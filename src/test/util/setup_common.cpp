@@ -95,6 +95,8 @@ BasicTestingSetup::BasicTestingSetup(
             "-debug",
             "-debugexclude=libevent",
             "-debugexclude=leveldb",
+            "-allownonstdtxnconsensus=1",
+            "-useecashprefix",
         },
         extra_args);
     // clang-format on
@@ -120,6 +122,8 @@ BasicTestingSetup::BasicTestingSetup(
     SeedRandomForTest(SeedRand::SEED);
 
     SelectParams(chainType);
+    config.SetEnableMinerFund(
+        config.GetChainParams().GetConsensus().enableMinerFund);
     InitLogging(*m_node.args);
     AppInitParameterInteraction(config, *m_node.args);
     LogInstance().StartLogging();
@@ -265,7 +269,7 @@ TestingSetup::TestingSetup(const ChainType chainType,
 
     /**
      * RPC does not come out of the warmup state on its own. Normally, this is
-     * handled in bitcoind's init path, but unit tests do not trigger this
+     * handled in lotusd's init path, but unit tests do not trigger this
      * codepath, so we call it explicitly as part of setup.
      */
     std::string rpcWarmupStatus;
@@ -302,7 +306,7 @@ TestChain100Setup::TestChain100Setup(
     const bool coins_db_in_memory, const bool block_tree_db_in_memory)
     : TestingSetup{ChainType::REGTEST, extra_args, coins_db_in_memory,
                    block_tree_db_in_memory} {
-    SetMockTime(1598887952);
+    SetMockTime(1600000000);
     constexpr std::array<uint8_t, 32> vchKey = {
         {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}};
@@ -313,9 +317,7 @@ TestChain100Setup::TestChain100Setup(
 
     {
         LOCK(::cs_main);
-        assert(
-            m_node.chainman->ActiveTip()->GetBlockHash().ToString() ==
-            "5afde277a26b6f36aee8f61a1dbf755587e1c6be63e654a88abe2a1ff0fbfb05");
+        assert(m_node.chainman->ActiveHeight() == COINBASE_MATURITY);
     }
 }
 
@@ -438,8 +440,8 @@ TestChain100Setup::PopulateMempool(FastRandomContext &det_rand,
     std::deque<std::pair<COutPoint, Amount>> unspent_prevouts;
     std::transform(m_coinbase_txns.begin(), m_coinbase_txns.end(),
                    std::back_inserter(unspent_prevouts), [](const auto &tx) {
-                       return std::make_pair(COutPoint(tx->GetId(), 0),
-                                             tx->vout[0].nValue);
+                       return std::make_pair(COutPoint(tx->GetId(), 1),
+                                             tx->vout[1].nValue);
                    });
     while (num_transactions > 0 && !unspent_prevouts.empty()) {
         // The number of inputs and outputs are random, between 1 and 24.
@@ -535,16 +537,26 @@ TestMemPoolEntryHelper::FromTx(const CTransactionRef &tx) const {
 }
 
 /**
- * @returns a real block
+ * @returns a Lotus block based on a real Bitcoin block
  * (0000000000013b8ab2cd513b0261a14096412195a72a0c4827d229dcc7e0f7af) with 9
  * txs.
  */
 CBlock getBlock13b8a() {
     CBlock block;
     DataStream stream{ParseHex(
-        "0100000090f0a9f110702f808219ebea1173056042a714bad51b916cb680000000"
-        "0000005275289558f51c9966699404ae2294730c3c9f9bda53523ce50e9b95e558"
-        "da2fdb261b4d4c86041b1ab1bf9309010000000100000000000000000000000000"
+        "90f0a9f110702f808219ebea1173056042a714bad51b916cb680000000000000"
+        "4c86041b"         // nBits
+        "db261b4d0000"     // nTime
+        "0000"             // nReserved
+        "0000000000000000" // nNonce
+        "01"               // nHeaderVersion
+        "3f0c0000000000"   // nSize
+        "a2860100"         // nHeight
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "8be315ab53286df23d5a48ab1b5b0bbcd7ad414cd7c35993a8e55958b4a52b75"
+        "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+        "00"
+        "09010000000100000000000000000000000000"
         "00000000000000000000000000000000000000ffffffff07044c86041b0146ffff"
         "ffff0100f2052a01000000434104e18f7afbe4721580e81e8414fc8c24d7cfacf2"
         "54bb5c7b949450c3e997c2dc1242487a8169507b631eb3771f2b425483fb13102c"
@@ -636,15 +648,18 @@ CBlock getBlock13b8a() {
         "4aab5e18570cf1f844f54788ac404b4c00000000001976a9142b6ba7c9d796b75e"
         "ef7942fc9288edd37c32f5c388ac00000000")};
     stream >> block;
+    assert(BlockMerkleRoot(block) == block.hashMerkleRoot);
     return block;
 }
 
 DummyConfig::DummyConfig()
-    : chainParams(CreateChainParams(ArgsManager{}, ChainType::REGTEST)) {}
+    : chainParams(CreateChainParams(ArgsManager{}, ChainType::REGTEST)),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 DummyConfig::DummyConfig(std::string net)
     : chainParams(
-          CreateChainParams(ArgsManager{}, ChainTypeFromString(net).value())) {}
+          CreateChainParams(ArgsManager{}, ChainTypeFromString(net).value())),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 std::ostream &operator<<(std::ostream &os, const arith_uint256 &num) {
     return os << ArithToUint256(num).ToString();

@@ -211,8 +211,10 @@ public:
 private:
     /** Memory only. */
     const uint256 hash;
+    const uint256 id;
 
     uint256 ComputeHash() const;
+    uint256 ComputeId() const;
 
 public:
     /** Construct a CTransaction that qualifies as IsNull() */
@@ -237,7 +239,7 @@ public:
 
     bool IsNull() const { return vin.empty() && vout.empty(); }
 
-    TxId GetId() const { return TxId(hash); }
+    TxId GetId() const { return TxId(id); }
     TxHash GetHash() const { return TxHash(hash); }
 
     // Return sum of txouts.
@@ -264,8 +266,8 @@ public:
     std::string ToString() const;
 };
 #if defined(__x86_64__)
-static_assert(sizeof(CTransaction) == 88,
-              "sizeof CTransaction is expected to be 88 bytes");
+static_assert(sizeof(CTransaction) == 120,
+              "sizeof CTransaction is expected to be 120 bytes");
 #endif
 
 /**
@@ -321,19 +323,44 @@ static inline CTransactionRef MakeTransactionRef(Tx &&txIn) {
     return std::make_shared<const CTransaction>(std::forward<Tx>(txIn));
 }
 
+class CCoinsView;
 /** Precompute sighash midstate to avoid quadratic hashing */
 struct PrecomputedTransactionData {
     uint256 hashPrevouts, hashSequence, hashOutputs;
+    /** Coins spend by the tx */
+    std::vector<CTxOut> m_spent_outputs;
+    /** Merkle root of the H(input.prevout || input.nSequence) for all inputs */
+    uint256 m_inputs_merkle_root;
+    /** Merkle root of the coins spend by the tx */
+    uint256 m_inputs_spent_outputs_merkle_root;
+    /** Height of the merkle tree of the inputs */
+    size_t m_inputs_merkle_height;
+    /** Merkle root of the tx outputs */
+    uint256 m_outputs_merkle_root;
+    /** Height of the merkle tree of the outputs */
+    size_t m_outputs_merkle_height;
+    /** Sum of the amounts in all the inputs */
+    Amount m_amount_inputs_sum;
+    /** Sum of the amounts in all the outputs */
+    Amount m_amount_outputs_sum;
 
-    PrecomputedTransactionData()
-        : hashPrevouts(), hashSequence(), hashOutputs() {}
+    PrecomputedTransactionData() = default;
 
     PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
         default;
     PrecomputedTransactionData &
     operator=(const PrecomputedTransactionData &txdata) = default;
+    PrecomputedTransactionData(PrecomputedTransactionData &&txdata) = default;
+    PrecomputedTransactionData &
+    operator=(PrecomputedTransactionData &&txdata) = default;
 
-    template <class T> explicit PrecomputedTransactionData(const T &tx);
+    template <class T>
+    explicit PrecomputedTransactionData(const T &tx,
+                                        std::vector<CTxOut> &&spent_outputs);
+
+    template <class T>
+    static PrecomputedTransactionData
+    FromCoinsView(const T &tx, const CCoinsView &coins_view);
 };
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H

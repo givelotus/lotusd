@@ -219,7 +219,7 @@ struct SnapshotTestSetup : TestChain100Setup {
             size_t total_coins{0};
 
             for (CTransactionRef &txn : m_coinbase_txns) {
-                COutPoint op{txn->GetId(), 0};
+                COutPoint op{txn->GetId(), 1};
                 BOOST_CHECK(ibd_coinscache.HaveCoin(op));
                 total_coins++;
             }
@@ -334,7 +334,7 @@ struct SnapshotTestSetup : TestChain100Setup {
                 size_t total_coins{0};
 
                 for (CTransactionRef &txn : m_coinbase_txns) {
-                    COutPoint op{txn->GetId(), 0};
+                    COutPoint op{txn->GetId(), 1};
                     BOOST_CHECK(coinscache.HaveCoin(op));
                     total_coins++;
                 }
@@ -364,7 +364,7 @@ struct SnapshotTestSetup : TestChain100Setup {
                 bool is_background = chainstate != &chainman.ActiveChainstate();
 
                 for (CTransactionRef &txn : m_coinbase_txns) {
-                    COutPoint op{txn->GetId(), 0};
+                    COutPoint op{txn->GetId(), 1};
                     if (coinscache.HaveCoin(op)) {
                         (is_background ? coins_in_background
                                        : coins_in_active)++;

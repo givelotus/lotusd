@@ -21,88 +21,110 @@ static valtype SignatureWithHashType(valtype vchSig, SigHashType sigHash) {
 static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
                                                   uint32_t flags) {
     ScriptError err = ScriptError::OK;
-    BOOST_CHECK(CheckDataSignatureEncoding(vchSig, flags, &err));
 
     const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
-    const bool hasStrictEnc = (flags & SCRIPT_VERIFY_STRICTENC) != 0;
+    // isTRKeySpend requires Schnorr sigs and Lotus sighash
+    const bool isTRKeySpend = (flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) != 0;
     const bool is64 = (vchSig.size() == 64);
+
+    // isTRKeySpend is never true for OP_CHECKDATASIG, but we test it anyway to
+    // make sure we don't introduce weird behavior
+    BOOST_CHECK_EQUAL(CheckDataSignatureEncoding(vchSig, flags, &err),
+                      !isTRKeySpend || is64);
 
     std::vector<BaseSigHashType> allBaseTypes{
         BaseSigHashType::ALL, BaseSigHashType::NONE, BaseSigHashType::SINGLE};
 
-    std::vector<SigHashType> baseSigHashes;
+    std::vector<SigHashType> sigHashes;
     for (const BaseSigHashType &baseType : allBaseTypes) {
-        const SigHashType baseSigHash = SigHashType().withBaseType(baseType);
-        baseSigHashes.push_back(baseSigHash);
-        baseSigHashes.push_back(baseSigHash.withAnyoneCanPay(true));
+        const SigHashType sigHashType = SigHashType().withBaseType(baseType);
+        if (hasForkId) {
+            // Check the signatures with the proper forkid flag.
+            sigHashes.push_back(sigHashType.withForkId());
+            sigHashes.push_back(
+                sigHashType.withForkId().withAnyoneCanPay(true));
+            sigHashes.push_back(sigHashType.withLotus());
+            sigHashes.push_back(
+                sigHashType.withLotus().withAnyoneCanPay(true));
+        } else {
+            sigHashes.push_back(sigHashType);
+            sigHashes.push_back(sigHashType.withAnyoneCanPay(true));
+        }
     }
 
-    for (const SigHashType &baseSigHash : baseSigHashes) {
-        // Check the signature with the proper forkid flag.
-        SigHashType sigHash = baseSigHash.withForkId(hasForkId);
+    for (const SigHashType &sigHash : sigHashes) {
+        // isTRKeySpend requires Schnorr sigs and Lotus sighash
+        const bool expectedValid =
+            isTRKeySpend ? is64 && sigHash.hasLotus() : true;
         valtype validSig = SignatureWithHashType(vchSig, sigHash);
-        BOOST_CHECK(CheckTransactionSignatureEncoding(validSig, flags, &err));
-        BOOST_CHECK_EQUAL(!is64, CheckTransactionECDSASignatureEncoding(
-                                     validSig, flags, &err));
-        BOOST_CHECK_EQUAL(is64, CheckTransactionSchnorrSignatureEncoding(
-                                    validSig, flags, &err));
+        BOOST_CHECK_EQUAL(expectedValid, CheckTransactionSignatureEncoding(
+                                             validSig, flags, &err));
+        BOOST_CHECK_EQUAL(
+            !is64 && expectedValid,
+            CheckTransactionECDSASignatureEncoding(validSig, flags, &err));
+        BOOST_CHECK_EQUAL(
+            is64 && expectedValid,
+            CheckTransactionSchnorrSignatureEncoding(validSig, flags, &err));
 
         // If we have strict encoding, we prevent the use of undefined flags.
-        std::array<SigHashType, 2> undefSigHashes{
-            {SigHashType(sigHash.getRawSigHashType() | 0x20),
+        std::array<SigHashType, 5> undefSigHashes{
+            {SigHashType(sigHash.getRawSigHashType() | 0x08),
+             SigHashType(sigHash.getRawSigHashType() | 0x04),
+             SigHashType(sigHash.getRawSigHashType() | 0x10),
+             SigHashType((sigHash.getRawSigHashType() & ~0x40) | 0x20),
              sigHash.withBaseType(BaseSigHashType::UNSUPPORTED)}};
 
         for (SigHashType undefSigHash : undefSigHashes) {
             valtype undefSighash = SignatureWithHashType(vchSig, undefSigHash);
+            BOOST_CHECK(
+                !CheckTransactionSignatureEncoding(undefSighash, flags, &err));
             BOOST_CHECK_EQUAL(
-                CheckTransactionSignatureEncoding(undefSighash, flags, &err),
-                !hasStrictEnc);
-            if (hasStrictEnc) {
-                BOOST_CHECK(err == ScriptError::SIG_HASHTYPE);
-            }
-            BOOST_CHECK_EQUAL(CheckTransactionECDSASignatureEncoding(
-                                  undefSighash, flags, &err),
-                              !(hasStrictEnc || is64));
-            if (is64 || hasStrictEnc) {
-                BOOST_CHECK(err == (is64 ? ScriptError::SIG_BADLENGTH
-                                         : ScriptError::SIG_HASHTYPE));
-            }
-            BOOST_CHECK_EQUAL(CheckTransactionSchnorrSignatureEncoding(
-                                  undefSighash, flags, &err),
-                              !(hasStrictEnc || !is64));
-            if (!is64 || hasStrictEnc) {
-                BOOST_CHECK(err == (!is64 ? ScriptError::SIG_NONSCHNORR
-                                          : ScriptError::SIG_HASHTYPE));
-            }
+                err, isTRKeySpend && !is64
+                         ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                         : ScriptError::SIG_HASHTYPE);
+            BOOST_CHECK(!CheckTransactionECDSASignatureEncoding(undefSighash,
+                                                                flags, &err));
+            BOOST_CHECK_EQUAL(
+                err, isTRKeySpend
+                         ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                     : is64 ? ScriptError::SIG_BADLENGTH
+                            : ScriptError::SIG_HASHTYPE);
+            BOOST_CHECK(!CheckTransactionSchnorrSignatureEncoding(undefSighash,
+                                                                  flags, &err));
+            BOOST_CHECK_EQUAL(err, !is64 ? ScriptError::SIG_NONSCHNORR
+                                         : ScriptError::SIG_HASHTYPE);
         }
 
         // If we check strict encoding, then invalid forkid is an error.
-        SigHashType invalidSigHash = baseSigHash.withForkId(!hasForkId);
+        SigHashType invalidSigHash =
+            sigHash.withAlgorithm(hasForkId ? SIGHASH_LEGACY : SIGHASH_FORKID);
         valtype invalidSig = SignatureWithHashType(vchSig, invalidSigHash);
 
+        BOOST_CHECK(
+            !CheckTransactionSignatureEncoding(invalidSig, flags, &err));
         BOOST_CHECK_EQUAL(
-            CheckTransactionSignatureEncoding(invalidSig, flags, &err),
-            !hasStrictEnc);
-        if (hasStrictEnc) {
-            BOOST_CHECK(err == (hasForkId ? ScriptError::MUST_USE_FORKID
-                                          : ScriptError::ILLEGAL_FORKID));
-        }
+            err,
+            isTRKeySpend
+                ? (is64 ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH
+                        : ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG)
+                : (hasForkId ? ScriptError::MUST_USE_FORKID
+                             : ScriptError::ILLEGAL_FORKID));
+        BOOST_CHECK(
+            !CheckTransactionECDSASignatureEncoding(invalidSig, flags, &err));
         BOOST_CHECK_EQUAL(
-            CheckTransactionECDSASignatureEncoding(invalidSig, flags, &err),
-            !(hasStrictEnc || is64));
-        if (is64 || hasStrictEnc) {
-            BOOST_CHECK(err == (is64        ? ScriptError::SIG_BADLENGTH
-                                : hasForkId ? ScriptError::MUST_USE_FORKID
-                                            : ScriptError::ILLEGAL_FORKID));
-        }
+            err, isTRKeySpend
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                 : is64      ? ScriptError::SIG_BADLENGTH
+                 : hasForkId ? ScriptError::MUST_USE_FORKID
+                             : ScriptError::ILLEGAL_FORKID);
+        BOOST_CHECK(
+            !CheckTransactionSchnorrSignatureEncoding(invalidSig, flags, &err));
         BOOST_CHECK_EQUAL(
-            CheckTransactionSchnorrSignatureEncoding(invalidSig, flags, &err),
-            !(hasStrictEnc || !is64));
-        if (!is64 || hasStrictEnc) {
-            BOOST_CHECK(err == (!is64       ? ScriptError::SIG_NONSCHNORR
-                                : hasForkId ? ScriptError::MUST_USE_FORKID
-                                            : ScriptError::ILLEGAL_FORKID));
-        }
+            err, !is64 ? ScriptError::SIG_NONSCHNORR
+                 : isTRKeySpend
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH
+                 : hasForkId ? ScriptError::MUST_USE_FORKID
+                             : ScriptError::ILLEGAL_FORKID);
     }
 }
 
@@ -199,6 +221,7 @@ BOOST_AUTO_TEST_CASE(checksignatureencoding_test) {
         uint32_t flags = lcg.next();
 
         ScriptError err = ScriptError::OK;
+        const bool isTRKeySpend = (flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) != 0;
 
         // Empty sig is always validly encoded.
         BOOST_CHECK(CheckDataSignatureEncoding({}, flags, &err));
@@ -212,41 +235,31 @@ BOOST_AUTO_TEST_CASE(checksignatureencoding_test) {
         // Signatures are valid as long as the hashtype is correct.
         CheckSignatureEncodingWithSigHashType(minimalSig, flags);
 
-        if (flags & SCRIPT_VERIFY_LOW_S) {
-            // If we do enforce low S, then high S sigs are rejected.
-            BOOST_CHECK(!CheckDataSignatureEncoding(highSSig, flags, &err));
-            BOOST_CHECK(err == ScriptError::SIG_HIGH_S);
-        } else {
-            // If we do not enforce low S, then high S sigs are accepted.
-            CheckSignatureEncodingWithSigHashType(highSSig, flags);
-        }
+        // We enforce low S, therefore high S sigs are rejected.
+        BOOST_CHECK(!CheckDataSignatureEncoding(highSSig, flags, &err));
+        BOOST_CHECK_EQUAL(
+            err, isTRKeySpend
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                     : ScriptError::SIG_HIGH_S);
 
         for (const valtype &nonDERSig : nonDERSigs) {
-            if (flags & (SCRIPT_VERIFY_DERSIG | SCRIPT_VERIFY_LOW_S |
-                         SCRIPT_VERIFY_STRICTENC)) {
-                // If we get any of the dersig flags, the non canonical dersig
-                // signature fails.
-                BOOST_CHECK(
-                    !CheckDataSignatureEncoding(nonDERSig, flags, &err));
-                BOOST_CHECK(err == ScriptError::SIG_DER);
-            } else {
-                // If we do not check, then it is accepted.
-                BOOST_CHECK(CheckDataSignatureEncoding(nonDERSig, flags, &err));
-            }
+            // If we get any of the dersig flags, the non canonical dersig
+            // signature fails.
+            BOOST_CHECK(!CheckDataSignatureEncoding(nonDERSig, flags, &err));
+            BOOST_CHECK_EQUAL(
+                err, isTRKeySpend
+                         ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                         : ScriptError::SIG_DER);
         }
 
         for (const valtype &nonDERSig : nonParsableSigs) {
-            if (flags & (SCRIPT_VERIFY_DERSIG | SCRIPT_VERIFY_LOW_S |
-                         SCRIPT_VERIFY_STRICTENC)) {
-                // If we get any of the dersig flags, the high S but non dersig
-                // signature fails.
-                BOOST_CHECK(
-                    !CheckDataSignatureEncoding(nonDERSig, flags, &err));
-                BOOST_CHECK(err == ScriptError::SIG_DER);
-            } else {
-                // If we do not check, then it is accepted.
-                BOOST_CHECK(CheckDataSignatureEncoding(nonDERSig, flags, &err));
-            }
+            // If we get any of the dersig flags, the high S but non dersig
+            // signature fails.
+            BOOST_CHECK(!CheckDataSignatureEncoding(nonDERSig, flags, &err));
+            BOOST_CHECK_EQUAL(
+                err, isTRKeySpend
+                         ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                         : ScriptError::SIG_DER);
         }
     }
 }
@@ -377,15 +390,10 @@ BOOST_AUTO_TEST_CASE(checkpubkeyencoding_test) {
         BOOST_CHECK(CheckPubKeyEncoding(compressedKey1, flags, &err));
         BOOST_CHECK(CheckPubKeyEncoding(fullKey, flags, &err));
 
-        // If SCRIPT_VERIFY_STRICTENC is specified, we rule out invalid keys.
-        const bool hasStrictEnc = (flags & SCRIPT_VERIFY_STRICTENC) != 0;
-        const bool allowInvalidKeys = !hasStrictEnc;
+        // We always rule out invalid keys.
         for (const valtype &key : invalidKeys) {
-            BOOST_CHECK_EQUAL(CheckPubKeyEncoding(key, flags, &err),
-                              allowInvalidKeys);
-            if (!allowInvalidKeys) {
-                BOOST_CHECK(err == ScriptError::PUBKEYTYPE);
-            }
+            BOOST_CHECK(!CheckPubKeyEncoding(key, flags, &err));
+            BOOST_CHECK(err == ScriptError::PUBKEYTYPE);
         }
     }
 }
@@ -407,20 +415,29 @@ BOOST_AUTO_TEST_CASE(checkschnorr_test) {
     MMIXLinearCongruentialGenerator lcg;
     for (int i = 0; i < 4096; i++) {
         uint32_t flags = lcg.next();
+        const bool isTRKeySpend = (flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) != 0;
 
-        const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
+        SigHashType sigHashType = SigHashType();
+        if (isTRKeySpend) {
+            // Prevent invalid flag combinations
+            flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
+            sigHashType = sigHashType.withLotus();
+        } else if (flags & SCRIPT_ENABLE_SIGHASH_FORKID) {
+            sigHashType = sigHashType.withForkId();
+        }
 
         ScriptError err = ScriptError::OK;
-        valtype DER65_hb =
-            SignatureWithHashType(DER64, SigHashType().withForkId(hasForkId));
-        valtype Zero65_hb =
-            SignatureWithHashType(Zero64, SigHashType().withForkId(hasForkId));
+        valtype DER65_hb = SignatureWithHashType(DER64, sigHashType);
+        valtype Zero65_hb = SignatureWithHashType(Zero64, sigHashType);
 
         BOOST_CHECK(CheckDataSignatureEncoding(DER64, flags, &err));
         BOOST_CHECK(CheckTransactionSignatureEncoding(DER65_hb, flags, &err));
         BOOST_CHECK(
             !CheckTransactionECDSASignatureEncoding(DER65_hb, flags, &err));
-        BOOST_CHECK(err == ScriptError::SIG_BADLENGTH);
+        BOOST_CHECK_EQUAL(
+            err, isTRKeySpend
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                     : ScriptError::SIG_BADLENGTH);
         BOOST_CHECK(
             CheckTransactionSchnorrSignatureEncoding(DER65_hb, flags, &err));
 
@@ -428,7 +445,10 @@ BOOST_AUTO_TEST_CASE(checkschnorr_test) {
         BOOST_CHECK(CheckTransactionSignatureEncoding(Zero65_hb, flags, &err));
         BOOST_CHECK(
             !CheckTransactionECDSASignatureEncoding(Zero65_hb, flags, &err));
-        BOOST_CHECK(err == ScriptError::SIG_BADLENGTH);
+        BOOST_CHECK_EQUAL(
+            err, isTRKeySpend
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG
+                     : ScriptError::SIG_BADLENGTH);
         BOOST_CHECK(
             CheckTransactionSchnorrSignatureEncoding(Zero65_hb, flags, &err));
     }

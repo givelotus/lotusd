@@ -4,6 +4,7 @@
 
 #include <key_io.h>
 
+#include <addresses/xaddress.h>
 #include <base58.h>
 #include <cashaddrenc.h>
 #include <chainparams.h>
@@ -35,6 +36,11 @@ public:
             m_params.Base58Prefix(CChainParams::SCRIPT_ADDRESS);
         data.insert(data.end(), id.begin(), id.end());
         return EncodeBase58Check(data);
+    }
+
+    std::string operator()(const Taproot &) const {
+        // Legacy Base58 encoding does not support Taproot addresses
+        return {};
     }
 
     std::string operator()(const CNoDestination &no) const { return {}; }
@@ -167,13 +173,23 @@ std::string EncodeExtKey(const CExtKey &key) {
 std::string EncodeDestination(const CTxDestination &dest,
                               const Config &config) {
     const CChainParams &params = config.GetChainParams();
-    return config.UseCashAddrEncoding() ? EncodeCashAddr(dest, params)
-                                        : EncodeLegacyAddr(dest, params);
+    return config.UseCashAddrEncoding()
+               ? EncodeCashAddr(dest, params)
+               : XAddress::EncodeDestination(params, dest);
+}
+
+std::string EncodeDestination(const CTxDestination &dest,
+                              const CChainParams &params) {
+    return XAddress::EncodeDestination(params, dest);
 }
 
 CTxDestination DecodeDestination(const std::string &addr,
                                  const CChainParams &params) {
     CTxDestination dst = DecodeCashAddr(addr, params);
+    if (XAddress::Parse(params, addr, dst)) {
+        return dst;
+    }
+    dst = DecodeCashAddr(addr, params);
     if (IsValidDestination(dst)) {
         return dst;
     }

@@ -7,6 +7,7 @@
 #include <blockindex.h>
 #include <chainparams.h>
 #include <config.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <key_io.h>
 #include <net.h>
@@ -60,8 +61,10 @@ PrepareBlock(const Config &config, const NodeContext &node,
                                      ->block);
 
     LOCK(cs_main);
-    block->nTime = Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1;
+    block->SetBlockTime(
+        Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1);
     block->hashMerkleRoot = BlockMerkleRoot(*block);
+    block->SetSize(::GetSerializeSize(*block));
 
     return block;
 }
@@ -90,8 +93,7 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
 
     CMutableTransaction tx_coinbase{*pblock->vtx.at(0)};
     tx_coinbase.vin.at(0).scriptSig =
-        CScript{} << pindexPrev->nHeight + 1
-                  << getExcessiveBlockSizeSig(nExcessiveBlockSize);
+        CScript{} << getExcessiveBlockSizeSig(nExcessiveBlockSize);
 
     // Make sure the coinbase is big enough.
     uint64_t coinbaseSize = ::GetSerializeSize(tx_coinbase);
@@ -105,4 +107,5 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
 
     pblock->vtx[0] = MakeTransactionRef(std::move(tx_coinbase));
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+    pblock->SetSize(::GetSerializeSize(*pblock));
 }

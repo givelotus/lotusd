@@ -129,7 +129,7 @@ OP_16 = CScriptOp(0x60)
 
 # control
 OP_NOP = CScriptOp(0x61)
-OP_VER = CScriptOp(0x62)
+OP_SCRIPTTYPE = CScriptOp(0x62)
 OP_IF = CScriptOp(0x63)
 OP_NOTIF = CScriptOp(0x64)
 OP_VERIF = CScriptOp(0x65)
@@ -192,8 +192,8 @@ OP_SUB = CScriptOp(0x94)
 OP_MUL = CScriptOp(0x95)
 OP_DIV = CScriptOp(0x96)
 OP_MOD = CScriptOp(0x97)
-OP_LSHIFT = CScriptOp(0x98)
-OP_RSHIFT = CScriptOp(0x99)
+OP_RAWLEFTBITSHIFT = CScriptOp(0x98)
+OP_MULPOW2 = CScriptOp(0x99)
 
 OP_BOOLAND = CScriptOp(0x9A)
 OP_BOOLOR = CScriptOp(0x9B)
@@ -277,7 +277,7 @@ OPCODE_NAMES.update(
         OP_15: "OP_15",
         OP_16: "OP_16",
         OP_NOP: "OP_NOP",
-        OP_VER: "OP_VER",
+        OP_SCRIPTTYPE: "OP_SCRIPTTYPE",
         OP_IF: "OP_IF",
         OP_NOTIF: "OP_NOTIF",
         OP_VERIF: "OP_VERIF",
@@ -331,8 +331,8 @@ OPCODE_NAMES.update(
         OP_MUL: "OP_MUL",
         OP_DIV: "OP_DIV",
         OP_MOD: "OP_MOD",
-        OP_LSHIFT: "OP_LSHIFT",
-        OP_RSHIFT: "OP_RSHIFT",
+        OP_RAWLEFTBITSHIFT: "OP_RAWLEFTBITSHIFT",
+        OP_MULPOW2: "OP_MULPOW2",
         OP_BOOLAND: "OP_BOOLAND",
         OP_BOOLOR: "OP_BOOLOR",
         OP_NUMEQUAL: "OP_NUMEQUAL",
@@ -594,6 +594,74 @@ class CScript(bytes):
                     ops.append(op)
 
         return f"CScript([{', '.join(ops)}])"
+
+
+SIGHASH_ALL = 1
+SIGHASH_NONE = 2
+SIGHASH_SINGLE = 3
+SIGHASH_FORKID = 0x40
+SIGHASH_LOTUS = 0x60
+SIGHASH_ANYONECANPAY = 0x80
+
+
+def TaggedHash(tag, data):
+    import hashlib
+    ss = hashlib.sha256(tag.encode('utf-8')).digest()
+    ss += ss
+    ss += data
+    return hashlib.sha256(ss).digest()
+
+
+def SignatureHashLotus(
+        tx_to,
+        spent_utxos: list,
+        sig_hash_type: int,
+        input_index: int,
+        executed_script_hash: bytes = None,
+        codeseparator_pos = 0xffff_ffff):
+    from .messages import get_merkle_root, hash256, ser_string, sha256
+    assert len(tx_to.vin) == len(spent_utxos)
+    assert input_index < len(tx_to.vin)
+    out_type = sig_hash_type & 3
+    in_type = sig_hash_type & SIGHASH_ANYONECANPAY
+    ss = bytearray(sig_hash_type.to_bytes(4, 'little'))
+    spend_type = 0
+    if executed_script_hash is not None:
+        spend_type |= 2
+    ss += hash256(
+        bytes([spend_type]) +
+        tx_to.vin[input_index].prevout.serialize() +
+        tx_to.vin[input_index].nSequence.to_bytes(4, 'little') +
+        spent_utxos[input_index].serialize())
+    if executed_script_hash is not None:
+        assert len(executed_script_hash) == 32
+        ss += codeseparator_pos.to_bytes(4, 'little')
+        ss += executed_script_hash
+    if in_type != SIGHASH_ANYONECANPAY:
+        ss += input_index.to_bytes(4, 'little')
+        ss += get_merkle_root([hash256(utxo.serialize()) for utxo in spent_utxos])[0]
+        ss += sum(utxo.nValue for utxo in spent_utxos).to_bytes(8, 'little')
+    if out_type == SIGHASH_ALL:
+        ss += sum(output.nValue for output in tx_to.vout).to_bytes(8, 'little')
+    ss += tx_to.nVersion.to_bytes(4, 'little')
+    if in_type != SIGHASH_ANYONECANPAY:
+        inputs_merkle_root, inputs_merkle_height = get_merkle_root(
+            [hash256(inpt.prevout.serialize() + inpt.nSequence.to_bytes(4, 'little'))
+             for inpt in tx_to.vin])
+        ss += inputs_merkle_root
+        ss += bytes([inputs_merkle_height])
+    if out_type == SIGHASH_SINGLE:
+        if input_index < len(tx_to.vout):
+            ss += hash256(tx_to.vout[input_index].serialize())
+        else:
+            raise ValueError("Invalid sighash SINGLE, no corresponding output")
+    if out_type == SIGHASH_ALL:
+        outputs_merkle_root, outputs_merkle_height = get_merkle_root(
+            [hash256(output.serialize()) for output in tx_to.vout])
+        ss += outputs_merkle_root
+        ss += bytes([outputs_merkle_height])
+    ss += tx_to.nLockTime.to_bytes(4, 'little')
+    return hash256(ss)
 
 
 class TestFrameworkScript(unittest.TestCase):

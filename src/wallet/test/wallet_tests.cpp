@@ -139,7 +139,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup) {
         BOOST_CHECK(result.last_failed_block.IsNull());
         BOOST_CHECK_EQUAL(result.last_scanned_block, newTip->GetBlockHash());
         BOOST_CHECK_EQUAL(*result.last_scanned_height, newTip->nHeight);
-        BOOST_CHECK_EQUAL(GetBalance(wallet).m_mine_immature, 100 * COIN);
+        BOOST_CHECK_EQUAL(GetBalance(wallet).m_mine_immature, 2 * SUBSIDY);
     }
 
     // Prune the older block file.
@@ -172,7 +172,7 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup) {
         BOOST_CHECK_EQUAL(result.last_failed_block, oldTip->GetBlockHash());
         BOOST_CHECK_EQUAL(result.last_scanned_block, newTip->GetBlockHash());
         BOOST_CHECK_EQUAL(*result.last_scanned_height, newTip->nHeight);
-        BOOST_CHECK_EQUAL(GetBalance(wallet).m_mine_immature, 50 * COIN);
+        BOOST_CHECK_EQUAL(GetBalance(wallet).m_mine_immature, SUBSIDY);
     }
 
     // Prune the remaining block file.
@@ -278,7 +278,7 @@ BOOST_FIXTURE_TEST_CASE(importmulti_rescan, TestChain100Setup) {
                       "could contain transactions pertaining to the key. As a "
                       "result, transactions and coins using this key may not "
                       "appear in the wallet. This error could be caused by "
-                      "pruning or data corruption (see bitcoind log for "
+                      "pruning or data corruption (see lotusd log for "
                       "details) and could be dealt with by downloading and "
                       "rescanning the relevant blocks (see -reindex option "
                       "and rescanblockchain RPC).\"}},{\"success\":true}]",
@@ -407,7 +407,7 @@ BOOST_FIXTURE_TEST_CASE(coin_mark_dirty_immature_credit, TestChain100Setup) {
     // credit amount is calculated.
     wtx.MarkDirty();
     BOOST_CHECK(spk_man->AddKeyPubKey(coinbaseKey, coinbaseKey.GetPubKey()));
-    BOOST_CHECK_EQUAL(CachedTxGetImmatureCredit(wallet, wtx), 50 * COIN);
+    BOOST_CHECK_EQUAL(CachedTxGetImmatureCredit(wallet, wtx), SUBSIDY);
 }
 
 static int64_t AddTx(ChainstateManager &chainman, CWallet &wallet,
@@ -652,7 +652,7 @@ BOOST_FIXTURE_TEST_CASE(ListCoinsTest, ListCoinsTestingSetup) {
     BOOST_CHECK_EQUAL(list.begin()->second.size(), 1U);
 
     // Check initial balance from one mature coinbase transaction.
-    BOOST_CHECK_EQUAL(50 * COIN, GetAvailableBalance(*wallet));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetAvailableBalance(*wallet));
 
     // Add a transaction creating a change address, and confirm ListCoins still
     // returns the coin associated with the change address underneath the
@@ -826,13 +826,13 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
         CreateAndProcessBlock({},
                               GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
             .vtx[0]);
-    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 0, coinbaseKey,
+    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 1, coinbaseKey,
                                     GetScriptForRawPubKey(key.GetPubKey()));
     m_coinbase_txns.push_back(
         CreateAndProcessBlock({block_tx},
                               GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
             .vtx[0]);
-    auto mempool_tx = TestSimpleSpend(*m_coinbase_txns[1], 0, coinbaseKey,
+    auto mempool_tx = TestSimpleSpend(*m_coinbase_txns[1], 1, coinbaseKey,
                                       GetScriptForRawPubKey(key.GetPubKey()));
     BOOST_CHECK(m_node.chain->broadcastTransaction(
         GetConfig(), MakeTransactionRef(mempool_tx), DEFAULT_TRANSACTION_MAXFEE,
@@ -871,14 +871,14 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
                 CreateAndProcessBlock(
                     {}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
                     .vtx[0]);
-            block_tx = TestSimpleSpend(*m_coinbase_txns[2], 0, coinbaseKey,
+            block_tx = TestSimpleSpend(*m_coinbase_txns[2], 1, coinbaseKey,
                                        GetScriptForRawPubKey(key.GetPubKey()));
             m_coinbase_txns.push_back(
                 CreateAndProcessBlock(
                     {block_tx}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
                     .vtx[0]);
             mempool_tx =
-                TestSimpleSpend(*m_coinbase_txns[3], 0, coinbaseKey,
+                TestSimpleSpend(*m_coinbase_txns[3], 1, coinbaseKey,
                                 GetScriptForRawPubKey(key.GetPubKey()));
             BOOST_CHECK(m_node.chain->broadcastTransaction(
                 GetConfig(), MakeTransactionRef(mempool_tx),
@@ -916,7 +916,7 @@ BOOST_FIXTURE_TEST_CASE(ZapSelectTx, TestChain100Setup) {
         CreateAndProcessBlock({},
                               GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
             .vtx[0]);
-    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 0, coinbaseKey,
+    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 1, coinbaseKey,
                                     GetScriptForRawPubKey(key.GetPubKey()));
     CreateAndProcessBlock({block_tx},
                           GetScriptForRawPubKey(coinbaseKey.GetPubKey()));

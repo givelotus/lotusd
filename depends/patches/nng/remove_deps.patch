@@ -1,0 +1,31 @@
+From 91c8e9db8ab57ad056824c57f24c270bdecfcff1 Mon Sep 17 00:00:00 2001
+From: Tobias Ruck <ruck.tobias@gmail.com>
+Date: Fri, 31 Dec 2021 16:58:41 -0600
+Subject: [PATCH] Remove dependencies that will fail the bitcoind build
+
+---
+ src/platform/posix/CMakeLists.txt | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/src/platform/posix/CMakeLists.txt b/src/platform/posix/CMakeLists.txt
+index 02a8cb53..880b2320 100644
+--- a/src/platform/posix/CMakeLists.txt
++++ b/src/platform/posix/CMakeLists.txt
+@@ -26,15 +26,12 @@ if (NNG_PLATFORM_POSIX)
+
+     nng_check_func(lockf NNG_HAVE_LOCKF)
+     nng_check_func(flock NNG_HAVE_FLOCK)
+-    nng_check_func(getrandom NNG_HAVE_GETRANDOM)
+     nng_check_func(arc4random_buf NNG_HAVE_ARC4RANDOM)
+
+-    nng_check_lib(rt clock_gettime NNG_HAVE_CLOCK_GETTIME)
+     nng_check_lib(pthread sem_wait NNG_HAVE_SEMAPHORE_PTHREAD)
+     nng_check_lib(pthread pthread_atfork NNG_HAVE_PTHREAD_ATFORK_PTHREAD)
+     nng_check_lib(pthread pthread_set_name_np NNG_HAVE_PTHREAD_SET_NAME_NP)
+     nng_check_lib(pthread pthread_setname_np NNG_HAVE_PTHREAD_SETNAME_NP)
+-    nng_check_lib(nsl gethostbyname NNG_HAVE_LIBNSL)
+     nng_check_lib(socket socket NNG_HAVE_LIBSOCKET)
+
+     # GCC needs libatomic on some architectures (e.g. ARM) because the
+-- 
+2.30.1 (Apple Git-130)

@@ -1,0 +1,2 @@
+bin/lotusd usr/bin
+bin/lotus-cli usr/bin

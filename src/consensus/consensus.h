@@ -7,6 +7,7 @@
 #define BITCOIN_CONSENSUS_CONSENSUS_H
 
 #include <cstdint>
+#include <vector>
 
 /** 1MB */
 static const uint64_t ONE_MEGABYTE = 1000000;
@@ -20,6 +21,14 @@ static const uint64_t LEGACY_MAX_BLOCK_SIZE = ONE_MEGABYTE;
 static const uint64_t DEFAULT_MAX_BLOCK_SIZE = 32 * ONE_MEGABYTE;
 /** Allowed number of signature check operations per transaction. */
 static const uint64_t MAX_TX_SIGCHECKS = 3000;
+
+/** Enforced prefix for all coinbase strings.
+ * This prevents duplicate transactions on other Bitcoin derived chains
+ * for approx. 9'664'528 years.
+ */
+static const std::vector<uint8_t> COINBASE_PREFIX =
+    {0x6c, 0x6f, 0x67, 0x6f, 0x73};
+
 /**
  * The ratio between the maximum allowable block size and the maximum allowable
  * SigChecks (executed signature check operations) in the block. (network rule).
@@ -32,10 +41,6 @@ static const int BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO = 141;
 static const int COINBASE_MATURITY = 100;
 /** Coinbase scripts have their own script size limit. */
 static const int MAX_COINBASE_SCRIPTSIG_SIZE = 100;
-
-/** Flags for nSequence and nLockTime locks */
-/** Interpret sequence numbers as relative lock-time constraints. */
-static constexpr unsigned int LOCKTIME_VERIFY_SEQUENCE = (1 << 0);
 
 /**
  * Compute the maximum number of sigchecks that can be contained in a block

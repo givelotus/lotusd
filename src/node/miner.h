@@ -36,6 +36,12 @@ class Processor;
 namespace node {
 static const bool DEFAULT_PRINTPRIORITY = false;
 
+/**
+ * Calculate the additional block reward in the coinbase from fees.
+ * Currenty, 50% of fees are burned.
+ */
+Amount GetBlockRewardFromFees(Amount nFees);
+
 struct CBlockTemplateEntry {
     CTransactionRef tx;
     Amount fees;
@@ -71,12 +77,14 @@ private:
     const bool test_block_validity;
 
     const bool add_finalized_txs;
+    const bool enableMinerFund;
 
 public:
     struct Options {
         bool fPrintPriority{DEFAULT_PRINTPRIORITY};
         bool test_block_validity{true};
         bool add_finalized_txs{false};
+        bool enableMinerFund{false};
     };
 
     BlockAssembler(const Config &config, Chainstate &chainstate,

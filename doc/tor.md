@@ -49,7 +49,7 @@ outgoing connections, but more is possible.
 
 In a typical situation, this suffices to run behind a Tor proxy:
 
-    ./bitcoind -proxy=127.0.0.1:9050
+    ./lotusd -proxy=127.0.0.1:9050
 
 ## 2. Automatically create a Bitcoin ABC onion service
 
@@ -149,10 +149,10 @@ You can also manually configure your node to be reachable from the Tor network.
 Add these lines to your `/etc/tor/torrc` (or equivalent config file):
 
     HiddenServiceDir /var/lib/tor/bitcoin-service/
-    HiddenServicePort 8333 127.0.0.1:8334
+    HiddenServicePort 10605 127.0.0.1:8334
 
 The directory can be different of course, but virtual port numbers should be equal to
-your bitcoind's P2P listen port (8333 by default), and target addresses and ports
+your bitcoind's P2P listen port (10605 by default), and target addresses and ports
 should be equal to binding address and port for inbound Tor connections (127.0.0.1:8334 by default).
 
     -externalip=X   You can tell bitcoind about its publicly reachable addresses using
@@ -186,14 +186,14 @@ In a typical situation, where you're only reachable via Tor, this should suffice
 listen on all devices and another node could establish a clearnet connection, when knowing
 your address. To mitigate this, additionally bind the address of your Tor proxy:
 
-    ./bitcoind ... -bind=127.0.0.1
+    ./lotusd ... -bind=127.0.0.1
 
 If you don't care too much about hiding your node, and want to be reachable on IPv4
 as well, use `discover` instead:
 
-    ./bitcoind ... -discover
+    ./lotusd ... -discover
 
-and open port 8333 on your firewall (or use port mapping, i.e. `-natpmp`).
+and open port 10605 on your firewall (or use port mapping, i.e. `-natpmp`).
 
 If you only want to use Tor to reach .onion addresses, but not use it as a proxy
 for normal IPv4/IPv6 communication, use:

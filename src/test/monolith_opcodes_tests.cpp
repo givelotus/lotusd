@@ -6,6 +6,7 @@
 #include <script/interpreter.h>
 
 #include <test/util/setup_common.h>
+#include <test/lcg.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -16,7 +17,7 @@ typedef std::vector<valtype> stacktype;
 
 BOOST_FIXTURE_TEST_SUITE(monolith_opcodes_tests, BasicTestingSetup)
 
-std::array<uint32_t, 3> flagset{{0, STANDARD_SCRIPT_VERIFY_FLAGS}};
+std::array<uint32_t, 2> flagset{{0, STANDARD_SCRIPT_VERIFY_FLAGS}};
 
 /**
  * General utility functions to check for script passing/failing.
@@ -50,6 +51,18 @@ static void CheckErrorForAllFlags(const stacktype &original_stack,
                                   ScriptError expected_error) {
     for (uint32_t flags : flagset) {
         CheckError(flags, original_stack, script, expected_error);
+    }
+}
+
+static void CheckConditionalForAllFlags(const stacktype &original_stack,
+                                       const CScript &script,
+                                       const stacktype &expected_stack,
+                                       ScriptError expected_error,
+                                       bool condition) {
+    if (condition) {
+        CheckTestResultForAllFlags(original_stack, script, expected_stack);
+    } else {
+        CheckErrorForAllFlags(original_stack, script, expected_error);
     }
 }
 
@@ -126,15 +139,27 @@ static void RunTestForAllBitwiseOpcodesSizes(const valtype &a, const valtype &b,
                                              const valtype &expected_and,
                                              const valtype &expected_or,
                                              const valtype &expected_xor) {
-    valtype wa, wb, wand, wor, wxor;
+    MMIXLinearCongruentialGenerator lcg;
+    valtype wa;
+    // Test for all len(wa) <= len(wb)
     for (size_t i = 0; i < a.size(); i++) {
         wa.push_back(a[i]);
-        wb.push_back(b[i]);
-        wand.push_back(expected_and[i]);
-        wor.push_back(expected_or[i]);
-        wxor.push_back(expected_xor[i]);
-
+        size_t len = i + 1;
+        valtype wb(b.begin(), b.begin() + len),
+                wand(expected_and.begin(), expected_and.begin() + len),
+                wor(expected_or.begin(), expected_or.begin() + len),
+                wxor(expected_xor.begin(), expected_xor.begin() + len);
+        // Test for len(wa) == len(wb)
         RunTestForAllBitwiseOpcodes(wa, wb, wand, wor, wxor);
+        // Test for len(wb) == len(wa)..len(b), expand arrays
+        // Skip some tests for faster execution
+        for (size_t j = i; j < b.size(); j += lcg.next() % 6 + 1) {
+            wb.push_back(b[j]);
+            wand.push_back(0);    // x & 0 == 0
+            wor.push_back(b[j]);  // x | 0 == x
+            wxor.push_back(b[j]); // x ^ 0 == x
+            RunTestForAllBitwiseOpcodes(wa, wb, wand, wor, wxor);
+        }
     }
 }
 
@@ -371,7 +396,7 @@ BOOST_AUTO_TEST_CASE(bitwise_opcodes_test) {
     TestBitwiseOpcodes(a, b, aandb, aorb);
 
     // Check errors conditions.
-    // 1. Less than 2 elements on stack.
+    // Less than 2 elements on stack.
     CheckAllBitwiseOpErrors({}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({{}}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({{0x00}}, ScriptError::INVALID_STACK_OPERATION);
@@ -379,16 +404,6 @@ BOOST_AUTO_TEST_CASE(bitwise_opcodes_test) {
                             ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({a}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({b}, ScriptError::INVALID_STACK_OPERATION);
-
-    // 2. Operand of mismatching length
-    CheckAllBitwiseOpErrors({{}, {0x00}}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0x00}, {}}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0x00}, {0xab, 0xcd, 0xef}},
-                            ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0xab, 0xcd, 0xef}, {0x00}},
-                            ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{}, a}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({b, {}}, ScriptError::INVALID_OPERAND_SIZE);
 }
 
 /**
@@ -523,6 +538,7 @@ BOOST_AUTO_TEST_CASE(string_opcodes_test) {
  * Type conversion opcodes.
  */
 static void CheckTypeConversionOp(const valtype &bin, const valtype &num) {
+    bool valid_num2bin = bin.size() <= MAX_NUM2BIN_SIZE;
     // Check BIN2NUM.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM, {num});
 
@@ -532,25 +548,30 @@ static void CheckTypeConversionOp(const valtype &bin, const valtype &num) {
         rebuilt_bin[rebuilt_bin.size() - 1] &= 0x7f;
     }
 
-    CheckTestResultForAllFlags({num}, CScript() << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
+    CheckConditionalForAllFlags(
+        {num}, CScript() << bin.size() << OP_NUM2BIN,
+        {rebuilt_bin}, ScriptError::INVALID_NUM2BIN_SIZE, valid_num2bin);
 
     // Check roundtrip with NUM2BIN.
-    CheckTestResultForAllFlags(
+    CheckConditionalForAllFlags(
         {bin}, CScript() << OP_BIN2NUM << bin.size() << OP_NUM2BIN,
-        {rebuilt_bin});
+        {rebuilt_bin}, ScriptError::INVALID_NUM2BIN_SIZE, valid_num2bin);
 
     // Grow and shrink back down using NUM2BIN.
-    CheckTestResultForAllFlags({bin},
-                               CScript()
-                                   << MAX_SCRIPT_ELEMENT_SIZE << OP_NUM2BIN
-                                   << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
-    CheckTestResultForAllFlags({num},
-                               CScript()
-                                   << MAX_SCRIPT_ELEMENT_SIZE << OP_NUM2BIN
-                                   << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
+    CheckConditionalForAllFlags({bin},
+                                CScript()
+                                    << MAX_NUM2BIN_SIZE << OP_NUM2BIN
+                                    << bin.size() << OP_NUM2BIN,
+                                {rebuilt_bin},
+                                ScriptError::INVALID_NUM2BIN_SIZE,
+                                valid_num2bin);
+    CheckConditionalForAllFlags({num},
+                                CScript()
+                                    << MAX_NUM2BIN_SIZE << OP_NUM2BIN
+                                    << bin.size() << OP_NUM2BIN,
+                                {rebuilt_bin},
+                                ScriptError::INVALID_NUM2BIN_SIZE,
+                                valid_num2bin);
 
     // BIN2NUM is indempotent.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM << OP_BIN2NUM,
@@ -620,8 +641,8 @@ BOOST_AUTO_TEST_CASE(type_conversion_test) {
                       ScriptError::INTEGER_OVERFLOW);
 
     // NUM2BIN must not generate oversized push.
-    valtype largezero(MAX_SCRIPT_ELEMENT_SIZE, 0);
-    BOOST_CHECK_EQUAL(largezero.size(), MAX_SCRIPT_ELEMENT_SIZE);
+    valtype largezero(MAX_NUM2BIN_SIZE, 0);
+    BOOST_CHECK_EQUAL(largezero.size(), MAX_NUM2BIN_SIZE);
     CheckTypeConversionOp(largezero, {});
 
     CheckNum2BinError({{}, {0x09, 0x02}}, ScriptError::PUSH_SIZE);
@@ -657,43 +678,23 @@ static void CheckDivMod(const valtype &a, const valtype &b,
         CheckError(flags, {b, {}}, CScript() << OP_DIV,
                    ScriptError::DIV_BY_ZERO);
 
-        if (flags & SCRIPT_VERIFY_MINIMALDATA) {
-            CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
 
-            CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-            CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::BAD_INTEGER_ENCODING);
-        } else {
-            CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-
-            CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-        }
+        CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
+        CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
+                    ScriptError::BAD_INTEGER_ENCODING);
     }
 
     // Division identities
@@ -730,6 +731,13 @@ BOOST_AUTO_TEST_CASE(div_and_mod_opcode_tests) {
     CheckDivModError({{}}, ScriptError::INVALID_STACK_OPERATION);
 
     // CheckOps not valid numbers
+    CheckDivMod({0x01, 0x02, 0x03, 0x04, 0x05}, {0x01, 0x02, 0x03, 0x04, 0x05},
+                {0x01}, {});
+    CheckDivMod({0x01, 0x02, 0x03, 0x04, 0x05}, {0x01},
+                {0x01, 0x02, 0x03, 0x04, 0x05}, {});
+    CheckDivMod({0x01, 0x05}, {0x01, 0x02, 0x03, 0x04, 0x05},
+                {}, {0x01, 0x05});
+
     CheckDivModError({{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09},
                       {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09}},
                      ScriptError::INTEGER_OVERFLOW);

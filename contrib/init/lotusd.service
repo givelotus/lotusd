@@ -1,0 +1,15 @@
+[Unit]
+Description=eCash node
+After=network.target
+
+[Service]
+ExecStart=%h/bitcoin-abc/bin/bitcoind -daemonwait -conf=%h/.bitcoin/lotus.conf -pid=%h/.bitcoin/bitcoind.pid
+ExecStopPost=-/bin/bash -c 'mv %h/.bitcoin/debug.log %h/.bitcoin/debug_$(date +%%Y%%m%%d%%H%%M%%S).log'
+Type=forking
+PIDFile=%h/.bitcoin/bitcoind.pid
+Restart=unless-stopped
+RestartSec=5
+StartLimitInterval=10
+
+[Install]
+WantedBy=default.target

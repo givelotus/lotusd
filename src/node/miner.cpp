@@ -27,7 +27,6 @@
 #include <timedata.h>
 #include <util/moneystr.h>
 #include <validation.h>
-#include <versionbits.h>
 
 #include <algorithm>
 #include <queue>
@@ -37,12 +36,12 @@
 namespace node {
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
                    const CBlockIndex *pindexPrev, int64_t adjustedTime) {
-    int64_t nOldTime = pblock->nTime;
+    int64_t nOldTime = pblock->GetBlockTime();
     int64_t nNewTime{
         std::max<int64_t>(pindexPrev->GetMedianTimePast() + 1, adjustedTime)};
 
     if (nOldTime < nNewTime) {
-        pblock->nTime = nNewTime;
+        pblock->SetBlockTime(nNewTime);
     }
 
     // Updating time can change work required on testnet:
@@ -53,6 +52,11 @@ int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
     return nNewTime - nOldTime;
 }
 
+Amount GetBlockRewardFromFees(Amount nFees) {
+    // 50% of fees get burned.
+    return nFees / 2;
+}
+
 void ApplyArgsManOptions(const ArgsManager &args,
                          BlockAssembler::Options &options) {
     options.fPrintPriority =
@@ -61,9 +65,10 @@ void ApplyArgsManOptions(const ArgsManager &args,
         "-avalanchepreconsensusmining", DEFAULT_AVALANCHE_MINING_PRECONSENSUS);
 }
 
-static BlockAssembler::Options ConfiguredOptions() {
+static BlockAssembler::Options ConfiguredOptions(const Config &config) {
     BlockAssembler::Options options;
     ApplyArgsManOptions(gArgs, options);
+    options.enableMinerFund = config.EnableMinerFund();
     return options;
 }
 
@@ -76,19 +81,22 @@ BlockAssembler::BlockAssembler(const BlockFitter &fitter,
       m_mempool(mempool), m_chainstate(chainstate), m_avalanche(avalanche),
       fPrintPriority{options.fPrintPriority},
       test_block_validity{options.test_block_validity},
-      add_finalized_txs{avalanche && options.add_finalized_txs} {}
+      add_finalized_txs{avalanche && options.add_finalized_txs},
+      enableMinerFund{options.enableMinerFund} {}
 
 BlockAssembler::BlockAssembler(const BlockFitter &fitter,
                                Chainstate &chainstate,
                                const CTxMemPool *mempool,
                                const avalanche::Processor *avalanche)
-    : BlockAssembler(fitter, chainstate, mempool, ConfiguredOptions(),
+    : BlockAssembler(fitter, chainstate, mempool,
+                     ConfiguredOptions(chainstate.m_chainman.GetConfig()),
                      avalanche) {}
 
 BlockAssembler::BlockAssembler(const Config &config, Chainstate &chainstate,
                                const CTxMemPool *mempool,
                                const avalanche::Processor *avalanche)
-    : BlockAssembler(BlockFitter(config), chainstate, mempool, avalanche) {}
+    : BlockAssembler(BlockFitter(config), chainstate, mempool,
+                     ConfiguredOptions(config), avalanche) {}
 
 std::optional<int64_t> BlockAssembler::m_last_block_num_txs{std::nullopt};
 std::optional<int64_t> BlockAssembler::m_last_block_size{std::nullopt};
@@ -117,14 +125,29 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     const Consensus::Params &consensusParams = chainParams.GetConsensus();
 
-    pblock->nVersion = ComputeBlockVersion(pindexPrev, consensusParams);
+    // Version must always be 1
+    pblock->nHeaderVersion = 1;
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
     if (chainParams.MineBlocksOnDemand()) {
-        pblock->nVersion = gArgs.GetIntArg("-blockversion", pblock->nVersion);
+        pblock->nHeaderVersion =
+            gArgs.GetIntArg("-blockversion", pblock->nHeaderVersion);
     }
 
-    pblock->nTime = TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
+    // Fill in header.
+    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
+    pblock->SetBlockTime(TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    UpdateTime(pblock, chainParams, pindexPrev,
+               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
+    pblock->nNonce = 0;
+    pblock->nHeight = nHeight;
+    if (nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
+        pblock->hashEpochBlock = pblock->hashPrevBlock;
+    } else {
+        pblock->hashEpochBlock = pindexPrev->hashEpochBlock;
+    }
+    pblock->hashExtendedMetadata = SerializeHash(pblock->vMetadata);
     m_lock_time_cutoff = pindexPrev->GetMedianTimePast();
 
     bool shouldAddFinalizedTxs =
@@ -141,10 +164,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     // Canonical ordering is naturally enforced when using the radix tree
-    if (!shouldAddFinalizedTxs &&
-        IsMagneticAnomalyEnabled(consensusParams, pindexPrev)) {
-        // If magnetic anomaly is enabled, we make sure transaction are
-        // canonically ordered.
+    if (!shouldAddFinalizedTxs) {
+        // We make sure transaction are canonically ordered.
         std::sort(std::begin(pblocktemplate->entries) + 1,
                   std::end(pblocktemplate->entries),
                   [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b)
@@ -158,6 +179,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     const auto time_1{SteadyClock::now()};
+    const Amount amountFeeReward = GetBlockRewardFromFees(blockFitter.nFees);
 
     m_last_block_num_txs = blockFitter.nBlockTx;
     m_last_block_size = blockFitter.nBlockSize;
@@ -166,21 +188,21 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     CMutableTransaction coinbaseTx;
     coinbaseTx.vin.resize(1);
     coinbaseTx.vin[0].prevout = COutPoint();
-    coinbaseTx.vout.resize(1);
-    coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
-    coinbaseTx.vout[0].nValue =
-        blockFitter.nFees + GetBlockSubsidy(nHeight, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    coinbaseTx.vin[0].scriptSig = CScript() << OP_0 << OP_0;
+    coinbaseTx.vout.resize(2);
+    coinbaseTx.vout[0].scriptPubKey = CScript() << OP_RETURN << COINBASE_PREFIX
+                                                << nHeight;
+    coinbaseTx.vout[0].nValue = Amount::zero();
+    coinbaseTx.vout[1].scriptPubKey = scriptPubKeyIn;
+    coinbaseTx.vout[1].nValue =
+        amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
 
-    const Amount blockReward = coinbaseTx.vout[0].nValue;
-
-    const auto whitelisted = GetMinerFundWhitelist(consensusParams);
-    if (!whitelisted.empty()) {
-        const Amount fund =
-            GetMinerFundAmount(consensusParams, blockReward, pindexPrev);
-        coinbaseTx.vout[0].nValue -= fund;
-        coinbaseTx.vout.emplace_back(
-            fund, GetScriptForDestination(*whitelisted.begin()));
+    const Amount blockReward = coinbaseTx.vout[1].nValue;
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, enableMinerFund, pindexPrev, blockReward);
+    for (const CTxOut &requiredOutput : requiredOutputs) {
+        coinbaseTx.vout[1].nValue -= requiredOutput.nValue;
+        coinbaseTx.vout.push_back(requiredOutput);
     }
 
     std::vector<CScript> stakingRewardsPayoutScripts;
@@ -188,7 +210,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         m_avalanche->getStakingRewardWinners(pindexPrev->GetBlockHash(),
                                              stakingRewardsPayoutScripts)) {
         const Amount stakingRewards = GetStakingRewardsAmount(blockReward);
-        coinbaseTx.vout[0].nValue -= stakingRewards;
+        coinbaseTx.vout[1].nValue -= stakingRewards;
         coinbaseTx.vout.emplace_back(stakingRewards,
                                      stakingRewardsPayoutScripts[0]);
     }
@@ -211,12 +233,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         nSerializeSize, blockFitter.nBlockTx, blockFitter.nFees,
         blockFitter.nBlockSigChecks);
 
-    // Fill in header.
-    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainParams, pindexPrev,
-               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
-    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
-    pblock->nNonce = 0;
+    // Fill in size
+    pblock->SetSize(nSerializeSize);
     pblocktemplate->entries[0].sigChecks = 0;
 
     BlockValidationState state;
@@ -225,6 +243,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
             state, chainParams, m_chainstate, *pblock, pindexPrev,
             GetAdjustedTime,
             BlockValidationOptions(blockFitter.getMaxGeneratedBlockSize())
+                .withMinerFund(enableMinerFund)
                 .withCheckPoW(false)
                 .withCheckMerkleRoot(false))) {
         throw std::runtime_error(strprintf("%s: TestBlockValidity failed: %s",
@@ -264,128 +283,82 @@ bool BlockAssembler::CheckTx(const CTransaction &tx) const {
 }
 
 /**
- * addTxs includes transactions paying a fee by ensuring that
- * the partial ordering of transactions is maintained.  That is to say
- * children come after parents, despite having a potentially larger fee.
+ * Build a dependency snapshot and select the highest-feerate ready transaction.
+ * Each transaction is queued at most once and each direct-parent edge is
+ * updated once: expected O(n + m + n log n) time and O(n + m) space for n
+ * entries and m dependency edges. Hash lookups use the salted transaction ID
+ * hasher. This is not an assertion of a speedup over upstream's assembler.
  */
 void BlockAssembler::addTxs(const CTxMemPool &mempool) {
-    // mapped_value is the number of mempool parents that are still needed for
-    // the entry. We decrement this count each time we add a parent of the entry
-    // to the block.
-    std::unordered_map<CTxMemPoolEntryRef, size_t> missingParentCount;
-    missingParentCount.reserve(mempool.size() / 2);
-
-    // set of children we skipped because we have not yet added their parents
-    std::unordered_set<CTxMemPoolEntryRef> skippedChildren;
-
-    auto hasMissingParents =
-        [&missingParentCount](const CTxMemPoolEntryRef &entry)
-            EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
-                // If we've added any of this tx's parents already, then
-                // missingParentCount will have the current count
-                if (auto pcIt = missingParentCount.find(entry);
-                    pcIt != missingParentCount.end()) {
-                    // when pcIt->second reaches 0, we have added all of this
-                    // tx's parents
-                    return pcIt->second != 0;
-                }
-                return !entry->GetMemPoolParentsConst().empty();
-            };
-
-    // Limit the number of attempts to add transactions to the block when it is
-    // close to full; this is just a simple heuristic to finish quickly if the
-    // mempool has a lot of entries.
-    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
-    int64_t nConsecutiveFailed = 0;
-
-    // Transactions where a parent has been added and need to be checked for
-    // inclusion.
-    std::queue<CTxMemPoolEntryRef> backlog;
-    auto mi = mempool.mapTx.get<modified_feerate>().begin();
-
-    auto nextEntry = [&backlog, &mi](bool &isFromBacklog) {
-        if (backlog.empty()) {
-            return *mi++;
-        }
-
-        auto &entry = backlog.front();
-        backlog.pop();
-
-        isFromBacklog = true;
-
-        return entry;
+    struct SnapshotEntry {
+        CTxMemPoolEntryRef entry;
+        size_t missingParents;
+        std::vector<size_t> children;
     };
+    std::vector<SnapshotEntry> snapshot;
+    snapshot.reserve(mempool.mapTx.size());
+    std::unordered_map<TxId, size_t, SaltedTxIdHasher> locations;
+    locations.reserve(mempool.mapTx.size());
+    for (const auto &entry : mempool.mapTx.get<entry_id>()) {
+        locations.emplace(entry->GetTx().GetId(), snapshot.size());
+        snapshot.push_back({entry, entry->GetMemPoolParentsConst().size(), {}});
+    }
+    // Parent sets deduplicate multiple inputs spending one parent, and a
+    // shared ancestor is represented only by its direct dependency edges.
+    for (size_t child = 0; child < snapshot.size(); ++child) {
+        for (const auto &parent : snapshot[child].entry->GetMemPoolParentsConst()) {
+            const auto position = locations.find(parent.get()->GetTx().GetId());
+            assert(position != locations.end());
+            snapshot[position->second].children.push_back(child);
+        }
+    }
+    auto lowerPriority = [&snapshot](size_t a, size_t b) {
+        return CompareTxMemPoolEntryByModifiedFeeRate{}(snapshot[b].entry,
+                                                       snapshot[a].entry);
+    };
+    std::priority_queue<size_t, std::vector<size_t>, decltype(lowerPriority)>
+        ready(lowerPriority);
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        if (snapshot[i].missingParents == 0) {
+            ready.push(i);
+        }
+    }
 
-    while (!backlog.empty() ||
-           mi != mempool.mapTx.get<modified_feerate>().end()) {
-        // Get a new or old transaction in mapTx to evaluate.
-        bool isFromBacklog = false;
-        const CTxMemPoolEntryRef &entry = nextEntry(isFromBacklog);
-
+    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
+    int64_t consecutiveFailures = 0;
+    while (!ready.empty()) {
+        const size_t index = ready.top();
+        ready.pop();
+        const auto &entry = snapshot[index].entry;
+        // Individual modified fees preserve the existing no-CPFP policy:
+        // already selected ancestors cannot subsidize a free descendant.
         if (blockFitter.isBelowBlockMinFeeRate(entry->GetModifiedFeeRate())) {
-            // Since the txs are sorted by fee, bail early if there is none that
-            // can be included in the block anymore.
+            // All remaining ready entries have no higher fee rate, and their
+            // descendants cannot become ready without including them.
             break;
         }
-
-        // Check whether all of this tx's parents are already in the block. If
-        // not, pass on it until later.
-        //
-        // If it's from the backlog, then we know all parents are already in
-        // the block.
-        if (!isFromBacklog && hasMissingParents(entry)) {
-            skippedChildren.insert(entry);
-            continue;
-        }
-
-        // Check whether the tx will exceed the block limits.
-        if (!blockFitter.testTxFits(entry->GetTxSize(),
-                                    entry->GetSigChecks())) {
-            ++nConsecutiveFailed;
-            if (nConsecutiveFailed > MAX_CONSECUTIVE_FAILURES &&
+        // Recheck this transaction's actual resources against the live block;
+        // ancestors are already included and must not be charged twice.
+        if (!blockFitter.testTxFits(entry->GetTxSize(), entry->GetSigChecks())) {
+            ++consecutiveFailures;
+            if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES &&
                 blockFitter.nBlockSize >
                     blockFitter.getMaxGeneratedBlockSize() - 1000) {
-                // Give up if we're close to full and haven't succeeded in a
-                // while.
                 break;
             }
             continue;
         }
-
-        // Test transaction finality (locktime)
         if (!CheckTx(entry->GetTx())) {
             continue;
         }
-
-        // This transaction will make it in; reset the failed counter.
-        nConsecutiveFailed = 0;
-
-        // Tx can be added.
+        consecutiveFailures = 0;
         AddToBlock(entry);
-
-        // This tx's children may now be candidates for addition if they have
-        // higher scores than the tx at the cursor. We can only process a
-        // child once all of that tx's parents have been added, though. To
-        // avoid O(n^2) checking of dependencies, we store and decrement the
-        // number of mempool parents for each child. Although this code
-        // ends up taking O(n) time to process a single tx with n children,
-        // that's okay because the amount of time taken is proportional to the
-        // tx's byte size and fee paid.
-        for (const auto &child : entry->GetMemPoolChildrenConst()) {
-            // Remember this tx has missing parents.
-            // Create the map entry if it doesn't exist already, and init with
-            // the number of parents.
-            const auto &[parentCount, _] = missingParentCount.try_emplace(
-                child, child.get()->GetMemPoolParentsConst().size());
-            // We just added one parent, so decrement the counter and check if
-            // we have any missing parent remaining.
-            const bool allParentsAdded = --parentCount->second == 0;
-
-            // If all parents have been added to the block, and if this child
-            // has been previously skipped due to missing parents, enqueue it
-            // (if it hasn't been skipped it will come up in a later iteration)
-            if (allParentsAdded && skippedChildren.count(child) > 0) {
-                backlog.push(child);
+        // Only successful inclusion releases children. A nonfinal, low-fee,
+        // or non-fitting ancestor therefore also excludes its descendants.
+        for (const size_t child : snapshot[index].children) {
+            assert(snapshot[child].missingParents > 0);
+            if (--snapshot[child].missingParents == 0) {
+                ready.push(child);
             }
         }
     }

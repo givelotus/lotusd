@@ -377,9 +377,9 @@ def main():
     if args.junitoutput and not os.path.isabs(args.junitoutput):
         args.junitoutput = os.path.join(tmpdir, args.junitoutput)
 
-    enable_bitcoind = config["components"].getboolean("ENABLE_BITCOIND")
+    enable_lotusd = config["components"].getboolean("ENABLE_BITCOIND")
 
-    if not enable_bitcoind:
+    if not enable_lotusd:
         print("No functional tests to run.")
         print("Rerun ./configure with --with-daemon and then make")
         sys.exit(0)
@@ -859,7 +859,7 @@ def get_all_scripts_from_disk(
 def check_script_prefixes(all_scripts):
     """Check that no more than `EXPECTED_VIOLATION_COUNT` of the
     test scripts don't start with one of the allowed name prefixes."""
-    EXPECTED_VIOLATION_COUNT = 13
+    EXPECTED_VIOLATION_COUNT = 14
 
     # LEEWAY is provided as a transition measure, so that pull-requests
     # that introduce new tests that don't conform with the naming
@@ -867,7 +867,7 @@ def check_script_prefixes(all_scripts):
     LEEWAY = 0
 
     good_prefixes_re = re.compile(
-        "(abc_)?(example|feature|interface|mempool|mining|p2p|rpc|wallet|tool|chronik)_"
+        "(abc_|logos_)?(example|feature|interface|mempool|mining|p2p|rpc|wallet|tool|chronik)_"
     )
     bad_script_names = [
         script for script in all_scripts if good_prefixes_re.match(script) is None
@@ -932,7 +932,7 @@ class RPCCoverage:
     Coverage calculation works by having each test script subprocess write
     coverage files into a particular directory. These files contain the RPC
     commands invoked during testing, as well as a complete listing of RPC
-    commands per `bitcoin-cli help` (`rpc_interface.txt`).
+    commands per `lotus-cli help` (`rpc_interface.txt`).
 
     After all tests complete, the commands run are combined and diff'd against
     the complete list to calculate uncovered RPC commands.

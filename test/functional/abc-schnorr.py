@@ -14,6 +14,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
+    prepare_block,
 )
 from test_framework.key import ECKey
 from test_framework.messages import (
@@ -85,19 +86,18 @@ class SchnorrTest(BitcoinTestFramework):
         block_time = (parent.nTime + 1) if nTime is None else nTime
 
         block = create_block(
-            parent.hash_int,
-            create_coinbase(block_height),
-            block_time,
-            txlist=transactions,
+            parent.hash_int, create_coinbase(block_height), block_time
         )
-        block.solve()
+        block.nHeight = block_height
+        block.vtx.extend(transactions)
+        prepare_block(block)
         self.block_heights[block.hash_int] = block_height
         return block
 
     def check_for_ban_on_rejected_tx(self, tx, reject_reason=None):
         """Check we are disconnected when sending a txn that the node rejects.
 
-        (Can't actually get banned, since bitcoind won't ban local peers.)"""
+        (Can't actually get banned, since lotusd won't ban local peers.)"""
         self.nodes[0].p2ps[0].send_txs_and_test(
             [tx],
             self.nodes[0],
@@ -110,7 +110,7 @@ class SchnorrTest(BitcoinTestFramework):
     def check_for_ban_on_rejected_block(self, block, reject_reason=None):
         """Check we are disconnected when sending a block that the node rejects.
 
-        (Can't actually get banned, since bitcoind won't ban local peers.)"""
+        (Can't actually get banned, since lotusd won't ban local peers.)"""
         self.nodes[0].p2ps[0].send_blocks_and_test(
             [block],
             self.nodes[0],

@@ -14,6 +14,7 @@ from test_framework.util import assert_equal
 class ECashRPCTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
+        self.extra_args = [["-ecash", "-fallbackfee=0"]]
 
     def test_currency(self, *, ticker: str, satoshis_per_unit: int, decimals: int):
         info = self.nodes[0].getcurrencyinfo()
@@ -39,7 +40,12 @@ class ECashRPCTest(BitcoinTestFramework):
         )
 
     def run_test(self):
-        self.log.info("Test with -ecash enabled (default setting)")
+        # Unset the test framework's default.
+        if "-ecash" in self.nodes[0].default_args:
+            self.nodes[0].default_args.remove("-ecash")
+
+        self.log.info("Test with -ecash enabled")
+        self.restart_node(0, ["-ecash", "-fallbackfee=0"])
         self.test_currency(ticker="XEC", satoshis_per_unit=100, decimals=2)
 
         self.log.info("Test with -ecash disabled")
@@ -47,7 +53,7 @@ class ECashRPCTest(BitcoinTestFramework):
         # is adapted to XEC only.
         # In BCHA mode, it triggers a "-fallbackfee is set very high!" error.
         self.restart_node(0, ["-ecash=0", "-fallbackfee=0"])
-        self.test_currency(ticker="BCHA", satoshis_per_unit=100_000_000, decimals=8)
+        self.test_currency(ticker="XPI", satoshis_per_unit=1_000_000, decimals=6)
 
 
 if __name__ == "__main__":

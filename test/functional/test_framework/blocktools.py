@@ -10,6 +10,7 @@ from typing import Optional, Union
 
 from .key import ECKey
 from .messages import (
+    COIN,
     XEC,
     CBlock,
     COutPoint,
@@ -35,10 +36,10 @@ from .txtools import pad_tx, sign_input
 from .util import assert_equal, satoshi_round
 
 # Genesis block data (regtest)
-TIME_GENESIS_BLOCK = 1296688602
-GENESIS_BLOCK_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+TIME_GENESIS_BLOCK = 1600000000
+GENESIS_BLOCK_HASH = "106050de32db2a668422cc34aa0f96d739d4189b8e5d6e763deeca527bba9c9f"
 GENESIS_BLOCK_HEADER = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"
-GENESIS_CB_TXID = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+GENESIS_CB_TXID = "04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc97c23d44a7"
 GENESIS_CB_PK = (
     "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38"
     "c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
@@ -57,12 +58,19 @@ COINBASE_MATURITY = 100
 
 MIN_BLOCKS_TO_KEEP = 288
 
+SUBSIDY = 260
+
+
+_UNSET = object()
+
 
 def create_block(
     hashprev: Optional[int] = None,
     coinbase: Optional[CTransaction] = None,
-    ntime: Optional[int] = None,
+    height_or_ntime: Optional[int] = None,
+    ntime: Any = _UNSET,
     *,
+    height: Optional[int] = None,
     version: Optional[int] = None,
     tmpl: Optional[dict] = None,
     txlist: Optional[list] = None,
@@ -71,7 +79,19 @@ def create_block(
     block = CBlock()
     if tmpl is None:
         tmpl = {}
-    block.nVersion = version or tmpl.get("version", 1)
+    if ntime is not _UNSET:
+        if height is None:
+            height = height_or_ntime
+    else:
+        if height_or_ntime is not None:
+            if height is None and height_or_ntime < 100_000_000:
+                height = height_or_ntime
+                ntime = None
+            else:
+                ntime = height_or_ntime
+        else:
+            ntime = None
+    block.nHeaderVersion = version or tmpl.get("version", 1)
     block.nTime = ntime or tmpl.get("curtime", int(time.time() + 600))
     block.hashPrevBlock = hashprev or int(tmpl["previousblockhash"], 0x10)
     if tmpl.get("bits") is not None:
@@ -79,25 +99,46 @@ def create_block(
     else:
         # difficulty retargeting is disabled in REGTEST chainparams
         block.nBits = 0x207FFFFF
+    if height is not None:
+        block.nHeight = height
+    elif tmpl.get("height") is not None:
+        block.nHeight = tmpl["height"]
+    elif coinbase is not None and getattr(coinbase, "_height", None) is not None:
+        block.nHeight = coinbase._height
     block.vtx.append(coinbase or create_coinbase(height=tmpl["height"]))
     if txlist:
         block.vtx.extend(txlist)
         make_conform_to_ctor(block)
     block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.rehash_extended_metadata()
+    block.calc_sha256()
     return block
 
 
 def make_conform_to_ctor(block: CBlock):
+    for tx in block.vtx:
+        tx.rehash()
     block.vtx = [block.vtx[0]] + sorted(block.vtx[1:], key=lambda tx: tx.txid_hex)
 
 
-def script_BIP34_coinbase_height(height: int) -> CScript:
+def prepare_block(block: CBlock):
+    make_conform_to_ctor(block)
+    block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.rehash_extended_metadata()
+    block.solve()
+
+
+def script_coinbase_height(height: int) -> CScript:
     if height <= 16:
-        res = CScriptOp.encode_op_n(height)
-        # Append dummy to increase scriptSig size above 2
-        # (see bad-cb-length consensus rule)
-        return CScript([res, OP_1])
-    return CScript([CScriptNum(height)])
+        num = CScriptOp.encode_op_n(height)
+    else:
+        num = CScriptNum(height)
+    return CScript([OP_RETURN, b'logos', num])
+
+
+script_BIP34_coinbase_height = script_coinbase_height
 
 
 def create_coinbase(
@@ -105,34 +146,32 @@ def create_coinbase(
     pubkey: Optional[bytes] = None,
     *,
     script_pubkey: Optional[bytes] = None,
-    nValue: int = 50_000_000,
+    nValue: int = SUBSIDY,
 ) -> CTransaction:
     """Create a coinbase transaction, assuming no miner fees.
 
     If pubkey is passed in, the coinbase output will be a P2PK output;
     otherwise an anyone-can-spend output."""
     coinbase = CTransaction()
+    coinbase._height = height
     coinbase.vin.append(
         CTxIn(
-            COutPoint(0, 0xFFFFFFFF), script_BIP34_coinbase_height(height), 0xFFFFFFFF
+            COutPoint(0, 0xFFFFFFFF), bytes(80), 0xFFFFFFFF
         )
     )
+    op_return_output = CTxOut()
+    op_return_output.scriptPubKey = script_coinbase_height(height)
     coinbaseoutput = CTxOut()
-    coinbaseoutput.nValue = nValue * XEC
-    if nValue == 50_000_000:
-        halvings = int(height / 150)  # regtest
-        coinbaseoutput.nValue >>= halvings
+    coinbaseoutput.nValue = int(nValue * COIN)
     if pubkey is not None:
         coinbaseoutput.scriptPubKey = CScript([pubkey, OP_CHECKSIG])
     elif script_pubkey is not None:
         coinbaseoutput.scriptPubKey = script_pubkey
     else:
         coinbaseoutput.scriptPubKey = CScript([OP_TRUE])
-    coinbase.vout = [coinbaseoutput]
+    coinbase.vout = [op_return_output, coinbaseoutput]
 
-    # Make sure the coinbase is at least 100 bytes
-    pad_tx(coinbase)
-
+    coinbase.rehash()
     return coinbase
 
 
@@ -150,28 +189,29 @@ def create_tx_with_script(
     tx.vin.append(CTxIn(COutPoint(prevtx.txid_int, n), script_sig, 0xFFFFFFFF))
     tx.vout.append(CTxOut(amount, script_pub_key))
     pad_tx(tx)
+    tx.rehash()
     return tx
 
 
-def create_transaction(node, txid, to_address, *, amount):
+def create_transaction(node, txid, to_address, *, amount, vout=0):
     """Return signed transaction spending the first output of the
     input txid. Note that the node must be able to sign for the
     output that is being spent, and the node must not be running
     multiple wallets.
     """
-    raw_tx = create_raw_transaction(node, txid, to_address, amount=amount)
+    raw_tx = create_raw_transaction(node, txid, to_address, amount=amount, vout=vout)
     tx = FromHex(CTransaction(), raw_tx)
     return tx
 
 
-def create_raw_transaction(node, txid, to_address, *, amount):
+def create_raw_transaction(node, txid, to_address, *, amount, vout=0):
     """Return raw signed transaction spending the first output of the
     input txid. Note that the node must be able to sign for the
     output that is being spent, and the node must not be running
     multiple wallets.
     """
     rawtx = node.createrawtransaction(
-        inputs=[{"txid": txid, "vout": 0}], outputs={to_address: amount}
+        inputs=[{"txid": txid, "vout": vout}], outputs={to_address: amount}
     )
     signresult = node.signrawtransactionwithwallet(rawtx)
     assert_equal(signresult["complete"], True)
@@ -243,7 +283,7 @@ def send_big_transactions(node, utxos, num, fee_multiplier):
         ctx.vin.append(CTxIn(COutPoint(txid, int(utxo["vout"])), b""))
         ctx.vout.append(
             CTxOut(
-                int(satoshi_round(utxo["amount"] * XEC)),
+                int(satoshi_round(utxo["amount"] * COIN)),
                 CScript([OP_DUP, OP_HASH160, addrHash, OP_EQUALVERIFY, OP_CHECKSIG]),
             )
         )
@@ -301,6 +341,8 @@ class BlockTestMixin:
         if reorder:
             make_conform_to_ctor(block)
         block.hashMerkleRoot = block.calc_merkle_root()
+        block.update_size()
+        block.rehash_extended_metadata()
         block.solve()
         # Update the internal state just like in next_block
         self.tip = block
@@ -320,16 +362,17 @@ class BlockTestMixin:
     # spend_tx
     def sign_tx(self, tx: CTransaction, spend_tx: CTransaction):
         assert self.coinbase_key is not None
-        scriptPubKey = bytearray(spend_tx.vout[0].scriptPubKey)
+        out_idx = tx.vin[0].prevout.n
+        scriptPubKey = bytearray(spend_tx.vout[out_idx].scriptPubKey)
         if scriptPubKey[0] == OP_TRUE:  # an anyone-can-spend
             tx.vin[0].scriptSig = CScript()
             return
         sign_input(
             tx,
             0,
-            spend_tx.vout[0].scriptPubKey,
+            spend_tx.vout[out_idx].scriptPubKey,
             self.coinbase_key,
-            spend_tx.vout[0].nValue,
+            spend_tx.vout[out_idx].nValue,
         )
 
     # this is a little handier to use than create_tx_with_script
@@ -341,8 +384,10 @@ class BlockTestMixin:
         self, spend_tx: CTransaction, value: int, script: Optional[CScript] = None
     ) -> CTransaction:
         script = script or CScript([OP_TRUE])
-        tx = self.create_tx(spend_tx, 0, value, script)
+        out_idx = 1 if len(spend_tx.vout) > 1 and spend_tx.vout[0].nValue == 0 else 0
+        tx = self.create_tx(spend_tx, out_idx, value, script)
         self.sign_tx(tx, spend_tx)
+        tx.rehash()
         return tx
 
     def next_block(
@@ -352,7 +397,7 @@ class BlockTestMixin:
         additional_coinbase_value=0,
         script: Optional[CScript] = None,
         spend: Optional[CTransaction] = None,
-        version=4,
+        version=1,
         coinbase_time: Optional[int] = None,
     ) -> CBlock:
         """Create a new block building on the current tip, and advance the tip to it.
@@ -369,20 +414,24 @@ class BlockTestMixin:
         # First create the coinbase
         height = self.block_heights[base_block_hash] + 1
         coinbase = create_coinbase(height, self.coinbase_pubkey)
-        coinbase.vout[0].nValue += additional_coinbase_value
+        coinbase.vout[1].nValue += additional_coinbase_value
         if spend is None:
+            coinbase.rehash()
             block = create_block(base_block_hash, coinbase, block_time, version=version)
         else:
+            out_idx = 1 if len(spend.vout) > 1 and spend.vout[0].nValue == 0 else 0
             # all but one satoshi to fees
-            coinbase.vout[0].nValue += spend.vout[0].nValue - 1
+            coinbase.vout[1].nValue += spend.vout[out_idx].nValue - 1
+            coinbase.rehash()
             # spend 1 satoshi
-            tx = self.create_tx(spend, 0, 1, script)
+            tx = self.create_tx(spend, out_idx, 1, script)
             self.sign_tx(tx, spend)
+            tx.rehash()
             block = create_block(
                 base_block_hash, coinbase, block_time, version=version, txlist=[tx]
             )
-        # Block is created. Find a valid nonce.
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         self.tip = block
         self.block_heights[block.hash_int] = height
         assert number not in self.blocks
@@ -394,4 +443,7 @@ class TestFrameworkBlockTools(unittest.TestCase):
     def test_create_coinbase(self):
         height = 20
         coinbase_tx = create_coinbase(height=height)
-        assert_equal(CScriptNum.decode(coinbase_tx.vin[0].scriptSig), height)
+        assert_equal(
+            CScriptNum.decode(coinbase_tx.vout[0].scriptPubKey[len(b"_\x05logos") :]),
+            height,
+        )

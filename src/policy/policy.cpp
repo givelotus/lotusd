@@ -86,11 +86,8 @@ bool IsStandardTx(const CTransaction &tx,
     }
 
     for (const CTxIn &txin : tx.vin) {
-        if (txin.scriptSig.size() > MAX_TX_IN_SCRIPT_SIG_SIZE) {
-            reason = "scriptsig-size";
-            return false;
-        }
-        if (!txin.scriptSig.IsPushOnly()) {
+        // Coinbase can have non-pushonly scriptSig
+        if (!tx.IsCoinBase() && !txin.scriptSig.IsPushOnly()) {
             reason = "scriptsig-not-pushonly";
             return false;
         }
@@ -117,8 +114,8 @@ bool IsStandardTx(const CTransaction &tx,
         }
     }
 
-    // only one OP_RETURN txout is permitted
-    if (nDataOut > 1) {
+    // max 3 OP_RETURN txout are permitted
+    if (nDataOut > 3) {
         reason = "multi-op-return";
         return false;
     }

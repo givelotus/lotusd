@@ -26,6 +26,11 @@ CExtPubKey DecodeExtPubKey(const std::string &str);
 std::string EncodeExtPubKey(const CExtPubKey &extpubkey);
 
 std::string EncodeDestination(const CTxDestination &dest, const Config &config);
+// In some places the node configuration is not available. (e.g. QT GUI) This
+// provides a usable override that will always return the default address
+// format.
+std::string EncodeDestination(const CTxDestination &dest,
+                              const CChainParams &params);
 CTxDestination DecodeDestination(const std::string &addr, const CChainParams &);
 bool IsValidDestinationString(const std::string &str,
                               const CChainParams &params);

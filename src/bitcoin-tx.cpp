@@ -138,7 +138,7 @@ static int AppInitRawTx(int argc, char *argv[]) {
 
     if (argc < 2 || HelpRequested(gArgs) || gArgs.IsArgSet("-version")) {
         // First part of help message is specific to this utility
-        std::string strUsage = PACKAGE_NAME " bitcoin-tx utility version " +
+        std::string strUsage = PACKAGE_NAME " lotus-tx utility version " +
                                FormatFullVersion() + "\n";
 
         if (gArgs.IsArgSet("-version")) {
@@ -146,9 +146,9 @@ static int AppInitRawTx(int argc, char *argv[]) {
         } else {
             strUsage +=
                 "\n"
-                "Usage:  bitcoin-tx [options] <hex-tx> [commands]  Update "
+                "Usage:  lotus-tx [options] <hex-tx> [commands]  Update "
                 "hex-encoded bitcoin transaction\n"
-                "or:     bitcoin-tx [options] -create [commands]   Create "
+                "or:     lotus-tx [options] -create [commands]   Create "
                 "hex-encoded bitcoin transaction\n"
                 "\n";
             strUsage += gArgs.GetHelpMessage();
@@ -538,7 +538,7 @@ static void MutateTxDelOutput(CMutableTransaction &tx,
     tx.vout.erase(tx.vout.begin() + outIdx);
 }
 
-static const unsigned int N_SIGHASH_OPTS = 12;
+static const unsigned int N_SIGHASH_OPTS = 18;
 static const struct {
     const char *flagStr;
     int flags;
@@ -558,6 +558,15 @@ static const struct {
      SIGHASH_NONE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
     {"SINGLE|FORKID|ANYONECANPAY",
      SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
+    {"ALL|LOTUS", SIGHASH_ALL | SIGHASH_LOTUS},
+    {"NONE|LOTUS", SIGHASH_NONE | SIGHASH_LOTUS},
+    {"SINGLE|LOTUS", SIGHASH_SINGLE | SIGHASH_LOTUS},
+    {"ALL|LOTUS|ANYONECANPAY",
+     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
+    {"NONE|LOTUS|ANYONECANPAY",
+     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
+    {"SINGLE|LOTUS|ANYONECANPAY",
+     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
 };
 
 static bool findSigHashFlags(SigHashType &sigHashType,
@@ -678,6 +687,14 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
 
     const FillableSigningProvider &keystore = tempKeystore;
 
+    // Collect spent outputs for Lotus sighash
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(mergedTx.vin.size());
+    for (const CTxIn &txin : mergedTx.vin) {
+        spent_outputs.push_back(view.AccessCoin(txin.prevout).GetTxOut());
+    }
+    const PrecomputedTransactionData txdata(mergedTx, std::move(spent_outputs));
+
     // Sign what we can:
     for (size_t i = 0; i < mergedTx.vin.size(); i++) {
         CTxIn &txin = mergedTx.vin[i];
@@ -689,14 +706,13 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
         const CScript &prevPubKey = coin.GetTxOut().scriptPubKey;
         const Amount amount = coin.GetTxOut().nValue;
 
-        SignatureData sigdata =
-            DataFromTransaction(mergedTx, i, coin.GetTxOut());
+        SignatureData sigdata = DataFromTransaction(mergedTx, i, txdata);
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) ||
             (i < mergedTx.vout.size())) {
             ProduceSignature(keystore,
                              MutableTransactionSignatureCreator(
-                                 &mergedTx, i, amount, sigHashType),
+                                 &mergedTx, i, amount, sigHashType, txdata),
                              prevPubKey, sigdata);
         }
 
@@ -715,8 +731,6 @@ public:
 static void MutateTx(CMutableTransaction &tx, const std::string &command,
                      const std::string &commandVal,
                      const CChainParams &chainParams) {
-    std::unique_ptr<Secp256k1Init> ecc;
-
     if (command == "nversion") {
         MutateTxVersion(tx, commandVal);
     } else if (command == "locktime") {
@@ -730,17 +744,14 @@ static void MutateTx(CMutableTransaction &tx, const std::string &command,
     } else if (command == "outaddr") {
         MutateTxAddOutAddr(tx, commandVal, chainParams);
     } else if (command == "outpubkey") {
-        ecc.reset(new Secp256k1Init());
         MutateTxAddOutPubKey(tx, commandVal);
     } else if (command == "outmultisig") {
-        ecc.reset(new Secp256k1Init());
         MutateTxAddOutMultiSig(tx, commandVal);
     } else if (command == "outscript") {
         MutateTxAddOutScript(tx, commandVal);
     } else if (command == "outdata") {
         MutateTxAddOutData(tx, commandVal);
     } else if (command == "sign") {
-        ecc.reset(new Secp256k1Init());
         MutateTxSign(tx, commandVal);
     } else if (command == "load") {
         RegisterLoad(commandVal);
@@ -837,6 +848,9 @@ static int CommandLineRawTx(int argc, char *argv[],
         } else {
             startArg = 1;
         }
+
+        std::unique_ptr<Secp256k1Init> ecc;
+        ecc.reset(new Secp256k1Init());
 
         for (int i = startArg; i < argc; i++) {
             std::string arg = argv[i];

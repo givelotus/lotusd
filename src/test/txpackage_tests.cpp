@@ -25,6 +25,8 @@
 static const Amount low_fee_amt{200 * SATOSHI};
 
 struct TxPackageTest : TestChain100Setup {
+    Amount CoinbaseValue() const { return m_coinbase_txns[0]->vout[1].nValue; }
+
     // Create placeholder transactions that have no meaning.
     inline CTransactionRef create_placeholder_tx(size_t num_inputs,
                                                  size_t num_outputs) {
@@ -92,16 +94,16 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
     CTransaction tx_3(deserialize, stream_3);
     CTransactionRef ptx_3{MakeTransactionRef(tx_3)};
 
-    // It's easy to see that txids are sorted in lexicographical order:
+    // Lotus merkleized IDs sorted in lexicographical order (tx_3, tx_2, tx_1):
     TxId txid_1{TxIdFromString(
-        "0x679c453b9f260ba4b74cd5168615f39b4bb2508e44982c4e93e49e44bb274339")};
+        "0x10515fb9ae596be27c049e46061027a865b2dd5abd3a2a1cd26ea68deec3887a")};
     TxId txid_2{TxIdFromString(
-        "0xb4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b")};
+        "0x52ffc1841b72646e1312442fb9d4563d219a787f752c17fb085746dfdcf8911d")};
     TxId txid_3{TxIdFromString(
-        "0xfc073689bfb493026d6a618ab07f9f008bd90e1748663c2728211675fb9e234c")};
-    BOOST_CHECK_EQUAL(tx_1.GetId(), txid_1);
+        "0xec1c19be50dc0c5015ef79e6b36b176482ec3f3865150bb65bda3bf7d47bf0a2")};
+    BOOST_CHECK_EQUAL(tx_3.GetId(), txid_1);
     BOOST_CHECK_EQUAL(tx_2.GetId(), txid_2);
-    BOOST_CHECK_EQUAL(tx_3.GetId(), txid_3);
+    BOOST_CHECK_EQUAL(tx_1.GetId(), txid_3);
 
     BOOST_CHECK(txid_1 < txid_2);
     BOOST_CHECK(txid_2 < txid_3);
@@ -189,10 +191,10 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
     CScript parent_locking_script =
         GetScriptForDestination(PKHash(parent_key.GetPubKey()));
     auto mtx_parent = CreateValidMempoolTransaction(
-        /* input_transaction */ m_coinbase_txns[0], /* vout */ 0,
+        /* input_transaction */ m_coinbase_txns[0], /* vout */ 1,
         /* input_height */ 0, /* input_signing_key */ coinbaseKey,
         /* output_destination */ parent_locking_script,
-        /* output_amount */ Amount(49 * COIN), /* submit */ false);
+        /* output_amount */ Amount(CoinbaseValue() - COIN), /* submit */ false);
     CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
 
     CKey child_key;
@@ -203,7 +205,8 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
         /* input_transaction */ tx_parent, /* vout */ 0,
         /* input_height */ 101, /* input_signing_key */ parent_key,
         /* output_destination */ child_locking_script,
-        /* output_amount */ Amount(48 * COIN), /* submit */ false);
+        /* output_amount */ Amount(CoinbaseValue() - 2 * COIN),
+        /* submit */ false);
     CTransactionRef tx_child = MakeTransactionRef(mtx_child);
     Package package_parent_child{tx_parent, tx_child};
     const auto result_parent_child =
@@ -276,13 +279,15 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests) {
 
     // Parent and Child Package
     {
-        auto mtx_parent = CreateValidMempoolTransaction(
-            m_coinbase_txns[0], 0, 0, coinbaseKey, spk, Amount(49 * COIN),
-            /* submit */ false);
+        auto mtx_parent =
+            CreateValidMempoolTransaction(m_coinbase_txns[0], 1, 0, coinbaseKey,
+                                          spk, Amount(CoinbaseValue() - COIN),
+                                          /* submit */ false);
         CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
 
         auto mtx_child = CreateValidMempoolTransaction(
-            tx_parent, 0, 101, placeholder_key, spk2, Amount(48 * COIN),
+            tx_parent, 0, 101, placeholder_key, spk2,
+            Amount(CoinbaseValue() - 2 * COIN),
             /* submit */ false);
         CTransactionRef tx_child = MakeTransactionRef(mtx_child);
 
@@ -302,12 +307,12 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests) {
         CMutableTransaction child;
         for (int i{0}; i < 49; ++i) {
             auto parent = MakeTransactionRef(CreateValidMempoolTransaction(
-                m_coinbase_txns[i + 1], 0, 0, coinbaseKey, spk,
-                Amount(48 * COIN), false));
+                m_coinbase_txns[i + 1], 1, 0, coinbaseKey, spk,
+                Amount(CoinbaseValue() - 2 * COIN), false));
             package.emplace_back(parent);
             child.vin.push_back(CTxIn(COutPoint(parent->GetId(), 0)));
         }
-        child.vout.push_back(CTxOut(47 * COIN, spk2));
+        child.vout.push_back(CTxOut(CoinbaseValue() - 3 * COIN, spk2));
 
         // The child must be in the package.
         BOOST_CHECK(!IsChildWithParents(package));
@@ -334,7 +339,7 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests) {
     {
         CMutableTransaction mtx_parent;
         mtx_parent.vin.push_back(
-            CTxIn(COutPoint(m_coinbase_txns[0]->GetId(), 0)));
+            CTxIn(COutPoint(m_coinbase_txns[0]->GetId(), 1)));
         mtx_parent.vout.push_back(CTxOut(20 * COIN, spk));
         mtx_parent.vout.push_back(CTxOut(20 * COIN, spk2));
         CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
@@ -384,10 +389,10 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     Package package_unrelated;
     for (size_t i{0}; i < 10; ++i) {
         auto mtx = CreateValidMempoolTransaction(
-            /*input_transaction=*/m_coinbase_txns[i + 25], /*input_vout=*/0,
+            /*input_transaction=*/m_coinbase_txns[i + 25], /*input_vout=*/1,
             /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
             /*output_destination=*/parent_locking_script,
-            /*output_amount=*/Amount(49 * COIN), /*submit=*/false);
+            /*output_amount=*/Amount(CoinbaseValue() - COIN), /*submit=*/false);
         package_unrelated.emplace_back(MakeTransactionRef(mtx));
     }
 
@@ -410,10 +415,10 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
     Package package_parent_child;
     Package package_3gen;
     auto mtx_parent = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_locking_script,
-        /*output_amount=*/Amount(49 * COIN), /*submit=*/false);
+        /*output_amount=*/Amount(CoinbaseValue() - COIN), /*submit=*/false);
     CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
     package_parent_child.push_back(tx_parent);
     package_3gen.push_back(tx_parent);
@@ -426,7 +431,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
         /*input_transaction=*/tx_parent, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/parent_key,
         /*output_destination=*/child_locking_script,
-        /*output_amount=*/Amount(48 * COIN), /*submit=*/false);
+        /*output_amount=*/Amount(CoinbaseValue() - 2 * COIN), /*submit=*/false);
     CTransactionRef tx_child = MakeTransactionRef(mtx_child);
     package_parent_child.push_back(tx_child);
     package_3gen.push_back(tx_child);
@@ -439,7 +444,7 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
         /*input_transaction=*/tx_child, /*input_vout=*/0,
         /*input_height=*/101, /*input_signing_key=*/child_key,
         /*output_destination=*/grandchild_locking_script,
-        /*output_amount=*/Amount(47 * COIN), /*submit=*/false);
+        /*output_amount=*/Amount(CoinbaseValue() - 3 * COIN), /*submit=*/false);
     CTransactionRef tx_grandchild = MakeTransactionRef(mtx_grandchild);
     package_3gen.push_back(tx_grandchild);
 
@@ -472,7 +477,8 @@ BOOST_AUTO_TEST_CASE(package_submission_tests) {
             /*input_transaction=*/tx_parent_invalid, /*input_vout=*/0,
             /*input_height=*/101, /*input_signing_key=*/parent_key,
             /*output_destination=*/child_locking_script,
-            /*output_amount=*/Amount(48 * COIN), /*submit=*/false);
+            /*output_amount=*/Amount(CoinbaseValue() - 2 * COIN),
+            /*submit=*/false);
         CTransactionRef tx_child_of_invalid_parent =
             MakeTransactionRef(mtx_child_of_invalid_parent);
 
@@ -603,20 +609,21 @@ BOOST_AUTO_TEST_CASE(package_mix) {
 
     // parent1 will already be in the mempool
     auto mtx_parent1 = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/acs_spk,
-        /*output_amount=*/Amount{49 * COIN}, /*submit=*/true);
+        /*output_amount=*/Amount{CoinbaseValue() - COIN}, /*submit=*/true);
     CTransactionRef ptx_parent1 = MakeTransactionRef(mtx_parent1);
     package_mixed.push_back(ptx_parent1);
 
     // parent2 will be a new transaction. Put a low feerate to make it invalid
     // on its own.
     auto mtx_parent2 = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/acs_spk,
-        /*output_amount=*/Amount{50 * COIN - low_fee_amt}, /*submit=*/false);
+        /*output_amount=*/Amount{CoinbaseValue() - low_fee_amt},
+        /*submit=*/false);
     CTransactionRef ptx_parent2 = MakeTransactionRef(mtx_parent2);
     package_mixed.push_back(ptx_parent2);
     BOOST_CHECK(m_node.mempool->GetMinFee().GetFee(
@@ -636,7 +643,7 @@ BOOST_AUTO_TEST_CASE(package_mix) {
     mtx_mixed_child.vin.push_back(
         CTxIn(COutPoint(ptx_parent2->GetId(), 0), acs_scriptsig));
     mtx_mixed_child.vout.push_back(
-        CTxOut((49 + 50 - 1) * COIN, mixed_child_spk));
+        CTxOut(2 * CoinbaseValue() - 2 * COIN, mixed_child_spk));
     CTransactionRef ptx_mixed_child = MakeTransactionRef(mtx_mixed_child);
     package_mixed.push_back(ptx_mixed_child);
 
@@ -700,13 +707,13 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
         GetScriptForDestination(PKHash(grandchild_key.GetPubKey()));
 
     // low-fee parent and high-fee child package
-    const Amount coinbase_value{50 * COIN};
+    const Amount coinbase_value{CoinbaseValue()};
     const Amount parent_value{coinbase_value - low_fee_amt};
     const Amount child_value{parent_value - COIN};
 
     Package package_cpfp;
     auto mtx_parent = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
         /*output_amount=*/parent_value, /*submit=*/false);
@@ -810,7 +817,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     const Amount parent_fee{200 * SATOSHI};
     const Amount child_fee{1200 * SATOSHI};
     auto mtx_parent_cheap = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
         /*output_amount=*/coinbase_value - parent_fee, /*submit=*/false);
@@ -931,7 +938,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests) {
     Package package_rich_parent;
     const Amount high_parent_fee{1 * COIN};
     auto mtx_parent_rich = CreateValidMempoolTransaction(
-        /*input_transaction=*/m_coinbase_txns[2], /*input_vout=*/0,
+        /*input_transaction=*/m_coinbase_txns[2], /*input_vout=*/1,
         /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
         /*output_destination=*/parent_spk,
         /*output_amount=*/coinbase_value - high_parent_fee, /*submit=*/false);

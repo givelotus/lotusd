@@ -113,11 +113,11 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
     CScript scriptPad = CScript() << OP_RETURN << std::vector<uint8_t>(100);
     CMutableTransaction tx;
     tx.vin = {CTxIn(
-        coinTx->GetId(), 0,
+        coinTx->GetId(), 1,
         CScript() << std::vector(anyoneScript.begin(), anyoneScript.end()))};
     tx.vout = {
         CTxOut(1000 * SATOSHI, anyoneP2sh),
-        CTxOut(coinTx->vout[0].nValue - 10000 * SATOSHI, anyoneP2sh),
+        CTxOut(coinTx->vout[1].nValue - 10000 * SATOSHI, anyoneP2sh),
     };
     const MempoolAcceptResult result =
         m_node.chainman->ProcessTransaction(MakeTransactionRef(tx));
@@ -173,7 +173,7 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
     BOOST_CHECK(CScript(script0.data(), script0.data() + script0.size()) ==
                 anyoneP2sh);
     BOOST_CHECK_EQUAL(query_tx.inputs[1].coin.output.sats,
-                      coinTx->vout[0].nValue / SATOSHI - 10000);
+                      coinTx->vout[1].nValue / SATOSHI - 10000);
     BOOST_CHECK(CScript(script1.data(), script1.data() + script1.size()) ==
                 anyoneP2sh);
 
@@ -283,13 +283,18 @@ BOOST_FIXTURE_TEST_CASE(test_get_block_header, TestChain100Setup) {
 
     BOOST_CHECK_EQUAL(
         HexStr(chronik_bridge::get_block_header(*tip.GetAncestor(0))),
-        "0100000000000000000000000000000000000000000000000000000000000000000000"
-        "003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5"
-        "494dffff7f2002000000");
-    BOOST_CHECK_EQUAL(HexStr(chronik_bridge::get_block_header(tip)),
-                      "00000020e0d8e43b1b228a5e07415ea057c06b3a8caf4e9d82c9af6c"
-                      "f04aa87229fa3e507c4ada19c5746e61699678baa1edc97f3258c613"
-                      "64d4f8614e6a0801896ee66773184d5fffff7f2000000000");
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "ffff7f2000105e5f000000005d9ff80000000000017b01000000000000000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "4cf30ab9dc2797f3a4fe5f6b2dbf11670bf97e5aa266d3a6adcd708fd892f337"
+        "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a");
+    BOOST_CHECK_EQUAL(
+        HexStr(chronik_bridge::get_block_header(tip)),
+        "960ae8500915812aba4708df80b8f659566b7f0bacb4aa825e4e25b84190a90a"
+        "ffff7f2063105e5f000000000400000000000000011c01000000000064000000"
+        "0000000000000000000000000000000000000000000000000000000000000000"
+        "bdb9e042af47cbbe2fec00be890aa34d45150c5c80c4723e6195a095ddad31f2"
+        "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a");
 }
 
 BOOST_FIXTURE_TEST_CASE(test_bridge_broadcast_tx, TestChain100Setup) {
@@ -306,9 +311,9 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_broadcast_tx, TestChain100Setup) {
 
     CScript scriptPad = CScript() << OP_RETURN << std::vector<uint8_t>(100);
     CMutableTransaction tx;
-    tx.vin = {CTxIn(coinTx->GetId(), 0)};
+    tx.vin = {CTxIn(coinTx->GetId(), 1)};
     tx.vout = {
-        CTxOut(coinTx->vout[0].nValue - 10000 * SATOSHI, scriptPad),
+        CTxOut(coinTx->vout[1].nValue - 10000 * SATOSHI, scriptPad),
     };
 
     {

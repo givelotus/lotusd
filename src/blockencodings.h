@@ -94,6 +94,7 @@ public:
     static constexpr int SHORTTXIDS_LENGTH = 6;
 
     CBlockHeader header;
+    std::vector<CBlockMetadataField> vMetadata;
 
     /**
      * Dummy for deserialization
@@ -115,7 +116,7 @@ public:
 
     SERIALIZE_METHODS(CBlockHeaderAndShortTxIDs, obj) {
         READWRITE(
-            obj.header, obj.nonce,
+            obj.header, obj.vMetadata, obj.nonce,
             Using<VectorFormatter<CustomUintFormatter<SHORTTXIDS_LENGTH>>>(
                 obj.shorttxids),
             Using<VectorFormatter<DifferentialIndexedItemFormatter>>(

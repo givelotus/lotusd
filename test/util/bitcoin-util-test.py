@@ -136,6 +136,7 @@ def bctest(testDir, testObj, buildenv):
             a_parsed = parse_output(outs[0], outputType)
         except Exception as e:
             logging.error(f"Error parsing command output as {outputType}: {e}")
+            logging.error(f"Command output is: {outs[0]}")
             raise
         try:
             b_parsed = parse_output(outputData, outputType)
@@ -176,7 +177,7 @@ def bctest(testDir, testObj, buildenv):
         want_error = testObj["error_txt"]
         # Compare error text
         # TODO: ideally, we'd compare the strings exactly and also assert
-        # That stderr is empty if no errors are expected. However, bitcoin-tx
+        # That stderr is empty if no errors are expected. However, lotus-tx
         # emits DISPLAY errors when running as a windows application on
         # linux through wine. Just assert that the expected error text appears
         # somewhere in stderr.

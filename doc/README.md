@@ -51,12 +51,12 @@ The following are some helpful notes on how to run Bitcoin ABC on your native pl
 
 Unpack the files into a directory and run:
 
-- `bin/bitcoin-qt` (GUI) or
-- `bin/bitcoind` (headless)
+- `bin/lotus-qt` (GUI) or
+- `bin/lotusd` (headless)
 
 ### Windows
 
-Unpack the files into a directory, and then run bitcoin-qt.exe.
+Unpack the files into a directory, and then run lotus-qt.exe.
 
 ### macOS
 
@@ -99,7 +99,7 @@ The Bitcoin ABC repo's [root README](/README.md) contains relevant information o
 ### Miscellaneous
 - [Assets Attribution](assets-attribution.md)
 - [Assumeutxo design](assumeutxo.md)
-- [bitcoin.conf Configuration File](bitcoin-conf.md)
+- [lotus.conf Configuration File](bitcoin-conf.md)
 - [Files](files.md)
 - [Fuzz-testing](fuzzing.md)
 - [I2P Support](i2p.md)

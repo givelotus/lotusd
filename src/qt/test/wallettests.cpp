@@ -5,7 +5,6 @@
 #include <qt/test/util.h>
 #include <qt/test/wallettests.h>
 
-#include <cashaddrenc.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <interfaces/chain.h>
@@ -68,7 +67,7 @@ TxId SendCoins(CWallet &wallet, SendCoinsDialog &sendCoinsDialog,
     SendCoinsEntry *entry =
         qobject_cast<SendCoinsEntry *>(entries->itemAt(0)->widget());
     entry->findChild<QValidatedLineEdit *>("payTo")->setText(
-        QString::fromStdString(EncodeCashAddr(address, Params())));
+        QString::fromStdString(EncodeDestination(address, Params())));
     entry->findChild<BitcoinAmountField *>("payAmount")->setValue(amount);
     TxId txid;
     boost::signals2::scoped_connection c =
@@ -108,9 +107,9 @@ QModelIndex FindTx(const QAbstractItemModel &model, const uint256 &txid) {
 //
 // This also requires overriding the default minimal Qt platform:
 //
-//     QT_QPA_PLATFORM=xcb     src/qt/test/test_bitcoin-qt  # Linux
-//     QT_QPA_PLATFORM=windows src/qt/test/test_bitcoin-qt  # Windows
-//     QT_QPA_PLATFORM=cocoa   src/qt/test/test_bitcoin-qt  # macOS
+//     QT_QPA_PLATFORM=xcb     src/qt/test/test_lotus-qt  # Linux
+//     QT_QPA_PLATFORM=windows src/qt/test/test_lotus-qt  # Windows
+//     QT_QPA_PLATFORM=cocoa   src/qt/test/test_lotus-qt  # macOS
 void TestGUI(interfaces::Node &node) {
     // Set up wallet and chain with 105 blocks (5 mature blocks for spending).
     TestChain100Setup test;
@@ -169,7 +168,7 @@ void TestGUI(interfaces::Node &node) {
         int unit = walletModel.getOptionsModel()->getDisplayUnit();
         Amount balance = walletModel.wallet().getBalance();
         QString balanceComparison = BitcoinUnits::formatWithUnit(
-            unit, balance, false, BitcoinUnits::SeparatorStyle::ALWAYS);
+            unit, balance, false, BitcoinUnits::SeparatorStyle::NEVER);
         QCOMPARE(balanceText, balanceComparison);
     }
 
@@ -178,9 +177,9 @@ void TestGUI(interfaces::Node &node) {
         walletModel.getTransactionTableModel();
     QCOMPARE(transactionTableModel->rowCount({}), 105);
     TxId txid1 = SendCoins(*wallet.get(), sendCoinsDialog,
-                           CTxDestination(PKHash()), 5 * COIN);
+                           CTxDestination(PKHash()), 1 * COIN);
     TxId txid2 = SendCoins(*wallet.get(), sendCoinsDialog,
-                           CTxDestination(PKHash()), 10 * COIN);
+                           CTxDestination(PKHash()), 5 * COIN);
     QCOMPARE(transactionTableModel->rowCount({}), 107);
     QVERIFY(FindTx(*transactionTableModel, txid1).isValid());
     QVERIFY(FindTx(*transactionTableModel, txid2).isValid());
@@ -235,13 +234,13 @@ void TestGUI(interfaces::Node &node) {
             QString uri = receiveRequestDialog
                               ->QObject::findChild<QLabel *>("uri_content")
                               ->text();
-            QCOMPARE(uri.count("ecregtest:"), 2);
+            QCOMPARE(uri.count("lotusR"), 2);
             QCOMPARE(receiveRequestDialog
                          ->QObject::findChild<QLabel *>("address_tag")
                          ->text(),
                      QString("Address:"));
 
-            QCOMPARE(uri.count("amount=0.01"), 2);
+            QCOMPARE(uri.count("amount=0.000001"), 2);
             QCOMPARE(
                 receiveRequestDialog->QObject::findChild<QLabel *>("amount_tag")
                     ->text(),
@@ -249,7 +248,7 @@ void TestGUI(interfaces::Node &node) {
             QCOMPARE(receiveRequestDialog
                          ->QObject::findChild<QLabel *>("amount_content")
                          ->text(),
-                     QString("0.01 ") +
+                     QString("0.000001 ") +
                          QString::fromStdString(Currency::getTicker()));
 
             QCOMPARE(uri.count("label=TEST_LABEL_1"), 2);
@@ -308,7 +307,7 @@ void WalletTests::walletTests() {
         qWarning()
             << "Skipping WalletTests on mac build with 'minimal' platform set "
                "due to Qt bugs. To run AppTests, invoke with "
-               "'QT_QPA_PLATFORM=cocoa test_bitcoin-qt' on mac, or else use a "
+               "'QT_QPA_PLATFORM=cocoa test_lotus-qt' on mac, or else use a "
                "linux or windows build.";
         return;
     }

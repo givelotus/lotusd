@@ -34,16 +34,6 @@ static constexpr Amount DEFAULT_BLOCK_MIN_TX_FEE_PER_KB(1000 * SATOSHI);
 static constexpr unsigned int MAX_STANDARD_TX_SIZE{100000};
 
 /**
- * Biggest 'standard' txin is a 15-of-15 P2SH multisig with compressed
- * keys (remember the 520 byte limit on redeemScript size). That works
- * out to a (15*(33+1))+3=513 byte redeemScript, 513+1+15*(73+1)+3=1627
- * bytes of scriptSig, which we round off to 1650 bytes for some minor
- * future-proofing. That's also enough to spend a 20-of-20 CHECKMULTISIG
- * scriptPubKey, though such a scriptPubKey is not considered standard.
- */
-static constexpr unsigned int MAX_TX_IN_SCRIPT_SIG_SIZE{1650};
-
-/**
  * Default for -incrementalrelayfee, which sets the minimum feerate increase for
  * mempool limiting or BIP 125 replacement.
  */
@@ -72,10 +62,7 @@ static constexpr Amount DEFAULT_MIN_RELAY_TX_FEE_PER_KB(1000 * SATOSHI);
  * (see CheckInputScripts).
  */
 static constexpr uint32_t MANDATORY_SCRIPT_VERIFY_FLAGS{
-    SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC |
-    SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_VERIFY_LOW_S |
-    SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_MINIMALDATA |
-    SCRIPT_ENABLE_SCHNORR_MULTISIG | SCRIPT_ENFORCE_SIGCHECKS};
+    SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_VERIFY_CLEANSTACK};
 
 /**
  * Standard script verification flags that standard transactions will comply
@@ -89,11 +76,8 @@ static constexpr uint32_t MANDATORY_SCRIPT_VERIFY_FLAGS{
  * contextual information of which upgrades are currently active.
  */
 static constexpr uint32_t STANDARD_SCRIPT_VERIFY_FLAGS{
-    MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_DERSIG |
-    SCRIPT_VERIFY_SIGPUSHONLY | SCRIPT_VERIFY_MINIMALDATA |
-    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS | SCRIPT_VERIFY_CLEANSTACK |
-    SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY | SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
-    SCRIPT_DISALLOW_SEGWIT_RECOVERY | SCRIPT_VERIFY_INPUT_SIGCHECKS};
+    MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
+    SCRIPT_VERIFY_INPUT_SIGCHECKS | SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS};
 
 /**
  * For convenience, standard but not mandatory verify flags.
@@ -105,8 +89,7 @@ static constexpr uint32_t STANDARD_NOT_MANDATORY_VERIFY_FLAGS{
  * Used as the flags parameter to sequence and nLocktime checks in non-consensus
  * code.
  */
-static constexpr uint32_t STANDARD_LOCKTIME_VERIFY_FLAGS{
-    LOCKTIME_VERIFY_SEQUENCE};
+static constexpr uint32_t STANDARD_LOCKTIME_VERIFY_FLAGS{0};
 
 Amount GetDustThreshold(const CTxOut &txout, const CFeeRate &dustRelayFee);
 

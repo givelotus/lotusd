@@ -11,7 +11,9 @@ from test_framework.blocktools import (
     COINBASE_MATURITY,
     create_block,
     create_coinbase,
+    create_tx_with_script,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import COIN, COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
@@ -58,13 +60,19 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         self.log.info("Create a new block with an anyone-can-spend coinbase.")
         height = 1
-        block = create_block(tip, create_coinbase(height), block_time)
-        block.solve()
-        # Save the coinbase for later
-        block1 = block
-        node.p2ps[0].send_blocks_and_test([block], node, success=True)
+        blocks = []
+        for _ in invalid_txs.iter_all_templates():
+            block = create_block(tip, create_coinbase(height), block_time)
+            block.nHeight = height
+            prepare_block(block)
+            block_time = block.nTime + 1
+            height += 1
+            # Save the coinbase for later
+            blocks.append(block)
+            tip = block.sha256
+            node.p2ps[0].send_blocks_and_test([block], node, success=True)
 
-        self.log.info("Mature the block.")
+        self.log.info("Mature the blocks.")
         self.generatetoaddress(
             self.nodes[0],
             COINBASE_MATURITY,
@@ -73,10 +81,17 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         # Iterate through a list of known invalid transaction types, ensuring each is
         # rejected. Some are consensus invalid and some just violate policy.
-        for BadTxTemplate in invalid_txs.iter_all_templates():
+        setup_txs = []
+        for block, BadTxTemplate in zip(blocks, invalid_txs.iter_all_templates()):
             self.log.info("Testing invalid transaction: %s", BadTxTemplate.__name__)
-            template = BadTxTemplate(spend_block=block1)
-            tx = template.get_tx()
+            template = BadTxTemplate(spend_block=block)
+            setup_tx = template.get_setup_tx()
+            if setup_tx is not None:
+                node.p2ps[0].send_txs_and_test([setup_tx], node)
+                setup_txs.append(setup_tx)
+                tx = template.get_tx(setup_tx)
+            else:
+                tx = template.get_tx()
             node.p2ps[0].send_txs_and_test(
                 [tx],
                 node,
@@ -99,7 +114,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         # are sent out and in the orphan cache
         SCRIPT_PUB_KEY_OP_TRUE = CScript([OP_TRUE])
         tx_withhold = CTransaction()
-        tx_withhold.vin.append(CTxIn(outpoint=COutPoint(block1.vtx[0].txid_int, 0)))
+        tx_withhold.vin.append(CTxIn(outpoint=COutPoint(blocks[0].vtx[0].txid_int, 1)))
         tx_withhold.vout = [
             CTxOut(nValue=25 * COIN - 12000, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE)
         ] * 2
@@ -149,8 +164,8 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         # Send invalid tx from p2ps[1]
         node.p2ps[1].send_txs_and_test([tx_orphan_2_invalid], node, success=False)
 
-        # Mempool should be empty
-        assert_equal(0, node.getmempoolinfo()["size"])
+        # Mempool should only have setup txs
+        assert_equal(len(setup_txs), node.getmempoolinfo()["size"])
         # p2ps[1] is still connected
         assert_equal(2, len(node.getpeerinfo()))
 
@@ -166,7 +181,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
                 tx_orphan_1,  # The orphan transaction that splits the coins
                 # The valid transaction (with sufficient fee)
                 tx_orphan_2_valid,
-            ]
+            ] + setup_txs  # The setup transactions we added in the beginning
         }
         # Transactions that do not end up in the mempool
         # tx_orphan_no_fee, because it has too low fee (p2ps[0] is not disconnected for relaying that tx)
@@ -244,9 +259,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         block_A.vtx.extend(
             [tx_withhold, tx_withhold_until_block_A, tx_orphan_include_by_block_A]
         )
-        make_conform_to_ctor(block_A)
-        block_A.hashMerkleRoot = block_A.calc_merkle_root()
-        block_A.solve()
+        prepare_block(block_A)
 
         self.log.info("Send the block that includes the previous orphan ... ")
         with node.assert_debug_log(
@@ -292,9 +305,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         height = node.getblockcount() + 1
         block_B = create_block(tip, create_coinbase(height))
         block_B.vtx.extend([tx_withhold_until_block_B, tx_orphan_include_by_block_B])
-        make_conform_to_ctor(block_B)
-        block_B.hashMerkleRoot = block_B.calc_merkle_root()
-        block_B.solve()
+        prepare_block(block_B)
 
         self.log.info(
             "Send the block that includes a transaction which conflicts with the previous orphan ... "

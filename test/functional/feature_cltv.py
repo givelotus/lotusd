@@ -11,7 +11,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
-    make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import msg_block, msg_tx
 from test_framework.p2p import P2PInterface
@@ -86,7 +86,7 @@ class BIP65Test(BitcoinTestFramework):
         self.generate(self.nodes[0], CLTV_HEIGHT - 2 - 10)
 
         self.log.info(
-            "Test that an invalid-according-to-CLTV transaction can still appear in a"
+            "Test that an invalid-according-to-CLTV transaction cannot appear in a"
             " block"
         )
 
@@ -105,26 +105,24 @@ class BIP65Test(BitcoinTestFramework):
         block.solve()
 
         peer.send_and_ping(msg_block(block))
-        # This block is valid
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
+        # This block is invalid
+        assert self.nodes[0].getbestblockhash() != block.hash_hex
 
-        self.log.info("Test that blocks must now be at least version 4")
+        # Create a valid block without the CLTV-violating transaction
+        block = create_block(
+            int(tip, 16), create_coinbase(CLTV_HEIGHT - 1), block_time
+        )
+        block.nHeight = CLTV_HEIGHT - 1
+        prepare_block(block)
+        peer.send_and_ping(msg_block(block))
+
         tip = block.hash_int
         block_time += 1
-        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time, version=3)
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(
-            expected_msgs=[f"{block.hash_hex}, bad-version(0x00000003)"]
-        ):
-            peer.send_and_ping(msg_block(block))
-            assert_equal(int(self.nodes[0].getbestblockhash(), 16), tip)
-            peer.sync_with_ping()
-
         self.log.info(
             "Test that invalid-according-to-cltv transactions cannot appear in a block"
         )
-        block.nVersion = 4
+        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time)
+        block.nHeight = CLTV_HEIGHT
 
         fundtx = wallet.create_self_transfer()["tx"]
         fundtx, spendtx = cltv_lock_to_height(fundtx)
@@ -136,8 +134,7 @@ class BIP65Test(BitcoinTestFramework):
 
         # Mine a block containing the funding transaction
         block.vtx.append(fundtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         peer.send_and_ping(msg_block(block))
         # This block is valid
@@ -146,7 +143,7 @@ class BIP65Test(BitcoinTestFramework):
         # We show that this tx is invalid due to CLTV by getting it
         # rejected from the mempool for exactly that reason.
         expected_cltv_reject_reason = (
-            "non-mandatory-script-verify-flag (Negative locktime)"
+            "mandatory-script-verify-flag-failed (Negative locktime)"
         )
         assert_equal(
             [
@@ -171,10 +168,10 @@ class BIP65Test(BitcoinTestFramework):
             block.hash_int,
             create_coinbase(CLTV_HEIGHT + 1),
             block_time,
-            version=4,
             txlist=[spendtx],
         )
-        block.solve()
+        block.nHeight = CLTV_HEIGHT + 1
+        prepare_block(block)
 
         with self.nodes[0].assert_debug_log(
             expected_msgs=[
@@ -207,9 +204,7 @@ class BIP65Test(BitcoinTestFramework):
         block.vtx.pop(1)
         block.vtx.append(fundtx)
         block.vtx.append(spendtx)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         peer.send_and_ping(msg_block(block))
         # This block is now valid

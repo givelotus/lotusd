@@ -84,6 +84,15 @@ const std::map<uint8_t, std::string> mapSigHashTypes = {
     {SIGHASH_SINGLE | SIGHASH_FORKID, "SINGLE|FORKID"},
     {SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY,
      "SINGLE|FORKID|ANYONECANPAY"},
+    {SIGHASH_ALL | SIGHASH_LOTUS, "ALL|LOTUS"},
+    {SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+     "ALL|LOTUS|ANYONECANPAY"},
+    {SIGHASH_NONE | SIGHASH_LOTUS, "NONE|LOTUS"},
+    {SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+     "NONE|LOTUS|ANYONECANPAY"},
+    {SIGHASH_SINGLE | SIGHASH_LOTUS, "SINGLE|LOTUS"},
+    {SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+     "SINGLE|LOTUS|ANYONECANPAY"},
 };
 
 std::string SighashToStr(uint8_t sighash_type) {
@@ -138,7 +147,7 @@ std::string ScriptToAsmStr(const CScript &script,
                     // formats (see IsCompressedOrUncompressedPubKey) being
                     // incongruous with the checks in
                     // CheckTransactionSignatureEncoding.
-                    uint32_t flags = SCRIPT_VERIFY_STRICTENC;
+                    uint32_t flags = SCRIPT_VERIFY_NONE;
                     if (vch.back() & SIGHASH_FORKID) {
                         // If the transaction is using SIGHASH_FORKID, we need
                         // to set the appropriate flag.

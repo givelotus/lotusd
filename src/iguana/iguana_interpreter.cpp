@@ -44,7 +44,7 @@ IguanaResult IguanaInterpreter::Run() const {
 
     IguanaTrace *lastTrace = &result.traceScriptPubKey;
 
-    if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash()) {
+    if (scriptPubKey.IsPayToScriptHash()) {
         result.traceRedeemScript.emplace();
         if (!txin.scriptSig.IsPushOnly()) {
             result.traceRedeemScript->scriptError = ScriptError::SIG_PUSHONLY;
@@ -56,8 +56,7 @@ IguanaResult IguanaInterpreter::Run() const {
         CScript redeemScript(redeemScriptRaw.begin(), redeemScriptRaw.end());
         stack.pop_back();
 
-        if ((flags & SCRIPT_DISALLOW_SEGWIT_RECOVERY) == 0 && stack.empty() &&
-            redeemScript.IsWitnessProgram()) {
+        if (stack.empty() && redeemScript.IsWitnessProgram()) {
             // Allow SegWit recovery; doesn't run redeemScript
             result.traceRedeemScript = std::nullopt;
             return result;

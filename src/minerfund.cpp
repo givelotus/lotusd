@@ -5,6 +5,7 @@
 #include <minerfund.h>
 
 #include <blockindex.h>
+#include <cashaddrenc.h>
 #include <chainparams.h>
 #include <common/args.h>
 #include <consensus/activation.h>
@@ -13,75 +14,124 @@
 #include <key_io.h> // For DecodeDestination
 #include <primitives/transaction.h>
 
-/**
- * Percentage of the block reward to be sent to the fund.
- */
-static constexpr int LEGACY_MINER_FUND_RATIO = 8;
-static constexpr int MINER_FUND_RATIO = 32;
-
-Amount GetMinerFundAmount(const Consensus::Params &params,
-                          const Amount &coinbaseValue,
-                          const CBlockIndex *pprev) {
-    const int minerFundRatio = IsCowperthwaiteEnabled(params, pprev)
-                                   ? MINER_FUND_RATIO
-                                   : LEGACY_MINER_FUND_RATIO;
-    return minerFundRatio * coinbaseValue / 100;
-}
-
-static CTxDestination BuildDestination(const std::string &dest) {
+static const CTxOut BuildOutput(const std::string &destStr,
+                                const Amount amount) {
     const ArgsManager unused_argsman{};
     const auto mainNetParams =
         CreateChainParams(unused_argsman, ChainType::MAIN);
-    return DecodeDestination(dest, *mainNetParams);
+    CTxDestination dest = DecodeDestination(destStr, *mainNetParams);
+    if (!IsValidDestination(dest)) {
+        dest = DecodeCashAddrDestination(
+            DecodeCashAddrContent(destStr, "bitcoincash"));
+    }
+    const CScript script = GetScriptForDestination(dest);
+    return {amount, script};
 }
 
-static const CTxDestination &GetMinerFundDestination() {
-    static const std::string ecashMinerFund =
-        "ecash:prfhcnyqnl5cgrnmlfmms675w93ld7mvvqd0y8lz07";
-    static const std::string bitcoinCashMinerFund =
-        "bitcoincash:prfhcnyqnl5cgrnmlfmms675w93ld7mvvq5zsvycff";
-    static CTxDestination dest = BuildDestination(
-        gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? ecashMinerFund
-                                                  : bitcoinCashMinerFund);
-
-    return dest;
+static const std::vector<CTxOut>
+BuildOutputsCycling(const std::vector<std::string> &addresses,
+                    const CBlockIndex *pindexPrev, const Amount blockReward) {
+    const size_t numAddresses = addresses.size();
+    const Amount shareAmount = blockReward / 2;
+    const auto blockHeight = pindexPrev->nHeight + 1;
+    const auto addressIndx = blockHeight % numAddresses;
+    const auto address = addresses[addressIndx];
+    return std::vector<CTxOut>({BuildOutput(address, shareAmount)});
 }
 
-std::unordered_set<CTxDestination, TxDestinationHasher>
-GetMinerFundWhitelist(const Consensus::Params &params) {
-    if (!gArgs.GetBoolArg("-enableminerfund", params.enableMinerFund)) {
+static const std::vector<CTxOut>
+BuildOutputsFanOut(const std::vector<std::string> &addresses,
+                   const CBlockIndex *pindexPrev, const Amount blockReward) {
+    const size_t numAddresses = addresses.size();
+    std::vector<CTxOut> minerFundOutputs;
+    const Amount shareAmount = blockReward / (int64_t(2 * numAddresses));
+    minerFundOutputs.reserve(numAddresses);
+    for (const std::string &address : addresses) {
+        minerFundOutputs.emplace_back(BuildOutput(address, shareAmount));
+    }
+    return minerFundOutputs;
+}
+
+std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
+                                                const CBlockIndex *pindexPrev,
+                                                const Amount &blockReward) {
+    if (!enableMinerFund) {
         return {};
     }
 
-    return {GetMinerFundDestination()};
+    // Revert to fan-out minerfund for First Kings (only one address)
+    if (IsFirstKingsEnabled(params, pindexPrev)) {
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.firstKings,
+                                  pindexPrev, blockReward);
+    }
+
+    if (IsSecondSamuelEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.secondSamuel,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsFirstSamuelEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.firstSamuel,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsRuthEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.ruth,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsJudgesEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.judges,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsJoshuaEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.joshua,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsDeuteronomyEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.deuteronomy,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsNumbersEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.numbers,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsLeviticusEnabled(params, pindexPrev)) {
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.leviticus,
+                                  pindexPrev, blockReward);
+    }
+
+    if (IsExodusEnabled(params, pindexPrev)) {
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.exodus,
+                                  pindexPrev, blockReward);
+    }
+
+    return BuildOutputsFanOut(params.coinbasePayoutAddresses.genesis,
+                              pindexPrev, blockReward);
 }
 
 bool CheckMinerFund(const Consensus::Params &params,
+                    const bool enableMinerFund,
                     const std::vector<CTxOut> &coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev) {
-    const auto whitelist = GetMinerFundWhitelist(params);
-    if (whitelist.empty()) {
+    const std::vector<CTxOut> requiredOutputs =
+        GetMinerFundRequiredOutputs(params, enableMinerFund, pprev, blockReward);
+    if (requiredOutputs.empty()) {
         return true;
     }
-
-    const Amount required = GetMinerFundAmount(params, blockReward, pprev);
-    for (auto &o : coinbaseTxOut) {
-        if (o.nValue < required) {
-            // This output doesn't qualify because its amount is too low.
-            continue;
-        }
-
-        CTxDestination address;
-        if (!ExtractDestination(o.scriptPubKey, address)) {
-            // Cannot decode address.
-            continue;
-        }
-
-        if (whitelist.find(address) != whitelist.end()) {
-            return true;
+    auto nextRequiredOutput = requiredOutputs.begin();
+    for (const CTxOut &o : coinbaseTxOut) {
+        if (o == *nextRequiredOutput) {
+            nextRequiredOutput++;
+            if (nextRequiredOutput == requiredOutputs.end()) {
+                return true;
+            }
         }
     }
-
-    // We did not find an output that match the miner fund requirements.
     return false;
 }

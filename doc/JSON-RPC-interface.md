@@ -1,7 +1,7 @@
 # JSON-RPC Interface
 
-The headless daemon `bitcoind` has the JSON-RPC API enabled by default, the GUI
-`bitcoin-qt` has it disabled by default. This can be changed with the `-server`
+The headless daemon `lotusd` has the JSON-RPC API enabled by default, the GUI
+`lotus-qt` has it disabled by default. This can be changed with the `-server`
 option. In the GUI it is possible to execute RPC methods in the Debug Console
 Dialog.
 
@@ -84,14 +84,14 @@ RPC interface will be abused.
   withstand arbitrary Internet traffic, so changing the above settings
   to expose it to the Internet (even using something like a Tor onion
   service) could expose you to unconsidered vulnerabilities.  See
-  `bitcoind -help` for more information about these settings and other
+  `lotusd -help` for more information about these settings and other
   settings described in this document.
 
     Related, if you use Bitcoin ABC inside a Docker container, you may
     need to expose the RPC port to the host system.  The default way to
     do this in Docker also exposes the port to the public Internet.
     Instead, expose it only on the host system's localhost, for example:
-    `-p 127.0.0.1:8332:8332`
+    `-p 127.0.0.1:10604:10604`
 
 - **Secure authentication:** By default, Bitcoin ABC generates unique
   login credentials each time it restarts and puts them into a file

@@ -33,7 +33,7 @@
 #include <string>
 #include <variant>
 
-const char *const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+const char *const BITCOIN_CONF_FILENAME = "lotus.conf";
 const char *const BITCOIN_SETTINGS_FILENAME = "settings.json";
 
 ArgsManager gArgs;
@@ -226,7 +226,7 @@ bool ArgsManager::ParseParameters(int argc, const char *const argv[],
 #endif
 
         if (key == "-") {
-            // bitcoin-tx using stdin
+            // lotus-tx using stdin
             break;
         }
         std::optional<std::string> val;
@@ -667,6 +667,9 @@ std::string ArgsManager::GetHelpMessage() const {
             case OptionsCategory::REGISTER_COMMANDS:
                 usage += HelpMessageGroup("Register Commands:");
                 break;
+            case OptionsCategory::NNG_INTERFACE:
+                usage += HelpMessageGroup("NNG Interface:");
+                break;
             case OptionsCategory::AVALANCHE:
                 usage += HelpMessageGroup("Avalanche options:");
                 break;
@@ -725,12 +728,12 @@ std::string HelpMessageOpt(const std::string &option,
 }
 
 fs::path GetDefaultDataDir() {
-    // Windows: C:\Users\Username\AppData\Roaming\Bitcoin
-    // macOS: ~/Library/Application Support/Bitcoin
-    // Unix-like: ~/.bitcoin
+    // Windows: C:\Users\Username\AppData\Roaming\Lotus
+    // macOS: ~/Library/Application Support/Lotus
+    // Unix-like: ~/.lotus
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "Lotus";
 #else
     fs::path pathRet;
     char *pszHome = getenv("HOME");
@@ -741,10 +744,10 @@ fs::path GetDefaultDataDir() {
     }
 #ifdef MAC_OSX
     // macOS
-    return pathRet / "Library/Application Support/Bitcoin";
+    return pathRet / "Library/Application Support/Lotus";
 #else
     // Unix-like
-    return pathRet / ".bitcoin";
+    return pathRet / ".lotus";
 #endif
 #endif
 }

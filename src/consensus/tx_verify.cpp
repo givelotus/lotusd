@@ -7,7 +7,6 @@
 #include <blockindex.h>
 #include <chain.h>
 #include <coins.h>
-#include <consensus/activation.h>
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <consensus/params.h>
@@ -49,21 +48,10 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
                              "bad-txns-nonfinal", "non-final transaction");
     }
 
-    if (IsMagneticAnomalyEnabled(params, nHeight)) {
-        // Size limit
-        if (::GetSerializeSize(tx) < MIN_TX_SIZE) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-undersize");
-        }
-    }
-
-    if (IsWellingtonEnabled(params, nHeight)) {
-        // Restrict version to 1 and 2
-        if (tx.nVersion > CTransaction::MAX_VERSION ||
-            tx.nVersion < CTransaction::MIN_VERSION) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-version");
-        }
+    // Size limit
+    if (::GetSerializeSize(tx) < MIN_TX_SIZE) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-undersize");
     }
 
     return true;
@@ -115,7 +103,10 @@ std::pair<int, int64_t> CalculateSequenceLocks(const CTransaction &tx,
     int nMinHeight = -1;
     int64_t nMinTime = -1;
 
-    bool fEnforceBIP68 = tx.nVersion >= 2 && flags & LOCKTIME_VERIFY_SEQUENCE;
+    // tx.nVersion is signed integer so requires cast to unsigned otherwise
+    // we would be doing a signed comparison and half the range of nVersion
+    // wouldn't support BIP 68.
+    bool fEnforceBIP68 = static_cast<uint32_t>(tx.nVersion) >= 2;
 
     // Do not enforce sequence numbers as a relative lock time
     // unless we have been instructed to

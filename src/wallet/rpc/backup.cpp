@@ -1247,6 +1247,7 @@ static std::string RecurseImportData(const CScript &script,
             return "";
         }
         case TxoutType::NULL_DATA:
+        case TxoutType::TAPROOT:
             return "unspendable script";
         case TxoutType::NONSTANDARD:
         default:
@@ -1697,7 +1698,7 @@ static std::string GetRescanErrorMessage(const std::string &object,
     if (have_pruned) {
         error_msg += strprintf(
             "This error could be caused by pruning or data corruption "
-            "(see bitcoind log for details) and could be dealt with by "
+            "(see lotusd log for details) and could be dealt with by "
             "downloading and rescanning the relevant blocks (see -reindex "
             "option and rescanblockchain RPC).");
     } else if (has_assumed_valid_chain) {

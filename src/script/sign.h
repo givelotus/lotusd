@@ -31,6 +31,7 @@ public:
     /** Create a singular (non-script) signature. */
     virtual bool CreateSig(const SigningProvider &provider,
                            std::vector<uint8_t> &vchSig, const CKeyID &keyid,
+                           const std::optional<ScriptExecutionData> &execdata,
                            const CScript &scriptCode) const = 0;
 };
 
@@ -41,14 +42,17 @@ class MutableTransactionSignatureCreator : public BaseSignatureCreator {
     Amount amount;
     SigHashType sigHashType;
     const MutableTransactionSignatureChecker checker;
+    const PrecomputedTransactionData &m_txdata;
 
 public:
     MutableTransactionSignatureCreator(
         const CMutableTransaction *txToIn, unsigned int nInIn,
-        const Amount &amountIn, SigHashType sigHashTypeIn = SigHashType());
+        const Amount &amountIn, SigHashType sigHashTypeIn,
+        const PrecomputedTransactionData &txdata);
     const BaseSignatureChecker &Checker() const override { return checker; }
     bool CreateSig(const SigningProvider &provider,
                    std::vector<uint8_t> &vchSig, const CKeyID &keyid,
+                   const std::optional<ScriptExecutionData> &execdata,
                    const CScript &scriptCode) const override;
 };
 
@@ -175,16 +179,18 @@ bool ProduceSignature(const SigningProvider &provider,
                       const CScript &scriptPubKey, SignatureData &sigdata);
 
 /** Produce a script signature for a transaction. */
-bool SignSignature(const SigningProvider &provider, const CScript &fromPubKey,
+bool SignSignature(const SigningProvider &provider,
+                   const PrecomputedTransactionData &txdata,
                    CMutableTransaction &txTo, unsigned int nIn,
-                   const Amount amount, SigHashType sigHashType);
+                   SigHashType sigHashType);
 bool SignSignature(const SigningProvider &provider, const CTransaction &txFrom,
                    CMutableTransaction &txTo, unsigned int nIn,
                    SigHashType sigHashType);
 
 /** Extract signature data from a transaction input, and insert it. */
 SignatureData DataFromTransaction(const CMutableTransaction &tx,
-                                  unsigned int nIn, const CTxOut &txout);
+                                  unsigned int nIn,
+                                  const PrecomputedTransactionData &txdata);
 void UpdateInput(CTxIn &input, const SignatureData &data);
 
 /**

@@ -7,12 +7,30 @@
 #define BITCOIN_CONSENSUS_PARAMS_H
 
 #include <primitives/blockhash.h>
+#include <script/script.h>
 #include <uint256.h>
 
 #include <chrono>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace Consensus {
+
+struct CoinbaseAddresses {
+    std::vector<std::string> genesis;
+    std::vector<std::string> exodus;
+    std::vector<std::string> leviticus;
+    std::vector<std::string> numbers;
+    std::vector<std::string> deuteronomy;
+    std::vector<std::string> joshua;
+    std::vector<std::string> judges;
+    std::vector<std::string> ruth;
+    std::vector<std::string> firstSamuel;
+    std::vector<std::string> secondSamuel;
+    std::vector<std::string> firstKings;
+    std::vector<std::string> secondKings;
+};
 
 enum BuriedDeployment : int16_t {
     // buried deployments get negative values to avoid overlap with
@@ -34,6 +52,37 @@ constexpr bool ValidDeployment(BuriedDeployment dep) {
 struct Params {
     BlockHash hashGenesisBlock;
     int nSubsidyHalvingInterval;
+    /** Unix time used for MTP activation of 2021-12-21T15:59:00.000Z protocol upgrade */
+    int exodusActivationTime;
+    /** Unix time used for MTP activation of 2022-06-21T09:14:00.000Z protocol upgrade */
+    int leviticusActivationTime;
+    /** Unix time used for MTP activation of 2022-12-21T21:48:00.000Z protocol
+     * upgrade */
+    int numbersActivationTime;
+    /** Unix time used for MTP activation of 2023-06-21T14:58:00.000Z protocol
+     * upgrade */
+    int deuteronomyActivationTime;
+    /** Unix time used for MTP activation of 2023-12-22T03:27:00.000Z protocol
+     * upgrade */
+    int joshuaActivationTime;
+    /** Unix time used for MTP activation of 2024-06-20T20:51:00.000Z protocol
+     * upgrade */
+    int judgesActivationTime;
+    /** Unit time used for MTP activation of 2024-12-21T09:20:00.000Z protocol
+     * upgrade */
+    int ruthActivationTime;
+    /** Unix time used for MTP activation of 2025-06-21T02:42:00.000Z protocol
+     * upgrade */
+    int firstSamuelActivationTime;
+    /** Unix time used for MTP activation of 2025-12-21T15:03:00.000Z protocol
+     * upgrade */
+    int secondSamuelActivationTime;
+    /** Unix time used for MTP activation of 2026-06-21T08:24:00.000Z protocol
+     * upgrade */
+    int firstKingsActivationTime;
+    /** Unix time used for MTP activation of 2026-12-21T20:50:00.000Z protocol
+     * upgrade */
+    int secondKingsActivationTime;
     /** Block height at which BIP16 becomes active */
     int BIP16Height;
     /** Block height and hash at which BIP34 becomes active */
@@ -45,32 +94,12 @@ struct Params {
     int BIP66Height;
     /** Block height at which CSV (BIP68, BIP112 and BIP113) becomes active */
     int CSVHeight;
-    /** Block height at which UAHF kicks in */
-    int uahfHeight;
-    /** Block height at which the new DAA becomes active */
-    int daaHeight;
-    /** Block height at which the magnetic anomaly activation becomes active */
-    int magneticAnomalyHeight;
-    /** Block height at which the graviton activation becomes active */
-    int gravitonHeight;
-    /** Block height at which the phonon activation becomes active */
-    int phononHeight;
-    /** Block height at which the axion activation becomes active */
-    int axionHeight;
-    /** Block height at which the wellington activation becomes active */
-    int wellingtonHeight;
-    /** Block height at which the Cowperthwaite activation becomes active */
-    int cowperthwaiteHeight;
-    /**
-     * Unix time used for MTP activation of 15 November 2026 12:00:00 UTC
-     * upgrade
-     */
-    int mengerActivationTime;
-    /** Unix time used for MTP activation of 15 May 2027 12:00:00 UTC upgrade */
-    int sandersActivationTime;
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
+    CoinbaseAddresses coinbasePayoutAddresses;
+
+    bool enableDifficultyBasedSubsidy;
 
     /** Enable or disable the staking rewards by default */
     bool enableStakingRewards;

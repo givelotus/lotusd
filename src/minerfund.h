@@ -5,30 +5,28 @@
 #ifndef BITCOIN_MINERFUND_H
 #define BITCOIN_MINERFUND_H
 
+#include <consensus/amount.h>
+#include <primitives/transaction.h>
 #include <script/standard.h>
-#include <util/hasher.h>
 
-#include <unordered_set>
+#include <vector>
 
 class CBlockIndex;
-class CTxOut;
 
 namespace Consensus {
-struct Amount;
 struct Params;
 } // namespace Consensus
 
-Amount GetMinerFundAmount(const Consensus::Params &params,
-                          const Amount &coinbaseValue,
-                          const CBlockIndex *pprev);
-
-std::unordered_set<CTxDestination, TxDestinationHasher>
-GetMinerFundWhitelist(const Consensus::Params &params);
+std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
+                                                const CBlockIndex *pindexPrev,
+                                                const Amount &blockReward);
 
 /**
  * Returns false if there is an invalid miner fund. True otherwise.
  */
 bool CheckMinerFund(const Consensus::Params &params,
+                    const bool enableMinerFund,
                     const std::vector<CTxOut> &coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev);
 

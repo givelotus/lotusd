@@ -6,6 +6,7 @@
 #include <script/standard.h>
 
 #include <script/script.h>
+#include <script/taproot.h>
 
 #include <string>
 
@@ -38,6 +39,8 @@ std::string GetTxnOutputType(TxoutType t) {
             return "scripthash";
         case TxoutType::MULTISIG:
             return "multisig";
+        case TxoutType::TAPROOT:
+            return "taproot";
         case TxoutType::NULL_DATA:
             return "nulldata";
     } // no default case, so the compiler can warn about missing cases
@@ -119,6 +122,19 @@ TxoutType Solver(const CScript &scriptPubKey,
         return TxoutType::SCRIPTHASH;
     }
 
+    // Taproot output:
+    // OP_SCRIPTTYPE OP_1 33 <33-byte commitment>
+    // or
+    // OP_SCRIPTTYPE OP_1 33 <33-byte commitment> 32 <32-byte state>
+    if (IsPayToTaproot(scriptPubKey)) {
+        // Extract the 33-byte commitment
+        std::vector<uint8_t> commitment(
+            scriptPubKey.begin() + 3, // Skip OP_SCRIPTTYPE, OP_1, and size byte
+            scriptPubKey.begin() + 3 + CPubKey::COMPRESSED_SIZE);
+        vSolutionsRet.push_back(std::move(commitment));
+        return TxoutType::TAPROOT;
+    }
+
     // Provably prunable, data-carrying output
     //
     // So long as script passes the IsUnspendable() test and all but the first
@@ -177,6 +193,14 @@ bool ExtractDestination(const CScript &scriptPubKey,
         addressRet = ScriptHash(uint160(vSolutions[0]));
         return true;
     }
+    if (whichType == TxoutType::TAPROOT) {
+        CPubKey commitment(vSolutions[0]);
+        if (!commitment.IsFullyValid()) {
+            return false;
+        }
+        addressRet = Taproot(commitment);
+        return true;
+    }
     // Multisig txns have more than one address...
     return false;
 }
@@ -233,6 +257,11 @@ public:
 
     CScript operator()(const ScriptHash &scriptID) const {
         return CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;
+    }
+
+    CScript operator()(const Taproot &taprootDest) const {
+        return CScript() << OP_SCRIPTTYPE << OP_1
+                         << ToByteVector(taprootDest.GetCommitment());
     }
 };
 } // namespace

@@ -12,6 +12,7 @@
 #include <script/conditionstack.h>
 #include <script/script.h>
 #include <script/script_error.h>
+#include <script/script_exec_data.h>
 #include <script/script_flags.h>
 #include <script/script_metrics.h>
 #include <script/sighashtype.h>
@@ -64,12 +65,13 @@ public:
 };
 
 template <class T>
-uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
-                      unsigned int nIn, SigHashType sigHashType,
-                      const Amount amount,
-                      const PrecomputedTransactionData *cache = nullptr,
-                      uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID,
-                      SigHashCache *sighash_cache = nullptr);
+bool SignatureHash(uint256 &sighashOut,
+                   const std::optional<ScriptExecutionData> &execdata,
+                   const CScript &scriptCode, const T &txTo, unsigned int nIn,
+                   SigHashType sigHashType, const Amount amount,
+                   const PrecomputedTransactionData *cache = nullptr,
+                   uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID,
+                   SigHashCache *sighash_cache = nullptr);
 
 class BaseSignatureChecker {
 public:
@@ -79,6 +81,7 @@ public:
 
     virtual bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                           const std::vector<uint8_t> &vchPubKey,
+                          const std::optional<ScriptExecutionData> &execdata,
                           const CScript &scriptCode, uint32_t flags) const {
         return false;
     }
@@ -104,9 +107,6 @@ private:
     mutable SigHashCache m_sighash_cache;
 
 public:
-    GenericTransactionSignatureChecker(const T *txToIn, unsigned int nInIn,
-                                       const Amount &amountIn)
-        : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
     GenericTransactionSignatureChecker(
         const T *txToIn, unsigned int nInIn, const Amount &amountIn,
         const PrecomputedTransactionData &txdataIn)
@@ -115,6 +115,7 @@ public:
     // The overridden functions are now final.
     bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode,
                   uint32_t flags) const final override;
     bool CheckLockTime(const CScriptNum &nLockTime) const final override;
@@ -146,6 +147,9 @@ private:
     // Number of executed non-push ops
     size_t nOpCount = 0;
 
+    // Opcode position in the executed Script
+    uint32_t opcode_pos = 0;
+
     // true/false stack of nested OP_IF/OP_ELSE/OP_ENDIF
     ConditionStack vfExec;
 
@@ -158,10 +162,21 @@ private:
     // Execution metrics (e.g. for counting sigchecks)
     ScriptExecutionMetrics &metrics;
 
+    // Dummy execution data when none is provided
+    ScriptExecutionData dummy_execdata;
+
+    // Execution data (e.g. for BIP341 sighash)
+    ScriptExecutionData &execdata;
+
     // Last script error
     ScriptError script_error;
 
 public:
+    ScriptInterpreter(std::vector<std::vector<uint8_t>> &stack,
+                      const CScript &script, uint32_t flags,
+                      const BaseSignatureChecker &checker,
+                      ScriptExecutionMetrics &metrics,
+                      ScriptExecutionData &execdata);
     ScriptInterpreter(std::vector<std::vector<uint8_t>> &stack,
                       const CScript &script, uint32_t flags,
                       const BaseSignatureChecker &checker,
@@ -212,13 +227,16 @@ private:
 
 bool EvalScript(std::vector<std::vector<uint8_t>> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptExecutionMetrics &metrics, ScriptError *error = nullptr);
+                ScriptExecutionMetrics &metrics, ScriptExecutionData &execdata,
+                ScriptError *error = nullptr);
 static inline bool EvalScript(std::vector<std::vector<uint8_t>> &stack,
                               const CScript &script, uint32_t flags,
                               const BaseSignatureChecker &checker,
                               ScriptError *error = nullptr) {
     ScriptExecutionMetrics dummymetrics;
-    return EvalScript(stack, script, flags, checker, dummymetrics, error);
+    ScriptExecutionData dummyexecdata{script};
+    return EvalScript(stack, script, flags, checker, dummymetrics,
+                      dummyexecdata, error);
 }
 
 /**

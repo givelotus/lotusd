@@ -51,6 +51,7 @@
 #include <node/caches.h>
 #include <node/chainstate.h>
 #include <node/chainstatemanager_args.h>
+#include <nng_interface/nng_interface.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
 #include <node/mempool_persist_args.h>
@@ -143,7 +144,7 @@ static const bool DEFAULT_PROXYRANDOMIZE = true;
 static const bool DEFAULT_REST_ENABLE = false;
 static constexpr bool DEFAULT_STOPAFTERBLOCKIMPORT{false};
 static constexpr bool DEFAULT_CHRONIK = false;
-static constexpr bool DEFAULT_USEASHADDR = true;
+static constexpr bool DEFAULT_USEASHADDR = false;
 
 #ifdef WIN32
 // Win32 LevelDB doesn't use filedescriptors, and the ones used for accessing
@@ -160,7 +161,7 @@ static const std::string HEADERS_TIME_FILE_NAME{"headerstime.dat"};
 /**
  * The PID file facilities.
  */
-static const char *BITCOIN_PID_FILENAME = "bitcoind.pid";
+static const char *BITCOIN_PID_FILENAME = "lotusd.pid";
 
 static fs::path GetPidFile(const ArgsManager &args) {
     return AbsPathForConfigVal(args,
@@ -304,6 +305,10 @@ void Shutdown(NodeContext &node) {
     if (node.connman) {
         node.connman->Stop();
     }
+
+#if ENABLE_NNG
+    StopNngInterface();
+#endif
 
     StopTorControl();
 
@@ -512,8 +517,12 @@ void SetupServerArgs(NodeContext &node) {
         "-rootcertificates=<file>",
         "-splash",
         "-uiplatform",
-        // TODO remove after the November 2026 upgrade
-        "-mengeractivationtime",
+        "-exodusactivationtime", "-leviticusactivationtime",
+        "-numbersactivationtime", "-deuteronomyactivationtime",
+        "-joshuaactivationtime", "-judgesactivationtime",
+        "-ruthactivationtime", "-firstsamuelactivationtime",
+        "-secondsamuelactivationtime", "-firstkingsactivationtime",
+        "-secondkingsactivationtime",
     };
 
     // Set all of the args and their help
@@ -1329,7 +1338,14 @@ void SetupServerArgs(NodeContext &node) {
         "-acceptnonstdtxn",
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
-            "testnet/regtest only; ", defaultChainParams->RequireStandard()),
+            "testnet/regtest only; ", false),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::NODE_RELAY);
+    argsman.AddArg(
+        "-allownonstdtxnconsensus",
+        strprintf(
+            "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
+            "testnet/regtest only; ", false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
@@ -1338,7 +1354,7 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_MAX_BLOCK_SIZE),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::NODE_RELAY);
-    const auto ticker = Currency::getTicker();
+    const auto &ticker = Currency::get().ticker;
     argsman.AddArg(
         "-dustrelayfee=<amt>",
         strprintf("Fee rate (in %s/kB) used to define dust, the value of an "
@@ -2082,7 +2098,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // Check blockmaxsize does not exceed maximum accepted block size.
     const int64_t nProposedMaxGeneratedBlockSize =
         args.GetIntArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
-    if (nProposedMaxGeneratedBlockSize <= 0) {
+    if (nProposedMaxGeneratedBlockSize <= 0 && args.IsArgSet("-blockmaxsize")) {
         return InitError(_("Max generated block size must be greater than 0"));
     }
     if (uint64_t(nProposedMaxGeneratedBlockSize) > config.GetMaxBlockSize()) {
@@ -2111,6 +2127,18 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         if (!ParseMoney(args.GetArg("-blockmintxfee", ""), n)) {
             return InitError(AmountErrMsg("blockmintxfee",
                                           args.GetArg("-blockmintxfee", "")));
+        }
+    }
+
+    {
+        const bool require_std_policy =
+            !args.GetBoolArg("-acceptnonstdtxn", false);
+        fRequireStandardConsensus =
+            !args.GetBoolArg("-allownonstdtxnconsensus", !require_std_policy);
+        if (!require_std_policy && fRequireStandardConsensus) {
+            return InitError(Untranslated(
+                "-acceptnonstdtxn=1 -allownonstdtxnconsensus=0 is an invalid "
+                "combination"));
         }
     }
 
@@ -2897,10 +2925,13 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                                      node.avalanche.get(), peerman_opts);
     validation_signals.RegisterValidationInterface(node.peerman.get());
 
-    // Encoded addresses using cashaddr instead of base58.
-    // We do this by default to avoid confusion with BTC addresses.
+    // Use XAddress by default; -usecashaddr selects CashAddr.
     config.SetCashAddrEncoding(
         args.GetBoolArg("-usecashaddr", DEFAULT_USEASHADDR));
+
+    // Hidden flag for testing Lotus miner funding.
+    config.SetEnableMinerFund(args.GetBoolArg(
+        "-enableminerfund", chainparams.GetConsensus().enableMinerFund));
 
     // Step 8: load indexers
 
@@ -2954,6 +2985,12 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         if (!chronik::Start(args, config, node, fReindexChronik)) {
             return false;
         }
+    }
+#endif
+
+#if ENABLE_NNG
+    if (!StartNngInterface(node, chainparams.GetConsensus())) {
+        return false;
     }
 #endif
 

@@ -25,7 +25,8 @@ const CChainParams &Params() {
 
 void ReadChainArgs(const ArgsManager &args,
                    CChainParams::ChainOptions &options) {
-    options.ecash = args.GetBoolArg("-ecash", DEFAULT_ECASH);
+    options.ecash = args.GetBoolArg("-ecash", DEFAULT_ECASH) ||
+                    args.GetBoolArg("-useecashprefix", DEFAULT_ECASH);
     // Only relevant for REGTEST
     options.fastprune = args.GetBoolArg("-fastprune", false);
 }

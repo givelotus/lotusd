@@ -1630,7 +1630,7 @@
     <name>WalletView</name>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>אפשרויות:</translation>
@@ -1660,7 +1660,7 @@
         <translation>ריצה כסוכן ברקע וקבלת פקודות</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
+        <source>Lotus</source>
         <translation>ליבת ביטקוין</translation>
     </message>
     <message>

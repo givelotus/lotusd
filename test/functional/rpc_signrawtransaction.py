@@ -242,6 +242,8 @@ class SignRawTransactionsTest(BitcoinTestFramework):
             "ALL|SINGLE|FORKID",
             str(0),
             str(0x20),
+            str(0x21),
+            str(0x64),
         ]
 
         # 1) If the sighash is valid with FORKID, the signature is complete
@@ -257,7 +259,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
         for sighash in no_forkid_sighashes:
             assert_raises_rpc_error(
                 -8,
-                "Signature must use SIGHASH_FORKID",
+                "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS",
                 self.nodes[0].signrawtransactionwithkey,
                 rawTx,
                 privKeys,

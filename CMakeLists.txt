@@ -1,15 +1,15 @@
 # Copyright (c) 2017 The Bitcoin developers
 
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.18)
 
 set(CMAKE_USER_MAKE_RULES_OVERRIDE
 	"${CMAKE_SOURCE_DIR}/cmake/modules/OverrideInitFlags.cmake"
 )
 
-project(bitcoin-abc
-	VERSION 0.34.1
-	DESCRIPTION "Bitcoin ABC is a full node implementation of the eCash protocol."
-	HOMEPAGE_URL "https://www.bitcoinabc.org"
+project(lotus
+	VERSION 11.6.0
+	DESCRIPTION "Lotus is a full node implementation of the Lotus protocol."
+	HOMEPAGE_URL "https://www.givelotus.org"
 )
 
 add_custom_target(print-version
@@ -23,8 +23,8 @@ add_custom_target(print-project-name
 )
 
 # Package information
-set(PACKAGE_NAME "Bitcoin ABC")
-set(PACKAGE_BUGREPORT "https://github.com/Bitcoin-ABC/bitcoin-abc/issues")
+set(PACKAGE_NAME "Lotus")
+set(PACKAGE_BUGREPORT "https://github.com/givelotus/lotus/issues")
 
 # Copyright
 set(COPYRIGHT_YEAR 2026)
@@ -50,7 +50,7 @@ endif()
 # as we need the libraries as well.
 set(CMAKE_PREFIX_PATH_SAVED "${CMAKE_PREFIX_PATH}")
 unset(CMAKE_PREFIX_PATH)
-find_package(Python 3.10 COMPONENTS Interpreter REQUIRED)
+find_package(Python 3.9 COMPONENTS Interpreter REQUIRED)
 set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH_SAVED}")
 
 # Add the magic targets `check-*`

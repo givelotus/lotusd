@@ -20,64 +20,193 @@
 #include <util/chaintype.h>
 #include <validation.h>
 
+#include <test/lcg.h>
 #include <test/util/setup_common.h>
 
 #include <boost/signals2/signal.hpp>
 #include <boost/test/unit_test.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <numeric>
 #include <string>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(validation_tests, TestingSetup)
 
-static void TestBlockSubsidyHalvings(const Consensus::Params &consensusParams) {
-    int maxHalvings = 64;
-    Amount nInitialSubsidy = 50 * COIN;
+// Whether to check all possible nBits in the block subsidy test (takes ~20s)
+#define IS_CHECK_SUBSIDY_EXHAUSTIVE 0
 
-    // for height == 0
-    Amount nPreviousSubsidy = 2 * nInitialSubsidy;
-    BOOST_CHECK_EQUAL(nPreviousSubsidy, 2 * nInitialSubsidy);
-    for (int nHalvings = 0; nHalvings < maxHalvings; nHalvings++) {
-        int nHeight = nHalvings * consensusParams.nSubsidyHalvingInterval;
-        Amount nSubsidy = GetBlockSubsidy(nHeight, consensusParams);
-        BOOST_CHECK(nSubsidy <= nInitialSubsidy);
-        BOOST_CHECK_EQUAL(nSubsidy, nPreviousSubsidy / 2);
-        nPreviousSubsidy = nSubsidy;
-    }
-    BOOST_CHECK_EQUAL(
-        GetBlockSubsidy(maxHalvings * consensusParams.nSubsidyHalvingInterval,
-                        consensusParams),
-        Amount::zero());
+static double ApproxTarget(const uint32_t nBits) {
+    const uint32_t exp = nBits >> 24;
+    double factor = exp > 3 ? pow(256, exp - 3) : 1.0 / pow(256, 3 - exp);
+    return (nBits & 0xff'ff'ff) * factor;
 }
 
-static void TestBlockSubsidyHalvings(int nSubsidyHalvingInterval) {
-    Consensus::Params consensusParams;
-    consensusParams.nSubsidyHalvingInterval = nSubsidyHalvingInterval;
-    TestBlockSubsidyHalvings(consensusParams);
+static void TestBlockSubsidyLogarithmic(const Consensus::Params &params) {
+    const std::vector<std::pair<uint32_t, Amount>> test_cases = {
+        {0x1c100000, 1 * SUBSIDY},
+        {0x1c0fffff, 1 * SUBSIDY + 359 * SATOSHI},
+        {0x1c080000, 2 * SUBSIDY},
+        {0x1c07ffff, 2 * SUBSIDY + 717 * SATOSHI},
+        {0x1c040000, 3 * SUBSIDY},
+        {0x1c03ffff, 3 * SUBSIDY + 1432 * SATOSHI},
+        {0x1c020000, 4 * SUBSIDY},
+        {0x1c01ffff, 4 * SUBSIDY + 2864 * SATOSHI},
+        {0x1c010000, 5 * SUBSIDY},
+        {0x1c00ffff, 5 * SUBSIDY + 5725 * SATOSHI},
+        {0x1c008000, 6 * SUBSIDY},
+        {0x1b7fffff, 6 * SUBSIDY + 47 * SATOSHI},
+        {0x1b400000, 7 * SUBSIDY},
+        {0x1b3fffff, 7 * SUBSIDY + 92 * SATOSHI},
+        {0x1b200000, 8 * SUBSIDY},
+        {0x1b1fffff, 8 * SUBSIDY + 181 * SATOSHI},
+        {0x1b100000, 9 * SUBSIDY},
+        {0x1b0fffff, 9 * SUBSIDY + 359 * SATOSHI},
+        {0x1b080000, 10 * SUBSIDY},
+        {0x1b07ffff, 10 * SUBSIDY + 717 * SATOSHI},
+        {0x1b040000, 11 * SUBSIDY},
+        {0x1b03ffff, 11 * SUBSIDY + 1432 * SATOSHI},
+        {0x1b020000, 12 * SUBSIDY},
+        {0x1b01ffff, 12 * SUBSIDY + 2864 * SATOSHI},
+        {0x1b010000, 13 * SUBSIDY},
+        {0x1b00ffff, 13 * SUBSIDY + 5725 * SATOSHI},
+        {0x1b008000, 14 * SUBSIDY},
+        {0x1a7fffff, 14 * SUBSIDY + 47 * SATOSHI},
+        {0x1a400000, 15 * SUBSIDY},
+        {0x1a3fffff, 15 * SUBSIDY + 92 * SATOSHI},
+        {0x1a200000, 16 * SUBSIDY},
+        {0x18200000, 32 * SUBSIDY},
+        {0x14200000, 64 * SUBSIDY},
+        {0x0c200000, 128 * SUBSIDY},
+        {0x01010000, 221 * SUBSIDY}, // Max possible difficulty
+        {0x1b04864c, int64_t(2'813'774'771) * SATOSHI},  // block 100000 on BTC
+        {0x1a05db8b, int64_t(4'796'920'144) * SATOSHI},  // block 200000 on BTC
+        {0x1900896c, int64_t(7'773'358'358) * SATOSHI},  // block 300000 on BTC
+        {0x1806b99f, int64_t(8'905'116'497) * SATOSHI},  // block 400000 on BTC
+        {0x18009645, int64_t(9'819'833'738) * SATOSHI},  // block 500000 on BTC
+        {0x1715a35c, int64_t(10'546'769'112) * SATOSHI}, // block 600000 on BTC
+        {0x170bef93, int64_t(10'769'920'772) * SATOSHI}, // block 680603 on BTC
+        {0x1000ffff, int64_t(26'260'005'725) * SATOSHI},
+        {0x0500ffff, int64_t(49'140'005'725) * SATOSHI},
+        {0x0300ffff, int64_t(53'300'005'725) * SATOSHI},
+        {0x1c100001, 1 * SUBSIDY}, // for testnet
+        {0x1d00ffff, 1 * SUBSIDY}, // for testnet
+    };
+    for (const auto &pair : test_cases) {
+        const Amount subsidy = GetBlockSubsidy(pair.first, params);
+        BOOST_CHECK_MESSAGE(pair.second == subsidy,
+                            "Subsidy test failed: "
+                                << std::dec << pair.second << " != " << subsidy
+                                << " for 0x" << std::hex << pair.first);
+    }
+#if IS_CHECK_SUBSIDY_EXHAUSTIVE
+    std::vector<uint32_t> test_mantissa_cases(257); // +1 for the rng one
+    std::iota(test_mantissa_cases.begin(), test_mantissa_cases.end() - 1, 0);
+#else
+    std::vector<uint32_t> test_mantissa_cases = {0x00, 0x01, 0x80,
+                                                 0xfe, 0xff, 0};
+#endif
+    MMIXLinearCongruentialGenerator lcg;
+    // check nBits exhaustively
+    for (uint32_t exp = 0x1c; exp >= 0x01; --exp) {
+        double max_rel_error = 0;
+        uint32_t max_rel_error_nBits;
+        double max_abs_error = 0;
+        uint32_t max_abs_error_nBits;
+        for (uint32_t mantissa_upper = 0x7f'ff00; mantissa_upper >= 0x8000;
+             mantissa_upper -= 0x100) {
+            test_mantissa_cases.back() = lcg.next() & 0xff; // last is random
+            for (uint32_t mantissa_lower : test_mantissa_cases) {
+                uint32_t mantissa = mantissa_upper | mantissa_lower;
+                if (exp == 0x1c && mantissa > 0x100000) {
+                    continue;
+                }
+                if (exp == 0x01 && mantissa < 0x10000) {
+                    continue;
+                }
+                uint32_t nBits = (exp << 24) | mantissa;
+                double approx_target = ApproxTarget(nBits);
+                double approx_max_target = ApproxTarget(0x1c100000);
+                double approx_log_difficulty =
+                    log2(approx_max_target) - log2(approx_target);
+                double approx_subsidy =
+                    (SUBSIDY / SATOSHI) * (approx_log_difficulty + 1);
+                double actual_subsidy =
+                    GetBlockSubsidy(nBits, params) / SATOSHI;
+                double abs_error = abs(actual_subsidy - approx_subsidy);
+                double rel_error = abs_error / approx_subsidy;
+                if (abs_error > max_abs_error) {
+                    max_abs_error = abs_error;
+                    max_abs_error_nBits = nBits;
+                }
+                if (rel_error > max_rel_error) {
+                    max_rel_error = rel_error;
+                    max_rel_error_nBits = nBits;
+                }
+            }
+        }
+        constexpr double MAX_EXPECTED_ABS_ERROR = 5.39298629760743;
+        BOOST_CHECK_MESSAGE(
+            max_abs_error < MAX_EXPECTED_ABS_ERROR,
+            strprintf("Subsidy approximation failed, absolute error too large: "
+                      "%.16f >= %.16f, for nBits = %08x",
+                      max_abs_error, MAX_EXPECTED_ABS_ERROR,
+                      max_abs_error_nBits));
+        constexpr double MAX_EXPECTED_REL_ERROR = 0.00000001573502;
+        BOOST_CHECK_MESSAGE(
+            max_rel_error < MAX_EXPECTED_REL_ERROR,
+            strprintf("Subsidy approximation failed, relative error too large: "
+                      "%.16f >= %.16f, for nBits = %08x",
+                      max_rel_error, MAX_EXPECTED_REL_ERROR,
+                      max_rel_error_nBits));
+    }
+}
+
+/**
+ * Make sure the block subsidy is constant.
+ */
+static void TestBlockSubsidyConstant(const Consensus::Params &consensusParams) {
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1d00ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1d008000, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1e7fffff, consensusParams));
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1c2a1115, consensusParams)); // block 50000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1b04864c, consensusParams)); // block 100000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1a05db8b, consensusParams)); // block 200000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1900896c, consensusParams)); // block 300000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1806b99f, consensusParams)); // block 400000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x18009645, consensusParams)); // block 500000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1715a35c, consensusParams)); // block 600000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x170bef93, consensusParams)); // block 680603 on BTC
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1000ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x0500ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x0300ffff, consensusParams));
 }
 
 BOOST_AUTO_TEST_CASE(block_subsidy_test) {
-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    // As in main
-    TestBlockSubsidyHalvings(chainParams->GetConsensus());
-    // As in regtest
-    TestBlockSubsidyHalvings(150);
-    // Just another interval
-    TestBlockSubsidyHalvings(1000);
-}
-
-BOOST_AUTO_TEST_CASE(subsidy_limit_test) {
-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    Amount nSum = Amount::zero();
-    for (int nHeight = 0; nHeight < 14000000; nHeight += 1000) {
-        Amount nSubsidy = GetBlockSubsidy(nHeight, chainParams->GetConsensus());
-        BOOST_CHECK(nSubsidy <= 50 * COIN);
-        nSum += 1000 * nSubsidy;
-        BOOST_CHECK(MoneyRange(nSum));
-    }
-    BOOST_CHECK_EQUAL(nSum, int64_t(2099999997690000LL) * SATOSHI);
+    TestBlockSubsidyLogarithmic(
+        CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus());
+    TestBlockSubsidyLogarithmic(
+        CreateChainParams(*m_node.args, ChainType::TESTNET)->GetConsensus());
+    TestBlockSubsidyConstant(
+        CreateChainParams(*m_node.args, ChainType::REGTEST)->GetConsensus());
 }
 
 static CBlock makeLargeDummyBlock(const size_t num_tx) {
@@ -145,17 +274,18 @@ BOOST_AUTO_TEST_CASE(test_assumeutxo) {
         BOOST_CHECK(!out);
     }
 
+    BOOST_REQUIRE(params->AssumeutxoForHeight(110));
     const auto out110 = *params->AssumeutxoForHeight(110);
     BOOST_CHECK_EQUAL(
         out110.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "c4e3f7ea7405229d1ee4cfb9e432b8f5683a2723e261d96ea05538668c68d1be");
     BOOST_CHECK_EQUAL(out110.m_chain_tx_count, 111U);
 
     const auto out110_2 = *params->AssumeutxoForBlockhash(BlockHash{uint256S(
-        "0x47cfb2b77860d250060e78d3248bb050928765453cbcbdbc121e3c48b99a376c")});
+        "0x1949a902dc57e04562bf5eaffe0f876935d75b156cec9e4374474dbffdc12851")});
     BOOST_CHECK_EQUAL(
         out110_2.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "c4e3f7ea7405229d1ee4cfb9e432b8f5683a2723e261d96ea05538668c68d1be");
     BOOST_CHECK_EQUAL(out110_2.m_chain_tx_count, 111U);
 }
 
@@ -200,35 +330,30 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with a single coinbase tx is mutated if the merkle root is not
-        // equal to the coinbase tx's hash.
+        // equal to Hash(TxHash || TxId).
         block.vtx.push_back(create_coinbase_tx());
         BOOST_CHECK(block.vtx[0]->GetHash() != block.hashMerkleRoot);
         BOOST_CHECK(is_mutated(block));
-        block.hashMerkleRoot = block.vtx[0]->GetHash();
+        block.hashMerkleRoot = BlockMerkleRoot(block);
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with two transactions is mutated if the merkle root does not
-        // match the double sha256 of the concatenation of the two transaction
-        // hashes.
+        // match the Merkle root of the Lotus transaction commitments.
         {
             block.vtx.push_back(MakeTransactionRef(CMutableTransaction{}));
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             BOOST_CHECK(is_not_mutated(block));
         }
 
-        // Block with two transactions is mutated if any node is duplicate.
+        // Duplicate transactions change the root, but Lotus does not use
+        // Bitcoin's duplicate-leaf mutation detection (its tree pads with
+        // zero).
         {
             block.vtx[1] = block.vtx[0];
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
-            BOOST_CHECK(is_mutated(block));
+            block.hashMerkleRoot = BlockMerkleRoot(block);
+            BOOST_CHECK(is_not_mutated(block));
         }
 
         // Blocks with 64-byte coinbase transactions are not considered mutated
@@ -239,7 +364,7 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
             mtx.vout.resize(1);
             mtx.vout[0].scriptPubKey.resize(4);
             block.vtx.push_back(MakeTransactionRef(mtx));
-            block.hashMerkleRoot = block.vtx.back()->GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             assert(block.vtx.back()->IsCoinBase());
             assert(GetSerializeSize(block.vtx.back()) == 64);
         }
@@ -275,10 +400,11 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
             "cdaf22d00002c6a7f848f8ae4d30054e61dcf3303d6fe01d282163341f06feecc1"
             "0032b3160fcab87bdfe3ecfb769206ef2d991b92f8a268e423a6ef4d485f06"));
         {
-            // Verify that double_sha256(txid1||txid2) == txid3
+            // This Bitcoin collision fixture uses raw transaction hashes.
+            // Lotus commits to both TxHash and TxId in each leaf.
             HashWriter hasher;
-            hasher << tx1.GetId();
-            hasher << tx2.GetId();
+            hasher << tx1.GetHash();
+            hasher << tx2.GetHash();
             assert(hasher.GetHash() == tx3.GetHash());
             // Verify that tx3 is 64 bytes in size.
             assert(GetSerializeSize(tx3) == 64);
@@ -296,7 +422,8 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         block.vtx.clear();
         block.vtx.push_back(MakeTransactionRef(tx3));
         BOOST_CHECK(!block.vtx.back()->IsCoinBase());
-        BOOST_CHECK(BlockMerkleRoot(block) == merkle_root);
+        BOOST_CHECK(BlockMerkleRoot(block) != merkle_root);
+        // Lotus detects the changed root before the 64-byte heuristic.
         BOOST_CHECK(is_mutated(block));
     }
 }

@@ -16,7 +16,6 @@
 #include <qt/test/util.h>
 #include <qt/walletmodel.h>
 
-#include <cashaddrenc.h>
 #include <key.h>
 #include <key_io.h>
 #include <wallet/wallet.h>
@@ -83,7 +82,7 @@ void TestAddAddressesToSendBook(interfaces::Node &node) {
             key.GetPubKey(), wallet->m_default_address_type));
 
         return std::make_pair(
-            dest, QString::fromStdString(EncodeCashAddr(dest, Params())));
+            dest, QString::fromStdString(EncodeDestination(dest, Params())));
     };
 
     CTxDestination r_key_dest, s_key_dest;
@@ -223,7 +222,7 @@ void AddressBookTests::addressBookTests() {
         qWarning()
             << "Skipping AddressBookTests on mac build with 'minimal' platform "
                "set due to Qt bugs. To run AppTests, invoke with "
-               "'QT_QPA_PLATFORM=cocoa test_bitcoin-qt' on mac, or else use a "
+               "'QT_QPA_PLATFORM=cocoa test_lotus-qt' on mac, or else use a "
                "linux or windows build.";
         return;
     }

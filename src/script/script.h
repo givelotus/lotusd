@@ -25,7 +25,7 @@
 static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
 
 // Maximum number of non-push operations per script
-static const int MAX_OPS_PER_SCRIPT = 201;
+static const int MAX_OPS_PER_SCRIPT = 400;
 
 // Maximum number of public keys per multisig
 static const int MAX_PUBKEYS_PER_MULTISIG = 20;
@@ -35,6 +35,9 @@ static const int MAX_SCRIPT_SIZE = 10000;
 
 // Maximum number of values on script interpreter stack
 static const int MAX_STACK_SIZE = 1000;
+
+// Maximum number of bytes OP_NUM2BIN can produce
+static const int MAX_NUM2BIN_SIZE = 68;
 
 // Maximum byte size of integers for arithmetic opcodes when interpreting Script
 constexpr size_t MAX_SCRIPTNUM_BYTE_SIZE = 8;
@@ -77,7 +80,7 @@ enum opcodetype {
 
     // control
     OP_NOP = 0x61,
-    OP_VER = 0x62,
+    OP_SCRIPTTYPE = 0x62,
     OP_IF = 0x63,
     OP_NOTIF = 0x64,
     OP_VERIF = 0x65,
@@ -140,8 +143,8 @@ enum opcodetype {
     OP_MUL = 0x95,
     OP_DIV = 0x96,
     OP_MOD = 0x97,
-    OP_LSHIFT = 0x98,
-    OP_RSHIFT = 0x99,
+    OP_RAWLEFTBITSHIFT = 0x98,
+    OP_MULPOW2 = 0x99,
 
     OP_BOOLAND = 0x9a,
     OP_BOOLOR = 0x9b,
@@ -223,19 +226,17 @@ struct scriptnum_encoding_error : public std::runtime_error {
 
 class CScriptNum {
     /**
-     * Numeric opcodes (OP_1ADD, etc) are restricted to operating on 4-byte
-     * integers. The semantics are subtle, though: operands must be in the range
-     * [-2^31 +1...2^31 -1], but results may overflow (and are valid as long as
-     * they are not used in a subsequent numeric operation). CScriptNum enforces
-     * those semantics by storing results as an int64 and allowing out-of-range
-     * values to be returned as a vector of bytes but throwing an exception if
-     * arithmetic is done or the result is interpreted as an integer.
+     * Numeric opcodes (OP_1ADD, etc) are restricted to operating on 8-byte
+     * integers. Both operands and results must be in the range
+     * [-2^63 +1...2^63 -1], throwing an exception otherwise.
      */
 public:
+    static const size_t MAXIMUM_ELEMENT_SIZE = MAX_SCRIPTNUM_BYTE_SIZE;
+
     explicit CScriptNum(const int64_t &n) { m_value = n; }
 
     explicit CScriptNum(const std::vector<uint8_t> &vch, bool fRequireMinimal,
-                        const size_t nMaxNumSize) {
+                        const size_t nMaxNumSize = MAXIMUM_ELEMENT_SIZE) {
         if (vch.size() > nMaxNumSize) {
             throw scriptnum_overflow_error("script number overflow");
         }
@@ -299,6 +300,9 @@ public:
     }
 
     inline CScriptNum operator/(const int64_t &rhs) const {
+        // Sanity check for invalid script num; should never occur
+        assert(m_value != std::numeric_limits<int64_t>::min());
+        assert(rhs != 0);
         return CScriptNum(m_value / rhs);
     }
     inline CScriptNum operator/(const CScriptNum &rhs) const {
@@ -306,6 +310,9 @@ public:
     }
 
     inline CScriptNum operator%(const int64_t &rhs) const {
+        // Sanity check for invalid script num; should never occur
+        assert(m_value != std::numeric_limits<int64_t>::min());
+        assert(rhs != 0);
         return CScriptNum(m_value % rhs);
     }
     inline CScriptNum operator%(const CScriptNum &rhs) const {
@@ -355,6 +362,34 @@ public:
     inline CScriptNum &operator&=(const int64_t &rhs) {
         m_value &= rhs;
         return *this;
+    }
+
+    inline CScriptNum mulpow2(const CScriptNum signed_shift) {
+        if (m_value == 0) {
+            return CScriptNum(0);
+        }
+        const int64_t sign = m_value > 0 ? 1 : -1;
+        // We use unsigned integers for shifts, they have well-defined behavior
+        const uint64_t absval = m_value > 0 ? m_value : -m_value;
+        if (signed_shift.m_value > 0) { // left shift: m_value * 2^shift
+            const uint64_t shift = signed_shift.m_value;
+            if (shift >= 63) {
+                throw scriptnum_overflow_error(
+                    "script number mulpow2 non-zero shift >= 63");
+            }
+            const uint64_t overflow_mask = std::numeric_limits<uint64_t>::max()
+                                           << (63 - shift);
+            if ((absval & overflow_mask) != 0) {
+                throw scriptnum_overflow_error("script number mulpow2 overflow");
+            }
+            return CScriptNum(sign * int64_t(absval << shift));
+        } else { // right shift: m_value * 2^-shift
+            const uint64_t shift = -signed_shift.m_value;
+            if (shift >= 63) {
+                return CScriptNum(0);
+            }
+            return CScriptNum(sign * int64_t(absval >> shift));
+        }
     }
 
     int64_t getint() const { return m_value; }

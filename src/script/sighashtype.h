@@ -12,11 +12,30 @@
 
 /** Signature hash types/flags */
 enum {
+    //! Sign all outputs
     SIGHASH_ALL = 1,
+    //! Sign no outputs
     SIGHASH_NONE = 2,
+    //! Sign the output at the same index as the signed input
     SIGHASH_SINGLE = 3,
-    SIGHASH_FORKID = 0x40,
+    //! Sign only this input, other inputs can be added or removed
     SIGHASH_ANYONECANPAY = 0x80,
+
+    //! Use the original legacy Bitcoin sighash algorim
+    SIGHASH_LEGACY = 0x00,
+    //! Invalid reserved sighash algorithm
+    SIGHASH_RESERVED = 0x20,
+    //! Use the BIP143 sighash algorithm
+    SIGHASH_FORKID = 0x40,
+    //! Use the Lotus sighash algorithm
+    SIGHASH_LOTUS = 0x60,
+
+    //! Bits which specify which sighash algorithm to use
+    SIGHASH_ALGORITHM_MASK = 0x60,
+    //! Bits which currently are not used and must be 0
+    SIGHASH_UNUSED_MASK = 0x1c,
+    //! Bits encoding the output type (ALL, NONE, SINGLE) as well as unused bits
+    SIGHASH_BASE_TYPE_MASK = 0x1f,
 };
 
 /**
@@ -44,16 +63,26 @@ public:
     explicit SigHashType(uint32_t sigHashIn) : sigHash(sigHashIn) {}
 
     SigHashType withBaseType(BaseSigHashType baseSigHashType) const {
-        return SigHashType((sigHash & ~0x1f) | uint32_t(baseSigHashType));
+        return SigHashType((sigHash & ~SIGHASH_BASE_TYPE_MASK) |
+                           uint32_t(baseSigHashType));
     }
 
     SigHashType withForkValue(uint32_t forkId) const {
         return SigHashType((forkId << 8) | (sigHash & 0xff));
     }
 
-    SigHashType withForkId(bool forkId = true) const {
-        return SigHashType((sigHash & ~SIGHASH_FORKID) |
-                           (forkId ? SIGHASH_FORKID : 0));
+    SigHashType withForkId() const {
+        return SigHashType((sigHash & ~SIGHASH_ALGORITHM_MASK) |
+                           SIGHASH_FORKID);
+    }
+
+    SigHashType withLotus() const {
+        return SigHashType((sigHash & ~SIGHASH_ALGORITHM_MASK) |
+                           SIGHASH_LOTUS);
+    }
+
+    SigHashType withAlgorithm(uint32_t algorithm) const {
+        return SigHashType((sigHash & ~SIGHASH_ALGORITHM_MASK) | algorithm);
     }
 
     SigHashType withAnyoneCanPay(bool anyoneCanPay = true) const {
@@ -62,19 +91,49 @@ public:
     }
 
     BaseSigHashType getBaseType() const {
-        return BaseSigHashType(sigHash & 0x1f);
+        return BaseSigHashType(sigHash & SIGHASH_BASE_TYPE_MASK);
     }
 
     uint32_t getForkValue() const { return sigHash >> 8; }
 
+    uint32_t getUnusedBits() const { return sigHash & SIGHASH_UNUSED_MASK; }
+
     bool isDefined() const {
-        auto baseType =
-            BaseSigHashType(sigHash & ~(SIGHASH_FORKID | SIGHASH_ANYONECANPAY));
-        return baseType >= BaseSigHashType::ALL &&
-               baseType <= BaseSigHashType::SINGLE;
+        BaseSigHashType baseType = getBaseType();
+        switch (baseType) {
+            case BaseSigHashType::ALL:
+            case BaseSigHashType::NONE:
+            case BaseSigHashType::SINGLE:
+                break;
+            default:
+                return false;
+        }
+        switch (sigHash & SIGHASH_ALGORITHM_MASK) {
+            case SIGHASH_LEGACY:
+            case SIGHASH_FORKID:
+            case SIGHASH_LOTUS:
+                break;
+            default:
+                return false;
+        }
+        return true;
     }
 
-    bool hasForkId() const { return (sigHash & SIGHASH_FORKID) != 0; }
+    bool isLegacy() const {
+        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_LEGACY;
+    }
+
+    bool isReserved() const {
+        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_RESERVED;
+    }
+
+    bool hasForkId() const {
+        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_FORKID;
+    }
+
+    bool hasLotus() const {
+        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_LOTUS;
+    }
 
     bool hasAnyoneCanPay() const {
         return (sigHash & SIGHASH_ANYONECANPAY) != 0;

@@ -595,7 +595,10 @@ BOOST_AUTO_TEST_CASE(remove_for_finalized_block) {
     Package txs;
     txs.reserve(100);
     for (size_t i = 0; i < 100; i++) {
-        CTransactionRef tx = make_tx({int64_t(i + 1) * COIN});
+        CMutableTransaction padded_tx{*make_tx({int64_t(i + 1) * COIN})};
+        padded_tx.vin.resize(1);
+        padded_tx.vin[0].scriptSig << std::vector<uint8_t>(MIN_TX_SIZE);
+        CTransactionRef tx = MakeTransactionRef(padded_tx);
         const TxId &txid = tx->GetId();
         auto mempoolEntry = entry.Fee(1000 * SATOSHI).FromTx(tx);
 
@@ -679,7 +682,7 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
 
     // Fake chain tip
     CBlockIndex active_chain_tip;
-    active_chain_tip.nHeight = params.wellingtonHeight;
+    active_chain_tip.nHeight = 1000;
 
     std::array<CBlockIndex, 12> blocks;
     for (size_t i = 0; i < blocks.size(); ++i) {
@@ -770,12 +773,52 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
         checkTx(bad_tx, good_tx, "bad-txns-undersize");
     }
 
-    // Transaction version is 3
+    // Lotus does not adopt eCash's Wellington transaction version restriction.
     {
-        CMutableTransaction bad_tx{good_tx};
-        bad_tx.nVersion = 3;
-        checkTx(bad_tx, good_tx, "bad-txns-version");
+        CMutableTransaction tx{good_tx};
+        tx.nVersion = 3;
+        auto tx_entry = entry.Fee(1000 * SATOSHI).FromTx(tx);
+        TxValidationState state;
+        BOOST_CHECK(ContextualCheckTransactionForCurrentBlock(
+            active_chain_tip, params, tx_entry->GetTx(), state));
+        mempool.addUnchecked(tx_entry);
+        std::vector<TxId> finalizedTxIds;
+        BOOST_CHECK(mempool.setAvalancheFinalized(
+            tx_entry, params, active_chain_tip,
+            m_node.chainman->ActiveChainstate(), finalizedTxIds));
+        BOOST_CHECK_EQUAL(finalizedTxIds.size(), 1);
+        mempool.clear(/*include_finalized_txs=*/true);
     }
+}
+
+BOOST_AUTO_TEST_CASE(long_chain_accepted) {
+    // Verify that chains longer than the old 50-tx ancestor/descendant limit
+    // are accepted into the mempool.  The O(n log n) mining algorithm (patch 29)
+    // reads no pre-computed CPFP fields, so there is no O(n²) DoS justification
+    // for a chain-length cap.  Build a strictly linear chain of 100 transactions
+    // each spending the single output of the previous one and verify all land
+    // in the mempool.
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    LOCK2(cs_main, m_node.mempool->cs);
+
+    CMutableTransaction first;
+    first.vin.resize(1);
+    first.vin[0].scriptSig = CScript();
+    first.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(first));
+
+    TxId prevId = first.GetId();
+    for (int i = 1; i < 100; i++) {
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].prevout = COutPoint(prevId, 0);
+        tx.vout.emplace_back(9000 * SATOSHI, CScript() << OP_TRUE);
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        prevId = tx.GetId();
+    }
+
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 100UL);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

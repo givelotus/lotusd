@@ -2666,7 +2666,7 @@ static RPCHelpMan loadwallet() {
         "loadwallet",
         "Loads a wallet from a wallet file or directory."
         "\nNote that all wallet command-line options used when starting "
-        "bitcoind will be"
+        "lotusd will be"
         "\napplied to the new wallet (eg -rescan, etc).\n",
         {
             {"filename", RPCArg::Type::STR, RPCArg::Optional::NO,
@@ -3199,6 +3199,7 @@ static RPCHelpMan listunspent() {
 
                 UniValue entry(UniValue::VOBJ);
                 entry.pushKV("txid", out.tx->GetId().GetHex());
+                entry.pushKV("hash", out.tx->GetHash().GetHex());
                 entry.pushKV("vout", out.i);
 
                 if (fValidAddress) {
@@ -3663,9 +3664,10 @@ RPCHelpMan signrawtransactionwithwallet() {
             ParsePrevouts(request.params[1], nullptr, coins);
 
             SigHashType nHashType = ParseSighashString(request.params[2]);
-            if (!nHashType.hasForkId()) {
-                throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                   "Signature must use SIGHASH_FORKID");
+            if (!nHashType.hasForkId() && !nHashType.hasLotus()) {
+                throw JSONRPCError(
+                    RPC_INVALID_PARAMETER,
+                    "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS");
             }
 
             // Script verification errors
@@ -3872,6 +3874,12 @@ public:
         if (provider && provider->GetCScript(scriptID, subscript)) {
             ProcessSubScript(subscript, obj);
         }
+        return obj;
+    }
+
+    UniValue operator()(const Taproot &dest) const {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("commitment", HexStr(dest.GetCommitment()));
         return obj;
     }
 };
@@ -4603,9 +4611,10 @@ static RPCHelpMan walletprocesspsbt() {
 
             // Get the sighash type
             SigHashType nHashType = ParseSighashString(request.params[2]);
-            if (!nHashType.hasForkId()) {
-                throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                   "Signature must use SIGHASH_FORKID");
+            if (!nHashType.hasForkId() && !nHashType.hasLotus()) {
+                throw JSONRPCError(
+                    RPC_INVALID_PARAMETER,
+                    "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS");
             }
 
             // Fill transaction with our data and also sign

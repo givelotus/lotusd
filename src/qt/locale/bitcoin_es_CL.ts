@@ -750,7 +750,7 @@
     <name>WalletView</name>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Opciones:
@@ -772,7 +772,7 @@
 </translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
+        <source>Lotus</source>
         <translation>bitcoin abc</translation>
     </message>
     <message>

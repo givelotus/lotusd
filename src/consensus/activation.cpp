@@ -8,122 +8,110 @@
 #include <common/args.h>
 #include <consensus/params.h>
 
-bool IsUAHFenabled(const Consensus::Params &params, int nHeight) {
-    return nHeight >= params.uahfHeight;
+bool IsExodusEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-exodusactivationtime", params.exodusActivationTime);
 }
 
-bool IsUAHFenabled(const Consensus::Params &params,
+bool IsLeviticusEnabled(const Consensus::Params &params,
+                        const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-leviticusactivationtime", params.leviticusActivationTime);
+}
+
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const int64_t nMedianTimePast) {
+    return nMedianTimePast >=
+           gArgs.GetIntArg("-numbersactivationtime", params.numbersActivationTime);
+}
+
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return IsNumbersEnabled(params, pindexPrev->GetMedianTimePast());
+}
+
+bool IsDeuteronomyEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-deuteronomyactivationtime", params.deuteronomyActivationTime);
+}
+
+bool IsJoshuaEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-joshuaactivationtime", params.joshuaActivationTime);
+}
+
+bool IsJudgesEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-judgesactivationtime", params.judgesActivationTime);
+}
+
+bool IsRuthEnabled(const Consensus::Params &params,
                    const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
 
-    return IsUAHFenabled(params, pindexPrev->nHeight);
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-ruthactivationtime", params.ruthActivationTime);
 }
 
-bool IsDAAEnabled(const Consensus::Params &params, int nHeight) {
-    return nHeight >= params.daaHeight;
-}
-
-bool IsDAAEnabled(const Consensus::Params &params,
-                  const CBlockIndex *pindexPrev) {
+bool IsFirstSamuelEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
 
-    return IsDAAEnabled(params, pindexPrev->nHeight);
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-firstsamuelactivationtime",
+                           params.firstSamuelActivationTime);
 }
 
-bool IsMagneticAnomalyEnabled(const Consensus::Params &params,
-                              int32_t nHeight) {
-    return nHeight >= params.magneticAnomalyHeight;
-}
-
-bool IsMagneticAnomalyEnabled(const Consensus::Params &params,
-                              const CBlockIndex *pindexPrev) {
+bool IsSecondSamuelEnabled(const Consensus::Params &params,
+                           const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
 
-    return IsMagneticAnomalyEnabled(params, pindexPrev->nHeight);
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-secondsamuelactivationtime",
+                           params.secondSamuelActivationTime);
 }
 
-static bool IsGravitonEnabled(const Consensus::Params &params,
-                              int32_t nHeight) {
-    return nHeight >= params.gravitonHeight;
-}
-
-bool IsGravitonEnabled(const Consensus::Params &params,
-                       const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsGravitonEnabled(params, pindexPrev->nHeight);
-}
-
-static bool IsPhononEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.phononHeight;
-}
-
-bool IsPhononEnabled(const Consensus::Params &params,
-                     const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsPhononEnabled(params, pindexPrev->nHeight);
-}
-
-static bool IsAxionEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.axionHeight;
-}
-
-bool IsAxionEnabled(const Consensus::Params &params,
-                    const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsAxionEnabled(params, pindexPrev->nHeight);
-}
-
-bool IsWellingtonEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.wellingtonHeight;
-}
-
-bool IsWellingtonEnabled(const Consensus::Params &params,
+bool IsFirstKingsEnabled(const Consensus::Params &params,
                          const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
 
-    return IsWellingtonEnabled(params, pindexPrev->nHeight);
-}
-
-bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.cowperthwaiteHeight;
-}
-
-bool IsCowperthwaiteEnabled(const Consensus::Params &params,
-                            const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsCowperthwaiteEnabled(params, pindexPrev->nHeight);
-}
-
-bool IsMengerEnabled(const Consensus::Params &params, int64_t nMedianTimePast) {
-    return nMedianTimePast >= gArgs.GetIntArg("-mengeractivationtime",
-                                              params.mengerActivationTime);
-}
-
-bool IsMengerEnabled(const Consensus::Params &params,
-                     const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsMengerEnabled(params, pindexPrev->GetMedianTimePast());
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-firstkingsactivationtime",
+                           params.firstKingsActivationTime);
 }

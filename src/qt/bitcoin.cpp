@@ -278,7 +278,7 @@ void BitcoinABC::shutdown() {
 }
 
 static int qt_argc = 1;
-static const char *qt_argv = "bitcoin-qt";
+static const char *qt_argv = "lotus-qt";
 
 BitcoinApplication::BitcoinApplication()
     : QApplication(qt_argc, const_cast<char **>(&qt_argv)), coreThread(nullptr),
@@ -708,7 +708,7 @@ int GuiMain(int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
-    /// 6-7. Parse bitcoin.conf, determine network, switch to network specific
+    /// 6-7. Parse lotus.conf, determine network, switch to network specific
     /// options, and create datadir and settings.json.
     // - Do not call gArgs.GetDataDirNet() before this step finishes
     // - Do not call Params() before this step

@@ -89,7 +89,12 @@ CBlock BuildChainTestingSetup::CreateBlock(
             .CreateNewBlock(scriptPubKey);
     CBlock &block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
-    block.nTime = prev->nTime + 1;
+    block.SetBlockTime(prev->nTime + 1);
+    block.nHeight = prev->nHeight + 1;
+    CMutableTransaction txCoinbase(*block.vtx[0]);
+    txCoinbase.vout[0].scriptPubKey = CScript() << OP_RETURN << COINBASE_PREFIX
+                                                << block.nHeight;
+    block.vtx[0] = MakeTransactionRef(std::move(txCoinbase));
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);
@@ -97,6 +102,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
         block.vtx.push_back(MakeTransactionRef(tx));
     }
     createCoinbaseAndMerkleRoot(&block, prev, config.GetMaxBlockSize());
+    block.SetSize(::GetSerializeSize(block));
 
     while (!CheckProofOfWork(block.GetHash(), block.nBits,
                              config.GetChainParams().GetConsensus())) {

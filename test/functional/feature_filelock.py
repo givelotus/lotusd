@@ -1,7 +1,7 @@
 # Copyright (c) 2018 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Check that it's not possible to start a second bitcoind instance using the same datadir or wallet."""
+"""Check that it's not possible to start a second lotusd instance using the same datadir or wallet."""
 
 import os
 

@@ -29,7 +29,7 @@ Start three nodes:
       isn't buried by at least two weeks' work.
 """
 
-from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase
+from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase, prepare_block
 from test_framework.key import ECKey
 from test_framework.messages import (
     CBlockHeader,
@@ -46,6 +46,8 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
+required_args = ["-allownonstdtxnconsensus=1"]
+
 
 class BaseNode(P2PInterface):
     def send_header_for_blocks(self, new_blocks):
@@ -60,9 +62,10 @@ class AssumeValidTest(BitcoinTestFramework):
         self.num_nodes = 3
         # Need a bit of extra time when running with the thread sanitizer
         self.rpc_timeout = 120
+        self.extra_args = [required_args]
 
     def setup_network(self):
-        self.add_nodes(3)
+        self.add_nodes(3, [required_args]*3)
         # Start node0. We don't start the other nodes yet since
         # we need to pre-mine a block with an invalid transaction
         # signature so we can pass in the block hash as assumevalid.
@@ -98,9 +101,10 @@ class AssumeValidTest(BitcoinTestFramework):
         block = create_block(
             self.tip, create_coinbase(height, coinbase_pubkey), self.block_time
         )
+        block.nHeight = height
         self.blocks.append(block)
         self.block_time += 1
-        block.solve()
+        prepare_block(block)
         # Save the coinbase for later
         self.block1 = block
         self.tip = block.hash_int
@@ -109,7 +113,8 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the block 100 deep so the coinbase output is spendable
         for _ in range(COINBASE_MATURITY):
             block = create_block(self.tip, create_coinbase(height), self.block_time)
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             self.blocks.append(block)
             self.tip = block.hash_int
             self.block_time += 1
@@ -123,21 +128,24 @@ class AssumeValidTest(BitcoinTestFramework):
         pad_tx(tx)
 
         block102 = create_block(
-            self.tip, create_coinbase(height), self.block_time, txlist=[tx]
+            self.tip, create_coinbase(height), self.block_time
         )
+        block102.nHeight = height
         self.block_time += 1
-        block102.solve()
+        block102.vtx.extend([tx])
+        prepare_block(block102)
         self.blocks.append(block102)
         self.tip = block102.hash_int
         self.block_time += 1
         height += 1
 
-        # Bury the assumed valid block 2100 deep
-        for _ in range(2100):
+        # Bury the assumed valid block 3400 deep
+        for _ in range(3700):
             block = create_block(
-                self.tip, create_coinbase(height), self.block_time, version=4
+                self.tip, create_coinbase(height), self.block_time
             )
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             self.blocks.append(block)
             self.tip = block.hash_int
             self.block_time += 1
@@ -145,8 +153,8 @@ class AssumeValidTest(BitcoinTestFramework):
 
         # Start node1 and node2 with assumevalid so they accept a block with a
         # bad signature.
-        self.start_node(1, extra_args=[f"-assumevalid={block102.hash_hex}"])
-        self.start_node(2, extra_args=[f"-assumevalid={block102.hash_hex}"])
+        self.start_node(1, extra_args=[f"-assumevalid={block102.hash_hex}"] + required_args)
+        self.start_node(2, extra_args=[f"-assumevalid={block102.hash_hex}"] + required_args)
 
         def wait_for_header_sync(node, height):
             expected = {
@@ -175,13 +183,13 @@ class AssumeValidTest(BitcoinTestFramework):
         wait_for_header_sync(self.nodes[1], 2202)
 
         # Send all blocks to node1. All blocks will be accepted.
-        for i in range(2202):
+        for i in range(3802):
             p2p1.send_without_ping(msg_block(self.blocks[i]))
         # Syncing 2200 blocks can take a while on slow systems. Give it plenty
         # of time to sync.
         p2p1.sync_with_ping(960)
         assert_equal(
-            self.nodes[1].getblock(self.nodes[1].getbestblockhash())["height"], 2202
+            self.nodes[1].getblock(self.nodes[1].getbestblockhash())["height"], 3802
         )
 
         p2p2 = self.nodes[2].add_p2p_connection(BaseNode())

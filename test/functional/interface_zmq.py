@@ -3,6 +3,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the ZMQ notification interface."""
 
+import hashlib
 import os
 import struct
 import tempfile
@@ -24,6 +25,15 @@ except ImportError:
 
 def hash256_reversed(byte_str):
     return hash256(byte_str)[::-1]
+
+
+def block_hash_reversed(blk_hdr):
+    layer2_offset = 32
+    layer3_offset = layer2_offset + 20
+    layer3_hash = hashlib.sha256(blk_hdr[layer3_offset:]).digest()
+    layer2_hash = hashlib.sha256(blk_hdr[layer2_offset:layer3_offset] + layer3_hash).digest()
+    layer1_hash = hashlib.sha256(blk_hdr[:layer2_offset] + layer2_hash).digest()
+    return layer1_hash[::-1]
 
 
 class ZMQSubscriber:
@@ -100,7 +110,7 @@ class ZMQTest(BitcoinTestFramework):
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_py3_zmq()
-        self.skip_if_no_bitcoind_zmq()
+        self.skip_if_no_lotusd_zmq()
 
     def run_test(self):
         self.ctx = zmq.Context()
@@ -182,7 +192,7 @@ class ZMQTest(BitcoinTestFramework):
         # Invalid zmq arguments don't take down the node, see #17185.
         self.restart_node(0, ["-zmqpubrawtx=foo", "-zmqpubhashtx=bar"])
 
-        address = "tcp://127.0.0.1:28332"
+        address = "tcp://127.0.0.1:13604"
 
         if unix:
             # Use the shortest temp path possible since paths may have as little as 92-char limit
@@ -216,7 +226,7 @@ class ZMQTest(BitcoinTestFramework):
 
             # Should receive the generated raw block.
             block = rawblock.receive()
-            assert_equal(genhashes[x], hash256_reversed(block[:80]).hex())
+            assert_equal(genhashes[x], block_hash_reversed(block[:160]).hex())
 
             # Should receive the generated block hash.
             blockhash = hashblock.receive().hex()

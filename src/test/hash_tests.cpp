@@ -224,4 +224,67 @@ BOOST_AUTO_TEST_CASE(sh256_tests) {
         "c106db19d4edecf66721ff6459e43ca339603e0c9326c0e5b83806d2616a8d24");
 }
 
+BOOST_AUTO_TEST_CASE(sha256uint256_tests) {
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("00000000000000000000000000000000000000000000000"
+                               "00000000000000000")),
+        uint256S("25295f0d1d592a90b333e26e85149708208e9f8e8bc18f6c77bd62f8ad7a6"
+                 "866"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("0123456789abcdef0123456789abcdef0123456789abcde"
+                               "f0123456789abcdef")),
+        uint256S("8947da2b8e453d7c31900c9113891b730c5d4d7a84b332902051d026575fc"
+                 "150"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("f17bc115754b0d900491da9715901538578803db10df2c3"
+                               "b9b61558f69907bbe")),
+        uint256S("22858d3cabd4baf35a7432c470c21e338aca3e2de2e6b104eff6d179528b9"
+                 "5ff"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("6dd6c5716cc8e24313f619bab92ad24981f54ff7e24173a"
+                               "093f45f801e0342af")),
+        uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce"
+                 "26f"));
+}
+
+BOOST_AUTO_TEST_CASE(hashwriter_single_sha256_tests) {
+    HashWriter h0{};
+    BOOST_CHECK_EQUAL(h0.GetSHA256(),
+                      uint256S("55b852781b9995a44c939b64e441ae2724b96f99c8f4fb9"
+                               "a141cfc9842c4b0e3"));
+
+    HashWriter h1{};
+    h1 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("e5726c3a31e47d6f3bf20d001f4d97613dd32fdfb4d9b1f"
+                               "34b365562594ab526"));
+
+    HashWriter h2{};
+    h2 << uint256S(
+        "6dd6c5716cc8e24313f619bab92ad24981f54ff7e24173a093f45f801e0342af");
+    BOOST_CHECK_EQUAL(h2.GetSHA256(),
+                      uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c"
+                               "172b3f1b60a8ce26f"));
+}
+
+BOOST_AUTO_TEST_CASE(tagged_hash) {
+    HashWriter h0 = TaggedHash("Tag");
+
+    BOOST_CHECK_EQUAL(h0.GetSHA256(),
+                      uint256S("566f4fc53cd1851d741b6c466fbb120ec14ae33cd4a3a37"
+                               "961df6fd0eff39a25"));
+
+    HashWriter h1 = TaggedHash("Tag");
+    h1 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("3f77201593bdfe9f54cabdd32080314a052a84ea23fc145"
+                               "bec9ff382829c1e64"));
+
+    HashWriter h2 = TaggedHash("Tag2");
+    h2 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("3749acbe03c67471510ccd50f3a1d920ca300f6057bb97d"
+                               "4565847857fca06ea"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

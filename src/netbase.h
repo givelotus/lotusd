@@ -188,7 +188,7 @@ LookupHost(const std::string &name, bool fAllowLookup,
  * @param name    The string representing a service. Could be a name or a
  *                numerical IP address (IPv6 addresses should be in their
  *                disambiguated bracketed form), optionally followed by a
- * uint16_t port number. (e.g. example.com:8333 or
+ * uint16_t port number. (e.g. example.com:10605 or
  *                [2001:db8:85a3:8d3:1319:8a2e:370:7348]:420)
  * @param portDefault The default port for resulting services if not specified
  *                    by the service string.

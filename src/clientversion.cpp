@@ -13,10 +13,10 @@
 
 /**
  * Name of client reported in the 'version' message. Report the same name
- * for both bitcoind and bitcoin-qt, to make it harder for attackers to
+ * for both lotusd and lotus-qt, to make it harder for attackers to
  * target servers or GUI users specifically.
  */
-const std::string CLIENT_NAME("Bitcoin ABC");
+const std::string CLIENT_NAME("lotusd");
 
 #ifdef HAVE_BUILD_INFO
 #include <obj/build.h>
@@ -92,8 +92,8 @@ std::string CopyrightHolders(const std::string &strPrefix) {
 
 std::string LicenseInfo() {
     const std::string URL_SOURCE_CODE =
-        "<https://github.com/Bitcoin-ABC/bitcoin-abc>";
-    const std::string URL_WEBSITE = "<https://www.bitcoinabc.org>";
+        "<https://github.com/givelotus/lotus>";
+    const std::string URL_WEBSITE = "<https://www.givelotus.org>";
 
     return CopyrightHolders(strprintf(_("Copyright (C) %i-%i").translated, 2009,
                                       COPYRIGHT_YEAR) +

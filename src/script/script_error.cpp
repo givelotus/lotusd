@@ -104,9 +104,33 @@ std::string ScriptErrorString(const ScriptError serror) {
         case ScriptError::ILLEGAL_FORKID:
             return "Illegal use of SIGHASH_FORKID";
         case ScriptError::MUST_USE_FORKID:
-            return "Signature must use SIGHASH_FORKID";
+            return "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS";
+        case ScriptError::INVALID_NUM2BIN_SIZE:
+            return "OP_NUM2BIN size limit exceeded";
         case ScriptError::SIGCHECKS_LIMIT_EXCEEDED:
             return "Validation resources exceeded (SigChecks)";
+        case ScriptError::INVALID_OP_SCRIPTTYPE:
+            return "Marker opcode OP_SCRIPTTYPE cannot be executed";
+        case ScriptError::SCRIPTTYPE_INVALID_TYPE:
+            return "Script type specified after OP_SCRIPTTYPE is invalid";
+        case ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT:
+            return "Malformed OP_SCRIPTTYPE script";
+        case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH:
+            return "Taproot key spend signatures must use SIGHASH_LOTUS";
+        case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG:
+            return "Taproot key spend signature must be Schnorr";
+        case ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED:
+            return "Invalid Taproot key spend signature";
+        case ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED:
+            return "BIP341-style taproot annex (0x50) not supported";
+        case ScriptError::TAPROOT_WRONG_CONTROL_SIZE:
+            return "Control block needs to be of length 33 + 32n";
+        case ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED:
+            return "Taproot control does not verify the script";
+        case ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED:
+            return "Unsupported taproot script leaf version";
+        case ScriptError::TAPROOT_PHASEOUT:
+            return "Taproot is being phased out";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

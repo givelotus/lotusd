@@ -6,7 +6,7 @@
 Test that the DERSIG soft-fork activates at (regtest) height 1251.
 """
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import msg_block
 from test_framework.p2p import P2PInterface
 from test_framework.script import CScript
@@ -38,6 +38,7 @@ def unDERify(tx):
 class BIP66Test(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
+        self.extra_args = [['-allownonstdtxnconsensus=1']]
         self.noban_tx_relay = True
         self.setup_clean_chain = True
         self.rpc_timeout = 240
@@ -56,25 +57,15 @@ class BIP66Test(BitcoinTestFramework):
             for b in self.generate(self.miniwallet, DERSIG_HEIGHT - 1)
         ]
 
-        self.log.info("Test that blocks must now be at least version 3")
-        tip = self.nodes[0].getbestblockhash()
-        block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
-        block = create_block(
-            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time, version=2
-        )
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(
-            expected_msgs=[f"{block.hash_hex}, bad-version(0x00000002)"]
-        ):
-            peer.send_and_ping(msg_block(block))
-            assert_equal(self.nodes[0].getbestblockhash(), tip)
-            peer.sync_with_ping()
-
         self.log.info(
             "Test that transactions with non-DER signatures cannot appear in a block"
         )
-        block.nVersion = 3
+        tip = self.nodes[0].getbestblockhash()
+        block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
+        block = create_block(
+            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time
+        )
+        block.nHeight = DERSIG_HEIGHT
 
         coin_txid = self.coinbase_txids[1]
         spendtx = self.create_tx(coin_txid)
@@ -94,7 +85,7 @@ class BIP66Test(BitcoinTestFramework):
                     ),
                     "reject-details": (
                         "mandatory-script-verify-flag-failed (Non-canonical DER signature), "
-                        f"input 0 of {spendtx_txid}, spending {coin_txid}:0"
+                        f"input 0 of {spendtx_txid}, spending {coin_txid}:1"
                     ),
                 }
             ],
@@ -105,8 +96,7 @@ class BIP66Test(BitcoinTestFramework):
 
         # Now we verify that a block with this transaction is also invalid.
         block.vtx.append(spendtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         with self.nodes[0].assert_debug_log(
             expected_msgs=[

@@ -22,6 +22,7 @@
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/amount.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/tx_check.h>
 #include <consensus/tx_verify.h>
@@ -33,10 +34,7 @@
 #include <minerfund.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
-#include <policy/block/minerfund.h>
-#include <policy/block/preconsensus.h>
-#include <policy/block/rtt.h>
-#include <policy/block/stakingrewards.h>
+#include <policy/block/parkingpolicy.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -47,6 +45,7 @@
 #include <script/script.h>
 #include <script/scriptcache.h>
 #include <script/sigcache.h>
+#include <script/taproot.h>
 #include <tinyformat.h>
 #include <txdb.h>
 #include <txmempool.h>
@@ -54,6 +53,7 @@
 #include <util/check.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
+#include <util/intmath.h>
 #include <util/signalinterrupt.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -113,10 +113,11 @@ static constexpr uint64_t HEADERS_TIME_VERSION{1};
 GlobalMutex g_best_block_mutex;
 std::condition_variable g_best_block_cv;
 const CBlockIndex *g_best_block;
+bool fRequireStandardConsensus = true;
 
 BlockValidationOptions::BlockValidationOptions(const Config &config)
     : excessiveBlockSize(config.GetMaxBlockSize()), checkPoW(true),
-      checkMerkleRoot(true) {}
+      checkMerkleRoot(true), enableMinerFund(config.EnableMinerFund()) {}
 
 const CBlockIndex *
 Chainstate::FindForkInGlobalIndex(const CBlockLocator &locator) const {
@@ -226,7 +227,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.sandersActivationTime);
+           activation_time.value_or(params.secondKingsActivationTime);
 }
 
 /**
@@ -597,13 +598,23 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
         return false;
     }
 
-    // Rather not work on nonstandard transactions (unless -testnet)
+    // Rather not work on nonstandard transactions
     std::string reason;
     if (m_pool.m_opts.require_standard &&
         !IsStandardTx(tx, m_pool.m_opts.max_datacarrier_bytes,
                       m_pool.m_opts.permit_bare_multisig,
                       m_pool.m_opts.dust_relay_feerate, reason)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
+
+    // Taproot is phased out until Second Samuel activation
+    if (m_pool.m_opts.require_standard &&
+        !IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
+                               m_active_chainstate.m_chain.Tip())) {
+        if (TxHasPayToTaproot(tx)) {
+            return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
+                                 "bad-taproot-phased-out");
+        }
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next
@@ -629,12 +640,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     // Check for conflicts with in-memory transactions
     for (const CTxIn &txin : tx.vin) {
         if (const auto ptxConflicting = m_pool.GetConflictTx(txin.prevout)) {
-            if (m_pool.isAvalancheFinalizedPreConsensus(
-                    ptxConflicting->GetId())) {
-                return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                     "finalized-tx-conflict");
-            }
-
             return state.Invalid(
                 TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
                 "txn-mempool-conflict");
@@ -726,10 +731,22 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     unsigned int nSize = tx.GetTotalSize();
 
+    uint32_t extraFlags = m_pool.m_opts.require_standard
+                              ? STANDARD_SCRIPT_VERIFY_FLAGS
+                              : MANDATORY_SCRIPT_VERIFY_FLAGS;
+
+    // After Second Samuel, we enable Taproot and SIGHASH_LOTUS
+    if (m_pool.m_opts.require_standard &&
+        IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
+                              m_active_chainstate.m_chain.Tip())) {
+        extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+    }
+
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
-        ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
-    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
+        ws.m_next_block_script_verify_flags | extraFlags;
+    ws.m_precomputed_txdata =
+        PrecomputedTransactionData::FromCoinsView(tx, m_view);
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false,
                            ws.m_precomputed_txdata, GetValidationCache(),
                            ws.m_sig_checks_standard)) {
@@ -1484,17 +1501,73 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
     return result;
 }
 
-Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
-    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
-    // Force block reward to zero when right shift is undefined.
-    if (halvings >= 64) {
-        return Amount::zero();
+Amount GetBlockSubsidy(uint32_t nBits,
+                       const Consensus::Params &consensusParams) {
+    static constexpr int64_t SUBSIDY_INT = SUBSIDY / SATOSHI;
+    // Always cap on regtest, and sometimes we need to cap on testnet.
+    if (!consensusParams.enableDifficultyBasedSubsidy || nBits > 0x1c100000) {
+        return SUBSIDY;
     }
+    // We define:
+    // R: Reward
+    // D: Difficulty
+    // T: Target
+    // Tm: Max Target
+    // a: Base subsidy
 
-    Amount nSubsidy = 50 * COIN;
-    // Subsidy is cut in half every 210,000 blocks which will occur
-    // approximately every 4 years.
-    return ((nSubsidy / SATOSHI) >> halvings) * SATOSHI;
+    // In Lotus, the reward R = a*log(D)
+    // R = a*log(Tm / T) = a*log(Tm) - a*log(T)
+
+    // We get the target by decomposing nBits:
+    // T = mantissa * 2^(exp - 3)
+
+    // The log of that cancels out the 2^x
+    // log(T) = log(mantissa) + exp - 3
+
+    // We can approximate log(x) using Log2FixedPoint.
+    // log(x) = Log2FixedPoint(2^b * x) / 2^b, where b is the precision.
+    // We use 27 bits for the precision, as this results in the higest accuracy.
+    static constexpr int64_t PRECISION_BITS = 27;
+
+    static constexpr int64_t LOG_MAX_TARGET = 220;
+    const int64_t exp = nBits >> 24;
+    const uint32_t mantissa = (nBits & 0x007fffff);
+    // First check in ContextualCheckBlockHeader ensures this (since nBits have
+    // to match exactly, enforcing canonical encoding)
+    assert(mantissa >= 0x8000);
+
+    // Compute a*log(nMantissa)
+    // We re-interpret mantissa as fixed point number with 27 bits in the
+    // fractional part, this is like dividing mantissa by 2^27.
+    // We correct for this later.
+    const int64_t logMantissaFixedPoint =
+        Log2FixedPoint(mantissa, PRECISION_BITS);
+
+    // Multiply by SUBSIDY before going back from fixed point to keep the
+    // precision. Otherwise, we only increase in SUBSIDY steps.
+    const int64_t aLogMantissaUncorrected =
+        (SUBSIDY_INT * logMantissaFixedPoint) >> PRECISION_BITS;
+
+    // We need to add a * PRECISION_BITS here because we implicitly divided
+    // mantissa by 2^27 before and correct for that here.
+    const int64_t aLogMantissa =
+        aLogMantissaUncorrected + SUBSIDY_INT * PRECISION_BITS;
+
+    // Compute a*log(2^(8 * (exp - 3))), which can be simplified to
+    // a*(8 * (exp - 3)).
+    const int64_t aLogExponent = SUBSIDY_INT * 8 * (exp - 3);
+    const int64_t aLogTarget = aLogMantissa + aLogExponent;
+    // R = a*log(D) = a*log(Tm / T) = a*log(Tm) - a*log(T)
+    int64_t blockSubsidy = SUBSIDY_INT * LOG_MAX_TARGET - aLogTarget;
+
+    // We want difficulty 1 to result in SUBSIDY, but log(1) = 0, so we add
+    // SUBSIDY here.
+    blockSubsidy += SUBSIDY_INT;
+
+    // Sanity check
+    assert(blockSubsidy >= SUBSIDY_INT && blockSubsidy <= 221 * SUBSIDY_INT);
+
+    return blockSubsidy * SATOSHI;
 }
 
 CoinsViews::CoinsViews(DBParams db_params, CoinsViewOptions options)
@@ -2039,58 +2112,11 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
 
     uint32_t flags = SCRIPT_VERIFY_NONE;
 
-    // Enforce P2SH (BIP16)
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_P2SH)) {
-        flags |= SCRIPT_VERIFY_P2SH;
-    }
+    // Always enforce CLEANSTACK
+    flags |= SCRIPT_VERIFY_CLEANSTACK;
 
-    // Enforce the DERSIG (BIP66) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_DERSIG)) {
-        flags |= SCRIPT_VERIFY_DERSIG;
-    }
-
-    // Start enforcing CHECKLOCKTIMEVERIFY (BIP65) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CLTV)) {
-        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-    }
-
-    // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CSV)) {
-        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
-    }
-
-    // If the UAHF is enabled, we start accepting replay protected txns
-    if (IsUAHFenabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_STRICTENC;
-        flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-    }
-
-    // If the DAA HF is enabled, we start rejecting transaction that use a high
-    // s in their signature. We also make sure that signature that are supposed
-    // to fail (for instance in multisig or other forms of smart contracts) are
-    // null.
-    if (IsDAAEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_LOW_S;
-        flags |= SCRIPT_VERIFY_NULLFAIL;
-    }
-
-    // When the magnetic anomaly fork is enabled, we start accepting
-    // transactions using the OP_CHECKDATASIG opcode and it's verify
-    // alternative. We also start enforcing push only signatures and
-    // clean stack.
-    if (IsMagneticAnomalyEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_SIGPUSHONLY;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
-    }
-
-    if (IsGravitonEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENABLE_SCHNORR_MULTISIG;
-        flags |= SCRIPT_VERIFY_MINIMALDATA;
-    }
-
-    if (IsPhononEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENFORCE_SIGCHECKS;
-    }
+    // Always enforce SIGHASH_FORKID
+    flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
 
     // We make sure this node will have replay protection during the next hard
     // fork.
@@ -2098,6 +2124,11 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
             consensusparams, pindex,
             chainman.m_options.replay_protection_activation_time)) {
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
+    }
+
+    if (IsNumbersEnabled(consensusparams, pindex) &&
+        !IsSecondSamuelEnabled(consensusparams, pindex)) {
+        flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
     }
 
     return flags;
@@ -2208,7 +2239,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 fScriptChecks = (GetBlockProofEquivalentTime(
                                      *m_chainman.m_best_header, *pindex,
                                      *m_chainman.m_best_header,
-                                     consensusParams) <= 60 * 60 * 24 * 7 * 2);
+                                     consensusParams) <= 60 * 60 * 24 * 5);
             }
         }
     }
@@ -2221,118 +2252,24 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
              Ticks<MillisecondsDouble>(m_chainman.time_check) /
                  m_chainman.num_blocks_total);
 
-    // Do not allow blocks that contain transactions which 'overwrite' older
-    // transactions, unless those are already completely spent. If such
-    // overwrites are allowed, coinbases and transactions depending upon those
-    // can be duplicated to remove the ability to spend the first instance --
-    // even after being sent to another address.
-    // See BIP30, CVE-2012-1909, and http://r6.ca/blog/20120206T005236Z.html
-    // for more information. This rule was originally applied to all blocks
-    // with a timestamp after March 15, 2012, 0:00 UTC. Now that the whole
-    // chain is irreversibly beyond that time it is applied to all blocks
-    // except the two in the chain that violate it. This prevents exploiting
-    // the issue against nodes during their initial block download.
-    bool fEnforceBIP30 = !((pindex->nHeight == 91842 &&
-                            pindex->GetBlockHash() ==
-                                uint256S("0x00000000000a4d0a398161ffc163c503763"
-                                         "b1f4360639393e0e4c8e300e0caec")) ||
-                           (pindex->nHeight == 91880 &&
-                            pindex->GetBlockHash() ==
-                                uint256S("0x00000000000743f190a18c5577a3c2d2a1f"
-                                         "610ae9601ac046a38084ccb7cd721")));
+    // Enforce BIP68 (sequence locks).
+    int nLockTimeFlags = 0;
 
-    // Once BIP34 activated it was not possible to create new duplicate
-    // coinbases and thus other than starting with the 2 existing duplicate
-    // coinbase pairs, not possible to create overwriting txs. But by the time
-    // BIP34 activated, in each of the existing pairs the duplicate coinbase had
-    // overwritten the first before the first had been spent. Since those
-    // coinbases are sufficiently buried it's no longer possible to create
-    // further duplicate transactions descending from the known pairs either. If
-    // we're on the known chain at height greater than where BIP34 activated, we
-    // can save the db accesses needed for the BIP30 check.
+    // Additional flags if standardness is enforced on consensus.
+    int extraFlags = 0;
+    if (fRequireStandardConsensus) {
+        extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-    // BIP34 requires that a block at height X (block X) has its coinbase
-    // scriptSig start with a CScriptNum of X (indicated height X).  The above
-    // logic of no longer requiring BIP30 once BIP34 activates is flawed in the
-    // case that there is a block X before the BIP34 height of 227,931 which has
-    // an indicated height Y where Y is greater than X.  The coinbase for block
-    // X would also be a valid coinbase for block Y, which could be a BIP30
-    // violation.  An exhaustive search of all mainnet coinbases before the
-    // BIP34 height which have an indicated height greater than the block height
-    // reveals many occurrences. The 3 lowest indicated heights found are
-    // 209,921, 490,897, and 1,983,702 and thus coinbases for blocks at these 3
-    // heights would be the first opportunity for BIP30 to be violated.
-
-    // The search reveals a great many blocks which have an indicated height
-    // greater than 1,983,702, so we simply remove the optimization to skip
-    // BIP30 checking for blocks at height 1,983,702 or higher.  Before we reach
-    // that block in another 25 years or so, we should take advantage of a
-    // future consensus change to do a new and improved version of BIP34 that
-    // will actually prevent ever creating any duplicate coinbases in the
-    // future.
-    static constexpr int BIP34_IMPLIES_BIP30_LIMIT = 1983702;
-
-    // There is no potential to create a duplicate coinbase at block 209,921
-    // because this is still before the BIP34 height and so explicit BIP30
-    // checking is still active.
-
-    // The final case is block 176,684 which has an indicated height of
-    // 490,897. Unfortunately, this issue was not discovered until about 2 weeks
-    // before block 490,897 so there was not much opportunity to address this
-    // case other than to carefully analyze it and determine it would not be a
-    // problem. Block 490,897 was, in fact, mined with a different coinbase than
-    // block 176,684, but it is important to note that even if it hadn't been or
-    // is remined on an alternate fork with a duplicate coinbase, we would still
-    // not run into a BIP30 violation.  This is because the coinbase for 176,684
-    // is spent in block 185,956 in transaction
-    // d4f7fbbf92f4a3014a230b2dc70b8058d02eb36ac06b4a0736d9d60eaa9e8781.  This
-    // spending transaction can't be duplicated because it also spends coinbase
-    // 0328dd85c331237f18e781d692c92de57649529bd5edf1d01036daea32ffde29.  This
-    // coinbase has an indicated height of over 4.2 billion, and wouldn't be
-    // duplicatable until that height, and it's currently impossible to create a
-    // chain that long. Nevertheless we may wish to consider a future soft fork
-    // which retroactively prevents block 490,897 from creating a duplicate
-    // coinbase. The two historical BIP30 violations often provide a confusing
-    // edge case when manipulating the UTXO and it would be simpler not to have
-    // another edge case to deal with.
-
-    // testnet3 has no blocks before the BIP34 height with indicated heights
-    // post BIP34 before approximately height 486,000,000 and presumably will
-    // be reset before it reaches block 1,983,702 and starts doing unnecessary
-    // BIP30 checking again.
-    assert(pindex->pprev);
-    CBlockIndex *pindexBIP34height =
-        pindex->pprev->GetAncestor(consensusParams.BIP34Height);
-    // Only continue to enforce if we're below BIP34 activation height or the
-    // block hash at that height doesn't correspond.
-    fEnforceBIP30 =
-        fEnforceBIP30 &&
-        (!pindexBIP34height ||
-         !(pindexBIP34height->GetBlockHash() == consensusParams.BIP34Hash));
-
-    // TODO: Remove BIP30 checking from block height 1,983,702 on, once we have
-    // a consensus change that ensures coinbases at those heights can not
-    // duplicate earlier coinbases.
-    if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
-        for (const auto &tx : block.vtx) {
-            for (size_t o = 0; o < tx->vout.size(); o++) {
-                if (view.HaveCoin(COutPoint(tx->GetId(), o))) {
-                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                         "bad-txns-BIP30",
-                                         "tried to overwrite transaction");
-                }
-            }
+        // Before Numbers or after Second Samuel, we enable Taproot and SIGHASH_LOTUS
+        if (!IsNumbersEnabled(consensusParams, pindex->pprev) ||
+            IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+            extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
         }
     }
 
-    // Enforce BIP68 (sequence locks).
-    int nLockTimeFlags = 0;
-    if (DeploymentActiveAt(*pindex, consensusParams,
-                           Consensus::DEPLOYMENT_CSV)) {
-        nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
-    }
-
-    const uint32_t flags = GetNextBlockScriptFlags(pindex->pprev, m_chainman);
+    const uint32_t flags =
+        GetNextBlockScriptFlags(pindex->pprev, m_chainman) |
+        static_cast<uint32_t>(extraFlags);
 
     const auto time_2{SteadyClock::now()};
     m_chainman.time_forks += time_2 - time_1;
@@ -2409,6 +2346,28 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             nFees += txfee;
         }
 
+        // Enforce standardness on all txs.
+        if (fRequireStandardConsensus) {
+            std::string reason;
+            if (!IsStandardTx(tx, MAX_OP_RETURN_RELAY, DEFAULT_PERMIT_BAREMULTISIG,
+                               CFeeRate(Amount::zero()), reason)) {
+                LogPrintf("ERROR: %s: contains a non-standard transaction "
+                          "(and fRequireStandardConsensus is true)\n",
+                          __func__);
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
+                break;
+            }
+            // Taproot is phased out between Numbers and Second Samuel
+            if (IsNumbersEnabled(consensusParams, pindex->pprev) &&
+                !IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
+                if (TxHasPayToTaproot(tx)) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                  "bad-taproot-phased-out");
+                    break;
+                }
+            }
+        }
+
         if (!MoneyRange(nFees)) {
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                           "bad-txns-accumulated-fee-outofrange",
@@ -2441,22 +2400,15 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // consult the cache, though).
         bool fCacheResults = fJustCheck;
 
-        const bool fEnforceSigCheck = flags & SCRIPT_ENFORCE_SIGCHECKS;
-        if (!fEnforceSigCheck) {
-            // Historically, there has been transactions with a very high
-            // sigcheck count, so we need to disable this check for such
-            // transactions.
-            nSigChecksTxLimiters[txIndex] = TxSigCheckLimiter::getDisabled();
-        }
-
         std::vector<CScriptCheck> vChecks;
         TxValidationState tx_state;
         if (fScriptChecks &&
-            !CheckInputScripts(tx, tx_state, view, flags, fCacheResults,
-                               fCacheResults, PrecomputedTransactionData(tx),
-                               m_chainman.m_validation_cache, nSigChecksRet,
-                               nSigChecksTxLimiters[txIndex],
-                               &nSigChecksBlockLimiter, &vChecks)) {
+            !CheckInputScripts(
+                tx, tx_state, view, flags, fCacheResults, fCacheResults,
+                PrecomputedTransactionData::FromCoinsView(tx, view),
+                m_chainman.m_validation_cache, nSigChecksRet,
+                nSigChecksTxLimiters[txIndex], &nSigChecksBlockLimiter,
+                &vChecks)) {
             // Any transaction validation failure in ConnectBlock is a block
             // consensus failure
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
@@ -2492,14 +2444,41 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
              Ticks<MillisecondsDouble>(m_chainman.time_connect) /
                  m_chainman.num_blocks_total);
 
+    // 50% of fees get burned.
+    Amount amountFeeReward = nFees / 2;
     const Amount blockReward =
-        nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(block.nBits, consensusParams);
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
         state.Invalid(
             BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
             strprintf("coinbase pays too much (actual=%d vs limit=%d)",
                       block.vtx[0]->GetValueOut(), blockReward));
     }
+
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, options.shouldValidateMinerFund(), pindex->pprev,
+        blockReward);
+
+    if (!requiredOutputs.empty() && state.IsValid()) {
+        auto nextRequiredOutput = requiredOutputs.begin();
+        // Miner fund outputs must appear in order.
+        // Can be separated by non-miner fund outputs.
+        for (const CTxOut &o : block.vtx[0]->vout) {
+            // Must match next required output exactly.
+            if (o == *nextRequiredOutput) {
+                nextRequiredOutput++;
+                // Found all outputs.
+                if (nextRequiredOutput == requiredOutputs.end()) {
+                    goto MinerFundSuccess;
+                }
+            }
+        }
+
+        // We did not find all required miner fund outputs.
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                      "bad-cb-minerfund");
+    }
+MinerFundSuccess:
 
     if (blockFees) {
         *blockFees = nFees;
@@ -2805,7 +2784,7 @@ static void UpdateTipLog(const CCoinsViewCache &coins_tip,
         "%s%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%lu "
         "date='%s' progress=%f cache=%.1fMiB(%utxo)\n",
         prefix, func_name, tip->GetBlockHash().ToString(), tip->nHeight,
-        tip->nVersion, log(tip->nChainWork.getdouble()) / log(2.0),
+        tip->nHeaderVersion, log(tip->nChainWork.getdouble()) / log(2.0),
         tip->GetChainTxCount(), FormatISO8601DateTime(tip->GetBlockTime()),
         GuessVerificationProgress(params.TxData(), tip),
         coins_tip.DynamicMemoryUsage() * (1.0 / (1 << 20)),
@@ -2961,8 +2940,6 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         AssertLockHeld(m_mempool->cs);
     }
 
-    const Consensus::Params &consensusParams = m_chainman.GetConsensus();
-
     assert(pindexNew->pprev == m_chain.Tip());
     // Read block from disk.
     const auto time_1{SteadyClock::now()};
@@ -3008,79 +2985,23 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         }
 
         /**
-         * The block is valid by consensus rules so now we check if the block
-         * passes all block policy checks. If not, then park the block and bail.
-         *
-         * We check block parking policies before flushing changes to the UTXO
-         * set. This allows us to avoid rewinding everything immediately after.
-         *
-         * Only check block parking policies the first time the block is
-         * connected. Avalanche voting can override the parking decision made by
-         * these policies.
+         * NOTE (Lotus mainnet):
+         * Block parking policies (`MinerFundPolicy`, `StakingRewardsPolicy`,
+         * `PreConsensusPolicy`, and `RTTPolicy`) are intentionally decoupled in
+         * `ConnectTip` for Lotus V1:
+         * 1. Lotus V1 enforces `CheckMinerFund` as a hard consensus rule inside
+         *    `ConnectBlock` using Lotus's `blockReward = GetBlockSubsidy(...) +
+         *    (blockFees - nBurnedCoins) / 2` formula. In contrast, eCash's
+         *    `MinerFundPolicy` in `ConnectTip` is a soft/Avalanche parking
+         *    policy that passes `blockFees + GetBlockSubsidy(...)` without
+         *    Lotus's `/ 2` fee/burn adjustment (which would falsely park blocks
+         *    with non-zero fees or OP_RETURN burns after IBD).
+         * 2. The `ParkingPolicy` infrastructure (`src/policy/block/minerfund.cpp`,
+         *    `stakingrewards.cpp`, `preconsensus.cpp`, `rtt.cpp`, and
+         *    `src/avalanche/stakecontendercache.cpp`) is deliberately preserved
+         *    intact for upstream compatibility. Miner fund and staking reward
+         *    parking policies are not active on Lotus mainnet.
          */
-        const BlockHash blockhash = pindexNew->GetBlockHash();
-        if (!m_chainman.IsInitialBlockDownload() &&
-            !m_filterParkingPoliciesApplied.contains(blockhash)) {
-            m_filterParkingPoliciesApplied.insert(blockhash);
-
-            const Amount blockReward =
-                blockFees +
-                GetBlockSubsidy(pindexNew->nHeight, consensusParams);
-
-            std::vector<std::unique_ptr<ParkingPolicy>> parkingPolicies;
-            parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(
-                consensusParams, *pindexNew, blockConnecting, blockReward));
-
-            if (avalanche) {
-                // Only enable the RTT policy if the node already finalized a
-                // block. This is because it's very possible that new blocks
-                // will be parked after a node restart (but after IBD) if the
-                // node is behind by a few blocks. We want to make sure that the
-                // node will be able to switch back to the right tip in this
-                // case.
-                if (avalanche->hasFinalizedTip()) {
-                    // Special case for testnet, don't reject blocks mined with
-                    // the min difficulty
-                    if (!consensusParams.fPowAllowMinDifficultyBlocks ||
-                        (blockConnecting.GetBlockTime() <=
-                         pindexNew->pprev->GetBlockTime() +
-                             2 * consensusParams.nPowTargetSpacing)) {
-                        parkingPolicies.emplace_back(
-                            std::make_unique<RTTPolicy>(consensusParams,
-                                                        *pindexNew));
-                    }
-                }
-
-                parkingPolicies.emplace_back(
-                    std::make_unique<StakingRewardsPolicy>(
-                        *avalanche, consensusParams, *pindexNew,
-                        blockConnecting, blockReward));
-
-                if (m_mempool) {
-                    parkingPolicies.emplace_back(
-                        std::make_unique<PreConsensusPolicy>(
-                            *avalanche, *pindexNew, blockConnecting, m_mempool,
-                            &disconnectpool));
-                }
-            }
-
-            // If any block policy is violated, bail on the first one found
-            if (std::find_if_not(parkingPolicies.begin(), parkingPolicies.end(),
-                                 [&](const auto &policy) {
-                                     bool ret = (*policy)(blockPolicyState);
-                                     if (!ret) {
-                                         LogPrintf(
-                                             "Park block because it "
-                                             "violated a block policy: %s\n",
-                                             blockPolicyState.ToString());
-                                     }
-                                     return ret;
-                                 }) != parkingPolicies.end()) {
-                pindexNew->nStatus = pindexNew->nStatus.withParked();
-                m_blockman.m_dirty_blockindex.insert(pindexNew);
-                return false;
-            }
-        }
 
         time_3 = SteadyClock::now();
         m_chainman.time_connect_total += time_3 - time_2;
@@ -3185,20 +3106,6 @@ CBlockIndex *Chainstate::FindMostWorkChain(
                 return nullptr;
             }
             pindexNew = *it;
-        }
-
-        // If this block will cause an avalanche finalized block to be reorged,
-        // then we park it.
-        {
-            LOCK(cs_avalancheFinalizedBlockIndex);
-            if (m_avalancheFinalizedBlockIndex &&
-                !AreOnTheSameFork(pindexNew, m_avalancheFinalizedBlockIndex)) {
-                LogPrintf("Park block %s because it forks prior to the "
-                          "avalanche finalized chaintip.\n",
-                          pindexNew->GetBlockHash().ToString());
-                pindexNew->nStatus = pindexNew->nStatus.withParked();
-                m_blockman.m_dirty_blockindex.insert(pindexNew);
-            }
         }
 
         const CBlockIndex *pindexFork = m_chain.FindFork(pindexNew);
@@ -4360,6 +4267,29 @@ static bool CheckBlockHeader(const CBlockHeader &block,
                              "high-hash", "proof of work failed");
     }
 
+    if (block.nReserved != 0) {
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-reserved",
+                             "block's reserved field must be 0");
+    }
+
+    if (block.nHeaderVersion != 1) {
+        LogPrintf("ERROR: expected block version 1 but got %d\n",
+                  block.nHeaderVersion);
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-version", "block version must be 1");
+    }
+
+    // Check if claimed size is excessive
+    if (block.GetSize() > validationOptions.getExcessiveBlockSize()) {
+        LogPrintf(
+            "ERROR: block has excessive size %u, which is above the limit %u\n",
+            block.GetSize(), validationOptions.getExcessiveBlockSize());
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-blk-size",
+                             "block header has excessive claimed size");
+    }
+
     return true;
 }
 
@@ -4368,23 +4298,12 @@ static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
         return true;
     }
 
-    bool mutated;
-    uint256 merkle_root = BlockMerkleRoot(block, &mutated);
+    uint256 merkle_root = BlockMerkleRoot(block);
     if (block.hashMerkleRoot != merkle_root) {
         return state.Invalid(
             /*result=*/BlockValidationResult::BLOCK_MUTATED,
             /*reject_reason=*/"bad-txnmrklroot",
             /*debug_message=*/"hashMerkleRoot mismatch");
-    }
-
-    // Check for merkle tree malleability (CVE-2012-2459): repeating sequences
-    // of transactions in a block without affecting the merkle root of a block,
-    // while still invalidating it.
-    if (mutated) {
-        return state.Invalid(
-            /*result=*/BlockValidationResult::BLOCK_MUTATED,
-            /*reject_reason=*/"bad-txns-duplicate",
-            /*debug_message=*/"duplicate transaction");
     }
 
     block.m_checked_merkle_root = true;
@@ -4411,9 +4330,27 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
         return false;
     }
 
+    const uint256 hashActualMetadata = SerializeHash(block.vMetadata);
+    if (hashActualMetadata != block.hashExtendedMetadata) {
+        LogPrintf(
+            "ERROR: extended metadata mismatch: expected %s, but got %s\n",
+            hashActualMetadata.ToString(),
+            block.hashExtendedMetadata.ToString());
+        return state.Invalid(BlockValidationResult::BLOCK_MUTATED,
+                             "bad-metadata-hash",
+                             "hashExtendedMetadata mismatch");
+    }
+
     // All potential-corruption validation must be done before we do any
     // transaction validation, as otherwise we may mark the header as invalid
-    // because we receive the wrong transactions for it.
+    // because we receive the wrong transactions or metadata for it.
+
+    // Metadata must be empty (for now)
+    if (!block.vMetadata.empty()) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-metadata",
+                             "forbidden extended metadata field");
+    }
 
     // First transaction must be coinbase.
     if (block.vtx.empty()) {
@@ -4425,15 +4362,21 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
     auto nMaxBlockSize = validationOptions.getExcessiveBlockSize();
 
     // Bail early if there is no way this block is of reasonable size.
+    // Since we checked for excessive size already, this will always mean we
+    // have a size mismatch.
     if ((block.vtx.size() * MIN_TRANSACTION_SIZE) > nMaxBlockSize) {
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch", "size limits failed");
     }
 
     auto currentBlockSize = ::GetSerializeSize(block);
-    if (currentBlockSize > nMaxBlockSize) {
+    if (currentBlockSize != block.GetSize()) {
+        LogPrintf("ERROR: block size mismatch: claims to have size %u, but "
+                  "has %u\n",
+                  block.GetSize(), currentBlockSize);
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch",
+                             "block does not have the size it claims to have");
     }
 
     // And a valid coinbase.
@@ -4575,8 +4518,34 @@ static bool ContextualCheckBlockHeader(
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast()) {
+        LogPrintf(
+            "ERROR: block too early: block's time is %d, but minimum is %d\n",
+            block.GetBlockTime(), pindexPrev->GetMedianTimePast());
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
                              "time-too-old", "block's timestamp is too early");
+    }
+
+    if (block.nHeight != pindexPrev->nHeight + 1) {
+        LogPrintf("ERROR: expected block height %d but got %d\n",
+                  pindexPrev->nHeight + 1, block.nHeight);
+        return state.Invalid(
+            BlockValidationResult::BLOCK_INVALID_HEADER, "bad-blk-height",
+            "block height is not one higher than previous block");
+    }
+
+    uint256 expectedEpochHash;
+    if (block.nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
+        expectedEpochHash = block.hashPrevBlock;
+    } else {
+        expectedEpochHash = pindexPrev->hashEpochBlock;
+    }
+
+    if (expectedEpochHash != block.hashEpochBlock) {
+        LogPrintf("ERROR: expected epoch hash %s but got %s",
+                  expectedEpochHash.ToString(),
+                  block.hashEpochBlock.ToString());
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-epoch", "block epoch block hash invalid");
     }
 
     // Check timestamp
@@ -4584,22 +4553,6 @@ static bool ContextualCheckBlockHeader(
         return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE,
                              "time-too-new",
                              "block timestamp too far in the future");
-    }
-
-    // Reject blocks with outdated version
-    if ((block.nVersion < 2 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_HEIGHTINCB)) ||
-        (block.nVersion < 3 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_DERSIG)) ||
-        (block.nVersion < 4 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_CLTV))) {
-        return state.Invalid(
-            BlockValidationResult::BLOCK_INVALID_HEADER,
-            strprintf("bad-version(0x%08x)", block.nVersion),
-            strprintf("rejected nVersion=0x%08x block", block.nVersion));
     }
 
     return true;
@@ -4618,25 +4571,13 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
-    // Enforce BIP113 (Median Time Past).
-    bool enforce_locktime_median_time_past{false};
-    if (DeploymentActiveAfter(pindexPrev, chainman,
-                              Consensus::DEPLOYMENT_CSV)) {
-        assert(pindexPrev != nullptr);
-        enforce_locktime_median_time_past = true;
-    }
-
+    // Always enforce BIP113 (Median Time Past) from genesis.
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
 
-    const int64_t nLockTimeCutoff{enforce_locktime_median_time_past
-                                      ? nMedianTimePast
-                                      : block.GetBlockTime()};
+    const int64_t nLockTimeCutoff = nMedianTimePast;
 
     const Consensus::Params params = chainman.GetConsensus();
-    const bool fIsMagneticAnomalyEnabled =
-        IsMagneticAnomalyEnabled(params, pindexPrev);
-
     // Check transactions:
     // - canonical ordering
     // - ensure they are finalized
@@ -4644,25 +4585,23 @@ static bool ContextualCheckBlock(const CBlock &block,
     const CTransaction *prevTx = nullptr;
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
-        if (fIsMagneticAnomalyEnabled) {
-            if (prevTx && (tx.GetId() <= prevTx->GetId())) {
-                if (tx.GetId() == prevTx->GetId()) {
-                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                         "tx-duplicate",
-                                         strprintf("Duplicated transaction %s",
-                                                   tx.GetId().ToString()));
-                }
-
-                return state.Invalid(
-                    BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
-                    strprintf("Transaction order is invalid (%s < %s)",
-                              tx.GetId().ToString(),
-                              prevTx->GetId().ToString()));
+        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
+            if (tx.GetId() == prevTx->GetId()) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                        "tx-duplicate",
+                                        strprintf("Duplicated transaction %s",
+                                                tx.GetId().ToString()));
             }
 
-            if (prevTx || !tx.IsCoinBase()) {
-                prevTx = &tx;
-            }
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
+                strprintf("Transaction order is invalid (%s < %s)",
+                            tx.GetId().ToString(),
+                            prevTx->GetId().ToString()));
+        }
+
+        if (prevTx || !tx.IsCoinBase()) {
+            prevTx = &tx;
         }
 
         TxValidationState tx_state;
@@ -4674,13 +4613,120 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that the coinbase starts with serialized block height
-    if (DeploymentActiveAfter(pindexPrev, chainman,
-                              Consensus::DEPLOYMENT_HEIGHTINCB)) {
-        CScript expect = CScript() << nHeight;
-        if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
-            !std::equal(expect.begin(), expect.end(),
-                        block.vtx[0]->vin[0].scriptSig.begin())) {
+    // Enforce rule that the coinbase transaction's first output must contain an OP_RETURN
+    // followed by a prefix and the serialized block height.
+    // This rule applies to all blocks except the genesis block (height 0).
+    // Note: This rule was added after some blocks were already mined, so we need
+    // to be flexible with validation for older blocks.
+    if (nHeight > 0) {
+        // Get the coinbase transaction's first output scriptPubKey
+        const CScript &scriptPubKey = block.vtx[0]->vout[0].scriptPubKey;
+
+        // Early blocks may not follow the height encoding rule
+        // Define a height after which we strictly enforce the rule
+        const int HEIGHT_ENCODING_ENFORCED_AFTER = 20000;
+        bool strictChecking = (nHeight >= HEIGHT_ENCODING_ENFORCED_AFTER);
+        const int SHAME_PREFIX_ENFORCED_BEFORE = 1018000;
+        bool strictCheckingCoinbaseShame = (nHeight < SHAME_PREFIX_ENFORCED_BEFORE);
+
+        // Empty script
+        if (scriptPubKey.empty()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Check for OP_RETURN
+        if (scriptPubKey[0] != 0x6a) { // 0x6a is OP_RETURN
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Position after OP_RETURN
+        size_t pos = 1;
+        if (pos >= scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Parse prefix length and data
+        uint8_t prefixLen = scriptPubKey[pos++];
+        if (pos + prefixLen > scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        std::vector<uint8_t> prefixData(scriptPubKey.begin() + pos,
+                                        scriptPubKey.begin() + pos + prefixLen);
+
+        // NOTE: v8.3.4 (patch 207) accidentally returned `true` early from
+        // ContextualCheckBlock whenever `prefixData != COINBASE_PREFIX` at
+        // `nHeight >= 1018000` (`!strictCheckingCoinbaseShame`), skipping the
+        // subsequent `<nHeight>` check for non-"logos" coinbases. We preserve
+        // that early `return true` for `nHeight >= 1018000` to avoid a chain
+        // split against LotusiaStewardship/lotusd nodes, while properly calling
+        // `state.Invalid(...)` on failures when `nHeight < 1018000`.
+        if (prefixLen != COINBASE_PREFIX.size() || prefixData != COINBASE_PREFIX) {
+            if (!strictCheckingCoinbaseShame) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Move position past prefix data
+        pos += prefixLen;
+
+        // Parse height length and data
+        if (pos >= scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        uint8_t heightLen = scriptPubKey[pos++];
+        if (pos + heightLen > scriptPubKey.size() || heightLen > 3) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        std::vector<uint8_t> heightData(scriptPubKey.begin() + pos,
+                                        scriptPubKey.begin() + pos + heightLen);
+
+        // Convert the little-endian bytes to an integer
+        int nHeight_coinbase = 0;
+        for (size_t i = 0; i < heightData.size(); i++) {
+            nHeight_coinbase |= static_cast<int>(heightData[i]) << (8 * i);
+        }
+
+        // Verify the height matches
+        if (nHeight_coinbase != nHeight) {
+            if (!strictChecking) {
+                return true;
+            }
             return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                  "bad-cb-height",
                                  "block height mismatch in coinbase");
@@ -5864,7 +5910,7 @@ void ChainstateManager::LoadExternalBlockFile(
 
                 // Read size.
                 blkdat >> nSize;
-                if (nSize < 80) {
+                if (nSize < 160) {
                     continue;
                 }
             } catch (const std::exception &) {

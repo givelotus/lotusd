@@ -67,6 +67,7 @@ static class : public BaseSignatureChecker {
 
     bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode, uint32_t flags) const final {
         if (vchPubKey == badpub) {
             return false;
@@ -90,15 +91,14 @@ static valtype makebits(int m, int n) {
 // set of flags for long-supported opcodes. The latter list is restricted to
 // the case with schnorr multisig turned on.
 static const std::vector<uint32_t> allflags{
-    0,
-    SCRIPT_VERIFY_NULLFAIL,
+    SCRIPT_ENABLE_SIGHASH_FORKID,  // We're testing with signatures ending with
+                                   // 0x41, so we need this flag.
     STANDARD_SCRIPT_VERIFY_FLAGS,
-    STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_SCHNORR_MULTISIG,
+    STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
 static const std::vector<uint32_t> schnorrmultisigflags{
-    SCRIPT_VERIFY_NULLFAIL | SCRIPT_ENABLE_SCHNORR_MULTISIG,
-    STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_SCHNORR_MULTISIG,
+    STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
 static void CheckEvalScript(const stacktype &original_stack,
@@ -110,9 +110,10 @@ static void CheckEvalScript(const stacktype &original_stack,
         ScriptError err = ScriptError::UNKNOWN;
         stacktype stack{original_stack};
         ScriptExecutionMetrics metrics;
+        ScriptExecutionData execdata{script};
 
-        bool r =
-            EvalScript(stack, script, flags, dummysigchecker, metrics, &err);
+        bool r = EvalScript(stack, script, flags, dummysigchecker, metrics,
+                            execdata, &err);
         BOOST_CHECK(r);
         BOOST_CHECK_EQUAL(err, ScriptError::OK);
         BOOST_CHECK(stack == expected_stack);
@@ -188,28 +189,6 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         CheckEvalScript({txsigecdsa, {0}}, script, {}, 0);
     }
 
-    // Without NULLFAIL, it is possible to have checksig/checkmultisig consume
-    // CPU using non-null signatures and then return false to the stack, without
-    // failing. Make sure that this historical case adds sigchecks, so that the
-    // CPU usage of possible malicious alternate histories (branching off before
-    // NULLFAIL activated in consensus) can be limited.
-    CheckEvalScript({txsigecdsa}, CScript() << badpub << OP_CHECKSIG, {vfalse},
-                    1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({{}, txsigecdsa},
-                    CScript() << 1 << badpub << badpub << badpub << badpub << 4
-                              << OP_CHECKMULTISIG,
-                    {vfalse}, 4, {SCRIPT_VERIFY_NONE});
-
-    // CHECKDATASIG and Schnorr need to be checked as well, since they have been
-    // made retroactively valid since forever and thus alternate histories could
-    // include them.
-    CheckEvalScript({sigecdsa}, CScript() << msg << badpub << OP_CHECKDATASIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({txsigschnorr}, CScript() << badpub << OP_CHECKSIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({sigschnorr}, CScript() << msg << badpub << OP_CHECKDATASIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
-
     // CHECKMULTISIG with schnorr cannot return false, it just fails instead
     // (hence, the sigchecks count is unimportant)
     {
@@ -222,16 +201,18 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         stacktype stack{{1}, txsigschnorr};
         BOOST_CHECK(!EvalScript(
             stack, CScript() << 1 << badpub << 1 << OP_CHECKMULTISIG,
-            SCRIPT_ENABLE_SCHNORR_MULTISIG, dummysigchecker));
+            SCRIPT_VERIFY_NONE, dummysigchecker));
     }
 
     // EvalScript cumulatively increases the sigchecks count.
     {
         stacktype stack{txsigschnorr};
         ScriptExecutionMetrics metrics;
+        ScriptExecutionData execdata{CScript()};
         metrics.nSigChecks = 12345;
         bool r = EvalScript(stack, CScript() << pub << OP_CHECKSIG,
-                            SCRIPT_VERIFY_NONE, dummysigchecker, metrics);
+                            SCRIPT_ENABLE_SIGHASH_FORKID, dummysigchecker,
+                            metrics, execdata);
         BOOST_CHECK(r);
         BOOST_CHECK_EQUAL(metrics.nSigChecks, 12346);
     }
@@ -239,7 +220,7 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
     // Other opcodes may be cryptographic and/or CPU intensive, but they do not
     // add any additional sigchecks.
     static_assert(
-        (MAX_SCRIPT_SIZE <= 10000 && MAX_OPS_PER_SCRIPT <= 201 &&
+        (MAX_SCRIPT_SIZE <= 10000 && MAX_OPS_PER_SCRIPT <= 400 &&
          MAX_STACK_SIZE <= 1000 && MAX_SCRIPT_ELEMENT_SIZE <= 520),
         "These can be made far worse with higher limits. Update accordingly.");
 
@@ -248,10 +229,9 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         valtype bigblob(MAX_SCRIPT_ELEMENT_SIZE);
         CheckEvalScript({},
                         CScript()
-                            << bigblob << OP_RIPEMD160 << bigblob << OP_SHA1
-                            << bigblob << OP_SHA256 << bigblob << OP_HASH160
-                            << bigblob << OP_HASH256 << OP_CAT << OP_CAT
-                            << OP_CAT << OP_CAT << OP_DROP,
+                            << bigblob << OP_RIPEMD160 << bigblob << OP_SHA256
+                            << bigblob << OP_HASH160 << bigblob << OP_HASH256
+                            << OP_CAT << OP_CAT << OP_CAT << OP_DROP,
                         {}, 0);
     }
 
@@ -331,27 +311,8 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
 
     // Common example
     CHECK_VERIFYSCRIPT(CScript() << txsigschnorr,
-                       CScript() << pub << OP_CHECKSIG, SCRIPT_VERIFY_NONE, 1);
-
-    // Correct behaviour occurs for segwit recovery special case (which returns
-    // success from an alternative location)
-    CScript swscript;
-    swscript << OP_0 << std::vector<uint8_t>(20);
-    CHECK_VERIFYSCRIPT(CScript() << ToByteVector(swscript),
-                       CScript()
-                           << OP_HASH160 << ToByteVector(CScriptID(swscript))
-                           << OP_EQUAL,
-                       SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CLEANSTACK, 0);
-
-    // If signature checks somehow occur in scriptsig, they do get counted.
-    // This can happen in historical blocks pre SIGPUSHONLY, even with CHECKSIG.
-    // (an analogous check for P2SH is not possible since it enforces
-    // sigpushonly).
-    CHECK_VERIFYSCRIPT(CScript() << sigschnorr << msg << pub
-                                 << OP_CHECKDATASIG /* scriptSig */,
-                       CScript() << sigecdsa << msg << pub
-                                 << OP_CHECKDATASIG /* scriptPubKey */,
-                       SCRIPT_VERIFY_NONE, 2);
+                       CScript() << pub << OP_CHECKSIG,
+                       SCRIPT_ENABLE_SIGHASH_FORKID, 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -12,6 +12,7 @@ class URITests : public QObject {
     Q_OBJECT
 
 private Q_SLOTS:
+    void uriTestsLotus();
     void uriTestsCashAddr();
     void uriTestFormatURI();
 };

@@ -13,6 +13,7 @@ from test_framework.blocktools import (
     COINBASE_MATURITY,
     create_block,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import (
     MSG_BLOCK,
@@ -50,7 +51,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal, assert_greater_than_or_equal, uint256_hex
 
-# TestP2PConn: A peer we use to send messages to bitcoind, and store responses.
+# TestP2PConn: A peer we use to send messages to lotusd, and store responses.
 
 
 class TestP2PConn(P2PInterface):
@@ -144,7 +145,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
     def build_block_on_tip(self, node):
         block = create_block(tmpl=node.getblocktemplate())
-        block.solve()
+        prepare_block(block)
         return block
 
     # Create 10 more anyone-can-spend utxo's for testing.
@@ -164,8 +165,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         block2 = self.build_block_on_tip(self.nodes[0])
         block2.vtx.append(tx)
-        block2.hashMerkleRoot = block2.calc_merkle_root()
-        block2.solve()
+        prepare_block(block2)
         self.test_node.send_and_ping(msg_block(block2))
         assert_equal(self.nodes[0].getbestblockhash(), uint256_hex(block2.hash_int))
         self.utxos.extend([[tx.txid_int, i, out_value] for i in range(10)])
@@ -275,7 +275,7 @@ class CompactBlocksTest(BitcoinTestFramework):
             ),
         )
 
-    # This test actually causes bitcoind to (reasonably!) disconnect us, so do
+    # This test actually causes lotusd to (reasonably!) disconnect us, so do
     # this last.
     def test_invalid_cmpctblock_message(self):
         self.generate(self.nodes[0], COINBASE_MATURITY + 1)
@@ -291,7 +291,7 @@ class CompactBlocksTest(BitcoinTestFramework):
         assert_equal(self.nodes[0].getbestblockhash(), uint256_hex(block.hashPrevBlock))
 
     # Compare the generated shortids to what we expect based on BIP 152, given
-    # bitcoind's choice of nonce.
+    # lotusd's choice of nonce.
     def test_compactblock_construction(self, test_node):
         node = self.nodes[0]
         # Generate a bunch of transactions.
@@ -388,7 +388,7 @@ class CompactBlocksTest(BitcoinTestFramework):
                 header_and_shortids.shortids.pop(0)
             index += 1
 
-    # Test that bitcoind requests compact blocks when we announce new blocks
+    # Test that lotusd requests compact blocks when we announce new blocks
     # via header or inv, and that responding to getblocktxn causes the block
     # to be successfully reconstructed.
     def test_compactblock_requests(self, test_node):
@@ -447,8 +447,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         ordered_txs = block.vtx
         make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         return block, ordered_txs
 
     # Test that we only receive getblocktxn requests for transactions that the
@@ -597,7 +596,7 @@ class CompactBlocksTest(BitcoinTestFramework):
         assert_equal(absolute_indices, sorted(expected_indices))
 
         # Now give an incorrect response.
-        # Note that it's possible for bitcoind to be smart enough to know we're
+        # Note that it's possible for lotusd to be smart enough to know we're
         # lying, since it could check to see if the shortid matches what we're
         # sending, and eg disconnect us for misbehavior.  If that behavior
         # change was made, we could just modify this test by having a
@@ -623,7 +622,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
     def test_getblocktxn_handler(self, test_node):
         node = self.nodes[0]
-        # bitcoind will not send blocktxn responses for blocks whose height is
+        # lotusd will not send blocktxn responses for blocks whose height is
         # more than 10 blocks deep.
         MAX_GETBLOCKTXN_DEPTH = 10
         chain_height = node.getblockcount()
@@ -728,9 +727,11 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         # Generate an old compactblock, and verify that it's not accepted.
         cur_height = node.getblockcount()
-        hashPrevBlock = int(node.getblockhash(cur_height - 5), 16)
+        old_height = cur_height - 5
+        hashPrevBlock = int(node.getblockhash(old_height), 16)
         block = self.build_block_on_tip(node)
         block.hashPrevBlock = hashPrevBlock
+        block.nHeight = old_height + 1
         block.solve()
 
         comp_block = HeaderAndShortIDs()

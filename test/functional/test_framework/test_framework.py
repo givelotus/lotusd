@@ -330,17 +330,17 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
         config = self.config
 
-        fname_bitcoind = os.path.join(
+        fname_lotusd = os.path.join(
             config["environment"]["BUILDDIR"],
             "src",
-            f"bitcoind{config['environment']['EXEEXT']}",
+            f"lotusd{config['environment']['EXEEXT']}",
         )
         fname_bitcoincli = os.path.join(
             config["environment"]["BUILDDIR"],
             "src",
-            f"bitcoin-cli{config['environment']['EXEEXT']}",
+            f"lotus-cli{config['environment']['EXEEXT']}",
         )
-        self.options.bitcoind = os.getenv("BITCOIND", default=fname_bitcoind)
+        self.options.lotusd = os.getenv("BITCOIND", default=fname_lotusd)
         self.options.bitcoincli = os.getenv("BITCOINCLI", default=fname_bitcoincli)
         self.options.emulator = config["environment"]["EMULATOR"] or None
 
@@ -587,7 +587,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             for i in range(len(extra_args)):
                 extra_args[i] = extra_args[i] + ["-whitelist=noban,in,out@127.0.0.1"]
         if binary is None:
-            binary = [self.options.bitcoind] * num_nodes
+            binary = [self.options.lotusd] * num_nodes
         assert_equal(len(extra_confs), num_nodes)
         assert_equal(len(extra_args), num_nodes)
         assert_equal(len(binary), num_nodes)
@@ -604,7 +604,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     chronik_electrum_port=chronikelectrum_port(i),
                     timewait=self.rpc_timeout,
                     timeout_factor=self.options.timeout_factor,
-                    bitcoind=binary[i],
+                    lotusd=binary[i],
                     bitcoin_cli=self.options.bitcoincli,
                     coverage_dir=self.options.coveragedir,
                     cwd=self.options.tmpdir,
@@ -624,7 +624,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 )
 
     def start_node(self, i, *args, **kwargs):
-        """Start a bitcoind"""
+        """Start a lotusd"""
 
         node = self.nodes[i]
 
@@ -635,7 +635,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             coverage.write_all_rpc_commands(self.options.coveragedir, node.rpc)
 
     def start_nodes(self, extra_args=None, *args, **kwargs):
-        """Start multiple bitcoinds"""
+        """Start multiple lotusds"""
 
         if extra_args is None:
             extra_args = [None] * self.num_nodes
@@ -650,11 +650,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 coverage.write_all_rpc_commands(self.options.coveragedir, node.rpc)
 
     def stop_node(self, i, expected_stderr="", wait=0):
-        """Stop a bitcoind test node"""
+        """Stop a lotusd test node"""
         self.nodes[i].stop_node(expected_stderr, wait=wait)
 
     def stop_nodes(self, wait=0):
-        """Stop multiple bitcoind test nodes"""
+        """Stop multiple lotusd test nodes"""
         for node in self.nodes:
             # Issue RPC to stop nodes
             node.stop_node(wait=wait, wait_until_stopped=False)
@@ -923,7 +923,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             else self.options.loglevel.upper()
         )
         ch.setLevel(ll)
-        # Format logs the same as bitcoind's debug.log with microprecision (so
+        # Format logs the same as lotusd's debug.log with microprecision (so
         # log files can be concatenated and sorted)
         formatter = logging.Formatter(
             fmt="%(asctime)s.%(msecs)03d000Z %(name)s (%(levelname)s): %(message)s",
@@ -977,7 +977,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     chronik_electrum_port=chronikelectrum_port(CACHE_NODE_ID),
                     timewait=self.rpc_timeout,
                     timeout_factor=self.options.timeout_factor,
-                    bitcoind=self.options.bitcoind,
+                    lotusd=self.options.lotusd,
                     bitcoin_cli=self.options.bitcoincli,
                     coverage_dir=None,
                     cwd=self.options.tmpdir,
@@ -1040,7 +1040,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             self.log.debug(f"Copy cache directory {cache_node_dir} to node {i}")
             to_dir = get_datadir_path(self.options.tmpdir, i)
             shutil.copytree(cache_node_dir, to_dir)
-            # Overwrite port/rpcport in bitcoin.conf
+            # Overwrite port/rpcport in lotus.conf
             initialize_datadir(
                 self.options.tmpdir,
                 i,
@@ -1094,10 +1094,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if platform.system() != "Linux":
             raise SkipTest("not on a Linux system")
 
-    def skip_if_no_bitcoind_zmq(self):
-        """Skip the running test if bitcoind has not been compiled with zmq support."""
+    def skip_if_no_lotusd_zmq(self):
+        """Skip the running test if lotusd has not been compiled with zmq support."""
         if not self.is_zmq_compiled():
-            raise SkipTest("bitcoind has not been built with zmq enabled.")
+            raise SkipTest("lotusd has not been built with zmq enabled.")
 
     def skip_if_no_wallet(self):
         """Skip the running test if wallet has not been compiled."""
@@ -1106,14 +1106,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             raise SkipTest("wallet has not been compiled.")
 
     def skip_if_no_wallet_tool(self):
-        """Skip the running test if bitcoin-wallet has not been compiled."""
+        """Skip the running test if lotus-wallet has not been compiled."""
         if not self.is_wallet_tool_compiled():
-            raise SkipTest("bitcoin-wallet has not been compiled")
+            raise SkipTest("lotus-wallet has not been compiled")
 
     def skip_if_no_cli(self):
-        """Skip the running test if bitcoin-cli has not been compiled."""
+        """Skip the running test if lotus-cli has not been compiled."""
         if not self.is_cli_compiled():
-            raise SkipTest("bitcoin-cli has not been compiled.")
+            raise SkipTest("lotus-cli has not been compiled.")
 
     def skip_if_no_chronik(self):
         """Skip the running test if Chronik indexer has not been compiled."""
@@ -1126,7 +1126,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             raise SkipTest("Chronik indexer plugins have not been compiled.")
 
     def is_cli_compiled(self):
-        """Checks whether bitcoin-cli was compiled."""
+        """Checks whether lotus-cli was compiled."""
         return self.config["components"].getboolean("ENABLE_CLI")
 
     def is_wallet_compiled(self):
@@ -1134,7 +1134,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         return self.config["components"].getboolean("ENABLE_WALLET")
 
     def is_wallet_tool_compiled(self):
-        """Checks whether bitcoin-wallet was compiled."""
+        """Checks whether lotus-wallet was compiled."""
         return self.config["components"].getboolean("ENABLE_WALLET_TOOL")
 
     def is_chronik_compiled(self):
@@ -1148,6 +1148,25 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def is_zmq_compiled(self):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")
+
+    def skip_if_no_py3_pynng(self):
+        try:
+            import pynng  # noqa
+        except ImportError:
+            raise SkipTest("pynng module not available.")
+
+    def skip_if_no_py3_flatbuffers(self):
+        try:
+            import flatbuffers  # noqa
+        except ImportError:
+            raise SkipTest("flatbuffers module not available.")
+
+    def skip_if_no_bitcoind_nng_interface(self):
+        if not self.is_nng_interface_compiled():
+            raise SkipTest("bitcoind has not been built with NNG interface support enabled.")
+
+    def is_nng_interface_compiled(self):
+        return self.config["components"].getboolean("ENABLE_NNG")
 
     def is_usdt_compiled(self):
         """Checks whether the USDT tracepoints were compiled."""

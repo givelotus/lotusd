@@ -5,7 +5,7 @@
 #
 # Test getblockstats rpc call
 #
-import decimal
+from decimal import Decimal
 import json
 import os
 
@@ -17,7 +17,7 @@ TESTSDIR = os.path.dirname(os.path.realpath(__file__))
 
 
 def EncodeDecimal(o):
-    if isinstance(o, decimal.Decimal):
+    if isinstance(o, Decimal):
         # json.load will read a quoted float as a string and not convert it back
         # to decimal, so store the value as unquoted float instead.
         return float(o)
@@ -57,7 +57,7 @@ class GetblockstatsTest(BitcoinTestFramework):
         ]
 
     def generate_test_data(self, filename):
-        mocktime = 1525107225
+        mocktime = 1600000000
         self.nodes[0].setmocktime(mocktime)
         self.generate(self.nodes[0], COINBASE_MATURITY + 1)
 

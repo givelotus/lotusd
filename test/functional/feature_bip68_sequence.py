@@ -5,7 +5,7 @@
 
 import time
 
-from test_framework.blocktools import create_block
+from test_framework.blocktools import create_block, prepare_block
 from test_framework.messages import XEC, COutPoint, CTransaction, CTxIn, CTxOut, ToHex
 from test_framework.script import CScript
 from test_framework.test_framework import BitcoinTestFramework
@@ -35,9 +35,11 @@ class BIP68Test(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-noparkdeepreorg",
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=1",
             ],
             [
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=0",
                 "-automaticunparking=1",
             ],
@@ -56,8 +58,9 @@ class BIP68Test(BitcoinTestFramework):
         self.log.info("Running test sequence-lock-unconfirmed-inputs")
         self.test_sequence_lock_unconfirmed_inputs()
 
-        self.log.info("Running test BIP68 not consensus before versionbits activation")
-        self.test_bip68_not_consensus()
+        self.log.info(
+            "Make sure BIP-68 txs always work, independent of when they are activated on Bitcoin.")
+        self.test_version2_relay()
 
         self.log.info("Activating BIP68 (and 112/113)")
         self.activateCSV()
@@ -411,7 +414,7 @@ class BIP68Test(BitcoinTestFramework):
         # tx3 to be removed.
         for i in range(2):
             block = create_block(tmpl=tmpl, ntime=cur_time)
-            block.solve()
+            prepare_block(block)
             tip = block.hash_int
             assert_equal(
                 None if i == 1 else "inconclusive",
@@ -439,54 +442,6 @@ class BIP68Test(BitcoinTestFramework):
     # versionbits activation.  If more blocks are mined prior to this test
     # being run, then it's possible the test has activated the soft fork, and
     # this test should be moved to run earlier, or deleted.
-    def test_bip68_not_consensus(self):
-        assert_equal(self.get_csv_status(), False)
-        tx1 = self.wallet.send_self_transfer(from_node=self.nodes[0])["tx"]
-
-        # Make an anyone-can-spend transaction
-        tx2 = CTransaction()
-        tx2.nVersion = 1
-        tx2.vin = [CTxIn(COutPoint(tx1.txid_int, 0), nSequence=0)]
-        tx2.vout = [
-            CTxOut(int(tx1.vout[0].nValue - self.relayfee * XEC), CScript([b"a"]))
-        ]
-
-        # sign tx2
-        self.wallet.sign_tx(tx=tx2)
-        pad_tx(tx2)
-        tx2_raw = tx2.serialize().hex()
-
-        self.wallet.sendrawtransaction(from_node=self.nodes[0], tx_hex=tx2_raw)
-
-        # Now make an invalid spend of tx2 according to BIP68
-        # 100 block relative locktime
-        sequence_value = 100
-
-        tx3 = CTransaction()
-        tx3.nVersion = 2
-        tx3.vin = [CTxIn(COutPoint(tx2.txid_int, 0), nSequence=sequence_value)]
-        tx3.vout = [
-            CTxOut(int(tx2.vout[0].nValue - self.relayfee * XEC), CScript([b"a"]))
-        ]
-        pad_tx(tx3)
-
-        assert_raises_rpc_error(
-            -26,
-            NOT_FINAL_ERROR,
-            self.wallet.sendrawtransaction,
-            from_node=self.nodes[0],
-            tx_hex=tx3.serialize().hex(),
-        )
-
-        # make a block that violates bip68; ensure that the tip updates
-        block = create_block(
-            tmpl=self.nodes[0].getblocktemplate(), txlist=[tx1, tx2, tx3]
-        )
-        block.solve()
-
-        assert_equal(None, self.nodes[0].submitblock(ToHex(block)))
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
-
     def activateCSV(self):
         # activation should happen at block height 576
         csv_activation_height = 576

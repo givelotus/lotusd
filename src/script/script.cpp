@@ -62,8 +62,8 @@ std::string GetOpName(opcodetype opcode) {
         // control
         case OP_NOP:
             return "OP_NOP";
-        case OP_VER:
-            return "OP_VER";
+        case OP_SCRIPTTYPE:
+            return "OP_SCRIPTTYPE";
         case OP_IF:
             return "OP_IF";
         case OP_NOTIF:
@@ -178,10 +178,10 @@ std::string GetOpName(opcodetype opcode) {
             return "OP_DIV";
         case OP_MOD:
             return "OP_MOD";
-        case OP_LSHIFT:
-            return "OP_LSHIFT";
-        case OP_RSHIFT:
-            return "OP_RSHIFT";
+        case OP_RAWLEFTBITSHIFT:
+            return "OP_RAWLEFTBITSHIFT";
+        case OP_MULPOW2:
+            return "OP_MULPOW2";
         case OP_BOOLAND:
             return "OP_BOOLAND";
         case OP_BOOLOR:

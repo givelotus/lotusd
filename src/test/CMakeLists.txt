@@ -37,6 +37,7 @@ gen_json_header(JSON_HEADERS
 	data/intcode_invalid.json
 	data/script_tests.json
 	data/sighash.json
+	data/sighash_lotus.json
 	data/tx_invalid.json
 	data/tx_valid.json
 )
@@ -116,7 +117,7 @@ if(BUILD_CHRONIK)
 	)
 endif()
 
-add_boost_unit_tests_to_suite(bitcoin test_bitcoin
+add_boost_unit_tests_to_suite(bitcoin test_lotus
 	fixture.cpp
 	jsonutil.cpp
 	scriptflags.cpp
@@ -155,6 +156,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		bswap_tests.cpp
 		cashaddr_tests.cpp
 		cashaddrenc_tests.cpp
+		xaddress_tests.cpp
 		chainstate_write_tests.cpp
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
@@ -190,21 +192,22 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		key_tests.cpp
 		lcg_tests.cpp
 		logging_tests.cpp
+		malfix_tests.cpp
 		mempool_tests.cpp
 		merkle_tests.cpp
 		merkleblock_tests.cpp
 		miner_tests.cpp
-		minerfund_tests.cpp
 		monolith_opcodes_tests.cpp
 		multisig_tests.cpp
 		net_peer_eviction_tests.cpp
 		net_tests.cpp
 		netbase_tests.cpp
+		op_mulpow2_tests.cpp
 		op_reversebytes_tests.cpp
+		op_rawleftbitshift_tests.cpp
 		orphanage_tests.cpp
 		pcp_tests.cpp
 		pmt_tests.cpp
-		policy_block_tests.cpp
 		policy_fee_tests.cpp
 		policyestimator_tests.cpp
 		pool_tests.cpp
@@ -236,6 +239,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		shortidprocessor_tests.cpp
 		sigcache_tests.cpp
 		sigencoding_tests.cpp
+		sighash_lotus_tests.cpp
 		sighash_tests.cpp
 		sighashtype_tests.cpp
 		sigcheckcount_tests.cpp
@@ -243,6 +247,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		sock_tests.cpp
 		streams_tests.cpp
 		sync_tests.cpp
+		taproot_tests.cpp
 		timedata_tests.cpp
 		torcontrol_tests.cpp
 		transaction_tests.cpp
@@ -311,19 +316,17 @@ function(add_boost_test_runners_with_upgrade_activated SUITE EXECUTABLE)
 			--
 			"-printtoconsole=1"
 			"-testsuitename=Bitcoin ABC unit tests with next upgrade activated"
-			# May. 16th, 2025 at 08:00:00
-			-mengeractivationtime=1747382400
 		)
 	endforeach()
 endfunction()
 
-add_boost_test_runners_with_upgrade_activated(bitcoin test_bitcoin)
+add_boost_test_runners_with_upgrade_activated(bitcoin test_lotus)
 
-target_link_libraries(test_bitcoin rpcclient testutil)
+target_link_libraries(test_lotus rpcclient testutil)
 if(TARGET bitcoinconsensus-shared)
-	target_link_libraries(test_bitcoin bitcoinconsensus-shared)
+	target_link_libraries(test_lotus bitcoinconsensus-shared)
 else()
-	target_link_libraries(test_bitcoin bitcoinconsensus)
+	target_link_libraries(test_lotus bitcoinconsensus)
 endif()
 
 add_subdirectory(fuzz)

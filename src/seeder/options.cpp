@@ -27,7 +27,7 @@ int CDnsSeedOpts::ParseCommandLine(int argc, const char **argv) {
             PACKAGE_NAME " Seeder " + FormatFullVersion() + "\n";
         if (HelpRequested(*argsManager)) {
             strUsage +=
-                "\nUsage: bitcoin-seeder -host=<host> -ns=<ns> "
+                "\nUsage: lotus-seeder -host=<host> -ns=<ns> "
                 "[-mbox=<mbox>] [-threads=<threads>] [-port=<port>]\n\n" +
                 argsManager->GetHelpMessage();
         }
@@ -106,6 +106,7 @@ int CDnsSeedOpts::ParseCommandLine(int argc, const char **argv) {
         filter_whitelist.insert(NODE_NETWORK | NODE_BLOOM);
         filter_whitelist.insert(NODE_NETWORK_LIMITED);
         filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_BLOOM);
+        filter_whitelist.insert(NODE_NETWORK | NODE_BLOOM | NODE_NETWORK_LIMITED);
     }
     return CONTINUE_EXECUTION;
 }

@@ -31,7 +31,7 @@ static std::vector<uint8_t> Serialize(const CScript &s) {
 }
 
 static bool Verify(const CScript &scriptSig, const CScript &scriptPubKey,
-                   bool fStrict, ScriptError &err) {
+                   ScriptError &err) {
     // Create dummy to/from transactions:
     CMutableTransaction txFrom;
     txFrom.vout.resize(1);
@@ -44,12 +44,11 @@ static bool Verify(const CScript &scriptSig, const CScript &scriptPubKey,
     txTo.vin[0].scriptSig = scriptSig;
     txTo.vout[0].nValue = SATOSHI;
 
-    return VerifyScript(
-        scriptSig, scriptPubKey,
-        (fStrict ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE) |
-            SCRIPT_ENABLE_SIGHASH_FORKID,
-        MutableTransactionSignatureChecker(&txTo, 0, txFrom.vout[0].nValue),
-        &err);
+    PrecomputedTransactionData txdata(txTo, std::vector(txTo.vout));
+    return VerifyScript(scriptSig, scriptPubKey, SCRIPT_ENABLE_SIGHASH_FORKID,
+                        MutableTransactionSignatureChecker(
+                            &txTo, 0, txFrom.vout[0].nValue, txdata),
+                        &err);
 }
 
 BOOST_FIXTURE_TEST_SUITE(script_p2sh_tests, BasicTestingSetup)
@@ -115,15 +114,14 @@ BOOST_AUTO_TEST_CASE(sign) {
     SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
     for (int i = 0; i < 8; i++) {
         CTransaction tx(txTo[i]);
-        PrecomputedTransactionData txdata(tx);
+        PrecomputedTransactionData txdata(tx, {txFrom.vout[i]});
         for (int j = 0; j < 8; j++) {
             CScript sigSave = txTo[i].vin[0].scriptSig;
             txTo[i].vin[0].scriptSig = txTo[j].vin[0].scriptSig;
             bool sigOK =
                 !CScriptCheck(txFrom.vout[txTo[i].vin[0].prevout.GetN()],
                               CTransaction(txTo[i]), signature_cache, 0,
-                              SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC |
-                                  SCRIPT_ENABLE_SIGHASH_FORKID,
+                              SCRIPT_ENABLE_SIGHASH_FORKID,
                               false, txdata)()
                      .has_value();
             if (i == j) {
@@ -151,8 +149,8 @@ BOOST_AUTO_TEST_CASE(norecurse) {
     scriptSig << Serialize(invalidAsScript);
 
     // Should not verify, because it will try to execute OP_INVALIDOPCODE
-    BOOST_CHECK(!Verify(scriptSig, p2sh, true, err));
-    BOOST_CHECK_MESSAGE(err == ScriptError::BAD_OPCODE, ScriptErrorString(err));
+    BOOST_CHECK(!Verify(scriptSig, p2sh, err));
+    BOOST_CHECK_MESSAGE(err == ScriptError::DISABLED_OPCODE, ScriptErrorString(err));
 
     // Try to recur, and verification should succeed because
     // the inner HASH160 <> EQUAL should only check the hash:
@@ -160,7 +158,7 @@ BOOST_AUTO_TEST_CASE(norecurse) {
     CScript scriptSig2;
     scriptSig2 << Serialize(invalidAsScript) << Serialize(p2sh);
 
-    BOOST_CHECK(Verify(scriptSig2, p2sh2, true, err));
+    BOOST_CHECK(Verify(scriptSig2, p2sh2, err));
     BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
 }
 
@@ -277,11 +275,8 @@ BOOST_AUTO_TEST_CASE(switchover) {
 
     CScript fund = GetScriptForDestination(ScriptHash(notValid));
 
-    // Validation should succeed under old rules (hash is correct):
-    BOOST_CHECK(Verify(scriptSig, fund, false, err));
-    BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
     // Fail under new:
-    BOOST_CHECK(!Verify(scriptSig, fund, true, err));
+    BOOST_CHECK(!Verify(scriptSig, fund, err));
     BOOST_CHECK_MESSAGE(err == ScriptError::EQUALVERIFY,
                         ScriptErrorString(err));
 }

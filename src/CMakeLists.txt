@@ -1,6 +1,6 @@
 # Copyright (c) 2017 The Bitcoin developers
 
-project(bitcoind)
+project(lotus-binaries)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,10 +16,11 @@ endforeach()
 
 option(BUILD_WALLET "Activate the wallet functionality" ON)
 option(BUILD_ZMQ "Activate the ZeroMQ functionalities" ON)
-option(BUILD_CLI "Build bitcoin-cli" ON)
-option(BUILD_TX "Build bitcoin-tx" ON)
-option(BUILD_QT "Build bitcoin-qt" ON)
-option(BUILD_SEEDER "Build bitcoin-seeder" ON)
+option(BUILD_BITCOIN_NNG "Activate the NNG functionalities" ON)
+option(BUILD_CLI "Build lotus-cli" ON)
+option(BUILD_TX "Build lotus-tx" ON)
+option(BUILD_QT "Build lotus-qt" ON)
+option(BUILD_SEEDER "Build lotus-seeder" ON)
 option(BUILD_LIBBITCOINCONSENSUS "Build the bitcoinconsenus shared library" ON)
 option(BUILD_CHAINSTATE "Build bitcoin-chainstate" OFF)
 option(BUILD_IGUANA "Activate the Iguana debugger" ON)
@@ -81,6 +82,7 @@ native_add_cmake_flags(
 	"-DBUILD_CHRONIK=OFF"
 	"-DBUILD_QT=OFF"
 	"-DBUILD_ZMQ=OFF"
+	"-DBUILD_BITCOIN_NNG=OFF"
 	"-DENABLE_QRCODE=OFF"
 	"-DUSE_JEMALLOC=OFF"
 	"-DENABLE_CLANG_TIDY=OFF"
@@ -346,17 +348,16 @@ function(find_git_head_logs_file RESULT)
 	find_package(Git)
 	if(GIT_FOUND)
 		execute_process(
-			COMMAND "${GIT_EXECUTABLE}" "rev-parse" "--show-toplevel"
+			COMMAND "${GIT_EXECUTABLE}" "rev-parse" "--path-format=absolute" "--git-path" "logs/HEAD"
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-			OUTPUT_VARIABLE GIT_ROOT
+			OUTPUT_VARIABLE GIT_HEAD_LOGS_FILE
 			RESULT_VARIABLE GIT_RESULT
 			OUTPUT_STRIP_TRAILING_WHITESPACE
 			ERROR_QUIET
 		)
 
 		if(GIT_RESULT EQUAL 0)
-			set(GIT_LOGS_DIR "${GIT_ROOT}/.git/logs")
-			set(GIT_HEAD_LOGS_FILE "${GIT_LOGS_DIR}/HEAD")
+			get_filename_component(GIT_LOGS_DIR "${GIT_HEAD_LOGS_FILE}" DIRECTORY)
 			# If the .git/logs/HEAD does not exist, create it
 			if(NOT EXISTS "${GIT_HEAD_LOGS_FILE}")
 				file(MAKE_DIRECTORY "${GIT_LOGS_DIR}")
@@ -419,6 +420,7 @@ add_library(util
 	util/exception.cpp
 	util/fs.cpp
 	util/fs_helpers.cpp
+	util/intmath.cpp
 	util/moneystr.cpp
 	util/readwritefile.cpp
 	util/settings.cpp
@@ -527,6 +529,7 @@ add_library(common
 	common/system.cpp
 	cashaddr.cpp
 	cashaddrenc.cpp
+	addresses/xaddress.cpp
 	chainparams.cpp
 	config.cpp
 	consensus/merkle.cpp
@@ -572,6 +575,7 @@ add_library(script
 	script/sign.cpp
 	script/signingprovider.cpp
 	script/standard.cpp
+	script/taproot.cpp
 )
 
 target_link_libraries(script common)
@@ -687,9 +691,6 @@ add_library(server
 	policy/packages.cpp
 	policy/settings.cpp
 	pow/aserti32d.cpp
-	pow/daa.cpp
-	pow/eda.cpp
-	pow/grasberg.cpp
 	pow/pow.cpp
 	rest.cpp
 	rpc/abc.cpp
@@ -715,7 +716,6 @@ add_library(server
 	txpool.cpp
 	validation.cpp
 	validationinterface.cpp
-	versionbits.cpp
 )
 
 target_include_directories(server PRIVATE leveldb/helpers/memenv)
@@ -746,19 +746,19 @@ if(BUILD_WALLET)
 	add_subdirectory(wallet)
 	target_link_libraries(server wallet)
 
-	# bitcoin-wallet
-	add_executable(bitcoin-wallet bitcoin-wallet.cpp)
-	generate_windows_version_info(bitcoin-wallet
+	# lotus-wallet
+	add_executable(lotus-wallet bitcoin-wallet.cpp)
+	generate_windows_version_info(lotus-wallet
 		DESCRIPTION "CLI tool for ${PACKAGE_NAME} wallets"
 	)
 
-	target_link_libraries(bitcoin-wallet wallet-tool common util)
+	target_link_libraries(lotus-wallet wallet-tool common util)
 
-	add_to_symbols_check(bitcoin-wallet)
-	add_to_security_check(bitcoin-wallet)
+	add_to_symbols_check(lotus-wallet)
+	add_to_security_check(lotus-wallet)
 
-	install_target(bitcoin-wallet)
-	install_manpages(bitcoin-wallet)
+	install_target(lotus-wallet)
+	install_manpages(lotus-wallet)
 else()
 	target_sources(server PRIVATE dummywallet.cpp)
 endif()
@@ -773,6 +773,11 @@ if(BUILD_ZMQ)
 	target_link_libraries(zmq leveldb)
 endif()
 
+if(BUILD_BITCOIN_NNG)
+	add_subdirectory(nng_interface)
+	target_link_libraries(server nng_interface)
+endif()
+
 # RPC client support
 add_library(rpcclient
 	compat/stdin.cpp
@@ -781,42 +786,42 @@ add_library(rpcclient
 
 target_link_libraries(rpcclient univalue util)
 
-# bitcoin-seeder
+# lotus-seeder
 if(BUILD_SEEDER)
 	add_subdirectory(seeder)
 endif()
 
-# bitcoin-cli
+# lotus-cli
 if(BUILD_CLI)
-	add_executable(bitcoin-cli bitcoin-cli.cpp)
-	generate_windows_version_info(bitcoin-cli
+	add_executable(lotus-cli bitcoin-cli.cpp)
+	generate_windows_version_info(lotus-cli
 		DESCRIPTION "JSON-RPC client for ${PACKAGE_NAME}"
 	)
 
-	target_link_libraries(bitcoin-cli common rpcclient)
-	link_event(bitcoin-cli event)
+	target_link_libraries(lotus-cli common rpcclient)
+	link_event(lotus-cli event)
 
-	add_to_symbols_check(bitcoin-cli)
-	add_to_security_check(bitcoin-cli)
+	add_to_symbols_check(lotus-cli)
+	add_to_security_check(lotus-cli)
 
-	install_target(bitcoin-cli)
-	install_manpages(bitcoin-cli)
+	install_target(lotus-cli)
+	install_manpages(lotus-cli)
 endif()
 
-# bitcoin-tx
+# lotus-tx
 if(BUILD_TX)
-	add_executable(bitcoin-tx bitcoin-tx.cpp)
-	generate_windows_version_info(bitcoin-tx
+	add_executable(lotus-tx bitcoin-tx.cpp)
+	generate_windows_version_info(lotus-tx
 		DESCRIPTION "CLI Bitcoin transaction editor utility"
 	)
 
-	target_link_libraries(bitcoin-tx bitcoinconsensus)
+	target_link_libraries(lotus-tx bitcoinconsensus)
 
-	add_to_symbols_check(bitcoin-tx)
-	add_to_security_check(bitcoin-tx)
+	add_to_symbols_check(lotus-tx)
+	add_to_security_check(lotus-tx)
 
-	install_target(bitcoin-tx)
-	install_manpages(bitcoin-tx)
+	install_target(lotus-tx)
+	install_manpages(lotus-tx)
 endif()
 
 # bitcoin-chainstate
@@ -875,8 +880,6 @@ if(BUILD_CHAINSTATE)
 		policy/policy.cpp
 		policy/settings.cpp
 		pow/aserti32d.cpp
-		pow/daa.cpp
-		pow/eda.cpp
 		pow/pow.cpp
 		primitives/block.cpp
 		primitives/transaction.cpp
@@ -919,7 +922,6 @@ if(BUILD_CHAINSTATE)
 		util/tokenpipe.cpp
 		validation.cpp
 		validationinterface.cpp
-		versionbits.cpp
 		warnings.cpp
 
 		# Bitcoin ABC specific dependencies that will not go away with Core backports
@@ -991,17 +993,17 @@ if(BUILD_CHAINSTATE)
 	add_to_security_check(bitcoin-chainstate)
 endif()
 
-# bitcoind
-add_executable(bitcoind bitcoind.cpp)
-target_link_libraries(bitcoind server)
-generate_windows_version_info(bitcoind
-	DESCRIPTION "Bitcoin node with a JSON-RPC server"
+# lotusd
+add_executable(lotusd bitcoind.cpp)
+target_link_libraries(lotusd server)
+generate_windows_version_info(lotusd
+	DESCRIPTION "Lotus node with a JSON-RPC server"
 )
-add_to_symbols_check(bitcoind)
-add_to_security_check(bitcoind)
+add_to_symbols_check(lotusd)
+add_to_security_check(lotusd)
 
-install_target(bitcoind)
-install_manpages(bitcoind)
+install_target(lotusd)
+install_manpages(lotusd)
 
 # Bitcoin-qt
 if(BUILD_QT)

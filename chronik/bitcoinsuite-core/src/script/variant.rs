@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     error::DataError,
     hash::{Hashed, ShaRmd160},
-    script::{PubKeyVariant, Script},
+    script::{PubKey, PubKeyVariant, Script},
 };
 
 /// Errors indicating a script type couldn't be parsed.
@@ -32,6 +32,9 @@ pub enum ScriptType {
     /// Pay-to-public-key.
     /// Script: `<pubkey> OP_CHECKSIG`
     P2PK,
+    /// Pay-to-Taproot.
+    /// Script: `OP_SCRIPTTYPE OP_1 <33-byte commitment> [<32-byte state>]`
+    P2TR,
     /// Other kinds of script.
     Other,
 }
@@ -48,6 +51,9 @@ pub enum ScriptVariant {
     /// Pay-to-public-key.
     /// Script: `<pubkey> OP_CHECKSIG`
     P2PK(PubKeyVariant),
+    /// Pay-to-Taproot.
+    /// Script: `OP_SCRIPTTYPE OP_1 <33-byte commitment> [<32-byte state>]`
+    P2TR(PubKey, Option<[u8; 32]>),
     /// Other kinds of script.
     Other(Script),
 }
@@ -86,6 +92,10 @@ impl ScriptVariant {
     ///     )),
     /// );
     /// assert_eq!(
+    ///     ScriptVariant::from_type_and_payload(ScriptType::P2TR, &[2; 33])?,
+    ///     ScriptVariant::P2TR(PubKey([2; 33]), None),
+    /// );
+    /// assert_eq!(
     ///     ScriptVariant::from_type_and_payload(ScriptType::Other, &[1, 2])?,
     ///     ScriptVariant::Other(Script::new(vec![1, 2].into())),
     /// );
@@ -101,6 +111,22 @@ impl ScriptVariant {
             P2PKH => ScriptVariant::P2PKH(ShaRmd160(parse_array(payload)?)),
             P2SH => ScriptVariant::P2SH(ShaRmd160(parse_array(payload)?)),
             P2PK => ScriptVariant::P2PK(payload.try_into()?),
+            P2TR => match payload.len() {
+                PubKey::SIZE => ScriptVariant::P2TR(
+                    PubKey(payload.try_into().unwrap()),
+                    None,
+                ),
+                65 => ScriptVariant::P2TR(
+                    PubKey(payload[..PubKey::SIZE].try_into().unwrap()),
+                    Some(payload[PubKey::SIZE..].try_into().unwrap()),
+                ),
+                actual => {
+                    return Err(DataError::InvalidLengthMulti {
+                        expected: vec![PubKey::SIZE, 65],
+                        actual,
+                    });
+                }
+            },
             Other => ScriptVariant::Other(Script::new(payload.to_vec().into())),
         })
     }
@@ -108,7 +134,7 @@ impl ScriptVariant {
     /// ```
     /// # use bitcoinsuite_core::{
     /// #     hash::ShaRmd160,
-    /// #     script::{Script, ScriptVariant},
+    /// #     script::{PubKey, Script, ScriptVariant},
     /// # };
     /// assert_eq!(
     ///     ScriptVariant::P2PKH(ShaRmd160([3; 20])).to_script().hex(),
@@ -117,6 +143,11 @@ impl ScriptVariant {
     /// assert_eq!(
     ///     ScriptVariant::P2SH(ShaRmd160([2; 20])).to_script().hex(),
     ///     "a914020202020202020202020202020202020202020287",
+    /// );
+    /// assert_eq!(
+    ///     ScriptVariant::P2TR(PubKey([2; 33]), None).to_script().hex(),
+    ///     "625121020202020202020202020202020202020202020202020202020202020202\
+    ///      020202",
     /// );
     /// ```
     pub fn to_script(&self) -> Script {
@@ -128,6 +159,9 @@ impl ScriptVariant {
             }
             ScriptVariant::P2PK(PubKeyVariant::Uncompressed(pk)) => {
                 Script::p2pk_uncompressed(pk)
+            }
+            ScriptVariant::P2TR(commitment, state) => {
+                Script::p2tr(commitment, *state)
             }
             ScriptVariant::Other(script) => script.clone(),
         }
@@ -142,6 +176,7 @@ impl FromStr for ScriptType {
             "p2pkh" => Ok(ScriptType::P2PKH),
             "p2sh" => Ok(ScriptType::P2SH),
             "p2pk" => Ok(ScriptType::P2PK),
+            "p2tr" => Ok(ScriptType::P2TR),
             "other" => Ok(ScriptType::Other),
             _ => Err(ScriptTypeError::UnknownScriptType(s.to_string())),
         }
@@ -158,6 +193,12 @@ impl Display for ScriptVariant {
             }
             ScriptVariant::P2PK(PubKeyVariant::Uncompressed(pk)) => {
                 write!(f, "p2pk({})", pk.hex())
+            }
+            ScriptVariant::P2TR(commitment, None) => {
+                write!(f, "p2tr({})", commitment.hex())
+            }
+            ScriptVariant::P2TR(commitment, Some(state)) => {
+                write!(f, "p2tr({}, {})", commitment.hex(), hex::encode(state))
             }
             ScriptVariant::Other(other) => write!(f, "other({})", other.hex()),
         }
@@ -189,6 +230,7 @@ mod tests {
         assert_eq!("p2pkh".parse::<ScriptType>()?, ScriptType::P2PKH);
         assert_eq!("p2sh".parse::<ScriptType>()?, ScriptType::P2SH);
         assert_eq!("p2pk".parse::<ScriptType>()?, ScriptType::P2PK);
+        assert_eq!("p2tr".parse::<ScriptType>()?, ScriptType::P2TR);
         assert_eq!("other".parse::<ScriptType>()?, ScriptType::Other);
         assert_eq!(
             "foobar".parse::<ScriptType>(),
@@ -231,6 +273,14 @@ mod tests {
                 actual: 64,
             },
         );
+        assert_eq!(
+            ScriptVariant::from_type_and_payload(ScriptType::P2TR, &[2; 20])
+                .unwrap_err(),
+            DataError::InvalidLengthMulti {
+                expected: vec![33, 65],
+                actual: 20,
+            },
+        );
         Ok(())
     }
 
@@ -256,6 +306,17 @@ mod tests {
             "p2pk(040404040404040404040404040404040404040404040404040404040404\
                   040404040404040404040404040404040404040404040404040404040404\
                   0404040404)",
+        );
+        assert_eq!(
+            P2TR(PubKey([2; 33]), None).to_string(),
+            "p2tr(020202020202020202020202020202020202020202020202020202020202\
+                  020202)",
+        );
+        assert_eq!(
+            P2TR(PubKey([2; 33]), Some([5; 32])).to_string(),
+            "p2tr(020202020202020202020202020202020202020202020202020202020202\
+                  020202, 0505050505050505050505050505050505050505050505050505\
+                  050505050505)",
         );
         assert_eq!(
             Other(Script::new(hex!("deafbeef").to_vec().into())).to_string(),

@@ -80,8 +80,37 @@ enum class ScriptError {
     ILLEGAL_FORKID,
     MUST_USE_FORKID,
 
+    /* OP_NUM2BIN size limit exceeded */
+    INVALID_NUM2BIN_SIZE,
+
     /* Auxiliary errors (unused by interpreter) */
     SIGCHECKS_LIMIT_EXCEEDED,
+
+    /* OP_SCRIPTTYPE should never be executed in an executed script, it's only a
+       marker */
+    INVALID_OP_SCRIPTTYPE,
+    /* Script type not supported */
+    SCRIPTTYPE_INVALID_TYPE,
+    /* Script not formatted in accordance with script type */
+    SCRIPTTYPE_MALFORMED_SCRIPT,
+
+    /* Key spend path for Taproot must use Lotus sighash */
+    TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH,
+    /* Key spend path for Taproot must Schnorr signatures */
+    TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
+    /* Key spend path for Taproot failed */
+    TAPROOT_VERIFY_SIGNATURE_FAILED,
+    /* Taproot annex not supported */
+    TAPROOT_ANNEX_NOT_SUPPORTED,
+    /* Control block not of size 33+32n */
+    TAPROOT_WRONG_CONTROL_SIZE,
+    /* Control block doesn't verify commitment */
+    TAPROOT_VERIFY_COMMITMENT_FAILED,
+    /* Taproot leaf version not supported */
+    TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
+
+    /* Taproot is being phased out */
+    TAPROOT_PHASEOUT,
 
     ERROR_COUNT,
 };

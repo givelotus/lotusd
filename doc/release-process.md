@@ -18,8 +18,8 @@ Bitcoin ABC Release Process
 
 3. Verify tests passed
     - Run `arc lint --everything` and check there is no linter error
-    - Ensure that bitcoind and bitcoin-qt run with no issue on all supported platforms.
-      Manually test bitcoin-qt by sending some transactions and navigating through the menus.
+    - Ensure that lotusd and lotus-qt run with no issue on all supported platforms.
+      Manually test lotus-qt by sending some transactions and navigating through the menus.
 
 4. Add git tag for release
     a. Create the tag: `git tag vM.m.r` (M = major version, m = minor version, r = revision)
@@ -40,7 +40,7 @@ Bitcoin ABC Release Process
 
 9. Upload GUIX Builds to [bitcoinabc.org](https://download.bitcoinabc.org/)
 
-10. Create a [GitHub release](https://github.com/Bitcoin-ABC/bitcoin-abc/releases):
+10. Create a [GitHub release](https://github.com/LogosFoundation/lotusd/releases):
     `contrib/release/github-release.sh -a <path to release binaries> -t <release tag> -o <file containing your Github OAuth token>`
 
 11. Create [Ubuntu PPA packages](https://launchpad.net/~bitcoin-abc/+archive/ubuntu/ppa):

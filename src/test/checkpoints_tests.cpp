@@ -13,6 +13,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <consensus/validation.h>
+#include <hash.h>
 #include <streams.h>
 #include <uint256.h>
 #include <util/chaintype.h>
@@ -25,7 +26,7 @@
 
 #include <memory>
 
-BOOST_FIXTURE_TEST_SUITE(checkpoints_tests, TestingSetup)
+BOOST_FIXTURE_TEST_SUITE(checkpoints_tests, RegTestingSetup)
 
 BOOST_AUTO_TEST_CASE(sanity) {
     const auto params = CreateChainParams(*m_node.args, ChainType::MAIN);
@@ -34,16 +35,14 @@ BOOST_AUTO_TEST_CASE(sanity) {
         "0000000069e244f73d78e8fd29ba2fd2ed618bd6fa2ee92559f542fdb26e7c1d");
     BlockHash p134444 = *BlockHash::FromHex(
         "00000000000005b12ffd4cd315cd34ffd4a594f430ac814c91184a0d42d2b0fe");
-    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 11111, p11111));
-    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 134444, p134444));
 
-    // Wrong hashes at checkpoints should fail:
-    BOOST_CHECK(!Checkpoints::CheckBlock(checkpoints, 11111, p134444));
-    BOOST_CHECK(!Checkpoints::CheckBlock(checkpoints, 134444, p11111));
+    /* TODO: Add sanity checks once we have any checkpoints */
 
-    // ... but any hash not at a checkpoint should succeed:
-    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 11111 + 1, p134444));
-    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 134444 + 1, p11111));
+    // Wrong hashes without any checkpoints succeeds:
+    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 11111, p134444));
+    BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 134444, p11111));
+
+    /* TODO: Add sanity checks for heights + 1 */
 }
 
 /**
@@ -58,16 +57,16 @@ BOOST_AUTO_TEST_CASE(sanity) {
 BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
     const CCheckpointData test_checkpoints = {
         .mapCheckpoints = {{2, *BlockHash::FromHex(
-                                   "000000006a625f06636b8bb6ac7b960a8d03705"
-                                   "d1ace08b1a19da3fdcc99ddbd")}},
+                                   "184834e12fe7d83c58c5dd50b4a0b2dbfceb859"
+                                   "63682eedce497d534330b4316")}},
     };
     const CBlockIndex *pindex = nullptr;
 
-    // Start with mainnet genesis block
+    // Start with regtest genesis block
     CBlockHeader headerG = Assert(m_node.chainman)->GetParams().GenesisBlock();
-    BOOST_CHECK(headerG.GetHash() ==
-                uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f"
-                         "1b60a8ce26f"));
+    BOOST_CHECK_EQUAL(headerG.GetHash(),
+                      uint256S("106050de32db2a668422cc34aa0f96d739d4189b8e5d6e7"
+                               "63deeca527bba9c9f"));
 
     {
         BlockValidationState state;
@@ -76,54 +75,45 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
         pindex = nullptr;
     }
 
-    CBlockHeader headerA, headerB, headerAA, headerAB;
-    DataStream stream = DataStream{ParseHex(
-        "010000006fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000"
-        "000000982051fd1e4ba744bbbe680e1fee14677ba1a3c3540bf7b1cdb606e85723"
-        "3e0e61bc6649ffff001d01e3629901010000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0704ffff001d0104ffff"
-        "ffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390"
-        "813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166"
-        "bf621e73a82cbf2342c858eeac00000000")};
-    stream >> headerA;
-    BOOST_CHECK(headerA.GetHash() ==
-                uint256S("00000000839a8e6886ab5951d76f411475428afc90947ee320161"
-                         "bbf18eb6048"));
-    BOOST_CHECK(headerA.hashPrevBlock == headerG.GetHash());
+    CBlockHeader headerA = headerG;
+    headerA.hashPrevBlock = headerG.GetHash();
+    headerA.SetBlockTime(headerG.GetBlockTime() + 120);
+    headerA.nNonce = 10000;
+    headerA.nHeight = 1;
+    BOOST_CHECK_EQUAL(headerA.GetHash(),
+                      uint256S("66fa9236d849a1dabaa4e95afa9806388f720095c15a5be"
+                               "c8aed3107000cacd4"));
+    BOOST_CHECK_EQUAL(headerA.hashPrevBlock, headerG.GetHash());
 
-    stream = DataStream{ParseHex(
-        "010000004860eb18bf1b1620e37e9490fc8a427514416fd75159ab86688e9a8300"
-        "000000d5fdcc541e25de1c7a5addedf24858b8bb665c9f36ef744ee42c316022c9"
-        "0f9bb0bc6649ffff001d08d2bd6101010000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0704ffff001d010bffff"
-        "ffff0100f2052a010000004341047211a824f55b505228e4c3d5194c1fcfaa15a4"
-        "56abdf37f9b9d97a4040afc073dee6c89064984f03385237d92167c13e236446b4"
-        "17ab79a0fcae412ae3316b77ac00000000")};
-    stream >> headerAA;
-    BOOST_CHECK(headerAA.GetHash() ==
-                uint256S("000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da"
-                         "3fdcc99ddbd"));
-    BOOST_CHECK(headerAA.hashPrevBlock == headerA.GetHash());
+    CBlockHeader headerAA = headerG;
+    headerAA.hashPrevBlock = headerA.GetHash();
+    headerAA.SetBlockTime(headerA.GetBlockTime() + 120);
+    headerAA.nNonce = 10000;
+    headerAA.nHeight = 2;
+    BOOST_CHECK_EQUAL(headerAA.GetHash(),
+                      uint256S("184834e12fe7d83c58c5dd50b4a0b2dbfceb85963682eed"
+                               "ce497d534330b4316"));
+    BOOST_CHECK_EQUAL(headerAA.hashPrevBlock, headerA.GetHash());
 
-    stream = DataStream{ParseHex(
-        "000000206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000"
-        "000000bff4e0fd76ec3e9c8853811dec34dda8d5debb24d4113d94235fd4b24bb2"
-        "92981b70995cffff001d4e6e050001020000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0d51026302082f454233"
-        "322e302fffffffff0100f2052a01000000232103c91f2fa16c94c92d08629eeb8f"
-        "d681658d49f2b3016b13336d67d79f858dbc71ac00000000")};
-    stream >> headerB;
-    BOOST_CHECK(headerB.hashPrevBlock == headerG.GetHash());
+    CBlockHeader headerB = headerG;
+    headerB.hashPrevBlock = headerG.GetHash();
+    headerB.SetBlockTime(headerG.GetBlockTime() + 1);
+    headerB.nNonce = 20000;
+    headerB.nHeight = 1;
+    BOOST_CHECK_EQUAL(headerB.GetHash(),
+                      uint256S("540810fbed7684a5c3f55b2b14492b3199fa2725550559a"
+                               "3a5aeb22accc2e091"));
+    BOOST_CHECK_EQUAL(headerB.hashPrevBlock, headerG.GetHash());
 
-    stream = DataStream{ParseHex(
-        "000000204860eb18bf1b1620e37e9490fc8a427514416fd75159ab86688e9a8300"
-        "0000003800b1dd09f3f1a1c9e62ce8dca6d1e6caacc9a02d178ef6ad95527b49ff"
-        "863f8282995cffff001d2cc70f0001020000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0d52024902082f454233"
-        "322e302fffffffff0100f2052a010000002321020a56690eb0e2454c1f362d3599"
-        "89198a0b23505578be4164a65521ee7751eb1dac00000000")};
-    stream >> headerAB;
-    BOOST_CHECK(headerAB.hashPrevBlock == headerA.GetHash());
+    CBlockHeader headerAB = headerG;
+    headerAB.hashPrevBlock = headerA.GetHash();
+    headerAB.SetBlockTime(headerG.GetBlockTime() + 2);
+    headerAB.nNonce = 20001;
+    headerAB.nHeight = 2;
+    BOOST_CHECK_EQUAL(headerAB.GetHash(),
+                      uint256S("244a4e6240d3374d2a977e37327d3a534fb309a81bf5fa1"
+                               "37def5de3d0b01347"));
+    BOOST_CHECK_EQUAL(headerAB.hashPrevBlock, headerA.GetHash());
 
     // Headers A and AA should be accepted
     {
@@ -150,7 +140,8 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
         BOOST_CHECK(!m_node.chainman->ProcessNewBlockHeaders(
             {headerB}, true, state, &pindex, test_checkpoints));
         BOOST_CHECK(state.IsInvalid());
-        BOOST_CHECK(state.GetRejectReason() == "bad-fork-prior-to-checkpoint");
+        BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                          "bad-fork-prior-to-checkpoint");
         BOOST_CHECK(pindex == nullptr);
     }
 
@@ -167,7 +158,7 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
         BOOST_CHECK(!m_node.chainman->ProcessNewBlockHeaders(
             {headerAB}, true, state, &pindex, test_checkpoints));
         BOOST_CHECK(state.IsInvalid());
-        BOOST_CHECK(state.GetRejectReason() == "checkpoint mismatch");
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "checkpoint mismatch");
         BOOST_CHECK(pindex == nullptr);
     }
 
