@@ -1,27 +1,17 @@
-FROM debian:bookworm-slim
-
+FROM ubuntu:24.04
 ARG RELEASE_ARCHIVE
-COPY "${RELEASE_ARCHIVE}" /tmp
-
-RUN tar xzf "/tmp/${RELEASE_ARCHIVE}" -C /usr/local --strip-components=1 --exclude="*-qt"
-RUN rm -f "/tmp/${RELEASE_ARCHIVE}"
-
-RUN groupadd -r bitcoin
-RUN useradd -rmg bitcoin bitcoin
-
-ENV BITCOIN_DATA /data
-
-# Set permissions on the data directory
-RUN mkdir "${BITCOIN_DATA}"
-RUN chown -R bitcoin:bitcoin "${BITCOIN_DATA}"
-RUN ln -sfn "$BITCOIN_DATA" /home/bitcoin/.bitcoin
-RUN chown -h bitcoin:bitcoin /home/bitcoin/.bitcoin
-
-# We need to declare the volume AFTER the directory is created and permissions
-# are set, otherwise the changes won't be persistent
-VOLUME "${BITCOIN_DATA}"
-
-EXPOSE 10604 10605 11604 11605
-
-USER bitcoin
-CMD ["lotusd"]
+COPY "${RELEASE_ARCHIVE}" /tmp/release.tar.gz
+# Ubuntu 24.04 release ELF dependencies: libevent, pthread support, Berkeley DB,
+# and the C++ runtime. Remaining libc/libgcc dependencies are installed by apt.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libevent-2.1-7t64 libevent-pthreads-2.1-7t64 libdb5.3++t64 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && tar xzf /tmp/release.tar.gz -C /usr/local --strip-components=1 \
+    && rm /tmp/release.tar.gz
+RUN groupadd -r lotus && useradd -rmg lotus lotus \
+    && mkdir /data && chown lotus:lotus /data \
+    && ln -s /data /home/lotus/.lotus
+VOLUME /data
+EXPOSE 10604 10605
+USER lotus
+CMD ["lotusd", "-datadir=/data"]

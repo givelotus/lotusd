@@ -1,58 +1,14 @@
-# Running the Bitcoin ABC node software inside a Docker container
+# Lotus release container
 
-## Building your Docker image
+Download `lotus-v11.6.1-x86_64-linux-gnu.tar.gz` and its SHA256SUMS from
+https://github.com/givelotus/lotus/releases/tag/v11.6.1. Verify the checksum
+before building. Run from this directory with the archive beside the Dockerfile:
 
-From this directory:
-1. [Download](https://www.bitcoinabc.org/releases/) the release archive for your target system.
-   This example assumes that you downloaded the file `bitcoin-abc-0.22.3-x86_64-linux-gnu.tar.gz`
-2. Build the image:
-
-```shell
-docker build -t bitcoin-abc:0.22.3 --build-arg RELEASE_ARCHIVE=bitcoin-abc-0.22.3-x86_64-linux-gnu.tar.gz .
+```sh
+docker build -t lotus:11.6.1 --build-arg RELEASE_ARCHIVE=lotus-v11.6.1-x86_64-linux-gnu.tar.gz .
+docker run --rm -v lotus-data:/data lotus:11.6.1
 ```
 
-## Running the node software
-
-By default the container will execute `lotusd`:
-
-```shell
-docker run bitcoin-abc:0.22.3
-```
-
-To pass options to `lotusd`, pass them as arguments to the container:
-
-```shell
-docker run bitcoin-abc:0.22.3 lotusd -version
-```
-
-You can also run another tool by specifying it as an argument to the container:
-
-```shell
-docker run bitcoin-abc:0.22.3 lotus-cli -version
-```
-
-## Persistent data directory
-
-The container uses `/data` volume as the default data directory.
-To make this directory persistent across container runs, you can bind the
-volume to your local filesystem:
-
-```shell
-mkdir ~/bitcoin-abc-data
-docker run -v ~/bitcoin-abc-data:/data bitcoin-abc:0.22.3
-```
-
-**Note: Make sure the container has write access to you local folder.**
-
-## Communication between lotus-cli and lotusd
-
-In order to make `lotus-cli` and `lotusd` communicate together, they need to
-use the same network. By using the same data directory, they also share the
-authentication cookie:
-
-```shell
-# Run the lotusd container in the background
-docker run --name lotusd -v ~/bitcoin-abc-data:/data --rm -d bitcoin-abc:0.22.3
-docker run --network container:lotusd -v ~/bitcoin-abc-data:/data --rm bitcoin-abc:0.22.3 lotus-cli getnetworkinfo
-docker stop lotusd
-```
+The volume must be writable by the container user. RPC remains bound to loopback;
+configure authentication and network exposure explicitly. No image is published
+by the release-preparation script. Release CI builds this image and checks lotusd/lotus-cli --version. It does not publish an image or run a synchronized container node.

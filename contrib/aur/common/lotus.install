@@ -14,8 +14,7 @@ post_upgrade() {
 }
 
 post_remove() {
-  _rmuser
-  rm -rf /srv/lotus /run/lotus
+  : # Preserve the service account and chain data on uninstall
 }
 
 _mkuser() {
@@ -29,31 +28,26 @@ _mkuser() {
 
 _rmuser() {
   echo -n "Removing lotus user... "
-  userdel -rf $_bc_user 2>/dev/null
+  userdel $_bc_user 2>/dev/null
   echo "done"
 }
 
 read -d '' lotus <<'EOI'
 
-Bitcoin ABC
-___________
+Lotus
+_____
 
-To start lotus:
+To start Lotus:
 
-$ systemctl start lotus
+$ sudo systemctl start lotus
 
-To communicate with lotus as a normal user:
+RPC uses the daemon's automatically generated authentication cookie.
+Run the CLI as the service user with the same config and data directory:
 
-$ mkdir -p ~/.lotus
-$ cat > ~/.lotus/lotus.conf <<'EOF'
-rpcport=10604
-rpcuser=lotus
-rpcpassword=secret
-EOF
-
-$ lotus-cli getmininginfo
+$ sudo -u lotus /usr/bin/lotus-cli -conf=/etc/lotus/lotus.conf -datadir=/srv/lotus getmininginfo
 
 Config:        /etc/lotus/lotus.conf
 Blockchain:    /srv/lotus
+Cookie:        /srv/lotus/.cookie (private to the service account)
 Documentation: /usr/share/doc/lotus
 EOI

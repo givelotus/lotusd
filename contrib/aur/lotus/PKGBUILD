@@ -1,57 +1,67 @@
+# Requires /usr/bin/python3.13 (PyO3 0.23); do not substitute newer Python.
 # Maintainer: Josh Ellithorpe <quest@mac.com>
 
 pkgname=lotusd
-pkgver=1.0.0
-pkgrel=0
+pkgver=11.6.1
+pkgrel=1
 pkgdesc="Lotus with lotusd, lotus-tx, lotus-seeder and lotus-cli"
-arch=('i686' 'x86_64')
+arch=('x86_64')
 url="https://givelotus.org"
-depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'miniupnpc' 'libnatpmp' 'jemalloc')
-makedepends=('cmake' 'ninja' 'boost' 'python' 'help2man')
+depends=('boost-libs' 'libevent' 'openssl' 'nng' 'utf8proc' 'sqlite' 'jemalloc')
+makedepends=('protobuf' 'flatbuffers' 'rustup' 'clang' 'curl' 'cmake' 'ninja' 'boost' 'python313' 'help2man')
 license=('MIT')
-source=(https://github.com/LogosFoundation/lotusd/archive/v$pkgver.tar.gz
-        lotus.conf
-        lotus.logrotate
-        lotus.service
-        lotus-reindex.service
-        lotus.install)
+source=(https://github.com/givelotus/lotus/releases/download/v$pkgver/lotus-v$pkgver-source.tar.gz)
+sha256sums=('SKIP')
+
+prepare() {
+  curl --fail --location --proto '=https' --tlsv1.2 \
+    https://github.com/givelotus/lotus/releases/download/v$pkgver/SHA256SUMS -o SHA256SUMS
+  grep -E "^[0-9a-f]{64}  lotus-v${pkgver//./\.}-source\.tar\.gz$" SHA256SUMS | sha256sum --check --strict -
+  rustup toolchain install 1.93.0 --profile minimal --component clippy
+}
+
 backup=('etc/lotus/lotus.conf'
         'etc/logrotate.d/lotus')
 provides=('lotus-cli' 'lotus-daemon' 'lotus-tx' 'lotus-seeder')
 conflicts=('lotus-cli' 'lotus-daemon' 'lotus-tx' 'lotus-seeder')
-install=lotus.install
+install=../common/lotus.install
 
 build() {
-  cd "$srcdir/${pkgname}-$pkgver"
+  cd "$srcdir/lotus-v$pkgver"
 
   msg2 'Building...'
   mkdir -p build
   pushd build
 
   cmake -GNinja .. \
+    -DBUILD_CHRONIK=ON \
+    -DRust_TOOLCHAIN=1.93.0 \
+    -DPython_EXECUTABLE=/usr/bin/python3.13 \
+    -DBUILD_BITCOIN_ZMQ=OFF \
+    -DENABLE_UPNP=OFF \
+    -DENABLE_NATPMP=OFF \
     -DENABLE_CLANG_TIDY=OFF \
     -DCLIENT_VERSION_IS_RELEASE=ON \
     -DENABLE_REDUCE_EXPORTS=ON \
     -DENABLE_STATIC_LIBSTDCXX=ON \
     -DBUILD_WALLET=OFF \
-    -DBUILD_QT=OFF \
-    -DBUILD_IGUANA=OFF \
+    -DBUILD_BITCOIN_QT=OFF \
     -DUSE_LINKER= \
     -DCMAKE_INSTALL_PREFIX=$pkgdir/usr
 
-  ninja
+  PYO3_PYTHON=/usr/bin/python3.13 ninja
   popd
 }
 
 check() {
-  cd "$srcdir/${pkgname}-$pkgver/build"
+  cd "$srcdir/lotus-v$pkgver/build"
 
   msg2 'Testing...'
-  ninja check
+  PYO3_PYTHON=/usr/bin/python3.13 ninja check
 }
 
 package() {
-  cd "$srcdir/${pkgname}-$pkgver"
+  cd "$srcdir/lotus-v$pkgver"
 
   msg2 'Installing license...'
   install -Dm 644 COPYING -t "$pkgdir/usr/share/licenses/${pkgname}"
@@ -83,15 +93,15 @@ package() {
   popd
 
   msg2 'Installing lotus.conf...'
-  install -Dm 600 "$srcdir/lotus.conf" -t "$pkgdir/etc/lotus"
+  install -Dm 600 "contrib/aur/common/lotus.conf" -t "$pkgdir/etc/lotus"
 
   msg2 'Installing lotus.service...'
-  install -Dm 644 "$srcdir/lotus.service" -t "$pkgdir/usr/lib/systemd/system"
-  install -Dm 644 "$srcdir/lotus-reindex.service" \
+  install -Dm 644 "contrib/aur/common/lotus.service" -t "$pkgdir/usr/lib/systemd/system"
+  install -Dm 644 "contrib/aur/common/lotus-reindex.service" \
     -t "$pkgdir/usr/lib/systemd/system"
 
   msg2 'Installing lotus.logrotate...'
-  install -Dm 644 "$srcdir/lotus.logrotate" "$pkgdir/etc/logrotate.d/lotus"
+  install -Dm 644 "contrib/aur/common/lotus.logrotate" "$pkgdir/etc/logrotate.d/lotus"
 
   msg2 'Installing bash completion...'
   for _compl in lotus-cli lotus-tx lotusd; do

@@ -11,7 +11,7 @@ ExecStart=/usr/bin/lotusd -daemon=0                       \
                             -datadir=/srv/lotus           \
                             -pid=/run/lotus/lotusd.pid
 ExecReload=/usr/bin/kill -HUP $MAINPID
-ExecStop=/usr/bin/lotusd stop
+ExecStop=/usr/bin/lotus-cli -conf=/etc/lotus/lotus.conf -datadir=/srv/lotus stop
 PrivateTmp=true
 
 [Install]
