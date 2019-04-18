@@ -778,6 +778,9 @@ BOOST_AUTO_TEST_CASE(TestCBlockTemplateEntry) {
     BOOST_CHECK_EQUAL(txEntry.txFee, 1 * SATOSHI);
     BOOST_CHECK_EQUAL(txEntry.txSize, 200);
     BOOST_CHECK_EQUAL(txEntry.txSigOps, 10);
+    BOOST_CHECK_EQUAL(txEntry.packageFee, 1 * SATOSHI);
+    BOOST_CHECK_EQUAL(txEntry.packageSize, 200);
+    BOOST_CHECK_EQUAL(txEntry.packageSigOps, 10);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
