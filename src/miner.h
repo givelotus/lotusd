@@ -32,9 +32,22 @@ struct CBlockTemplateEntry {
     //!< Cached total number of SigOps
     uint64_t txSigOps;
 
+    //!< Track the "order" of a transaction in a package. (Order is >= 0) Larger
+    //!< number means it has more dependencies.  It is roughly the number of
+    //!< dependencies this transaction has.
+    uint64_t packageOrder;
+    //!< Estimated package fees (This is guaranteed to be >= real fees)
+    Amount packageFee;
+    //!< Estimated package size (This is guaranteed to be >= real size)
+    size_t packageSize;
+    //!< Estimated package sigops (This is guaranteed to be >= real sigops)
+    uint64_t packageSigOps;
+
     CBlockTemplateEntry(CTransactionRef _tx, Amount _fees, uint64_t _size,
                         int64_t _sigOps)
-        : tx(_tx), txFee(_fees), txSize(_size), txSigOps(_sigOps) {}
+        : tx(_tx), txFee(_fees), txSize(_size), txSigOps(_sigOps),
+          packageOrder(0), packageFee(_fees), packageSize(_size),
+          packageSigOps(_sigOps) {}
 };
 
 struct CBlockTemplate {
