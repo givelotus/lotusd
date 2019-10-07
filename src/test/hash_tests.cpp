@@ -224,4 +224,24 @@ BOOST_AUTO_TEST_CASE(sha256uint256_tests) {
                  "26f"));
 }
 
+BOOST_AUTO_TEST_CASE(hashwriter_single_sha256_tests) {
+    CHashWriter h0(SER_DISK, CLIENT_VERSION);
+    BOOST_CHECK_EQUAL(h0.GetSHA256(),
+                      uint256S("55b852781b9995a44c939b64e441ae2724b96f99c8f4fb9"
+                               "a141cfc9842c4b0e3"));
+
+    CHashWriter h1(SER_DISK, CLIENT_VERSION);
+    h1 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("e5726c3a31e47d6f3bf20d001f4d97613dd32fdfb4d9b1f"
+                               "34b365562594ab526"));
+
+    CHashWriter h2(SER_DISK, CLIENT_VERSION);
+    h2 << uint256S(
+        "6dd6c5716cc8e24313f619bab92ad24981f54ff7e24173a093f45f801e0342af");
+    BOOST_CHECK_EQUAL(h2.GetSHA256(),
+                      uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c"
+                               "172b3f1b60a8ce26f"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
