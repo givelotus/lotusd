@@ -5,6 +5,7 @@
 #include <hash.h>
 
 #include <crypto/hmac_sha512.h>
+#include <string>
 
 inline uint32_t ROTL32(uint32_t x, int8_t r) {
     return (x << r) | (x >> (32 - r));
@@ -86,4 +87,14 @@ uint256 SHA256Uint256(const uint256 &input) {
     uint256 result;
     CSHA256().Write(input.begin(), 32).Finalize(result.begin());
     return result;
+}
+
+CHashWriter TaggedHash(const std::string &tag) {
+    CHashWriter writer(SER_GETHASH, 0);
+    uint256 taghash;
+    CSHA256()
+        .Write((const uint8_t *)tag.data(), tag.size())
+        .Finalize(taghash.begin());
+    writer << taghash << taghash;
+    return writer;
 }
