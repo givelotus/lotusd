@@ -36,10 +36,6 @@ GetMinerFundWhitelist(const Consensus::Params &params,
     if (!gArgs.GetBoolArg("-enableminerfund", params.enableMinerFund)) {
         return {};
     }
-
-    if (!IsAxionEnabled(params, pindexPrev)) {
-        return {};
-    }
-
+    
     return {GetMinerFundDestination()};
 }

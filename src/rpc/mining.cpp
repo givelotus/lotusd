@@ -954,11 +954,8 @@ static UniValue getblocktemplate(const Config &config,
         minerFundList.push_back(EncodeCashAddr(fundDestination, chainparams));
     }
 
-    int64_t minerFundMinValue = 0;
-    if (IsAxionEnabled(consensusParams, pindexPrev)) {
-        minerFundMinValue =
-            int64_t(GetMinerFundAmount(coinbasevalue) / SATOSHI);
-    }
+    int64_t minerFundMinValue =
+        int64_t(GetMinerFundAmount(coinbasevalue) / SATOSHI);
 
     UniValue minerFund(UniValue::VOBJ);
     minerFund.pushKV("addresses", minerFundList);
