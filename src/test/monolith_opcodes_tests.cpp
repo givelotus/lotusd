@@ -657,43 +657,23 @@ static void CheckDivMod(const valtype &a, const valtype &b,
         CheckError(flags, {b, {}}, CScript() << OP_DIV,
                    ScriptError::DIV_BY_ZERO);
 
-        if (flags & SCRIPT_VERIFY_MINIMALDATA) {
-            CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
+        CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
 
-            CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-            CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::UNKNOWN);
-        } else {
-            CheckError(flags, {a, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {a, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-
-            CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-            CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
-                       ScriptError::DIV_BY_ZERO);
-        }
+        CheckError(flags, {b, {0x00}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {b, {0x80}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {b, {0x00, 0x00}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
+        CheckError(flags, {b, {0x00, 0x80}}, CScript() << OP_DIV,
+                    ScriptError::UNKNOWN);
     }
 
     // Division identities
