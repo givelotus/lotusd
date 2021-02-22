@@ -458,8 +458,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
             TxValidationState state;
             CTransaction transaction(tx);
             PrecomputedTransactionData txdata(transaction);
-            const uint32_t flags =
-                STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENFORCE_SIGCHECKS;
+            const uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
             int nSigChecksDummy;
 
             /**
@@ -575,7 +574,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         std::vector<CScriptCheck> scriptchecks;
         BOOST_CHECK(CheckInputScripts(
             transaction, state, &::ChainstateActive().CoinsTip(),
-            STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENFORCE_SIGCHECKS, true, true,
+            STANDARD_SCRIPT_VERIFY_FLAGS, true, true,
             txdata, nSigChecksDummy, &scriptchecks));
         // Should get 2 script checks back -- caching is on a whole-transaction
         // basis.
