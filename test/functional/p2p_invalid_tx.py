@@ -10,6 +10,7 @@ In this test we connect to one node over p2p, and test tx requests.
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
+    create_tx_with_script,
 )
 from test_framework.txtools import pad_tx
 from test_framework.messages import (
@@ -68,25 +69,36 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         self.log.info("Create a new block with an anyone-can-spend coinbase.")
         height = 1
-        block = create_block(tip, create_coinbase(height), block_time)
-        block.solve()
-        # Save the coinbase for later
-        block1 = block
-        tip = block.sha256
-        node.p2p.send_blocks_and_test([block], node, success=True)
+        blocks = []
+        for _ in invalid_txs.iter_all_templates():
+            block = create_block(tip, create_coinbase(height), block_time)
+            block_time = block.nTime + 1
+            height += 1
+            block.solve()
+            # Save the coinbase for later
+            blocks.append(block)
+            tip = block.sha256
+            node.p2p.send_blocks_and_test([block], node, success=True)
 
-        self.log.info("Mature the block.")
+        self.log.info("Mature the blocks.")
         self.nodes[0].generatetoaddress(
             100, self.nodes[0].get_deterministic_priv_key().address)
 
         # Iterate through a list of known invalid transaction types, ensuring each is
         # rejected. Some are consensus invalid and some just violate policy.
-        for BadTxTemplate in invalid_txs.iter_all_templates():
+        setup_txs = []
+        for block, BadTxTemplate in zip(blocks, invalid_txs.iter_all_templates()):
             self.log.info(
                 "Testing invalid transaction: %s",
                 BadTxTemplate.__name__)
-            template = BadTxTemplate(spend_block=block1)
-            tx = template.get_tx()
+            template = BadTxTemplate(spend_block=block)
+            setup_tx = template.get_setup_tx()
+            if setup_tx is not None:
+                node.p2p.send_txs_and_test([setup_tx], node)
+                setup_txs.append(setup_tx)
+                tx = template.get_tx(setup_tx)
+            else:
+                tx = template.get_tx()
             node.p2p.send_txs_and_test(
                 [tx], node, success=False,
                 expect_disconnect=template.expect_disconnect,
@@ -108,7 +120,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         SCRIPT_PUB_KEY_OP_TRUE = CScript([OP_TRUE])
         tx_withhold = CTransaction()
         tx_withhold.vin.append(
-            CTxIn(outpoint=COutPoint(block1.vtx[0].sha256, 0)))
+            CTxIn(outpoint=COutPoint(blocks[0].vtx[0].sha256, 0)))
         tx_withhold.vout.append(
             CTxOut(nValue=50 * COIN - 12000, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
         pad_tx(tx_withhold)
@@ -159,8 +171,8 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         node.p2ps[1].send_txs_and_test(
             [tx_orphan_2_invalid], node, success=False)
 
-        # Mempool should be empty
-        assert_equal(0, node.getmempoolinfo()['size'])
+        # Mempool should only have setup txs
+        assert_equal(len(setup_txs), node.getmempoolinfo()['size'])
         # p2ps[1] is still connected
         assert_equal(2, len(node.getpeerinfo()))
 
@@ -176,7 +188,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
                 tx_orphan_1,  # The orphan transaction that splits the coins
                 # The valid transaction (with sufficient fee)
                 tx_orphan_2_valid,
-            ]
+            ] + setup_txs  # The setup transactions we added in the beginning
         }
         # Transactions that do not end up in the mempool
         # tx_orphan_no_fee, because it has too low fee (p2ps[0] is not disconnected for relaying that tx)

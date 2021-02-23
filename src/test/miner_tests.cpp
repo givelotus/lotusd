@@ -337,16 +337,17 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // block size > limit
     tx.vin.resize(1);
     tx.vin[0].scriptSig = CScript();
+    tx.vin[0].scriptSig << OP_1;
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+
+    tx.vout.resize(1);
+    tx.vout[0].nValue = MINERREWARD;
     // 18 * (520char + DROP) + OP_1 = 9433 bytes
     std::vector<uint8_t> vchData(520);
     for (unsigned int i = 0; i < 18; ++i) {
-        tx.vin[0].scriptSig << vchData << OP_DROP;
+        tx.vout[0].scriptPubKey << vchData << OP_DROP;
     }
 
-    tx.vin[0].scriptSig << OP_1;
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
-    tx.vout.resize(1);
-    tx.vout[0].nValue = MINERREWARD;
     for (unsigned int i = 0; i < 128; ++i) {
         tx.vout[0].nValue -= LOWFEE;
         const TxId txid = tx.GetId();

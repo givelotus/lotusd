@@ -1783,7 +1783,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         flags |= SCRIPT_VERIFY_STRICTENC;
     }
 
-    if ((flags & SCRIPT_VERIFY_SIGPUSHONLY) != 0 && !scriptSig.IsPushOnly()) {
+    if (!scriptSig.IsPushOnly()) {
         return set_error(serror, ScriptError::SIG_PUSHONLY);
     }
 
