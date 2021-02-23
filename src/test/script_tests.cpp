@@ -149,8 +149,7 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
         // Some flags are not purely-restrictive and thus we can't assume
         // anything about what happens when they are flipped. Keep them as-is.
         extra_flags &=
-            ~(SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION |
-              SCRIPT_ENABLE_SCHNORR_MULTISIG);
+            ~(SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
         uint32_t combined_flags =
             expect ? (flags & ~extra_flags) : (flags | extra_flags);
         // Weed out invalid flag combinations.
@@ -1055,27 +1054,6 @@ BOOST_AUTO_TEST_CASE(script_build) {
             .DamagePush(10)
             .SetScriptError(ScriptError::SIG_HASHTYPE));
 
-    tests.push_back(TestBuilder(CScript() << OP_3 << ToByteVector(keys.pubkey0C)
-                                          << ToByteVector(keys.pubkey1C)
-                                          << ToByteVector(keys.pubkey2C) << OP_3
-                                          << OP_CHECKMULTISIG,
-                                "3-of-3 with nonzero dummy", 0)
-                        .Num(1)
-                        .PushSigECDSA(keys.key0)
-                        .PushSigECDSA(keys.key1)
-                        .PushSigECDSA(keys.key2));
-    tests.push_back(TestBuilder(CScript() << OP_3 << ToByteVector(keys.pubkey0C)
-                                          << ToByteVector(keys.pubkey1C)
-                                          << ToByteVector(keys.pubkey2C) << OP_3
-                                          << OP_CHECKMULTISIG << OP_NOT,
-                                "3-of-3 NOT with invalid sig and nonzero dummy",
-                                0)
-                        .Num(1)
-                        .PushSigECDSA(keys.key0)
-                        .PushSigECDSA(keys.key1)
-                        .PushSigECDSA(keys.key2)
-                        .DamagePush(10));
-
     tests.push_back(TestBuilder(CScript() << OP_2 << ToByteVector(keys.pubkey1C)
                                           << ToByteVector(keys.pubkey1C) << OP_2
                                           << OP_CHECKMULTISIG,
@@ -1727,12 +1705,9 @@ BOOST_AUTO_TEST_CASE(script_build) {
     // New-multisig tests follow. New multisig will activate with a bunch of
     // related flags active from other upgrades, so we do tests with this group
     // of flags turned on:
-    uint32_t newmultisigflags =
-        SCRIPT_ENABLE_SCHNORR_MULTISIG | SCRIPT_VERIFY_NULLFAIL |
-        SCRIPT_VERIFY_STRICTENC;
+    uint32_t newmultisigflags = SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_STRICTENC;
 
-    // Tests of the legacy multisig (null dummy element), but with the
-    // SCRIPT_ENABLE_SCHNORR_MULTISIG flag turned on. These show the desired
+    // Tests of the legacy multisig (null dummy element). These show the desired
     // legacy behaviour that should be retained.
     tests.push_back(
         TestBuilder(CScript() << OP_1 << ToByteVector(keys.pubkey0H)
@@ -2203,10 +2178,9 @@ BOOST_AUTO_TEST_CASE(script_build) {
 
     // SigChecks tests follow. We want to primarily focus on behaviour with
     // the modern set of (relevant) flags.
-    uint32_t sigchecksflags =
-        SCRIPT_ENABLE_SCHNORR_MULTISIG | SCRIPT_VERIFY_NULLFAIL |
-        SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_INPUT_SIGCHECKS |
-        SCRIPT_VERIFY_P2SH;
+    uint32_t sigchecksflags = 
+        SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_STRICTENC |
+        SCRIPT_VERIFY_INPUT_SIGCHECKS | SCRIPT_VERIFY_P2SH;
     // First, try some important use cases that we want to make sure are
     // supported but that have high density of sigchecks.
     tests.push_back(TestBuilder(CScript() << 1 << ToByteVector(keys.pubkey0C)
