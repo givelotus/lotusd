@@ -12,7 +12,7 @@ from test_framework.mininode import (
     P2PInterface,
     msg_headers,
 )
-from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_framework import BitcoinTestFramework, SkipTest
 
 import os
 
@@ -31,6 +31,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
         )
 
     def run_test(self):
+        raise SkipTest("Temporarily disabled until there is an actual testnet.")
         self.log.info("Read headers data")
         self.headers_file_path = os.path.join(
             os.path.dirname(
