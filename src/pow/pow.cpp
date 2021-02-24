@@ -31,15 +31,18 @@ uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
         return pindexPrev->nBits;
     }
 
-    if (IsAxionEnabled(params, pindexPrev)) {
-        return GetNextASERTWorkRequired(pindexPrev, pblock, params);
+    // ASERT requires an anchor block which has one parent.
+    // The Genesis block has no parent. Therefore, the block after Genesis
+    // will be our anchor block. We assign it minimum difficulty.
+    if (!pindexPrev->pprev) {
+        const uint32_t nProofOfWorkLimit =
+            UintToArith256(params.powLimit).GetCompact();
+        return nProofOfWorkLimit;
     }
 
-    if (IsDAAEnabled(params, pindexPrev)) {
-        return GetNextDAAWorkRequired(pindexPrev, pblock, params);
-    }
-
-    return GetNextEDAWorkRequired(pindexPrev, pblock, params);
+    // All blocks after genesis+1 adjust difficulty based on the genesis
+    // block timestamp as anchor.
+    return GetNextASERTWorkRequired(pindexPrev, pblock, params);
 }
 
 // Check that on difficulty adjustments, the new difficulty does not increase
