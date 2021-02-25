@@ -193,7 +193,7 @@ static bool EvalChecksig(const valtype &vchSig, const valtype &vchPubKey,
         fSuccess = checker.CheckSig(vchSig, vchPubKey, scriptCode, flags);
         metrics.nSigChecks += 1;
 
-        if (!fSuccess && (flags & SCRIPT_VERIFY_NULLFAIL)) {
+        if (!fSuccess) {
             return set_error(serror, ScriptError::SIG_NULLFAIL);
         }
     }
@@ -1011,7 +1011,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 vchSig, CPubKey(vchPubKey), uint256(vchHash));
                             metrics.nSigChecks += 1;
 
-                            if (!fSuccess && (flags & SCRIPT_VERIFY_NULLFAIL)) {
+                            if (!fSuccess) {
                                 return set_error(serror,
                                                  ScriptError::SIG_NULLFAIL);
                             }
@@ -1233,8 +1233,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                             // If the operation failed, we may require that all
                             // signatures must be empty vector
-                            if (!fSuccess && (flags & SCRIPT_VERIFY_NULLFAIL) &&
-                                !areAllSignaturesNull) {
+                            if (!fSuccess && !areAllSignaturesNull) {
                                 return set_error(serror,
                                                  ScriptError::SIG_NULLFAIL);
                             }

@@ -96,13 +96,11 @@ static valtype makebits(int m, int n) {
 // the case with schnorr multisig turned on.
 static const std::vector<uint32_t> allflags{
     0,
-    SCRIPT_VERIFY_NULLFAIL,
     STANDARD_SCRIPT_VERIFY_FLAGS,
     STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
 static const std::vector<uint32_t> schnorrmultisigflags{
-    SCRIPT_VERIFY_NULLFAIL,
     STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
@@ -192,28 +190,6 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         CheckEvalScript({txsigecdsa, {1}}, script, {vtrue}, 1);
         CheckEvalScript({txsigecdsa, {0}}, script, {}, 0);
     }
-
-    // Without NULLFAIL, it is possible to have checksig/checkmultisig consume
-    // CPU using non-null signatures and then return false to the stack, without
-    // failing. Make sure that this historical case adds sigchecks, so that the
-    // CPU usage of possible malicious alternate histories (branching off before
-    // NULLFAIL activated in consensus) can be limited.
-    CheckEvalScript({txsigecdsa}, CScript() << badpub << OP_CHECKSIG, {vfalse},
-                    1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({{}, txsigecdsa},
-                    CScript() << 1 << badpub << badpub << badpub << badpub << 4
-                              << OP_CHECKMULTISIG,
-                    {vfalse}, 4, {SCRIPT_VERIFY_NONE});
-
-    // CHECKDATASIG and Schnorr need to be checked as well, since they have been
-    // made retroactively valid since forever and thus alternate histories could
-    // include them.
-    CheckEvalScript({sigecdsa}, CScript() << msg << badpub << OP_CHECKDATASIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({txsigschnorr}, CScript() << badpub << OP_CHECKSIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
-    CheckEvalScript({sigschnorr}, CScript() << msg << badpub << OP_CHECKDATASIG,
-                    {vfalse}, 1, {SCRIPT_VERIFY_NONE});
 
     // CHECKMULTISIG with schnorr cannot return false, it just fails instead
     // (hence, the sigchecks count is unimportant)
