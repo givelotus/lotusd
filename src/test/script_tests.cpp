@@ -1729,7 +1729,7 @@ BOOST_AUTO_TEST_CASE(script_build) {
     // of flags turned on:
     uint32_t newmultisigflags =
         SCRIPT_ENABLE_SCHNORR_MULTISIG | SCRIPT_VERIFY_NULLFAIL |
-        SCRIPT_VERIFY_MINIMALDATA | SCRIPT_VERIFY_STRICTENC;
+        SCRIPT_VERIFY_STRICTENC;
 
     // Tests of the legacy multisig (null dummy element), but with the
     // SCRIPT_ENABLE_SCHNORR_MULTISIG flag turned on. These show the desired
@@ -2205,8 +2205,8 @@ BOOST_AUTO_TEST_CASE(script_build) {
     // the modern set of (relevant) flags.
     uint32_t sigchecksflags =
         SCRIPT_ENABLE_SCHNORR_MULTISIG | SCRIPT_VERIFY_NULLFAIL |
-        SCRIPT_VERIFY_MINIMALDATA | SCRIPT_VERIFY_STRICTENC |
-        SCRIPT_VERIFY_INPUT_SIGCHECKS | SCRIPT_VERIFY_P2SH;
+        SCRIPT_VERIFY_STRICTENC | SCRIPT_VERIFY_INPUT_SIGCHECKS |
+        SCRIPT_VERIFY_P2SH;
     // First, try some important use cases that we want to make sure are
     // supported but that have high density of sigchecks.
     tests.push_back(TestBuilder(CScript() << 1 << ToByteVector(keys.pubkey0C)
@@ -2445,40 +2445,7 @@ BOOST_AUTO_TEST_CASE(script_json_test) {
 }
 
 BOOST_AUTO_TEST_CASE(script_PushData) {
-    // Check that PUSHDATA1, PUSHDATA2, and PUSHDATA4 create the same value on
-    // the stack as the 1-75 opcodes do.
-    static const uint8_t direct[] = {1, 0x5a};
-    static const uint8_t pushdata1[] = {OP_PUSHDATA1, 1, 0x5a};
-    static const uint8_t pushdata2[] = {OP_PUSHDATA2, 1, 0, 0x5a};
-    static const uint8_t pushdata4[] = {OP_PUSHDATA4, 1, 0, 0, 0, 0x5a};
-
     ScriptError err;
-    std::vector<std::vector<uint8_t>> directStack;
-    BOOST_CHECK(EvalScript(directStack,
-                           CScript(direct, direct + sizeof(direct)),
-                           SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
-    BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
-
-    std::vector<std::vector<uint8_t>> pushdata1Stack;
-    BOOST_CHECK(EvalScript(pushdata1Stack,
-                           CScript(pushdata1, pushdata1 + sizeof(pushdata1)),
-                           SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
-    BOOST_CHECK(pushdata1Stack == directStack);
-    BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
-
-    std::vector<std::vector<uint8_t>> pushdata2Stack;
-    BOOST_CHECK(EvalScript(pushdata2Stack,
-                           CScript(pushdata2, pushdata2 + sizeof(pushdata2)),
-                           SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
-    BOOST_CHECK(pushdata2Stack == directStack);
-    BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
-
-    std::vector<std::vector<uint8_t>> pushdata4Stack;
-    BOOST_CHECK(EvalScript(pushdata4Stack,
-                           CScript(pushdata4, pushdata4 + sizeof(pushdata4)),
-                           SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
-    BOOST_CHECK(pushdata4Stack == directStack);
-    BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
 
     const std::vector<uint8_t> pushdata1_trunc{OP_PUSHDATA1, 1};
     const std::vector<uint8_t> pushdata2_trunc{OP_PUSHDATA2, 1, 0};
@@ -2866,7 +2833,7 @@ BOOST_AUTO_TEST_CASE(script_standard_push) {
         BOOST_CHECK_MESSAGE(script.IsPushOnly(),
                             "Number " << i << " is not pure push.");
         BOOST_CHECK_MESSAGE(VerifyScript(script, CScript() << OP_1,
-                                         SCRIPT_VERIFY_MINIMALDATA,
+                                         SCRIPT_VERIFY_NONE,
                                          BaseSignatureChecker(), &err),
                             "Number " << i << " push is not minimal data.");
         BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
@@ -2879,7 +2846,7 @@ BOOST_AUTO_TEST_CASE(script_standard_push) {
         BOOST_CHECK_MESSAGE(script.IsPushOnly(),
                             "Length " << i << " is not pure push.");
         BOOST_CHECK_MESSAGE(VerifyScript(script, CScript() << OP_1,
-                                         SCRIPT_VERIFY_MINIMALDATA,
+                                         SCRIPT_VERIFY_NONE,
                                          BaseSignatureChecker(), &err),
                             "Length " << i << " push is not minimal data.");
         BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));

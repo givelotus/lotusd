@@ -220,7 +220,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
         return set_error(serror, ScriptError::SCRIPT_SIZE);
     }
     int nOpCount = 0;
-    bool fRequireMinimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0;
+    constexpr bool fRequireMinimal = true;
 
     try {
         while (pc < pend) {
