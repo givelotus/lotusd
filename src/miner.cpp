@@ -159,14 +159,11 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     int nDescendantsUpdated = 0;
     addPackageTxs(nPackagesSelected, nDescendantsUpdated);
 
-    if (IsMagneticAnomalyEnabled(consensusParams, pindexPrev)) {
-        // If magnetic anomaly is enabled, we make sure transaction are
-        // canonically ordered.
-        std::sort(std::begin(pblocktemplate->entries) + 1,
-                  std::end(pblocktemplate->entries),
-                  [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b)
-                      -> bool { return a.tx->GetId() < b.tx->GetId(); });
-    }
+    // We make sure transaction are canonically ordered.
+    std::sort(std::begin(pblocktemplate->entries) + 1,
+                std::end(pblocktemplate->entries),
+                [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b)
+                    -> bool { return a.tx->GetId() < b.tx->GetId(); });
 
     // Copy all the transactions refs into the block
     pblock->vtx.reserve(pblocktemplate->entries.size());
