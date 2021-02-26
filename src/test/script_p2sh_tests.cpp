@@ -118,8 +118,7 @@ BOOST_AUTO_TEST_CASE(sign) {
             bool sigOK =
                 CScriptCheck(txFrom.vout[txTo[i].vin[0].prevout.GetN()],
                              CTransaction(txTo[i]), 0,
-                             SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC |
-                                 SCRIPT_ENABLE_SIGHASH_FORKID,
+                             SCRIPT_VERIFY_P2SH | SCRIPT_ENABLE_SIGHASH_FORKID,
                              false, txdata)();
             if (i == j) {
                 BOOST_CHECK_MESSAGE(sigOK,

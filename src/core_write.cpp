@@ -139,7 +139,7 @@ std::string ScriptToAsmStr(const CScript &script,
                     // formats (see IsCompressedOrUncompressedPubKey) being
                     // incongruous with the checks in
                     // CheckTransactionSignatureEncoding.
-                    uint32_t flags = SCRIPT_VERIFY_STRICTENC;
+                    uint32_t flags = SCRIPT_VERIFY_NONE;
                     if (vch.back() & SIGHASH_FORKID) {
                         // If the transaction is using SIGHASH_FORKID, we need
                         // to set the appropriate flag.
