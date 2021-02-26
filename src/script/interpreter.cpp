@@ -1777,11 +1777,6 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
     set_error(serror, ScriptError::UNKNOWN);
 
-    // If FORKID is enabled, we also ensure strict encoding.
-    if (flags & SCRIPT_ENABLE_SIGHASH_FORKID) {
-        flags |= SCRIPT_VERIFY_STRICTENC;
-    }
-
     if (!scriptSig.IsPushOnly()) {
         return set_error(serror, ScriptError::SIG_PUSHONLY);
     }

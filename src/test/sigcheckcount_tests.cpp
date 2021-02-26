@@ -95,7 +95,8 @@ static valtype makebits(int m, int n) {
 // set of flags for long-supported opcodes. The latter list is restricted to
 // the case with schnorr multisig turned on.
 static const std::vector<uint32_t> allflags{
-    0,
+    SCRIPT_ENABLE_SIGHASH_FORKID,  // We're testing with signatures ending with
+                                   // 0x41, so we need this flag.
     STANDARD_SCRIPT_VERIFY_FLAGS,
     STANDARD_SCRIPT_VERIFY_FLAGS,
 };
@@ -212,7 +213,7 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         ScriptExecutionMetrics metrics;
         metrics.nSigChecks = 12345;
         bool r = EvalScript(stack, CScript() << pub << OP_CHECKSIG,
-                            SCRIPT_VERIFY_NONE, dummysigchecker, metrics);
+                            SCRIPT_ENABLE_SIGHASH_FORKID, dummysigchecker, metrics);
         BOOST_CHECK(r);
         BOOST_CHECK_EQUAL(metrics.nSigChecks, 12346);
     }
@@ -311,8 +312,9 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
     CHECK_VERIFYSCRIPT(CScript() << OP_1, CScript(), SCRIPT_VERIFY_NONE, 0);
 
     // Common example
-    CHECK_VERIFYSCRIPT(CScript() << sigschnorr, CScript() << pub << OP_CHECKSIG,
-                       SCRIPT_VERIFY_NONE, 1);
+    CHECK_VERIFYSCRIPT(CScript() << txsigschnorr,
+                       CScript() << pub << OP_CHECKSIG,
+                       SCRIPT_ENABLE_SIGHASH_FORKID, 1);
 
     // Correct behaviour occurs for segwit recovery special case (which returns
     // success from an alternative location)

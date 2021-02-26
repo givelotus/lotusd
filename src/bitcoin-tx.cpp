@@ -722,8 +722,6 @@ public:
 static void MutateTx(CMutableTransaction &tx, const std::string &command,
                      const std::string &commandVal,
                      const CChainParams &chainParams) {
-    std::unique_ptr<Secp256k1Init> ecc;
-
     if (command == "nversion") {
         MutateTxVersion(tx, commandVal);
     } else if (command == "locktime") {
@@ -737,17 +735,14 @@ static void MutateTx(CMutableTransaction &tx, const std::string &command,
     } else if (command == "outaddr") {
         MutateTxAddOutAddr(tx, commandVal, chainParams);
     } else if (command == "outpubkey") {
-        ecc.reset(new Secp256k1Init());
         MutateTxAddOutPubKey(tx, commandVal);
     } else if (command == "outmultisig") {
-        ecc.reset(new Secp256k1Init());
         MutateTxAddOutMultiSig(tx, commandVal);
     } else if (command == "outscript") {
         MutateTxAddOutScript(tx, commandVal);
     } else if (command == "outdata") {
         MutateTxAddOutData(tx, commandVal);
     } else if (command == "sign") {
-        ecc.reset(new Secp256k1Init());
         MutateTxSign(tx, commandVal);
     } else if (command == "load") {
         RegisterLoad(commandVal);
@@ -846,6 +841,9 @@ static int CommandLineRawTx(int argc, char *argv[],
         } else {
             startArg = 1;
         }
+
+        std::unique_ptr<Secp256k1Init> ecc;
+        ecc.reset(new Secp256k1Init());
 
         for (int i = startArg; i < argc; i++) {
             std::string arg = argv[i];

@@ -141,19 +141,12 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
     for (int i = 0; i < 4096; i++) {
         uint32_t flags = lcg.next();
 
-        if (flags & SCRIPT_VERIFY_STRICTENC) {
-            // When strict encoding is enforced, hybrid keys are invalid.
-            CheckError(flags, {{}, message, pubkeyH}, script,
-                       ScriptError::PUBKEYTYPE);
-            CheckError(flags, {{}, message, pubkeyH}, scriptverify,
-                       ScriptError::PUBKEYTYPE);
-        } else {
-            // Otherwise, hybrid keys are valid.
-            CheckPass(flags, {{}, message, pubkeyH}, script, {});
-            CheckError(flags, {{}, message, pubkeyH}, scriptverify,
-                       ScriptError::CHECKDATASIGVERIFY);
-        }
-
+        // Since strict encoding is enforced, hybrid keys are invalid.
+        CheckError(flags, {{}, message, pubkeyH}, script,
+                    ScriptError::PUBKEYTYPE);
+        CheckError(flags, {{}, message, pubkeyH}, scriptverify,
+                    ScriptError::PUBKEYTYPE);
+        
         // Uncompressed keys are valid.
         CheckPass(flags, {{}, message, pubkey}, script, {});
         CheckError(flags, {{}, message, pubkey}, scriptverify,
@@ -171,35 +164,17 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
         CheckError(flags, {validsig, {0x01}, pubkeyC}, scriptverify,
                     ScriptError::SIG_NULLFAIL);
 
-        if (flags & SCRIPT_VERIFY_LOW_S) {
-            // If we do enforce low S, then high S sigs are rejected.
-            CheckError(flags, {highSSig, message, pubkeyC}, script,
-                       ScriptError::SIG_HIGH_S);
-            CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
-                       ScriptError::SIG_HIGH_S);
-        } else {
-            // Otherwise, we enforce nullfail, these invalid sigs hit this.
-            CheckError(flags, {highSSig, message, pubkeyC}, script,
-                       ScriptError::SIG_NULLFAIL);
-            CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
-                       ScriptError::SIG_NULLFAIL);
-        }
+        // Since we enforce low S, high S sigs are rejected.
+        CheckError(flags, {highSSig, message, pubkeyC}, script,
+                    ScriptError::SIG_HIGH_S);
+        CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
+                    ScriptError::SIG_HIGH_S);
 
-        if (flags & (SCRIPT_VERIFY_DERSIG | SCRIPT_VERIFY_LOW_S |
-                     SCRIPT_VERIFY_STRICTENC)) {
-            // If we get any of the dersig flags, the non canonical dersig
-            // signature fails.
-            CheckError(flags, {nondersig, message, pubkeyC}, script,
-                       ScriptError::SIG_DER);
-            CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
-                       ScriptError::SIG_DER);
-        } else {
-            // Otherwise, we do enforce nullfail, these invalid sigs hit this.
-            CheckError(flags, {nondersig, message, pubkeyC}, script,
-                       ScriptError::SIG_NULLFAIL);
-            CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
-                       ScriptError::SIG_NULLFAIL);
-        }
+        // Non canonical dersig signature fails.
+        CheckError(flags, {nondersig, message, pubkeyC}, script,
+                    ScriptError::SIG_DER);
+        CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
+                    ScriptError::SIG_DER);
     }
 }
 
