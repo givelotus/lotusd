@@ -98,12 +98,12 @@ static const std::vector<uint32_t> allflags{
     0,
     SCRIPT_VERIFY_NULLFAIL,
     STANDARD_SCRIPT_VERIFY_FLAGS,
-    STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_SCHNORR_MULTISIG,
+    STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
 static const std::vector<uint32_t> schnorrmultisigflags{
-    SCRIPT_VERIFY_NULLFAIL | SCRIPT_ENABLE_SCHNORR_MULTISIG,
-    STANDARD_SCRIPT_VERIFY_FLAGS | SCRIPT_ENABLE_SCHNORR_MULTISIG,
+    SCRIPT_VERIFY_NULLFAIL,
+    STANDARD_SCRIPT_VERIFY_FLAGS,
 };
 
 static void CheckEvalScript(const stacktype &original_stack,
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         stacktype stack{{1}, txsigschnorr};
         BOOST_CHECK(!EvalScript(
             stack, CScript() << 1 << badpub << 1 << OP_CHECKMULTISIG,
-            SCRIPT_ENABLE_SCHNORR_MULTISIG, dummysigchecker));
+            SCRIPT_VERIFY_NONE, dummysigchecker));
     }
 
     // EvalScript cumulatively increases the sigchecks count.
