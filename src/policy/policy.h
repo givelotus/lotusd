@@ -74,7 +74,7 @@ static constexpr Amount DEFAULT_MIN_RELAY_TX_FEE_PER_KB(1000 * SATOSHI);
 static constexpr uint32_t MANDATORY_SCRIPT_VERIFY_FLAGS{
     SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC |
     SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_VERIFY_LOW_S |
-    SCRIPT_VERIFY_NULLFAIL | SCRIPT_ENABLE_SCHNORR_MULTISIG};
+    SCRIPT_VERIFY_NULLFAIL};
 
 /**
  * Standard script verification flags that standard transactions will comply

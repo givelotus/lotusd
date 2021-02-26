@@ -1066,8 +1066,7 @@ bool ScriptInterpreter::RunNextOpInner() {
                 // schnorr path can only succeed.
                 bool fSuccess = true;
 
-                if ((flags & SCRIPT_ENABLE_SCHNORR_MULTISIG) &&
-                    stacktop(-idxDummy).size() != 0) {
+                if (stacktop(-idxDummy).size() != 0) {
                     // SCHNORR MULTISIG
                     static_assert(MAX_PUBKEYS_PER_MULTISIG < 32,
                                   "Schnorr multisig checkbits implementation "
