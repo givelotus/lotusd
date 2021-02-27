@@ -404,13 +404,12 @@ class BIP68_112_113Test(BitcoinTestFramework):
             [tx, spend_tx(self.nodes[0], tx, self.nodeaddress)]
             for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v1[8:])
         ])
-
         # add BIP113 tx and -1 CSV tx
         # = MTP of prior block (not <) but < time put on current block
         bip113tx_v1.nLockTime = self.last_block_time - 600 * 5
         bip113signed1 = sign_transaction(self.nodes[0], bip113tx_v1)
+        self.send_failure_blocks([[bip113signed1]])
         success_txs = []
-        success_txs.append(bip113signed1)
         # add BIP 68 txs
         success_txs.extend(all_rlt_txs(bip68txs_v1))
         success_txs.extend([
@@ -455,13 +454,13 @@ class BIP68_112_113Test(BitcoinTestFramework):
             [tx, spend_tx(self.nodes[0], tx, self.nodeaddress)]
             for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2)
         ])
-
         # add BIP113 tx and -1 CSV tx
         # = MTP of prior block (not <) but < time put on current block
         bip113tx_v2.nLockTime = self.last_block_time - 600 * 5
         bip113signed2 = sign_transaction(self.nodes[0], bip113tx_v2)
+        self.send_failure_blocks([[bip113signed2]])
+
         success_txs = []
-        success_txs.append(bip113signed2)
         # add BIP 68 txs
         success_txs.extend(all_rlt_txs(bip68txs_v2[:8]))
         # Test #4

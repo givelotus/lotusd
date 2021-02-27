@@ -149,11 +149,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     pblock->nTime = GetAdjustedTime();
-    nMedianTimePast = pindexPrev->GetMedianTimePast();
-    nLockTimeCutoff =
-        (STANDARD_LOCKTIME_VERIFY_FLAGS & LOCKTIME_MEDIAN_TIME_PAST)
-            ? nMedianTimePast
-            : pblock->GetBlockTime();
+    nLockTimeCutoff = pindexPrev->GetMedianTimePast();
 
     int nPackagesSelected = 0;
     int nDescendantsUpdated = 0;

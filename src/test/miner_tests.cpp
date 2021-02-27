@@ -490,7 +490,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
 
     // non-final txs in mempool
     SetMockTime(::ChainActive().Tip()->GetMedianTimePast() + 1);
-    uint32_t flags = LOCKTIME_MEDIAN_TIME_PAST;
+    uint32_t flags = 0;
     // height map
     std::vector<int> prevheights;
 

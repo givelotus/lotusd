@@ -3883,9 +3883,7 @@ bool ContextualCheckTransactionForCurrentBlock(const Consensus::Params &params,
         ::ChainActive().Tip() == nullptr
             ? 0
             : ::ChainActive().Tip()->GetMedianTimePast();
-    const int64_t nLockTimeCutoff = (flags & LOCKTIME_MEDIAN_TIME_PAST)
-                                        ? nMedianTimePast
-                                        : GetAdjustedTime();
+    const int64_t nLockTimeCutoff = nMedianTimePast;
 
     return ContextualCheckTransaction(params, tx, state, nBlockHeight,
                                       nLockTimeCutoff, nMedianTimePast);
@@ -3903,20 +3901,11 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  const Consensus::Params &params,
                                  const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
-
-    // Start enforcing BIP113 (Median Time Past).
-    int nLockTimeFlags = 0;
-    if (nHeight >= params.CSVHeight) {
-        assert(pindexPrev != nullptr);
-        nLockTimeFlags |= LOCKTIME_MEDIAN_TIME_PAST;
-    }
-
+    
+    // Always enforce BIP113 (Median Time Past).    
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
-
-    const int64_t nLockTimeCutoff = (nLockTimeFlags & LOCKTIME_MEDIAN_TIME_PAST)
-                                        ? nMedianTimePast
-                                        : block.GetBlockTime();
+    const int64_t nLockTimeCutoff = nMedianTimePast;
 
     // Check transactions:
     // - canonical ordering
