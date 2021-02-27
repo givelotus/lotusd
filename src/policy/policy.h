@@ -102,7 +102,7 @@ static constexpr uint32_t STANDARD_NOT_MANDATORY_VERIFY_FLAGS =
  * code.
  */
 static constexpr uint32_t STANDARD_LOCKTIME_VERIFY_FLAGS =
-    LOCKTIME_VERIFY_SEQUENCE | LOCKTIME_MEDIAN_TIME_PAST;
+    LOCKTIME_MEDIAN_TIME_PAST;
 
 Amount GetDustThreshold(const CTxOut &txout, const CFeeRate &dustRelayFee);
 

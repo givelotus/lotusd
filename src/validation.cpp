@@ -1773,9 +1773,6 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
     // Start enforcing BIP68 (sequence locks).
     int nLockTimeFlags = 0;
-    if (pindex->nHeight >= consensusParams.CSVHeight) {
-        nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
-    }
 
     const uint32_t flags =
         GetNextBlockScriptFlags(consensusParams, pindex->pprev);
