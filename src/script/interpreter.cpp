@@ -1782,9 +1782,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         // serror is set
         return false;
     }
-    if (flags & SCRIPT_VERIFY_P2SH) {
-        stackCopy = stack;
-    }
+    stackCopy = stack;
     if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, serror)) {
         // serror is set
         return false;
@@ -1797,7 +1795,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     // Additional validation for spend-to-script-hash transactions:
-    if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash()) {
+    if (scriptPubKey.IsPayToScriptHash()) {
         // scriptSig must be literals-only or validation fails
         if (!scriptSig.IsPushOnly()) {
             return set_error(serror, ScriptError::SIG_PUSHONLY);
@@ -1842,10 +1840,6 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     // a clean stack (the P2SH inputs remain). The same holds for witness
     // evaluation.
     if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
-        // Disallow CLEANSTACK without P2SH, as otherwise a switch
-        // CLEANSTACK->P2SH+CLEANSTACK would be possible, which is not a
-        // softfork (and P2SH should be one).
-        assert((flags & SCRIPT_VERIFY_P2SH) != 0);
         if (stack.size() != 1) {
             return set_error(serror, ScriptError::CLEANSTACK);
         }
