@@ -74,7 +74,7 @@ static const Amount DUST_RELAY_TX_FEE(1000 * SATOSHI);
 static constexpr uint32_t MANDATORY_SCRIPT_VERIFY_FLAGS =
     SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC |
     SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_VERIFY_LOW_S |
-    SCRIPT_VERIFY_NULLFAIL | SCRIPT_VERIFY_CLEANSTACK;
+    SCRIPT_VERIFY_CLEANSTACK;
 
 /**
  * Standard script verification flags that standard transactions will comply
