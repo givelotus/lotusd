@@ -101,8 +101,7 @@ static constexpr uint32_t STANDARD_NOT_MANDATORY_VERIFY_FLAGS =
  * Used as the flags parameter to sequence and nLocktime checks in non-consensus
  * code.
  */
-static constexpr uint32_t STANDARD_LOCKTIME_VERIFY_FLAGS =
-    LOCKTIME_MEDIAN_TIME_PAST;
+static constexpr uint32_t STANDARD_LOCKTIME_VERIFY_FLAGS = 0;
 
 Amount GetDustThreshold(const CTxOut &txout, const CFeeRate &dustRelayFee);
 
