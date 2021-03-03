@@ -1557,14 +1557,6 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
         flags |= SCRIPT_VERIFY_NULLFAIL;
     }
 
-    // When the magnetic anomaly fork is enabled, we start accepting
-    // transactions using the OP_CHECKDATASIG opcode and it's verify
-    // alternative. We also start enforcing push only signatures and
-    // clean stack.
-    if (IsMagneticAnomalyEnabled(params, pindex)) {
-        flags |= SCRIPT_VERIFY_SIGPUSHONLY;
-    }
-
     // We make sure this node will have replay protection during the next hard
     // fork.
     if (IsReplayProtectionEnabled(params, pindex)) {

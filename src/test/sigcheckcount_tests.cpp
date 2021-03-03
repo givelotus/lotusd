@@ -347,16 +347,6 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
                            << OP_HASH160 << ToByteVector(CScriptID(swscript))
                            << OP_EQUAL,
                        SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CLEANSTACK, 0);
-
-    // If signature checks somehow occur in scriptsig, they do get counted.
-    // This can happen in historical blocks pre SIGPUSHONLY, even with CHECKSIG.
-    // (an analogous check for P2SH is not possible since it enforces
-    // sigpushonly).
-    CHECK_VERIFYSCRIPT(CScript() << sigschnorr << msg << pub
-                                 << OP_CHECKDATASIG /* scriptSig */,
-                       CScript() << sigecdsa << msg << pub
-                                 << OP_CHECKDATASIG /* scriptPubKey */,
-                       SCRIPT_VERIFY_NONE, 2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

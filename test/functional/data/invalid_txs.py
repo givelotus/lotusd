@@ -40,7 +40,9 @@ from test_framework.script import (
     OP_2DIV,
     OP_MUL,
     OP_LSHIFT,
-    OP_RSHIFT
+    OP_RSHIFT,
+    OP_HASH160,
+    OP_EQUAL,
 )
 
 basic_p2sh = sc.CScript(
@@ -78,6 +80,9 @@ class BadTxTemplate:
     def get_tx(self, *args, **kwargs):
         """Return a CTransaction that is invalid per the subclass."""
         pass
+
+    def get_setup_tx(self):
+        return None
 
 
 class OutputMissing(BadTxTemplate):
@@ -214,29 +219,35 @@ class InvalidOPIFConstruction(BadTxTemplate):
     expect_disconnect = True
     valid_in_block = True
 
-    def get_tx(self):
+    def get_tx(self, tx):
+        return create_tx_with_script(tx, 0, amount=tx.vout[0].nValue - 10000)
+
+    def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_sig=b'\x64' * 35,
+            self.spend_tx, 0, script_pub_key=b'\x64' * 35,
             amount=(self.spend_avail // 2))
 
 
 def getDisabledOpcodeTemplate(opcode):
     """ Creates disabled opcode tx template class"""
 
-    def get_tx(self):
-        tx = CTransaction()
-        vin = self.valid_txin
-        vin.scriptSig = CScript([opcode])
-        tx.vin.append(vin)
-        tx.vout.append(CTxOut(1, basic_p2sh))
-        pad_tx(tx)
-        tx.calc_sha256()
+    def get_tx(self, tx):
+        return create_tx_with_script(tx, 0, amount=tx.vout[0].nValue - 10000, script_sig=CScript([CScript([opcode])]))
+
+    def get_setup_tx(self):
+        return create_tx_with_script(
+            self.spend_tx, 0, amount=self.spend_tx.vout[0].nValue - 10000, script_pub_key=CScript([
+                OP_HASH160,
+                sc.hash160(CScript([opcode])),
+                OP_EQUAL,
+            ]))
         return tx
 
     return type('DisabledOpcode_' + str(opcode), (BadTxTemplate,), {
         'reject_reason': "disabled opcode",
         'expect_disconnect': True,
         'get_tx': get_tx,
+        'get_setup_tx': get_setup_tx,
         'valid_in_block': True
     })
 
