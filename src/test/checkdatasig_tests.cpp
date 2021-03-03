@@ -159,29 +159,17 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
         CheckError(flags, {{}, message, pubkey}, scriptverify,
                    ScriptError::CHECKDATASIGVERIFY);
 
-        if (flags & SCRIPT_VERIFY_NULLFAIL) {
-            // Invalid signature causes checkdatasig to fail.
-            CheckError(flags, {minimalsig, message, pubkeyC}, script,
-                       ScriptError::SIG_NULLFAIL);
-            CheckError(flags, {minimalsig, message, pubkeyC}, scriptverify,
-                       ScriptError::SIG_NULLFAIL);
+        // Invalid signature causes checkdatasig to fail.
+        CheckError(flags, {minimalsig, message, pubkeyC}, script,
+                    ScriptError::SIG_NULLFAIL);
+        CheckError(flags, {minimalsig, message, pubkeyC}, scriptverify,
+                    ScriptError::SIG_NULLFAIL);
 
-            // Invalid message causes checkdatasig to fail.
-            CheckError(flags, {validsig, {0x01}, pubkeyC}, script,
-                       ScriptError::SIG_NULLFAIL);
-            CheckError(flags, {validsig, {0x01}, pubkeyC}, scriptverify,
-                       ScriptError::SIG_NULLFAIL);
-        } else {
-            // When nullfail is not enforced, invalid signature are just false.
-            CheckPass(flags, {minimalsig, message, pubkeyC}, script, {});
-            CheckError(flags, {minimalsig, message, pubkeyC}, scriptverify,
-                       ScriptError::CHECKDATASIGVERIFY);
-
-            // Invalid message cause checkdatasig to fail.
-            CheckPass(flags, {validsig, {0x01}, pubkeyC}, script, {});
-            CheckError(flags, {validsig, {0x01}, pubkeyC}, scriptverify,
-                       ScriptError::CHECKDATASIGVERIFY);
-        }
+        // Invalid message causes checkdatasig to fail.
+        CheckError(flags, {validsig, {0x01}, pubkeyC}, script,
+                    ScriptError::SIG_NULLFAIL);
+        CheckError(flags, {validsig, {0x01}, pubkeyC}, scriptverify,
+                    ScriptError::SIG_NULLFAIL);
 
         if (flags & SCRIPT_VERIFY_LOW_S) {
             // If we do enforce low S, then high S sigs are rejected.
@@ -189,17 +177,12 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
                        ScriptError::SIG_HIGH_S);
             CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
                        ScriptError::SIG_HIGH_S);
-        } else if (flags & SCRIPT_VERIFY_NULLFAIL) {
-            // If we do enforce nullfail, these invalid sigs hit this.
+        } else {
+            // Otherwise, we enforce nullfail, these invalid sigs hit this.
             CheckError(flags, {highSSig, message, pubkeyC}, script,
                        ScriptError::SIG_NULLFAIL);
             CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
                        ScriptError::SIG_NULLFAIL);
-        } else {
-            // If we do not enforce low S, then high S sigs are accepted.
-            CheckPass(flags, {highSSig, message, pubkeyC}, script, {});
-            CheckError(flags, {highSSig, message, pubkeyC}, scriptverify,
-                       ScriptError::CHECKDATASIGVERIFY);
         }
 
         if (flags & (SCRIPT_VERIFY_DERSIG | SCRIPT_VERIFY_LOW_S |
@@ -210,17 +193,12 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
                        ScriptError::SIG_DER);
             CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
                        ScriptError::SIG_DER);
-        } else if (flags & SCRIPT_VERIFY_NULLFAIL) {
-            // If we do enforce nullfail, these invalid sigs hit this.
+        } else {
+            // Otherwise, we do enforce nullfail, these invalid sigs hit this.
             CheckError(flags, {nondersig, message, pubkeyC}, script,
                        ScriptError::SIG_NULLFAIL);
             CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
                        ScriptError::SIG_NULLFAIL);
-        } else {
-            // If we do not check, then it is accepted.
-            CheckPass(flags, {nondersig, message, pubkeyC}, script, {});
-            CheckError(flags, {nondersig, message, pubkeyC}, scriptverify,
-                       ScriptError::CHECKDATASIGVERIFY);
         }
     }
 }
