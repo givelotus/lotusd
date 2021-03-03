@@ -2158,7 +2158,7 @@ BOOST_AUTO_TEST_CASE(script_cltv_truncated) {
     std::vector<std::vector<uint8_t>> stack_ignore;
     ScriptError err;
     BOOST_CHECK(!EvalScript(stack_ignore, script_cltv_trunc,
-                            SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY,
+                            SCRIPT_VERIFY_NONE,
                             BaseSignatureChecker(), &err));
     BOOST_CHECK_EQUAL(err, ScriptError::INVALID_STACK_OPERATION);
 }

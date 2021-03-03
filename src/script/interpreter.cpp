@@ -289,10 +289,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         break;
 
                     case OP_CHECKLOCKTIMEVERIFY: {
-                        if (!(flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
-                            break;
-                        }
-
                         if (stack.size() < 1) {
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);

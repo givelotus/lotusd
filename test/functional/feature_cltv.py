@@ -99,7 +99,7 @@ class BIP65Test(BitcoinTestFramework):
         self.nodeaddress = self.nodes[0].getnewaddress()
 
         self.log.info(
-            "Test that an invalid-according-to-CLTV transaction can still appear in a block")
+            "Test that an invalid-according-to-CLTV transaction cannot appear in a block")
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[0],
                                     self.nodeaddress, amount=49.99)
@@ -119,8 +119,15 @@ class BIP65Test(BitcoinTestFramework):
         block.solve()
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))
-        # This block is valid
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash)
+        # This block is invalid
+        assert self.nodes[0].getbestblockhash() != block.hash
+        
+        # Create valid block to get over the threshold for the version enforcement
+        block = create_block(int(tip, 16), create_coinbase(
+            CLTV_HEIGHT - 1), block_time)
+        block.nVersion = 3
+        block.solve()
+        self.nodes[0].p2p.send_and_ping(msg_block(block))
 
         self.log.info("Test that blocks must now be at least version 4")
         tip = block.sha256
@@ -161,7 +168,7 @@ class BIP65Test(BitcoinTestFramework):
         # rejected from the mempool for exactly that reason.
         assert_equal(
             [{'txid': spendtx.hash, 'allowed': False,
-              'reject-reason': 'non-mandatory-script-verify-flag (Negative locktime)'}],
+              'reject-reason': 'mandatory-script-verify-flag-failed (Negative locktime)'}],
             self.nodes[0].testmempoolaccept(
                 rawtxs=[spendtx.serialize().hex()], maxfeerate=0)
         )
