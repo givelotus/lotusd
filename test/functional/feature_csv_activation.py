@@ -403,6 +403,10 @@ class BIP68_112_113Test(BitcoinTestFramework):
             bip112tx_special_v2,
             self.spend_tx(bip112tx_special_v2),
         ]])
+        self.send_failure_blocks([
+            [tx]
+            for tx in all_rlt_txs(bip68txs_v2[8:])
+        ])
         # add BIP 112 with seq=10 txs
         self.send_failure_blocks([
             [tx, self.spend_tx(tx)]
@@ -410,7 +414,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         ])
         self.send_failure_blocks([
             [tx, self.spend_tx(tx)]
-            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v2[8:])
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v2)
         ])
         self.send_failure_blocks([
             [tx, self.spend_tx(tx)]
@@ -418,7 +422,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         ])
         self.send_failure_blocks([
             [tx, self.spend_tx(tx)]
-            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2[8:])
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2)
         ])
 
         # add BIP113 tx and -1 CSV tx
@@ -427,16 +431,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         success_txs = []
         success_txs.append(bip113tx_v2)
         # add BIP 68 txs
-        success_txs.extend(all_rlt_txs(bip68txs_v2))
-        success_txs.extend([
-            tx
-            for setup_txs in [
-                bip112txs_vary_OP_CSV_v2[:8],
-                bip112txs_vary_OP_CSV_9_v2[:8]
-            ]
-            for setup_tx in all_rlt_txs(setup_txs)
-            for tx in [setup_tx, self.spend_tx(setup_tx)]
-        ])
+        success_txs.extend(all_rlt_txs(bip68txs_v2[:8]))
         # Test #4
         self.send_blocks([self.create_test_block(success_txs)])
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
