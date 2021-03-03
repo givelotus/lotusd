@@ -30,10 +30,6 @@ enum {
     // (BIP62 rule 5).
     SCRIPT_VERIFY_LOW_S = (1U << 3),
 
-    // Using a non-push operator in the scriptSig causes script failure
-    // (BIP62 rule 2).
-    SCRIPT_VERIFY_SIGPUSHONLY = (1U << 5),
-
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
