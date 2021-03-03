@@ -216,7 +216,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
         )
         update_block(4449)
         peer.send_blocks_and_test(
-            [self.tip], node, success=False, reject_reason="bad-txns-BIP30"
+            [self.tip], node, success=False, reject_reason="bad-txns-inputs-missingorspent"
         )
 
 
