@@ -35,11 +35,6 @@ enum {
     // Note: The Segwit Recovery feature is an exception to CLEANSTACK
     SCRIPT_VERIFY_CLEANSTACK = (1U << 8),
 
-    // Verify CHECKLOCKTIMEVERIFY
-    //
-    // See BIP65 for details.
-    SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY = (1U << 9),
-
     // Require the argument of OP_IF/NOTIF to be exactly 0x01 or empty vector
     //
     SCRIPT_VERIFY_MINIMALIF = (1U << 13),
