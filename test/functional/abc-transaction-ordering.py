@@ -227,7 +227,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
             sorted(replay_tx_block.vtx[1:], key=lambda tx: tx.get_id())
         update_block(4449)
         node.p2p.send_blocks_and_test(
-            [self.tip], node, success=False, reject_reason='bad-txns-BIP30')
+            [self.tip], node, success=False, reject_reason='bad-txns-inputs-missingorspent')
 
 
 if __name__ == '__main__':
