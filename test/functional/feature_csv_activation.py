@@ -5,7 +5,7 @@
 
 This soft fork will activate the following BIPS:
 BIP 68  - nSequence relative lock times
-BIP 112 - CHECKSEQUENCEVERIFY
+BIP 112 - CHECKSEQUENCEVERIFY (now activated from genesis)
 BIP 113 - MedianTimePast semantics for nLockTime
 
 regtest lock-in with 108/144 block signalling
@@ -199,7 +199,18 @@ class BIP68_112_113Test(BitcoinTestFramework):
 
         Call with success = False if the tip shouldn't advance to the most recent block.
         """
-        self.helper_peer.send_blocks_and_test(blocks, self.nodes[0], success=success)
+        self.helper_peer.send_blocks_and_test(blocks, self.nodes[0], success=success, timeout=5)
+
+    def send_failure_blocks(self, failure_blocks):
+        any_succeeded = False
+        for i, txs in enumerate(failure_blocks):
+            try:
+                self.send_blocks([self.create_test_block(txs)], success=False)
+            except:
+                print("block", i, "succeeded but should have failed: ", [tx.vin for tx in txs])
+                self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
+                any_succeeded = True
+        assert not any_succeeded
 
     def run_test(self):
         self.helper_peer = self.nodes[0].add_p2p_connection(P2PDataStore())
@@ -340,66 +351,92 @@ class BIP68_112_113Test(BitcoinTestFramework):
         self.log.info("Pre-Soft Fork Tests. All txs should pass.")
         self.log.info("Test version 1 txs")
 
-        success_txs = []
+        # Test whether these transactions (which used to be valid on Bitcoin)
+        # are now rejected since we enforce OP_CSV from genesis.
+        # add BIP 112 with seq=10 txs
+        self.send_failure_blocks([[
+            bip112tx_special_v1,
+            self.spend_tx(bip112tx_special_v1)
+        ]])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_nSequence_v1)
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v1[8:])
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v1)
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v1[8:])
+        ])
+
         # add BIP113 tx and -1 CSV tx
         # = MTP of prior block (not <) but < time put on current block
         bip113tx_v1.nLockTime = self.last_block_time - 600 * 5
+        success_txs = []
         success_txs.append(bip113tx_v1)
-        success_txs.append(bip112tx_special_v1)
-        success_txs.append(self.spend_tx(bip112tx_special_v1))
         # add BIP 68 txs
         success_txs.extend(all_rlt_txs(bip68txs_v1))
-        # add BIP 112 with seq=10 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_v1)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v1)]
-        )
-        # try BIP 112 with seq=9 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_9_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v1)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_9_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v1)]
-        )
+        success_txs.extend([
+            tx
+            for setup_txs in [
+                bip112txs_vary_OP_CSV_v1[:8],
+                bip112txs_vary_OP_CSV_9_v1[:8]
+            ]
+            for setup_tx in all_rlt_txs(setup_txs)
+            for tx in [setup_tx, self.spend_tx(setup_tx)]
+        ])
         # Test #3
         self.send_blocks([self.create_test_block(success_txs)])
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
 
         self.log.info("Test version 2 txs")
 
-        success_txs = []
+        # Test whether these transactions (which used to be valid on Bitcoin)
+        # are now rejected since we enforce OP_CSV from genesis.
+        self.send_failure_blocks([[
+            bip112tx_special_v2,
+            self.spend_tx(bip112tx_special_v2),
+        ]])
+        # add BIP 112 with seq=10 txs
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_nSequence_v2)
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v2[8:])
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v2)
+        ])
+        self.send_failure_blocks([
+            [tx, self.spend_tx(tx)]
+            for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2[8:])
+        ])
+
         # add BIP113 tx and -1 CSV tx
         # = MTP of prior block (not <) but < time put on current block
         bip113tx_v2.nLockTime = self.last_block_time - 600 * 5
+        success_txs = []
         success_txs.append(bip113tx_v2)
-        success_txs.append(bip112tx_special_v2)
-        success_txs.append(self.spend_tx(bip112tx_special_v2))
         # add BIP 68 txs
         success_txs.extend(all_rlt_txs(bip68txs_v2))
-        # add BIP 112 with seq=10 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_v2)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v2)]
-        )
-        # try BIP 112 with seq=9 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_9_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v2)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_9_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2)]
-        )
+        success_txs.extend([
+            tx
+            for setup_txs in [
+                bip112txs_vary_OP_CSV_v2[:8],
+                bip112txs_vary_OP_CSV_9_v2[:8]
+            ]
+            for setup_tx in all_rlt_txs(setup_txs)
+            for tx in [setup_tx, self.spend_tx(setup_tx)]
+        ])
         # Test #4
         self.send_blocks([self.create_test_block(success_txs)])
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
