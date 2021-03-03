@@ -152,8 +152,8 @@ void MinerTestingSetup::TestPackageSelection(
     std::unique_ptr<CBlockTemplate> pblocktemplate =
         AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK(pblocktemplate->block.vtx[1]->GetId() == parentTxId);
-    BOOST_CHECK(pblocktemplate->block.vtx[2]->GetId() == highFeeTxId);
-    BOOST_CHECK(pblocktemplate->block.vtx[3]->GetId() == mediumFeeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[2]->GetId() == mediumFeeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[3]->GetId() == highFeeTxId);
 
     // Test that a package below the block min tx fee doesn't get included
     tx.vin[0].prevout = COutPoint(highFeeTxId, 0);
@@ -189,8 +189,11 @@ void MinerTestingSetup::TestPackageSelection(
     lowFeeTxId = tx.GetId();
     m_node.mempool->addUnchecked(entry.Fee(feeToUse + 2 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK(pblocktemplate->block.vtx[4]->GetId() == freeTxId);
-    BOOST_CHECK(pblocktemplate->block.vtx[5]->GetId() == lowFeeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[1]->GetId() == freeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[2]->GetId() == parentTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[3]->GetId() == mediumFeeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[4]->GetId() == lowFeeTxId);
+    BOOST_CHECK(pblocktemplate->block.vtx[5]->GetId() == highFeeTxId);
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as ancestor transactions get included in a block. Add a

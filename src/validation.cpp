@@ -3941,9 +3941,6 @@ static bool ContextualCheckBlock(const CBlock &block,
                                         ? nMedianTimePast
                                         : block.GetBlockTime();
 
-    const bool fIsMagneticAnomalyEnabled =
-        IsMagneticAnomalyEnabled(params, pindexPrev);
-
     // Check transactions:
     // - canonical ordering
     // - ensure they are finalized
@@ -3954,25 +3951,23 @@ static bool ContextualCheckBlock(const CBlock &block,
     const CTransaction *prevTx = nullptr;
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
-        if (fIsMagneticAnomalyEnabled) {
-            if (prevTx && (tx.GetId() <= prevTx->GetId())) {
-                if (tx.GetId() == prevTx->GetId()) {
-                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                         "tx-duplicate",
-                                         strprintf("Duplicated transaction %s",
-                                                   tx.GetId().ToString()));
-                }
-
-                return state.Invalid(
-                    BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
-                    strprintf("Transaction order is invalid (%s < %s)",
-                              tx.GetId().ToString(),
-                              prevTx->GetId().ToString()));
+        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
+            if (tx.GetId() == prevTx->GetId()) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                        "tx-duplicate",
+                                        strprintf("Duplicated transaction %s",
+                                                tx.GetId().ToString()));
             }
 
-            if (prevTx || !tx.IsCoinBase()) {
-                prevTx = &tx;
-            }
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
+                strprintf("Transaction order is invalid (%s < %s)",
+                            tx.GetId().ToString(),
+                            prevTx->GetId().ToString()));
+        }
+
+        if (prevTx || !tx.IsCoinBase()) {
+            prevTx = &tx;
         }
 
         TxValidationState tx_state;
