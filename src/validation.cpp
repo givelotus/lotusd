@@ -1532,11 +1532,6 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
 
-    // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
-    if ((pindex->nHeight + 1) >= params.CSVHeight) {
-        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
-    }
-
     // If the UAHF is enabled, we start accepting replay protected txns
     if (IsUAHFenabled(params, pindex)) {
         flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
