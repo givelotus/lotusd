@@ -78,8 +78,8 @@ class BIP68Test(BitcoinTestFramework):
         self.test_sequence_lock_unconfirmed_inputs()
 
         self.log.info(
-            "Running test BIP68 not consensus before versionbits activation")
-        self.test_bip68_not_consensus()
+            "Make sure BIP-68 txs always work, independent of when they are activated on Bitcoin.")
+        self.test_version2_relay()
 
         self.log.info("Activating BIP68 (and 112/113)")
         self.activateCSV()
@@ -418,61 +418,6 @@ class BIP68Test(BitcoinTestFramework):
     def get_csv_status(self):
         height = self.nodes[0].getblockchaininfo()['blocks']
         return height >= 576
-
-    # Make sure that BIP68 isn't being used to validate blocks, prior to
-    # versionbits activation.  If more blocks are mined prior to this test
-    # being run, then it's possible the test has activated the soft fork, and
-    # this test should be moved to run earlier, or deleted.
-    def test_bip68_not_consensus(self):
-        assert_equal(self.get_csv_status(), False)
-        txid = self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), 2)
-
-        tx1 = FromHex(CTransaction(), self.nodes[0].getrawtransaction(txid))
-        tx1.rehash()
-
-        # Make an anyone-can-spend transaction
-        tx2 = CTransaction()
-        tx2.nVersion = 1
-        tx2.vin = [CTxIn(COutPoint(tx1.sha256, 0), nSequence=0)]
-        tx2.vout = [
-            CTxOut(int(tx1.vout[0].nValue - self.relayfee * COIN), CScript([b'a']))]
-
-        # sign tx2
-        tx2_raw = self.nodes[0].signrawtransactionwithwallet(ToHex(tx2))["hex"]
-        tx2 = FromHex(tx2, tx2_raw)
-        pad_tx(tx2)
-        tx2.rehash()
-
-        self.nodes[0].sendrawtransaction(ToHex(tx2))
-
-        # Now make an invalid spend of tx2 according to BIP68
-        # 100 block relative locktime
-        sequence_value = 100
-
-        tx3 = CTransaction()
-        tx3.nVersion = 2
-        tx3.vin = [CTxIn(COutPoint(tx2.sha256, 0), nSequence=sequence_value)]
-        tx3.vout = [
-            CTxOut(int(tx2.vout[0].nValue - self.relayfee * COIN), CScript([b'a']))]
-        pad_tx(tx3)
-        tx3.rehash()
-
-        assert_raises_rpc_error(-26, NOT_FINAL_ERROR,
-                                self.nodes[0].sendrawtransaction, ToHex(tx3))
-
-        # make a block that violates bip68; ensure that the tip updates
-        tip = int(self.nodes[0].getbestblockhash(), 16)
-        block = create_block(
-            tip, create_coinbase(self.nodes[0].getblockcount() + 1))
-        block.nVersion = 3
-        block.vtx.extend(
-            sorted([tx1, tx2, tx3], key=lambda tx: tx.get_id()))
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.rehash()
-        block.solve()
-
-        assert_equal(None, self.nodes[0].submitblock(ToHex(block)))
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash)
 
     def activateCSV(self):
         # activation should happen at block height 576
