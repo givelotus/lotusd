@@ -15,21 +15,6 @@ enum {
     // Note: The Segwit Recovery feature is an exception to P2SH
     SCRIPT_VERIFY_P2SH = (1U << 0),
 
-    // Passing a non-strict-DER signature or one with undefined hashtype to a
-    // checksig operation causes script failure. Evaluating a pubkey that is not
-    // (0x04 + 64 bytes) or (0x02 or 0x03 + 32 bytes) by checksig causes script
-    // failure.
-    SCRIPT_VERIFY_STRICTENC = (1U << 1),
-
-    // Passing a non-strict-DER signature to a checksig operation causes script
-    // failure (BIP62 rule 1)
-    SCRIPT_VERIFY_DERSIG = (1U << 2),
-
-    // Passing a non-strict-DER signature or one with S > order/2 to a checksig
-    // operation causes script failure
-    // (BIP62 rule 5).
-    SCRIPT_VERIFY_LOW_S = (1U << 3),
-
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
