@@ -1524,6 +1524,7 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
     // Start enforcing P2SH (BIP16)
     if ((pindex->nHeight + 1) >= params.BIP16Height) {
         flags |= SCRIPT_VERIFY_P2SH;
+        flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
     // Start enforcing the DERSIG (BIP66) rule.
@@ -1562,7 +1563,6 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
     // clean stack.
     if (IsMagneticAnomalyEnabled(params, pindex)) {
         flags |= SCRIPT_VERIFY_SIGPUSHONLY;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
     // We make sure this node will have replay protection during the next hard
