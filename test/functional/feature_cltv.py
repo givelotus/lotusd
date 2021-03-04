@@ -129,20 +129,11 @@ class BIP65Test(BitcoinTestFramework):
         block.solve()
         self.nodes[0].p2p.send_and_ping(msg_block(block))
 
-        self.log.info("Test that blocks must now be at least version 4")
         tip = block.sha256
         block_time += 1
-        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time)
-        block.nVersion = 3
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(expected_msgs=['{}, bad-version(0x00000003)'.format(block.hash)]):
-            self.nodes[0].p2p.send_and_ping(msg_block(block))
-            assert_equal(int(self.nodes[0].getbestblockhash(), 16), tip)
-            self.nodes[0].p2p.sync_with_ping()
-
         self.log.info(
             "Test that invalid-according-to-cltv transactions cannot appear in a block")
+        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time)
         block.nVersion = 4
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
