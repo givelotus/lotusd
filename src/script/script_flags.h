@@ -43,10 +43,6 @@ enum {
     //
     SCRIPT_ENABLE_REPLAY_PROTECTION = (1U << 17),
 
-    // The exception to CLEANSTACK and P2SH for the recovery of coins sent
-    // to p2sh segwit addresses is not allowed.
-    SCRIPT_DISALLOW_SEGWIT_RECOVERY = (1U << 20),
-
     // Require the number of sigchecks in an input to satisfy a specific
     // bound, defined by scriptSig length.
     // Note: The Segwit Recovery feature is a (currently moot) exception to
