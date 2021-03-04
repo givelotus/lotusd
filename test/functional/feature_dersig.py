@@ -53,24 +53,13 @@ class BIP66Test(BitcoinTestFramework):
             b)['tx'][0] for b in self.nodes[0].generate(DERSIG_HEIGHT - 1)]
         self.nodeaddress = self.nodes[0].getnewaddress()
 
-        self.log.info("Test that blocks must now be at least version 3")
+        self.log.info(
+            "Test that transactions with non-DER signatures cannot appear in a block")
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
         block = create_block(
             int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time)
-        block.nVersion = 2
-        block.rehash()
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(expected_msgs=['{}, bad-version(0x00000002)'.format(block.hash)]):
-            self.nodes[0].p2p.send_and_ping(msg_block(block))
-            assert_equal(self.nodes[0].getbestblockhash(), tip)
-            self.nodes[0].p2p.sync_with_ping()
-
-        self.log.info(
-            "Test that transactions with non-DER signatures cannot appear in a block")
         block.nVersion = 3
-
         spendtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
                                      self.nodeaddress, amount=1.0)
         unDERify(spendtx)

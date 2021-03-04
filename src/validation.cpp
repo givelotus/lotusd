@@ -3721,19 +3721,6 @@ static bool ContextualCheckBlockHeader(const CChainParams &params,
                              "block timestamp too far in the future");
     }
 
-    // Reject outdated version blocks when 95% (75% on testnet) of the network
-    // has upgraded:
-    // check for version 2, 3 and 4 upgrades
-    const Consensus::Params &consensusParams = params.GetConsensus();
-    if ((block.nVersion < 2 && nHeight >= consensusParams.BIP34Height) ||
-        (block.nVersion < 3 && nHeight >= consensusParams.BIP66Height) ||
-        (block.nVersion < 4 && nHeight >= consensusParams.BIP65Height)) {
-        return state.Invalid(
-            BlockValidationResult::BLOCK_INVALID_HEADER,
-            strprintf("bad-version(0x%08x)", block.nVersion),
-            strprintf("rejected nVersion=0x%08x block", block.nVersion));
-    }
-
     return true;
 }
 
