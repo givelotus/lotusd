@@ -140,13 +140,6 @@ ValidateCheckInputsForAllFlags(const CTransaction &tx, uint32_t failing_flags,
         uint32_t test_flags = lcg.next() | required_flags;
         TxValidationState state;
 
-        // Filter out incompatible flag choices
-        if ((test_flags & SCRIPT_VERIFY_CLEANSTACK)) {
-            // CLEANSTACK requires P2SH, see VerifyScript() in
-            // script/interpreter.cpp
-            test_flags |= SCRIPT_VERIFY_P2SH;
-        }
-
         int nSigChecksDirect = 0xf00d;
         bool ret = CheckInputScripts(
             tx, state, &::ChainstateActive().CoinsTip(), test_flags, true,
@@ -324,8 +317,12 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
                                      p2pk_scriptPubKey.end());
         invalid_under_p2sh_tx.vin[0].scriptSig << vchSig2;
 
+        // This test should always fail.
+        // There are no flags required for this test, therefore we set some
+        // unused flag as both required and failing.
+        // TODO: Add a "should always fail" flag to make this clean.
         ValidateCheckInputsForAllFlags(CTransaction(invalid_under_p2sh_tx),
-                                       SCRIPT_VERIFY_P2SH, 0, true, 0);
+                                       1 << 31, 1 << 31, true, 0);
     }
 
     // Test CHECKLOCKTIMEVERIFY
@@ -450,7 +447,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         // convention.
         ValidateCheckInputsForAllFlags(
             CTransaction(tx), SCRIPT_ENABLE_REPLAY_PROTECTION,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_VERIFY_P2SH, true, 2);
+            SCRIPT_ENABLE_SIGHASH_FORKID, true, 2);
 
         {
             // Try checking this valid transaction with sigchecks limiter

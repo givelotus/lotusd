@@ -1520,12 +1520,8 @@ int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev,
 static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
                                         const CBlockIndex *pindex) {
     uint32_t flags = SCRIPT_VERIFY_NONE;
-
-    // Start enforcing P2SH (BIP16)
-    if ((pindex->nHeight + 1) >= params.BIP16Height) {
-        flags |= SCRIPT_VERIFY_P2SH;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
-    }
+    // Always enforce CLEANSTACK
+    flags |= SCRIPT_VERIFY_CLEANSTACK;
 
     // If the UAHF is enabled, we start accepting replay protected txns
     if (IsUAHFenabled(params, pindex)) {

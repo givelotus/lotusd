@@ -31,10 +31,6 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
     const unsigned int flags =
         fuzzed_data_provider.ConsumeIntegral<unsigned int>();
     assert(bitcoinconsensus_version() == BITCOINCONSENSUS_API_VER);
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 &&
-        (flags & SCRIPT_VERIFY_P2SH) == 0) {
-        return;
-    }
     (void)bitcoinconsensus_verify_script(
         random_bytes_1.data(), random_bytes_1.size(), random_bytes_2.data(),
         random_bytes_2.size(), n_in, flags, err_p);

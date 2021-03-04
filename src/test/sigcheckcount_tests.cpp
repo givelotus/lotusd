@@ -324,7 +324,7 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
                        CScript()
                            << OP_HASH160 << ToByteVector(CScriptID(swscript))
                            << OP_EQUAL,
-                       SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CLEANSTACK, 0);
+                       SCRIPT_VERIFY_CLEANSTACK, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

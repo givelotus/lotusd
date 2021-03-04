@@ -62,9 +62,6 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
             } else {
                 verify_flags |= fuzzed_flags;
             }
-            if (!IsValidFlagCombination(verify_flags)) {
-                return;
-            }
 
             ScriptError serror_fuzzed;
             const bool ret_fuzzed =
@@ -77,9 +74,4 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
     } catch (const std::ios_base::failure &) {
         return;
     }
-}
-
-static bool IsValidFlagCombination(uint32_t flags) {
-    // If the CLEANSTACK flag is set, then P2SH should also be set
-    return (~flags & SCRIPT_VERIFY_CLEANSTACK) || (flags & SCRIPT_VERIFY_P2SH);
 }

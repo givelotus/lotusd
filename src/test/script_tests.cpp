@@ -38,7 +38,7 @@
 // Uncomment if you want to output updated JSON tests.
 // #define UPDATE_JSON_TESTS
 
-static const uint32_t gFlags = SCRIPT_VERIFY_P2SH;
+static const uint32_t gFlags = SCRIPT_VERIFY_NONE;
 
 struct ScriptErrorDesc {
     ScriptError err;
@@ -124,9 +124,6 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
                    uint32_t flags, const std::string &message,
                    ScriptError scriptError, const Amount nValue) {
     bool expect = (scriptError == ScriptError::OK);
-    if (flags & SCRIPT_VERIFY_CLEANSTACK) {
-        flags |= SCRIPT_VERIFY_P2SH;
-    }
 
     ScriptError err;
     const CTransaction txCredit{
@@ -152,10 +149,6 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
             ~(SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
         uint32_t combined_flags =
             expect ? (flags & ~extra_flags) : (flags | extra_flags);
-        // Weed out invalid flag combinations.
-        if (combined_flags & SCRIPT_VERIFY_CLEANSTACK) {
-            combined_flags |= SCRIPT_VERIFY_P2SH;
-        }
 
         BOOST_CHECK_MESSAGE(VerifyScript(scriptSig, scriptPubKey,
                                          combined_flags,
@@ -580,12 +573,12 @@ BOOST_AUTO_TEST_CASE(script_build) {
 
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0C) << OP_CHECKSIG,
-                    "P2SH(P2PK)", SCRIPT_VERIFY_P2SH, true)
+                    "P2SH(P2PK)", SCRIPT_VERIFY_NONE, true)
             .PushSigECDSA(keys.key0)
             .PushRedeem());
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0C) << OP_CHECKSIG,
-                    "P2SH(P2PK), bad redeemscript", SCRIPT_VERIFY_P2SH, true)
+                    "P2SH(P2PK), bad redeemscript", SCRIPT_VERIFY_NONE, true)
             .PushSigECDSA(keys.key0)
             .PushRedeem()
             .DamagePush(10)
@@ -594,22 +587,14 @@ BOOST_AUTO_TEST_CASE(script_build) {
     tests.push_back(TestBuilder(CScript() << OP_DUP << OP_HASH160
                                           << ToByteVector(keys.pubkey0.GetID())
                                           << OP_EQUALVERIFY << OP_CHECKSIG,
-                                "P2SH(P2PKH)", SCRIPT_VERIFY_P2SH, true)
+                                "P2SH(P2PKH)", SCRIPT_VERIFY_NONE, true)
                         .PushSigECDSA(keys.key0)
                         .Push(keys.pubkey0)
                         .PushRedeem());
     tests.push_back(TestBuilder(CScript() << OP_DUP << OP_HASH160
                                           << ToByteVector(keys.pubkey1.GetID())
                                           << OP_EQUALVERIFY << OP_CHECKSIG,
-                                "P2SH(P2PKH), bad sig but no VERIFY_P2SH", 0,
-                                true)
-                        .PushSigECDSA(keys.key0)
-                        .DamagePush(10)
-                        .PushRedeem());
-    tests.push_back(TestBuilder(CScript() << OP_DUP << OP_HASH160
-                                          << ToByteVector(keys.pubkey1.GetID())
-                                          << OP_EQUALVERIFY << OP_CHECKSIG,
-                                "P2SH(P2PKH), bad sig", SCRIPT_VERIFY_P2SH,
+                                "P2SH(P2PKH), bad sig", SCRIPT_VERIFY_NONE,
                                 true)
                         .PushSigECDSA(keys.key0)
                         .DamagePush(10)
@@ -640,7 +625,7 @@ BOOST_AUTO_TEST_CASE(script_build) {
                                           << ToByteVector(keys.pubkey1C)
                                           << ToByteVector(keys.pubkey2C) << OP_3
                                           << OP_CHECKMULTISIG,
-                                "P2SH(2-of-3)", SCRIPT_VERIFY_P2SH, true)
+                                "P2SH(2-of-3)", SCRIPT_VERIFY_NONE, true)
                         .Num(0)
                         .PushSigECDSA(keys.key1)
                         .PushSigECDSA(keys.key2)
@@ -649,7 +634,7 @@ BOOST_AUTO_TEST_CASE(script_build) {
                                           << ToByteVector(keys.pubkey1C)
                                           << ToByteVector(keys.pubkey2C) << OP_3
                                           << OP_CHECKMULTISIG,
-                                "P2SH(2-of-3), 1 sig", SCRIPT_VERIFY_P2SH, true)
+                                "P2SH(2-of-3), 1 sig", SCRIPT_VERIFY_NONE, true)
                         .Num(0)
                         .PushSigECDSA(keys.key1)
                         .Num(0)
@@ -890,7 +875,7 @@ BOOST_AUTO_TEST_CASE(script_build) {
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey1) << OP_CHECKSIG,
                     "P2SH(P2PK) with invalid sighashtype and STRICTENC",
-                    SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_NONE, true)
+                    SCRIPT_VERIFY_NONE, true)
             .PushSigECDSA(keys.key1, SigHashType(0x21))
             .PushRedeem()
             // Should fail for STRICTENC
@@ -927,27 +912,27 @@ BOOST_AUTO_TEST_CASE(script_build) {
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2PK with unnecessary input but no CLEANSTACK",
-                    SCRIPT_VERIFY_P2SH)
+                    SCRIPT_VERIFY_NONE)
             .Num(11)
             .PushSigECDSA(keys.key0));
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2PK with unnecessary input",
-                    SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH)
+                    SCRIPT_VERIFY_CLEANSTACK)
             .Num(11)
             .PushSigECDSA(keys.key0)
             .SetScriptError(ScriptError::CLEANSTACK));
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2SH with unnecessary input but no CLEANSTACK",
-                    SCRIPT_VERIFY_P2SH, true)
+                    SCRIPT_VERIFY_NONE, true)
             .Num(11)
             .PushSigECDSA(keys.key0)
             .PushRedeem());
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2SH with unnecessary input",
-                    SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH, true)
+                    SCRIPT_VERIFY_CLEANSTACK, true)
             .Num(11)
             .PushSigECDSA(keys.key0)
             .PushRedeem()
@@ -955,7 +940,7 @@ BOOST_AUTO_TEST_CASE(script_build) {
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2SH with CLEANSTACK",
-                    SCRIPT_VERIFY_CLEANSTACK | SCRIPT_VERIFY_P2SH, true)
+                    SCRIPT_VERIFY_CLEANSTACK, true)
             .PushSigECDSA(keys.key0)
             .PushRedeem());
 
@@ -1890,9 +1875,8 @@ BOOST_AUTO_TEST_CASE(script_build) {
 
     // SigChecks tests follow. We want to primarily focus on behaviour with
     // the modern set of (relevant) flags.
-    uint32_t sigchecksflags = 
-        SCRIPT_VERIFY_NONE | SCRIPT_VERIFY_INPUT_SIGCHECKS |
-        SCRIPT_VERIFY_P2SH;
+    uint32_t sigchecksflags =
+        SCRIPT_VERIFY_NONE | SCRIPT_VERIFY_INPUT_SIGCHECKS;
     // First, try some important use cases that we want to make sure are
     // supported but that have high density of sigchecks.
     tests.push_back(TestBuilder(CScript() << 1 << ToByteVector(keys.pubkey0C)
@@ -2140,15 +2124,15 @@ BOOST_AUTO_TEST_CASE(script_PushData) {
     std::vector<std::vector<uint8_t>> stack_ignore;
     BOOST_CHECK(!EvalScript(
         stack_ignore, CScript(pushdata1_trunc.begin(), pushdata1_trunc.end()),
-        SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
+        SCRIPT_VERIFY_NONE, BaseSignatureChecker(), &err));
     BOOST_CHECK_EQUAL(err, ScriptError::BAD_OPCODE);
     BOOST_CHECK(!EvalScript(
         stack_ignore, CScript(pushdata2_trunc.begin(), pushdata2_trunc.end()),
-        SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
+        SCRIPT_VERIFY_NONE, BaseSignatureChecker(), &err));
     BOOST_CHECK_EQUAL(err, ScriptError::BAD_OPCODE);
     BOOST_CHECK(!EvalScript(
         stack_ignore, CScript(pushdata4_trunc.begin(), pushdata4_trunc.end()),
-        SCRIPT_VERIFY_P2SH, BaseSignatureChecker(), &err));
+        SCRIPT_VERIFY_NONE, BaseSignatureChecker(), &err));
     BOOST_CHECK_EQUAL(err, ScriptError::BAD_OPCODE);
 }
 
