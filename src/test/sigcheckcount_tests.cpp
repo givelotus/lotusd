@@ -315,16 +315,6 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
     CHECK_VERIFYSCRIPT(CScript() << txsigschnorr,
                        CScript() << pub << OP_CHECKSIG,
                        SCRIPT_ENABLE_SIGHASH_FORKID, 1);
-
-    // Correct behaviour occurs for segwit recovery special case (which returns
-    // success from an alternative location)
-    CScript swscript;
-    swscript << OP_0 << std::vector<uint8_t>(20);
-    CHECK_VERIFYSCRIPT(CScript() << ToByteVector(swscript),
-                       CScript()
-                           << OP_HASH160 << ToByteVector(CScriptID(swscript))
-                           << OP_EQUAL,
-                       SCRIPT_VERIFY_CLEANSTACK, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

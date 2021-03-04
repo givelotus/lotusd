@@ -45,17 +45,6 @@ static void CheckError(uint32_t flags, const stacktype &original_stack,
     BOOST_CHECK(err == expected);
 }
 
-static void CheckPass(uint32_t flags, const stacktype &original_stack,
-                      const CScript &script, const stacktype &expected) {
-    BaseSignatureChecker sigchecker;
-    ScriptError err = ScriptError::OK;
-    stacktype stack{original_stack};
-    bool r = EvalScript(stack, script, flags, sigchecker, &err);
-    BOOST_CHECK(r);
-    BOOST_CHECK(err == ScriptError::OK);
-    BOOST_CHECK(stack == expected);
-}
-
 BOOST_AUTO_TEST_CASE(opcodes_random_flags) {
     // Test script execution of the six signature opcodes with Schnorr-sized
     // signatures, and probe failure mode under a very wide variety of flags.
