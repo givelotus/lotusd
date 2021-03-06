@@ -86,8 +86,7 @@ static constexpr uint32_t MANDATORY_SCRIPT_VERIFY_FLAGS =
  * contextual information of which upgrades are currently active.
  */
 static constexpr uint32_t STANDARD_SCRIPT_VERIFY_FLAGS =
-    MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS |
-    SCRIPT_VERIFY_INPUT_SIGCHECKS;
+    MANDATORY_SCRIPT_VERIFY_FLAGS | SCRIPT_VERIFY_INPUT_SIGCHECKS;
 
 /**
  * For convenience, standard but not mandatory verify flags.

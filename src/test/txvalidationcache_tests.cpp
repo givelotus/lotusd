@@ -20,6 +20,9 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <logging.h>
+#include <core_io.h>
+
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests)
 
 BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup) {
@@ -148,6 +151,16 @@ ValidateCheckInputsForAllFlags(const CTransaction &tx, uint32_t failing_flags,
         // CheckInputScripts should succeed iff test_flags doesn't intersect
         // with failing_flags
         bool expected_return_value = !(test_flags & failing_flags);
+        if (ret != expected_return_value) {
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                const Coin &coin = ::ChainstateActive().CoinsTip().AccessCoin(tx.vin[i].prevout);
+                LogPrintf("Input Idx: %d\n", i);
+                LogPrintf("scriptPubKey: %s\n", ScriptToAsmStr(coin.GetTxOut().scriptPubKey));
+                LogPrintf("scriptSig: %s\n", ScriptToAsmStr(tx.vin[i].scriptSig));
+            }
+            LogPrintf("Locktime: %d, %x\n", tx.nLockTime, tx.nLockTime);
+            LogPrintf("Expected return value %d but got %d\n", expected_return_value, ret);
+        }
         BOOST_CHECK_EQUAL(ret, expected_return_value);
 
         if (ret) {
@@ -198,8 +211,6 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
     BOOST_CHECK(keystore.AddCScript(p2pk_scriptPubKey));
 
     CMutableTransaction funding_tx;
-    // Needed when spending the output of this transaction
-    CScript noppyScriptPubKey;
     // Create a transaction output that can fail DISCOURAGE_UPGRADABLE_NOPS
     // checks when spent. This is for testing consensus vs non-standard rules in
     // `checkinputs_test`.
@@ -209,9 +220,10 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         funding_tx.vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetId(), 0);
         funding_tx.vout.resize(1);
         funding_tx.vout[0].nValue = 50 * COIN;
-
-        noppyScriptPubKey << OP_IF << OP_NOP10 << OP_ENDIF << OP_1;
-        funding_tx.vout[0].scriptPubKey = noppyScriptPubKey;
+        funding_tx.vout[0].scriptPubKey = CScript() << OP_IF
+                                                    << OP_NOP10
+                                                    << OP_ENDIF
+                                                    << OP_1;
         std::vector<uint8_t> fundingVchSig;
         uint256 fundingSigHash = SignatureHash(
             p2pk_scriptPubKey, CTransaction(funding_tx), 0,
@@ -290,7 +302,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         // we can test later that block validation works fine in the absence of
         // cached successes.
         ValidateCheckInputsForAllFlags(
-            tx, SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS, 0, false, 0);
+            tx, SCRIPT_VERIFY_NONE, 0, false, 0);
     }
 
     // And if we produce a block with this tx, it should be valid, even though

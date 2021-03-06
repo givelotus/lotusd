@@ -11,16 +11,6 @@
 enum {
     SCRIPT_VERIFY_NONE = 0,
 
-    // Discourage use of NOPs reserved for upgrades (NOP1-10)
-    //
-    // Provided so that nodes can avoid accepting or mining transactions
-    // containing executed NOP's whose meaning may change after a soft-fork,
-    // thus rendering the script invalid; with this flag set executing
-    // discouraged NOPs fails the script. This verification flag will never be a
-    // mandatory flag applied to scripts in a block. NOPs that are not executed,
-    // e.g.  within an unexecuted IF ENDIF block, are *not* rejected.
-    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS = (1U << 7),
-
     // Require that only a single stack element remains after evaluation. This
     // changes the success criterion from "At least one stack element must
     // remain, and when interpreted as a boolean, it must be true" to "Exactly

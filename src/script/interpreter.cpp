@@ -88,13 +88,19 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_MUL:
         case OP_LSHIFT:
         case OP_RSHIFT:
+        case OP_NOP1:
+        case OP_NOP4:
+        case OP_NOP5:
+        case OP_NOP6:
+        case OP_NOP7:
+        case OP_NOP8:
+        case OP_NOP9:
+        case OP_NOP10:
             // Disabled opcodes.
             return true;
-
         default:
             break;
     }
-
     return false;
 }
 
@@ -366,21 +372,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                         break;
                     }
-
-                    case OP_NOP1:
-                    case OP_NOP4:
-                    case OP_NOP5:
-                    case OP_NOP6:
-                    case OP_NOP7:
-                    case OP_NOP8:
-                    case OP_NOP9:
-                    case OP_NOP10: {
-                        if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
-                            return set_error(
-                                serror,
-                                ScriptError::DISCOURAGE_UPGRADABLE_NOPS);
-                        }
-                    } break;
 
                     case OP_IF:
                     case OP_NOTIF: {
