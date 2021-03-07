@@ -206,7 +206,7 @@ public:
                                              std::end(pnSeed6_main));
 
         fDefaultConsistencyChecks = false;
-        fRequireStandard = true;
+        fRequireStandardPolicy = true;
         m_is_test_chain = false;
         m_is_mockable_chain = false;
 
@@ -369,7 +369,7 @@ public:
                                              std::end(pnSeed6_test));
 
         fDefaultConsistencyChecks = false;
-        fRequireStandard = false;
+        fRequireStandardPolicy = false;
         m_is_test_chain = true;
         m_is_mockable_chain = false;
 
@@ -504,7 +504,7 @@ public:
         vSeeds.clear();
 
         fDefaultConsistencyChecks = true;
-        fRequireStandard = true;
+        fRequireStandardPolicy = true;
         m_is_test_chain = true;
         m_is_mockable_chain = true;
 
