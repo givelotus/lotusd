@@ -25,7 +25,9 @@ class CTORMiningTest(BitcoinTestFramework):
         self.blocks = {}
         self.mocktime = int(time.time()) - 600 * 100
 
-        extra_arg = ['-spendzeroconfchange=0', '-whitelist=noban@127.0.0.1']
+        extra_arg = ['-spendzeroconfchange=0',
+                     '-whitelist=noban@127.0.0.1',
+                     '-allownonstdtxnconsensus=1']
         self.extra_args = [extra_arg, extra_arg]
 
     def skip_test_if_missing_module(self):

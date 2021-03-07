@@ -103,6 +103,7 @@ std::atomic_bool fReindex(false);
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fRequireStandardPolicy = true;
+bool fRequireStandardConsensus = true;
 bool fCheckBlockIndex = false;
 bool fCheckpointsEnabled = DEFAULT_CHECKPOINTS_ENABLED;
 size_t nCoinCacheUsage = 5000 * 300;
@@ -1658,8 +1659,17 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // Start enforcing BIP68 (sequence locks).
     int nLockTimeFlags = 0;
 
+    // Additional flags if standardness is enforced on consensus.
+    int extraFlags = 0;
+    if (fRequireStandardConsensus) {
+        // if standardness is enforced on blocks, it MUST also be enforced on
+        // the mempool, otherwise we might mine invalid blocks.
+        assert(fRequireStandardPolicy);
+        extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    }
+
     const uint32_t flags =
-        GetNextBlockScriptFlags(consensusParams, pindex->pprev);
+        GetNextBlockScriptFlags(consensusParams, pindex->pprev) | extraFlags;
 
     int64_t nTime2 = GetTimeMicros();
     nTimeForks += nTime2 - nTime1;
@@ -1729,6 +1739,19 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
                              tx.GetId().ToString(), state.ToString());
             }
             nFees += txfee;
+        }
+
+        // Enforce standardness on all txs.
+        if (fRequireStandardConsensus) {
+            std::string reason;
+            if (!IsStandardTx(tx, fIsBareMultisigStd, CFeeRate(Amount::zero()),
+                              reason)) {
+                LogPrintf("ERROR: %s: contains a non-standard transaction "
+                          "(and fRequireStandardConsensus is true)\n",
+                          __func__);
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     reason);
+            }
         }
 
         if (!MoneyRange(nFees)) {

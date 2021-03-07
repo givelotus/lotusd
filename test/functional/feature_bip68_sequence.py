@@ -49,11 +49,13 @@ class BIP68Test(BitcoinTestFramework):
             [
                 "-noparkdeepreorg",
                 "-maxreorgdepth=-1",
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=1",
                 # bump because mocktime might cause a disconnect otherwise
                 "-peertimeout=9999",
             ],
             [
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=0",
                 "-maxreorgdepth=-1"
             ]
