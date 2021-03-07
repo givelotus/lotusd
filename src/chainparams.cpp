@@ -206,7 +206,7 @@ public:
             pnSeed6_main, pnSeed6_main + ARRAYLEN(pnSeed6_main));
 
         fDefaultConsistencyChecks = false;
-        fRequireStandard = true;
+        fRequireStandardPolicy = true;
         m_is_test_chain = false;
         m_is_mockable_chain = false;
 
@@ -349,7 +349,7 @@ public:
             pnSeed6_test, pnSeed6_test + ARRAYLEN(pnSeed6_test));
 
         fDefaultConsistencyChecks = false;
-        fRequireStandard = false;
+        fRequireStandardPolicy = false;
         m_is_test_chain = true;
         m_is_mockable_chain = false;
 
@@ -459,7 +459,7 @@ public:
         vSeeds.clear();
 
         fDefaultConsistencyChecks = true;
-        fRequireStandard = true;
+        fRequireStandardPolicy = true;
         m_is_test_chain = true;
         m_is_mockable_chain = true;
 
