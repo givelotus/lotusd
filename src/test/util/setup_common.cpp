@@ -95,6 +95,7 @@ BasicTestingSetup::BasicTestingSetup(
             "-debug",
             "-debugexclude=libevent",
             "-debugexclude=leveldb",
+            "-allownonstdtxnconsensus=1",
         },
         extra_args);
     // clang-format on

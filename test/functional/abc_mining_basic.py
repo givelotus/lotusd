@@ -28,10 +28,12 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-enableminerfund",
+                "-allownonstdtxnconsensus=1",
             ],
             [
                 "-enableminerfund",
                 "-usecashaddr=0",
+                "-allownonstdtxnconsensus=1",
             ],
         ]
 

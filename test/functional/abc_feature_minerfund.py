@@ -49,8 +49,11 @@ class MinerFundTest(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-enableminerfund",
+                "-allownonstdtxnconsensus=1",
             ],
-            [],
+            [
+                "-allownonstdtxnconsensus=1",
+            ],
         ]
 
     @staticmethod

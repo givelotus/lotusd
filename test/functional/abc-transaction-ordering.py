@@ -36,6 +36,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
         self.tip = None
         self.blocks = {}
         self.noban_tx_relay = True
+        self.extra_args = [['-allownonstdtxnconsensus=1']]
 
     def add_transactions_to_block(self, block, tx_list):
         block.vtx.extend(tx_list)
