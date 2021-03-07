@@ -102,7 +102,7 @@ std::atomic_bool fImporting(false);
 std::atomic_bool fReindex(false);
 bool fHavePruned = false;
 bool fPruneMode = false;
-bool fRequireStandard = true;
+bool fRequireStandardPolicy = true;
 bool fCheckBlockIndex = false;
 bool fCheckpointsEnabled = DEFAULT_CHECKPOINTS_ENABLED;
 size_t nCoinCacheUsage = 5000 * 300;
@@ -460,7 +460,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     // Rather not work on nonstandard transactions (unless -testnet)
     std::string reason;
-    if (fRequireStandard && !IsStandardTx(tx, reason)) {
+    if (fRequireStandardPolicy && !IsStandardTx(tx, reason)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
     }
 
@@ -558,7 +558,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     }
 
     // Check for non-standard pay-to-script-hash in inputs
-    if (fRequireStandard &&
+    if (fRequireStandardPolicy &&
         !AreInputsStandard(tx, m_view, ws.m_next_block_script_verify_flags)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
                              "bad-txns-nonstandard-inputs");

@@ -1037,7 +1037,8 @@ void SetupServerArgs(NodeContext &node) {
         "-acceptnonstdtxn",
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
-            "testnet/regtest only; ", defaultChainParams->RequireStandard()),
+            "testnet/regtest only; ",
+            defaultChainParams->RequireStandardPolicy()),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
@@ -2015,9 +2016,9 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         dustRelayFee = CFeeRate(n);
     }
 
-    fRequireStandard =
-        !args.GetBoolArg("-acceptnonstdtxn", !chainparams.RequireStandard());
-    if (!chainparams.IsTestChain() && !fRequireStandard) {
+    fRequireStandardPolicy = !args.GetBoolArg("-acceptnonstdtxn",
+        !chainparams.RequireStandardPolicy());
+    if (!chainparams.IsTestChain() && !fRequireStandardPolicy) {
         return InitError(strprintf(
             Untranslated(
                 "acceptnonstdtxn is not currently supported for %s chain"),
