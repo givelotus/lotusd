@@ -1524,10 +1524,8 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
     // Always enforce CLEANSTACK
     flags |= SCRIPT_VERIFY_CLEANSTACK;
 
-    // If the UAHF is enabled, we start accepting replay protected txns
-    if (IsUAHFenabled(params, pindex)) {
-        flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-    }
+    // Always enforce SIGHASH_FORKID
+    flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
 
     // We make sure this node will have replay protection during the next hard
     // fork.
