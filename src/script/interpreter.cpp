@@ -88,10 +88,18 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_MUL:
         case OP_LSHIFT:
         case OP_RSHIFT:
+
+        case OP_RESERVED:
+        case OP_VER:
+        case OP_RESERVED1:
+        case OP_RESERVED2:
             // Disabled opcodes.
             return true;
 
         default:
+            // All undefined opcodes are also disabled.
+            if (opcode >= FIRST_UNDEFINED_OP_VALUE)
+                return true;
             break;
     }
 
