@@ -30,7 +30,10 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.extra_args = [[
             '-enableminerfund',
-        ], []]
+            '-allownonstdtxnconsensus=1',
+        ], [
+            '-allownonstdtxnconsensus=1',
+        ]]
 
     def run_test(self):
         node = self.nodes[0]

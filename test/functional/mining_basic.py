@@ -47,6 +47,7 @@ class MiningTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.setup_clean_chain = True
         self.supports_cli = False
+        self.extra_args = [['-allownonstdtxnconsensus=1']] * 2
 
     def mine_chain(self):
         self.log.info('Create some old blocks')

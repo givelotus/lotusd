@@ -27,6 +27,7 @@ class MinerFundTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.extra_args = [[
             '-enableminerfund',
+            '-allownonstdtxnconsensus=1',
         ]]
 
     def run_test(self):

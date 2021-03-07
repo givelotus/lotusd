@@ -98,6 +98,7 @@ BasicTestingSetup::BasicTestingSetup(
             "-debug",
             "-debugexclude=libevent",
             "-debugexclude=leveldb",
+            "-allownonstdtxnconsensus=1",
         },
         extra_args);
     arguments = Cat(arguments, fixture_extra_args);

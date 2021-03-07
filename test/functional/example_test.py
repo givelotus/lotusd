@@ -88,7 +88,9 @@ class ExampleTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 3
         # Use self.extra_args to change command-line arguments for the nodes
-        self.extra_args = [[], ["-logips"], []]
+        self.extra_args = [["-allownonstdtxnconsensus=1"],
+                           ["-allownonstdtxnconsensus=1", "-logips"],
+                           ["-allownonstdtxnconsensus=1"]]
 
         # self.log.info("I've finished set_test_params")  # Oops! Can't run
         # self.log before run_test()

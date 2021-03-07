@@ -1041,6 +1041,14 @@ void SetupServerArgs(NodeContext &node) {
             defaultChainParams->RequireStandardPolicy()),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
+    argsman.AddArg(
+        "-allownonstdtxnconsensus",
+        strprintf(
+            "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
+            "testnet/regtest only; ",
+            defaultChainParams->RequireStandardPolicy()),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
                    strprintf("Do not accept blocks larger than this limit, in "
                              "bytes (default: %d)",
@@ -2018,12 +2026,21 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
 
     fRequireStandardPolicy = !args.GetBoolArg("-acceptnonstdtxn",
         !chainparams.RequireStandardPolicy());
+    fRequireStandardConsensus =  // defaults to fRequireStandardPolicy
+        !args.GetBoolArg("-allownonstdtxnconsensus", !fRequireStandardPolicy);
+    if (!fRequireStandardPolicy && fRequireStandardConsensus) {
+        return InitError(
+            Untranslated(
+                "-acceptnonstdtxn=1 -allownonstdtxnconsensus=0 is an invalid "
+                "combination"));
+    }
     if (!chainparams.IsTestChain() && !fRequireStandardPolicy) {
         return InitError(strprintf(
             Untranslated(
                 "acceptnonstdtxn is not currently supported for %s chain"),
             chainparams.NetworkIDString()));
     }
+
     nBytesPerSigOp = args.GetArg("-bytespersigop", nBytesPerSigOp);
 
     if (!g_wallet_init_interface.ParameterInteraction()) {
