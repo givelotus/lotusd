@@ -78,18 +78,6 @@ public:
     CMainParams() {
         strNetworkID = CBaseChainParams::MAIN;
         consensus.nSubsidyHalvingInterval = 210000;
-        // 00000000000000ce80a7e057163a4db1d5ad7b20fb6f598c9597b9665c8fb0d4 -
-        // April 1, 2012
-        consensus.BIP16Height = 173805;
-        consensus.BIP34Height = 227931;
-        consensus.BIP34Hash = BlockHash::fromHex(
-            "000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8");
-        // 000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0
-        consensus.BIP65Height = 388381;
-        // 00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931
-        consensus.BIP66Height = 363725;
-        // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
-        consensus.CSVHeight = 419328;
         consensus.powLimit = uint256S(
             "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         // two weeks
@@ -124,27 +112,6 @@ public:
         // valid.
         consensus.defaultAssumeValid =
             ChainParamsConstants::MAINNET_DEFAULT_ASSUME_VALID;
-
-        // August 1, 2017 hard fork
-        consensus.uahfHeight = 478558;
-
-        // November 13, 2017 hard fork
-        consensus.daaHeight = 504031;
-
-        // November 15, 2018 hard fork
-        consensus.magneticAnomalyHeight = 556766;
-
-        // November 15, 2019 protocol upgrade
-        consensus.gravitonHeight = 609135;
-
-        // May 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.phononHeight = 635258;
-
-        // Nov 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.axionActivationTime = 1605441600;
-
-        // May 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.tachyonActivationTime = 1621080000;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -237,17 +204,7 @@ public:
     CTestNetParams() {
         strNetworkID = CBaseChainParams::TESTNET;
         consensus.nSubsidyHalvingInterval = 210000;
-        // 00000000040b4e986385315e14bee30ad876d8b47f748025b26683116d21aa65
-        consensus.BIP16Height = 514;
-        consensus.BIP34Height = 21111;
-        consensus.BIP34Hash = BlockHash::fromHex(
-            "0000000023b3a96d3484e5abb3755c413e7d41500f8e2a5c3f0dd01299cd8ef8");
-        // 00000000007f6655f22f98e72ed80d8b06dc761d5da09df0fa1dc4be4f861eb6
-        consensus.BIP65Height = 581885;
-        // 000000002104c8c45e99a8853285a3b592602a3ccde2b832481da85e9e4ba182
-        consensus.BIP66Height = 330776;
-        // 00000000025e930139bac5c6c31a403776da130831ab85be56578f3fa75369bb
-        consensus.CSVHeight = 770112;
+
         consensus.powLimit = uint256S(
             "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         // two weeks
@@ -283,26 +240,6 @@ public:
         consensus.defaultAssumeValid =
             ChainParamsConstants::TESTNET_DEFAULT_ASSUME_VALID;
 
-        // August 1, 2017 hard fork
-        consensus.uahfHeight = 1155875;
-
-        // November 13, 2017 hard fork
-        consensus.daaHeight = 1188697;
-
-        // November 15, 2018 hard fork
-        consensus.magneticAnomalyHeight = 1267996;
-
-        // November 15, 2019 protocol upgrade
-        consensus.gravitonHeight = 1341711;
-
-        // May 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.phononHeight = 1378460;
-
-        // Nov 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.axionActivationTime = 1605441600;
-
-        // May 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.tachyonActivationTime = 1621080000;
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
         diskMagic[1] = 0xf4;
@@ -373,17 +310,7 @@ public:
     CRegTestParams() {
         strNetworkID = CBaseChainParams::REGTEST;
         consensus.nSubsidyHalvingInterval = 150;
-        // always enforce P2SH BIP16 on regtest
-        consensus.BIP16Height = 0;
-        // BIP34 activated on regtest (Used in functional tests)
-        consensus.BIP34Height = 500;
-        consensus.BIP34Hash = BlockHash();
-        // BIP65 activated on regtest (Used in functional tests)
-        consensus.BIP65Height = 1351;
-        // BIP66 activated on regtest (Used in functional tests)
-        consensus.BIP66Height = 1251;
-        // CSV activated on regtest (Used in functional tests)
-        consensus.CSVHeight = 576;
+
         consensus.powLimit = uint256S(
             "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         // two weeks
@@ -412,27 +339,6 @@ public:
         // By default assume that the signatures in ancestors of this block are
         // valid.
         consensus.defaultAssumeValid = BlockHash();
-
-        // UAHF is always enabled on regtest.
-        consensus.uahfHeight = 0;
-
-        // November 13, 2017 hard fork is always on on regtest.
-        consensus.daaHeight = 0;
-
-        // November 15, 2018 hard fork is always on on regtest.
-        consensus.magneticAnomalyHeight = 0;
-
-        // November 15, 2019 protocol upgrade
-        consensus.gravitonHeight = 0;
-
-        // May 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.phononHeight = 0;
-
-        // Nov 15, 2020 12:00:00 UTC protocol upgrade
-        consensus.axionActivationTime = 1605441600;
-
-        // May 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.tachyonActivationTime = 1621080000;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
