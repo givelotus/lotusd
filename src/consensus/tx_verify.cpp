@@ -49,12 +49,10 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
                              "bad-txns-nonfinal", "non-final transaction");
     }
 
-    if (IsMagneticAnomalyEnabled(params, nHeight)) {
-        // Size limit
-        if (::GetSerializeSize(tx, PROTOCOL_VERSION) < MIN_TX_SIZE) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-undersize");
-        }
+    // Size limit
+    if (::GetSerializeSize(tx, PROTOCOL_VERSION) < MIN_TX_SIZE) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                "bad-txns-undersize");
     }
 
     return true;
