@@ -278,7 +278,7 @@ bool CheckSequenceLocks(const CTxMemPool &pool, const CTransaction &tx,
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
                                       int64_t nMedianTimePast) {
     return nMedianTimePast >= gArgs.GetArg("-replayprotectionactivationtime",
-                                           params.tachyonActivationTime);
+        0xffffffff); // TODO: define upgrade schedule
 }
 
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
