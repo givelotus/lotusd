@@ -94,6 +94,7 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_MUL:
         case OP_LSHIFT:
         case OP_RSHIFT:
+        case OP_SHA1:
             // Disabled opcodes.
             return true;
 
