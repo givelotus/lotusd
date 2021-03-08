@@ -10,7 +10,6 @@
 #include <crypto/hmac_sha512.h>
 #include <crypto/poly1305.h>
 #include <crypto/ripemd160.h>
-#include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <crypto/sha3.h>
 #include <crypto/sha512.h>
@@ -59,9 +58,6 @@ static void TestVector(const Hasher &h, const In &in, const Out &out) {
     }
 }
 
-static void TestSHA1(const std::string &in, const std::string &hexout) {
-    TestVector(CSHA1(), in, ParseHex(hexout));
-}
 static void TestSHA256(const std::string &in, const std::string &hexout) {
     TestVector(CSHA256(), in, ParseHex(hexout));
 }
@@ -317,25 +313,6 @@ BOOST_AUTO_TEST_CASE(ripemd160_testvectors) {
     TestRIPEMD160(std::string(1000000, 'a'),
                   "52783243c1697bdbe16d37f97f68f08325dc1528");
     TestRIPEMD160(test1, "464243587bd146ea835cdf57bdae582f25ec45f1");
-}
-
-BOOST_AUTO_TEST_CASE(sha1_testvectors) {
-    TestSHA1("", "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-    TestSHA1("abc", "a9993e364706816aba3e25717850c26c9cd0d89d");
-    TestSHA1("message digest", "c12252ceda8be8994d5fa0290a47231c1d16aae3");
-    TestSHA1("secure hash algorithm",
-             "d4d6d2f0ebe317513bbd8d967d89bac5819c2f60");
-    TestSHA1("SHA1 is considered to be safe",
-             "f2b6650569ad3a8720348dd6ea6c497dee3a842a");
-    TestSHA1("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
-             "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
-    TestSHA1("For this sample, this 63-byte string will be used as input data",
-             "4f0ea5cd0585a23d028abdc1a6684e5a8094dc49");
-    TestSHA1("This is exactly 64 bytes long, not counting the terminating byte",
-             "fb679f23e7d1ce053313e66e127ab1b444397057");
-    TestSHA1(std::string(1000000, 'a'),
-             "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
-    TestSHA1(test1, "b7755760681cbfd971451668f32af5774f4656b5");
 }
 
 BOOST_AUTO_TEST_CASE(sha256_testvectors) {

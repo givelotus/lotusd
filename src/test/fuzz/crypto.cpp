@@ -5,7 +5,6 @@
 #include <crypto/hmac_sha256.h>
 #include <crypto/hmac_sha512.h>
 #include <crypto/ripemd160.h>
-#include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <crypto/sha512.h>
 #include <hash.h>
@@ -32,7 +31,6 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
     CHMAC_SHA256 hmac_sha256{data.data(), data.size()};
     CHMAC_SHA512 hmac_sha512{data.data(), data.size()};
     CRIPEMD160 ripemd160;
-    CSHA1 sha1;
     CSHA256 sha256;
     CSHA512 sha512;
     CSipHasher sip_hasher{fuzzed_data_provider.ConsumeIntegral<uint64_t>(),
@@ -56,7 +54,6 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                 (void)hmac_sha256.Write(data.data(), data.size());
                 (void)hmac_sha512.Write(data.data(), data.size());
                 (void)ripemd160.Write(data.data(), data.size());
-                (void)sha1.Write(data.data(), data.size());
                 (void)sha256.Write(data.data(), data.size());
                 (void)sha512.Write(data.data(), data.size());
                 (void)sip_hasher.Write(data.data(), data.size());
@@ -70,14 +67,13 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                 (void)hash160.Reset();
                 (void)hash256.Reset();
                 (void)ripemd160.Reset();
-                (void)sha1.Reset();
                 (void)sha256.Reset();
                 (void)sha512.Reset();
                 break;
             }
             case 2: {
                 switch (
-                    fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 8)) {
+                    fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 7)) {
                     case 0: {
                         data.resize(CHash160::OUTPUT_SIZE);
                         hash160.Finalize(data);
@@ -104,21 +100,16 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                         break;
                     }
                     case 5: {
-                        data.resize(CSHA1::OUTPUT_SIZE);
-                        sha1.Finalize(data.data());
-                        break;
-                    }
-                    case 6: {
                         data.resize(CSHA256::OUTPUT_SIZE);
                         sha256.Finalize(data.data());
                         break;
                     }
-                    case 7: {
+                    case 6: {
                         data.resize(CSHA512::OUTPUT_SIZE);
                         sha512.Finalize(data.data());
                         break;
                     }
-                    case 8: {
+                    case 7: {
                         data.resize(1);
                         data[0] = sip_hasher.Finalize() % 256;
                         break;
