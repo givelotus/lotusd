@@ -104,6 +104,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Illegal use of SIGHASH_FORKID";
         case ScriptError::MUST_USE_FORKID:
             return "Signature must use SIGHASH_FORKID";
+        case ScriptError::INVALID_NUM2BIN_SIZE:
+            return "OP_NUM2BIN size limit exceeded";
         case ScriptError::SIGCHECKS_LIMIT_EXCEEDED:
             return "Validation resources exceeded (SigChecks)";
         case ScriptError::UNKNOWN:

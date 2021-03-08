@@ -93,6 +93,7 @@ static ScriptErrorDesc script_errors[] = {
     {ScriptError::MOD_BY_ZERO, "MOD_BY_ZERO"},
     {ScriptError::INVALID_BITFIELD_SIZE, "BITFIELD_SIZE"},
     {ScriptError::INVALID_BIT_RANGE, "BIT_RANGE"},
+    {ScriptError::INVALID_NUM2BIN_SIZE, "INVALID_NUM2BIN_SIZE"},
 };
 
 static std::string FormatScriptError(ScriptError err) {

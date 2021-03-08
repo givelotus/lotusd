@@ -79,6 +79,9 @@ enum class ScriptError {
     ILLEGAL_FORKID,
     MUST_USE_FORKID,
 
+    /* OP_NUM2BIN size limit exceeded */
+    INVALID_NUM2BIN_SIZE,
+
     /* Auxiliary errors (unused by interpreter) */
     SIGCHECKS_LIMIT_EXCEEDED,
 

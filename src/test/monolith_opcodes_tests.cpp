@@ -53,6 +53,18 @@ static void CheckErrorForAllFlags(const stacktype &original_stack,
     }
 }
 
+static void CheckConditionalForAllFlags(const stacktype &original_stack,
+                                       const CScript &script,
+                                       const stacktype &expected_stack,
+                                       ScriptError expected_error,
+                                       bool condition) {
+    if (condition) {
+        CheckTestResultForAllFlags(original_stack, script, expected_stack);
+    } else {
+        CheckErrorForAllFlags(original_stack, script, expected_error);
+    }
+}
+
 static void CheckOpError(const stacktype &original_stack, opcodetype op,
                          ScriptError expected_error) {
     CheckErrorForAllFlags(original_stack, CScript() << op, expected_error);
@@ -523,6 +535,7 @@ BOOST_AUTO_TEST_CASE(string_opcodes_test) {
  * Type conversion opcodes.
  */
 static void CheckTypeConversionOp(const valtype &bin, const valtype &num) {
+    bool valid_num2bin = bin.size() <= MAX_NUM2BIN_SIZE;
     // Check BIN2NUM.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM, {num});
 
@@ -532,25 +545,30 @@ static void CheckTypeConversionOp(const valtype &bin, const valtype &num) {
         rebuilt_bin[rebuilt_bin.size() - 1] &= 0x7f;
     }
 
-    CheckTestResultForAllFlags({num}, CScript() << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
+    CheckConditionalForAllFlags(
+        {num}, CScript() << bin.size() << OP_NUM2BIN,
+        {rebuilt_bin}, ScriptError::INVALID_NUM2BIN_SIZE, valid_num2bin);
 
     // Check roundtrip with NUM2BIN.
-    CheckTestResultForAllFlags(
+    CheckConditionalForAllFlags(
         {bin}, CScript() << OP_BIN2NUM << bin.size() << OP_NUM2BIN,
-        {rebuilt_bin});
+        {rebuilt_bin}, ScriptError::INVALID_NUM2BIN_SIZE, valid_num2bin);
 
     // Grow and shrink back down using NUM2BIN.
-    CheckTestResultForAllFlags({bin},
-                               CScript()
-                                   << MAX_SCRIPT_ELEMENT_SIZE << OP_NUM2BIN
-                                   << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
-    CheckTestResultForAllFlags({num},
-                               CScript()
-                                   << MAX_SCRIPT_ELEMENT_SIZE << OP_NUM2BIN
-                                   << bin.size() << OP_NUM2BIN,
-                               {rebuilt_bin});
+    CheckConditionalForAllFlags({bin},
+                                CScript()
+                                    << MAX_NUM2BIN_SIZE << OP_NUM2BIN
+                                    << bin.size() << OP_NUM2BIN,
+                                {rebuilt_bin},
+                                ScriptError::INVALID_NUM2BIN_SIZE,
+                                valid_num2bin);
+    CheckConditionalForAllFlags({num},
+                                CScript()
+                                    << MAX_NUM2BIN_SIZE << OP_NUM2BIN
+                                    << bin.size() << OP_NUM2BIN,
+                                {rebuilt_bin},
+                                ScriptError::INVALID_NUM2BIN_SIZE,
+                                valid_num2bin);
 
     // BIN2NUM is indempotent.
     CheckTestResultForAllFlags({bin}, CScript() << OP_BIN2NUM << OP_BIN2NUM,
@@ -620,8 +638,8 @@ BOOST_AUTO_TEST_CASE(type_conversion_test) {
                       ScriptError::INVALID_NUMBER_RANGE);
 
     // NUM2BIN must not generate oversized push.
-    valtype largezero(MAX_SCRIPT_ELEMENT_SIZE, 0);
-    BOOST_CHECK_EQUAL(largezero.size(), MAX_SCRIPT_ELEMENT_SIZE);
+    valtype largezero(MAX_NUM2BIN_SIZE, 0);
+    BOOST_CHECK_EQUAL(largezero.size(), MAX_NUM2BIN_SIZE);
     CheckTypeConversionOp(largezero, {});
 
     CheckNum2BinError({{}, {0x09, 0x02}}, ScriptError::PUSH_SIZE);

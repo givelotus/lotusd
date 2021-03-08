@@ -1331,6 +1331,11 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                             return set_error(serror, ScriptError::PUSH_SIZE);
                         }
 
+                        if (size > MAX_NUM2BIN_SIZE) {
+                            return set_error(serror,
+                                             ScriptError::INVALID_NUM2BIN_SIZE);
+                        }
+
                         popstack(stack);
                         valtype &rawnum = stacktop(-1);
 
