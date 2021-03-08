@@ -4,7 +4,6 @@
 
 #include <bench/bench.h>
 #include <crypto/ripemd160.h>
-#include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <crypto/sha3.h>
 #include <crypto/sha512.h>
@@ -23,13 +22,6 @@ static void RIPEMD160(benchmark::Bench &bench) {
     std::vector<uint8_t> in(BUFFER_SIZE, 0);
     bench.batch(in.size()).unit("byte").run(
         [&] { CRIPEMD160().Write(in.data(), in.size()).Finalize(hash); });
-}
-
-static void SHA1(benchmark::Bench &bench) {
-    uint8_t hash[CSHA1::OUTPUT_SIZE];
-    std::vector<uint8_t> in(BUFFER_SIZE, 0);
-    bench.batch(in.size()).unit("byte").run(
-        [&] { CSHA1().Write(in.data(), in.size()).Finalize(hash); });
 }
 
 static void SHA256(benchmark::Bench &bench) {
@@ -85,7 +77,6 @@ static void FastRandom_1bit(benchmark::Bench &bench) {
 }
 
 BENCHMARK(RIPEMD160);
-BENCHMARK(SHA1);
 BENCHMARK(SHA256);
 BENCHMARK(SHA512);
 BENCHMARK(SHA3_256_1M);
