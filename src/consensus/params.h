@@ -45,18 +45,6 @@ struct Params {
     int BIP66Height;
     /** Block height at which CSV (BIP68, BIP112 and BIP113) becomes active */
     int CSVHeight;
-    /** Block height at which UAHF kicks in */
-    int uahfHeight;
-    /** Block height at which the new DAA becomes active */
-    int daaHeight;
-    /** Block height at which the magnetic anomaly activation becomes active */
-    int magneticAnomalyHeight;
-    /** Block height at which the graviton activation becomes active */
-    int gravitonHeight;
-    /** Block height at which the phonon activation becomes active */
-    int phononHeight;
-    /** Block height at which the axion activation becomes active */
-    int axionHeight;
     /** Block height at which the wellington activation becomes active */
     int wellingtonHeight;
     /** Block height at which the Cowperthwaite activation becomes active */
