@@ -5,7 +5,6 @@
 #include <crypto/hmac_sha256.h>
 #include <crypto/hmac_sha512.h>
 #include <crypto/ripemd160.h>
-#include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <crypto/sha512.h>
 #include <hash.h>
@@ -32,7 +31,6 @@ FUZZ_TARGET(crypto) {
     CHMAC_SHA256 hmac_sha256{data.data(), data.size()};
     CHMAC_SHA512 hmac_sha512{data.data(), data.size()};
     CRIPEMD160 ripemd160;
-    CSHA1 sha1;
     CSHA256 sha256;
     CSHA512 sha512;
     CSipHasher sip_hasher{fuzzed_data_provider.ConsumeIntegral<uint64_t>(),
@@ -57,7 +55,6 @@ FUZZ_TARGET(crypto) {
                 (void)hmac_sha256.Write(data.data(), data.size());
                 (void)hmac_sha512.Write(data.data(), data.size());
                 (void)ripemd160.Write(data.data(), data.size());
-                (void)sha1.Write(data.data(), data.size());
                 (void)sha256.Write(data.data(), data.size());
                 (void)sha512.Write(data.data(), data.size());
                 (void)sip_hasher.Write(data);
@@ -70,7 +67,6 @@ FUZZ_TARGET(crypto) {
                 (void)hash160.Reset();
                 (void)hash256.Reset();
                 (void)ripemd160.Reset();
-                (void)sha1.Reset();
                 (void)sha256.Reset();
                 (void)sha512.Reset();
             },
@@ -96,10 +92,6 @@ FUZZ_TARGET(crypto) {
                     [&] {
                         data.resize(CRIPEMD160::OUTPUT_SIZE);
                         ripemd160.Finalize(data.data());
-                    },
-                    [&] {
-                        data.resize(CSHA1::OUTPUT_SIZE);
-                        sha1.Finalize(data.data());
                     },
                     [&] {
                         data.resize(CSHA256::OUTPUT_SIZE);
