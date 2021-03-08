@@ -145,7 +145,7 @@ BOOST_AUTO_TEST_CASE(norecurse) {
 
     // Should not verify, because it will try to execute OP_INVALIDOPCODE
     BOOST_CHECK(!Verify(scriptSig, p2sh, err));
-    BOOST_CHECK_MESSAGE(err == ScriptError::BAD_OPCODE, ScriptErrorString(err));
+    BOOST_CHECK_MESSAGE(err == ScriptError::DISABLED_OPCODE, ScriptErrorString(err));
 
     // Try to recur, and verification should succeed because
     // the inner HASH160 <> EQUAL should only check the hash:
