@@ -230,10 +230,9 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
         valtype bigblob(MAX_SCRIPT_ELEMENT_SIZE);
         CheckEvalScript({},
                         CScript()
-                            << bigblob << OP_RIPEMD160 << bigblob << OP_SHA1
-                            << bigblob << OP_SHA256 << bigblob << OP_HASH160
-                            << bigblob << OP_HASH256 << OP_CAT << OP_CAT
-                            << OP_CAT << OP_CAT << OP_DROP,
+                            << bigblob << OP_RIPEMD160 << bigblob << OP_SHA256
+                            << bigblob << OP_HASH160 << bigblob << OP_HASH256
+                            << OP_CAT << OP_CAT << OP_CAT << OP_DROP,
                         {}, 0);
     }
 
