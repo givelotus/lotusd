@@ -36,6 +36,9 @@ static const int MAX_SCRIPT_SIZE = 10000;
 // Maximum number of values on script interpreter stack
 static const int MAX_STACK_SIZE = 1000;
 
+// Maximum number of bytes OP_NUM2BIN can produce
+static const int MAX_NUM2BIN_SIZE = 68;
+
 // Maximum byte size of integers for arithmetic opcodes when interpreting Script
 constexpr size_t MAX_SCRIPTNUM_BYTE_SIZE = 8;
 
