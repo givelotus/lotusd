@@ -85,6 +85,7 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_VER:
         case OP_VERIF:
         case OP_VERNOTIF:
+        case OP_IFDUP:
         case OP_INVERT:
         case OP_RESERVED1:
         case OP_RESERVED2:
@@ -551,18 +552,6 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
                         swap(stacktop(-4), stacktop(-2));
                         swap(stacktop(-3), stacktop(-1));
-                    } break;
-
-                    case OP_IFDUP: {
-                        // (x - 0 | x x)
-                        if (stack.size() < 1) {
-                            return set_error(
-                                serror, ScriptError::INVALID_STACK_OPERATION);
-                        }
-                        valtype vch = stacktop(-1);
-                        if (CastToBool(vch)) {
-                            stack.push_back(vch);
-                        }
                     } break;
 
                     case OP_DEPTH: {
