@@ -161,8 +161,8 @@ class AssumeValidTest(BitcoinTestFramework):
         self.block_time += 1
         height += 1
 
-        # Bury the assumed valid block 2100 deep
-        for i in range(2100):
+        # Bury the assumed valid block 3400 deep
+        for i in range(3700):
             block = create_block(
                 self.tip, create_coinbase(height), self.block_time)
             block.nVersion = 4
@@ -195,13 +195,13 @@ class AssumeValidTest(BitcoinTestFramework):
         self.assert_blockchain_height(self.nodes[0], 101)
 
         # Send all blocks to node1. All blocks will be accepted.
-        for i in range(2202):
+        for i in range(3802):
             p2p1.send_message(msg_block(self.blocks[i]))
         # Syncing 2200 blocks can take a while on slow systems. Give it plenty
         # of time to sync.
         p2p1.sync_with_ping(960)
         assert_equal(self.nodes[1].getblock(
-            self.nodes[1].getbestblockhash())['height'], 2202)
+            self.nodes[1].getbestblockhash())['height'], 3802)
 
         # Send blocks to node2. Block 102 will be rejected.
         self.send_blocks_until_disconnected(p2p2)

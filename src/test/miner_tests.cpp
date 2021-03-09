@@ -60,34 +60,34 @@ constexpr static struct {
     uint8_t extranonce;
     uint32_t nonce;
 } blockinfo[] = {
-    {1,  0x7458c333}, {2, 0x4f87692f}, {3,  0xe4448bee}, {3,  0xcd574612},
-    {3,  0x5bc18aa4}, {5, 0xdbaeec2c}, {3,  0x2667b5c0}, {7,  0x8601b02b},
-    {3,  0xfb9632cc}, {6, 0x3227743e}, {3,  0x5f8eb6ac}, {4,  0x995aade0},
-    {5,  0xf83707af}, {6, 0x5eaeacc8}, {5,  0x8904dd0f}, {5,  0x1777db09},
-    {5,  0x9983d245}, {6, 0xc63ea3e8}, {5,  0x138f4f9f}, {3,  0x050350d0},
-    {3,  0x5e92f880}, {3, 0x3e92c08c}, {3,  0x8b2df62c}, {3,  0xcda57eb0},
-    {5,  0xeb7bff82}, {8, 0xb9c3129a}, {4,  0x300bf551}, {2,  0x21296be2},
-    {3,  0x7de2e084}, {5, 0x9f632535}, {3,  0x2e287bc6}, {4,  0xb59237de},
-    {10, 0x24a3f15e}, {5, 0x61af79d1}, {6,  0xda8bb49a}, {4,  0x686a46b5},
-    {6,  0x4460fd0c}, {2, 0x4e6a1940}, {4,  0xcb117cc0}, {6,  0xb5b3ab58},
-    {2,  0xabd841a6}, {5, 0x6fe14606}, {5,  0xdb206677}, {8,  0xfea51682},
-    {4,  0x34e87922}, {4, 0xac6dde44}, {4,  0x7d87e69f}, {3,  0xea2ca574},
-    {5,  0x125d0397}, {6, 0x5c3c794a}, {3,  0x42377608}, {5,  0x5bf48b3b},
-    {3,  0x27dfebe8}, {3, 0x4f982736}, {3,  0xcc11930b}, {4,  0xaafbdfa3},
-    {5,  0xf131a20a}, {5, 0xabfbedf5}, {4,  0xf0003e5c}, {4,  0xfe31362b},
-    {3,  0xe9d08362}, {3, 0x1247bf50}, {6,  0xf9324b62}, {5,  0x03fd9685},
-    {5,  0x8bf90170}, {3, 0xc95d7d70}, {5,  0x47c15edb}, {3,  0x7bca2618},
-    {4,  0x16262264}, {6, 0x2a058a73}, {2,  0x316f4d36}, {5,  0x03d00388},
-    {10, 0x75fb1f7e}, {4, 0x7516b914}, {2,  0xcda26b5d}, {5,  0xfe0d87cd},
-    {2,  0xb12d039c}, {4, 0x3d920303}, {2,  0x65e42878}, {3,  0xb7ba5a78},
-    {9,  0x07d51bd8}, {8, 0x7d248874}, {5,  0x0eee1b25}, {5,  0x0600770e},
-    {3,  0xcf5dcd70}, {4, 0x4eee7d58}, {3,  0x0205ca6c}, {4,  0x7a25eb28},
-    {3,  0x418406e0}, {8, 0x76a0a254}, {4,  0x91f60022}, {5,  0x1cf95b21},
-    {4,  0x8b5f1a54}, {3, 0xd4e81503}, {4,  0x0dca1f0e}, {8,  0xd640b02a},
-    {6,  0x489d711a}, {3, 0xc6f16d46}, {14, 0x2db7b2a8}, {10, 0x6a12c33c},
-    {3,  0xb9dc3270}, {4, 0xcf2a0162}, {3,  0xeaf1387e}, {3,  0xa3d5e1f0},
-    {2,  0xd9b22c59}, {4, 0xda118c1c}, {3,  0x7e900a4e}, {3,  0x02569532},
-    {5,  0xfcaadcde}, {3, 0xec9d9944},
+    {1,  0x7458c333}, {2, 0x0daddc14}, {4,  0x8a819d66}, {4, 0x9e3e0e18},
+    {2,  0x7ca25212}, {3, 0x73990ba8}, {13, 0x59a33e0a}, {2, 0x6b54f444},
+    {6,  0x998779bf}, {2, 0x95dd8882}, {5,  0x57719051}, {3, 0xf898500e},
+    {4,  0x633e5f5a}, {4, 0x35cb1e49}, {3,  0x51016402}, {4, 0xfdeb94b3},
+    {3,  0x2e98ee78}, {3, 0x5c2cab72}, {7,  0xb5a7262a}, {4, 0x11f53c56},
+    {4,  0x15ca0298}, {4, 0x0fa30d6d}, {3,  0x86002fae}, {8, 0x02d24308},
+    {5,  0x798de683}, {3, 0x91deea2c}, {3,  0xad22319c}, {4, 0xfa76e9fe},
+    {4,  0x057a308f}, {4, 0x52f81220}, {4,  0x40e80fcb}, {5, 0x95aa2d5e},
+    {13, 0x16b469b5}, {5, 0x9ec874d7}, {5,  0xb2d065c4}, {2, 0x24bfac36},
+    {5,  0xe965520d}, {4, 0x90cb405a}, {4,  0x48636dcc}, {7, 0x5227b412},
+    {3,  0xe8c0096c}, {2, 0x68632394}, {6,  0xdb811608}, {3, 0xc36a7560},
+    {5,  0x0c77ee4c}, {5, 0xe4790000}, {3,  0xe5261e98}, {5, 0x4bffc009},
+    {4,  0x74ccee31}, {9, 0x61f184f0}, {7,  0x22d2f084}, {4, 0x5950b11e},
+    {8,  0x3aec6818}, {2, 0x411f760a}, {5,  0x58cb502a}, {4, 0xba49182a},
+    {4,  0x9c07a9bf}, {5, 0x77953976}, {3,  0xbdb7e300}, {6, 0xfbcd1f02},
+    {2,  0x383d9404}, {4, 0xb545c962}, {5,  0x1b6e65ae}, {2, 0x01f81a81},
+    {6,  0x2469b77c}, {2, 0x8cd02784}, {5,  0x61e98150}, {3, 0x95edf392},
+    {3,  0x61521ac4}, {4, 0x0a04ca08}, {4,  0x1ba15aa8}, {9, 0xb962507e},
+    {5,  0xc3f3a903}, {5, 0x7e854b68}, {5,  0x08d9877c}, {4, 0xb0f0e310},
+    {5,  0x3ab2a5f1}, {8, 0x314866b9}, {5,  0x7cd1a7ea}, {5, 0x063933d0},
+    {2,  0x3ea6b156}, {5, 0x8d49c6c2}, {11, 0xcff9e600}, {3, 0x0554003a},
+    {3,  0xe38f3196}, {6, 0x3543bace}, {2,  0xa5d6ea50}, {4, 0x7e45630d},
+    {14, 0x0bcf1366}, {2, 0x914bb320}, {6,  0xb315f15c}, {7, 0xf9a7cb5e},
+    {6,  0x237b0b4c}, {5, 0xad9a76ec}, {5,  0x4eb04326}, {5, 0xb498761b},
+    {4,  0xb2446f07}, {4, 0x115ec1e6}, {5,  0xabeca7bc}, {4, 0x28745c5b},
+    {3,  0xf5995790}, {3, 0x60600872}, {3,  0xb1b00a70}, {5, 0x7981c90f},
+    {4,  0xc4024408}, {4, 0x91ee6498}, {4,  0xda71424c}, {3, 0x00566904},
+    {5,  0x9548e846}, {5, 0x153b63eb},
 };
 
 const Amount BLOCKSUBSIDY = 50 * COIN;
@@ -238,7 +238,7 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vout[0].nValue = (100000000 - 10000) * SATOSHI;
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), lowFeeTxId2);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), lowFeeTxId2);
 }
 
 void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
