@@ -68,7 +68,7 @@ static constexpr int32_t MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT = 4;
 static constexpr int64_t CHAIN_SYNC_TIMEOUT = 20 * 60;
 /** How frequently to check for stale tips, in seconds */
 // 10 minutes
-static constexpr int64_t STALE_CHECK_INTERVAL = 10 * 60;
+static constexpr int64_t STALE_CHECK_INTERVAL = 2 * 60;
 /**
  * How frequently to check for extra outbound peers and disconnect, in seconds.
  */
