@@ -221,7 +221,7 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
     // Other opcodes may be cryptographic and/or CPU intensive, but they do not
     // add any additional sigchecks.
     static_assert(
-        (MAX_SCRIPT_SIZE <= 10000 && MAX_OPS_PER_SCRIPT <= 201 &&
+        (MAX_SCRIPT_SIZE <= 10000 && MAX_OPS_PER_SCRIPT <= 400 &&
          MAX_STACK_SIZE <= 1000 && MAX_SCRIPT_ELEMENT_SIZE <= 520),
         "These can be made far worse with higher limits. Update accordingly.");
 
