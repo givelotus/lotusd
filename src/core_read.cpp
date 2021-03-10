@@ -74,16 +74,26 @@ CScript ParseScript(const std::string &s) {
         if (std::all_of(w.begin(), w.end(), ::IsDigit) ||
             (w.front() == '-' && w.size() > 1 &&
              std::all_of(w.begin() + 1, w.end(), ::IsDigit))) {
+            bool is_valid = true;
+            int64_t n;
             // Number
-            int64_t n = atoi64(w);
+            try {
+                n = std::stoll(w);
+                if (n == std::numeric_limits<int64_t>::min()) {
+                    is_valid = false;
+                }
+            } catch (...) {
+                is_valid = false;
+            }
 
             // limit the range of numbers ParseScript accepts in decimal
-            // since numbers outside -0xFFFFFFFF...0xFFFFFFFF are illegal in
-            // scripts
-            if (n > int64_t{0xffffffff} || n < -1 * int64_t{0xffffffff}) {
+            // since numbers outside -0x7FFFFFFFFFFFFFFF...0x7FFFFFFFFFFFFFFF
+            // are illegal in scripts
+            if (!is_valid) {
                 throw std::runtime_error("script parse error: decimal numeric "
                                          "value only allowed in the "
-                                         "range -0xFFFFFFFF...0xFFFFFFFF");
+                                         "range -0x7FFFFFFFFFFFFFFF..."
+                                         "0x7FFFFFFFFFFFFFFF");
             }
 
             result << n;
