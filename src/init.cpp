@@ -1038,7 +1038,7 @@ void SetupServerArgs(NodeContext &node) {
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
             "testnet/regtest only; ",
-            defaultChainParams->RequireStandardPolicy()),
+            false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg(
@@ -1046,7 +1046,7 @@ void SetupServerArgs(NodeContext &node) {
         strprintf(
             "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
             "testnet/regtest only; ",
-            defaultChainParams->RequireStandardPolicy()),
+            false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
@@ -2024,8 +2024,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         dustRelayFee = CFeeRate(n);
     }
 
-    fRequireStandardPolicy = !args.GetBoolArg("-acceptnonstdtxn",
-        !chainparams.RequireStandardPolicy());
+    fRequireStandardPolicy = !args.GetBoolArg("-acceptnonstdtxn", false);
     fRequireStandardConsensus =  // defaults to fRequireStandardPolicy
         !args.GetBoolArg("-allownonstdtxnconsensus", !fRequireStandardPolicy);
     if (!fRequireStandardPolicy && fRequireStandardConsensus) {

@@ -459,7 +459,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
         return false;
     }
 
-    // Rather not work on nonstandard transactions (unless -testnet)
+    // Rather not work on nonstandard transactions
     std::string reason;
     if (fRequireStandardPolicy && !IsStandardTx(tx, reason)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
