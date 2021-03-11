@@ -13,13 +13,15 @@
 #include <tinyformat.h>
 #include <util/strencodings.h>
 #include <util/system.h>
+#include <hash.h>
 
 #include <cassert>
 
 static CBlock CreateGenesisBlock(const char *pszTimestamp,
                                  const CScript &genesisOutputScript,
-                                 uint32_t nTime, uint32_t nNonce,
-                                 uint32_t nBits, int32_t nVersion,
+                                 uint32_t nBits, uint64_t nTime, nonce_t vNonce,
+                                 uint32_t nVersion, uint32_t nSizeMB,
+                                 int32_t nHeight, uint256 hashExtendedMetadata,
                                  const Amount genesisReward) {
     CMutableTransaction txNew;
     txNew.nVersion = 1;
@@ -34,10 +36,13 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
     txNew.vout[0].scriptPubKey = genesisOutputScript;
 
     CBlock genesis;
-    genesis.nTime = nTime;
     genesis.nBits = nBits;
-    genesis.nNonce = nNonce;
+    genesis.SetBlockTime(nTime);
+    genesis.vNonce = vNonce;
     genesis.nVersion = nVersion;
+    genesis.nSizeMB = nSizeMB;
+    genesis.nHeight = nHeight;
+    genesis.hashExtendedMetadata = hashExtendedMetadata;
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
     genesis.hashPrevBlock.SetNull();
     genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
@@ -57,8 +62,9 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
  *     CTxOut(nValue=50.00000000, scriptPubKey=0x5F1DF16B2B704C8A578D0B)
  *   vMerkleTree: 4a5e1e
  */
-CBlock CreateGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits,
-                          int32_t nVersion, const Amount genesisReward) {
+CBlock CreateGenesisBlock(uint32_t nBits, uint64_t nTime, nonce_t vNonce,
+                          uint32_t nVersion, int32_t nSizeMB, int32_t nHeight,
+                          const Amount genesisReward) {
     const char *pszTimestamp =
         "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks";
     const CScript genesisOutputScript =
@@ -66,8 +72,10 @@ CBlock CreateGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits,
                               "a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112"
                               "de5c384df7ba0b8d578a4c702b6bf11d5f")
                   << OP_CHECKSIG;
-    return CreateGenesisBlock(pszTimestamp, genesisOutputScript, nTime, nNonce,
-                              nBits, nVersion, genesisReward);
+    const uint256 hashExtendedMetadata = SerializeHash('\0');
+    return CreateGenesisBlock(pszTimestamp, genesisOutputScript, nBits, nTime,
+                              vNonce, nVersion, nSizeMB, nHeight,
+                              hashExtendedMetadata, genesisReward);
 }
 
 /**
@@ -135,7 +143,8 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::MAINNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1,
+        genesis = CreateGenesisBlock(0x1d00ffff, 1231006505,
+                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 1, 1, 0,
                                      50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock ==
@@ -256,8 +265,9 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::TESTNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis =
-            CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(0x1d00ffff, 1296688602,
+                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 1, 1, 0,
+                                     50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock ==
                uint256S("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526"
@@ -353,7 +363,9 @@ public:
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
-        genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(0x207fffff, 1296688602,
+                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 1, 1, 0,
+                                     50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock ==
                uint256S("0x0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b"

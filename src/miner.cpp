@@ -31,12 +31,12 @@
 
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
                    const CBlockIndex *pindexPrev) {
-    int64_t nOldTime = pblock->nTime;
+    int64_t nOldTime = pblock->GetBlockTime();
     int64_t nNewTime =
         std::max(pindexPrev->GetMedianTimePast() + 1, GetAdjustedTime());
 
     if (nOldTime < nNewTime) {
-        pblock->nTime = nNewTime;
+        pblock->SetBlockTime(nNewTime);
     }
 
     // Updating time can change work required on testnet:
@@ -148,7 +148,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         pblock->nVersion = gArgs.GetArg("-blockversion", pblock->nVersion);
     }
 
-    pblock->nTime = GetAdjustedTime();
+    pblock->SetBlockTime(GetAdjustedTime());
     nLockTimeCutoff = pindexPrev->GetMedianTimePast();
 
     int nPackagesSelected = 0;
@@ -209,9 +209,17 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     // Fill in header.
     pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainParams, pindexPrev);
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
-    pblock->nNonce = 0;
+    UpdateTime(pblock, chainParams, pindexPrev);
+    pblock->vNonce.fill(0);
+    pblock->nSizeMB = (nSerializeSize + 999999) / 1000000;
+    pblock->nHeight = nHeight;
+    if (nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
+        pblock->hashEpochBlock = pblock->hashPrevBlock;
+    } else {
+        pblock->hashEpochBlock = pindexPrev->hashEpochBlock;
+    }
+    pblock->hashExtendedMetadata = SerializeHash('\0');
     pblocktemplate->entries[0].sigOpCount = 0;
 
     BlockValidationState state;

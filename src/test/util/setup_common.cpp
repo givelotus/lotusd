@@ -280,7 +280,7 @@ CBlock TestChain100Setup::CreateAndProcessBlock(
 
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
     while (!CheckProofOfWork(block.GetHash(), block.nBits, params)) {
-        ++block.nNonce;
+        block.IncrementNonce();
     }
 
     std::shared_ptr<const CBlock> shared_pblock =

@@ -121,12 +121,12 @@ UniValue blockheaderToJSON(const CBlockIndex *tip,
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
     result.pushKV("height", blockindex->nHeight);
-    result.pushKV("version", blockindex->nVersion);
+    result.pushKV("version", uint64_t(blockindex->nVersion));
     result.pushKV("versionHex", strprintf("%08x", blockindex->nVersion));
     result.pushKV("merkleroot", blockindex->hashMerkleRoot.GetHex());
     result.pushKV("time", int64_t(blockindex->nTime));
     result.pushKV("mediantime", int64_t(blockindex->GetMedianTimePast()));
-    result.pushKV("nonce", uint64_t(blockindex->nNonce));
+    result.pushKV("nonce", HexStr(blockindex->vNonce));
     result.pushKV("bits", strprintf("%08x", blockindex->nBits));
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex->nChainWork.GetHex());
@@ -156,7 +156,7 @@ UniValue blockToJSON(const CBlock &block, const CBlockIndex *tip,
     result.pushKV("confirmations", confirmations);
     result.pushKV("size", (int)::GetSerializeSize(block, PROTOCOL_VERSION));
     result.pushKV("height", blockindex->nHeight);
-    result.pushKV("version", block.nVersion);
+    result.pushKV("version", uint64_t(block.nVersion));
     result.pushKV("versionHex", strprintf("%08x", block.nVersion));
     result.pushKV("merkleroot", block.hashMerkleRoot.GetHex());
     UniValue txs(UniValue::VARR);
@@ -172,7 +172,7 @@ UniValue blockToJSON(const CBlock &block, const CBlockIndex *tip,
     result.pushKV("tx", txs);
     result.pushKV("time", block.GetBlockTime());
     result.pushKV("mediantime", int64_t(blockindex->GetMedianTimePast()));
-    result.pushKV("nonce", uint64_t(block.nNonce));
+    result.pushKV("nonce", HexStr(block.vNonce));
     result.pushKV("bits", strprintf("%08x", block.nBits));
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex->nChainWork.GetHex());

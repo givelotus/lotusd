@@ -2845,7 +2845,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         // Ignore time offsets that are improbable (before the Genesis block)
         // and may underflow the nTimeOffset calculation.
         int64_t currentTime = GetTime();
-        if (nTime >= int64_t(m_chainparams.GenesisBlock().nTime)) {
+        if (nTime >= int64_t(m_chainparams.GenesisBlock().GetBlockTime())) {
             int64_t nTimeOffset = nTime - currentTime;
             pfrom.nTimeOffset = nTimeOffset;
             AddTimeData(pfrom.addr, nTimeOffset);

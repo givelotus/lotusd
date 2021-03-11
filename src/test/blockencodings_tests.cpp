@@ -53,7 +53,7 @@ static CBlock BuildBlockTestCase() {
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
     while (!CheckProofOfWork(block.GetHash(), block.nBits, params)) {
-        ++block.nNonce;
+        block.IncrementNonce();
     }
 
     return block;
@@ -356,7 +356,7 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
     while (!CheckProofOfWork(block.GetHash(), block.nBits, params)) {
-        ++block.nNonce;
+        block.IncrementNonce();
     }
 
     // Test simple header round-trip with only coinbase

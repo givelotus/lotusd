@@ -33,8 +33,9 @@ CTxIn MineBlock(const Config &config, const NodeContext &node,
 
     while (!CheckProofOfWork(block->GetHash(), block->nBits,
                              config.GetChainParams().GetConsensus())) {
-        ++block->nNonce;
-        assert(block->nNonce);
+        block->IncrementNonce();
+        nonce_t empty{};
+        assert(block->vNonce != empty);
     }
 
     bool processed{
@@ -53,7 +54,7 @@ std::shared_ptr<CBlock> PrepareBlock(const Config &config,
                                      ->block);
 
     LOCK(cs_main);
-    block->nTime = ::ChainActive().Tip()->GetMedianTimePast() + 1;
+    block->SetBlockTime(::ChainActive().Tip()->GetMedianTimePast() + 1);
     block->hashMerkleRoot = BlockMerkleRoot(*block);
 
     return block;

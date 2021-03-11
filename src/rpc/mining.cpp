@@ -131,17 +131,19 @@ static bool GenerateBlock(const Config &config, ChainstateManager &chainman,
 
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
 
+    nonce_t max_nonce{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                      0xff};
     while (max_tries > 0 &&
-           block.nNonce < std::numeric_limits<uint32_t>::max() &&
+           block.vNonce != max_nonce &&
            !CheckProofOfWork(block.GetHash(), block.nBits, params) &&
            !ShutdownRequested()) {
-        ++block.nNonce;
+        block.IncrementNonce();
         --max_tries;
     }
     if (max_tries == 0 || ShutdownRequested()) {
         return false;
     }
-    if (block.nNonce == std::numeric_limits<uint32_t>::max()) {
+    if (block.vNonce == max_nonce) {
         return true;
     }
 
@@ -906,7 +908,7 @@ static UniValue getblocktemplate(const Config &config,
 
     // Update nTime
     UpdateTime(pblock, chainparams, pindexPrev);
-    pblock->nNonce = 0;
+    pblock->vNonce.fill(0);
 
     UniValue aCaps(UniValue::VARR);
     aCaps.push_back("proposal");
@@ -974,7 +976,7 @@ static UniValue getblocktemplate(const Config &config,
     UniValue result(UniValue::VOBJ);
     result.pushKV("capabilities", aCaps);
 
-    result.pushKV("version", pblock->nVersion);
+    result.pushKV("version", uint64_t(pblock->nVersion));
 
     result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
     result.pushKV("transactions", transactions);

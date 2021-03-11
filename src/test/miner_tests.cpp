@@ -311,7 +311,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
         {
             LOCK(cs_main);
             pblock->nVersion = 1;
-            pblock->nTime = ::ChainActive().Tip()->GetMedianTimePast() + 1;
+            pblock->SetBlockTime(::ChainActive().Tip()->GetMedianTimePast() + 1);
             CMutableTransaction txCoinbase(*pblock->vtx[0]);
             txCoinbase.nVersion = 1;
             int nHeight = ::ChainActive().Height() + 1;
@@ -328,7 +328,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
                 txFirst.push_back(pblock->vtx[0]);
             }
             pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
-            pblock->nNonce = blockinfo[i].nonce;
+            pblock->vNonce.fill(0);
             CBlockHeader header = pblock->GetBlockHeader();
             pblock->nBits = GetNextWorkRequired(::ChainActive().Tip(), &header, chainparams);
         }

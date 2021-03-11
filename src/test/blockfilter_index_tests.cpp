@@ -72,7 +72,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
         BlockAssembler(config, *m_node.mempool).CreateNewBlock(scriptPubKey);
     CBlock &block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
-    block.nTime = prev->nTime + 1;
+    block.SetBlockTime(prev->nTime + 1);
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);
@@ -85,7 +85,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
 
     while (!CheckProofOfWork(block.GetHash(), block.nBits,
                              config.GetChainParams().GetConsensus())) {
-        ++block.nNonce;
+        block.IncrementNonce();
     }
 
     return block;
