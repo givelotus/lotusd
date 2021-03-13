@@ -60,34 +60,34 @@ constexpr static struct {
     uint8_t extranonce;
     uint32_t nonce;
 } blockinfo[] = {
-    {1,  0x7458c333}, {2, 0x0daddc14}, {4,  0x8a819d66}, {4, 0x9e3e0e18},
-    {2,  0x7ca25212}, {3, 0x73990ba8}, {13, 0x59a33e0a}, {2, 0x6b54f444},
-    {6,  0x998779bf}, {2, 0x95dd8882}, {5,  0x57719051}, {3, 0xf898500e},
-    {4,  0x633e5f5a}, {4, 0x35cb1e49}, {3,  0x51016402}, {4, 0xfdeb94b3},
-    {3,  0x2e98ee78}, {3, 0x5c2cab72}, {7,  0xb5a7262a}, {4, 0x11f53c56},
-    {4,  0x15ca0298}, {4, 0x0fa30d6d}, {3,  0x86002fae}, {8, 0x02d24308},
-    {5,  0x798de683}, {3, 0x91deea2c}, {3,  0xad22319c}, {4, 0xfa76e9fe},
-    {4,  0x057a308f}, {4, 0x52f81220}, {4,  0x40e80fcb}, {5, 0x95aa2d5e},
-    {13, 0x16b469b5}, {5, 0x9ec874d7}, {5,  0xb2d065c4}, {2, 0x24bfac36},
-    {5,  0xe965520d}, {4, 0x90cb405a}, {4,  0x48636dcc}, {7, 0x5227b412},
-    {3,  0xe8c0096c}, {2, 0x68632394}, {6,  0xdb811608}, {3, 0xc36a7560},
-    {5,  0x0c77ee4c}, {5, 0xe4790000}, {3,  0xe5261e98}, {5, 0x4bffc009},
-    {4,  0x74ccee31}, {9, 0x61f184f0}, {7,  0x22d2f084}, {4, 0x5950b11e},
-    {8,  0x3aec6818}, {2, 0x411f760a}, {5,  0x58cb502a}, {4, 0xba49182a},
-    {4,  0x9c07a9bf}, {5, 0x77953976}, {3,  0xbdb7e300}, {6, 0xfbcd1f02},
-    {2,  0x383d9404}, {4, 0xb545c962}, {5,  0x1b6e65ae}, {2, 0x01f81a81},
-    {6,  0x2469b77c}, {2, 0x8cd02784}, {5,  0x61e98150}, {3, 0x95edf392},
-    {3,  0x61521ac4}, {4, 0x0a04ca08}, {4,  0x1ba15aa8}, {9, 0xb962507e},
-    {5,  0xc3f3a903}, {5, 0x7e854b68}, {5,  0x08d9877c}, {4, 0xb0f0e310},
-    {5,  0x3ab2a5f1}, {8, 0x314866b9}, {5,  0x7cd1a7ea}, {5, 0x063933d0},
-    {2,  0x3ea6b156}, {5, 0x8d49c6c2}, {11, 0xcff9e600}, {3, 0x0554003a},
-    {3,  0xe38f3196}, {6, 0x3543bace}, {2,  0xa5d6ea50}, {4, 0x7e45630d},
-    {14, 0x0bcf1366}, {2, 0x914bb320}, {6,  0xb315f15c}, {7, 0xf9a7cb5e},
-    {6,  0x237b0b4c}, {5, 0xad9a76ec}, {5,  0x4eb04326}, {5, 0xb498761b},
-    {4,  0xb2446f07}, {4, 0x115ec1e6}, {5,  0xabeca7bc}, {4, 0x28745c5b},
-    {3,  0xf5995790}, {3, 0x60600872}, {3,  0xb1b00a70}, {5, 0x7981c90f},
-    {4,  0xc4024408}, {4, 0x91ee6498}, {4,  0xda71424c}, {3, 0x00566904},
-    {5,  0x9548e846}, {5, 0x153b63eb},
+    {1, 0x37d6aa0a}, {5, 0x80ae6e74}, {5, 0x9efd9460}, {3, 0x383aa884},
+    {4, 0x90c46bf6}, {2, 0xda6dc180}, {3, 0x255ee91c}, {9, 0xf6a6af40},
+    {4, 0x7e70ba5b}, {6, 0xd30ae59c}, {5, 0x7dc71700}, {2, 0xe5e61ff8},
+    {3, 0x260e571c}, {7, 0x543695ca}, {6, 0x4c0ac01a}, {3, 0x4902b214},
+    {3, 0x8955a2a0}, {4, 0x9adbe946}, {7, 0x1d401800}, {4, 0xb9a70715},
+    {8, 0xcfda3006}, {4, 0x28208fda}, {3, 0x419834d8}, {5, 0xe63e718f},
+    {4, 0x3061b786}, {6, 0x6b43e824}, {6, 0xe12aa54c}, {2, 0xff90df90},
+    {5, 0x206000f8}, {4, 0x84002278}, {3, 0x235d3e2c}, {3, 0x8c863c30},
+    {7, 0xc16c949b}, {2, 0x48907700}, {3, 0xd19e171a}, {6, 0x1a6e0c5c},
+    {3, 0x1dee3e9c}, {7, 0xdccee028}, {10, 0x12638e28}, {4, 0xb3207f01},
+    {3, 0x917fec26}, {5, 0xb223f949}, {3, 0x8aaa7600}, {3, 0x4a5f43d8},
+    {3, 0x6fbcc6b6}, {4, 0xea28156e}, {7, 0xb8986f3e}, {2, 0x7dc96d64},
+    {4, 0x34a0b592}, {2, 0x6d1b7201}, {4, 0x9aff1d9e}, {3, 0xc7579c78},
+    {3, 0xb89ae5ec}, {8, 0xd19bca58}, {4, 0x7a2efe20}, {4, 0x19100026},
+    {4, 0xab81b19e}, {6, 0xd72d10d6}, {5, 0x62030a52}, {2, 0x924e06ba},
+    {3, 0x115de74a}, {4, 0xf6210041}, {3, 0x17ba4320}, {3, 0x2c161454},
+    {3, 0xca4ef754}, {3, 0xe397b118}, {4, 0x1f701e8e}, {3, 0x4389ee7c},
+    {8, 0x29229fb0}, {3, 0x8edfa29c}, {7, 0x2850f6a7}, {4, 0x519b6766},
+    {3, 0x2f23314}, {3, 0x5d94d073}, {4, 0x70b8c866}, {5, 0x59243540},
+    {7, 0xd1a6f386}, {4, 0x9ad7f920}, {3, 0x60b10040}, {3, 0x20bedfb4},
+    {3, 0x570b960}, {4, 0x85d67401}, {7, 0x18532b68}, {5, 0x7babcb30},
+    {4, 0x6ffc05c4}, {2, 0xfa1b745e}, {7, 0xa5962800}, {3, 0x776e0ce2},
+    {5, 0x1b806f04}, {6, 0xfac75f3c}, {4, 0x1c180300}, {5, 0x1fdf7554},
+    {5, 0x47e99e0e}, {3, 0x83307adc}, {5, 0xa9431e28}, {3, 0xfe73f9ee},
+    {3, 0x9dcc7b9f}, {5, 0xa6a9dc80}, {3, 0xd02b73fa}, {4, 0xef1961f8},
+    {4, 0x857e0d68}, {4, 0x772177b6}, {3, 0xa2971570}, {7, 0x952093f6},
+    {3, 0xda3f86b6}, {8, 0x1837ab9a}, {6, 0xeb8fcca6}, {7, 0x7cbc680d},
+    {4, 0xcf4f6e90}, {11, 0x60803c66},
 };
 
 const Amount BLOCKSUBSIDY = 50 * COIN;
@@ -157,9 +157,9 @@ void MinerTestingSetup::TestPackageSelection(
     std::unique_ptr<CBlockTemplate> pblocktemplate =
         AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 4);
-    BOOST_CHECK(pblocktemplate->block.vtx[1]->GetId() == parentTxId);
-    BOOST_CHECK(pblocktemplate->block.vtx[2]->GetId() == mediumFeeTxId);
-    BOOST_CHECK(pblocktemplate->block.vtx[3]->GetId() == highFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), highFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), parentTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), mediumFeeTxId);
 
     // Test that a package below the block min tx fee doesn't get included
     tx.vin[0].prevout = COutPoint(highFeeTxId, 0);
@@ -196,11 +196,11 @@ void MinerTestingSetup::TestPackageSelection(
     m_node.mempool->addUnchecked(entry.Fee(feeToUse + 2 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 6);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), lowFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), highFeeTxId);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), freeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), lowFeeTxId);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), mediumFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), highFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), freeTxId);
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as ancestor transactions get included in a block. Add a
@@ -238,7 +238,7 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vout[0].nValue = (100000000 - 10000) * SATOSHI;
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), lowFeeTxId2);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), lowFeeTxId2);
 }
 
 void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
@@ -264,7 +264,10 @@ void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
     unsigned int nHeight = ::ChainActive().Tip()->nHeight + 1;
     std::vector<uint8_t> vec(cbmsg.begin(), cbmsg.end());
     BOOST_CHECK(pblock->vtx[0]->vin[0].scriptSig ==
-                (CScript() << nHeight << CScriptNum(extraNonce) << vec));
+                (CScript() << COINBASE_PREFIX
+                           << nHeight
+                           << CScriptNum(extraNonce)
+                           << vec));
 }
 
 // Coinbase scriptSig has to contains the correct EB value
@@ -316,7 +319,9 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
             txCoinbase.nVersion = 1;
             int nHeight = ::ChainActive().Height() + 1;
             // Make sure coinbase is BIP34 compliant
-            txCoinbase.vin[0].scriptSig = CScript() << nHeight << OP_0;
+            txCoinbase.vin[0].scriptSig = CScript() << COINBASE_PREFIX
+                                                    << nHeight
+                                                    << OP_0;
             txCoinbase.vin[0].scriptSig.push_back(blockinfo[i].extranonce);
             txCoinbase.vin[0].scriptSig.resize(100);
             txCoinbase.vout[0].scriptPubKey = CScript();

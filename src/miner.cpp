@@ -180,7 +180,9 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
         nFees + GetBlockSubsidy(nHeight, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    coinbaseTx.vin[0].scriptSig = CScript() << COINBASE_PREFIX
+                                            << nHeight
+                                            << OP_0;
 
     const std::vector<CTxDestination> whitelisted =
         GetMinerFundWhitelist(consensusParams, pindexPrev);
@@ -551,7 +553,9 @@ void IncrementExtraNonce(CBlock *pblock, const CBlockIndex *pindexPrev,
     unsigned int nHeight = pindexPrev->nHeight + 1;
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     txCoinbase.vin[0].scriptSig =
-        (CScript() << nHeight << CScriptNum(nExtraNonce)
+        (CScript() << COINBASE_PREFIX
+                   << nHeight
+                   << CScriptNum(nExtraNonce)
                    << getExcessiveBlockSizeSig(nExcessiveBlockSize));
 
     // Make sure the coinbase is big enough.

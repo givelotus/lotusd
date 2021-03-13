@@ -98,7 +98,8 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     // spend
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     if (nHeight > -1) {
-        txCoinbase.vin[0].scriptSig = CScript() << nHeight
+        txCoinbase.vin[0].scriptSig = CScript() << COINBASE_PREFIX
+                                                << nHeight
                                                 << std::vector<uint8_t>(80);
     }
     txCoinbase.vout.resize(2);
