@@ -675,35 +675,41 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         valtype &vch1 = stacktop(-2);
                         valtype &vch2 = stacktop(-1);
 
-                        // Inputs must be the same size
-                        if (vch1.size() != vch2.size()) {
-                            return set_error(serror,
-                                             ScriptError::INVALID_OPERAND_SIZE);
-                        }
+                        int depthLonger =
+                            vch1.size() > vch2.size() ? 2 : 1;
+                        int depthShorter =
+                            vch1.size() > vch2.size() ? 1 : 2;
+                        valtype &vchLonger = stacktop(-depthLonger);
+                        valtype &vchShorter = stacktop(-depthShorter);
 
-                        // To avoid allocating, we modify vch1 in place.
+                        // To avoid allocating, we modify vchLonger in place.
                         switch (opcode) {
                             case OP_AND:
-                                for (size_t i = 0; i < vch1.size(); ++i) {
-                                    vch1[i] &= vch2[i];
+                                for (size_t i = 0; i < vchLonger.size(); ++i) {
+                                    if (i < vchShorter.size()) {
+                                        vchLonger[i] &= vchShorter[i];
+                                    } else {
+                                        vchLonger[i] = 0;
+                                    }
                                 }
                                 break;
                             case OP_OR:
-                                for (size_t i = 0; i < vch1.size(); ++i) {
-                                    vch1[i] |= vch2[i];
+                                for (size_t i = 0; i < vchShorter.size(); ++i) {
+                                    vchLonger[i] |= vchShorter[i];
                                 }
+                                // leave remaining bytes in vchLonger unchanged
                                 break;
                             case OP_XOR:
-                                for (size_t i = 0; i < vch1.size(); ++i) {
-                                    vch1[i] ^= vch2[i];
+                                for (size_t i = 0; i < vchShorter.size(); ++i) {
+                                    vchLonger[i] ^= vchShorter[i];
                                 }
+                                // leave remaining bytes in vchLonger unchanged
                                 break;
                             default:
                                 break;
                         }
-
-                        // And pop vch2.
-                        popstack(stack);
+                        // pop the shorter one of both.
+                        stack.erase(stack.end() - depthShorter);
                     } break;
 
                     case OP_EQUAL:
