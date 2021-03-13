@@ -11,7 +11,7 @@ import copy
 from decimal import Decimal
 
 from test_framework.blocktools import TIME_GENESIS_BLOCK, create_coinbase
-from test_framework.messages import BLOCK_HEADER_SIZE, CBlock, CBlockHeader
+from test_framework.messages import BLOCK_HEADER_SIZE, CBlock, CBlockHeader, CScriptNum
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
@@ -91,6 +91,15 @@ class MiningTest(BitcoinTestFramework):
         coinbase_tx = create_coinbase(height=next_height)
         # sequence numbers must not be max for nLockTime to have effect
         coinbase_tx.vin[0].nSequence = 2**32 - 2
+        coinbase_tx.rehash()
+
+        assert_equal(
+            coinbase_tx.vin[0].scriptSig[:6],
+            b'\x05logos')
+        # round-trip the encoded bip34 block height commitment
+        assert_equal(
+            CScriptNum.decode(coinbase_tx.vin[0].scriptSig[6:]),
+            next_height)
 
         block = CBlock()
         block.nVersion = tmpl["version"]

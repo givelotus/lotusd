@@ -7,6 +7,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <consensus/amount.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <pow/pow.h>
@@ -43,7 +44,9 @@ static void DuplicateInputs(benchmark::Bench &bench) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = SCRIPT_PUB;
     coinbaseTx.vout[0].nValue = GetBlockSubsidy(nHeight, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    coinbaseTx.vin[0].scriptSig = CScript() << COINBASE_PREFIX
+                                            << nHeight
+                                            << OP_0;
 
     naughtyTx.vout.resize(1);
     naughtyTx.vout[0].nValue = Amount::zero();

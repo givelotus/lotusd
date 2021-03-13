@@ -8,6 +8,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <config.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <node/miner.h>
@@ -105,7 +106,8 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     // spend
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     if (nHeight > -1) {
-        txCoinbase.vin[0].scriptSig = CScript() << nHeight
+        txCoinbase.vin[0].scriptSig = CScript() << COINBASE_PREFIX
+                                                << nHeight
                                                 << std::vector<uint8_t>(80);
     }
     txCoinbase.vout.resize(2);
@@ -293,7 +295,7 @@ BOOST_AUTO_TEST_CASE(avalanche_finalization_bad_state) {
 
     // Generate an invalid block with a valid header
     const std::shared_ptr<const CBlock> pblock =
-        BadBlock(config, chainParams.GenesisBlock().GetHash());
+        BadBlock(config, chainParams.GenesisBlock().GetHash(), 1);
 
     // Process the valid header
     const CBlockIndex *pindexBadBlock;
@@ -376,7 +378,9 @@ BOOST_AUTO_TEST_CASE(mempool_locks_reorg) {
 
         // Later on split from here
         const BlockHash split_hash{last_mined->hashPrevBlock};
-        const int split_height = ::ChainActive().Tip()->nHeight;
+        const int split_height = WITH_LOCK(
+            Assert(m_node.chainman)->GetMutex(),
+            return m_node.chainman->ActiveHeight());
 
         // Create a bunch of transactions to spend the miner rewards of the
         // most recent blocks
