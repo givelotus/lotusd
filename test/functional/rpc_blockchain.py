@@ -391,7 +391,7 @@ class BlockchainTest(BitcoinTestFramework):
         assert_equal(blockinfo['height'], blockheaderinfo['height'])
         assert_equal(blockinfo['versionHex'], blockheaderinfo['versionHex'])
         assert_equal(blockinfo['version'], blockheaderinfo['version'])
-        assert_equal(blockinfo['size'], 181)
+        assert_equal(blockinfo['size'], 186)
         assert_equal(blockinfo['merkleroot'], blockheaderinfo['merkleroot'])
         # Verify transaction data by check the hex values
         for tx in blockinfo['tx']:

@@ -100,10 +100,12 @@ class MiningTest(BitcoinTestFramework):
         coinbase_tx.vin[0].nSequence = 2 ** 32 - 2
         coinbase_tx.rehash()
 
+        assert_equal(
+            coinbase_tx.vin[0].scriptSig[:6],
+            b'\x05logos')
         # round-trip the encoded bip34 block height commitment
         assert_equal(
-            CScriptNum.decode(
-                coinbase_tx.vin[0].scriptSig),
+            CScriptNum.decode(coinbase_tx.vin[0].scriptSig[6:]),
             next_height)
         # round-trip negative and multi-byte CScriptNums to catch python
         # regression
