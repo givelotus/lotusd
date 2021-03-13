@@ -6,6 +6,7 @@
 #include <script/interpreter.h>
 
 #include <test/util/setup_common.h>
+#include <test/lcg.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -16,7 +17,7 @@ typedef std::vector<valtype> stacktype;
 
 BOOST_FIXTURE_TEST_SUITE(monolith_opcodes_tests, BasicTestingSetup)
 
-std::array<uint32_t, 3> flagset{{0, STANDARD_SCRIPT_VERIFY_FLAGS}};
+std::array<uint32_t, 2> flagset{{0, STANDARD_SCRIPT_VERIFY_FLAGS}};
 
 /**
  * General utility functions to check for script passing/failing.
@@ -138,15 +139,27 @@ static void RunTestForAllBitwiseOpcodesSizes(const valtype &a, const valtype &b,
                                              const valtype &expected_and,
                                              const valtype &expected_or,
                                              const valtype &expected_xor) {
-    valtype wa, wb, wand, wor, wxor;
+    MMIXLinearCongruentialGenerator lcg;
+    valtype wa;
+    // Test for all len(wa) <= len(wb)
     for (size_t i = 0; i < a.size(); i++) {
         wa.push_back(a[i]);
-        wb.push_back(b[i]);
-        wand.push_back(expected_and[i]);
-        wor.push_back(expected_or[i]);
-        wxor.push_back(expected_xor[i]);
-
+        size_t len = i + 1;
+        valtype wb(b.begin(), b.begin() + len),
+                wand(expected_and.begin(), expected_and.begin() + len),
+                wor(expected_or.begin(), expected_or.begin() + len),
+                wxor(expected_xor.begin(), expected_xor.begin() + len);
+        // Test for len(wa) == len(wb)
         RunTestForAllBitwiseOpcodes(wa, wb, wand, wor, wxor);
+        // Test for len(wb) == len(wa)..len(b), expand arrays
+        // Skip some tests for faster execution
+        for (size_t j = i; j < b.size(); j += lcg.next() % 6 + 1) {
+            wb.push_back(b[j]);
+            wand.push_back(0);    // x & 0 == 0
+            wor.push_back(b[j]);  // x | 0 == x
+            wxor.push_back(b[j]); // x ^ 0 == x
+            RunTestForAllBitwiseOpcodes(wa, wb, wand, wor, wxor);
+        }
     }
 }
 
@@ -383,7 +396,7 @@ BOOST_AUTO_TEST_CASE(bitwise_opcodes_test) {
     TestBitwiseOpcodes(a, b, aandb, aorb);
 
     // Check errors conditions.
-    // 1. Less than 2 elements on stack.
+    // Less than 2 elements on stack.
     CheckAllBitwiseOpErrors({}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({{}}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({{0x00}}, ScriptError::INVALID_STACK_OPERATION);
@@ -391,16 +404,6 @@ BOOST_AUTO_TEST_CASE(bitwise_opcodes_test) {
                             ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({a}, ScriptError::INVALID_STACK_OPERATION);
     CheckAllBitwiseOpErrors({b}, ScriptError::INVALID_STACK_OPERATION);
-
-    // 2. Operand of mismatching length
-    CheckAllBitwiseOpErrors({{}, {0x00}}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0x00}, {}}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0x00}, {0xab, 0xcd, 0xef}},
-                            ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{0xab, 0xcd, 0xef}, {0x00}},
-                            ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({{}, a}, ScriptError::INVALID_OPERAND_SIZE);
-    CheckAllBitwiseOpErrors({b, {}}, ScriptError::INVALID_OPERAND_SIZE);
 }
 
 /**
