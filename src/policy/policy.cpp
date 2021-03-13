@@ -114,8 +114,8 @@ bool IsStandardTx(const CTransaction &tx, bool permit_bare_multisig,
         }
     }
 
-    // only one OP_RETURN txout is permitted
-    if (nDataOut > 1) {
+    // max 3 OP_RETURN txout are permitted
+    if (nDataOut > 3) {
         reason = "multi-op-return";
         return false;
     }

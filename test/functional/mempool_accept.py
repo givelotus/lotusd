@@ -340,9 +340,10 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
                 {'txid': tx.rehash(), 'allowed': False, 'reject-reason': 'dust'}],
             rawtxs=[ToHex(tx)],
         )
+        # 4 OP_RETURN outputs not allowed
         tx = FromHex(CTransaction(), raw_tx_reference)
         tx.vout[0].scriptPubKey = CScript([OP_RETURN, b'\xff'])
-        tx.vout = [tx.vout[0]] * 2
+        tx.vout = [tx.vout[0]] * 4
         self.check_mempool_result(
             result_expected=[
                 {'txid': tx.rehash(), 'allowed': False, 'reject-reason': 'multi-op-return'}],
