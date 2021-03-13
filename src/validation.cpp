@@ -1643,7 +1643,7 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 fScriptChecks =
                     (GetBlockProofEquivalentTime(
                          *pindexBestHeader, *pindex, *pindexBestHeader,
-                         consensusParams) <= 60 * 60 * 24 * 7 * 2);
+                         consensusParams) <= 60 * 60 * 24 * 5);
             }
         }
     }
