@@ -92,7 +92,6 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_2MUL:
         case OP_2DIV:
         case OP_MUL:
-        case OP_LSHIFT:
         case OP_RSHIFT:
         case OP_NUMEQUAL:
         case OP_NUMEQUALVERIFY:
@@ -1285,6 +1284,105 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         valtype &data = stacktop(-1);
                         std::reverse(data.begin(), data.end());
                     } break;
+
+                    case OP_RAWLEFTBITSHIFT: {
+                        // (in bits -- out)
+                        if (stack.size() < 2) {
+                            return set_error(
+                                serror, ScriptError::INVALID_STACK_OPERATION);
+                        }
+                        valtype &data = stacktop(-2);
+                        const int32_t signed_bitshift =
+                            CScriptNum(stacktop(-1), fRequireMinimal).getint();
+                        popstack(stack);
+                        if (data.empty() || signed_bitshift == 0) {
+                            break;
+                        }
+                        uint32_t bitshift = abs(signed_bitshift);
+                        if (bitshift > data.size() * 8) {
+                            bitshift = data.size() * 8;
+                        }
+                        const size_t inner_bitshift = bitshift % 8;
+                        const size_t byteshift = bitshift / 8;
+                        if (signed_bitshift > 0) { // Shift left
+                            const uint8_t mask = 0xff >> inner_bitshift;
+                            // Copy bits over to the destination
+                            for (size_t idx = byteshift; idx < data.size();
+                                 idx++) {
+                                assert(idx < data.size());
+                                const uint8_t bits = data[idx];
+                                const size_t offset = idx - byteshift;
+                                assert(offset < data.size());
+                                const uint8_t remove_mask = mask
+                                                            << inner_bitshift;
+                                // Clear existing bits
+                                data[offset] &= ~remove_mask;
+                                // Set new bits
+                                data[offset] |= (bits & mask) << inner_bitshift;
+                                if (offset == 0) {
+                                    continue;
+                                }
+                                assert(offset - 1 < data.size());
+                                const uint8_t remove_mask_carry =
+                                    uint8_t(~mask) >> (8 - inner_bitshift);
+                                // Clear existing bits
+                                data[offset - 1] &= ~remove_mask_carry;
+                                const uint8_t val = bits & ~mask;
+                                // Set new bits
+                                data[offset - 1] |= val >> (8 - inner_bitshift);
+                            }
+                            // Clear bits that are shifted-in from the left.
+                            if (byteshift < data.size()) {
+                                data[data.size() - byteshift - 1] &=
+                                    0xff << inner_bitshift;
+                            }
+                            // Clear bytes that are shifted-in from the left.
+                            for (size_t i = data.size() - byteshift;
+                                 i < data.size(); ++i) {
+                                assert(i < data.size());
+                                data[i] = 0;
+                            }
+                        } else { // Shift right
+                            const uint8_t mask = 0xff << inner_bitshift;
+                            const size_t end =
+                                std::numeric_limits<size_t>::max();
+                            // Copy bits over to the destination
+                            for (size_t idx = data.size() - byteshift - 1;
+                                 idx != end; --idx) {
+                                assert(idx < data.size());
+                                const uint8_t bits = data[idx];
+                                const size_t offset = idx + byteshift;
+                                const uint8_t remove_mask =
+                                    mask >> inner_bitshift;
+                                assert(offset < data.size());
+                                // Clear existing bits
+                                data[offset] &= ~remove_mask;
+                                // Set new bits
+                                data[offset] |= (bits & mask) >> inner_bitshift;
+                                if (offset + 1 >= data.size()) {
+                                    continue;
+                                }
+                                assert(offset + 1 < data.size());
+                                const uint8_t remove_mask_carry =
+                                    ~mask << (8 - inner_bitshift);
+                                // Clear existing bits
+                                data[offset + 1] &= ~remove_mask_carry;
+                                const uint8_t val = bits & ~mask;
+                                // Set new bits
+                                data[offset + 1] |= val << (8 - inner_bitshift);
+                            }
+                            // Clear bytes that are shifted-in from the right.
+                            for (size_t i = 0; i < byteshift; ++i) {
+                                assert(i < data.size());
+                                data[i] = 0;
+                            }
+                            // Clear bits that are shifted-in from the right.
+                            if (byteshift < data.size()) {
+                                data[byteshift] &= 0xff >> inner_bitshift;
+                            }
+                        }
+                        break;
+                    }
 
                     //
                     // Conversion operations
