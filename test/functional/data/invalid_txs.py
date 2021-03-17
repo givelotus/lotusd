@@ -39,7 +39,6 @@ from test_framework.script import (
     OP_2MUL,
     OP_2DIV,
     OP_MUL,
-    OP_LSHIFT,
     OP_RSHIFT,
     OP_HASH160,
     OP_EQUAL,
@@ -258,7 +257,6 @@ DisabledOpcodeTemplates = [getDisabledOpcodeTemplate(opcode) for opcode in [
     OP_2MUL,
     OP_2DIV,
     OP_MUL,
-    OP_LSHIFT,
     OP_RSHIFT]]
 
 

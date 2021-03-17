@@ -138,7 +138,7 @@ enum opcodetype {
     OP_MUL = 0x95,
     OP_DIV = 0x96,
     OP_MOD = 0x97,
-    OP_LSHIFT = 0x98,
+    OP_RAWLEFTBITSHIFT = 0x98,
     OP_RSHIFT = 0x99,
 
     OP_BOOLAND = 0x9a,
