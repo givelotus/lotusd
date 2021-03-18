@@ -201,4 +201,27 @@ BOOST_AUTO_TEST_CASE(hashverifier_tests) {
     BOOST_CHECK(h1.GetHash() != checksum);
 }
 
+BOOST_AUTO_TEST_CASE(sha256uint256_tests) {
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("00000000000000000000000000000000000000000000000"
+                               "00000000000000000")),
+        uint256S("25295f0d1d592a90b333e26e85149708208e9f8e8bc18f6c77bd62f8ad7a6"
+                 "866"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("0123456789abcdef0123456789abcdef0123456789abcde"
+                               "f0123456789abcdef")),
+        uint256S("8947da2b8e453d7c31900c9113891b730c5d4d7a84b332902051d026575fc"
+                 "150"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("f17bc115754b0d900491da9715901538578803db10df2c3"
+                               "b9b61558f69907bbe")),
+        uint256S("22858d3cabd4baf35a7432c470c21e338aca3e2de2e6b104eff6d179528b9"
+                 "5ff"));
+    BOOST_CHECK_EQUAL(
+        SHA256Uint256(uint256S("6dd6c5716cc8e24313f619bab92ad24981f54ff7e24173a"
+                               "093f45f801e0342af")),
+        uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce"
+                 "26f"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

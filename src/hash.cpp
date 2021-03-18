@@ -81,3 +81,9 @@ void BIP32Hash(const ChainCode &chainCode, uint32_t nChild, uint8_t header,
         .Write(num, 4)
         .Finalize(output);
 }
+
+uint256 SHA256Uint256(const uint256 &input) {
+    uint256 result;
+    CSHA256().Write(input.begin(), 32).Finalize(result.begin());
+    return result;
+}

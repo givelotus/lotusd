@@ -6,6 +6,7 @@
 #ifndef BITCOIN_HASH_H
 #define BITCOIN_HASH_H
 
+#include <attributes.h>
 #include <crypto/common.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha256.h>
@@ -178,6 +179,9 @@ uint256 SerializeHash(const T &obj, int nType = SER_GETHASH,
     ss << obj;
     return ss.GetHash();
 }
+
+/** Single-SHA256 a 32-byte input (represented as uint256). */
+NODISCARD uint256 SHA256Uint256(const uint256& input);
 
 uint32_t MurmurHash3(uint32_t nHashSeed, Span<const uint8_t> vDataToHash);
 
