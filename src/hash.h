@@ -196,6 +196,9 @@ public:
     }
 };
 
+/** Single-SHA256 a 32-byte input (represented as uint256). */
+NODISCARD uint256 SHA256Uint256(const uint256 &input);
+
 uint32_t MurmurHash3(uint32_t nHashSeed, Span<const uint8_t> vDataToHash);
 
 void BIP32Hash(const ChainCode &chainCode, uint32_t nChild, uint8_t header,
