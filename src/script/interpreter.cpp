@@ -1596,37 +1596,41 @@ public:
     }
 };
 
-template <class T> uint256 GetPrevoutHash(const T &txTo) {
+/** Compute the (single) SHA256 of the concatenation of all prevouts of a tx. */
+template <class T> uint256 GetPrevoutsSHA256(const T &txTo) {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto &txin : txTo.vin) {
         ss << txin.prevout;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
-template <class T> uint256 GetSequenceHash(const T &txTo) {
+/** Compute the (single) SHA256 of the concatenation of all nSequences of a tx.
+ */
+template <class T> uint256 GetSequencesSHA256(const T &txTo) {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto &txin : txTo.vin) {
         ss << txin.nSequence;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
-template <class T> uint256 GetOutputsHash(const T &txTo) {
+/** Compute the (single) SHA256 of the concatenation of all txouts of a tx. */
+template <class T> uint256 GetOutputsSHA256(const T &txTo) {
     CHashWriter ss(SER_GETHASH, 0);
     for (const auto &txout : txTo.vout) {
         ss << txout;
     }
-    return ss.GetHash();
+    return ss.GetSHA256();
 }
 
 } // namespace
 
 template <class T>
 PrecomputedTransactionData::PrecomputedTransactionData(const T &txTo) {
-    hashPrevouts = GetPrevoutHash(txTo);
-    hashSequence = GetSequenceHash(txTo);
-    hashOutputs = GetOutputsHash(txTo);
+    hashPrevouts = SHA256Uint256(GetPrevoutsSHA256(txTo));
+    hashSequence = SHA256Uint256(GetSequencesSHA256(txTo));
+    hashOutputs = SHA256Uint256(GetOutputsSHA256(txTo));
 }
 
 // explicit instantiation
@@ -1656,18 +1660,21 @@ uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
         uint256 hashOutputs;
 
         if (!sigHashType.hasAnyoneCanPay()) {
-            hashPrevouts = cache ? cache->hashPrevouts : GetPrevoutHash(txTo);
+            hashPrevouts = cache ? cache->hashPrevouts
+                                 : SHA256Uint256(GetPrevoutsSHA256(txTo));
         }
 
         if (!sigHashType.hasAnyoneCanPay() &&
             (sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
             (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
-            hashSequence = cache ? cache->hashSequence : GetSequenceHash(txTo);
+            hashSequence = cache ? cache->hashSequence
+                                 : SHA256Uint256(GetSequencesSHA256(txTo));
         }
 
         if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
             (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
-            hashOutputs = cache ? cache->hashOutputs : GetOutputsHash(txTo);
+            hashOutputs = cache ? cache->hashOutputs
+                                : SHA256Uint256(GetOutputsSHA256(txTo));
         } else if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
                    (nIn < txTo.vout.size())) {
             CHashWriter ss(SER_GETHASH, 0);
