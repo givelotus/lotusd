@@ -6,6 +6,7 @@
 
 #include <script/interpreter.h>
 
+#include <coins.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha256.h>
 #include <pubkey.h>
@@ -1627,17 +1628,37 @@ template <class T> uint256 GetOutputsSHA256(const T &txTo) {
 } // namespace
 
 template <class T>
-PrecomputedTransactionData::PrecomputedTransactionData(const T &txTo) {
+PrecomputedTransactionData::PrecomputedTransactionData(
+    const T &txTo, std::vector<CTxOut> &&spent_outputs) {
     hashPrevouts = SHA256Uint256(GetPrevoutsSHA256(txTo));
     hashSequence = SHA256Uint256(GetSequencesSHA256(txTo));
     hashOutputs = SHA256Uint256(GetOutputsSHA256(txTo));
+    m_spent_outputs = std::move(spent_outputs);
+}
+
+template <class T>
+PrecomputedTransactionData
+PrecomputedTransactionData::FromCoinsView(const T &tx,
+                                          const CCoinsView &coins_view) {
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(tx.vin.size());
+    for (const CTxIn &input : tx.vin) {
+        Coin coin;
+        coins_view.GetCoin(input.prevout, coin);
+        spent_outputs.push_back(coin.GetTxOut());
+    }
+    return PrecomputedTransactionData(tx, std::move(spent_outputs));
 }
 
 // explicit instantiation
 template PrecomputedTransactionData::PrecomputedTransactionData(
-    const CTransaction &txTo);
+    const CTransaction &txTo, std::vector<CTxOut> &&spent_outputs);
+template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
+    const CTransaction &txTo, const CCoinsView &coins_view);
 template PrecomputedTransactionData::PrecomputedTransactionData(
-    const CMutableTransaction &txTo);
+    const CMutableTransaction &txTo, std::vector<CTxOut> &&spent_outputs);
+template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
+    const CMutableTransaction &txTo, const CCoinsView &coins_view);
 
 template <class T>
 uint256 SignatureHash(const CScript &scriptCode, const T &txTo,

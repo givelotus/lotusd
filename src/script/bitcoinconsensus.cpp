@@ -79,6 +79,7 @@ static bool verify_flags(unsigned int flags) {
 
 static int verify_script(const uint8_t *scriptPubKey,
                          unsigned int scriptPubKeyLen, Amount amount,
+                         std::vector<CTxOut> spentOutputs,
                          const uint8_t *txTo, unsigned int txToLen,
                          unsigned int nIn, unsigned int flags,
                          bitcoinconsensus_error *err) {
@@ -99,7 +100,7 @@ static int verify_script(const uint8_t *scriptPubKey,
         // Regardless of the verification result, the tx did not error.
         set_error(err, bitcoinconsensus_ERR_OK);
 
-        PrecomputedTransactionData txdata(tx);
+        PrecomputedTransactionData txdata(tx, std::move(spentOutputs));
         return VerifyScript(
             tx.vin[nIn].scriptSig,
             CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags,
@@ -115,7 +116,8 @@ int bitcoinconsensus_verify_script_with_amount(
     const uint8_t *txTo, unsigned int txToLen, unsigned int nIn,
     unsigned int flags, bitcoinconsensus_error *err) {
     Amount am(amount * SATOSHI);
-    return ::verify_script(scriptPubKey, scriptPubKeyLen, am, txTo, txToLen,
+    // TODO: Return failure if BIP341 flag is set.
+    return ::verify_script(scriptPubKey, scriptPubKeyLen, am, {}, txTo, txToLen,
                            nIn, flags, err);
 }
 
@@ -128,9 +130,10 @@ int bitcoinconsensus_verify_script(const uint8_t *scriptPubKey,
         flags & bitcoinconsensus_SCRIPT_FLAGS_VERIFY_WITNESS_DEPRECATED) {
         return set_error(err, bitcoinconsensus_ERR_AMOUNT_REQUIRED);
     }
+    // TODO: Return failure if BIP341 flag is set.
 
-    return ::verify_script(scriptPubKey, scriptPubKeyLen, Amount::zero(), txTo,
-                           txToLen, nIn, flags, err);
+    return ::verify_script(scriptPubKey, scriptPubKeyLen, Amount::zero(), {},
+                           txTo, txToLen, nIn, flags, err);
 }
 
 unsigned int bitcoinconsensus_version() {

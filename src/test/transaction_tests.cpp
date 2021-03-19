@@ -75,7 +75,9 @@ BOOST_AUTO_TEST_CASE(tx_valid) {
 
             std::map<COutPoint, CScript> mapprevOutScriptPubKeys;
             std::map<COutPoint, Amount> mapprevOutValues;
+            std::vector<CTxOut> spent_outputs;
             UniValue inputs = test[0].get_array();
+            spent_outputs.reserve(inputs.size());
             bool fValid = true;
             for (size_t inpIdx = 0; inpIdx < inputs.size(); inpIdx++) {
                 const UniValue &input = inputs[inpIdx];
@@ -89,12 +91,14 @@ BOOST_AUTO_TEST_CASE(tx_valid) {
                     break;
                 }
                 COutPoint outpoint = buildOutPoint(vinput);
-                mapprevOutScriptPubKeys[outpoint] =
-                    ParseScript(vinput[2].get_str());
+                const CScript scriptPubKey = ParseScript(vinput[2].get_str());
+                Amount nValue = Amount::zero();
+                mapprevOutScriptPubKeys[outpoint] = scriptPubKey;
                 if (vinput.size() >= 4) {
-                    mapprevOutValues[outpoint] =
-                        vinput[3].get_int64() * SATOSHI;
+                    nValue = vinput[3].get_int64() * SATOSHI;
+                    mapprevOutValues[outpoint] = nValue;
                 }
+                spent_outputs.push_back({nValue, scriptPubKey});
             }
             if (!fValid) {
                 BOOST_ERROR("Bad test: " << strTest);
@@ -121,7 +125,7 @@ BOOST_AUTO_TEST_CASE(tx_valid) {
                                 strTest);
             BOOST_CHECK(state.IsInvalid());
 
-            PrecomputedTransactionData txdata(tx);
+            PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
             for (size_t i = 0; i < tx.vin.size(); i++) {
                 if (!mapprevOutScriptPubKeys.count(tx.vin[i].prevout)) {
                     BOOST_ERROR("Bad test: " << strTest);
@@ -177,7 +181,9 @@ BOOST_AUTO_TEST_CASE(tx_invalid) {
 
             std::map<COutPoint, CScript> mapprevOutScriptPubKeys;
             std::map<COutPoint, Amount> mapprevOutValues;
+            std::vector<CTxOut> spent_outputs;
             UniValue inputs = test[0].get_array();
+            spent_outputs.reserve(inputs.size());
             bool fValid = true;
             for (size_t inpIdx = 0; inpIdx < inputs.size(); inpIdx++) {
                 const UniValue &input = inputs[inpIdx];
@@ -191,12 +197,14 @@ BOOST_AUTO_TEST_CASE(tx_invalid) {
                     break;
                 }
                 COutPoint outpoint = buildOutPoint(vinput);
-                mapprevOutScriptPubKeys[outpoint] =
-                    ParseScript(vinput[2].get_str());
+                const CScript scriptPubKey = ParseScript(vinput[2].get_str());
+                Amount nValue;
+                mapprevOutScriptPubKeys[outpoint] = scriptPubKey;
                 if (vinput.size() >= 4) {
-                    mapprevOutValues[outpoint] =
-                        vinput[3].get_int64() * SATOSHI;
+                    nValue = vinput[3].get_int64() * SATOSHI;
+                    mapprevOutValues[outpoint] = nValue;
                 }
+                spent_outputs.push_back({nValue, scriptPubKey});
             }
             if (!fValid) {
                 BOOST_ERROR("Bad test: " << strTest);
@@ -211,7 +219,7 @@ BOOST_AUTO_TEST_CASE(tx_invalid) {
             TxValidationState state;
             fValid = CheckRegularTransaction(tx, state) && state.IsValid();
 
-            PrecomputedTransactionData txdata(tx);
+            PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
             for (size_t i = 0; i < tx.vin.size() && fValid; i++) {
                 if (!mapprevOutScriptPubKeys.count(tx.vin[i].prevout)) {
                     BOOST_ERROR("Bad test: " << strTest);
@@ -427,7 +435,6 @@ BOOST_AUTO_TEST_CASE(test_big_transaction) {
     CTransaction tx(mtx);
 
     // check all inputs concurrently, with the cache
-    PrecomputedTransactionData txdata(tx);
     boost::thread_group threadGroup;
     CCheckQueue<CScriptCheck> scriptcheckqueue(128);
     CCheckQueueControl<CScriptCheck> control(&scriptcheckqueue);
@@ -438,12 +445,16 @@ BOOST_AUTO_TEST_CASE(test_big_transaction) {
     }
 
     std::vector<Coin> coins;
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(mtx.vin.size());
     for (size_t i = 0; i < mtx.vin.size(); i++) {
         CTxOut out;
         out.nValue = 1000 * SATOSHI;
         out.scriptPubKey = scriptPubKey;
+        spent_outputs.push_back(out);
         coins.emplace_back(std::move(out), 1, false);
     }
+    PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
 
     for (size_t i = 0; i < mtx.vin.size(); i++) {
         std::vector<CScriptCheck> vChecks;

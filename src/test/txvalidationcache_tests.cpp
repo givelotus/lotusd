@@ -133,7 +133,9 @@ ValidateCheckInputsForAllFlags(const CTransaction &tx, uint32_t failing_flags,
                                uint32_t required_flags, bool add_to_cache,
                                int expected_sigchecks)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
-    PrecomputedTransactionData txdata(tx);
+    PrecomputedTransactionData txdata =
+        PrecomputedTransactionData::FromCoinsView(
+            tx, ::ChainstateActive().CoinsTip());
 
     MMIXLinearCongruentialGenerator lcg;
     for (int i = 0; i < 4096; i++) {
@@ -267,7 +269,9 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         LOCK(cs_main);
 
         TxValidationState state;
-        PrecomputedTransactionData ptd_spend_tx(tx);
+        PrecomputedTransactionData ptd_spend_tx =
+            PrecomputedTransactionData::FromCoinsView(
+                tx, ::ChainstateActive().CoinsTip());
         int nSigChecksDummy;
 
         BOOST_CHECK(!CheckInputScripts(tx, state,
@@ -358,7 +362,9 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         TxValidationState state;
 
         CTransaction transaction(invalid_with_cltv_tx);
-        PrecomputedTransactionData txdata(transaction);
+        PrecomputedTransactionData txdata =
+            PrecomputedTransactionData::FromCoinsView(
+                transaction, ::ChainstateActive().CoinsTip());
 
         int nSigChecksRet;
         BOOST_CHECK(CheckInputScripts(transaction, state,
@@ -399,7 +405,9 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         TxValidationState state;
 
         CTransaction transaction(invalid_with_csv_tx);
-        PrecomputedTransactionData txdata(transaction);
+        PrecomputedTransactionData txdata =
+            PrecomputedTransactionData::FromCoinsView(
+                transaction, ::ChainstateActive().CoinsTip());
 
         int nSigChecksRet;
         BOOST_CHECK(CheckInputScripts(transaction, state,
@@ -455,7 +463,9 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
 
             TxValidationState state;
             CTransaction transaction(tx);
-            PrecomputedTransactionData txdata(transaction);
+            PrecomputedTransactionData txdata =
+                PrecomputedTransactionData::FromCoinsView(
+                    transaction, ::ChainstateActive().CoinsTip());
             const uint32_t flags = STANDARD_SCRIPT_VERIFY_FLAGS;
             int nSigChecksDummy;
 
@@ -557,7 +567,9 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
 
         TxValidationState state;
         CTransaction transaction(tx);
-        PrecomputedTransactionData txdata(transaction);
+        PrecomputedTransactionData txdata =
+            PrecomputedTransactionData::FromCoinsView(
+                transaction, ::ChainstateActive().CoinsTip());
 
         // This transaction is now invalid because the second signature is
         // missing.

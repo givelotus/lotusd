@@ -200,6 +200,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		settings_tests.cpp
 		sigcache_tests.cpp
 		sigencoding_tests.cpp
+		sighash_bip341_tests.cpp
 		sighash_tests.cpp
 		sighashtype_tests.cpp
 		sigcheckcount_tests.cpp
