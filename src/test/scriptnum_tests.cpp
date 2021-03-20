@@ -18,8 +18,8 @@ typedef boost::multiprecision::checked_int128_t i128_t;
 typedef std::vector<uint8_t> valtype;
 typedef std::vector<valtype> stacktype;
 
-constexpr i128_t MAX_SCRIPT_INT = 0x7fff'ffff'ffff'ffff;
-constexpr i128_t MIN_SCRIPT_INT = -0x7fff'ffff'ffff'ffff;
+const i128_t MAX_SCRIPT_INT = 0x7fff'ffff'ffff'ffff;
+const i128_t MIN_SCRIPT_INT = -0x7fff'ffff'ffff'ffff;
 const static std::vector<uint32_t> flaglist({
     SCRIPT_VERIFY_NONE,
     STANDARD_SCRIPT_VERIFY_FLAGS,
