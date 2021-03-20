@@ -6,11 +6,11 @@
 #include <script/interpreter.h>
 #include <script/script.h>
 
-#include <test/util/setup_common.h>
 #include <test/lcg.h>
+#include <test/util/setup_common.h>
 
+#include <boost/multiprecision/cpp_int.hpp>
 #include <boost/test/unit_test.hpp>
-#include <boost/multiprecision/cpp_int.hpp> 
 
 BOOST_FIXTURE_TEST_SUITE(scriptnum_tests, BasicTestingSetup)
 
@@ -38,9 +38,9 @@ const static std::vector<valtype> interesting_numbers({
     {100},
     {0xe4}, // -100
     {127},
-    {0xff}, // -127
-    {0, 1}, // 256
-    {0, 0x81}, // -256
+    {0xff},       // -127
+    {0, 1},       // 256
+    {0, 0x81},    // -256
     {0xe8, 0x03}, // 1000
     {0xe8, 0x83}, // -1000
     {0xb0, 0x13}, // 5040
@@ -71,8 +71,8 @@ const static std::vector<valtype> interesting_numbers({
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81},
     {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
     {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},  // invalid numbers
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81},  // vvvvvvvvvvvvvvv
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}, // invalid numbers
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x81}, // vvvvvvvvvvvvvvv
     {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f},
     {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 });
@@ -81,7 +81,7 @@ static i128_t ToInt128(const valtype &vch) {
     if (vch.empty()) {
         return 0;
     }
-    
+
     i128_t result = 0;
     for (size_t i = 0; i < vch.size(); ++i) {
         if (i == vch.size() - 1 && vch[i] & 0x80) {
@@ -129,10 +129,9 @@ static bool AnyOverflows(const stacktype &stack) {
     return false;
 }
 
-static void CheckErrorOrOverflow(
-        const stacktype &original_stack,
-        const opcodetype opcode,
-        const ScriptError expected_error) {
+static void CheckErrorOrOverflow(const stacktype &original_stack,
+                                 const opcodetype opcode,
+                                 const ScriptError expected_error) {
     CScript script = CScript() << opcode;
     BaseSignatureChecker sigchecker;
     ScriptError err = ScriptError::OK;
@@ -150,10 +149,9 @@ static void CheckErrorOrOverflow(
     }
 }
 
-static void CheckPassOrOverflow(
-        const stacktype &original_stack,
-        const opcodetype opcode,
-        const i128_t &expected_int) {
+static void CheckPassOrOverflow(const stacktype &original_stack,
+                                const opcodetype opcode,
+                                const i128_t &expected_int) {
     CScript script = CScript() << opcode;
     BaseSignatureChecker sigchecker;
     ScriptError err = ScriptError::OK;
@@ -229,7 +227,7 @@ static void CheckTernary(const valtype &a_i63, const valtype &b_i63,
 BOOST_AUTO_TEST_CASE(num_arithmetic_test) {
     MMIXLinearCongruentialGenerator lcg;
     for (uint32_t test = 0; test < 2048; ++test) {
-        uint32_t a_len = lcg.next() % 11;  // generate numbers 0-10 bytes len
+        uint32_t a_len = lcg.next() % 11; // generate numbers 0-10 bytes len
         uint32_t b_len = lcg.next() % 11;
         uint32_t c_len = lcg.next() % 11;
         valtype a_i63(a_len), b_i63(b_len), c_i63(c_len);
