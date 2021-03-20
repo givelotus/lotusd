@@ -226,13 +226,9 @@ struct scriptnum_encoding_error : public std::runtime_error {
 
 class CScriptNum {
     /**
-     * Numeric opcodes (OP_1ADD, etc) are restricted to operating on 4-byte
-     * integers. The semantics are subtle, though: operands must be in the range
-     * [-2^31 +1...2^31 -1], but results may overflow (and are valid as long as
-     * they are not used in a subsequent numeric operation). CScriptNum enforces
-     * those semantics by storing results as an int64 and allowing out-of-range
-     * values to be returned as a vector of bytes but throwing an exception if
-     * arithmetic is done or the result is interpreted as an integer.
+     * Numeric opcodes (OP_1ADD, etc) are restricted to operating on 8-byte
+     * integers. Both operands and results must be in the range
+     * [-2^63 +1...2^63 -1], throwing an exception otherwise.
      */
 public:
     explicit CScriptNum(const int64_t &n) { m_value = n; }
@@ -302,6 +298,9 @@ public:
     }
 
     inline CScriptNum operator/(const int64_t &rhs) const {
+        // Sanity check for invalid script num; should never occur
+        assert(m_value != std::numeric_limits<int64_t>::min());
+        assert(rhs != 0);
         return CScriptNum(m_value / rhs);
     }
     inline CScriptNum operator/(const CScriptNum &rhs) const {
@@ -309,6 +308,9 @@ public:
     }
 
     inline CScriptNum operator%(const int64_t &rhs) const {
+        // Sanity check for invalid script num; should never occur
+        assert(m_value != std::numeric_limits<int64_t>::min());
+        assert(rhs != 0);
         return CScriptNum(m_value % rhs);
     }
     inline CScriptNum operator%(const CScriptNum &rhs) const {
