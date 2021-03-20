@@ -1625,15 +1625,40 @@ template <class T> uint256 GetOutputsSHA256(const T &txTo) {
     return ss.GetSHA256();
 }
 
+/** Compute the (single) SHA256 of the concatenation of all amounts spent by a
+ * tx. */
+uint256 GetSpentAmountsSHA256(const std::vector<CTxOut> &outputs_spent) {
+    CHashWriter ss(SER_GETHASH, 0);
+    for (const auto &txout : outputs_spent) {
+        ss << txout.nValue;
+    }
+    return ss.GetSHA256();
+}
+
+/** Compute the (single) SHA256 of the concatenation of all scriptPubKeys spent
+ * by a tx. */
+uint256 GetSpentScriptsSHA256(const std::vector<CTxOut> &outputs_spent) {
+    CHashWriter ss(SER_GETHASH, 0);
+    for (const auto &txout : outputs_spent) {
+        ss << txout.scriptPubKey;
+    }
+    return ss.GetSHA256();
+}
+
 } // namespace
 
 template <class T>
 PrecomputedTransactionData::PrecomputedTransactionData(
     const T &txTo, std::vector<CTxOut> &&spent_outputs) {
-    hashPrevouts = SHA256Uint256(GetPrevoutsSHA256(txTo));
-    hashSequence = SHA256Uint256(GetSequencesSHA256(txTo));
-    hashOutputs = SHA256Uint256(GetOutputsSHA256(txTo));
+    m_prevouts_single_hash = GetPrevoutsSHA256(txTo);
+    m_sequences_single_hash = GetSequencesSHA256(txTo);
+    m_outputs_single_hash = GetOutputsSHA256(txTo);
+    hashPrevouts = SHA256Uint256(m_prevouts_single_hash);
+    hashSequence = SHA256Uint256(m_sequences_single_hash);
+    hashOutputs = SHA256Uint256(m_outputs_single_hash);
     m_spent_outputs = std::move(spent_outputs);
+    m_spent_amounts_single_hash = GetSpentAmountsSHA256(m_spent_outputs);
+    m_spent_scripts_single_hash = GetSpentScriptsSHA256(m_spent_outputs);
 }
 
 template <class T>

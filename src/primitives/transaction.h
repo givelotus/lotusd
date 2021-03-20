@@ -330,9 +330,13 @@ class CCoinsView;
 struct PrecomputedTransactionData {
     uint256 hashPrevouts, hashSequence, hashOutputs;
     std::vector<CTxOut> m_spent_outputs;
+    uint256 m_prevouts_single_hash;
+    uint256 m_sequences_single_hash;
+    uint256 m_outputs_single_hash;
+    uint256 m_spent_amounts_single_hash;
+    uint256 m_spent_scripts_single_hash;
 
-    PrecomputedTransactionData()
-        : hashPrevouts(), hashSequence(), hashOutputs() {}
+    PrecomputedTransactionData() = default;
 
     PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
         default;
