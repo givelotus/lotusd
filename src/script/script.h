@@ -270,17 +270,15 @@ public:
     }
 
     inline CScriptNum operator+(const int64_t &rhs) const {
-        long long int result;
-        if (__builtin_saddll_overflow(m_value, rhs, &result) ||
-            result == std::numeric_limits<int64_t>::min()) {
+        int64_t result;
+        if (overflow_add_int64(m_value, rhs, result)) {
             throw scriptnum_error("script number add overflow");
         }
         return CScriptNum(result);
     }
     inline CScriptNum operator-(const int64_t &rhs) const {
-        long long int result;
-        if (__builtin_ssubll_overflow(m_value, rhs, &result) ||
-            result == std::numeric_limits<int64_t>::min()) {
+        int64_t result;
+        if (overflow_sub_int64(m_value, rhs, result)) {
             throw scriptnum_error("script number sub overflow");
         }
         return CScriptNum(result);
@@ -342,9 +340,8 @@ public:
     }
 
     inline CScriptNum &operator+=(const int64_t &rhs) {
-        long long int result = m_value;
-        if (__builtin_saddll_overflow(m_value, rhs, &result) ||
-            result == std::numeric_limits<int64_t>::min()) {
+        int64_t result;
+        if (overflow_add_int64(m_value, rhs, result)) {
             throw scriptnum_error("script number add overflow");
         }
         m_value = result;
@@ -352,9 +349,8 @@ public:
     }
 
     inline CScriptNum &operator-=(const int64_t &rhs) {
-        long long int result = m_value;
-        if (__builtin_ssubll_overflow(m_value, rhs, &result) ||
-            result == std::numeric_limits<int64_t>::min()) {
+        int64_t result;
+        if (overflow_sub_int64(m_value, rhs, result)) {
             throw scriptnum_error("script number sub overflow");
         }
         m_value = result;
@@ -427,6 +423,66 @@ private:
         }
 
         return result;
+    }
+
+    /**
+     * Computes a + b and stores it in result. If the sum overflows or results
+     * in an invalid Script integer, return true, otherwise false.
+     */
+    static bool overflow_add_int64(int64_t a, int64_t b, int64_t &result) {
+#if HAVE_DECL___BUILTIN_SADDLL_OVERFLOW
+        static_assert(std::numeric_limits<long long int>::max() ==
+                      std::numeric_limits<int64_t>::max());
+        long long int tmp_result;
+        if (__builtin_saddll_overflow(a, b, &tmp_result)) {
+            return true;
+        }
+        result = tmp_result;
+#else
+        if (a > 0 && b > std::numeric_limits<int64_t>::max() - a) {
+            // integer overflow
+            return true;
+        }
+        if (a < 0 && b < std::numeric_limits<int64_t>::min() - a) {
+            // integer underflow
+            return true;
+        }
+        result = a + b;
+#endif
+        if (result == std::numeric_limits<int64_t>::min()) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Computes a - b and stores it in result. If the difference overflows or
+     * results in an invalid Script integer, return true, otherwise false.
+     */
+    static bool overflow_sub_int64(int64_t a, int64_t b, int64_t &result) {
+#if HAVE_DECL___BUILTIN_SSUBLL_OVERFLOW
+        static_assert(std::numeric_limits<long long int>::max() ==
+                      std::numeric_limits<int64_t>::max());
+        long long int tmp_result;
+        if (__builtin_ssubll_overflow(a, b, &tmp_result)) {
+            return true;
+        }
+        result = tmp_result;
+#else
+        if (a < 0 && b > std::numeric_limits<int64_t>::max() + a) {
+            // integer overflow
+            return true;
+        }
+        if (a > 0 && b < std::numeric_limits<int64_t>::min() + a) {
+            // integer underflow
+            return true;
+        }
+        result = a - b;
+#endif
+        if (result == std::numeric_limits<int64_t>::min()) {
+            return true;
+        }
+        return false;
     }
 
     int64_t m_value;
