@@ -44,7 +44,7 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Invalid operand size";
         case ScriptError::INVALID_NUMBER_RANGE:
             return "Given operand is not a number within the valid range "
-                   "[-2^31...2^31]";
+                   "[-2^63 + 1...2^63 - 1]";
         case ScriptError::IMPOSSIBLE_ENCODING:
             return "The requested encoding is impossible to satisfy";
         case ScriptError::INVALID_SPLIT_RANGE:
