@@ -244,4 +244,24 @@ BOOST_AUTO_TEST_CASE(hashwriter_single_sha256_tests) {
                                "172b3f1b60a8ce26f"));
 }
 
+BOOST_AUTO_TEST_CASE(tagged_hash) {
+    CHashWriter h0 = TaggedHash("Tag");
+
+    BOOST_CHECK_EQUAL(h0.GetSHA256(),
+                      uint256S("566f4fc53cd1851d741b6c466fbb120ec14ae33cd4a3a37"
+                               "961df6fd0eff39a25"));
+
+    CHashWriter h1 = TaggedHash("Tag");
+    h1 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("3f77201593bdfe9f54cabdd32080314a052a84ea23fc145"
+                               "bec9ff382829c1e64"));
+
+    CHashWriter h2 = TaggedHash("Tag2");
+    h2 << "The quick brown fox jumps over the lazy dog";
+    BOOST_CHECK_EQUAL(h1.GetSHA256(),
+                      uint256S("3749acbe03c67471510ccd50f3a1d920ca300f6057bb97d"
+                               "4565847857fca06ea"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
