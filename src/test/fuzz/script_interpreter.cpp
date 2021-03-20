@@ -40,7 +40,7 @@ FUZZ_TARGET(script_interpreter) {
                 if (mtx_precomputed) {
                     const CTransaction tx_precomputed{*mtx_precomputed};
                     const PrecomputedTransactionData
-                        precomputed_transaction_data{tx_precomputed};
+                        precomputed_transaction_data{tx_precomputed, {}};
                     (void)SignatureHash(
                         script_code, tx_to, in,
                         SigHashType(

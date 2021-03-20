@@ -321,9 +321,11 @@ static inline CTransactionRef MakeTransactionRef(Tx &&txIn) {
     return std::make_shared<const CTransaction>(std::forward<Tx>(txIn));
 }
 
+class CCoinsView;
 /** Precompute sighash midstate to avoid quadratic hashing */
 struct PrecomputedTransactionData {
     uint256 hashPrevouts, hashSequence, hashOutputs;
+    std::vector<CTxOut> m_spent_outputs;
 
     PrecomputedTransactionData()
         : hashPrevouts(), hashSequence(), hashOutputs() {}
@@ -333,7 +335,13 @@ struct PrecomputedTransactionData {
     PrecomputedTransactionData &
     operator=(const PrecomputedTransactionData &txdata) = default;
 
-    template <class T> explicit PrecomputedTransactionData(const T &tx);
+    template <class T>
+    explicit PrecomputedTransactionData(const T &tx,
+                                        std::vector<CTxOut> &&spent_outputs);
+
+    template <class T>
+    static PrecomputedTransactionData
+    FromCoinsView(const T &tx, const CCoinsView &coins_view);
 };
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H

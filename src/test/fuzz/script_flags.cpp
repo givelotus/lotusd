@@ -17,7 +17,7 @@ FUZZ_TARGET(script_flags) {
     DataStream ds{buffer};
     try {
         const CTransaction tx(deserialize, ds);
-        const PrecomputedTransactionData txdata(tx);
+        const PrecomputedTransactionData txdata(tx, {});
 
         uint32_t verify_flags;
         ds >> verify_flags;

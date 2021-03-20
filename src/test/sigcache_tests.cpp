@@ -59,7 +59,8 @@ BOOST_AUTO_TEST_CASE(sig_pubkey_hash_variations) {
         "010000000122739e70fbee987a8be1788395a2f2e6ad18ccb7ff611cd798071539"
         "dde3c38e000000000151ffffffff010000000000000000016a00000000")};
     CTransaction dummyTx(deserialize, stream);
-    PrecomputedTransactionData txdata(dummyTx);
+    // spent_outputs can be empty here
+    PrecomputedTransactionData txdata(dummyTx, {});
     SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
     CachingTransactionSignatureChecker checker(&dummyTx, 0, 0 * SATOSHI, true,
                                                signature_cache, txdata);
