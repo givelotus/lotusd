@@ -601,7 +601,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
         ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
-    PrecomputedTransactionData txdata(tx);
+    PrecomputedTransactionData txdata =
+        PrecomputedTransactionData::FromCoinsView(tx, m_view);
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false,
                            txdata, ws.m_sig_checks_standard)) {
         // State filled in by CheckInputScripts
@@ -723,7 +724,8 @@ bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
     // scripts (ie, other policy checks pass). We perform the inexpensive
     // checks first and avoid hashing and signature verification unless those
     // checks pass, to mitigate CPU exhaustion denial-of-service attacks.
-    PrecomputedTransactionData txdata(*ptx);
+    PrecomputedTransactionData txdata =
+        PrecomputedTransactionData::FromCoinsView(*ptx, m_view);
 
     if (!ConsensusScriptChecks(args, workspace, txdata)) {
         return false;
@@ -1789,10 +1791,11 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
         int nSigChecksRet;
         TxValidationState tx_state;
         if (fScriptChecks &&
-            !CheckInputScripts(tx, tx_state, view, flags, fCacheResults,
-                               fCacheResults, PrecomputedTransactionData(tx),
-                               nSigChecksRet, nSigChecksTxLimiters[txIndex],
-                               &nSigChecksBlockLimiter, &vChecks)) {
+            !CheckInputScripts(
+                tx, tx_state, view, flags, fCacheResults, fCacheResults,
+                PrecomputedTransactionData::FromCoinsView(tx, view),
+                nSigChecksRet, nSigChecksTxLimiters[txIndex],
+                &nSigChecksBlockLimiter, &vChecks)) {
             // Any transaction validation failure in ConnectBlock is a block
             // consensus failure
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
