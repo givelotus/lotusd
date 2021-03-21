@@ -5,6 +5,7 @@
 #include <bench/bench.h>
 #include <bench/data.h>
 
+#include <pubkey.h>
 #include <rpc/blockchain.h>
 #include <streams.h>
 #include <validation.h>
@@ -12,6 +13,7 @@
 #include <univalue.h>
 
 static void BlockToJsonVerbose(benchmark::Bench &bench) {
+    const ECCVerifyHandle verify_handle;
     CDataStream stream(benchmark::data::block413567, SER_NETWORK,
                        PROTOCOL_VERSION);
     char a = '\0';
