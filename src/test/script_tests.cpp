@@ -2408,6 +2408,7 @@ BOOST_AUTO_TEST_CASE(script_combineSigs) {
     pkSingle << ToByteVector(keys[0].GetPubKey()) << OP_CHECKSIG;
     BOOST_CHECK(keystore.AddCScript(pkSingle));
     scriptPubKey = GetScriptForDestination(ScriptHash(pkSingle));
+    txTo.vin[0].prevout = COutPoint(txFrom.GetId(), 0);
     BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 0,
                               SigHashType().withForkId()));
     scriptSig = DataFromTransaction(txTo, 0, txFrom.vout[0]);
@@ -2426,6 +2427,7 @@ BOOST_AUTO_TEST_CASE(script_combineSigs) {
 
     // Hardest case:  Multisig 2-of-3
     scriptPubKey = GetScriptForMultisig(2, pubkeys);
+    txTo.vin[0].prevout = COutPoint(txFrom.GetId(), 0);
     BOOST_CHECK(keystore.AddCScript(scriptPubKey));
     BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 0,
                               SigHashType().withForkId()));

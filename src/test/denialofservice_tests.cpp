@@ -386,7 +386,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans) {
 
     // This really-big orphan should be ignored:
     for (int i = 0; i < 10; i++) {
-        CTransactionRef txPrev = RandomOrphan();
+        CMutableTransaction txPrev = CMutableTransaction(*RandomOrphan());
 
         CMutableTransaction tx;
         tx.vout.resize(1);
@@ -394,10 +394,12 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans) {
         tx.vout[0].scriptPubKey =
             GetScriptForDestination(PKHash(key.GetPubKey()));
         tx.vin.resize(2777);
+        txPrev.vout.resize(tx.vin.size());
+        const TxId txid = txPrev.GetId();
         for (size_t j = 0; j < tx.vin.size(); j++) {
-            tx.vin[j].prevout = COutPoint(txPrev->GetId(), j);
+            tx.vin[j].prevout = COutPoint(txid, j);
         }
-        BOOST_CHECK(SignSignature(keystore, *txPrev, tx, 0,
+        BOOST_CHECK(SignSignature(keystore, CTransaction(txPrev), tx, 0,
                                   SigHashType().withForkId()));
         // Re-use same signature for other inputs
         // (they don't have to be valid for this test)
