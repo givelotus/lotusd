@@ -1686,13 +1686,14 @@ template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
     const CMutableTransaction &txTo, const CCoinsView &coins_view);
 
 template <class T>
-uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
-                            uint32_t nIn, SigHashType sigHashType) {
+bool SignatureHashLegacy(uint256 &sighashOut, const CScript &scriptCode,
+                         const T &txTo, uint32_t nIn, SigHashType sigHashType) {
     // Check for invalid use of SIGHASH_SINGLE
     if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
         (nIn >= txTo.vout.size())) {
         //  nOut out of range
-        return UINT256_ONE();
+        sighashOut = UINT256_ONE();
+        return true;
     }
 
     // Wrapper to serialize only the necessary parts of the transaction being
@@ -1703,14 +1704,15 @@ uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
     // Serialize and hash
     CHashWriter ss(SER_GETHASH, 0);
     ss << txTmp << sigHashType;
-    return ss.GetHash();
+    sighashOut = ss.GetHash();
+    return true;
 }
 
 template <class T>
-uint256 SignatureHashBIP143(const CScript &scriptCode, const T &txTo,
-                            uint32_t nIn, SigHashType sigHashType,
-                            const Amount amount,
-                            const PrecomputedTransactionData *cache) {
+bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
+                         const T &txTo, uint32_t nIn, SigHashType sigHashType,
+                         const Amount amount,
+                         const PrecomputedTransactionData *cache) {
     uint256 hashPrevouts;
     uint256 hashSequence;
     uint256 hashOutputs;
@@ -1758,14 +1760,15 @@ uint256 SignatureHashBIP143(const CScript &scriptCode, const T &txTo,
     // Sighash type
     ss << sigHashType;
 
-    return ss.GetHash();
+    sighashOut = ss.GetHash();
+    return true;
 }
 
 template <class T>
-uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
-                      unsigned int nIn, SigHashType sigHashType,
-                      const Amount amount,
-                      const PrecomputedTransactionData *cache, uint32_t flags) {
+bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                   const T &txTo, unsigned int nIn, SigHashType sigHashType,
+                   const Amount amount, const PrecomputedTransactionData *cache,
+                   uint32_t flags) {
     assert(nIn < txTo.vin.size());
 
     if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
@@ -1777,23 +1780,25 @@ uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
     }
 
     if (!sigHashType.hasForkId() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
-        return SignatureHashLegacy(scriptCode, txTo, nIn, sigHashType);
+        return SignatureHashLegacy(sighashOut, scriptCode, txTo, nIn,
+                                   sigHashType);
     }
 
-    return SignatureHashBIP143(scriptCode, txTo, nIn, sigHashType, amount,
-                                cache);
+    return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn, sigHashType,
+                               amount, cache);
 }
 
 // need to instantiate explicitly
-template uint256 SignatureHash(const CScript &scriptCode,
-                               const CTransaction &txTo, unsigned int nIn,
-                               SigHashType sigHashType, const Amount amount,
-                               const PrecomputedTransactionData *cache,
-                               uint32_t flags);
-template uint256
-SignatureHash(const CScript &scriptCode, const CMutableTransaction &txTo,
-              unsigned int nIn, SigHashType sigHashType, const Amount amount,
-              const PrecomputedTransactionData *cache, uint32_t flags);
+template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                            const CTransaction &txTo, unsigned int nIn,
+                            SigHashType sigHashType, const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags);
+template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                            const CMutableTransaction &txTo, unsigned int nIn,
+                            SigHashType sigHashType, const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags);
 
 bool BaseSignatureChecker::VerifySignature(const std::vector<uint8_t> &vchSig,
                                            const CPubKey &pubkey,
@@ -1822,8 +1827,11 @@ bool GenericTransactionSignatureChecker<T>::CheckSig(
     SigHashType sigHashType = GetHashType(vchSig);
     vchSig.pop_back();
 
-    uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, sigHashType, amount,
-                                    this->txdata, flags);
+    uint256 sighash;
+    if (!SignatureHash(sighash, scriptCode, *txTo, nIn, sigHashType, amount,
+                       this->txdata, flags)) {
+        return false;
+    }
 
     if (!VerifySignature(vchSig, pubkey, sighash)) {
         return false;
