@@ -28,8 +28,10 @@ bool MutableTransactionSignatureCreator::CreateSig(
     if (!provider.GetKey(address, key)) {
         return false;
     }
-
-    uint256 hash = SignatureHash(scriptCode, *txTo, nIn, sigHashType, amount);
+    uint256 hash;
+    if (!SignatureHash(hash, scriptCode, *txTo, nIn, sigHashType, amount)) {
+        return false;
+    }
     if (!key.SignECDSA(hash, vchSig)) {
         return false;
     }
