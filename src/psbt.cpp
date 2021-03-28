@@ -169,13 +169,21 @@ void UpdatePSBTOutput(const SigningProvider &provider,
     SignatureData sigdata;
     psbt_out.FillSignatureData(sigdata);
 
+    // Collect spent outputs for BIP341 sighash
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(psbt.inputs.size());
+    for (const PSBTInput &input : psbt.inputs) {
+        spent_outputs.push_back(input.utxo);
+    }
+    const PrecomputedTransactionData txdata(*psbt.tx, std::move(spent_outputs));
+
     // Construct a would-be spend of this output, to update sigdata with.
     // Note that ProduceSignature is used to fill in metadata (not actual
     // signatures), so provider does not need to provide any private keys (it
     // can be a HidingSigningProvider).
     MutableTransactionSignatureCreator creator(
         psbt.tx ? &psbt.tx.value() : nullptr, /* index */ 0, out.nValue,
-        SigHashType().withForkId());
+        SigHashType().withForkId(), txdata);
     ProduceSignature(provider, creator, out.scriptPubKey, sigdata);
 
     // Put redeem_script and key paths, into PSBTOutput.
@@ -211,8 +219,15 @@ bool SignPSBTInput(const SigningProvider &provider,
         sig_complete = ProduceSignature(provider, DUMMY_SIGNATURE_CREATOR,
                                         utxo.scriptPubKey, sigdata);
     } else {
+        // Collect spent outputs for BIP341 sighash
+        std::vector<CTxOut> spent_outputs;
+        spent_outputs.reserve(psbt.inputs.size());
+        for (const PSBTInput &input : psbt.inputs) {
+            spent_outputs.push_back(input.utxo);
+        }
+        const PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
         MutableTransactionSignatureCreator creator(&tx, index, utxo.nValue,
-                                                   sighash);
+                                                   sighash, txdata);
         sig_complete =
             ProduceSignature(provider, creator, utxo.scriptPubKey, sigdata);
     }

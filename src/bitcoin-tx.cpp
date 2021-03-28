@@ -683,6 +683,14 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
 
     const FillableSigningProvider &keystore = tempKeystore;
 
+    // Collect spent outputs for BIP341 sighash
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(mergedTx.vin.size());
+    for (const CTxIn &txin : mergedTx.vin) {
+        spent_outputs.push_back(view.AccessCoin(txin.prevout).GetTxOut());
+    }
+    const PrecomputedTransactionData txdata(mergedTx, std::move(spent_outputs));
+
     // Sign what we can:
     for (size_t i = 0; i < mergedTx.vin.size(); i++) {
         CTxIn &txin = mergedTx.vin[i];
@@ -701,7 +709,7 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
             (i < mergedTx.vout.size())) {
             ProduceSignature(keystore,
                              MutableTransactionSignatureCreator(
-                                 &mergedTx, i, amount, sigHashType),
+                                 &mergedTx, i, amount, sigHashType, txdata),
                              prevPubKey, sigdata);
         }
 

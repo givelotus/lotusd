@@ -2351,11 +2351,14 @@ SignatureData CombineSignatures(const CTxOut &txout,
                                 const CMutableTransaction &tx,
                                 const SignatureData &scriptSig1,
                                 const SignatureData &scriptSig2) {
+    assert(tx.vin.size() == 1);
     SignatureData data;
     data.MergeSignatureData(scriptSig1);
     data.MergeSignatureData(scriptSig2);
+    const PrecomputedTransactionData txdata(tx, {txout});
     ProduceSignature(DUMMY_SIGNING_PROVIDER,
-                     MutableTransactionSignatureCreator(&tx, 0, txout.nValue),
+                     MutableTransactionSignatureCreator(&tx, 0, txout.nValue,
+                                                        SigHashType(), txdata),
                      txout.scriptPubKey, data);
     return data;
 }
