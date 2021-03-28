@@ -214,7 +214,8 @@ static bool EvalChecksig(const valtype &vchSig, const valtype &vchPubKey,
 
 bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptExecutionMetrics &metrics, ScriptError *serror) {
+                ScriptExecutionMetrics &metrics, ScriptExecutionData &execdata,
+                ScriptError *serror) {
     static const CScriptNum bnZero(0);
     static const CScriptNum bnOne(1);
     static const valtype vchFalse(0);
@@ -232,10 +233,12 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
         return set_error(serror, ScriptError::SCRIPT_SIZE);
     }
     int nOpCount = 0;
+    uint32_t opcode_pos = 0;
+    execdata.m_codeseparator_pos = 0xffff'ffff;
     constexpr bool fRequireMinimal = true;
 
     try {
-        while (pc < pend) {
+        for (; pc < pend; ++opcode_pos) {
             bool fExec = vfExec.all_true();
 
             //
@@ -926,6 +929,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                     case OP_CODESEPARATOR: {
                         // Hash starts after the code separator
                         pbegincodehash = pc;
+                        execdata.m_codeseparator_pos = opcode_pos;
                     } break;
 
                     case OP_CHECKSIG:
@@ -1939,16 +1943,19 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     ScriptExecutionMetrics metrics = {};
+    ScriptExecutionData execdata = {};
 
     // scriptSig and scriptPubKey must be evaluated sequentially on the same
     // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, metrics, serror)) {
+    if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
+                    serror)) {
         // serror is set
         return false;
     }
     stackCopy = stack;
-    if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, serror)) {
+    if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, execdata,
+                    serror)) {
         // serror is set
         return false;
     }
@@ -1978,7 +1985,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
         popstack(stack);
 
-        if (!EvalScript(stack, pubKey2, flags, checker, metrics, serror)) {
+        if (!EvalScript(stack, pubKey2, flags, checker, metrics, execdata,
+                        serror)) {
             // serror is set
             return false;
         }

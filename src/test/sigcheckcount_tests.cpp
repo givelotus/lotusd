@@ -114,9 +114,10 @@ static void CheckEvalScript(const stacktype &original_stack,
         ScriptError err = ScriptError::UNKNOWN;
         stacktype stack{original_stack};
         ScriptExecutionMetrics metrics;
+        ScriptExecutionData execdata;
 
-        bool r =
-            EvalScript(stack, script, flags, dummysigchecker, metrics, &err);
+        bool r = EvalScript(stack, script, flags, dummysigchecker, metrics,
+                            execdata, &err);
         BOOST_CHECK(r);
         BOOST_CHECK_EQUAL(err, ScriptError::OK);
         BOOST_CHECK(stack == expected_stack);
@@ -211,9 +212,11 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
     {
         stacktype stack{txsigschnorr};
         ScriptExecutionMetrics metrics;
+        ScriptExecutionData execdata;
         metrics.nSigChecks = 12345;
         bool r = EvalScript(stack, CScript() << pub << OP_CHECKSIG,
-                            SCRIPT_ENABLE_SIGHASH_FORKID, dummysigchecker, metrics);
+                            SCRIPT_ENABLE_SIGHASH_FORKID, dummysigchecker,
+                            metrics, execdata);
         BOOST_CHECK(r);
         BOOST_CHECK_EQUAL(metrics.nSigChecks, 12346);
     }
