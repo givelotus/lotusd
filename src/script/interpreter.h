@@ -105,9 +105,6 @@ private:
     mutable SigHashCache m_sighash_cache;
 
 public:
-    GenericTransactionSignatureChecker(const T *txToIn, unsigned int nInIn,
-                                       const Amount &amountIn)
-        : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
     GenericTransactionSignatureChecker(
         const T *txToIn, unsigned int nInIn, const Amount &amountIn,
         const PrecomputedTransactionData &txdataIn)
