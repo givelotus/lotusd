@@ -33,7 +33,6 @@ from test_framework.script import (
     OP_HASH160,
     OP_INVERT,
     OP_MUL,
-    OP_RSHIFT,
     CScript,
 )
 from test_framework.txtools import pad_tx
@@ -283,7 +282,7 @@ class NonStandardAndInvalid(BadTxTemplate):
 # Disabled opcode tx templates (CVE-2010-5137)
 DisabledOpcodeTemplates = [
     getDisabledOpcodeTemplate(opcode)
-    for opcode in [OP_INVERT, OP_2MUL, OP_2DIV, OP_MUL, OP_RSHIFT]
+    for opcode in [OP_INVERT, OP_2MUL, OP_2DIV, OP_MUL]
 ]
 
 
