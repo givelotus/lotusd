@@ -265,6 +265,16 @@ void DoCheck(const std::string &prv, const std::string &pub, int flags,
                             script_provider_cached1.origins);
             }
 
+            std::vector<CTxOut> spent_outputs;
+            for (const CScript &spk : spks) {
+                spent_outputs.push_back({1 * COIN, spk});
+            }
+            CMutableTransaction spend;
+            spend.vin.resize(1);
+            spend.vout.resize(1);
+            const PrecomputedTransactionData txdata(spend,
+                                                    std::move(spent_outputs));
+
             // For each of the produced scripts, verify solvability, and when
             // possible, try to sign a transaction spending it.
             for (size_t n = 0; n < spks.size(); ++n) {
@@ -274,13 +284,9 @@ void DoCheck(const std::string &prv, const std::string &pub, int flags,
                     (flags & UNSOLVABLE) == 0);
 
                 if (flags & SIGNABLE) {
-                    CMutableTransaction spend;
-                    spend.vin.resize(1);
-                    spend.vout.resize(1);
                     BOOST_CHECK_MESSAGE(
-                        SignSignature(Merge(keys_priv, script_provider),
-                                      spks[n], spend, 0, 1 * COIN,
-                                      SigHashType().withForkId()),
+                        SignSignature(Merge(keys_priv, script_provider), txdata,
+                                      spend, 0, SigHashType().withForkId()),
                         prv);
                 }
 

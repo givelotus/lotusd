@@ -785,17 +785,24 @@ static UniValue combinerawtransaction(const Config &config,
     // Use CTransaction for the constant parts of the
     // transaction to avoid rehashing.
     const CTransaction txConst(mergedTx);
-    // Sign what we can:
-    for (size_t i = 0; i < mergedTx.vin.size(); i++) {
-        CTxIn &txin = mergedTx.vin[i];
+    // Collect spent outputs for BIP341 sighash
+    std::vector<CTxOut> spent_outputs;
+    spent_outputs.reserve(txConst.vin.size());
+    for (const CTxIn &txin : txConst.vin) {
         const Coin &coin = view.AccessCoin(txin.prevout);
         if (coin.IsSpent()) {
             throw JSONRPCError(RPC_VERIFY_ERROR,
                                "Input not found or already spent");
         }
+        spent_outputs.push_back(coin.GetTxOut());
+    }
+    const PrecomputedTransactionData txdata(txConst, std::move(spent_outputs));
+    // Sign what we can:
+    for (size_t i = 0; i < mergedTx.vin.size(); i++) {
+        CTxIn &txin = mergedTx.vin[i];
         SignatureData sigdata;
 
-        const CTxOut &txout = coin.GetTxOut();
+        const CTxOut &txout = txdata.m_spent_outputs[i];
 
         // ... and merge in other signatures:
         for (const CMutableTransaction &txv : txVariants) {
@@ -803,10 +810,10 @@ static UniValue combinerawtransaction(const Config &config,
                 sigdata.MergeSignatureData(DataFromTransaction(txv, i, txout));
             }
         }
-        ProduceSignature(
-            DUMMY_SIGNING_PROVIDER,
-            MutableTransactionSignatureCreator(&mergedTx, i, txout.nValue),
-            txout.scriptPubKey, sigdata);
+        ProduceSignature(DUMMY_SIGNING_PROVIDER,
+                         MutableTransactionSignatureCreator(
+                             &mergedTx, i, txout.nValue, SigHashType(), txdata),
+                         txout.scriptPubKey, sigdata);
 
         UpdateInput(txin, sigdata);
     }

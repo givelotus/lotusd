@@ -102,7 +102,7 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
         if (mutable_transaction && tx_out &&
             mutable_transaction->vin.size() > n_in) {
             SignatureData signature_data_1 =
-                DataFromTransaction(*mutable_transaction, n_in, *tx_out);
+                DataFromTransaction(*mutable_transaction, n_in, {*tx_out});
             CTxIn input;
             UpdateInput(input, signature_data_1);
             const CScript script = ConsumeScript(fuzzed_data_provider);
@@ -136,7 +136,7 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                 MutableTransactionSignatureCreator signature_creator{
                     &tx_to, n_in, ConsumeMoney(fuzzed_data_provider),
                     SigHashType(
-                        fuzzed_data_provider.ConsumeIntegral<uint32_t>())};
+                        fuzzed_data_provider.ConsumeIntegral<uint32_t>()), {}};
                 std::vector<uint8_t> vch_sig;
                 CKeyID address;
                 if (fuzzed_data_provider.ConsumeBool()) {

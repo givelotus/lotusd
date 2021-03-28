@@ -45,7 +45,8 @@ class MutableTransactionSignatureCreator : public BaseSignatureCreator {
 public:
     MutableTransactionSignatureCreator(
         const CMutableTransaction *txToIn, unsigned int nInIn,
-        const Amount &amountIn, SigHashType sigHashTypeIn = SigHashType());
+        const Amount &amountIn, SigHashType sigHashTypeIn,
+        const PrecomputedTransactionData &txdata);
     const BaseSignatureChecker &Checker() const override { return checker; }
     bool CreateSig(const SigningProvider &provider,
                    std::vector<uint8_t> &vchSig, const CKeyID &keyid,
@@ -173,9 +174,10 @@ bool ProduceSignature(const SigningProvider &provider,
                       const CScript &scriptPubKey, SignatureData &sigdata);
 
 /** Produce a script signature for a transaction. */
-bool SignSignature(const SigningProvider &provider, const CScript &fromPubKey,
+bool SignSignature(const SigningProvider &provider,
+                   const PrecomputedTransactionData &txdata,
                    CMutableTransaction &txTo, unsigned int nIn,
-                   const Amount amount, SigHashType sigHashType);
+                   SigHashType sigHashType);
 bool SignSignature(const SigningProvider &provider, const CTransaction &txFrom,
                    CMutableTransaction &txTo, unsigned int nIn,
                    SigHashType sigHashType);

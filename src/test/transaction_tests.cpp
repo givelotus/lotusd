@@ -38,6 +38,7 @@
 
 #include <map>
 #include <string>
+#include <algorithm>
 
 typedef std::vector<uint8_t> valtype;
 
@@ -424,12 +425,17 @@ BOOST_AUTO_TEST_CASE(test_big_transaction) {
         mtx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_1);
     }
 
-    // sign all inputs
-    for (size_t i = 0; i < mtx.vin.size(); i++) {
-        bool hashSigned =
-            SignSignature(keystore, scriptPubKey, mtx, i, 1000 * SATOSHI,
-                          sigHashes.at(i % sigHashes.size()));
-        BOOST_CHECK_MESSAGE(hashSigned, "Failed to sign test transaction");
+    {
+        const CTxOut output{1000 * SATOSHI, scriptPubKey};
+        std::vector<CTxOut> spent_outputs(mtx.vin.size());
+        std::fill_n(spent_outputs.begin(), spent_outputs.size(), output);
+        const PrecomputedTransactionData txdata(mtx, std::move(spent_outputs));
+        // sign all inputs
+        for (size_t i = 0; i < mtx.vin.size(); i++) {
+            bool hashSigned = SignSignature(keystore, txdata, mtx, i,
+                                            sigHashes.at(i % sigHashes.size()));
+            BOOST_CHECK_MESSAGE(hashSigned, "Failed to sign test transaction");
+        }
     }
 
     CTransaction tx(mtx);
@@ -478,10 +484,11 @@ SignatureData CombineSignatures(const CMutableTransaction &input1,
     SignatureData sigdata;
     sigdata = DataFromTransaction(input1, 0, tx->vout[0]);
     sigdata.MergeSignatureData(DataFromTransaction(input2, 0, tx->vout[0]));
-    ProduceSignature(
-        DUMMY_SIGNING_PROVIDER,
-        MutableTransactionSignatureCreator(&input1, 0, tx->vout[0].nValue),
-        tx->vout[0].scriptPubKey, sigdata);
+    const PrecomputedTransactionData txdata(*tx, {tx->vout[0]});
+    ProduceSignature(DUMMY_SIGNING_PROVIDER,
+                     MutableTransactionSignatureCreator(
+                         &input1, 0, tx->vout[0].nValue, SigHashType(), txdata),
+                     tx->vout[0].scriptPubKey, sigdata);
     return sigdata;
 }
 

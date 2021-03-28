@@ -431,23 +431,25 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         tx.vout[0].nValue = 22 * CENT;
         tx.vout[0].scriptPubKey = p2pk_scriptPubKey;
 
+        const PrecomputedTransactionData precomputed_txdata(
+            tx, {spend_tx.vout[0], spend_tx.vout[3]});
         // Sign
         {
             SignatureData sigdata;
+            MutableTransactionSignatureCreator creator(
+                &tx, 0, 11 * CENT, SigHashType().withForkId(),
+                precomputed_txdata);
             BOOST_CHECK(ProduceSignature(
-                keystore,
-                MutableTransactionSignatureCreator(&tx, 0, 11 * CENT,
-                                                   SigHashType().withForkId()),
-                spend_tx.vout[0].scriptPubKey, sigdata));
+                keystore, creator, spend_tx.vout[0].scriptPubKey, sigdata));
             UpdateInput(tx.vin[0], sigdata);
         }
         {
             SignatureData sigdata;
+            MutableTransactionSignatureCreator creator(
+                &tx, 1, 11 * CENT, SigHashType().withForkId(),
+                precomputed_txdata);
             BOOST_CHECK(ProduceSignature(
-                keystore,
-                MutableTransactionSignatureCreator(&tx, 1, 11 * CENT,
-                                                   SigHashType().withForkId()),
-                spend_tx.vout[3].scriptPubKey, sigdata));
+                keystore, creator, spend_tx.vout[3].scriptPubKey, sigdata));
             UpdateInput(tx.vin[1], sigdata);
         }
 
