@@ -275,14 +275,17 @@ struct Stacks {
 // Extracts signatures and scripts from incomplete scriptSigs. Please do not
 // extend this, use PSBT instead
 SignatureData DataFromTransaction(const CMutableTransaction &tx,
-                                  unsigned int nIn, const CTxOut &txout) {
+                                  unsigned int nIn,
+                                  const PrecomputedTransactionData &txdata) {
     SignatureData data;
     assert(tx.vin.size() > nIn);
     data.scriptSig = tx.vin[nIn].scriptSig;
     Stacks stack(data);
+    const CTxOut &txout = txdata.m_spent_outputs[nIn];
 
     // Get signatures
-    MutableTransactionSignatureChecker tx_checker(&tx, nIn, txout.nValue);
+    MutableTransactionSignatureChecker tx_checker(&tx, nIn, txout.nValue,
+                                                  txdata);
     SignatureExtractorChecker extractor_checker(data, tx_checker);
     if (VerifyScript(data.scriptSig, txout.scriptPubKey,
                      STANDARD_SCRIPT_VERIFY_FLAGS, extractor_checker)) {
@@ -484,7 +487,7 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
         const CScript &prevPubKey = coinTxOut.scriptPubKey;
         const Amount amount = coinTxOut.nValue;
 
-        SignatureData sigdata = DataFromTransaction(mtx, i, coinTxOut);
+        SignatureData sigdata = DataFromTransaction(mtx, i, txdata);
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) ||
             (i < mtx.vout.size())) {
@@ -505,7 +508,8 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
         ScriptError serror = ScriptError::OK;
         if (!VerifyScript(
                 txin.scriptSig, prevPubKey, STANDARD_SCRIPT_VERIFY_FLAGS,
-                TransactionSignatureChecker(&txConst, i, amount), &serror)) {
+                TransactionSignatureChecker(&txConst, i, amount, txdata),
+                &serror)) {
             if (serror == ScriptError::INVALID_STACK_OPERATION) {
                 // Unable to sign input and verification failed (possible
                 // attempt to partially sign).

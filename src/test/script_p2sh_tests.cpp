@@ -39,11 +39,11 @@ static bool Verify(const CScript &scriptSig, const CScript &scriptPubKey,
     txTo.vin[0].scriptSig = scriptSig;
     txTo.vout[0].nValue = SATOSHI;
 
-    return VerifyScript(
-        scriptSig, scriptPubKey,
-        SCRIPT_ENABLE_SIGHASH_FORKID,
-        MutableTransactionSignatureChecker(&txTo, 0, txFrom.vout[0].nValue),
-        &err);
+    PrecomputedTransactionData txdata(txTo, std::vector(txTo.vout));
+    return VerifyScript(scriptSig, scriptPubKey, SCRIPT_ENABLE_SIGHASH_FORKID,
+                        MutableTransactionSignatureChecker(
+                            &txTo, 0, txFrom.vout[0].nValue, txdata),
+                        &err);
 }
 
 BOOST_FIXTURE_TEST_SUITE(script_p2sh_tests, BasicTestingSetup)

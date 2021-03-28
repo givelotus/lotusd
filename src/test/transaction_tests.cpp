@@ -356,10 +356,11 @@ static void CheckWithFlag(const CTransactionRef &output,
                           bool success) {
     ScriptError error;
     CTransaction inputi(input);
+    const PrecomputedTransactionData txdata(inputi, {output->vout[0]});
     bool ret = VerifyScript(
         inputi.vin[0].scriptSig, output->vout[0].scriptPubKey,
         flags | SCRIPT_ENABLE_SIGHASH_FORKID,
-        TransactionSignatureChecker(&inputi, 0, output->vout[0].nValue),
+        TransactionSignatureChecker(&inputi, 0, output->vout[0].nValue, txdata),
         &error);
     BOOST_CHECK_EQUAL(ret, success);
 }
@@ -482,8 +483,10 @@ SignatureData CombineSignatures(const CMutableTransaction &input1,
                                 const CMutableTransaction &input2,
                                 const CTransactionRef tx) {
     SignatureData sigdata;
-    sigdata = DataFromTransaction(input1, 0, tx->vout[0]);
-    sigdata.MergeSignatureData(DataFromTransaction(input2, 0, tx->vout[0]));
+    sigdata = DataFromTransaction(
+        input1, 0, PrecomputedTransactionData(input1, {tx->vout[0]}));
+    sigdata.MergeSignatureData(DataFromTransaction(
+        input2, 0, PrecomputedTransactionData(input2, {tx->vout[0]})));
     const PrecomputedTransactionData txdata(*tx, {tx->vout[0]});
     ProduceSignature(DUMMY_SIGNING_PROVIDER,
                      MutableTransactionSignatureCreator(

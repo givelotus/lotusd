@@ -184,7 +184,8 @@ bool SignSignature(const SigningProvider &provider, const CTransaction &txFrom,
 
 /** Extract signature data from a transaction input, and insert it. */
 SignatureData DataFromTransaction(const CMutableTransaction &tx,
-                                  unsigned int nIn, const CTxOut &txout);
+                                  unsigned int nIn,
+                                  const PrecomputedTransactionData &txdata);
 void UpdateInput(CTxIn &input, const SignatureData &data);
 
 /**

@@ -61,9 +61,6 @@ private:
     const PrecomputedTransactionData *txdata;
 
 public:
-    GenericTransactionSignatureChecker(const T *txToIn, unsigned int nInIn,
-                                       const Amount &amountIn)
-        : txTo(txToIn), nIn(nInIn), amount(amountIn), txdata(nullptr) {}
     GenericTransactionSignatureChecker(
         const T *txToIn, unsigned int nInIn, const Amount &amountIn,
         const PrecomputedTransactionData &txdataIn)
