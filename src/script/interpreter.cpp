@@ -1701,14 +1701,15 @@ void SigHashCache::Store(const SigHashType &hash_type,
 }
 
 template <class T>
-uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
-                            uint32_t nIn, SigHashType sigHashType,
-                            SigHashCache *sighash_cache = nullptr) {
+bool SignatureHashLegacy(uint256 &sighashOut, const CScript &scriptCode,
+                         const T &txTo, uint32_t nIn, SigHashType sigHashType,
+                         SigHashCache *sighash_cache = nullptr) {
     // Check for invalid use of SIGHASH_SINGLE
     if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
         (nIn >= txTo.vout.size())) {
         //  nOut out of range
-        return uint256::ONE;
+        sighashOut = uint256::ONE;
+        return true;
     }
 
     HashWriter ss{};
@@ -1717,7 +1718,8 @@ uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
     if (sighash_cache && sighash_cache->Load(sigHashType, scriptCode, ss)) {
         // Add sighash type and hash.
         ss << sigHashType;
-        return ss.GetHash();
+        sighashOut = ss.GetHash();
+        return true;
     }
 
     // Wrapper to serialize only the necessary parts of the transaction being
@@ -1731,22 +1733,24 @@ uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
         sighash_cache->Store(sigHashType, scriptCode, ss);
     }
     ss << sigHashType;
-    return ss.GetHash();
+    sighashOut = ss.GetHash();
+    return true;
 }
 
 template <class T>
-uint256 SignatureHashBIP143(const CScript &scriptCode, const T &txTo,
-                            uint32_t nIn, SigHashType sigHashType,
-                            const Amount amount,
-                            const PrecomputedTransactionData *cache,
-                            SigHashCache *sighash_cache = nullptr) {
+bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
+                         const T &txTo, uint32_t nIn, SigHashType sigHashType,
+                         const Amount amount,
+                         const PrecomputedTransactionData *cache,
+                         SigHashCache *sighash_cache = nullptr) {
     HashWriter ss{};
 
     // Try to compute using cached SHA256 midstate.
     if (sighash_cache && sighash_cache->Load(sigHashType, scriptCode, ss)) {
         // Add sighash type and hash.
         ss << sigHashType;
-        return ss.GetHash();
+        sighashOut = ss.GetHash();
+        return true;
     }
 
     uint256 hashPrevouts;
@@ -1798,15 +1802,15 @@ uint256 SignatureHashBIP143(const CScript &scriptCode, const T &txTo,
     // Sighash type
     ss << sigHashType;
 
-    return ss.GetHash();
+    sighashOut = ss.GetHash();
+    return true;
 }
 
 template <class T>
-uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
-                      unsigned int nIn, SigHashType sigHashType,
-                      const Amount amount,
-                      const PrecomputedTransactionData *cache, uint32_t flags,
-                      SigHashCache *sighash_cache) {
+bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                   const T &txTo, unsigned int nIn, SigHashType sigHashType,
+                   const Amount amount, const PrecomputedTransactionData *cache,
+                   uint32_t flags, SigHashCache *sighash_cache) {
     assert(nIn < txTo.vin.size());
 
     if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
@@ -1818,26 +1822,25 @@ uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
     }
 
     if (!sigHashType.hasForkId() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
-        return SignatureHashLegacy(scriptCode, txTo, nIn, sigHashType,
-                                   sighash_cache);
+        return SignatureHashLegacy(sighashOut, scriptCode, txTo, nIn,
+                                   sigHashType, sighash_cache);
     }
 
-    return SignatureHashBIP143(scriptCode, txTo, nIn, sigHashType, amount,
-                               cache, sighash_cache);
+    return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn, sigHashType,
+                               amount, cache, sighash_cache);
 }
 
 // need to instantiate explicitly
-template uint256 SignatureHash(const CScript &scriptCode,
-                               const CTransaction &txTo, unsigned int nIn,
-                               SigHashType sigHashType, const Amount amount,
-                               const PrecomputedTransactionData *cache,
-                               uint32_t flags, SigHashCache *sighash_cache);
-template uint256 SignatureHash(const CScript &scriptCode,
-                               const CMutableTransaction &txTo,
-                               unsigned int nIn, SigHashType sigHashType,
-                               const Amount amount,
-                               const PrecomputedTransactionData *cache,
-                               uint32_t flags, SigHashCache *sighash_cache);
+template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                            const CTransaction &txTo, unsigned int nIn,
+                            SigHashType sigHashType, const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags, SigHashCache *sighash_cache);
+template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                            const CMutableTransaction &txTo, unsigned int nIn,
+                            SigHashType sigHashType, const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags, SigHashCache *sighash_cache);
 
 bool BaseSignatureChecker::VerifySignature(const std::vector<uint8_t> &vchSig,
                                            const CPubKey &pubkey,
@@ -1866,8 +1869,11 @@ bool GenericTransactionSignatureChecker<T>::CheckSig(
     SigHashType sigHashType = GetHashType(vchSig);
     vchSig.pop_back();
 
-    uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, sigHashType, amount,
-                                    this->txdata, flags, &m_sighash_cache);
+    uint256 sighash;
+    if (!SignatureHash(sighash, scriptCode, *txTo, nIn, sigHashType, amount,
+                       this->txdata, flags, &m_sighash_cache)) {
+        return false;
+    }
 
     if (!VerifySignature(vchSig, pubkey, sighash)) {
         return false;
