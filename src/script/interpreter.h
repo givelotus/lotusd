@@ -9,6 +9,7 @@
 
 #include <primitives/transaction.h>
 #include <script/script_error.h>
+#include <script/script_exec_data.h>
 #include <script/script_flags.h>
 #include <script/script_metrics.h>
 #include <script/sighashtype.h>
@@ -84,13 +85,16 @@ using MutableTransactionSignatureChecker =
 
 bool EvalScript(std::vector<std::vector<uint8_t>> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptExecutionMetrics &metrics, ScriptError *error = nullptr);
+                ScriptExecutionMetrics &metrics, ScriptExecutionData &execdata,
+                ScriptError *error = nullptr);
 static inline bool EvalScript(std::vector<std::vector<uint8_t>> &stack,
                               const CScript &script, uint32_t flags,
                               const BaseSignatureChecker &checker,
                               ScriptError *error = nullptr) {
     ScriptExecutionMetrics dummymetrics;
-    return EvalScript(stack, script, flags, checker, dummymetrics, error);
+    ScriptExecutionData dummyexecdata;
+    return EvalScript(stack, script, flags, checker, dummymetrics,
+                      dummyexecdata, error);
 }
 
 /**
