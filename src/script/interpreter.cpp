@@ -1661,71 +1661,8 @@ template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
     const CMutableTransaction &txTo, const CCoinsView &coins_view);
 
 template <class T>
-uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
-                      unsigned int nIn, SigHashType sigHashType,
-                      const Amount amount,
-                      const PrecomputedTransactionData *cache, uint32_t flags) {
-    assert(nIn < txTo.vin.size());
-
-    if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
-        // Legacy chain's value for fork id must be of the form 0xffxxxx.
-        // By xoring with 0xdead, we ensure that the value will be different
-        // from the original one, even if it already starts with 0xff.
-        uint32_t newForkValue = sigHashType.getForkValue() ^ 0xdead;
-        sigHashType = sigHashType.withForkValue(0xff0000 | newForkValue);
-    }
-
-    if (sigHashType.hasForkId() && (flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
-        uint256 hashPrevouts;
-        uint256 hashSequence;
-        uint256 hashOutputs;
-
-        if (!sigHashType.hasAnyoneCanPay()) {
-            hashPrevouts = cache ? cache->hashPrevouts
-                                 : SHA256Uint256(GetPrevoutsSHA256(txTo));
-        }
-
-        if (!sigHashType.hasAnyoneCanPay() &&
-            (sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
-            (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
-            hashSequence = cache ? cache->hashSequence
-                                 : SHA256Uint256(GetSequencesSHA256(txTo));
-        }
-
-        if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
-            (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
-            hashOutputs = cache ? cache->hashOutputs
-                                : SHA256Uint256(GetOutputsSHA256(txTo));
-        } else if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
-                   (nIn < txTo.vout.size())) {
-            CHashWriter ss(SER_GETHASH, 0);
-            ss << txTo.vout[nIn];
-            hashOutputs = ss.GetHash();
-        }
-
-        CHashWriter ss(SER_GETHASH, 0);
-        // Version
-        ss << txTo.nVersion;
-        // Input prevouts/nSequence (none/all, depending on flags)
-        ss << hashPrevouts;
-        ss << hashSequence;
-        // The input being signed (replacing the scriptSig with scriptCode +
-        // amount). The prevout may already be contained in hashPrevout, and the
-        // nSequence may already be contain in hashSequence.
-        ss << txTo.vin[nIn].prevout;
-        ss << scriptCode;
-        ss << amount;
-        ss << txTo.vin[nIn].nSequence;
-        // Outputs (none/one/all, depending on flags)
-        ss << hashOutputs;
-        // Locktime
-        ss << txTo.nLockTime;
-        // Sighash type
-        ss << sigHashType;
-
-        return ss.GetHash();
-    }
-
+uint256 SignatureHashLegacy(const CScript &scriptCode, const T &txTo,
+                            uint32_t nIn, SigHashType sigHashType) {
     // Check for invalid use of SIGHASH_SINGLE
     if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
         (nIn >= txTo.vout.size())) {
@@ -1743,6 +1680,95 @@ uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
     ss << txTmp << sigHashType;
     return ss.GetHash();
 }
+
+template <class T>
+uint256 SignatureHashBIP143(const CScript &scriptCode, const T &txTo,
+                            uint32_t nIn, SigHashType sigHashType,
+                            const Amount amount,
+                            const PrecomputedTransactionData *cache) {
+    uint256 hashPrevouts;
+    uint256 hashSequence;
+    uint256 hashOutputs;
+
+    if (!sigHashType.hasAnyoneCanPay()) {
+        hashPrevouts = cache ? cache->hashPrevouts
+                             : SHA256Uint256(GetPrevoutsSHA256(txTo));
+    }
+
+    if (!sigHashType.hasAnyoneCanPay() &&
+        (sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
+        (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
+        hashSequence = cache ? cache->hashSequence
+                             : SHA256Uint256(GetSequencesSHA256(txTo));
+    }
+
+    if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
+        (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
+        hashOutputs =
+            cache ? cache->hashOutputs : SHA256Uint256(GetOutputsSHA256(txTo));
+    } else if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
+               (nIn < txTo.vout.size())) {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << txTo.vout[nIn];
+        hashOutputs = ss.GetHash();
+    }
+
+    CHashWriter ss(SER_GETHASH, 0);
+    // Version
+    ss << txTo.nVersion;
+    // Input prevouts/nSequence (none/all, depending on flags)
+    ss << hashPrevouts;
+    ss << hashSequence;
+    // The input being signed (replacing the scriptSig with scriptCode +
+    // amount). The prevout may already be contained in hashPrevout, and the
+    // nSequence may already be contain in hashSequence.
+    ss << txTo.vin[nIn].prevout;
+    ss << scriptCode;
+    ss << amount;
+    ss << txTo.vin[nIn].nSequence;
+    // Outputs (none/one/all, depending on flags)
+    ss << hashOutputs;
+    // Locktime
+    ss << txTo.nLockTime;
+    // Sighash type
+    ss << sigHashType;
+
+    return ss.GetHash();
+}
+
+template <class T>
+uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
+                      unsigned int nIn, SigHashType sigHashType,
+                      const Amount amount,
+                      const PrecomputedTransactionData *cache, uint32_t flags) {
+    assert(nIn < txTo.vin.size());
+
+    if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
+        // Legacy chain's value for fork id must be of the form 0xffxxxx.
+        // By xoring with 0xdead, we ensure that the value will be different
+        // from the original one, even if it already starts with 0xff.
+        uint32_t newForkValue = sigHashType.getForkValue() ^ 0xdead;
+        sigHashType = sigHashType.withForkValue(0xff0000 | newForkValue);
+    }
+
+    if (!sigHashType.hasForkId() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
+        return SignatureHashLegacy(scriptCode, txTo, nIn, sigHashType);
+    }
+
+    return SignatureHashBIP143(scriptCode, txTo, nIn, sigHashType, amount,
+                                cache);
+}
+
+// need to instantiate explicitly
+template uint256 SignatureHash(const CScript &scriptCode,
+                               const CTransaction &txTo, unsigned int nIn,
+                               SigHashType sigHashType, const Amount amount,
+                               const PrecomputedTransactionData *cache,
+                               uint32_t flags);
+template uint256
+SignatureHash(const CScript &scriptCode, const CMutableTransaction &txTo,
+              unsigned int nIn, SigHashType sigHashType, const Amount amount,
+              const PrecomputedTransactionData *cache, uint32_t flags);
 
 bool BaseSignatureChecker::VerifySignature(const std::vector<uint8_t> &vchSig,
                                            const CPubKey &pubkey,
