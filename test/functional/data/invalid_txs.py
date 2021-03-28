@@ -39,7 +39,6 @@ from test_framework.script import (
     OP_2MUL,
     OP_2DIV,
     OP_MUL,
-    OP_RSHIFT,
     OP_HASH160,
     OP_EQUAL,
 )
@@ -256,8 +255,7 @@ DisabledOpcodeTemplates = [getDisabledOpcodeTemplate(opcode) for opcode in [
     OP_INVERT,
     OP_2MUL,
     OP_2DIV,
-    OP_MUL,
-    OP_RSHIFT]]
+    OP_MUL]]
 
 
 def iter_all_templates():
