@@ -139,7 +139,7 @@ enum opcodetype {
     OP_DIV = 0x96,
     OP_MOD = 0x97,
     OP_RAWLEFTBITSHIFT = 0x98,
-    OP_RSHIFT = 0x99,
+    OP_MULPOW2 = 0x99,
 
     OP_BOOLAND = 0x9a,
     OP_BOOLOR = 0x9b,
@@ -360,6 +360,34 @@ public:
     inline CScriptNum &operator&=(const int64_t &rhs) {
         m_value &= rhs;
         return *this;
+    }
+
+    inline CScriptNum mulpow2(const CScriptNum signed_shift) {
+        if (m_value == 0) {
+            return CScriptNum(0);
+        }
+        const int64_t sign = m_value > 0 ? 1 : -1;
+        // We use unsigned integers for shifts, they have well-defined behavior
+        const uint64_t absval = m_value > 0 ? m_value : -m_value;
+        if (signed_shift.m_value > 0) { // left shift: m_value * 2^shift
+            const uint64_t shift = signed_shift.m_value;
+            if (shift >= 63) {
+                throw scriptnum_error(
+                    "script number mulpow2 non-zero shift >= 63");
+            }
+            const uint64_t overflow_mask = std::numeric_limits<uint64_t>::max()
+                                           << (63 - shift);
+            if ((absval & overflow_mask) != 0) {
+                throw scriptnum_error("script number mulpow2 overflow");
+            }
+            return CScriptNum(sign * int64_t(absval << shift));
+        } else { // right shift: m_value * 2^-shift
+            const uint64_t shift = -signed_shift.m_value;
+            if (shift >= 63) {
+                return CScriptNum(0);
+            }
+            return CScriptNum(sign * int64_t(absval >> shift));
+        }
     }
 
     int getint() const {

@@ -93,7 +93,6 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_2MUL:
         case OP_2DIV:
         case OP_MUL:
-        case OP_RSHIFT:
         case OP_NUMEQUAL:
         case OP_NUMEQUALVERIFY:
         case OP_NUMNOTEQUAL:
@@ -794,6 +793,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                     case OP_SUB:
                     case OP_DIV:
                     case OP_MOD:
+                    case OP_MULPOW2:
                     case OP_BOOLAND:
                     case OP_BOOLOR:
                     case OP_LESSTHAN:
@@ -837,6 +837,9 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 bn = bn1 % bn2;
                                 break;
 
+                            case OP_MULPOW2:
+                                bn = bn1.mulpow2(bn2);
+                                break;
                             case OP_BOOLAND:
                                 bn = (bn1 != bnZero && bn2 != bnZero);
                                 break;

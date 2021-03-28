@@ -153,7 +153,7 @@ void TestFormatRoundTrip(const std::string &script) {
 BOOST_AUTO_TEST_CASE(format_script_test) {
     TestFormatRoundTrip("0 1 5 CHECKDATASIG CHECKSIG XOR NOP5 NOP10 "
                         "CHECKDATASIGVERIFY DEPTH RETURN VERIFY SPLIT INVERT "
-                        "EQUAL HASH256 GREATERTHANOREQUAL RSHIFT");
+                        "EQUAL HASH256 GREATERTHANOREQUAL MULPOW2");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
