@@ -19,7 +19,7 @@ MutableTransactionSignatureCreator::MutableTransactionSignatureCreator(
     const Amount &amountIn, SigHashType sigHashTypeIn,
     const PrecomputedTransactionData &txdata)
     : txTo(txToIn), nIn(nInIn), amount(amountIn), sigHashType(sigHashTypeIn),
-      checker(txTo, nIn, amountIn, txdata) {}
+      checker(txTo, nIn, amountIn, txdata), m_txdata(txdata) {}
 
 bool MutableTransactionSignatureCreator::CreateSig(
     const SigningProvider &provider, std::vector<uint8_t> &vchSig,
@@ -31,7 +31,7 @@ bool MutableTransactionSignatureCreator::CreateSig(
     }
     uint256 hash;
     if (!SignatureHash(hash, execdata, scriptCode, *txTo, nIn, sigHashType,
-                       amount)) {
+                       amount, &m_txdata)) {
         return false;
     }
     if (!key.SignECDSA(hash, vchSig)) {
