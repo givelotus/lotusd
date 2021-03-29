@@ -23,9 +23,10 @@ class CTransaction;
 class uint256;
 
 template <class T>
-bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
-                   const T &txTo, unsigned int nIn, SigHashType sigHashType,
-                   const Amount amount,
+bool SignatureHash(uint256 &sighashOut,
+                   const std::optional<ScriptExecutionData> &execdata,
+                   const CScript &scriptCode, const T &txTo, unsigned int nIn,
+                   SigHashType sigHashType, const Amount amount,
                    const PrecomputedTransactionData *cache = nullptr,
                    uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID);
 
@@ -37,6 +38,7 @@ public:
 
     virtual bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                           const std::vector<uint8_t> &vchPubKey,
+                          const std::optional<ScriptExecutionData> &execdata,
                           const CScript &scriptCode, uint32_t flags) const {
         return false;
     }
@@ -69,6 +71,7 @@ public:
     // The overridden functions are now final.
     bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode,
                   uint32_t flags) const final override;
     bool CheckLockTime(const CScriptNum &nLockTime) const final override;
@@ -89,7 +92,7 @@ static inline bool EvalScript(std::vector<std::vector<uint8_t>> &stack,
                               const BaseSignatureChecker &checker,
                               ScriptError *error = nullptr) {
     ScriptExecutionMetrics dummymetrics;
-    ScriptExecutionData dummyexecdata;
+    ScriptExecutionData dummyexecdata{script};
     return EvalScript(stack, script, flags, checker, dummymetrics,
                       dummyexecdata, error);
 }
