@@ -67,6 +67,7 @@ static class : public BaseSignatureChecker {
 
     bool CheckSig(const std::vector<uint8_t> &vchSigIn,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode, uint32_t flags) const final {
         if (vchPubKey == badpub) {
             return false;
@@ -109,7 +110,7 @@ static void CheckEvalScript(const stacktype &original_stack,
         ScriptError err = ScriptError::UNKNOWN;
         stacktype stack{original_stack};
         ScriptExecutionMetrics metrics;
-        ScriptExecutionData execdata;
+        ScriptExecutionData execdata{script};
 
         bool r = EvalScript(stack, script, flags, dummysigchecker, metrics,
                             execdata, &err);
@@ -207,7 +208,7 @@ BOOST_AUTO_TEST_CASE(test_evalscript) {
     {
         stacktype stack{txsigschnorr};
         ScriptExecutionMetrics metrics;
-        ScriptExecutionData execdata;
+        ScriptExecutionData execdata{CScript()};
         metrics.nSigChecks = 12345;
         bool r = EvalScript(stack, CScript() << pub << OP_CHECKSIG,
                             SCRIPT_ENABLE_SIGHASH_FORKID, dummysigchecker,

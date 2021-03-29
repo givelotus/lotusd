@@ -29,7 +29,7 @@ FUZZ_TARGET(eval_script) {
     const CScript script(script_bytes.begin(), script_bytes.end());
     std::vector<std::vector<uint8_t>> stack;
     ScriptExecutionMetrics metrics;
-    ScriptExecutionData execdata;
+    ScriptExecutionData execdata{script};
     (void)EvalScript(stack, script, flags, BaseSignatureChecker(), metrics,
                      execdata);
 }

@@ -31,6 +31,7 @@ public:
     /** Create a singular (non-script) signature. */
     virtual bool CreateSig(const SigningProvider &provider,
                            std::vector<uint8_t> &vchSig, const CKeyID &keyid,
+                           const std::optional<ScriptExecutionData> &execdata,
                            const CScript &scriptCode) const = 0;
 };
 
@@ -50,6 +51,7 @@ public:
     const BaseSignatureChecker &Checker() const override { return checker; }
     bool CreateSig(const SigningProvider &provider,
                    std::vector<uint8_t> &vchSig, const CKeyID &keyid,
+                   const std::optional<ScriptExecutionData> &execdata,
                    const CScript &scriptCode) const override;
 };
 

@@ -24,13 +24,15 @@ MutableTransactionSignatureCreator::MutableTransactionSignatureCreator(
 
 bool MutableTransactionSignatureCreator::CreateSig(
     const SigningProvider &provider, std::vector<uint8_t> &vchSig,
-    const CKeyID &address, const CScript &scriptCode) const {
+    const CKeyID &address, const std::optional<ScriptExecutionData> &execdata,
+    const CScript &scriptCode) const {
     CKey key;
     if (!provider.GetKey(address, key)) {
         return false;
     }
     uint256 hash;
-    if (!SignatureHash(hash, scriptCode, *txTo, nIn, sigHashType, amount)) {
+    if (!SignatureHash(hash, execdata, scriptCode, *txTo, nIn, sigHashType,
+                       amount)) {
         return false;
     }
     if (!key.SignECDSA(hash, vchSig)) {
@@ -77,7 +79,7 @@ static bool GetPubKey(const SigningProvider &provider,
 static bool CreateSig(const BaseSignatureCreator &creator,
                       SignatureData &sigdata, const SigningProvider &provider,
                       std::vector<uint8_t> &sig_out, const CPubKey &pubkey,
-                      const CScript &scriptcode) {
+                      const CScript &scriptPubKey) {
     CKeyID keyid = pubkey.GetID();
     const auto it = sigdata.signatures.find(keyid);
     if (it != sigdata.signatures.end()) {
@@ -89,7 +91,9 @@ static bool CreateSig(const BaseSignatureCreator &creator,
         sigdata.misc_pubkeys.emplace(keyid,
                                      std::make_pair(pubkey, std::move(info)));
     }
-    if (creator.CreateSig(provider, sig_out, keyid, scriptcode)) {
+    if (creator.CreateSig(provider, sig_out, keyid,
+                          ScriptExecutionData(scriptPubKey),
+                          scriptPubKey)) {
         auto i = sigdata.signatures.emplace(keyid, SigPair(pubkey, sig_out));
         assert(i.second);
         return true;
@@ -247,8 +251,10 @@ public:
         : sigdata(sigdata_), checker(checker_) {}
     bool CheckSig(const std::vector<uint8_t> &scriptSig,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode, uint32_t flags) const override {
-        if (checker.CheckSig(scriptSig, vchPubKey, scriptCode, flags)) {
+        if (checker.CheckSig(scriptSig, vchPubKey, execdata, scriptCode,
+                             flags)) {
             CPubKey pubkey(vchPubKey);
 
             sigdata.signatures.emplace(pubkey.GetID(),
@@ -322,8 +328,10 @@ SignatureData DataFromTransaction(const CMutableTransaction &tx,
                 // We either have a signature for this pubkey, or we have found
                 // a signature and it is valid
                 if (data.signatures.count(CPubKey(pubkey).GetID()) ||
-                    extractor_checker.CheckSig(sig, pubkey, next_script,
-                                               STANDARD_SCRIPT_VERIFY_FLAGS)) {
+                    extractor_checker.CheckSig(
+                        sig, pubkey,
+                        ScriptExecutionData(next_script),
+                        next_script, STANDARD_SCRIPT_VERIFY_FLAGS)) {
                     last_success_key = i + 1;
                     break;
                 }
@@ -397,6 +405,7 @@ public:
     DummySignatureChecker() = default;
     bool CheckSig(const std::vector<uint8_t> &scriptSig,
                   const std::vector<uint8_t> &vchPubKey,
+                  const std::optional<ScriptExecutionData> &execdata,
                   const CScript &scriptCode, uint32_t flags) const override {
         return true;
     }
@@ -416,6 +425,7 @@ public:
     }
     bool CreateSig(const SigningProvider &provider,
                    std::vector<uint8_t> &vchSig, const CKeyID &keyid,
+                   const std::optional<ScriptExecutionData> &execdata,
                    const CScript &scriptCode) const override {
         // Create a dummy signature that is a valid DER-encoding
         vchSig.assign(m_r_len + m_s_len + 7, '\000');

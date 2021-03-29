@@ -113,7 +113,7 @@ void CheckCodesepPos(const CScript &script,
     for (uint32_t flags : allflags) {
         BaseSignatureChecker sigchecker;
         ScriptExecutionMetrics metrics = {};
-        ScriptExecutionData execdata = {};
+        ScriptExecutionData execdata{CScript()};
         stacktype stack = {};
         bool r =
             EvalScript(stack, script, flags, sigchecker, metrics, execdata);

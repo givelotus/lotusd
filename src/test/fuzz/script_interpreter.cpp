@@ -27,8 +27,10 @@ FUZZ_TARGET(script_interpreter) {
                 fuzzed_data_provider.ConsumeIntegral<unsigned int>();
             if (in < tx_to.vin.size()) {
                 uint256 sighash;
+                const std::optional<ScriptExecutionData> execdata{
+                    ScriptExecutionData(script_code)};
                 (void)SignatureHash(
-                    sighash, script_code, tx_to, in,
+                    sighash, execdata, script_code, tx_to, in,
                     SigHashType(
                         fuzzed_data_provider.ConsumeIntegral<uint32_t>()),
                     ConsumeMoney(fuzzed_data_provider), nullptr,
@@ -43,7 +45,7 @@ FUZZ_TARGET(script_interpreter) {
                     const PrecomputedTransactionData
                         precomputed_transaction_data{tx_precomputed, {}};
                     (void)SignatureHash(
-                        sighash, script_code, tx_to, in,
+                        sighash, execdata, script_code, tx_to, in,
                         SigHashType(
                             fuzzed_data_provider.ConsumeIntegral<uint32_t>()),
                         ConsumeMoney(fuzzed_data_provider),
@@ -83,16 +85,18 @@ FUZZ_TARGET(sighash_cache) {
     // fuzzer-generated hash types whether or not a cache is
     // provided. The cache is conserved across types to exercise cache hits.
     SigHashCache sighash_cache{};
+    const std::optional<ScriptExecutionData> execdata{
+        ScriptExecutionData(scriptcode)};
     for (int i{0}; i < 100; ++i) {
         const SigHashType hash_type{provider.ConsumeIntegral<uint32_t>()};
         uint256 nocache_res;
-        const bool nocache_ok{SignatureHash(nocache_res, scriptcode, tx_to,
-                                            in_index, hash_type, amount,
+        const bool nocache_ok{SignatureHash(nocache_res, execdata, scriptcode,
+                                            tx_to, in_index, hash_type, amount,
                                             nullptr, flags)};
         uint256 cache_res;
-        const bool cache_ok{SignatureHash(cache_res, scriptcode, tx_to,
-                                          in_index, hash_type, amount, nullptr,
-                                          flags, &sighash_cache)};
+        const bool cache_ok{SignatureHash(cache_res, execdata, scriptcode,
+                                          tx_to, in_index, hash_type, amount,
+                                          nullptr, flags, &sighash_cache)};
         Assert(nocache_ok == cache_ok);
         Assert(nocache_res == cache_res);
     }
