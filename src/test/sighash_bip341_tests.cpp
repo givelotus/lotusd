@@ -10,7 +10,14 @@
 #include <script/interpreter.h>
 #include <script/script.h>
 #include <script/standard.h>
+#include <streams.h>
+#include <univalue.h>
+#include <util/strencodings.h>
 
+#include <test/data/sighash_bip341.json.h>
+#include <test/jsonutil.h>
+#include <test/lcg.h>
+#include <test/scriptflags.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
@@ -173,6 +180,197 @@ BOOST_AUTO_TEST_CASE(script_execution_data) {
                               << OP_ELSE << OP_CODESEPARATOR << OP_ENDIF
                               << OP_ELSE << OP_CODESEPARATOR << OP_ENDIF,
                     10);
+}
+
+// Make sure BIP341 can't be used yet on the chain.
+BOOST_AUTO_TEST_CASE(bip341_not_enabled_yet) {
+    SigHashType sigHashType = SigHashType().withForkId().withBIP341();
+    BOOST_CHECK(!sigHashType.isDefined());
+    BOOST_CHECK(!SigHashType(0x20).isDefined()); // SIGHASH_BUG
+    BOOST_CHECK(!sigHashType.withForkId(false).isDefined());
+    BOOST_CHECK(!sigHashType.withAnyoneCanPay().isDefined());
+    BOOST_CHECK(!sigHashType.withForkId(false).withAnyoneCanPay().isDefined());
+    BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::NONE).isDefined());
+    BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::SINGLE).isDefined());
+}
+
+BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    const PrecomputedTransactionData txdata(tx, {CTxOut()});
+    const ScriptExecutionData execdata{CScript()};
+    uint256 sighash;
+
+    MMIXLinearCongruentialGenerator lcg;
+    for (uint32_t sig_bits = 0; sig_bits <= 0xff; ++sig_bits) {
+        uint32_t hash_type = (lcg.next() << 8) | sig_bits;
+        bool is_valid = true;
+        if (((hash_type & SIGHASH_BIP341) && (hash_type & SIGHASH_FORKID)) &&
+            (!(hash_type & 0x03) || (hash_type & 0x1c))) {
+            // hash_type 0 is invalid, any undefined bits are invalid
+            is_valid = false;
+        }
+        const bool success = SignatureHash(
+            sighash, execdata, CScript(), tx, 0, SigHashType(hash_type),
+            Amount::zero(), &txdata, SCRIPT_ENABLE_SIGHASH_FORKID);
+        BOOST_CHECK_EQUAL(is_valid, success);
+        if (is_valid != success) {
+            BOOST_ERROR("Unexpected result for hash type: " << std::hex
+                                                            << hash_type);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(bip341_sighash_from_data) {
+    UniValue tests = read_json(std::string(
+        json_tests::sighash_bip341,
+        json_tests::sighash_bip341 + sizeof(json_tests::sighash_bip341)));
+
+    for (size_t idx = 0; idx < tests.size(); idx++) {
+        CTransactionRef tx;
+        std::vector<CTxOut> spent_outputs;
+        SigHashType sig_hash_type;
+        uint32_t input_idx;
+        uint32_t codeseparator_pos;
+        uint32_t script_flags;
+        std::vector<uint8_t> sighash_preimage;
+        bool expect_success = true;
+
+        const UniValue &test = tests[idx];
+        std::string str_test = test.write();
+        if (test.size() < 4) {
+            continue;
+        }
+
+        std::string raw_tx;
+        const UniValue tx_parts = test[0];
+        for (size_t part_idx = 0; part_idx < tx_parts.size(); ++part_idx) {
+            raw_tx += tx_parts[part_idx].get_str();
+        }
+        try {
+            CDataStream stream(ParseHex(raw_tx), SER_NETWORK, PROTOCOL_VERSION);
+            stream >> tx;
+        } catch (...) {
+            BOOST_ERROR("Invalid spent output: " << raw_tx);
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+
+        const UniValue &spent_outputs_list = test[1];
+        spent_outputs.resize(spent_outputs_list.size());
+        for (size_t output_idx = 0; output_idx < spent_outputs_list.size();
+             ++output_idx) {
+            const UniValue &output = spent_outputs_list[output_idx];
+            spent_outputs[output_idx].nValue = output[0].get_int64() * SATOSHI;
+            try {
+                spent_outputs[output_idx].scriptPubKey =
+                    ParseScript(output[1].get_str());
+            } catch (...) {
+                BOOST_ERROR("Invalid spent output: " << output[1].write());
+                BOOST_ERROR("Test: " << str_test);
+                return;
+            }
+        }
+
+        try {
+            sig_hash_type = ParseSighashString(test[2].get_str());
+        } catch (...) {
+            BOOST_ERROR("Invalid sig_hash_type: " << test[2].write());
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+        try {
+            input_idx = test[3].get_int();
+        } catch (...) {
+            BOOST_ERROR("Invalid input_idx: " << test[3].write());
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+        try {
+            codeseparator_pos = test[4].get_int64();
+        } catch (...) {
+            BOOST_ERROR("Invalid codeseparator_pos: " << test[4].write());
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+        try {
+            script_flags = ParseScriptFlags(test[5].get_str());
+        } catch (...) {
+            BOOST_ERROR("Invalid script_flags: " << test[5].write());
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+
+        std::string sighash_preimage_hex;
+        const UniValue &preimage_parts = test[6];
+        for (size_t part_idx = 0; part_idx < preimage_parts.size();
+             ++part_idx) {
+            const UniValue &part = preimage_parts[part_idx];
+            try {
+                if (part.isArray()) {
+                    std::vector<uint8_t> preimage;
+                    for (size_t i = 0; i < part.size(); ++i) {
+                        std::vector<uint8_t> preimage_part =
+                            ParseHex(part[i].get_str());
+                        preimage.insert(preimage.end(), preimage_part.begin(),
+                                        preimage_part.end());
+                    }
+                    uint256 hash;
+                    CSHA256()
+                        .Write(preimage.data(), preimage.size())
+                        .Finalize(hash.begin());
+                    sighash_preimage_hex += HexStr(hash);
+                } else {
+                    sighash_preimage_hex += part.get_str();
+                }
+            } catch (...) {
+                BOOST_ERROR("Invalid sighash preimage: " << test[6].write());
+                BOOST_ERROR("Test: " << str_test);
+                return;
+            }
+        }
+        if (sighash_preimage_hex == "failure") {
+            expect_success = false;
+        } else {
+            sighash_preimage = ParseHex(sighash_preimage_hex);
+        }
+
+        BOOST_CHECK_EQUAL(spent_outputs.size(), tx->vin.size());
+        if (spent_outputs.size() != tx->vin.size()) {
+            BOOST_ERROR("Test: " << str_test);
+            continue;
+        }
+
+        const uint256 taghash = uint256S(
+            "31a0e428c697752387eb13a366fd953ded614665f24b92b4c8702a4bdf480af4");
+        std::vector<uint8_t> data;
+        data.reserve(taghash.size() * 2 + sighash_preimage.size());
+        data.insert(data.end(), taghash.begin(), taghash.end());
+        data.insert(data.end(), taghash.begin(), taghash.end());
+        data.insert(data.end(), sighash_preimage.begin(),
+                    sighash_preimage.end());
+        uint256 expected_sighash;
+        CSHA256()
+            .Write(data.data(), data.size())
+            .Finalize(expected_sighash.begin());
+
+        const CTxOut &utxo = spent_outputs[input_idx];
+        const ScriptExecutionData execdata(utxo.scriptPubKey,
+                                           codeseparator_pos);
+        const PrecomputedTransactionData txdata{*tx,
+                                                std::vector(spent_outputs)};
+        uint256 actual_sighash;
+        const bool success = SignatureHash(
+            actual_sighash, execdata, utxo.scriptPubKey, *tx, input_idx,
+            sig_hash_type, utxo.nValue, &txdata, script_flags);
+        if (expect_success) {
+            BOOST_CHECK(success);
+            BOOST_CHECK_EQUAL(expected_sighash, actual_sighash);
+        } else {
+            BOOST_CHECK(!success);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
