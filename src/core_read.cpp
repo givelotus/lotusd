@@ -291,6 +291,21 @@ SigHashType ParseSighashString(const UniValue &sighash) {
             {"SINGLE|FORKID", SIGHASH_SINGLE | SIGHASH_FORKID},
             {"SINGLE|FORKID|ANYONECANPAY",
              SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
+            {"ALL|BIP341|FORKID",
+             SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_FORKID},
+            {"ALL|BIP341|FORKID|ANYONECANPAY", SIGHASH_ALL | SIGHASH_BIP341 |
+                                                   SIGHASH_FORKID |
+                                                   SIGHASH_ANYONECANPAY},
+            {"NONE|BIP341|FORKID",
+             SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_FORKID},
+            {"NONE|BIP341|FORKID|ANYONECANPAY", SIGHASH_NONE | SIGHASH_BIP341 |
+                                                    SIGHASH_FORKID |
+                                                    SIGHASH_ANYONECANPAY},
+            {"SINGLE|BIP341|FORKID",
+             SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_FORKID},
+            {"SINGLE|BIP341|FORKID|ANYONECANPAY",
+             SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_FORKID |
+                 SIGHASH_ANYONECANPAY},
         };
         std::string strHashType = sighash.get_str();
         const auto &it = map_sighash_values.find(strHashType);

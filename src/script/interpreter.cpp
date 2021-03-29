@@ -1776,6 +1776,85 @@ bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
     return true;
 }
 
+static const CHashWriter HASHER_TAPSIGHASH = TaggedHash("TapSighash");
+
+template <class T>
+bool SignatureHashBIP341(uint256 &hash_out,
+                         const std::optional<ScriptExecutionData> &execdata,
+                         const T &tx_to, uint32_t in_pos,
+                         SigHashType sig_hash_type,
+                         const PrecomputedTransactionData &cache) {
+    uint8_t ext_flag = bool(execdata);
+    uint8_t key_version = 0;
+    assert(in_pos < tx_to.vin.size());
+
+    CHashWriter ss = HASHER_TAPSIGHASH;
+
+    // Epoch
+    static constexpr uint8_t EPOCH = 0;
+    ss << EPOCH;
+
+    // Hash type
+    uint8_t hash_type = sig_hash_type.getRawSigHashType() & 0xff;
+    assert(hash_type & SIGHASH_BIP341);
+    assert(hash_type & SIGHASH_FORKID);
+    if (!(hash_type & 0x03) || (hash_type & 0x1c)) {
+        // hash_type 0 is invalid, any undefined bits are invalid 
+        return false;
+    }
+    ss << hash_type;
+
+    // Transaction level data
+
+    // hash_type is only 1 byte, which can't fit the entire sig hash type
+    // (unlike Legacy sighash and BIP143 sighash, where it's 4 bytes).
+    // Instead, we bitwise XOR the fork value (upper 3 bytes of sig_hash_type)
+    // onto the nVersion (which in Logos is always 1 or 2 as consensus rule).
+    // This way, we get the same replay protection effect.
+    ss << (tx_to.nVersion ^ (sig_hash_type.getForkValue() << 8));
+    ss << tx_to.nLockTime;
+    if (!sig_hash_type.hasAnyoneCanPay()) {
+        ss << cache.m_prevouts_single_hash;
+        ss << cache.m_spent_amounts_single_hash;
+        ss << cache.m_spent_scripts_single_hash;
+        ss << cache.m_sequences_single_hash;
+    }
+    if (sig_hash_type.getBaseType() == BaseSigHashType::ALL) {
+        ss << cache.m_outputs_single_hash;
+    }
+
+    // Data about the input/prevout being spent
+    const uint8_t spend_type = ext_flag << 1;
+    ss << spend_type;
+    if (sig_hash_type.hasAnyoneCanPay()) {
+        ss << tx_to.vin[in_pos].prevout;
+        ss << cache.m_spent_outputs[in_pos];
+        ss << tx_to.vin[in_pos].nSequence;
+    } else {
+        ss << in_pos;
+    }
+
+    // Data about the output (if only one).
+    if (sig_hash_type.getBaseType() == BaseSigHashType::SINGLE) {
+        if (in_pos >= tx_to.vout.size()) {
+            return false;
+        }
+        CHashWriter sha_single_output(SER_GETHASH, 0);
+        sha_single_output << tx_to.vout[in_pos];
+        ss << sha_single_output.GetSHA256();
+    }
+
+    // Additional data for non-taproot signatures (see BIP342)
+    if (execdata) {
+        ss << execdata->m_executed_script_hash;
+        ss << key_version;
+        ss << execdata->m_codeseparator_pos;
+    }
+
+    hash_out = ss.GetSHA256();
+    return true;
+}
+
 template <class T>
 bool SignatureHash(uint256 &sighashOut,
                    const std::optional<ScriptExecutionData> &execdata,
@@ -1797,23 +1876,31 @@ bool SignatureHash(uint256 &sighashOut,
                                    sigHashType);
     }
 
-    return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn, sigHashType,
-                               amount, cache);
+    if (sigHashType.hasBIP341()) {
+        assert(cache);
+        return SignatureHashBIP341(sighashOut, execdata, txTo, nIn, sigHashType,
+                                   *cache);
+    } else {
+        return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn,
+                                   sigHashType, amount, cache);
+    }
 }
 
 // need to instantiate explicitly
-template bool
-SignatureHash(uint256 &sighashOut,
-              const std::optional<ScriptExecutionData> &execdata,
-              const CScript &scriptCode, const CTransaction &txTo,
-              unsigned int nIn, SigHashType sigHashType, const Amount amount,
-              const PrecomputedTransactionData *cache, uint32_t flags);
-template bool
-SignatureHash(uint256 &sighashOut,
-              const std::optional<ScriptExecutionData> &execdata,
-              const CScript &scriptCode, const CMutableTransaction &txTo,
-              unsigned int nIn, SigHashType sigHashType, const Amount amount,
-              const PrecomputedTransactionData *cache, uint32_t flags);
+template bool SignatureHash(uint256 &sighashOut,
+                            const std::optional<ScriptExecutionData> &execdata,
+                            const CScript &scriptCode, const CTransaction &txTo,
+                            unsigned int nIn, SigHashType sigHashType,
+                            const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags);
+template bool SignatureHash(uint256 &sighashOut,
+                            const std::optional<ScriptExecutionData> &execdata,
+                            const CScript &scriptCode,
+                            const CMutableTransaction &txTo, unsigned int nIn,
+                            SigHashType sigHashType, const Amount amount,
+                            const PrecomputedTransactionData *cache,
+                            uint32_t flags);
 
 bool BaseSignatureChecker::VerifySignature(const std::vector<uint8_t> &vchSig,
                                            const CPubKey &pubkey,
