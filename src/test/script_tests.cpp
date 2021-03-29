@@ -341,8 +341,9 @@ public:
                  Amount amount = Amount::zero(),
                  uint32_t sigFlags = SCRIPT_ENABLE_SIGHASH_FORKID) {
         uint256 hash;
-        BOOST_CHECK(SignatureHash(hash, script, CTransaction(spendTx), 0,
-                                  sigHashType, amount, nullptr, sigFlags));
+        BOOST_CHECK(SignatureHash(
+            hash, std::optional(ScriptExecutionData(script)), script,
+            CTransaction(spendTx), 0, sigHashType, amount, nullptr, sigFlags));
         std::vector<uint8_t> vchSig = DoSignECDSA(key, hash, lenR, lenS);
         vchSig.push_back(static_cast<uint8_t>(sigHashType.getRawSigHashType()));
         DoPush(vchSig);
@@ -354,8 +355,9 @@ public:
                    Amount amount = Amount::zero(),
                    uint32_t sigFlags = SCRIPT_ENABLE_SIGHASH_FORKID) {
         uint256 hash;
-        BOOST_CHECK(SignatureHash(hash, script, CTransaction(spendTx), 0,
-                                  sigHashType, amount, nullptr, sigFlags));
+        BOOST_CHECK(SignatureHash(
+            hash, std::optional(ScriptExecutionData(script)), script,
+            CTransaction(spendTx), 0, sigHashType, amount, nullptr, sigFlags));
         std::vector<uint8_t> vchSig = DoSignSchnorr(key, hash);
         vchSig.push_back(static_cast<uint8_t>(sigHashType.getRawSigHashType()));
         DoPush(vchSig);
@@ -389,8 +391,9 @@ public:
         // This calculates a pubkey to verify with a given ECDSA transaction
         // signature.
         uint256 hash;
-        BOOST_CHECK(SignatureHash(hash, script, CTransaction(spendTx), 0,
-                                  sigHashType, amount, nullptr, sigFlags));
+        BOOST_CHECK(SignatureHash(hash, ScriptExecutionData(script), script,
+                                  CTransaction(spendTx), 0, sigHashType, amount,
+                                  nullptr, sigFlags));
 
         assert(rdata.size() <= 32);
         assert(sdata.size() <= 32);
@@ -2157,8 +2160,9 @@ static CScript sign_multisig(const CScript &scriptPubKey,
                              const std::vector<CKey> &keys,
                              const CTransaction &transaction) {
     uint256 hash;
-    BOOST_CHECK(SignatureHash(hash, scriptPubKey, transaction, 0, SigHashType(),
-                              Amount::zero()));
+    BOOST_CHECK(SignatureHash(
+        hash, std::optional(ScriptExecutionData(scriptPubKey)), scriptPubKey,
+        transaction, 0, SigHashType(), Amount::zero()));
 
     CScript result;
     //
@@ -2456,14 +2460,16 @@ BOOST_AUTO_TEST_CASE(script_combineSigs) {
     // A couple of partially-signed versions:
     std::vector<uint8_t> sig1;
     uint256 hash1;
-    BOOST_CHECK(SignatureHash(hash1, scriptPubKey, CTransaction(txTo), 0,
+    BOOST_CHECK(SignatureHash(hash1, ScriptExecutionData(scriptPubKey),
+                              scriptPubKey, CTransaction(txTo), 0,
                               SigHashType().withForkId(), Amount::zero()));
     BOOST_CHECK(keys[0].SignECDSA(hash1, sig1));
     sig1.push_back(SIGHASH_ALL | SIGHASH_FORKID);
     std::vector<uint8_t> sig2;
     uint256 hash2;
     BOOST_CHECK(SignatureHash(
-        hash2, scriptPubKey, CTransaction(txTo), 0,
+        hash2, ScriptExecutionData(scriptPubKey), scriptPubKey,
+        CTransaction(txTo), 0,
         SigHashType().withBaseType(BaseSigHashType::NONE).withForkId(),
         Amount::zero()));
     BOOST_CHECK(keys[1].SignECDSA(hash2, sig2));
@@ -2471,7 +2477,8 @@ BOOST_AUTO_TEST_CASE(script_combineSigs) {
     std::vector<uint8_t> sig3;
     uint256 hash3;
     BOOST_CHECK(SignatureHash(
-        hash3, scriptPubKey, CTransaction(txTo), 0,
+        hash3, ScriptExecutionData(scriptPubKey), scriptPubKey,
+        CTransaction(txTo), 0,
         SigHashType().withBaseType(BaseSigHashType::SINGLE).withForkId(),
         Amount::zero()));
     BOOST_CHECK(keys[2].SignECDSA(hash3, sig3));

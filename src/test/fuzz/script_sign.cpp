@@ -146,8 +146,9 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                 } else {
                     address = CKeyID{ConsumeUInt160(fuzzed_data_provider)};
                 }
+                const ScriptExecutionData execdata{CScript()};
                 (void)signature_creator.CreateSig(
-                    provider, vch_sig, address,
+                    provider, vch_sig, address, std::optional(execdata),
                     ConsumeScript(fuzzed_data_provider));
             }
             std::map<COutPoint, Coin> coins;

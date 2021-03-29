@@ -138,19 +138,23 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
         RandomTransaction(txTo, (nHashType & 0x1f) == SIGHASH_SINGLE);
         CScript scriptCode;
         RandomScript(scriptCode);
+        const std::optional<ScriptExecutionData> execdata{
+            ScriptExecutionData(scriptCode)};
         int nIn = InsecureRandRange(txTo.vin.size());
 
         uint256 shref =
             SignatureHashOld(scriptCode, CTransaction(txTo), nIn, nHashType);
         uint256 shold;
-        BOOST_CHECK(SignatureHash(shold, scriptCode, CTransaction(txTo), nIn,
-                                  sigHashType, Amount::zero(), nullptr, 0));
+        BOOST_CHECK(SignatureHash(shold, execdata, scriptCode,
+                                  CTransaction(txTo), nIn, sigHashType,
+                                  Amount::zero(), nullptr, 0));
         BOOST_CHECK(shold == shref);
 
         // Check the impact of the forkid flag.
         uint256 shreg;
-        BOOST_CHECK(SignatureHash(shreg, scriptCode, CTransaction(txTo), nIn,
-                                  sigHashType, Amount::zero()));
+        BOOST_CHECK(SignatureHash(shreg, execdata, scriptCode,
+                                  CTransaction(txTo), nIn, sigHashType,
+                                  Amount::zero()));
         if (sigHashType.hasForkId()) {
             BOOST_CHECK(nHashType & SIGHASH_FORKID);
             BOOST_CHECK(shreg != shref);
@@ -161,38 +165,38 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
 
         // Make sure replay protection works as expected.
         uint256 shrep;
-        BOOST_CHECK(SignatureHash(shrep, scriptCode, CTransaction(txTo), nIn,
-                                  sigHashType, Amount::zero(), nullptr,
-                                  SCRIPT_ENABLE_SIGHASH_FORKID |
-                                      SCRIPT_ENABLE_REPLAY_PROTECTION));
+        BOOST_CHECK(SignatureHash(
+            shrep, execdata, scriptCode, CTransaction(txTo), nIn, sigHashType,
+            Amount::zero(), nullptr,
+            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
         uint32_t newForkValue = 0xff0000 | ((nHashType >> 8) ^ 0xdead);
         uint256 manualshrep;
-        BOOST_CHECK(SignatureHash(manualshrep, scriptCode, CTransaction(txTo),
-                                  nIn, sigHashType.withForkValue(newForkValue),
-                                  Amount::zero()));
+        BOOST_CHECK(SignatureHash(
+            manualshrep, execdata, scriptCode, CTransaction(txTo), nIn,
+            sigHashType.withForkValue(newForkValue), Amount::zero()));
         BOOST_CHECK(shrep == manualshrep);
 
         // Replay protection works even if the hash is of the form 0xffxxxx
         uint256 shrepff;
         BOOST_CHECK(SignatureHash(
-            shrepff, scriptCode, CTransaction(txTo), nIn,
+            shrepff, execdata, scriptCode, CTransaction(txTo), nIn,
             sigHashType.withForkValue(newForkValue), Amount::zero(), nullptr,
             SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
         uint256 manualshrepff;
         BOOST_CHECK(SignatureHash(
-            manualshrepff, scriptCode, CTransaction(txTo), nIn,
+            manualshrepff, execdata, scriptCode, CTransaction(txTo), nIn,
             sigHashType.withForkValue(newForkValue ^ 0xdead), Amount::zero()));
         BOOST_CHECK(shrepff == manualshrepff);
 
         uint256 shrepabcdef;
         BOOST_CHECK(SignatureHash(
-            shrepabcdef, scriptCode, CTransaction(txTo), nIn,
+            shrepabcdef, execdata, scriptCode, CTransaction(txTo), nIn,
             sigHashType.withForkValue(0xabcdef), Amount::zero(), nullptr,
             SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
         uint256 manualshrepabcdef;
-        BOOST_CHECK(
-            SignatureHash(manualshrepabcdef, scriptCode, CTransaction(txTo), nIn,
-                          sigHashType.withForkValue(0xff1342), Amount::zero()));
+        BOOST_CHECK(SignatureHash(
+            manualshrepabcdef, execdata, scriptCode, CTransaction(txTo), nIn,
+            sigHashType.withForkValue(0xff1342), Amount::zero()));
         BOOST_CHECK(shrepabcdef == manualshrepabcdef);
 
 #if defined(PRINT_SIGHASH_JSON)
@@ -266,21 +270,24 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
             BOOST_ERROR("Bad test, couldn't deserialize data: " << strTest);
             continue;
         }
+        const std::optional<ScriptExecutionData> execdata{
+            ScriptExecutionData(scriptCode)};
 
         uint256 shreg;
-        BOOST_CHECK(SignatureHash(shreg, scriptCode, *tx, nIn, sigHashType,
-                                  Amount::zero()));
+        BOOST_CHECK(SignatureHash(shreg, execdata, scriptCode, *tx, nIn,
+                                  sigHashType, Amount::zero()));
         BOOST_CHECK_MESSAGE(shreg.GetHex() == sigHashRegHex, strTest);
 
         uint256 shold;
-        BOOST_CHECK(SignatureHash(shold, scriptCode, *tx, nIn, sigHashType,
-                                  Amount::zero(), nullptr, 0));
+        BOOST_CHECK(SignatureHash(shold, execdata, scriptCode, *tx, nIn,
+                                  sigHashType, Amount::zero(), nullptr, 0));
         BOOST_CHECK_MESSAGE(shold.GetHex() == sigHashOldHex, strTest);
 
         uint256 shrep;
-        BOOST_CHECK(SignatureHash(
-            shrep, scriptCode, *tx, nIn, sigHashType, Amount::zero(), nullptr,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
+        BOOST_CHECK(SignatureHash(shrep, execdata, scriptCode, *tx, nIn,
+                                  sigHashType, Amount::zero(), nullptr,
+                                  SCRIPT_ENABLE_SIGHASH_FORKID |
+                                      SCRIPT_ENABLE_REPLAY_PROTECTION));
         BOOST_CHECK_MESSAGE(shrep.GetHex() == sigHashRepHex, strTest);
     }
 }
