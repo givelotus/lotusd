@@ -132,7 +132,8 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
     int nRandomTests = 1000;
     for (int i = 0; i < nRandomTests; i++) {
         uint32_t nHashType = InsecureRand32();
-        if (nHashType & SIGHASH_BIP341) {
+        // BIP341 must have 0x40 set and valid base type
+        if (nHashType & 0x20) {
             nHashType &= ~uint32_t(0x1c); // clear invalid bits
             nHashType |= SIGHASH_FORKID;  // prevent illegal flag combination
             if (!(nHashType & 0x1f)) {    // base type not set
@@ -166,10 +167,13 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
                                   CTransaction(txTo), nIn, sigHashType,
                                   Amount::zero(), &txdata));
         if (sigHashType.hasForkId()) {
-            BOOST_CHECK(nHashType & SIGHASH_FORKID);
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_TYPE_MASK, SIGHASH_FORKID);
+            BOOST_CHECK(shreg != shref);
+        } else if (sigHashType.hasBIP341()) {
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_TYPE_MASK, SIGHASH_BIP341);
             BOOST_CHECK(shreg != shref);
         } else {
-            BOOST_CHECK((nHashType & SIGHASH_FORKID) == 0);
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_FORKID, 0);
             BOOST_CHECK(shreg == shref);
         }
 

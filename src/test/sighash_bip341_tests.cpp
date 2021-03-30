@@ -187,11 +187,12 @@ BOOST_AUTO_TEST_CASE(bip341_not_enabled_yet) {
     SigHashType sigHashType = SigHashType().withForkId().withBIP341();
     BOOST_CHECK(!sigHashType.isDefined());
     BOOST_CHECK(!SigHashType(0x20).isDefined()); // SIGHASH_BUG
-    BOOST_CHECK(!sigHashType.withForkId(false).isDefined());
     BOOST_CHECK(!sigHashType.withAnyoneCanPay().isDefined());
-    BOOST_CHECK(!sigHashType.withForkId(false).withAnyoneCanPay().isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::NONE).isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::SINGLE).isDefined());
+    // withForkId resets the other bit in SIGHASH_TYPE_MASK
+    BOOST_CHECK(sigHashType.withForkId(false).isDefined());
+    BOOST_CHECK(sigHashType.withForkId(false).withAnyoneCanPay().isDefined());
 }
 
 BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
@@ -205,8 +206,10 @@ BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
     MMIXLinearCongruentialGenerator lcg;
     for (uint32_t sig_bits = 0; sig_bits <= 0xff; ++sig_bits) {
         uint32_t hash_type = (lcg.next() << 8) | sig_bits;
-        bool is_valid = true;
-        if (((hash_type & SIGHASH_BIP341) && (hash_type & SIGHASH_FORKID)) &&
+        // 0x20 is a reserved sig hash type
+        bool is_valid = (hash_type & SIGHASH_TYPE_MASK) != 0x20;
+        // Invalid bits make SignatureHash using BIP341 fail
+        if ((hash_type & SIGHASH_TYPE_MASK) == SIGHASH_BIP341 &&
             (!(hash_type & 0x03) || (hash_type & 0x1c))) {
             // hash_type 0 is invalid, any undefined bits are invalid
             is_valid = false;

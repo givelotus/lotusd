@@ -12,12 +12,21 @@
 
 /** Signature hash types/flags */
 enum {
+    // Sign all outputs
     SIGHASH_ALL = 1,
+    // Sign no outputs
     SIGHASH_NONE = 2,
+    // Sign the output at the same index as the signed input
     SIGHASH_SINGLE = 3,
-    SIGHASH_BIP341 = 0x20,
+    // Use the BIP143 sighash algorithm
     SIGHASH_FORKID = 0x40,
+    // Use the BIP341 sighash algorithm
+    SIGHASH_BIP341 = 0x60,
+    // Sign only this input, other inputs can be added or removed
     SIGHASH_ANYONECANPAY = 0x80,
+
+    // Bits which specify which sighash algorithm to use
+    SIGHASH_TYPE_MASK = 0x60,
 };
 
 /**
@@ -53,12 +62,12 @@ public:
     }
 
     SigHashType withForkId(bool forkId = true) const {
-        return SigHashType((sigHash & ~SIGHASH_FORKID) |
+        return SigHashType((sigHash & ~SIGHASH_TYPE_MASK) |
                            (forkId ? SIGHASH_FORKID : 0));
     }
 
     SigHashType withBIP341(bool bip341 = true) const {
-        return SigHashType((sigHash & ~SIGHASH_BIP341) |
+        return SigHashType((sigHash & ~SIGHASH_TYPE_MASK) |
                            (bip341 ? SIGHASH_BIP341 : 0));
     }
 
@@ -80,9 +89,15 @@ public:
                baseType <= BaseSigHashType::SINGLE;
     }
 
-    bool hasForkId() const { return (sigHash & SIGHASH_FORKID) != 0; }
+    bool hasForkId() const {
+        return (sigHash & SIGHASH_TYPE_MASK) == SIGHASH_FORKID;
+    }
 
-    bool hasBIP341() const { return (sigHash & SIGHASH_BIP341) != 0; }
+    bool hasBIP341() const {
+        return (sigHash & SIGHASH_TYPE_MASK) == SIGHASH_BIP341;
+    }
+
+    bool isLegacy() const { return !(sigHash & SIGHASH_TYPE_MASK); }
 
     bool hasAnyoneCanPay() const {
         return (sigHash & SIGHASH_ANYONECANPAY) != 0;

@@ -35,7 +35,7 @@ enum {
     //
     SCRIPT_VERIFY_MINIMALIF = (1U << 13),
 
-    // Do we accept signature using SIGHASH_FORKID
+    // Do we accept signatures using SIGHASH_FORKID or SIGHASH_BIP341
     //
     SCRIPT_ENABLE_SIGHASH_FORKID = (1U << 16),
 
