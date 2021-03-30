@@ -182,15 +182,18 @@ BOOST_AUTO_TEST_CASE(script_execution_data) {
                     10);
 }
 
-// Make sure BIP341 can't be used yet on the chain.
-BOOST_AUTO_TEST_CASE(bip341_not_enabled_yet) {
-    SigHashType sigHashType = SigHashType().withForkId().withBIP341();
+// Test that SIGHASH_BIP341 can only be used with SIGHASH_FORKID
+BOOST_AUTO_TEST_CASE(bip341_only_with_fork_id) {
+    SigHashType sigHashType = SigHashType(0x21);
     BOOST_CHECK(!sigHashType.isDefined());
     BOOST_CHECK(!SigHashType(0x20).isDefined()); // SIGHASH_BUG
     BOOST_CHECK(!sigHashType.withAnyoneCanPay().isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::NONE).isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::SINGLE).isDefined());
+    BOOST_CHECK(!SigHashType(SIGHASH_BIP341).isDefined());
+    BOOST_CHECK(!SigHashType(SIGHASH_FORKID).isDefined());
     // withForkId resets the other bit in SIGHASH_TYPE_MASK
+    BOOST_CHECK(sigHashType.withForkId().isDefined());
     BOOST_CHECK(sigHashType.withForkId(false).isDefined());
     BOOST_CHECK(sigHashType.withForkId(false).withAnyoneCanPay().isDefined());
 }

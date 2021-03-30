@@ -29,16 +29,24 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
     std::vector<BaseSigHashType> allBaseTypes{
         BaseSigHashType::ALL, BaseSigHashType::NONE, BaseSigHashType::SINGLE};
 
-    std::vector<SigHashType> baseSigHashes;
+    std::vector<SigHashType> sigHashTypes;
     for (const BaseSigHashType &baseType : allBaseTypes) {
-        const SigHashType baseSigHash = SigHashType().withBaseType(baseType);
-        baseSigHashes.push_back(baseSigHash);
-        baseSigHashes.push_back(baseSigHash.withAnyoneCanPay(true));
+        const SigHashType sigHashType = SigHashType().withBaseType(baseType);
+        if (hasForkId) {
+            // Check the signatures with the proper forkid flag.
+            sigHashTypes.push_back(sigHashType.withForkId());
+            sigHashTypes.push_back(
+                sigHashType.withForkId().withAnyoneCanPay(true));
+            sigHashTypes.push_back(sigHashType.withBIP341());
+            sigHashTypes.push_back(
+                sigHashType.withBIP341().withAnyoneCanPay(true));
+        } else {
+            sigHashTypes.push_back(sigHashType);
+            sigHashTypes.push_back(sigHashType.withAnyoneCanPay(true));
+        }
     }
 
-    for (const SigHashType &baseSigHash : baseSigHashes) {
-        // Check the signature with the proper forkid flag.
-        SigHashType sigHash = baseSigHash.withForkId(hasForkId);
+    for (const SigHashType &sigHash : sigHashTypes) {
         valtype validSig = SignatureWithHashType(vchSig, sigHash);
         BOOST_CHECK(CheckTransactionSignatureEncoding(validSig, flags, &err));
         BOOST_CHECK_EQUAL(!is64, CheckTransactionECDSASignatureEncoding(
@@ -47,8 +55,9 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
                                     validSig, flags, &err));
 
         // If we have strict encoding, we prevent the use of undefined flags.
-        std::array<SigHashType, 2> undefSigHashes{
-            {SigHashType(sigHash.getRawSigHashType() | 0x20),
+        std::array<SigHashType, 3> undefSigHashes{
+            {SigHashType(sigHash.getRawSigHashType() | 0x10),
+             SigHashType((sigHash.getRawSigHashType() & ~0x40) | 0x20),
              sigHash.withBaseType(BaseSigHashType::UNSUPPORTED)}};
 
         for (SigHashType undefSigHash : undefSigHashes) {
@@ -67,7 +76,7 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
         }
 
         // If we check strict encoding, then invalid forkid is an error.
-        SigHashType invalidSigHash = baseSigHash.withForkId(!hasForkId);
+        SigHashType invalidSigHash = sigHash.withForkId(!hasForkId);
         valtype invalidSig = SignatureWithHashType(vchSig, invalidSigHash);
 
         BOOST_CHECK(

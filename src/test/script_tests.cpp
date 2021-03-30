@@ -2662,6 +2662,36 @@ BOOST_AUTO_TEST_CASE(script_GetScriptAsm) {
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "c3"))
                                  << vchPubKey,
                        true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[ALL|BIP341] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "61"))
+                                 << vchPubKey,
+                       true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[ALL|BIP341|ANYONECANPAY] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e1"))
+                                 << vchPubKey,
+                       true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[NONE|BIP341] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "62"))
+                                 << vchPubKey,
+                       true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[NONE|BIP341|ANYONECANPAY] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e2"))
+                                 << vchPubKey,
+                       true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[SINGLE|BIP341] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "63"))
+                                 << vchPubKey,
+                       true));
+    BOOST_CHECK_EQUAL(
+        derSig + "[SINGLE|BIP341|ANYONECANPAY] " + pubKey,
+        ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e3"))
+                                 << vchPubKey,
+                       true));
 
     BOOST_CHECK_EQUAL(derSig + "00 " + pubKey,
                       ScriptToAsmStr(CScript()

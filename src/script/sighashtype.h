@@ -83,8 +83,12 @@ public:
     uint32_t getForkValue() const { return sigHash >> 8; }
 
     bool isDefined() const {
-        auto baseType =
-            BaseSigHashType(sigHash & ~(SIGHASH_FORKID | SIGHASH_ANYONECANPAY));
+        if ((sigHash & SIGHASH_BIP341) && !(sigHash & SIGHASH_FORKID)) {
+            // BIP341 without FORKID is invalid
+            return false;
+        }
+        auto baseType = BaseSigHashType(
+            sigHash & ~(SIGHASH_TYPE_MASK | SIGHASH_ANYONECANPAY));
         return baseType >= BaseSigHashType::ALL &&
                baseType <= BaseSigHashType::SINGLE;
     }
