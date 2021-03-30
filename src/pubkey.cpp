@@ -225,6 +225,29 @@ bool CPubKey::VerifySchnorr(const uint256 &hash,
     return VerifySchnorr(hash, sig);
 }
 
+bool CPubKey::VerifyPubkeyTweakAdd(const CPubKey &base,
+                                   const uint256 &tweak) const {
+    secp256k1_pubkey point;
+    size_t pk_len = COMPRESSED_SIZE;
+    uint8_t pk_expected[COMPRESSED_SIZE];
+    if (!secp256k1_ec_pubkey_parse(secp256k1_context_verify, &point,
+                                   base.data(), base.size())) {
+        return false;
+    }
+    if (!secp256k1_ec_pubkey_tweak_add(secp256k1_context_verify, &point,
+                                       tweak.begin())) {
+        return false;
+    }
+    if (!secp256k1_ec_pubkey_serialize(secp256k1_context_verify, pk_expected,
+                                       &pk_len, &point,
+                                       SECP256K1_EC_COMPRESSED)) {
+        return false;
+    }
+    assert(pk_len == COMPRESSED_SIZE);
+
+    return std::memcmp(vch, pk_expected, COMPRESSED_SIZE) == 0;
+}
+
 bool CPubKey::RecoverCompact(const uint256 &hash,
                              const std::vector<uint8_t> &vchSig) {
     if (vchSig.size() != COMPACT_SIGNATURE_SIZE) {
