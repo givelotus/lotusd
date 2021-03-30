@@ -172,6 +172,12 @@ public:
                        const std::vector<uint8_t> &vchSig) const;
 
     /**
+     * Verify that this pubkey is the base point tweaked by tweak.
+     * Computes base + tweak*G and checks that it's equal to this.
+     */
+    bool AddScalar(CPubKey &result, const uint256 &scalar) const;
+
+    /**
      * Check whether a DER-serialized ECDSA signature is normalized (lower-S).
      */
     static bool
