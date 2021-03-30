@@ -108,6 +108,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "OP_NUM2BIN size limit exceeded";
         case ScriptError::SIGCHECKS_LIMIT_EXCEEDED:
             return "Validation resources exceeded (SigChecks)";
+        case ScriptError::INVALID_OP_SCRIPTTYPE:
+            return "Marker opcode OP_SCRIPTTYPE cannot be executed";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

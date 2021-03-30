@@ -38,8 +38,9 @@
 ["0", "IF 0x50 ENDIF 1", "", "DISABLED_OPCODE", "0x50 is disabled (even if not executed)"],
 ["0x51", "0x5f ADD 0x60 EQUAL", "", "OK", "0x51 through 0x60 push 1 through 16 onto stack"],
 ["1","NOP", "", "OK"],
-["0", "IF VER ELSE 1 ENDIF", "", "DISABLED_OPCODE", "VER disabled"],
 ["0", "IF RESERVED RESERVED1 RESERVED2 ELSE 1 ENDIF", "", "DISABLED_OPCODE", "RESERVED disabled"],
+
+["0", "IF SCRIPTTYPE ELSE 1 ENDIF", "", "INVALID_OP_SCRIPTTYPE", "Marker opcode OP_SCRIPTTYPE cannot occur in script"],
 
 ["1", "DUP IF ENDIF", "", "OK"],
 ["1", "IF 1 ENDIF", "", "OK"],
@@ -684,11 +685,12 @@
 ["1", "IF 0x50 ENDIF 1", "","DISABLED_OPCODE", "0x50 is disabled"],
 ["0x52", "0x5f ADD 0x60 EQUAL", "","EVAL_FALSE", "0x51 through 0x60 push 1 through 16 onto stack"],
 ["0","NOP", "","EVAL_FALSE",""],
-["1", "IF VER ELSE 1 ENDIF", "", "DISABLED_OPCODE", "VER non-functional"],
 ["0", "IF VERIF ELSE 1 ENDIF", "", "DISABLED_OPCODE", "VERIF illegal everywhere"],
 ["0", "IF ELSE 1 ELSE VERIF ENDIF", "", "DISABLED_OPCODE", "VERIF illegal everywhere"],
 ["0", "IF VERNOTIF ELSE 1 ENDIF", "", "DISABLED_OPCODE", "VERNOTIF illegal everywhere"],
 ["0", "IF ELSE 1 ELSE VERNOTIF ENDIF", "", "DISABLED_OPCODE", "VERNOTIF illegal everywhere"],
+
+["1", "IF SCRIPTTYPE ELSE 1 ENDIF", "", "INVALID_OP_SCRIPTTYPE", "Marker opcode OP_SCRIPTTYPE cannot occur in script"],
 
 ["1 IF", "1 ENDIF", "", "SIG_PUSHONLY", "IF/ENDIF can't span scriptSig/scriptPubKey; kept in case someone re-activates opcodes in sigScript"],
 ["1 IF 0 ENDIF", "1 ENDIF", "", "SIG_PUSHONLY"],
@@ -1834,7 +1836,8 @@
 
 ["","NOP10", "", "EVAL_FALSE"],
 
-["1","VER", "", "DISABLED_OPCODE", "OP_VER is disabled"],
+["1","SCRIPTTYPE", "", "INVALID_OP_SCRIPTTYPE", "Marker opcode OP_SCRIPTTYPE cannot occur in script"],
+
 ["1","VERIF", "", "DISABLED_OPCODE", "OP_VERIF is reserved"],
 ["1","VERNOTIF", "", "DISABLED_OPCODE", "OP_VERNOTIF is reserved"],
 ["1","RESERVED", "", "DISABLED_OPCODE", "OP_RESERVED is disabled"],
@@ -1961,7 +1964,7 @@
 ["NOP1 0x01 1", "HASH160 0x14 0xda1745e9b549bd0bfa1a569971c77eba30cd5a4b EQUAL", "", "SIG_PUSHONLY"],
 
 ["0 0x01 0x50", "HASH160 0x14 0xece424a6bb6ddf4db592c0faed60685047a361b1 EQUAL", "", "DISABLED_OPCODE", "OP_RESERVED in P2SH should fail"],
-["0 0x01 VER", "HASH160 0x14 0x0f4d7845db968f2a81b530b6f3c1d6246d4c7e01 EQUAL", "", "DISABLED_OPCODE", "OP_VER in P2SH should fail"],
+["0 0x01 SCRIPTTYPE", "HASH160 0x14 0x0f4d7845db968f2a81b530b6f3c1d6246d4c7e01 EQUAL", "", "INVALID_OP_SCRIPTTYPE", "OP_SCRIPTTYPE in P2SH should fail"],
 
 ["0x00", "'00' EQUAL", "", "EVAL_FALSE", "Basic OP_0 execution"],
 

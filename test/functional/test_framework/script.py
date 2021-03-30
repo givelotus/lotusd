@@ -147,7 +147,7 @@ OP_16 = CScriptOp(0x60)
 
 # control
 OP_NOP = CScriptOp(0x61)
-OP_VER = CScriptOp(0x62)
+OP_SCRIPTTYPE = CScriptOp(0x62)
 OP_IF = CScriptOp(0x63)
 OP_NOTIF = CScriptOp(0x64)
 OP_VERIF = CScriptOp(0x65)
@@ -294,7 +294,7 @@ OPCODE_NAMES.update({
     OP_15: 'OP_15',
     OP_16: 'OP_16',
     OP_NOP: 'OP_NOP',
-    OP_VER: 'OP_VER',
+    OP_SCRIPTTYPE: 'OP_SCRIPTTYPE',
     OP_IF: 'OP_IF',
     OP_NOTIF: 'OP_NOTIF',
     OP_VERIF: 'OP_VERIF',
