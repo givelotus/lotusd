@@ -75,7 +75,7 @@ enum opcodetype {
 
     // control
     OP_NOP = 0x61,
-    OP_VER = 0x62,
+    OP_SCRIPTTYPE = 0x62,
     OP_IF = 0x63,
     OP_NOTIF = 0x64,
     OP_VERIF = 0x65,

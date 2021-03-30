@@ -85,6 +85,10 @@ enum class ScriptError {
     /* Auxiliary errors (unused by interpreter) */
     SIGCHECKS_LIMIT_EXCEEDED,
 
+    /* OP_SCRIPTTYPE should never be executed in an executed script, it's only a
+       marker */
+    INVALID_OP_SCRIPTTYPE,
+
     ERROR_COUNT,
 };
 

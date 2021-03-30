@@ -83,7 +83,6 @@ static void CleanupScriptCode(CScript &scriptCode,
 static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
     switch (opcode) {
         case OP_RESERVED:
-        case OP_VER:
         case OP_VERIF:
         case OP_VERNOTIF:
         case OP_IFDUP:
@@ -261,6 +260,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
             // Some opcodes are disabled (CVE-2010-5137).
             if (IsOpcodeDisabled(opcode, flags)) {
                 return set_error(serror, ScriptError::DISABLED_OPCODE);
+            }
+
+            if (opcode == OP_SCRIPTTYPE) {
+                return set_error(serror, ScriptError::INVALID_OP_SCRIPTTYPE);
             }
 
             if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4) {
