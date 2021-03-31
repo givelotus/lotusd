@@ -132,17 +132,18 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
     int nRandomTests = 1000;
     for (int i = 0; i < nRandomTests; i++) {
         uint32_t nHashType = InsecureRand32();
-        if (nHashType & SIGHASH_BIP341) {
-            nHashType &= ~uint32_t(0x1c); // clear invalid bits
-            nHashType |= SIGHASH_FORKID;  // prevent illegal flag combination
-            if (!(nHashType & 0x1f)) {    // base type not set
+        // BIP341 must have 0x40 set and valid base type
+        if (nHashType & SIGHASH_RESERVED) {
+            nHashType &= ~uint32_t(SIGHASH_UNUSED_MASK); // clear invalid bits
+            nHashType |= SIGHASH_FORKID; // prevent illegal flag combination
+            if (!(nHashType & SIGHASH_BASE_TYPE_MASK)) { // base type not set
                 nHashType |= SIGHASH_ALL;
             }
         }
         SigHashType sigHashType(nHashType);
 
         CMutableTransaction txTo;
-        RandomTransaction(txTo, (nHashType & 0x1f) == SIGHASH_SINGLE);
+        RandomTransaction(txTo, (nHashType & SIGHASH_BASE_TYPE_MASK) == SIGHASH_SINGLE);
         CScript scriptCode;
         RandomScript(scriptCode);
         const std::optional<ScriptExecutionData> execdata{
@@ -166,10 +167,15 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
                                   CTransaction(txTo), nIn, sigHashType,
                                   Amount::zero(), &txdata));
         if (sigHashType.hasForkId()) {
-            BOOST_CHECK(nHashType & SIGHASH_FORKID);
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_ALGORITHM_MASK,
+                              SIGHASH_FORKID);
+            BOOST_CHECK(shreg != shref);
+        } else if (sigHashType.hasBIP341()) {
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_ALGORITHM_MASK,
+                              SIGHASH_BIP341);
             BOOST_CHECK(shreg != shref);
         } else {
-            BOOST_CHECK((nHashType & SIGHASH_FORKID) == 0);
+            BOOST_CHECK_EQUAL(nHashType & SIGHASH_FORKID, 0);
             BOOST_CHECK(shreg == shref);
         }
 

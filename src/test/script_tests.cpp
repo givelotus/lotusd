@@ -341,9 +341,13 @@ public:
                  Amount amount = Amount::zero(),
                  uint32_t sigFlags = SCRIPT_ENABLE_SIGHASH_FORKID) {
         uint256 hash;
-        BOOST_CHECK(SignatureHash(
-            hash, std::optional(ScriptExecutionData(script)), script,
-            CTransaction(spendTx), 0, sigHashType, amount, nullptr, sigFlags));
+        // Only sign if not reserved sighash, sign 0x0000...00 otherwise
+        if (!sigHashType.isReserved()) {
+            BOOST_CHECK(
+                SignatureHash(hash, std::optional(ScriptExecutionData(script)),
+                              script, CTransaction(spendTx), 0, sigHashType,
+                              amount, nullptr, sigFlags));
+        }
         std::vector<uint8_t> vchSig = DoSignECDSA(key, hash, lenR, lenS);
         vchSig.push_back(static_cast<uint8_t>(sigHashType.getRawSigHashType()));
         DoPush(vchSig);

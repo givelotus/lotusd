@@ -1871,18 +1871,19 @@ bool SignatureHash(uint256 &sighashOut,
         sigHashType = sigHashType.withForkValue(0xff0000 | newForkValue);
     }
 
-    if (!sigHashType.hasForkId() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
+    if (sigHashType.isLegacy() || !(flags & SCRIPT_ENABLE_SIGHASH_FORKID)) {
         return SignatureHashLegacy(sighashOut, scriptCode, txTo, nIn,
                                    sigHashType);
-    }
-
-    if (sigHashType.hasBIP341()) {
+    } else if (sigHashType.hasForkId()) {
+        return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn,
+                                   sigHashType, amount, cache);
+    } else if (sigHashType.hasBIP341()) {
         assert(cache);
         return SignatureHashBIP341(sighashOut, execdata, txTo, nIn, sigHashType,
                                    *cache);
     } else {
-        return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn,
-                                   sigHashType, amount, cache);
+        // reserved sigHashType 0x20
+        return false;
     }
 }
 

@@ -16,68 +16,83 @@ BOOST_FIXTURE_TEST_SUITE(sighashtype_tests, BasicTestingSetup)
 
 static void CheckSigHashType(SigHashType t, BaseSigHashType baseType,
                              bool isDefined, uint32_t forkValue, bool hasForkId,
+                             bool hasBIP341, uint32_t unusedBits,
                              bool hasAnyoneCanPay) {
     BOOST_CHECK(t.getBaseType() == baseType);
     BOOST_CHECK_EQUAL(t.isDefined(), isDefined);
     BOOST_CHECK_EQUAL(t.getForkValue(), forkValue);
+    BOOST_CHECK_EQUAL(t.getUnusedBits(), unusedBits);
     BOOST_CHECK_EQUAL(t.hasForkId(), hasForkId);
+    BOOST_CHECK_EQUAL(t.hasBIP341(), hasBIP341);
     BOOST_CHECK_EQUAL(t.hasAnyoneCanPay(), hasAnyoneCanPay);
 }
 
 BOOST_AUTO_TEST_CASE(sighash_construction_test) {
     // Check default values.
-    CheckSigHashType(SigHashType(), BaseSigHashType::ALL, true, 0, false,
-                     false);
+    CheckSigHashType(SigHashType(), BaseSigHashType::ALL, true, 0, false, false,
+                     0, false);
 
     // Check all possible permutations.
     std::set<BaseSigHashType> baseTypes{
         BaseSigHashType::UNSUPPORTED, BaseSigHashType::ALL,
         BaseSigHashType::NONE, BaseSigHashType::SINGLE};
     std::set<uint32_t> forkValues{0, 1, 0x123456, 0xfedcba, 0xffffff};
-    std::set<bool> forkIdFlagValues{false, true};
+    std::set<uint32_t> algorithmValues{SIGHASH_LEGACY, SIGHASH_FORKID,
+                                       SIGHASH_BIP341};
     std::set<bool> anyoneCanPayFlagValues{false, true};
 
     for (BaseSigHashType baseType : baseTypes) {
         for (uint32_t forkValue : forkValues) {
-            for (bool hasForkId : forkIdFlagValues) {
+            for (uint32_t algorithm : algorithmValues) {
                 for (bool hasAnyoneCanPay : anyoneCanPayFlagValues) {
-                    const SigHashType t =
-                        SigHashType()
-                            .withBaseType(baseType)
-                            .withForkValue(forkValue)
-                            .withForkId(hasForkId)
-                            .withAnyoneCanPay(hasAnyoneCanPay);
+                    SigHashType t = SigHashType()
+                                        .withBaseType(baseType)
+                                        .withForkValue(forkValue)
+                                        .withAlgorithm(algorithm)
+                                        .withAnyoneCanPay(hasAnyoneCanPay);
+                    bool hasForkId = algorithm == SIGHASH_FORKID;
+                    bool hasBIP341 = algorithm == SIGHASH_BIP341;
 
                     bool isDefined = baseType != BaseSigHashType::UNSUPPORTED;
-                    CheckSigHashType(t, baseType, isDefined, forkValue,
-                                     hasForkId, hasAnyoneCanPay);
+                    CheckSigHashType(t, baseType, isDefined && !hasBIP341,
+                                     forkValue, hasForkId, hasBIP341, 0,
+                                     hasAnyoneCanPay);
 
                     // Also check all possible alterations.
-                    CheckSigHashType(t.withForkId(hasForkId), baseType,
-                                     isDefined, forkValue, hasForkId,
-                                     hasAnyoneCanPay);
-                    CheckSigHashType(t.withForkId(!hasForkId), baseType,
-                                     isDefined, forkValue, !hasForkId,
-                                     hasAnyoneCanPay);
-                    CheckSigHashType(t.withAnyoneCanPay(hasAnyoneCanPay),
+                    CheckSigHashType(t.withAlgorithm(hasForkId
+                                                         ? SIGHASH_FORKID
+                                                         : SIGHASH_LEGACY),
                                      baseType, isDefined, forkValue, hasForkId,
+                                     false, 0, hasAnyoneCanPay);
+                    CheckSigHashType(t.withAlgorithm(!hasForkId
+                                                         ? SIGHASH_FORKID
+                                                         : SIGHASH_LEGACY),
+                                     baseType, isDefined, forkValue, !hasForkId,
+                                     false, 0, hasAnyoneCanPay);
+                    CheckSigHashType(t.withAnyoneCanPay(hasAnyoneCanPay),
+                                     baseType, isDefined && !hasBIP341,
+                                     forkValue, hasForkId, hasBIP341, 0,
                                      hasAnyoneCanPay);
                     CheckSigHashType(t.withAnyoneCanPay(!hasAnyoneCanPay),
-                                     baseType, isDefined, forkValue, hasForkId,
+                                     baseType, isDefined && !hasBIP341,
+                                     forkValue, hasForkId, hasBIP341, 0,
                                      !hasAnyoneCanPay);
 
                     for (BaseSigHashType newBaseType : baseTypes) {
                         bool isNewDefined =
-                            newBaseType != BaseSigHashType::UNSUPPORTED;
+                            newBaseType != BaseSigHashType::UNSUPPORTED &&
+                            !hasBIP341;
                         CheckSigHashType(t.withBaseType(newBaseType),
                                          newBaseType, isNewDefined, forkValue,
-                                         hasForkId, hasAnyoneCanPay);
+                                         hasForkId, hasBIP341, 0,
+                                         hasAnyoneCanPay);
                     }
 
                     for (uint32_t newForkValue : forkValues) {
                         CheckSigHashType(t.withForkValue(newForkValue),
-                                         baseType, isDefined, newForkValue,
-                                         hasForkId, hasAnyoneCanPay);
+                                         baseType, isDefined && !hasBIP341,
+                                         newForkValue, hasForkId, hasBIP341, 0,
+                                         hasAnyoneCanPay);
                     }
                 }
             }
@@ -93,8 +108,12 @@ BOOST_AUTO_TEST_CASE(sighash_serialization_test) {
         for (uint32_t forkValue : forkValues) {
             uint32_t rawType = sigHashType | (forkValue << 8);
 
-            uint32_t baseType = rawType & 0x1f;
-            bool hasForkId = (rawType & SIGHASH_FORKID) != 0;
+            uint32_t baseType = rawType & SIGHASH_BASE_TYPE_MASK;
+            uint32_t unused = rawType & SIGHASH_UNUSED_MASK;
+            bool hasForkId =
+                (rawType & SIGHASH_ALGORITHM_MASK) == SIGHASH_FORKID;
+            bool hasBIP341 =
+                (rawType & SIGHASH_ALGORITHM_MASK) == SIGHASH_BIP341;
             bool hasAnyoneCanPay = (rawType & SIGHASH_ANYONECANPAY) != 0;
 
             uint32_t noflag =
@@ -105,7 +124,8 @@ BOOST_AUTO_TEST_CASE(sighash_serialization_test) {
 
             // Check deserialization.
             CheckSigHashType(tbase, BaseSigHashType(baseType), isDefined,
-                             forkValue, hasForkId, hasAnyoneCanPay);
+                             forkValue, hasForkId, hasBIP341, unused,
+                             hasAnyoneCanPay);
 
             // Check raw value.
             BOOST_CHECK_EQUAL(tbase.getRawSigHashType(), rawType);
