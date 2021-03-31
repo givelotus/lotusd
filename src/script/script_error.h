@@ -88,6 +88,16 @@ enum class ScriptError {
     /* OP_SCRIPTTYPE should never be executed in an executed script, it's only a
        marker */
     INVALID_OP_SCRIPTTYPE,
+    SCRIPTTYPE_INVALID_TYPE,
+    SCRIPTTYPE_MALFORMED_SCRIPT,
+
+    /* Control block needs to be of length 33 + 32n */
+    TAPROOT_MUST_USE_BIP341_SIGHASH,
+    TAPROOT_WRONG_CONTROL_SIZE,
+    TAPROOT_VERIFY_SIGNATURE_FAILED,
+    TAPROOT_VERIFY_COMMITMENT_FAILED,
+    TAPROOT_ANNEX_NOT_SUPPORTED,
+    TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
 
     ERROR_COUNT,
 };

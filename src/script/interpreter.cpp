@@ -2092,6 +2092,92 @@ bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
     return q == q_expected;
 }
 
+static bool VerifyScriptType(std::vector<valtype> stack,
+                             const CScript &script_pubkey, uint32_t flags,
+                             const BaseSignatureChecker &checker,
+                             ScriptExecutionMetrics &metrics_out,
+                             ScriptError *serror) {
+    if (script_pubkey.size() == 1 ||
+        !script_pubkey.IsPushOnly(script_pubkey.begin() + 1)) {
+        return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+    }
+    if (script_pubkey[1] == OP_1) { // Taproot script version
+        if (script_pubkey.size() != SCRIPT_SIZE_WITHOUT_STATE &&
+            script_pubkey.size() != SCRIPT_SIZE_WITH_STATE) {
+            return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+        }
+        valtype vch_pubkey =
+            valtype(script_pubkey.begin() + SCRIPT_INTRO_SIZE,
+                    script_pubkey.begin() + SCRIPT_SIZE_WITHOUT_STATE);
+
+        if (stack.size() == 0) {
+            return set_error(serror, ScriptError::INVALID_STACK_OPERATION);
+        }
+        if (stack.size() >= 2 && !stack.back().empty() &&
+            stack.back()[0] == ANNEX_TAG) {
+            return set_error(serror, ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED);
+        }
+        if (stack.size() == 1) {
+            // Spend using single signature instead of executing script
+            valtype &vch_sig = stacktop(-1);
+            bool f_success;
+            if (!EvalChecksig(vch_sig, vch_pubkey, script_pubkey.begin(),
+                              script_pubkey.end(),
+                              flags | SCRIPT_REQUIRE_TAPROOT_SIGHASH, checker,
+                              metrics_out, std::nullopt, serror, f_success)) {
+                // serror is set
+                return false;
+            }
+            if (!f_success) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED);
+            }
+            return set_success(serror);
+        } else {
+            // Spend using executing script, internal pubkey and merkle path
+            valtype control_block = stacktop(-1);
+            valtype script_bytes = stacktop(-2);
+            CScript exec_script(script_bytes.begin(), script_bytes.end());
+            popstack(stack);
+            popstack(stack);
+            const uint32_t size_remainder =
+                (control_block.size() - TAPROOT_CONTROL_BASE_SIZE) %
+                TAPROOT_CONTROL_NODE_SIZE;
+            if (control_block.size() < TAPROOT_CONTROL_BASE_SIZE ||
+                control_block.size() > TAPROOT_CONTROL_MAX_SIZE ||
+                (size_remainder != 0)) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_WRONG_CONTROL_SIZE);
+            }
+            if ((control_block[0] & TAPROOT_LEAF_MASK) !=
+                TAPROOT_LEAF_TAPSCRIPT) {
+                return set_error(
+                    serror, ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED);
+            }
+            uint256 tapleaf_hash;
+            if (!VerifyTaprootCommitment(tapleaf_hash, control_block,
+                                         vch_pubkey, exec_script)) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED);
+            }
+            if (script_pubkey.size() == SCRIPT_SIZE_WITH_STATE) {
+                stack.push_back(valtype(
+                    script_pubkey.begin() + SCRIPT_SIZE_WITHOUT_STATE + 1,
+                    script_pubkey.begin() + SCRIPT_SIZE_WITH_STATE));
+            }
+            ScriptExecutionData execdata{tapleaf_hash};
+            if (!EvalScript(stack, exec_script, flags, checker, metrics_out,
+                            execdata, serror)) {
+                // serror is set
+                return false;
+            }
+            return set_success(serror);
+        }
+    } else {
+        return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
+    }
+}
+
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
@@ -2113,6 +2199,15 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
             // serror is set
             return false;
         }
+    }
+    if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_SCRIPTTYPE) {
+        if (!VerifyScriptType(stack, scriptPubKey, flags, checker, metricsOut,
+                              serror)) {
+            // serror is set
+            return false;
+        }
+        metricsOut = metrics;
+        return set_success(serror);
     }
     stackCopy = stack;
     {

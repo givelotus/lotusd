@@ -216,6 +216,9 @@ static bool CheckSighashEncoding(const valtype &vchSig, uint32_t flags,
     }
 
     SigHashType sigHashType = GetHashType(vchSig);
+    if ((flags & SCRIPT_REQUIRE_TAPROOT_SIGHASH) && !sigHashType.hasBIP341()) {
+        return set_error(serror, ScriptError::TAPROOT_MUST_USE_BIP341_SIGHASH);
+    }
     bool usesForkId = sigHashType.hasForkId() || sigHashType.hasBIP341();
     bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
     if (!forkIdEnabled && usesForkId) {
