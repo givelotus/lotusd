@@ -22,6 +22,15 @@ class CScript;
 class CTransaction;
 class uint256;
 
+static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
+static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
+static constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
+static constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
+static constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
+static constexpr size_t TAPROOT_CONTROL_MAX_SIZE =
+    TAPROOT_CONTROL_BASE_SIZE +
+    TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
+
 template <class T>
 bool SignatureHash(uint256 &sighashOut,
                    const std::optional<ScriptExecutionData> &execdata,
@@ -96,6 +105,25 @@ static inline bool EvalScript(std::vector<std::vector<uint8_t>> &stack,
     return EvalScript(stack, script, flags, checker, dummymetrics,
                       dummyexecdata, error);
 }
+
+/**
+ * Verifies that the control block proves that script is part of the commitment.
+ *
+ * - tapleaf_hash: Output; the tapleaf hash of script.
+ * - control_block: Must have length 33 + 32 * n.
+ *   First byte is (leaf version | parity of internal_pubkey), next 32 bytes are
+ *   the X-coordinate of internal_pubkey, and then up to
+ *   TAPROOT_CONTROL_MAX_NODE_COUNT nodes of each 32 bytes.
+ * - commitment: Public key that has been committed to.
+ * - script: Script we are proving inclusion in commitment for.
+ *
+ * Note: The length requirements on control_block and commitment have to be
+ * upheld by the caller.
+ */
+bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
+                             const std::vector<uint8_t> &control_block,
+                             const std::vector<uint8_t> &commitment,
+                             const CScript &script);
 
 /**
  * Execute an unlocking and locking script together.
