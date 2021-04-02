@@ -31,9 +31,19 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
 
     std::vector<SigHashType> baseSigHashes;
     for (const BaseSigHashType &baseType : allBaseTypes) {
-        const SigHashType baseSigHash = SigHashType().withBaseType(baseType);
-        baseSigHashes.push_back(baseSigHash);
-        baseSigHashes.push_back(baseSigHash.withAnyoneCanPay(true));
+        const SigHashType sigHashType = SigHashType().withBaseType(baseType);
+        if (hasForkId) {
+            // Check the signatures with the proper forkid flag.
+            baseSigHashes.push_back(sigHashType.withForkId());
+            baseSigHashes.push_back(
+                sigHashType.withForkId().withAnyoneCanPay(true));
+            baseSigHashes.push_back(sigHashType.withBIP341());
+            baseSigHashes.push_back(
+                sigHashType.withBIP341().withAnyoneCanPay(true));
+        } else {
+            baseSigHashes.push_back(sigHashType);
+            baseSigHashes.push_back(sigHashType.withAnyoneCanPay(true));
+        }
     }
 
     for (const SigHashType &baseSigHash : baseSigHashes) {
@@ -48,8 +58,9 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
                                     validSig, flags, &err));
 
         // If we have strict encoding, we prevent the use of undefined flags.
-        std::array<SigHashType, 2> undefSigHashes{
-            {SigHashType(sigHash.getRawSigHashType() | 0x20),
+        std::array<SigHashType, 3> undefSigHashes{
+            {SigHashType(sigHash.getRawSigHashType() | 0x10),
+             SigHashType((sigHash.getRawSigHashType() & ~0x40) | 0x20),
              sigHash.withBaseType(BaseSigHashType::UNSUPPORTED)}};
 
         for (SigHashType undefSigHash : undefSigHashes) {

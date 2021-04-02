@@ -405,6 +405,14 @@ BOOST_AUTO_TEST_CASE(test_big_transaction) {
     sigHashes.emplace_back(SIGHASH_SINGLE | SIGHASH_FORKID |
                            SIGHASH_ANYONECANPAY);
     sigHashes.emplace_back(SIGHASH_ALL | SIGHASH_FORKID | SIGHASH_ANYONECANPAY);
+    sigHashes.emplace_back(SIGHASH_NONE | SIGHASH_BIP341);
+    sigHashes.emplace_back(SIGHASH_SINGLE | SIGHASH_BIP341);
+    sigHashes.emplace_back(SIGHASH_ALL | SIGHASH_BIP341);
+    sigHashes.emplace_back(SIGHASH_NONE | SIGHASH_BIP341 |
+                           SIGHASH_ANYONECANPAY);
+    sigHashes.emplace_back(SIGHASH_SINGLE | SIGHASH_BIP341 |
+                           SIGHASH_ANYONECANPAY);
+    sigHashes.emplace_back(SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY);
 
     CMutableTransaction mtx;
     mtx.nVersion = 1;

@@ -631,6 +631,7 @@ SIGHASH_ALL = 1
 SIGHASH_NONE = 2
 SIGHASH_SINGLE = 3
 SIGHASH_FORKID = 0x40
+SIGHASH_BIP341 = 0x60
 SIGHASH_ANYONECANPAY = 0x80
 
 
@@ -751,6 +752,60 @@ def SignatureHashForkId(script, txTo, inIdx, hashtype, amount):
     ss += struct.pack("<I", hashtype)
 
     return hash256(ss)
+
+
+def TaggedHash(tag, data):
+    ss = hashlib.sha256(tag.encode('utf-8')).digest()
+    ss += ss
+    ss += data
+    return hashlib.sha256(ss).digest()
+
+
+def SignatureHashBIP341(
+        tx_to: CTransaction,
+        spent_utxos: list,
+        sig_hash_type: int,
+        input_index: int,
+        executed_script_hash: bytes = None,
+        codeseparator_pos = 0xffff_ffff):
+    assert len(tx_to.vin) == len(spent_utxos)
+    assert input_index < len(tx_to.vin)
+    out_type = sig_hash_type & 3
+    in_type = sig_hash_type & SIGHASH_ANYONECANPAY
+    spk = spent_utxos[input_index].scriptPubKey
+    hash_type = sig_hash_type & 0xff
+    ss = bytearray([0, hash_type]) # epoch, sig_hash_type
+    ss += struct.pack("<I", tx_to.nVersion ^ (sig_hash_type & 0xffffff00))
+    ss += struct.pack("<I", tx_to.nLockTime)
+    if in_type != SIGHASH_ANYONECANPAY:
+        ss += sha256(b"".join(i.prevout.serialize() for i in tx_to.vin))
+        ss += sha256(b"".join(struct.pack("<q", u.nValue) for u in spent_utxos))
+        ss += sha256(b"".join(ser_string(u.scriptPubKey) for u in spent_utxos))
+        ss += sha256(b"".join(struct.pack("<I", i.nSequence) for i in tx_to.vin))
+    if out_type == SIGHASH_ALL:
+        ss += sha256(b"".join(o.serialize() for o in tx_to.vout))
+    spend_type = 0
+    if executed_script_hash is not None:
+        spend_type |= 2
+    ss += bytes([spend_type])
+    if in_type == SIGHASH_ANYONECANPAY:
+        ss += tx_to.vin[input_index].prevout.serialize()
+        ss += struct.pack("<q", spent_utxos[input_index].nValue)
+        ss += ser_string(spk)
+        ss += struct.pack("<I", tx_to.vin[input_index].nSequence)
+    else:
+        ss += struct.pack("<I", input_index)
+    if out_type == SIGHASH_SINGLE:
+        if input_index < len(tx_to.vout):
+            ss += sha256(tx_to.vout[input_index].serialize())
+        else:
+            raise ValueError("Invalid sighash")
+    if executed_script_hash is not None:
+        assert len(executed_script_hash) == 32
+        ss += executed_script_hash
+        ss += bytes([0])
+        ss += struct.pack("<I", codeseparator_pos)
+    return TaggedHash("TapSighash", ss)
 
 
 class TestFrameworkScript(unittest.TestCase):
