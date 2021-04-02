@@ -38,7 +38,8 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
 
     for (const SigHashType &baseSigHash : baseSigHashes) {
         // Check the signature with the proper forkid flag.
-        SigHashType sigHash = baseSigHash.withForkId(hasForkId);
+        SigHashType sigHash = baseSigHash.withAlgorithm(
+            hasForkId ? SIGHASH_FORKID : SIGHASH_LEGACY);
         valtype validSig = SignatureWithHashType(vchSig, sigHash);
         BOOST_CHECK(CheckTransactionSignatureEncoding(validSig, flags, &err));
         BOOST_CHECK_EQUAL(!is64, CheckTransactionECDSASignatureEncoding(
@@ -67,7 +68,8 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
         }
 
         // If we check strict encoding, then invalid forkid is an error.
-        SigHashType invalidSigHash = baseSigHash.withForkId(!hasForkId);
+        SigHashType invalidSigHash =
+            baseSigHash.withAlgorithm(hasForkId ? SIGHASH_LEGACY : SIGHASH_FORKID);
         valtype invalidSig = SignatureWithHashType(vchSig, invalidSigHash);
 
         BOOST_CHECK(
@@ -372,10 +374,12 @@ BOOST_AUTO_TEST_CASE(checkschnorr_test) {
         const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
 
         ScriptError err = ScriptError::OK;
-        valtype DER65_hb =
-            SignatureWithHashType(DER64, SigHashType().withForkId(hasForkId));
-        valtype Zero65_hb =
-            SignatureWithHashType(Zero64, SigHashType().withForkId(hasForkId));
+        valtype DER65_hb = SignatureWithHashType(
+            DER64, SigHashType().withAlgorithm(hasForkId ? SIGHASH_FORKID
+                                                         : SIGHASH_LEGACY));
+        valtype Zero65_hb = SignatureWithHashType(
+            Zero64, SigHashType().withAlgorithm(hasForkId ? SIGHASH_FORKID
+                                                          : SIGHASH_LEGACY));
 
         BOOST_CHECK(CheckDataSignatureEncoding(DER64, flags, &err));
         BOOST_CHECK(CheckTransactionSignatureEncoding(DER65_hb, flags, &err));
