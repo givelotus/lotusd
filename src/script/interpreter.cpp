@@ -102,8 +102,7 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
 
         default:
             // All undefined opcodes are also disabled.
-            if (opcode >= FIRST_UNDEFINED_OP_VALUE)
-                return true;
+            if (opcode >= FIRST_UNDEFINED_OP_VALUE) return true;
             break;
     }
 
@@ -683,10 +682,8 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         valtype &vch1 = stacktop(-2);
                         valtype &vch2 = stacktop(-1);
 
-                        int depthLonger =
-                            vch1.size() > vch2.size() ? 2 : 1;
-                        int depthShorter =
-                            vch1.size() > vch2.size() ? 1 : 2;
+                        int depthLonger = vch1.size() > vch2.size() ? 2 : 1;
+                        int depthShorter = vch1.size() > vch2.size() ? 1 : 2;
                         valtype &vchLonger = stacktop(-depthLonger);
                         valtype &vchShorter = stacktop(-depthShorter);
 
@@ -911,10 +908,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
                         valtype &vch = stacktop(-1);
-                        valtype vchHash((opcode == OP_RIPEMD160 ||
-                                         opcode == OP_HASH160)
-                                            ? 20
-                                            : 32);
+                        valtype vchHash(
+                            (opcode == OP_RIPEMD160 || opcode == OP_HASH160)
+                                ? 20
+                                : 32);
                         if (opcode == OP_RIPEMD160) {
                             CRIPEMD160()
                                 .Write(vch.data(), vch.size())
@@ -1694,12 +1691,14 @@ PrecomputedTransactionData::FromCoinsView(const T &tx,
 // explicit instantiation
 template PrecomputedTransactionData::PrecomputedTransactionData(
     const CTransaction &txTo, std::vector<CTxOut> &&spent_outputs);
-template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
-    const CTransaction &txTo, const CCoinsView &coins_view);
+template PrecomputedTransactionData
+PrecomputedTransactionData::FromCoinsView(const CTransaction &txTo,
+                                          const CCoinsView &coins_view);
 template PrecomputedTransactionData::PrecomputedTransactionData(
     const CMutableTransaction &txTo, std::vector<CTxOut> &&spent_outputs);
-template PrecomputedTransactionData PrecomputedTransactionData::FromCoinsView(
-    const CMutableTransaction &txTo, const CCoinsView &coins_view);
+template PrecomputedTransactionData
+PrecomputedTransactionData::FromCoinsView(const CMutableTransaction &txTo,
+                                          const CCoinsView &coins_view);
 
 template <class T>
 bool SignatureHashLegacy(uint256 &sighashOut, const CScript &scriptCode,
@@ -1806,7 +1805,7 @@ bool SignatureHashBIP341(uint256 &hash_out,
     assert(hash_type & SIGHASH_BIP341);
     assert(hash_type & SIGHASH_FORKID);
     if (!(hash_type & 0x03) || (hash_type & 0x1c)) {
-        // hash_type 0 is invalid, any undefined bits are invalid 
+        // hash_type 0 is invalid, any undefined bits are invalid
         return false;
     }
     ss << hash_type;
@@ -2092,6 +2091,105 @@ bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
     return q == q_expected;
 }
 
+#include <logging.h>
+#include <util/strencodings.h>
+
+static bool VerifyScriptType(std::vector<valtype> stack,
+                             const CScript &script_pubkey, uint32_t flags,
+                             const BaseSignatureChecker &checker,
+                             ScriptExecutionMetrics &metrics_out,
+                             ScriptError *serror) {
+    if (script_pubkey.size() == 1 ||
+        !script_pubkey.IsPushOnly(script_pubkey.begin() + 1)) {
+        return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+    }
+    if (script_pubkey[1] == OP_1) { // Taproot script version
+        if (!((script_pubkey.size() == SCRIPT_SIZE_WITHOUT_STATE &&
+               script_pubkey[SCRIPT_INTRO_SIZE - 1] ==
+                   CPubKey::COMPRESSED_SIZE) ||
+              (script_pubkey.size() == SCRIPT_SIZE_WITH_STATE &&
+               script_pubkey[SCRIPT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE] ==
+                   CSHA256::OUTPUT_SIZE))) {
+            return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+        }
+        valtype vch_pubkey =
+            valtype(script_pubkey.begin() + SCRIPT_INTRO_SIZE,
+                    script_pubkey.begin() + SCRIPT_SIZE_WITHOUT_STATE);
+
+        if (stack.size() == 0) {
+            return set_error(serror, ScriptError::INVALID_STACK_OPERATION);
+        }
+        if (stack.size() >= 2 && !stack.back().empty() &&
+            stack.back()[0] == ANNEX_TAG) {
+            return set_error(serror, ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED);
+        }
+        if (stack.size() == 1) {
+            // Spend using single signature instead of executing script
+            valtype &vch_sig = stacktop(-1);
+            bool f_success = false;
+            if (!EvalChecksig(vch_sig, vch_pubkey, script_pubkey.begin(),
+                              script_pubkey.end(),
+                              flags | SCRIPT_REQUIRE_TAPROOT_SIGHASH, checker,
+                              metrics_out, std::nullopt, serror, f_success)) {
+                if (*serror == ScriptError::SIG_NULLFAIL) {
+                    *serror = ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED;
+                }
+                // serror is set
+                return false;
+            }
+            if (!f_success) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED);
+            }
+            return set_success(serror);
+        } else {
+            // Spend using executing script, internal pubkey and merkle path
+            valtype control_block = stacktop(-1);
+            valtype script_bytes = stacktop(-2);
+            CScript exec_script(script_bytes.begin(), script_bytes.end());
+            popstack(stack);
+            popstack(stack);
+            const uint32_t size_remainder =
+                (control_block.size() - TAPROOT_CONTROL_BASE_SIZE) %
+                TAPROOT_CONTROL_NODE_SIZE;
+            if (control_block.size() < TAPROOT_CONTROL_BASE_SIZE ||
+                control_block.size() > TAPROOT_CONTROL_MAX_SIZE ||
+                (size_remainder != 0)) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_WRONG_CONTROL_SIZE);
+            }
+            if ((control_block[0] & TAPROOT_LEAF_MASK) !=
+                TAPROOT_LEAF_TAPSCRIPT) {
+                return set_error(
+                    serror, ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED);
+            }
+            uint256 tapleaf_hash;
+            if (!VerifyTaprootCommitment(tapleaf_hash, control_block,
+                                         vch_pubkey, exec_script)) {
+                return set_error(serror,
+                                 ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED);
+            }
+            if (script_pubkey.size() == SCRIPT_SIZE_WITH_STATE) {
+                stack.push_back(valtype(
+                    script_pubkey.begin() + SCRIPT_SIZE_WITHOUT_STATE + 1,
+                    script_pubkey.begin() + SCRIPT_SIZE_WITH_STATE));
+            }
+            ScriptExecutionData execdata{tapleaf_hash};
+            if (!EvalScript(stack, exec_script, flags, checker, metrics_out,
+                            execdata, serror)) {
+                // serror is set
+                return false;
+            }
+        }
+    } else {
+        return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
+    }
+    if (stack.empty() || !CastToBool(stack.back())) {
+        return set_error(serror, ScriptError::EVAL_FALSE);
+    }
+    return set_success(serror);
+}
+
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
@@ -2107,12 +2205,21 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
     {
-        ScriptExecutionData execdata{CScript()};  // unused in scriptSig
+        ScriptExecutionData execdata{CScript()}; // unused in scriptSig
         if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
                         serror)) {
             // serror is set
             return false;
         }
+    }
+    if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_SCRIPTTYPE) {
+        if (!VerifyScriptType(stack, scriptPubKey, flags, checker, metricsOut,
+                              serror)) {
+            // serror is set
+            return false;
+        }
+        metricsOut = metrics;
+        return set_success(serror);
     }
     stackCopy = stack;
     {

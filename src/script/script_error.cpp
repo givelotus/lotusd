@@ -110,6 +110,22 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Validation resources exceeded (SigChecks)";
         case ScriptError::INVALID_OP_SCRIPTTYPE:
             return "Marker opcode OP_SCRIPTTYPE cannot be executed";
+        case ScriptError::SCRIPTTYPE_INVALID_TYPE:
+            return "Scripttype specified after OP_SCRIPTTYPE is invalid";
+        case ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT:
+            return "Malformed OP_SCRIPTTYPE script";
+        case ScriptError::TAPROOT_WRONG_CONTROL_SIZE:
+            return "Control block needs to be of length 33 + 32n";
+        case ScriptError::TAPROOT_MUST_USE_BIP341_SIGHASH:
+            return "Taproot signatures must use SIGHASH_BIP341";
+        case ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED:
+            return "Invalid Taproot signature";
+        case ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED:
+            return "Taproot control does not verify the script";
+        case ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED:
+            return "BIP341-style taproot annex (0x50) not supported";
+        case ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED:
+            return "Unsupported taproot script leaf version";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

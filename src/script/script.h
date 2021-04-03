@@ -8,6 +8,7 @@
 
 #include <crypto/common.h>
 #include <prevector.h>
+#include <pubkey.h>
 #include <serialize.h>
 
 #include <cassert>
@@ -40,6 +41,14 @@ static const int MAX_NUM2BIN_SIZE = 68;
 // Threshold for nLockTime: below this value it is interpreted as block number,
 // otherwise as UNIX timestamp. Thresold is Tue Nov 5 00:53:20 1985 UTC
 static const unsigned int LOCKTIME_THRESHOLD = 500000000;
+
+// OP_SCRIPTTYPE <type> 0x21...
+constexpr uint32_t SCRIPT_INTRO_SIZE = 3;
+constexpr uint32_t SCRIPT_SIZE_WITHOUT_STATE =
+    SCRIPT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE;
+constexpr uint32_t SCRIPT_SIZE_WITH_STATE =
+    SCRIPT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE + 33;
+static constexpr uint32_t ANNEX_TAG = 0x50;
 
 template <typename T> std::vector<uint8_t> ToByteVector(const T &in) {
     return std::vector<uint8_t>(in.begin(), in.end());

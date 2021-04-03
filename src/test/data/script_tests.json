@@ -1836,7 +1836,7 @@
 
 ["","NOP10", "", "EVAL_FALSE"],
 
-["1","SCRIPTTYPE", "", "INVALID_OP_SCRIPTTYPE", "Marker opcode OP_SCRIPTTYPE cannot occur in script"],
+["1","SCRIPTTYPE", "", "SCRIPTTYPE_MALFORMED_SCRIPT", "Marker opcode OP_SCRIPTTYPE cannot occur in script"],
 
 ["1","VERIF", "", "DISABLED_OPCODE", "OP_VERIF is reserved"],
 ["1","VERNOTIF", "", "DISABLED_OPCODE", "OP_VERNOTIF is reserved"],

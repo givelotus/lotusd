@@ -48,6 +48,10 @@ enum {
     // Note: The Segwit Recovery feature is a (currently moot) exception to
     // VERIFY_INPUT_SIGCHECKS
     SCRIPT_VERIFY_INPUT_SIGCHECKS = (1U << 22),
+
+    // Require BIP341 for key spend path (spending without revealing the script)
+    // in Taproot
+    SCRIPT_REQUIRE_TAPROOT_SIGHASH = (1U << 23),
 };
 
 #endif // BITCOIN_SCRIPT_SCRIPT_FLAGS_H
