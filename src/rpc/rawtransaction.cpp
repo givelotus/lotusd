@@ -879,7 +879,13 @@ static UniValue signrawtransactionwithkey(const Config &config,
              "       \"SINGLE|FORKID\"\n"
              "       \"ALL|FORKID|ANYONECANPAY\"\n"
              "       \"NONE|FORKID|ANYONECANPAY\"\n"
-             "       \"SINGLE|FORKID|ANYONECANPAY\""},
+             "       \"SINGLE|FORKID|ANYONECANPAY\"\n"
+             "       \"ALL|BIP341\"\n"
+             "       \"NONE|BIP341\"\n"
+             "       \"SINGLE|BIP341\"\n"
+             "       \"ALL|BIP341|ANYONECANPAY\"\n"
+             "       \"NONE|BIP341|ANYONECANPAY\"\n"
+             "       \"SINGLE|BIP341|ANYONECANPAY\""},
         },
         RPCResult{
             RPCResult::Type::OBJ,

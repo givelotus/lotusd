@@ -166,6 +166,12 @@ class SignRawTransactionsTest(BitcoinTestFramework):
             "ALL|FORKID|ANYONECANPAY",
             "NONE|FORKID|ANYONECANPAY",
             "SINGLE|FORKID|ANYONECANPAY",
+            "ALL|BIP341",
+            "NONE|BIP341",
+            "SINGLE|BIP341",
+            "ALL|BIP341|ANYONECANPAY",
+            "NONE|BIP341|ANYONECANPAY",
+            "SINGLE|BIP341|ANYONECANPAY",
         ]
         no_forkid_sighashes = [
             "ALL",
@@ -180,6 +186,8 @@ class SignRawTransactionsTest(BitcoinTestFramework):
             "ALL|SINGLE|FORKID",
             str(0),
             str(0x20),
+            str(0x21),
+            str(0x64),
         ]
 
         # 1) If the sighash is valid with FORKID, the signature is complete
@@ -192,7 +200,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
 
         # 2) If FORKID is missing in the sighash, the RPC throws an error
         for sighash in no_forkid_sighashes:
-            assert_raises_rpc_error(-8, "Signature must use SIGHASH_FORKID",
+            assert_raises_rpc_error(-8, "Signature must use SIGHASH_FORKID or SIGHASH_BIP341",
                                     self.nodes[0].signrawtransactionwithkey,
                                     rawTx, privKeys, inputs, sighash)
 

@@ -257,9 +257,10 @@ void SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
                      const std::map<COutPoint, Coin> &coins,
                      const UniValue &hashType, UniValue &result) {
     SigHashType sigHashType = ParseSighashString(hashType);
-    if (!sigHashType.hasForkId()) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER,
-                           "Signature must use SIGHASH_FORKID");
+    if (!sigHashType.hasForkId() && !sigHashType.hasBIP341()) {
+        throw JSONRPCError(
+            RPC_INVALID_PARAMETER,
+            "Signature must use SIGHASH_FORKID or SIGHASH_BIP341");
     }
 
     // Script verification errors
