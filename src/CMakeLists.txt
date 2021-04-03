@@ -572,6 +572,7 @@ add_library(script
 	script/sign.cpp
 	script/signingprovider.cpp
 	script/standard.cpp
+	script/taproot.cpp
 )
 
 target_link_libraries(script common)
