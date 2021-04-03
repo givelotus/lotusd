@@ -110,6 +110,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Validation resources exceeded (SigChecks)";
         case ScriptError::INVALID_OP_SCRIPTTYPE:
             return "Marker opcode OP_SCRIPTTYPE cannot be executed";
+        case ScriptError::TAPROOT_MUST_USE_BIP341_SIGHASH:
+            return "Taproot key path signatures must use SIGHASH_BIP341";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

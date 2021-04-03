@@ -93,9 +93,14 @@ BOOST_AUTO_TEST_CASE(opcodes_random_flags) {
     for (int i = 0; i < 4096; i++) {
         uint32_t flags = lcg.next();
 
-        const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
-        const SigHashType sigHashType = SigHashType().withAlgorithm(
-            hasForkId ? SIGHASH_FORKID : SIGHASH_LEGACY);
+        SigHashType sigHashType = SigHashType();
+        if (flags & SCRIPT_REQUIRE_BIP341_SIGHASH) {
+            // Prevent invalid flag combinations
+            flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
+            sigHashType = sigHashType.withBIP341();
+        } else if (flags & SCRIPT_ENABLE_SIGHASH_FORKID) {
+            sigHashType = sigHashType.withForkId();
+        }
 
         // Prepare 65-byte transaction sigs with right hashtype byte.
         valtype DER64_with_hashtype = SignatureWithHashType(DER64, sigHashType);

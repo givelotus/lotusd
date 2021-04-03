@@ -466,9 +466,10 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
 
         // This should be valid under all script flags that support our sighash
         // convention.
-        ValidateCheckInputsForAllFlags(
-            CTransaction(tx), SCRIPT_ENABLE_REPLAY_PROTECTION,
-            SCRIPT_ENABLE_SIGHASH_FORKID, true, 2);
+        ValidateCheckInputsForAllFlags(CTransaction(tx),
+                                       SCRIPT_ENABLE_REPLAY_PROTECTION |
+                                           SCRIPT_REQUIRE_BIP341_SIGHASH,
+                                       SCRIPT_ENABLE_SIGHASH_FORKID, true, 2);
 
         {
             // Try checking this valid transaction with sigchecks limiter
