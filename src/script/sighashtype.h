@@ -111,6 +111,7 @@ public:
         switch (sigHash & SIGHASH_ALGORITHM_MASK) {
             case SIGHASH_LEGACY:
             case SIGHASH_FORKID:
+            case SIGHASH_BIP341:
                 break;
             default:
                 return false;
