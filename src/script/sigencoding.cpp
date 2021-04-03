@@ -215,7 +215,8 @@ static bool CheckSighashEncoding(const valtype &vchSig, uint32_t flags,
         return set_error(serror, ScriptError::SIG_HASHTYPE);
     }
 
-    bool usesForkId = GetHashType(vchSig).hasForkId();
+    SigHashType sigHashType = GetHashType(vchSig);
+    bool usesForkId = sigHashType.hasForkId() || sigHashType.hasBIP341();
     bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
     if (!forkIdEnabled && usesForkId) {
         return set_error(serror, ScriptError::ILLEGAL_FORKID);

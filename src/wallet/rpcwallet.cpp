@@ -4076,9 +4076,10 @@ UniValue signrawtransactionwithwallet(const Config &config,
     ParsePrevouts(request.params[1], nullptr, coins);
 
     SigHashType nHashType = ParseSighashString(request.params[2]);
-    if (!nHashType.hasForkId()) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER,
-                           "Signature must use SIGHASH_FORKID");
+    if (!nHashType.hasForkId() && !nHashType.hasBIP341()) {
+        throw JSONRPCError(
+            RPC_INVALID_PARAMETER,
+            "Signature must use SIGHASH_FORKID or SIGHASH_BIP341");
     }
 
     // Script verification errors
@@ -4771,9 +4772,10 @@ static UniValue walletprocesspsbt(const Config &config,
 
     // Get the sighash type
     SigHashType nHashType = ParseSighashString(request.params[2]);
-    if (!nHashType.hasForkId()) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER,
-                           "Signature must use SIGHASH_FORKID");
+    if (!nHashType.hasForkId() && !nHashType.hasBIP341()) {
+        throw JSONRPCError(
+            RPC_INVALID_PARAMETER,
+            "Signature must use SIGHASH_FORKID or SIGHASH_BIP341");
     }
 
     // Fill transaction with our data and also sign
