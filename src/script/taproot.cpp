@@ -4,6 +4,7 @@
 
 #include <hash.h>
 #include <pubkey.h>
+#include <script/script.h>
 #include <script/taproot.h>
 
 static const CHashWriter HASHER_TAPLEAF = TaggedHash("TapLeaf");
@@ -61,4 +62,25 @@ bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
         return false;
     }
     return q == q_expected;
+}
+
+bool IsPayToTaproot(const CScript &script) {
+    if (script.size() < TAPROOT_SIZE_WITHOUT_STATE) {
+        return false;
+    }
+    // Taproot must start with OP_SCRIPTTYPE OP_1
+    if (script[0] != OP_SCRIPTTYPE || script[1] != TAPROOT_SCRIPTTYPE) {
+        return false;
+    }
+    // First push (commitment) must be 33 bytes long
+    if (script[2] != CPubKey::COMPRESSED_SIZE) {
+        return false;
+    }
+    // If there's only a commitment but no state, we're valid
+    if (script.size() == TAPROOT_SIZE_WITHOUT_STATE) {
+        return true;
+    }
+    // Otherwise, we need a state with 32 bytes.
+    return script.size() == TAPROOT_SIZE_WITH_STATE &&
+           script[TAPROOT_SIZE_WITHOUT_STATE] == CSHA256::OUTPUT_SIZE;
 }
