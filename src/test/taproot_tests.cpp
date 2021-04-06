@@ -2,6 +2,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <core_io.h>
+#include <policy/policy.h>
+#include <script/interpreter.h>
+#include <script/sigencoding.h>
 #include <script/taproot.h>
 #include <util/strencodings.h>
 
@@ -247,6 +251,36 @@ BOOST_AUTO_TEST_CASE(verify_taproot_commitment_3) {
     expected_taproot_leaf = ParseHex(
         "8fe98416aeedc4ff4bdd55d79dd3e5399c9c2b1d2d2beea8c300c2ba262c5bbc");
     BOOST_CHECK_EQUAL(taproot_leaf, uint256(expected_taproot_leaf));
+}
+
+BOOST_AUTO_TEST_CASE(is_p2tr) {
+    BOOST_CHECK(!IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1));
+    BOOST_CHECK(
+        !IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1 << valtype(0)));
+    BOOST_CHECK(
+        !IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1 << valtype(32)));
+    BOOST_CHECK(
+        !IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1 << valtype(34)));
+    for (uint32_t commitment_len = 0; commitment_len < 70; ++commitment_len) {
+        bool is_valid_commitment = commitment_len == 33;
+        BOOST_CHECK_EQUAL(is_valid_commitment,
+                          IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1
+                                                   << valtype(commitment_len)));
+        for (uint32_t state_len = 0; state_len < 70; ++state_len) {
+            bool is_valid_state = state_len == 32;
+            BOOST_CHECK_EQUAL(is_valid_commitment && is_valid_state,
+                              IsPayToTaproot(CScript()
+                                             << OP_SCRIPTTYPE << OP_1
+                                             << valtype(commitment_len)
+                                             << valtype(state_len)));
+            for (uint32_t junk_len = 0; junk_len < 70; ++junk_len) {
+                BOOST_CHECK(!IsPayToTaproot(CScript() << OP_SCRIPTTYPE << OP_1
+                                                      << valtype(commitment_len)
+                                                      << valtype(state_len)
+                                                      << valtype(junk_len)));
+            }
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

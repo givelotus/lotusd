@@ -19,6 +19,15 @@ static constexpr size_t TAPROOT_CONTROL_MAX_SIZE =
     TAPROOT_CONTROL_BASE_SIZE +
     TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
+static constexpr opcodetype TAPROOT_SCRIPTTYPE = OP_1;
+
+// OP_SCRIPTTYPE <type> 0x21...
+static constexpr uint32_t TAPROOT_INTRO_SIZE = 3;
+static constexpr uint32_t TAPROOT_SIZE_WITHOUT_STATE =
+    TAPROOT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE;
+static constexpr uint32_t TAPROOT_SIZE_WITH_STATE =
+    TAPROOT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE + 33;
+
 /**
  * Verifies that the control block proves that script is part of the commitment.
  *
@@ -36,5 +45,14 @@ static constexpr size_t TAPROOT_CONTROL_MAX_SIZE =
 bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
                              const valtype &control_block,
                              const valtype &commitment, const CScript &script);
+
+/**
+ * Returns whether the script is a valid Taproot output script.
+ *
+ * Valid scripts can be either of these:
+ * - `OP_SCRIPTTYPE OP_1 <33-byte commitment>
+ * - `OP_SCRIPTTYPE OP_1 <33-byte commitment> <32-byte state>
+ */
+bool IsPayToTaproot(const CScript &script);
 
 #endif // BITCOIN_SCRIPT_TAPROOT_H
