@@ -160,6 +160,10 @@ static bool IsSchnorrSig(const slicedvaltype &sig) {
 static bool CheckRawECDSASignatureEncoding(const slicedvaltype &sig,
                                            uint32_t flags,
                                            ScriptError *serror) {
+    if (flags & SCRIPT_REQUIRE_TAPROOT_SIGNATURES) {
+        // In Taproot key spend path, only Schnorr signatures are allowed.
+        return set_error(serror, ScriptError::TAPROOT_MUST_USE_SCHNORR_SIGS);
+    }
     if (IsSchnorrSig(sig)) {
         // In an ECDSA-only context, 64-byte signatures are forbidden.
         return set_error(serror, ScriptError::SIG_BADLENGTH);
@@ -216,6 +220,11 @@ static bool CheckSighashEncoding(const valtype &vchSig, uint32_t flags,
     }
 
     SigHashType sigHashType = GetHashType(vchSig);
+    // For Taproot key spend path, using BIP341 sighash is required
+    if ((flags & SCRIPT_REQUIRE_TAPROOT_SIGNATURES) &&
+        !sigHashType.hasBIP341()) {
+        return set_error(serror, ScriptError::TAPROOT_MUST_USE_BIP341_SIGHASH);
+    }
     bool usesForkId = sigHashType.hasForkId() || sigHashType.hasBIP341();
     bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
     if (!forkIdEnabled && usesForkId) {

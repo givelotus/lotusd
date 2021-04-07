@@ -140,6 +140,8 @@ BOOST_AUTO_TEST_CASE(checkdatasig_test) {
     MMIXLinearCongruentialGenerator lcg;
     for (int i = 0; i < 4096; i++) {
         uint32_t flags = lcg.next();
+        // Flag cannot occur in script execution, only in Taproot key spend
+        flags &= ~SCRIPT_REQUIRE_TAPROOT_SIGNATURES;
 
         // Since strict encoding is enforced, hybrid keys are invalid.
         CheckError(flags, {{}, message, pubkeyH}, script,

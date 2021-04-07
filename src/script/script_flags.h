@@ -11,6 +11,11 @@
 enum {
     SCRIPT_VERIFY_NONE = 0,
 
+    // Require BIP341 sighash and Schnorr signatures for key spend path
+    // (spending without revealing the script) in Taproot.
+    // Only used for checking signatures, not during script execution.
+    SCRIPT_REQUIRE_TAPROOT_SIGNATURES = (1U << 0),
+
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
