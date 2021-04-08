@@ -88,6 +88,10 @@ enum class ScriptError {
     /* OP_SCRIPTTYPE should never be executed in an executed script, it's only a
        marker */
     INVALID_OP_SCRIPTTYPE,
+    /* Script type not supported */
+    SCRIPTTYPE_INVALID_TYPE,
+    /* Script not formatted in accordance with script type */
+    SCRIPTTYPE_MALFORMED_SCRIPT,
 
     /* Key spend path for Taproot must use BIP341 sighash */
     TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
