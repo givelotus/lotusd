@@ -2042,6 +2042,45 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
+bool VerifyScriptPostConditions(const std::vector<valtype> stack,
+                                const CScript &scriptSig, uint32_t flags,
+                                const ScriptExecutionMetrics &metrics,
+                                ScriptError *serror) {
+    // The CLEANSTACK check is only performed after potential P2SH evaluation,
+    // as the non-P2SH evaluation of a P2SH script will obviously not result in
+    // a clean stack (the P2SH inputs remain).
+    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
+        if (stack.size() != 1) {
+            return set_error(serror, ScriptError::CLEANSTACK);
+        }
+    }
+
+    if (flags & SCRIPT_VERIFY_INPUT_SIGCHECKS) {
+        // This limit is intended for standard use, and is based on an
+        // examination of typical and historical standard uses.
+        // - allowing P2SH ECDSA multisig with compressed keys, which at an
+        // extreme (1-of-15) may have 15 SigChecks in ~590 bytes of scriptSig.
+        // - allowing Bare ECDSA multisig, which at an extreme (1-of-3) may have
+        // 3 sigchecks in ~72 bytes of scriptSig.
+        // - Since the size of an input is 41 bytes + length of scriptSig, then
+        // the most dense possible inputs satisfying this rule would be:
+        //   2 sigchecks and 26 bytes: 1/33.50 sigchecks/byte.
+        //   3 sigchecks and 69 bytes: 1/36.66 sigchecks/byte.
+        // The latter can be readily done with 1-of-3 bare multisignatures,
+        // however the former is not practically doable with standard scripts,
+        // so the practical density limit is 1/36.66.
+        static_assert(INT_MAX > MAX_SCRIPT_SIZE,
+                      "overflow sanity check on max script size");
+        static_assert(INT_MAX / 43 / 3 > MAX_OPS_PER_SCRIPT,
+                      "overflow sanity check on maximum possible sigchecks "
+                      "from sig+redeem+pub scripts");
+        if (int(scriptSig.size()) < metrics.nSigChecks * 43 - 60) {
+            return set_error(serror, ScriptError::INPUT_SIGCHECKS);
+        }
+    }
+    return true;
+}
+
 static bool VerifyTaprootSpend(std::vector<valtype> stack,
                                const CScript &script_sig,
                                const CScript &script_pubkey, uint32_t flags,
@@ -2078,8 +2117,49 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
         }
         return set_success(serror);
     }
-    // Temporarily return UNKNOWN for script spend path
-    return set_error(serror, ScriptError::UNKNOWN);
+    // Spend using executing script, internal pubkey and merkle path
+    valtype control_block = stacktop(-1);
+    valtype script_bytes = stacktop(-2);
+    CScript exec_script(script_bytes.begin(), script_bytes.end());
+    popstack(stack);
+    popstack(stack);
+    const uint32_t size_remainder =
+        (control_block.size() - TAPROOT_CONTROL_BASE_SIZE) %
+        TAPROOT_CONTROL_NODE_SIZE;
+    if (control_block.size() < TAPROOT_CONTROL_BASE_SIZE ||
+        control_block.size() > TAPROOT_CONTROL_MAX_SIZE ||
+        (size_remainder != 0)) {
+        return set_error(serror, ScriptError::TAPROOT_WRONG_CONTROL_SIZE);
+    }
+    if ((control_block[0] & TAPROOT_LEAF_MASK) != TAPROOT_LEAF_TAPSCRIPT) {
+        return set_error(serror,
+                         ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED);
+    }
+    uint256 tapleaf_hash;
+    if (!VerifyTaprootCommitment(tapleaf_hash, control_block, vch_pubkey,
+                                 exec_script)) {
+        return set_error(serror, ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED);
+    }
+    if (script_pubkey.size() == TAPROOT_SIZE_WITH_STATE) {
+        stack.push_back(
+            valtype(script_pubkey.begin() + TAPROOT_SIZE_WITHOUT_STATE + 1,
+                    script_pubkey.begin() + TAPROOT_SIZE_WITH_STATE));
+    }
+    ScriptExecutionData execdata{tapleaf_hash};
+    if (!EvalScript(stack, exec_script, flags, checker, metrics, execdata,
+                    serror)) {
+        // serror is set
+        return false;
+    }
+    if (stack.empty() || CastToBool(stack.back()) == false) {
+        return set_error(serror, ScriptError::EVAL_FALSE);
+    }
+    if (!VerifyScriptPostConditions(stack, script_sig, flags, metrics,
+                                    serror)) {
+        // serror is set
+        return false;
+    }
+    return set_success(serror);
 }
 
 static bool VerifyScriptType(std::vector<valtype> stack,
@@ -2182,38 +2262,9 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         }
     }
 
-    // The CLEANSTACK check is only performed after potential P2SH evaluation,
-    // as the non-P2SH evaluation of a P2SH script will obviously not result in
-    // a clean stack (the P2SH inputs remain). The same holds for witness
-    // evaluation.
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0) {
-        if (stack.size() != 1) {
-            return set_error(serror, ScriptError::CLEANSTACK);
-        }
-    }
-
-    if (flags & SCRIPT_VERIFY_INPUT_SIGCHECKS) {
-        // This limit is intended for standard use, and is based on an
-        // examination of typical and historical standard uses.
-        // - allowing P2SH ECDSA multisig with compressed keys, which at an
-        // extreme (1-of-15) may have 15 SigChecks in ~590 bytes of scriptSig.
-        // - allowing Bare ECDSA multisig, which at an extreme (1-of-3) may have
-        // 3 sigchecks in ~72 bytes of scriptSig.
-        // - Since the size of an input is 41 bytes + length of scriptSig, then
-        // the most dense possible inputs satisfying this rule would be:
-        //   2 sigchecks and 26 bytes: 1/33.50 sigchecks/byte.
-        //   3 sigchecks and 69 bytes: 1/36.66 sigchecks/byte.
-        // The latter can be readily done with 1-of-3 bare multisignatures,
-        // however the former is not practically doable with standard scripts,
-        // so the practical density limit is 1/36.66.
-        static_assert(INT_MAX > MAX_SCRIPT_SIZE,
-                      "overflow sanity check on max script size");
-        static_assert(INT_MAX / 43 / 3 > MAX_OPS_PER_SCRIPT,
-                      "overflow sanity check on maximum possible sigchecks "
-                      "from sig+redeem+pub scripts");
-        if (int(scriptSig.size()) < metrics.nSigChecks * 43 - 60) {
-            return set_error(serror, ScriptError::INPUT_SIGCHECKS);
-        }
+    if (!VerifyScriptPostConditions(stack, scriptSig, flags, metrics, serror)) {
+        // serror is set
+        return false;
     }
 
     metricsOut = metrics;

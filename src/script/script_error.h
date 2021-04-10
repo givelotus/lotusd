@@ -101,6 +101,12 @@ enum class ScriptError {
     TAPROOT_VERIFY_SIGNATURE_FAILED,
     /* Taproot annex not supported */
     TAPROOT_ANNEX_NOT_SUPPORTED,
+    /* Control block not of size 33+32n */
+    TAPROOT_WRONG_CONTROL_SIZE,
+    /* Control block doesn't verify commitment */
+    TAPROOT_VERIFY_COMMITMENT_FAILED,
+    /* Taproot leaf version not supported */
+    TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
 
     ERROR_COUNT,
 };

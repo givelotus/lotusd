@@ -104,6 +104,11 @@ static ScriptErrorDesc script_errors[] = {
     {ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED,
      "TAPROOT_VERIFY_SIGNATURE_FAILED"},
     {ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED, "TAPROOT_ANNEX_NOT_SUPPORTED"},
+    {ScriptError::TAPROOT_WRONG_CONTROL_SIZE, "TAPROOT_WRONG_CONTROL_SIZE"},
+    {ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED,
+     "TAPROOT_VERIFY_COMMITMENT_FAILED"},
+    {ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
+     "TAPROOT_LEAF_VERSION_NOT_SUPPORTED"},
 };
 
 static std::string FormatScriptError(ScriptError err) {
@@ -171,6 +176,80 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
             message + strprintf(" (with %s flags %08x)",
                                 expect ? "removed" : "added",
                                 combined_flags ^ flags));
+    }
+
+    // Run the test in a Taproot output using one leaf.
+    // We skip tests
+    // - containing OP_CHECK[MULTI]SIG[VERIFY], as they will contain
+    //   invalid sigs,
+    // - containing OP_HASH160, as they might be P2SH,
+    // - larger than 520 bytes, as they cannot be pushed on the stack.
+    // For scripts containing OP_SCRIPTTYPE, we change the error to
+    // INVALID_OP_SCRIPTTYPE.
+    bool verify_taproot = scriptPubKey.size() <= 520;
+    CScript::const_iterator pc = scriptPubKey.begin();
+    while (pc != scriptPubKey.end()) {
+        opcodetype opcode;
+        std::vector<uint8_t> vch_push_value;
+        if (scriptPubKey.GetOp(pc, opcode, vch_push_value)) {
+            switch (opcode) {
+                case OP_CHECKSIG:
+                case OP_CHECKSIGVERIFY:
+                case OP_CHECKMULTISIG:
+                case OP_CHECKMULTISIGVERIFY:
+                case OP_HASH160:
+                    verify_taproot = false;
+                    break;
+                case OP_SCRIPTTYPE:
+                    scriptError = ScriptError::INVALID_OP_SCRIPTTYPE;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+    if (verify_taproot) {
+        const std::vector<uint8_t> vch_internal_pubkey =
+            ParseHex("020000000000000000000000000000000000000000000000000000000"
+                     "000000014");
+        CPubKey pubkey_internal(vch_internal_pubkey.begin(),
+                                vch_internal_pubkey.end());
+        const uint256 tapleaf_hash =
+            (TaggedHash("TapLeaf") << uint8_t(0xc0) << scriptPubKey)
+                .GetSHA256();
+        const uint256 tweak_hash =
+            (TaggedHash("TapTweak")
+             << MakeSpan(pubkey_internal) << tapleaf_hash)
+                .GetSHA256();
+        CPubKey pubkey_commitment;
+        BOOST_CHECK(pubkey_internal.AddScalar(pubkey_commitment, tweak_hash));
+        const std::vector<uint8_t> vch_pubkey_commitment(
+            pubkey_commitment.begin(), pubkey_commitment.end());
+        const CScript script_pubkey_taproot =
+            CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey_commitment;
+        const CTransaction tx_credit_taproot{
+            BuildCreditingTransaction(script_pubkey_taproot, nValue)};
+        std::vector<uint8_t> control_block = vch_internal_pubkey;
+        control_block[0] = control_block[0] == 0x02 ? 0 : 1;
+        control_block[0] |= 0xc0;
+        CScript script_sig_taproot = scriptSig;
+        script_sig_taproot << std::vector<uint8_t>(scriptPubKey.begin(),
+                                                   scriptPubKey.end());
+        script_sig_taproot << control_block;
+        CMutableTransaction tx_taproot =
+            BuildSpendingTransaction(script_sig_taproot, tx_credit_taproot);
+        const PrecomputedTransactionData txdata_taproot(
+            tx_taproot, std::vector(tx_credit_taproot.vout));
+        BOOST_CHECK_MESSAGE(
+            VerifyScript(script_sig_taproot, script_pubkey_taproot, flags,
+                         MutableTransactionSignatureChecker(
+                             &tx_taproot, 0, nValue, txdata_taproot),
+                         &err) == expect,
+            message);
+        BOOST_CHECK_MESSAGE(err == scriptError,
+                            FormatScriptError(err) + " where " +
+                                FormatScriptError(scriptError) +
+                                " expected: " + message);
     }
 
 #if defined(HAVE_CONSENSUS_LIB)
