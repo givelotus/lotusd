@@ -283,4 +283,88 @@ BOOST_AUTO_TEST_CASE(is_p2tr) {
     }
 }
 
+std::array<uint32_t, 2> flagset{
+    {SCRIPT_ENABLE_SIGHASH_FORKID, STANDARD_SCRIPT_VERIFY_FLAGS}};
+
+struct TestUtxo {
+    CScript script_sig;
+    CScript script_pubkey;
+    CScript exec_script;
+    Amount amount;
+    uint32_t sequence = 0xffff'ffff;
+    COutPoint outpoint = COutPoint();
+};
+
+void CheckTxScripts(const std::vector<TestUtxo> &inputs,
+                    const std::vector<CTxOut> &outputs, const uint32_t flags,
+                    const ScriptError expected_error = ScriptError::OK) {
+    CMutableTransaction tx;
+    std::vector<CTxOut> spent_outputs;
+    for (const TestUtxo &input : inputs) {
+        tx.vin.push_back(
+            CTxIn(input.outpoint, input.script_sig, input.sequence));
+        spent_outputs.push_back({input.amount, input.script_pubkey});
+    }
+    tx.vout = outputs;
+    const PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
+    for (uint32_t i = 0; i < tx.vin.size(); ++i) {
+        const MutableTransactionSignatureChecker sig_checker(
+            &tx, i, inputs[i].amount, txdata);
+        ScriptExecutionMetrics metrics;
+        ScriptError serror;
+        bool result =
+            VerifyScript(inputs[i].script_sig, inputs[i].script_pubkey, flags,
+                         sig_checker, metrics, &serror);
+        BOOST_CHECK_EQUAL(serror, expected_error);
+        std::string script_asm = ScriptToAsmStr(inputs[i].exec_script);
+        if (expected_error == ScriptError::OK) {
+            BOOST_CHECK_MESSAGE(result, "Script: " << script_asm);
+        } else {
+            BOOST_CHECK_MESSAGE(!result, "Script: " << script_asm);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(verify_invalid_taproot_script) {
+    valtype vch_pubkey = ParseHex(
+        "020000000000000000000000000000000000000000000000000000000000000001");
+    std::vector<std::pair<CScript, ScriptError>> invalid_scripts = {
+        {{CScript() << OP_SCRIPTTYPE << OP_0},
+         ScriptError::SCRIPTTYPE_INVALID_TYPE},
+        {{CScript() << OP_SCRIPTTYPE << OP_2},
+         ScriptError::SCRIPTTYPE_INVALID_TYPE},
+        {{CScript() << OP_SCRIPTTYPE << OP_3},
+         ScriptError::SCRIPTTYPE_INVALID_TYPE},
+        {{CScript() << OP_SCRIPTTYPE << OP_1},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(0)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(32)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(34)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(0)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(31)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(33)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(10) << valtype(55)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(32) << valtype(33)},
+         ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+         ScriptError::UNKNOWN},
+        {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(32)},
+         ScriptError::UNKNOWN},
+    };
+    for (auto &pair : invalid_scripts) {
+        std::vector<TestUtxo> inputs = {{{}, pair.first, {}, Amount::zero()}};
+        const std::vector<CTxOut> outputs = {{Amount::zero(), {}}};
+        for (uint32_t flags : flagset) {
+            CheckTxScripts(inputs, outputs, flags, pair.second);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
