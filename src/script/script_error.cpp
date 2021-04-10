@@ -118,6 +118,10 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Taproot key spend signatures must use SIGHASH_BIP341";
         case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG:
             return "Taproot key spend signature must be Schnorr";
+        case ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED:
+            return "Invalid Taproot key spend signature";
+        case ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED:
+            return "BIP341-style taproot annex (0x50) not supported";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

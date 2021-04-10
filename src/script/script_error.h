@@ -97,6 +97,10 @@ enum class ScriptError {
     TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
     /* Key spend path for Taproot must Schnorr signatures */
     TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
+    /* Key spend path for Taproot failed */
+    TAPROOT_VERIFY_SIGNATURE_FAILED,
+    /* Taproot annex not supported */
+    TAPROOT_ANNEX_NOT_SUPPORTED,
 
     ERROR_COUNT,
 };
