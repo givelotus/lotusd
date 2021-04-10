@@ -2051,7 +2051,35 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
     if (!IsPayToTaproot(script_pubkey)) {
         return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
     }
-    // Temporarily return UNKNOWN
+    valtype vch_pubkey =
+        valtype(script_pubkey.begin() + TAPROOT_INTRO_SIZE,
+                script_pubkey.begin() + TAPROOT_SIZE_WITHOUT_STATE);
+
+    if (stack.size() == 0) {
+        return set_error(serror, ScriptError::INVALID_STACK_OPERATION);
+    }
+    if (stack.size() >= 2 && !stack.back().empty() &&
+        stack.back()[0] == TAPROOT_ANNEX_TAG) {
+        return set_error(serror, ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED);
+    }
+    if (stack.size() == 1) {
+        // Spend using single signature instead of executing script
+        const valtype &vch_sig = stacktop(-1);
+        const uint32_t sig_flags = flags | SCRIPT_TAPROOT_KEY_SPEND_PATH;
+        if (!CheckTransactionSignatureEncoding(vch_sig, sig_flags, serror) ||
+            !CheckPubKeyEncoding(vch_pubkey, sig_flags, serror)) {
+            // serror is set
+            return false;
+        }
+
+        if (vch_sig.empty() || !checker.CheckSig(vch_sig, vch_pubkey,
+                                                 std::nullopt, {}, sig_flags)) {
+            return set_error(serror,
+                             ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED);
+        }
+        return set_success(serror);
+    }
+    // Temporarily return UNKNOWN for script spend path
     return set_error(serror, ScriptError::UNKNOWN);
 }
 
