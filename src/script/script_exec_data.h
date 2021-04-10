@@ -48,6 +48,12 @@ struct ScriptExecutionData {
         m_codeseparator_pos = codeseparator_pos;
     }
 
+    ScriptExecutionData(const uint256 &executed_script_hash,
+                        uint32_t codeseparator_pos = DEFAULT_CODESEP_POS) {
+        m_executed_script_hash = executed_script_hash;
+        m_codeseparator_pos = codeseparator_pos;
+    }
+
     ScriptExecutionData() = delete;
 };
 
