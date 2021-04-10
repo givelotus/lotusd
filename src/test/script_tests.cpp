@@ -95,6 +95,10 @@ static ScriptErrorDesc script_errors[] = {
     {ScriptError::INVALID_BIT_RANGE, "BIT_RANGE"},
     {ScriptError::INVALID_NUM2BIN_SIZE, "INVALID_NUM2BIN_SIZE"},
     {ScriptError::INVALID_OP_SCRIPTTYPE, "INVALID_OP_SCRIPTTYPE"},
+    {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
+     "TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH"},
+    {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
+     "TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG"},
 };
 
 static std::string FormatScriptError(ScriptError err) {

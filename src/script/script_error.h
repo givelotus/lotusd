@@ -89,6 +89,11 @@ enum class ScriptError {
        marker */
     INVALID_OP_SCRIPTTYPE,
 
+    /* Key spend path for Taproot must use BIP341 sighash */
+    TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
+    /* Key spend path for Taproot must Schnorr signatures */
+    TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
+
     ERROR_COUNT,
 };
 
