@@ -50,6 +50,7 @@
 #include <script/sigcache.h>
 #include <script/standard.h>
 #include <shutdown.h>
+#include <sync.h>
 #include <timedata.h>
 #include <torcontrol.h>
 #include <txdb.h>
@@ -176,12 +177,12 @@ void Interrupt(NodeContext &node) {
 }
 
 void Shutdown(NodeContext &node) {
-    LogPrintf("%s: In progress...\n", __func__);
-    static RecursiveMutex cs_Shutdown;
-    TRY_LOCK(cs_Shutdown, lockShutdown);
-    if (!lockShutdown) {
+    static Mutex g_shutdown_mutex;
+    TRY_LOCK(g_shutdown_mutex, lock_shutdown);
+    if (!lock_shutdown) {
         return;
     }
+    LogPrintf("%s: In progress...\n", __func__);
     Assert(node.args);
 
     /// Note: Shutdown() must be able to handle cases in which initialization
@@ -801,7 +802,8 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg(
         "-maxuploadtarget=<n>",
         strprintf("Tries to keep outbound traffic under the given target (in "
-                  "MiB per 24h), 0 = no limit (default: %d)",
+                  "MiB per 24h). Limit does not apply to peers with 'noban' "
+                  "permission. 0 = no limit (default: %d)",
                   DEFAULT_MAX_UPLOAD_TARGET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
 
@@ -861,20 +863,12 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_CHECKBLOCKS),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::DEBUG_TEST);
-    argsman.AddArg(
-        "-checklevel=<n>",
-        strprintf("How thorough the block verification of "
-                  "-checkblocks is: "
-                  "level 0 reads the blocks from disk, "
-                  "level 1 verifies block validity, "
-                  "level 2 verifies undo data, "
-                  "level 3 checks disconnection of tip blocks, "
-                  "and level 4 tries to reconnect the blocks. "
-                  "Each level includes the checks of the previous levels "
-                  "(0-4, default: %u)",
-                  DEFAULT_CHECKLEVEL),
-        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-        OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-checklevel=<n>",
+                   strprintf("How thorough the block verification of "
+                             "-checkblocks is: %s (0-4, default: %u)",
+                             Join(CHECKLEVEL_DOC, ", "), DEFAULT_CHECKLEVEL),
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-checkblockindex",
                    strprintf("Do a consistency check for the block tree, "
                              "chainstate, and other validation data structures "
@@ -2491,7 +2485,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     nCoinDBCache = std::min(nCoinDBCache, MAX_COINS_DB_CACHE_MB << 20);
     nTotalCache -= nCoinDBCache;
     // the rest goes to in-memory cache
-    nCoinCacheUsage = nTotalCache;
+    int64_t nCoinCacheUsage = nTotalCache;
     int64_t nMempoolSizeMax =
         args.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     LogPrintf("Cache configuration:\n");
@@ -2530,6 +2524,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             try {
                 LOCK(cs_main);
                 chainman.InitializeChainstate();
+                chainman.m_total_coinstip_cache = nCoinCacheUsage;
+                chainman.m_total_coinsdb_cache = nCoinDBCache;
+
                 UnloadBlockIndex();
 
                 // new CBlockTreeDB tries to delete the existing file, which
@@ -2646,7 +2643,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
                     // The on-disk coinsdb is now in a good state, create the
                     // cache
-                    chainstate->InitCoinsCache();
+                    chainstate->InitCoinsCache(nCoinCacheUsage);
                     assert(chainstate->CanFlushToDisk());
 
                     if (!is_coinsview_empty(chainstate)) {

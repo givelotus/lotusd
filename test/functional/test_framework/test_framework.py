@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import time
+from typing import Optional
 
 from .authproxy import JSONRPCException
 from . import coverage
@@ -94,6 +95,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     The __init__() and main() methods should not be overridden.
 
     This class also contains various public and private helper methods."""
+
+    chain: Optional[str] = None
+    setup_clean_chain: Optional[bool] = None
 
     def __init__(self):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method"""
@@ -302,8 +306,15 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         else:
             self.log.error(
                 "Test failed. Test logging available at {}/test_framework.log".format(self.options.tmpdir))
+            self.log.error("")
             self.log.error("Hint: Call {} '{}' to consolidate all logs".format(os.path.normpath(
                 os.path.dirname(os.path.realpath(__file__)) + "/../combine_logs.py"), self.options.tmpdir))
+            self.log.error("")
+            self.log.error(
+                "If this failure happened unexpectedly or intermittently, please"
+                " file a bug and provide a link or upload of the combined log.")
+            self.log.error(self.config['environment']['PACKAGE_BUGREPORT'])
+            self.log.error("")
             exit_code = TEST_EXIT_FAILED
         # Logging.shutdown will not remove stream- and filehandlers, so we must
         # do it explicitly. Handlers are removed so the next test run can apply
@@ -406,7 +417,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     # Public helper methods. These can be accessed by the subclass test
     # scripts.
 
-    def add_nodes(self, num_nodes, extra_args=None,
+    def add_nodes(self, num_nodes: int, extra_args=None,
                   *, host=None, binary=None):
         """Instantiate TestNode objects.
 

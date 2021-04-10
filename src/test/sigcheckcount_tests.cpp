@@ -96,8 +96,8 @@ static valtype makebits(int m, int n) {
 // set of flags for long-supported opcodes. The latter list is restricted to
 // the case with schnorr multisig turned on.
 static const std::vector<uint32_t> allflags{
-    SCRIPT_ENABLE_SIGHASH_FORKID,  // We're testing with signatures ending with
-                                   // 0x41, so we need this flag.
+    SCRIPT_ENABLE_SIGHASH_FORKID, // We're testing with signatures ending with
+                                  // 0x41, so we need this flag.
     STANDARD_SCRIPT_VERIFY_FLAGS,
     STANDARD_SCRIPT_VERIFY_FLAGS,
 };
@@ -316,8 +316,27 @@ BOOST_AUTO_TEST_CASE(test_verifyscript) {
 
     // Common example
     CHECK_VERIFYSCRIPT(CScript() << txsigschnorr,
-                       CScript() << pub << OP_CHECKSIG,
-                       SCRIPT_ENABLE_SIGHASH_FORKID, 1);
+                       CScript() << pub << OP_CHECKSIG, SCRIPT_VERIFY_NONE, 1);
+
+    // Correct behaviour occurs for segwit recovery special case (which returns
+    // success from an alternative location)
+    CScript swscript;
+    swscript << OP_0 << std::vector<uint8_t>(20);
+    CHECK_VERIFYSCRIPT(CScript() << ToByteVector(swscript),
+                       CScript()
+                           << OP_HASH160 << ToByteVector(CScriptID(swscript))
+                           << OP_EQUAL,
+                       SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CLEANSTACK, 0);
+
+    // If signature checks somehow occur in scriptsig, they do get counted.
+    // This can happen in historical blocks pre SIGPUSHONLY, even with CHECKSIG.
+    // (an analogous check for P2SH is not possible since it enforces
+    // sigpushonly).
+    CHECK_VERIFYSCRIPT(CScript() << sigschnorr << msg << pub
+                                 << OP_CHECKDATASIG /* scriptSig */,
+                       CScript() << sigecdsa << msg << pub
+                                 << OP_CHECKDATASIG /* scriptPubKey */,
+                       SCRIPT_VERIFY_NONE, 2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

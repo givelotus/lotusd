@@ -45,10 +45,10 @@ except UnicodeDecodeError:
     CROSS = "x "
     CIRCLE = "o "
 
-if os.name != 'nt' or sys.getwindowsversion() >= (10, 0, 14393):
+if os.name != 'nt' or sys.getwindowsversion() >= (10, 0, 14393):  # type: ignore
     if os.name == 'nt':
         import ctypes
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = ctypes.windll.kernel32  # type: ignore
         ENABLE_VIRTUAL_TERMINAL_PROCESSING = 4
         STD_OUTPUT_HANDLE = -11
         STD_ERROR_HANDLE = -12
@@ -75,6 +75,8 @@ TEST_EXIT_PASSED = 0
 TEST_EXIT_SKIPPED = 77
 
 TEST_FRAMEWORK_MODULES = [
+    "address",
+    "blocktools",
     "script",
 ]
 
@@ -177,6 +179,9 @@ def main():
     src_dir = config["environment"]["SRCDIR"]
     build_dir = config["environment"]["BUILDDIR"]
     tests_dir = os.path.join(src_dir, 'test', 'functional')
+
+    # SRCDIR must be set for cdefs.py to find and parse consensus.h
+    os.environ["SRCDIR"] = src_dir
 
     # Parse arguments and pass through unrecognised args
     parser = argparse.ArgumentParser(add_help=False,
