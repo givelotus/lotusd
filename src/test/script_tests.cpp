@@ -99,6 +99,8 @@ static ScriptErrorDesc script_errors[] = {
      "TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH"},
     {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
      "TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG"},
+    {ScriptError::SCRIPTTYPE_INVALID_TYPE, "SCRIPTTYPE_INVALID_TYPE"},
+    {ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT, "SCRIPTTYPE_MALFORMED_SCRIPT"},
 };
 
 static std::string FormatScriptError(ScriptError err) {

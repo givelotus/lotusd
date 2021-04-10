@@ -13,6 +13,7 @@
 #include <script/bitfield.h>
 #include <script/script.h>
 #include <script/sigencoding.h>
+#include <script/taproot.h>
 #include <uint256.h>
 #include <util/bitmanip.h>
 
@@ -2041,6 +2042,37 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
+static bool VerifyTaprootSpend(std::vector<valtype> stack,
+                               const CScript &script_sig,
+                               const CScript &script_pubkey, uint32_t flags,
+                               const BaseSignatureChecker &checker,
+                               ScriptExecutionMetrics &metrics,
+                               ScriptError *serror) {
+    if (!IsPayToTaproot(script_pubkey)) {
+        return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+    }
+    // Temporarily return UNKNOWN
+    return set_error(serror, ScriptError::UNKNOWN);
+}
+
+static bool VerifyScriptType(std::vector<valtype> stack,
+                             const CScript &script_sig,
+                             const CScript &script_pubkey, uint32_t flags,
+                             const BaseSignatureChecker &checker,
+                             ScriptExecutionMetrics &metrics,
+                             ScriptError *serror) {
+    if (script_pubkey.size() == 1) {
+        return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
+    }
+    if (script_pubkey[1] == TAPROOT_SCRIPTTYPE) { // Taproot script version
+        return VerifyTaprootSpend(stack, script_sig, script_pubkey, flags,
+                                  checker, metrics, serror);
+    } else {
+        // Script type not defined
+        return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
+    }
+}
+
 bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
                   uint32_t flags, const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
@@ -2062,6 +2094,15 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
             // serror is set
             return false;
         }
+    }
+    if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_SCRIPTTYPE) {
+        if (!VerifyScriptType(stack, scriptSig, scriptPubKey, flags, checker,
+                              metrics, serror)) {
+            // serror is set
+            return false;
+        }
+        metricsOut = metrics;
+        return set_success(serror);
     }
     stackCopy = stack;
     {
