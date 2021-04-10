@@ -295,6 +295,24 @@ struct TestUtxo {
     COutPoint outpoint = COutPoint();
 };
 
+struct TestInput {
+    CScript script_sig;
+    CScript script_pubkey;
+    CScript exec_script;
+    Amount amount;
+    SigHashType sig_hash_type;
+    bool use_schnorr;
+    bool is_key_path_spend = true;
+    uint32_t sequence = 0xffff'ffff;
+    COutPoint outpoint = COutPoint();
+    uint32_t codeseparator_pos = 0xffff'ffff;
+    TestUtxo utxo() const {
+        return {
+            script_sig, script_pubkey, exec_script, amount, sequence, outpoint,
+        };
+    }
+};
+
 void CheckTxScripts(const std::vector<TestUtxo> &inputs,
                     const std::vector<CTxOut> &outputs, const uint32_t flags,
                     const ScriptError expected_error = ScriptError::OK) {
@@ -323,6 +341,40 @@ void CheckTxScripts(const std::vector<TestUtxo> &inputs,
             BOOST_CHECK_MESSAGE(!result, "Script: " << script_asm);
         }
     }
+}
+
+std::vector<valtype> MakeSigs(const CKey &seckey,
+                              const std::vector<TestInput> &inputs,
+                              const std::vector<CTxOut> &outputs,
+                              const uint32_t flags) {
+    CMutableTransaction tx;
+    std::vector<CTxOut> spent_outputs;
+    for (const TestInput &input : inputs) {
+        tx.vin.push_back(
+            CTxIn(input.outpoint, input.script_sig, input.sequence));
+        spent_outputs.push_back({input.amount, input.script_pubkey});
+    }
+    tx.vout = outputs;
+    const PrecomputedTransactionData txdata(tx, std::move(spent_outputs));
+    std::vector<valtype> sigs(inputs.size());
+    for (uint32_t input_idx = 0; input_idx < inputs.size(); ++input_idx) {
+        const TestInput &input = inputs[input_idx];
+        std::optional<ScriptExecutionData> execdata;
+        assert(input.is_key_path_spend);
+        const CScript script_code = CScript();
+        uint256 sighash;
+        BOOST_CHECK(SignatureHash(
+            sighash, execdata, script_code, tx, input_idx, input.sig_hash_type,
+            txdata.m_spent_outputs[input_idx].nValue, &txdata, flags));
+        if (input.use_schnorr) {
+            BOOST_CHECK(seckey.SignSchnorr(sighash, sigs[input_idx]));
+        } else {
+            BOOST_CHECK(seckey.SignECDSA(sighash, sigs[input_idx]));
+        }
+        sigs[input_idx].push_back(input.sig_hash_type.getRawSigHashType() &
+                                  0xff);
+    }
+    return sigs;
 }
 
 BOOST_AUTO_TEST_CASE(verify_invalid_taproot_script) {
@@ -354,9 +406,9 @@ BOOST_AUTO_TEST_CASE(verify_invalid_taproot_script) {
         {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(32) << valtype(33)},
          ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT},
         {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
-         ScriptError::UNKNOWN},
+         ScriptError::INVALID_STACK_OPERATION},
         {{CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(32)},
-         ScriptError::UNKNOWN},
+         ScriptError::INVALID_STACK_OPERATION},
     };
     for (auto &pair : invalid_scripts) {
         std::vector<TestUtxo> inputs = {{{}, pair.first, {}, Amount::zero()}};
@@ -364,6 +416,168 @@ BOOST_AUTO_TEST_CASE(verify_invalid_taproot_script) {
         for (uint32_t flags : flagset) {
             CheckTxScripts(inputs, outputs, flags, pair.second);
         }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(verify_invalid_taproot_spend) {
+    valtype vch_pubkey = ParseHex(
+        "020000000000000000000000000000000000000000000000000000000000000001");
+    std::vector<std::pair<std::pair<stacktype, CScript>, ScriptError>>
+        invalid_scripts = {
+            {{{}, CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::INVALID_STACK_OPERATION},
+            {{{{}, {0x50}}, CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED},
+            {{{{0x00, 0x00}, {0x50}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED},
+            {{{{}, {0x50, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED},
+            {{{{}}, CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::PUBKEYTYPE},
+            {{{{}}, CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey},
+             ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED},
+            {{{valtype(65)}, CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey},
+             ScriptError::SIG_HASHTYPE},
+            {{{{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x61}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey},
+             ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED},
+            {{{{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x65}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey},
+             ScriptError::SIG_HASHTYPE},
+        };
+    for (auto &pair : invalid_scripts) {
+        CScript script_sig;
+        for (const valtype &item : pair.first.first) {
+            script_sig = script_sig << item;
+        }
+        TestUtxo input = {
+            .script_sig = script_sig,
+            .script_pubkey = pair.first.second,
+            .exec_script = pair.first.second,
+            .amount = Amount::zero(),
+        };
+        const std::vector<CTxOut> outputs = {{Amount::zero(), {}}};
+        for (uint32_t flags : flagset) {
+            CheckTxScripts({input}, outputs, flags, pair.second);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(verify_key_spend) {
+    CKey seckey;
+    const valtype vch_seckey = ParseHex(
+        "0000000000000000000000000000000000000000000000000000000000000001");
+    seckey.Set(vch_seckey.begin(), vch_seckey.end(), true);
+    CPubKey pubkey = seckey.GetPubKey();
+    const valtype vch_pubkey(pubkey.begin(), pubkey.end());
+    const CScript script = CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey;
+    const Amount amount = 1337 * COIN;
+    const SigHashType sighash_all = SigHashType(SIGHASH_ALL).withBIP341();
+    const SigHashType sighash_none = SigHashType(SIGHASH_NONE).withBIP341();
+    const SigHashType sighash_single = SigHashType(SIGHASH_SINGLE).withBIP341();
+    const std::vector<std::vector<TestInput>> success_input_cases = {
+        {{{}, script, {}, amount, sighash_all, true}},
+        {{{}, script, {}, amount, sighash_all.withAnyoneCanPay(), true}},
+        {{{}, script, {}, amount, sighash_none, true}},
+        {{{}, script, {}, amount, sighash_none.withAnyoneCanPay(), true}},
+        {{{}, script, {}, amount, sighash_single, true}},
+        {{{}, script, {}, amount, sighash_single.withAnyoneCanPay(), true}},
+        {{{}, script, {}, amount, sighash_single, true},
+         {{}, script, {}, amount, sighash_all, true},
+         {{}, script, {}, amount, sighash_all.withAnyoneCanPay(), true},
+         {{}, script, {}, amount, sighash_none, true},
+         {{}, script, {}, amount, sighash_none.withAnyoneCanPay(), true}},
+    };
+    const std::vector<std::pair<std::vector<TestInput>, ScriptError>>
+        error_input_cases = {
+            {{{{}, script, {}, amount, sighash_all, false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{}, script, {}, amount, sighash_all.withAnyoneCanPay(), false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{}, script, {}, amount, sighash_none, false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{}, script, {}, amount, sighash_none.withAnyoneCanPay(), false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{}, script, {}, amount, sighash_single, false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{},
+               script,
+               {},
+               amount,
+               sighash_single.withAnyoneCanPay(),
+               false}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG},
+            {{{{},
+               script,
+               {},
+               amount,
+               sighash_all.withAlgorithm(SIGHASH_LEGACY),
+               true}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH},
+            {{{{},
+               script,
+               {},
+               amount,
+               sighash_all.withAlgorithm(SIGHASH_FORKID),
+               true}},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH},
+        };
+    const std::vector<std::vector<CTxOut>> output_cases = {
+        {{Amount::zero(), {}}},
+        {{10 * COIN, CScript() << OP_1}},
+        {{10 * COIN, CScript() << OP_1},
+         {20 * COIN, CScript() << OP_3},
+         {30 * COIN, CScript() << OP_4}}};
+    std::vector<std::pair<std::vector<TestInput>, ScriptError>> input_cases;
+    for (const auto &inputs : success_input_cases) {
+        input_cases.push_back({inputs, ScriptError::OK});
+    }
+    input_cases.insert(input_cases.end(), error_input_cases.begin(),
+                       error_input_cases.end());
+    for (const auto &pair : input_cases) {
+        const std::vector<TestInput> &inputs = pair.first;
+        const ScriptError serror = pair.second;
+        std::vector<TestUtxo> signed_inputs(inputs.size());
+        for (const std::vector<CTxOut> &outputs : output_cases) {
+            for (uint32_t flags : flagset) {
+                std::vector<valtype> sigs =
+                    MakeSigs(seckey, inputs, outputs, flags);
+                for (uint32_t i = 0; i < inputs.size(); ++i) {
+                    signed_inputs[i] = inputs[i].utxo();
+                    signed_inputs[i].script_sig = CScript() << sigs[i];
+                }
+                CheckTxScripts(signed_inputs, outputs, flags, serror);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(verify_taproot_simple_contract_disabled) {
+    const std::vector<CTxOut> outputs = {{Amount::zero(), {}}};
+    for (uint32_t flags : flagset) {
+        CheckTxScripts({{CScript() << valtype(0) << valtype(1),
+                         CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33),
+                         CScript(), Amount::zero()}},
+                       outputs, flags, ScriptError::UNKNOWN);
+        CheckTxScripts(
+            {{CScript() << valtype(0) << valtype(1),
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(32),
+              CScript(), Amount::zero()}},
+            outputs, flags, ScriptError::UNKNOWN);
     }
 }
 
