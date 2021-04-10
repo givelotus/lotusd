@@ -478,8 +478,11 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
 
         // This should be valid under all script flags that support our sighash
         // convention.
+        // If the SCRIPT_TAPROOT_KEY_SPEND_PATH is set (which never occurs
+        // during script execution), the tx fails.
         ValidateCheckInputsForAllFlags(
-            CTransaction(tx), SCRIPT_ENABLE_REPLAY_PROTECTION,
+            CTransaction(tx),
+            SCRIPT_ENABLE_REPLAY_PROTECTION | SCRIPT_TAPROOT_KEY_SPEND_PATH,
             SCRIPT_ENABLE_SIGHASH_FORKID, true,
             m_node.chainman->ActiveChainstate().CoinsTip(),
             m_node.chainman->m_validation_cache, 2);
