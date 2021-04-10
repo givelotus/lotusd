@@ -343,6 +343,12 @@ void CheckTxScripts(const std::vector<TestUtxo> &inputs,
     }
 }
 
+uint256 MakeTapleafHash(const CScript &exec_script) {
+    const uint256 tapleaf_hash =
+        (TaggedHash("TapLeaf") << uint8_t(0xc0) << exec_script).GetSHA256();
+    return tapleaf_hash;
+}
+
 std::vector<valtype> MakeSigs(const CKey &seckey,
                               const std::vector<TestInput> &inputs,
                               const std::vector<CTxOut> &outputs,
@@ -360,8 +366,23 @@ std::vector<valtype> MakeSigs(const CKey &seckey,
     for (uint32_t input_idx = 0; input_idx < inputs.size(); ++input_idx) {
         const TestInput &input = inputs[input_idx];
         std::optional<ScriptExecutionData> execdata;
-        assert(input.is_key_path_spend);
-        const CScript script_code = CScript();
+        if (!input.is_key_path_spend) {
+            execdata = std::optional(ScriptExecutionData(
+                MakeTapleafHash(input.exec_script), input.codeseparator_pos));
+        }
+        CScript script_code;
+        if (execdata && execdata->m_codeseparator_pos != 0xffff'ffff) {
+            CScript::const_iterator pc = input.exec_script.begin();
+            for (uint32_t i = 0; i <= execdata->m_codeseparator_pos; ++i) {
+                opcodetype opcode;
+                valtype vch_push_value;
+                BOOST_CHECK(
+                    input.exec_script.GetOp(pc, opcode, vch_push_value));
+            }
+            script_code = CScript(pc, input.exec_script.end());
+        } else {
+            script_code = input.exec_script;
+        }
         uint256 sighash;
         BOOST_CHECK(SignatureHash(
             sighash, execdata, script_code, tx, input_idx, input.sig_hash_type,
@@ -458,6 +479,88 @@ BOOST_AUTO_TEST_CASE(verify_invalid_taproot_spend) {
                 0x00, 0x00, 0x00, 0x00, 0x65}},
               CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey},
              ScriptError::SIG_HASHTYPE},
+            {{{{}, {}}, CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(32)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(34)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(33 + 31)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(33 + 33)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(33 + 12 * 32 - 1)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_WRONG_CONTROL_SIZE},
+            {{{{}, valtype(33)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED},
+            {{{{}, valtype(33 + 32)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED},
+            {{{{}, valtype(33 + 2 * 32)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED},
+            {{{{}, valtype(33 + 12 * 32)},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED},
+            {{{{}, {0xc2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED},
+            {{{{},
+               {
+                   0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+               }},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
+            {{{{}, {0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
+            {{{{}, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
+            {{{{}, {0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
+            {{{valtype(22),
+               {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
+            {{{valtype(22),
+               {0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33)},
+             ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED},
         };
     for (auto &pair : invalid_scripts) {
         CScript script_sig;
@@ -566,18 +669,355 @@ BOOST_AUTO_TEST_CASE(verify_key_spend) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(verify_taproot_simple_contract_disabled) {
+BOOST_AUTO_TEST_CASE(verify_taproot_simple_contract_one_leaf) {
+    std::vector<std::string> internal_pubkeys_hex = {
+        "020000000000000000000000000000000000000000000000000000000000000014",
+        "030000000000000000000000000000000000000000000000000000000000000014",
+        "020101010101010101010101010101010101010101010101010101010101010101",
+        "030101010101010101010101010101010101010101010101010101010101010101",
+    };
+    std::vector<std::pair<std::pair<CScript, CScript>, ScriptError>> scripts = {
+        {{CScript() << 4, CScript() << 5 << OP_ADD << 9 << OP_EQUAL},
+         ScriptError::OK},
+        {{CScript(), CScript()}, ScriptError::EVAL_FALSE},
+        {{CScript() << OP_0, CScript()}, ScriptError::EVAL_FALSE},
+        {{CScript() << OP_1, CScript()}, ScriptError::OK},
+        {{CScript() << 4, CScript() << 5 << OP_ADD << 9 << OP_EQUALVERIFY},
+         ScriptError::EVAL_FALSE},
+        {{CScript() << 4, CScript() << 5 << OP_ADD << 10 << OP_EQUAL},
+         ScriptError::EVAL_FALSE},
+        {{CScript() << 4, CScript() << 5 << OP_ADD << 10 << OP_EQUALVERIFY},
+         ScriptError::EQUALVERIFY},
+    };
     const std::vector<CTxOut> outputs = {{Amount::zero(), {}}};
-    for (uint32_t flags : flagset) {
-        CheckTxScripts({{CScript() << valtype(0) << valtype(1),
-                         CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33),
-                         CScript(), Amount::zero()}},
-                       outputs, flags, ScriptError::UNKNOWN);
-        CheckTxScripts(
-            {{CScript() << valtype(0) << valtype(1),
-              CScript() << OP_SCRIPTTYPE << OP_1 << valtype(33) << valtype(32),
-              CScript(), Amount::zero()}},
-            outputs, flags, ScriptError::UNKNOWN);
+    for (const auto &pair : scripts) {
+        const CScript &exec_script = pair.first.second;
+        const ScriptError serror = pair.second;
+        const uint256 tapleaf_hash = MakeTapleafHash(exec_script);
+        for (const std::string &internal_pubkey_hex : internal_pubkeys_hex) {
+            CScript script_sig = pair.first.first;
+            valtype vch_internal_pubkey = ParseHex(internal_pubkey_hex);
+            CPubKey pubkey_internal(vch_internal_pubkey.begin(),
+                                    vch_internal_pubkey.end());
+            const uint256 tweak_hash =
+                (TaggedHash("TapTweak")
+                 << MakeSpan(pubkey_internal) << tapleaf_hash)
+                    .GetSHA256();
+            CPubKey pubkey_commitment;
+            BOOST_CHECK(
+                pubkey_internal.AddScalar(pubkey_commitment, tweak_hash));
+            valtype control_block(pubkey_internal.begin(),
+                                  pubkey_internal.end());
+            control_block[0] = control_block[0] == 0x02 ? 0 : 1;
+            control_block[0] |= 0xc0;
+            TestUtxo input{
+                script_sig << valtype(exec_script.begin(), exec_script.end())
+                           << control_block,
+                CScript() << OP_SCRIPTTYPE << OP_1
+                          << valtype(pubkey_commitment.begin(),
+                                     pubkey_commitment.end()),
+                exec_script, 3 * COIN};
+            for (uint32_t flags : flagset) {
+                CheckTxScripts({input}, outputs, flags, serror);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(verify_taproot_checksig_contract_one_leaf) {
+    valtype vch_pubkey_internal(ParseHex(
+        "020000000000000000000000000000000000000000000000000000000000000001"));
+    CPubKey pubkey_internal(vch_pubkey_internal.begin(),
+                            vch_pubkey_internal.end());
+    valtype control_block(pubkey_internal.begin(), pubkey_internal.end());
+    control_block[0] = control_block[0] == 0x02 ? 0 : 1;
+    control_block[0] |= 0xc0;
+    CKey sig_seckey;
+    const valtype vch_sig_seckey = ParseHex(
+        "0000000000000000000000000000000000000000000000000000000000000001");
+    sig_seckey.Set(vch_sig_seckey.begin(), vch_sig_seckey.end(), true);
+    CPubKey sig_pubkey = sig_seckey.GetPubKey();
+    const valtype vch_sig_pubkey(sig_pubkey.begin(), sig_pubkey.end());
+    struct TestScript {
+        CScript exec_script;
+        SigHashType sig_hash_type;
+        bool use_schnorr;
+        uint32_t sequence = 0xffff'ffff;
+        uint32_t codeseparator_pos = 0xffff'ffff;
+        std::optional<valtype> state = std::nullopt;
+    };
+    const SigHashType sighash_all = SigHashType(SIGHASH_ALL);
+    const SigHashType sighash_none = SigHashType(SIGHASH_NONE);
+    const SigHashType sighash_single = SigHashType(SIGHASH_SINGLE);
+    const CScript script = CScript() << vch_sig_pubkey << OP_CHECKSIG;
+    const ScriptError ok = ScriptError::OK;
+    using Pair = std::pair<std::vector<TestScript>, ScriptError>;
+    uint32_t seq = 0x1234'0001;
+    const std::vector<Pair> script_cases = {
+        {{{script, sighash_all.withForkId(), false, seq++}}, ok},
+        {{{script, sighash_all.withBIP341(), false, seq++}}, ok},
+        {{{script, sighash_all.withForkId(), true, seq++}}, ok},
+        {{{script, sighash_all.withBIP341(), true, seq++}}, ok},
+        {{{script, sighash_all.withForkId().withAnyoneCanPay(), false, seq++}},
+         ok},
+        {{{script, sighash_all.withBIP341().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_all.withForkId().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_all.withBIP341().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_none.withForkId(), false, seq++}}, ok},
+        {{{script, sighash_none.withBIP341(), false, seq++}}, ok},
+        {{{script, sighash_none.withForkId(), true, seq++}}, ok},
+        {{{script, sighash_none.withBIP341(), true, seq++}}, ok},
+        {{{script, sighash_none.withForkId().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_none.withBIP341().withAnyoneCanPay(), false, seq++}},
+         ok},
+        {{{script, sighash_none.withForkId().withAnyoneCanPay(), true, seq++}},
+         ok},
+        {{{script, sighash_none.withBIP341().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_single.withForkId(), false}}, ok},
+        {{{script, sighash_single.withBIP341(), false}}, ok},
+        {{{script, sighash_single.withForkId(), true}}, ok},
+        {{{script, sighash_single.withBIP341(), true}}, ok},
+        {{{script, sighash_single.withForkId().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_single.withBIP341().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_single.withForkId().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_single.withBIP341().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_single.withBIP341(), true, seq++},
+          {script, sighash_single.withForkId().withAnyoneCanPay(), false},
+          {script, sighash_all.withForkId(), false, seq++},
+          {script, sighash_all.withBIP341(), false, seq++},
+          {script, sighash_all.withForkId(), true, seq++},
+          {script, sighash_all.withBIP341(), true, seq++},
+          {script, sighash_all.withForkId().withAnyoneCanPay(), false, seq++},
+          {script, sighash_all.withBIP341().withAnyoneCanPay(), false, seq++},
+          {script, sighash_all.withForkId().withAnyoneCanPay(), true, seq++},
+          {script, sighash_all.withBIP341().withAnyoneCanPay(), true, seq++},
+          {script, sighash_none.withForkId(), false, seq++},
+          {script, sighash_none.withBIP341(), false, seq++},
+          {script, sighash_none.withForkId(), true, seq++},
+          {script, sighash_none.withBIP341(), true, seq++},
+          {script, sighash_none.withForkId().withAnyoneCanPay(), false, seq++},
+          {script, sighash_none.withBIP341().withAnyoneCanPay(), false, seq++},
+          {script, sighash_none.withForkId().withAnyoneCanPay(), true, seq++},
+          {script, sighash_none.withBIP341().withAnyoneCanPay(), true, seq++}},
+         ok},
+        // use 000000..00 as state and check equality in script
+        {{{CScript() << valtype(32) << OP_EQUALVERIFY << vch_sig_pubkey
+                     << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 0xffff'ffff, valtype(32)}},
+         ok},
+        // use 000102..1f as state and check equality in script
+        {{{CScript() << valtype{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
+                                11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                                22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+                     << OP_EQUALVERIFY << vch_sig_pubkey << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 0xffff'ffff,
+           valtype{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
+                   11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                   22, 23, 24, 25, 26, 27, 28, 29, 30, 31}}},
+         ok},
+        // OP_CODESEPARATOR tests
+        {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 0}},
+         ok},
+        {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
+           sighash_single.withBIP341(), false, seq++, 0}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << OP_CODESEPARATOR << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 1}},
+         ok},
+        {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
+           sighash_single.withForkId(), true, seq++, 0}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << OP_CODESEPARATOR << OP_CHECKSIG,
+           sighash_single.withForkId(), true, seq++, 1}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << 0 << OP_IF << OP_CODESEPARATOR
+                     << OP_ENDIF << OP_CHECKSIG,
+           sighash_single.withForkId(), true, seq++}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << 1 << OP_IF << OP_CODESEPARATOR
+                     << OP_ENDIF << OP_CHECKSIG,
+           sighash_single.withForkId(), true, seq++, 3}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << 0 << OP_IF << OP_CODESEPARATOR
+                     << OP_ENDIF << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << 1 << OP_IF << OP_CODESEPARATOR
+                     << OP_ENDIF << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 3}},
+         ok},
+        {{{CScript() << vch_sig_pubkey << 1 << OP_IF << OP_CODESEPARATOR
+                     << OP_ENDIF << OP_CHECKSIG,
+           sighash_single.withBIP341(), false, seq++, 3}},
+         ok},
+        {{{CScript() << valtype(32) << OP_EQUALVERIFY << OP_CODESEPARATOR
+                     << vch_sig_pubkey << OP_CHECKSIG,
+           sighash_single.withBIP341(), true, seq++, 2, valtype(32)}},
+         ok},
+        // test using legacy sighash
+        {{{script, sighash_single.withAlgorithm(SIGHASH_LEGACY), true, seq++}},
+         ScriptError::MUST_USE_FORKID}};
+    const std::vector<CTxOut> outputs = {{Amount::zero(), {}},
+                                         {Amount::zero(), {}}};
+    std::vector<std::vector<TestInput>> input_cases;
+    uint32_t script_counter = 0;
+    for (const auto &pair : script_cases) {
+        const std::vector<TestScript> scripts = pair.first;
+        std::vector<TestInput> inputs;
+        for (const auto &script : scripts) {
+            const uint256 tweak_hash =
+                (TaggedHash("TapTweak") << MakeSpan(pubkey_internal)
+                                        << MakeTapleafHash(script.exec_script))
+                    .GetSHA256();
+            CPubKey pubkey_commitment;
+            BOOST_CHECK(
+                pubkey_internal.AddScalar(pubkey_commitment, tweak_hash));
+            CScript script_pubkey = CScript()
+                                    << OP_SCRIPTTYPE << OP_1
+                                    << valtype(pubkey_commitment.begin(),
+                                               pubkey_commitment.end());
+            if (script.state) {
+                script_pubkey << *script.state;
+            }
+            inputs.push_back({
+                .script_sig = CScript() << valtype(script.exec_script.begin(),
+                                                   script.exec_script.end())
+                                        << control_block,
+                .script_pubkey = script_pubkey,
+                .exec_script = script.exec_script,
+                .amount = int64_t(script_counter) * COIN,
+                .sig_hash_type = script.sig_hash_type,
+                .use_schnorr = script.use_schnorr,
+                .is_key_path_spend = false,
+                .sequence = script.sequence,
+                .outpoint = COutPoint(TxId(uint256()), script_counter++),
+                .codeseparator_pos = script.codeseparator_pos,
+            });
+        }
+        for (uint32_t flags : flagset) {
+            std::vector<valtype> sigs =
+                MakeSigs(sig_seckey, inputs, outputs, flags);
+            std::vector<TestUtxo> utxos(inputs.size());
+            for (uint32_t i = 0; i < inputs.size(); ++i) {
+                utxos[i] = inputs[i].utxo();
+                utxos[i].script_sig = CScript()
+                                      << sigs[i]
+                                      << valtype(scripts[i].exec_script.begin(),
+                                                 scripts[i].exec_script.end())
+                                      << control_block;
+            }
+            CheckTxScripts(utxos, outputs, flags, pair.second);
+        }
+    }
+}
+
+/**
+ * Tests spending branches of the following tree:
+ * ```
+ * script_tree = ScriptBranch(
+ *     ScriptBranch(
+ *         ScriptBranch(
+ *             ScriptLeaf(0xc0, bytes.fromhex('52935987')),
+ *             ScriptLeaf(0xc0,
+ *                        bytes.fromhex('21e59e705cb909acaba73cef8c4b8e775cd87c'
+ *                                      'c0956e4045306d7ded41947f04c602bcac')),
+ *         ),
+ *         ScriptLeaf(0xc0, bytes.fromhex('537e0301020387')),
+ *     ),
+ *     ScriptLeaf(0xc0,
+ *                bytes.fromhex('2102c6047f9441ed7d6d3045406e95c07cd85c778e4b8c'
+ *                              'ef3ca7abac09b95c709ee5ac')),
+ * )
+ * ```
+ */
+BOOST_AUTO_TEST_CASE(verify_taproot_checksig_contract_tree) {
+    valtype vch_pubkey_internal(ParseHex(
+        "030000000000000000000000000000000000000000000000000000000000000001"));
+    CKey sig_seckey;
+    const valtype vch_sig_seckey = ParseHex(
+        "0000000000000000000000000000000000000000000000000000000000000002");
+    valtype vch_pubkey_commitment(ParseHex(
+        "022614104f2ff34195c79544001a0e34e6641b71eb15c8377cb29e194072bba9ca"));
+    sig_seckey.Set(vch_sig_seckey.begin(), vch_sig_seckey.end(), true);
+    CPubKey sig_pubkey = sig_seckey.GetPubKey();
+    const valtype vch_sig_pubkey(sig_pubkey.begin(), sig_pubkey.end());
+    const std::vector<CTxOut> outputs = {{Amount::zero(), {}}};
+    const CScript simple_script = CScript() << vch_sig_pubkey << OP_CHECKSIG;
+    TestInput input = {
+        {},
+        CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey_commitment,
+        simple_script,
+        12 * COIN,
+        SigHashType(),
+        true,
+        false,
+    };
+    valtype control_block = ParseHex(
+        "c100000000000000000000000000000000000000000000000000000000000000016d5b"
+        "cada2aad300646d1a6156d93c4e224572842de30503cfa48269506df5042");
+    const std::vector<std::pair<SigHashType, ScriptError>> test_cases = {
+        {SigHashType(SIGHASH_ALL).withForkId(), ScriptError::OK},
+        {SigHashType(SIGHASH_ALL).withForkId().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_NONE).withForkId(), ScriptError::OK},
+        {SigHashType(SIGHASH_NONE).withForkId().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_SINGLE).withForkId(), ScriptError::OK},
+        {SigHashType(SIGHASH_SINGLE).withForkId().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_ALL).withBIP341(), ScriptError::OK},
+        {SigHashType(SIGHASH_ALL).withBIP341().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_NONE).withBIP341(), ScriptError::OK},
+        {SigHashType(SIGHASH_NONE).withBIP341().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_SINGLE).withBIP341(), ScriptError::OK},
+        {SigHashType(SIGHASH_SINGLE).withBIP341().withAnyoneCanPay(),
+         ScriptError::OK},
+        {SigHashType(SIGHASH_ALL), ScriptError::MUST_USE_FORKID},
+        {SigHashType(SIGHASH_ALL).withAnyoneCanPay(),
+         ScriptError::MUST_USE_FORKID},
+        {SigHashType(SIGHASH_NONE), ScriptError::MUST_USE_FORKID},
+        {SigHashType(SIGHASH_NONE).withAnyoneCanPay(),
+         ScriptError::MUST_USE_FORKID},
+        {SigHashType(SIGHASH_SINGLE), ScriptError::MUST_USE_FORKID},
+        {SigHashType(SIGHASH_SINGLE).withAnyoneCanPay(),
+         ScriptError::MUST_USE_FORKID},
+    };
+    for (const auto &test_case : test_cases) {
+        for (uint32_t flags : flagset) {
+            input.sig_hash_type = test_case.first;
+            std::vector<valtype> sigs =
+                MakeSigs(sig_seckey, {input}, outputs, flags);
+            input.script_sig =
+                CScript() << sigs[0]
+                          << valtype(simple_script.begin(), simple_script.end())
+                          << control_block;
+            CheckTxScripts({input.utxo()}, outputs, flags, test_case.second);
+        }
+    }
+    valtype vch_pubkey_reversed(vch_sig_pubkey);
+    std::reverse(vch_pubkey_reversed.begin(), vch_pubkey_reversed.end());
+    const CScript reversebytes_script =
+        CScript() << vch_pubkey_reversed << OP_REVERSEBYTES << OP_CHECKSIG;
+    input.exec_script = reversebytes_script;
+    control_block = ParseHex(
+        "c10000000000000000000000000000000000000000000000000000000000000001d87d"
+        "d8a2a2c9eee36960394f72e3e1cddc0fad436632f5e4300eb2ea3534c3d22abb84bfbc"
+        "0d359a06a66092f89bcca0d4575516c28a7d1c763b4bf9fd8c905faa209c7079e4a14f"
+        "4c633e1fe7b9ee9e5463d13003b4dc7c2eeb02115740fc48");
+    for (const auto &test_case : test_cases) {
+        for (uint32_t flags : flagset) {
+            input.sig_hash_type = test_case.first;
+            std::vector<valtype> sigs =
+                MakeSigs(sig_seckey, {input}, outputs, flags);
+            input.script_sig = CScript() << sigs[0]
+                                         << valtype(reversebytes_script.begin(),
+                                                    reversebytes_script.end())
+                                         << control_block;
+            CheckTxScripts({input.utxo()}, outputs, flags, test_case.second);
+        }
     }
 }
 

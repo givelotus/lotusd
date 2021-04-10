@@ -240,6 +240,15 @@ class ECPubKey():
         else:
             self.valid = False
 
+    def add(self, tweak):
+        t = int.from_bytes(tweak, 'big')
+        assert t < SECP256K1_ORDER
+        q = ECPubKey()
+        q.p = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, t), (self.p, 1)]))
+        q.valid = True
+        q.compressed = True
+        return q
+
     @property
     def is_compressed(self):
         return self.compressed
@@ -359,6 +368,13 @@ class ECKey():
         """Retrieve the 32-byte representation of this key."""
         assert(self.valid)
         return self.secret.to_bytes(32, 'big')
+
+    def add(self, other):
+        assert isinstance(other, ECKey)
+        value = (self.secret + other.secret) % SECP256K1_ORDER
+        result = ECKey()
+        result.set(value.to_bytes(32, 'big'), True)
+        return result
 
     @property
     def is_valid(self):

@@ -122,6 +122,12 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Invalid Taproot key spend signature";
         case ScriptError::TAPROOT_ANNEX_NOT_SUPPORTED:
             return "BIP341-style taproot annex (0x50) not supported";
+        case ScriptError::TAPROOT_WRONG_CONTROL_SIZE:
+            return "Control block needs to be of length 33 + 32n";
+        case ScriptError::TAPROOT_VERIFY_COMMITMENT_FAILED:
+            return "Taproot control does not verify the script";
+        case ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED:
+            return "Unsupported taproot script leaf version";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:
