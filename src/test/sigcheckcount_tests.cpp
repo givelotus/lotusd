@@ -96,8 +96,8 @@ static valtype makebits(int m, int n) {
 // set of flags for long-supported opcodes. The latter list is restricted to
 // the case with schnorr multisig turned on.
 static const std::vector<uint32_t> allflags{
-    SCRIPT_ENABLE_SIGHASH_FORKID,  // We're testing with signatures ending with
-                                   // 0x41, so we need this flag.
+    SCRIPT_ENABLE_SIGHASH_FORKID, // We're testing with signatures ending with
+                                  // 0x41, so we need this flag.
     STANDARD_SCRIPT_VERIFY_FLAGS,
     STANDARD_SCRIPT_VERIFY_FLAGS,
 };

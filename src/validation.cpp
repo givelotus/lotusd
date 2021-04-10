@@ -53,7 +53,6 @@
 #include <warnings.h>
 
 #include <boost/algorithm/string/replace.hpp>
-#include <boost/thread.hpp> // boost::this_thread::interruption_point() (mingw)
 
 #include <optional>
 #include <string>
@@ -62,10 +61,18 @@
 #define MICRO 0.000001
 #define MILLI 0.001
 
-/** Time to wait (in seconds) between writing blocks/block index to disk. */
-static const unsigned int DATABASE_WRITE_INTERVAL = 60 * 60;
-/** Time to wait (in seconds) between flushing chainstate to disk. */
-static const unsigned int DATABASE_FLUSH_INTERVAL = 24 * 60 * 60;
+/** Time to wait between writing blocks/block index to disk. */
+static constexpr std::chrono::hours DATABASE_WRITE_INTERVAL{1};
+/** Time to wait between flushing chainstate to disk. */
+static constexpr std::chrono::hours DATABASE_FLUSH_INTERVAL{24};
+const std::vector<std::string> CHECKLEVEL_DOC{
+    "level 0 reads the blocks from disk",
+    "level 1 verifies block validity",
+    "level 2 verifies undo data",
+    "level 3 checks disconnection of tip blocks",
+    "level 4 tries to reconnect the blocks",
+    "each level includes the checks of the previous levels",
+};
 
 ChainstateManager g_chainman;
 
@@ -106,7 +113,6 @@ bool fRequireStandardPolicy = true;
 bool fRequireStandardConsensus = true;
 bool fCheckBlockIndex = false;
 bool fCheckpointsEnabled = DEFAULT_CHECKPOINTS_ENABLED;
-size_t nCoinCacheUsage = 5000 * 300;
 uint64_t nPruneTarget = 0;
 int64_t nMaxTipAge = DEFAULT_MAX_TIP_AGE;
 
@@ -891,8 +897,9 @@ void CChainState::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                                                  in_memory, should_wipe);
 }
 
-void CChainState::InitCoinsCache() {
+void CChainState::InitCoinsCache(size_t cache_size_bytes) {
     assert(m_coins_views != nullptr);
+    m_coinstip_cache_size_bytes = cache_size_bytes;
     m_coins_views->InitCache();
 }
 
@@ -1444,20 +1451,27 @@ DisconnectResult ApplyBlockUndo(const CBlockUndo &blockUndo,
     return fClean ? DisconnectResult::OK : DisconnectResult::UNCLEAN;
 }
 
-static void FlushBlockFile(bool fFinalize = false) {
-    LOCK(cs_LastBlockFile);
+static void FlushUndoFile(int block_file, bool finalize = false) {
+    FlatFilePos undo_pos_old(block_file, vinfoBlockFile[block_file].nUndoSize);
+    if (!UndoFileSeq().Flush(undo_pos_old, finalize)) {
+        AbortNode("Flushing undo file to disk failed. This is likely the "
+                  "result of an I/O error.");
+    }
+}
 
+static void FlushBlockFile(bool fFinalize = false, bool finalize_undo = false) {
+    LOCK(cs_LastBlockFile);
     FlatFilePos block_pos_old(nLastBlockFile,
                               vinfoBlockFile[nLastBlockFile].nSize);
-    FlatFilePos undo_pos_old(nLastBlockFile,
-                             vinfoBlockFile[nLastBlockFile].nUndoSize);
-
-    bool status = true;
-    status &= BlockFileSeq().Flush(block_pos_old, fFinalize);
-    status &= UndoFileSeq().Flush(undo_pos_old, fFinalize);
-    if (!status) {
+    if (!BlockFileSeq().Flush(block_pos_old, fFinalize)) {
         AbortNode("Flushing block file to disk failed. This is likely the "
                   "result of an I/O error.");
+    }
+    // we do not always flush the undo file, as the chain tip may be lagging
+    // behind the incoming blocks,
+    // e.g. during IBD or a sync after a node going offline
+    if (!fFinalize || finalize_undo) {
+        FlushUndoFile(nLastBlockFile, finalize_undo);
     }
 }
 
@@ -1478,6 +1492,18 @@ static bool WriteUndoDataForBlock(const CBlockUndo &blockundo,
         if (!UndoWriteToDisk(blockundo, _pos, pindex->pprev->GetBlockHash(),
                              chainparams.DiskMagic())) {
             return AbortNode(state, "Failed to write undo data");
+        }
+        // rev files are written in block height order, whereas blk files are
+        // written as blocks come in (often out of order) we want to flush the
+        // rev (undo) file once we've written the last block, which is indicated
+        // by the last height in the block file info as below; note that this
+        // does not catch the case where the undo writes are keeping up with the
+        // block writes (usually when a synced up node is getting newly mined
+        // blocks) -- this case is caught in the FindBlockPos function
+        if (_pos.nFile < nLastBlockFile &&
+            static_cast<uint32_t>(pindex->nHeight) ==
+                vinfoBlockFile[_pos.nFile].nHeightLast) {
+            FlushUndoFile(_pos.nFile, true);
         }
 
         // update nUndoPos in block index
@@ -1916,7 +1942,7 @@ MinerFundSuccess:
 CoinsCacheSizeState
 CChainState::GetCoinsCacheSizeState(const CTxMemPool &tx_pool) {
     return this->GetCoinsCacheSizeState(
-        tx_pool, nCoinCacheUsage,
+        tx_pool, m_coinstip_cache_size_bytes,
         gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000);
 }
 
@@ -1952,8 +1978,8 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
                                    int nManualPruneHeight) {
     LOCK(cs_main);
     assert(this->CanFlushToDisk());
-    static int64_t nLastWrite = 0;
-    static int64_t nLastFlush = 0;
+    static std::chrono::microseconds nLastWrite{0};
+    static std::chrono::microseconds nLastFlush{0};
     std::set<int> setFilesToPrune;
     bool full_flush_completed = false;
 
@@ -1989,12 +2015,12 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
                     }
                 }
             }
-            int64_t nNow = GetTimeMicros();
+            const auto nNow = GetTime<std::chrono::microseconds>();
             // Avoid writing/flushing immediately after startup.
-            if (nLastWrite == 0) {
+            if (nLastWrite.count() == 0) {
                 nLastWrite = nNow;
             }
-            if (nLastFlush == 0) {
+            if (nLastFlush.count() == 0) {
                 nLastFlush = nNow;
             }
             // The cache is large and we're within 10% and 10 MiB of the limit,
@@ -2006,14 +2032,12 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
                                   cache_state >= CoinsCacheSizeState::CRITICAL;
             // It's been a while since we wrote the block index to disk. Do this
             // frequently, so we don't need to redownload after a crash.
-            bool fPeriodicWrite =
-                mode == FlushStateMode::PERIODIC &&
-                nNow > nLastWrite + (int64_t)DATABASE_WRITE_INTERVAL * 1000000;
+            bool fPeriodicWrite = mode == FlushStateMode::PERIODIC &&
+                                  nNow > nLastWrite + DATABASE_WRITE_INTERVAL;
             // It's been very long since we flushed the cache. Do this
             // infrequently, to optimize cache usage.
-            bool fPeriodicFlush =
-                mode == FlushStateMode::PERIODIC &&
-                nNow > nLastFlush + (int64_t)DATABASE_FLUSH_INTERVAL * 1000000;
+            bool fPeriodicFlush = mode == FlushStateMode::PERIODIC &&
+                                  nNow > nLastFlush + DATABASE_FLUSH_INTERVAL;
             // Combine all conditions that result in a full cache flush.
             fDoFullFlush = (mode == FlushStateMode::ALWAYS) || fCacheLarge ||
                            fCacheCritical || fPeriodicFlush || fFlushForPrune;
@@ -2856,8 +2880,6 @@ bool CChainState::ActivateBestChain(const Config &config,
     CBlockIndex *pindexNewTip = nullptr;
     int nStopAtHeight = gArgs.GetArg("-stopatheight", DEFAULT_STOPATHEIGHT);
     do {
-        boost::this_thread::interruption_point();
-
         // Block until the validation queue drains. This should largely
         // never happen in normal operation, however may happen during
         // reindex, causing memory blowup if we run too far ahead.
@@ -3501,8 +3523,15 @@ static bool FindBlockPos(FlatFilePos &pos, unsigned int nAddSize,
         vinfoBlockFile.resize(nFile + 1);
     }
 
+    bool finalize_undo = false;
     if (!fKnown) {
         while (vinfoBlockFile[nFile].nSize + nAddSize >= MAX_BLOCKFILE_SIZE) {
+            // when the undo file is keeping up with the block file, we want to
+            // flush it explicitly when it is lagging behind (more blocks arrive
+            // than are being connected), we let the undo block write case
+            // handle it
+            finalize_undo = (vinfoBlockFile[nFile].nHeightLast ==
+                             (unsigned int)ChainActive().Tip()->nHeight);
             nFile++;
             if (vinfoBlockFile.size() <= nFile) {
                 vinfoBlockFile.resize(nFile + 1);
@@ -3517,7 +3546,7 @@ static bool FindBlockPos(FlatFilePos &pos, unsigned int nAddSize,
             LogPrintf("Leaving block file %i: %s\n", nLastBlockFile,
                       vinfoBlockFile[nLastBlockFile].ToString());
         }
-        FlushBlockFile(!fKnown);
+        FlushBlockFile(!fKnown, finalize_undo);
         nLastBlockFile = nFile;
     }
 
@@ -4721,7 +4750,6 @@ bool CVerifyDB::VerifyDB(const Config &config, CCoinsView *coinsview,
     LogPrintfToBeContinued("[0%%]...");
     for (pindex = ::ChainActive().Tip(); pindex && pindex->pprev;
          pindex = pindex->pprev) {
-        boost::this_thread::interruption_point();
         const int percentageDone =
             std::max(1, std::min(99, (int)(((double)(::ChainActive().Height() -
                                                      pindex->nHeight)) /
@@ -4775,13 +4803,12 @@ bool CVerifyDB::VerifyDB(const Config &config, CCoinsView *coinsview,
                 }
             }
         }
-
         // check level 3: check for inconsistencies during memory-only
         // disconnect of tip blocks
         if (nCheckLevel >= 3 &&
             (coins.DynamicMemoryUsage() +
              ::ChainstateActive().CoinsTip().DynamicMemoryUsage()) <=
-                nCoinCacheUsage) {
+                ::ChainstateActive().m_coinstip_cache_size_bytes) {
             assert(coins.GetBestBlock() == pindex->GetBlockHash());
             DisconnectResult res =
                 ::ChainstateActive().DisconnectBlock(block, pindex, coins);
@@ -4818,7 +4845,6 @@ bool CVerifyDB::VerifyDB(const Config &config, CCoinsView *coinsview,
     // check level 4: try reconnecting blocks
     if (nCheckLevel >= 4) {
         while (pindex != ::ChainActive().Tip()) {
-            boost::this_thread::interruption_point();
             const int percentageDone = std::max(
                 1, std::min(99, 100 - int(double(::ChainActive().Height() -
                                                  pindex->nHeight) /
@@ -4844,6 +4870,9 @@ bool CVerifyDB::VerifyDB(const Config &config, CCoinsView *coinsview,
                              "hash=%s (%s)",
                              pindex->nHeight, pindex->GetBlockHash().ToString(),
                              state.ToString());
+            }
+            if (ShutdownRequested()) {
+                return true;
             }
         }
     }
@@ -5560,6 +5589,39 @@ std::string CChainState::ToString() {
                      tip ? tip->GetBlockHash().ToString() : "null");
 }
 
+bool CChainState::ResizeCoinsCaches(size_t coinstip_size, size_t coinsdb_size) {
+    if (coinstip_size == m_coinstip_cache_size_bytes &&
+        coinsdb_size == m_coinsdb_cache_size_bytes) {
+        // Cache sizes are unchanged, no need to continue.
+        return true;
+    }
+    size_t old_coinstip_size = m_coinstip_cache_size_bytes;
+    m_coinstip_cache_size_bytes = coinstip_size;
+    m_coinsdb_cache_size_bytes = coinsdb_size;
+    CoinsDB().ResizeCache(coinsdb_size);
+
+    LogPrintf("[%s] resized coinsdb cache to %.1f MiB\n", this->ToString(),
+              coinsdb_size * (1.0 / 1024 / 1024));
+    LogPrintf("[%s] resized coinstip cache to %.1f MiB\n", this->ToString(),
+              coinstip_size * (1.0 / 1024 / 1024));
+
+    BlockValidationState state;
+    const CChainParams &chainparams = Params();
+
+    bool ret;
+
+    if (coinstip_size > old_coinstip_size) {
+        // Likely no need to flush if cache sizes have grown.
+        ret = FlushStateToDisk(chainparams, state, FlushStateMode::IF_NEEDED);
+    } else {
+        // Otherwise, flush state to disk and deallocate the in-memory coins
+        // map.
+        ret = FlushStateToDisk(chainparams, state, FlushStateMode::ALWAYS);
+        CoinsTip().ReallocateCache();
+    }
+    return ret;
+}
+
 std::string CBlockFileInfo::ToString() const {
     return strprintf(
         "CBlockFileInfo(blocks=%u, size=%u, heights=%u...%u, time=%s...%s)",
@@ -5896,4 +5958,36 @@ void ChainstateManager::Reset() {
     m_snapshot_chainstate.reset();
     m_active_chainstate = nullptr;
     m_snapshot_validated = false;
+}
+
+void ChainstateManager::MaybeRebalanceCaches() {
+    if (m_ibd_chainstate && !m_snapshot_chainstate) {
+        LogPrintf("[snapshot] allocating all cache to the IBD chainstate\n");
+        // Allocate everything to the IBD chainstate.
+        m_ibd_chainstate->ResizeCoinsCaches(m_total_coinstip_cache,
+                                            m_total_coinsdb_cache);
+    } else if (m_snapshot_chainstate && !m_ibd_chainstate) {
+        LogPrintf(
+            "[snapshot] allocating all cache to the snapshot chainstate\n");
+        // Allocate everything to the snapshot chainstate.
+        m_snapshot_chainstate->ResizeCoinsCaches(m_total_coinstip_cache,
+                                                 m_total_coinsdb_cache);
+    } else if (m_ibd_chainstate && m_snapshot_chainstate) {
+        // If both chainstates exist, determine who needs more cache based on
+        // IBD status.
+        //
+        // Note: shrink caches first so that we don't inadvertently overwhelm
+        // available memory.
+        if (m_snapshot_chainstate->IsInitialBlockDownload()) {
+            m_ibd_chainstate->ResizeCoinsCaches(m_total_coinstip_cache * 0.05,
+                                                m_total_coinsdb_cache * 0.05);
+            m_snapshot_chainstate->ResizeCoinsCaches(
+                m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
+        } else {
+            m_snapshot_chainstate->ResizeCoinsCaches(
+                m_total_coinstip_cache * 0.05, m_total_coinsdb_cache * 0.05);
+            m_ibd_chainstate->ResizeCoinsCaches(m_total_coinstip_cache * 0.95,
+                                                m_total_coinsdb_cache * 0.95);
+        }
+    }
 }

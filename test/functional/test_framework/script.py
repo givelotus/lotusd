@@ -10,6 +10,7 @@ This file is modified from python-bitcoinlib.
 import hashlib
 import struct
 import unittest
+from typing import List, Dict
 
 from .messages import (
     CTransaction,
@@ -23,7 +24,7 @@ from .messages import (
 
 
 MAX_SCRIPT_ELEMENT_SIZE = 520
-OPCODE_NAMES = {}
+OPCODE_NAMES: Dict["CScriptOp", str] = {}
 
 
 def hash160(s):
@@ -42,7 +43,7 @@ def bn2vch(v):
     return encoded_v.to_bytes(n_bytes, 'little')
 
 
-_opcode_instances = []
+_opcode_instances: List["CScriptOp"] = []
 
 
 class CScriptOp(int):
@@ -834,3 +835,13 @@ class TestFrameworkScript(unittest.TestCase):
                          bytes([0x15, 0xCD, 0x5B, 0x07]))
         self.assertEqual(bn2vch(-54321),
                          bytes([0x31, 0xD4, 0x80]))
+
+    def test_cscriptnum_encoding(self):
+        # round-trip negative and multi-byte CScriptNums
+        values = [0, 1, -1, -2, 127, 128, -255, 256, (1 << 15) - 1,
+                  -(1 << 16), (1 << 24) - 1, (1 << 31), 1 - (1 << 32),
+                  1 << 40, 1500, -1500]
+        for value in values:
+            self.assertEqual(
+                CScriptNum.decode(CScriptNum.encode(CScriptNum(value))),
+                value)
