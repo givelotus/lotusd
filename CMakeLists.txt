@@ -7,7 +7,7 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 )
 
 project(bitcoin-abc
-	VERSION 0.22.14
+	VERSION 0.22.15
 	DESCRIPTION "Bitcoin ABC is a full node implementation of the BCHA protocol."
 	HOMEPAGE_URL "https://www.bitcoinabc.org"
 )
@@ -41,7 +41,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Find the python interpreter. This is required for several targets.
-find_package(Python 3.5 COMPONENTS Interpreter REQUIRED)
+find_package(Python 3.6 COMPONENTS Interpreter REQUIRED)
 
 # Add the magic targets `check-*`
 add_custom_target(check-all)
