@@ -28,6 +28,8 @@ static constexpr uint32_t TAPROOT_SIZE_WITHOUT_STATE =
 static constexpr uint32_t TAPROOT_SIZE_WITH_STATE =
     TAPROOT_INTRO_SIZE + CPubKey::COMPRESSED_SIZE + 33;
 
+static constexpr uint32_t TAPROOT_ANNEX_TAG = 0x50;
+
 /**
  * Verifies that the control block proves that script is part of the commitment.
  *
