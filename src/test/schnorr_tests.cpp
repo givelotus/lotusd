@@ -92,6 +92,8 @@ BOOST_AUTO_TEST_CASE(opcodes_random_flags) {
     MMIXLinearCongruentialGenerator lcg(1234);
     for (int i = 0; i < 4096; i++) {
         uint32_t flags = lcg.next();
+        // Flag cannot occur in script execution, only in Taproot key spend
+        flags &= ~SCRIPT_TAPROOT_KEY_SPEND_PATH;
 
         const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
         const SigHashType sigHashType = SigHashType().withAlgorithm(
