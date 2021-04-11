@@ -97,6 +97,18 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success) {
     BOOST_CHECK(solutions[3] == ToByteVector(pubkeys[2]));
     BOOST_CHECK(solutions[4] == std::vector<uint8_t>({3}));
 
+    // TxoutType::TAPROOT
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0]);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::TAPROOT);
+    BOOST_CHECK_EQUAL(solutions.size(), 0U);
+
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0])
+      << std::vector<uint8_t>(32);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::TAPROOT);
+    BOOST_CHECK_EQUAL(solutions.size(), 0U);
+
     // TxoutType::NULL_DATA
     s.clear();
     s << OP_RETURN << std::vector<uint8_t>({0}) << std::vector<uint8_t>({75})
@@ -173,6 +185,20 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success) {
         s << OP_1 << ToByteVector(pubkeys[0]) << ToByteVector(pubkeys[1]);
         AppendPush(s, pushdataop, {2});
         s << OP_CHECKMULTISIG;
+        BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
+        BOOST_CHECK_EQUAL(solutions.size(), 0);
+
+        // mutated TxoutType::TAPROOT -- commitment
+        s.clear();
+        s << OP_SCRIPTTYPE << OP_1;
+        AppendPush(s, pushdataop, ToByteVector(pubkeys[0]));
+        BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
+        BOOST_CHECK_EQUAL(solutions.size(), 0);
+
+        // mutated TxoutType::TAPROOT -- state
+        s.clear();
+        s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0]);
+        AppendPush(s, pushdataop, std::vector<uint8_t>(32));
         BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
         BOOST_CHECK_EQUAL(solutions.size(), 0);
     }
@@ -260,6 +286,17 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_failure) {
     s.clear();
     s << OP_0 << std::vector<uint8_t>(19, 0x01);
     BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
+
+    // TxoutType::TAPROOT with incorrectly sized commitment
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << std::vector<uint8_t>(30, 0x01);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
+
+    // TxoutType::TAPROOT with incorrectly sized state
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkey)
+      << std::vector<uint8_t>(31, 0x01);
+    BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::NONSTANDARD);
 }
 
 BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination) {
@@ -297,6 +334,11 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination) {
     // TxoutType::MULTISIG
     s.clear();
     s << OP_1 << ToByteVector(pubkey) << OP_1 << OP_CHECKMULTISIG;
+    BOOST_CHECK(!ExtractDestination(s, address));
+
+    // TxoutType::TAPROOT
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkey);
     BOOST_CHECK(!ExtractDestination(s, address));
 
     // TxoutType::NULL_DATA
@@ -374,6 +416,11 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestinations) {
                 *boost::get<PKHash>(&addresses[0]) == PKHash(pubkeys[0]));
     BOOST_CHECK(boost::get<PKHash>(&addresses[1]) &&
                 *boost::get<PKHash>(&addresses[1]) == PKHash(pubkeys[1]));
+
+    // TxoutType::TAPROOT
+    s.clear();
+    s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0]);
+    BOOST_CHECK(!ExtractDestinations(s, whichType, addresses, nRequired));
 
     // TxoutType::NULL_DATA
     s.clear();
