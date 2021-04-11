@@ -63,11 +63,6 @@ static constexpr std::chrono::milliseconds AVALANCHE_DEFAULT_QUERY_TIMEOUT{
  */
 static constexpr int AVALANCHE_MAX_INFLIGHT_POLL = 10;
 
-/**
- * How many UTXOs can be used for a single proof.
- */
-static constexpr int AVALANCHE_MAX_PROOF_STAKES = 1000;
-
 namespace avalanche {
 
 class Delegation;
@@ -261,6 +256,12 @@ class Processor {
     class NotificationsHandler;
     std::unique_ptr<interfaces::Handler> chainNotificationsHandler;
 
+    /**
+     * Flag indicating that the proof must be registered at first new block
+     * after IBD
+     */
+    bool mustRegisterProof = false;
+
 public:
     Processor(interfaces::Chain &chain, CConnman *connmanIn,
               NodePeerManager *nodePeerManagerIn);
@@ -291,6 +292,14 @@ public:
      * include in his AVAHELLO message.
      */
     uint256 buildRemoteSighash(CNode *pfrom) const;
+
+    /**
+     * Get the local proof used by this node.
+     *
+     * @returns Proof for this node.
+     * @throws a std::runtime_error if there is no proof set for this node
+     */
+    const Proof getProof() const;
 
     std::vector<avalanche::Peer> getPeers() const;
     std::vector<NodeId> getNodeIdsForPeer(PeerId peerId) const;

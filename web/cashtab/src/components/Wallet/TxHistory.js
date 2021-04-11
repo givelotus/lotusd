@@ -2,15 +2,11 @@ import React from 'react';
 import styled from 'styled-components';
 import Tx from './Tx';
 
-export const TxTitle = styled.h2`
-    color: ${props => props.theme.wallet.text.secondary};
-`;
 export const TxLink = styled.a``;
 
-const TxHistory = ({ txs }) => {
+const TxHistory = ({ txs, fiatPrice }) => {
     return (
         <div>
-            <TxTitle>Transactions</TxTitle>
             {txs.map(tx => (
                 <TxLink
                     key={tx.txid}
@@ -18,7 +14,7 @@ const TxHistory = ({ txs }) => {
                     target="_blank"
                     rel="noreferrer"
                 >
-                    <Tx data={tx} />
+                    <Tx data={tx} fiatPrice={fiatPrice} />
                 </TxLink>
             ))}
         </div>

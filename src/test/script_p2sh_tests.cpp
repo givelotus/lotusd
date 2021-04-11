@@ -117,8 +117,7 @@ BOOST_AUTO_TEST_CASE(sign) {
             bool sigOK =
                 CScriptCheck(txFrom.vout[txTo[i].vin[0].prevout.GetN()],
                              CTransaction(txTo[i]), 0,
-                             SCRIPT_ENABLE_SIGHASH_FORKID,
-                             false, txdata)();
+                             SCRIPT_ENABLE_SIGHASH_FORKID, false, txdata)();
             if (i == j) {
                 BOOST_CHECK_MESSAGE(sigOK,
                                     strprintf("VerifySignature %d %d", i, j));
@@ -145,7 +144,8 @@ BOOST_AUTO_TEST_CASE(norecurse) {
 
     // Should not verify, because it will try to execute OP_INVALIDOPCODE
     BOOST_CHECK(!Verify(scriptSig, p2sh, err));
-    BOOST_CHECK_MESSAGE(err == ScriptError::DISABLED_OPCODE, ScriptErrorString(err));
+    BOOST_CHECK_MESSAGE(err == ScriptError::DISABLED_OPCODE,
+                        ScriptErrorString(err));
 
     // Try to recur, and verification should succeed because
     // the inner HASH160 <> EQUAL should only check the hash:
@@ -332,8 +332,8 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard) {
     txTo.vout[0].scriptPubKey =
         GetScriptForDestination(PKHash(key[1].GetPubKey()));
 
-    txTo.vin.resize(4);
-    for (int i = 0; i < 4; i++) {
+    txTo.vin.resize(3);
+    for (int i = 0; i < 3; i++) {
         txTo.vin[i].prevout = COutPoint(txFrom.GetId(), i);
     }
 

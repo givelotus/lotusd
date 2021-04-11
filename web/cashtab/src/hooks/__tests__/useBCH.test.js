@@ -2,10 +2,16 @@
 import useBCH from '../useBCH';
 import mockReturnGetHydratedUtxoDetails from '../__mocks__/mockReturnGetHydratedUtxoDetails';
 import mockReturnGetSlpBalancesAndUtxos from '../__mocks__/mockReturnGetSlpBalancesAndUtxos';
+import mockReturnGetHydratedUtxoDetailsWithZeroBalance from '../__mocks__/mockReturnGetHydratedUtxoDetailsWithZeroBalance';
+import mockReturnGetSlpBalancesAndUtxosNoZeroBalance from '../__mocks__/mockReturnGetSlpBalancesAndUtxosNoZeroBalance';
 import sendBCHMock from '../__mocks__/sendBCH';
 import mockTxHistory from '../__mocks__/mockTxHistory';
 import mockFlatTxHistory from '../__mocks__/mockFlatTxHistory';
 import mockTxDataWithPassthrough from '../__mocks__/mockTxDataWithPassthrough';
+import {
+    tokenSendWdt,
+    tokenReceiveTBS,
+} from '../__mocks__/mockParseTokenInfoForTxHistory';
 import {
     mockSentCashTx,
     mockReceivedCashTx,
@@ -61,6 +67,18 @@ describe('useBCH hook', () => {
         );
 
         expect(result).toStrictEqual(mockReturnGetSlpBalancesAndUtxos);
+    });
+
+    it(`Ignores SLP utxos with utxo.tokenQty === '0'`, async () => {
+        const { getSlpBalancesAndUtxos } = useBCH();
+
+        const result = await getSlpBalancesAndUtxos(
+            mockReturnGetHydratedUtxoDetailsWithZeroBalance,
+        );
+
+        expect(result).toStrictEqual(
+            mockReturnGetSlpBalancesAndUtxosNoZeroBalance,
+        );
     });
 
     it('sends BCH correctly', async () => {
@@ -270,7 +288,7 @@ describe('useBCH hook', () => {
 
     it('Correctly flattens transaction history', () => {
         const { flattenTransactions } = useBCH();
-        expect(flattenTransactions(mockTxHistory)).toStrictEqual(
+        expect(flattenTransactions(mockTxHistory, 10)).toStrictEqual(
             mockFlatTxHistory,
         );
     });
@@ -301,5 +319,25 @@ describe('useBCH hook', () => {
         expect(parseTxData([mockTxDataWithPassthrough[3]])).toStrictEqual(
             mockReceivedTokenTx,
         );
+    });
+
+    it(`Correctly parses a "send ${currency.tokenTicker}" transaction with token details`, () => {
+        const { parseTokenInfoForTxHistory } = useBCH();
+        expect(
+            parseTokenInfoForTxHistory(
+                tokenSendWdt.parsedTx,
+                tokenSendWdt.tokenInfo,
+            ),
+        ).toStrictEqual(tokenSendWdt.cashtabTokenInfo);
+    });
+
+    it(`Correctly parses a "receive ${currency.tokenTicker}" transaction with token details and 9 decimals of precision`, () => {
+        const { parseTokenInfoForTxHistory } = useBCH();
+        expect(
+            parseTokenInfoForTxHistory(
+                tokenReceiveTBS.parsedTx,
+                tokenReceiveTBS.tokenInfo,
+            ),
+        ).toStrictEqual(tokenReceiveTBS.cashtabTokenInfo);
     });
 });

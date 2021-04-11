@@ -26,6 +26,7 @@ import random
 import socket
 import struct
 import time
+import unittest
 
 from typing import List
 
@@ -63,6 +64,7 @@ MSG_TX = 1
 MSG_BLOCK = 2
 MSG_FILTERED_BLOCK = 3
 MSG_CMPCT_BLOCK = 4
+MSG_AVA_PROOF = 0x1f000001
 MSG_TYPE_MASK = 0xffffffff >> 2
 
 FILTER_TYPE_BASIC = 0
@@ -302,7 +304,8 @@ class CInv:
         MSG_TX: "TX",
         MSG_BLOCK: "Block",
         MSG_FILTERED_BLOCK: "filtered Block",
-        MSG_CMPCT_BLOCK: "CompactBlock"
+        MSG_CMPCT_BLOCK: "CompactBlock",
+        MSG_AVA_PROOF: "avalanche proof",
     }
 
     def __init__(self, t=0, h=0):
@@ -828,6 +831,110 @@ class BlockTransactions:
     def __repr__(self):
         return "BlockTransactions(hash={:064x} transactions={})".format(
             self.blockhash, repr(self.transactions))
+
+
+class AvalancheStake:
+    def __init__(self, utxo=None, amount=0, height=0,
+                 pubkey=b"", is_coinbase=False):
+        self.utxo: COutPoint = utxo or COutPoint()
+        self.amount: int = amount
+        """Amount in satoshis (int64)"""
+        self.height: int = height
+        """Block height containing this utxo (uint32)"""
+        self.pubkey: bytes = pubkey
+        """Public key"""
+
+        self.is_coinbase: bool = is_coinbase
+
+    def deserialize(self, f):
+        self.utxo = COutPoint()
+        self.utxo.deserialize(f)
+        self.amount = struct.unpack("<q", f.read(8))[0]
+        height_ser = struct.unpack("<I", f.read(4))[0]
+        self.is_coinbase = bool(height_ser & 1)
+        self.height = height_ser >> 1
+        self.pubkey = deser_string(f)
+
+    def serialize(self) -> bytes:
+        r = self.utxo.serialize()
+        height_ser = self.height << 1 | int(self.is_coinbase)
+        r += struct.pack('<q', self.amount)
+        r += struct.pack('<I', height_ser)
+        r += ser_compact_size(len(self.pubkey))
+        r += self.pubkey
+        return r
+
+    def get_hash(self, proofid) -> bytes:
+        """Return the bitcoin hash of the concatenation of proofid
+        and the serialized stake."""
+        return hash256(proofid + self.serialize())
+
+    def __repr__(self):
+        return f"AvalancheStake(utxo={self.utxo}, amount={self.amount}," \
+               f" height={self.height}, " \
+               f"pubkey={self.pubkey.hex()})"
+
+
+class AvalancheSignedStake:
+    def __init__(self, stake=None, sig=b""):
+        self.stake: AvalancheStake = stake or AvalancheStake()
+        self.sig: bytes = sig
+        """Signature for this stake, bytes of length 64"""
+
+    def deserialize(self, f):
+        self.stake = AvalancheStake()
+        self.stake.deserialize(f)
+        self.sig = f.read(64)
+
+    def serialize(self) -> bytes:
+        return self.stake.serialize() + self.sig
+
+
+class AvalancheProof:
+    __slots__ = ("sequence", "expiration", "master", "stakes", "proofid")
+
+    def __init__(self, sequence=0, expiration=0,
+                 master=b"", signed_stakes=None):
+        self.sequence: int = sequence
+        self.expiration: int = expiration
+        self.master: bytes = master
+
+        self.stakes: List[AvalancheSignedStake] = signed_stakes or [
+            AvalancheSignedStake()]
+        self.proofid: int = self.compute_proof_id()
+
+    def compute_proof_id(self) -> int:
+        """Return Bitcoin's 256-bit hash (double SHA-256) of the
+        serialized proof data.
+        :return: bytes of length 32
+        """
+        ss = struct.pack("<Qq", self.sequence, self.expiration)
+        ss += ser_string(self.master)
+        ss += ser_vector(self.stakes)
+        h = hash256(ss)
+        # make it an int, for comparing with Delegation.proofid
+        return uint256_from_str(h)
+
+    def deserialize(self, f):
+        self.sequence = struct.unpack("<Q", f.read(8))[0]
+        self.expiration = struct.unpack("<q", f.read(8))[0]
+        self.master = deser_string(f)
+        self.stakes = deser_vector(f, AvalancheSignedStake)
+        self.proofid = self.compute_proof_id()
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("<Q", self.sequence)
+        r += struct.pack("<q", self.expiration)
+        r += ser_string(self.master)
+        r += ser_vector(self.stakes)
+        return r
+
+    def __repr__(self):
+        return f"AvalancheProof(sequence={self.sequence}, " \
+               f"expiration={self.expiration}, " \
+               f"master={self.master.hex()}, " \
+               f"stakes={self.stakes})"
 
 
 class AvalanchePoll():
@@ -1800,6 +1907,25 @@ class msg_cfcheckpt:
             self.filter_type, self.stop_hash)
 
 
+class msg_avaproof():
+    __slots__ = ("proof",)
+    msgtype = b"avaproof"
+
+    def __init__(self):
+        self.proof = AvalancheProof()
+
+    def deserialize(self, f):
+        self.proof.deserialize(f)
+
+    def serialize(self):
+        r = b""
+        r += self.proof.serialize()
+        return r
+
+    def __repr__(self):
+        return "msg_avaproof(proof={})".format(repr(self.proof))
+
+
 class msg_avapoll():
     __slots__ = ("poll",)
     msgtype = b"avapoll"
@@ -1874,3 +2000,27 @@ class msg_avahello():
 
     def __repr__(self):
         return "msg_avahello(response={})".format(repr(self.hello))
+
+
+class TestFrameworkMessages(unittest.TestCase):
+    def test_serialization_round_trip(self):
+        """Verify that messages and serialized objects are unchanged after
+        a round-trip of deserialization-serialization.
+        """
+        avaproof = AvalancheProof()
+        proof_hex = (
+            "2a00000000000000fff053650000000021030b4c866585dd868a9d62348a9cd00"
+            "8d6a312937048fff31670e7e920cfc7a74401b7fc19792583e9cb39843fc5e22a"
+            "4e3648ab1cb18a70290b341ee8d4f550ae2400000000102700000000000078881"
+            "4004104d0de0aaeaefad02b8bdc8a01a1b8b11c696bd3d66a2c5f10780d95b7df"
+            "42645cd85228a6fb29940e858e7e55842ae2bd115d1ed7cc0e82d934e929c9764"
+            "8cb0ac3052d58da74de7404e84ebe2940ed2b0fe85578d8230788d8387aeaa618"
+            "274b0f2edc73679fd398f60e6315258c9ec348df7fcc09340ae1af37d009719b0"
+            "665"
+        )
+        avaproof.deserialize(BytesIO(bytes.fromhex(proof_hex)))
+        self.assertEqual(avaproof.serialize().hex(), proof_hex)
+
+        msg_proof = msg_avaproof()
+        msg_proof.proof = avaproof
+        self.assertEqual(msg_proof.serialize().hex(), proof_hex)
