@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test bitcoin-cli"""
 from decimal import Decimal
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -11,11 +12,11 @@ from test_framework.util import (
     get_auth_cookie,
 )
 
-# The block reward of coinbaseoutput.nValue (50) BTC/block matures after
+# The block reward of coinbaseoutput.nValue (260) Lotus/block matures after
 # COINBASE_MATURITY (100) blocks. Therefore, after mining 101 blocks we expect
-# node 0 to have a balance of (BLOCKS - COINBASE_MATURITY) * 50 BTC/block.
+# node 0 to have a balance of (BLOCKS - COINBASE_MATURITY) * 260 Lotus/block.
 BLOCKS = 101
-BALANCE = (BLOCKS - 100) * 50
+BALANCE = (BLOCKS - 100) * SUBSIDY
 
 
 class TestBitcoinCli(BitcoinTestFramework):
@@ -98,9 +99,10 @@ class TestBitcoinCli(BitcoinTestFramework):
             # Setup to test -getinfo and -rpcwallet= with multiple wallets.
             wallets = ['', 'Encrypted', 'secret']
             amounts = [
-                BALANCE + Decimal('9.99999550'),
-                Decimal(9),
-                Decimal(31)]
+                # 2 block rewards - 1
+                2 * SUBSIDY - Decimal('2.00000450'),
+                Decimal('0.5'),
+                Decimal('1.5')]
             self.nodes[0].createwallet(wallet_name=wallets[1])
             self.nodes[0].createwallet(wallet_name=wallets[2])
             w1 = self.nodes[0].get_wallet_rpc(wallets[0])
@@ -111,7 +113,7 @@ class TestBitcoinCli(BitcoinTestFramework):
             w1.sendtoaddress(w2.getnewaddress(), amounts[1])
             w1.sendtoaddress(w3.getnewaddress(), amounts[2])
 
-            # Mine a block to confirm; adds a block reward (50 BTC) to the
+            # Mine a block to confirm; adds a block reward (260 Lotus) to the
             # default wallet.
             self.nodes[0].generate(1)
 

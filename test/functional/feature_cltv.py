@@ -8,7 +8,15 @@ Test that the CHECKLOCKTIMEVERIFY soft-fork activates at (regtest) block height
 1351.
 """
 
-from test_framework.blocktools import create_block, create_coinbase, create_transaction, make_conform_to_ctor
+from decimal import Decimal
+
+from test_framework.blocktools import (
+    create_block,
+    create_coinbase,
+    create_transaction,
+    make_conform_to_ctor,
+    SUBSIDY,
+)
 from test_framework.messages import (
     CTransaction,
     FromHex,
@@ -102,9 +110,9 @@ class BIP65Test(BitcoinTestFramework):
             "Test that an invalid-according-to-CLTV transaction cannot appear in a block")
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[0],
-                                    self.nodeaddress, amount=49.99)
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
         fundtx, spendtx = cltv_lock_to_height(
-            self.nodes[0], fundtx, self.nodeaddress, 49.98)
+            self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'))
 
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
@@ -137,9 +145,9 @@ class BIP65Test(BitcoinTestFramework):
         block.nVersion = 4
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
-                                    self.nodeaddress, amount=49.99)
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
         fundtx, spendtx = cltv_lock_to_height(
-            self.nodes[0], fundtx, self.nodeaddress, 49.98)
+            self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'))
 
         # The funding tx only has unexecuted bad CLTV, in scriptpubkey; this is
         # valid.
@@ -187,9 +195,9 @@ class BIP65Test(BitcoinTestFramework):
         self.log.info(
             "Test that a version 4 block with a valid-according-to-CLTV transaction is accepted")
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[2],
-                                    self.nodeaddress, amount=49.99)
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
         fundtx, spendtx = cltv_lock_to_height(
-            self.nodes[0], fundtx, self.nodeaddress, 49.98, CLTV_HEIGHT)
+            self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'), CLTV_HEIGHT)
 
         # make sure sequence is nonfinal and locktime is good
         spendtx.vin[0].nSequence = 0xfffffffe

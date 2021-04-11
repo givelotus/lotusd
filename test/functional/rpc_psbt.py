@@ -9,6 +9,8 @@ import json
 import os
 
 from decimal import Decimal
+
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_approx,
@@ -33,7 +35,7 @@ class PSBTTest(BitcoinTestFramework):
     def run_test(self):
         # Create and fund a raw tx for sending 10 BTC
         psbtx1 = self.nodes[0].walletcreatefundedpsbt(
-            [], {self.nodes[2].getnewaddress(): 10})['psbt']
+            [], {self.nodes[2].getnewaddress(): Decimal('0.1')})['psbt']
 
         # If inputs are specified, do not automatically add more:
         utxo1 = self.nodes[0].listunspent()[0]
@@ -42,10 +44,11 @@ class PSBTTest(BitcoinTestFramework):
                                 self.nodes[0].walletcreatefundedpsbt,
                                 [{"txid": utxo1['txid'],
                                   "vout": utxo1['vout']}],
-                                {self.nodes[2].getnewaddress(): 90})
+                                {self.nodes[2].getnewaddress(): SUBSIDY + Decimal('2')})
 
-        psbtx1 = self.nodes[0].walletcreatefundedpsbt([{"txid": utxo1['txid'], "vout": utxo1['vout']}], {
-                                                      self.nodes[2].getnewaddress(): 90}, 0, {"add_inputs": True})['psbt']
+        psbtx1 = self.nodes[0].walletcreatefundedpsbt(
+            [{"txid": utxo1['txid'], "vout": utxo1['vout']}],
+            {self.nodes[2].getnewaddress(): SUBSIDY + Decimal('2')}, 0, {"add_inputs": True})['psbt']
         assert_equal(len(self.nodes[0].decodepsbt(psbtx1)['tx']['vin']), 2)
 
         # Node 1 should not be able to add anything to it but still return the
@@ -70,7 +73,7 @@ class PSBTTest(BitcoinTestFramework):
         p2pkh = self.nodes[1].getnewaddress("")
 
         # fund those addresses
-        rawtx = self.nodes[0].createrawtransaction([], {p2sh: 10, p2pkh: 10})
+        rawtx = self.nodes[0].createrawtransaction([], {p2sh: Decimal('2'), p2pkh: Decimal('2')})
         rawtx = self.nodes[0].fundrawtransaction(rawtx, {"changePosition": 0})
         signed_tx = self.nodes[0].signrawtransactionwithwallet(rawtx['hex'])[
             'hex']
@@ -89,8 +92,9 @@ class PSBTTest(BitcoinTestFramework):
                 p2pkh_pos = out['n']
 
         # spend single key from node 1
-        rawtx = self.nodes[1].walletcreatefundedpsbt([{"txid": txid, "vout": p2pkh_pos}], {
-                                                     self.nodes[1].getnewaddress(): 9.99})['psbt']
+        rawtx = self.nodes[1].walletcreatefundedpsbt(
+            [{"txid": txid, "vout": p2pkh_pos}],
+            {self.nodes[1].getnewaddress(): Decimal('0.99')})['psbt']
         walletprocesspsbt_out = self.nodes[1].walletprocesspsbt(rawtx)
         # Make sure it has UTXOs
         decoded = self.nodes[1].decodepsbt(walletprocesspsbt_out['psbt'])
@@ -102,14 +106,15 @@ class PSBTTest(BitcoinTestFramework):
         # feeRate of 0.1 BCH / KB produces a total fee slightly below -maxtxfee
         res = self.nodes[1].walletcreatefundedpsbt(
             [
-                {
-                    "txid": txid, "vout": p2sh_pos}, {
-                    "txid": txid, "vout": p2pkh_pos}], {
-                        self.nodes[1].getnewaddress(): 29.99}, 0, {
-                            "feeRate": 0.1, "add_inputs": True})
+                {"txid": txid, "vout": p2sh_pos},
+                {"txid": txid, "vout": p2pkh_pos},
+            ],
+            {self.nodes[1].getnewaddress(): Decimal('4.99')},
+            0,
+            {"feeRate": Decimal('0.1'), "add_inputs": True})
         assert_approx(res["fee"], 0.065, 0.005)
 
-        # feeRate of 10 BCH / KB produces a total fee well above -maxtxfee
+        # feeRate of 1 coin / KB produces a total fee well above -maxtxfee
         # previously this was silently capped at -maxtxfee
         assert_raises_rpc_error(-4,
                                 "Fee exceeds maximum configured by -maxtxfee",
@@ -117,10 +122,10 @@ class PSBTTest(BitcoinTestFramework):
                                 [{"txid": txid,
                                   "vout": p2sh_pos},
                                  {"txid": txid,
-                                     "vout": p2pkh_pos}],
-                                {self.nodes[1].getnewaddress(): 29.99},
+                                  "vout": p2pkh_pos}],
+                                {self.nodes[1].getnewaddress(): Decimal('6.99')},
                                 0,
-                                {"feeRate": 10,
+                                {"feeRate": 1,
                                     "add_inputs": True})
         assert_raises_rpc_error(-4,
                                 "Fee exceeds maximum configured by -maxtxfee",
@@ -131,12 +136,13 @@ class PSBTTest(BitcoinTestFramework):
                                      "vout": p2pkh_pos}],
                                 {self.nodes[1].getnewaddress(): 1},
                                 0,
-                                {"feeRate": 10,
+                                {"feeRate": 1,
                                     "add_inputs": False})
 
         # partially sign multisig things with node 1
-        psbtx = self.nodes[1].walletcreatefundedpsbt([{"txid": txid, "vout": p2sh_pos}], {
-                                                     self.nodes[1].getnewaddress(): 9.99})['psbt']
+        psbtx = self.nodes[1].walletcreatefundedpsbt(
+            [{"txid": txid, "vout": p2sh_pos}], {
+            self.nodes[1].getnewaddress(): Decimal('1.99')})['psbt']
         walletprocesspsbt_out = self.nodes[1].walletprocesspsbt(psbtx)
         psbtx = walletprocesspsbt_out['psbt']
         assert_equal(walletprocesspsbt_out['complete'], False)
@@ -148,8 +154,9 @@ class PSBTTest(BitcoinTestFramework):
             self.nodes[2].finalizepsbt(walletprocesspsbt_out['psbt'])['hex'])
 
         # check that walletprocesspsbt fails to decode a non-psbt
-        rawtx = self.nodes[1].createrawtransaction([{"txid": txid, "vout": p2pkh_pos}], {
-                                                   self.nodes[1].getnewaddress(): 9.99})
+        rawtx = self.nodes[1].createrawtransaction(
+            [{"txid": txid, "vout": p2pkh_pos}],
+            {self.nodes[1].getnewaddress(): Decimal('1.99')})
         assert_raises_rpc_error(-22, "TX decode failed",
                                 self.nodes[1].walletprocesspsbt, rawtx)
 

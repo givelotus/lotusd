@@ -6,6 +6,10 @@
 Test transaction download behavior
 """
 
+from decimal import Decimal
+import time
+
+from test_framework.blocktools import SUBSIDY
 from test_framework.address import ADDRESS_BCHREG_UNSPENDABLE
 from test_framework.messages import (
     CInv,
@@ -25,8 +29,6 @@ from test_framework.util import (
     assert_equal,
     wait_until,
 )
-
-import time
 
 
 class TestP2PConn(P2PInterface):
@@ -98,7 +100,7 @@ class TxDownloadTest(BitcoinTestFramework):
                 "txid": self.nodes[0].getblock(self.nodes[0].getblockhash(1))['tx'][0],
                 "vout": 0
             }],
-            outputs={ADDRESS_BCHREG_UNSPENDABLE: 50 - 0.00025},
+            outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.00025')},
         )
         tx = self.nodes[0].signrawtransactionwithkey(
             hexstring=tx,

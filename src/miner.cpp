@@ -168,6 +168,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     int64_t nTime1 = GetTimeMicros();
+    // 50% of fees get burned.
+    const Amount amountFeeReward = nFees / 2;
 
     m_last_block_num_txs = nBlockTx;
     m_last_block_size = nBlockSize;
@@ -179,18 +181,16 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
-        nFees + GetBlockSubsidy(nHeight, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript() << COINBASE_PREFIX
-                                            << nHeight
-                                            << OP_0;
+        amountFeeReward + GetBlockSubsidy(nHeight, consensusParams);
+    coinbaseTx.vin[0].scriptSig = CScript()
+                                  << COINBASE_PREFIX << nHeight << OP_0;
 
-    const std::vector<CTxDestination> whitelisted =
-        GetMinerFundWhitelist(consensusParams, pindexPrev);
-    if (!whitelisted.empty()) {
-        const Amount fund = GetMinerFundAmount(coinbaseTx.vout[0].nValue);
-        coinbaseTx.vout[0].nValue -= fund;
-        coinbaseTx.vout.emplace_back(fund,
-                                     GetScriptForDestination(whitelisted[0]));
+    const Amount coinbaseValue = coinbaseTx.vout[0].nValue;
+    const std::vector<CTxOut> requiredOutputs =
+        GetMinerFundRequiredOutputs(consensusParams, pindexPrev, coinbaseValue);
+    for (const CTxOut &requiredOutput : requiredOutputs) {
+        coinbaseTx.vout[0].nValue -= requiredOutput.nValue;
+        coinbaseTx.vout.push_back(requiredOutput);
     }
 
     // Make sure the coinbase is big enough.

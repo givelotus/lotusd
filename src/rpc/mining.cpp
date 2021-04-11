@@ -947,19 +947,20 @@ static UniValue getblocktemplate(const Config &config,
 
     UniValue aux(UniValue::VOBJ);
 
-    UniValue minerFundList(UniValue::VARR);
+    UniValue requiredOutputsList(UniValue::VARR);
     const Consensus::Params &consensusParams = chainparams.GetConsensus();
-    for (auto fundDestination :
-         GetMinerFundWhitelist(consensusParams, pindexPrev)) {
-        minerFundList.push_back(EncodeCashAddr(fundDestination, chainparams));
+    for (auto requiredOutput : GetMinerFundRequiredOutputs(
+             consensusParams, pindexPrev, coinbasevalue)) {
+        UniValue requiredOutputObj(UniValue::VOBJ);
+        requiredOutputObj.pushKV("scriptPubKey",
+                                 HexStr(requiredOutput.scriptPubKey));
+        requiredOutputObj.pushKV("value",
+                                 int64_t(requiredOutput.nValue / SATOSHI));
+        requiredOutputsList.push_back(requiredOutputObj);
     }
 
-    int64_t minerFundMinValue =
-        int64_t(GetMinerFundAmount(coinbasevalue) / SATOSHI);
-
     UniValue minerFund(UniValue::VOBJ);
-    minerFund.pushKV("addresses", minerFundList);
-    minerFund.pushKV("minimumvalue", minerFundMinValue);
+    minerFund.pushKV("outputs", requiredOutputsList);
 
     UniValue coinbasetxn(UniValue::VOBJ);
     coinbasetxn.pushKV("minerfund", minerFund);

@@ -69,8 +69,8 @@ class TransactionOrderingTest(BitcoinTestFramework):
             # We need to have something to spend to fill the block.
             block = create_block(base_block_hash, coinbase, block_time)
         else:
-            # all but one satoshi to fees
-            coinbase.vout[0].nValue += spend.tx.vout[spend.n].nValue - 1
+            # Burn half of the fees
+            coinbase.vout[0].nValue += spend.tx.vout[spend.n].nValue // 2
             coinbase.rehash()
             block = create_block(base_block_hash, coinbase, block_time)
 

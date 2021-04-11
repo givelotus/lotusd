@@ -24,6 +24,7 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
     make_conform_to_ctor,
+    SUBSIDY,
 )
 from test_framework.key import ECKey
 from test_framework.messages import (
@@ -79,12 +80,12 @@ def create_fund_and_activation_specific_spending_tx(spend, pre_fork_only):
     # Fund transaction
     script = CScript([public_key, OP_CHECKSIG])
     txfund = create_tx_with_script(
-        spend.tx, spend.n, b'', amount=50 * COIN, script_pub_key=script)
+        spend.tx, spend.n, b'', amount=int(SUBSIDY * COIN), script_pub_key=script)
     txfund.rehash()
 
     # Activation specific spending tx
     txspend = CTransaction()
-    txspend.vout.append(CTxOut(50 * COIN - 1000, CScript([OP_TRUE])))
+    txspend.vout.append(CTxOut(int(SUBSIDY * COIN) - 1000, CScript([OP_TRUE])))
     txspend.vin.append(CTxIn(COutPoint(txfund.sha256, 0), b''))
 
     # Sign the transaction
@@ -93,7 +94,7 @@ def create_fund_and_activation_specific_spending_tx(spend, pre_fork_only):
     forkvalue = 0 if pre_fork_only else 0xffdead
     sighashtype = (forkvalue << 8) | SIGHASH_ALL | SIGHASH_FORKID
     sighash = SignatureHashForkId(
-        script, txspend, 0, sighashtype, 50 * COIN)
+        script, txspend, 0, sighashtype, int(SUBSIDY * COIN))
     sig = private_key.sign_ecdsa(sighash) + \
         bytes(bytearray([SIGHASH_ALL | SIGHASH_FORKID]))
     txspend.vin[0].scriptSig = CScript([sig])

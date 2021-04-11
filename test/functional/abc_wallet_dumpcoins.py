@@ -6,6 +6,7 @@
 Test the dumpcoins RPCs call.
 """
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
@@ -47,7 +48,7 @@ class DumpCoinsTest(BitcoinTestFramework):
                 "txid": coinbases[0],
                 "vout": 0,
                 "depth": 101,
-                "value": Decimal('50.00000000'),
+                "value": SUBSIDY,
             }],
         })
 
@@ -57,13 +58,13 @@ class DumpCoinsTest(BitcoinTestFramework):
                 "txid": coinbases[0],
                 "vout": 0,
                 "depth": 102,
-                "value": Decimal('50.00000000'),
+                "value": SUBSIDY,
             }],
             address1: [{
                 "txid": coinbases[1],
                 "vout": 0,
                 "depth": 101,
-                "value": Decimal('50.00000000'),
+                "value": SUBSIDY,
             }],
         })
 

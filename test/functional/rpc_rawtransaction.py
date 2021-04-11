@@ -16,6 +16,7 @@ from decimal import Decimal
 
 from collections import OrderedDict
 from io import BytesIO
+from test_framework.blocktools import SUBSIDY
 from test_framework.messages import (
     COutPoint,
     CTransaction,
@@ -73,9 +74,9 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.sync_all()
         self.nodes[0].generate(101)
         self.sync_all()
-        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), 1.5)
-        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), 1.0)
-        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), 5.0)
+        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), Decimal('0.2'))
+        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), Decimal('0.5'))
+        self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), Decimal('1.0'))
         self.sync_all()
         self.nodes[0].generate(5)
         self.sync_all()
@@ -261,7 +262,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         # won't exists
         inputs = [
             {'txid': "1d1d4e24ed99057e84c3f80fd8fbec79ed9e1acee37da269356ecea000000000", 'vout': 1}]
-        outputs = {self.nodes[0].getnewaddress(): 4.998}
+        outputs = {self.nodes[0].getnewaddress(): Decimal('1.998')}
         rawtx = self.nodes[2].createrawtransaction(inputs, outputs)
         rawtx = pad_raw_tx(rawtx)
         rawtx = self.nodes[2].signrawtransactionwithwallet(rawtx)
@@ -419,8 +420,8 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.sync_all()
         self.nodes[0].generate(1)
         self.sync_all()
-        assert_equal(self.nodes[0].getbalance(), bal + Decimal(
-            '50.00000000') + Decimal('2.19000000'))  # block reward + tx
+        assert_equal(self.nodes[0].getbalance(),
+                     bal + SUBSIDY + Decimal('2.19000000'))  # block reward + tx
 
         rawTxBlock = self.nodes[0].getblock(self.nodes[0].getbestblockhash())
 
@@ -477,8 +478,8 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.sync_all()
         self.nodes[0].generate(1)
         self.sync_all()
-        assert_equal(self.nodes[0].getbalance(
-        ), bal + Decimal('50.00000000') + Decimal('2.19000000'))  # block reward + tx
+        assert_equal(self.nodes[0].getbalance(),
+                     bal + SUBSIDY + Decimal('2.19000000'))  # block reward + tx
 
         # getrawtransaction tests
         # 1. valid parameters - only supply txid

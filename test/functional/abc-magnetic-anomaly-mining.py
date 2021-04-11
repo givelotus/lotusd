@@ -11,6 +11,7 @@ import decimal
 import random
 import time
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 
 
@@ -82,8 +83,8 @@ class CTORMiningTest(BitcoinTestFramework):
             for _ in range(len(inputs)):
                 addr = mining_node.getnewaddress()
                 output = {
-                    # 50 BCH per coinbase
-                    addr: decimal.Decimal(50)
+                    # 260 Lotus per coinbase
+                    addr: SUBSIDY
                 }
                 outputs.update(output)
 

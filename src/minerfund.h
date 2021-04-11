@@ -6,6 +6,7 @@
 #define BITCOIN_MINERFUND_H
 
 #include <amount.h>
+#include <primitives/transaction.h>
 #include <script/standard.h>
 
 #include <vector>
@@ -16,10 +17,8 @@ namespace Consensus {
 struct Params;
 }
 
-Amount GetMinerFundAmount(const Amount &coinbaseValue);
-
-std::vector<CTxDestination>
-GetMinerFundWhitelist(const Consensus::Params &params,
-                      const CBlockIndex *pindexPrev);
+std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const CBlockIndex *pindexPrev,
+                                                const Amount &blockReward);
 
 #endif // BITCOIN_MINERFUND_H

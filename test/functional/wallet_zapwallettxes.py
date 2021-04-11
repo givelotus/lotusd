@@ -14,6 +14,9 @@
   transactions are still available, but that the unconfirmed transaction has
   been zapped.
 """
+
+from decimal import Decimal
+
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -38,13 +41,13 @@ class ZapWalletTXesTest (BitcoinTestFramework):
         self.sync_all()
 
         # This transaction will be confirmed
-        txid1 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 10)
+        txid1 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('1'))
 
         self.nodes[0].generate(1)
         self.sync_all()
 
         # This transaction will not be confirmed
-        txid2 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 20)
+        txid2 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('1.4'))
 
         # Confirmed and unconfirmed transactions are now in the wallet.
         assert_equal(self.nodes[0].gettransaction(txid1)['txid'], txid1)

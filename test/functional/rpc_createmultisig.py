@@ -4,6 +4,13 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test multisig RPCs"""
 
+import binascii
+import itertools
+import json
+import os
+from decimal import Decimal
+
+from test_framework.blocktools import SUBSIDY
 from test_framework.descriptors import descsum_create, drop_origins
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
@@ -11,12 +18,6 @@ from test_framework.util import (
     assert_equal,
 )
 from test_framework.key import ECPubKey
-
-import binascii
-import decimal
-import itertools
-import json
-import os
 
 
 class RpcCreateMultiSigTest(BitcoinTestFramework):
@@ -120,10 +121,11 @@ class RpcCreateMultiSigTest(BitcoinTestFramework):
 
         height = node0.getblockchaininfo()["blocks"]
         assert 150 < height < 350
-        total = 149 * 50 + (height - 149 - 100) * 25
-        assert bal1 == 0
-        assert bal2 == self.moved
-        assert bal0 + bal1 + bal2 == total
+        fees_burned = Decimal('0.00002448')
+        total = (height - 100) * SUBSIDY
+        assert_equal(bal1, 0)
+        assert_equal(bal2, self.moved)
+        assert_equal(bal0 + bal1 + bal2 + fees_burned, total)
 
     def do_multisig(self):
         node0, node1, node2 = self.nodes
@@ -147,7 +149,7 @@ class RpcCreateMultiSigTest(BitcoinTestFramework):
         assert maddw == madd
         assert mredeemw == mredeem
 
-        txid = node0.sendtoaddress(madd, 40)
+        txid = node0.sendtoaddress(madd, Decimal('2'))
 
         tx = node0.getrawtransaction(txid, True)
         vout = [v["n"] for v in tx["vout"]
@@ -161,7 +163,7 @@ class RpcCreateMultiSigTest(BitcoinTestFramework):
 
         node0.generate(1)
 
-        outval = value - decimal.Decimal("0.00001000")
+        outval = value - Decimal('0.00001000')
         rawtx = node2.createrawtransaction(
             [{"txid": txid, "vout": vout}], [{self.final: outval}])
 

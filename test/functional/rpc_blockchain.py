@@ -37,6 +37,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     TIME_GENESIS_BLOCK,
+    SUBSIDY,
 )
 from test_framework.messages import (
     msg_block,
@@ -235,7 +236,7 @@ class BlockchainTest(BitcoinTestFramework):
         node = self.nodes[0]
         res = node.gettxoutsetinfo()
 
-        assert_equal(res['total_amount'], Decimal('8725.00000000'))
+        assert_equal(res['total_amount'], 200 * SUBSIDY)
         assert_equal(res['transactions'], 200)
         assert_equal(res['height'], 200)
         assert_equal(res['txouts'], 200)

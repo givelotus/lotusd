@@ -145,19 +145,18 @@ public:
 
 static constexpr Amount SATOSHI = Amount::satoshi();
 static constexpr Amount CASH = 100 * SATOSHI;
-static constexpr Amount COIN = 100000000 * SATOSHI;
+static constexpr Amount COIN = 100'000'000 * SATOSHI;
+static constexpr Amount LOTUS = 1'000'000 * SATOSHI;
+
+static constexpr Amount SUBSIDY = 260 * LOTUS;
 
 /**
  * No amount larger than this (in satoshi) is valid.
  *
- * Note that this constant is *not* the total money supply, which in Bitcoin
- * currently happens to be less than 21,000,000 BCH for various reasons, but
- * rather a sanity check. As this sanity check is used by consensus-critical
- * validation code, the exact value of the MAX_MONEY constant is consensus
- * critical; in unusual circumstances like a(nother) overflow bug that allowed
- * for the creation of coins out of thin air modification could lead to a fork.
+ * Logos doesn't have a capped supply, however, we impose the same MAX_MONEY
+ * limit as Bitcoin as sanity check to prevent overflows.
  */
-static const Amount MAX_MONEY = 21000000 * COIN;
+static const Amount MAX_MONEY = 21'000'000 * COIN;
 inline bool MoneyRange(const Amount nValue) {
     return nValue >= Amount::zero() && nValue <= MAX_MONEY;
 }

@@ -31,7 +31,7 @@ Start three nodes:
 """
 import time
 
-from test_framework.blocktools import (create_block, create_coinbase)
+from test_framework.blocktools import (create_block, create_coinbase, SUBSIDY)
 from test_framework.key import ECKey
 from test_framework.messages import (
     CBlockHeader,
@@ -41,6 +41,7 @@ from test_framework.messages import (
     CTxOut,
     msg_block,
     msg_headers,
+    COIN,
 )
 from test_framework.mininode import P2PInterface
 from test_framework.script import (CScript, OP_TRUE)
@@ -145,7 +146,7 @@ class AssumeValidTest(BitcoinTestFramework):
         tx = CTransaction()
         tx.vin.append(
             CTxIn(COutPoint(self.block1.vtx[0].sha256, 0), scriptSig=b""))
-        tx.vout.append(CTxOut(49 * 100000000, CScript([OP_TRUE])))
+        tx.vout.append(CTxOut(int(SUBSIDY * COIN), CScript([OP_TRUE])))
         pad_tx(tx)
         tx.calc_sha256()
 

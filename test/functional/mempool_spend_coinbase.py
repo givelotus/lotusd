@@ -12,8 +12,10 @@ in the next block are accepted into the memory pool,
 but less mature coinbase spends are NOT.
 """
 
+from decimal import Decimal
+
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.blocktools import create_raw_transaction
+from test_framework.blocktools import create_raw_transaction, SUBSIDY
 from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
@@ -34,7 +36,8 @@ class MempoolSpendCoinbaseTest(BitcoinTestFramework):
         # is too immature to spend.
         b = [self.nodes[0].getblockhash(n) for n in range(101, 103)]
         coinbase_txids = [self.nodes[0].getblock(h)['tx'][0] for h in b]
-        spends_raw = [create_raw_transaction(self.nodes[0], txid, node0_address, amount=49.99)
+        spends_raw = [create_raw_transaction(self.nodes[0], txid, node0_address,
+                                             amount=SUBSIDY - Decimal('0.01'))
                       for txid in coinbase_txids]
 
         spend_101_id = self.nodes[0].sendrawtransaction(spends_raw[0])

@@ -861,16 +861,7 @@ static bool WriteBlockToDisk(const CBlock &block, FlatFilePos &pos,
 }
 
 Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
-    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
-    // Force block reward to zero when right shift is undefined.
-    if (halvings >= 64) {
-        return Amount::zero();
-    }
-
-    Amount nSubsidy = 50 * COIN;
-    // Subsidy is cut in half every 210,000 blocks which will occur
-    // approximately every 4 years.
-    return ((nSubsidy / SATOSHI) >> halvings) * SATOSHI;
+    return SUBSIDY;
 }
 
 CoinsViews::CoinsViews(std::string ldb_name, size_t cache_size_bytes,
@@ -1853,8 +1844,10 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
              nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs - 1),
              nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
+    // 50% of fees get burned.
+    Amount amountFeeReward = nFees / 2;
     Amount blockReward =
-        nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(pindex->nHeight, consensusParams);
     if (block.vtx[0]->GetValueOut() > blockReward) {
         LogPrintf("ERROR: ConnectBlock(): coinbase pays too much (actual=%d vs "
                   "limit=%d)\n",
@@ -1863,30 +1856,25 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
                              "bad-cb-amount");
     }
 
-    const std::vector<CTxDestination> whitelist =
-        GetMinerFundWhitelist(consensusParams, pindex->pprev);
-    if (!whitelist.empty()) {
-        const Amount required = GetMinerFundAmount(blockReward);
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, pindex->pprev, blockReward);
 
-        for (auto &o : block.vtx[0]->vout) {
-            if (o.nValue < required) {
-                // This output doesn't qualify because its amount is too low.
-                continue;
-            }
-
-            CTxDestination address;
-            if (!ExtractDestination(o.scriptPubKey, address)) {
-                // Cannot decode address.
-                continue;
-            }
-
-            if (std::find(whitelist.begin(), whitelist.end(), address) !=
-                whitelist.end()) {
-                goto MinerFundSuccess;
+    if (!requiredOutputs.empty()) {
+        auto nextRequiredOutput = requiredOutputs.begin();
+        // Miner fund outputs must appear in order.
+        // Can be separated by non-miner fund outputs.
+        for (const CTxOut &o : block.vtx[0]->vout) {
+            // Must match next required output exactly.
+            if (o == *nextRequiredOutput) {
+                nextRequiredOutput++;
+                // Found all outputs.
+                if (nextRequiredOutput == requiredOutputs.end()) {
+                    goto MinerFundSuccess;
+                }
             }
         }
 
-        // We did not find an output that match the miner fund requirements.
+        // We did not find all required miner fund outputs.
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                              "bad-cb-minerfund");
     }
