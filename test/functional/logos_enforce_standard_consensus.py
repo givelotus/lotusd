@@ -12,12 +12,14 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     make_conform_to_ctor,
+    SUBSIDY,
 )
 from test_framework.messages import (
     COutPoint,
     CTransaction,
     CTxIn,
     CTxOut,
+    COIN,
 )
 from test_framework.util import (
     wait_until,
@@ -53,7 +55,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         node.generatetoaddress(num_mature_coins, address)
         node.generatetoaddress(100, address)
 
-        value = 50 * 100_000_000
+        value = int(SUBSIDY * COIN)
 
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
 
