@@ -6,7 +6,7 @@
 #
 # Test getblockstats rpc call
 #
-import decimal
+from decimal import Decimal
 import json
 import os
 
@@ -20,7 +20,7 @@ TESTSDIR = os.path.dirname(os.path.realpath(__file__))
 
 
 def EncodeDecimal(o):
-    if isinstance(o, decimal.Decimal):
+    if isinstance(o, Decimal):
         # json.load will read a quoted float as a string and not convert it back
         # to decimal, so store the value as unquoted float instead.
         return float(o)
@@ -58,18 +58,18 @@ class GetblockstatsTest(BitcoinTestFramework):
         address = self.nodes[0].get_deterministic_priv_key().address
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=10,
+            amount=Decimal('0.1'),
             subtractfeefromamount=True)
         self.nodes[0].generate(1)
         self.sync_all()
 
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=10,
+            amount=Decimal('0.1'),
             subtractfeefromamount=True)
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=10,
+            amount=Decimal('0.1'),
             subtractfeefromamount=False)
         self.nodes[0].settxfee(amount=0.003)
         self.nodes[0].sendtoaddress(
@@ -101,7 +101,7 @@ class GetblockstatsTest(BitcoinTestFramework):
 
     def load_test_data(self, filename):
         with open(filename, 'r', encoding="utf8") as f:
-            d = json.load(f, parse_float=decimal.Decimal)
+            d = json.load(f, parse_float=Decimal)
             blocks = d['blocks']
             mocktime = d['mocktime']
             self.expected_stats = d['stats']

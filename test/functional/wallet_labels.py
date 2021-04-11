@@ -11,6 +11,7 @@ RPCs tested are:
 """
 from collections import defaultdict
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 from test_framework.wallet_util import test_address
@@ -30,7 +31,7 @@ class WalletLabelsTest(BitcoinTestFramework):
         assert_equal(len(node.listunspent()), 0)
 
         # Note each time we call generate, all generated coins go into
-        # the same address, so we call twice to get two addresses w/50 each
+        # the same address, so we call twice to get two addresses w/260 Lotus each
         node.generatetoaddress(
             nblocks=1, address=node.getnewaddress(
                 label='coinbase'))
@@ -38,7 +39,7 @@ class WalletLabelsTest(BitcoinTestFramework):
             nblocks=101,
             address=node.getnewaddress(
                 label='coinbase'))
-        assert_equal(node.getbalance(), 100)
+        assert_equal(node.getbalance(), 2 * SUBSIDY)
 
         # there should be 2 address groups
         # each with 1 address with a balance of 50 Bitcoins
@@ -50,14 +51,14 @@ class WalletLabelsTest(BitcoinTestFramework):
         for address_group in address_groups:
             assert_equal(len(address_group), 1)
             assert_equal(len(address_group[0]), 3)
-            assert_equal(address_group[0][1], 50)
+            assert_equal(address_group[0][1], SUBSIDY)
             assert_equal(address_group[0][2], 'coinbase')
             linked_addresses.add(address_group[0][0])
 
         # send 50 from each address to a third address not in this wallet
         common_address = "msf4WtN1YQKXvNtvdFYt9JBnUD2FB41kjr"
         node.sendmany(
-            amounts={common_address: 100},
+            amounts={common_address: 2 * SUBSIDY},
             subtractfeefrom=[common_address],
             minconf=1,
         )

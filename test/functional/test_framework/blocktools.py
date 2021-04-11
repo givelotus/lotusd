@@ -5,6 +5,7 @@
 """Utilities for manipulating blocks and transactions."""
 
 import unittest
+from decimal import Decimal
 
 from .script import (
     CScript,
@@ -33,6 +34,7 @@ from .util import assert_equal, satoshi_round
 
 # Genesis block time (regtest)
 TIME_GENESIS_BLOCK = 1296688602
+SUBSIDY = Decimal('2.6')
 
 
 def create_block(hashprev, coinbase, ntime=None, *, version=1):
@@ -78,9 +80,7 @@ def create_coinbase(height, pubkey=None):
                               script_BIP34_coinbase_height(height),
                               0xffffffff))
     coinbaseoutput = CTxOut()
-    coinbaseoutput.nValue = 50 * COIN
-    halvings = int(height / 150)  # regtest
-    coinbaseoutput.nValue >>= halvings
+    coinbaseoutput.nValue = int(SUBSIDY * COIN)
     if (pubkey is not None):
         coinbaseoutput.scriptPubKey = CScript([pubkey, OP_CHECKSIG])
     else:

@@ -13,6 +13,7 @@ import json
 from struct import pack, unpack
 import urllib.parse
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -91,7 +92,7 @@ class RESTTest (BitcoinTestFramework):
         self.nodes[1].generatetoaddress(100, not_related_address)
         self.sync_all()
 
-        assert_equal(self.nodes[0].getbalance(), 50)
+        assert_equal(self.nodes[0].getbalance(), SUBSIDY)
 
         txid = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 0.1)
         self.sync_all()
@@ -356,9 +357,9 @@ class RESTTest (BitcoinTestFramework):
 
         # Make 3 tx and mine them on node 1
         txs = []
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
         self.sync_all()
 
         # Check that there are exactly 3 transactions in the TX memory pool

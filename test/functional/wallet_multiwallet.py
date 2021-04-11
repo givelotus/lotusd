@@ -11,6 +11,7 @@ import os
 import shutil
 import time
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
 from test_framework.util import (
@@ -173,7 +174,7 @@ class MultiWalletTest(BitcoinTestFramework):
         assert_equal(set(node.listwallets()), {"w4", "w5"})
         w5 = wallet("w5")
         w5_info = w5.getwalletinfo()
-        assert_equal(w5_info['immature_balance'], 50)
+        assert_equal(w5_info['immature_balance'], SUBSIDY)
 
         competing_wallet_dir = os.path.join(
             self.options.tmpdir, 'competing_walletdir')
@@ -196,7 +197,7 @@ class MultiWalletTest(BitcoinTestFramework):
         for wallet_name, wallet in zip(wallet_names, wallets):
             info = wallet.getwalletinfo()
             assert_equal(info['immature_balance'],
-                         50 if wallet is wallets[0] else 0)
+                         SUBSIDY if wallet is wallets[0] else 0)
             assert_equal(info['walletname'], wallet_name)
 
         # accessing invalid wallet fails
@@ -209,18 +210,18 @@ class MultiWalletTest(BitcoinTestFramework):
 
         w1, w2, w3, w4, *_ = wallets
         node.generatetoaddress(nblocks=101, address=w1.getnewaddress())
-        assert_equal(w1.getbalance(), 100)
+        assert_equal(w1.getbalance(), SUBSIDY * 2)
         assert_equal(w2.getbalance(), 0)
         assert_equal(w3.getbalance(), 0)
         assert_equal(w4.getbalance(), 0)
 
-        w1.sendtoaddress(w2.getnewaddress(), 1)
-        w1.sendtoaddress(w3.getnewaddress(), 2)
-        w1.sendtoaddress(w4.getnewaddress(), 3)
+        w1.sendtoaddress(w2.getnewaddress(), Decimal('0.1'))
+        w1.sendtoaddress(w3.getnewaddress(), Decimal('0.2'))
+        w1.sendtoaddress(w4.getnewaddress(), Decimal('0.3'))
         node.generatetoaddress(nblocks=1, address=w1.getnewaddress())
-        assert_equal(w2.getbalance(), 1)
-        assert_equal(w3.getbalance(), 2)
-        assert_equal(w4.getbalance(), 3)
+        assert_equal(w2.getbalance(), Decimal('0.1'))
+        assert_equal(w3.getbalance(), Decimal('0.2'))
+        assert_equal(w4.getbalance(), Decimal('0.3'))
 
         batch = w1.batch([w1.getblockchaininfo.get_request(),
                           w1.getwalletinfo.get_request()])

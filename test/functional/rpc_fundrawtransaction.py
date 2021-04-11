@@ -5,6 +5,7 @@
 
 from decimal import Decimal
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.messages import CTransaction, FromHex
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
@@ -100,7 +101,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         handled properly."""
         self.log.info("Test fundrawtxn changePosition option")
         rawmatch = self.nodes[2].createrawtransaction(
-            [], {self.nodes[2].getnewaddress(): 50})
+            [], {self.nodes[2].getnewaddress(): SUBSIDY})
         rawmatch = self.nodes[2].fundrawtransaction(
             rawmatch, {"changePosition": 1, "subtractFeeFromOutputs": [0]})
         assert_equal(rawmatch["changepos"], -1)
@@ -108,7 +109,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         watchonly_address = self.nodes[0].getnewaddress()
         watchonly_pubkey = self.nodes[0].getaddressinfo(watchonly_address)[
             "pubkey"]
-        self.watchonly_amount = Decimal(200)
+        self.watchonly_amount = Decimal('10')
         self.nodes[3].importpubkey(watchonly_pubkey, "", True)
         self.watchonly_txid = self.nodes[0].sendtoaddress(
             watchonly_address, self.watchonly_amount)
@@ -586,7 +587,7 @@ class RawTransactionsTest(BitcoinTestFramework):
 
         # Make sure funds are received at node1.
         assert_equal(
-            oldBalance + Decimal('51.10000000'), self.nodes[0].getbalance())
+            oldBalance + SUBSIDY + Decimal('1.10000000'), self.nodes[0].getbalance())
 
     def test_many_inputs_fee(self):
         """Multiple (~19) inputs tx test | Compare fee."""
@@ -647,7 +648,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.nodes[1].sendrawtransaction(fundedAndSignedTx['hex'])
         self.nodes[1].generate(1)
         self.sync_all()
-        assert_equal(oldBalance + Decimal('50.19000000'),
+        assert_equal(oldBalance + SUBSIDY + Decimal('0.19000000'),
                      self.nodes[0].getbalance())  # 0.19+block reward
 
     def test_op_return(self):
@@ -718,7 +719,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         assert_equal(len(self.nodes[3].listunspent(1)), 1)
 
         inputs = []
-        outputs = {self.nodes[3].getnewaddress(): 1}
+        outputs = {self.nodes[3].getnewaddress(): Decimal('0.5')}
         rawTx = self.nodes[3].createrawtransaction(inputs, outputs)
         # uses self.min_relay_tx_fee (set by settxfee)
         result = self.nodes[3].fundrawtransaction(rawTx)
@@ -747,12 +748,12 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.log.info("Test fundrawtxn does not reuse addresses")
 
         rawTx = self.nodes[3].createrawtransaction(
-            inputs=[], outputs={self.nodes[3].getnewaddress(): 1})
+            inputs=[], outputs={self.nodes[3].getnewaddress(): Decimal('0.2')})
         result3 = self.nodes[3].fundrawtransaction(rawTx)
         res_dec = self.nodes[0].decoderawtransaction(result3["hex"])
         changeaddress = ""
         for out in res_dec['vout']:
-            if out['value'] > 1.0:
+            if out['value'] > Decimal('0.1'):
                 changeaddress += out['scriptPubKey']['addresses'][0]
         assert changeaddress != ""
         nextaddr = self.nodes[3].getnewaddress()
@@ -767,7 +768,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         assert_equal(len(self.nodes[3].listunspent(1)), 1)
 
         inputs = []
-        outputs = {self.nodes[2].getnewaddress(): 1}
+        outputs = {self.nodes[2].getnewaddress(): Decimal('0.2')}
         rawTx = self.nodes[3].createrawtransaction(inputs, outputs)
 
         # uses self.min_relay_tx_fee (set by settxfee)
@@ -802,7 +803,9 @@ class RawTransactionsTest(BitcoinTestFramework):
 
         inputs = []
         outputs = {
-            self.nodes[2].getnewaddress(): value for value in (1.0, 1.1, 1.2, 1.3)}
+            self.nodes[2].getnewaddress(): Decimal(value)
+            for value in ('0.1', '0.11', '0.12', '0.13')
+        }
         rawTx = self.nodes[3].createrawtransaction(inputs, outputs)
 
         # Split the fee between outputs 0, 2, and 3, but not output 1

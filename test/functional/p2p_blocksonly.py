@@ -4,6 +4,9 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test p2p blocksonly"""
 
+from decimal import Decimal
+
+from test_framework.blocktools import SUBSIDY
 from test_framework.messages import msg_tx, CTransaction, FromHex
 from test_framework.mininode import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
@@ -29,8 +32,8 @@ class P2PBlocksOnly(BitcoinTestFramework):
                 'vout': 0
             }],
             outputs=[{
-                self.nodes[0].get_deterministic_priv_key().address: 50 -
-                0.00125
+                self.nodes[0].get_deterministic_priv_key().address:
+                    SUBSIDY - Decimal('0.00125')
             }],
         )
         self.log.info(prevtx)

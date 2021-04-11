@@ -10,6 +10,7 @@ Two nodes. Node1 is under test. Node0 is providing transactions and generating b
 - Generate 110 keys (enough to drain the keypool). Store key 90 (in the initial keypool) and key 110 (beyond the initial keypool). Send funds to key 90 and key 110.
 - Stop node1, clear the datadir, move wallet file back into the datadir and restart node1.
 - connect node1 to node0. Verify that they sync and node1 receives its funds."""
+from decimal import Decimal
 import os
 import shutil
 
@@ -48,9 +49,9 @@ class KeypoolRestoreTest(BitcoinTestFramework):
             addr_extpool = self.nodes[1].getnewaddress()
 
         self.log.info("Send funds to wallet")
-        self.nodes[0].sendtoaddress(addr_oldpool, 10)
+        self.nodes[0].sendtoaddress(addr_oldpool, Decimal('1'))
         self.nodes[0].generate(1)
-        self.nodes[0].sendtoaddress(addr_extpool, 5)
+        self.nodes[0].sendtoaddress(addr_extpool, Decimal('0.5'))
         self.nodes[0].generate(1)
         self.sync_blocks()
 
@@ -62,7 +63,7 @@ class KeypoolRestoreTest(BitcoinTestFramework):
         self.sync_all()
 
         self.log.info("Verify keypool is restored and balance is correct")
-        assert_equal(self.nodes[1].getbalance(), 15)
+        assert_equal(self.nodes[1].getbalance(), Decimal('1.5'))
         assert_equal(self.nodes[1].listtransactions()
                      [0]['category'], "receive")
         # Check that we have marked all keys up to the used keypool key as used

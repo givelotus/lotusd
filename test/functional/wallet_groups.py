@@ -4,6 +4,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test wallet group functionality."""
 
+from decimal import Decimal
+
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.messages import CTransaction, FromHex, ToHex
 from test_framework.util import (
@@ -121,7 +123,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # scriptPubKey
         for i in range(5):
             raw_tx = self.nodes[0].createrawtransaction(
-                [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: 0.05}])
+                [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: Decimal('0.0005')}])
             tx = FromHex(CTransaction(), raw_tx)
             tx.vin = []
             tx.vout = [tx.vout[0]] * 2000
@@ -136,7 +138,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # Check that we can create a transaction that only requires ~100 of our
         # utxos, without pulling in all outputs and creating a transaction that
         # is way too big.
-        assert self.nodes[2].sendtoaddress(address=addr2[0], amount=5)
+        assert self.nodes[2].sendtoaddress(address=addr2[0], amount=Decimal('0.3'))
 
 
 if __name__ == '__main__':

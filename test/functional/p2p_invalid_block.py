@@ -18,6 +18,7 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
     make_conform_to_ctor,
+    SUBSIDY,
 )
 from test_framework.messages import COIN
 from test_framework.mininode import P2PDataStore
@@ -73,9 +74,9 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         # b'0x51' is OP_TRUE
         tx1 = create_tx_with_script(
-            block1.vtx[0], 0, script_sig=b'', amount=50 * COIN)
+            block1.vtx[0], 0, script_sig=b'', amount=int(SUBSIDY * COIN))
         tx2 = create_tx_with_script(
-            tx1, 0, script_sig=b'\x51', amount=50 * COIN)
+            tx1, 0, script_sig=b'\x51', amount=int(SUBSIDY * COIN))
 
         block2.vtx.extend([tx1, tx2])
         block2.vtx = [block2.vtx[0]] + \
@@ -113,7 +114,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         block3 = create_block(tip, create_coinbase(height), block_time)
         block_time += 1
-        block3.vtx[0].vout[0].nValue = 100 * COIN  # Too high!
+        block3.vtx[0].vout[0].nValue = int(2 * SUBSIDY * COIN)  # Too high!
         block3.vtx[0].sha256 = None
         block3.vtx[0].calc_sha256()
         block3.hashMerkleRoot = block3.calc_merkle_root()
@@ -141,7 +142,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         # Create a block that spends the output of a tx in a previous block.
         block4 = create_block(tip, create_coinbase(height), block_time)
         tx3 = create_tx_with_script(tx2, 0, script_sig=b'\x51',
-                                    amount=50 * COIN)
+                                    amount=int(SUBSIDY * COIN))
 
         # Duplicates input
         tx3.vin.append(tx3.vin[0])

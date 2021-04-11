@@ -17,6 +17,7 @@ and inputs have the form:
 <input 0> ... <input n> <leaf script> <control block>
 """
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.key import ECKey, ECPubKey
 from test_framework.messages import (
     COutPoint,
@@ -407,7 +408,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
                         for tx_case in TX_CASES
                         if isinstance(tx_case, dict))
 
-        value = 50 * 100_000_000
+        value = int(SUBSIDY * 100_000_000)
         fee = 10_000
 
         pubkey_bytes = bytes.fromhex('020000000000000000000000000000000000000000000000000000000000000001')

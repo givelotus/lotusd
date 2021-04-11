@@ -35,9 +35,11 @@ import os
 from random import randint
 import shutil
 
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
+    assert_greater_than,
     assert_raises_rpc_error,
     connect_nodes,
 )
@@ -70,7 +72,7 @@ class WalletBackupTest(BitcoinTestFramework):
 
     def one_send(self, from_node, to_address):
         if (randint(1, 2) == 1):
-            amount = Decimal(randint(1, 10)) / Decimal(10)
+            amount = Decimal(randint(1, 10)) / Decimal('2000')
             self.nodes[from_node].sendtoaddress(to_address, amount)
 
     def do_one_round(self):
@@ -125,9 +127,9 @@ class WalletBackupTest(BitcoinTestFramework):
         self.nodes[3].generate(100)
         self.sync_blocks()
 
-        assert_equal(self.nodes[0].getbalance(), 50)
-        assert_equal(self.nodes[1].getbalance(), 50)
-        assert_equal(self.nodes[2].getbalance(), 50)
+        assert_equal(self.nodes[0].getbalance(), SUBSIDY)
+        assert_equal(self.nodes[1].getbalance(), SUBSIDY)
+        assert_equal(self.nodes[2].getbalance(), SUBSIDY)
         assert_equal(self.nodes[3].getbalance(), 0)
 
         self.log.info("Creating transactions")
@@ -164,8 +166,10 @@ class WalletBackupTest(BitcoinTestFramework):
         total = balance0 + balance1 + balance2 + balance3
 
         # At this point, there are 214 blocks (103 for setup, then 10 rounds, then 101.)
-        # 114 are mature, so the sum of all wallets should be 114 * 50 = 5700.
-        assert_equal(total, 5700)
+        # 114 are mature.
+        approx_burned_fees = Decimal('0.0001')
+        assert_greater_than(total, 114 * SUBSIDY - approx_burned_fees)
+        assert_greater_than(114 * SUBSIDY, total - approx_burned_fees)
 
         ##
         # Test restoring spender wallets from backups

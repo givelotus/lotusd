@@ -25,7 +25,7 @@ class ScantxoutsetTest(BitcoinTestFramework):
 
     def run_test(self):
         self.log.info("Mining blocks...")
-        self.nodes[0].generate(110)
+        self.nodes[0].generate(150)
 
         addr = self.nodes[0].getnewaddress("")
         pubkey = self.nodes[0].getaddressinfo(addr)['pubkey']
