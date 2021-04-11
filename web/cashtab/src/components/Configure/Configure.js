@@ -5,18 +5,22 @@ import { Collapse, Form, Input, Modal, Spin, Alert } from 'antd';
 import {
     PlusSquareOutlined,
     WalletFilled,
-    WalletOutlined,
     ImportOutlined,
-    CopyOutlined,
     LockOutlined,
 } from '@ant-design/icons';
 import { WalletContext } from '@utils/context';
 import { StyledCollapse } from '@components/Common/StyledCollapse';
+import { AntdFormWrapper } from '@components/Common/EnhancedInputs';
 import PrimaryButton, {
     SecondaryButton,
     SmartButton,
 } from '@components/Common/PrimaryButton';
-import { CashLoader, CashLoadingIcon } from '@components/Common/CustomIcons';
+import {
+    CashLoader,
+    CashLoadingIcon,
+    ThemedCopyOutlined,
+    ThemedWalletOutlined,
+} from '@components/Common/CustomIcons';
 import { ReactComponent as Trashcan } from '@assets/trashcan.svg';
 import { ReactComponent as Edit } from '@assets/edit.svg';
 import { Event } from '@utils/GoogleAnalytics';
@@ -25,10 +29,10 @@ const { Panel } = Collapse;
 
 const SettingsLink = styled.a`
     text-decoration: underline;
-    color: #ff8d00;
+    color: ${props => props.theme.primary};
     :visited {
         text-decoration: underline;
-        color: #ff8d00;
+        color: ${props => props.theme.primary};
     }
 `;
 
@@ -61,7 +65,7 @@ const SWName = styled.div`
 
     h3 {
         font-size: 16px;
-        color: #444;
+        color: ${props => props.theme.wallet.text.secondary};
         margin: 0;
         text-align: left;
         white-space: nowrap;
@@ -89,20 +93,20 @@ const SWButtonCtn = styled.div`
     }
 
     svg {
-        stroke: #444;
-        fill: #444;
+        stroke: ${props => props.theme.wallet.text.secondary};
+        fill: ${props => props.theme.wallet.text.secondary};
         width: 25px;
         height: 25px;
         margin-right: 20px;
         cursor: pointer;
 
         :first-child:hover {
-            stroke: #ff8d00;
-            fill: #ff8d00;
+            stroke: ${props => props.theme.primary};
+            fill: ${props => props.theme.primary};
         }
         :hover {
-            stroke: red;
-            fill: red;
+            stroke: ${props => props.theme.settings.delete};
+            fill: ${props => props.theme.settings.delete};
         }
     }
 `;
@@ -116,7 +120,7 @@ const AWRow = styled.div`
     h3 {
         font-size: 16px;
         display: inline-block;
-        color: #444;
+        color: ${props => props.theme.wallet.text.secondary};
         margin: 0;
         text-align: left;
         font-weight: bold;
@@ -127,7 +131,7 @@ const AWRow = styled.div`
     h4 {
         font-size: 16px;
         display: inline-block;
-        color: #ff8d00 !important;
+        color: ${props => props.theme.primary} !important;
         margin: 0;
         text-align: right;
     }
@@ -139,18 +143,18 @@ const AWRow = styled.div`
 
 const StyledConfigure = styled.div`
     h2 {
-        color: #444;
+        color: ${props => props.theme.wallet.text.secondary};
         font-size: 25px;
     }
     p {
-        color: #444;
+        color: ${props => props.theme.wallet.text.secondary};
     }
 `;
 
 const StyledSpacer = styled.div`
     height: 1px;
     width: 100%;
-    background-color: #e2e2e2;
+    background-color: ${props => props.theme.wallet.borders.color};
     margin: 60px 0 50px;
 `;
 
@@ -378,67 +382,73 @@ const Configure = () => {
                         onOk={changeWalletName}
                         onCancel={() => cancelRenameWallet()}
                     >
-                        <Form style={{ width: 'auto' }}>
-                            <Form.Item
-                                validateStatus={
-                                    newWalletNameIsValid !== null &&
-                                    newWalletNameIsValid
-                                        ? ''
-                                        : 'error'
-                                }
-                                help={
-                                    newWalletNameIsValid !== null &&
-                                    newWalletNameIsValid
-                                        ? ''
-                                        : 'Wallet name must be a string between 1 and 24 characters long'
-                                }
-                            >
-                                <Input
-                                    prefix={<WalletFilled />}
-                                    placeholder="Enter new wallet name"
-                                    name="newName"
-                                    value={newWalletName}
-                                    onChange={e => handleWalletNameInput(e)}
-                                />
-                            </Form.Item>
-                        </Form>
+                        <AntdFormWrapper>
+                            <Form style={{ width: 'auto' }}>
+                                <Form.Item
+                                    validateStatus={
+                                        newWalletNameIsValid !== null &&
+                                        newWalletNameIsValid
+                                            ? ''
+                                            : 'error'
+                                    }
+                                    help={
+                                        newWalletNameIsValid !== null &&
+                                        newWalletNameIsValid
+                                            ? ''
+                                            : 'Wallet name must be a string between 1 and 24 characters long'
+                                    }
+                                >
+                                    <Input
+                                        prefix={<WalletFilled />}
+                                        placeholder="Enter new wallet name"
+                                        name="newName"
+                                        value={newWalletName}
+                                        onChange={e => handleWalletNameInput(e)}
+                                    />
+                                </Form.Item>
+                            </Form>
+                        </AntdFormWrapper>
                     </Modal>
                 )}
                 {walletToBeDeleted !== null && (
                     <Modal
-                        title={`Are you suer you want to delete wallet "${walletToBeDeleted.name}"?`}
+                        title={`Are you sure you want to delete wallet "${walletToBeDeleted.name}"?`}
                         visible={showDeleteWalletModal}
                         onOk={deleteSelectedWallet}
                         onCancel={() => cancelDeleteWallet()}
                     >
-                        <Form style={{ width: 'auto' }}>
-                            <Form.Item
-                                validateStatus={
-                                    walletDeleteValid !== null &&
-                                    walletDeleteValid
-                                        ? ''
-                                        : 'error'
-                                }
-                                help={
-                                    walletDeleteValid !== null &&
-                                    walletDeleteValid
-                                        ? ''
-                                        : 'Your confirmation phrase must match exactly'
-                                }
-                            >
-                                <Input
-                                    prefix={<WalletFilled />}
-                                    placeholder={`Type "delete ${walletToBeDeleted.name}" to confirm`}
-                                    name="walletToBeDeletedInput"
-                                    value={confirmationOfWalletToBeDeleted}
-                                    onChange={e => handleWalletToDeleteInput(e)}
-                                />
-                            </Form.Item>
-                        </Form>
+                        <AntdFormWrapper>
+                            <Form style={{ width: 'auto' }}>
+                                <Form.Item
+                                    validateStatus={
+                                        walletDeleteValid !== null &&
+                                        walletDeleteValid
+                                            ? ''
+                                            : 'error'
+                                    }
+                                    help={
+                                        walletDeleteValid !== null &&
+                                        walletDeleteValid
+                                            ? ''
+                                            : 'Your confirmation phrase must match exactly'
+                                    }
+                                >
+                                    <Input
+                                        prefix={<WalletFilled />}
+                                        placeholder={`Type "delete ${walletToBeDeleted.name}" to confirm`}
+                                        name="walletToBeDeletedInput"
+                                        value={confirmationOfWalletToBeDeleted}
+                                        onChange={e =>
+                                            handleWalletToDeleteInput(e)
+                                        }
+                                    />
+                                </Form.Item>
+                            </Form>
+                        </AntdFormWrapper>
                     </Modal>
                 )}
                 <h2>
-                    <CopyOutlined /> Backup your wallet
+                    <ThemedCopyOutlined /> Backup your wallet
                 </h2>
                 <Alert
                     style={{ marginBottom: '12px' }}
@@ -459,7 +469,7 @@ const Configure = () => {
                 )}
                 <StyledSpacer />
                 <h2>
-                    <WalletOutlined /> Manage Wallets
+                    <ThemedWalletOutlined /> Manage Wallets
                 </h2>
                 {apiError ? (
                     <>
@@ -486,37 +496,39 @@ const Configure = () => {
                                     Copy and paste your mnemonic seed phrase
                                     below to import an existing wallet
                                 </p>
-                                <Form style={{ width: 'auto' }}>
-                                    <Form.Item
-                                        validateStatus={
-                                            !formData.dirty &&
-                                            !formData.mnemonic
-                                                ? 'error'
-                                                : ''
-                                        }
-                                        help={
-                                            !formData.dirty &&
-                                            !formData.mnemonic
-                                                ? 'Mnemonic seed phrase required'
-                                                : ''
-                                        }
-                                    >
-                                        <Input
-                                            prefix={<LockOutlined />}
-                                            placeholder="mnemonic (seed phrase)"
-                                            name="mnemonic"
-                                            autoComplete="off"
-                                            onChange={e => handleChange(e)}
-                                            required
-                                        />
-                                    </Form.Item>
-                                    <SmartButton
-                                        disabled={!isValidMnemonic}
-                                        onClick={() => submit()}
-                                    >
-                                        Import
-                                    </SmartButton>
-                                </Form>
+                                <AntdFormWrapper>
+                                    <Form style={{ width: 'auto' }}>
+                                        <Form.Item
+                                            validateStatus={
+                                                !formData.dirty &&
+                                                !formData.mnemonic
+                                                    ? 'error'
+                                                    : ''
+                                            }
+                                            help={
+                                                !formData.dirty &&
+                                                !formData.mnemonic
+                                                    ? 'Mnemonic seed phrase required'
+                                                    : ''
+                                            }
+                                        >
+                                            <Input
+                                                prefix={<LockOutlined />}
+                                                placeholder="mnemonic (seed phrase)"
+                                                name="mnemonic"
+                                                autoComplete="off"
+                                                onChange={e => handleChange(e)}
+                                                required
+                                            />
+                                        </Form.Item>
+                                        <SmartButton
+                                            disabled={!isValidMnemonic}
+                                            onClick={() => submit()}
+                                        >
+                                            Import
+                                        </SmartButton>
+                                    </Form>
+                                </AntdFormWrapper>
                             </>
                         )}
                     </>

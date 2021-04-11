@@ -550,6 +550,8 @@ void CNode::copyStats(CNodeStats &stats, const std::vector<bool> &m_asmap) {
     }
     stats.nLastSend = nLastSend;
     stats.nLastRecv = nLastRecv;
+    stats.nLastTXTime = nLastTXTime;
+    stats.nLastBlockTime = nLastBlockTime;
     stats.nTimeConnected = nTimeConnected;
     stats.nTimeOffset = nTimeOffset;
     stats.addrName = GetAddrName();
@@ -960,10 +962,11 @@ bool CConnman::AttemptToEvictConnection() {
     // An attacker cannot manipulate this metric without physically moving nodes
     // closer to the target.
     EraseLastKElements(vEvictionCandidates, ReverseCompareNodeMinPingTime, 8);
-    // Protect 4 nodes that most recently sent us transactions.
-    // An attacker cannot manipulate this metric without performing useful work.
+    // Protect 4 nodes that most recently sent us novel transactions accepted
+    // into our mempool. An attacker cannot manipulate this metric without
+    // performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeTXTime, 4);
-    // Protect 4 nodes that most recently sent us blocks.
+    // Protect 4 nodes that most recently sent us novel blocks.
     // An attacker cannot manipulate this metric without performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeBlockTime, 4);
     // Protect the half of the remaining nodes which have been connected the
@@ -2884,7 +2887,7 @@ void CConnman::RecordBytesSent(uint64_t bytes) {
         nMaxOutboundTotalBytesSentInCycle = 0;
     }
 
-    // TODO, exclude peers with noban permission
+    // TODO, exclude peers with download permission
     nMaxOutboundTotalBytesSentInCycle += bytes;
 }
 

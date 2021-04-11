@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the resolution of forks via avalanche."""
 import random
+from typing import List, Dict
 
 from test_framework.key import (
     ECKey,
@@ -23,9 +24,11 @@ from test_framework.messages import (
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
+    assert_raises_rpc_error,
     wait_until,
 )
 
+AVALANCHE_MAX_PROOF_STAKES = 1000
 
 BLOCK_ACCEPTED = 0
 BLOCK_INVALID = 1
@@ -34,6 +37,8 @@ BLOCK_FORK = 3
 BLOCK_UNKNOWN = -1
 BLOCK_MISSING = -2
 BLOCK_PENDING = -3
+
+QUORUM_NODE_COUNT = 16
 
 
 class TestNode(P2PInterface):
@@ -112,6 +117,18 @@ class TestNode(P2PInterface):
             return self.avahello
 
 
+def get_stakes(coinbases: List[Dict],
+               priv_key: str) -> List[Dict]:
+    return [{
+        'txid': coinbase['txid'],
+        'vout': coinbase['n'],
+        'amount': coinbase['value'],
+        'height': coinbase['height'],
+        'iscoinbase': True,
+        'privatekey': priv_key,
+    } for coinbase in coinbases]
+
+
 class AvalancheTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
@@ -124,28 +141,33 @@ class AvalancheTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]
 
+        self.log.info("Check the node is signalling the avalanche service.")
+        assert_equal(
+            int(node.getnetworkinfo()['localservices'], 16) & NODE_AVALANCHE,
+            NODE_AVALANCHE)
+
         # Build a fake quorum of nodes.
+        def get_node():
+            n = TestNode()
+            node.add_p2p_connection(
+                n, services=NODE_NETWORK | NODE_AVALANCHE)
+            n.wait_for_verack()
+
+            # Get our own node id so we can use it later.
+            n.nodeid = node.getpeerinfo()[-1]['id']
+
+            return n
+
         def get_quorum():
-            def get_node():
-                n = TestNode()
-                node.add_p2p_connection(
-                    n, services=NODE_NETWORK | NODE_AVALANCHE)
-                n.wait_for_verack()
-
-                # Get our own node id so we can use it later.
-                n.nodeid = node.getpeerinfo()[-1]['id']
-
-                return n
-
-            return [get_node() for _ in range(0, 16)]
+            return [get_node() for _ in range(0, QUORUM_NODE_COUNT)]
 
         # Pick on node from the quorum for polling.
         quorum = get_quorum()
         poll_node = quorum[0]
 
         # Generate many block and poll for them.
-        address = node.get_deterministic_priv_key().address
-        blocks = node.generatetoaddress(100, address)
+        addrkey0 = node.get_deterministic_priv_key()
+        blocks = node.generatetoaddress(100, addrkey0.address)
 
         def get_coinbase(h):
             b = node.getblock(h, 2)
@@ -239,21 +261,40 @@ class AvalancheTest(BitcoinTestFramework):
             "12b004fff7f4b69ef8650e767f18f11ede158148b425660723b9f9a66e61f747"), True)
         pubkey = privkey.get_pubkey()
 
-        privatekey = node.get_deterministic_priv_key().key
-        proof = node.buildavalancheproof(11, 12, pubkey.get_bytes().hex(), [{
-            'txid': coinbases[0]['txid'],
-            'vout': coinbases[0]['n'],
-            'amount': coinbases[0]['value'],
-            'height': coinbases[0]['height'],
-            'iscoinbase': True,
-            'privatekey': privatekey,
-        }])
+        proof_sequence = 11
+        proof_expiration = 12
+        proof = node.buildavalancheproof(
+            proof_sequence, proof_expiration, pubkey.get_bytes().hex(),
+            [{
+                'txid': coinbases[0]['txid'],
+                'vout': coinbases[0]['n'],
+                'amount': coinbases[0]['value'],
+                'height': coinbases[0]['height'],
+                'iscoinbase': True,
+                'privatekey': addrkey0.key,
+            }])
 
         # Activate the quorum.
         for n in quorum:
             success = node.addavalanchenode(
                 n.nodeid, pubkey.get_bytes().hex(), proof)
             assert success is True
+
+        self.log.info("Testing getavalanchepeerinfo...")
+        avapeerinfo = node.getavalanchepeerinfo()
+        # There is a single peer because all nodes share the same proof.
+        assert_equal(len(avapeerinfo), 1)
+        assert_equal(avapeerinfo[0]["peerid"], 0)
+        assert_equal(avapeerinfo[0]["nodecount"], len(quorum))
+        # The first avalanche node index is 1, because 0 is self.nodes[1].
+        assert_equal(sorted(avapeerinfo[0]["nodes"]),
+                     list(range(1, QUORUM_NODE_COUNT + 1)))
+        assert_equal(avapeerinfo[0]["sequence"], proof_sequence)
+        assert_equal(avapeerinfo[0]["expiration"], proof_expiration)
+        assert_equal(avapeerinfo[0]["master"], pubkey.get_bytes().hex())
+        assert_equal(avapeerinfo[0]["proof"], proof)
+        assert_equal(len(avapeerinfo[0]["stakes"]), 1)
+        assert_equal(avapeerinfo[0]["stakes"][0]["txid"], coinbases[0]['txid'])
 
         def can_find_block_in_poll(hash, resp=BLOCK_ACCEPTED):
             found_hash = False
@@ -346,6 +387,32 @@ class AvalancheTest(BitcoinTestFramework):
         avakey.set(bytes.fromhex(node.getavalanchekey()))
         assert avakey.verify_schnorr(
             avahello.sig, avahello.get_sighash(poll_node))
+
+        # Check the maximum number of stakes policy
+        blocks = node.generatetoaddress(AVALANCHE_MAX_PROOF_STAKES + 1,
+                                        addrkey0.address)
+
+        too_many_coinbases = [get_coinbase(h) for h in blocks]
+        too_many_stakes = get_stakes(too_many_coinbases, addrkey0.key)
+
+        self.log.info(
+            "A proof using the maximum number of stakes is accepted...")
+        maximum_stakes = get_stakes(too_many_coinbases[:-1],
+                                    addrkey0.key)
+        good_proof = node.buildavalancheproof(
+            proof_sequence, proof_expiration,
+            pubkey.get_bytes().hex(), maximum_stakes)
+        node.addavalanchenode(
+            get_node().nodeid, pubkey.get_bytes().hex(), good_proof)
+
+        self.log.info("A proof using too many stakes should be rejected...")
+        bad_proof = node.buildavalancheproof(
+            proof_sequence, proof_expiration,
+            pubkey.get_bytes().hex(), too_many_stakes)
+        assert_raises_rpc_error(-32602, "Avalanche proof has too many UTXOs",
+                                node.addavalanchenode,
+                                get_node().nodeid, pubkey.get_bytes().hex(),
+                                bad_proof)
 
 
 if __name__ == '__main__':

@@ -6,6 +6,7 @@
 #define BITCOIN_AVALANCHE_PROCESSOR_H
 
 #include <avalanche/node.h>
+#include <avalanche/peermanager.h>
 #include <avalanche/protocol.h>
 #include <blockindexworkcomparator.h>
 #include <eventloop.h>
@@ -61,6 +62,11 @@ static constexpr std::chrono::milliseconds AVALANCHE_DEFAULT_QUERY_TIMEOUT{
  * How many inflight requests can exist for one item.
  */
 static constexpr int AVALANCHE_MAX_INFLIGHT_POLL = 10;
+
+/**
+ * How many UTXOs can be used for a single proof.
+ */
+static constexpr int AVALANCHE_MAX_PROOF_STAKES = 1000;
 
 namespace avalanche {
 
@@ -280,6 +286,15 @@ public:
     CPubKey getSessionPubKey() const;
     bool sendHello(CNode *pfrom) const;
 
+    /**
+     * Build and return the challenge whose signature we expect a peer to
+     * include in his AVAHELLO message.
+     */
+    uint256 buildRemoteSighash(CNode *pfrom) const;
+
+    std::vector<avalanche::Peer> getPeers() const;
+    std::vector<NodeId> getNodeIdsForPeer(PeerId peerId) const;
+
     bool startEventLoop(CScheduler &scheduler);
     bool stopEventLoop();
 
@@ -288,6 +303,12 @@ private:
     void clearTimedoutRequests();
     std::vector<CInv> getInvsForNextPoll(bool forPoll = true);
     NodeId getSuitableNodeToQuery();
+
+    /**
+     * Build and return the challenge whose signature is included in the
+     * AVAHELLO message that we send to a peer.
+     */
+    uint256 buildLocalSighash(CNode *pfrom) const;
 
     friend struct ::avalanche::AvalancheTest;
 };

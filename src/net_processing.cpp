@@ -1858,8 +1858,8 @@ static void ProcessGetBlockData(const Config &config, CNode &pfrom,
           (pindexBestHeader->GetBlockTime() - pindex->GetBlockTime() >
            HISTORICAL_BLOCK_AGE)) ||
          inv.type == MSG_FILTERED_BLOCK) &&
-        /* never disconnect nodes with the noban permission */
-        !pfrom.HasPermission(PF_NOBAN)) {
+        // nodes with the download permission may exceed target
+        !pfrom.HasPermission(PF_DOWNLOAD)) {
         LogPrint(BCLog::NET,
                  "historical block serving limit reached, disconnect peer=%d\n",
                  pfrom.GetId());
@@ -3086,8 +3086,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                              txid.ToString(), pfrom.GetId());
                     pfrom.fDisconnect = true;
                     return;
-                } else if (!fAlreadyHave && !fImporting && !fReindex &&
-                           !::ChainstateActive().IsInitialBlockDownload()) {
+                } else if (!fAlreadyHave && !m_chainman.ActiveChainstate()
+                                                 .IsInitialBlockDownload()) {
                     RequestTx(State(pfrom.GetId()), txid, current_time);
                 }
             }
@@ -3286,7 +3286,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
 
         LOCK(cs_main);
         if (::ChainstateActive().IsInitialBlockDownload() &&
-            !pfrom.HasPermission(PF_NOBAN)) {
+            !pfrom.HasPermission(PF_DOWNLOAD)) {
             LogPrint(BCLog::NET,
                      "Ignoring getheaders from peer=%d because node is in "
                      "initial block download\n",
@@ -3945,8 +3945,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         return;
     }
 
-    if (msg_type == NetMsgType::AVAHELLO && g_avalanche &&
-        gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+    if (msg_type == NetMsgType::AVAHELLO && g_avalanche) {
+        if (!gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+            Misbehaving(pfrom, 20, "unsolicited-avahello");
+            return;
+        }
         if (!pfrom.m_avalanche_state) {
             pfrom.m_avalanche_state = std::make_unique<CNode::AvalancheState>();
         }
@@ -3956,6 +3959,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         verifier >> delegation;
 
         avalanche::Proof proof;
+        // TODO: read proof from message
+        if (proof.getStakes().size() > AVALANCHE_MAX_PROOF_STAKES) {
+            Misbehaving(pfrom, 100, "too-large-avalanche-proof");
+            return;
+        }
 
         avalanche::DelegationState state;
         CPubKey pubkey;
@@ -3970,8 +3978,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
 
     // Ignore avalanche requests while importing
     if (msg_type == NetMsgType::AVAPOLL && !fImporting && !fReindex &&
-        g_avalanche &&
-        gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+        g_avalanche) {
+        if (!gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+            Misbehaving(pfrom, 20, "unsolicited-avapoll");
+            return;
+        }
         auto now = std::chrono::steady_clock::now();
         int64_t cooldown =
             gArgs.GetArg("-avacooldown", AVALANCHE_DEFAULT_COOLDOWN);
@@ -4080,8 +4091,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
 
     // Ignore avalanche requests while importing
     if (msg_type == NetMsgType::AVARESPONSE && !fImporting && !fReindex &&
-        g_avalanche &&
-        gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+        g_avalanche) {
+        if (!gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+            Misbehaving(pfrom, 20, "unsolicited-avaresponse");
+            return;
+        }
         // As long as QUIC is not implemented, we need to sign response and
         // verify response's signatures in order to avoid any manipulation of
         // messages at the transport level.
@@ -5510,11 +5524,23 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                         1000000)
                     .GetFeePerK();
             int64_t timeNow = GetTimeMicros();
+            static FeeFilterRounder g_filter_rounder{
+                CFeeRate{DEFAULT_MIN_RELAY_TX_FEE_PER_KB}};
+            if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
+                // Received tx-inv messages are discarded when the active
+                // chainstate is in IBD, so tell the peer to not send them.
+                currentFilter = MAX_MONEY;
+            } else {
+                static const Amount MAX_FILTER{
+                    g_filter_rounder.round(MAX_MONEY)};
+                if (pto->m_tx_relay->lastSentFeeFilter == MAX_FILTER) {
+                    // Send the current filter if we sent MAX_FILTER previously
+                    // and made it out of IBD.
+                    pto->m_tx_relay->nextSendTimeFeeFilter = timeNow - 1;
+                }
+            }
             if (timeNow > pto->m_tx_relay->nextSendTimeFeeFilter) {
-                static CFeeRate default_feerate =
-                    CFeeRate(DEFAULT_MIN_RELAY_TX_FEE_PER_KB);
-                static FeeFilterRounder filterRounder(default_feerate);
-                Amount filterToSend = filterRounder.round(currentFilter);
+                Amount filterToSend = g_filter_rounder.round(currentFilter);
                 filterToSend =
                     std::max(filterToSend, ::minRelayTxFee.GetFeePerK());
 
