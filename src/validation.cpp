@@ -284,7 +284,7 @@ bool CheckSequenceLocks(const CTxMemPool &pool, const CTransaction &tx,
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
                                       int64_t nMedianTimePast) {
     return nMedianTimePast >= gArgs.GetArg("-replayprotectionactivationtime",
-        0xffffffff); // TODO: define upgrade schedule
+                                           params.selectronActivationTime);
 }
 
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
@@ -3825,8 +3825,8 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  const Consensus::Params &params,
                                  const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
-    
-    // Always enforce BIP113 (Median Time Past).    
+
+    // Always enforce BIP113 (Median Time Past).
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
     const int64_t nLockTimeCutoff = nMedianTimePast;
@@ -3844,16 +3844,15 @@ static bool ContextualCheckBlock(const CBlock &block,
         if (prevTx && (tx.GetId() <= prevTx->GetId())) {
             if (tx.GetId() == prevTx->GetId()) {
                 return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                        "tx-duplicate",
-                                        strprintf("Duplicated transaction %s",
-                                                tx.GetId().ToString()));
+                                     "tx-duplicate",
+                                     strprintf("Duplicated transaction %s",
+                                               tx.GetId().ToString()));
             }
 
             return state.Invalid(
                 BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
                 strprintf("Transaction order is invalid (%s < %s)",
-                            tx.GetId().ToString(),
-                            prevTx->GetId().ToString()));
+                          tx.GetId().ToString(), prevTx->GetId().ToString()));
         }
 
         if (prevTx || !tx.IsCoinBase()) {
@@ -5922,9 +5921,9 @@ ChainstateManager::InitializeChainstate(const BlockHash &snapshot_blockhash) {
     return *to_modify;
 }
 
-CChain &ChainstateManager::ActiveChain() const {
+CChainState &ChainstateManager::ActiveChainstate() const {
     assert(m_active_chainstate);
-    return m_active_chainstate->m_chain;
+    return *m_active_chainstate;
 }
 
 bool ChainstateManager::IsSnapshotActive() const {

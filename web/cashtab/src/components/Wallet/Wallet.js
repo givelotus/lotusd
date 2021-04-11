@@ -7,6 +7,7 @@ import { QRCode } from '@components/Common/QRCode';
 import { currency } from '@components/Common/Ticker.js';
 import { Link } from 'react-router-dom';
 import TokenList from './TokenList';
+import TxHistory from './TxHistory';
 import { CashLoader } from '@components/Common/CustomIcons';
 import { formatBalance } from '@utils/cashMethods';
 
@@ -21,12 +22,12 @@ export const LoadingCtn = styled.div`
     svg {
         width: 50px;
         height: 50px;
-        fill: #ff8d00;
+        fill: ${props => props.theme.primary};
     }
 `;
 
 export const BalanceHeader = styled.div`
-    color: #444;
+    color: ${props => props.theme.wallet.text.primary};
     width: 100%;
     font-size: 30px;
     font-weight: bold;
@@ -36,7 +37,7 @@ export const BalanceHeader = styled.div`
 `;
 
 export const BalanceHeaderFiat = styled.div`
-    color: #444;
+    color: ${props => props.theme.wallet.text.secondary};
     width: 100%;
     font-size: 18px;
     margin-bottom: 20px;
@@ -47,7 +48,7 @@ export const BalanceHeaderFiat = styled.div`
 `;
 
 export const ZeroBalanceHeader = styled.div`
-    color: #444;
+    color: ${props => props.theme.wallet.text.primary};
     width: 100%;
     font-size: 14px;
     margin-bottom: 5px;
@@ -60,13 +61,16 @@ export const SwitchBtnCtn = styled.div`
     align-content: space-between;
     margin-bottom: 15px;
     .nonactiveBtn {
-        color: #444;
-        background: linear-gradient(145deg, #eeeeee, #c8c8c8) !important;
+        color: ${props => props.theme.wallet.text.secondary};
+        background: ${props =>
+            props.theme.wallet.switch.inactive.background} !important;
         box-shadow: none !important;
     }
     .slpActive {
-        background: #5ebd6d !important;
-        box-shadow: inset 5px 5px 11px #4e9d5a, inset -5px -5px 11px #6edd80 !important;
+        background: ${props =>
+            props.theme.wallet.switch.activeToken.background} !important;
+        box-shadow: ${props =>
+            props.theme.wallet.switch.activeToken.shadow} !important;
     }
 `;
 
@@ -74,14 +78,14 @@ export const SwitchBtn = styled.div`
     font-weight: bold;
     display: inline-block;
     cursor: pointer;
-    color: #ffffff;
+    color: ${props => props.theme.contrast};
     font-size: 14px;
     padding: 6px 0;
     width: 100px;
     margin: 0 1px;
     text-decoration: none;
-    background: #ff8d00;
-    box-shadow: inset 8px 8px 16px #d67600, inset -8px -8px 16px #ffa400;
+    background: ${props => props.theme.primary};
+    box-shadow: ${props => props.theme.wallet.switch.activeCash.shadow};
     user-select: none;
     :first-child {
         border-radius: 100px 0 0 100px;
@@ -92,23 +96,23 @@ export const SwitchBtn = styled.div`
 `;
 
 export const Links = styled(Link)`
-    color: #444;
+    color: ${props => props.theme.wallet.text.secondary};
     width: 100%;
     font-size: 16px;
     margin: 10px 0 20px 0;
-    border: 1px solid #444;
+    border: 1px solid ${props => props.theme.wallet.text.secondary};
     padding: 14px 0;
     display: inline-block;
     border-radius: 3px;
     transition: all 200ms ease-in-out;
     svg {
-        fill: #444;
+        fill: ${props => props.theme.wallet.text.secondary};
     }
     :hover {
-        color: #ff8d00;
-        border-color: #ff8d00;
+        color: ${props => props.theme.primary};
+        border-color: ${props => props.theme.primary};
         svg {
-            fill: #444;
+            fill: ${props => props.theme.primary};
         }
     }
     @media (max-width: 768px) {
@@ -118,24 +122,24 @@ export const Links = styled(Link)`
 `;
 
 export const ExternalLink = styled.a`
-    color: #444;
+    color: ${props => props.theme.wallet.text.secondary};
     width: 100%;
     font-size: 16px;
     margin: 0 0 20px 0;
-    border: 1px solid #444;
+    border: 1px solid ${props => props.theme.wallet.text.secondary};
     padding: 14px 0;
     display: inline-block;
     border-radius: 3px;
     transition: all 200ms ease-in-out;
     svg {
-        fill: #444;
+        fill: ${props => props.theme.wallet.text.secondary};
         transition: all 200ms ease-in-out;
     }
     :hover {
-        color: #ff8d00;
-        border-color: #ff8d00;
+        color: ${props => props.theme.primary};
+        border-color: ${props => props.theme.primary};
         svg {
-            fill: #ff8d00;
+            fill: ${props => props.theme.primary};
         }
     }
     @media (max-width: 768px) {
@@ -146,18 +150,16 @@ export const ExternalLink = styled.a`
 
 const WalletInfo = () => {
     const ContextValue = React.useContext(WalletContext);
-    const { wallet, fiatPrice, balances, txHistory, apiError } = ContextValue;
+    const {
+        wallet,
+        fiatPrice,
+        balances,
+        parsedTxHistory,
+        apiError,
+    } = ContextValue;
     const [address, setAddress] = React.useState('cashAddress');
 
-    const hasHistory =
-        (txHistory &&
-            txHistory[0] &&
-            txHistory[0].transactions &&
-            txHistory[0].transactions.length > 0) ||
-        (txHistory &&
-            txHistory[1] &&
-            txHistory[1].transactions &&
-            txHistory[1].transactions.length > 0);
+    const hasHistory = parsedTxHistory && parsedTxHistory.length > 0;
 
     const handleChangeAddress = () => {
         setAddress(address === 'cashAddress' ? 'slpAddress' : 'cashAddress');
@@ -247,14 +249,18 @@ const WalletInfo = () => {
                     {currency.tokenTicker}
                 </SwitchBtn>
             </SwitchBtnCtn>
+            {hasHistory && parsedTxHistory && (
+                <TxHistory txs={parsedTxHistory} />
+            )}
             {balances.totalBalance ? (
                 <>
                     <ExternalLink
+                        style={{ marginTop: '24px' }}
                         href={`${currency.blockExplorerUrl}/address/${wallet.Path1899.cashAddress}`}
                         target="_blank"
                         rel="noopener noreferrer"
                     >
-                        <LinkOutlined /> View Transactions
+                        <LinkOutlined /> More transactions
                     </ExternalLink>
                 </>
             ) : null}
@@ -274,6 +280,7 @@ const Wallet = () => {
                 </LoadingCtn>
             )}
             {!loading && wallet.Path245 && <WalletInfo />}
+
             {!loading && wallet.Path245 && tokens && tokens.length > 0 && (
                 <TokenList tokens={tokens} />
             )}

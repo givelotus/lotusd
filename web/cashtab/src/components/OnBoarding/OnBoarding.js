@@ -2,13 +2,13 @@ import React, { useState } from 'react';
 import styled from 'styled-components';
 import { WalletContext } from '@utils/context';
 import { Input, Form, Modal } from 'antd';
+import { AntdFormWrapper } from '@components/Common/EnhancedInputs';
 import {
     ExclamationCircleOutlined,
     PlusSquareOutlined,
     ImportOutlined,
     LockOutlined,
 } from '@ant-design/icons';
-import StyledOnboarding from '@components/Common/StyledOnBoarding';
 import PrimaryButton, {
     SecondaryButton,
     SmartButton,
@@ -17,7 +17,7 @@ import { currency } from '@components/Common/Ticker.js';
 import { Event } from '@utils/GoogleAnalytics';
 
 export const WelcomeText = styled.p`
-    color: #444;
+    color: ${props => props.theme.wallet.text.secondary};
     width: 100%;
     font-size: 16px;
     margin-bottom: 60px;
@@ -26,7 +26,7 @@ export const WelcomeText = styled.p`
 
 export const WelcomeLink = styled.a`
     text-decoration: underline;
-    color: #ff8d00;
+    color: ${props => props.theme.primary};
 `;
 
 export const OnBoarding = ({ history }) => {
@@ -114,7 +114,7 @@ export const OnBoarding = ({ history }) => {
                 <ImportOutlined /> Import Wallet
             </SecondaryButton>
             {seedInput && (
-                <StyledOnboarding>
+                <AntdFormWrapper>
                     <Form style={{ width: 'auto' }}>
                         <Form.Item
                             validateStatus={
@@ -145,7 +145,7 @@ export const OnBoarding = ({ history }) => {
                             Import
                         </SmartButton>
                     </Form>
-                </StyledOnboarding>
+                </AntdFormWrapper>
             )}
         </>
     );
