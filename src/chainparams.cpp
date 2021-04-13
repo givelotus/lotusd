@@ -238,8 +238,8 @@ public:
             .nTimeout = 1230767999,
         };
 
-        // The miner fund is disabled by default on testnet.
-        consensus.enableMinerFund = false;
+        // The miner fund is enabled by default on testnet.
+        consensus.enableMinerFund = ENABLE_MINER_FUND;
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
