@@ -888,8 +888,9 @@ static UniValue getblocktemplate(const Config &config,
         CBlockIndex *pindexPrevNew = ::ChainActive().Tip();
         nStart = GetTime();
 
-        // Create new block
-        CScript scriptDummy = CScript() << OP_TRUE;
+        // Create new block. scriptDummy is just for testing block validity and
+        // is not part of the returned template.
+        CScript scriptDummy = CScript() << OP_RETURN;
         pblocktemplate =
             BlockAssembler(config, mempool).CreateNewBlock(scriptDummy);
         if (!pblocktemplate) {
