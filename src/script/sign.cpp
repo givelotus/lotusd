@@ -124,6 +124,7 @@ static bool SignStep(const SigningProvider &provider,
     switch (whichTypeRet) {
         case TxoutType::NONSTANDARD:
         case TxoutType::NULL_DATA:
+        case TxoutType::TAPROOT:
             return false;
         case TxoutType::PUBKEY:
             if (!CreateSig(creator, sigdata, provider, sig,

@@ -825,6 +825,40 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
     BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
     BOOST_CHECK_EQUAL(reason, "multi-op-return");
 
+    // Taproot
+    t.vout.resize(1);
+    t.vout[0].nValue = MAX_MONEY;
+    t.vout[0].scriptPubKey = CScript()
+                             << OP_SCRIPTTYPE << OP_1
+                             << ParseHex("02c192b7e5fd2c86d83d30ac8dd63eaf00c2f"
+                                         "ab891fda5ee885931e73d13c52452");
+    reason.clear();
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+    t.vout[0].scriptPubKey = CScript()
+                             << OP_SCRIPTTYPE << OP_1
+                             << ParseHex("02c192b7e5fd2c86d83d30ac8dd63eaf00c2f"
+                                         "ab891fda5ee885931e73d13c524");
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "scriptpubkey");
+    t.vout[0].scriptPubKey = CScript()
+                             << OP_SCRIPTTYPE << OP_1
+                             << ParseHex("02c192b7e5fd2c86d83d30ac8dd63eaf00c2f"
+                                         "ab891fda5ee885931e73d13c52452")
+                             << ParseHex("858f2481a6c4df431e2fbdc1a27bc8a952fef"
+                                         "035af0c75d29ee62e9a5e46ab3e");
+    reason.clear();
+    BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+    t.vout[0].scriptPubKey = CScript()
+                             << OP_SCRIPTTYPE << OP_1
+                             << ParseHex("02c192b7e5fd2c86d83d30ac8dd63eaf00c2f"
+                                         "ab891fda5ee885931e73d13c52452")
+                             << ParseHex("858f2481a6c4df431e2fbdc1a27bc8a952fef"
+                                         "035af0c75d29ee62e9a5e46ab");
+    reason.clear();
+    BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
+    BOOST_CHECK_EQUAL(reason, "scriptpubkey");
+
     // Check large scriptSig (non-standard if size is >1650 bytes)
     t.vout.resize(1);
     t.vout[0].nValue = MAX_MONEY;
