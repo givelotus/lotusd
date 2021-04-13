@@ -6,6 +6,7 @@
 #include <script/standard.h>
 
 #include <script/script.h>
+#include <script/taproot.h>
 
 #include <string>
 
@@ -38,6 +39,8 @@ std::string GetTxnOutputType(TxoutType t) {
             return "scripthash";
         case TxoutType::MULTISIG:
             return "multisig";
+        case TxoutType::TAPROOT:
+            return "taproot";
         case TxoutType::NULL_DATA:
             return "nulldata";
     } // no default case, so the compiler can warn about missing cases
@@ -119,6 +122,14 @@ TxoutType Solver(const CScript &scriptPubKey,
         return TxoutType::SCRIPTHASH;
     }
 
+    // Taproot output:
+    // OP_SCRIPTTYPE OP_1 33 <33-byte commitment>
+    // or
+    // OP_SCRIPTTYPE OP_1 33 <33-byte commitment> 32 <32-byte state>
+    if (IsPayToTaproot(scriptPubKey)) {
+        return TxoutType::TAPROOT;
+    }
+
     // Provably prunable, data-carrying output
     //
     // So long as script passes the IsUnspendable() test and all but the first
@@ -176,6 +187,10 @@ bool ExtractDestination(const CScript &scriptPubKey,
     if (whichType == TxoutType::SCRIPTHASH) {
         addressRet = ScriptHash(uint160(vSolutions[0]));
         return true;
+    }
+    if (whichType == TxoutType::TAPROOT) {
+        // Taproot doesn't has destinations for now
+        return false;
     }
     // Multisig txns have more than one address...
     return false;
