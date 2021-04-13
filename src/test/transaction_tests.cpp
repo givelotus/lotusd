@@ -885,9 +885,17 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
         uint8_t orig_op = *prev_pc;
         // replace current push-op with each non-push-op
         for (auto op : non_push_ops) {
+            // save prevout
+            COutPoint prevout = t.vin[0].prevout;
             t.vin[0].scriptSig[index] = op;
             BOOST_CHECK(!IsStandardTx(CTransaction(t), reason));
             BOOST_CHECK_EQUAL(reason, "scriptsig-not-pushonly");
+
+            // make input coinbase, then scriptsig-not-pushonly does not apply
+            t.vin[0].prevout = COutPoint();
+            BOOST_CHECK(IsStandardTx(CTransaction(t), reason));
+            // restore prevout
+            t.vin[0].prevout = prevout;
         }
         // restore op
         t.vin[0].scriptSig[index] = orig_op;

@@ -88,7 +88,8 @@ bool IsStandardTx(const CTransaction &tx, bool permit_bare_multisig,
             reason = "scriptsig-size";
             return false;
         }
-        if (!txin.scriptSig.IsPushOnly()) {
+        // Coinbase can have non-pushonly scriptSig
+        if (!tx.IsCoinBase() && !txin.scriptSig.IsPushOnly()) {
             reason = "scriptsig-not-pushonly";
             return false;
         }
