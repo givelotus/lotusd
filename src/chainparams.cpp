@@ -308,9 +308,9 @@ public:
         checkpointData = CheckpointData(CBaseChainParams::TESTNET);
 
         // Data as of block
-        // 000000000005b07ecf85563034d13efd81c1a29e47e22b20f4fc6919d5b09cd6
-        // (height 1223263)
-        chainTxData = ChainTxData{1522608381, 15052068, 0.15};
+        // 000000000ecaba087910aaf66ade754e6972f6bbefa3f396514501589602b060
+        // (height 5251)
+        chainTxData = ChainTxData{1618419413, 5260, 0.01};
     }
 };
 
