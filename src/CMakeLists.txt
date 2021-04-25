@@ -375,6 +375,7 @@ add_library(util
 	util/bip32.cpp
 	util/bytevectorhash.cpp
 	util/error.cpp
+	util/intmath.cpp
 	util/message.cpp
 	util/moneystr.cpp
 	util/settings.cpp
