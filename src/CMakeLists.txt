@@ -419,6 +419,7 @@ add_library(util
 	util/exception.cpp
 	util/fs.cpp
 	util/fs_helpers.cpp
+	util/intmath.cpp
 	util/moneystr.cpp
 	util/readwritefile.cpp
 	util/settings.cpp
