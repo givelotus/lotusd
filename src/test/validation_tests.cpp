@@ -30,12 +30,36 @@ BOOST_FIXTURE_TEST_SUITE(validation_tests, TestingSetup)
  * Make sure the block subsidy is really constant.
  */
 static void TestBlockSubsidyConstant(const Consensus::Params &consensusParams) {
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0, consensusParams));
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(1, consensusParams));
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(100'000, consensusParams));
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(210'000, consensusParams));
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(210'001, consensusParams));
-    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x7fff'ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1d00ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1d008000, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1e7fffff, consensusParams));
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1c2a1115, consensusParams)); // block 50000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1b04864c, consensusParams)); // block 100000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1a05db8b, consensusParams)); // block 200000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1900896c, consensusParams)); // block 300000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1806b99f, consensusParams)); // block 400000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x18009645, consensusParams)); // block 500000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x1715a35c, consensusParams)); // block 600000 on BTC
+    BOOST_CHECK_EQUAL(
+        SUBSIDY,
+        GetBlockSubsidy(0x170bef93, consensusParams)); // block 680603 on BTC
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x1000ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x0500ffff, consensusParams));
+    BOOST_CHECK_EQUAL(SUBSIDY, GetBlockSubsidy(0x0300ffff, consensusParams));
 }
 
 static void TestBlockSubsidyConstant(int nSubsidyHalvingInterval) {

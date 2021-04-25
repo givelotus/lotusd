@@ -860,7 +860,8 @@ static bool WriteBlockToDisk(const CBlock &block, FlatFilePos &pos,
     return true;
 }
 
-Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
+Amount GetBlockSubsidy(uint32_t nBits,
+                       const Consensus::Params &consensusParams) {
     return SUBSIDY;
 }
 
@@ -1847,7 +1848,7 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // 50% of fees get burned.
     Amount amountFeeReward = nFees / 2;
     Amount blockReward =
-        amountFeeReward + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(block.nBits, consensusParams);
     if (block.vtx[0]->GetValueOut() > blockReward) {
         LogPrintf("ERROR: ConnectBlock(): coinbase pays too much (actual=%d vs "
                   "limit=%d)\n",

@@ -148,7 +148,12 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         pblock->nVersion = gArgs.GetArg("-blockversion", pblock->nVersion);
     }
 
+    // Fill in header.
+    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
     pblock->nTime = GetAdjustedTime();
+    UpdateTime(pblock, chainParams, pindexPrev);
+    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
+    pblock->nNonce = 0;
     nLockTimeCutoff = pindexPrev->GetMedianTimePast();
 
     int nPackagesSelected = 0;
@@ -181,7 +186,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
-        amountFeeReward + GetBlockSubsidy(nHeight, consensusParams);
+        amountFeeReward +
+        GetBlockSubsidy(pblock->nBits, consensusParams);
     coinbaseTx.vin[0].scriptSig = CScript()
                                   << COINBASE_PREFIX << nHeight << OP_0;
 
@@ -209,11 +215,6 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     LogPrintf("CreateNewBlock(): total size: %u txs: %u fees: %ld sigops %d\n",
               nSerializeSize, nBlockTx, nFees, nBlockSigOps);
 
-    // Fill in header.
-    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainParams, pindexPrev);
-    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
-    pblock->nNonce = 0;
     pblocktemplate->entries[0].sigOpCount = 0;
 
     BlockValidationState state;
