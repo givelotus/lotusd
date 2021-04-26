@@ -40,7 +40,7 @@ public:
 };
 } // namespace
 
-static const unsigned short SERVICE_PORT = 18444;
+static const unsigned short SERVICE_PORT = 12605;
 
 struct SeederTestingSetup {
     SeederTestingSetup() {

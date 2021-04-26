@@ -77,10 +77,10 @@ if __name__ == "__main__":
         "Make chainparams file.\n"
         "Prerequisites: RPC access to a bitcoind node.\n\n"),
         formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument('--address', '-a', default="127.0.0.1:8332",
+    parser.add_argument('--address', '-a', default="127.0.0.1:10604",
                         help="Node address for making RPC calls.\n"
                              "The chain (MainNet or TestNet) will be automatically detected.\n"
-                             "Default: '127.0.0.1:8332'")
+                             "Default: '127.0.0.1:10604'")
     parser.add_argument('--block', '-b',
                         help="The block hash or height to use for fetching chainparams.\n"
                              "MainNet default: 10 blocks from the chain tip."

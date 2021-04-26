@@ -133,7 +133,7 @@ static void SetupCliArgs(ArgsManager &argsman) {
         "-rpcwallet=<walletname>",
         "Send RPC for non-default wallet on RPC server (needs to exactly match "
         "corresponding -wallet option passed to bitcoind). This changes the "
-        "RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>",
+        "RPC endpoint used, e.g. http://127.0.0.1:10604/wallet/<walletname>",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
 
