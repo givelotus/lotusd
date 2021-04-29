@@ -199,7 +199,7 @@ class ProxyTest(BitcoinTestFramework):
             self.network_test(node, addr, network=NET_IPV6)
 
         if test_onion:
-            addr = "bitcoinostk4e4re.onion:8333"
+            addr = "bitcoinostk4e4re.onion:10605"
             self.log.debug(
                 f"Test: outgoing onion connection through node {node.index} for address {addr}"
             )
@@ -208,14 +208,14 @@ class ProxyTest(BitcoinTestFramework):
             assert isinstance(cmd, Socks5Command)
             assert_equal(cmd.atyp, AddressType.DOMAINNAME)
             assert_equal(cmd.addr, b"bitcoinostk4e4re.onion")
-            assert_equal(cmd.port, 8333)
+            assert_equal(cmd.port, 10605)
             if not auth:
                 assert_equal(cmd.username, None)
                 assert_equal(cmd.password, None)
             rv.append(cmd)
             self.network_test(node, addr, network=NET_ONION)
 
-        addr = "node.noumenon:8333"
+        addr = "node.noumenon:10605"
         self.log.debug(
             f"Test: outgoing DNS name connection through node {node.index} for address {addr}"
         )
@@ -225,7 +225,7 @@ class ProxyTest(BitcoinTestFramework):
         assert isinstance(cmd, Socks5Command)
         assert_equal(cmd.atyp, AddressType.DOMAINNAME)
         assert_equal(cmd.addr, b"node.noumenon")
-        assert_equal(cmd.port, 8333)
+        assert_equal(cmd.port, 10605)
         if not auth:
             assert_equal(cmd.username, None)
             assert_equal(cmd.password, None)

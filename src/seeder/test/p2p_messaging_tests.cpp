@@ -47,7 +47,7 @@ public:
 };
 } // namespace
 
-static const uint16_t SERVICE_PORT = 18444;
+static const uint16_t SERVICE_PORT = 12605;
 
 struct SeederTestingSetup {
     SeederTestingSetup(const ChainType chain_type = ChainType::REGTEST) {

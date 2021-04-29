@@ -182,7 +182,7 @@ class ZMQTest(BitcoinTestFramework):
         # Invalid zmq arguments don't take down the node, see #17185.
         self.restart_node(0, ["-zmqpubrawtx=foo", "-zmqpubhashtx=bar"])
 
-        address = "tcp://127.0.0.1:28332"
+        address = "tcp://127.0.0.1:13604"
 
         if unix:
             # Use the shortest temp path possible since paths may have as little as 92-char limit

@@ -24,7 +24,7 @@ Command line
 ------------
 
 Command line options prefixed with main/test/regtest network names like
-`-main.port=8333` `-test.server=1` previously were allowed but ignored. Now
+`-main.port=10605` `-test.server=1` previously were allowed but ignored. Now
 they trigger "Invalid parameter" errors on startup.
 
 Light Clients
