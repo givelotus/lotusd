@@ -1002,7 +1002,7 @@
     <name>WalletView</name>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Opcións:</translation>
@@ -1028,7 +1028,7 @@
         <translation>Executar no fondo como un demo e aceptar comandos</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
+        <source>Lotus</source>
         <translation>Core de Bitcoin</translation>
     </message>
     <message>

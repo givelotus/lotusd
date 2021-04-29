@@ -2137,7 +2137,7 @@
     </message>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Opções:</translation>
@@ -2195,8 +2195,8 @@
         <translation>Não é possível iniciar o servidor HTTP. Verifique o debug.log para detalhes.</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
-        <translation>Bitcoin ABC</translation>
+        <source>Lotus</source>
+        <translation>Lotus</translation>
     </message>
     <message>
         <source>A fee rate (in %s/kB) that will be used when fee estimation has insufficient data (default: %s)</source>

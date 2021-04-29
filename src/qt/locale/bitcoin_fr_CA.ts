@@ -154,6 +154,6 @@
     <name>WalletView</name>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     </context>
 </TS>
