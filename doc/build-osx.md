@@ -72,7 +72,7 @@ Mining is also possible in disable-wallet mode using the `getblocktemplate` RPC 
 Running
 -------
 
-Bitcoin ABC is now available at `./src/bitcoind`
+Bitcoin ABC is now available at `./src/lotusd`
 
 Before running, it's recommended that you create an RPC configuration file:
 
@@ -80,7 +80,7 @@ Before running, it's recommended that you create an RPC configuration file:
 
     chmod 600 "/Users/${USER}/Library/Application Support/Lotus/lotus.conf"
 
-The first time you run bitcoind, it will start downloading the blockchain. This process could take many hours, or even days on slower than average systems.
+The first time you run lotusd, it will start downloading the blockchain. This process could take many hours, or even days on slower than average systems.
 
 You can monitor the download process by looking at the debug.log file:
 
@@ -89,9 +89,9 @@ You can monitor the download process by looking at the debug.log file:
 Other commands:
 -------
 
-    ./src/bitcoind -daemon # Starts the bitcoin daemon.
-    ./src/bitcoin-cli --help # Outputs a list of command-line options.
-    ./src/bitcoin-cli help # Outputs a list of RPC commands when the daemon is running.
+    ./src/lotusd -daemon # Starts the lotus daemon.
+    ./src/lotus-cli --help # Outputs a list of command-line options.
+    ./src/lotus-cli help # Outputs a list of RPC commands when the daemon is running.
 
 Notes
 -----

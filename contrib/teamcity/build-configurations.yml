@@ -374,7 +374,7 @@ builds:
         - install-tests
       - - package
     post_build: |
-      wine "${ARTIFACT_DIR}/bin/test_bitcoin.exe" --run_test=\!radix_tests,rcu_tests
+      wine "${ARTIFACT_DIR}/bin/test_lotus.exe" --run_test=\!radix_tests,rcu_tests
     timeout: 3600
     artifacts:
       bitcoin-abc-*-x86_64-w64-mingw32.exe: bitcoin-abc-x86_64-w64-mingw32.exe

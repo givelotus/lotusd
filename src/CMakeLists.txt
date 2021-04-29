@@ -1,6 +1,6 @@
 # Copyright (c) 2017 The Bitcoin developers
 
-project(bitcoind)
+project(lotusd)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,10 +11,10 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 option(BUILD_BITCOIN_WALLET "Activate the wallet functionality" ON)
 option(BUILD_BITCOIN_ZMQ "Activate the ZeroMQ functionalities" ON)
-option(BUILD_BITCOIN_CLI "Build bitcoin-cli" ON)
-option(BUILD_BITCOIN_TX "Build bitcoin-tx" ON)
-option(BUILD_BITCOIN_QT "Build bitcoin-qt" ON)
-option(BUILD_BITCOIN_SEEDER "Build bitcoin-seeder" ON)
+option(BUILD_BITCOIN_CLI "Build lotus-cli" ON)
+option(BUILD_BITCOIN_TX "Build lotus-tx" ON)
+option(BUILD_BITCOIN_QT "Build lotus-qt" ON)
+option(BUILD_BITCOIN_SEEDER "Build lotus-seeder" ON)
 option(BUILD_LIBBITCOINCONSENSUS "Build the bitcoinconsenus shared library" ON)
 option(ENABLE_BIP70 "Enable BIP70 (payment protocol) support in GUI" ON)
 option(ENABLE_HARDENING "Harden the executables" ON)
@@ -642,19 +642,19 @@ if(BUILD_BITCOIN_WALLET)
 	add_subdirectory(wallet)
 	target_link_libraries(server wallet)
 
-	# bitcoin-wallet
-	add_executable(bitcoin-wallet bitcoin-wallet.cpp)
-	generate_windows_version_info(bitcoin-wallet
+	# lotus-wallet
+	add_executable(lotus-wallet bitcoin-wallet.cpp)
+	generate_windows_version_info(lotus-wallet
 		DESCRIPTION "CLI tool for ${PACKAGE_NAME} wallets"
 	)
 
-	target_link_libraries(bitcoin-wallet wallet-tool common util)
+	target_link_libraries(lotus-wallet wallet-tool common util)
 
-	add_to_symbols_check(bitcoin-wallet)
-	add_to_security_check(bitcoin-wallet)
+	add_to_symbols_check(lotus-wallet)
+	add_to_security_check(lotus-wallet)
 
-	install_target(bitcoin-wallet)
-	install_manpages(bitcoin-wallet)
+	install_target(lotus-wallet)
+	install_manpages(lotus-wallet)
 else()
 	target_sources(server PRIVATE dummywallet.cpp)
 endif()
@@ -673,55 +673,55 @@ add_library(rpcclient
 
 target_link_libraries(rpcclient univalue util)
 
-# bitcoin-seeder
+# lotus-seeder
 if(BUILD_BITCOIN_SEEDER)
 	add_subdirectory(seeder)
 endif()
 
-# bitcoin-cli
+# lotus-cli
 if(BUILD_BITCOIN_CLI)
-	add_executable(bitcoin-cli bitcoin-cli.cpp)
-	generate_windows_version_info(bitcoin-cli
+	add_executable(lotus-cli bitcoin-cli.cpp)
+	generate_windows_version_info(lotus-cli
 		DESCRIPTION "JSON-RPC client for ${PACKAGE_NAME}"
 	)
 
-	target_link_libraries(bitcoin-cli common rpcclient)
-	link_event(bitcoin-cli event)
+	target_link_libraries(lotus-cli common rpcclient)
+	link_event(lotus-cli event)
 
-	add_to_symbols_check(bitcoin-cli)
-	add_to_security_check(bitcoin-cli)
+	add_to_symbols_check(lotus-cli)
+	add_to_security_check(lotus-cli)
 
-	install_target(bitcoin-cli)
-	install_manpages(bitcoin-cli)
+	install_target(lotus-cli)
+	install_manpages(lotus-cli)
 endif()
 
-# bitcoin-tx
+# lotus-tx
 if(BUILD_BITCOIN_TX)
-	add_executable(bitcoin-tx bitcoin-tx.cpp)
-	generate_windows_version_info(bitcoin-tx
+	add_executable(lotus-tx bitcoin-tx.cpp)
+	generate_windows_version_info(lotus-tx
 		DESCRIPTION "CLI Bitcoin transaction editor utility"
 	)
 
-	target_link_libraries(bitcoin-tx bitcoinconsensus)
+	target_link_libraries(lotus-tx bitcoinconsensus)
 
-	add_to_symbols_check(bitcoin-tx)
-	add_to_security_check(bitcoin-tx)
+	add_to_symbols_check(lotus-tx)
+	add_to_security_check(lotus-tx)
 
-	install_target(bitcoin-tx)
-	install_manpages(bitcoin-tx)
+	install_target(lotus-tx)
+	install_manpages(lotus-tx)
 endif()
 
-# bitcoind
-add_executable(bitcoind bitcoind.cpp)
-target_link_libraries(bitcoind server)
-generate_windows_version_info(bitcoind
-	DESCRIPTION "Bitcoin node with a JSON-RPC server"
+# lotusd
+add_executable(lotusd bitcoind.cpp)
+target_link_libraries(lotusd server)
+generate_windows_version_info(lotusd
+	DESCRIPTION "Lotus node with a JSON-RPC server"
 )
-add_to_symbols_check(bitcoind)
-add_to_security_check(bitcoind)
+add_to_symbols_check(lotusd)
+add_to_security_check(lotusd)
 
-install_target(bitcoind)
-install_manpages(bitcoind)
+install_target(lotusd)
+install_manpages(lotusd)
 
 # Bitcoin-qt
 if(BUILD_BITCOIN_QT)

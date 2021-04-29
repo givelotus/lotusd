@@ -1,5 +1,5 @@
 ---
-name: "bitcoin-abc-linux"
+name: "lotusd-linux"
 enable_cache: true
 distro: "debian"
 suites:
@@ -34,7 +34,7 @@ repositories:
   - "cmake"
 remotes:
 - "url": "https://github.com/LogosFoundation/lotusd.git"
-  "dir": "bitcoin"
+  "dir": "lotus"
 files: []
 script: |
 
@@ -103,7 +103,7 @@ script: |
   create_per-host_faketime_wrappers "2000-01-01 12:00:00"
   export PATH=${WRAP_DIR}:${PATH}
 
-  cd bitcoin
+  cd lotus
   SOURCEDIR=`pwd`
   BASEPREFIX=`pwd`/depends
   # Build dependencies for each host

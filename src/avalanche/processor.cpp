@@ -24,7 +24,7 @@
  */
 static constexpr std::chrono::milliseconds AVALANCHE_TIME_STEP{10};
 
-// Unfortunately, the bitcoind codebase is full of global and we are kinda
+// Unfortunately, the lotusd codebase is full of global and we are kinda
 // forced into it here.
 std::unique_ptr<avalanche::Processor> g_avalanche;
 

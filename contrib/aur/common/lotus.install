@@ -1,0 +1,59 @@
+_bc_user=lotus
+_bc_group=lotus
+
+post_install() {
+  _mkuser
+  chown -R $_bc_user:$_bc_group /etc/lotus /srv/lotus /run/lotus
+  printf "%b\n" "$lotus"
+}
+
+post_upgrade() {
+  _mkuser
+  chown -R $_bc_user:$_bc_group /etc/lotus /srv/lotus /run/lotus
+  printf "%b\n" "$lotus"
+}
+
+post_remove() {
+  _rmuser
+  rm -rf /srv/lotus /run/lotus
+}
+
+_mkuser() {
+  getent passwd $_bc_user &>/dev/null || {
+    echo -n "Creating lotus user... "
+    grep -E "^$_bc_group:" /etc/group >/dev/null || groupadd $_bc_group
+    useradd -m -d /etc/lotus -g $_bc_group -s /usr/bin/nologin $_bc_user 2>/dev/null
+    echo "done"
+  }
+}
+
+_rmuser() {
+  echo -n "Removing lotus user... "
+  userdel -rf $_bc_user 2>/dev/null
+  echo "done"
+}
+
+read -d '' lotus <<'EOI'
+
+Bitcoin ABC
+___________
+
+To start lotus:
+
+$ systemctl start lotus
+
+To communicate with lotus as a normal user:
+
+$ mkdir -p ~/.lotus
+$ cat > ~/.lotus/lotus.conf <<'EOF'
+rpcport=10604
+rpcuser=lotus
+rpcpassword=secret
+EOF
+
+$ lotus-cli getmininginfo
+
+Config:        /etc/lotus/lotus.conf
+Blockchain:    /srv/lotus
+Documentation: /usr/share/doc/lotus
+EOI

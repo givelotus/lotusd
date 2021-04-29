@@ -34,7 +34,7 @@ outgoing connections, but more is possible.
 
 In a typical situation, this suffices to run behind a Tor proxy:
 
-	./bitcoind -proxy=127.0.0.1:9050
+	./lotusd -proxy=127.0.0.1:9050
 
 
 ## 2. Run a Bitcoin ABC hidden server
@@ -49,7 +49,7 @@ versions of Tor see [Section 3](#3-automatically-listen-on-tor).*
 	HiddenServicePort 11605 127.0.0.1:11605
 
 The directory can be different of course, but (both) port numbers should be equal to
-your bitcoind's P2P listen port (10605 by default).
+your lotusd's P2P listen port (10605 by default).
 
 	-externalip=X   You can tell bitcoin about its publicly reachable address using
 	                this option, and this can be a .onion address. Given the above
@@ -71,25 +71,25 @@ your bitcoind's P2P listen port (10605 by default).
 
 In a typical situation, where you're only reachable via Tor, this should suffice:
 
-	./bitcoind -proxy=127.0.0.1:9050 -externalip=57qr3yd1nyntf5k.onion -listen
+	./lotusd -proxy=127.0.0.1:9050 -externalip=57qr3yd1nyntf5k.onion -listen
 
 (obviously, replace the .onion address with your own). It should be noted that you still
 listen on all devices and another node could establish a clearnet connection, when knowing
 your address. To mitigate this, additionally bind the address of your Tor proxy:
 
-	./bitcoind ... -bind=127.0.0.1
+	./lotusd ... -bind=127.0.0.1
 
 If you don't care too much about hiding your node, and want to be reachable on IPv4
 as well, use `discover` instead:
 
-	./bitcoind ... -discover
+	./lotusd ... -discover
 
 and open port 10605 on your firewall (or use -upnp).
 
 If you only want to use Tor to reach .onion addresses, but not use it as a proxy
 for normal IPv4/IPv6 communication, use:
 
-	./bitcoind -onion=127.0.0.1:9050 -externalip=57qr3yd1nyntf5k.onion -discover
+	./lotusd -onion=127.0.0.1:9050 -externalip=57qr3yd1nyntf5k.onion -discover
 
 ## 3. Automatically listen on Tor
 
@@ -108,13 +108,13 @@ To show verbose debugging information, pass `-debug=tor`.
 
 Connecting to Tor's control socket API requires one of two authentication methods to be
 configured. It also requires the control socket to be enabled, e.g. put `ControlPort 9051`
-in `torrc` config file. For cookie authentication the user running bitcoind must have read
+in `torrc` config file. For cookie authentication the user running lotusd must have read
 access to the `CookieAuthFile` specified in Tor configuration. In some cases this is
 preconfigured and the creation of a hidden service is automatic. If permission problems
 are seen with `-debug=tor` they can be resolved by adding both the user running Tor and
-the user running bitcoind to the same group and setting permissions appropriately. On
-Debian-based systems the user running bitcoind can be added to the debian-tor group,
-which has the appropriate permissions. Before starting bitcoind you will need to re-login
+the user running lotusd to the same group and setting permissions appropriately. On
+Debian-based systems the user running lotusd can be added to the debian-tor group,
+which has the appropriate permissions. Before starting lotusd you will need to re-login
 to allow debian-tor group to be applied. Otherwise you will see the following notice: "tor:
 Authentication cookie /run/tor/control.authcookie could not be opened (check permissions)"
 on debug.log.

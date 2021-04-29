@@ -1,6 +1,6 @@
 # Copyright (c) 2018 The Bitcoin developers
 
-project(bitcoin-bench)
+project(lotus-bench)
 
 set(BENCH_DATA_RAW_FILES
 	data/block413567.raw
@@ -33,7 +33,7 @@ foreach(_raw_file ${BENCH_DATA_RAW_FILES})
 	)
 endforeach()
 
-add_executable(bitcoin-bench
+add_executable(lotus-bench
 	addrman.cpp
 	base58.cpp
 	bench.cpp
@@ -69,29 +69,29 @@ add_executable(bitcoin-bench
 	${BENCH_DATA_GENERATED_HEADERS}
 )
 
-target_link_libraries(bitcoin-bench testutil)
+target_link_libraries(lotus-bench testutil)
 
 if(BUILD_BITCOIN_WALLET)
-	target_sources(bitcoin-bench
+	target_sources(lotus-bench
 		PRIVATE
 			coin_selection.cpp
 			wallet_balance.cpp
 	)
-	target_link_libraries(bitcoin-bench wallet)
+	target_link_libraries(lotus-bench wallet)
 endif()
 
 include(InstallationHelper)
-install_target(bitcoin-bench EXCLUDE_FROM_ALL)
+install_target(lotus-bench EXCLUDE_FROM_ALL)
 
 include(TestSuite)
 
 add_test_custom_target(bench-bitcoin
 	TEST_COMMAND
-		"$<TARGET_FILE:bitcoin-bench>"
+		"$<TARGET_FILE:lotus-bench>"
 		-output_csv=BitcoinABC_Bench.csv
 		-output_json=BitcoinABC_Bench.json
 	CUSTOM_TARGET_ARGS
-		DEPENDS bitcoin-bench
+		DEPENDS lotus-bench
 		USES_TERMINAL
 )
 

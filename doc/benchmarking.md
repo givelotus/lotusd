@@ -25,7 +25,7 @@ Help
 ---------------------
 `-?` will print a list of options and exit:
 
-    src/bench/bitcoin-bench -?
+    src/bench/lotus-bench -?
 
 Notes
 ---------------------

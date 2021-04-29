@@ -2,7 +2,7 @@
 # Copyright (c) 2018 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Check that it's not possible to start a second bitcoind instance using the same datadir or wallet."""
+"""Check that it's not possible to start a second lotusd instance using the same datadir or wallet."""
 import os
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -24,7 +24,7 @@ class FilelockTest(BitcoinTestFramework):
         self.log.info("Using datadir {}".format(datadir))
 
         self.log.info(
-            "Check that we can't start a second bitcoind instance using the same datadir")
+            "Check that we can't start a second lotusd instance using the same datadir")
         expected_msg = "Error: Cannot obtain a lock on data directory {0}. {1} is probably already running.".format(
             datadir, self.config['environment']['PACKAGE_NAME'])
         self.nodes[1].assert_start_raises_init_error(extra_args=[
@@ -33,7 +33,7 @@ class FilelockTest(BitcoinTestFramework):
         if self.is_wallet_compiled():
             wallet_dir = os.path.join(datadir, 'wallets')
             self.log.info(
-                "Check that we can't start a second bitcoind instance using the same wallet")
+                "Check that we can't start a second lotusd instance using the same wallet")
             expected_msg = "Error: Error initializing wallet database environment"
             self.nodes[1].assert_start_raises_init_error(
                 extra_args=[

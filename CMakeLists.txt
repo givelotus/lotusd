@@ -8,7 +8,7 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 
 project(bitcoin-abc
 	VERSION 0.23.1
-	DESCRIPTION "Bitcoin ABC is a full node implementation of the BCHA protocol."
+	DESCRIPTION "Lotus is a full node implementation of the BCHA protocol."
 	HOMEPAGE_URL "https://www.bitcoinabc.org"
 )
 
@@ -18,7 +18,7 @@ add_custom_target(print-version
 )
 
 # Package information
-set(PACKAGE_NAME "Bitcoin ABC")
+set(PACKAGE_NAME "Lotus")
 set(PACKAGE_BUGREPORT "https://github.com/LogosFoundation/lotusd/issues")
 
 # Copyright

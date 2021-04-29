@@ -6,12 +6,12 @@ if(BUILD_BITCOIN_CLI)
 		COMMAND
 			"${CMAKE_CURRENT_SOURCE_DIR}/gen-rpc-docs.sh"
 			"${CMAKE_CURRENT_SOURCE_DIR}/generate.go"
-			"$<TARGET_FILE:bitcoind>"
-			"$<TARGET_FILE:bitcoin-cli>"
+			"$<TARGET_FILE:lotusd>"
+			"$<TARGET_FILE:lotus-cli>"
 		WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
 		DEPENDS
-			bitcoind
-			bitcoin-cli
+			lotusd
+			lotus-cli
 	)
 endif()
 

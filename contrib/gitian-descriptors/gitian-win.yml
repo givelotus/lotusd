@@ -1,5 +1,5 @@
 ---
-name: "bitcoin-abc-win"
+name: "lotus-win"
 enable_cache: true
 distro: "debian"
 suites:
@@ -30,7 +30,7 @@ repositories:
   - "cmake"
 remotes:
 - "url": "https://github.com/LogosFoundation/lotusd.git"
-  "dir": "bitcoin"
+  "dir": "lotus"
 files: []
 script: |
   WRAP_DIR=$HOME/wrapped
@@ -84,7 +84,7 @@ script: |
 
   function create_per-host_linker_wrapper {
   # This is only needed for trusty, as the mingw linker leaks a few bytes of
-  # heap, causing non-determinism. See discussion in https://github.com/bitcoin/bitcoin/pull/6900
+  # heap, causing non-determinism. See discussion in https://github.com/lotus/lotus/pull/6900
   for i in ${HOSTS[@]}; do
     mkdir -p ${WRAP_DIR}/${i}
     for prog in collect2; do
@@ -113,7 +113,7 @@ script: |
   create_per-host_linker_wrapper "2000-01-01 12:00:00"
   export PATH=${WRAP_DIR}:${PATH}
 
-  cd bitcoin
+  cd lotus
   SOURCEDIR=`pwd`
   BASEPREFIX=`pwd`/depends
   # Build dependencies for each host
@@ -169,7 +169,7 @@ script: |
       -DCLIENT_VERSION_IS_RELEASE=ON \
       -DENABLE_CLANG_TIDY=OFF \
       -DENABLE_REDUCE_EXPORTS=ON \
-      -DBUILD_BITCOIN_SEEDER=OFF \
+      -DBUILD_lotus_SEEDER=OFF \
       -DCPACK_STRIP_FILES=ON \
       -DCMAKE_INSTALL_PREFIX=${INSTALLPATH} \
       -DCCACHE=OFF \
@@ -182,7 +182,7 @@ script: |
 
     ninja package
 
-    cp -f bitcoin-abc-*-setup-unsigned.exe ${OUTDIR}/
+    cp -f lotusd-*-setup-unsigned.exe ${OUTDIR}/
     cd installed
     mkdir -p ${DISTNAME}/lib
     mv ${DISTNAME}/bin/*.dll* ${DISTNAME}/lib/

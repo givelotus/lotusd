@@ -176,7 +176,7 @@ script: |
     ${WRAP_DIR}/dmg dmg "${OSX_VOLNAME}.dmg" ${OUTDIR}/${DISTNAME}-osx-unsigned.dmg
 
     cd installed
-    find -path "*.app*" -type f -executable -exec mv {} ${DISTNAME}/bin/bitcoin-qt \;
+    find -path "*.app*" -type f -executable -exec mv {} ${DISTNAME}/bin/lotus-qt \;
     find ${DISTNAME} -not -path "*.app*" | sort | tar --mtime="${REFERENCE_DATETIME}" --no-recursion --mode='u+rw,go+r-w,a+X' --owner=0 --group=0 -c -T - | gzip -9n > ${OUTDIR}/${DISTNAME}-${i}.tar.gz
     cd ../../
   done

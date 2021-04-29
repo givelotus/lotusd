@@ -158,7 +158,7 @@ TestingSetup::TestingSetup(const std::string &chainName,
 
     /**
      * RPC does not come out of the warmup state on its own. Normally, this is
-     * handled in bitcoind's init path, but unit tests do not trigger this
+     * handled in lotusd's init path, but unit tests do not trigger this
      * codepath, so we call it explicitly as part of setup.
      */
     std::string rpcWarmupStatus;

@@ -1878,7 +1878,7 @@ UniValue importmulti(const Config &config, const JSONRPCRequest &mainRequest) {
                                 "result, transactions and coins using this key "
                                 "may not appear in the wallet. This error "
                                 "could be caused by pruning or data corruption "
-                                "(see bitcoind log for details) and could be "
+                                "(see lotusd log for details) and could be "
                                 "dealt with by downloading and rescanning the "
                                 "relevant blocks (see -reindex and -rescan "
                                 "options).",
@@ -2293,7 +2293,7 @@ UniValue importdescriptors(const Config &config,
                                 "result, transactions and coins using this "
                                 "desc may not appear in the wallet. This error "
                                 "could be caused by pruning or data corruption "
-                                "(see bitcoind log for details) and could be "
+                                "(see lotusd log for details) and could be "
                                 "dealt with by downloading and rescanning the "
                                 "relevant blocks (see -reindex and -rescan "
                                 "options).",

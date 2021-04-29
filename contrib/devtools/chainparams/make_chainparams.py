@@ -75,7 +75,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=(
         "Make chainparams file.\n"
-        "Prerequisites: RPC access to a bitcoind node.\n\n"),
+        "Prerequisites: RPC access to a lotusd node.\n\n"),
         formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--address', '-a', default="127.0.0.1:10604",
                         help="Node address for making RPC calls.\n"

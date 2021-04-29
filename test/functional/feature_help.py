@@ -52,7 +52,7 @@ class HelpTest(BitcoinTestFramework):
 
         # Test that arguments not in the help results in an error
         self.log.info(
-            "Start bitcoind with -fakearg to make sure it does not start")
+            "Start lotusd with -fakearg to make sure it does not start")
         self.nodes[0].start(extra_args=['-fakearg'])
         # Node should exit immediately and output an error to stderr
         _, output = self.get_node_output(ret_code_expected=1)

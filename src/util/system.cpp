@@ -324,7 +324,7 @@ bool ArgsManager::ParseParameters(int argc, const char *const argv[],
     for (int i = 1; i < argc; i++) {
         std::string key(argv[i]);
         if (key == "-") {
-            // bitcoin-tx using stdin
+            // lotus-tx using stdin
             break;
         }
         std::string val;
@@ -788,7 +788,7 @@ const fs::path &GetDataDir(bool fNetSpecific) {
         //
         // TODO: this is an ugly way to create the wallets/ directory and
         // really shouldn't be done here. Once this is fixed, please
-        // also remove the corresponding line in bitcoind.cpp AppInit.
+        // also remove the corresponding line in lotusd.cpp AppInit.
         // See more info at:
         // https://reviews.bitcoinabc.org/D3312
         fs::create_directories(path / "wallets");

@@ -54,7 +54,7 @@ class PreviousSpendableOutput():
         self.n = n
 
 
-# TestP2PConn: A peer we use to send messages to bitcoind, and store responses.
+# TestP2PConn: A peer we use to send messages to lotusd, and store responses.
 class TestP2PConn(P2PInterface):
 
     def __init__(self):

@@ -727,7 +727,7 @@ static UniValue echo(const Config &config, const JSONRPCRequest &request) {
             "testing.\n"
             "\nThe difference between echo and echojson is that echojson has "
             "argument conversion enabled in the client-side table in "
-            "bitcoin-cli and the GUI. There is no server-side difference.",
+            "lotus-cli and the GUI. There is no server-side difference.",
             {},
             RPCResult{RPCResult::Type::NONE, "",
                       "Returns whatever was passed in"},

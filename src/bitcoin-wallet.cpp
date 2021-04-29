@@ -54,15 +54,15 @@ static bool WalletAppInit(int argc, char *argv[]) {
     }
     if (argc < 2 || HelpRequested(gArgs)) {
         std::string usage =
-            strprintf("%s bitcoin-wallet version", PACKAGE_NAME) + " " +
+            strprintf("%s lotus-wallet version", PACKAGE_NAME) + " " +
             FormatFullVersion() + "\n\n" +
-            "bitcoin-wallet is an offline tool for creating and interacting "
+            "lotus-wallet is an offline tool for creating and interacting "
             "with " PACKAGE_NAME " wallet files.\n" +
-            "By default bitcoin-wallet will act on wallets in the default "
+            "By default lotus-wallet will act on wallets in the default "
             "mainnet wallet directory in the datadir.\n" +
             "To change the target wallet, use the -datadir, -wallet and "
             "-testnet/-regtest arguments.\n\n" +
-            "Usage:\n" + "  bitcoin-wallet [options] <command>\n\n" +
+            "Usage:\n" + "  lotus-wallet [options] <command>\n\n" +
             gArgs.GetHelpMessage();
 
         tfm::format(std::cout, "%s", usage);
@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
 
     if (method.empty()) {
         tfm::format(std::cerr,
-                    "No method provided. Run `bitcoin-wallet -help` for "
+                    "No method provided. Run `lotus-wallet -help` for "
                     "valid methods.\n");
         return EXIT_FAILURE;
     }
