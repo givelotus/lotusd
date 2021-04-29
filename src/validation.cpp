@@ -45,6 +45,7 @@
 #include <txmempool.h>
 #include <undo.h>
 #include <util/check.h> // For NDEBUG compile time check
+#include <util/intmath.h>
 #include <util/moneystr.h>
 #include <util/strencodings.h>
 #include <util/system.h>
@@ -862,7 +863,72 @@ static bool WriteBlockToDisk(const CBlock &block, FlatFilePos &pos,
 
 Amount GetBlockSubsidy(uint32_t nBits,
                        const Consensus::Params &consensusParams) {
-    return SUBSIDY;
+    static constexpr int64_t SUBSIDY_INT = SUBSIDY / SATOSHI;
+    if (!consensusParams.enableDifficultyBasedSubsidy) {
+        return SUBSIDY;
+    }
+    // We define:
+    // R: Reward
+    // D: Difficulty
+    // T: Target
+    // Tm: Max Target
+    // a: Base subsidy
+
+    // In Lotus, the reward R = a*log(D)
+    // R = a*log(Tm / T) = a*log(Tm) - a*log(T)
+
+    // We get the target by decomposing nBits:
+    // T = mantissa * 2^(exp - 3)
+
+    // The log of that cancels out the 2^x
+    // log(T) = log(mantissa) + exp - 3
+
+    // We can approximate log(x) using Log2FixedPoint.
+    // log(x) = Log2FixedPoint(2^b * x) / 2^b, where b is the precision.
+    // We use 27 bits for the precision, as this results in the higest accuracy.
+    static constexpr int64_t PRECISION_BITS = 27;
+
+    static constexpr int64_t LOG_MAX_TARGET = 220;
+    const int64_t exp = nBits >> 24;
+    const uint32_t mantissa = (nBits & 0x007fffff);
+    // CheckProofOfWork ensures this
+    assert(nBits <= 0x1c100000);
+    // First check in ContextualCheckBlockHeader ensures this (since nBits have
+    // to match exactly, enforcing canonical encoding)
+    assert(mantissa >= 0x8000);
+
+    // Compute a*log(nMantissa)
+    // We re-interpret mantissa as fixed point number with 27 bits in the
+    // fractional part, this is like dividing mantissa by 2^27.
+    // We correct for this later.
+    const int64_t logMantissaFixedPoint =
+        Log2FixedPoint(mantissa, PRECISION_BITS);
+
+    // Multiply by SUBSIDY before going back from fixed point to keep the
+    // precision. Otherwise, we only increase in SUBSIDY steps.
+    const int64_t aLogMantissaUncorrected =
+        (SUBSIDY_INT * logMantissaFixedPoint) >> PRECISION_BITS;
+
+    // We need to add a * PRECISION_BITS here because we implicitly divided
+    // mantissa by 2^27 before and correct for that here.
+    const int64_t aLogMantissa =
+        aLogMantissaUncorrected + SUBSIDY_INT * PRECISION_BITS;
+
+    // Compute a*log(2^(8 * (exp - 3))), which can be simplified to
+    // a*(8 * (exp - 3)).
+    const int64_t aLogExponent = SUBSIDY_INT * 8 * (exp - 3);
+    const int64_t aLogTarget = aLogMantissa + aLogExponent;
+    // R = a*log(D) = a*log(Tm / T) = a*log(Tm) - a*log(T)
+    int64_t blockSubsidy = SUBSIDY_INT * LOG_MAX_TARGET - aLogTarget;
+
+    // We want difficulty 1 to result in SUBSIDY, but log(1) = 0, so we add
+    // SUBSIDY here.
+    blockSubsidy += SUBSIDY_INT;
+
+    // Sanity check
+    assert(blockSubsidy >= SUBSIDY_INT && blockSubsidy <= 221 * SUBSIDY_INT);
+
+    return blockSubsidy * SATOSHI;
 }
 
 CoinsViews::CoinsViews(std::string ldb_name, size_t cache_size_bytes,
