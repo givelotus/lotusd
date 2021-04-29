@@ -238,7 +238,7 @@ This example lists the steps necessary to setup and build a command line only,
 non-wallet distribution of the latest changes on Arch Linux:
 
     pacman -S base-devel boost cmake git libevent ninja python
-    git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
+    git clone https://github.com/LogosFoundation/lotusd.git
     cd bitcoin-abc/
     mkdir build
     cd build

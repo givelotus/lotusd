@@ -39,7 +39,7 @@ Bitcoin ABC Release Process
 
 9. Upload Gitian Builds to [bitcoinabc.org](https://download.bitcoinabc.org/)
 
-10. Create a [GitHub release](https://github.com/Bitcoin-ABC/bitcoin-abc/releases):
+10. Create a [GitHub release](https://github.com/LogosFoundation/lotusd/releases):
     `contrib/release/github-release.sh -a <path to release binaries> -t <release tag> -o <file containing your Github OAuth token>`
 
 11. Create [Ubuntu PPA packages](https://launchpad.net/~bitcoin-abc/+archive/ubuntu/ppa):

@@ -29,7 +29,7 @@ repositories:
   packages:
   - "cmake"
 remotes:
-- "url": "https://github.com/Bitcoin-ABC/bitcoin-abc.git"
+- "url": "https://github.com/LogosFoundation/lotusd.git"
   "dir": "bitcoin"
 files: []
 script: |

@@ -36,7 +36,7 @@ Before you start building, please make sure that your compiler supports C++17.
 
 1. Clone the Bitcoin ABC source code and cd into `bitcoin-abc`
 
-        git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
+        git clone https://github.com/LogosFoundation/lotusd.git
         cd bitcoin-abc
 
 2.  Build Bitcoin ABC:

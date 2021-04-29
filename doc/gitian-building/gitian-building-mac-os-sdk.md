@@ -26,4 +26,4 @@ mv Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz gitian-builder/i
 
 Troubleshooting
 ---------------
-See [README_osx.md](https://github.com/Bitcoin-ABC/bitcoin-abc/blob/master/doc/README_osx.md) for troubleshooting tips.
+See [README_osx.md](https://github.com/LogosFoundation/lotusd/blob/master/doc/README_osx.md) for troubleshooting tips.

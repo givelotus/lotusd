@@ -35,7 +35,7 @@ repositories:
   packages:
   - "cmake"
 remotes:
-- "url": "https://github.com/Bitcoin-ABC/bitcoin-abc.git"
+- "url": "https://github.com/LogosFoundation/lotusd.git"
   "dir": "bitcoin"
 files:
 - "Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz"

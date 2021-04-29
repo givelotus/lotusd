@@ -30,7 +30,7 @@ def setup():
             ['git', 'clone', 'https://github.com/devrandom/gitian-builder.git'])
     if not os.path.isdir('bitcoin-abc'):
         subprocess.check_call(
-            ['git', 'clone', 'https://github.com/Bitcoin-ABC/bitcoin-abc.git'])
+            ['git', 'clone', 'https://github.com/LogosFoundation/lotusd.git'])
     os.chdir('gitian-builder')
     make_image_prog = ['bin/make-base-vm',
                        '--distro', 'debian', '--suite', 'buster', '--arch', 'amd64']
@@ -197,7 +197,7 @@ def main():
                         help='Indicate that the version argument is for a commit or branch')
     parser.add_argument('-p', '--pull', action='store_true', dest='pull',
                         help='Indicate that the version argument is the number of a github repository pull request')
-    parser.add_argument('-u', '--url', dest='url', default='https://github.com/Bitcoin-ABC/bitcoin-abc.git',
+    parser.add_argument('-u', '--url', dest='url', default='https://github.com/LogosFoundation/lotusd.git',
                         help='Specify the URL of the repository. Default is %(default)s')
     parser.add_argument('-v', '--verify', action='store_true',
                         dest='verify', help='Verify the Gitian build')
