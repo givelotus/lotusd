@@ -663,7 +663,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     cache_node_dir, i))
             to_dir = get_datadir_path(self.options.tmpdir, i)
             shutil.copytree(cache_node_dir, to_dir)
-            # Overwrite port/rpcport in bitcoin.conf
+            # Overwrite port/rpcport in lotus.conf
             initialize_datadir(self.options.tmpdir, i, self.chain)
 
     def _initialize_chain_clean(self):

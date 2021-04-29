@@ -57,7 +57,7 @@ static bool AppInit(int argc, char *argv[]) {
 
     util::ThreadSetInternalName("init");
 
-    // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's
+    // If Qt is used, parameters/lotus.conf are parsed in qt/bitcoin.cpp's
     // main()
     SetupServerArgs(node);
     ArgsManager &args = *Assert(node.args);
