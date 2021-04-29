@@ -46,7 +46,7 @@ The rest of the steps in this guide will be performed as that user.
 Clone the git repository for Bitcoin ABC which contains the Gitian sources.
 
 ```bash
-git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
+git clone https://github.com/LogosFoundation/lotusd.git
 ```
 
 Setting up the Gitian image

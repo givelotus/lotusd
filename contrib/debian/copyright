@@ -1,7 +1,7 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Bitcoin ABC
 Upstream-Contact: helpdesk@bitcoinabc.org
-Source: https://github.com/Bitcoin-ABC/bitcoin-abc
+Source: https://github.com/LogosFoundation/lotusd
 
 Files: *
 Copyright: 2009-2017, The Bitcoin Core Developers, 2017-2019 The Bitcoin Developers

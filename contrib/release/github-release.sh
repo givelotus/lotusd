@@ -175,4 +175,4 @@ else
 fi
 
 echo "Done."
-echo "https://github.com/Bitcoin-ABC/bitcoin-abc/releases/tag/${TAG}"
+echo "https://github.com/LogosFoundation/lotusd/releases/tag/${TAG}"

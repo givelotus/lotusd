@@ -9,7 +9,7 @@ url="https://bitcoinabc.org"
 depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'miniupnpc' 'jemalloc')
 makedepends=('cmake' 'ninja' 'boost' 'python' 'help2man')
 license=('MIT')
-source=(https://github.com/Bitcoin-ABC/bitcoin-abc/archive/v$pkgver.tar.gz
+source=(https://github.com/LogosFoundation/lotusd/archive/v$pkgver.tar.gz
         bitcoin.conf
         bitcoin.logrotate
         bitcoin.service

@@ -106,7 +106,7 @@ Creating the image will take a while, but only has to be done once.
 Execute the following as user `gitianuser`:
 
 ```bash
-git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
+git clone https://github.com/LogosFoundation/lotusd.git
 cd bitcoin-abc/contrib/gitian-builder
 ```
 

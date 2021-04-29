@@ -1,7 +1,7 @@
 Getting and building the inputs
 -------------------------------
 
-At this point you have two options, you can either use the automated script (found in [https://github.com/Bitcoin-ABC/bitcoin-abc/blob/master/contrib/gitian-build.py](https://github.com/Bitcoin-ABC/bitcoin-abc/blob/master/contrib/gitian-build.py), only works in Debian/Ubuntu) or you could manually do everything by following this guide.
+At this point you have two options, you can either use the automated script (found in [https://github.com/LogosFoundation/lotusd/blob/master/contrib/gitian-build.py](https://github.com/LogosFoundation/lotusd/blob/master/contrib/gitian-build.py), only works in Debian/Ubuntu) or you could manually do everything by following this guide.
 If you are using the automated script, then run it with the `--setup` command. Afterwards, run it with the `--build` command (example: `contrib/gitian-build.py -b signer 0.15.0`). Otherwise ignore this.
 
 Follow the instructions in [https://github.com/bitcoin/bitcoin/blob/master/doc/release-process.md](https://github.com/bitcoin/bitcoin/blob/master/doc/release-process.md#fetch-and-create-inputs-first-time-or-when-dependency-versions-change)
@@ -33,7 +33,7 @@ Output from `gbuild` will look something like
     remote: Total 57959 (delta 0), reused 0 (delta 0), pack-reused 57958
     Receiving objects: 100% (57959/57959), 53.76 MiB | 484.00 KiB/s, done.
     Resolving deltas: 100% (41590/41590), done.
-    From https://github.com/Bitcoin-ABC/bitcoin-abc.git
+    From https://github.com/LogosFoundation/lotusd.git
     ... (new tags, new branch etc)
     --- Building for trusty amd64 ---
     Stopping target if it is up
@@ -59,7 +59,7 @@ and inputs.
 
 For example:
 ```bash
-URL=https://github.com/Bitcoin-ABC/bitcoin-abc.git
+URL=https://github.com/LogosFoundation/lotusd.git
 COMMIT=v0.18.5
 ./bin/gbuild --commit bitcoin=${COMMIT} --url bitcoin=${URL} ../bitcoin-abc/contrib/gitian-descriptors/gitian-linux.yml
 ./bin/gbuild --commit bitcoin=${COMMIT} --url bitcoin=${URL} ../bitcoin-abc/contrib/gitian-descriptors/gitian-win.yml
