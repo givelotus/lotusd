@@ -714,7 +714,6 @@ add_library(server
 	txpool.cpp
 	validation.cpp
 	validationinterface.cpp
-	versionbits.cpp
 )
 
 target_include_directories(server PRIVATE leveldb/helpers/memenv)
@@ -916,7 +915,6 @@ if(BUILD_CHAINSTATE)
 		util/tokenpipe.cpp
 		validation.cpp
 		validationinterface.cpp
-		versionbits.cpp
 		warnings.cpp
 
 		# Bitcoin ABC specific dependencies that will not go away with Core backports
