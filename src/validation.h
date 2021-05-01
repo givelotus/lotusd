@@ -15,6 +15,7 @@
 #include <blockfileinfo.h>
 #include <blockindexworkcomparator.h>
 #include <coins.h>
+#include <chain.h>
 #include <consensus/consensus.h>
 #include <disconnectresult.h>
 #include <flatfile.h>
@@ -25,7 +26,6 @@
 #include <sync.h>
 #include <txdb.h>
 #include <txmempool.h> // For CTxMemPool::cs
-#include <versionbits.h>
 
 #include <atomic>
 #include <cstdint>
@@ -376,29 +376,6 @@ CheckInputScripts(const CTransaction &tx, TxValidationState &state,
                              scriptCacheStore, txdata, nSigChecksOut,
                              nSigChecksTxLimiter, nullptr, nullptr);
 }
-
-/** Get the BIP9 state for a given deployment at the current tip. */
-ThresholdState VersionBitsTipState(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos);
-
-/** Get the BIP9 state for a given deployment at a given block. */
-ThresholdState VersionBitsBlockState(const Consensus::Params &params,
-                                     Consensus::DeploymentPos pos,
-                                     const CBlockIndex *pindex);
-
-/**
- * Get the numerical statistics for the BIP9 state for a given deployment at the
- * current tip.
- */
-BIP9Stats VersionBitsTipStatistics(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos);
-
-/**
- * Get the block height at which the BIP9 deployment switched into the state for
- * the block building on the current tip.
- */
-int VersionBitsTipStateSinceHeight(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos);
 
 /** Apply the effects of this transaction on the UTXO set represented by view */
 void UpdateCoins(const CTransaction &tx, CCoinsViewCache &inputs, int nHeight);
@@ -1241,12 +1218,6 @@ extern std::unique_ptr<CBlockTreeDB> pblocktree;
  * This is also true for mempool checks.
  */
 int GetSpendHeight(const CCoinsViewCache &inputs);
-
-/**
- * Determine what nVersion a new block should use.
- */
-int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev,
-                            const Consensus::Params &params);
 
 /** Get block file info entry for one block file */
 CBlockFileInfo *GetBlockFileInfo(size_t n);

@@ -1514,28 +1514,6 @@ void ThreadScriptCheck(int worker_num) {
     scriptcheckqueue.Thread();
 }
 
-VersionBitsCache versionbitscache GUARDED_BY(cs_main);
-
-int32_t ComputeBlockVersion(const CBlockIndex *pindexPrev,
-                            const Consensus::Params &params) {
-    LOCK(cs_main);
-    int32_t nVersion = VERSIONBITS_TOP_BITS;
-
-    for (int i = 0; i < (int)Consensus::MAX_VERSION_BITS_DEPLOYMENTS; i++) {
-        ThresholdState state = VersionBitsState(
-            pindexPrev, params, static_cast<Consensus::DeploymentPos>(i),
-            versionbitscache);
-        if (state == ThresholdState::LOCKED_IN ||
-            state == ThresholdState::STARTED) {
-            nVersion |= VersionBitsMask(
-                params, static_cast<Consensus::DeploymentPos>(i));
-        }
-    }
-
-    // Clear the last 4 bits (miner fund activation).
-    return nVersion & ~uint32_t(0x0f);
-}
-
 // Returns the script flags which should be checked for the block after
 // the given block.
 static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
@@ -5621,39 +5599,6 @@ CBlockFileInfo *GetBlockFileInfo(size_t n) {
     LOCK(cs_LastBlockFile);
 
     return &vinfoBlockFile.at(n);
-}
-
-static ThresholdState VersionBitsStateImpl(const Consensus::Params &params,
-                                           Consensus::DeploymentPos pos,
-                                           const CBlockIndex *pindex)
-    EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
-    return VersionBitsState(pindex, params, pos, versionbitscache);
-}
-
-ThresholdState VersionBitsTipState(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos) {
-    LOCK(cs_main);
-    return VersionBitsStateImpl(params, pos, ::ChainActive().Tip());
-}
-
-ThresholdState VersionBitsBlockState(const Consensus::Params &params,
-                                     Consensus::DeploymentPos pos,
-                                     const CBlockIndex *pindex) {
-    LOCK(cs_main);
-    return VersionBitsStateImpl(params, pos, pindex);
-}
-
-BIP9Stats VersionBitsTipStatistics(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos) {
-    LOCK(cs_main);
-    return VersionBitsStatistics(::ChainActive().Tip(), params, pos);
-}
-
-int VersionBitsTipStateSinceHeight(const Consensus::Params &params,
-                                   Consensus::DeploymentPos pos) {
-    LOCK(cs_main);
-    return VersionBitsStateSinceHeight(::ChainActive().Tip(), params, pos,
-                                       versionbitscache);
 }
 
 static const uint64_t MEMPOOL_DUMP_VERSION = 1;
