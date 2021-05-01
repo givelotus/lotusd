@@ -11,6 +11,7 @@ from test_framework.util import assert_equal
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
+    prepare_block,
 )
 
 
@@ -36,8 +37,8 @@ class InvalidChainsTest(BitcoinTestFramework):
         coinbase = create_coinbase(height)
         coinbase.rehash()
         block = create_block(base_block_hash, coinbase, block_time)
-
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         self.tip = block
         self.block_heights[block.sha256] = height
         assert number not in self.blocks

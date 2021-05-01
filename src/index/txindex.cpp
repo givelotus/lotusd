@@ -251,8 +251,11 @@ bool TxIndex::WriteBlock(const CBlock &block, const CBlockIndex *pindex) {
         return true;
     }
 
+    // We start after the block header, so we need to skip the entire vMetadata
+    // section and the number of transactions (encoded as CompactSize).
     CDiskTxPos pos(pindex->GetBlockPos(),
-                   GetSizeOfCompactSize(block.vtx.size()));
+                   ::GetSerializeSize(block.vMetadata, CLIENT_VERSION) +
+                       GetSizeOfCompactSize(block.vtx.size()));
     std::vector<std::pair<TxId, CDiskTxPos>> vPos;
     vPos.reserve(block.vtx.size());
     for (const auto &tx : block.vtx) {

@@ -8,7 +8,9 @@
 
 #include <chainparamsconstants.h>
 #include <chainparamsseeds.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
+#include <hash.h>
 #include <network.h>
 #include <tinyformat.h>
 #include <util/strencodings.h>
@@ -16,66 +18,46 @@
 
 #include <cassert>
 
-static CBlock CreateGenesisBlock(const char *pszTimestamp,
-                                 const CScript &genesisOutputScript,
-                                 uint32_t nTime, uint32_t nNonce,
-                                 uint32_t nBits, int32_t nVersion,
-                                 const Amount genesisReward) {
-    CMutableTransaction txNew;
-    txNew.nVersion = 1;
-    txNew.vin.resize(1);
-    txNew.vout.resize(1);
-    txNew.vin[0].scriptSig =
-        CScript() << 486604799 << CScriptNum(4)
-                  << std::vector<uint8_t>((const uint8_t *)pszTimestamp,
-                                          (const uint8_t *)pszTimestamp +
-                                              strlen(pszTimestamp));
-    txNew.vout[0].nValue = genesisReward;
-    txNew.vout[0].scriptPubKey = genesisOutputScript;
-
-    CBlock genesis;
-    genesis.nTime = nTime;
-    genesis.nBits = nBits;
-    genesis.nNonce = nNonce;
-    genesis.nVersion = nVersion;
-    genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
-    genesis.hashPrevBlock.SetNull();
-    genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
-    return genesis;
-}
-
 /**
  * Build the genesis block. Note that the output of its generation transaction
  * cannot be spent since it did not originally exist in the database.
- *
- * CBlock(hash=000000000019d6, ver=1, hashPrevBlock=00000000000000,
- * hashMerkleRoot=4a5e1e, nTime=1231006505, nBits=1d00ffff, nNonce=2083236893,
- * vtx=1)
- *   CTransaction(hash=4a5e1e, ver=1, vin.size=1, vout.size=1, nLockTime=0)
- *     CTxIn(COutPoint(000000, -1), coinbase
- * 04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73)
- *     CTxOut(nValue=50.00000000, scriptPubKey=0x5F1DF16B2B704C8A578D0B)
- *   vMerkleTree: 4a5e1e
  */
-CBlock CreateGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits,
-                          int32_t nVersion, const Amount genesisReward) {
-    const char *pszTimestamp =
-        "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks";
-    const CScript genesisOutputScript =
+static CBlock CreateGenesisBlock(uint32_t nBits, uint64_t nTime,
+                                 uint64_t nNonce) {
+    const std::string strScriptSig = "John 1:1 In the beginning was the Logos";
+    const int32_t nHeight = 0;
+    CMutableTransaction txNew;
+    txNew.nVersion = 1;
+    txNew.vin.resize(1);
+    txNew.vout.resize(2);
+    txNew.vin[0].scriptSig = CScript()
+                             << COINBASE_PREFIX << nHeight
+                             << std::vector<uint8_t>(strScriptSig.begin(),
+                                                     strScriptSig.end());
+    txNew.vout[0].nValue = SUBSIDY / 2;
+    txNew.vout[0].scriptPubKey =
+        CScript() << OP_RETURN
+                  << ParseHex("ffe330c4b7643e554c62adcbe0b80537435d888b5c33d5e2"
+                              "9a70cdd743e3a093");
+    txNew.vout[1].nValue = SUBSIDY / 2;
+    txNew.vout[1].scriptPubKey =
         CScript() << ParseHex("04678afdb0fe5548271967f1a67130b7105cd6a828e03909"
                               "a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112"
                               "de5c384df7ba0b8d578a4c702b6bf11d5f")
                   << OP_CHECKSIG;
-    return CreateGenesisBlock(pszTimestamp, genesisOutputScript, nTime, nNonce,
-                              nBits, nVersion, genesisReward);
-}
-
-CBlock CreateLogosGenesisBlock(uint32_t nTime, uint32_t nNonce, uint32_t nBits,
-                               int32_t nVersion, const Amount genesisReward) {
-    const char *pszTimestamp = "John 1:1 In the beginning was the Logos";
-    const CScript genesisOutputScript = CScript() << OP_RETURN;
-    return CreateGenesisBlock(pszTimestamp, genesisOutputScript, nTime, nNonce,
-                              nBits, nVersion, genesisReward);
+    CBlock genesis;
+    genesis.nBits = nBits;
+    genesis.SetBlockTime(nTime);
+    genesis.nReserved = 0;
+    genesis.nNonce = nNonce;
+    genesis.nHeaderVersion = 1;
+    genesis.hashExtendedMetadata = SerializeHash(std::vector<uint8_t>());
+    genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
+    genesis.SetSize(GetSerializeSize(genesis, PROTOCOL_VERSION));
+    genesis.nHeight = 0;
+    genesis.hashPrevBlock.SetNull();
+    genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
+    return genesis;
 }
 
 /**
@@ -87,7 +69,7 @@ public:
         strNetworkID = CBaseChainParams::MAIN;
         consensus.nSubsidyHalvingInterval = 210000;
         consensus.powLimit = uint256S(
-            "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            "0000000010000000000000000000000000000000000000000000000000000000");
         // two weeks
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60;
         consensus.nPowTargetSpacing = 2 * 60;
@@ -137,15 +119,18 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::MAINNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1,
-                                     50 * COIN);
+        genesis = CreateGenesisBlock(0x1c100000, 1619549570, 9640686251ull);
         consensus.hashGenesisBlock = genesis.GetHash();
+        assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1"
-                        "b60a8ce26f"));
+               uint256S("0000000000c46dcb1d212e21cf73963f3f7e0ec986d5b03b944dab"
+                        "9a7ec1f872"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b"
-                        "7afdeda33b"));
+               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
+                        "97c23d44a7"));
+        assert(genesis.hashExtendedMetadata ==
+               uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
+                        "8158e00614"));
 
         // Note that of those which support the service bits prefix, most only
         // support a subset of possible options. This is fine at runtime as
@@ -207,7 +192,7 @@ public:
         consensus.nSubsidyHalvingInterval = 210000;
 
         consensus.powLimit = uint256S(
-            "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            "0000000010000000000000000000000000000000000000000000000000000000");
         // two weeks
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60;
         consensus.nPowTargetSpacing = 2 * 60;
@@ -252,15 +237,18 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::TESTNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateLogosGenesisBlock(1618199040, 2402150191, 0x1d00ffff, 1,
-                                          260 * LOTUS);
+        genesis = CreateGenesisBlock(0x1c100000, 1619547788, 53126525591ull);
         consensus.hashGenesisBlock = genesis.GetHash();
+        assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("000000007fcfdfe97c71d4eb5b83c7c2855557daf5d6fd104f4670"
-                        "c7856ba74e"));
+               uint256S("000000000200ac85af6efaefbb839edab1c7a76226480dd2a9d804"
+                        "d05044428e"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("2ea66f6f2a723a125629edcf156cab217f9bbd6441558f77c85e90"
-                        "0ed6554793"));
+               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
+                        "97c23d44a7"));
+        assert(genesis.hashExtendedMetadata ==
+               uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
+                        "8158e00614"));
 
         vFixedSeeds.clear();
         vSeeds.clear();
@@ -347,14 +335,18 @@ public:
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
-        genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(0x207fffff, 1600000000, 1043670);
         consensus.hashGenesisBlock = genesis.GetHash();
+        assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("0x0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b"
-                        "1a11466e2206"));
+               uint256S("1060508db3b75302e0ee313a7cd1e05999c44974136a1138f9b1e6"
+                        "8c4dc24b12"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("0x4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab212"
-                        "7b7afdeda33b"));
+               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
+                        "97c23d44a7"));
+        assert(genesis.hashExtendedMetadata ==
+               uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
+                        "8158e00614"));
 
         //! Regtest mode doesn't have any fixed seeds.
         vFixedSeeds.clear();

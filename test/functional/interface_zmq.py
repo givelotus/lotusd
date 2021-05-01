@@ -3,6 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the ZMQ notification interface."""
+import hashlib
 import struct
 from io import BytesIO
 
@@ -18,6 +19,15 @@ from time import sleep
 
 def hash256_reversed(byte_str):
     return hash256(byte_str)[::-1]
+
+
+def block_hash_reversed(blk_hdr):
+    layer2_offset = 32
+    layer3_offset = layer2_offset + 20
+    layer3_hash = hashlib.sha256(blk_hdr[layer3_offset:]).digest()
+    layer2_hash = hashlib.sha256(blk_hdr[layer2_offset:layer3_offset] + layer3_hash).digest()
+    layer1_hash = hashlib.sha256(blk_hdr[:layer2_offset] + layer2_hash).digest()
+    return layer1_hash[::-1]
 
 
 class ZMQSubscriber:
@@ -108,7 +118,7 @@ class ZMQTest (BitcoinTestFramework):
 
             # Should receive the generated raw block.
             block = rawblock.receive()
-            assert_equal(genhashes[x], hash256_reversed(block[:80]).hex())
+            assert_equal(genhashes[x], block_hash_reversed(block[:160]).hex())
 
             # Should receive the generated block hash.
             hash = hashblock.receive().hex()

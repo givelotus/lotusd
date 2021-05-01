@@ -497,64 +497,107 @@ class CTransaction:
 
 
 class CBlockHeader:
-    __slots__ = ("hash", "hashMerkleRoot", "hashPrevBlock", "nBits", "nNonce",
-                 "nTime", "nVersion", "sha256")
+    __slots__ = (
+        "hashPrevBlock",
+        "nBits",
+        "nTime",
+        "nReserved",
+        "nNonce",
+        "nHeaderVersion",
+        "nSize",
+        "nHeight",
+        "hashEpochBlock",
+        "hashMerkleRoot",
+        "hashExtendedMetadata",
+        "hash",
+        "sha256",
+    )
 
     def __init__(self, header=None):
         if header is None:
             self.set_null()
         else:
-            self.nVersion = header.nVersion
             self.hashPrevBlock = header.hashPrevBlock
-            self.hashMerkleRoot = header.hashMerkleRoot
-            self.nTime = header.nTime
             self.nBits = header.nBits
+            self.nTime = header.nTime
+            self.nReserved = header.nReserved
             self.nNonce = header.nNonce
+            self.nHeaderVersion = header.nHeaderVersion
+            self.nSize = header.nSize
+            self.nHeight = header.nHeight
+            self.hashEpochBlock = header.hashEpochBlock
+            self.hashMerkleRoot = header.hashMerkleRoot
+            self.hashExtendedMetadata = header.hashExtendedMetadata
             self.sha256 = header.sha256
             self.hash = header.hash
             self.calc_sha256()
 
     def set_null(self):
-        self.nVersion = 1
         self.hashPrevBlock = 0
-        self.hashMerkleRoot = 0
-        self.nTime = 0
         self.nBits = 0
+        self.nTime = 0
+        self.nReserved = 0
         self.nNonce = 0
+        self.nHeaderVersion = 1
+        self.nSize = 0
+        self.nHeight = 0
+        self.hashEpochBlock = 0
+        self.hashMerkleRoot = 0
+        self.hashExtendedMetadata = 0
         self.sha256 = None
         self.hash = None
 
     def deserialize(self, f):
-        self.nVersion = struct.unpack("<i", f.read(4))[0]
         self.hashPrevBlock = deser_uint256(f)
+        self.nBits = int.from_bytes(f.read(4), 'little')
+        self.nTime = int.from_bytes(f.read(6), 'little')
+        self.nReserved = int.from_bytes(f.read(2), 'little')
+        self.nNonce = int.from_bytes(f.read(8), 'little')
+        self.nHeaderVersion = int.from_bytes(f.read(1), 'little')
+        self.nSize = int.from_bytes(f.read(7), 'little')
+        self.nHeight = int.from_bytes(f.read(4), 'little')
+        self.hashEpochBlock = deser_uint256(f)
         self.hashMerkleRoot = deser_uint256(f)
-        self.nTime = struct.unpack("<I", f.read(4))[0]
-        self.nBits = struct.unpack("<I", f.read(4))[0]
-        self.nNonce = struct.unpack("<I", f.read(4))[0]
+        self.hashExtendedMetadata = deser_uint256(f)
         self.sha256 = None
         self.hash = None
 
     def serialize(self):
-        r = b""
-        r += struct.pack("<i", self.nVersion)
+        r = bytearray()
         r += ser_uint256(self.hashPrevBlock)
+        r += self.nBits.to_bytes(4, 'little')
+        r += self.nTime.to_bytes(6, 'little')
+        r += self.nReserved.to_bytes(2, 'little')
+        r += self.nNonce.to_bytes(8, 'little')
+        r += self.nHeaderVersion.to_bytes(1, 'little')
+        r += self.nSize.to_bytes(7, 'little')
+        r += self.nHeight.to_bytes(4, 'little')
+        r += ser_uint256(self.hashEpochBlock)
         r += ser_uint256(self.hashMerkleRoot)
-        r += struct.pack("<I", self.nTime)
-        r += struct.pack("<I", self.nBits)
-        r += struct.pack("<I", self.nNonce)
-        return r
+        r += ser_uint256(self.hashExtendedMetadata)
+        return bytes(r)
 
     def calc_sha256(self):
         if self.sha256 is None:
-            r = b""
-            r += struct.pack("<i", self.nVersion)
-            r += ser_uint256(self.hashPrevBlock)
-            r += ser_uint256(self.hashMerkleRoot)
-            r += struct.pack("<I", self.nTime)
-            r += struct.pack("<I", self.nBits)
-            r += struct.pack("<I", self.nNonce)
-            self.sha256 = uint256_from_str(hash256(r))
-            self.hash = encode(hash256(r)[::-1], 'hex_codec').decode('ascii')
+            layer3 = bytearray()
+            layer3 += self.nHeaderVersion.to_bytes(1, 'little')
+            layer3 += self.nSize.to_bytes(7, 'little')
+            layer3 += self.nHeight.to_bytes(4, 'little')
+            layer3 += ser_uint256(self.hashEpochBlock)
+            layer3 += ser_uint256(self.hashMerkleRoot)
+            layer3 += ser_uint256(self.hashExtendedMetadata)
+            layer2 = bytearray()
+            layer2 += self.nBits.to_bytes(4, 'little')
+            layer2 += self.nTime.to_bytes(6, 'little')
+            layer2 += self.nReserved.to_bytes(2, 'little')
+            layer2 += self.nNonce.to_bytes(8, 'little')
+            layer2 += hashlib.sha256(layer3).digest()
+            layer1 = bytearray()
+            layer1 += ser_uint256(self.hashPrevBlock)
+            layer1 += hashlib.sha256(layer2).digest()
+            hash_bytes = sha256(layer1)
+            self.sha256 = uint256_from_str(hash_bytes)
+            self.hash = hash_bytes[::-1].hex()
 
     def rehash(self):
         self.sha256 = None
@@ -562,31 +605,49 @@ class CBlockHeader:
         return self.sha256
 
     def __repr__(self):
-        return "CBlockHeader(nVersion={} hashPrevBlock={:064x} hashMerkleRoot={:064x} nTime={} nBits={:08x} nNonce={:08x})".format(
-            self.nVersion, self.hashPrevBlock, self.hashMerkleRoot,
-            self.nTime, self.nBits, self.nNonce)
+        return (
+            "CBlockHeader(hashPrevBlock={:064x} nBits={:08x} nTime={} "
+            "nReserved={} nNonce={} nHeaderVersion={} nSize={} nHeight={} "
+            "hashEpochBlock={:064x} hashMerkleRoot={:064x} "
+            "hashExtendedMetadata={:064x})".format(
+                self.hashPrevBlock, self.nBits, self.nTime, self.nReserved,
+                self.nNonce, self.nHeaderVersion, self.nSize, self.nHeight,
+                self.hashEpochBlock, self.hashMerkleRoot,
+                self.hashExtendedMetadata,
+            )
+        )
 
 
 BLOCK_HEADER_SIZE = len(CBlockHeader().serialize())
-assert_equal(BLOCK_HEADER_SIZE, 80)
+assert_equal(BLOCK_HEADER_SIZE, 160)
 
 
 class CBlock(CBlockHeader):
-    __slots__ = ("vtx",)
+    __slots__ = ("vMetadata", "vtx",)
 
     def __init__(self, header=None):
         super().__init__(header)
+        self.vMetadata = []
         self.vtx = []
 
     def deserialize(self, f):
         super().deserialize(f)
+        self.vMetadata = deser_vector(f, CBlockMetadataField)
         self.vtx = deser_vector(f, CTransaction)
 
     def serialize(self):
         r = b""
         r += super().serialize()
+        r += ser_vector(self.vMetadata)
         r += ser_vector(self.vtx)
         return r
+
+    def update_size(self):
+        self.nSize = len(self.serialize())
+
+    def rehash_extended_metadata(self):
+        self.hashExtendedMetadata = uint256_from_str(
+            hash256(ser_vector(self.vMetadata)))
 
     # Calculate the merkle root given a vector of transaction hashes
     def get_merkle_root(self, hashes):
@@ -625,9 +686,27 @@ class CBlock(CBlockHeader):
             self.rehash()
 
     def __repr__(self):
-        return "CBlock(nVersion={} hashPrevBlock={:064x} hashMerkleRoot={:064x} nTime={} nBits={:08x} nNonce={:08x} vtx={})".format(
-            self.nVersion, self.hashPrevBlock, self.hashMerkleRoot,
+        return "CBlock(nHeaderVersion={} hashPrevBlock={:064x} hashMerkleRoot={:064x} nTime={} nBits={:08x} nNonce={:08x} vtx={})".format(
+            self.nHeaderVersion, self.hashPrevBlock, self.hashMerkleRoot,
             self.nTime, self.nBits, self.nNonce, repr(self.vtx))
+
+
+class CBlockMetadataField:
+    __slots__ = ("fieldId", "data")
+
+    def __init__(self, fieldId, data):
+        self.fieldId = fieldId
+        self.data = data
+
+    def deserialize(self, f):
+        self.fieldId = int.from_bytes(f.read(4), 'little')
+        self.data = deser_string(f)
+
+    def serialize(self):
+        r = bytearray()
+        r += self.fieldId.to_bytes(4, 'little')
+        r += ser_string(self.data)
+        return r
 
 
 class PrefilledTransaction:
@@ -655,11 +734,12 @@ class PrefilledTransaction:
 
 # This is what we send on the wire, in a cmpctblock message.
 class P2PHeaderAndShortIDs:
-    __slots__ = ("header", "nonce", "prefilled_txn", "prefilled_txn_length",
-                 "shortids", "shortids_length")
+    __slots__ = ("header", "vMetadata", "nonce", "prefilled_txn",
+                 "prefilled_txn_length", "shortids", "shortids_length")
 
     def __init__(self):
         self.header = CBlockHeader()
+        self.vMetadata = []
         self.nonce = 0
         self.shortids_length = 0
         self.shortids = []
@@ -668,6 +748,7 @@ class P2PHeaderAndShortIDs:
 
     def deserialize(self, f):
         self.header.deserialize(f)
+        self.vMetadata = deser_vector(f, CBlockMetadataField)
         self.nonce = struct.unpack("<Q", f.read(8))[0]
         self.shortids_length = deser_compact_size(f)
         for i in range(self.shortids_length):
@@ -681,6 +762,7 @@ class P2PHeaderAndShortIDs:
     def serialize(self):
         r = b""
         r += self.header.serialize()
+        r += ser_vector(self.vMetadata)
         r += struct.pack("<Q", self.nonce)
         r += ser_compact_size(self.shortids_length)
         for x in self.shortids:
@@ -690,8 +772,8 @@ class P2PHeaderAndShortIDs:
         return r
 
     def __repr__(self):
-        return "P2PHeaderAndShortIDs(header={}, nonce={}, shortids_length={}, shortids={}, prefilled_txn_length={}, prefilledtxn={}".format(
-            repr(self.header), self.nonce, self.shortids_length,
+        return "P2PHeaderAndShortIDs(header={}, vMetadata={}, nonce={}, shortids_length={}, shortids={}, prefilled_txn_length={}, prefilledtxn={}".format(
+            repr(self.header), repr(self.vMetadata), self.nonce, self.shortids_length,
             repr(self.shortids), self.prefilled_txn_length,
             repr(self.prefilled_txn))
 
@@ -1549,13 +1631,10 @@ class msg_headers:
 
     def deserialize(self, f):
         # comment in bitcoind indicates these should be deserialized as blocks
-        blocks = deser_vector(f, CBlock)
-        for x in blocks:
-            self.headers.append(CBlockHeader(x))
+        self.headers = deser_vector(f, CBlockHeader)
 
     def serialize(self):
-        blocks = [CBlock(x) for x in self.headers]
-        return ser_vector(blocks)
+        return ser_vector([CBlockHeader(header) for header in self.headers])
 
     def __repr__(self):
         return "msg_headers(headers={})".format(repr(self.headers))

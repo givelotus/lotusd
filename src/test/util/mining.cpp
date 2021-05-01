@@ -53,7 +53,7 @@ std::shared_ptr<CBlock> PrepareBlock(const Config &config,
                                      ->block);
 
     LOCK(cs_main);
-    block->nTime = ::ChainActive().Tip()->GetMedianTimePast() + 1;
+    block->SetBlockTime(::ChainActive().Tip()->GetMedianTimePast() + 1);
     block->hashMerkleRoot = BlockMerkleRoot(*block);
 
     return block;

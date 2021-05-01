@@ -7,7 +7,7 @@
 Test that the DERSIG soft-fork activates at (regtest) height 1251.
 """
 
-from test_framework.blocktools import create_block, create_coinbase, create_transaction
+from test_framework.blocktools import create_block, create_coinbase, create_transaction, prepare_block
 from test_framework.messages import msg_block
 from test_framework.mininode import P2PInterface
 from test_framework.script import CScript
@@ -60,7 +60,7 @@ class BIP66Test(BitcoinTestFramework):
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
         block = create_block(
             int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time)
-        block.nVersion = 3
+        block.nHeight = DERSIG_HEIGHT
         spendtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
                                      self.nodeaddress, amount=1.0)
         unDERify(spendtx)
@@ -77,9 +77,7 @@ class BIP66Test(BitcoinTestFramework):
 
         # Now we verify that a block with this transaction is also invalid.
         block.vtx.append(spendtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.rehash()
-        block.solve()
+        prepare_block(block)
 
         with self.nodes[0].assert_debug_log(expected_msgs=['ConnectBlock {} failed, blk-bad-inputs'.format(block.hash)]):
             self.nodes[0].p2p.send_and_ping(msg_block(block))
@@ -90,9 +88,7 @@ class BIP66Test(BitcoinTestFramework):
             "Test that a version 3 block with a DERSIG-compliant transaction is accepted")
         block.vtx[1] = create_transaction(self.nodes[0],
                                           self.coinbase_txids[1], self.nodeaddress, amount=1.0)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.rehash()
-        block.solve()
+        prepare_block(block)
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))
         assert_equal(int(self.nodes[0].getbestblockhash(), 16), block.sha256)

@@ -6,10 +6,16 @@
 #ifndef BITCOIN_PRIMITIVES_BLOCK_H
 #define BITCOIN_PRIMITIVES_BLOCK_H
 
+#include <array>
 #include <primitives/blockhash.h>
 #include <primitives/transaction.h>
 #include <serialize.h>
 #include <uint256.h>
+
+typedef std::array<uint8_t, 6> block_time_t;
+typedef std::array<uint8_t, 7> block_size_t;
+
+constexpr int32_t EPOCH_NUM_BLOCKS = 5040; // one week
 
 /**
  * Nodes collect new transactions into a block, hash them into a hash tree, and
@@ -21,40 +27,131 @@
  */
 class CBlockHeader {
 public:
-    // header
-    int32_t nVersion;
+    /** Hash of block this block is extending, or all zeros for genesis block */
     BlockHash hashPrevBlock;
-    uint256 hashMerkleRoot;
-    uint32_t nTime;
+    /** Target blockhash should meet encoded compactly */
     uint32_t nBits;
-    uint32_t nNonce;
+    /** Block time of the block encoded little endian */
+    block_time_t vTime;
+    /** Reserved bytes for future use, all 0 for now */
+    uint16_t nReserved;
+    /** Nonce for miners to tweak the blockhash */
+    uint64_t nNonce;
+    /** Version of the bytes that follow; always 0x01 for now */
+    uint8_t nHeaderVersion;
+    /** Size of the block encoded little endian */
+    block_size_t vSize;
+    /** Height of the block; length of the chain from genesis */
+    int32_t nHeight;
+    /**
+     * Epochs are 5040 blocks long; each block points to the prev block of the
+     * first block within an epoch
+     */
+    uint256 hashEpochBlock;
+    /** Merkle root of the txs in the block */
+    uint256 hashMerkleRoot;
+    /** Hash of the extended metadata of the block */
+    uint256 hashExtendedMetadata;
 
     CBlockHeader() { SetNull(); }
 
     SERIALIZE_METHODS(CBlockHeader, obj) {
-        READWRITE(obj.nVersion, obj.hashPrevBlock, obj.hashMerkleRoot,
-                  obj.nTime, obj.nBits, obj.nNonce);
+        READWRITE(obj.hashPrevBlock);
+        READWRITE(obj.nBits);
+        READWRITE(obj.vTime);
+        READWRITE(obj.nReserved);
+        READWRITE(obj.nNonce);
+        READWRITE(obj.nHeaderVersion);
+        READWRITE(obj.vSize);
+        READWRITE(obj.nHeight);
+        READWRITE(obj.hashEpochBlock);
+        READWRITE(obj.hashMerkleRoot);
+        READWRITE(obj.hashExtendedMetadata);
     }
 
     void SetNull() {
-        nVersion = 0;
         hashPrevBlock = BlockHash();
-        hashMerkleRoot.SetNull();
-        nTime = 0;
         nBits = 0;
+        vTime.fill(0);
+        nReserved = 0;
         nNonce = 0;
+        nHeaderVersion = 0;
+        vSize.fill(0);
+        nHeight = 0;
+        hashEpochBlock.SetNull();
+        hashMerkleRoot.SetNull();
+        hashExtendedMetadata.SetNull();
     }
 
     bool IsNull() const { return (nBits == 0); }
 
     BlockHash GetHash() const;
 
-    int64_t GetBlockTime() const { return (int64_t)nTime; }
+    /**
+     * Block time as advertised in the block header.
+     * Might not correspond to actual mined or received time.
+     */
+    int64_t GetBlockTime() const {
+        return uint64_t(vTime[0]) | (uint64_t(vTime[1]) << 8) |
+               (uint64_t(vTime[2]) << 16) | (uint64_t(vTime[3]) << 24) |
+               (uint64_t(vTime[4]) << 32) | (uint64_t(vTime[5]) << 40);
+    }
+
+    /** Set the block time as advertised in the block header. */
+    void SetBlockTime(uint64_t nTime) {
+        vTime = {{
+            uint8_t((nTime & 0x0000000000ff)),
+            uint8_t((nTime & 0x00000000ff00) >> 8),
+            uint8_t((nTime & 0x000000ff0000) >> 16),
+            uint8_t((nTime & 0x0000ff000000) >> 24),
+            uint8_t((nTime & 0x00ff00000000) >> 32),
+            uint8_t((nTime & 0xff0000000000) >> 40),
+        }};
+    }
+
+    /**
+     * Block size, with full encoding, including header, metadata and txs.
+     * This doesn't measure anything, so could diverge from the actual size of
+     * an encoded CBlock.
+     */
+    uint64_t GetSize() const {
+        return uint64_t(vSize[0]) | (uint64_t(vSize[1]) << 8) |
+               (uint64_t(vSize[2]) << 16) | (uint64_t(vSize[3]) << 24) |
+               (uint64_t(vSize[4]) << 32) | (uint64_t(vSize[5]) << 40) |
+               (uint64_t(vSize[6]) << 48);
+    }
+
+    /** Set the advertised block size in the block header. */
+    void SetSize(uint64_t nSize) {
+        vSize = {{
+            uint8_t((nSize & 0x000000000000ff)),
+            uint8_t((nSize & 0x0000000000ff00) >> 8),
+            uint8_t((nSize & 0x00000000ff0000) >> 16),
+            uint8_t((nSize & 0x000000ff000000) >> 24),
+            uint8_t((nSize & 0x0000ff00000000) >> 32),
+            uint8_t((nSize & 0x00ff0000000000) >> 40),
+            uint8_t((nSize & 0xff000000000000) >> 48),
+        }};
+    }
+};
+
+class CBlockMetadataField {
+public:
+    uint32_t nFieldId;
+    std::vector<uint8_t> vData;
+
+    SERIALIZE_METHODS(CBlockMetadataField, obj) {
+        READWRITE(obj.nFieldId);
+        READWRITE(obj.vData);
+    }
 };
 
 class CBlock : public CBlockHeader {
 public:
-    // network and disk
+    // both for network and disk
+    /** Extended metadata for the block as key-value array */
+    std::vector<CBlockMetadataField> vMetadata;
+    /** Transactions in the block */
     std::vector<CTransactionRef> vtx;
 
     // memory only
@@ -69,24 +166,31 @@ public:
 
     SERIALIZE_METHODS(CBlock, obj) {
         READWRITEAS(CBlockHeader, obj);
+        READWRITE(obj.vMetadata);
         READWRITE(obj.vtx);
     }
 
     void SetNull() {
         CBlockHeader::SetNull();
         vtx.clear();
+        vMetadata.clear();
         fChecked = false;
     }
 
     CBlockHeader GetBlockHeader() const {
-        CBlockHeader block;
-        block.nVersion = nVersion;
-        block.hashPrevBlock = hashPrevBlock;
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime = nTime;
-        block.nBits = nBits;
-        block.nNonce = nNonce;
-        return block;
+        CBlockHeader header;
+        header.hashPrevBlock = hashPrevBlock;
+        header.nBits = nBits;
+        header.vTime = vTime;
+        header.nReserved = nReserved;
+        header.nNonce = nNonce;
+        header.nHeaderVersion = nHeaderVersion;
+        header.vSize = vSize;
+        header.nHeight = nHeight;
+        header.hashEpochBlock = hashEpochBlock;
+        header.hashMerkleRoot = hashMerkleRoot;
+        header.hashExtendedMetadata = hashExtendedMetadata;
+        return header;
     }
 
     std::string ToString() const;

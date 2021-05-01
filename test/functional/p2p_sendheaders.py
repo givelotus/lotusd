@@ -85,7 +85,7 @@ d. Announce 49 headers that don't connect.
 e. Announce one more that doesn't connect.
    Expect: disconnect.
 """
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import (
     CBlockHeader,
     CInv,
@@ -267,9 +267,11 @@ class SendHeadersTest(BitcoinTestFramework):
 
         self.log.info(
             "Verify getheaders with null locator and invalid hashstop does not return headers.")
-        block = create_block(int(tip["hash"], 16), create_coinbase(
-            tip["height"] + 1), tip["mediantime"] + 1)
-        block.solve()
+        height = tip["height"] + 1
+        block = create_block(int(tip["hash"], 16), create_coinbase(height),
+            tip["mediantime"] + 1)
+        block.nHeight = height
+        prepare_block(block)
         test_node.send_header_for_blocks([block])
         test_node.clear_block_announcements()
         test_node.send_get_headers(locator=[], hashstop=int(block.hash, 16))
@@ -314,7 +316,8 @@ class SendHeadersTest(BitcoinTestFramework):
                 block_time = last_time + 1
                 new_block = create_block(
                     tip, create_coinbase(height + 1), block_time)
-                new_block.solve()
+                new_block.nHeight = height + 1
+                prepare_block(new_block)
                 test_node.send_header_for_blocks([new_block])
                 test_node.wait_for_getdata([new_block.sha256])
                 # make sure this block is processed
@@ -354,7 +357,8 @@ class SendHeadersTest(BitcoinTestFramework):
                 for b in range(i + 1):
                     blocks.append(create_block(
                         tip, create_coinbase(height), block_time))
-                    blocks[-1].solve()
+                    blocks[-1].nHeight = height
+                    prepare_block(blocks[-1])
                     tip = blocks[-1].sha256
                     block_time += 1
                     height += 1
@@ -477,7 +481,8 @@ class SendHeadersTest(BitcoinTestFramework):
         for b in range(2):
             blocks.append(create_block(
                 tip, create_coinbase(height), block_time))
-            blocks[-1].solve()
+            blocks[-1].nHeight = height
+            prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
             height += 1
@@ -496,7 +501,8 @@ class SendHeadersTest(BitcoinTestFramework):
         for b in range(3):
             blocks.append(create_block(
                 tip, create_coinbase(height), block_time))
-            blocks[-1].solve()
+            blocks[-1].nHeight = height
+            prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
             height += 1
@@ -519,7 +525,8 @@ class SendHeadersTest(BitcoinTestFramework):
         for b in range(20):
             blocks.append(create_block(
                 tip, create_coinbase(height), block_time))
-            blocks[-1].solve()
+            blocks[-1].nHeight = height
+            prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
             height += 1
@@ -569,7 +576,8 @@ class SendHeadersTest(BitcoinTestFramework):
             for j in range(2):
                 blocks.append(create_block(
                     tip, create_coinbase(height), block_time))
-                blocks[-1].solve()
+                blocks[-1].nHeight = height
+                prepare_block(blocks[-1])
                 tip = blocks[-1].sha256
                 block_time += 1
                 height += 1
@@ -592,7 +600,8 @@ class SendHeadersTest(BitcoinTestFramework):
         for j in range(MAX_UNCONNECTING_HEADERS + 1):
             blocks.append(create_block(
                 tip, create_coinbase(height), block_time))
-            blocks[-1].solve()
+            blocks[-1].nHeight = height
+            prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
             height += 1

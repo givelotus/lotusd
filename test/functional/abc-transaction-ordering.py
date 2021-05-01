@@ -117,7 +117,9 @@ class TransactionOrderingTest(BitcoinTestFramework):
         if tx_count > 0:
             assert_equal(len(block.vtx), tx_count)
 
-        # Do PoW, which is cheap on regnet
+        block.nHeight = height
+        block.update_size()
+        block.rehash_extended_metadata()
         block.solve()
         self.tip = block
         self.block_heights[block.sha256] = height
@@ -150,6 +152,8 @@ class TransactionOrderingTest(BitcoinTestFramework):
             block = self.blocks[block_number]
             old_sha256 = block.sha256
             block.hashMerkleRoot = block.calc_merkle_root()
+            block.update_size()
+            block.rehash_extended_metadata()
             block.solve()
             # Update the internal state just like in next_block
             self.tip = block

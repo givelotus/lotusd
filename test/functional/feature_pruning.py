@@ -58,7 +58,7 @@ def mine_large_blocks(node, n):
 
         # Build the block
         block = CBlock()
-        block.nVersion = best_block["version"]
+        block.nHeaderVersion = best_block["version"]
         block.hashPrevBlock = previousblockhash
         block.nTime = mine_large_blocks.nTime
         block.nBits = int('207fffff', 16)

@@ -17,7 +17,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import COIN
@@ -46,7 +46,8 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         height = 1
         block = create_block(tip, create_coinbase(height), block_time)
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         # Save the coinbase for later
         block1 = block
         tip = block.sha256
@@ -70,6 +71,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         self.log.info("Test merkle root malleability.")
 
         block2 = create_block(tip, create_coinbase(height), block_time)
+        block2.nHeight = height
         block_time += 1
 
         # b'0x51' is OP_TRUE
@@ -81,9 +83,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2.vtx.extend([tx1, tx2])
         block2.vtx = [block2.vtx[0]] + \
             sorted(block2.vtx[1:], key=lambda tx: tx.get_id())
-        block2.hashMerkleRoot = block2.calc_merkle_root()
-        block2.rehash()
-        block2.solve()
+        prepare_block(block2)
         orig_hash = block2.sha256
         block2_orig = copy.deepcopy(block2)
 
@@ -92,6 +92,10 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         assert_equal(block2.hashMerkleRoot, block2.calc_merkle_root())
         assert_equal(orig_hash, block2.rehash())
         assert block2_orig.vtx != block2.vtx
+        # Note: Lotus doesn't suffer from CVE-2012-2459, which is made clear
+        # through the fact that we have to do another solve
+        block2.nSize = len(block2.serialize())
+        block2.solve()
 
         node.p2p.send_blocks_and_test(
             [block2], node, success=False, reject_reason='bad-txns-duplicate')
@@ -102,10 +106,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2_dup = copy.deepcopy(block2_orig)
         block2_dup.vtx[2].vin.append(block2_dup.vtx[2].vin[0])
         block2_dup.vtx[2].rehash()
-        make_conform_to_ctor(block2_dup)
-        block2_dup.hashMerkleRoot = block2_dup.calc_merkle_root()
-        block2_dup.rehash()
-        block2_dup.solve()
+        prepare_block(block2_dup)
         node.p2p.send_blocks_and_test(
             [block2_dup], node, success=False,
             reject_reason='bad-txns-inputs-duplicate')
@@ -113,13 +114,12 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         self.log.info("Test very broken block.")
 
         block3 = create_block(tip, create_coinbase(height), block_time)
+        block3.nHeight = height
         block_time += 1
         block3.vtx[0].vout[0].nValue = int(2 * SUBSIDY * COIN)  # Too high!
         block3.vtx[0].sha256 = None
         block3.vtx[0].calc_sha256()
-        block3.hashMerkleRoot = block3.calc_merkle_root()
-        block3.rehash()
-        block3.solve()
+        prepare_block(block3)
 
         node.p2p.send_blocks_and_test(
             [block3], node, success=False, reject_reason='bad-cb-amount')
@@ -141,6 +141,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         # Complete testing of CVE-2018-17144, by checking for the inflation bug.
         # Create a block that spends the output of a tx in a previous block.
         block4 = create_block(tip, create_coinbase(height), block_time)
+        block4.nHeight = height
         tx3 = create_tx_with_script(tx2, 0, script_sig=b'\x51',
                                     amount=int(SUBSIDY * COIN))
 
@@ -148,10 +149,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         tx3.vin.append(tx3.vin[0])
         tx3.rehash()
         block4.vtx.append(tx3)
-        make_conform_to_ctor(block4)
-        block4.hashMerkleRoot = block4.calc_merkle_root()
-        block4.rehash()
-        block4.solve()
+        prepare_block(block4)
         self.log.info("Test inflation by duplicating input")
         node.p2p.send_blocks_and_test([block4], node, success=False,
                                       reject_reason='bad-txns-inputs-duplicate')

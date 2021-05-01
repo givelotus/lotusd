@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     const arith_uint256 powLimit = UintToArith256(params.powLimit);
     arith_uint256 currentPow = powLimit >> 3;
     uint32_t initialBits = currentPow.GetCompact();
-    double dMaxErr = 0.0001166792656486;
+    double dMaxErr = 0.0001168682888;
 
     // Genesis block, and parent of ASERT anchor block in this test case.
     blocks[0] = CBlockIndex();
@@ -323,14 +323,14 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
         "Min error: %16.14f%%\tMax error: %16.14f%%\tMax step: %16.14f%%\n",
         dMin * 100, dMax * 100, dMaxStep * 100);
     BOOST_CHECK_MESSAGE(
-        dMin < -0.0001013168981059 && dMin > -0.0001013168981060 &&
-            dMax > 0.0001166792656485 && dMax < 0.0001166792656486,
+        dMin < -0.0001011019566646 && dMin > -0.0001011019566647 &&
+            dMax > 0.0001168682887368 && dMax < 0.0001168682887369,
         failMsg);
     failMsg = strprintf("Min relError: %16.14f%%\tMax relError: %16.14f%%\n",
                         dRelMin * 100, dRelMax * 100);
     BOOST_CHECK_MESSAGE(
-        dRelMin < -0.0001013168981059 && dRelMin > -0.0001013168981060 &&
-            dRelMax > 0.0001166792656485 && dRelMax < 0.0001166792656486,
+        dRelMin < -0.0001011019566646 && dRelMin > -0.0001011019566647 &&
+            dRelMax > 0.0001168682887368 && dRelMax < 0.0001168682887369,
         failMsg);
 
     // Difficulty increases as long as we produce fast blocks
@@ -486,9 +486,9 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
 
     // Define some named input argument values
     const arith_uint256 SINGLE_300_TARGET{
-        "00000000ffb1ffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        "000000000ffb2000000000000000000000000000000000000000000000000000"};
     const arith_uint256 FUNNY_REF_TARGET{
-        "000000008000000000000000000fffffffffffffffffffffffffffffffffffff"};
+        "000000000800000000000000000fffffffffffffffffffffffffffffffffffff"};
 
     // Define our expected input and output values.
     // The timeDiff entries exclude the `parent_time_diff` - this is
@@ -498,37 +498,36 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
         /* refTarget, targetSpacing, timeDiff, heightDiff, expectedTarget,
            expectednBits */
 
-        {powLimit, t_block, 0, 2 * dh_day, powLimit >> 1, 0x1c7fffff},
-        {powLimit, t_block, 0, 4 * dh_day, powLimit >> 2, 0x1c3fffff},
-        {powLimit >> 1, t_block, 0, 2 * dh_day, powLimit >> 2, 0x1c3fffff},
-        {powLimit >> 2, t_block, 0, 2 * dh_day, powLimit >> 3, 0x1c1fffff},
-        {powLimit >> 3, t_block, 0, 2 * dh_day, powLimit >> 4, 0x1c0fffff},
-        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day, 3, 0x01030000},
-        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day + 600 * 119 / t_block, 3,
-            0x01030000},
-        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day + 600 * 120 / t_block, 2,
-            0x01020000},
-        {powLimit, t_block, 0, 2 * (256 - 33) * dh_day - 1, 2, 0x01020000},
+        {powLimit, t_block, 0, 2 * dh_day, powLimit >> 1, 0x1c080000},
+        {powLimit, t_block, 0, 4 * dh_day, powLimit >> 2, 0x1c040000},
+        {powLimit >> 1, t_block, 0, 2 * dh_day, powLimit >> 2, 0x1c040000},
+        {powLimit >> 2, t_block, 0, 2 * dh_day, powLimit >> 3, 0x1c020000},
+        {powLimit >> 3, t_block, 0, 2 * dh_day, powLimit >> 4, 0x1c010000},
+        {powLimit, t_block, 0, 2 * (256 - 38) * dh_day, 4, 0x01040000},
+        {powLimit, t_block, 0, 2 * (256 - 38) * dh_day + 1, 3, 0x01030000},
+        {powLimit, t_block, 0, 2 * (256 - 38) * dh_day + 600 * 119 / t_block, 3,
+         0x01030000},
+        {powLimit, t_block, 0, 2 * (256 - 38) * dh_day + 600 * 120 / t_block, 2,
+         0x01020000},
+        {powLimit, t_block, 0, 2 * (256 - 37) * dh_day, 2, 0x01020000},
         // 1 bit less since we do not need to shift to 0
-        {powLimit, t_block, 0, 2 * (256 - 33) * dh_day, 1, 0x01010000},
+        {powLimit, t_block, 0, 2 * (256 - 37) * dh_day + 1, 1, 0x01010000},
         // more will not decrease below 1
-        {powLimit, t_block, 0, 2 * (256 - 32) * dh_day, 1, 0x01010000},
-        {1, t_block, 0, 2 * (256 - 32) * dh_day, 1, 0x01010000}, 
+        {powLimit, t_block, 0, 2 * (256 - 36) * dh_day, 1, 0x01010000},
+        {1, t_block, 0, 2 * (256 - 36) * dh_day, 1, 0x01010000},
         {powLimit, t_block, 2 * (512 - 32) * dh_day, 0, powLimit,
-            powLimit_nBits},
-        {1, t_block, (512 - 64) * dh_day * t_block, 0, powLimit,
-            powLimit_nBits},
+         powLimit_nBits},
+        {1, t_block, (512 - 64 - 8) * dh_day * t_block, 0, powLimit,
+         powLimit_nBits},
         // clamps to powLimit
-        {powLimit, t_block, 300, dh_day / 144, SINGLE_300_TARGET, 0x1d00ffb1},
+        {powLimit, t_block, 300, dh_day / 144, SINGLE_300_TARGET, 0x1c0ffb20},
         // confuses any attempt to detect overflow by inspecting result
         {FUNNY_REF_TARGET, t_block, t_block * 2 * 33 * dh_day, 0, powLimit,
          powLimit_nBits},
-        // overflow to exactly 2^256
-        {1, t_block, t_block * 2 * 256 * dh_day, 0, powLimit, powLimit_nBits},
-        // just under powlimit (not clamped) yet over powlimit_nbits
-        {1, t_block, t_block * 2 * 224 * dh_day - 1, 0,
-            arith_uint256(0xffff8) << 204,
-         powLimit_nBits},
+        {1, t_block, t_block * 2 * 220 * dh_day, 0, powLimit, powLimit_nBits},
+        // just under powlimit (not clamped) and powlimit_nbits
+        {1, t_block, t_block * 2 * 220 * dh_day - 1, 0,
+         arith_uint256(0xffff8) << 200, 0x1c0ffff8},
     };
 
     for (auto &v : calculate_args) {

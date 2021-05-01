@@ -31,12 +31,12 @@
 
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
                    const CBlockIndex *pindexPrev) {
-    int64_t nOldTime = pblock->nTime;
+    int64_t nOldTime = pblock->GetBlockTime();
     int64_t nNewTime =
         std::max(pindexPrev->GetMedianTimePast() + 1, GetAdjustedTime());
 
     if (nOldTime < nNewTime) {
-        pblock->nTime = nNewTime;
+        pblock->SetBlockTime(nNewTime);
     }
 
     // Updating time can change work required on testnet:
@@ -141,20 +141,29 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     const Consensus::Params &consensusParams = chainParams.GetConsensus();
 
-    // Always mine version 1
-    pblock->nVersion = 1;
+    // Version must always be 1
+    pblock->nHeaderVersion = 1;
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
     if (chainParams.MineBlocksOnDemand()) {
-        pblock->nVersion = gArgs.GetArg("-blockversion", pblock->nVersion);
+        pblock->nHeaderVersion =
+            gArgs.GetArg("-blockversion", pblock->nHeaderVersion);
     }
 
     // Fill in header.
     pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    pblock->nTime = GetAdjustedTime();
+    pblock->SetBlockTime(GetAdjustedTime());
     UpdateTime(pblock, chainParams, pindexPrev);
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
     pblock->nNonce = 0;
+    pblock->nHeight = nHeight;
+    if (nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
+        pblock->hashEpochBlock = pblock->hashPrevBlock;
+    } else {
+        pblock->hashEpochBlock = pindexPrev->hashEpochBlock;
+    }
+    pblock->hashExtendedMetadata = SerializeHash(pblock->vMetadata);
+
     nLockTimeCutoff = pindexPrev->GetMedianTimePast();
 
     int nPackagesSelected = 0;
@@ -162,10 +171,12 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     addPackageTxs(nPackagesSelected, nDescendantsUpdated);
 
     // We make sure transaction are canonically ordered.
-    std::sort(std::begin(pblocktemplate->entries) + 1,
-                std::end(pblocktemplate->entries),
-                [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b)
-                    -> bool { return a.tx->GetId() < b.tx->GetId(); });
+    std::sort(
+        std::begin(pblocktemplate->entries) + 1,
+        std::end(pblocktemplate->entries),
+        [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b) -> bool {
+            return a.tx->GetId() < b.tx->GetId();
+        });
 
     // Copy all the transactions refs into the block
     pblock->vtx.reserve(pblocktemplate->entries.size());
@@ -187,8 +198,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
-        amountFeeReward +
-        GetBlockSubsidy(pblock->nBits, consensusParams);
+        amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
     coinbaseTx.vin[0].scriptSig = CScript()
                                   << COINBASE_PREFIX << nHeight << OP_0;
 
@@ -216,6 +226,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     LogPrintf("CreateNewBlock(): total size: %u txs: %u fees: %ld sigops %d\n",
               nSerializeSize, nBlockTx, nFees, nBlockSigOps);
 
+    // Fill in size
+    pblock->SetSize(nSerializeSize);
     pblocktemplate->entries[0].sigOpCount = 0;
 
     BlockValidationState state;
@@ -555,9 +567,7 @@ void IncrementExtraNonce(CBlock *pblock, const CBlockIndex *pindexPrev,
     unsigned int nHeight = pindexPrev->nHeight + 1;
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     txCoinbase.vin[0].scriptSig =
-        (CScript() << COINBASE_PREFIX
-                   << nHeight
-                   << CScriptNum(nExtraNonce)
+        (CScript() << COINBASE_PREFIX << nHeight << CScriptNum(nExtraNonce)
                    << getExcessiveBlockSizeSig(nExcessiveBlockSize));
 
     // Make sure the coinbase is big enough.

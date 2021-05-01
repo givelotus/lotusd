@@ -23,7 +23,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.key import ECKey
@@ -147,6 +147,8 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         coinbase = create_coinbase(height)
         coinbase.rehash()
         block = create_block(base_block_hash, coinbase, block_time)
+        block.nHeight = height
+        prepare_block(block)
 
         # Do PoW, which is cheap on regnet
         block.solve()
@@ -182,8 +184,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
             block = self.blocks[block_number]
             block.vtx.extend(new_transactions)
             old_sha256 = block.sha256
-            make_conform_to_ctor(block)
-            block.hashMerkleRoot = block.calc_merkle_root()
+            prepare_block(block)
             block.solve()
             # Update the internal state just like in next_block
             self.tip = block

@@ -32,9 +32,6 @@ public:
     //! pointer to the index of some further predecessor of this block
     CBlockIndex *pskip{nullptr};
 
-    //! height of the entry in the chain. The genesis block has height 0
-    int nHeight{0};
-
     //! Which # file this block is stored in (blk?????.dat)
     int nFile{0};
 
@@ -52,11 +49,6 @@ public:
     //! Note: in a potential headers-first mode, this number cannot be relied
     //! upon
     unsigned int nTx{0};
-
-    //! Size of this block.
-    //! Note: in a potential headers-first mode, this number cannot be relied
-    //! upon
-    unsigned int nSize{0};
 
 private:
     //! (memory only) Number of transactions in the chain up to and including
@@ -76,11 +68,20 @@ public:
     BlockStatus nStatus{};
 
     //! block header
-    int32_t nVersion{0};
-    uint256 hashMerkleRoot{};
-    uint32_t nTime{0};
     uint32_t nBits{0};
-    uint32_t nNonce{0};
+    int64_t nTime{0};
+    uint16_t nReserved;
+    uint64_t nNonce{0};
+    uint8_t nHeaderVersion{0};
+    //! Size of this block.
+    //! Note: in a potential headers-first mode, this number cannot be relied
+    //! upon. It is covered by PoW thought.
+    uint64_t nSize{0};
+    //! height of the entry in the chain. The genesis block has height 0
+    int32_t nHeight{0};
+    uint256 hashEpochBlock{};
+    uint256 hashMerkleRoot{};
+    uint256 hashExtendedMetadata{};
 
     //! (memory only) Sequential id assigned to distinguish order in which
     //! blocks are received.
@@ -90,14 +91,17 @@ public:
     uint64_t nTimeReceived{0};
 
     //! (memory only) Maximum nTime in the chain up to and including this block.
-    unsigned int nTimeMax{0};
+    int64_t nTimeMax{0};
 
     explicit CBlockIndex() = default;
 
     explicit CBlockIndex(const CBlockHeader &block)
-        : nVersion{block.nVersion}, hashMerkleRoot{block.hashMerkleRoot},
-          nTime{block.nTime}, nBits{block.nBits}, nNonce{block.nNonce},
-          nTimeReceived{0} {}
+        : nBits{block.nBits}, nTime{block.GetBlockTime()},
+          nReserved{block.nReserved}, nNonce{block.nNonce},
+          nHeaderVersion{block.nHeaderVersion}, nSize{block.GetSize()},
+          nHeight{block.nHeight}, hashEpochBlock{block.hashEpochBlock},
+          hashMerkleRoot{block.hashMerkleRoot},
+          hashExtendedMetadata{block.hashExtendedMetadata}, nTimeReceived{0} {}
 
     FlatFilePos GetBlockPos() const {
         FlatFilePos ret;
@@ -119,14 +123,19 @@ public:
 
     CBlockHeader GetBlockHeader() const {
         CBlockHeader block;
-        block.nVersion = nVersion;
         if (pprev) {
             block.hashPrevBlock = pprev->GetBlockHash();
         }
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime = nTime;
         block.nBits = nBits;
+        block.SetBlockTime(nTime);
+        block.nReserved = nReserved;
         block.nNonce = nNonce;
+        block.nHeaderVersion = nHeaderVersion;
+        block.SetSize(nSize);
+        block.nHeight = nHeight;
+        block.hashEpochBlock = hashEpochBlock;
+        block.hashMerkleRoot = hashMerkleRoot;
+        block.hashExtendedMetadata = hashExtendedMetadata;
         return block;
     }
 

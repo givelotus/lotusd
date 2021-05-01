@@ -5,7 +5,7 @@
 """Test that the wallet resends transactions periodically."""
 import time
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import ToHex
 from test_framework.mininode import P2PTxInvStore, mininode_lock
 from test_framework.test_framework import BitcoinTestFramework
@@ -50,10 +50,11 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
         # extra minute to be sure.
         block_time = int(time.time()) + 6 * 60
         node.setmocktime(block_time)
+        height = node.getblockcount() + 1
         block = create_block(int(node.getbestblockhash(), 16), create_coinbase(
-            node.getblockcount() + 1), block_time)
-        block.rehash()
-        block.solve()
+            height), block_time)
+        block.nHeight = height
+        prepare_block(block)
         node.submitblock(ToHex(block))
 
         node.syncwithvalidationinterfacequeue()

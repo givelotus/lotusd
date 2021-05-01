@@ -11,7 +11,7 @@ from test_framework.script import hash160
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import (
@@ -81,11 +81,13 @@ class Int63Test(BitcoinTestFramework):
 
         def make_block():
             parent_block_header = node.getblockheader(node.getbestblockhash())
-            coinbase = create_coinbase(parent_block_header['height'] + 1)
+            height = parent_block_header['height'] + 1
+            coinbase = create_coinbase(height)
             coinbase.vout[0].scriptPubKey = p2sh_script
             coinbase.calc_sha256()
             block = create_block(
                 int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
+            block.nHeight = height
             return block
 
         interesting_numbers = [
@@ -177,9 +179,7 @@ class Int63Test(BitcoinTestFramework):
             txs.append(spend_tx)
         block = make_block()
         block.vtx.extend(txs)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         node.p2p.send_blocks_and_test([block], node)
         
         fund_txs = []
@@ -204,18 +204,14 @@ class Int63Test(BitcoinTestFramework):
 
         block = make_block()
         block.vtx.extend(fund_txs)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         node.p2p.send_blocks_and_test([block], node)
 
         invalid_block = make_block()
         invalid_block.vtx.append(None)
         for invalid_spend_tx in random.sample(invalid_spend_txs, 100):
             invalid_block.vtx[1] = invalid_spend_tx
-            make_conform_to_ctor(invalid_block)
-            invalid_block.hashMerkleRoot = invalid_block.calc_merkle_root()
-            invalid_block.solve()
+            prepare_block(invalid_block)
             node.p2p.send_blocks_and_test(
                 [invalid_block], node,
                 success=False,

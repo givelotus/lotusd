@@ -10,7 +10,7 @@ Only testing Version 1 compact blocks (txids)
 
 import random
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import (
     BlockTransactions,
     BlockTransactionsRequest,
@@ -146,13 +146,13 @@ class CompactBlocksTest(BitcoinTestFramework):
         self.skip_if_no_wallet()
 
     def build_block_on_tip(self, node):
-        height = node.getblockcount()
+        height = node.getblockcount() + 1
         tip = node.getbestblockhash()
         mtp = node.getblockheader(tip)['mediantime']
         block = create_block(
-            int(tip, 16), create_coinbase(height + 1), mtp + 1)
-        block.nVersion = 4
-        block.solve()
+            int(tip, 16), create_coinbase(height), mtp + 1)
+        block.nHeight = height
+        prepare_block(block)
         return block
 
     # Create 10 more anyone-can-spend utxo's for testing.
@@ -173,8 +173,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         block2 = self.build_block_on_tip(self.nodes[0])
         block2.vtx.append(tx)
-        block2.hashMerkleRoot = block2.calc_merkle_root()
-        block2.solve()
+        prepare_block(block2)
         self.test_node.send_and_ping(msg_block(block2))
         assert_equal(int(self.nodes[0].getbestblockhash(), 16), block2.sha256)
         self.utxos.extend([[tx.sha256, i, out_value] for i in range(10)])
@@ -471,8 +470,7 @@ class CompactBlocksTest(BitcoinTestFramework):
         ordered_txs = block.vtx
         block.vtx = [block.vtx[0]] + \
             sorted(block.vtx[1:], key=lambda tx: tx.get_id())
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         return block, ordered_txs
 
     # Test that we only receive getblocktxn requests for transactions that the
@@ -709,9 +707,11 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         # Generate an old compactblock, and verify that it's not accepted.
         cur_height = node.getblockcount()
-        hashPrevBlock = int(node.getblockhash(cur_height - 5), 16)
+        old_height = cur_height - 5
+        hashPrevBlock = int(node.getblockhash(old_height), 16)
         block = self.build_block_on_tip(node)
         block.hashPrevBlock = hashPrevBlock
+        block.nHeight = old_height + 1
         block.solve()
 
         comp_block = HeaderAndShortIDs()
