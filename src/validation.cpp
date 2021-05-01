@@ -2136,7 +2136,7 @@ static void UpdateTip(const CChainParams &params, CBlockIndex *pindexNew)
     LogPrintf("%s: new best=%s height=%d version=0x%08x log2_work=%.8g tx=%ld "
               "date='%s' progress=%f cache=%.1fMiB(%utxo)\n",
               __func__, pindexNew->GetBlockHash().ToString(),
-              pindexNew->nHeight, pindexNew->nVersion,
+              pindexNew->nHeight, pindexNew->nHeaderVersion,
               log(pindexNew->nChainWork.getdouble()) / log(2.0),
               pindexNew->GetChainTxCount(),
               FormatISO8601DateTime(pindexNew->GetBlockTime()),
@@ -3585,6 +3585,29 @@ static bool CheckBlockHeader(const CBlockHeader &block,
                              "high-hash", "proof of work failed");
     }
 
+    if (block.nReserved != 0) {
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-reserved",
+                             "block's reserved field must be 0");
+    }
+
+    if (block.nHeaderVersion != 1) {
+        LogPrintf("ERROR: expected block version 1 but got %d\n",
+                  block.nHeaderVersion);
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-version", "block version must be 1");
+    }
+
+    // Check if claimed size is excessive
+    if (block.GetSize() > validationOptions.getExcessiveBlockSize()) {
+        LogPrintf(
+            "ERROR: block has excessive size %u, which is above the limit %u\n",
+            block.GetSize(), validationOptions.getExcessiveBlockSize());
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-blk-size",
+                             "block header has excessive claimed size");
+    }
+
     return true;
 }
 
@@ -3620,9 +3643,27 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
         }
     }
 
+    const uint256 hashActualMetadata = SerializeHash(block.vMetadata);
+    if (hashActualMetadata != block.hashExtendedMetadata) {
+        LogPrintf(
+            "ERROR: extended metadata mismatch: expected %s, but got %s\n",
+            hashActualMetadata.ToString(),
+            block.hashExtendedMetadata.ToString());
+        return state.Invalid(BlockValidationResult::BLOCK_MUTATED,
+                             "bad-metadata-hash",
+                             "hashExtendedMetadata mismatch");
+    }
+
     // All potential-corruption validation must be done before we do any
     // transaction validation, as otherwise we may mark the header as invalid
-    // because we receive the wrong transactions for it.
+    // because we receive the wrong transactions or metadata for it.
+
+    // Metadata must be empty (for now)
+    if (!block.vMetadata.empty()) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-metadata",
+                             "forbidden extended metadata field");
+    }
 
     // First transaction must be coinbase.
     if (block.vtx.empty()) {
@@ -3634,15 +3675,21 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
     auto nMaxBlockSize = validationOptions.getExcessiveBlockSize();
 
     // Bail early if there is no way this block is of reasonable size.
+    // Since we checked for excessive size already, this will always mean we
+    // have a size mismatch.
     if ((block.vtx.size() * MIN_TRANSACTION_SIZE) > nMaxBlockSize) {
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch", "size limits failed");
     }
 
     auto currentBlockSize = ::GetSerializeSize(block, PROTOCOL_VERSION);
-    if (currentBlockSize > nMaxBlockSize) {
+    if (currentBlockSize != block.GetSize()) {
+        LogPrintf("ERROR: block size mismatch: claims to have size %u, but "
+                  "has %u\n",
+                  block.GetSize(), currentBlockSize);
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch",
+                             "block does not have the size it claims to have");
     }
 
     // And a valid coinbase.
@@ -3730,8 +3777,34 @@ static bool ContextualCheckBlockHeader(const CChainParams &params,
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast()) {
+        LogPrintf(
+            "ERROR: block too early: block's time is %d, but minimum is %d\n",
+            block.GetBlockTime(), pindexPrev->GetMedianTimePast());
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
                              "time-too-old", "block's timestamp is too early");
+    }
+
+    if (block.nHeight != pindexPrev->nHeight + 1) {
+        LogPrintf("ERROR: expected block height %d but got %d\n",
+                  pindexPrev->nHeight + 1, block.nHeight);
+        return state.Invalid(
+            BlockValidationResult::BLOCK_INVALID_HEADER, "bad-blk-height",
+            "block height is not one higher than previous block");
+    }
+
+    uint256 expectedEpochHash;
+    if (block.nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
+        expectedEpochHash = block.hashPrevBlock;
+    } else {
+        expectedEpochHash = pindexPrev->hashEpochBlock;
+    }
+
+    if (expectedEpochHash != block.hashEpochBlock) {
+        LogPrintf("ERROR: expected epoch hash %s but got %s",
+                  expectedEpochHash.ToString(),
+                  block.hashEpochBlock.ToString());
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-epoch", "block epoch block hash invalid");
     }
 
     // Check timestamp
@@ -5108,7 +5181,7 @@ void LoadExternalBlockFile(const Config &config, FILE *fileIn,
 
                 // Read size.
                 blkdat >> nSize;
-                if (nSize < 80) {
+                if (nSize < 160) {
                     continue;
                 }
             } catch (const std::exception &) {

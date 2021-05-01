@@ -129,10 +129,11 @@ static bool GenerateBlock(const Config &config, ChainstateManager &chainman,
                             extra_nonce);
     }
 
+    block.SetSize(GetSerializeSize(block));
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
 
     while (max_tries > 0 &&
-           block.nNonce < std::numeric_limits<uint32_t>::max() &&
+           block.nNonce < std::numeric_limits<uint64_t>::max() &&
            !CheckProofOfWork(block.GetHash(), block.nBits, params) &&
            !ShutdownRequested()) {
         ++block.nNonce;
@@ -141,7 +142,7 @@ static bool GenerateBlock(const Config &config, ChainstateManager &chainman,
     if (max_tries == 0 || ShutdownRequested()) {
         return false;
     }
-    if (block.nNonce == std::numeric_limits<uint32_t>::max()) {
+    if (block.nNonce == std::numeric_limits<uint64_t>::max()) {
         return true;
     }
 
@@ -182,6 +183,7 @@ static UniValue generateBlocks(const Config &config,
         }
 
         CBlock *pblock = &pblocktemplate->block;
+        pblock->nHeight = nHeight + 1;
 
         BlockHash block_hash;
         if (!GenerateBlock(config, chainman, *pblock, nMaxTries, nExtraNonce,
@@ -434,6 +436,7 @@ static UniValue generateblock(const Config &config,
 
     // Add transactions
     block.vtx.insert(block.vtx.end(), txs.begin(), txs.end());
+    block.SetSize(GetSerializeSize(block));
 
     {
         LOCK(cs_main);
@@ -976,9 +979,12 @@ static UniValue getblocktemplate(const Config &config,
     UniValue result(UniValue::VOBJ);
     result.pushKV("capabilities", aCaps);
 
-    result.pushKV("version", pblock->nVersion);
+    result.pushKV("version", uint64_t(pblock->nHeaderVersion));
 
     result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
+    result.pushKV("epochblockhash", pblock->hashEpochBlock.GetHex());
+    result.pushKV("extendedmetadatahash",
+                  pblock->hashExtendedMetadata.GetHex());
     result.pushKV("transactions", transactions);
     result.pushKV("coinbaseaux", aux);
     result.pushKV("coinbasetxn", coinbasetxn);

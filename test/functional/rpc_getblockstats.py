@@ -51,7 +51,7 @@ class GetblockstatsTest(BitcoinTestFramework):
             hash_or_height=self.start_height + i) for i in range(self.max_stat_pos + 1)]
 
     def generate_test_data(self, filename):
-        mocktime = 1525107225
+        mocktime = 1600000000
         self.nodes[0].setmocktime(mocktime)
         self.nodes[0].generate(101)
 

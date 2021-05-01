@@ -17,23 +17,23 @@ BOOST_FIXTURE_TEST_SUITE(blockindex_tests, BasicTestingSetup)
 BOOST_AUTO_TEST_CASE(get_block_header) {
     const int32_t expectedVersion = 4;
     const uint256 expectedMerkleRoot = uint256();
-    const uint32_t expectedBlockTime = 123;
+    const uint64_t expectedBlockTime = 123;
     const uint32_t expectedDifficultyBits = 234;
-    const uint32_t expectedNonce = 345;
+    const uint64_t expectedNonce = 345;
 
     CBlockHeader header;
-    header.nVersion = expectedVersion;
+    header.nHeaderVersion = expectedVersion;
     header.hashMerkleRoot = expectedMerkleRoot;
-    header.nTime = expectedBlockTime;
+    header.SetBlockTime(expectedBlockTime);
     header.nBits = expectedDifficultyBits;
     header.nNonce = expectedNonce;
 
     CBlockIndex index = CBlockIndex(header);
 
     CBlockHeader checkHeader = index.GetBlockHeader();
-    BOOST_CHECK(checkHeader.nVersion == expectedVersion);
+    BOOST_CHECK(checkHeader.nHeaderVersion == expectedVersion);
     BOOST_CHECK(checkHeader.hashMerkleRoot == expectedMerkleRoot);
-    BOOST_CHECK(checkHeader.nTime == expectedBlockTime);
+    BOOST_CHECK(checkHeader.GetBlockTime() == expectedBlockTime);
     BOOST_CHECK(checkHeader.nBits == expectedDifficultyBits);
     BOOST_CHECK(checkHeader.nNonce == expectedNonce);
 }
@@ -108,11 +108,13 @@ BOOST_AUTO_TEST_CASE(get_block_hash) {
 }
 
 BOOST_AUTO_TEST_CASE(received_time) {
-    // Set to UINT32_MAX because that's the maximum value header.nTime can hold
-    const int64_t expectedBlockTime = std::numeric_limits<uint32_t>::max();
+    // Set to 0xffff'ffff'ffff because that's the maximum value header.nTime can
+    // hold
+    const int64_t expectedBlockTime = 0xffff'ffff'ffff;
 
     CBlockHeader header;
-    header.nTime = uint32_t(expectedBlockTime);
+    header.SetBlockTime(expectedBlockTime);
+    BOOST_CHECK_EQUAL(header.GetBlockTime(), expectedBlockTime);
 
     CBlockIndex index = CBlockIndex(header);
 

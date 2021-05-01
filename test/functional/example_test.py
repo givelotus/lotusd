@@ -14,7 +14,7 @@ is testing and *how* it's being tested
 from collections import defaultdict
 
 # Avoid wildcard * imports if possible
-from test_framework.blocktools import (create_block, create_coinbase)
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import (
     CInv,
     MSG_BLOCK,
@@ -185,7 +185,8 @@ class ExampleTest(BitcoinTestFramework):
             block = create_block(
                 self.tip, create_coinbase(
                     height + 1), self.block_time)
-            block.solve()
+            block.nHeight = height + 1
+            prepare_block(block)
             block_message = msg_block(block)
             # Send message is used to send a P2P message to the node over our
             # P2PInterface

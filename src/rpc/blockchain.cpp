@@ -119,9 +119,10 @@ UniValue blockheaderToJSON(const CBlockIndex *tip,
     const CBlockIndex *pnext;
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
+    result.pushKV("size", blockindex->nSize);
     result.pushKV("height", blockindex->nHeight);
-    result.pushKV("version", blockindex->nVersion);
-    result.pushKV("versionHex", strprintf("%08x", blockindex->nVersion));
+    result.pushKV("version", uint64_t(blockindex->nHeaderVersion));
+    result.pushKV("versionHex", strprintf("%02x", blockindex->nHeaderVersion));
     result.pushKV("merkleroot", blockindex->hashMerkleRoot.GetHex());
     result.pushKV("time", int64_t(blockindex->nTime));
     result.pushKV("mediantime", int64_t(blockindex->GetMedianTimePast()));
@@ -130,6 +131,9 @@ UniValue blockheaderToJSON(const CBlockIndex *tip,
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex->nChainWork.GetHex());
     result.pushKV("nTx", uint64_t(blockindex->nTx));
+    result.pushKV("epochblockhash", blockindex->hashEpochBlock.GetHex());
+    result.pushKV("extendedmetadatahash",
+                  blockindex->hashExtendedMetadata.GetHex());
 
     if (blockindex->pprev) {
         result.pushKV("previousblockhash",
@@ -155,8 +159,8 @@ UniValue blockToJSON(const CBlock &block, const CBlockIndex *tip,
     result.pushKV("confirmations", confirmations);
     result.pushKV("size", (int)::GetSerializeSize(block, PROTOCOL_VERSION));
     result.pushKV("height", blockindex->nHeight);
-    result.pushKV("version", block.nVersion);
-    result.pushKV("versionHex", strprintf("%08x", block.nVersion));
+    result.pushKV("version", uint64_t(block.nHeaderVersion));
+    result.pushKV("versionHex", strprintf("%02x", block.nHeaderVersion));
     result.pushKV("merkleroot", block.hashMerkleRoot.GetHex());
     UniValue txs(UniValue::VARR);
     for (const auto &tx : block.vtx) {
@@ -176,6 +180,10 @@ UniValue blockToJSON(const CBlock &block, const CBlockIndex *tip,
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex->nChainWork.GetHex());
     result.pushKV("nTx", uint64_t(blockindex->nTx));
+    result.pushKV("epochblockhash", blockindex->hashEpochBlock.GetHex());
+    result.pushKV("extendedmetadatahash",
+                  blockindex->hashExtendedMetadata.GetHex());
+    result.pushKV("extendedmetadata", UniValue(UniValue::VARR));
 
     if (blockindex->pprev) {
         result.pushKV("previousblockhash",

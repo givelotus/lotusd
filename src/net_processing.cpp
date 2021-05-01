@@ -2874,7 +2874,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         // Ignore time offsets that are improbable (before the Genesis block)
         // and may underflow the nTimeOffset calculation.
         int64_t currentTime = GetTime();
-        if (nTime >= int64_t(m_chainparams.GenesisBlock().nTime)) {
+        if (nTime >= int64_t(m_chainparams.GenesisBlock().GetBlockTime())) {
             int64_t nTimeOffset = nTime - currentTime;
             pfrom.nTimeOffset = nTimeOffset;
             AddTimeData(pfrom.addr, nTimeOffset);
@@ -3349,7 +3349,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
 
         // we must use CBlocks, as CBlockHeaders won't include the 0x00 nTx
         // count at the end
-        std::vector<CBlock> vHeaders;
+        std::vector<CBlockHeader> vHeaders;
         int nLimit = MAX_HEADERS_RESULTS;
         LogPrint(BCLog::NET, "getheaders %d to %s from peer=%d\n",
                  (pindex ? pindex->nHeight : -1),
@@ -3593,6 +3593,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         // Keep a CBlock for "optimistic" compactblock reconstructions (see
         // below)
         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
+        pblock->vMetadata = cmpctblock.vMetadata;
         bool fBlockReconstructed = false;
 
         {
@@ -3923,8 +3924,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         headers.resize(nCount);
         for (unsigned int n = 0; n < nCount; n++) {
             vRecv >> headers[n];
-            // Ignore tx count; assume it is 0.
-            ReadCompactSize(vRecv);
+            // Note: Lotus doesn't have a superfluous size at the end
         }
 
         return ProcessHeadersMessage(config, pfrom, headers,
@@ -4989,7 +4989,7 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
             // many blocks, or if the peer doesn't want headers, just add all to
             // the inv queue.
             LOCK(pto->cs_inventory);
-            std::vector<CBlock> vHeaders;
+            std::vector<CBlockHeader> vHeaders;
             bool fRevertToInv =
                 ((!state.fPreferHeaders &&
                   (!state.fPreferHeaderAndIDs ||

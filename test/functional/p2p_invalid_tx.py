@@ -11,6 +11,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.txtools import pad_tx
@@ -73,9 +74,10 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         blocks = []
         for _ in invalid_txs.iter_all_templates():
             block = create_block(tip, create_coinbase(height), block_time)
+            block.nHeight = height
+            prepare_block(block)
             block_time = block.nTime + 1
             height += 1
-            block.solve()
             # Save the coinbase for later
             blocks.append(block)
             tip = block.sha256

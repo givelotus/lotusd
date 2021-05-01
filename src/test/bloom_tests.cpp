@@ -326,15 +326,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_2) {
-    // Random real block
-    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
-    // With 4 txes
+    // Based on a real BTC block with 4 txs
+    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
-            "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
-            "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
+            "75616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800000000"
+            "ffff001d"         // nBits
+            "d4d26e490000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "04010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff0804ffff001d029105ff"
             "ffffff0100f2052a010000004341046d8709a041d34357697dfcb30a9d05900a62"
             "94078012bf3bb09c6f9b525f1d16d5503d7905db1ada9501446ea00728668fc571"
@@ -444,15 +458,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
 BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     // Like merkle_block_2 except this block gets its transactions reversed in
     // order to check non-topological processing.
-    // Random real block
-    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
-    // With 4 txes
+    // Based on a real BTC block with 4 txs
+    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
-            "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
-            "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
+            "75616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800000000"
+            "ffff001d"         // nBits
+            "d4d26e490000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "04010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff0804ffff001d029105ff"
             "ffffff0100f2052a010000004341046d8709a041d34357697dfcb30a9d05900a62"
             "94078012bf3bb09c6f9b525f1d16d5503d7905db1ada9501446ea00728668fc571"
@@ -566,15 +594,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
-    // Random real block
-    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
-    // With 4 txes
+    // Based on a real BTC block with 4 txs
+    // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
-            "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
-            "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
+            "75616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800000000"
+            "ffff001d"         // nBits
+            "d4d26e490000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "04010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff0804ffff001d029105ff"
             "ffffff0100f2052a010000004341046d8709a041d34357697dfcb30a9d05900a62"
             "94078012bf3bb09c6f9b525f1d16d5503d7905db1ada9501446ea00728668fc571"
@@ -678,19 +720,34 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
-    // Random real block
-    // (000000000000dab0130bbcc991d3d7ae6b81aa6f50a798888dfe62337458dc45)
-    // With one tx
+    // Based on a real BTC block with 1 tx
+    // (000000000000dab0130bbcc991d3d7ae6b81aa6f50a798888dfe62337458dc45),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
-        ParseHex("0100000079cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00"
-                 "00000000000b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3f"
-                 "f60abe184f196367291b4d4c86041b8fa45d6301010000000100000000000"
-                 "00000000000000000000000000000000000000000000000000000ffffffff"
-                 "08044c86041b020a02ffffffff0100f2052a01000000434104ecd3229b057"
-                 "1c3be876feaac0442a9f13c5a572742927af1dc623353ecf8c202225f6486"
-                 "8137a18cdd85cbbb4c74fbccfd4f49639cf1bdc94a5672bb15ad5d4cac000"
-                 "00000"),
+        ParseHex(
+            "79cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b0000000000000"
+            "4c86041b"         // nBits
+            "67291b4d0000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f1963"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "01010000000100000000000"
+            "00000000000000000000000000000000000000000000000000000ffffffff"
+            "08044c86041b020a02ffffffff0100f2052a01000000434104ecd3229b057"
+            "1c3be876feaac0442a9f13c5a572742927af1dc623353ecf8c202225f6486"
+            "8137a18cdd85cbbb4c74fbccfd4f49639cf1bdc94a5672bb15ad5d4cac000"
+            "00000"),
         SER_NETWORK, PROTOCOL_VERSION);
     stream >> block;
 
@@ -721,11 +778,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     CDataStream merkleStream(SER_NETWORK, PROTOCOL_VERSION);
     merkleStream << merkleBlock;
 
-    std::vector<uint8_t> vch =
-        ParseHex("0100000079cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00"
-                 "00000000000b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3f"
-                 "f60abe184f196367291b4d4c86041b8fa45d630100000001b50cc069d6a3e"
-                 "33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19630101");
+    std::vector<uint8_t> vch = ParseHex(
+        "79cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00000000000004c8604"
+        "1b67291b4d000000000000000000000000010000000000000000000000000000000000"
+        "0000000000000000000000000000000000000000000000000000b50cc069d6a3e33e3f"
+        "f84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19631406e05881e299367766d313"
+        "e26c05564ec91bf721d31726bd6e46e60689539a0100000001b50cc069d6a3e33e3ff8"
+        "4a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19630101");
     std::vector<char> expected(vch.size());
 
     for (size_t i = 0; i < vch.size(); i++) {
@@ -737,15 +796,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_4) {
-    // Random real block
-    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
-    // With 7 txes
+    // Based on a real BTC block with 7 txs
+    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
-            "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
-            "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
+            "82bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000000000"
+            "4c86041b"         // nBits
+            "76381b4d0000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "07010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff07044c86041b0136ffff"
             "ffff0100f2052a01000000434104eaafc2314def4ca98ac970241bcab022b9c1e1"
             "f4ea423a20f134c876f2c01ec0f0dd5b2e86e7168cefe0d81113c3807420ce13ad"
@@ -873,15 +946,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
-    // Random real block
-    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
-    // With 7 txes
+    // Based on a real BTC block with 7 txs
+    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
-            "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
-            "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
+            "82bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000000000"
+            "4c86041b"         // nBits
+            "76381b4d0000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "07010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff07044c86041b0136ffff"
             "ffff0100f2052a01000000434104eaafc2314def4ca98ac970241bcab022b9c1e1"
             "f4ea423a20f134c876f2c01ec0f0dd5b2e86e7168cefe0d81113c3807420ce13ad"
@@ -982,15 +1069,29 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
-    // Random real block
-    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
-    // With 7 txes
+    // Based on a real BTC block with 7 txs
+    // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4),
+    // adapted to Lotus header. Block doesn't have the claimed PoW, but this
+    // test doesn't rely on that.
     CBlock block;
     CDataStream stream(
         ParseHex(
-            "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
-            "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
-            "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
+            "82bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000000000"
+            "4c86041b"         // nBits
+            "76381b4d0000"     // nTime
+            "0000"             // nReserved
+            "0000000000000000" // nNonce
+            "01"               // nHeaderVersion
+            "00000000000000"   // nSize
+            "00000000"         // nHeight
+            // hashEpochBlock
+            "0000000000000000000000000000000000000000000000000000000000000000"
+            // hashMerkleRoot
+            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            // hashExtendedMetadata
+            "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
+            "00" // vMetadata (empty)
+            "07010000000100000000000000000000000000"
             "00000000000000000000000000000000000000ffffffff07044c86041b0136ffff"
             "ffff0100f2052a01000000434104eaafc2314def4ca98ac970241bcab022b9c1e1"
             "f4ea423a20f134c876f2c01ec0f0dd5b2e86e7168cefe0d81113c3807420ce13ad"

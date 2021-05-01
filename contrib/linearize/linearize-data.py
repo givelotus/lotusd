@@ -54,15 +54,12 @@ def wordreverse(in_buf):
 
 
 def calc_hdr_hash(blk_hdr):
-    hash1 = hashlib.sha256()
-    hash1.update(blk_hdr)
-    hash1_o = hash1.digest()
-
-    hash2 = hashlib.sha256()
-    hash2.update(hash1_o)
-    hash2_o = hash2.digest()
-
-    return hash2_o
+    layer2_offset = 32
+    layer3_offset = layer2_offset + 20
+    layer3_hash = hashlib.sha256(blk_hdr[layer3_offset:]).digest()
+    layer2_hash = hashlib.sha256(blk_hdr[layer2_offset:layer3_offset] + layer3_hash).digest()
+    layer1_hash = hashlib.sha256(blk_hdr[:layer2_offset] + layer2_hash).digest()
+    return layer1_hash
 
 
 def calc_hash_str(blk_hdr):
@@ -143,7 +140,7 @@ class BlockDataCopier:
         self.outOfOrderData = {}
         self.outOfOrderSize = 0  # running total size for items in outOfOrderData
 
-    def writeBlock(self, inhdr, blk_hdr, rawblock):
+    def writeBlock(self, inhdr, blk_hdr, metadata, rawblock):
         blockSizeOnDisk = len(inhdr) + len(blk_hdr) + len(rawblock)
         if not self.fileOutput and (
                 (self.outsz + blockSizeOnDisk) > self.maxOutSz):
@@ -180,6 +177,7 @@ class BlockDataCopier:
 
         self.outF.write(inhdr)
         self.outF.write(blk_hdr)
+        self.outF.write(metadata)
         self.outF.write(rawblock)
         self.outsz = self.outsz + len(inhdr) + len(blk_hdr) + len(rawblock)
 
@@ -225,7 +223,7 @@ class BlockDataCopier:
                     return
 
             inhdr = self.inF.read(8)
-            if (not inhdr or (inhdr[0] == "\0")):
+            if not inhdr or (inhdr[0] == 0):
                 self.inF.close()
                 self.inF = None
                 self.inFn = self.inFn + 1
@@ -237,8 +235,13 @@ class BlockDataCopier:
                 return
             inLenLE = inhdr[4:]
             su = struct.unpack("<I", inLenLE)
-            inLen = su[0] - 80  # length without header
-            blk_hdr = self.inF.read(80)
+            inLen = su[0] - 160  # length without header
+            blk_hdr = self.inF.read(160)
+            metadata = self.inF.read(1)
+            if metadata != b'\0':
+                print("Unsupported metadata:", metadata.hex())
+                return
+            inLen -= 1
             inExtent = BlockExtent(
                 self.inFn, self.inF.tell(), inhdr, blk_hdr, inLen)
 
@@ -258,7 +261,7 @@ class BlockDataCopier:
             if self.blkCountOut == blkHeight:
                 # If in-order block, just copy
                 rawblock = self.inF.read(inLen)
-                self.writeBlock(inhdr, blk_hdr, rawblock)
+                self.writeBlock(inhdr, blk_hdr, metadata, rawblock)
 
                 # See if we can catch up to prior out-of-order blocks
                 while self.blkCountOut in self.blockExtents:

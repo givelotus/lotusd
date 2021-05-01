@@ -33,14 +33,14 @@ from .txtools import pad_tx
 from .util import assert_equal, satoshi_round
 
 # Genesis block time (regtest)
-TIME_GENESIS_BLOCK = 1296688602
+TIME_GENESIS_BLOCK = 1600000000
 SUBSIDY = Decimal('2.6')
 
 
 def create_block(hashprev, coinbase, ntime=None, *, version=1):
     """Create a block (with regtest difficulty)."""
     block = CBlock()
-    block.nVersion = version
+    block.nHeaderVersion = version
     if ntime is None:
         import time
         block.nTime = int(time.time() + 600)
@@ -60,6 +60,14 @@ def make_conform_to_ctor(block):
         tx.rehash()
     block.vtx = [block.vtx[0]] + \
         sorted(block.vtx[1:], key=lambda tx: tx.get_id())
+
+
+def prepare_block(block):
+    make_conform_to_ctor(block)
+    block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.rehash_extended_metadata()
+    block.solve()
 
 
 def script_BIP34_coinbase_height(height):

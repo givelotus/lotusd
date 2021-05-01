@@ -306,15 +306,19 @@ bool CBlockTreeDB::LoadBlockIndexGuts(
         // Construct block index object
         CBlockIndex *pindexNew = insertBlockIndex(diskindex.GetBlockHash());
         pindexNew->pprev = insertBlockIndex(diskindex.hashPrev);
-        pindexNew->nHeight = diskindex.nHeight;
         pindexNew->nFile = diskindex.nFile;
         pindexNew->nDataPos = diskindex.nDataPos;
         pindexNew->nUndoPos = diskindex.nUndoPos;
-        pindexNew->nVersion = diskindex.nVersion;
-        pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-        pindexNew->nTime = diskindex.nTime;
         pindexNew->nBits = diskindex.nBits;
+        pindexNew->nTime = diskindex.nTime;
+        pindexNew->nReserved = diskindex.nReserved;
         pindexNew->nNonce = diskindex.nNonce;
+        pindexNew->nHeaderVersion = diskindex.nHeaderVersion;
+        pindexNew->nSize = diskindex.nSize;
+        pindexNew->nHeight = diskindex.nHeight;
+        pindexNew->hashEpochBlock = diskindex.hashEpochBlock;
+        pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
+        pindexNew->hashExtendedMetadata = diskindex.hashExtendedMetadata;
         pindexNew->nStatus = diskindex.nStatus;
         pindexNew->nTx = diskindex.nTx;
 

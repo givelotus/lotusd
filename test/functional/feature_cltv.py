@@ -14,7 +14,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_transaction,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import (
@@ -118,13 +118,11 @@ class BIP65Test(BitcoinTestFramework):
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
         block = create_block(int(tip, 16), create_coinbase(
             CLTV_HEIGHT - 1), block_time)
-        block.nVersion = 3
+        block.nHeight = CLTV_HEIGHT - 1
         block.vtx.append(fundtx)
         # include the -1 CLTV in block
         block.vtx.append(spendtx)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))
         # This block is invalid
@@ -133,8 +131,8 @@ class BIP65Test(BitcoinTestFramework):
         # Create valid block to get over the threshold for the version enforcement
         block = create_block(int(tip, 16), create_coinbase(
             CLTV_HEIGHT - 1), block_time)
-        block.nVersion = 3
-        block.solve()
+        block.nHeight = CLTV_HEIGHT - 1
+        prepare_block(block)
         self.nodes[0].p2p.send_and_ping(msg_block(block))
 
         tip = block.sha256
@@ -142,7 +140,7 @@ class BIP65Test(BitcoinTestFramework):
         self.log.info(
             "Test that invalid-according-to-cltv transactions cannot appear in a block")
         block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time)
-        block.nVersion = 4
+        block.nHeight = CLTV_HEIGHT
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
                                     self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
@@ -156,8 +154,7 @@ class BIP65Test(BitcoinTestFramework):
 
         # Mine a block containing the funding transaction
         block.vtx.append(fundtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))
         # This block is valid
@@ -182,10 +179,9 @@ class BIP65Test(BitcoinTestFramework):
         block_time += 1
         block = create_block(
             block.sha256, create_coinbase(CLTV_HEIGHT + 1), block_time)
-        block.nVersion = 4
+        block.nHeight = CLTV_HEIGHT + 1
         block.vtx.append(spendtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         with self.nodes[0].assert_debug_log(expected_msgs=['ConnectBlock {} failed, blk-bad-inputs'.format(block.hash)]):
             self.nodes[0].p2p.send_and_ping(msg_block(block))
@@ -211,9 +207,7 @@ class BIP65Test(BitcoinTestFramework):
         block.vtx.pop(1)
         block.vtx.append(fundtx)
         block.vtx.append(spendtx)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))
         # This block is now valid

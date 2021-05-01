@@ -9,6 +9,7 @@ import time
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
+    prepare_block,
 )
 from test_framework.messages import (
     COIN,
@@ -396,9 +397,8 @@ class BIP68Test(BitcoinTestFramework):
         height = self.nodes[0].getblockcount()
         for i in range(2):
             block = create_block(tip, create_coinbase(height), cur_time)
-            block.nVersion = 3
-            block.rehash()
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             tip = block.sha256
             height += 1
             assert_equal(

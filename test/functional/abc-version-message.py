@@ -52,7 +52,7 @@ class VersionMessageTest(BitcoinTestFramework):
         # Genesis block timestamp
         with self.nodes[0].assert_debug_log(expected_msgs=["added time data"], unexpected_msgs=["Ignoring invalid timestamp in version message"]):
             self.nodes[0].add_p2p_connection(
-                ModifiedVersionTimestampP2PInterface(1296688602), send_version=False)
+                ModifiedVersionTimestampP2PInterface(1600000000), send_version=False)
 
 
 if __name__ == '__main__':

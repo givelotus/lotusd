@@ -47,7 +47,7 @@ import time
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import COIN, CTransaction, FromHex, ToHex
@@ -184,7 +184,6 @@ class BIP68_112_113Test(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
-                            '-blockversion=4',
                             '-allownonstdtxnconsensus=1']]
 
     def skip_test_if_missing_module(self):
@@ -200,28 +199,22 @@ class BIP68_112_113Test(BitcoinTestFramework):
             self.tipheight += 1
         return test_blocks
 
-    def create_test_block(self, txs, version=536870912):
+    def create_test_block(self, txs):
         block = create_block(self.tip, create_coinbase(
             self.tipheight + 1), self.last_block_time + 600)
-        block.nVersion = version
         block.vtx.extend(txs)
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.rehash()
-        block.solve()
+        block.nHeight = self.tipheight + 1
+        prepare_block(block)
         return block
 
     # Create a block with given txs, and spend these txs in the same block.
     # Spending utxos in the same block is OK as long as nSequence is not enforced.
     # Otherwise a number of intermediate blocks should be generated, and this
     # method should not be used.
-    def create_test_block_spend_utxos(self, node, txs, version=536870912):
-        block = self.create_test_block(txs, version)
+    def create_test_block_spend_utxos(self, node, txs):
+        block = self.create_test_block(txs)
         block.vtx.extend([spend_tx(node, tx, self.nodeaddress) for tx in txs])
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.rehash()
-        block.solve()
+        prepare_block(block)
         return block
 
     def send_blocks(self, blocks, success=True):

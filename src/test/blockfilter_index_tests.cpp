@@ -72,7 +72,8 @@ CBlock BuildChainTestingSetup::CreateBlock(
         BlockAssembler(config, *m_node.mempool).CreateNewBlock(scriptPubKey);
     CBlock &block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
-    block.nTime = prev->nTime + 1;
+    block.SetBlockTime(prev->nTime + 1);
+    block.nHeight = prev->nHeight + 1;
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);
@@ -82,6 +83,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
     // IncrementExtraNonce creates a valid coinbase and merkleRoot
     unsigned int extraNonce = 0;
     IncrementExtraNonce(&block, prev, config.GetMaxBlockSize(), extraNonce);
+    block.SetSize(::GetSerializeSize(block));
 
     while (!CheckProofOfWork(block.GetHash(), block.nBits,
                              config.GetChainParams().GetConsensus())) {

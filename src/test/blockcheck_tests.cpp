@@ -51,6 +51,31 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     config.SetMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE);
 
     CBlock block;
+    // nHeaderVersion 0 invalid, must be 1
+    RunCheckOnBlock(config, block, "bad-blk-version");
+
+    // nReserved must be 0
+    block.nReserved = 1;
+    RunCheckOnBlock(config, block, "bad-blk-reserved");
+
+    // hashExtendedMetadata doesn't match
+    block.nReserved = 0;
+    block.nHeaderVersion = 1;
+    RunCheckOnBlock(config, block, "bad-metadata-hash");
+
+    // Excessive block size in header
+    block.SetSize(config.GetMaxBlockSize() + 1);
+    RunCheckOnBlock(config, block, "bad-blk-size");
+
+    // vMetadata must be empty (for now)
+    block.SetSize(0);
+    block.vMetadata = {{0, {}}};
+    block.hashExtendedMetadata = SerializeHash(block.vMetadata);
+    RunCheckOnBlock(config, block, "bad-metadata");
+
+    // Block must have at least a coinbase tx
+    block.vMetadata.clear();
+    block.hashExtendedMetadata = SerializeHash(block.vMetadata);
     RunCheckOnBlock(config, block, "bad-cb-missing");
 
     CMutableTransaction tx;
@@ -64,31 +89,36 @@ BOOST_AUTO_TEST_CASE(blockfail) {
 
     block.vtx.resize(1);
     block.vtx[0] = MakeTransactionRef(tx);
+    RunCheckOnBlock(config, block, "bad-blk-size-mismatch");
+
+    block.SetSize(GetSerializeSize(block));
     RunCheckOnBlock(config, block);
 
     // No coinbase
     tx.vin[0].prevout = InsecureRandOutPoint();
     block.vtx[0] = MakeTransactionRef(tx);
-
+    block.SetSize(GetSerializeSize(block));
     RunCheckOnBlock(config, block, "bad-cb-missing");
 
     // Invalid coinbase
     tx = CMutableTransaction(coinbaseTx);
     tx.vin[0].scriptSig.resize(0);
     block.vtx[0] = MakeTransactionRef(tx);
-
+    block.SetSize(GetSerializeSize(block));
     RunCheckOnBlock(config, block, "bad-cb-length");
 
     // Oversize block.
     tx = CMutableTransaction(coinbaseTx);
     block.vtx[0] = MakeTransactionRef(tx);
     auto txSize = ::GetSerializeSize(tx, PROTOCOL_VERSION);
-    auto maxTxCount = ((DEFAULT_MAX_BLOCK_SIZE - 1) / txSize) - 1;
+    auto emptySize = ::GetSerializeSize(CBlock());
+    auto maxTxCount = ((DEFAULT_MAX_BLOCK_SIZE - emptySize) / txSize);
 
     for (size_t i = 1; i < maxTxCount; i++) {
         tx.vin[0].prevout = InsecureRandOutPoint();
         block.vtx.push_back(MakeTransactionRef(tx));
     }
+    block.SetSize(GetSerializeSize(block));
 
     // Check that at this point, we still accept the block.
     RunCheckOnBlock(config, block);
@@ -97,7 +127,8 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     // allowed block size.
     tx.vin[0].prevout = InsecureRandOutPoint();
     block.vtx.push_back(MakeTransactionRef(tx));
-    RunCheckOnBlock(config, block, "bad-blk-length");
+    block.SetSize(GetSerializeSize(block));
+    RunCheckOnBlock(config, block, "bad-blk-size");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

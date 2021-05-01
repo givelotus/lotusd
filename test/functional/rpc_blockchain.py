@@ -36,6 +36,7 @@ from test_framework.util import (
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
+    prepare_block,
     TIME_GENESIS_BLOCK,
     SUBSIDY,
 )
@@ -332,7 +333,8 @@ class BlockchainTest(BitcoinTestFramework):
 
         def solve_and_send_block(prevhash, height, time):
             b = create_block(prevhash, create_coinbase(height), time)
-            b.solve()
+            b.nHeight = height
+            prepare_block(b)
             node.p2p.send_and_ping(msg_block(b))
             return b
 
@@ -368,7 +370,7 @@ class BlockchainTest(BitcoinTestFramework):
         assert_equal(blockinfo['height'], blockheaderinfo['height'])
         assert_equal(blockinfo['versionHex'], blockheaderinfo['versionHex'])
         assert_equal(blockinfo['version'], blockheaderinfo['version'])
-        assert_equal(blockinfo['size'], 186)
+        assert_equal(blockinfo['size'], blockheaderinfo['size'])
         assert_equal(blockinfo['merkleroot'], blockheaderinfo['merkleroot'])
         # Verify transaction data by check the hex values
         for tx in blockinfo['tx']:
