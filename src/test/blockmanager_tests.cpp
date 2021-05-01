@@ -165,14 +165,14 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
 
     // Test blocks with no transactions, not even a coinbase
     CBlock block1;
-    block1.nVersion = 1;
+    block1.nHeaderVersion = 1;
     CBlock block2;
-    block2.nVersion = 2;
+    block2.nHeaderVersion = 2;
     CBlock block3;
-    block3.nVersion = 3;
+    block3.nHeaderVersion = 3;
 
-    // They are 80 bytes header + 1 byte 0x00 for vtx length
-    constexpr int TEST_BLOCK_SIZE{81};
+    // They are 160 bytes header + 1 byte 0x00 for vMetadata length + 1 byte 0x00 for vtx length
+    constexpr int TEST_BLOCK_SIZE{162};
 
     // Blockstore is empty
     BOOST_CHECK_EQUAL(blockman.CalculateCurrentUsage(), 0);
@@ -191,16 +191,16 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
     // Errors are expected because block data is junk, thrown AFTER successful
     // read
     CBlock read_block;
-    BOOST_CHECK_EQUAL(read_block.nVersion, 0);
+    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 0);
     {
         ASSERT_DEBUG_LOG("ReadBlock: Errors in block header");
         BOOST_CHECK(!blockman.ReadBlock(read_block, pos1));
-        BOOST_CHECK_EQUAL(read_block.nVersion, 1);
+        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 1);
     }
     {
         ASSERT_DEBUG_LOG("ReadBlock: Errors in block header");
         BOOST_CHECK(!blockman.ReadBlock(read_block, pos2));
-        BOOST_CHECK_EQUAL(read_block.nVersion, 2);
+        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2);
     }
 
     // During reindex, the flat file block storage will not be written to.
@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
 
     // Block 2 was not overwritten:
     blockman.ReadBlock(read_block, pos2);
-    BOOST_CHECK_EQUAL(read_block.nVersion, 2);
+    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

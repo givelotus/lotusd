@@ -35,10 +35,10 @@ from .txtools import pad_tx, sign_input
 from .util import assert_equal, satoshi_round
 
 # Genesis block data (regtest)
-TIME_GENESIS_BLOCK = 1296688602
-GENESIS_BLOCK_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
+TIME_GENESIS_BLOCK = 1600000000
+GENESIS_BLOCK_HASH = "1060508db3b75302e0ee313a7cd1e05999c44974136a1138f9b1e68c4dc24b12"
 GENESIS_BLOCK_HEADER = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"
-GENESIS_CB_TXID = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+GENESIS_CB_TXID = "04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc97c23d44a7"
 GENESIS_CB_PK = (
     "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38"
     "c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
@@ -71,7 +71,7 @@ def create_block(
     block = CBlock()
     if tmpl is None:
         tmpl = {}
-    block.nVersion = version or tmpl.get("version", 1)
+    block.nHeaderVersion = version or tmpl.get("version", 1)
     block.nTime = ntime or tmpl.get("curtime", int(time.time() + 600))
     block.hashPrevBlock = hashprev or int(tmpl["previousblockhash"], 0x10)
     if tmpl.get("bits") is not None:
@@ -79,16 +79,30 @@ def create_block(
     else:
         # difficulty retargeting is disabled in REGTEST chainparams
         block.nBits = 0x207FFFFF
+    if tmpl.get("height") is not None:
+        block.nHeight = tmpl["height"]
+    elif coinbase is not None and getattr(coinbase, "_height", None) is not None:
+        block.nHeight = coinbase._height
     block.vtx.append(coinbase or create_coinbase(height=tmpl["height"]))
     if txlist:
         block.vtx.extend(txlist)
         make_conform_to_ctor(block)
     block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.rehash_extended_metadata()
     return block
 
 
 def make_conform_to_ctor(block: CBlock):
     block.vtx = [block.vtx[0]] + sorted(block.vtx[1:], key=lambda tx: tx.txid_hex)
+
+
+def prepare_block(block: CBlock):
+    make_conform_to_ctor(block)
+    block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.rehash_extended_metadata()
+    block.solve()
 
 
 def script_BIP34_coinbase_height(height: int) -> CScript:
@@ -111,6 +125,7 @@ def create_coinbase(
     If pubkey is passed in, the coinbase output will be a P2PK output;
     otherwise an anyone-can-spend output."""
     coinbase = CTransaction()
+    coinbase._height = height
     coinbase.vin.append(
         CTxIn(
             COutPoint(0, 0xFFFFFFFF), script_BIP34_coinbase_height(height), 0xFFFFFFFF
@@ -300,6 +315,8 @@ class BlockTestMixin:
         if reorder:
             make_conform_to_ctor(block)
         block.hashMerkleRoot = block.calc_merkle_root()
+        block.update_size()
+        block.rehash_extended_metadata()
         block.solve()
         # Update the internal state just like in next_block
         self.tip = block
@@ -351,7 +368,7 @@ class BlockTestMixin:
         additional_coinbase_value=0,
         script: Optional[CScript] = None,
         spend: Optional[CTransaction] = None,
-        version=4,
+        version=1,
         coinbase_time: Optional[int] = None,
     ) -> CBlock:
         """Create a new block building on the current tip, and advance the tip to it.
@@ -380,8 +397,8 @@ class BlockTestMixin:
             block = create_block(
                 base_block_hash, coinbase, block_time, version=version, txlist=[tx]
             )
-        # Block is created. Find a valid nonce.
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         self.tip = block
         self.block_heights[block.hash_int] = height
         assert number not in self.blocks

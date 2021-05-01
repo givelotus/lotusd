@@ -11,7 +11,7 @@ from test_framework.script import hash160
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import (
@@ -71,11 +71,13 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
 
         def make_block():
             parent_block_header = node.getblockheader(node.getbestblockhash())
-            coinbase = create_coinbase(parent_block_header['height'] + 1)
+            height = parent_block_header['height'] + 1
+            coinbase = create_coinbase(height)
             coinbase.vout[0].scriptPubKey = p2sh_script
             coinbase.calc_sha256()
             block = create_block(
                 int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
+            block.nHeight = height
             return block
 
         # make a few non-standard txs
@@ -174,9 +176,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             for tx in txs
         )
         nonstd_block.vtx.extend(std_txs)
-        make_conform_to_ctor(nonstd_block)
-        nonstd_block.hashMerkleRoot = nonstd_block.calc_merkle_root()
-        nonstd_block.solve()
+        prepare_block(nonstd_block)
         # send nonstd_block, expected accept
         node.p2p.send_blocks_and_test([nonstd_block], node)
         node.invalidateblock(node.getbestblockhash())
@@ -205,9 +205,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         for txs, reason in nonstd_txs:
             block = make_block()
             block.vtx += txs
-            make_conform_to_ctor(block)
-            block.hashMerkleRoot = block.calc_merkle_root()
-            block.solve()
+            prepare_block(block)
             if reason == 'dust':
                 # verify dust is actually allowed in block
                 node.p2p.send_blocks_and_test([block], node)
@@ -222,9 +220,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         # verify std txs are accepted as blocks
         std_block = make_block()
         std_block.vtx.extend(std_txs)
-        make_conform_to_ctor(std_block)
-        std_block.hashMerkleRoot = std_block.calc_merkle_root()
-        std_block.solve()
+        prepare_block(std_block)
         # send std_block, expected accept
         node.p2p.send_blocks_and_test([std_block], node)
         node.invalidateblock(node.getbestblockhash())

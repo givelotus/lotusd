@@ -57,7 +57,7 @@ class GetblockstatsTest(BitcoinTestFramework):
         ]
 
     def generate_test_data(self, filename):
-        mocktime = 1525107225
+        mocktime = 1600000000
         self.nodes[0].setmocktime(mocktime)
         self.generate(self.nodes[0], COINBASE_MATURITY + 1)
 

@@ -40,9 +40,10 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
 
     block.vtx.resize(3);
     block.vtx[0] = MakeTransactionRef(tx);
-    block.nVersion = 42;
     block.hashPrevBlock = BlockHash(ctx.rand256());
     block.nBits = 0x207fffff;
+    block.nHeaderVersion = 1;
+    block.hashExtendedMetadata = SerializeHash(std::vector<uint8_t>());
 
     tx.vin[0].prevout = InsecureRandOutPoint(ctx);
     block.vtx[1] = MakeTransactionRef(tx);
@@ -56,6 +57,7 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
     bool mutated;
     block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
     assert(!mutated);
+    block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
@@ -139,8 +141,8 @@ BOOST_AUTO_TEST_CASE(SimpleRoundTripTest) {
         BOOST_CHECK(block.hashMerkleRoot != BlockMerkleRoot(block2, &mutated));
 
         CBlock block3;
-        BOOST_CHECK(partialBlock.FillBlock(block3, {block.vtx[1]}) ==
-                    READ_STATUS_OK);
+        BOOST_CHECK_EQUAL(partialBlock.FillBlock(block3, {block.vtx[1]}),
+                          READ_STATUS_OK);
         BOOST_CHECK_EQUAL(block.GetHash().ToString(),
                           block3.GetHash().ToString());
         BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(),
@@ -153,6 +155,7 @@ class TestHeaderAndShortIDs {
     // Utility to encode custom CBlockHeaderAndShortTxIDs
 public:
     CBlockHeader header;
+    std::vector<CBlockMetadataField> vMetadata;
     uint64_t nonce;
     std::vector<uint64_t> shorttxids;
     std::vector<PrefilledTransaction> prefilledtxn;
@@ -176,7 +179,7 @@ public:
 
     SERIALIZE_METHODS(TestHeaderAndShortIDs, obj) {
         READWRITE(
-            obj.header, obj.nonce,
+            obj.header, obj.vMetadata, obj.nonce,
             Using<VectorFormatter<CustomUintFormatter<
                 CBlockHeaderAndShortTxIDs::SHORTTXIDS_LENGTH>>>(obj.shorttxids),
             Using<VectorFormatter<DifferentialIndexedItemFormatter>>(
@@ -377,13 +380,15 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
     auto rand_ctx(FastRandomContext(uint256{42}));
     block.vtx.resize(1);
     block.vtx[0] = MakeTransactionRef(std::move(coinbase));
-    block.nVersion = 42;
+    block.nHeaderVersion = 1;
+    block.hashExtendedMetadata = SerializeHash(std::vector<uint8_t>());
     block.hashPrevBlock = BlockHash(rand_ctx.rand256());
     block.nBits = 0x207fffff;
 
     bool mutated;
     block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
     assert(!mutated);
+    block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
@@ -571,7 +576,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
                                              const std::string &reason) {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, compactSize);
 
@@ -592,7 +598,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
                                               const std::string &reason) {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, 0);
         // prefilledtxn.size()
@@ -615,7 +622,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
                                                    const std::string &reason) {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, 0);
         // prefilledtxn.size()
@@ -654,7 +662,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
     {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, 0);
         // prefilledtxn.size()
@@ -677,7 +686,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
     {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, 1);
         // shorttxids[0]
@@ -705,7 +715,8 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
     {
         DataStream ss{};
         // header, nonce
-        ss << CBlockHeader() << uint64_t(0);
+        ss << CBlockHeader() << std::vector<CBlockMetadataField>{}
+           << uint64_t(0);
         // shorttxids.size()
         WriteCompactSize(ss, 0);
         // prefilledtxn.size()

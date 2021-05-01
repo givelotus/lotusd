@@ -20,30 +20,49 @@
 // A compressed CBlockHeader, which leaves out the prevhash
 struct CompressedHeader {
     // header
-    int32_t nVersion{0};
-    uint256 hashMerkleRoot;
-    uint32_t nTime{0};
     uint32_t nBits{0};
-    uint32_t nNonce{0};
+    int32_t nHeight{0};
+    uint64_t nNonce{0};
+    block_time_t vTime{{0}};
+    uint16_t nReserved{0};
+    uint8_t nHeaderVersion{0};
+    block_size_t vSize{{0}};
+    uint256 hashEpochBlock;
+    uint256 hashMerkleRoot;
+    uint256 hashExtendedMetadata;
 
-    CompressedHeader() { hashMerkleRoot.SetNull(); }
+    CompressedHeader() {
+        hashEpochBlock.SetNull();
+        hashMerkleRoot.SetNull();
+        hashExtendedMetadata.SetNull();
+    }
 
     CompressedHeader(const CBlockHeader &header) {
-        nVersion = header.nVersion;
-        hashMerkleRoot = header.hashMerkleRoot;
-        nTime = header.nTime;
         nBits = header.nBits;
+        nHeight = header.nHeight;
         nNonce = header.nNonce;
+        vTime = header.vTime;
+        nReserved = header.nReserved;
+        nHeaderVersion = header.nHeaderVersion;
+        vSize = header.vSize;
+        hashEpochBlock = header.hashEpochBlock;
+        hashMerkleRoot = header.hashMerkleRoot;
+        hashExtendedMetadata = header.hashExtendedMetadata;
     }
 
     CBlockHeader GetFullHeader(const BlockHash &hash_prev_block) {
         CBlockHeader ret;
-        ret.nVersion = nVersion;
         ret.hashPrevBlock = hash_prev_block;
-        ret.hashMerkleRoot = hashMerkleRoot;
-        ret.nTime = nTime;
         ret.nBits = nBits;
+        ret.nHeight = nHeight;
         ret.nNonce = nNonce;
+        ret.vTime = vTime;
+        ret.nReserved = nReserved;
+        ret.nHeaderVersion = nHeaderVersion;
+        ret.vSize = vSize;
+        ret.hashEpochBlock = hashEpochBlock;
+        ret.hashMerkleRoot = hashMerkleRoot;
+        ret.hashExtendedMetadata = hashExtendedMetadata;
         return ret;
     };
 };
@@ -129,7 +148,9 @@ public:
      * Return the block timestamp of the last header received during the
      * PRESYNC phase.
      */
-    uint32_t GetPresyncTime() const { return m_last_header_received.nTime; }
+    int64_t GetPresyncTime() const {
+        return m_last_header_received.GetBlockTime();
+    }
 
     /**
      * Return the amount of work in the chain received during the PRESYNC

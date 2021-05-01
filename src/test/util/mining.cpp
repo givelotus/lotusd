@@ -61,8 +61,10 @@ PrepareBlock(const Config &config, const NodeContext &node,
                                      ->block);
 
     LOCK(cs_main);
-    block->nTime = Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1;
+    block->SetBlockTime(
+        Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1);
     block->hashMerkleRoot = BlockMerkleRoot(*block);
+    block->SetSize(::GetSerializeSize(*block));
 
     return block;
 }
@@ -107,4 +109,5 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
 
     pblock->vtx[0] = MakeTransactionRef(std::move(tx_coinbase));
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+    pblock->SetSize(::GetSerializeSize(*pblock));
 }

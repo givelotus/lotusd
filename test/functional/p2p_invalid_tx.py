@@ -13,6 +13,7 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import COIN, COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
@@ -62,9 +63,10 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         blocks = []
         for _ in invalid_txs.iter_all_templates():
             block = create_block(tip, create_coinbase(height), block_time)
+            block.nHeight = height
+            prepare_block(block)
             block_time = block.nTime + 1
             height += 1
-            block.solve()
             # Save the coinbase for later
             blocks.append(block)
             tip = block.sha256

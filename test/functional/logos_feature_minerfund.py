@@ -8,7 +8,7 @@ from decimal import Decimal
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    make_conform_to_ctor,
+    prepare_block,
     SUBSIDY,
 )
 from test_framework.messages import ToHex, CTxOut, CTxIn, COutPoint, CTransaction, COIN
@@ -71,7 +71,8 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[0].nValue = int(SUBSIDY * COIN)
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
-        block.solve()
+        block.nHeight = block_height
+        prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
         # Submit a custom block that does send the required outputs
@@ -86,14 +87,16 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[4], coinbase.vout[3] = coinbase.vout[3], coinbase.vout[4]
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
-        block.solve()
+        block.nHeight = block_height
+        prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
         # Fix the order and block is valid
         coinbase.vout[4], coinbase.vout[3] = coinbase.vout[3], coinbase.vout[4]
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
-        block.solve()
+        block.nHeight = block_height
+        prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 
         # Mature block 1
@@ -108,7 +111,8 @@ class MinerFundTest(BitcoinTestFramework):
         pad_tx(tx)
         # Each share gets 1.25 times more due to fees
         share_multiplier = Decimal('1.25')
-        coinbase = create_coinbase(best_block_header['height'] + 1)
+        block_height = best_block_header['height'] + 1
+        coinbase = create_coinbase(block_height)
         coinbase.vout[0] = CTxOut(int(share_multiplier * SUBSIDY / 2 * COIN),
                                   CScript([OP_HASH160, bytes(20), OP_EQUAL]))
         for output in expected_outputs:
@@ -116,9 +120,9 @@ class MinerFundTest(BitcoinTestFramework):
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16), coinbase, best_block_header['time'] + 1)
+        block.nHeight = block_height
         block.vtx.append(tx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 
 

@@ -10,7 +10,7 @@
 import copy
 from decimal import Decimal
 
-from test_framework.blocktools import TIME_GENESIS_BLOCK, create_coinbase
+from test_framework.blocktools import TIME_GENESIS_BLOCK, create_coinbase, prepare_block
 from test_framework.messages import BLOCK_HEADER_SIZE, CBlock, CBlockHeader, CScriptNum
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
@@ -102,12 +102,14 @@ class MiningTest(BitcoinTestFramework):
             next_height)
 
         block = CBlock()
-        block.nVersion = tmpl["version"]
+        block.nHeaderVersion = tmpl["version"]
         block.hashPrevBlock = int(tmpl["previousblockhash"], 16)
         block.nTime = tmpl["curtime"]
         block.nBits = int(tmpl["bits"], 16)
         block.nNonce = 0
+        block.nHeight = next_height
         block.vtx = [coinbase_tx]
+        prepare_block(block)
 
         self.log.info("getblocktemplate: Test valid block")
         assert_template(node, block, None)
@@ -149,6 +151,7 @@ class MiningTest(BitcoinTestFramework):
         bad_tx = copy.deepcopy(bad_block.vtx[0])
         bad_tx.vin[0].prevout.txid = 255
         bad_block.vtx.append(bad_tx)
+        prepare_block(bad_block)
         assert_template(node, bad_block, "bad-txns-inputs-missingorspent")
         assert_submitblock(bad_block, "bad-txns-inputs-missingorspent")
 
@@ -161,8 +164,12 @@ class MiningTest(BitcoinTestFramework):
         self.log.info("getblocktemplate: Test bad tx count")
         # The tx count is immediately after the block header
         bad_block_sn = bytearray(block.serialize())
-        assert_equal(bad_block_sn[BLOCK_HEADER_SIZE], 1)
-        bad_block_sn[BLOCK_HEADER_SIZE] += 1
+        # Check metadata is empty (for now)
+        assert_equal(bad_block_sn[BLOCK_HEADER_SIZE], 0)
+        # Check num txs = 1, which is behind the header and metadata
+        assert_equal(bad_block_sn[BLOCK_HEADER_SIZE + 1], 1)
+        # Increase num txs by 1 artificially
+        bad_block_sn[BLOCK_HEADER_SIZE + 1] += 1
         assert_raises_rpc_error(
             -22,
             "Block decode failed",

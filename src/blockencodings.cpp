@@ -21,7 +21,7 @@
 CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock &block,
                                                      const uint64_t nonce)
     : nonce(nonce), shorttxids(block.vtx.size() - 1), prefilledtxn(1),
-      header(block) {
+      header(block), vMetadata(block.vMetadata) {
     FillShortTxIDSelector();
     // TODO: Use our mempool prior to block acceptance to predictively fill more
     // than just the coinbase.
@@ -191,6 +191,8 @@ ReadStatus PartiallyDownloadedBlock::FillBlock(
             // Possible Short ID collision.
             return READ_STATUS_FAILED;
         }
+        LogPrintf("ERROR: PartiallyDownloadedBlock::FillBlock failed: %s\n",
+                  state.ToString());
         return READ_STATUS_CHECKBLOCK_FAILED;
     }
 

@@ -4,7 +4,7 @@
 
 import time
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -32,8 +32,8 @@ class InvalidChainsTest(BitcoinTestFramework):
         height = self.block_heights[base_block_hash] + 1
         coinbase = create_coinbase(height)
         block = create_block(base_block_hash, coinbase, block_time)
-
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         self.tip = block
         self.block_heights[block.hash_int] = height
         assert number not in self.blocks

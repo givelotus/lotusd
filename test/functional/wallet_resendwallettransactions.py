@@ -5,7 +5,7 @@
 
 import time
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import ToHex
 from test_framework.p2p import P2PTxInvStore
 from test_framework.test_framework import BitcoinTestFramework
@@ -48,12 +48,14 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
         # extra minute to be sure.
         block_time = int(time.time()) + 6 * 60
         node.setmocktime(block_time)
+        height = node.getblockcount() + 1
         block = create_block(
             int(node.getbestblockhash(), 16),
-            create_coinbase(node.getblockcount() + 1),
+            create_coinbase(height),
             block_time,
         )
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         node.submitblock(ToHex(block))
 
         # Set correct m_best_block_time, which is used in
