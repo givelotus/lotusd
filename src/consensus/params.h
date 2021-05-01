@@ -32,6 +32,8 @@ struct Params {
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
 
+    bool enableDifficultyBasedSubsidy;
+
     /** Proof of work parameters */
     uint256 powLimit;
     bool fPowAllowMinDifficultyBlocks;

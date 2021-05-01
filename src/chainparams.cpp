@@ -85,6 +85,9 @@ public:
         // The miner fund is enabled by default on mainnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
 
+        // Mainnet rewards based on difficulty.
+        consensus.enableDifficultyBasedSubsidy = true;
+
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
             ChainParamsConstants::MAINNET_MINIMUM_CHAIN_WORK;
@@ -208,6 +211,9 @@ public:
         // The miner fund is enabled by default on testnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
 
+        // Testnet rewards based on difficulty.
+        consensus.enableDifficultyBasedSubsidy = true;
+
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
             ChainParamsConstants::TESTNET_MINIMUM_CHAIN_WORK;
@@ -309,6 +315,9 @@ public:
 
         // The miner fund is disabled by default on regnet.
         consensus.enableMinerFund = false;
+
+        // Regtest rewards a constant amount independent of difficulty.
+        consensus.enableDifficultyBasedSubsidy = false;
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x00");

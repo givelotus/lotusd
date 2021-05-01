@@ -64,33 +64,32 @@ BlockAssembler MinerTestingSetup::AssemblerForTest(const CChainParams &params) {
 }
 
 constexpr uint64_t blockinfo[] = {
-    80806239248,  36663315142,  45227949834,  44108617520,  29708483491,
-    55956396199,  43373136901,  184568954235, 8030821652,   135778740536,
-    282307931074, 72805091384,  70057026190,  231652693905, 92118978074,
-    26259783141,  16287580758,  229659423653, 82899115750,  27656695552,
-    26397677886,  16393879408,  20666850084,  48483806822,  144440379235,
-    63199845025,  98834152696,  52012298551,  45492959093,  73741296661,
-    34989463980,  479411683635, 9120327637,   25020836323,  94223331090,
-    60007814754,  34427721593,  18541987412,  22714152116,  63616749685,
-    63538065054,  1438750169,   44922323154,  79332789140,  17389358740,
-    23679299233,  11045727895,  85258772653,  35271683886,  56263954376,
-    137163317583, 54269501478,  38739919713,  48034037181,  17278330193,
-    14028073987,  4849365943,   47252703650,  70772475851,  47222270790,
-    4037710411,   57543983455,  94602857448,  54810893610,  274628454954,
-    37602983315,  29815244305,  48564102352,  15841218732,  98473244519,
-    2969487671,   320310760730, 86825715486,  47504878491,  93931764317,
-    17813199340,  37203154077,  25161553257,  48611045685,  84870380488,
-    18994126776,  42600068452,  94271571206,  36882473273,  10302521845,
-    14510408253,  55153450456,  211714477708, 64276514693,  26386432305,
-    16853942118,  91499119664,  3225146899,   60966421175,  104858107378,
-    85165060220,  103395867392, 27676058438,  885215186,    882434150,
-    922772064,    28759511460,  124877325486, 86222419635,  21828564280,
-    162971421003, 62803422958,  4459801437,   56940414056,  39760054254,
+    80806239248,  65799807021,  604811529080, 126913528961, 127051102755,
+    21095037785,  47895049626,  32828337979,  22831555262,  50835325299,
+    20313599487,  158271518541, 5655489867,   11538952148,  68009355488,
+    94050716609,  30732139119,  48355079627,  14929580175,  69247195963,
+    134230454255, 37090265427,  72863632734,  10249035062,  10714066729,
+    30892021872,  247444101800, 92368953603,  157328457646, 28070491851,
+    143946695374, 16993066316,  1575826894,   114326524605, 17842621599,
+    81108283206,  137927551695, 11245622926,  38543497095,  45120880211,
+    198600876819, 7153814780,   220733370671, 54184557421,  27748532620,
+    154327260037, 43758623650,  118010064926, 30692323650,  15900613437,
+    92824406802,  31930973668,  126539988647, 1219232133,   61482218533,
+    40155942895,  160169687080, 19660426893,  9166093214,   24738795807,
+    13370042733,  186256330695, 4236962184,   10810748245,  19874652913,
+    11665638005,  72039030225,  21904403725,  11701325173,  5652028548,
+    140173855207, 31813666119,  35232238057,  76043640035,  103035596842,
+    5665780659,   110218606197, 32809031536,  106429572907, 85141912537,
+    355352261930, 199136621921, 25138183482,  49140260704,  4346189002,
+    72264236860,  78959013513,  155771819961, 238009067832, 18291756492,
+    87838056375,  136321205108, 72502321344,  15720059453,  51921992886,
+    91690867130,  48194731295,  160420989370, 33504249785,  14913212389,
+    15510785795,  12355704863,  16066178829,  76658978291,  97206712505,
+    51764895256,  7067277928,   132883370085, 20564470344,  66135444850,
 };
 
 // In Logos, half of the block subsidy goes to the miner.
 const Amount MINERREWARD = SUBSIDY / 2;
-const uint64_t MINERREWARD_INT = MINERREWARD / SATOSHI;
 const Amount LOWFEE = 10'000 * SATOSHI;
 const Amount HIGHFEE = 10 * LOTUS;
 const Amount HIGHERFEE = 4 * LOTUS;
@@ -124,12 +123,13 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vin[0].scriptSig = scriptSig;
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
     tx.vout.resize(2);
-    tx.vout[0].nValue = int64_t(MINERREWARD_INT - 1000) * SATOSHI;
+    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - 1000 * SATOSHI;
     tx.vout[1].nValue = Amount::zero();
     tx.vout[1].scriptPubKey = CScript() << OP_RETURN << padData;
     // This tx has a low fee: 1000 satoshis.
     // Save this txid for later use.
     TxId parentTxId = tx.GetId();
+    Amount parentTxAmount = tx.vout[0].nValue;
     m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI)
                                      .Time(GetTime())
                                      .SpendsCoinbase(true)
@@ -137,7 +137,7 @@ void MinerTestingSetup::TestPackageSelection(
 
     // This tx has a medium fee: 10000 satoshis.
     tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
-    tx.vout[0].nValue = int64_t(MINERREWARD_INT - 10000) * SATOSHI;
+    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - 10000 * SATOSHI;
     TxId mediumFeeTxId = tx.GetId();
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI)
                                      .Time(GetTime())
@@ -147,8 +147,9 @@ void MinerTestingSetup::TestPackageSelection(
     // This tx has a high fee, but depends on the first transaction.
     tx.vin[0].prevout = COutPoint(parentTxId, 0);
     // 50k satoshi fee.
-    tx.vout[0].nValue = int64_t(MINERREWARD_INT - 1000 - 50000) * SATOSHI;
+    tx.vout[0].nValue = parentTxAmount - 50000 * SATOSHI;
     TxId highFeeTxId = tx.GetId();
+    Amount highFeeTxAmount = tx.vout[0].nValue;
     m_node.mempool->addUnchecked(entry.Fee(50000 * SATOSHI)
                                      .Time(GetTime())
                                      .SpendsCoinbase(false)
@@ -158,14 +159,15 @@ void MinerTestingSetup::TestPackageSelection(
         AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 4);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), highFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), mediumFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), mediumFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), highFeeTxId);
 
     // Test that a package below the block min tx fee doesn't get included
     tx.vin[0].prevout = COutPoint(highFeeTxId, 0);
     // 0 fee.
-    tx.vout[0].nValue = int64_t(MINERREWARD_INT - 1000 - 50000) * SATOSHI;
+    tx.vout[0].nValue = highFeeTxAmount;
     TxId freeTxId = tx.GetId();
+    Amount freeTxAmount = tx.vout[0].nValue;
     m_node.mempool->addUnchecked(entry.Fee(Amount::zero()).FromTx(tx));
     size_t freeTxSize = GetSerializeSize(tx, PROTOCOL_VERSION);
 
@@ -174,8 +176,7 @@ void MinerTestingSetup::TestPackageSelection(
     Amount feeToUse = blockMinFeeRate.GetFee(2 * freeTxSize) - SATOSHI;
 
     tx.vin[0].prevout = COutPoint(freeTxId, 0);
-    tx.vout[0].nValue =
-        int64_t(MINERREWARD_INT - 1000 - 50000) * SATOSHI - feeToUse;
+    tx.vout[0].nValue = freeTxAmount - feeToUse;
     TxId lowFeeTxId = tx.GetId();
     m_node.mempool->addUnchecked(entry.Fee(feeToUse).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
@@ -197,21 +198,22 @@ void MinerTestingSetup::TestPackageSelection(
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 6);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), lowFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), highFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), mediumFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), mediumFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), lowFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), highFeeTxId);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), freeTxId);
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as ancestor transactions get included in a block. Add a
     // 0-fee transaction that has 2 outputs.
     tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 0);
-    tx.vout[0].nValue = int64_t(MINERREWARD_INT - 100000000) * SATOSHI;
+    tx.vout[0].nValue = txFirst[2]->vout[0].nValue - 100000000 * SATOSHI;
     tx.vout[0].scriptPubKey = CScript() << padData << OP_DROP;
     // 1BCC output.
     tx.vout[1].nValue = 100000000 * SATOSHI;
     tx.vout[1].scriptPubKey = CScript();
     TxId freeTxId2 = tx.GetId();
+    Amount freeTxAmount2 = tx.vout[0].nValue;
     m_node.mempool->addUnchecked(
         entry.Fee(Amount::zero()).SpendsCoinbase(true).FromTx(tx));
 
@@ -219,8 +221,7 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vin[0].prevout = COutPoint(freeTxId2, 0);
     tx.vout.resize(1);
     feeToUse = blockMinFeeRate.GetFee(freeTxSize);
-    tx.vout[0].nValue =
-        int64_t(MINERREWARD_INT - 100000000) * SATOSHI - feeToUse;
+    tx.vout[0].nValue = freeTxAmount2 - feeToUse;
     TxId lowFeeTxId2 = tx.GetId();
     m_node.mempool->addUnchecked(
         entry.Fee(feeToUse).SpendsCoinbase(false).FromTx(tx));
@@ -239,7 +240,7 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vout[0].nValue = (100000000 - 10000) * SATOSHI;
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), lowFeeTxId2);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), lowFeeTxId2);
 }
 
 void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
@@ -342,6 +343,17 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
             }
 #endif
             CMutableTransaction txCoinbase(*pblock->vtx[0]);
+            // Block subsidy adjustst with difficulty, so we have to update the
+            // miner fund outputs
+            Amount minerReward =
+                GetBlockSubsidy(pblock->nBits, chainparams.GetConsensus());
+            std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+                chainparams.GetConsensus(), ::ChainActive().Tip(), minerReward);
+            for (size_t i = 0; i < requiredOutputs.size(); ++i) {
+                txCoinbase.vout[i + 1] = requiredOutputs[i];
+                minerReward -= requiredOutputs[i].nValue;
+            }
+            txCoinbase.vout[0].nValue = minerReward;
             txCoinbase.nVersion = 1;
             // Make sure coinbase is BIP34 compliant
             txCoinbase.vin[0].scriptSig = CScript()
@@ -428,7 +440,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // Child with higher priority than parent.
     tx.vin[0].scriptSig = scriptSig;
     tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
-    tx.vout[0].nValue = MINERREWARD - HIGHFEE;
+    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - HIGHFEE;
     TxId txid = tx.GetId();
     m_node.mempool->addUnchecked(
         entry.Fee(HIGHFEE).Time(GetTime()).SpendsCoinbase(true).FromTx(tx));
@@ -437,7 +449,8 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     tx.vin[1].scriptSig = scriptSig;
     tx.vin[1].prevout = COutPoint(txFirst[0]->GetId(), 0);
     // First txn output + fresh coinbase - new txn fee.
-    tx.vout[0].nValue = tx.vout[0].nValue + MINERREWARD - HIGHERFEE;
+    tx.vout[0].nValue =
+        tx.vout[0].nValue + txFirst[0]->vout[0].nValue - HIGHERFEE;
     txid = tx.GetId();
     m_node.mempool->addUnchecked(
         entry.Fee(HIGHERFEE).Time(GetTime()).SpendsCoinbase(true).FromTx(tx));
@@ -464,7 +477,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
     tx.vin[0].scriptSig = scriptSig;
     tx.vout.resize(2);
-    tx.vout[0].nValue = MINERREWARD - HIGHFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - HIGHFEE;
     tx.vout[0].scriptPubKey = CScript() << OP_1;
     tx.vout[1].nValue = Amount::zero();
     tx.vout[1].scriptPubKey = CScript() << OP_RETURN << padData;
@@ -522,7 +535,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // Invalid p2sh txn in mempool, template creation fails
     tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
     tx.vin[0].scriptSig = scriptSig;
-    tx.vout[0].nValue = MINERREWARD - LOWFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - LOWFEE;
     script = CScript() << OP_0;
     tx.vout[0].scriptPubKey = GetScriptForDestination(ScriptHash(script));
     txid = tx.GetId();
@@ -572,7 +585,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // and for adding txs to the mempool.
     tx.vin[0].nSequence = ::ChainActive().Tip()->nHeight - 1;
     prevheights[0] = baseheight + 1;
-    tx.vout[0].nValue = MINERREWARD - HIGHFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - HIGHFEE;
     tx.vout[0].scriptPubKey = CScript() << OP_1;
     tx.nLockTime = 0;
     m_node.mempool->addUnchecked(
@@ -603,6 +616,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // makes relative locktime fail when creating a block.
     // We only rely on TestSequenceLocks for now.
     tx.vin[0].nSequence = 0;
+    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - entry.nFee;
     prevheights[0] = baseheight + 2;
     m_node.mempool->addUnchecked(entry.Time(GetTime()).FromTx(tx));
     // txFirst[1] is the 3rd block.
@@ -645,6 +659,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // Absolute height locked.
     tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 0);
     tx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL - 1;
+    tx.vout[0].nValue = txFirst[2]->vout[0].nValue - entry.nFee;
     prevheights[0] = baseheight + 3;
     tx.nLockTime = ::ChainActive().Tip()->nHeight + 1;
     txid = tx.GetId();
@@ -672,6 +687,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
 
     // Absolute time locked.
     tx.vin[0].prevout = COutPoint(txFirst[3]->GetId(), 0);
+    tx.vout[0].nValue = txFirst[3]->vout[0].nValue - entry.nFee;
     tx.nLockTime = ::ChainActive().Tip()->GetMedianTimePast();
     prevheights.resize(1);
     prevheights[0] = baseheight + 4;
