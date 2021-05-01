@@ -10,12 +10,12 @@ depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'miniupnpc' 'jemalloc')
 makedepends=('cmake' 'ninja' 'boost' 'python' 'help2man')
 license=('MIT')
 source=(https://github.com/LogosFoundation/lotusd/archive/v$pkgver.tar.gz
-        bitcoin.conf
+        lotus.conf
         bitcoin.logrotate
         bitcoin.service
         bitcoin-reindex.service
         bitcoin.install)
-backup=('etc/bitcoin/bitcoin.conf'
+backup=('etc/lotus/lotus.conf'
         'etc/logrotate.d/bitcoin')
 provides=('bitcoin-cli' 'bitcoin-daemon' 'bitcoin-tx' 'bitcoin-seeder')
 conflicts=('bitcoin-cli' 'bitcoin-daemon' 'bitcoin-tx' 'bitcoin-seeder')
@@ -55,7 +55,7 @@ package() {
   install -Dm 644 COPYING -t "$pkgdir/usr/share/licenses/${pkgname}"
 
   msg2 'Installing examples...'
-  install -Dm644 "contrib/debian/examples/bitcoin.conf" \
+  install -Dm644 "contrib/debian/examples/lotus.conf" \
     -t "$pkgdir/usr/share/doc/bitcoin/examples"
 
   msg2 'Installing documentation...'
@@ -68,7 +68,7 @@ package() {
   done
 
   msg2 'Installing essential directories'
-  install -dm 700 "$pkgdir/etc/bitcoin"
+  install -dm 700 "$pkgdir/etc/lotus"
   install -dm 755 "$pkgdir/srv/bitcoin"
   install -dm 755 "$pkgdir/run/bitcoin"
 
@@ -80,8 +80,8 @@ package() {
   ninja install-manpages
   popd
 
-  msg2 'Installing bitcoin.conf...'
-  install -Dm 600 "$srcdir/bitcoin.conf" -t "$pkgdir/etc/bitcoin"
+  msg2 'Installing lotus.conf...'
+  install -Dm 600 "$srcdir/lotus.conf" -t "$pkgdir/etc/lotus"
 
   msg2 'Installing bitcoin.service...'
   install -Dm 644 "$srcdir/bitcoin.service" -t "$pkgdir/usr/lib/systemd/system"

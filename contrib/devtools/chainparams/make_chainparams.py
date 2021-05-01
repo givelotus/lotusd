@@ -85,9 +85,9 @@ if __name__ == "__main__":
                         help="The block hash or height to use for fetching chainparams.\n"
                              "MainNet default: 10 blocks from the chain tip."
                              "TestNet default: 2000 blocks from the chain tip.")
-    parser.add_argument('--config', '-c', default="~/.bitcoin/bitcoin.conf",
-                        help="Path to bitcoin.conf for RPC authentication arguments (rpcuser & rpcpassword).\n"
-                             "Default: ~/.bitcoin/bitcoin.conf")
+    parser.add_argument('--config', '-c', default="~/.lotus/lotus.conf",
+                        help="Path to lotus.conf for RPC authentication arguments (rpcuser & rpcpassword).\n"
+                             "Default: ~/.lotus/lotus.conf")
     args = parser.parse_args()
     args.config = os.path.expanduser(args.config)
 
@@ -106,7 +106,7 @@ if __name__ == "__main__":
                     assert password is None
                     password = line.split("=")[1].strip("\n")
     else:
-        raise FileNotFoundError("Missing bitcoin.conf")
+        raise FileNotFoundError("Missing lotus.conf")
     if user is None:
         raise ValueError("Config is missing rpcuser")
     if password is None:

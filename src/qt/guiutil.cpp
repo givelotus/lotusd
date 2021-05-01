@@ -412,7 +412,7 @@ bool openBitcoinConf() {
 
     configFile.close();
 
-    /* Open bitcoin.conf with the associated application */
+    /* Open lotus.conf with the associated application */
     bool res = QDesktopServices::openUrl(
         QUrl::fromLocalFile(boostPathToQString(pathConfig)));
 #ifdef Q_OS_MAC
@@ -711,7 +711,7 @@ bool SetStartOnSystemStartup(bool fAutoStart) {
         optionFile << "[Desktop Entry]\n";
         optionFile << "Type=Application\n";
         if (chain == CBaseChainParams::MAIN) {
-            optionFile << "Name=Bitcoin\n";
+            optionFile << "Name=Lotus\n";
         } else {
             optionFile << strprintf("Name=Bitcoin (%s)\n", chain);
         }

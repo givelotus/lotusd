@@ -7,7 +7,7 @@ After=network.target
 User=bitcoin
 Group=bitcoin
 ExecStart=/usr/bin/bitcoind -daemon=0                       \
-                            -conf=/etc/bitcoin/bitcoin.conf \
+                            -conf=/etc/lotus/lotus.conf \
                             -datadir=/srv/bitcoin           \
                             -pid=/run/bitcoin/bitcoind.pid
 ExecReload=/usr/bin/kill -HUP $MAINPID
