@@ -99,15 +99,6 @@ public:
 
         // nPowTargetTimespan / nPowTargetSpacing
         consensus.nMinerConfirmationWindow = 2016;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY] = {
-            .bit = 28,
-            // 95% of 2016
-            .nActivationThreshold = 1916,
-            // January 1, 2008
-            .nStartTime = 1199145601,
-            // December 31, 2008
-            .nTimeout = 1230767999,
-        };
 
         // The miner fund is enabled by default on mainnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
@@ -228,15 +219,6 @@ public:
 
         // nPowTargetTimespan / nPowTargetSpacing
         consensus.nMinerConfirmationWindow = 2016;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY] = {
-            .bit = 28,
-            // 75% of 2016
-            .nActivationThreshold = 1512,
-            // January 1, 2008
-            .nStartTime = 1199145601,
-            // December 31, 2008
-            .nTimeout = 1230767999,
-        };
 
         // The miner fund is enabled by default on testnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
@@ -336,11 +318,6 @@ public:
 
         // Faster than normal for regtest (144 instead of 2016)
         consensus.nMinerConfirmationWindow = 144;
-        consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY] = {
-            .bit = 28,
-            // 75% of 144
-            .nActivationThreshold = 108,
-        };
 
         // The miner fund is disabled by default on regnet.
         consensus.enableMinerFund = false;

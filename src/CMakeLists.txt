@@ -483,7 +483,6 @@ add_library(common
 	rpc/util.cpp
 	scheduler.cpp
 	salteduint256hasher.cpp
-	versionbitsinfo.cpp
 	warnings.cpp
 
 	${NETWORK_SOURCES}
@@ -597,7 +596,6 @@ add_library(server
 	txmempool.cpp
 	validation.cpp
 	validationinterface.cpp
-	versionbits.cpp
 )
 
 target_include_directories(server PRIVATE leveldb/helpers/memenv)
