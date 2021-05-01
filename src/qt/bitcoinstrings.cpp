@@ -7,178 +7,256 @@
 #define UNUSED
 #endif
 static const char UNUSED *bitcoin_strings[] = {
-QT_TRANSLATE_NOOP("bitcoin-abc", "The %s developers"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"-maxtxfee is set very high! Fees this large could be paid on a single "
-"transaction."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Can't generate a change-address key. Private keys are disabled for this "
-"wallet."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Cannot obtain a lock on data directory %s. %s is probably already running."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Cannot provide specific connections and have addrman find outgoing "
-"connections at the same."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Cannot upgrade a non HD split wallet without upgrading to support pre split "
-"keypool. Please use -upgradewallet=200300 or -upgradewallet with no version "
-"specified."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Distributed under the MIT software license, see the accompanying file %s or "
-"%s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Error reading %s! All keys read correctly, but transaction data or address "
-"book entries might be missing or incorrect."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Error: Listening for incoming connections failed (listen returned error %s)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Invalid amount for -maxtxfee=<amount>: '%s' (must be at least the minrelay "
-"fee of %s to prevent stuck transactions)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Max generated block size (blockmaxsize) cannot exceed the excessive block "
-"size (excessiveblocksize)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Please check that your computer's date and time are correct! If your clock "
-"is wrong, %s will not work properly."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Please contribute if you find %s useful. Visit %s for further information "
-"about the software."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Prune configured below the minimum of %d MiB.  Please use a higher number."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Prune: last wallet synchronisation goes beyond pruned data. You need to -"
-"reindex (download the whole blockchain again in case of pruned node)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Rescans are not possible in pruned mode. You will need to use -reindex which "
-"will download the whole blockchain again."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"The block database contains a block which appears to be from the future. "
-"This may be due to your computer's date and time being set incorrectly. Only "
-"rebuild the block database if you are sure that your computer's date and "
-"time are correct"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"The transaction amount is too small to send after the fee has been deducted"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"This is a pre-release test build - use at your own risk - do not use for "
-"mining or merchant applications"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"This is the transaction fee you may pay when fee estimates are not available."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"This product includes software developed by the OpenSSL Project for use in "
-"the OpenSSL Toolkit %s and cryptographic software written by Eric Young and "
-"UPnP software written by Thomas Bernard."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Total length of network version string (%i) exceeds maximum length (%i). "
-"Reduce the number or size of uacomments."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Unable to replay blocks. You will need to rebuild the database using -"
-"reindex-chainstate."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Warning: Private keys detected in wallet {%s} with disabled private keys"),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Warning: The network does not appear to fully agree! Some miners appear to "
-"be experiencing issues."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Warning: Wallet file corrupt, data salvaged! Original %s saved as %s in %s; "
-"if your balance or transactions are incorrect you should restore from a "
-"backup."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"Warning: We do not appear to fully agree with our peers! You may need to "
-"upgrade, or other nodes may need to upgrade."),
-QT_TRANSLATE_NOOP("bitcoin-abc", ""
-"You need to rebuild the database using -reindex to go back to unpruned "
-"mode.  This will redownload the entire blockchain"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "%s corrupt, salvage failed"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "%s is set very high!"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "(press q to shutdown and continue later)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "-maxmempool must be at least %d MB"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Cannot downgrade wallet"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Cannot resolve -%s address: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Cannot write to data directory '%s'; check permissions."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Change index out of range"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Config setting for %s only applied on %s network when in [%s] section."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Copyright (C) %i-%i"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Corrupted block database detected"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Do you want to rebuild the block database now?"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Done loading"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error initializing block database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error initializing wallet database environment %s!"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading %s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading %s: Private keys can only be disabled during creation"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading %s: Wallet corrupted"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading %s: Wallet requires newer version of %s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading block database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error loading wallet %s. Duplicate -wallet filename specified."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error opening block database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error reading from database, shutting down."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error upgrading chainstate database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error: A fatal internal error occurred, see debug.log for details"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error: Disk space is low for %s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Error: Disk space is low!"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Excessive block size must be > 1,000,000 bytes (1MB)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Failed to listen on any port. Use -listen=0 if you want this."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Failed to rescan the wallet during initialization"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Importing..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Incorrect or no genesis block found. Wrong datadir for network?"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Information"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Initialization sanity check failed. %s is shutting down."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Insufficient funds"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid -onion address or hostname: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid -proxy address or hostname: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid amount for -%s=<amount>: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid amount for -fallbackfee=<amount>: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid amount for -paytxfee=<amount>: '%s' (must be at least %s)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Invalid netmask specified in -whitelist: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Keypool ran out, please call keypoolrefill first"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Loading P2P addresses..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Loading banlist..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Loading block index..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Loading wallet..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Need to specify a port with -whitebind: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Not enough file descriptors available."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Prune cannot be configured with a negative value."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Prune mode is incompatible with -txindex."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Pruning blockstore..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Reducing -maxconnections from %d to %d, because of system limitations."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Replaying blocks..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Rescanning..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Section [%s] is not recognized."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Signing transaction failed"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Specified -walletdir \"%s\" does not exist"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Specified -walletdir \"%s\" is a relative path"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Specified -walletdir \"%s\" is not a directory"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Specified blocks directory \"%s\" does not exist."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Starting network threads..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "The source code is available from %s."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "The transaction amount is too small to pay the fee"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "The wallet will avoid paying less than the minimum relay fee."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "This is experimental software."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "This is the minimum transaction fee you pay on every transaction."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "This is the transaction fee you will pay if you send a transaction."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction amount too small"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction amounts must not be negative"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction fee and change calculation failed"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction has too long of a mempool chain"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction must have at least one recipient"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction too large for fee policy"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Transaction too large"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to bind to %s on this computer (bind returned error %s)"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to bind to %s on this computer. %s is probably already running."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to create the PID file '%s': %s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to generate initial keys"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to generate keys"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unable to start HTTP server. See debug log for details."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unknown network specified in -onlynet: '%s'"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Unsupported logging category %s=%s."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Upgrading UTXO database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Upgrading txindex database"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "User Agent comment (%s) contains unsafe characters."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Verifying blocks..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Verifying wallet(s)..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Wallet %s resides outside wallet directory %s"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Wallet needed to be rewritten: restart %s to complete"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Warning"),
-QT_TRANSLATE_NOOP("bitcoin-abc", "Zapping all transactions from wallet..."),
-QT_TRANSLATE_NOOP("bitcoin-abc", "press q to shutdown"),
+    QT_TRANSLATE_NOOP("lotus", "The %s developers"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        ""
+        "-maxtxfee is set very high! Fees this large could be paid on a single "
+        "transaction."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Can't generate a change-address key. Private "
+                               "keys are disabled for this "
+                               "wallet."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Cannot obtain a lock on data directory %s. %s "
+                               "is probably already running."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        ""
+        "Cannot provide specific connections and have addrman find outgoing "
+        "connections at the same."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Cannot upgrade a non HD split wallet without "
+                               "upgrading to support pre split "
+                               "keypool. Please use -upgradewallet=200300 or "
+                               "-upgradewallet with no version "
+                               "specified."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Distributed under the MIT software license, "
+                               "see the accompanying file %s or "
+                               "%s"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Error reading %s! All keys read correctly, but "
+                               "transaction data or address "
+                               "book entries might be missing or incorrect."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Error: Listening for incoming connections "
+                               "failed (listen returned error %s)"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Invalid amount for -maxtxfee=<amount>: '%s' "
+                               "(must be at least the minrelay "
+                               "fee of %s to prevent stuck transactions)"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Max generated block size (blockmaxsize) cannot "
+                               "exceed the excessive block "
+                               "size (excessiveblocksize)"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Please check that your computer's date and "
+                               "time are correct! If your clock "
+                               "is wrong, %s will not work properly."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Please contribute if you find %s useful. Visit "
+                               "%s for further information "
+                               "about the software."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Prune configured below the minimum of %d MiB.  "
+                               "Please use a higher number."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        ""
+        "Prune: last wallet synchronisation goes beyond pruned data. You need "
+        "to -"
+        "reindex (download the whole blockchain again in case of pruned node)"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Rescans are not possible in pruned mode. You "
+                               "will need to use -reindex which "
+                               "will download the whole blockchain again."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "The block database contains a block which "
+                               "appears to be from the future. "
+                               "This may be due to your computer's date and "
+                               "time being set incorrectly. Only "
+                               "rebuild the block database if you are sure "
+                               "that your computer's date and "
+                               "time are correct"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "The transaction amount is too small to send "
+                               "after the fee has been deducted"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "This is a pre-release test build - use at your "
+                               "own risk - do not use for "
+                               "mining or merchant applications"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "This is the transaction fee you may pay when "
+                               "fee estimates are not available."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "This product includes software developed by "
+                               "the OpenSSL Project for use in "
+                               "the OpenSSL Toolkit %s and cryptographic "
+                               "software written by Eric Young and "
+                               "UPnP software written by Thomas Bernard."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Total length of network version string (%i) "
+                               "exceeds maximum length (%i). "
+                               "Reduce the number or size of uacomments."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        ""
+        "Unable to replay blocks. You will need to rebuild the database using -"
+        "reindex-chainstate."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Warning: Private keys detected in wallet {%s} "
+                               "with disabled private keys"),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Warning: The network does not appear to fully "
+                               "agree! Some miners appear to "
+                               "be experiencing issues."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Warning: Wallet file corrupt, data salvaged! "
+                               "Original %s saved as %s in %s; "
+                               "if your balance or transactions are incorrect "
+                               "you should restore from a "
+                               "backup."),
+    QT_TRANSLATE_NOOP("lotus", ""
+                               "Warning: We do not appear to fully agree with "
+                               "our peers! You may need to "
+                               "upgrade, or other nodes may need to upgrade."),
+    QT_TRANSLATE_NOOP("lotus",
+                      ""
+                      "You need to rebuild the database using -reindex to go "
+                      "back to unpruned "
+                      "mode.  This will redownload the entire blockchain"),
+    QT_TRANSLATE_NOOP("lotus", "%s corrupt, salvage failed"),
+    QT_TRANSLATE_NOOP("lotus", "%s is set very high!"),
+    QT_TRANSLATE_NOOP("lotus", "(press q to shutdown and continue later)"),
+    QT_TRANSLATE_NOOP("lotus", "-maxmempool must be at least %d MB"),
+    QT_TRANSLATE_NOOP("lotus", "Cannot downgrade wallet"),
+    QT_TRANSLATE_NOOP("lotus", "Cannot resolve -%s address: '%s'"),
+    QT_TRANSLATE_NOOP(
+        "lotus", "Cannot write to data directory '%s'; check permissions."),
+    QT_TRANSLATE_NOOP("lotus", "Change index out of range"),
+    QT_TRANSLATE_NOOP("lotus", "Config setting for %s only applied on %s "
+                               "network when in [%s] section."),
+    QT_TRANSLATE_NOOP("lotus", "Copyright (C) %i-%i"),
+    QT_TRANSLATE_NOOP("lotus", "Corrupted block database detected"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Do you want to rebuild the block database now?"),
+    QT_TRANSLATE_NOOP("lotus", "Done loading"),
+    QT_TRANSLATE_NOOP("lotus", "Error initializing block database"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Error initializing wallet database environment %s!"),
+    QT_TRANSLATE_NOOP("lotus", "Error loading %s"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Error loading %s: Private keys can only be disabled during creation"),
+    QT_TRANSLATE_NOOP("lotus", "Error loading %s: Wallet corrupted"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Error loading %s: Wallet requires newer version of %s"),
+    QT_TRANSLATE_NOOP("lotus", "Error loading block database"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Error loading wallet %s. Duplicate -wallet filename specified."),
+    QT_TRANSLATE_NOOP("lotus", "Error opening block database"),
+    QT_TRANSLATE_NOOP("lotus", "Error reading from database, shutting down."),
+    QT_TRANSLATE_NOOP("lotus", "Error upgrading chainstate database"),
+    QT_TRANSLATE_NOOP("lotus", "Error"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Error: A fatal internal error occurred, see debug.log for details"),
+    QT_TRANSLATE_NOOP("lotus", "Error: Disk space is low for %s"),
+    QT_TRANSLATE_NOOP("lotus", "Error: Disk space is low!"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Excessive block size must be > 1,000,000 bytes (1MB)"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Failed to listen on any port. Use -listen=0 if you want this."),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Failed to rescan the wallet during initialization"),
+    QT_TRANSLATE_NOOP("lotus", "Importing..."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Incorrect or no genesis block found. Wrong datadir for network?"),
+    QT_TRANSLATE_NOOP("lotus", "Information"),
+    QT_TRANSLATE_NOOP(
+        "lotus", "Initialization sanity check failed. %s is shutting down."),
+    QT_TRANSLATE_NOOP("lotus", "Insufficient funds"),
+    QT_TRANSLATE_NOOP("lotus", "Invalid -onion address or hostname: '%s'"),
+    QT_TRANSLATE_NOOP("lotus", "Invalid -proxy address or hostname: '%s'"),
+    QT_TRANSLATE_NOOP("lotus", "Invalid amount for -%s=<amount>: '%s'"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Invalid amount for -fallbackfee=<amount>: '%s'"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Invalid amount for -paytxfee=<amount>: '%s' (must be at least %s)"),
+    QT_TRANSLATE_NOOP("lotus", "Invalid netmask specified in -whitelist: '%s'"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Keypool ran out, please call keypoolrefill first"),
+    QT_TRANSLATE_NOOP("lotus", "Loading P2P addresses..."),
+    QT_TRANSLATE_NOOP("lotus", "Loading banlist..."),
+    QT_TRANSLATE_NOOP("lotus", "Loading block index..."),
+    QT_TRANSLATE_NOOP("lotus", "Loading wallet..."),
+    QT_TRANSLATE_NOOP("lotus", "Need to specify a port with -whitebind: '%s'"),
+    QT_TRANSLATE_NOOP("lotus", "Not enough file descriptors available."),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Prune cannot be configured with a negative value."),
+    QT_TRANSLATE_NOOP("lotus", "Prune mode is incompatible with -txindex."),
+    QT_TRANSLATE_NOOP("lotus", "Pruning blockstore..."),
+    QT_TRANSLATE_NOOP("lotus", "Reducing -maxconnections from %d to %d, "
+                               "because of system limitations."),
+    QT_TRANSLATE_NOOP("lotus", "Replaying blocks..."),
+    QT_TRANSLATE_NOOP("lotus", "Rescanning..."),
+    QT_TRANSLATE_NOOP("lotus", "Section [%s] is not recognized."),
+    QT_TRANSLATE_NOOP("lotus", "Signing transaction failed"),
+    QT_TRANSLATE_NOOP("lotus", "Specified -walletdir \"%s\" does not exist"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Specified -walletdir \"%s\" is a relative path"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Specified -walletdir \"%s\" is not a directory"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Specified blocks directory \"%s\" does not exist."),
+    QT_TRANSLATE_NOOP("lotus", "Starting network threads..."),
+    QT_TRANSLATE_NOOP("lotus", "The source code is available from %s."),
+    QT_TRANSLATE_NOOP("lotus",
+                      "The transaction amount is too small to pay the fee"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "The wallet will avoid paying less than the minimum relay fee."),
+    QT_TRANSLATE_NOOP("lotus", "This is experimental software."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "This is the minimum transaction fee you pay on every transaction."),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "This is the transaction fee you will pay if you send a transaction."),
+    QT_TRANSLATE_NOOP("lotus", "Transaction amount too small"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction amounts must not be negative"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction fee and change calculation failed"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction has too long of a mempool chain"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction must have at least one recipient"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction too large for fee policy"),
+    QT_TRANSLATE_NOOP("lotus", "Transaction too large"),
+    QT_TRANSLATE_NOOP(
+        "lotus",
+        "Unable to bind to %s on this computer (bind returned error %s)"),
+    QT_TRANSLATE_NOOP("lotus", "Unable to bind to %s on this computer. %s is "
+                               "probably already running."),
+    QT_TRANSLATE_NOOP("lotus", "Unable to create the PID file '%s': %s"),
+    QT_TRANSLATE_NOOP("lotus", "Unable to generate initial keys"),
+    QT_TRANSLATE_NOOP("lotus", "Unable to generate keys"),
+    QT_TRANSLATE_NOOP(
+        "lotus", "Unable to start HTTP server. See debug log for details."),
+    QT_TRANSLATE_NOOP("lotus", "Unknown network specified in -onlynet: '%s'"),
+    QT_TRANSLATE_NOOP("lotus", "Unsupported logging category %s=%s."),
+    QT_TRANSLATE_NOOP("lotus", "Upgrading UTXO database"),
+    QT_TRANSLATE_NOOP("lotus", "Upgrading txindex database"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "User Agent comment (%s) contains unsafe characters."),
+    QT_TRANSLATE_NOOP("lotus", "Verifying blocks..."),
+    QT_TRANSLATE_NOOP("lotus", "Verifying wallet(s)..."),
+    QT_TRANSLATE_NOOP("lotus", "Wallet %s resides outside wallet directory %s"),
+    QT_TRANSLATE_NOOP("lotus",
+                      "Wallet needed to be rewritten: restart %s to complete"),
+    QT_TRANSLATE_NOOP("lotus", "Warning"),
+    QT_TRANSLATE_NOOP("lotus", "Zapping all transactions from wallet..."),
+    QT_TRANSLATE_NOOP("lotus", "press q to shutdown"),
 };

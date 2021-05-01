@@ -3947,7 +3947,7 @@ Note:  Since the fee is calculated on a per-byte basis, a fee of &quot;100 satos
     </message>
 </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <location filename="../bitcoinstrings.cpp" line="+26"/>
         <source>Distributed under the MIT software license, see the accompanying file %s or %s</source>
