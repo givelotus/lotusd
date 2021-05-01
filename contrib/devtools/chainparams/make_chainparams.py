@@ -99,10 +99,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         "-c",
-        default="~/.bitcoin/bitcoin.conf",
+        default="~/.lotus/lotus.conf",
         help=(
-            "Path to bitcoin.conf for RPC authentication arguments (rpcuser &"
-            " rpcpassword).\nDefault: ~/.bitcoin/bitcoin.conf"
+            "Path to lotus.conf for RPC authentication arguments (rpcuser &"
+            " rpcpassword).\nDefault: ~/.lotus/lotus.conf"
         ),
     )
     args = parser.parse_args()
@@ -123,7 +123,7 @@ if __name__ == "__main__":
                     assert password is None
                     password = line.split("=")[1].strip("\n")
     else:
-        raise FileNotFoundError("Missing bitcoin.conf")
+        raise FileNotFoundError("Missing lotus.conf")
     if user is None:
         raise ValueError("Config is missing rpcuser")
     if password is None:

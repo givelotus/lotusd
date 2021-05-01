@@ -16,7 +16,7 @@ help_message() {
   echo "Run bitcoind until a given log message is encountered, then kill bitcoind."
   echo ""
   echo "Example usages:"
-  echo "$0 --grep 'progress=1.000000' --params \"-datadir=~/.bitcoin\" --callback mycallback"
+  echo "$0 --grep 'progress=1.000000' --params \"-datadir=~/.lotus\" --callback mycallback"
   echo ""
   echo "Options:"
   echo "-h, --help            Display this help message."
