@@ -47,6 +47,11 @@ int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
     return nNewTime - nOldTime;
 }
 
+Amount GetBlockRewardFromFees(Amount nFees) {
+    // 50% of fees get burned.
+    return nFees / 2;
+}
+
 uint64_t CTxMemPoolModifiedEntry::GetVirtualSizeWithAncestors() const {
     return GetVirtualTransactionSize(nSizeWithAncestors,
                                      nSigOpCountWithAncestors);
@@ -185,8 +190,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     int64_t nTime1 = GetTimeMicros();
-    // 50% of fees get burned.
-    const Amount amountFeeReward = nFees / 2;
+    const Amount amountFeeReward = GetBlockRewardFromFees(nFees);
 
     m_last_block_num_txs = nBlockTx;
     m_last_block_size = nBlockSize;

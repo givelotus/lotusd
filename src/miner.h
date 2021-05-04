@@ -66,6 +66,12 @@ struct CTxMemPoolModifiedEntry {
 };
 
 /**
+ * Calculate the additional block reward in the coinbase from fees.
+ * Currenty, 50% of fees are burned.
+ */
+Amount GetBlockRewardFromFees(Amount nFees);
+
+/**
  * Comparator for CTxMemPool::txiter objects.
  * It simply compares the internal memory address of the CTxMemPoolEntry object
  * pointed to. This means it has no meaning, and is only useful for using them
