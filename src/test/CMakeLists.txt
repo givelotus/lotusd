@@ -167,6 +167,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		lcg_tests.cpp
 		limitedmap_tests.cpp
 		logging_tests.cpp
+		malfix_tests.cpp
 		mempool_tests.cpp
 		merkle_tests.cpp
 		merkleblock_tests.cpp

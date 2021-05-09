@@ -199,18 +199,20 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     CMutableTransaction coinbaseTx;
     coinbaseTx.vin.resize(1);
     coinbaseTx.vin[0].prevout = COutPoint();
-    coinbaseTx.vout.resize(1);
-    coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
-    coinbaseTx.vout[0].nValue =
+    coinbaseTx.vin[0].scriptSig = CScript() << OP_0 << OP_0;
+    coinbaseTx.vout.resize(2);
+    coinbaseTx.vout[0].scriptPubKey = CScript() << OP_RETURN << COINBASE_PREFIX
+                                                << nHeight;
+    coinbaseTx.vout[0].nValue = Amount::zero();
+    coinbaseTx.vout[1].scriptPubKey = scriptPubKeyIn;
+    coinbaseTx.vout[1].nValue =
         amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript()
-                                  << COINBASE_PREFIX << nHeight << OP_0;
 
-    const Amount coinbaseValue = coinbaseTx.vout[0].nValue;
+    const Amount coinbaseValue = coinbaseTx.vout[1].nValue;
     const std::vector<CTxOut> requiredOutputs =
         GetMinerFundRequiredOutputs(consensusParams, pindexPrev, coinbaseValue);
     for (const CTxOut &requiredOutput : requiredOutputs) {
-        coinbaseTx.vout[0].nValue -= requiredOutput.nValue;
+        coinbaseTx.vout[1].nValue -= requiredOutput.nValue;
         coinbaseTx.vout.push_back(requiredOutput);
     }
 
@@ -567,11 +569,9 @@ void IncrementExtraNonce(CBlock *pblock, const CBlockIndex *pindexPrev,
     }
 
     ++nExtraNonce;
-    // Height first in coinbase required for block.version=2
-    unsigned int nHeight = pindexPrev->nHeight + 1;
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     txCoinbase.vin[0].scriptSig =
-        (CScript() << COINBASE_PREFIX << nHeight << CScriptNum(nExtraNonce)
+        (CScript() << CScriptNum(nExtraNonce)
                    << getExcessiveBlockSizeSig(nExcessiveBlockSize));
 
     // Make sure the coinbase is big enough.

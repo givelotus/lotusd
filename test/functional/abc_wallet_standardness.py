@@ -77,7 +77,8 @@ class WalletStandardnessTest(BitcoinTestFramework):
             # ensure signing process did not disturb scriptPubKey
             signedtx = FromHex(CTransaction(), rawtx)
             assert_equal(scriptPubKey, signedtx.vout[0].scriptPubKey)
-            txid = signedtx.rehash()
+            signedtx.calc_txid()
+            txid = signedtx.txid_hex
 
             balance_initial = std_node.getbalance()
 

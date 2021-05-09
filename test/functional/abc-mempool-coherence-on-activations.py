@@ -86,7 +86,7 @@ def create_fund_and_activation_specific_spending_tx(spend, pre_fork_only):
     # Activation specific spending tx
     txspend = CTransaction()
     txspend.vout.append(CTxOut(int(SUBSIDY * COIN) - 1000, CScript([OP_TRUE])))
-    txspend.vin.append(CTxIn(COutPoint(txfund.sha256, 0), b''))
+    txspend.vin.append(CTxIn(COutPoint(txfund.txid, 0), b''))
 
     # Sign the transaction
     # Use forkvalues that create pre-fork-only or post-fork-only
@@ -173,7 +173,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # move the tip back to a previous block
         def tip(number):
@@ -202,14 +202,14 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
 
         # checks the mempool has exactly the same txns as in the provided list
         def check_mempool_equal(txns):
-            assert set(node.getrawmempool()) == set(tx.hash for tx in txns)
+            assert set(node.getrawmempool()) == set(tx.txid_hex for tx in txns)
 
         # Create an always-valid chained transaction. It spends a
         # scriptPub=OP_TRUE coin into another. Returns the transaction and its
         # spendable output for further chaining.
         def create_always_valid_chained_tx(spend):
             tx = create_tx_with_script(
-                spend.tx, spend.n, b'', amount=spend.tx.vout[0].nValue - 1000, script_pub_key=CScript([OP_TRUE]))
+                spend.tx, spend.n, b'', amount=spend.tx.vout[spend.n].nValue - 1000, script_pub_key=CScript([OP_TRUE]))
             tx.rehash()
             return tx, PreviousSpendableOutput(tx, 0)
 

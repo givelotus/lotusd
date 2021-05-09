@@ -64,28 +64,28 @@ BlockAssembler MinerTestingSetup::AssemblerForTest(const CChainParams &params) {
 }
 
 constexpr uint64_t blockinfo[] = {
-    80806239248,  65799807021,  604811529080, 126913528961, 127051102755,
-    21095037785,  47895049626,  32828337979,  22831555262,  50835325299,
-    20313599487,  158271518541, 5655489867,   11538952148,  68009355488,
-    94050716609,  30732139119,  48355079627,  14929580175,  69247195963,
-    134230454255, 37090265427,  72863632734,  10249035062,  10714066729,
-    30892021872,  247444101800, 92368953603,  157328457646, 28070491851,
-    143946695374, 16993066316,  1575826894,   114326524605, 17842621599,
-    81108283206,  137927551695, 11245622926,  38543497095,  45120880211,
-    198600876819, 7153814780,   220733370671, 54184557421,  27748532620,
-    154327260037, 43758623650,  118010064926, 30692323650,  15900613437,
-    92824406802,  31930973668,  126539988647, 1219232133,   61482218533,
-    40155942895,  160169687080, 19660426893,  9166093214,   24738795807,
-    13370042733,  186256330695, 4236962184,   10810748245,  19874652913,
-    11665638005,  72039030225,  21904403725,  11701325173,  5652028548,
-    140173855207, 31813666119,  35232238057,  76043640035,  103035596842,
-    5665780659,   110218606197, 32809031536,  106429572907, 85141912537,
-    355352261930, 199136621921, 25138183482,  49140260704,  4346189002,
-    72264236860,  78959013513,  155771819961, 238009067832, 18291756492,
-    87838056375,  136321205108, 72502321344,  15720059453,  51921992886,
-    91690867130,  48194731295,  160420989370, 33504249785,  14913212389,
-    15510785795,  12355704863,  16066178829,  76658978291,  97206712505,
-    51764895256,  7067277928,   132883370085, 20564470344,  66135444850,
+    57137586545,  203906838680, 37341269554,  124675956107, 143498055326,
+    34221506364,  104198109,    39235918446,  86470147682,  178412698046,
+    11529010165,  73535899488,  49116792746,  4431721905,   9850823019,
+    80454294224,  4848789644,   111086237654, 82682535872,  29915475741,
+    12095352580,  32556579783,  10415626579,  55545333028,  250331715143,
+    143491684625, 208187975679, 229394364557, 19522049784,  4465616070,
+    105968788127, 15209329897,  62225562945,  164025189649, 115661654471,
+    2917315162,   200928144,    34310199100,  126198469056, 209410321226,
+    40250710375,  51755687307,  37235251287,  133614149050, 4495244887,
+    52624989304,  37820597512,  822816206,    32349072859,  39871789317,
+    38787280109,  118391407386, 82189705523,  201514131224, 41242290287,
+    77234567619,  87283561757,  22476264135,  26251475603,  14932055915,
+    64240910770,  62018122820,  42432154561,  87143303142,  39627815544,
+    97667634757,  60373793386,  4253033578,   1538871139,   24950353753,
+    198216687206, 109331536301, 20430148983,  55232661289,  5211076681,
+    51658728588,  38439646577,  15161928456,  36102571321,  9621738445,
+    242256854983, 33320293061,  13312935257,  25452450059,  68830410069,
+    212071500382, 25778229971,  59046383470,  35666902961,  95692818631,
+    48977939372,  9425169597,   32741731001,  245833627731, 135164885266,
+    14941674866,  27040000899,  71077792063,  132681785768, 5285283089,
+    247674599906, 154547963705, 24899201852,  18500443927,  11292961160,
+    25977402601,  69163360576,  12528959981,  109224017060, 9359153064,
 };
 
 // In Logos, half of the block subsidy goes to the miner.
@@ -121,9 +121,10 @@ void MinerTestingSetup::TestPackageSelection(
     CMutableTransaction tx;
     tx.vin.resize(1);
     tx.vin[0].scriptSig = scriptSig;
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    // vout 0 = OP_RETURN, vout 1 = miner reward
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
     tx.vout.resize(2);
-    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - 1000 * SATOSHI;
+    tx.vout[0].nValue = txFirst[0]->vout[1].nValue - 1000 * SATOSHI;
     tx.vout[1].nValue = Amount::zero();
     tx.vout[1].scriptPubKey = CScript() << OP_RETURN << padData;
     // This tx has a low fee: 1000 satoshis.
@@ -136,8 +137,8 @@ void MinerTestingSetup::TestPackageSelection(
                                      .FromTx(tx));
 
     // This tx has a medium fee: 10000 satoshis.
-    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
-    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - 10000 * SATOSHI;
+    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 1);
+    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - 10000 * SATOSHI;
     TxId mediumFeeTxId = tx.GetId();
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI)
                                      .Time(GetTime())
@@ -159,8 +160,8 @@ void MinerTestingSetup::TestPackageSelection(
         AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 4);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), mediumFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), highFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), highFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), mediumFeeTxId);
 
     // Test that a package below the block min tx fee doesn't get included
     tx.vin[0].prevout = COutPoint(highFeeTxId, 0);
@@ -197,17 +198,17 @@ void MinerTestingSetup::TestPackageSelection(
     m_node.mempool->addUnchecked(entry.Fee(feeToUse + 2 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 6);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), mediumFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), lowFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), freeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), lowFeeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), parentTxId);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), highFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), freeTxId);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), mediumFeeTxId);
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as ancestor transactions get included in a block. Add a
     // 0-fee transaction that has 2 outputs.
-    tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 0);
-    tx.vout[0].nValue = txFirst[2]->vout[0].nValue - 100000000 * SATOSHI;
+    tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 1);
+    tx.vout[0].nValue = txFirst[2]->vout[1].nValue - 100000000 * SATOSHI;
     tx.vout[0].scriptPubKey = CScript() << padData << OP_DROP;
     // 1BCC output.
     tx.vout[1].nValue = 100000000 * SATOSHI;
@@ -240,7 +241,7 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vout[0].nValue = (100000000 - 10000) * SATOSHI;
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), lowFeeTxId2);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), lowFeeTxId2);
 }
 
 void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
@@ -263,11 +264,9 @@ void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
     unsigned int extraNonce = 0;
     IncrementExtraNonce(pblock, ::ChainActive().Tip(), config.GetMaxBlockSize(),
                         extraNonce);
-    unsigned int nHeight = ::ChainActive().Tip()->nHeight + 1;
     std::vector<uint8_t> vec(cbmsg.begin(), cbmsg.end());
     BOOST_CHECK(pblock->vtx[0]->vin[0].scriptSig ==
-                (CScript() << COINBASE_PREFIX << nHeight
-                           << CScriptNum(extraNonce) << vec));
+                (CScript() << CScriptNum(extraNonce) << vec));
 }
 
 // Coinbase scriptSig has to contains the correct EB value
@@ -343,6 +342,13 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
             }
 #endif
             CMutableTransaction txCoinbase(*pblock->vtx[0]);
+            txCoinbase.nVersion = 1;
+            // Add padding to prevent undersize
+            txCoinbase.vin[0].scriptSig = CScript();
+            txCoinbase.vin[0].scriptSig.resize(100);
+            // First output is OP_RETURN "logos" <height>
+            txCoinbase.vout[0].scriptPubKey =
+                CScript() << OP_RETURN << COINBASE_PREFIX << nHeight;
             // Block subsidy adjustst with difficulty, so we have to update the
             // miner fund outputs
             Amount minerReward =
@@ -350,16 +356,11 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
             std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
                 chainparams.GetConsensus(), ::ChainActive().Tip(), minerReward);
             for (size_t i = 0; i < requiredOutputs.size(); ++i) {
-                txCoinbase.vout[i + 1] = requiredOutputs[i];
+                txCoinbase.vout[i + 2] = requiredOutputs[i];
                 minerReward -= requiredOutputs[i].nValue;
             }
-            txCoinbase.vout[0].nValue = minerReward;
-            txCoinbase.nVersion = 1;
-            // Make sure coinbase is BIP34 compliant
-            txCoinbase.vin[0].scriptSig = CScript()
-                                          << COINBASE_PREFIX << nHeight << OP_0;
-            txCoinbase.vin[0].scriptSig.resize(100);
-            txCoinbase.vout[0].scriptPubKey =
+            txCoinbase.vout[1].nValue = minerReward;
+            txCoinbase.vout[1].scriptPubKey =
                 GetScriptForDestination(ScriptHash(CScript() << OP_1));
             pblock->vtx[0] = MakeTransactionRef(std::move(txCoinbase));
             if (txFirst.size() == 0) {
@@ -404,7 +405,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // block size > limit
     tx.vin.resize(1);
     tx.vin[0].scriptSig = scriptSig;
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
 
     tx.vout.resize(1);
     tx.vout[0].nValue = MINERREWARD;
@@ -439,18 +440,18 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
 
     // Child with higher priority than parent.
     tx.vin[0].scriptSig = scriptSig;
-    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
-    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - HIGHFEE;
+    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 1);
+    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - HIGHFEE;
     TxId txid = tx.GetId();
     m_node.mempool->addUnchecked(
         entry.Fee(HIGHFEE).Time(GetTime()).SpendsCoinbase(true).FromTx(tx));
     tx.vin[0].prevout = COutPoint(txid, 0);
     tx.vin.resize(2);
     tx.vin[1].scriptSig = scriptSig;
-    tx.vin[1].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vin[1].prevout = COutPoint(txFirst[0]->GetId(), 1);
     // First txn output + fresh coinbase - new txn fee.
     tx.vout[0].nValue =
-        tx.vout[0].nValue + txFirst[0]->vout[0].nValue - HIGHERFEE;
+        tx.vout[0].nValue + txFirst[0]->vout[1].nValue - HIGHERFEE;
     txid = tx.GetId();
     m_node.mempool->addUnchecked(
         entry.Fee(HIGHERFEE).Time(GetTime()).SpendsCoinbase(true).FromTx(tx));
@@ -474,10 +475,10 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     m_node.mempool->clear();
 
     // Double spend txn pair in mempool, template creation fails.
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
     tx.vin[0].scriptSig = scriptSig;
     tx.vout.resize(2);
-    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - HIGHFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[1].nValue - HIGHFEE;
     tx.vout[0].scriptPubKey = CScript() << OP_1;
     tx.vout[1].nValue = Amount::zero();
     tx.vout[1].scriptPubKey = CScript() << OP_RETURN << padData;
@@ -533,9 +534,9 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
                     AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey));
 
     // Invalid p2sh txn in mempool, template creation fails
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
     tx.vin[0].scriptSig = scriptSig;
-    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - LOWFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[1].nValue - LOWFEE;
     script = CScript() << OP_0;
     tx.vout[0].scriptPubKey = GetScriptForDestination(ScriptHash(script));
     txid = tx.GetId();
@@ -575,7 +576,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     tx.vin.resize(1);
     prevheights.resize(1);
     // Only 1 transaction.
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
     tx.vin[0].scriptSig = scriptSig;
     // TODO: These tests seem to be broken regarding MTP, enforcing BIP68 from
     // genesis makes relative locktime fail when creating a block.
@@ -585,7 +586,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // and for adding txs to the mempool.
     tx.vin[0].nSequence = ::ChainActive().Tip()->nHeight - 1;
     prevheights[0] = baseheight + 1;
-    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - HIGHFEE;
+    tx.vout[0].nValue = txFirst[0]->vout[1].nValue - HIGHFEE;
     tx.vout[0].scriptPubKey = CScript() << OP_1;
     tx.nLockTime = 0;
     m_node.mempool->addUnchecked(
@@ -611,12 +612,12 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
                       CreateBlockIndex(::ChainActive().Tip()->nHeight + 2)));
 
     // Relative time locked.
-    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[1]->GetId(), 1);
     // TODO: These tests seem to be broken, enforcing BIP68 from genesis
     // makes relative locktime fail when creating a block.
     // We only rely on TestSequenceLocks for now.
     tx.vin[0].nSequence = 0;
-    tx.vout[0].nValue = txFirst[1]->vout[0].nValue - entry.nFee;
+    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - entry.nFee;
     prevheights[0] = baseheight + 2;
     m_node.mempool->addUnchecked(entry.Time(GetTime()).FromTx(tx));
     // txFirst[1] is the 3rd block.
@@ -657,9 +658,9 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     }
 
     // Absolute height locked.
-    tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 0);
+    tx.vin[0].prevout = COutPoint(txFirst[2]->GetId(), 1);
     tx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL - 1;
-    tx.vout[0].nValue = txFirst[2]->vout[0].nValue - entry.nFee;
+    tx.vout[0].nValue = txFirst[2]->vout[1].nValue - entry.nFee;
     prevheights[0] = baseheight + 3;
     tx.nLockTime = ::ChainActive().Tip()->nHeight + 1;
     txid = tx.GetId();
@@ -686,8 +687,8 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     }
 
     // Absolute time locked.
-    tx.vin[0].prevout = COutPoint(txFirst[3]->GetId(), 0);
-    tx.vout[0].nValue = txFirst[3]->vout[0].nValue - entry.nFee;
+    tx.vin[0].prevout = COutPoint(txFirst[3]->GetId(), 1);
+    tx.vout[0].nValue = txFirst[3]->vout[1].nValue - entry.nFee;
     tx.nLockTime = ::ChainActive().Tip()->GetMedianTimePast();
     prevheights.resize(1);
     prevheights[0] = baseheight + 4;

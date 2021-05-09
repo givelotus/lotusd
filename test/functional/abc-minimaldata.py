@@ -138,11 +138,11 @@ class MinimaldataTest(BitcoinTestFramework):
 
             script = CScript([OP_ADD])
 
-            value = spendfrom.vout[0].nValue
+            value = spendfrom.vout[1].nValue
 
             # Fund transaction
             txfund = create_tx_with_script(
-                spendfrom, 0, b'', amount=value, script_pub_key=script)
+                spendfrom, 1, b'', amount=value, script_pub_key=script)
             txfund.rehash()
             fundings.append(txfund)
 
@@ -151,7 +151,7 @@ class MinimaldataTest(BitcoinTestFramework):
             txspend.vout.append(
                 CTxOut(value - 1000, CScript([OP_TRUE])))
             txspend.vin.append(
-                CTxIn(COutPoint(txfund.sha256, 0), b''))
+                CTxIn(COutPoint(txfund.txid, 0), b''))
 
             # Sign the transaction
             txspend.vin[0].scriptSig = CScript(

@@ -71,7 +71,7 @@ def cltv_lock_to_height(node, tx, to_address, amount, height=-1):
 
     # make spending tx
     inputs = [{
-        "txid": fundtx.hash,
+        "txid": fundtx.txid_hex,
         "vout": 0
     }]
     output = {to_address: amount}
@@ -110,7 +110,7 @@ class BIP65Test(BitcoinTestFramework):
             "Test that an invalid-according-to-CLTV transaction cannot appear in a block")
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[0],
-                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'), vout=1)
         fundtx, spendtx = cltv_lock_to_height(
             self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'))
 
@@ -143,14 +143,14 @@ class BIP65Test(BitcoinTestFramework):
         block.nHeight = CLTV_HEIGHT
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
-                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'), vout=1)
         fundtx, spendtx = cltv_lock_to_height(
             self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'))
 
         # The funding tx only has unexecuted bad CLTV, in scriptpubkey; this is
         # valid.
         self.nodes[0].p2p.send_and_ping(msg_tx(fundtx))
-        assert fundtx.hash in self.nodes[0].getrawmempool()
+        assert fundtx.txid_hex in self.nodes[0].getrawmempool()
 
         # Mine a block containing the funding transaction
         block.vtx.append(fundtx)
@@ -163,7 +163,7 @@ class BIP65Test(BitcoinTestFramework):
         # We show that this tx is invalid due to CLTV by getting it
         # rejected from the mempool for exactly that reason.
         assert_equal(
-            [{'txid': spendtx.hash, 'allowed': False,
+            [{'txid': spendtx.txid_hex, 'allowed': False,
               'reject-reason': 'mandatory-script-verify-flag-failed (Negative locktime)'}],
             self.nodes[0].testmempoolaccept(
                 rawtxs=[spendtx.serialize().hex()], maxfeerate=0)
@@ -191,7 +191,7 @@ class BIP65Test(BitcoinTestFramework):
         self.log.info(
             "Test that a version 4 block with a valid-according-to-CLTV transaction is accepted")
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[2],
-                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'))
+                                    self.nodeaddress, amount=SUBSIDY - Decimal('0.01'), vout=1)
         fundtx, spendtx = cltv_lock_to_height(
             self.nodes[0], fundtx, self.nodeaddress, SUBSIDY - Decimal('0.02'), CLTV_HEIGHT)
 

@@ -215,8 +215,10 @@ public:
 private:
     /** Memory only. */
     const uint256 hash;
+    const uint256 id;
 
     uint256 ComputeHash() const;
+    uint256 ComputeId() const;
 
 public:
     /** Construct a CTransaction that qualifies as IsNull() */
@@ -241,7 +243,7 @@ public:
 
     bool IsNull() const { return vin.empty() && vout.empty(); }
 
-    const TxId GetId() const { return TxId(hash); }
+    const TxId GetId() const { return TxId(id); }
     const TxHash GetHash() const { return TxHash(hash); }
 
     // Return sum of txouts.
@@ -268,8 +270,8 @@ public:
     std::string ToString() const;
 };
 #if defined(__x86_64__)
-static_assert(sizeof(CTransaction) == 88,
-              "sizeof CTransaction is expected to be 88 bytes");
+static_assert(sizeof(CTransaction) == 120,
+              "sizeof CTransaction is expected to be 120 bytes");
 #endif
 
 /**

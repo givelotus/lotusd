@@ -62,7 +62,7 @@ class CTORMiningTest(BitcoinTestFramework):
                 txin = unspent.pop()
                 inputs.append({
                     'txid': txin['txid'],
-                    'vout': 0  # This is a coinbase
+                    'vout': 1  # This is a coinbase (vout 0 = OP_RETURN)
                 })
                 if len(unspent) == 0:
                     break

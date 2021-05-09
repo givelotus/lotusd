@@ -5,6 +5,7 @@
 
 #include <primitives/transaction.h>
 
+#include <consensus/merkle.h>
 #include <hash.h>
 #include <tinyformat.h>
 #include <util/strencodings.h>
@@ -47,8 +48,22 @@ static uint256 ComputeCMutableTransactionHash(const CMutableTransaction &tx) {
     return SerializeHash(tx, SER_GETHASH, 0);
 }
 
+static uint256 ComputeTxId(int32_t nVersion, const std::vector<CTxIn> &vin,
+                           const std::vector<CTxOut> &vout,
+                           uint32_t nLockTime) {
+    CHashWriter txid(SER_GETHASH, 0);
+    size_t height;
+    txid << nVersion;
+    txid << TxInputsMerkleRoot(vin, height);
+    txid << uint8_t(height);
+    txid << TxOutputsMerkleRoot(vout, height);
+    txid << uint8_t(height);
+    txid << nLockTime;
+    return txid.GetHash();
+}
+
 TxId CMutableTransaction::GetId() const {
-    return TxId(ComputeCMutableTransactionHash(*this));
+    return TxId(ComputeTxId(nVersion, vin, vout, nLockTime));
 }
 
 TxHash CMutableTransaction::GetHash() const {
@@ -57,6 +72,10 @@ TxHash CMutableTransaction::GetHash() const {
 
 uint256 CTransaction::ComputeHash() const {
     return SerializeHash(*this, SER_GETHASH, 0);
+}
+
+uint256 CTransaction::ComputeId() const {
+    return ComputeTxId(nVersion, vin, vout, nLockTime);
 }
 
 /**
@@ -68,10 +87,10 @@ CTransaction::CTransaction()
       hash() {}
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
     : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();

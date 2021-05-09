@@ -1032,7 +1032,7 @@ static UniValue sendrawtransaction(const Config &config,
         throw JSONRPCTransactionError(err, err_string);
     }
 
-    return tx->GetHash().GetHex();
+    return tx->GetId().GetHex();
 }
 
 static UniValue testmempoolaccept(const Config &config,

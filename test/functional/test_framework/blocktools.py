@@ -70,12 +70,12 @@ def prepare_block(block):
     block.solve()
 
 
-def script_BIP34_coinbase_height(height):
+def script_coinbase_height(height):
     if height <= 16:
         num = CScriptOp.encode_op_n(height)
     else:
         num = CScriptNum(height)
-    return CScript([b'logos', num])
+    return CScript([OP_RETURN, b'logos', num])
 
 
 def create_coinbase(height, pubkey=None):
@@ -85,20 +85,19 @@ def create_coinbase(height, pubkey=None):
     otherwise an anyone-can-spend output."""
     coinbase = CTransaction()
     coinbase.vin.append(CTxIn(COutPoint(0, 0xffffffff),
-                              script_BIP34_coinbase_height(height),
+                              bytes(80),
                               0xffffffff))
+    op_return_output = CTxOut()
+    op_return_output.scriptPubKey = script_coinbase_height(height)
     coinbaseoutput = CTxOut()
     coinbaseoutput.nValue = int(SUBSIDY * COIN)
     if (pubkey is not None):
         coinbaseoutput.scriptPubKey = CScript([pubkey, OP_CHECKSIG])
     else:
         coinbaseoutput.scriptPubKey = CScript([OP_TRUE])
-    coinbase.vout = [coinbaseoutput]
+    coinbase.vout = [op_return_output, coinbaseoutput]
 
-    # Make sure the coinbase is at least 100 bytes
-    pad_tx(coinbase)
-
-    coinbase.calc_sha256()
+    coinbase.rehash()
     return coinbase
 
 
@@ -111,32 +110,32 @@ def create_tx_with_script(prevtx, n, script_sig=b"", *,
     """
     tx = CTransaction()
     assert(n < len(prevtx.vout))
-    tx.vin.append(CTxIn(COutPoint(prevtx.sha256, n), script_sig, 0xffffffff))
+    tx.vin.append(CTxIn(COutPoint(prevtx.txid, n), script_sig, 0xffffffff))
     tx.vout.append(CTxOut(amount, script_pub_key))
     pad_tx(tx)
-    tx.calc_sha256()
+    tx.rehash()
     return tx
 
 
-def create_transaction(node, txid, to_address, *, amount):
+def create_transaction(node, txid, to_address, *, amount, vout=0):
     """ Return signed transaction spending the first output of the
         input txid. Note that the node must be able to sign for the
         output that is being spent, and the node must not be running
         multiple wallets.
     """
-    raw_tx = create_raw_transaction(node, txid, to_address, amount=amount)
+    raw_tx = create_raw_transaction(node, txid, to_address, amount=amount, vout=vout)
     tx = FromHex(CTransaction(), raw_tx)
     return tx
 
 
-def create_raw_transaction(node, txid, to_address, *, amount):
+def create_raw_transaction(node, txid, to_address, *, amount, vout=0):
     """ Return raw signed transaction spending the first output of the
         input txid. Note that the node must be able to sign for the
         output that is being spent, and the node must not be running
         multiple wallets.
     """
     rawtx = node.createrawtransaction(
-        inputs=[{"txid": txid, "vout": 0}], outputs={to_address: amount})
+        inputs=[{"txid": txid, "vout": vout}], outputs={to_address: amount})
     signresult = node.signrawtransactionwithwallet(rawtx)
     assert_equal(signresult["complete"], True)
     return signresult['hex']
@@ -242,5 +241,5 @@ class TestFrameworkBlockTools(unittest.TestCase):
         height = 20
         coinbase_tx = create_coinbase(height=height)
         assert_equal(
-            CScriptNum.decode(coinbase_tx.vin[0].scriptSig[len(b'\x05logos'):]),
+            CScriptNum.decode(coinbase_tx.vout[0].scriptPubKey[len(b'_\x05logos'):]),
             height)

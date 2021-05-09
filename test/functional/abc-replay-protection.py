@@ -101,7 +101,7 @@ class ReplayProtectionTest(BitcoinTestFramework):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # move the tip back to a previous block
         def tip(number):
@@ -159,7 +159,7 @@ class ReplayProtectionTest(BitcoinTestFramework):
             # Spend transaction
             txspend = CTransaction()
             txspend.vout.append(CTxOut(int(SUBSIDY * COIN) - 2000, CScript([OP_TRUE])))
-            txspend.vin.append(CTxIn(COutPoint(txfund.sha256, 0), b''))
+            txspend.vin.append(CTxIn(COutPoint(txfund.txid, 0), b''))
 
             # Sign the transaction
             sighashtype = (forkvalue << 8) | SIGHASH_ALL | SIGHASH_FORKID

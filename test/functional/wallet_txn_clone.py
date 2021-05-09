@@ -14,7 +14,8 @@ from test_framework.util import (
     connect_nodes,
     disconnect_nodes,
 )
-from test_framework.messages import CTransaction, COIN
+from test_framework.script import CScript, OP_RETURN
+from test_framework.messages import CTransaction, CTxOut, COIN
 
 
 class TxnMallTest(BitcoinTestFramework):
@@ -90,6 +91,7 @@ class TxnMallTest(BitcoinTestFramework):
 
         # Use a different signature hash type to sign.  This creates an equivalent but malleated clone.
         # Don't send the clone anywhere yet
+        clone_tx.vout.append(CTxOut(0, CScript([OP_RETURN])))
         tx1_clone = self.nodes[0].signrawtransactionwithwallet(
             clone_tx.serialize().hex(), None, "ALL|FORKID|ANYONECANPAY")
         assert_equal(tx1_clone["complete"], True)

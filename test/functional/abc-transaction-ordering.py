@@ -82,7 +82,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
                 tx = CTransaction()
                 # Spend from one of the spendable outputs
                 spend = spendable_outputs.popleft()
-                tx.vin.append(CTxIn(COutPoint(spend.tx.sha256, spend.n)))
+                tx.vin.append(CTxIn(COutPoint(spend.tx.txid, spend.n)))
                 # Add spendable outputs
                 for i in range(4):
                     tx.vout.append(CTxOut(0, CScript([OP_TRUE])))
@@ -141,7 +141,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # move the tip back to a previous block
         def tip(number):
@@ -216,7 +216,7 @@ class TransactionOrderingTest(BitcoinTestFramework):
             [double_tx_block.vtx[8]] + double_tx_block.vtx[8:]
         update_block(4447)
         node.p2p.send_blocks_and_test(
-            [self.tip], node, success=False, reject_reason='bad-txns-duplicate')
+            [self.tip], node, success=False, reject_reason='tx-duplicate')
 
         # Rewind bad block.
         tip(4446)

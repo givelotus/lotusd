@@ -80,12 +80,17 @@ BOOST_AUTO_TEST_CASE(psbt_updater_test) {
     // Call FillPSBT
     PartiallySignedTransaction psbtx;
     CDataStream ssData(
-        ParseHex("70736274ff0100a0020000000258e87a21b56daf0c23be8e7070456c336f7"
-                 "cbaa5c8757924f545887bb2abdd750000000000ffffffff6b04ec37326fba"
-                 "c8e468a73bf952c8877f84f96c3f9deadeab246455e34fe0cd0100000000f"
-                 "fffffff0270aaf008000000001976a914d85c2b71d0060b09c9886aeb815e"
-                 "50991dda124d88ac00e1f505000000001976a91400aea9a2e5f0f876a588d"
-                 "f5546e8742d1d87008f88ac000000000000000000"),
+        ParseHex(
+            "70736274ff0100a00200000002"
+            // spent prev_tx2
+            "1dde6a239e4c4b9b3b6dff700958e6a6841e063722e7eacfc56fc05ce281e161"
+            "0000000000ffffffff"
+            // spent prev_tx1
+            "82f42b26d2d93d14d3c2020333331d239ff21e1ab766db08ba1f302016049dde"
+            "0100000000f"
+            "fffffff0270aaf008000000001976a914d85c2b71d0060b09c9886aeb815e"
+            "50991dda124d88ac00e1f505000000001976a91400aea9a2e5f0f876a588d"
+            "f5546e8742d1d87008f88ac000000000000000000"),
         SER_NETWORK, PROTOCOL_VERSION);
     ssData >> psbtx;
 
@@ -104,9 +109,13 @@ BOOST_AUTO_TEST_CASE(psbt_updater_test) {
     std::string final_hex = HexStr(ssTx);
     BOOST_CHECK_EQUAL(
         final_hex,
-        "70736274ff0100a0020000000258e87a21b56daf0c23be8e7070456c336f7cbaa5c875"
-        "7924f545887bb2abdd750000000000ffffffff6b04ec37326fbac8e468a73bf952c887"
-        "7f84f96c3f9deadeab246455e34fe0cd0100000000ffffffff0270aaf0080000000019"
+        "70736274ff0100a00200000002"
+        // spent prev_tx2
+        "1dde6a239e4c4b9b3b6dff700958e6a6841e063722e7eacfc56fc05ce281e161"
+        "0000000000ffffffff"
+        // spent prev_tx1
+        "82f42b26d2d93d14d3c2020333331d239ff21e1ab766db08ba1f302016049dde"
+        "0100000000ffffffff0270aaf0080000000019"
         "76a914d85c2b71d0060b09c9886aeb815e50991dda124d88ac00e1f505000000001976"
         "a91400aea9a2e5f0f876a588df5546e8742d1d87008f88ac000000000001002080f0fa"
         "020000000017a9140fb9463421696b82c833af241c78c17ddbde493487010447522102"

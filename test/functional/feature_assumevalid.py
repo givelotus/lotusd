@@ -147,10 +147,10 @@ class AssumeValidTest(BitcoinTestFramework):
         # (null) signature
         tx = CTransaction()
         tx.vin.append(
-            CTxIn(COutPoint(self.block1.vtx[0].sha256, 0), scriptSig=b""))
+            CTxIn(COutPoint(self.block1.vtx[0].txid, 1), scriptSig=b""))
         tx.vout.append(CTxOut(int(SUBSIDY * COIN), CScript([OP_TRUE])))
         pad_tx(tx)
-        tx.calc_sha256()
+        tx.rehash()
 
         block102 = create_block(
             self.tip, create_coinbase(height), self.block_time)

@@ -74,6 +74,10 @@ CBlock BuildChainTestingSetup::CreateBlock(
     block.hashPrevBlock = prev->GetBlockHash();
     block.SetBlockTime(prev->nTime + 1);
     block.nHeight = prev->nHeight + 1;
+    CMutableTransaction txCoinbase(*block.vtx[0]);
+    txCoinbase.vout[0].scriptPubKey = CScript() << OP_RETURN << COINBASE_PREFIX
+                                                << block.nHeight;
+    block.vtx[0] = MakeTransactionRef(std::move(txCoinbase));
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);

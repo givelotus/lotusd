@@ -65,8 +65,9 @@ class MempoolPackagesTest(BitcoinTestFramework):
         # MAX_ANCESTORS transactions off a confirmed tx should be fine
         chain = []
         for i in range(MAX_ANCESTORS):
-            (txid, sent_value) = self.chain_transaction(
-                self.nodes[0], txid, 0, value, fee, 1)
+            txid, sent_value = self.chain_transaction(
+                self.nodes[0], txid, vout, value, fee, 1)
+            vout = 0
             value = sent_value
             chain.append(txid)
 
