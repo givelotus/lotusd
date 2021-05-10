@@ -97,7 +97,7 @@ class MinimaldataTest(BitcoinTestFramework):
     def check_for_ban_on_rejected_tx(self, tx, reject_reason=None):
         """Check we are disconnected when sending a txn that the node rejects.
 
-        (Can't actually get banned, since bitcoind won't ban local peers.)"""
+        (Can't actually get banned, since lotusd won't ban local peers.)"""
         self.nodes[0].p2p.send_txs_and_test(
             [tx], self.nodes[0], success=False, expect_disconnect=True, reject_reason=reject_reason)
         self.reconnect_p2p()
@@ -105,7 +105,7 @@ class MinimaldataTest(BitcoinTestFramework):
     def check_for_ban_on_rejected_block(self, block, reject_reason=None):
         """Check we are disconnected when sending a block that the node rejects.
 
-        (Can't actually get banned, since bitcoind won't ban local peers.)"""
+        (Can't actually get banned, since lotusd won't ban local peers.)"""
         self.nodes[0].p2p.send_blocks_and_test(
             [block], self.nodes[0], success=False, reject_reason=reject_reason, expect_disconnect=True)
         self.reconnect_p2p()

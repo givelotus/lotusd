@@ -17,7 +17,7 @@ ninja
 ninja install # optional
 ```
 
-This will build bitcoin-qt as well.
+This will build lotus-qt as well.
 
 Dependencies
 ---------------------
@@ -124,7 +124,7 @@ jemalloc dependencies (provides the jemalloc library, can be disabled by passing
 Dependencies for the GUI: Ubuntu & Debian
 -----------------------------------------
 
-If you want to build bitcoin-qt, make sure that the required packages for Qt development
+If you want to build lotus-qt, make sure that the required packages for Qt development
 are installed. Qt 5 is necessary to build the GUI.
 To build without GUI pass `-DBUILD_BITCOIN_QT=OFF` on the cmake command line.
 
@@ -160,7 +160,7 @@ libqrencode dependencies (can be disabled by passing `-DENABLE_QRCODE=OFF`):
 
 Notes
 -----
-The release is built with GCC and then "strip bitcoind" to strip the debug
+The release is built with GCC and then "strip lotusd" to strip the debug
 symbols, which reduces the executable size by about 90%.
 
 

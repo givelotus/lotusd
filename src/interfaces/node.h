@@ -42,7 +42,7 @@ class Handler;
 class Wallet;
 struct BlockTip;
 
-//! Top-level interface for a bitcoin node (bitcoind process).
+//! Top-level interface for a bitcoin node (lotusd process).
 class Node {
 public:
     virtual ~Node() {}

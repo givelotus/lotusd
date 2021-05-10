@@ -132,7 +132,7 @@ static void SetupCliArgs(ArgsManager &argsman) {
     argsman.AddArg(
         "-rpcwallet=<walletname>",
         "Send RPC for non-default wallet on RPC server (needs to exactly match "
-        "corresponding -wallet option passed to bitcoind). This changes the "
+        "corresponding -wallet option passed to lotusd). This changes the "
         "RPC endpoint used, e.g. http://127.0.0.1:10604/wallet/<walletname>",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
@@ -184,14 +184,14 @@ static int AppInitRPC(int argc, char *argv[]) {
             PACKAGE_NAME " RPC client version " + FormatFullVersion() + "\n";
         if (!gArgs.IsArgSet("-version")) {
             strUsage += "\n"
-                        "Usage:  bitcoin-cli [options] <command> [params]  "
+                        "Usage:  lotus-cli [options] <command> [params]  "
                         "Send command to " PACKAGE_NAME "\n"
-                        "or:     bitcoin-cli [options] -named <command> "
+                        "or:     lotus-cli [options] -named <command> "
                         "[name=value]...  Send command to " PACKAGE_NAME
                         " (with named arguments)\n"
-                        "or:     bitcoin-cli [options] help                "
+                        "or:     lotus-cli [options] help                "
                         "List commands\n"
-                        "or:     bitcoin-cli [options] help <command>      Get "
+                        "or:     lotus-cli [options] help <command>      Get "
                         "help for a command\n";
 
             strUsage += "\n" + gArgs.GetHelpMessage();
@@ -480,7 +480,7 @@ public:
 
         const UniValue &networkinfo{batch[ID_NETWORKINFO]["result"]};
         if (networkinfo["version"].get_int() < 230000) {
-            throw std::runtime_error("-netinfo requires bitcoind server to be "
+            throw std::runtime_error("-netinfo requires lotusd server to be "
                                      "running v0.23.0 and up");
         }
 
@@ -771,7 +771,7 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string &strMethod,
         }
         throw CConnectionFailed(
             strprintf("Could not connect to the server %s:%d%s\n\nMake sure "
-                      "the bitcoind server is running and that you are "
+                      "the lotusd server is running and that you are "
                       "connecting to the correct RPC port.",
                       host, port, responseErrorMessage));
     } else if (response.status == HTTP_UNAUTHORIZED) {
@@ -985,7 +985,7 @@ static int CommandLineRPC(int argc, char *argv[]) {
                 if (errCode.isNum() &&
                     errCode.get_int() == RPC_WALLET_NOT_SPECIFIED) {
                     strPrint += "\nTry adding \"-rpcwallet=<filename>\" option "
-                                "to bitcoin-cli command line.";
+                                "to lotus-cli command line.";
                 }
             }
         } else {

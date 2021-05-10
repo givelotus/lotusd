@@ -51,10 +51,10 @@ include(TestSuite)
 
 set(_TEST_TARGET_DEPENDS "")
 if(BUILD_BITCOIN_CLI)
-	list(APPEND _TEST_TARGET_DEPENDS bitcoin-cli)
+	list(APPEND _TEST_TARGET_DEPENDS lotus-cli)
 endif()
 if(BUILD_BITCOIN_WALLET)
-	list(APPEND _TEST_TARGET_DEPENDS bitcoin-wallet)
+	list(APPEND _TEST_TARGET_DEPENDS lotus-wallet)
 endif()
 
 function(add_functional_test_check TARGET DESCRIPTION)
@@ -73,7 +73,7 @@ function(add_functional_test_check TARGET DESCRIPTION)
 		CUSTOM_TARGET_ARGS
 			COMMENT "Running ${DESCRIPTION}"
 			DEPENDS
-				bitcoind
+				lotusd
 				${_TEST_TARGET_DEPENDS}
 				${CMAKE_CURRENT_BINARY_DIR}/functional/test_runner.py
 			USES_TERMINAL
@@ -115,7 +115,7 @@ if(BUILD_BITCOIN_TX)
 		CUSTOM_TARGET_ARGS
 			COMMENT "Test Bitcoin utilities..."
 			DEPENDS
-				bitcoin-tx
+				lotus-tx
 				${CMAKE_CURRENT_BINARY_DIR}/util/bitcoin-util-test.py
 	)
 

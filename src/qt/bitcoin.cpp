@@ -183,7 +183,7 @@ void BitcoinABC::shutdown() {
 }
 
 static int qt_argc = 1;
-static const char *qt_argv = "bitcoin-qt";
+static const char *qt_argv = "lotus-qt";
 
 BitcoinApplication::BitcoinApplication()
     : QApplication(qt_argc, const_cast<char **>(&qt_argv)), coreThread(nullptr),
@@ -488,7 +488,7 @@ static void SetupUIArgs(ArgsManager &argsman) {
 static void MigrateSettings() {
     assert(!QApplication::applicationName().isEmpty());
 
-    static const QString legacyAppName("Bitcoin-Qt"),
+    static const QString legacyAppName("Lotus-QT"),
 #ifdef Q_OS_DARWIN
         // Macs and/or iOS et al use a domain-style name for Settings
         // files. All other platforms use a simple orgname. This

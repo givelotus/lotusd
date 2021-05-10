@@ -49,8 +49,8 @@ case $1 in
 esac
 done
 
-BITCOIND="${BUILD_DIR}/src/bitcoind"
-BITCOIN_CLI="${BUILD_DIR}/src/bitcoin-cli"
+BITCOIND="${BUILD_DIR}/src/lotusd"
+BITCOIN_CLI="${BUILD_DIR}/src/lotus-cli"
 if [ ! -x "${BITCOIND}" ]; then
   echo "${BITCOIND} does not exist or has incorrect permissions."
   exit 10
@@ -65,14 +65,14 @@ TEMP_DATADIR=$(mktemp -d)
 BITCOIND="${BITCOIND} -datadir=${TEMP_DATADIR} ${OPTION_TESTNET} -rpcport=${RPC_PORT} -connect=0 -daemon"
 BITCOIN_CLI="${BITCOIN_CLI} -datadir=${TEMP_DATADIR} ${OPTION_TESTNET} -rpcport=${RPC_PORT}"
 
->&2 echo "Spinning up bitcoind..."
+>&2 echo "Spinning up lotusd..."
 ${BITCOIND} || {
-  echo "Error starting bitcoind. Stopping script."
+  echo "Error starting lotusd. Stopping script."
   exit 12
 }
 cleanup() {
   # Cleanup background processes spawned by this script.
-  >&2 echo "Cleaning up bitcoin daemon..."
+  >&2 echo "Cleaning up lotus daemon..."
   ${BITCOIN_CLI} stop
   rm -rf "${TEMP_DATADIR}"
 }
@@ -80,7 +80,7 @@ trap "cleanup" EXIT
 
 # Short sleep to make sure the RPC server is available
 sleep 0.1
-# Wait until bitcoind is fully spun up
+# Wait until lotusd is fully spun up
 WARMUP_TIMEOUT=60
 for _ in $(seq 1 ${WARMUP_TIMEOUT}); do
   ${BITCOIN_CLI} getconnectioncount &> /dev/null

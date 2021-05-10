@@ -43,7 +43,7 @@ object BitcoinABCMasterLinux : BuildType({
             // Parse test reports
             type = "xml-report-plugin"
             param("xmlReportParsing.reportType", "junit")
-            param("xmlReportParsing.reportDirs", "+:build/test_bitcoin.xml")
+            param("xmlReportParsing.reportDirs", "+:build/test_lotus.xml")
         }
     }
 })

@@ -103,7 +103,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
         out1 = conn.getresponse().read()
         assert b'"error":null' in out1
         assert conn.sock is not None
-        # connection must be closed because bitcoind should use
+        # connection must be closed because lotusd should use
         # keep-alive by default
 
         # Check excessive request size

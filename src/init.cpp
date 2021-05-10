@@ -106,7 +106,7 @@ static const char *DEFAULT_ASMAP_FILENAME = "ip_asn.map";
 /**
  * The PID file facilities.
  */
-static const char *BITCOIN_PID_FILENAME = "bitcoind.pid";
+static const char *BITCOIN_PID_FILENAME = "lotusd.pid";
 
 static fs::path GetPidFile(const ArgsManager &args) {
     return AbsPathForConfigVal(
@@ -1032,16 +1032,14 @@ void SetupServerArgs(NodeContext &node) {
         "-acceptnonstdtxn",
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
-            "testnet/regtest only; ",
-            false),
+            "testnet/regtest only; ", false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg(
         "-allownonstdtxnconsensus",
         strprintf(
             "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
-            "testnet/regtest only; ",
-            false),
+            "testnet/regtest only; ", false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
@@ -2020,13 +2018,12 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     }
 
     fRequireStandardPolicy = !args.GetBoolArg("-acceptnonstdtxn", false);
-    fRequireStandardConsensus =  // defaults to fRequireStandardPolicy
+    fRequireStandardConsensus = // defaults to fRequireStandardPolicy
         !args.GetBoolArg("-allownonstdtxnconsensus", !fRequireStandardPolicy);
     if (!fRequireStandardPolicy && fRequireStandardConsensus) {
-        return InitError(
-            Untranslated(
-                "-acceptnonstdtxn=1 -allownonstdtxnconsensus=0 is an invalid "
-                "combination"));
+        return InitError(Untranslated(
+            "-acceptnonstdtxn=1 -allownonstdtxnconsensus=0 is an invalid "
+            "combination"));
     }
     if (!chainparams.IsTestChain() && !fRequireStandardPolicy) {
         return InitError(strprintf(

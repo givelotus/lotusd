@@ -12,7 +12,7 @@ class ArgsManager;
 
 /**
  * CBaseChainParams defines the base parameters
- * (shared between bitcoin-cli and bitcoind)
+ * (shared between lotus-cli and lotusd)
  * of a given instance of the Bitcoin system.
  */
 class CBaseChainParams {

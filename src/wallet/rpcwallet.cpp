@@ -3174,7 +3174,7 @@ static UniValue loadwallet(const Config &config,
         "loadwallet",
         "Loads a wallet from a wallet file or directory."
         "\nNote that all wallet command-line options used when starting "
-        "bitcoind will be"
+        "lotusd will be"
         "\napplied to the new wallet (eg -zapwallettxes, rescan, etc).\n",
         {
             {"filename", RPCArg::Type::STR, RPCArg::Optional::NO,
@@ -4395,7 +4395,7 @@ UniValue getaddressinfo(const Config &config, const JSONRPCRequest &request) {
                      {RPCResult::Type::OBJ,
                       "",
                       "DEPRECATED, will be removed in a future version. To "
-                      "re-enable, launch bitcoind with "
+                      "re-enable, launch lotusd with "
                       "`-deprecatedrpc=labelspurpose`",
                       {
                           {RPCResult::Type::STR, "name",

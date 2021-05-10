@@ -3,15 +3,14 @@ abc-ci-builds
 *.tar.gz
 
 *.exe
-src/bitcoin
-src/bitcoind
-src/bitcoin-cli
-src/bitcoin-seeder
-src/bitcoin-tx
-src/bitcoin-wallet
-src/test/test_bitcoin
-src/test/test_bitcoin_fuzzy
-src/qt/test/test_bitcoin-qt
+src/lotusd
+src/lotus-cli
+src/lotus-seeder
+src/lotus-tx
+src/lotus-wallet
+src/test/test_lotus
+src/test/test_lotus_fuzzy
+src/qt/test/test_lotus-qt
 
 src/univalue/gen
 src/obj
@@ -22,11 +21,11 @@ src/qt/forms/ui_*.h
 
 src/qt/test/moc*.cpp
 
-src/qt/bitcoin-qt.config
-src/qt/bitcoin-qt.creator
-src/qt/bitcoin-qt.creator.user
-src/qt/bitcoin-qt.files
-src/qt/bitcoin-qt.includes
+src/qt/lotus-qt.config
+src/qt/lotus-qt.creator
+src/qt/lotus-qt.creator.user
+src/qt/lotus-qt.files
+src/qt/lotus-qt.includes
 
 .deps
 .libs
@@ -56,8 +55,8 @@ src/qt/bitcoin-qt.includes
 # Compilation and Qt preprocessor part
 *.qm
 Makefile
-bitcoin-qt
-Bitcoin-Qt.app
+lotus-qt
+Lotus-QT.app
 background.tiff*
 
 # Resources cpp

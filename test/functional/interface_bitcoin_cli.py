@@ -2,7 +2,7 @@
 # Copyright (c) 2017-2019 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test bitcoin-cli"""
+"""Test lotus-cli"""
 from decimal import Decimal
 from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
@@ -32,7 +32,7 @@ class TestBitcoinCli(BitcoinTestFramework):
         self.nodes[0].generate(BLOCKS)
 
         self.log.info(
-            "Compare responses from getblockchaininfo RPC and `bitcoin-cli getblockchaininfo`")
+            "Compare responses from getblockchaininfo RPC and `lotus-cli getblockchaininfo`")
         cli_response = self.nodes[0].cli.getblockchaininfo()
         rpc_response = self.nodes[0].getblockchaininfo()
         assert_equal(cli_response, rpc_response)
@@ -82,7 +82,7 @@ class TestBitcoinCli(BitcoinTestFramework):
 
         if self.is_wallet_compiled():
             self.log.info(
-                "Test -getinfo and bitcoin-cli getwalletinfo return expected wallet info")
+                "Test -getinfo and lotus-cli getwalletinfo return expected wallet info")
             assert_equal(cli_get_info['balance'], BALANCE)
             assert 'balances' not in cli_get_info.keys()
             wallet_info = self.nodes[0].getwalletinfo()

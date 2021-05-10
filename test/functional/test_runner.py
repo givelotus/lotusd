@@ -245,9 +245,9 @@ def main():
     if args.junitoutput and not os.path.isabs(args.junitoutput):
         args.junitoutput = os.path.join(tmpdir, args.junitoutput)
 
-    enable_bitcoind = config["components"].getboolean("ENABLE_BITCOIND")
+    enable_lotusd = config["components"].getboolean("ENABLE_BITCOIND")
 
-    if not enable_bitcoind:
+    if not enable_lotusd:
         print("No functional tests to run.")
         print("Rerun ./configure with --with-daemon and then make")
         sys.exit(0)
@@ -354,11 +354,11 @@ def run_tests(test_list, build_dir, tests_dir, junitoutput, tmpdir, num_jobs, te
               enable_coverage=False, args=None, combined_logs_len=0, build_timings=None, failfast=False):
     args = args or []
 
-    # Warn if bitcoind is already running (unix only)
+    # Warn if lotusd is already running (unix only)
     try:
-        pidofOutput = subprocess.check_output(["pidof", "bitcoind"])
+        pidofOutput = subprocess.check_output(["pidof", "lotusd"])
         if pidofOutput is not None and pidofOutput != b'':
-            print("{}WARNING!{} There is already a bitcoind process running on this system. Tests may fail unexpectedly due to resource contention!".format(
+            print("{}WARNING!{} There is already a lotusd process running on this system. Tests may fail unexpectedly due to resource contention!".format(
                 BOLD[1], BOLD[0]))
     except (OSError, subprocess.SubprocessError):
         pass
@@ -447,7 +447,7 @@ def execute_test_processes(
     failfast_event = threading.Event()
     test_results = []
     poll_timeout = 10  # seconds
-    # In case there is a graveyard of zombie bitcoinds, we can apply a
+    # In case there is a graveyard of zombie lotusds, we can apply a
     # pseudorandom offset to hopefully jump over them.
     # (625 is PORT_RANGE/MAX_NODES)
     portseed_offset = int(time.time() * 1000) % 625
@@ -737,7 +737,7 @@ class RPCCoverage():
     Coverage calculation works by having each test script subprocess write
     coverage files into a particular directory. These files contain the RPC
     commands invoked during testing, as well as a complete listing of RPC
-    commands per `bitcoin-cli help` (`rpc_interface.txt`).
+    commands per `lotus-cli help` (`rpc_interface.txt`).
 
     After all tests complete, the commands run are combined and diff'd against
     the complete list to calculate uncovered RPC commands.

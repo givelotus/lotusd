@@ -102,7 +102,7 @@ gen_asmap_headers(ASMAP_HEADERS
 	data/asmap.raw
 )
 
-add_boost_unit_tests_to_suite(bitcoin test_bitcoin
+add_boost_unit_tests_to_suite(bitcoin test_lotus
 	fixture.cpp
 	jsonutil.cpp
 	scriptflags.cpp
@@ -278,13 +278,13 @@ function(add_boost_test_runners_with_upgrade_activated SUITE EXECUTABLE)
 	endforeach()
 endfunction()
 
-add_boost_test_runners_with_upgrade_activated(bitcoin test_bitcoin)
+add_boost_test_runners_with_upgrade_activated(bitcoin test_lotus)
 
-target_link_libraries(test_bitcoin rpcclient testutil)
+target_link_libraries(test_lotus rpcclient testutil)
 if(TARGET bitcoinconsensus-shared)
-	target_link_libraries(test_bitcoin bitcoinconsensus-shared)
+	target_link_libraries(test_lotus bitcoinconsensus-shared)
 else()
-	target_link_libraries(test_bitcoin bitcoinconsensus)
+	target_link_libraries(test_lotus bitcoinconsensus)
 endif()
 
 add_subdirectory(fuzz)
