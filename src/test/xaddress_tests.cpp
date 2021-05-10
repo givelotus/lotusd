@@ -194,4 +194,50 @@ BOOST_AUTO_TEST_CASE(parse_p2pkh_works) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(encode_destination_works) {
+    // First create an instance of an engine.
+    std::random_device rd;
+    auto gen = [&rd]() { return uint8_t(rd()); };
+    GlobalConfig config;
+    std::vector<uint8_t> fakeKeyBytes(32);
+    std::generate(begin(fakeKeyBytes), end(fakeKeyBytes), gen);
+    const auto fakeKeyId = Hash160(fakeKeyBytes);
+    // Assert that encode works for PKHash.
+    {
+        CScript scriptPubKey = CScript() << OP_DUP << OP_HASH160
+                                         << ToByteVector(fakeKeyId)
+                                         << OP_EQUALVERIFY << OP_CHECKSIG;
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        BOOST_CHECK_EQUAL(
+            XAddress::EncodeDestination(config.GetChainParams(),
+                                        PKHash(CKeyID(fakeKeyId))),
+            encodedAddress);
+    }
+
+    // Assert that encode works for ScriptHash.
+    {
+        CScript redeemScript = CScript() << OP_TRUE;
+        CScript scriptPubKey =
+            CScript() << OP_HASH160
+                      << ToByteVector(Hash160(ToByteVector(redeemScript)))
+                      << OP_EQUAL;
+
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        BOOST_CHECK_EQUAL(XAddress::EncodeDestination(config.GetChainParams(),
+                                                      ScriptHash(redeemScript)),
+                          encodedAddress);
+    }
+
+    // Assert null address for CNoDestination.
+    {
+        BOOST_CHECK_EQUAL(XAddress::EncodeDestination(config.GetChainParams(),
+                                                      CNoDestination()),
+                          "");
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

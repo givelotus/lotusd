@@ -63,6 +63,11 @@ DecodeError Decode(const std::string &address, Content &parsedOutput);
  */
 bool Parse(const CChainParams &params, const std::string &address,
            CTxDestination &retDestination);
+/**
+ * Encodes a CTxDestination to an XAddress. Returns the empty string on failure.
+ */
+std::string EncodeDestination(const CChainParams &params,
+                              const CTxDestination &dst);
 } // namespace XAddress
 
 #endif // BITCOIN_XADDR_H
