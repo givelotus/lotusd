@@ -76,15 +76,15 @@ class Int63Test(BitcoinTestFramework):
             coin = int(node.getblock(block_hash)['tx'][0], 16)
             tx = CTransaction()
             tx.vin.append(
-                CTxIn(COutPoint(coin, 0), CScript([b'\x51'])))
+                CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
             return tx
 
         def make_block():
             parent_block_header = node.getblockheader(node.getbestblockhash())
             height = parent_block_header['height'] + 1
             coinbase = create_coinbase(height)
-            coinbase.vout[0].scriptPubKey = p2sh_script
-            coinbase.calc_sha256()
+            coinbase.vout[1].scriptPubKey = p2sh_script
+            coinbase.rehash()
             block = create_block(
                 int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
             block.nHeight = height
@@ -173,7 +173,7 @@ class Int63Test(BitcoinTestFramework):
                     CScript([OP_HASH160, hash160(script), OP_EQUAL])))
             fund_tx.rehash()
             for i, script in enumerate(scripts):
-                spend_tx.vin.append(CTxIn(COutPoint(fund_tx.sha256, i), CScript([script])))
+                spend_tx.vin.append(CTxIn(COutPoint(fund_tx.txid, i), CScript([script])))
             spend_tx.vout.append(CTxOut(value // len(scripts), p2sh_script))
             txs.append(fund_tx)
             txs.append(spend_tx)
@@ -197,7 +197,7 @@ class Int63Test(BitcoinTestFramework):
 
             for vout, script in enumerate(scripts):
                 spend_tx = CTransaction()
-                spend_tx.vin.append(CTxIn(COutPoint(fund_tx.sha256, vout), CScript([script])))
+                spend_tx.vin.append(CTxIn(COutPoint(fund_tx.txid, vout), CScript([script])))
                 spend_tx.vout.append(CTxOut(value // len(scripts), p2sh_script))
                 pad_tx(spend_tx)
                 invalid_spend_txs.append(spend_tx)

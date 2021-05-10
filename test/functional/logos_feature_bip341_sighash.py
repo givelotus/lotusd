@@ -303,7 +303,7 @@ class Bip341Sighash(BitcoinTestFramework):
         block_hash = node.getblockhash(1)
         coin = int(node.getblock(block_hash)['tx'][0], 16)
         tx_fan_out = CTransaction()
-        tx_fan_out.vin.append(CTxIn(COutPoint(coin, 0), CScript([b'\x51'])))
+        tx_fan_out.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
         tx_fan_out.vout = spendable_outputs
         tx_fan_out.rehash()
 
@@ -329,7 +329,7 @@ class Bip341Sighash(BitcoinTestFramework):
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(output_amount, output_script))
             for _ in test_case['sig_hash_types']:
-                tx.vin.append(CTxIn(COutPoint(int(tx_fan_out.hash, 16), utxo_idx), CScript()))
+                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid, utxo_idx), CScript()))
                 utxo_idx += 1
             # Keep unsigned tx for signrawtransactionwithkey below
             unsigned_tx = tx.serialize().hex()
@@ -338,7 +338,7 @@ class Bip341Sighash(BitcoinTestFramework):
             # Make list of inputs for signrawtransactionwithkey
             for i, spent_output in enumerate(spent_outputs):
                 sign_inputs.append({
-                    'txid': tx_fan_out.hash,
+                    'txid': tx_fan_out.txid_hex,
                     'vout': key_idx + i,
                     'amount': Decimal(spent_output.nValue) / COIN,
                     'scriptPubKey': spent_output.scriptPubKey.hex(),

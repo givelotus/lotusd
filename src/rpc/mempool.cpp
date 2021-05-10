@@ -95,7 +95,7 @@ static RPCHelpMan sendrawtransaction() {
             CHECK_NONFATAL(node.validation_signals)
                 ->SyncWithValidationInterfaceQueue();
 
-            return tx->GetHash().GetHex();
+            return tx->GetId().GetHex();
         },
     };
 }
