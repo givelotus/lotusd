@@ -9,6 +9,7 @@
 #include <config.h>
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
+#include <consensus/merkle.h>
 #include <crypto/sha256.h>
 #include <init.h>
 #include <interfaces/chain.h>
@@ -35,6 +36,7 @@
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 
+#include <assert.h>
 #include <functional>
 #include <memory>
 
@@ -322,7 +324,7 @@ CBlock getBlock13b8a() {
             "3f0c0000000000"   // nSize
             "a2860100"         // nHeight
             "0000000000000000000000000000000000000000000000000000000000000000"
-            "5275289558f51c9966699404ae2294730c3c9f9bda53523ce50e9b95e558da2f"
+            "8be315ab53286df23d5a48ab1b5b0bbcd7ad414cd7c35993a8e55958b4a52b75"
             "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
             "00"
             "09010000000100000000000000000000000000"
@@ -418,5 +420,6 @@ CBlock getBlock13b8a() {
             "ef7942fc9288edd37c32f5c388ac00000000"),
         SER_NETWORK, PROTOCOL_VERSION);
     stream >> block;
+    assert(BlockMerkleRoot(block) == block.hashMerkleRoot);
     return block;
 }

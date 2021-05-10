@@ -214,6 +214,24 @@ def ToHex(obj):
     return obj.serialize().hex()
 
 
+# Calculate merkle root given a vector of hashes
+def get_merkle_root(hashes):
+    if not hashes:
+        return bytes(32), 0
+    num_layers = 1
+    while len(hashes) > 1:
+        num_layers += 1
+        newhashes = []
+        for i in range(0, len(hashes), 2):
+            if i + 1 < len(hashes):
+                other = hashes[i + 1]
+            else:
+                other = bytes(32)
+            newhashes.append(hash256(hashes[i] + other))
+        hashes = newhashes
+    return hashes[0], num_layers
+
+
 # Objects that map to lotusd objects, which can be serialized/deserialized
 
 class CAddress:
@@ -426,7 +444,16 @@ class CTxOut:
 
 
 class CTransaction:
-    __slots__ = ("hash", "nLockTime", "nVersion", "sha256", "vin", "vout")
+    __slots__ = (
+        "txhash",
+        "txhash_hex",
+        "txid",
+        "txid_hex",
+        "nLockTime",
+        "nVersion",
+        "vin",
+        "vout",
+    )
 
     def __init__(self, tx=None):
         if tx is None:
@@ -434,23 +461,29 @@ class CTransaction:
             self.vin = []
             self.vout = []
             self.nLockTime = 0
-            self.sha256 = None
-            self.hash = None
+            self.txhash = None
+            self.txhash_hex = None
+            self.txid = None
+            self.txid_hex = None
         else:
             self.nVersion = tx.nVersion
             self.vin = copy.deepcopy(tx.vin)
             self.vout = copy.deepcopy(tx.vout)
             self.nLockTime = tx.nLockTime
-            self.sha256 = tx.sha256
-            self.hash = tx.hash
+            self.txhash = tx.txhash
+            self.txhash_hex = tx.txhash_hex
+            self.txid = tx.txid
+            self.txid_hex = tx.txid_hex
 
     def deserialize(self, f):
         self.nVersion = struct.unpack("<i", f.read(4))[0]
         self.vin = deser_vector(f, CTxIn)
         self.vout = deser_vector(f, CTxOut)
         self.nLockTime = struct.unpack("<I", f.read(4))[0]
-        self.sha256 = None
-        self.hash = None
+        self.txhash = None
+        self.txhash_hex = None
+        self.txid = None
+        self.txid_hex = None
 
     def billable_size(self):
         """
@@ -468,21 +501,47 @@ class CTransaction:
 
     # Recalculate the txid
     def rehash(self):
-        self.sha256 = None
-        self.calc_sha256()
-        return self.hash
+        self.calc_txhash()
+        self.calc_txid()
 
-    # self.sha256 and self.hash -- those are expected to be the txid.
-    def calc_sha256(self):
-        if self.sha256 is None:
-            self.sha256 = uint256_from_str(hash256(self.serialize()))
-        self.hash = encode(
-            hash256(self.serialize())[::-1], 'hex_codec').decode('ascii')
+    def calc_txhash(self):
+        txhash_bytes = hash256(self.serialize())
+        self.txhash_hex = txhash_bytes[::-1].hex()
+        self.txhash = uint256_from_str(txhash_bytes)
+
+    def calc_txid(self):
+        r = bytearray()
+        r += self.nVersion.to_bytes(4, 'little')
+        input_merkle_root, num_layers = self.input_merkle_root()
+        r += input_merkle_root
+        r += num_layers.to_bytes(1, 'little')
+        output_merkle_root, num_layers = self.output_merkle_root()
+        r += output_merkle_root
+        r += num_layers.to_bytes(1, 'little')
+        r += self.nLockTime.to_bytes(4, 'little')
+        txid_bytes = hash256(r)
+        self.txid_hex = txid_bytes[::-1].hex()
+        self.txid = uint256_from_str(txid_bytes)
+
+    def input_merkle_root(self):
+        hashes = []
+        for tx_input in self.vin:
+            tx_input_ser = bytearray()
+            tx_input_ser += tx_input.prevout.serialize()
+            tx_input_ser += tx_input.nSequence.to_bytes(4, 'little')
+            hashes.append(hash256(tx_input_ser))
+        return get_merkle_root(hashes)
+
+    def output_merkle_root(self):
+        hashes = []
+        for tx_output in self.vout:
+            hashes.append(hash256(tx_output.serialize()))
+        return get_merkle_root(hashes)
 
     def get_id(self):
         # For now, just forward the hash.
-        self.calc_sha256()
-        return self.hash
+        self.calc_txid()
+        return self.txid
 
     def is_valid(self):
         self.calc_sha256()
@@ -649,22 +708,12 @@ class CBlock(CBlockHeader):
         self.hashExtendedMetadata = uint256_from_str(
             hash256(ser_vector(self.vMetadata)))
 
-    # Calculate the merkle root given a vector of transaction hashes
-    def get_merkle_root(self, hashes):
-        while len(hashes) > 1:
-            newhashes = []
-            for i in range(0, len(hashes), 2):
-                i2 = min(i + 1, len(hashes) - 1)
-                newhashes.append(hash256(hashes[i] + hashes[i2]))
-            hashes = newhashes
-        return uint256_from_str(hashes[0])
-
     def calc_merkle_root(self):
         hashes = []
         for tx in self.vtx:
-            tx.calc_sha256()
-            hashes.append(ser_uint256(tx.sha256))
-        return self.get_merkle_root(hashes)
+            tx.rehash()
+            hashes.append(hash256(ser_uint256(tx.txhash) + ser_uint256(tx.txid)))
+        return uint256_from_str(get_merkle_root(hashes)[0])
 
     def is_valid(self):
         self.calc_sha256()
@@ -842,7 +891,7 @@ class HeaderAndShortIDs:
         [k0, k1] = self.get_siphash_keys()
         for i in range(len(block.vtx)):
             if i not in prefill_list:
-                tx_hash = block.vtx[i].sha256
+                tx_hash = block.vtx[i].txhash
                 self.shortids.append(calculate_shortid(k0, k1, tx_hash))
 
     def __repr__(self):

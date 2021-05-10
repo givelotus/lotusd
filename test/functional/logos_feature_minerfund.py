@@ -16,6 +16,7 @@ from test_framework.script import (
     CScript,
     OP_HASH160,
     OP_EQUAL,
+    OP_RETURN,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
@@ -55,8 +56,8 @@ class MinerFundTest(BitcoinTestFramework):
             {'scriptPubKey': '6a1ac8e1f6e5a0ede5f2e3f9a0efeea0ede5aca0e1a0f3e9eeeee5f2',
              'value': 10 * share_amount},
         ]
-        assert_equal(len(coinbase['vout']), 1 + len(expected_outputs))
-        for actual_output, expected_output in zip(coinbase['vout'][1:], expected_outputs):
+        assert_equal(len(coinbase['vout']), 2 + len(expected_outputs))
+        for actual_output, expected_output in zip(coinbase['vout'][2:], expected_outputs):
             assert_equal(actual_output['value'], expected_output['value'])
             assert_equal(actual_output['scriptPubKey']['hex'], expected_output['scriptPubKey'])
 
@@ -67,8 +68,8 @@ class MinerFundTest(BitcoinTestFramework):
 
         # Submit a custom block that does not send anything
         # to the fund and check if it is rejected.
-        coinbase.vout[0].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
-        coinbase.vout[0].nValue = int(SUBSIDY * COIN)
+        coinbase.vout[1].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
+        coinbase.vout[1].nValue = int(SUBSIDY * COIN)
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
         block.nHeight = block_height
@@ -78,7 +79,7 @@ class MinerFundTest(BitcoinTestFramework):
         # Submit a custom block that does send the required outputs
         # with the miner reward output in the middle (which is allowed)
         # but with the outputs in the wrong order (which is not allowed)
-        coinbase.vout = []
+        coinbase.vout[1:] = []
         for output in expected_outputs:
             coinbase.vout.append(CTxOut(int(output['value'] * COIN),
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
@@ -107,13 +108,13 @@ class MinerFundTest(BitcoinTestFramework):
         # Half of that is burned, so 65 Lotus remain
         coin = int(node.getblock(node.getblockhash(1))['tx'][0], 16)
         tx = CTransaction()
-        tx.vin.append(CTxIn(COutPoint(coin, 0), CScript([b'\x51'])))
+        tx.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
         pad_tx(tx)
         # Each share gets 1.25 times more due to fees
         share_multiplier = Decimal('1.25')
         block_height = best_block_header['height'] + 1
         coinbase = create_coinbase(block_height)
-        coinbase.vout[0] = CTxOut(int(share_multiplier * SUBSIDY / 2 * COIN),
+        coinbase.vout[1] = CTxOut(int(share_multiplier * SUBSIDY / 2 * COIN),
                                   CScript([OP_HASH160, bytes(20), OP_EQUAL]))
         for output in expected_outputs:
             coinbase.vout.append(CTxOut(int(share_multiplier * output['value'] * COIN),

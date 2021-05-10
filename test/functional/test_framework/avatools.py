@@ -28,8 +28,8 @@ def get_stakes(node: TestNode,
         {
             'height': b['height'],
             'txid': b['tx'][0]['txid'],
-            'n': 0,
-            'value': b['tx'][0]['vout'][0]['value'],
+            'n': 1,  # vout 0 = OP_RETURN, vout 1 = miner reward
+            'value': b['tx'][0]['vout'][1]['value'],
         } for b in blocks
     ]
 

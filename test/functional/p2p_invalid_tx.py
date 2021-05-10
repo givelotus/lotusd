@@ -123,27 +123,27 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         SCRIPT_PUB_KEY_OP_TRUE = CScript([OP_TRUE])
         tx_withhold = CTransaction()
         tx_withhold.vin.append(
-            CTxIn(outpoint=COutPoint(blocks[0].vtx[0].sha256, 0)))
+            CTxIn(outpoint=COutPoint(blocks[0].vtx[0].txid, 1)))
         tx_withhold.vout.append(
             CTxOut(nValue=int(SUBSIDY * COIN) - 12000, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
         pad_tx(tx_withhold)
-        tx_withhold.calc_sha256()
+        tx_withhold.calc_txid()
 
         # Our first orphan tx with some outputs to create further orphan txs
         tx_orphan_1 = CTransaction()
         tx_orphan_1.vin.append(
-            CTxIn(outpoint=COutPoint(tx_withhold.sha256, 0)))
+            CTxIn(outpoint=COutPoint(tx_withhold.txid, 0)))
         tx_orphan_1.vout = [
             CTxOut(
                 nValue=int(0.1 * COIN),
                 scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE)] * 3
         pad_tx(tx_orphan_1)
-        tx_orphan_1.calc_sha256()
+        tx_orphan_1.calc_txid()
 
         # A valid transaction with low fee
         tx_orphan_2_no_fee = CTransaction()
         tx_orphan_2_no_fee.vin.append(
-            CTxIn(outpoint=COutPoint(tx_orphan_1.sha256, 0)))
+            CTxIn(outpoint=COutPoint(tx_orphan_1.txid, 0)))
         tx_orphan_2_no_fee.vout.append(
             CTxOut(nValue=int(0.1 * COIN), scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
         pad_tx(tx_orphan_2_no_fee)
@@ -151,20 +151,20 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         # A valid transaction with sufficient fee
         tx_orphan_2_valid = CTransaction()
         tx_orphan_2_valid.vin.append(
-            CTxIn(outpoint=COutPoint(tx_orphan_1.sha256, 1)))
+            CTxIn(outpoint=COutPoint(tx_orphan_1.txid, 1)))
         tx_orphan_2_valid.vout.append(
             CTxOut(nValue=int(0.1 * COIN) - 12000, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
-        tx_orphan_2_valid.calc_sha256()
+        tx_orphan_2_valid.calc_txid()
         pad_tx(tx_orphan_2_valid)
 
         # An invalid transaction with negative fee
         tx_orphan_2_invalid = CTransaction()
         tx_orphan_2_invalid.vin.append(
-            CTxIn(outpoint=COutPoint(tx_orphan_1.sha256, 2)))
+            CTxIn(outpoint=COutPoint(tx_orphan_1.txid, 2)))
         tx_orphan_2_invalid.vout.append(
             CTxOut(nValue=int(1.1 * COIN), scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
         pad_tx(tx_orphan_2_invalid)
-        tx_orphan_2_invalid.calc_sha256()
+        tx_orphan_2_invalid.calc_txid()
 
         self.log.info('Send the orphans ... ')
         # Send valid orphan txs from p2ps[0]
@@ -185,7 +185,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         # Transactions that should end up in the mempool
         expected_mempool = {
-            t.hash
+            t.txid_hex
             for t in [
                 tx_withhold,  # The transaction that is the root for all orphans
                 tx_orphan_1,  # The orphan transaction that splits the coins
@@ -219,7 +219,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         rejected_parent.vin.append(
             CTxIn(
                 outpoint=COutPoint(
-                    tx_orphan_2_invalid.sha256,
+                    tx_orphan_2_invalid.txid,
                     0)))
         rejected_parent.vout.append(
             CTxOut(
@@ -227,7 +227,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
                 scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
         pad_tx(rejected_parent)
         rejected_parent.rehash()
-        with node.assert_debug_log(['not keeping orphan with rejected parents {}'.format(rejected_parent.hash)]):
+        with node.assert_debug_log(['not keeping orphan with rejected parents {}'.format(rejected_parent.txid_hex)]):
             node.p2p.send_txs_and_test([rejected_parent], node, success=False)
 
 

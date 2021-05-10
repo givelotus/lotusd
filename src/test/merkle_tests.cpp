@@ -100,12 +100,13 @@ static void MerkleComputation(const std::vector<uint256> &leaves,
     bool matchh = matchlevel == level;
     while (count != (((uint32_t)1) << level)) {
         // If we reach this point, h is an inner value that is not the top.
-        // We combine it with itself (Bitcoin's special rule for odd levels in
-        // the tree) to produce a higher level one.
+        // We combine it with 0x0000...000000 (Lotus special value for odd
+        // levels in the tree) to produce a higher level one.
+        // This is different from Bitcoin; there the hash would be H(h || h).
         if (pbranch && matchh) {
-            pbranch->push_back(h);
+            pbranch->push_back(uint256());
         }
-        CHash256().Write(h).Write(h).Finalize(h);
+        CHash256().Write(h).Write(uint256()).Finalize(h);
         // Increment count to the value it would have if two entries at this
         // level had existed.
         count += (((uint32_t)1) << level);
@@ -140,12 +141,19 @@ ComputeMerkleBranch(const std::vector<uint256> &leaves, uint32_t position) {
     return ret;
 }
 
+static uint256 TxLeafHash(const CTransaction &tx) {
+    CHashWriter leaf(SER_GETHASH, 0);
+    leaf << tx.GetHash();
+    leaf << tx.GetId();
+    return leaf.GetHash();
+}
+
 static std::vector<uint256> BlockMerkleBranch(const CBlock &block,
                                               uint32_t position) {
     std::vector<uint256> leaves;
     leaves.resize(block.vtx.size());
     for (size_t s = 0; s < block.vtx.size(); s++) {
-        leaves[s] = block.vtx[s]->GetHash();
+        leaves[s] = TxLeafHash(*block.vtx[s]);
     }
     return ComputeMerkleBranch(leaves, position);
 }
@@ -158,7 +166,7 @@ static uint256 BlockBuildMerkleTree(const CBlock &block, bool *fMutated,
     vMerkleTree.reserve(block.vtx.size() * 2 + 16);
     for (std::vector<CTransactionRef>::const_iterator it(block.vtx.begin());
          it != block.vtx.end(); ++it) {
-        vMerkleTree.push_back((*it)->GetId());
+        vMerkleTree.push_back(TxLeafHash(**it));
     }
     int j = 0;
     bool mutated = false;
@@ -182,21 +190,6 @@ static uint256 BlockBuildMerkleTree(const CBlock &block, bool *fMutated,
     return (vMerkleTree.empty() ? uint256() : vMerkleTree.back());
 }
 
-// Older version of the merkle branch computation code, for comparison.
-static std::vector<uint256>
-BlockGetMerkleBranch(const CBlock &block,
-                     const std::vector<uint256> &vMerkleTree, int nIndex) {
-    std::vector<uint256> vMerkleBranch;
-    int j = 0;
-    for (int nSize = block.vtx.size(); nSize > 1; nSize = (nSize + 1) / 2) {
-        int i = std::min(nIndex ^ 1, nSize - 1);
-        vMerkleBranch.push_back(vMerkleTree[j + i]);
-        nIndex >>= 1;
-        j += nSize;
-    }
-    return vMerkleBranch;
-}
-
 static inline int ctz(uint32_t i) {
     if (i == 0) {
         return 0;
@@ -211,6 +204,7 @@ static inline int ctz(uint32_t i) {
 
 BOOST_AUTO_TEST_CASE(merkle_test) {
     for (int i = 0; i < 32; i++) {
+        // Test if CVE-2012-2459 has been fixed in Lotus.
         // Try 32 block sizes: all sizes from 0 to 16 inclusive, and then 15
         // random sizes.
         int ntx = (i <= 16) ? i : 17 + (InsecureRandRange(4000));
@@ -247,11 +241,10 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
                 block.vtx[j] = MakeTransactionRef(std::move(mtx));
             }
             // Compute the root of the block before mutating it.
-            bool unmutatedMutated = false;
-            uint256 unmutatedRoot = BlockMerkleRoot(block, &unmutatedMutated);
-            BOOST_CHECK(unmutatedMutated == false);
-            // Optionally mutate by duplicating the last transactions, resulting
-            // in the same merkle root.
+            uint256 unmutatedRoot = BlockMerkleRoot(block);
+            // Optionally mutate by duplicating the last transactions.
+            // This results in the same merkle root on Bitcoin (see
+            // CVE-2012-2459); but has been fixed on Lotus.
             block.vtx.resize(ntx3);
             for (int j = 0; j < duplicate1; j++) {
                 block.vtx[ntx + j] = block.vtx[ntx + j - duplicate1];
@@ -268,13 +261,16 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
             uint256 oldRoot =
                 BlockBuildMerkleTree(block, &oldMutated, merkleTree);
             // Compute the merkle root using the new mechanism.
-            bool newMutated = false;
-            uint256 newRoot = BlockMerkleRoot(block, &newMutated);
-            BOOST_CHECK(oldRoot == newRoot);
-            BOOST_CHECK(newRoot == unmutatedRoot);
+            uint256 newRoot = BlockMerkleRoot(block);
+            // Old algo only results in the same root for blocks where the
+            // number of txs is a power of two.
+            bool is_pow2 = (1ULL << ctz(block.vtx.size())) == block.vtx.size();
+            BOOST_CHECK((oldRoot == newRoot) == is_pow2);
+            // If the block has been mutated, the roots must be different
+            BOOST_CHECK((newRoot != unmutatedRoot) == oldMutated);
+            // Empty txs results in 0x0000...000000
             BOOST_CHECK((newRoot == uint256()) == (ntx == 0));
-            BOOST_CHECK(oldMutated == newMutated);
-            BOOST_CHECK(newMutated == !!mutate);
+            BOOST_CHECK(oldMutated == !!mutate);
             // If no mutation was done (once for every ntx value), try up to 16
             // branches.
             if (mutate == 0) {
@@ -287,12 +283,9 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
                     }
                     std::vector<uint256> newBranch =
                         BlockMerkleBranch(block, mtx);
-                    std::vector<uint256> oldBranch =
-                        BlockGetMerkleBranch(block, merkleTree, mtx);
-                    BOOST_CHECK(oldBranch == newBranch);
                     BOOST_CHECK(
-                        ComputeMerkleRootFromBranch(block.vtx[mtx]->GetId(),
-                                                    newBranch, mtx) == oldRoot);
+                        ComputeMerkleRootFromBranch(TxLeafHash(*block.vtx[mtx]),
+                                                    newBranch, mtx) == newRoot);
                 }
             }
         }
@@ -300,29 +293,24 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_empty_block) {
-    bool mutated = false;
     CBlock block;
-    uint256 root = BlockMerkleRoot(block, &mutated);
+    uint256 root = BlockMerkleRoot(block);
 
     BOOST_CHECK_EQUAL(root.IsNull(), true);
-    BOOST_CHECK_EQUAL(mutated, false);
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_oneTx_block) {
-    bool mutated = false;
     CBlock block;
 
     block.vtx.resize(1);
     CMutableTransaction mtx;
     mtx.nLockTime = 0;
     block.vtx[0] = MakeTransactionRef(std::move(mtx));
-    uint256 root = BlockMerkleRoot(block, &mutated);
-    BOOST_CHECK_EQUAL(root, block.vtx[0]->GetHash());
-    BOOST_CHECK_EQUAL(mutated, false);
+    uint256 root = BlockMerkleRoot(block);
+    BOOST_CHECK_EQUAL(root, TxLeafHash(*block.vtx[0]));
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_OddTxWithRepeatedLastTx_block) {
-    bool mutated;
     CBlock block, blockWithRepeatedLastTx;
 
     block.vtx.resize(3);
@@ -336,13 +324,13 @@ BOOST_AUTO_TEST_CASE(merkle_test_OddTxWithRepeatedLastTx_block) {
     blockWithRepeatedLastTx = block;
     blockWithRepeatedLastTx.vtx.push_back(blockWithRepeatedLastTx.vtx.back());
 
-    uint256 rootofBlock = BlockMerkleRoot(block, &mutated);
-    BOOST_CHECK_EQUAL(mutated, false);
+    uint256 rootofBlock = BlockMerkleRoot(block);
 
     uint256 rootofBlockWithRepeatedLastTx =
-        BlockMerkleRoot(blockWithRepeatedLastTx, &mutated);
-    BOOST_CHECK_EQUAL(rootofBlock, rootofBlockWithRepeatedLastTx);
-    BOOST_CHECK_EQUAL(mutated, true);
+        BlockMerkleRoot(blockWithRepeatedLastTx);
+    // CVE-2012-2459 is fixed in Lotus: repeating the last tx results in a
+    // different merkle root
+    BOOST_CHECK(rootofBlock != rootofBlockWithRepeatedLastTx);
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_LeftSubtreeRightSubtree) {
@@ -370,8 +358,10 @@ BOOST_AUTO_TEST_CASE(merkle_test_LeftSubtreeRightSubtree) {
     std::vector<uint256> leftRight;
     leftRight.push_back(rootOfLeftSubtree);
     leftRight.push_back(rootOfRightSubtree);
-    uint256 rootOfLR = ComputeMerkleRoot(leftRight);
+    size_t num_layers;
+    uint256 rootOfLR = ComputeMerkleRoot(leftRight, num_layers);
 
     BOOST_CHECK_EQUAL(root, rootOfLR);
+    BOOST_CHECK_EQUAL(num_layers, 2);
 }
 BOOST_AUTO_TEST_SUITE_END()

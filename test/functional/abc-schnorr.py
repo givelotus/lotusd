@@ -155,17 +155,18 @@ class SchnorrTest(BitcoinTestFramework):
 
         def create_fund_and_spend_tx(multi=False, sig='schnorr'):
             spendfrom = spendable_outputs.pop()
+            vout = 1
 
             if multi:
                 script = CScript([OP_1, public_key, OP_1, OP_CHECKMULTISIG])
             else:
                 script = CScript([public_key, OP_CHECKSIG])
 
-            value = spendfrom.vout[0].nValue
+            value = spendfrom.vout[vout].nValue
 
             # Fund transaction
             txfund = create_tx_with_script(
-                spendfrom, 0, b'', amount=value, script_pub_key=script)
+                spendfrom, vout, b'', amount=value, script_pub_key=script)
             txfund.rehash()
             fundings.append(txfund)
 
@@ -174,7 +175,7 @@ class SchnorrTest(BitcoinTestFramework):
             txspend.vout.append(
                 CTxOut(value - 1000, CScript([OP_TRUE])))
             txspend.vin.append(
-                CTxIn(COutPoint(txfund.sha256, 0), b''))
+                CTxIn(COutPoint(txfund.txid, 0), b''))
 
             # Sign the transaction
             sighashtype = SIGHASH_ALL | SIGHASH_FORKID
@@ -210,8 +211,10 @@ class SchnorrTest(BitcoinTestFramework):
         node.generatetoaddress(1, node.get_deterministic_priv_key().address)
         tip = self.getbestblock(node)
         # Make sure they are in the block, and mempool is now empty.
-        txhashes = set([schnorrchecksigtx.hash, ecdsachecksigtx.hash])
-        assert txhashes.issubset(tx.rehash() for tx in tip.vtx)
+        txids = set([schnorrchecksigtx.txid_hex, ecdsachecksigtx.txid_hex])
+        for tx in tip.vtx:
+            tx.calc_txid()
+        assert txids.issubset(tx.txid_hex for tx in tip.vtx)
         assert not node.getrawmempool()
 
         self.log.info("Schnorr in multisig is rejected with mandatory error.")

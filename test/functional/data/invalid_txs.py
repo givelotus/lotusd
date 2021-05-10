@@ -70,8 +70,8 @@ class BadTxTemplate:
         self.spend_avail = sum(o.nValue for o in self.spend_tx.vout)
         self.valid_txin = CTxIn(
             COutPoint(
-                self.spend_tx.sha256,
-                0),
+                self.spend_tx.txid,
+                1),
             b"",
             0xffffffff)
 
@@ -91,7 +91,7 @@ class OutputMissing(BadTxTemplate):
     def get_tx(self):
         tx = CTransaction()
         tx.vin.append(self.valid_txin)
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -102,7 +102,7 @@ class InputMissing(BadTxTemplate):
     def get_tx(self):
         tx = CTransaction()
         tx.vout.append(CTxOut(0, sc.CScript([sc.OP_TRUE] * 100)))
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -115,7 +115,7 @@ class SizeTooSmall(BadTxTemplate):
         tx = CTransaction()
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(0, sc.CScript([sc.OP_TRUE])))
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -134,12 +134,12 @@ class BadInputOutpointIndex(BadTxTemplate):
         tx.vin.append(
             CTxIn(
                 COutPoint(
-                    self.spend_tx.sha256,
+                    self.spend_tx.txid,
                     bad_idx),
                 b"",
                 0xffffffff))
         tx.vout.append(CTxOut(0, basic_p2sh))
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -152,7 +152,7 @@ class DuplicateInput(BadTxTemplate):
         tx.vin.append(self.valid_txin)
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(1, basic_p2sh))
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -166,14 +166,14 @@ class NonexistentInput(BadTxTemplate):
         tx.vin.append(
             CTxIn(
                 COutPoint(
-                    self.spend_tx.sha256 +
+                    self.spend_tx.txid +
                     1,
                     0),
                 b"",
                 0xffffffff))
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(1, basic_p2sh))
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -183,7 +183,7 @@ class SpendTooMuch(BadTxTemplate):
 
     def get_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_pub_key=basic_p2sh, amount=(self.spend_avail + 1))
+            self.spend_tx, 1, script_pub_key=basic_p2sh, amount=(self.spend_avail + 1))
 
 
 class CreateNegative(BadTxTemplate):
@@ -191,7 +191,7 @@ class CreateNegative(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        return create_tx_with_script(self.spend_tx, 0, amount=-1)
+        return create_tx_with_script(self.spend_tx, 1, amount=-1)
 
 
 class CreateTooLarge(BadTxTemplate):
@@ -199,7 +199,7 @@ class CreateTooLarge(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        return create_tx_with_script(self.spend_tx, 0, amount=MAX_MONEY + 1)
+        return create_tx_with_script(self.spend_tx, 1, amount=MAX_MONEY + 1)
 
 
 class CreateSumTooLarge(BadTxTemplate):
@@ -207,9 +207,9 @@ class CreateSumTooLarge(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        tx = create_tx_with_script(self.spend_tx, 0, amount=MAX_MONEY)
+        tx = create_tx_with_script(self.spend_tx, 1, amount=MAX_MONEY)
         tx.vout = [tx.vout[0]] * 2
-        tx.calc_sha256()
+        tx.rehash()
         return tx
 
 
@@ -223,7 +223,7 @@ class InvalidOPIFConstruction(BadTxTemplate):
 
     def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_pub_key=b'\x64' * 35,
+            self.spend_tx, 1, script_pub_key=b'\x64' * 35,
             amount=(self.spend_avail // 2))
 
 
@@ -235,7 +235,7 @@ def getDisabledOpcodeTemplate(opcode):
 
     def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, amount=self.spend_tx.vout[0].nValue - 10000, script_pub_key=CScript([
+            self.spend_tx, 1, amount=self.spend_tx.vout[1].nValue - 10000, script_pub_key=CScript([
                 OP_HASH160,
                 sc.hash160(CScript([opcode])),
                 OP_EQUAL,

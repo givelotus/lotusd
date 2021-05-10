@@ -69,14 +69,14 @@ BOOST_AUTO_TEST_CASE(precompute_bip341_hashes) {
     txTo.vout[0].nValue = 3000 * SATOSHI;
 
     BOOST_CHECK_EQUAL(txFrom.GetId(),
-                      uint256S("b691de70195fab2d9ca4f3600657439eb7892d9d593766e"
-                               "3ed4d0e85da2c1c85"));
+                      uint256S("28990ad4de25dd2c1c20a4321081e7d72fb7de80fd9d7cd"
+                               "2345d17691626d140"));
 
     PrecomputedTransactionData txdata(txTo, std::move(txFrom.vout));
 
     BOOST_CHECK_EQUAL(txdata.m_prevouts_single_hash,
-                      uint256S("a7665bc0836a487c6c35b9745ce48d9a4d249336989451b"
-                               "604f9b741c1b3ee50"));
+                      uint256S("f984fdec96fac3e809c8737d9067a0d4632b9af6c8539f5"
+                               "aa934e64693966f7a"));
     BOOST_CHECK_EQUAL(txdata.m_sequences_single_hash,
                       uint256S("01282d1aeed227f3c168067a934f754805702a15317106e"
                                "b2f76788b7f7fb381"));
@@ -85,8 +85,8 @@ BOOST_AUTO_TEST_CASE(precompute_bip341_hashes) {
                                "7e32118f150e5ebae"));
 
     BOOST_CHECK_EQUAL(txdata.hashPrevouts,
-                      uint256S("4b665423628c1d0365c6bb55123f0132384b4c019f1cf3d"
-                               "1ed1c34400b36f432"));
+                      uint256S("91737a8b58112c5bb792245e22700f22c88fa84944ff46c"
+                               "5cae3fd522f5da68e"));
     BOOST_CHECK_EQUAL(txdata.hashPrevouts,
                       SHA256Uint256(txdata.m_prevouts_single_hash));
 

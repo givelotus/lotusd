@@ -8,6 +8,7 @@ import time
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.mininode import P2PDataStore
 from test_framework.util import assert_equal
+from test_framework.script import CScript
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
@@ -20,6 +21,7 @@ class InvalidChainsTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.tip = None
+        self.counter = 0
         self.blocks = {}
         self.block_heights = {}
         self.extra_args = [["-whitelist=noban@127.0.0.1",
@@ -34,8 +36,10 @@ class InvalidChainsTest(BitcoinTestFramework):
             block_time = self.tip.nTime + 1
 
         height = self.block_heights[base_block_hash] + 1
-        coinbase = create_coinbase(height)
+        # Add counter in coinbase to make blocks unique
+        coinbase = create_coinbase(height, CScript([self.counter]))
         coinbase.rehash()
+        self.counter += 1
         block = create_block(base_block_hash, coinbase, block_time)
         block.nHeight = height
         prepare_block(block)

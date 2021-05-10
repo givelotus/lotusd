@@ -16,10 +16,10 @@ static void MerkleRoot(benchmark::Bench &bench) {
         item = rng.rand256();
     }
     bench.batch(leaves.size()).unit("leaf").run([&] {
-        bool mutation = false;
+        size_t num_layers;
         uint256 hash =
-            ComputeMerkleRoot(std::vector<uint256>(leaves), &mutation);
-        leaves[mutation] = hash;
+            ComputeMerkleRoot(std::vector<uint256>(leaves), num_layers);
+        leaves[num_layers] = hash;
     });
 }
 

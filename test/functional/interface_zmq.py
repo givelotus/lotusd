@@ -17,10 +17,6 @@ from test_framework.util import (
 from time import sleep
 
 
-def hash256_reversed(byte_str):
-    return hash256(byte_str)[::-1]
-
-
 def block_hash_reversed(blk_hdr):
     layer2_offset = 32
     layer3_offset = layer2_offset + 20
@@ -110,11 +106,11 @@ class ZMQTest (BitcoinTestFramework):
             txid = hashtx.receive()
 
             # Should receive the coinbase raw transaction.
-            hex = rawtx.receive()
+            rawtx_bytes = rawtx.receive()
             tx = CTransaction()
-            tx.deserialize(BytesIO(hex))
-            tx.calc_sha256()
-            assert_equal(tx.hash, txid.hex())
+            tx.deserialize(BytesIO(rawtx_bytes))
+            tx.rehash()
+            assert_equal(tx.txid_hex, txid.hex())
 
             # Should receive the generated raw block.
             block = rawblock.receive()
@@ -137,8 +133,11 @@ class ZMQTest (BitcoinTestFramework):
             assert_equal(payment_txid, txid.hex())
 
             # Should receive the broadcasted raw transaction.
-            hex = rawtx.receive()
-            assert_equal(payment_txid, hash256_reversed(hex).hex())
+            rawtx_bytes = rawtx.receive()
+            tx = CTransaction()
+            tx.deserialize(BytesIO(rawtx_bytes))
+            tx.calc_txid()
+            assert_equal(payment_txid, tx.txid_hex)
 
             # Mining the block with this tx should result in second notification
             # after coinbase tx notification

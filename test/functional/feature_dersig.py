@@ -62,14 +62,14 @@ class BIP66Test(BitcoinTestFramework):
             int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time)
         block.nHeight = DERSIG_HEIGHT
         spendtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
-                                     self.nodeaddress, amount=1.0)
+                                     self.nodeaddress, amount=1.0, vout=1)
         unDERify(spendtx)
         spendtx.rehash()
 
         # First we show that this tx is valid except for DERSIG by getting it
         # rejected from the mempool for exactly that reason.
         assert_equal(
-            [{'txid': spendtx.hash, 'allowed': False,
+            [{'txid': spendtx.txid_hex, 'allowed': False,
                 'reject-reason': 'mandatory-script-verify-flag-failed (Non-canonical DER signature)'}],
             self.nodes[0].testmempoolaccept(
                 rawtxs=[spendtx.serialize().hex()], maxfeerate=0)
@@ -87,7 +87,7 @@ class BIP66Test(BitcoinTestFramework):
         self.log.info(
             "Test that a version 3 block with a DERSIG-compliant transaction is accepted")
         block.vtx[1] = create_transaction(self.nodes[0],
-                                          self.coinbase_txids[1], self.nodeaddress, amount=1.0)
+                                          self.coinbase_txids[1], self.nodeaddress, amount=1.0, vout=1)
         prepare_block(block)
 
         self.nodes[0].p2p.send_and_ping(msg_block(block))

@@ -117,8 +117,9 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         size_t current_coinbase = next_coinbase++;
         const CTransaction &coinbase = *m_coinbase_txns[current_coinbase];
         ProofBuilder pb(0, 0, masterpriv.GetPubKey());
-        BOOST_CHECK(pb.addUTXO(COutPoint(coinbase.GetId(), 0),
-                               coinbase.vout[0].nValue, current_coinbase + 1,
+        // vout 0 = OP_RETURN, vout 1 = miner reward
+        BOOST_CHECK(pb.addUTXO(COutPoint(coinbase.GetId(), 1),
+                               coinbase.vout[1].nValue, current_coinbase + 1,
                                true, coinbaseKey));
         return pb.build();
     }

@@ -483,46 +483,47 @@ class RawTransactionsTest(BitcoinTestFramework):
 
         # getrawtransaction tests
         # 1. valid parameters - only supply txid
-        txId = rawTx["txid"]
+        txid = rawTx["txid"]
+        txhash = rawTx["hash"]
         assert_equal(
-            self.nodes[0].getrawtransaction(txId), rawTxSigned['hex'])
+            self.nodes[0].getrawtransaction(txid), rawTxSigned['hex'])
 
         # 2. valid parameters - supply txid and 0 for non-verbose
         assert_equal(
-            self.nodes[0].getrawtransaction(txId, 0), rawTxSigned['hex'])
+            self.nodes[0].getrawtransaction(txid, 0), rawTxSigned['hex'])
 
         # 3. valid parameters - supply txid and False for non-verbose
-        assert_equal(self.nodes[0].getrawtransaction(txId, False),
+        assert_equal(self.nodes[0].getrawtransaction(txid, False),
                      rawTxSigned['hex'])
 
         # 4. valid parameters - supply txid and 1 for verbose.
         # We only check the "hex" field of the output so we don't need to
         # update this test every time the output format changes.
-        assert_equal(self.nodes[0].getrawtransaction(txId, 1)["hex"],
+        assert_equal(self.nodes[0].getrawtransaction(txid, 1)["hex"],
                      rawTxSigned['hex'])
 
         # 5. valid parameters - supply txid and True for non-verbose
-        assert_equal(self.nodes[0].getrawtransaction(txId, True)["hex"],
+        assert_equal(self.nodes[0].getrawtransaction(txid, True)["hex"],
                      rawTxSigned['hex'])
 
         # 6. invalid parameters - supply txid and string "Flase"
         assert_raises_rpc_error(-1, "not a boolean",
                                 self.nodes[0].getrawtransaction,
-                                txId, "Flase")
+                                txid, "Flase")
 
         # 7. invalid parameters - supply txid and empty array
         assert_raises_rpc_error(-1, "not a boolean",
-                                self.nodes[0].getrawtransaction, txId, [])
+                                self.nodes[0].getrawtransaction, txid, [])
 
         # 8. invalid parameters - supply txid and empty dict
         assert_raises_rpc_error(
-            -1, "not a boolean", self.nodes[0].getrawtransaction, txId, {})
+            -1, "not a boolean", self.nodes[0].getrawtransaction, txid, {})
 
         # Sanity checks on verbose getrawtransaction output
-        rawTxOutput = self.nodes[0].getrawtransaction(txId, True)
+        rawTxOutput = self.nodes[0].getrawtransaction(txid, True)
         assert_equal(rawTxOutput["hex"], rawTxSigned["hex"])
-        assert_equal(rawTxOutput["txid"], txId)
-        assert_equal(rawTxOutput["hash"], txId)
+        assert_equal(rawTxOutput["txid"], txid)
+        assert_equal(rawTxOutput["hash"], txhash)
         assert_greater_than(rawTxOutput["size"], 300)
         assert_equal(rawTxOutput["version"], 0x02)
         assert_equal(rawTxOutput["locktime"], 0)

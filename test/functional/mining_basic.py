@@ -132,12 +132,13 @@ class MiningTest(BitcoinTestFramework):
         assert_raises_rpc_error(-22, "Block decode failed", node.getblocktemplate, {
                                 'data': block.serialize()[:-1].hex(), 'mode': 'proposal'})
 
-        self.log.info("getblocktemplate: Test duplicate transaction")
+        self.log.info("getblocktemplate: Test duplicate transaction, results in 'bad-tx-coinbase'")
         bad_block = copy.deepcopy(block)
         bad_block.vtx.append(bad_block.vtx[0])
-        assert_template(node, bad_block, 'bad-txns-duplicate')
-        assert_submitblock(bad_block, 'bad-txns-duplicate',
-                           'bad-txns-duplicate')
+        prepare_block(bad_block)
+        assert_template(node, bad_block, 'bad-tx-coinbase')
+        assert_submitblock(bad_block, 'bad-tx-coinbase',
+                           'bad-tx-coinbase')
 
         self.log.info("getblocktemplate: Test invalid transaction")
         bad_block = copy.deepcopy(block)

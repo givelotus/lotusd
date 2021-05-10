@@ -788,13 +788,13 @@ BOOST_FIXTURE_TEST_CASE(CreateWalletFromFile, TestChain100Setup) {
         CreateAndProcessBlock({},
                               GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
             .vtx[0]);
-    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 0, coinbaseKey,
+    auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 1, coinbaseKey,
                                     GetScriptForRawPubKey(key.GetPubKey()));
     m_coinbase_txns.push_back(
         CreateAndProcessBlock({block_tx},
                               GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
             .vtx[0]);
-    auto mempool_tx = TestSimpleSpend(*m_coinbase_txns[1], 0, coinbaseKey,
+    auto mempool_tx = TestSimpleSpend(*m_coinbase_txns[1], 1, coinbaseKey,
                                       GetScriptForRawPubKey(key.GetPubKey()));
     BOOST_CHECK(
         chain->broadcastTransaction(GetConfig(), MakeTransactionRef(mempool_tx),
@@ -835,7 +835,7 @@ BOOST_FIXTURE_TEST_CASE(CreateWalletFromFile, TestChain100Setup) {
                         {}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
                         .vtx[0]);
                 block_tx =
-                    TestSimpleSpend(*m_coinbase_txns[2], 0, coinbaseKey,
+                    TestSimpleSpend(*m_coinbase_txns[2], 1, coinbaseKey,
                                     GetScriptForRawPubKey(key.GetPubKey()));
                 m_coinbase_txns.push_back(
                     CreateAndProcessBlock(
@@ -843,7 +843,7 @@ BOOST_FIXTURE_TEST_CASE(CreateWalletFromFile, TestChain100Setup) {
                         GetScriptForRawPubKey(coinbaseKey.GetPubKey()))
                         .vtx[0]);
                 mempool_tx =
-                    TestSimpleSpend(*m_coinbase_txns[3], 0, coinbaseKey,
+                    TestSimpleSpend(*m_coinbase_txns[3], 1, coinbaseKey,
                                     GetScriptForRawPubKey(key.GetPubKey()));
                 BOOST_CHECK(chain->broadcastTransaction(
                     GetConfig(), MakeTransactionRef(mempool_tx),

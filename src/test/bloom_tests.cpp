@@ -134,7 +134,8 @@ BOOST_AUTO_TEST_CASE(bloom_create_insert_key) {
 
 BOOST_AUTO_TEST_CASE(bloom_match) {
     // Random real transaction
-    // (b4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b)
+    // (hash: b4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b)
+    // (id: 52ffc1841b72646e1312442fb9d4563d219a787f752c17fb085746dfdcf8911d)
     CDataStream stream(
         ParseHex("01000000010b26e9b7735eb6aabdf358bab62f9816a21ba9ebdb719d5299e"
                  "88607d722c190000000008b4830450220070aca44506c5cef3a16ed519d7c"
@@ -149,12 +150,11 @@ BOOST_AUTO_TEST_CASE(bloom_match) {
     CTransaction tx(deserialize, stream);
 
     // and one which spends it
-    // (e2769b09e784f32f62ef849763d4f45b98e07ba658647343b915ff832b110436)
     uint8_t ch[] = {
-        0x01, 0x00, 0x00, 0x00, 0x01, 0x6b, 0xff, 0x7f, 0xcd, 0x4f, 0x85, 0x65,
-        0xef, 0x40, 0x6d, 0xd5, 0xd6, 0x3d, 0x4f, 0xf9, 0x4f, 0x31, 0x8f, 0xe8,
-        0x20, 0x27, 0xfd, 0x4d, 0xc4, 0x51, 0xb0, 0x44, 0x74, 0x01, 0x9f, 0x74,
-        0xb4, 0x00, 0x00, 0x00, 0x00, 0x8c, 0x49, 0x30, 0x46, 0x02, 0x21, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x01, 0x1d, 0x91, 0xf8, 0xdc, 0xdf, 0x46, 0x57,
+        0x08, 0xfb, 0x17, 0x2c, 0x75, 0x7f, 0x78, 0x9a, 0x21, 0x3d, 0x56, 0xd4,
+        0xb9, 0x2f, 0x44, 0x12, 0x13, 0x6e, 0x64, 0x72, 0x1b, 0x84, 0xc1, 0xff,
+        0x52, 0x00, 0x00, 0x00, 0x00, 0x8c, 0x49, 0x30, 0x46, 0x02, 0x21, 0x00,
         0xda, 0x0d, 0xc6, 0xae, 0xce, 0xfe, 0x1e, 0x06, 0xef, 0xdf, 0x05, 0x77,
         0x37, 0x57, 0xde, 0xb1, 0x68, 0x82, 0x09, 0x30, 0xe3, 0xb0, 0xd0, 0x3f,
         0x46, 0xf5, 0xfc, 0xf1, 0x50, 0xbf, 0x99, 0x0c, 0x02, 0x21, 0x00, 0xd2,
@@ -179,14 +179,14 @@ BOOST_AUTO_TEST_CASE(bloom_match) {
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     filter.insert(uint256S(
-        "0xb4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b"));
+        "52ffc1841b72646e1312442fb9d4563d219a787f752c17fb085746dfdcf8911d"));
     BOOST_CHECK_MESSAGE(filter.IsRelevantAndUpdate(tx),
                         "Simple Bloom filter didn't match tx hash");
 
     filter = CBloomFilter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
-    // byte-reversed tx hash
+    // byte-reversed txid
     filter.insert(ParseHex(
-        "6bff7fcd4f8565ef406dd5d63d4ff94f318fe82027fd4dc451b04474019f74b4"));
+        "1d91f8dcdf465708fb172c757f789a213d56d4b92f4412136e64721b84c1ff52"));
     BOOST_CHECK_MESSAGE(
         filter.IsRelevantAndUpdate(tx),
         "Simple Bloom filter didn't match manually serialized tx hash");
@@ -279,7 +279,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the last transaction
     filter.insert(uint256S(
-        "0x74d681e0e03bafa802c8aa084379aa98d9fcd632ddc2ed9782b586ec87451f20"));
+        "fb0d787c3a9e400ec2b1e178f8a40b9f3b8914bd0361a21bc59f1fc67d06fc60"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK_EQUAL(merkleBlock.header.GetHash().GetHex(),
@@ -289,22 +289,22 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x74d681e0e03bafa802c8aa084379aa98d9fcd632ddc2ed9782b"
-                         "586ec87451f20"));
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 8);
+                uint256S("fb0d787c3a9e400ec2b1e178f8a40b9f3b8914bd0361a21bc59f1"
+                         "fc67d06fc60"));
+    BOOST_CHECK_EQUAL(merkleBlock.vMatchedTxn[0].first, 8);
 
     std::vector<uint256> vMatched;
     std::vector<size_t> vIndex;
-    BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
-                block.hashMerkleRoot);
-    BOOST_CHECK(vMatched.size() == merkleBlock.vMatchedTxn.size());
+    const uint256 merkleRoot = merkleBlock.txn.ExtractMatches(vMatched, vIndex);
+    BOOST_CHECK(merkleRoot == block.hashMerkleRoot);
+    BOOST_CHECK_EQUAL(vMatched.size(), merkleBlock.vMatchedTxn.size());
     for (size_t i = 0; i < vMatched.size(); i++) {
         BOOST_CHECK(vMatched[i] == merkleBlock.vMatchedTxn[i].second);
     }
 
     // Also match the 8th transaction
     filter.insert(uint256S(
-        "0xdd1fd2a6fc16404faf339881a90adbde7f4f728691ac62e8f168809cdfae1053"));
+        "07587f10890455d56dfb90322fe80ff90b20b07b21edc2c143f3ab62b65abc3b"));
     merkleBlock = CMerkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
@@ -313,8 +313,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
     BOOST_CHECK(merkleBlock.vMatchedTxn[1] == pair);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xdd1fd2a6fc16404faf339881a90adbde7f4f728691ac62e8f16"
-                         "8809cdfae1053"));
+                uint256S("07587f10890455d56dfb90322fe80ff90b20b07b21edc2c143f3a"
+                         "b62b65abc3b"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 7);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -344,7 +344,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            "cefc1c96cfb5351660ae8c35a711dbb9556a69d501d2a1371e3b09fb00d72776"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -364,11 +364,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
             "68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d"
             "8f000000004341044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad7"
             "69f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cf"
-            "c617c0ea45afac0000000001000000025f9a06d3acdceb56be1bfeaa3e8a25e62d"
-            "182fa24fefe899d1c17f1dad4c2028000000004847304402205d6058484157235b"
+            "c617c0ea45afac000000000100000002"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "000000004847304402205d6058484157235b"
             "06028c30736c15613a28bdb768ee628094ca8b0030d4d6eb0220328789c9a2ec27"
-            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff5f9a06"
-            "d3acdceb56be1bfeaa3e8a25e62d182fa24fefe899d1c17f1dad4c202801000000"
+            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "01000000"
             "4a493046022100c45af050d3cea806cedd0ab22520c53ebe63b987b8954146cdca"
             "42487b84bdd6022100b9b027716a6b59e640da50a864d6dd8a0ef24c76ce62391f"
             "a3eabaf4d2886d2d01ffffffff0200e1f505000000004341046a0765b5865641ce"
@@ -376,8 +378,9 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
             "8b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d8f0000000043"
             "41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef1"
             "70e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0c"
-            "ac000000000100000002e2274e5fea1bf29d963914bd301aa63b64daaf8a3e88f1"
-            "19b5046ca5738a0f6b0000000048473044022016e7a727a061ea2254a6c358376a"
+            "ac000000000100000002"
+            "80410ed9e83b1ceefa149816fed4579a2378e4982af1963bc1bed4126fe7de44"
+            "0000000048473044022016e7a727a061ea2254a6c358376a"
             "aa617ac537eb836c77d646ebda4c748aac8b0220192ce28bf9f2c06a6467e6531e"
             "27648d2b3e2e2bae85159c9242939840295ba501ffffffffe2274e5fea1bf29d96"
             "3914bd301aa63b64daaf8a3e88f119b5046ca5738a0f6b010000004a4930460221"
@@ -394,7 +397,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the first transaction
     filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+        "80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303fd61ae7fca4b"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -403,8 +406,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+                uint256S("80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303f"
+                         "d61ae7fca4b"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -428,23 +431,23 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
     merkleBlock = CMerkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 4);
+    BOOST_CHECK_EQUAL(merkleBlock.vMatchedTxn.size(), 4);
 
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[0]);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+                uint256S("4f8fe427a10f8e8ce2c9fc6cf082f1f334fdd1477ba74d022b486"
+                         "af4faa02298"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x6b0f8a73a56c04b519f1883e8aafda643ba61a30bd1439969df"
-                         "21bea5f4e27e2"));
+                uint256S("ad9d3df4cf2cdb63b58a6db8356818abd76ddc604fc1d876c8a91"
+                         "2502066094f"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 2);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[3].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+                uint256S("46fc771780b9381a6bec19753fb60bb9e38a85f6eda72b833d29c"
+                         "616594d2a36"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[3].first == 3);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -476,7 +479,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            "cefc1c96cfb5351660ae8c35a711dbb9556a69d501d2a1371e3b09fb00d72776"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -496,11 +499,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
             "68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d"
             "8f000000004341044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad7"
             "69f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cf"
-            "c617c0ea45afac0000000001000000025f9a06d3acdceb56be1bfeaa3e8a25e62d"
-            "182fa24fefe899d1c17f1dad4c2028000000004847304402205d6058484157235b"
+            "c617c0ea45afac000000000100000002"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "000000004847304402205d6058484157235b"
             "06028c30736c15613a28bdb768ee628094ca8b0030d4d6eb0220328789c9a2ec27"
-            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff5f9a06"
-            "d3acdceb56be1bfeaa3e8a25e62d182fa24fefe899d1c17f1dad4c202801000000"
+            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "01000000"
             "4a493046022100c45af050d3cea806cedd0ab22520c53ebe63b987b8954146cdca"
             "42487b84bdd6022100b9b027716a6b59e640da50a864d6dd8a0ef24c76ce62391f"
             "a3eabaf4d2886d2d01ffffffff0200e1f505000000004341046a0765b5865641ce"
@@ -508,8 +513,9 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
             "8b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d8f0000000043"
             "41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef1"
             "70e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0c"
-            "ac000000000100000002e2274e5fea1bf29d963914bd301aa63b64daaf8a3e88f1"
-            "19b5046ca5738a0f6b0000000048473044022016e7a727a061ea2254a6c358376a"
+            "ac000000000100000002"
+            "80410ed9e83b1ceefa149816fed4579a2378e4982af1963bc1bed4126fe7de44"
+            "0000000048473044022016e7a727a061ea2254a6c358376a"
             "aa617ac537eb836c77d646ebda4c748aac8b0220192ce28bf9f2c06a6467e6531e"
             "27648d2b3e2e2bae85159c9242939840295ba501ffffffffe2274e5fea1bf29d96"
             "3914bd301aa63b64daaf8a3e88f119b5046ca5738a0f6b010000004a4930460221"
@@ -532,7 +538,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the fourth (was first) transaction
     filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+        "80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303fd61ae7fca4b"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -541,8 +547,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+                uint256S("80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303f"
+                         "d61ae7fca4b"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 3);
 
     std::vector<uint256> vMatched;
@@ -569,18 +575,18 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 4);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+                uint256S("46fc771780b9381a6bec19753fb60bb9e38a85f6eda72b833d29c"
+                         "616594d2a36"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x6b0f8a73a56c04b519f1883e8aafda643ba61a30bd1439969df"
-                         "21bea5f4e27e2"));
+                uint256S("ad9d3df4cf2cdb63b58a6db8356818abd76ddc604fc1d876c8a91"
+                         "2502066094f"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+                uint256S("4f8fe427a10f8e8ce2c9fc6cf082f1f334fdd1477ba74d022b486"
+                         "af4faa02298"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 2);
 
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[3]);
@@ -612,7 +618,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f0ae1"
+            "cefc1c96cfb5351660ae8c35a711dbb9556a69d501d2a1371e3b09fb00d72776"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -632,11 +638,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
             "68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d"
             "8f000000004341044a656f065871a353f216ca26cef8dde2f03e8c16202d2e8ad7"
             "69f02032cb86a5eb5e56842e92e19141d60a01928f8dd2c875a390f67c1f6c94cf"
-            "c617c0ea45afac0000000001000000025f9a06d3acdceb56be1bfeaa3e8a25e62d"
-            "182fa24fefe899d1c17f1dad4c2028000000004847304402205d6058484157235b"
+            "c617c0ea45afac000000000100000002"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "000000004847304402205d6058484157235b"
             "06028c30736c15613a28bdb768ee628094ca8b0030d4d6eb0220328789c9a2ec27"
-            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff5f9a06"
-            "d3acdceb56be1bfeaa3e8a25e62d182fa24fefe899d1c17f1dad4c202801000000"
+            "ddaec0ad5ef58efded42e6ea17c2e1ce838f3d6913f5e95db601ffffffff"
+            "9822a0faf46a482b024da77b47d1fd34f3f182f06cfcc9e28c8e0fa127e48f4f"
+            "01000000"
             "4a493046022100c45af050d3cea806cedd0ab22520c53ebe63b987b8954146cdca"
             "42487b84bdd6022100b9b027716a6b59e640da50a864d6dd8a0ef24c76ce62391f"
             "a3eabaf4d2886d2d01ffffffff0200e1f505000000004341046a0765b5865641ce"
@@ -644,8 +652,9 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
             "8b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00180d8f0000000043"
             "41046a0765b5865641ce08dd39690aade26dfbf5511430ca428a3089261361cef1"
             "70e3929a68aee3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0c"
-            "ac000000000100000002e2274e5fea1bf29d963914bd301aa63b64daaf8a3e88f1"
-            "19b5046ca5738a0f6b0000000048473044022016e7a727a061ea2254a6c358376a"
+            "ac000000000100000002"
+            "80410ed9e83b1ceefa149816fed4579a2378e4982af1963bc1bed4126fe7de44"
+            "0000000048473044022016e7a727a061ea2254a6c358376a"
             "aa617ac537eb836c77d646ebda4c748aac8b0220192ce28bf9f2c06a6467e6531e"
             "27648d2b3e2e2bae85159c9242939840295ba501ffffffffe2274e5fea1bf29d96"
             "3914bd301aa63b64daaf8a3e88f119b5046ca5738a0f6b010000004a4930460221"
@@ -662,7 +671,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_NONE);
     // Match the first transaction
     filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+        "80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303fd61ae7fca4b"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -671,8 +680,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+                uint256S("80872609dde35348cacb8f7afdf025afea01e33ab85cc8f10303f"
+                         "d61ae7fca4b"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -702,13 +711,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[0]);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+                uint256S("4f8fe427a10f8e8ce2c9fc6cf082f1f334fdd1477ba74d022b486"
+                         "af4faa02298"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+                uint256S("46fc771780b9381a6bec19753fb60bb9e38a85f6eda72b833d29c"
+                         "616594d2a36"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 3);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -738,7 +747,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f1963"
+            "34f7fe1c3dc8ea25eb170a2f11f831d3a8586abed816d692e2d73764c2db246f"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -754,7 +763,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the only transaction
     filter.insert(uint256S(
-        "0x63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee3a3d669c00cb5"));
+        "bc36cdfa633e8134bca27e48ad8038f83819295f1cd4a33a42943c2cd7464235"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -762,8 +771,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee"
-                         "3a3d669c00cb5"));
+                uint256S("bc36cdfa633e8134bca27e48ad8038f83819295f1cd4a33a42943"
+                         "c2cd7464235"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -781,10 +790,11 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     std::vector<uint8_t> vch = ParseHex(
         "79cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00000000000004c8604"
         "1b67291b4d000000000000000000000000010000000000000000000000000000000000"
-        "0000000000000000000000000000000000000000000000000000b50cc069d6a3e33e3f"
-        "f84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19631406e05881e299367766d313"
-        "e26c05564ec91bf721d31726bd6e46e60689539a0100000001b50cc069d6a3e33e3ff8"
-        "4a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19630101");
+        "000000000000000000000000000000000000000000000000000034f7fe1c3dc8ea25eb"
+        "170a2f11f831d3a8586abed816d692e2d73764c2db246f1406e05881e299367766d313"
+        "e26c05564ec91bf721d31726bd6e46e60689539a0200000002b50cc069d6a3e33e3ff8"
+        "4a5c41d9d3febe7c770fdcc96b2c3ff60abe184f1963354246d72c3c94423aa3d41c5f"
+        "291938f83880ad487ea2bc34813e63facd36bc0105");
     std::vector<char> expected(vch.size());
 
     for (size_t i = 0; i < vch.size(); i++) {
@@ -814,7 +824,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            "e0dad60e6b60299e4fcc670462fedc2c706b476d5d80efef8ad332ce7637444e"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -900,7 +910,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the last transaction
     filter.insert(uint256S(
-        "0x0a2a92f0bda4727d0a13eaddf4dd9ac6b5c61a1429e6b2b818f19b15df0ac154"));
+        "30a20a1cbe4bb65f9ead53fb019c688803addd5c870fcdad97566dbae7d8d3ac"));
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -909,8 +919,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x0a2a92f0bda4727d0a13eaddf4dd9ac6b5c61a1429e6b2b818f"
-                         "19b15df0ac154"));
+                uint256S("30a20a1cbe4bb65f9ead53fb019c688803addd5c870fcdad97566"
+                         "dbae7d8d3ac"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 6);
 
     std::vector<uint256> vMatched;
@@ -924,15 +934,15 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
 
     // Also match the 4th transaction
     filter.insert(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+        "e9c80cc8f2def3c01cda29846833dc3b50c84bbd05d7dce863299e612c67e764"));
     merkleBlock = CMerkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 2);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de673"
-                         "26471df5bc041"));
+                uint256S("e9c80cc8f2def3c01cda29846833dc3b50c84bbd05d7dce863299"
+                         "e612c67e764"));
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 3);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1] == pair);
@@ -964,7 +974,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            "e0dad60e6b60299e4fcc670462fedc2c706b476d5d80efef8ad332ce7637444e"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -1060,11 +1070,11 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
 
     // We should match the generation outpoint
     const TxId txid1(uint256S(
-        "0x147caa76786596590baa4e98f5d9f48b86c7765e489f7a6ff3360fe5c674360b"));
+        "d9d399e70c723551606ffa85c4a3c491c81df7119cafbe8e80814437b3cc08b7"));
     BOOST_CHECK(filter.contains(COutPoint(txid1, 0)));
     // ... but not the 4th transaction's output (its not pay-2-pubkey)
     const TxId txid2(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+        "e9c80cc8f2def3c01cda29846833dc3b50c84bbd05d7dce863299e612c67e764"));
     BOOST_CHECK(!filter.contains(COutPoint(txid2, 0)));
 }
 
@@ -1087,7 +1097,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
             // hashEpochBlock
             "0000000000000000000000000000000000000000000000000000000000000000"
             // hashMerkleRoot
-            "7f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d97287"
+            "e0dad60e6b60299e4fcc670462fedc2c706b476d5d80efef8ad332ce7637444e"
             // hashExtendedMetadata
             "1406e05881e299367766d313e26c05564ec91bf721d31726bd6e46e60689539a"
             "00" // vMetadata (empty)
@@ -1183,10 +1193,10 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
 
     // We shouldn't match any outpoints (UPDATE_NONE)
     const TxId txid1(uint256S(
-        "0x147caa76786596590baa4e98f5d9f48b86c7765e489f7a6ff3360fe5c674360b"));
+        "d9d399e70c723551606ffa85c4a3c491c81df7119cafbe8e80814437b3cc08b7"));
     BOOST_CHECK(!filter.contains(COutPoint(txid1, 0)));
     const TxId txid2(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+        "e9c80cc8f2def3c01cda29846833dc3b50c84bbd05d7dce863299e612c67e764"));
     BOOST_CHECK(!filter.contains(COutPoint(txid2, 0)));
 }
 

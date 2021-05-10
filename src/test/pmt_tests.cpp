@@ -47,11 +47,14 @@ BOOST_AUTO_TEST_CASE(pmt_test1) {
 
         // calculate actual merkle root and height
         uint256 merkleRoot1 = BlockMerkleRoot(block);
-        std::vector<uint256> vTxid(nTx, uint256());
+        // CPartialMerkleTree stores two hashes for each tx.
+        // The first one is the txhash, the second one the txid.
+        std::vector<uint256> vHashes(2 * nTx, uint256());
         for (unsigned int j = 0; j < nTx; j++) {
-            vTxid[j] = block.vtx[j]->GetId();
+            vHashes[2 * j] = block.vtx[j]->GetHash();
+            vHashes[2 * j + 1] = block.vtx[j]->GetId();
         }
-        int nHeight = 1, nTx_ = nTx;
+        int nHeight = 1, nTx_ = 2 * nTx;
         while (nTx_ > 1) {
             nTx_ = (nTx_ + 1) / 2;
             nHeight++;
@@ -61,27 +64,28 @@ BOOST_AUTO_TEST_CASE(pmt_test1) {
         // 1/128
         for (int att = 1; att < 15; att++) {
             // build random subset of txid's
-            std::vector<bool> vMatch(nTx, false);
+            // We always exclude txhashes from matching.
+            std::vector<bool> vMatch(2 * nTx, false);
             std::vector<uint256> vMatchTxid1;
             for (unsigned int j = 0; j < nTx; j++) {
                 bool fInclude = InsecureRandBits(att / 2) == 0;
-                vMatch[j] = fInclude;
+                vMatch[2 * j + 1] = fInclude;
                 if (fInclude) {
-                    vMatchTxid1.push_back(vTxid[j]);
+                    vMatchTxid1.push_back(vHashes[2 * j + 1]);
                 }
             }
 
             // build the partial merkle tree
-            CPartialMerkleTree pmt1(vTxid, vMatch);
+            CPartialMerkleTree pmt1(vHashes, vMatch);
 
             // serialize
             CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
             ss << pmt1;
 
             // verify CPartialMerkleTree's size guarantees
-            unsigned int n =
-                std::min<unsigned int>(nTx, 1 + vMatchTxid1.size() * nHeight);
-            BOOST_CHECK(ss.size() <= 10 + (258 * n + 7) / 8);
+            unsigned int n = std::min<unsigned int>(
+                2 * nTx, 1 + vMatchTxid1.size() * nHeight);
+            BOOST_CHECK(ss.size() <= 11 + (258 * n + 7) / 8);
 
             // deserialize into a tester copy
             CPartialMerkleTreeTester pmt2;
@@ -94,7 +98,7 @@ BOOST_AUTO_TEST_CASE(pmt_test1) {
 
             // check that it has the same merkle root as the original, and a
             // valid one
-            BOOST_CHECK(merkleRoot1 == merkleRoot2);
+            BOOST_CHECK_EQUAL(merkleRoot1, merkleRoot2);
             BOOST_CHECK(!merkleRoot2.IsNull());
 
             // check that it contains the matched transactions (in the same
@@ -114,7 +118,7 @@ BOOST_AUTO_TEST_CASE(pmt_test1) {
 }
 
 BOOST_AUTO_TEST_CASE(pmt_malleability) {
-    std::vector<uint256> vTxid = {
+    std::vector<uint256> vHashes = {
         ArithToUint256(1),  ArithToUint256(2), ArithToUint256(3),
         ArithToUint256(4),  ArithToUint256(5), ArithToUint256(6),
         ArithToUint256(7),  ArithToUint256(8), ArithToUint256(9),
@@ -122,9 +126,9 @@ BOOST_AUTO_TEST_CASE(pmt_malleability) {
     std::vector<bool> vMatch = {false, false, false, false, false, false,
                                 false, false, false, true,  true,  false};
 
-    CPartialMerkleTree tree(vTxid, vMatch);
+    CPartialMerkleTree tree(vHashes, vMatch);
     std::vector<size_t> vIndex;
-    BOOST_CHECK(tree.ExtractMatches(vTxid, vIndex).IsNull());
+    BOOST_CHECK(tree.ExtractMatches(vHashes, vIndex).IsNull());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

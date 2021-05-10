@@ -47,9 +47,7 @@ static CBlock BuildBlockTestCase() {
     }
     block.vtx[2] = MakeTransactionRef(tx);
 
-    bool mutated;
-    block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
-    assert(!mutated);
+    block.hashMerkleRoot = BlockMerkleRoot(block);
     block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
@@ -130,8 +128,7 @@ BOOST_AUTO_TEST_CASE(SimpleRoundTripTest) {
             partialBlock.FillBlock(block2, {block.vtx[2]});
             partialBlock = tmp;
         }
-        bool mutated;
-        BOOST_CHECK(block.hashMerkleRoot != BlockMerkleRoot(block2, &mutated));
+        BOOST_CHECK(block.hashMerkleRoot != BlockMerkleRoot(block2));
 
         CBlock block3;
         BOOST_CHECK_EQUAL(partialBlock.FillBlock(block3, {block.vtx[1]}),
@@ -139,8 +136,7 @@ BOOST_AUTO_TEST_CASE(SimpleRoundTripTest) {
         BOOST_CHECK_EQUAL(block.GetHash().ToString(),
                           block3.GetHash().ToString());
         BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(),
-                          BlockMerkleRoot(block3, &mutated).ToString());
-        BOOST_CHECK(!mutated);
+                          BlockMerkleRoot(block3).ToString());
     }
 }
 
@@ -240,8 +236,7 @@ BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest) {
         BOOST_CHECK_EQUAL(
             pool.mapTx.find(block.vtx[2]->GetId())->GetSharedTx().use_count(),
             SHARED_TX_OFFSET + 2);
-        bool mutated;
-        BOOST_CHECK(block.hashMerkleRoot != BlockMerkleRoot(block2, &mutated));
+        BOOST_CHECK(block.hashMerkleRoot != BlockMerkleRoot(block2));
 
         CBlock block3;
         PartiallyDownloadedBlock partialBlockCopy = partialBlock;
@@ -250,8 +245,7 @@ BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest) {
         BOOST_CHECK_EQUAL(block.GetHash().ToString(),
                           block3.GetHash().ToString());
         BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(),
-                          BlockMerkleRoot(block3, &mutated).ToString());
-        BOOST_CHECK(!mutated);
+                          BlockMerkleRoot(block3).ToString());
 
         // +3 because of partialBlock and block2 and block3
         BOOST_CHECK_EQUAL(
@@ -318,10 +312,8 @@ BOOST_AUTO_TEST_CASE(SufficientPreforwardRTTest) {
         BOOST_CHECK(partialBlock.FillBlock(block2, {}) == READ_STATUS_OK);
         BOOST_CHECK_EQUAL(block.GetHash().ToString(),
                           block2.GetHash().ToString());
-        bool mutated;
         BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(),
-                          BlockMerkleRoot(block2, &mutated).ToString());
-        BOOST_CHECK(!mutated);
+                          BlockMerkleRoot(block2).ToString());
 
         txid = block.vtx[1]->GetId();
         block.vtx.clear();
@@ -353,9 +345,7 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
     block.nHeaderVersion = 1;
     block.hashExtendedMetadata = SerializeHash(std::vector<uint8_t>());
 
-    bool mutated;
-    block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
-    assert(!mutated);
+    block.hashMerkleRoot = BlockMerkleRoot(block);
     block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
@@ -386,8 +376,7 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
         BOOST_CHECK_EQUAL(block.GetHash().ToString(),
                           block2.GetHash().ToString());
         BOOST_CHECK_EQUAL(block.hashMerkleRoot.ToString(),
-                          BlockMerkleRoot(block2, &mutated).ToString());
-        BOOST_CHECK(!mutated);
+                          BlockMerkleRoot(block2).ToString());
     }
 }
 

@@ -278,7 +278,7 @@ class BIP68Test(BitcoinTestFramework):
         # Sequence lock of 0 should pass.
         tx2 = CTransaction()
         tx2.nVersion = 2
-        tx2.vin = [CTxIn(COutPoint(tx1.sha256, 0), nSequence=0)]
+        tx2.vin = [CTxIn(COutPoint(tx1.txid, 0), nSequence=0)]
         tx2.vout = [
             CTxOut(int(0), CScript([b'a']))]
         tx2.vout[0].nValue = tx1.vout[0].nValue - \
@@ -299,13 +299,13 @@ class BIP68Test(BitcoinTestFramework):
             tx = CTransaction()
             tx.nVersion = 2
             tx.vin = [
-                CTxIn(COutPoint(orig_tx.sha256, 0), nSequence=sequence_value)]
+                CTxIn(COutPoint(orig_tx.txid, 0), nSequence=sequence_value)]
             tx.vout = [
                 CTxOut(int(orig_tx.vout[0].nValue - fee_multiplier * node.calculate_fee(tx)), CScript([b'a']))]
             pad_tx(tx)
             tx.rehash()
 
-            if (orig_tx.hash in node.getrawmempool()):
+            if (orig_tx.txid_hex in node.getrawmempool()):
                 # sendrawtransaction should fail if the tx is in the mempool
                 assert_raises_rpc_error(-26, NOT_FINAL_ERROR,
                                         node.sendrawtransaction, ToHex(tx))
@@ -324,14 +324,14 @@ class BIP68Test(BitcoinTestFramework):
         # Now mine some blocks, but make sure tx2 doesn't get mined.
         # Use prioritisetransaction to lower the effective feerate to 0
         self.nodes[0].prioritisetransaction(
-            txid=tx2.hash, fee_delta=-fee_multiplier * self.nodes[0].calculate_fee(tx2))
+            txid=tx2.txid_hex, fee_delta=-fee_multiplier * self.nodes[0].calculate_fee(tx2))
         cur_time = int(time.time())
         for i in range(10):
             self.nodes[0].setmocktime(cur_time + 600)
             self.nodes[0].generate(1)
             cur_time += 600
 
-        assert tx2.hash in self.nodes[0].getrawmempool()
+        assert tx2.txid_hex in self.nodes[0].getrawmempool()
 
         test_nonzero_locks(
             tx2, self.nodes[0], use_height_lock=True)
@@ -340,31 +340,31 @@ class BIP68Test(BitcoinTestFramework):
 
         # Mine tx2, and then try again
         self.nodes[0].prioritisetransaction(
-            txid=tx2.hash, fee_delta=fee_multiplier * self.nodes[0].calculate_fee(tx2))
+            txid=tx2.txid_hex, fee_delta=fee_multiplier * self.nodes[0].calculate_fee(tx2))
 
         # Advance the time on the node so that we can test timelocks
         self.nodes[0].setmocktime(cur_time + 600)
         self.nodes[0].generate(1)
-        assert tx2.hash not in self.nodes[0].getrawmempool()
+        assert tx2.txid_hex not in self.nodes[0].getrawmempool()
 
         # Now that tx2 is not in the mempool, a sequence locked spend should
         # succeed
         tx3 = test_nonzero_locks(
             tx2, self.nodes[0], use_height_lock=False)
-        assert tx3.hash in self.nodes[0].getrawmempool()
+        assert tx3.txid_hex in self.nodes[0].getrawmempool()
 
         self.nodes[0].generate(1)
-        assert tx3.hash not in self.nodes[0].getrawmempool()
+        assert tx3.txid_hex not in self.nodes[0].getrawmempool()
 
         # One more test, this time using height locks
         tx4 = test_nonzero_locks(
             tx3, self.nodes[0], use_height_lock=True)
-        assert tx4.hash in self.nodes[0].getrawmempool()
+        assert tx4.txid_hex in self.nodes[0].getrawmempool()
 
         # Now try combining confirmed and unconfirmed inputs
         tx5 = test_nonzero_locks(
             tx4, self.nodes[0], use_height_lock=True)
-        assert tx5.hash not in self.nodes[0].getrawmempool()
+        assert tx5.txid_hex not in self.nodes[0].getrawmempool()
 
         utxos = self.nodes[0].listunspent()
         tx5.vin.append(
@@ -385,8 +385,8 @@ class BIP68Test(BitcoinTestFramework):
         # If we invalidate the tip, tx3 should get added to the mempool, causing
         # tx4 to be removed (fails sequence-lock).
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-        assert tx4.hash not in self.nodes[0].getrawmempool()
-        assert tx3.hash in self.nodes[0].getrawmempool()
+        assert tx4.txid_hex not in self.nodes[0].getrawmempool()
+        assert tx3.txid_hex in self.nodes[0].getrawmempool()
 
         # Now mine 2 empty blocks to reorg out the current tip (labeled tip-1 in
         # diagram above).
@@ -408,8 +408,8 @@ class BIP68Test(BitcoinTestFramework):
             cur_time += 1
 
         mempool = self.nodes[0].getrawmempool()
-        assert tx3.hash not in mempool
-        assert tx2.hash in mempool
+        assert tx3.txid_hex not in mempool
+        assert tx2.txid_hex in mempool
 
         # Reset the chain and get rid of the mocktimed-blocks
         self.nodes[0].setmocktime(0)

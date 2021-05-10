@@ -50,17 +50,17 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
         b = [self.nodes[0].getblockhash(n) for n in range(101, 105)]
         coinbase_txids = [self.nodes[0].getblock(h)['tx'][0] for h in b]
         spend_101_raw = create_raw_transaction(
-            self.nodes[0], coinbase_txids[1], node1_address, amount=SUBSIDY - Decimal('0.01'))
+            self.nodes[0], coinbase_txids[1], node1_address, amount=SUBSIDY - Decimal('0.01'), vout=1)
         spend_102_raw = create_raw_transaction(
-            self.nodes[0], coinbase_txids[2], node0_address, amount=SUBSIDY - Decimal('0.01'))
+            self.nodes[0], coinbase_txids[2], node0_address, amount=SUBSIDY - Decimal('0.01'), vout=1)
         spend_103_raw = create_raw_transaction(
-            self.nodes[0], coinbase_txids[3], node0_address, amount=SUBSIDY - Decimal('0.01'))
+            self.nodes[0], coinbase_txids[3], node0_address, amount=SUBSIDY - Decimal('0.01'), vout=1)
 
         # Create a transaction which is time-locked to two blocks in the future
         timelock_tx = self.nodes[0].createrawtransaction(
             inputs=[{
                 "txid": coinbase_txids[0],
-                "vout": 0
+                "vout": 1
             }],
             outputs={node0_address: SUBSIDY - Decimal('0.01')},
             locktime=self.nodes[0].getblockcount() + 2,

@@ -46,7 +46,7 @@ class DumpCoinsTest(BitcoinTestFramework):
         generate_and_get_txid(address1, {
             address0: [{
                 "txid": coinbases[0],
-                "vout": 0,
+                "vout": 1,
                 "depth": 101,
                 "value": SUBSIDY,
             }],
@@ -56,13 +56,13 @@ class DumpCoinsTest(BitcoinTestFramework):
         generate_and_get_txid(address1, {
             address0: [{
                 "txid": coinbases[0],
-                "vout": 0,
+                "vout": 1,
                 "depth": 102,
                 "value": SUBSIDY,
             }],
             address1: [{
                 "txid": coinbases[1],
-                "vout": 0,
+                "vout": 1,
                 "depth": 101,
                 "value": SUBSIDY,
             }],

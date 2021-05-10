@@ -76,7 +76,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         # b'0x51' is OP_TRUE
         tx1 = create_tx_with_script(
-            block1.vtx[0], 0, script_sig=b'', amount=int(SUBSIDY * COIN))
+            block1.vtx[0], 1, script_sig=b'', amount=int(SUBSIDY * COIN))
         tx2 = create_tx_with_script(
             tx1, 0, script_sig=b'\x51', amount=int(SUBSIDY * COIN))
 
@@ -88,17 +88,17 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2_orig = copy.deepcopy(block2)
 
         # Mutate block 2
+        # Lotus fixed CVE-2012-2459, therefore mutating results in a different merkle root
         block2.vtx.append(block2.vtx[2])
-        assert_equal(block2.hashMerkleRoot, block2.calc_merkle_root())
-        assert_equal(orig_hash, block2.rehash())
+        assert block2.hashMerkleRoot != block2.calc_merkle_root()
         assert block2_orig.vtx != block2.vtx
-        # Note: Lotus doesn't suffer from CVE-2012-2459, which is made clear
-        # through the fact that we have to do another solve
+        block2.hashMerkleRoot = block2.calc_merkle_root()
         block2.nSize = len(block2.serialize())
         block2.solve()
+        assert orig_hash != block2.rehash()
 
         node.p2p.send_blocks_and_test(
-            [block2], node, success=False, reject_reason='bad-txns-duplicate')
+            [block2], node, success=False, reject_reason='tx-duplicate')
 
         # Check transactions for duplicate inputs (CVE-2018-17144)
         self.log.info("Test duplicate input block.")
@@ -117,8 +117,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block3.nHeight = height
         block_time += 1
         block3.vtx[0].vout[0].nValue = int(2 * SUBSIDY * COIN)  # Too high!
-        block3.vtx[0].sha256 = None
-        block3.vtx[0].calc_sha256()
+        block3.vtx[0].rehash()
         prepare_block(block3)
 
         node.p2p.send_blocks_and_test(

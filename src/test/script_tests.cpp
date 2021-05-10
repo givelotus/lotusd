@@ -636,6 +636,15 @@ BOOST_AUTO_TEST_CASE(script_build) {
 
     std::vector<TestBuilder> tests;
 
+    {
+        std::vector<uint8_t> reversed_pubkey = ToByteVector(keys.pubkey0C);
+        std::reverse(reversed_pubkey.begin(), reversed_pubkey.end());
+        tests.push_back(TestBuilder(CScript() << reversed_pubkey
+                                              << OP_REVERSEBYTES << OP_CHECKSIG,
+                                    "REVERSEBYTES, reversed pubkey", 0)
+                            .PushSigECDSA(keys.key0));
+    }
+
     tests.push_back(
         TestBuilder(CScript() << ToByteVector(keys.pubkey0) << OP_CHECKSIG,
                     "P2PK", 0)

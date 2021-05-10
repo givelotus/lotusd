@@ -59,8 +59,8 @@ public:
     static std::unique_ptr<CChainParams> createChainParams() {
         CCheckpointData checkpoints = {
             .mapCheckpoints = {
-                {2, BlockHash::fromHex("6ca3646c53dab4ae79cbdee551cd422f210b69d"
-                                       "a9971bbc41af38e9c7c972161")},
+                {2, BlockHash::fromHex("184834e12fe7d83c58c5dd50b4a0b2dbfceb859"
+                                       "63682eedce497d534330b4316")},
             }};
         const auto regParams = CreateChainParams(CBaseChainParams::REGTEST);
         return std::make_unique<ChainParamsWithCheckpoints>(*regParams,
@@ -85,8 +85,8 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
     // Start with regtest genesis block
     CBlockHeader headerG = config.GetChainParams().GenesisBlock();
     BOOST_CHECK_EQUAL(headerG.GetHash(),
-                      uint256S("1060508db3b75302e0ee313a7cd1e05999c44974136a113"
-                               "8f9b1e68c4dc24b12"));
+                      uint256S("106050de32db2a668422cc34aa0f96d739d4189b8e5d6e7"
+                               "63deeca527bba9c9f"));
 
     {
         BlockValidationState state;
@@ -99,11 +99,11 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
     CBlockHeader headerA = headerG;
     headerA.hashPrevBlock = headerG.GetHash();
     headerA.SetBlockTime(headerG.GetBlockTime() + 120);
-    headerA.nNonce = 10001;
+    headerA.nNonce = 10000;
     headerA.nHeight = 1;
     BOOST_CHECK_EQUAL(headerA.GetHash(),
-                      uint256S("0f0ff9fe39dfeb65298babafdc6044ef165b4dcbecfbe93"
-                               "78f9b98de18a8289b"));
+                      uint256S("66fa9236d849a1dabaa4e95afa9806388f720095c15a5be"
+                               "c8aed3107000cacd4"));
     BOOST_CHECK_EQUAL(headerA.hashPrevBlock, headerG.GetHash());
 
     CBlockHeader headerAA = headerG;
@@ -112,28 +112,28 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
     headerAA.nNonce = 10000;
     headerAA.nHeight = 2;
     BOOST_CHECK_EQUAL(headerAA.GetHash(),
-                      uint256S("6ca3646c53dab4ae79cbdee551cd422f210b69da9971bbc"
-                               "41af38e9c7c972161"));
+                      uint256S("184834e12fe7d83c58c5dd50b4a0b2dbfceb85963682eed"
+                               "ce497d534330b4316"));
     BOOST_CHECK_EQUAL(headerAA.hashPrevBlock, headerA.GetHash());
 
     CBlockHeader headerB = headerG;
     headerB.hashPrevBlock = headerG.GetHash();
     headerB.SetBlockTime(headerG.GetBlockTime() + 1);
-    headerB.nNonce = 20001;
+    headerB.nNonce = 20000;
     headerB.nHeight = 1;
     BOOST_CHECK_EQUAL(headerB.GetHash(),
-                      uint256S("7664062a849c0399478c02cdef7610ff6ddf482034c8151"
-                               "b60dab61bc7db2863"));
+                      uint256S("540810fbed7684a5c3f55b2b14492b3199fa2725550559a"
+                               "3a5aeb22accc2e091"));
     BOOST_CHECK_EQUAL(headerB.hashPrevBlock, headerG.GetHash());
 
     CBlockHeader headerAB = headerG;
     headerAB.hashPrevBlock = headerA.GetHash();
     headerAB.SetBlockTime(headerG.GetBlockTime() + 2);
-    headerAB.nNonce = 20002;
+    headerAB.nNonce = 20001;
     headerAB.nHeight = 2;
     BOOST_CHECK_EQUAL(headerAB.GetHash(),
-                      uint256S("373ec21df9f49bc9818e7afa715ed99fd1201a8f88471ad"
-                               "11f3f7605242ad7ac"));
+                      uint256S("244a4e6240d3374d2a977e37327d3a534fb309a81bf5fa1"
+                               "37def5de3d0b01347"));
     BOOST_CHECK_EQUAL(headerAB.hashPrevBlock, headerA.GetHash());
 
     // Headers A and AA should be accepted
@@ -164,7 +164,8 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
             !Assert(m_node.chainman)
                  ->ProcessNewBlockHeaders(config, {headerB}, state, &pindex));
         BOOST_CHECK(state.IsInvalid());
-        BOOST_CHECK(state.GetRejectReason() == "bad-fork-prior-to-checkpoint");
+        BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                          "bad-fork-prior-to-checkpoint");
         BOOST_CHECK(pindex == nullptr);
     }
 
@@ -181,7 +182,7 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
             !Assert(m_node.chainman)
                  ->ProcessNewBlockHeaders(config, {headerAB}, state, &pindex));
         BOOST_CHECK(state.IsInvalid());
-        BOOST_CHECK(state.GetRejectReason() == "checkpoint mismatch");
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "checkpoint mismatch");
         BOOST_CHECK(pindex == nullptr);
     }
 

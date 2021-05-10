@@ -44,7 +44,8 @@ BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup) {
     for (int i = 0; i < 2; i++) {
         spends[i].nVersion = 1;
         spends[i].vin.resize(1);
-        spends[i].vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetId(), 0);
+        // vout 0 = OP_RETURN, vout 1 = miner reward
+        spends[i].vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetId(), 1);
         spends[i].vout.resize(1);
         spends[i].vout[0].nValue = 11 * CENT;
         spends[i].vout[0].scriptPubKey = scriptPubKey;
@@ -55,7 +56,7 @@ BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup) {
         BOOST_CHECK(SignatureHash(
             hash, std::optional(ScriptExecutionData(scriptPubKey)),
             scriptPubKey, CTransaction(spends[i]), 0,
-            SigHashType().withForkId(), m_coinbase_txns[0]->vout[0].nValue));
+            SigHashType().withForkId(), m_coinbase_txns[0]->vout[1].nValue));
         BOOST_CHECK(coinbaseKey.SignECDSA(hash, vchSig));
         vchSig.push_back(uint8_t(SIGHASH_ALL | SIGHASH_FORKID));
         spends[i].vin[0].scriptSig << vchSig;
@@ -210,7 +211,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
     {
         funding_tx.nVersion = 1;
         funding_tx.vin.resize(1);
-        funding_tx.vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetId(), 0);
+        funding_tx.vin[0].prevout = COutPoint(m_coinbase_txns[0]->GetId(), 1);
         funding_tx.vout.resize(1);
         funding_tx.vout[0].nValue = SUBSIDY;
 
@@ -222,7 +223,7 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
             fundingSigHash,
             std::optional(ScriptExecutionData(p2pk_scriptPubKey)),
             p2pk_scriptPubKey, CTransaction(funding_tx), 0,
-            SigHashType().withForkId(), m_coinbase_txns[0]->vout[0].nValue));
+            SigHashType().withForkId(), m_coinbase_txns[0]->vout[1].nValue));
         BOOST_CHECK(coinbaseKey.SignECDSA(fundingSigHash, fundingVchSig));
         fundingVchSig.push_back(uint8_t(SIGHASH_ALL | SIGHASH_FORKID));
         funding_tx.vin[0].scriptSig << fundingVchSig;

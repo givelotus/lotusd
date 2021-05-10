@@ -30,13 +30,11 @@ static CBlock CreateGenesisBlock(uint32_t nBits, uint64_t nTime,
     txNew.nVersion = 1;
     txNew.vin.resize(1);
     txNew.vout.resize(2);
-    txNew.vin[0].scriptSig = CScript()
-                             << COINBASE_PREFIX << nHeight
-                             << std::vector<uint8_t>(strScriptSig.begin(),
-                                                     strScriptSig.end());
+    txNew.vin[0].scriptSig = CScript() << std::vector<uint8_t>(
+                                 strScriptSig.begin(), strScriptSig.end());
     txNew.vout[0].nValue = SUBSIDY / 2;
     txNew.vout[0].scriptPubKey =
-        CScript() << OP_RETURN
+        CScript() << OP_RETURN << COINBASE_PREFIX << nHeight
                   << ParseHex("ffe330c4b7643e554c62adcbe0b80537435d888b5c33d5e2"
                               "9a70cdd743e3a093");
     txNew.vout[1].nValue = SUBSIDY / 2;
@@ -122,15 +120,15 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::MAINNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(0x1c100000, 1619549570, 9640686251ull);
+        genesis = CreateGenesisBlock(0x1c100000, 1619549570, 173024572809ull);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("0000000000c46dcb1d212e21cf73963f3f7e0ec986d5b03b944dab"
-                        "9a7ec1f872"));
+               uint256S("0000000004d77f4cf08a2c37867778f1a3d6272f1e5e3c59ee20ed"
+                        "b739a52c5d"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
-                        "97c23d44a7"));
+               uint256S("37f392d88f70cdada6d366a25a7ef90b6711bf2d6b5ffea4f39727"
+                        "dcb90af34c"));
         assert(genesis.hashExtendedMetadata ==
                uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
                         "8158e00614"));
@@ -243,15 +241,15 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::TESTNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(0x1c100000, 1619854081, 43978244002ull);
+        genesis = CreateGenesisBlock(0x1c100000, 1619854081, 159684556417ull);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("00000000099767f5cd4e2420d7465d76d9e8dd71a5d8fe831b4c1d"
-                        "d1340bb1b9"));
+               uint256S("0000000003b908ce4df90b91912fd02f32e971a7782afd5f6892d5"
+                        "99169432ac"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
-                        "97c23d44a7"));
+               uint256S("37f392d88f70cdada6d366a25a7ef90b6711bf2d6b5ffea4f39727"
+                        "dcb90af34c"));
         assert(genesis.hashExtendedMetadata ==
                uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
                         "8158e00614"));
@@ -344,15 +342,15 @@ public:
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
-        genesis = CreateGenesisBlock(0x207fffff, 1600000000, 1043670);
+        genesis = CreateGenesisBlock(0x207fffff, 1600000000, 16293725);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(genesis.GetSize() == 379);
         assert(consensus.hashGenesisBlock ==
-               uint256S("1060508db3b75302e0ee313a7cd1e05999c44974136a1138f9b1e6"
-                        "8c4dc24b12"));
+               uint256S("106050de32db2a668422cc34aa0f96d739d4189b8e5d6e763deeca"
+                        "527bba9c9f"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc"
-                        "97c23d44a7"));
+               uint256S("37f392d88f70cdada6d366a25a7ef90b6711bf2d6b5ffea4f39727"
+                        "dcb90af34c"));
         assert(genesis.hashExtendedMetadata ==
                uint256S("9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e2"
                         "8158e00614"));
