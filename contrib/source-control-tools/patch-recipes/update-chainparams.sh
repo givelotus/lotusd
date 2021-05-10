@@ -13,7 +13,7 @@ if [ "$#" == 0 ]; then
   ARGS=("abc" 10604 11604)
 fi
 
-# Assumes bitcoind instances are already running on mainnet and testnet
+# Assumes lotusd instances are already running on mainnet and testnet
 pushd "${CHAINPARAMS_SCRIPTS_DIR}"
 INDEX=0
 while [ "${INDEX}" -lt "${#ARGS[@]}" ]; do

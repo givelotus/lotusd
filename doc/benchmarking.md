@@ -33,7 +33,7 @@ Help
 ---------------------
 `-?` will print a list of options and exit:
 
-    src/bench/bitcoin-bench -?
+    src/bench/lotus-bench -?
 
 To print the various options, like listing the benchmarks without running them
 or using a regex filter to only run certain benchmarks.

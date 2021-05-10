@@ -306,7 +306,7 @@ bool BerkeleyDatabase::Verify(bilingual_str &errorStr) {
         if (result != 0) {
             errorStr =
                 strprintf(_("%s corrupt. Try using the wallet tool "
-                            "bitcoin-wallet to salvage or restoring a backup."),
+                            "lotus-wallet to salvage or restoring a backup."),
                           fs::quoted(fs::PathToString(file_path)));
             return false;
         }

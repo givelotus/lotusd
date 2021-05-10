@@ -200,7 +200,7 @@ def ToHex(obj):
     return obj.serialize().hex()
 
 
-# Objects that map to bitcoind objects, which can be serialized/deserialized
+# Objects that map to lotusd objects, which can be serialized/deserialized
 
 
 class CAddress:

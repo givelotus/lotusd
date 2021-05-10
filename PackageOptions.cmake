@@ -4,7 +4,7 @@ set(CPACK_PACKAGE_DESCRIPTION "${PROJECT_DESCRIPTION}")
 set(CPACK_PACKAGE_HOMEPAGE_URL "${PROJECT_HOMEPAGE_URL}")
 set(CPACK_PACKAGE_CONTACT "info@bitcoinabc.org")
 
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Bitcoin-abc")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "lotus")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/COPYING")
 set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_SOURCE_DIR}/doc/README_windows.txt")
 
@@ -17,7 +17,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 	set(CPACK_GENERATOR "NSIS;ZIP")
 	set(CPACK_INSTALLED_DIRECTORIES "${CMAKE_SOURCE_DIR}/doc" doc)
 else()
-	set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/share/pixmaps/bitcoin-abc128.png")
+	set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/share/pixmaps/lotus128.png")
 	set(CPACK_GENERATOR "TGZ")
 endif()
 
@@ -32,7 +32,7 @@ set(CPACK_SOURCE_GENERATOR "TGZ")
 # CPack NSIS installer options
 Include(InstallationHelper)
 set(CPACK_NSIS_EXECUTABLES_DIRECTORY "${CMAKE_INSTALL_BINDIR}")
-set(_nsis_bitcoin_qt "bitcoin-qt.exe")
+set(_nsis_bitcoin_qt "lotus-qt.exe")
 
 set(CPACK_NSIS_URL_INFO_ABOUT "${CPACK_PACKAGE_HOMEPAGE_URL}")
 set(CPACK_NSIS_CONTACT "${CPACK_PACKAGE_CONTACT}")
@@ -57,7 +57,7 @@ macro(add_start_menu_link LINK_NAME EXE PARAMETERS ICON_EXE ICON_INDEX)
 	)
 endmacro()
 
-set(CPACK_NSIS_MENU_LINKS "${CMAKE_INSTALL_BINDIR}/${_nsis_bitcoin_qt}" "Bitcoin ABC")
+set(CPACK_NSIS_MENU_LINKS "${CMAKE_INSTALL_BINDIR}/${_nsis_bitcoin_qt}" "Lotus")
 add_start_menu_link("${PACKAGE_NAME} (testnet)"
 	"${_nsis_bitcoin_qt}"
 	"-testnet"
