@@ -5,34 +5,46 @@
 #ifndef BITCOIN_XADDR_H
 #define BITCOIN_XADDR_H
 
-#include <boost/utility/string_ref.hpp>
 #include <string>
 #include <vector>
 
 namespace XAddress {
 
+const std::string TOKEN_NAME = "lotus";
+
+enum NetworkType : uint8_t {
+    MAINNET = '_',
+    TESTNET = 'T',
+    REGTEST = 'R',
+};
+
+enum AddressType : uint8_t {
+    SCRIPT_PUB_KEY = 0,
+};
+
 class Content {
 public:
     std::string token;
-    uint8_t network;
+    NetworkType network;
+    AddressType type;
     std::vector<uint8_t> payload;
 
     Content() = default;
 
-    Content(std::string _token, uint8_t _network, std::vector<uint8_t> _payload)
-        : token(_token), network(_network), payload(_payload) {}
+    Content(std::string _token, NetworkType _network, AddressType _type,
+            std::vector<uint8_t> _payload)
+        : token(_token), network(_network), type(_type), payload(_payload) {}
 };
 
 /**
  * Encode an XAddress string.
  */
-std::string Encode(const std::string &token, const uint8_t network,
-                   const std::vector<uint8_t> &payload);
+std::string Encode(const Content &addressContent);
 /**
  * Decode an XAddress string. Returns false on failure, and parsedOutput is not
  * modified.
  */
-bool Decode(boost::string_ref address, Content &parsedOutput);
+bool Decode(const std::string &address, Content &parsedOutput);
 } // namespace XAddress
 
 #endif // BITCOIN_XADDR_H

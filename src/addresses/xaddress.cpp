@@ -10,89 +10,74 @@
 #include <util/string.h>
 #include <util/vector.h>
 
-#include <boost/utility/string_ref.hpp>
 #include <string>
 
 namespace XAddress {
 /**
  * Create a checksum.
  */
-std::string CreateCheck(const boost::string_ref addressWithoutCheck) {
-    uint256 hash = Hash(addressWithoutCheck);
-    std::vector<uint8_t> vch(hash.begin(), hash.begin() + 4);
-    std::string unpaddedCheck = EncodeBase58(vch);
-    const size_t padding = 6 - unpaddedCheck.length();
-    return std::string(padding, '1').append(unpaddedCheck);
+uint256 CreateCheck(const Content &addressContent) {
+    CHashWriter hasher(SER_GETHASH, 0);
+    hasher << addressContent.token;
+    hasher << uint8_t(addressContent.network);
+    hasher << uint8_t(addressContent.type);
+    hasher << addressContent.payload;
+    return hasher.GetSHA256();
 }
 
 /**
  * Encode a XAddress string.
  */
-std::string Encode(const std::string &token, const uint8_t network,
-                   const std::vector<uint8_t> &payload) {
-    const std::string encodedPayload = EncodeBase58(payload);
+std::string Encode(const Content &addressContent) {
+    std::vector<uint8_t> preencodedBuffer;
+    uint256 check = CreateCheck(addressContent);
+    preencodedBuffer.reserve(addressContent.payload.size() + 5);
+    preencodedBuffer.push_back(addressContent.type);
+    preencodedBuffer.insert(preencodedBuffer.end(),
+                            addressContent.payload.begin(),
+                            addressContent.payload.end());
+    preencodedBuffer.insert(preencodedBuffer.end(), check.begin(),
+                            check.begin() + 4);
     std::string address;
-    address.append(token);
-    address.append(1, network);
-    address.append(encodedPayload);
-    address.append(CreateCheck(address));
+    address.append(addressContent.token);
+    address.append(1, addressContent.network);
+    address.append(EncodeBase58(preencodedBuffer));
     return address;
-}
-
-/**
- * Check integrity of an XAddress
- */
-bool IntegrityCheck(const boost::string_ref address) {
-    if (address.length() < 6) {
-        return false;
-    }
-    std::vector<uint8_t> decodedCheck;
-    const std::string encodedCheck(address.substr(address.length() - 6, 6));
-    if (!DecodeBase58(encodedCheck, decodedCheck, 6)) {
-        return false;
-    }
-    if (decodedCheck.size() < 4) {
-        return false;
-    }
-    const uint256 check = Hash(address.substr(0, address.length() - 6));
-    // decodedCheck potentially has excess padding due to the way
-    // base58 decode processes padding and bytes.
-    if (memcmp(&check, &decodedCheck[decodedCheck.size() - 4], 4)) {
-        return false;
-    }
-    return true;
 }
 
 /**
  * Decode a XAddress string.
  */
-bool Decode(const boost::string_ref address, Content &parsedOutput) {
-    if (!IntegrityCheck(address)) {
-        return false;
-    }
-    const boost::string_ref addressWithoutCheck =
-        address.substr(0, address.length() - 6);
+bool Decode(const std::string &address, Content &parsedOutput) {
     const auto networkPosition =
-        std::find_if(addressWithoutCheck.begin(), addressWithoutCheck.end(),
-                     [](const char c) -> bool {
-                         return std::isupper(c) || std::isdigit(c) || c == '_';
-                     });
-    if (networkPosition == addressWithoutCheck.end()) {
+        std::find_if(address.begin(), address.end(), [](const char c) -> bool {
+            return std::isupper(c) || std::isdigit(c) || c == '_';
+        });
+    if (networkPosition == address.end()) {
         return false;
     }
-    const boost::string_ref token = addressWithoutCheck.substr(
-        0, std::distance(addressWithoutCheck.begin(), networkPosition));
-    const uint8_t networkByte = uint8_t(*networkPosition);
+    const std::string token =
+        address.substr(0, std::distance(address.begin(), networkPosition));
+    const NetworkType networkByte = NetworkType(*networkPosition);
+
     // Need to be able to get a c_str() from this, so we must do a copy.
-    const std::string encodedPayload(networkPosition + 1,
-                                     addressWithoutCheck.end());
+    const std::string encodedPayload(networkPosition + 1, address.end());
     // vch length cannot be greater than encodedPayload
     std::vector<uint8_t> vch;
     if (!DecodeBase58(encodedPayload, vch, encodedPayload.length())) {
         return false;
     }
-    parsedOutput =
-        Content(std::string(token.begin(), token.end()), networkByte, vch);
+    // Undersized payload. Can't include type byte and checksum
+    if (vch.size() < 5) {
+        return false;
+    }
+    const AddressType addressByte = AddressType(vch[0]);
+    parsedOutput = Content(token, networkByte, addressByte,
+                           std::vector(vch.begin() + 1, vch.end() - 4));
+    const uint256 check = CreateCheck(parsedOutput);
+    if (memcmp(&check, &vch[vch.size() - 4], 4)) {
+        return false;
+    }
     return true;
 }
 

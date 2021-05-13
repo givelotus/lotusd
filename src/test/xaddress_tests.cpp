@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
 #include <functional>
-#include <iostream>
 #include <random>
 #include <string>
 
@@ -32,16 +31,18 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_succeeds) {
 
     // Assert that encode/decode works.
     for (size_t i = 0; i < 10000; i++) {
-        std::vector<uint8_t> payload(10);
+        std::vector<uint8_t> payload(1);
         std::generate(begin(payload), end(payload), gen);
-        const std::string encodedAddress =
-            XAddress::Encode("lotus", '_', payload);
+        const std::string encodedAddress = XAddress::Encode(
+            XAddress::Content(XAddress::TOKEN_NAME, XAddress::MAINNET,
+                              XAddress::SCRIPT_PUB_KEY, payload));
         XAddress::Content parsedAddress;
         BOOST_CHECK_EQUAL(XAddress::Decode(encodedAddress, parsedAddress),
                           true);
-        BOOST_CHECK_EQUAL(parsedAddress.token, "lotus");
-        BOOST_CHECK_MESSAGE(parsedAddress.network == uint8_t('_'),
+        BOOST_CHECK_EQUAL(parsedAddress.token, XAddress::TOKEN_NAME);
+        BOOST_CHECK_MESSAGE(parsedAddress.network == XAddress::MAINNET,
                             "Network byte incorrect");
+        BOOST_CHECK_EQUAL(parsedAddress.type, XAddress::SCRIPT_PUB_KEY);
         BOOST_CHECK_MESSAGE(parsedAddress.payload == payload,
                             "Parsed payload incorrect");
     }
@@ -60,9 +61,11 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_fails) {
 
     // Assert that check fails.
     for (size_t i = 0; i < 10000; i++) {
-        std::vector<uint8_t> payload(10);
+        std::vector<uint8_t> payload(20);
         std::generate(begin(payload), end(payload), gen);
-        std::string encodedAddress = XAddress::Encode("lotus", 'T', payload);
+        std::string encodedAddress = XAddress::Encode(
+            XAddress::Content(XAddress::TOKEN_NAME, XAddress::MAINNET,
+                              XAddress::SCRIPT_PUB_KEY, payload));
         const size_t mutatedPosition =
             randContext.randrange(encodedAddress.size());
         const unsigned char replacedCharacter =
