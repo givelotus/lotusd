@@ -142,7 +142,7 @@ class FilterTest(BitcoinTestFramework):
             'Check that we not receive a tx if the filter does not match a mempool tx')
         filter_node.merkleblock_received = False
         filter_node.tx_received = False
-        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('4'))
+        self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('400'))
         filter_node.sync_with_ping()
         filter_node.sync_with_ping()
         assert not filter_node.merkleblock_received
@@ -151,7 +151,7 @@ class FilterTest(BitcoinTestFramework):
         self.log.info(
             'Check that we receive a tx in reply to a mempool msg if the filter matches a mempool tx')
         filter_node.merkleblock_received = False
-        txid = self.nodes[0].sendtoaddress(filter_address, Decimal('4'))
+        txid = self.nodes[0].sendtoaddress(filter_address, Decimal('400'))
         filter_node.wait_for_tx(txid)
         assert not filter_node.merkleblock_received
 
@@ -161,7 +161,7 @@ class FilterTest(BitcoinTestFramework):
 
         for _ in range(5):
             txid = self.nodes[0].sendtoaddress(
-                self.nodes[0].getnewaddress(), Decimal('1'))
+                self.nodes[0].getnewaddress(), Decimal('100'))
             filter_node.wait_for_tx(txid)
 
         self.log.info(

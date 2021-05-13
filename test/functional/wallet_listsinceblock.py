@@ -39,7 +39,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
 
     def test_no_blockhash(self):
         self.log.info("Test no blockhash")
-        txid = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('0.1'))
+        txid = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('10'))
         blockhash, = self.nodes[2].generate(1)
         blockheight = self.nodes[2].getblockheader(blockhash)['height']
         self.sync_all()
@@ -47,7 +47,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
         txs = self.nodes[0].listtransactions()
         assert_array_result(txs, {"txid": txid}, {
             "category": "receive",
-            "amount": Decimal('0.1'),
+            "amount": Decimal('10'),
             "blockhash": blockhash,
             "blockheight": blockheight,
             "confirmations": 1,
@@ -108,7 +108,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
         self.split_network()
 
         # send to nodes[0] from nodes[2]
-        senttx = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('0.1'))
+        senttx = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('10'))
 
         # generate on both sides
         nodes1_last_blockhash = self.nodes[1].generate(6)[-1]

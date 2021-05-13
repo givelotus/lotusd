@@ -227,7 +227,7 @@
     "exec": "./lotus-tx",
     "args": [
       "-create",
-      "outaddr=1:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o:garbage"
+      "outaddr=100.:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o:garbage"
     ],
     "return_code": 1,
     "error_txt": "error: TX output missing or too many separators",
@@ -260,8 +260,8 @@
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
       "in=bf829c6bcf84579331337659d31f89dfd138f7f7785802d5501c92333145ca7c:18",
       "in=22a6f904655d53ae2ff70e701a0bbd90aa3975c0f40bfc6cc996a9049e31cdfc:1",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
-      "outaddr=4:1P8yWvZW8jVihP1bzHeqfE4aoXNX8AVa46"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outaddr=400.:1P8yWvZW8jVihP1bzHeqfE4aoXNX8AVa46"
     ],
     "output_cmp": "txcreate1.hex",
     "description": "Creates a new transaction with three inputs and two outputs"
@@ -274,8 +274,8 @@
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
       "in=bf829c6bcf84579331337659d31f89dfd138f7f7785802d5501c92333145ca7c:18",
       "in=22a6f904655d53ae2ff70e701a0bbd90aa3975c0f40bfc6cc996a9049e31cdfc:1",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
-      "outaddr=4:1P8yWvZW8jVihP1bzHeqfE4aoXNX8AVa46"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outaddr=400.:1P8yWvZW8jVihP1bzHeqfE4aoXNX8AVa46"
     ],
     "output_cmp": "txcreate1.json",
     "description": "Creates a new transaction with three inputs and two outputs (output in json)"
@@ -434,7 +434,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "output_cmp": "txcreatesignv1.hex",
@@ -449,7 +449,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "output_cmp": "txcreatesignv1.json",
@@ -462,7 +462,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "output_cmp": "txcreatesignv2.hex",
@@ -475,7 +475,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=SINGLE|FORKID"
     ],
     "output_cmp": "txcreatesignv2-single.hex",
@@ -488,7 +488,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":\"0foo\",\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "return_code": 1,
@@ -502,7 +502,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"Zd49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59412\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "return_code": 1,
@@ -516,7 +516,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc594\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "return_code": 1,
@@ -530,7 +530,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc5948512\",\"vout\":0,\"scriptPubKey\":\"76a91491b24bf9f5288532960ac687abb035127b1d28a588ac\"}]",
-      "outaddr=0.001:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
+      "outaddr=0.1:193P6LtvS4nCnkDvM9uXn1gsSRqh4aDAz7",
       "sign=ALL|FORKID"
     ],
     "return_code": 1,
@@ -546,7 +546,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=ALL|LOTUS"
     ],
     "output_cmp": "txcreatesignlotusv1-all.json",
@@ -560,7 +560,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=ALL|LOTUS|ANYONECANPAY"
     ],
     "output_cmp": "txcreatesignlotusv2-all-anyonecanpay.json",
@@ -574,7 +574,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=ALL|LOTUS"
     ],
     "output_cmp": "txcreatesignlotusv2-all.json",
@@ -588,7 +588,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=NONE|LOTUS|ANYONECANPAY"
     ],
     "output_cmp": "txcreatesignlotusv2-none-anyonecanpay.json",
@@ -602,7 +602,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=NONE|LOTUS"
     ],
     "output_cmp": "txcreatesignlotusv2-none.json",
@@ -616,7 +616,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=SINGLE|LOTUS|ANYONECANPAY"
     ],
     "output_cmp": "txcreatesignlotusv2-single-anyonecanpay.json",
@@ -630,7 +630,7 @@
       "in=4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485:0",
       "set=privatekeys:[\"KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU74NMTptX4\"]",
       "set=prevtxs:[{\"txid\":\"4d49a71ec9da436f71ec4ee231d04f292a29cd316f598bb7068feccabdc59485\",\"vout\":0,\"scriptPubKey\":\"76a91406afd46bcdfd22ef94ac122aa11f241244a37ecc88ac\"}]",
-      "outaddr=0.001:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
+      "outaddr=0.1:qqr2l4rteh7j9mu54sfz4gglysfyfgm7esufu9gq2x",
       "sign=SINGLE|LOTUS"
     ],
     "output_cmp": "txcreatesignlotusv2-single.json",
@@ -662,7 +662,7 @@
     "args": [
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
-      "outdata=4:badhexdata"
+      "outdata=400:badhexdata"
     ],
     "return_code": 1,
     "error_txt": "error: invalid TX output data",
@@ -684,8 +684,8 @@
     "args": [
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
-      "outdata=4:54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outdata=400:54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
     ],
     "output_cmp": "txcreatedata1.hex",
     "description": "Creates a new transaction with one input, one address output and one data output"
@@ -697,8 +697,8 @@
       "-create",
       "nversion=1",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
-      "outdata=4:54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outdata=400:54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
     ],
     "output_cmp": "txcreatedata1.json",
     "description": "Creates a new v1 transaction with one input, one address output and one data output (output in json)"
@@ -708,7 +708,7 @@
     "args": [
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
       "outdata=54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
     ],
     "output_cmp": "txcreatedata2.hex",
@@ -720,7 +720,7 @@
       "-json",
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o",
       "outdata=54686973204f505f52455455524e207472616e73616374696f6e206f7574707574207761732063726561746564206279206d6f646966696564206372656174657261777472616e73616374696f6e2e"
     ],
     "output_cmp": "txcreatedata2.json",
@@ -731,7 +731,7 @@
     "args": [
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0:4294967293",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o"
     ],
     "output_cmp": "txcreatedata_seq0.hex",
     "description": "Creates a new transaction with one input with sequence number and one address output"
@@ -742,7 +742,7 @@
       "-json",
       "-create",
       "in=5897de6bd6027a475eadd57019d4e6872c396d0716c4875a5f1a6fcfdf385c1f:0:4294967293",
-      "outaddr=0.18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o"
+      "outaddr=18:13tuJJDR2RgArmgfv6JScSdreahzgc4T6o"
     ],
     "output_cmp": "txcreatedata_seq0.json",
     "description": "Creates a new transaction with one input with sequence number and one address output (output in json)"
@@ -770,7 +770,7 @@
     "exec": "./lotus-tx",
     "args": [
       "-create",
-      "outmultisig=1:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485",
+      "outmultisig=100:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485",
       "nversion=1"
     ],
     "output_cmp": "txcreatemultisig1.hex",
@@ -781,7 +781,7 @@
     "args": [
       "-json",
       "-create",
-      "outmultisig=1:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485",
+      "outmultisig=100:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485",
       "nversion=1"
     ],
     "output_cmp": "txcreatemultisig1.json",
@@ -791,7 +791,7 @@
     "exec": "./lotus-tx",
     "args": [
       "-create",
-      "outmultisig=1:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485:S",
+      "outmultisig=100:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485:S",
       "nversion=1"
     ],
     "output_cmp": "txcreatemultisig2.hex",
@@ -802,7 +802,7 @@
     "args": [
       "-json",
       "-create",
-      "outmultisig=1:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485:S",
+      "outmultisig=100:2:3:02a5613bd857b7048924264d1e70e08fb2a7e6527d32b7ab1bb993ac59964ff397:021ac43c7ff740014c3b33737ede99c967e4764553d1b2b83db77c83b8715fa72d:02df2089105c77f266fa11a9d33f05c735234075f2e8780824c6b709415f9fb485:S",
       "nversion=1"
     ],
     "output_cmp": "txcreatemultisig2.json",

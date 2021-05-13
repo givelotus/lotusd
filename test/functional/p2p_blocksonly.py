@@ -33,7 +33,7 @@ class P2PBlocksOnly(BitcoinTestFramework):
             }],
             outputs=[{
                 self.nodes[0].get_deterministic_priv_key().address:
-                    SUBSIDY - Decimal('0.00125')
+                    SUBSIDY - Decimal('0.125')
             }],
         )
         self.log.info(prevtx)

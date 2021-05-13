@@ -219,8 +219,8 @@ def assert_array_result(object_array, to_match, expected,
 
 def check_json_precision():
     """Make sure json library being used does not lose precision converting BCH values"""
-    n = Decimal("20000000.00000003")
-    satoshis = int(json.loads(json.dumps(float(n))) * 1.0e8)
+    n = Decimal('2000000000.000003')
+    satoshis = int(json.loads(json.dumps(float(n))) * 1.0e6)
     if satoshis != 2000000000000003:
         raise RuntimeError("JSON encode/decode loses precision")
 
@@ -244,7 +244,7 @@ def str_to_b64str(string):
 
 
 def satoshi_round(amount):
-    return Decimal(amount).quantize(Decimal('0.00000001'), rounding=ROUND_DOWN)
+    return Decimal(amount).quantize(Decimal('0.000001'), rounding=ROUND_DOWN)
 
 
 def wait_until(predicate, *, attempts=float('inf'),
@@ -522,7 +522,7 @@ def gather_inputs(from_node, amount_needed, confirmations_required=1):
     utxo = from_node.listunspent(confirmations_required)
     random.shuffle(utxo)
     inputs = []
-    total_in = Decimal("0.00000000")
+    total_in = Decimal('0.000000')
     while total_in < amount_needed and len(utxo) > 0:
         t = utxo.pop()
         total_in += t["amount"]
@@ -546,7 +546,7 @@ def make_change(from_node, amount_in, amount_out, fee):
         change_address = from_node.getnewaddress()
         # Split change in two, being careful of rounding:
         outputs[change_address] = Decimal(
-            change / 2).quantize(Decimal('0.00000001'), rounding=ROUND_DOWN)
+            change / 2).quantize(Decimal('0.000001'), rounding=ROUND_DOWN)
         change = amount_in - amount - outputs[change_address]
     if change > 0:
         outputs[from_node.getnewaddress()] = change

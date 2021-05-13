@@ -574,7 +574,7 @@ static Amount AmountFromValue(const UniValue &value) {
     }
 
     int64_t n;
-    if (!ParseFixedPoint(value.getValStr(), 8, &n)) {
+    if (!ParseFixedPoint(value.getValStr(), 6, &n)) {
         throw std::runtime_error("Invalid amount");
     }
     Amount amount = n * SATOSHI;

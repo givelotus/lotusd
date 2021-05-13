@@ -52,11 +52,11 @@ class TxnMallTest(BitcoinTestFramework):
 
         # Assign coins to foo and bar addresses:
         node0_address_foo = self.nodes[0].getnewaddress()
-        fund_foo_txid = self.nodes[0].sendtoaddress(node0_address_foo, starting_balance - Decimal('1.6'))
+        fund_foo_txid = self.nodes[0].sendtoaddress(node0_address_foo, starting_balance - Decimal('160'))
         fund_foo_tx = self.nodes[0].gettransaction(fund_foo_txid)
 
         node0_address_bar = self.nodes[0].getnewaddress()
-        fund_bar_txid = self.nodes[0].sendtoaddress(node0_address_bar, Decimal('1'))
+        fund_bar_txid = self.nodes[0].sendtoaddress(node0_address_bar, Decimal('100'))
         fund_bar_tx = self.nodes[0].gettransaction(fund_bar_txid)
 
         assert_equal(self.nodes[0].getbalance(),
@@ -70,22 +70,22 @@ class TxnMallTest(BitcoinTestFramework):
         doublespend_fee = Decimal('-.02')
         rawtx_input_0 = {}
         rawtx_input_0["txid"] = fund_foo_txid
-        rawtx_input_0["vout"] = find_output(self.nodes[0], fund_foo_txid, starting_balance - Decimal('1.6'))
+        rawtx_input_0["vout"] = find_output(self.nodes[0], fund_foo_txid, starting_balance - Decimal('160'))
         rawtx_input_1 = {}
         rawtx_input_1["txid"] = fund_bar_txid
-        rawtx_input_1["vout"] = find_output(self.nodes[0], fund_bar_txid, 1)
+        rawtx_input_1["vout"] = find_output(self.nodes[0], fund_bar_txid, 100)
         inputs = [rawtx_input_0, rawtx_input_1]
         change_address = self.nodes[0].getnewaddress()
         outputs = {}
-        outputs[node1_address] = starting_balance - Decimal('1.4')
-        outputs[change_address] = Decimal('0.8') + doublespend_fee
+        outputs[node1_address] = starting_balance - Decimal('140')
+        outputs[change_address] = Decimal('80') + doublespend_fee
         rawtx = self.nodes[0].createrawtransaction(inputs, outputs)
         doublespend = self.nodes[0].signrawtransactionwithwallet(rawtx)
         assert_equal(doublespend["complete"], True)
 
         # Create two spends using 1 260 Lotus coin each
-        txid1 = self.nodes[0].sendtoaddress(node1_address, SUBSIDY - Decimal('1'))
-        txid2 = self.nodes[0].sendtoaddress(node1_address, SUBSIDY - Decimal('2'))
+        txid1 = self.nodes[0].sendtoaddress(node1_address, SUBSIDY - Decimal('100'))
+        txid2 = self.nodes[0].sendtoaddress(node1_address, SUBSIDY - Decimal('200'))
 
         # Have node0 mine a block:
         if (self.options.mine_block):
@@ -139,13 +139,13 @@ class TxnMallTest(BitcoinTestFramework):
         # Node0's total balance should be starting balance, plus 520 Lotus for
         # two more matured blocks, minus 6360 Lotus for the double-spend,
         # plus fees (which are negative):
-        expected = starting_balance + 2 * SUBSIDY - (starting_balance - Decimal('1.4')) + \
+        expected = starting_balance + 2 * SUBSIDY - (starting_balance - Decimal('140')) + \
             fund_foo_tx["fee"] + fund_bar_tx["fee"] + doublespend_fee
         assert_equal(self.nodes[0].getbalance(), expected)
 
         # Node1's balance should be its initial balance (6500 Lotus for 25 block
         # rewards) plus the doublespend:
-        assert_equal(self.nodes[1].getbalance(), 2 * starting_balance - Decimal('1.4'))
+        assert_equal(self.nodes[1].getbalance(), 2 * starting_balance - Decimal('140'))
 
 
 if __name__ == '__main__':

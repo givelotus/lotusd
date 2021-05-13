@@ -20,7 +20,7 @@ Proof buildRandomProof(uint32_t score, const CPubKey &master) {
     key.MakeNewKey(true);
 
     const COutPoint o(TxId(GetRandHash()), 0);
-    const Amount v = (int64_t(score) * COIN) / 100;
+    const Amount v = (int64_t(score) * COIN);
     const int height = 1234;
     const bool is_coinbase = false;
 

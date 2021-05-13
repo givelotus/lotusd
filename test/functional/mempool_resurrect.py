@@ -32,7 +32,7 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
 
         b = [self.nodes[0].getblockhash(n) for n in range(1, 4)]
         coinbase_txids = [self.nodes[0].getblock(h)['tx'][0] for h in b]
-        spends1_raw = [create_raw_transaction(self.nodes[0], txid, node0_address, amount=SUBSIDY - Decimal('0.01'), vout=1)
+        spends1_raw = [create_raw_transaction(self.nodes[0], txid, node0_address, amount=SUBSIDY - Decimal('1'), vout=1)
                        for txid in coinbase_txids]
         spends1_id = [self.nodes[0].sendrawtransaction(tx)
                       for tx in spends1_raw]
@@ -40,7 +40,7 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
         blocks = []
         blocks.extend(self.nodes[0].generate(1))
 
-        spends2_raw = [create_raw_transaction(self.nodes[0], txid, node0_address, amount=SUBSIDY - Decimal('0.02'))
+        spends2_raw = [create_raw_transaction(self.nodes[0], txid, node0_address, amount=SUBSIDY - Decimal('2'))
                        for txid in spends1_id]
         spends2_id = [self.nodes[0].sendrawtransaction(tx)
                       for tx in spends2_raw]

@@ -406,7 +406,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
                         for tx_case in TX_CASES
                         if isinstance(tx_case, dict))
 
-        value = int(SUBSIDY * 100_000_000)
+        value = int(SUBSIDY * 1_000_000)
         fee = 10_000
 
         pubkey_bytes = bytes.fromhex('020000000000000000000000000000000000000000000000000000000000000001')

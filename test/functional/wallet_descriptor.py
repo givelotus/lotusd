@@ -59,7 +59,7 @@ class WalletDescriptorTest(BitcoinTestFramework):
         # Make transactions
         self.log.info("Test sending and receiving")
         addr = recv_wrpc.getnewaddress()
-        send_wrpc.sendtoaddress(addr, Decimal('1'))
+        send_wrpc.sendtoaddress(addr, Decimal('100'))
 
         # Make sure things are disabled
         self.log.info("Test disabled RPCs")

@@ -84,7 +84,7 @@ Amount AmountFromValue(const UniValue &value) {
     }
 
     int64_t n;
-    if (!ParseFixedPoint(value.getValStr(), 8, &n)) {
+    if (!ParseFixedPoint(value.getValStr(), 6, &n)) {
         throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
     }
 

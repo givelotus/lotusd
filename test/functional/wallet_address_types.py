@@ -204,7 +204,7 @@ class AddressTypeTest(BitcoinTestFramework):
             to_send = (
                 old_balances[from_node] /
                 101).quantize(
-                Decimal("0.00000001"))
+                Decimal('0.000001'))
             sends = {}
             addresses = {}
 

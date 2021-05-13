@@ -139,12 +139,12 @@ IMPORT_NODES = [ImportNode(*fields)
 # Rescans start at the earliest block up to 2 hours before the key timestamp.
 TIMESTAMP_WINDOW = 2 * 60 * 60
 
-AMOUNT_DUST = 0.00000546
+AMOUNT_DUST = 0.000546
 
 
 def get_rand_amount():
     r = random.uniform(AMOUNT_DUST, 1)
-    return Decimal(str(round(r, 8)))
+    return Decimal(str(round(r, 6)))
 
 
 class ImportRescanTest(BitcoinTestFramework):

@@ -100,7 +100,7 @@ class TxDownloadTest(BitcoinTestFramework):
                 "txid": self.nodes[0].getblock(self.nodes[0].getblockhash(1))['tx'][0],
                 "vout": 0
             }],
-            outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.00025')},
+            outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.025')},
         )
         tx = self.nodes[0].signrawtransactionwithkey(
             hexstring=tx,

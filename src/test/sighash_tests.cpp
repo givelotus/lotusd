@@ -21,8 +21,6 @@
 
 #include <univalue.h>
 
-#include <iostream>
-
 // Old script.cpp SignatureHash function
 static uint256 SignatureHashOld(CScript scriptCode, const CTransaction &txTo,
                                 unsigned int nIn, uint32_t nHashType) {

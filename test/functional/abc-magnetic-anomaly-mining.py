@@ -70,7 +70,7 @@ class CTORMiningTest(BitcoinTestFramework):
             outputs = {}
             # Calculate a unique fee for this transaction
             fee = decimal.Decimal(random.randint(
-                1000, 2000)) / decimal.Decimal(1e8)
+                1000, 2000)) / decimal.Decimal(1e6)
             # Spend to the same number of outputs as inputs, so we can leave
             # the amounts unchanged and avoid rounding errors. This also ensures
             # the number of sigops == number of sigchecks.
@@ -107,7 +107,7 @@ class CTORMiningTest(BitcoinTestFramework):
         for txn in tmpl['transactions'][1:]:
             txid = txn['txid']
             txnMetadata = transactions[txid]
-            expectedFeeSats = int(txnMetadata['fee'] * 10**8)
+            expectedFeeSats = int(txnMetadata['fee'] * 10**6)
             expectedSigOps = txnMetadata['sigops']
 
             txid_decoded = int(txid, 16)

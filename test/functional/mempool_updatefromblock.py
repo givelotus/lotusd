@@ -84,7 +84,7 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
                     (inputs_value -
                      fee) /
                     Decimal(n_outputs)).quantize(
-                    Decimal('0.00000001'))
+                    Decimal('0.000001'))
                 outputs = {}
                 for n in range(0, n_outputs):
                     outputs[self.nodes[0].getnewaddress()] = output_value
@@ -92,7 +92,7 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
                 output_value = (
                     inputs_value -
                     fee).quantize(
-                    Decimal('0.00000001'))
+                    Decimal('0.000001'))
                 outputs = {end_address: output_value}
 
             self.log.debug('output_value={}'.format(output_value))

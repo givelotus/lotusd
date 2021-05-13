@@ -44,7 +44,7 @@ uint32_t Proof::getScore() const {
         total += s.getStake().getAmount();
     }
 
-    return uint32_t((100 * total) / COIN);
+    return uint32_t((total) / COIN);
 }
 
 static constexpr Amount PROOF_DUST_THRESOLD = 1 * SATOSHI;

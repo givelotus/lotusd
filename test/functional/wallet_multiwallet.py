@@ -215,13 +215,13 @@ class MultiWalletTest(BitcoinTestFramework):
         assert_equal(w3.getbalance(), 0)
         assert_equal(w4.getbalance(), 0)
 
-        w1.sendtoaddress(w2.getnewaddress(), Decimal('0.1'))
-        w1.sendtoaddress(w3.getnewaddress(), Decimal('0.2'))
-        w1.sendtoaddress(w4.getnewaddress(), Decimal('0.3'))
+        w1.sendtoaddress(w2.getnewaddress(), Decimal('10'))
+        w1.sendtoaddress(w3.getnewaddress(), Decimal('20'))
+        w1.sendtoaddress(w4.getnewaddress(), Decimal('30'))
         node.generatetoaddress(nblocks=1, address=w1.getnewaddress())
-        assert_equal(w2.getbalance(), Decimal('0.1'))
-        assert_equal(w3.getbalance(), Decimal('0.2'))
-        assert_equal(w4.getbalance(), Decimal('0.3'))
+        assert_equal(w2.getbalance(), Decimal('10'))
+        assert_equal(w3.getbalance(), Decimal('20'))
+        assert_equal(w4.getbalance(), Decimal('30'))
 
         batch = w1.batch([w1.getblockchaininfo.get_request(),
                           w1.getwalletinfo.get_request()])
@@ -231,9 +231,9 @@ class MultiWalletTest(BitcoinTestFramework):
         self.log.info('Check for per-wallet settxfee call')
         assert_equal(w1.getwalletinfo()['paytxfee'], 0)
         assert_equal(w2.getwalletinfo()['paytxfee'], 0)
-        w2.settxfee(0.001)
+        w2.settxfee(0.1)
         assert_equal(w1.getwalletinfo()['paytxfee'], 0)
-        assert_equal(w2.getwalletinfo()['paytxfee'], Decimal('0.00100000'))
+        assert_equal(w2.getwalletinfo()['paytxfee'], Decimal('0.100000'))
 
         self.log.info("Test dynamic wallet loading")
 

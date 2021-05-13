@@ -72,7 +72,7 @@ class WalletBackupTest(BitcoinTestFramework):
 
     def one_send(self, from_node, to_address):
         if (randint(1, 2) == 1):
-            amount = Decimal(randint(1, 10)) / Decimal('2000')
+            amount = Decimal(randint(100, 1000)) / Decimal('2000')
             self.nodes[from_node].sendtoaddress(to_address, amount)
 
     def do_one_round(self):
@@ -167,7 +167,7 @@ class WalletBackupTest(BitcoinTestFramework):
 
         # At this point, there are 214 blocks (103 for setup, then 10 rounds, then 101.)
         # 114 are mature.
-        approx_burned_fees = Decimal('0.0001')
+        approx_burned_fees = Decimal('0.01')
         assert_greater_than(total, 114 * SUBSIDY - approx_burned_fees)
         assert_greater_than(114 * SUBSIDY, total - approx_burned_fees)
 

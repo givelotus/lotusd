@@ -100,9 +100,9 @@ class TestBitcoinCli(BitcoinTestFramework):
             wallets = ['', 'Encrypted', 'secret']
             amounts = [
                 # 2 block rewards - 1
-                2 * SUBSIDY - Decimal('2.00000450'),
-                Decimal('0.5'),
-                Decimal('1.5')]
+                2 * SUBSIDY - Decimal('200.000450'),
+                Decimal('50'),
+                Decimal('150')]
             self.nodes[0].createwallet(wallet_name=wallets[1])
             self.nodes[0].createwallet(wallet_name=wallets[2])
             w1 = self.nodes[0].get_wallet_rpc(wallets[0])
