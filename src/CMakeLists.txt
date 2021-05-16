@@ -459,6 +459,7 @@ add_library(common
 	bloom.cpp
 	cashaddr.cpp
 	cashaddrenc.cpp
+	addresses/xaddress.cpp
 	chainparams.cpp
 	config.cpp
 	consensus/merkle.cpp
