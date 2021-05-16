@@ -27,8 +27,8 @@ enum {
     SIGHASH_RESERVED = 0x20,
     //! Use the BIP143 sighash algorithm
     SIGHASH_FORKID = 0x40,
-    //! Use the BIP341 sighash algorithm
-    SIGHASH_BIP341 = 0x60,
+    //! Use the Lotus sighash algorithm
+    SIGHASH_LOTUS = 0x60,
 
     //! Bits which specify which sighash algorithm to use
     SIGHASH_ALGORITHM_MASK = 0x60,
@@ -76,9 +76,9 @@ public:
                            SIGHASH_FORKID);
     }
 
-    SigHashType withBIP341() const {
+    SigHashType withLotus() const {
         return SigHashType((sigHash & ~SIGHASH_ALGORITHM_MASK) |
-                           SIGHASH_BIP341);
+                           SIGHASH_LOTUS);
     }
 
     SigHashType withAlgorithm(uint32_t algorithm) const {
@@ -111,7 +111,7 @@ public:
         switch (sigHash & SIGHASH_ALGORITHM_MASK) {
             case SIGHASH_LEGACY:
             case SIGHASH_FORKID:
-            case SIGHASH_BIP341:
+            case SIGHASH_LOTUS:
                 break;
             default:
                 return false;
@@ -131,8 +131,8 @@ public:
         return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_FORKID;
     }
 
-    bool hasBIP341() const {
-        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_BIP341;
+    bool hasLotus() const {
+        return (sigHash & SIGHASH_ALGORITHM_MASK) == SIGHASH_LOTUS;
     }
 
     bool hasAnyoneCanPay() const {

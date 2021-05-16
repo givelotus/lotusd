@@ -272,6 +272,7 @@ void DoCheck(const std::string &prv, const std::string &pub, int flags,
             CMutableTransaction spend;
             spend.vin.resize(1);
             spend.vout.resize(1);
+            spent_outputs.resize(1);
             const PrecomputedTransactionData txdata(spend,
                                                     std::move(spent_outputs));
 

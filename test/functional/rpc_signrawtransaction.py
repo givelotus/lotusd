@@ -228,12 +228,12 @@ class SignRawTransactionsTest(BitcoinTestFramework):
             "ALL|FORKID|ANYONECANPAY",
             "NONE|FORKID|ANYONECANPAY",
             "SINGLE|FORKID|ANYONECANPAY",
-            "ALL|BIP341",
-            "NONE|BIP341",
-            "SINGLE|BIP341",
-            "ALL|BIP341|ANYONECANPAY",
-            "NONE|BIP341|ANYONECANPAY",
-            "SINGLE|BIP341|ANYONECANPAY",
+            "ALL|LOTUS",
+            "NONE|LOTUS",
+            "SINGLE|LOTUS",
+            "ALL|LOTUS|ANYONECANPAY",
+            "NONE|LOTUS|ANYONECANPAY",
+            "SINGLE|LOTUS|ANYONECANPAY",
         ]
         no_forkid_sighashes = [
             "ALL",
@@ -265,7 +265,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
         for sighash in no_forkid_sighashes:
             assert_raises_rpc_error(
                 -8,
-                "Signature must use SIGHASH_FORKID or SIGHASH_BIP341",
+                "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS",
                 self.nodes[0].signrawtransactionwithkey,
                 rawTx,
                 privKeys,

@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
-Test that we can broadcast transactions using the new BIP341 sighash.
+Test that we can broadcast transactions using the new Lotus sighash.
 
 We build txs using different numbers of inputs and output, with varying scripts
 and OP_CODESEPARATOR, and make sure they broadcast or result in the expected
@@ -27,6 +27,7 @@ from test_framework.messages import (
     CTransaction,
     CTxIn,
     CTxOut,
+    hash256,
 )
 from test_framework.mininode import (
     P2PDataStore,
@@ -49,69 +50,69 @@ from test_framework.script import (
     OP_NOP,
     SIGHASH_ALL,
     SIGHASH_ANYONECANPAY,
-    SIGHASH_BIP341,
+    SIGHASH_LOTUS,
     SIGHASH_NONE,
     SIGHASH_SINGLE,
     SIGHASH_FORKID,
-    SignatureHashBIP341,
+    SignatureHashLotus,
 )
 from test_framework.test_framework import BitcoinTestFramework
 
 
 TESTCASES = [
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341]),
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341], schnorr=True),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341]),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341], schnorr=True),
-    dict(outputs=2, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY]),
-    dict(outputs=2, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY], schnorr=True),
-    dict(outputs=3, sig_hash_types=[SIGHASH_NONE | SIGHASH_BIP341]),
-    dict(outputs=3, sig_hash_types=[SIGHASH_NONE | SIGHASH_BIP341], schnorr=True),
-    dict(outputs=4, sig_hash_types=[SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY]),
-    dict(outputs=4, sig_hash_types=[SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY], schnorr=True),
-    dict(outputs=5, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_BIP341]),
-    dict(outputs=5, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_BIP341], schnorr=True),
-    dict(outputs=6, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY]),
-    dict(outputs=6, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY], schnorr=True),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341,
-                                     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_NONE | SIGHASH_BIP341,
-                                     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY]),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341,
-                                     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_NONE | SIGHASH_BIP341,
-                                     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY], schnorr=True),
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341], is_p2pk=True),
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341], is_p2pk=True, schnorr=True),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341,
-                                     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_NONE | SIGHASH_BIP341,
-                                     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY], is_p2pk=True),
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341],
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS]),
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS], schnorr=True),
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS]),
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS], schnorr=True),
+    dict(outputs=2, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY]),
+    dict(outputs=2, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY], schnorr=True),
+    dict(outputs=3, sig_hash_types=[SIGHASH_NONE | SIGHASH_LOTUS]),
+    dict(outputs=3, sig_hash_types=[SIGHASH_NONE | SIGHASH_LOTUS], schnorr=True),
+    dict(outputs=4, sig_hash_types=[SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY]),
+    dict(outputs=4, sig_hash_types=[SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY], schnorr=True),
+    dict(outputs=5, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_LOTUS]),
+    dict(outputs=5, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_LOTUS], schnorr=True),
+    dict(outputs=6, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY]),
+    dict(outputs=6, sig_hash_types=[SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY], schnorr=True),
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS,
+                                     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_NONE | SIGHASH_LOTUS,
+                                     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY]),
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS,
+                                     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_NONE | SIGHASH_LOTUS,
+                                     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY], schnorr=True),
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS], is_p2pk=True),
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS], is_p2pk=True, schnorr=True),
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS,
+                                     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_NONE | SIGHASH_LOTUS,
+                                     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY], is_p2pk=True),
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS],
          codesep=30, opcodes=[OP_NOP]*30 + [OP_CODESEPARATOR]),
-    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341],
+    dict(outputs=1, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS],
          codesep=29, opcodes=[OP_NOP]*30 + [OP_CODESEPARATOR], error='Signature must be zero for failed CHECK(MULTI)SIG operation'),
-    dict(outputs=3, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341],
+    dict(outputs=3, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS],
          codesep=300, opcodes=[OP_NOP]*300 + [OP_CODESEPARATOR]),
-    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341,
-                                     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_NONE | SIGHASH_BIP341,
-                                     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY],
+    dict(outputs=10, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS,
+                                     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_NONE | SIGHASH_LOTUS,
+                                     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY],
          codesep=14, opcodes=[OP_NOP]*14 + [OP_CODESEPARATOR]),
-    dict(outputs=13, sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341,
-                                     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_NONE | SIGHASH_BIP341,
-                                     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341,
-                                     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY],
+    dict(outputs=13, sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS,
+                                     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_NONE | SIGHASH_LOTUS,
+                                     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS,
+                                     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY],
          codesep=9, opcodes=[
             OP_0, OP_IF,
                 OP_CODESEPARATOR,
@@ -126,7 +127,7 @@ TESTCASES = [
                 OP_ENDIF,
             OP_ENDIF]),
     dict(outputs=13,
-         sig_hash_types=[SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_FORKID],
+         sig_hash_types=[SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_FORKID],
          codesep=9,
          opcodes=[
             OP_1, OP_IF,
@@ -142,7 +143,7 @@ TESTCASES = [
                 OP_ENDIF,
             OP_ENDIF],
          error='Signature must be zero for failed CHECK(MULTI)SIG operation'),
-    dict(outputs=4, sig_hash_types=[SIGHASH_BIP341], error='Signature hash type missing or not understood'),
+    dict(outputs=4, sig_hash_types=[SIGHASH_LOTUS], error='Signature hash type missing or not understood'),
     dict(outputs=3, sig_hash_types=[0x61, 0x20, 0x63], error='Signature hash type missing or not understood'),
     dict(outputs=3, sig_hash_types=[0x61, 0x21, 0x63], error='Signature hash type missing or not understood'),
     dict(outputs=3, sig_hash_types=[0x61, 0x22, 0x63], error='Signature hash type missing or not understood'),
@@ -195,9 +196,9 @@ TESTCASES = [
     dict(outputs=3, sig_hash_types=[0x61, 0xef, 0x63], error='Signature hash type missing or not understood'),
     dict(outputs=3, sig_hash_types=[0x61, 0xf1, 0x63], error='Signature hash type missing or not understood'),
     dict(outputs=5, sig_hash_types=[SIGHASH_FORKID], error='Signature hash type missing or not understood'),
-    dict(outputs=4, sig_hash_types=[SIGHASH_ALL], error='Signature must use SIGHASH_FORKID or SIGHASH_BIP341'),
-    dict(outputs=3, sig_hash_types=[SIGHASH_NONE], error='Signature must use SIGHASH_FORKID or SIGHASH_BIP341'),
-    dict(outputs=2, sig_hash_types=[SIGHASH_SINGLE], error='Signature must use SIGHASH_FORKID or SIGHASH_BIP341'),
+    dict(outputs=4, sig_hash_types=[SIGHASH_ALL], error='Signature must use SIGHASH_FORKID or SIGHASH_LOTUS'),
+    dict(outputs=3, sig_hash_types=[SIGHASH_NONE], error='Signature must use SIGHASH_FORKID or SIGHASH_LOTUS'),
+    dict(outputs=2, sig_hash_types=[SIGHASH_SINGLE], error='Signature must use SIGHASH_FORKID or SIGHASH_LOTUS'),
     dict(outputs=6, sig_hash_types=[SIGHASH_ALL | SIGHASH_FORKID],
          error='Signature must be zero for failed CHECK(MULTI)SIG operation'), # Valid sighash type but wrong sighash algorithm
     dict(outputs=3, sig_hash_types=[0x21], error='Signature must be zero for failed CHECK(MULTI)SIG operation', suffix=0x61),
@@ -236,7 +237,7 @@ class Bip341Sighash(BitcoinTestFramework):
 
     ALGORITHM = {
         SIGHASH_FORKID: 'FORKID',
-        SIGHASH_BIP341: 'BIP341',
+        SIGHASH_LOTUS: 'LOTUS',
     }
 
     def get_sig_hash_type_str(self, sig_hash_type: int):
@@ -346,12 +347,12 @@ class Bip341Sighash(BitcoinTestFramework):
             for i, sig_hash_type in enumerate(test_case['sig_hash_types']):
                 # Compute sighash for this input; we sign it manually using sign_ecdsa/sign_schnorr
                 # and then broadcast the complete transaction
-                sighash = SignatureHashBIP341(
+                sighash = SignatureHashLotus(
                     tx_to=tx,
                     spent_utxos=spent_outputs,
                     sig_hash_type=sig_hash_type,
                     input_index=i,
-                    executed_script_hash=hashlib.sha256(executed_scripts[key_idx]).digest(),
+                    executed_script_hash=hash256(executed_scripts[key_idx]),
                     codeseparator_pos=test_case.get('codesep', 0xffff_ffff),
                 )
                 if test_case.get('schnorr', False):
@@ -381,12 +382,12 @@ class Bip341Sighash(BitcoinTestFramework):
                     signed_tx.deserialize(io.BytesIO(bytes.fromhex(raw_tx_signed)))
                     sig = list(CScript(signed_tx.vin[i].scriptSig))[0]
                     pubkey = private_keys[key_idx].get_pubkey()
-                    sighash = SignatureHashBIP341(
+                    sighash = SignatureHashLotus(
                         tx_to=tx,
                         spent_utxos=spent_outputs,
                         sig_hash_type=sig_hash_type & 0xff,
                         input_index=i,
-                        executed_script_hash=hashlib.sha256(executed_scripts[key_idx]).digest(),
+                        executed_script_hash=hash256(executed_scripts[key_idx]),
                     )
                     # Verify sig signs the above sighash and has the expected sighash type
                     assert pubkey.verify_ecdsa(sig[:-1], sighash)

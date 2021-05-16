@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
     int nRandomTests = 1000;
     for (int i = 0; i < nRandomTests; i++) {
         uint32_t nHashType = m_rng.rand32();
-        // BIP341 must have 0x40 set and valid base type
+        // Lotus must have 0x40 set and valid base type
         if (nHashType & SIGHASH_RESERVED) {
             nHashType &= ~uint32_t(SIGHASH_UNUSED_MASK); // clear invalid bits
             nHashType |= SIGHASH_FORKID; // prevent illegal flag combination
@@ -172,9 +172,9 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
             BOOST_CHECK_EQUAL(nHashType & SIGHASH_ALGORITHM_MASK,
                               SIGHASH_FORKID);
             BOOST_CHECK(shreg != shref);
-        } else if (sigHashType.hasBIP341()) {
+        } else if (sigHashType.hasLotus()) {
             BOOST_CHECK_EQUAL(nHashType & SIGHASH_ALGORITHM_MASK,
-                              SIGHASH_BIP341);
+                              SIGHASH_LOTUS);
             BOOST_CHECK(shreg != shref);
         } else {
             BOOST_CHECK_EQUAL(nHashType & SIGHASH_FORKID, 0);

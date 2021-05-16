@@ -221,12 +221,12 @@ static bool CheckSighashEncoding(const valtype &vchSig, uint32_t flags,
     }
 
     SigHashType sigHashType = GetHashType(vchSig);
-    // For Taproot key spend path, using BIP341 sighash is required
-    if ((flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) && !sigHashType.hasBIP341()) {
+    // For Taproot key spend path, using Lotus sighash is required
+    if ((flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) && !sigHashType.hasLotus()) {
         return set_error(
-            serror, ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH);
+            serror, ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH);
     }
-    bool usesForkId = sigHashType.hasForkId() || sigHashType.hasBIP341();
+    bool usesForkId = sigHashType.hasForkId() || sigHashType.hasLotus();
     bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
     if (!forkIdEnabled && usesForkId) {
         return set_error(serror, ScriptError::ILLEGAL_FORKID);

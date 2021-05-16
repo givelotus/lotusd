@@ -51,11 +51,11 @@ from test_framework.script import (
     OP_TUCK,
     SIGHASH_ALL,
     SIGHASH_ANYONECANPAY,
-    SIGHASH_BIP341,
+    SIGHASH_LOTUS,
     SIGHASH_NONE,
     SIGHASH_SINGLE,
     SIGHASH_FORKID,
-    SignatureHashBIP341,
+    SignatureHashLotus,
     SignatureHashForkId,
     TaggedHash,
 )
@@ -77,12 +77,12 @@ script_checksig_state = dict(script_inputs=[],
 def nth_script(n):
     return dict(script_inputs=[], script=[PUBLIC_KEYS[n], OP_CHECKSIG], keys=[PRIVATE_KEYS[n]])
 
-all_bip341_sig_hash_types = [SIGHASH_ALL | SIGHASH_BIP341,
-                             SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                             SIGHASH_NONE | SIGHASH_BIP341,
-                             SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY,
-                             SIGHASH_SINGLE | SIGHASH_BIP341,
-                             SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY]
+all_lotus_sig_hash_types = [SIGHASH_ALL | SIGHASH_LOTUS,
+                            SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                            SIGHASH_NONE | SIGHASH_LOTUS,
+                            SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY,
+                            SIGHASH_SINGLE | SIGHASH_LOTUS,
+                            SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY]
 
 all_forkid_sig_hash_types = [SIGHASH_ALL | SIGHASH_FORKID,
                              SIGHASH_ALL | SIGHASH_FORKID | SIGHASH_ANYONECANPAY,
@@ -92,7 +92,7 @@ all_forkid_sig_hash_types = [SIGHASH_ALL | SIGHASH_FORKID,
                              SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY]
 
 TX_CASES = [
-    dict(outputs=1, inputs=[((script_checksig, script_checksig_state), 0, [SIGHASH_ALL | SIGHASH_BIP341])]),
+    dict(outputs=1, inputs=[((script_checksig, script_checksig_state), 0, [SIGHASH_ALL | SIGHASH_LOTUS])]),
     dict(outputs=8, inputs=[((script_checksig_state, script_checksig), 0, [SIGHASH_ALL | SIGHASH_FORKID])]),
     dict(
         outputs=8,
@@ -101,7 +101,7 @@ TX_CASES = [
                   script=[PUBLIC_KEYS[3]] + [OP_TUCK, OP_CHECKSIGVERIFY] * 22 + [OP_CHECKSIG],
                   keys=[PRIVATE_KEYS[3]] * 23,
                   schnorr=True),
-             0, [SIGHASH_ALL | SIGHASH_BIP341] * 23),
+             0, [SIGHASH_ALL | SIGHASH_LOTUS] * 23),
         ],
     ),
     dict(
@@ -111,7 +111,7 @@ TX_CASES = [
                   script=[PUBLIC_KEYS[4]] + [OP_2DUP, OP_CHECKSIGVERIFY] * 40 + [OP_CHECKSIG],
                   keys=[PRIVATE_KEYS[4]],
                   schnorr=True),
-             0, [SIGHASH_ALL | SIGHASH_BIP341])
+             0, [SIGHASH_ALL | SIGHASH_LOTUS])
         ],
         error='Input SigChecks limit exceeded',
     ),
@@ -122,7 +122,7 @@ TX_CASES = [
                   script=[6] + PUBLIC_KEYS[:10] + [10, OP_CHECKMULTISIG],
                   keys=PRIVATE_KEYS[:6],
                   schnorr=False),
-             0, all_bip341_sig_hash_types),
+             0, all_lotus_sig_hash_types),
             (dict(script_inputs=[0],
                   script=[6] + PUBLIC_KEYS[:10] + [10, OP_CHECKMULTISIG],
                   keys=PRIVATE_KEYS[2:8],
@@ -132,7 +132,7 @@ TX_CASES = [
                   script=[6] + PUBLIC_KEYS[:10] + [10, OP_CHECKMULTISIG],
                   keys=PRIVATE_KEYS[4:10],
                   schnorr=False),
-             0, all_bip341_sig_hash_types),
+             0, all_lotus_sig_hash_types),
             (dict(script_inputs=[bytes([0b00111111, 0])],
                   script=[6] + PUBLIC_KEYS[:10] + [10, OP_CHECKMULTISIG],
                   keys=PRIVATE_KEYS[:6],
@@ -179,7 +179,7 @@ TX_CASES = [
                     ),
                 ),
                 i,
-                [SIGHASH_ALL | SIGHASH_BIP341],
+                [SIGHASH_ALL | SIGHASH_LOTUS],
             )
             for i in range(18)
         ],
@@ -191,7 +191,7 @@ TX_CASES = [
                   script=[PUBLIC_KEYS[0], OP_CHECKSIG],
                   keys=[PRIVATE_KEYS[0]]),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
         error='Extra items left on stack after execution',
     ),
@@ -203,7 +203,7 @@ TX_CASES = [
                   keys=PRIVATE_KEYS[:6],
                   schnorr=True),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341] * 6),
+             [SIGHASH_ALL | SIGHASH_LOTUS] * 6),
         ],
         error='Signature cannot be 65 bytes in CHECKMULTISIG',
     ),
@@ -215,7 +215,7 @@ TX_CASES = [
                   keys=PRIVATE_KEYS[:6],
                   schnorr=False),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341] * 6),
+             [SIGHASH_ALL | SIGHASH_LOTUS] * 6),
         ],
         error='Only Schnorr signatures allowed in this operation',
     ),
@@ -229,25 +229,25 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=2),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
         error='Signature must be zero for failed CHECK(MULTI)SIG operation',
     ),
     dict(
         outputs=1,
-        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_BIP341])],
+        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_LOTUS])],
         suffix=0x20,
         error='Signature hash type missing or not understood',
     ),
     dict(
         outputs=1,
-        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_BIP341])],
+        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_LOTUS])],
         suffix=0x21,
         error='Signature hash type missing or not understood',
     ),
     dict(
         outputs=1,
-        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_BIP341])],
+        inputs=[(script_checksig, 0, [SIGHASH_ALL | SIGHASH_LOTUS])],
         suffix=0x21,
         error='Signature hash type missing or not understood',
     ),
@@ -258,7 +258,7 @@ TX_CASES = [
                  script=[bytes(reversed(PUBLIC_KEYS[4])), OP_REVERSEBYTES, OP_CHECKSIG],
                  keys=[PRIVATE_KEYS[4]]),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -268,7 +268,7 @@ TX_CASES = [
                   script=[OP_OR, PUBLIC_KEYS[5], OP_CHECKSIG],
                   keys=[PRIVATE_KEYS[5]]),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -279,7 +279,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[6]],
                   codesep=2),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -290,7 +290,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=4),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -305,7 +305,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=3),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -320,7 +320,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=5),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -335,7 +335,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=9),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     dict(
@@ -350,7 +350,7 @@ TX_CASES = [
                   keys=[PRIVATE_KEYS[7]],
                   codesep=0xffff_ffff),
              0,
-             [SIGHASH_ALL | SIGHASH_BIP341]),
+             [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
     ),
     'ENABLE_REPLAY_PROTECTION',
@@ -484,8 +484,8 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
                 assert len(sig_hash_types) == len(keys)
                 sigs = []
                 for sig_hash_type, key in zip(sig_hash_types, keys):
-                    if sig_hash_type & SIGHASH_BIP341 == SIGHASH_BIP341:
-                        sighash = SignatureHashBIP341(
+                    if sig_hash_type & SIGHASH_LOTUS == SIGHASH_LOTUS:
+                        sighash = SignatureHashLotus(
                             tx_to=tx,
                             spent_utxos=spent_outputs,
                             sig_hash_type=sig_hash_type,

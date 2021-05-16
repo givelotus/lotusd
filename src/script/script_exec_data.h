@@ -30,21 +30,21 @@ struct ScriptExecutionData {
      * - In plain scripts, this is the SHA256 of the scriptPubKey.
      * - In P2SH, this is the SHA256 of the redeemScript.
      * - In Tapscripts, this is the "tapleaf hash", calculated as defined in
-     *   BIP341: taggedhash_TapLeaf(version || compact_size(len(script)) ||
-     *                              script).
+     *   Lotus: taggedhash_TapLeaf(version || compact_size(len(script)) ||
+     *                             script).
      * - In Taproot, this entire struct would not be constructed.
      */
     uint256 m_executed_script_hash;
 
     /**
-     * ScriptExecutionData with the SHA-256 of executed_script and as
+     * ScriptExecutionData with the double SHA-256 of executed_script and as
      * codeseparator position.
      */
     ScriptExecutionData(const CScript &executed_script,
                         uint32_t codeseparator_pos = DEFAULT_CODESEP_POS) {
-        CSHA256()
-            .Write(executed_script.data(), executed_script.size())
-            .Finalize(m_executed_script_hash.begin());
+        CHash256()
+            .Write({executed_script.data(), executed_script.size()})
+            .Finalize(m_executed_script_hash);
         m_codeseparator_pos = codeseparator_pos;
     }
 
