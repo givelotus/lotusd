@@ -156,6 +156,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		bswap_tests.cpp
 		cashaddr_tests.cpp
 		cashaddrenc_tests.cpp
+		xaddress_tests.cpp
 		chainstate_write_tests.cpp
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
