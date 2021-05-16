@@ -24,8 +24,7 @@ BOOST_FIXTURE_TEST_SUITE(xaddress_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(raw_encode_decode_succeeds) {
     std::random_device rd;
-    auto lcg = MMIXLinearCongruentialGenerator(rd());
-    auto gen = [&lcg]() { return uint8_t(lcg.next()); };
+    auto gen = [&rd]() { return uint8_t(rd()); };
 
     // Assert that encode/decode works.
     for (size_t i = 0; i < 10000; i++) {
@@ -48,9 +47,7 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_succeeds) {
 
 BOOST_AUTO_TEST_CASE(raw_encode_decode_fails) {
     std::random_device rd;
-    auto lcg = MMIXLinearCongruentialGenerator(rd());
-    auto gen = [&lcg]() { return uint8_t(lcg.next()); };
-    FastRandomContext randContext;
+    auto gen = [&rd]() { return uint8_t(rd()); };
 
     // Assert that we get some XAddress::BASE58_DECODE_FAILED or
     // XAddress::INTEGRITY_CHECK_FAILED failures.
@@ -60,10 +57,8 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_fails) {
         std::string encodedAddress = XAddress::Encode(
             XAddress::Content(XAddress::TOKEN_NAME, XAddress::MAINNET,
                               XAddress::SCRIPT_PUB_KEY, payload));
-        const size_t mutatedPosition =
-            randContext.randrange(encodedAddress.size());
-        const unsigned char replacedCharacter =
-            pszBase58[randContext.randrange(pszBase58.size())];
+        const size_t mutatedPosition = rd() % encodedAddress.size();
+        const unsigned char replacedCharacter = rd() % pszBase58.size();
         const auto error = encodedAddress[mutatedPosition] == replacedCharacter
                                ? XAddress::DECODE_OK
                                : XAddress::BASE58_DECODE_FAILED |
