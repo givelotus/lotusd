@@ -3,7 +3,10 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <addresses/xaddress.h>
+#include <config.h>
 #include <random.h>
+#include <script/standard.h>
+#include <span.h>
 #include <test/util/setup_common.h>
 #include <util/strencodings.h>
 #include <util/vector.h>
@@ -92,6 +95,102 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_fails) {
         BOOST_CHECK_MESSAGE(decodeResult == XAddress::UNDERSIZED_PAYLOAD,
                             "Should have errored as NO_NETWORK_POSITION: "
                                 << int(decodeResult));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(parse_p2pkh_works) {
+    // First create an instance of an engine.
+    std::random_device rd;
+    auto gen = [&rd]() { return uint8_t(rd()); };
+
+    GlobalConfig config;
+    // Assert that parsing returns a correct CTxDestination for PKHash.
+    for (size_t i = 0; i < 10000; i++) {
+        std::vector<uint8_t> fakeKeyBytes(20);
+        std::generate(begin(fakeKeyBytes), end(fakeKeyBytes), gen);
+        CScript scriptPubKey = CScript() << OP_DUP << OP_HASH160
+                                         << ToByteVector(fakeKeyBytes)
+                                         << OP_EQUALVERIFY << OP_CHECKSIG;
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        CTxDestination dest;
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(config.GetChainParams(), encodedAddress, dest),
+            true);
+        const PKHash pkDest = boost::get<PKHash>(dest);
+        BOOST_CHECK_EQUAL(MakeSpan(pkDest) == fakeKeyBytes, true);
+    }
+
+    // Assert that parsing returns a correct CTxDestination for ScriptHash.
+    for (size_t i = 0; i < 10000; i++) {
+        std::vector<uint8_t> fakeHashBytes(20);
+        std::generate(begin(fakeHashBytes), end(fakeHashBytes), gen);
+        CScript scriptPubKey =
+            CScript() << OP_HASH160 << ToByteVector(fakeHashBytes) << OP_EQUAL;
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        CTxDestination dest;
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(config.GetChainParams(), encodedAddress, dest),
+            true);
+        const ScriptHash pkDest = boost::get<ScriptHash>(dest);
+        BOOST_CHECK_EQUAL(MakeSpan(pkDest) == fakeHashBytes, true);
+    }
+
+    // Check that parsing return CNoDestination for garbage.
+    for (size_t i = 0; i < 10000; i++) {
+        std::vector<uint8_t> garbledyGook(20);
+        std::generate(begin(garbledyGook), end(garbledyGook), gen);
+        const std::string encodedAddress = XAddress::Encode(
+            XAddress::Content(XAddress::TOKEN_NAME, XAddress::MAINNET,
+                              XAddress::SCRIPT_PUB_KEY, garbledyGook));
+        CTxDestination dest;
+        XAddress::Content parsedAddress;
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(config.GetChainParams(), encodedAddress, dest),
+            false);
+        BOOST_CHECK_NO_THROW(boost::get<CNoDestination>(dest));
+    }
+    // Check that parsing return CNoDestination for unknown type byte.
+    {
+        CTxDestination dest;
+        std::vector<uint8_t> fakeHashBytes(20);
+        std::generate(begin(fakeHashBytes), end(fakeHashBytes), gen);
+        CScript scriptPubKey =
+            CScript() << OP_HASH160 << ToByteVector(fakeHashBytes) << OP_EQUAL;
+
+        // Check that parsing return CNoDestination for unknown type byte.
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(
+                config.GetChainParams(),
+                XAddress::Encode(XAddress::Content(
+                    XAddress::TOKEN_NAME, XAddress::MAINNET,
+                    static_cast<XAddress::AddressType>(0xf0), fakeHashBytes)),
+                dest),
+            false);
+        BOOST_CHECK_NO_THROW(boost::get<CNoDestination>(dest));
+
+        // Check that parsing return CNoDestination for unknown token.
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(config.GetChainParams(),
+                            XAddress::Encode(XAddress::Content(
+                                "poop", XAddress::MAINNET,
+                                XAddress::SCRIPT_PUB_KEY, fakeHashBytes)),
+                            dest),
+            false);
+        BOOST_CHECK_NO_THROW(boost::get<CNoDestination>(dest));
+
+        // Check that parsing return CNoDestination for wrong network.
+        BOOST_CHECK_EQUAL(
+            XAddress::Parse(config.GetChainParams(),
+                            XAddress::Encode(XAddress::Content(
+                                XAddress::TOKEN_NAME, XAddress::TESTNET,
+                                XAddress::SCRIPT_PUB_KEY, fakeHashBytes)),
+                            dest),
+            false);
+        BOOST_CHECK_NO_THROW(boost::get<CNoDestination>(dest));
     }
 }
 

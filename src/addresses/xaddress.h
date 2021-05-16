@@ -5,6 +5,9 @@
 #ifndef BITCOIN_XADDR_H
 #define BITCOIN_XADDR_H
 
+#include <chainparams.h>
+#include <script/standard.h>
+
 #include <string>
 #include <vector>
 
@@ -16,6 +19,7 @@ enum NetworkType : uint8_t {
     MAINNET = '_',
     TESTNET = 'T',
     REGTEST = 'R',
+    UNKNOWN = 'U'
 };
 
 enum AddressType : uint8_t {
@@ -54,6 +58,11 @@ std::string Encode(const Content &addressContent);
  * modified.
  */
 DecodeError Decode(const std::string &address, Content &parsedOutput);
+/**
+ * Parse an XAddress string into a CTxDestination. Returns false on failure.
+ */
+bool Parse(const CChainParams &params, const std::string &address,
+           CTxDestination &retDestination);
 } // namespace XAddress
 
 #endif // BITCOIN_XADDR_H
