@@ -37,11 +37,11 @@ BOOST_AUTO_TEST_CASE(raw_encode_decode_succeeds) {
         XAddress::Content parsedAddress;
         BOOST_CHECK_EQUAL(XAddress::Decode(encodedAddress, parsedAddress),
                           XAddress::DECODE_OK);
-        BOOST_CHECK_EQUAL(parsedAddress.token, XAddress::TOKEN_NAME);
-        BOOST_CHECK_MESSAGE(parsedAddress.network == XAddress::MAINNET,
+        BOOST_CHECK_EQUAL(parsedAddress.m_token, XAddress::TOKEN_NAME);
+        BOOST_CHECK_MESSAGE(parsedAddress.m_network == XAddress::MAINNET,
                             "Network byte incorrect");
-        BOOST_CHECK_EQUAL(parsedAddress.type, XAddress::SCRIPT_PUB_KEY);
-        BOOST_CHECK_MESSAGE(parsedAddress.payload == payload,
+        BOOST_CHECK_EQUAL(parsedAddress.m_type, XAddress::SCRIPT_PUB_KEY);
+        BOOST_CHECK_MESSAGE(parsedAddress.m_payload == payload,
                             "Parsed payload incorrect");
     }
 }

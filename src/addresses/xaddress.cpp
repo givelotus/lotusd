@@ -18,10 +18,10 @@ namespace XAddress {
  */
 uint256 HashAddressContents(const Content &addressContent) {
     CHashWriter hasher(SER_GETHASH, 0);
-    hasher << addressContent.token;
-    hasher << uint8_t(addressContent.network);
-    hasher << uint8_t(addressContent.type);
-    hasher << addressContent.payload;
+    hasher << addressContent.m_token;
+    hasher << uint8_t(addressContent.m_network);
+    hasher << uint8_t(addressContent.m_type);
+    hasher << addressContent.m_payload;
     return hasher.GetSHA256();
 }
 
@@ -31,16 +31,16 @@ uint256 HashAddressContents(const Content &addressContent) {
 std::string Encode(const Content &addressContent) {
     std::vector<uint8_t> preencodedBuffer;
     uint256 check = HashAddressContents(addressContent);
-    preencodedBuffer.reserve(addressContent.payload.size() + 5);
-    preencodedBuffer.push_back(addressContent.type);
+    preencodedBuffer.reserve(addressContent.m_payload.size() + 5);
+    preencodedBuffer.push_back(addressContent.m_type);
     preencodedBuffer.insert(preencodedBuffer.end(),
-                            addressContent.payload.begin(),
-                            addressContent.payload.end());
+                            addressContent.m_payload.begin(),
+                            addressContent.m_payload.end());
     preencodedBuffer.insert(preencodedBuffer.end(), check.begin(),
                             check.begin() + 4);
     std::string address;
-    address.append(addressContent.token);
-    address.append(1, addressContent.network);
+    address.append(addressContent.m_token);
+    address.append(1, addressContent.m_network);
     address.append(EncodeBase58(preencodedBuffer));
     return address;
 }

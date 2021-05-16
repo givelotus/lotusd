@@ -32,16 +32,17 @@ enum DecodeError : uint8_t {
 
 class Content {
 public:
-    std::string token;
-    NetworkType network;
-    AddressType type;
-    std::vector<uint8_t> payload;
+    std::string m_token;
+    NetworkType m_network;
+    AddressType m_type;
+    std::vector<uint8_t> m_payload;
 
     Content() = default;
 
-    Content(std::string _token, NetworkType _network, AddressType _type,
-            std::vector<uint8_t> _payload)
-        : token(_token), network(_network), type(_type), payload(_payload) {}
+    Content(std::string token, NetworkType network, AddressType type,
+            std::vector<uint8_t> payload)
+        : m_token(token), m_network(network), m_type(type), m_payload(payload) {
+    }
 };
 
 /**
