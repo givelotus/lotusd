@@ -118,4 +118,32 @@ bool Parse(const CChainParams &params, const std::string &address,
     return ExtractDestination(scriptPubKey, retDestination);
 }
 
+class Encoder : public boost::static_visitor<std::string> {
+public:
+    explicit Encoder(const CChainParams &p) : params(p) {}
+
+    std::string operator()(const PKHash &id) const {
+        CScript scriptPubKey = CScript() << OP_DUP << OP_HASH160 << id
+                                         << OP_EQUALVERIFY << OP_CHECKSIG;
+        return Encode(Content(TOKEN_NAME, GetAddressNetworkByte(params),
+                              SCRIPT_PUB_KEY, ToByteVector(scriptPubKey)));
+    }
+
+    std::string operator()(const ScriptHash &id) const {
+        CScript scriptPubKey = CScript() << OP_HASH160 << id << OP_EQUAL;
+        return Encode(Content(TOKEN_NAME, GetAddressNetworkByte(params),
+                              SCRIPT_PUB_KEY, ToByteVector(scriptPubKey)));
+    }
+
+    std::string operator()(const CNoDestination &) const { return ""; }
+
+private:
+    const CChainParams &params;
+};
+
+std::string EncodeDestination(const CChainParams &params,
+                              const CTxDestination &dst) {
+    return boost::apply_visitor(Encoder(params), dst);
+}
+
 } // namespace XAddress
