@@ -23,7 +23,7 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
     ScriptError err = ScriptError::OK;
 
     const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
-    // isTRKeySpend requires Schnorr sigs and BIP341 sighash
+    // isTRKeySpend requires Schnorr sigs and Lotus sighash
     const bool isTRKeySpend = (flags & SCRIPT_TAPROOT_KEY_SPEND_PATH) != 0;
     const bool is64 = (vchSig.size() == 64);
 
@@ -43,9 +43,9 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
             sigHashes.push_back(sigHashType.withForkId());
             sigHashes.push_back(
                 sigHashType.withForkId().withAnyoneCanPay(true));
-            sigHashes.push_back(sigHashType.withBIP341());
+            sigHashes.push_back(sigHashType.withLotus());
             sigHashes.push_back(
-                sigHashType.withBIP341().withAnyoneCanPay(true));
+                sigHashType.withLotus().withAnyoneCanPay(true));
         } else {
             sigHashes.push_back(sigHashType);
             sigHashes.push_back(sigHashType.withAnyoneCanPay(true));
@@ -53,9 +53,9 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
     }
 
     for (const SigHashType &sigHash : sigHashes) {
-        // isTRKeySpend requires Schnorr sigs and BIP341 sighash
+        // isTRKeySpend requires Schnorr sigs and Lotus sighash
         const bool expectedValid =
-            isTRKeySpend ? is64 && sigHash.hasBIP341() : true;
+            isTRKeySpend ? is64 && sigHash.hasLotus() : true;
         valtype validSig = SignatureWithHashType(vchSig, sigHash);
         BOOST_CHECK_EQUAL(expectedValid, CheckTransactionSignatureEncoding(
                                              validSig, flags, &err));
@@ -105,7 +105,7 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
         BOOST_CHECK_EQUAL(
             err,
             isTRKeySpend
-                ? (is64 ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH
+                ? (is64 ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH
                         : ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG)
                 : (hasForkId ? ScriptError::MUST_USE_FORKID
                              : ScriptError::ILLEGAL_FORKID));
@@ -122,7 +122,7 @@ static void CheckSignatureEncodingWithSigHashType(const valtype &vchSig,
         BOOST_CHECK_EQUAL(
             err, !is64 ? ScriptError::SIG_NONSCHNORR
                  : isTRKeySpend
-                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH
+                     ? ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH
                  : hasForkId ? ScriptError::MUST_USE_FORKID
                              : ScriptError::ILLEGAL_FORKID);
     }
@@ -421,7 +421,7 @@ BOOST_AUTO_TEST_CASE(checkschnorr_test) {
         if (isTRKeySpend) {
             // Prevent invalid flag combinations
             flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-            sigHashType = sigHashType.withBIP341();
+            sigHashType = sigHashType.withLotus();
         } else if (flags & SCRIPT_ENABLE_SIGHASH_FORKID) {
             sigHashType = sigHashType.withForkId();
         }

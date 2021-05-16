@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(taproot_cpubkey_add_scalar) {
 
 /**
  * The control blocks have been generated using these Python functions, based
- * on the Python code in BIP341:
+ * on the Python code in Lotus sighash:
  * ```
  * from dataclasses import dataclass
  * from typing import List, Union
@@ -589,9 +589,9 @@ BOOST_AUTO_TEST_CASE(verify_key_spend) {
     const valtype vch_pubkey(pubkey.begin(), pubkey.end());
     const CScript script = CScript() << OP_SCRIPTTYPE << OP_1 << vch_pubkey;
     const Amount amount = 1337 * COIN;
-    const SigHashType sighash_all = SigHashType(SIGHASH_ALL).withBIP341();
-    const SigHashType sighash_none = SigHashType(SIGHASH_NONE).withBIP341();
-    const SigHashType sighash_single = SigHashType(SIGHASH_SINGLE).withBIP341();
+    const SigHashType sighash_all = SigHashType(SIGHASH_ALL).withLotus();
+    const SigHashType sighash_none = SigHashType(SIGHASH_NONE).withLotus();
+    const SigHashType sighash_single = SigHashType(SIGHASH_SINGLE).withLotus();
     const std::vector<std::vector<TestInput>> success_input_cases = {
         {{{}, script, {}, amount, sighash_all, true}},
         {{{}, script, {}, amount, sighash_all.withAnyoneCanPay(), true}},
@@ -630,14 +630,14 @@ BOOST_AUTO_TEST_CASE(verify_key_spend) {
                amount,
                sighash_all.withAlgorithm(SIGHASH_LEGACY),
                true}},
-             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH},
             {{{{},
                script,
                {},
                amount,
                sighash_all.withAlgorithm(SIGHASH_FORKID),
                true}},
-             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH},
+             ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH},
         };
     const std::vector<std::vector<CTxOut>> output_cases = {
         {{Amount::zero(), {}}},
@@ -755,75 +755,75 @@ BOOST_AUTO_TEST_CASE(verify_taproot_checksig_contract_one_leaf) {
     uint32_t seq = 0x1234'0001;
     const std::vector<Pair> script_cases = {
         {{{script, sighash_all.withForkId(), false, seq++}}, ok},
-        {{{script, sighash_all.withBIP341(), false, seq++}}, ok},
+        {{{script, sighash_all.withLotus(), false, seq++}}, ok},
         {{{script, sighash_all.withForkId(), true, seq++}}, ok},
-        {{{script, sighash_all.withBIP341(), true, seq++}}, ok},
+        {{{script, sighash_all.withLotus(), true, seq++}}, ok},
         {{{script, sighash_all.withForkId().withAnyoneCanPay(), false, seq++}},
          ok},
-        {{{script, sighash_all.withBIP341().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_all.withLotus().withAnyoneCanPay(), false}}, ok},
         {{{script, sighash_all.withForkId().withAnyoneCanPay(), true}}, ok},
-        {{{script, sighash_all.withBIP341().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_all.withLotus().withAnyoneCanPay(), true}}, ok},
         {{{script, sighash_none.withForkId(), false, seq++}}, ok},
-        {{{script, sighash_none.withBIP341(), false, seq++}}, ok},
+        {{{script, sighash_none.withLotus(), false, seq++}}, ok},
         {{{script, sighash_none.withForkId(), true, seq++}}, ok},
-        {{{script, sighash_none.withBIP341(), true, seq++}}, ok},
+        {{{script, sighash_none.withLotus(), true, seq++}}, ok},
         {{{script, sighash_none.withForkId().withAnyoneCanPay(), false}}, ok},
-        {{{script, sighash_none.withBIP341().withAnyoneCanPay(), false, seq++}},
+        {{{script, sighash_none.withLotus().withAnyoneCanPay(), false, seq++}},
          ok},
         {{{script, sighash_none.withForkId().withAnyoneCanPay(), true, seq++}},
          ok},
-        {{{script, sighash_none.withBIP341().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_none.withLotus().withAnyoneCanPay(), true}}, ok},
         {{{script, sighash_single.withForkId(), false}}, ok},
-        {{{script, sighash_single.withBIP341(), false}}, ok},
+        {{{script, sighash_single.withLotus(), false}}, ok},
         {{{script, sighash_single.withForkId(), true}}, ok},
-        {{{script, sighash_single.withBIP341(), true}}, ok},
+        {{{script, sighash_single.withLotus(), true}}, ok},
         {{{script, sighash_single.withForkId().withAnyoneCanPay(), false}}, ok},
-        {{{script, sighash_single.withBIP341().withAnyoneCanPay(), false}}, ok},
+        {{{script, sighash_single.withLotus().withAnyoneCanPay(), false}}, ok},
         {{{script, sighash_single.withForkId().withAnyoneCanPay(), true}}, ok},
-        {{{script, sighash_single.withBIP341().withAnyoneCanPay(), true}}, ok},
-        {{{script, sighash_single.withBIP341(), true, seq++},
+        {{{script, sighash_single.withLotus().withAnyoneCanPay(), true}}, ok},
+        {{{script, sighash_single.withLotus(), true, seq++},
           {script, sighash_single.withForkId().withAnyoneCanPay(), false},
           {script, sighash_all.withForkId(), false, seq++},
-          {script, sighash_all.withBIP341(), false, seq++},
+          {script, sighash_all.withLotus(), false, seq++},
           {script, sighash_all.withForkId(), true, seq++},
-          {script, sighash_all.withBIP341(), true, seq++},
+          {script, sighash_all.withLotus(), true, seq++},
           {script, sighash_all.withForkId().withAnyoneCanPay(), false, seq++},
-          {script, sighash_all.withBIP341().withAnyoneCanPay(), false, seq++},
+          {script, sighash_all.withLotus().withAnyoneCanPay(), false, seq++},
           {script, sighash_all.withForkId().withAnyoneCanPay(), true, seq++},
-          {script, sighash_all.withBIP341().withAnyoneCanPay(), true, seq++},
+          {script, sighash_all.withLotus().withAnyoneCanPay(), true, seq++},
           {script, sighash_none.withForkId(), false, seq++},
-          {script, sighash_none.withBIP341(), false, seq++},
+          {script, sighash_none.withLotus(), false, seq++},
           {script, sighash_none.withForkId(), true, seq++},
-          {script, sighash_none.withBIP341(), true, seq++},
+          {script, sighash_none.withLotus(), true, seq++},
           {script, sighash_none.withForkId().withAnyoneCanPay(), false, seq++},
-          {script, sighash_none.withBIP341().withAnyoneCanPay(), false, seq++},
+          {script, sighash_none.withLotus().withAnyoneCanPay(), false, seq++},
           {script, sighash_none.withForkId().withAnyoneCanPay(), true, seq++},
-          {script, sighash_none.withBIP341().withAnyoneCanPay(), true, seq++}},
+          {script, sighash_none.withLotus().withAnyoneCanPay(), true, seq++}},
          ok},
         // use 000000..00 as state and check equality in script
         {{{CScript() << valtype(32) << OP_EQUALVERIFY << vch_sig_pubkey
                      << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 0xffff'ffff, valtype(32)}},
+           sighash_single.withLotus(), true, seq++, 0xffff'ffff, valtype(32)}},
          ok},
         // use 000102..1f as state and check equality in script
         {{{CScript() << valtype{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
                                 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
                                 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
                      << OP_EQUALVERIFY << vch_sig_pubkey << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 0xffff'ffff,
+           sighash_single.withLotus(), true, seq++, 0xffff'ffff,
            valtype{0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
                    11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
                    22, 23, 24, 25, 26, 27, 28, 29, 30, 31}}},
          ok},
         // OP_CODESEPARATOR tests
         {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 0}},
+           sighash_single.withLotus(), true, seq++, 0}},
          ok},
         {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
-           sighash_single.withBIP341(), false, seq++, 0}},
+           sighash_single.withLotus(), false, seq++, 0}},
          ok},
         {{{CScript() << vch_sig_pubkey << OP_CODESEPARATOR << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 1}},
+           sighash_single.withLotus(), true, seq++, 1}},
          ok},
         {{{CScript() << OP_CODESEPARATOR << vch_sig_pubkey << OP_CHECKSIG,
            sighash_single.withForkId(), true, seq++, 0}},
@@ -841,19 +841,19 @@ BOOST_AUTO_TEST_CASE(verify_taproot_checksig_contract_one_leaf) {
          ok},
         {{{CScript() << vch_sig_pubkey << 0 << OP_IF << OP_CODESEPARATOR
                      << OP_ENDIF << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++}},
+           sighash_single.withLotus(), true, seq++}},
          ok},
         {{{CScript() << vch_sig_pubkey << 1 << OP_IF << OP_CODESEPARATOR
                      << OP_ENDIF << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 3}},
+           sighash_single.withLotus(), true, seq++, 3}},
          ok},
         {{{CScript() << vch_sig_pubkey << 1 << OP_IF << OP_CODESEPARATOR
                      << OP_ENDIF << OP_CHECKSIG,
-           sighash_single.withBIP341(), false, seq++, 3}},
+           sighash_single.withLotus(), false, seq++, 3}},
          ok},
         {{{CScript() << valtype(32) << OP_EQUALVERIFY << OP_CODESEPARATOR
                      << vch_sig_pubkey << OP_CHECKSIG,
-           sighash_single.withBIP341(), true, seq++, 2, valtype(32)}},
+           sighash_single.withLotus(), true, seq++, 2, valtype(32)}},
          ok},
         // test using legacy sighash
         {{{script, sighash_single.withAlgorithm(SIGHASH_LEGACY), true, seq++}},
@@ -966,14 +966,14 @@ BOOST_AUTO_TEST_CASE(verify_taproot_checksig_contract_tree) {
         {SigHashType(SIGHASH_SINGLE).withForkId(), ScriptError::OK},
         {SigHashType(SIGHASH_SINGLE).withForkId().withAnyoneCanPay(),
          ScriptError::OK},
-        {SigHashType(SIGHASH_ALL).withBIP341(), ScriptError::OK},
-        {SigHashType(SIGHASH_ALL).withBIP341().withAnyoneCanPay(),
+        {SigHashType(SIGHASH_ALL).withLotus(), ScriptError::OK},
+        {SigHashType(SIGHASH_ALL).withLotus().withAnyoneCanPay(),
          ScriptError::OK},
-        {SigHashType(SIGHASH_NONE).withBIP341(), ScriptError::OK},
-        {SigHashType(SIGHASH_NONE).withBIP341().withAnyoneCanPay(),
+        {SigHashType(SIGHASH_NONE).withLotus(), ScriptError::OK},
+        {SigHashType(SIGHASH_NONE).withLotus().withAnyoneCanPay(),
          ScriptError::OK},
-        {SigHashType(SIGHASH_SINGLE).withBIP341(), ScriptError::OK},
-        {SigHashType(SIGHASH_SINGLE).withBIP341().withAnyoneCanPay(),
+        {SigHashType(SIGHASH_SINGLE).withLotus(), ScriptError::OK},
+        {SigHashType(SIGHASH_SINGLE).withLotus().withAnyoneCanPay(),
          ScriptError::OK},
         {SigHashType(SIGHASH_ALL), ScriptError::MUST_USE_FORKID},
         {SigHashType(SIGHASH_ALL).withAnyoneCanPay(),

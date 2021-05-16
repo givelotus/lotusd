@@ -11,7 +11,7 @@
 enum {
     SCRIPT_VERIFY_NONE = 0,
 
-    // Require BIP341 sighash and Schnorr signatures for key spend path
+    // Require Lotus sighash and Schnorr signatures for key spend path
     // (spending without revealing the script) in Taproot.
     // Only used for checking signatures, not during script execution.
     SCRIPT_TAPROOT_KEY_SPEND_PATH = (1U << 0),
@@ -40,7 +40,7 @@ enum {
     //
     SCRIPT_VERIFY_MINIMALIF = (1U << 13),
 
-    // Do we accept signatures using SIGHASH_FORKID or SIGHASH_BIP341
+    // Do we accept signatures using SIGHASH_FORKID or SIGHASH_LOTUS
     //
     SCRIPT_ENABLE_SIGHASH_FORKID = (1U << 16),
 

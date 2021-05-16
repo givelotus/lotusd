@@ -95,8 +95,8 @@ static ScriptErrorDesc script_errors[] = {
     {ScriptError::INVALID_BIT_RANGE, "BIT_RANGE"},
     {ScriptError::INVALID_NUM2BIN_SIZE, "INVALID_NUM2BIN_SIZE"},
     {ScriptError::INVALID_OP_SCRIPTTYPE, "INVALID_OP_SCRIPTTYPE"},
-    {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
-     "TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH"},
+    {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH,
+     "TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH"},
     {ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
      "TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG"},
     {ScriptError::SCRIPTTYPE_INVALID_TYPE, "SCRIPTTYPE_INVALID_TYPE"},
@@ -2760,32 +2760,32 @@ BOOST_AUTO_TEST_CASE(script_GetScriptAsm) {
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[ALL|BIP341] " + pubKey,
+        derSig + "[ALL|LOTUS] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "61"))
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[ALL|BIP341|ANYONECANPAY] " + pubKey,
+        derSig + "[ALL|LOTUS|ANYONECANPAY] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e1"))
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[NONE|BIP341] " + pubKey,
+        derSig + "[NONE|LOTUS] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "62"))
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[NONE|BIP341|ANYONECANPAY] " + pubKey,
+        derSig + "[NONE|LOTUS|ANYONECANPAY] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e2"))
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[SINGLE|BIP341] " + pubKey,
+        derSig + "[SINGLE|LOTUS] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "63"))
                                  << vchPubKey,
                        true));
     BOOST_CHECK_EQUAL(
-        derSig + "[SINGLE|BIP341|ANYONECANPAY] " + pubKey,
+        derSig + "[SINGLE|LOTUS|ANYONECANPAY] " + pubKey,
         ScriptToAsmStr(CScript() << ToByteVector(ParseHex(derSig + "e3"))
                                  << vchPubKey,
                        true));

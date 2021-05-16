@@ -543,15 +543,15 @@ static const struct {
      SIGHASH_NONE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
     {"SINGLE|FORKID|ANYONECANPAY",
      SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
-    {"ALL|BIP341", SIGHASH_ALL | SIGHASH_BIP341},
-    {"NONE|BIP341", SIGHASH_NONE | SIGHASH_BIP341},
-    {"SINGLE|BIP341", SIGHASH_SINGLE | SIGHASH_BIP341},
-    {"ALL|BIP341|ANYONECANPAY",
-     SIGHASH_ALL | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY},
-    {"NONE|BIP341|ANYONECANPAY",
-     SIGHASH_NONE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY},
-    {"SINGLE|BIP341|ANYONECANPAY",
-     SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY},
+    {"ALL|LOTUS", SIGHASH_ALL | SIGHASH_LOTUS},
+    {"NONE|LOTUS", SIGHASH_NONE | SIGHASH_LOTUS},
+    {"SINGLE|LOTUS", SIGHASH_SINGLE | SIGHASH_LOTUS},
+    {"ALL|LOTUS|ANYONECANPAY",
+     SIGHASH_ALL | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
+    {"NONE|LOTUS|ANYONECANPAY",
+     SIGHASH_NONE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
+    {"SINGLE|LOTUS|ANYONECANPAY",
+     SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
 };
 
 static bool findSigHashFlags(SigHashType &sigHashType,
@@ -692,7 +692,7 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
 
     const FillableSigningProvider &keystore = tempKeystore;
 
-    // Collect spent outputs for BIP341 sighash
+    // Collect spent outputs for Lotus sighash
     std::vector<CTxOut> spent_outputs;
     spent_outputs.reserve(mergedTx.vin.size());
     for (const CTxIn &txin : mergedTx.vin) {
