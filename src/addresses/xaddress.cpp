@@ -14,9 +14,9 @@
 
 namespace XAddress {
 /**
- * Create a checksum.
+ * Create SHA256 Hash of the address contents for integrity checks.
  */
-uint256 CreateCheck(const Content &addressContent) {
+uint256 HashAddressContents(const Content &addressContent) {
     CHashWriter hasher(SER_GETHASH, 0);
     hasher << addressContent.token;
     hasher << uint8_t(addressContent.network);
@@ -30,7 +30,7 @@ uint256 CreateCheck(const Content &addressContent) {
  */
 std::string Encode(const Content &addressContent) {
     std::vector<uint8_t> preencodedBuffer;
-    uint256 check = CreateCheck(addressContent);
+    uint256 check = HashAddressContents(addressContent);
     preencodedBuffer.reserve(addressContent.payload.size() + 5);
     preencodedBuffer.push_back(addressContent.type);
     preencodedBuffer.insert(preencodedBuffer.end(),
@@ -48,13 +48,13 @@ std::string Encode(const Content &addressContent) {
 /**
  * Decode a XAddress string.
  */
-bool Decode(const std::string &address, Content &parsedOutput) {
+DecodeError Decode(const std::string &address, Content &parsedOutput) {
     const auto networkPosition =
         std::find_if(address.begin(), address.end(), [](const char c) -> bool {
             return std::isupper(c) || std::isdigit(c) || c == '_';
         });
     if (networkPosition == address.end()) {
-        return false;
+        return NO_NETWORK_POSITION;
     }
     const std::string token =
         address.substr(0, std::distance(address.begin(), networkPosition));
@@ -65,20 +65,20 @@ bool Decode(const std::string &address, Content &parsedOutput) {
     // vch length cannot be greater than encodedPayload
     std::vector<uint8_t> vch;
     if (!DecodeBase58(encodedPayload, vch, encodedPayload.length())) {
-        return false;
+        return BASE58_DECODE_FAILED;
     }
     // Undersized payload. Can't include type byte and checksum
     if (vch.size() < 5) {
-        return false;
+        return UNDERSIZED_PAYLOAD;
     }
     const AddressType addressByte = AddressType(vch[0]);
     parsedOutput = Content(token, networkByte, addressByte,
                            std::vector(vch.begin() + 1, vch.end() - 4));
-    const uint256 check = CreateCheck(parsedOutput);
+    const uint256 check = HashAddressContents(parsedOutput);
     if (memcmp(&check, &vch[vch.size() - 4], 4)) {
-        return false;
+        return INTEGRITY_CHECK_FAILED;
     }
-    return true;
+    return DECODE_OK;
 }
 
 } // namespace XAddress

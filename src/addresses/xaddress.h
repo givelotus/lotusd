@@ -22,6 +22,14 @@ enum AddressType : uint8_t {
     SCRIPT_PUB_KEY = 0,
 };
 
+enum DecodeError : uint8_t {
+    DECODE_OK = 0,
+    NO_NETWORK_POSITION = 1,
+    BASE58_DECODE_FAILED = 2,
+    UNDERSIZED_PAYLOAD = 3,
+    INTEGRITY_CHECK_FAILED = 4,
+};
+
 class Content {
 public:
     std::string token;
@@ -44,7 +52,7 @@ std::string Encode(const Content &addressContent);
  * Decode an XAddress string. Returns false on failure, and parsedOutput is not
  * modified.
  */
-bool Decode(const std::string &address, Content &parsedOutput);
+DecodeError Decode(const std::string &address, Content &parsedOutput);
 } // namespace XAddress
 
 #endif // BITCOIN_XADDR_H
