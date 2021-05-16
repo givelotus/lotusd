@@ -103,7 +103,7 @@ std::string ScriptErrorString(const ScriptError serror) {
         case ScriptError::ILLEGAL_FORKID:
             return "Illegal use of SIGHASH_FORKID";
         case ScriptError::MUST_USE_FORKID:
-            return "Signature must use SIGHASH_FORKID or SIGHASH_BIP341";
+            return "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS";
         case ScriptError::INVALID_NUM2BIN_SIZE:
             return "OP_NUM2BIN size limit exceeded";
         case ScriptError::SIGCHECKS_LIMIT_EXCEEDED:
@@ -114,8 +114,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Script type specified after OP_SCRIPTTYPE is invalid";
         case ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT:
             return "Malformed OP_SCRIPTTYPE script";
-        case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH:
-            return "Taproot key spend signatures must use SIGHASH_BIP341";
+        case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH:
+            return "Taproot key spend signatures must use SIGHASH_LOTUS";
         case ScriptError::TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG:
             return "Taproot key spend signature must be Schnorr";
         case ScriptError::TAPROOT_VERIFY_SIGNATURE_FAILED:

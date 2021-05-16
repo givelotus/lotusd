@@ -331,12 +331,22 @@ class CCoinsView;
 /** Precompute sighash midstate to avoid quadratic hashing */
 struct PrecomputedTransactionData {
     uint256 hashPrevouts, hashSequence, hashOutputs;
+    /** Coins spend by the tx */
     std::vector<CTxOut> m_spent_outputs;
-    uint256 m_prevouts_single_hash;
-    uint256 m_sequences_single_hash;
-    uint256 m_outputs_single_hash;
-    uint256 m_spent_amounts_single_hash;
-    uint256 m_spent_scripts_single_hash;
+    /** Merkle root of the H(input.prevout || input.nSequence) for all inputs */
+    uint256 m_inputs_merkle_root;
+    /** Merkle root of the coins spend by the tx */
+    uint256 m_inputs_spent_outputs_merkle_root;
+    /** Height of the merkle tree of the inputs */
+    size_t m_inputs_merkle_height;
+    /** Merkle root of the tx outputs */
+    uint256 m_outputs_merkle_root;
+    /** Height of the merkle tree of the outputs */
+    size_t m_outputs_merkle_height;
+    /** Sum of the amounts in all the inputs */
+    Amount m_amount_inputs_sum;
+    /** Sum of the amounts in all the outputs */
+    Amount m_amount_outputs_sum;
 
     PrecomputedTransactionData() = default;
 

@@ -116,7 +116,7 @@ int bitcoinconsensus_verify_script_with_amount(
     const uint8_t *txTo, unsigned int txToLen, unsigned int nIn,
     unsigned int flags, bitcoinconsensus_error *err) {
     Amount am(amount * SATOSHI);
-    // TODO: Return failure if BIP341 flag is set.
+    // TODO: Return failure if LOTUS flag is set.
     return ::verify_script(scriptPubKey, scriptPubKeyLen, am, {}, txTo, txToLen,
                            nIn, flags, err);
 }
@@ -130,7 +130,7 @@ int bitcoinconsensus_verify_script(const uint8_t *scriptPubKey,
         flags & bitcoinconsensus_SCRIPT_FLAGS_VERIFY_WITNESS_DEPRECATED) {
         return set_error(err, bitcoinconsensus_ERR_AMOUNT_REQUIRED);
     }
-    // TODO: Return failure if BIP341 flag is set.
+    // TODO: Return failure if LOTUS flag is set.
 
     return ::verify_script(scriptPubKey, scriptPubKeyLen, Amount::zero(), {},
                            txTo, txToLen, nIn, flags, err);

@@ -291,15 +291,15 @@ SigHashType ParseSighashString(const UniValue &sighash) {
             {"SINGLE|FORKID", SIGHASH_SINGLE | SIGHASH_FORKID},
             {"SINGLE|FORKID|ANYONECANPAY",
              SIGHASH_SINGLE | SIGHASH_FORKID | SIGHASH_ANYONECANPAY},
-            {"ALL|BIP341", SIGHASH_ALL | SIGHASH_BIP341},
-            {"ALL|BIP341|ANYONECANPAY", SIGHASH_ALL | SIGHASH_BIP341 |
+            {"ALL|LOTUS", SIGHASH_ALL | SIGHASH_LOTUS},
+            {"ALL|LOTUS|ANYONECANPAY", SIGHASH_ALL | SIGHASH_LOTUS |
                                             SIGHASH_ANYONECANPAY},
-            {"NONE|BIP341", SIGHASH_NONE | SIGHASH_BIP341},
-            {"NONE|BIP341|ANYONECANPAY", SIGHASH_NONE | SIGHASH_BIP341 |
+            {"NONE|LOTUS", SIGHASH_NONE | SIGHASH_LOTUS},
+            {"NONE|LOTUS|ANYONECANPAY", SIGHASH_NONE | SIGHASH_LOTUS |
                                              SIGHASH_ANYONECANPAY},
-            {"SINGLE|BIP341", SIGHASH_SINGLE | SIGHASH_BIP341},
-            {"SINGLE|BIP341|ANYONECANPAY",
-             SIGHASH_SINGLE | SIGHASH_BIP341 | SIGHASH_ANYONECANPAY},
+            {"SINGLE|LOTUS", SIGHASH_SINGLE | SIGHASH_LOTUS},
+            {"SINGLE|LOTUS|ANYONECANPAY",
+             SIGHASH_SINGLE | SIGHASH_LOTUS | SIGHASH_ANYONECANPAY},
         };
         std::string strHashType = sighash.get_str();
         const auto &it = map_sighash_values.find(strHashType);

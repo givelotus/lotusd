@@ -7,6 +7,7 @@
 #include <script/interpreter.h>
 
 #include <coins.h>
+#include <consensus/merkle.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha256.h>
 #include <pubkey.h>
@@ -76,7 +77,7 @@ static void CleanupScriptCode(CScript &scriptCode,
                               uint32_t flags) {
     SigHashType sigHashType = GetHashType(vchSig);
     if (!(flags & SCRIPT_ENABLE_SIGHASH_FORKID) ||
-        (!sigHashType.hasForkId() && !sigHashType.hasBIP341())) {
+        (!sigHashType.hasForkId() && !sigHashType.hasLotus())) {
         FindAndDelete(scriptCode, CScript() << vchSig);
     }
 }
@@ -1613,52 +1614,31 @@ public:
     }
 };
 
-/** Compute the (single) SHA256 of the concatenation of all prevouts of a tx. */
-template <class T> uint256 GetPrevoutsSHA256(const T &txTo) {
+/** Compute the double SHA256 of the concatenation of all prevouts of a tx. */
+uint256 GetBIP143PrevoutsHash(const std::vector<CTxIn> &vin) {
     CHashWriter ss(SER_GETHASH, 0);
-    for (const auto &txin : txTo.vin) {
+    for (const auto &txin : vin) {
         ss << txin.prevout;
     }
-    return ss.GetSHA256();
+    return ss.GetHash();
 }
 
-/** Compute the (single) SHA256 of the concatenation of all nSequences of a tx.
- */
-template <class T> uint256 GetSequencesSHA256(const T &txTo) {
+/** Compute the double SHA256 of the concatenation of all nSequences of a tx. */
+uint256 GetBIP143SequencesHash(const std::vector<CTxIn> &vin) {
     CHashWriter ss(SER_GETHASH, 0);
-    for (const auto &txin : txTo.vin) {
+    for (const auto &txin : vin) {
         ss << txin.nSequence;
     }
-    return ss.GetSHA256();
+    return ss.GetHash();
 }
 
-/** Compute the (single) SHA256 of the concatenation of all txouts of a tx. */
-template <class T> uint256 GetOutputsSHA256(const T &txTo) {
+/** Compute the double SHA256 of the concatenation of all txouts of a tx. */
+uint256 GetBIP143OutputsHash(const std::vector<CTxOut> &vout) {
     CHashWriter ss(SER_GETHASH, 0);
-    for (const auto &txout : txTo.vout) {
+    for (const auto &txout : vout) {
         ss << txout;
     }
-    return ss.GetSHA256();
-}
-
-/** Compute the (single) SHA256 of the concatenation of all amounts spent by a
- * tx. */
-uint256 GetSpentAmountsSHA256(const std::vector<CTxOut> &outputs_spent) {
-    CHashWriter ss(SER_GETHASH, 0);
-    for (const auto &txout : outputs_spent) {
-        ss << txout.nValue;
-    }
-    return ss.GetSHA256();
-}
-
-/** Compute the (single) SHA256 of the concatenation of all scriptPubKeys spent
- * by a tx. */
-uint256 GetSpentScriptsSHA256(const std::vector<CTxOut> &outputs_spent) {
-    CHashWriter ss(SER_GETHASH, 0);
-    for (const auto &txout : outputs_spent) {
-        ss << txout.scriptPubKey;
-    }
-    return ss.GetSHA256();
+    return ss.GetHash();
 }
 
 } // namespace
@@ -1666,15 +1646,33 @@ uint256 GetSpentScriptsSHA256(const std::vector<CTxOut> &outputs_spent) {
 template <class T>
 PrecomputedTransactionData::PrecomputedTransactionData(
     const T &txTo, std::vector<CTxOut> &&spent_outputs) {
-    m_prevouts_single_hash = GetPrevoutsSHA256(txTo);
-    m_sequences_single_hash = GetSequencesSHA256(txTo);
-    m_outputs_single_hash = GetOutputsSHA256(txTo);
-    hashPrevouts = SHA256Uint256(m_prevouts_single_hash);
-    hashSequence = SHA256Uint256(m_sequences_single_hash);
-    hashOutputs = SHA256Uint256(m_outputs_single_hash);
+    hashPrevouts = GetBIP143PrevoutsHash(txTo.vin);
+    hashSequence = GetBIP143SequencesHash(txTo.vin);
+    hashOutputs = GetBIP143OutputsHash(txTo.vout);
     m_spent_outputs = std::move(spent_outputs);
-    m_spent_amounts_single_hash = GetSpentAmountsSHA256(m_spent_outputs);
-    m_spent_scripts_single_hash = GetSpentScriptsSHA256(m_spent_outputs);
+    m_amount_outputs_sum = Amount::zero();
+    m_amount_inputs_sum = Amount::zero();
+    if (m_spent_outputs.size() == 0) {
+        // TODO: ideally this should never occur, but some tests rely on it
+        return;
+    }
+    m_inputs_merkle_root =
+        TxInputsMerkleRoot(txTo.vin, m_inputs_merkle_height);
+    m_outputs_merkle_root =
+        TxOutputsMerkleRoot(txTo.vout, m_outputs_merkle_height);
+    for (const CTxOut &output : txTo.vout) {
+        m_amount_outputs_sum += output.nValue;
+    }
+    std::vector<uint256> spent_outputs_hashes;
+    spent_outputs_hashes.reserve(m_spent_outputs.size());
+    for (const CTxOut &spent_output : m_spent_outputs) {
+        spent_outputs_hashes.push_back(SerializeHash(spent_output));
+        m_amount_inputs_sum += spent_output.nValue;
+    }
+    size_t spent_outputs_merkle_height;
+    m_inputs_spent_outputs_merkle_root =
+        ComputeMerkleRoot(spent_outputs_hashes, spent_outputs_merkle_height);
+    assert(spent_outputs_merkle_height == m_inputs_merkle_height);
 }
 
 template <class T>
@@ -1734,21 +1732,21 @@ bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
     uint256 hashOutputs;
 
     if (!sigHashType.hasAnyoneCanPay()) {
-        hashPrevouts = cache ? cache->hashPrevouts
-                             : SHA256Uint256(GetPrevoutsSHA256(txTo));
+        hashPrevouts =
+            cache ? cache->hashPrevouts : GetBIP143PrevoutsHash(txTo.vin);
     }
 
     if (!sigHashType.hasAnyoneCanPay() &&
         (sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
         (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
-        hashSequence = cache ? cache->hashSequence
-                             : SHA256Uint256(GetSequencesSHA256(txTo));
+        hashSequence =
+            cache ? cache->hashSequence : GetBIP143SequencesHash(txTo.vin);
     }
 
     if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) &&
         (sigHashType.getBaseType() != BaseSigHashType::NONE)) {
         hashOutputs =
-            cache ? cache->hashOutputs : SHA256Uint256(GetOutputsSHA256(txTo));
+            cache ? cache->hashOutputs : GetBIP143OutputsHash(txTo.vout);
     } else if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
                (nIn < txTo.vout.size())) {
         CHashWriter ss(SER_GETHASH, 0);
@@ -1780,82 +1778,70 @@ bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
     return true;
 }
 
-static const CHashWriter HASHER_TAPSIGHASH = TaggedHash("TapSighash");
-
 template <class T>
-bool SignatureHashBIP341(uint256 &hash_out,
+bool SignatureHashLotus(uint256 &hash_out,
                          const std::optional<ScriptExecutionData> &execdata,
                          const T &tx_to, uint32_t in_pos,
                          SigHashType sig_hash_type,
                          const PrecomputedTransactionData &cache) {
     uint8_t ext_flag = bool(execdata);
-    uint8_t key_version = 0;
     assert(in_pos < tx_to.vin.size());
 
-    CHashWriter ss = HASHER_TAPSIGHASH;
-
-    // Epoch
-    static constexpr uint8_t EPOCH = 0;
-    ss << EPOCH;
+    CHashWriter ss(SER_GETHASH, 0);
 
     // Hash type
-    uint8_t hash_type = sig_hash_type.getRawSigHashType() & 0xff;
-    assert(hash_type & SIGHASH_BIP341);
+    uint32_t hash_type = sig_hash_type.getRawSigHashType();
+    assert(hash_type & SIGHASH_LOTUS);
     assert(hash_type & SIGHASH_FORKID);
     if (!(hash_type & 0x03) || (hash_type & 0x1c)) {
-        // hash_type 0 is invalid, any undefined bits are invalid 
+        // hash_type 0 is invalid, any undefined bits are invalid
         return false;
     }
     ss << hash_type;
 
-    // Transaction level data
-
-    // hash_type is only 1 byte, which can't fit the entire sig hash type
-    // (unlike Legacy sighash and BIP143 sighash, where it's 4 bytes).
-    // Instead, we bitwise XOR the fork value (upper 3 bytes of sig_hash_type)
-    // onto the nVersion (which in Logos is always 1 or 2 as consensus rule).
-    // This way, we get the same replay protection effect.
-    ss << (tx_to.nVersion ^ (sig_hash_type.getForkValue() << 8));
-    ss << tx_to.nLockTime;
-    if (!sig_hash_type.hasAnyoneCanPay()) {
-        ss << cache.m_prevouts_single_hash;
-        ss << cache.m_spent_amounts_single_hash;
-        ss << cache.m_spent_scripts_single_hash;
-        ss << cache.m_sequences_single_hash;
-    }
-    if (sig_hash_type.getBaseType() == BaseSigHashType::ALL) {
-        ss << cache.m_outputs_single_hash;
-    }
-
-    // Data about the input/prevout being spent
-    const uint8_t spend_type = ext_flag << 1;
-    ss << spend_type;
-    if (sig_hash_type.hasAnyoneCanPay()) {
-        ss << tx_to.vin[in_pos].prevout;
-        ss << cache.m_spent_outputs[in_pos];
-        ss << tx_to.vin[in_pos].nSequence;
-    } else {
-        ss << in_pos;
-    }
-
-    // Data about the output (if only one).
-    if (sig_hash_type.getBaseType() == BaseSigHashType::SINGLE) {
-        if (in_pos >= tx_to.vout.size()) {
-            return false;
-        }
-        CHashWriter sha_single_output(SER_GETHASH, 0);
-        sha_single_output << tx_to.vout[in_pos];
-        ss << sha_single_output.GetSHA256();
+    {
+        const uint8_t spend_type = ext_flag << 1;
+        CHashWriter input_hash(SER_GETHASH, 0);
+        input_hash << spend_type;
+        input_hash << tx_to.vin[in_pos].prevout;
+        input_hash << tx_to.vin[in_pos].nSequence;
+        input_hash << cache.m_spent_outputs[in_pos];
+        ss << input_hash.GetHash();
     }
 
     // Additional data for non-taproot signatures (see BIP342)
     if (execdata) {
-        ss << execdata->m_executed_script_hash;
-        ss << key_version;
         ss << execdata->m_codeseparator_pos;
+        ss << execdata->m_executed_script_hash;
     }
 
-    hash_out = ss.GetSHA256();
+    if (!sig_hash_type.hasAnyoneCanPay()) {
+        ss << in_pos;
+        ss << cache.m_inputs_spent_outputs_merkle_root;
+        ss << (cache.m_amount_inputs_sum / SATOSHI);
+    }
+    if (sig_hash_type.getBaseType() == BaseSigHashType::ALL) {
+        ss << (cache.m_amount_outputs_sum / SATOSHI);
+    }
+
+    ss << tx_to.nVersion;
+    if (!sig_hash_type.hasAnyoneCanPay()) {
+        ss << cache.m_inputs_merkle_root;
+        ss << uint8_t(cache.m_inputs_merkle_height);
+    }
+    if (sig_hash_type.getBaseType() == BaseSigHashType::SINGLE) {
+        if (in_pos >= tx_to.vout.size()) {
+            return false;
+        }
+        ss << SerializeHash(tx_to.vout[in_pos]);
+    }
+    if (sig_hash_type.getBaseType() == BaseSigHashType::ALL) {
+        ss << cache.m_outputs_merkle_root;
+        ss << uint8_t(cache.m_outputs_merkle_height);
+    }
+    ss << tx_to.nLockTime;
+
+    hash_out = ss.GetHash();
     return true;
 }
 
@@ -1881,9 +1867,9 @@ bool SignatureHash(uint256 &sighashOut,
     } else if (sigHashType.hasForkId()) {
         return SignatureHashBIP143(sighashOut, scriptCode, txTo, nIn,
                                    sigHashType, amount, cache);
-    } else if (sigHashType.hasBIP341()) {
+    } else if (sigHashType.hasLotus()) {
         assert(cache);
-        return SignatureHashBIP341(sighashOut, execdata, txTo, nIn, sigHashType,
+        return SignatureHashLotus(sighashOut, execdata, txTo, nIn, sigHashType,
                                    *cache);
     } else {
         // reserved sigHashType 0x20
@@ -2195,7 +2181,7 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
     {
-        ScriptExecutionData execdata{CScript()};  // unused in scriptSig
+        ScriptExecutionData execdata{CScript()}; // unused in scriptSig
         if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
                         serror)) {
             // serror is set

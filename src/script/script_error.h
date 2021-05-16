@@ -93,8 +93,8 @@ enum class ScriptError {
     /* Script not formatted in accordance with script type */
     SCRIPTTYPE_MALFORMED_SCRIPT,
 
-    /* Key spend path for Taproot must use BIP341 sighash */
-    TAPROOT_KEY_SPEND_MUST_USE_BIP341_SIGHASH,
+    /* Key spend path for Taproot must use Lotus sighash */
+    TAPROOT_KEY_SPEND_MUST_USE_LOTUS_SIGHASH,
     /* Key spend path for Taproot must Schnorr signatures */
     TAPROOT_KEY_SPEND_MUST_USE_SCHNORR_SIG,
     /* Key spend path for Taproot failed */

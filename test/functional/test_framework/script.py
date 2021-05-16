@@ -15,6 +15,7 @@ from typing import List, Dict
 from .messages import (
     CTransaction,
     CTxOut,
+    get_merkle_root,
     hash256,
     ser_string,
     ser_uint256,
@@ -632,7 +633,7 @@ SIGHASH_ALL = 1
 SIGHASH_NONE = 2
 SIGHASH_SINGLE = 3
 SIGHASH_FORKID = 0x40
-SIGHASH_BIP341 = 0x60
+SIGHASH_LOTUS = 0x60
 SIGHASH_ANYONECANPAY = 0x80
 
 
@@ -762,7 +763,7 @@ def TaggedHash(tag, data):
     return hashlib.sha256(ss).digest()
 
 
-def SignatureHashBIP341(
+def SignatureHashLotus(
         tx_to: CTransaction,
         spent_utxos: list,
         sig_hash_type: int,
@@ -773,40 +774,44 @@ def SignatureHashBIP341(
     assert input_index < len(tx_to.vin)
     out_type = sig_hash_type & 3
     in_type = sig_hash_type & SIGHASH_ANYONECANPAY
-    spk = spent_utxos[input_index].scriptPubKey
-    hash_type = sig_hash_type & 0xff
-    ss = bytearray([0, hash_type]) # epoch, sig_hash_type
-    ss += struct.pack("<I", tx_to.nVersion ^ (sig_hash_type & 0xffffff00))
-    ss += struct.pack("<I", tx_to.nLockTime)
-    if in_type != SIGHASH_ANYONECANPAY:
-        ss += sha256(b"".join(i.prevout.serialize() for i in tx_to.vin))
-        ss += sha256(b"".join(struct.pack("<q", u.nValue) for u in spent_utxos))
-        ss += sha256(b"".join(ser_string(u.scriptPubKey) for u in spent_utxos))
-        ss += sha256(b"".join(struct.pack("<I", i.nSequence) for i in tx_to.vin))
-    if out_type == SIGHASH_ALL:
-        ss += sha256(b"".join(o.serialize() for o in tx_to.vout))
+    ss = bytearray(sig_hash_type.to_bytes(4, 'little'))
     spend_type = 0
     if executed_script_hash is not None:
         spend_type |= 2
-    ss += bytes([spend_type])
-    if in_type == SIGHASH_ANYONECANPAY:
-        ss += tx_to.vin[input_index].prevout.serialize()
-        ss += struct.pack("<q", spent_utxos[input_index].nValue)
-        ss += ser_string(spk)
-        ss += struct.pack("<I", tx_to.vin[input_index].nSequence)
-    else:
-        ss += struct.pack("<I", input_index)
-    if out_type == SIGHASH_SINGLE:
-        if input_index < len(tx_to.vout):
-            ss += sha256(tx_to.vout[input_index].serialize())
-        else:
-            raise ValueError("Invalid sighash")
+    ss += hash256(
+        bytes([spend_type]) +
+        tx_to.vin[input_index].prevout.serialize() +
+        tx_to.vin[input_index].nSequence.to_bytes(4, 'little') +
+        spent_utxos[input_index].serialize())
     if executed_script_hash is not None:
         assert len(executed_script_hash) == 32
+        ss += codeseparator_pos.to_bytes(4, 'little')
         ss += executed_script_hash
-        ss += bytes([0])
-        ss += struct.pack("<I", codeseparator_pos)
-    return TaggedHash("TapSighash", ss)
+    if in_type != SIGHASH_ANYONECANPAY:
+        ss += input_index.to_bytes(4, 'little')
+        ss += get_merkle_root([hash256(utxo.serialize()) for utxo in spent_utxos])[0]
+        ss += sum(utxo.nValue for utxo in spent_utxos).to_bytes(8, 'little')
+    if out_type == SIGHASH_ALL:
+        ss += sum(output.nValue for output in tx_to.vout).to_bytes(8, 'little')
+    ss += tx_to.nVersion.to_bytes(4, 'little')
+    if in_type != SIGHASH_ANYONECANPAY:
+        inputs_merkle_root, inputs_merkle_height = get_merkle_root(
+            [hash256(inpt.prevout.serialize() + inpt.nSequence.to_bytes(4, 'little'))
+             for inpt in tx_to.vin])
+        ss += inputs_merkle_root
+        ss += bytes([inputs_merkle_height])
+    if out_type == SIGHASH_SINGLE:
+        if input_index < len(tx_to.vout):
+            ss += hash256(tx_to.vout[input_index].serialize())
+        else:
+            raise ValueError("Invalid sighash SINGLE, no corresponding output")
+    if out_type == SIGHASH_ALL:
+        outputs_merkle_root, outputs_merkle_height = get_merkle_root(
+            [hash256(output.serialize()) for output in tx_to.vout])
+        ss += outputs_merkle_root
+        ss += bytes([outputs_merkle_height])
+    ss += tx_to.nLockTime.to_bytes(4, 'little')
+    return hash256(ss)
 
 
 class TestFrameworkScript(unittest.TestCase):

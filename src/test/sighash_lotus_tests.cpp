@@ -14,7 +14,7 @@
 #include <univalue.h>
 #include <util/strencodings.h>
 
-#include <test/data/sighash_bip341.json.h>
+#include <test/data/sighash_lotus.json.h>
 #include <test/jsonutil.h>
 #include <test/lcg.h>
 #include <test/scriptflags.h>
@@ -25,7 +25,7 @@
 typedef std::vector<uint8_t> valtype;
 typedef std::vector<valtype> stacktype;
 
-BOOST_FIXTURE_TEST_SUITE(sighash_bip341_tests, BasicTestingSetup)
+BOOST_FIXTURE_TEST_SUITE(sighash_lotus_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(prepare_spent_outputs) {
     LOCK(cs_main);
@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_CASE(prepare_spent_outputs) {
     BOOST_CHECK(txdata.m_spent_outputs == txFrom.vout);
 }
 
-BOOST_AUTO_TEST_CASE(precompute_bip341_hashes) {
+BOOST_AUTO_TEST_CASE(precompute_lotus_sighash) {
     CMutableTransaction txFrom;
     txFrom.vout.resize(2);
     txFrom.vout[0] = CTxOut{1000 * SATOSHI, CScript() << OP_1};
@@ -64,9 +64,13 @@ BOOST_AUTO_TEST_CASE(precompute_bip341_hashes) {
     txTo.vin[0].nSequence = 0xffff'fffe;
     txTo.vin[1].prevout = COutPoint(txFrom.GetId(), 1);
     txTo.vin[1].nSequence = 0xffff'ffff;
-    txTo.vout.resize(1);
+    txTo.vout.resize(3);
     txTo.vout[0].scriptPubKey = CScript() << OP_3;
     txTo.vout[0].nValue = 3000 * SATOSHI;
+    txTo.vout[1].scriptPubKey = CScript() << OP_4;
+    txTo.vout[1].nValue = 4000 * SATOSHI;
+    txTo.vout[2].scriptPubKey = CScript() << OP_5;
+    txTo.vout[2].nValue = 5000 * SATOSHI;
 
     BOOST_CHECK_EQUAL(txFrom.GetId(),
                       uint256S("28990ad4de25dd2c1c20a4321081e7d72fb7de80fd9d7cd"
@@ -74,40 +78,38 @@ BOOST_AUTO_TEST_CASE(precompute_bip341_hashes) {
 
     PrecomputedTransactionData txdata(txTo, std::move(txFrom.vout));
 
-    BOOST_CHECK_EQUAL(txdata.m_prevouts_single_hash,
-                      uint256S("f984fdec96fac3e809c8737d9067a0d4632b9af6c8539f5"
-                               "aa934e64693966f7a"));
-    BOOST_CHECK_EQUAL(txdata.m_sequences_single_hash,
-                      uint256S("01282d1aeed227f3c168067a934f754805702a15317106e"
-                               "b2f76788b7f7fb381"));
-    BOOST_CHECK_EQUAL(txdata.m_outputs_single_hash,
-                      uint256S("01e2054d5e24f0163cb2862cca70d36ca9f2b1f1f3ee6bc"
-                               "7e32118f150e5ebae"));
-
     BOOST_CHECK_EQUAL(txdata.hashPrevouts,
                       uint256S("91737a8b58112c5bb792245e22700f22c88fa84944ff46c"
                                "5cae3fd522f5da68e"));
-    BOOST_CHECK_EQUAL(txdata.hashPrevouts,
-                      SHA256Uint256(txdata.m_prevouts_single_hash));
-
     BOOST_CHECK_EQUAL(txdata.hashSequence,
                       uint256S("b805fcb22768d3701b2fb60a55b5a5d7122bfdb2ba3d313"
                                "40c6e2bf17d425e98"));
-    BOOST_CHECK_EQUAL(txdata.hashSequence,
-                      SHA256Uint256(txdata.m_sequences_single_hash));
-
     BOOST_CHECK_EQUAL(txdata.hashOutputs,
-                      uint256S("bbfa4eda7307e5de2aaeccb963beb427f51e9a3d4912ad2"
-                               "ac9e1dc5f3407d4dc"));
-    BOOST_CHECK_EQUAL(txdata.hashOutputs,
-                      SHA256Uint256(txdata.m_outputs_single_hash));
+                      uint256S("b351743e5d8984941a46ec73b2cbbc41ee858abae9928ce"
+                               "2c52d52fdc567a50c"));
 
-    BOOST_CHECK_EQUAL(txdata.m_spent_amounts_single_hash,
-                      uint256S("a6ad32a03e35d509baa268e437ea28289d6d07529c6efd8"
-                               "f1f7ced8ef2aba365"));
-    BOOST_CHECK_EQUAL(txdata.m_spent_scripts_single_hash,
-                      uint256S("abf93a5b45ba5cda5b1eb8bf2272c060127d390a6e020ba"
-                               "a5345b6977e89ea3c"));
+    BOOST_CHECK_EQUAL(txdata.m_inputs_merkle_root,
+                      uint256S("8b516e759e1628a4bd02743d3006e042e25dbf98d4f4ebc"
+                               "1042fde7d6660542a"));
+    BOOST_CHECK_EQUAL(txdata.m_inputs_spent_outputs_merkle_root,
+                      uint256S("2c87544fb644b4ee6e955738e5e1feca7019890859314b0"
+                               "4da0526b47d22aa73"));
+    BOOST_CHECK_EQUAL(txdata.m_inputs_merkle_height, 2);
+    BOOST_CHECK_EQUAL(txdata.m_outputs_merkle_root,
+                      uint256S("9b14ae09281d70dc35243ade1ad172fc9e16b726990f173"
+                               "cad905ed7da83780f"));
+    BOOST_CHECK_EQUAL(txdata.m_outputs_merkle_height, 3);
+    BOOST_CHECK_EQUAL(txdata.m_amount_inputs_sum, 3000 * SATOSHI);
+    BOOST_CHECK_EQUAL(txdata.m_amount_outputs_sum, 12000 * SATOSHI);
+
+    CHashWriter hasher_txid(SER_GETHASH, 0);
+    hasher_txid << txTo.nVersion;
+    hasher_txid << txdata.m_inputs_merkle_root;
+    hasher_txid << uint8_t(txdata.m_inputs_merkle_height);
+    hasher_txid << txdata.m_outputs_merkle_root;
+    hasher_txid << uint8_t(txdata.m_outputs_merkle_height);
+    hasher_txid << txTo.nLockTime;
+    BOOST_CHECK_EQUAL(txTo.GetId(), hasher_txid.GetHash());
 }
 
 static const std::vector<uint32_t> allflags{
@@ -182,15 +184,15 @@ BOOST_AUTO_TEST_CASE(script_execution_data) {
                     10);
 }
 
-// Test that SIGHASH_BIP341 can only be used with SIGHASH_FORKID
-BOOST_AUTO_TEST_CASE(bip341_only_with_fork_id) {
+// Test that SIGHASH_LOTUS can only be used with SIGHASH_FORKID
+BOOST_AUTO_TEST_CASE(lotus_sighash_only_with_fork_id) {
     SigHashType sigHashType = SigHashType(0x21);
     BOOST_CHECK(!sigHashType.isDefined());
     BOOST_CHECK(!SigHashType(SIGHASH_RESERVED).isDefined());
     BOOST_CHECK(!sigHashType.withAnyoneCanPay().isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::NONE).isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::SINGLE).isDefined());
-    BOOST_CHECK(!SigHashType(SIGHASH_BIP341).isDefined());
+    BOOST_CHECK(!SigHashType(SIGHASH_LOTUS).isDefined());
     BOOST_CHECK(!SigHashType(SIGHASH_FORKID).isDefined());
     // withForkId resets the other bit in SIGHASH_TYPE_MASK
     BOOST_CHECK(sigHashType.withForkId().isDefined());
@@ -200,7 +202,7 @@ BOOST_AUTO_TEST_CASE(bip341_only_with_fork_id) {
                     .isDefined());
 }
 
-BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
+BOOST_AUTO_TEST_CASE(lotus_sighash_invalid_hash_type) {
     CMutableTransaction tx;
     tx.vin.resize(1);
     tx.vout.resize(1);
@@ -212,8 +214,8 @@ BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
     for (uint32_t sig_bits = 0; sig_bits <= 0xff; ++sig_bits) {
         SigHashType sig_hash_type{(lcg.next() << 8) | sig_bits};
         bool is_valid = !sig_hash_type.isReserved();
-        // Invalid bits make SignatureHash using BIP341 fail
-        if (sig_hash_type.hasBIP341() &&
+        // Invalid bits make SignatureHash using Lotus fail
+        if (sig_hash_type.hasLotus() &&
             (!(sig_bits & 0x03) || (sig_hash_type.getUnusedBits()))) {
             // hash_type 0 is invalid, any usused bits are invalid
             is_valid = false;
@@ -229,10 +231,28 @@ BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(bip341_sighash_from_data) {
+void GetPreimageHexRecursive(std::string &sighash_preimage_hex,
+                             const UniValue &part) {
+    if (part.isArray()) {
+        std::string inner_preimage_hex;
+        for (size_t i = 0; i < part.size(); ++i) {
+            GetPreimageHexRecursive(inner_preimage_hex, part[i]);
+        }
+        std::vector<uint8_t> inner_preimage = ParseHex(inner_preimage_hex);
+        uint256 hash;
+        CHash256()
+            .Write({inner_preimage.data(), inner_preimage.size()})
+            .Finalize(hash);
+        sighash_preimage_hex += HexStr(hash);
+    } else {
+        sighash_preimage_hex += part.get_str();
+    }
+}
+
+BOOST_AUTO_TEST_CASE(lotus_sighash_from_data) {
     UniValue tests = read_json(std::string(
-        json_tests::sighash_bip341,
-        json_tests::sighash_bip341 + sizeof(json_tests::sighash_bip341)));
+        json_tests::sighash_lotus,
+        json_tests::sighash_lotus + sizeof(json_tests::sighash_lotus)));
 
     for (size_t idx = 0; idx < tests.size(); idx++) {
         CTransactionRef tx;
@@ -313,24 +333,9 @@ BOOST_AUTO_TEST_CASE(bip341_sighash_from_data) {
         const UniValue &preimage_parts = test[6];
         for (size_t part_idx = 0; part_idx < preimage_parts.size();
              ++part_idx) {
-            const UniValue &part = preimage_parts[part_idx];
             try {
-                if (part.isArray()) {
-                    std::vector<uint8_t> preimage;
-                    for (size_t i = 0; i < part.size(); ++i) {
-                        std::vector<uint8_t> preimage_part =
-                            ParseHex(part[i].get_str());
-                        preimage.insert(preimage.end(), preimage_part.begin(),
-                                        preimage_part.end());
-                    }
-                    uint256 hash;
-                    CSHA256()
-                        .Write(preimage.data(), preimage.size())
-                        .Finalize(hash.begin());
-                    sighash_preimage_hex += HexStr(hash);
-                } else {
-                    sighash_preimage_hex += part.get_str();
-                }
+                GetPreimageHexRecursive(sighash_preimage_hex,
+                                        preimage_parts[part_idx]);
             } catch (...) {
                 BOOST_ERROR("Invalid sighash preimage: " << test[6].write());
                 BOOST_ERROR("Test: " << str_test);
@@ -349,18 +354,10 @@ BOOST_AUTO_TEST_CASE(bip341_sighash_from_data) {
             continue;
         }
 
-        const uint256 taghash = uint256S(
-            "31a0e428c697752387eb13a366fd953ded614665f24b92b4c8702a4bdf480af4");
-        std::vector<uint8_t> data;
-        data.reserve(taghash.size() * 2 + sighash_preimage.size());
-        data.insert(data.end(), taghash.begin(), taghash.end());
-        data.insert(data.end(), taghash.begin(), taghash.end());
-        data.insert(data.end(), sighash_preimage.begin(),
-                    sighash_preimage.end());
         uint256 expected_sighash;
-        CSHA256()
-            .Write(data.data(), data.size())
-            .Finalize(expected_sighash.begin());
+        CHash256()
+            .Write({sighash_preimage.data(), sighash_preimage.size()})
+            .Finalize(expected_sighash);
 
         const CTxOut &utxo = spent_outputs[input_idx];
         const ScriptExecutionData execdata(utxo.scriptPubKey,

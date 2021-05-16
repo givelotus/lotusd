@@ -35,7 +35,7 @@ gen_json_header(JSON_HEADERS
 	data/key_io_invalid.json
 	data/script_tests.json
 	data/sighash.json
-	data/sighash_bip341.json
+	data/sighash_lotus.json
 	data/tx_invalid.json
 	data/tx_valid.json
 )
@@ -206,7 +206,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		settings_tests.cpp
 		sigcache_tests.cpp
 		sigencoding_tests.cpp
-		sighash_bip341_tests.cpp
+		sighash_lotus_tests.cpp
 		sighash_tests.cpp
 		sighashtype_tests.cpp
 		sigcheckcount_tests.cpp
