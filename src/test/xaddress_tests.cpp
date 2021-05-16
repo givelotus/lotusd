@@ -195,4 +195,81 @@ BOOST_AUTO_TEST_CASE(parse_p2pkh_works) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(encode_destination_works) {
+    // First create an instance of an engine.
+    std::random_device rd;
+    auto gen = [&rd]() { return uint8_t(rd()); };
+    GlobalConfig config;
+    std::vector<uint8_t> fakeKeyBytes(32);
+    std::generate(begin(fakeKeyBytes), end(fakeKeyBytes), gen);
+    const auto fakeKeyId = Hash160(fakeKeyBytes);
+    // Assert that encode works for PKHash.
+    {
+        CScript scriptPubKey = CScript() << OP_DUP << OP_HASH160
+                                         << ToByteVector(fakeKeyId)
+                                         << OP_EQUALVERIFY << OP_CHECKSIG;
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        BOOST_CHECK_EQUAL(
+            XAddress::EncodeDestination(config.GetChainParams(),
+                                        PKHash(CKeyID(fakeKeyId))),
+            encodedAddress);
+    }
+
+    // Assert that encode works for ScriptHash.
+    {
+        CScript redeemScript = CScript() << OP_TRUE;
+        CScript scriptPubKey =
+            CScript() << OP_HASH160
+                      << ToByteVector(Hash160(ToByteVector(redeemScript)))
+                      << OP_EQUAL;
+
+        const std::string encodedAddress = XAddress::Encode(XAddress::Content(
+            XAddress::TOKEN_NAME, XAddress::MAINNET, XAddress::SCRIPT_PUB_KEY,
+            ToByteVector(scriptPubKey)));
+        BOOST_CHECK_EQUAL(XAddress::EncodeDestination(config.GetChainParams(),
+                                                      ScriptHash(redeemScript)),
+                          encodedAddress);
+    }
+
+    // Assert null address for CNoDestination.
+    {
+        BOOST_CHECK_EQUAL(XAddress::EncodeDestination(config.GetChainParams(),
+                                                      CNoDestination()),
+                          "");
+    }
+}
+
+BOOST_AUTO_TEST_CASE(encode_broken_checksum_works) {
+    // Test that we validate addresses that had the old
+    // checksum commitment that include varints for the
+    // size of "lotus" and the payload.
+    GlobalConfig config;
+
+    const std::string encodedAddress =
+        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN";
+    const std::vector<uint8_t> expectedPayload = {
+        118, 169, 20,  118, 160, 64,  83,  189, 160, 168, 139, 218, 81,
+        119, 184, 106, 21,  195, 178, 159, 85,  152, 115, 136, 172};
+    XAddress::Content parsedAddress;
+
+    BOOST_CHECK_EQUAL(XAddress::Decode(encodedAddress, parsedAddress),
+                      XAddress::DECODE_OK);
+    BOOST_CHECK_EQUAL(parsedAddress.m_network, XAddress::MAINNET);
+    BOOST_CHECK_EQUAL(parsedAddress.m_type, XAddress::SCRIPT_PUB_KEY);
+    BOOST_CHECK_MESSAGE(parsedAddress.m_payload == expectedPayload,
+                        "Parsed payload incorrect");
+    BOOST_CHECK_EQUAL(parsedAddress.m_token, XAddress::TOKEN_NAME);
+
+    // Check encodes with correct checksum
+    XAddress::Content oldCheckSumDecoded;
+    BOOST_CHECK_EQUAL(
+        XAddress::Decode("lotus_1PrQxBkWiRorG9kcMKvFq3hoRdN8XLUy4YzAHe",
+                         oldCheckSumDecoded),
+        XAddress::DECODE_OK);
+    BOOST_CHECK_EQUAL(XAddress::Encode(oldCheckSumDecoded),
+                      "lotus_1PrQxBkWiRorG9kcMKvFq3hoRdN8XLUy4YzAHe");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
