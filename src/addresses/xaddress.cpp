@@ -4,7 +4,10 @@
 
 #include <addresses/xaddress.h>
 #include <base58.h>
+#include <chainparams.h>
 #include <hash.h>
+#include <script/script.h>
+#include <script/standard.h>
 #include <span.h>
 #include <uint256.h>
 #include <util/strencodings.h>
@@ -12,6 +15,7 @@
 #include <util/vector.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <string>
 
@@ -105,6 +109,39 @@ DecodeError Decode(const std::string &address, Content &parsedOutput) {
         return DECODE_OK;
     }
     return INTEGRITY_CHECK_FAILED;
+}
+
+static NetworkType GetAddressNetworkByte(const CChainParams &p) {
+    if (p.GetChainType() == ChainType::MAIN) {
+        return MAINNET;
+    }
+    if (p.GetChainType() == ChainType::TESTNET) {
+        return TESTNET;
+    }
+    if (p.GetChainType() == ChainType::REGTEST) {
+        return REGTEST;
+    }
+    assert(false || "Unknown network for XAddress");
+    return UNKNOWN;
+}
+
+bool Parse(const CChainParams &params, const std::string &address,
+           CTxDestination &retDestination) {
+    Content content;
+    if (Decode(address, content) != DECODE_OK) {
+        return false;
+    }
+    if (GetAddressNetworkByte(params) != content.m_network) {
+        return false;
+    }
+    if (TOKEN_NAME != content.m_token) {
+        return false;
+    }
+    if (SCRIPT_PUB_KEY != content.m_type) {
+        return false;
+    }
+    CScript scriptPubKey(content.m_payload.begin(), content.m_payload.end());
+    return ExtractDestination(scriptPubKey, retDestination);
 }
 
 } // namespace XAddress
