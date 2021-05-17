@@ -7,7 +7,7 @@
 import re
 
 from test_framework.txtools import pad_tx
-from test_framework.script import hash160
+from test_framework.hash import hash160
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
@@ -60,14 +60,14 @@ class Int63Test(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # OP_TRUE in P2SH
         address = node.decodescript('51')['p2sh']
         num_mature_coins = 30
-        node.generatetoaddress(num_mature_coins, address)
-        node.generatetoaddress(100, address)
+        self.generatetoaddress(node, num_mature_coins, address)
+        self.generatetoaddress(node, 100, address)
 
-        value = int(SUBSIDY * 100_000_000)
+        value = int(SUBSIDY * 1_000_000)
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
 
         def make_tx(coin_height):
@@ -87,7 +87,6 @@ class Int63Test(BitcoinTestFramework):
             coinbase.rehash()
             block = create_block(
                 int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
-            block.nHeight = height
             return block
 
         interesting_numbers = [
@@ -180,8 +179,8 @@ class Int63Test(BitcoinTestFramework):
         block = make_block()
         block.vtx.extend(txs)
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
-        
+        peer.send_blocks_and_test([block], node)
+
         fund_txs = []
         invalid_spend_txs = []
         num_txs = 5
@@ -205,17 +204,17 @@ class Int63Test(BitcoinTestFramework):
         block = make_block()
         block.vtx.extend(fund_txs)
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
+        peer.send_blocks_and_test([block], node)
 
         invalid_block = make_block()
         invalid_block.vtx.append(None)
         for invalid_spend_tx in random.sample(invalid_spend_txs, 100):
             invalid_block.vtx[1] = invalid_spend_tx
             prepare_block(invalid_block)
-            node.p2p.send_blocks_and_test(
+            peer.send_blocks_and_test(
                 [invalid_block], node,
                 success=False,
-                reject_reason='state=blk-bad-inputs, parallel script check failed')
+                reject_reason='state=mandatory-script-verify-flag-failed')
 
 
 if __name__ == '__main__':

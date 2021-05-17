@@ -25,7 +25,7 @@ from test_framework.messages import (
     CTxIn,
     CTxOut,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PDataStore,
 )
 from test_framework.script import (
@@ -139,17 +139,19 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
+                            '-acceptnonstdtxn=1',
+                            '-allownonstdtxnconsensus=1',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # Allocate as many UTXOs as are needed
         num_utxos = sum(test_case['inputs']
                         for test_case in TESTCASES
                         if isinstance(test_case, dict))
 
-        value = int(SUBSIDY * 100_000_000)
+        value = int(SUBSIDY * 1_000_000)
         fee = 10_000
 
         max_utxo_value = (value - fee) // num_utxos
@@ -177,26 +179,26 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         anyonecanspend_address = node.decodescript('51')['p2sh']
         burn_address = node.decodescript('00')['p2sh']
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
-        node.generatetoaddress(1, anyonecanspend_address)
-        node.generatetoaddress(100, burn_address)
+        self.generatetoaddress(node, 1, anyonecanspend_address)
+        self.generatetoaddress(node, 100, burn_address)
 
         # Build and send fan-out transaction creating all the UTXOs
         block_hash = node.getblockhash(1)
         coin = int(node.getblock(block_hash)['tx'][0], 16)
         tx_fan_out = CTransaction()
         tx_fan_out.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
-        tx_fan_out.vout = spendable_outputs
+        tx_fan_out.vout = list(spendable_outputs)
         tx_fan_out.rehash()
 
         # Broadcast fan-out tx
-        node.p2p.send_txs_and_test([tx_fan_out], node)
+        peer.send_txs_and_test([tx_fan_out], node)
 
         utxo_idx = 0
         key_idx = 0
         for test_case in TESTCASES:
             if test_case == 'ENABLE_REPLAY_PROTECTION':
                 node.setmocktime(ACTIVATION_TIME)
-                node.generatetoaddress(11, burn_address)
+                self.generatetoaddress(node, 11, burn_address)
                 continue
             # Build tx for this test, will broadcast later
             tx = CTransaction()
@@ -211,7 +213,7 @@ class TaprootKeySpendTest(BitcoinTestFramework):
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(output_amount, output_script))
             for _ in range(test_case['inputs']):
-                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid, utxo_idx), CScript()))
+                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid_int, utxo_idx), CScript()))
                 utxo_idx += 1
             if test_case.get('sigs', None) is not None:
                 for i, sig in enumerate(test_case['sigs']):
@@ -240,9 +242,9 @@ class TaprootKeySpendTest(BitcoinTestFramework):
             # Broadcast transaction and check success/failure
             tx.rehash()
             if 'error' not in test_case:
-                node.p2p.send_txs_and_test([tx], node)
+                peer.send_txs_and_test([tx], node)
             else:
-                node.p2p.send_txs_and_test([tx], node, success=False, reject_reason=test_case['error'])
+                peer.send_txs_and_test([tx], node, success=False, reject_reason=test_case['error'])
 
 
 if __name__ == '__main__':

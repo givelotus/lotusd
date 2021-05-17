@@ -20,7 +20,8 @@ import re
 
 from test_framework import cashaddr
 from test_framework.blocktools import SUBSIDY
-from test_framework.key import ECKey, bytes_to_wif
+from test_framework.key import ECKey
+from test_framework.wallet_util import bytes_to_wif
 from test_framework.messages import (
     COIN,
     COutPoint,
@@ -29,11 +30,11 @@ from test_framework.messages import (
     CTxOut,
     hash256,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PDataStore,
 )
+from test_framework.hash import hash160
 from test_framework.script import (
-    hash160,
     CScript,
     OP_0,
     OP_1,
@@ -227,6 +228,8 @@ class Bip341Sighash(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
+                            '-acceptnonstdtxn=1',
+                            '-allownonstdtxnconsensus=1',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     BASE_TYPES = {
@@ -252,13 +255,13 @@ class Bip341Sighash(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # Allocate as many UTXOs as are needed
         num_utxos = sum(len(test_case['sig_hash_types'])
                         for test_case in TESTCASES
                         if isinstance(test_case, dict))
 
-        value = int(SUBSIDY * 100_000_000)
+        value = int(SUBSIDY * 1_000_000)
         fee = 10_000
 
         max_utxo_value = (value - fee) // num_utxos
@@ -297,25 +300,25 @@ class Bip341Sighash(BitcoinTestFramework):
         anyonecanspend_address = node.decodescript('51')['p2sh']
         burn_address = node.decodescript('00')['p2sh']
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
-        node.generatetoaddress(1, anyonecanspend_address)
-        node.generatetoaddress(100, burn_address)
+        self.generatetoaddress(node, 1, anyonecanspend_address)
+        self.generatetoaddress(node, 100, burn_address)
 
         # Build and send fan-out transaction creating all the UTXOs
         block_hash = node.getblockhash(1)
         coin = int(node.getblock(block_hash)['tx'][0], 16)
         tx_fan_out = CTransaction()
         tx_fan_out.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
-        tx_fan_out.vout = spendable_outputs
+        tx_fan_out.vout = list(spendable_outputs)
         tx_fan_out.rehash()
 
-        node.p2p.send_txs_and_test([tx_fan_out], node)
+        peer.send_txs_and_test([tx_fan_out], node)
 
         utxo_idx = 0
         key_idx = 0
         for test_case in TESTCASES:
             if test_case == 'ENABLE_REPLAY_PROTECTION':
                 node.setmocktime(ACTIVATION_TIME)
-                node.generatetoaddress(11, burn_address)
+                self.generatetoaddress(node, 11, burn_address)
                 continue
             # Build tx for this test, will broadcast later
             tx = CTransaction()
@@ -330,7 +333,7 @@ class Bip341Sighash(BitcoinTestFramework):
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(output_amount, output_script))
             for _ in test_case['sig_hash_types']:
-                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid, utxo_idx), CScript()))
+                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid_int, utxo_idx), CScript()))
                 utxo_idx += 1
             # Keep unsigned tx for signrawtransactionwithkey below
             unsigned_tx = tx.serialize().hex()
@@ -377,7 +380,7 @@ class Bip341Sighash(BitcoinTestFramework):
                     private_key_wif = bytes_to_wif(private_keys[key_idx].get_bytes())
                     raw_tx_signed = self.nodes[0].signrawtransactionwithkey(
                         unsigned_tx, [private_key_wif], sign_inputs, sig_hash_type_str)['hex']
-                    # Extract signature from signed 
+                    # Extract signature from signed
                     signed_tx = CTransaction()
                     signed_tx.deserialize(io.BytesIO(bytes.fromhex(raw_tx_signed)))
                     sig = list(CScript(signed_tx.vin[i].scriptSig))[0]
@@ -396,9 +399,9 @@ class Bip341Sighash(BitcoinTestFramework):
             # Broadcast transaction and check success/failure
             tx.rehash()
             if 'error' not in test_case:
-                node.p2p.send_txs_and_test([tx], node)
+                peer.send_txs_and_test([tx], node)
             else:
-                node.p2p.send_txs_and_test([tx], node, success=False, reject_reason=test_case['error'])
+                peer.send_txs_and_test([tx], node, success=False, reject_reason=test_case['error'])
 
 
 if __name__ == '__main__':

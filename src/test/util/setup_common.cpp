@@ -96,6 +96,7 @@ BasicTestingSetup::BasicTestingSetup(
             "-debugexclude=libevent",
             "-debugexclude=leveldb",
             "-allownonstdtxnconsensus=1",
+            "-useecashprefix",
         },
         extra_args);
     // clang-format on

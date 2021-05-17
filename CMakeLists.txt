@@ -8,7 +8,7 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 
 project(bitcoin-abc
 	VERSION 0.34.1
-	DESCRIPTION "Lotus is a full node implementation of the eCash protocol."
+	DESCRIPTION "Lotus is a full node implementation of the Lotus protocol."
 	HOMEPAGE_URL "https://www.bitcoinabc.org"
 )
 

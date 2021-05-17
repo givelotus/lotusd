@@ -28,7 +28,7 @@ from .address import ADDRESS_ECREG_UNSPENDABLE
 from .authproxy import JSONRPCException
 from .descriptors import descsum_create
 from .jsonrpctools import ChronikElectrumClient
-from .messages import XEC, CTransaction, FromHex
+from .messages import COIN, XEC, CTransaction, FromHex
 from .p2p import P2P_SUBVERSION
 from .util import (
     EncodeDecimal,
@@ -149,6 +149,7 @@ class TestNode:
             "-debugexclude=libevent",
             "-debugexclude=leveldb",
             "-uacomment=" + self.name,
+            "-useecashprefix",
         ]
 
         if use_valgrind:
@@ -912,8 +913,8 @@ class TestNode:
         # 107 = length of PUSH(longest_sig = 72 bytes), PUSH(pubkey = 33 bytes)
         billable_size_estimate += len(tx.vin) * 107
 
-        # relay_fee gives a value in XEC per kB.
-        return int(self.relay_fee() / 1000 * billable_size_estimate * XEC)
+        # relay_fee gives a value in XPI per kB.
+        return int(self.relay_fee() / 1000 * billable_size_estimate * COIN)
 
     def calculate_fee_from_txid(self, txid):
         ctx = FromHex(CTransaction(), self.getrawtransaction(txid))

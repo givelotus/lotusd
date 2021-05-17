@@ -96,13 +96,9 @@ void Proof::computeScore() {
 
 uint32_t Proof::amountToScore(Amount amount) {
     amount = MoneyClamp(amount);
-    // After clamping, (100 * amount) is guaranteed not to overflow int64_t,
-    // and the resulting score fits in uint32_t.
-    static_assert(MAX_MONEY <=
-                  (std::numeric_limits<int64_t>::max() / 100) * SATOSHI);
-    static_assert((100 * MAX_MONEY) / COIN <=
+    static_assert(MAX_MONEY / COIN <=
                   std::numeric_limits<uint32_t>::max());
-    return (100 * amount) / COIN;
+    return amount / COIN;
 }
 
 Amount Proof::getStakedAmount() const {

@@ -34,9 +34,8 @@ std::string CTxIn::ToString() const {
 }
 
 std::string CTxOut::ToString() const {
-    const Amount xec = 100 * SATOSHI;
-    return strprintf("CTxOut(nValue=%d.%02d, scriptPubKey=%s)", nValue / xec,
-                     (nValue % xec) / SATOSHI,
+    return strprintf("CTxOut(nValue=%d.%06d, scriptPubKey=%s)", nValue / COIN,
+                     (nValue % COIN) / SATOSHI,
                      HexStr(scriptPubKey).substr(0, 30));
 }
 

@@ -25,7 +25,7 @@ from test_framework.messages import (
     CTxIn,
     CTxOut,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PDataStore,
 )
 from test_framework.script import (
@@ -56,9 +56,9 @@ from test_framework.script import (
     SIGHASH_SINGLE,
     SIGHASH_FORKID,
     SignatureHashLotus,
-    SignatureHashForkId,
     TaggedHash,
 )
+from test_framework.signature_hash import SignatureHashForkId
 from test_framework.test_framework import BitcoinTestFramework
 
 PRIVATE_KEYS = []
@@ -103,17 +103,6 @@ TX_CASES = [
                   schnorr=True),
              0, [SIGHASH_ALL | SIGHASH_LOTUS] * 23),
         ],
-    ),
-    dict(
-        outputs=8,
-        inputs=[
-            (dict(script_inputs=[],
-                  script=[PUBLIC_KEYS[4]] + [OP_2DUP, OP_CHECKSIGVERIFY] * 40 + [OP_CHECKSIG],
-                  keys=[PRIVATE_KEYS[4]],
-                  schnorr=True),
-             0, [SIGHASH_ALL | SIGHASH_LOTUS])
-        ],
-        error='Input SigChecks limit exceeded',
     ),
     dict(
         outputs=6,
@@ -193,7 +182,7 @@ TX_CASES = [
              0,
              [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
-        error='Extra items left on stack after execution',
+        error='Stack size must be exactly one after execution',
     ),
     dict(
         outputs=1,
@@ -396,17 +385,19 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
+                            '-acceptnonstdtxn=1',
+                            '-allownonstdtxnconsensus=1',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # Allocate as many UTXOs as are needed
         num_utxos = sum(len(tx_case['inputs'])
                         for tx_case in TX_CASES
                         if isinstance(tx_case, dict))
 
-        value = int(SUBSIDY * 100_000_000)
+        value = int(SUBSIDY * 1_000_000)
         fee = 10_000
 
         pubkey_bytes = bytes.fromhex('020000000000000000000000000000000000000000000000000000000000000001')
@@ -438,24 +429,24 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         anyonecanspend_address = node.decodescript('51')['p2sh']
         burn_address = node.decodescript('00')['p2sh']
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
-        node.generatetoaddress(1, anyonecanspend_address)
-        node.generatetoaddress(100, burn_address)
+        self.generatetoaddress(node, 1, anyonecanspend_address)
+        self.generatetoaddress(node, 100, burn_address)
 
         # Build and send fan-out transaction creating all the UTXOs
         block_hash = node.getblockhash(1)
         coin = int(node.getblock(block_hash)['tx'][0], 16)
         tx_fan_out = CTransaction()
         tx_fan_out.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
-        tx_fan_out.vout = spendable_outputs
+        tx_fan_out.vout = list(spendable_outputs)
         tx_fan_out.rehash()
 
-        node.p2p.send_txs_and_test([tx_fan_out], node)
+        peer.send_txs_and_test([tx_fan_out], node)
 
         utxo_idx = 0
         for tx_case in TX_CASES:
             if tx_case == 'ENABLE_REPLAY_PROTECTION':
                 node.setmocktime(ACTIVATION_TIME)
-                node.generatetoaddress(11, burn_address)
+                self.generatetoaddress(node, 11, burn_address)
                 continue
             num_inputs = len(tx_case['inputs'])
             num_outputs = tx_case['outputs']
@@ -471,7 +462,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(output_amount, output_script))
             for _ in range(num_inputs):
-                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid, utxo_idx), CScript()))
+                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid_int, utxo_idx), CScript()))
                 utxo_idx += 1
             for input_idx, input_case in enumerate(tx_case['inputs']):
                 tree, leaf_idx, sig_hash_types = input_case
@@ -515,9 +506,9 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
             # Broadcast transaction and check success/failure
             tx.rehash()
             if 'error' not in tx_case:
-                node.p2p.send_txs_and_test([tx], node)
+                peer.send_txs_and_test([tx], node)
             else:
-                node.p2p.send_txs_and_test([tx], node, success=False, reject_reason=tx_case['error'])
+                peer.send_txs_and_test([tx], node, success=False, reject_reason=tx_case['error'])
 
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ class Chainstate;
 
 namespace avalanche {
 
-constexpr uint32_t MIN_VALID_PROOF_SCORE = 100 * PROOF_DUST_THRESHOLD / COIN;
+constexpr uint32_t MIN_VALID_PROOF_SCORE = PROOF_DUST_THRESHOLD / COIN;
 
 const CScript UNSPENDABLE_ECREG_PAYOUT_SCRIPT =
     CScript() << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 0)

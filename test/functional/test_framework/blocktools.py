@@ -10,6 +10,7 @@ from typing import Optional, Union
 
 from .key import ECKey
 from .messages import (
+    COIN,
     XEC,
     CBlock,
     COutPoint,
@@ -56,6 +57,8 @@ MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60
 COINBASE_MATURITY = 100
 
 MIN_BLOCKS_TO_KEEP = 288
+
+SUBSIDY = 260
 
 
 def create_block(
@@ -123,7 +126,7 @@ def create_coinbase(
     pubkey: Optional[bytes] = None,
     *,
     script_pubkey: Optional[bytes] = None,
-    nValue: int = 50_000_000,
+    nValue: int = SUBSIDY,
 ) -> CTransaction:
     """Create a coinbase transaction, assuming no miner fees.
 
@@ -139,8 +142,8 @@ def create_coinbase(
     op_return_output = CTxOut()
     op_return_output.scriptPubKey = script_coinbase_height(height)
     coinbaseoutput = CTxOut()
-    coinbaseoutput.nValue = nValue * XEC
-    if nValue == 50_000_000:
+    coinbaseoutput.nValue = nValue * COIN
+    if nValue == SUBSIDY:
         halvings = int(height / 150)  # regtest
         coinbaseoutput.nValue >>= halvings
     if pubkey is not None:
@@ -263,7 +266,7 @@ def send_big_transactions(node, utxos, num, fee_multiplier):
         ctx.vin.append(CTxIn(COutPoint(txid, int(utxo["vout"])), b""))
         ctx.vout.append(
             CTxOut(
-                int(satoshi_round(utxo["amount"] * XEC)),
+                int(satoshi_round(utxo["amount"] * COIN)),
                 CScript([OP_DUP, OP_HASH160, addrHash, OP_EQUALVERIFY, OP_CHECKSIG]),
             )
         )

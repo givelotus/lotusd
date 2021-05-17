@@ -60,7 +60,7 @@ BOOST_AUTO_TEST_CASE(proofbuilder) {
     for (int i = 0; i < 3; i++) {
         key.MakeNewKey(true);
         BOOST_CHECK(pb.addUTXO(COutPoint(TxId(GetRandHash()), m_rng.rand32()),
-                               int64_t(m_rng.rand32()) * COIN / 100,
+                               int64_t(m_rng.rand32()) * COIN,
                                m_rng.rand32(), m_rng.randbool(), key));
     }
 
@@ -932,7 +932,7 @@ BOOST_AUTO_TEST_CASE(amount_to_score) {
     BOOST_CHECK_EQUAL(Proof::amountToScore(PROOF_DUST_THRESHOLD),
                       MIN_VALID_PROOF_SCORE);
     BOOST_CHECK_EQUAL(Proof::amountToScore(MAX_MONEY),
-                      uint32_t((100 * MAX_MONEY) / COIN));
+                      uint32_t(MAX_MONEY / COIN));
     BOOST_CHECK_EQUAL(Proof::amountToScore(MAX_MONEY + SATOSHI),
                       Proof::amountToScore(MAX_MONEY));
 }
