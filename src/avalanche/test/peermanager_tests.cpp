@@ -374,7 +374,7 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
     TxId txid2(GetRandHash());
     BOOST_CHECK(txid1 != txid2);
 
-    const Amount v = 5 * COIN;
+    const Amount v = 500 * COIN;
     const int height = 1234;
 
     {

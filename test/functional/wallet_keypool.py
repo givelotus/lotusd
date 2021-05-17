@@ -105,7 +105,7 @@ class KeyPoolTest(BitcoinTestFramework):
         assert_equal(res[0]['success'], True)
         w1.walletpassphrase('test', 100)
 
-        res = w1.sendtoaddress(address=address, amount=0.00010000)
+        res = w1.sendtoaddress(address=address, amount=0.010000)
         nodes[0].generate(1)
         destination = addr.pop()
 
@@ -115,53 +115,53 @@ class KeyPoolTest(BitcoinTestFramework):
                                 "Transaction needs a change address, but we can't generate it. Please call keypoolrefill first.",
                                 w2.walletcreatefundedpsbt,
                                 inputs=[],
-                                outputs=[{addr.pop(): 0.00005000}],
+                                outputs=[{addr.pop(): 0.005000}],
                                 options={"subtractFeeFromOutputs": [0],
-                                         "feeRate": 0.00010})
+                                         "feeRate": 0.010})
 
         # creating a 10,000 sat transaction without change, with a manual
         # input, should still be possible
         res = w2.walletcreatefundedpsbt(
             inputs=w2.listunspent(),
-            outputs=[{destination: 0.00010000}],
-            options={"subtractFeeFromOutputs": [0], "feeRate": 0.00010})
+            outputs=[{destination: 0.010000}],
+            options={"subtractFeeFromOutputs": [0], "feeRate": 0.010})
         assert_equal("psbt" in res, True)
 
         # creating a 10,000 sat transaction without change should still be
         # possible
         res = w2.walletcreatefundedpsbt(
             inputs=[],
-            outputs=[{destination: 0.00010000}],
-            options={"subtractFeeFromOutputs": [0], "feeRate": 0.00010})
+            outputs=[{destination: 0.010000}],
+            options={"subtractFeeFromOutputs": [0], "feeRate": 0.010})
         assert_equal("psbt" in res, True)
         # should work without subtractFeeFromOutputs if the exact fee is
         # subtracted from the amount
         res = w2.walletcreatefundedpsbt(inputs=[],
-                                        outputs=[{destination: 0.00008000}],
-                                        options={"feeRate": 0.00010})
+                                        outputs=[{destination: 0.008000}],
+                                        options={"feeRate": 0.010})
         assert_equal("psbt" in res, True)
 
         # dust change should be removed
         res = w2.walletcreatefundedpsbt(inputs=[],
-                                        outputs=[{destination: 0.00007900}],
-                                        options={"feeRate": 0.00010})
+                                        outputs=[{destination: 0.007900}],
+                                        options={"feeRate": 0.010})
         assert_equal("psbt" in res, True)
 
         # create a transaction without change at the maximum fee rate, such
         # that the output is still spendable:
         res = w2.walletcreatefundedpsbt(
             inputs=[],
-            outputs=[{destination: 0.00010000}],
-            options={"subtractFeeFromOutputs": [0], "feeRate": 0.0004949})
+            outputs=[{destination: 0.010000}],
+            options={"subtractFeeFromOutputs": [0], "feeRate": 0.04949})
         assert_equal("psbt" in res, True)
-        assert_equal(res["fee"], Decimal("0.00009453"))
+        assert_equal(res["fee"], Decimal('0.009453'))
 
         # creating a 10,000 sat transaction with a manual change address should
         # be possible
         res = w2.walletcreatefundedpsbt(inputs=[],
-                                        outputs=[{destination: 0.00010000}],
+                                        outputs=[{destination: 0.010000}],
                                         options={"subtractFeeFromOutputs": [0],
-                                                 "feeRate": 0.00010,
+                                                 "feeRate": 0.010,
                                                  "changeAddress": addr.pop()})
         assert_equal("psbt" in res, True)
 

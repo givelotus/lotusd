@@ -58,23 +58,23 @@ class GetblockstatsTest(BitcoinTestFramework):
         address = self.nodes[0].get_deterministic_priv_key().address
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=Decimal('0.1'),
+            amount=Decimal('10'),
             subtractfeefromamount=True)
         self.nodes[0].generate(1)
         self.sync_all()
 
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=Decimal('0.1'),
+            amount=Decimal('10'),
             subtractfeefromamount=True)
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=Decimal('0.1'),
+            amount=Decimal('10'),
             subtractfeefromamount=False)
-        self.nodes[0].settxfee(amount=0.003)
+        self.nodes[0].settxfee(amount=0.3)
         self.nodes[0].sendtoaddress(
             address=address,
-            amount=1,
+            amount=Decimal('100'),
             subtractfeefromamount=True)
         self.sync_all()
         self.nodes[0].generate(1)

@@ -65,8 +65,8 @@ Proof ProofBuilder::buildRandom(uint32_t score) {
     key.MakeNewKey(true);
 
     ProofBuilder pb(0, std::numeric_limits<uint32_t>::max(), CPubKey());
-    pb.addUTXO(COutPoint(TxId(GetRandHash()), 0), (int64_t(score) * COIN) / 100,
-               0, false, std::move(key));
+    pb.addUTXO(COutPoint(TxId(GetRandHash()), 0), (int64_t(score) * COIN), 0,
+               false, std::move(key));
     return pb.build();
 }
 

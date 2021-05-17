@@ -64,7 +64,7 @@ class MempoolPersistTest(BitcoinTestFramework):
         tx_creation_time_lower = int(time.time())
         for i in range(5):
             last_txid = self.nodes[2].sendtoaddress(
-                self.nodes[2].getnewaddress(), Decimal("10"))
+                self.nodes[2].getnewaddress(), Decimal('1000'))
         node2_balance = self.nodes[2].getbalance()
         self.sync_all()
         tx_creation_time_higher = int(time.time())
@@ -79,7 +79,7 @@ class MempoolPersistTest(BitcoinTestFramework):
         assert_equal(fees['base'], fees['modified'])
         self.nodes[0].prioritisetransaction(txid=last_txid, fee_delta=1000)
         fees = self.nodes[0].getmempoolentry(txid=last_txid)['fees']
-        assert_equal(fees['base'] + Decimal('0.00001000'), fees['modified'])
+        assert_equal(fees['base'] + Decimal('0.001000'), fees['modified'])
 
         tx_creation_time = self.nodes[0].getmempoolentry(txid=last_txid)[
             'time']
@@ -91,7 +91,7 @@ class MempoolPersistTest(BitcoinTestFramework):
         assert(len(self.nodes[0].getpeerinfo()) == 0)
         assert(len(self.nodes[0].p2ps) == 0)
         self.nodes[0].sendtoaddress(
-            self.nodes[2].getnewaddress(), Decimal("12"))
+            self.nodes[2].getnewaddress(), Decimal('1200'))
         connect_nodes(self.nodes[0], self.nodes[2])
 
         self.log.debug("Stop-start the nodes. Verify that node0 has the "
@@ -116,7 +116,7 @@ class MempoolPersistTest(BitcoinTestFramework):
 
         self.log.debug('Verify prioritization is loaded correctly')
         fees = self.nodes[0].getmempoolentry(txid=last_txid)['fees']
-        assert_equal(fees['base'] + Decimal('0.00001000'), fees['modified'])
+        assert_equal(fees['base'] + Decimal('0.001000'), fees['modified'])
 
         self.log.debug('Verify time is loaded correctly')
         assert_equal(
@@ -187,7 +187,7 @@ class MempoolPersistTest(BitcoinTestFramework):
         # make a transaction that will remain in the unbroadcast set
         assert(len(node0.getpeerinfo()) == 0)
         assert(len(node0.p2ps) == 0)
-        node0.sendtoaddress(self.nodes[1].getnewaddress(), Decimal("12"))
+        node0.sendtoaddress(self.nodes[1].getnewaddress(), Decimal('1200'))
 
         # shutdown, then startup with wallet disabled
         self.stop_nodes()

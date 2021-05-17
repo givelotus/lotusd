@@ -22,7 +22,7 @@ UniValue ValueFromAmount(const Amount &amount) {
     Amount n_abs(sign ? -amount : amount);
     int64_t quotient = n_abs / COIN;
     int64_t remainder = (n_abs % COIN) / SATOSHI;
-    return UniValue(UniValue::VNUM, strprintf("%s%d.%08d", sign ? "-" : "",
+    return UniValue(UniValue::VNUM, strprintf("%s%d.%06d", sign ? "-" : "",
                                               quotient, remainder));
 }
 

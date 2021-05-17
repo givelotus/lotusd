@@ -61,7 +61,7 @@ class MempoolPackagesTest(BitcoinTestFramework):
         vout = utxo[0]['vout']
         value = utxo[0]['amount']
 
-        fee = Decimal("0.0001")
+        fee = Decimal('0.01')
         # MAX_ANCESTORS transactions off a confirmed tx should be fine
         chain = []
         for i in range(MAX_ANCESTORS):
@@ -175,7 +175,7 @@ class MempoolPackagesTest(BitcoinTestFramework):
         for x in chain:
             ancestor_fees += mempool[x]['fee']
             assert_equal(mempool[x]['fees']['ancestor'],
-                         ancestor_fees + Decimal('0.00001'))
+                         ancestor_fees + Decimal('0.001'))
             assert_equal(mempool[x]['ancestorfees'],
                          ancestor_fees * COIN + 1000)
 
@@ -191,7 +191,7 @@ class MempoolPackagesTest(BitcoinTestFramework):
         for x in reversed(chain):
             descendant_fees += mempool[x]['fee']
             assert_equal(mempool[x]['fees']['descendant'],
-                         descendant_fees + Decimal('0.00001'))
+                         descendant_fees + Decimal('0.001'))
             assert_equal(mempool[x]['descendantfees'],
                          descendant_fees * COIN + 1000)
 
@@ -220,13 +220,13 @@ class MempoolPackagesTest(BitcoinTestFramework):
             descendant_fees += mempool[x]['fee']
             if (x == chain[-1]):
                 assert_equal(mempool[x]['modifiedfee'],
-                             mempool[x]['fee'] + satoshi_round(0.00002))
+                             mempool[x]['fee'] + satoshi_round(0.002))
                 assert_equal(mempool[x]['fees']['modified'],
-                             mempool[x]['fee'] + satoshi_round(0.00002))
+                             mempool[x]['fee'] + satoshi_round(0.002))
             assert_equal(mempool[x]['descendantfees'],
                          descendant_fees * COIN + 2000)
             assert_equal(mempool[x]['fees']['descendant'],
-                         descendant_fees + satoshi_round(0.00002))
+                         descendant_fees + satoshi_round(0.002))
 
         # Check that node1's mempool is as expected (-> custom ancestor limit)
         mempool0 = self.nodes[0].getrawmempool(False)

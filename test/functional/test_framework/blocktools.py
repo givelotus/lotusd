@@ -34,7 +34,7 @@ from .util import assert_equal, satoshi_round
 
 # Genesis block time (regtest)
 TIME_GENESIS_BLOCK = 1600000000
-SUBSIDY = Decimal('2.6')
+SUBSIDY = Decimal('260')
 
 
 def create_block(hashprev, coinbase, ntime=None, *, version=1):

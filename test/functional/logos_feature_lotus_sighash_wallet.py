@@ -91,7 +91,7 @@ class Bip341SighashWallet(BitcoinTestFramework):
             tx = CTransaction()
             for i in range(test_case['outputs']):
                 # Make sure each UTXO is unique
-                output_amount = max_output_amount - i * Decimal('0.00000047')
+                output_amount = max_output_amount - i * Decimal('0.000047')
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(int(output_amount * COIN), output_script))
             # Build deserialized outputs so we can compute the sighash below

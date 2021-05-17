@@ -47,14 +47,14 @@ class TxnMallTest(BitcoinTestFramework):
             # bug workaround, coins generated assigned to first getnewaddress!
             self.nodes[i].getnewaddress()
 
-        self.nodes[0].settxfee(.001)
+        self.nodes[0].settxfee(0.1)
 
         node0_address1 = self.nodes[0].getnewaddress(address_type=output_type)
-        node0_txid1 = self.nodes[0].sendtoaddress(node0_address1, Decimal('19'))
+        node0_txid1 = self.nodes[0].sendtoaddress(node0_address1, Decimal('1900'))
         node0_tx1 = self.nodes[0].gettransaction(node0_txid1)
 
         node0_address2 = self.nodes[0].getnewaddress(address_type=output_type)
-        node0_txid2 = self.nodes[0].sendtoaddress(node0_address2, Decimal('29'))
+        node0_txid2 = self.nodes[0].sendtoaddress(node0_address2, Decimal('2900'))
         node0_tx2 = self.nodes[0].gettransaction(node0_txid2)
 
         assert_equal(self.nodes[0].getbalance(),
@@ -64,8 +64,8 @@ class TxnMallTest(BitcoinTestFramework):
         node1_address = self.nodes[1].getnewaddress()
 
         # Send tx1, and another transaction tx2 that won't be cloned
-        txid1 = self.nodes[0].sendtoaddress(node1_address, Decimal('2'))
-        txid2 = self.nodes[0].sendtoaddress(node1_address, Decimal('1'))
+        txid1 = self.nodes[0].sendtoaddress(node1_address, Decimal('200'))
+        txid2 = self.nodes[0].sendtoaddress(node1_address, Decimal('100'))
 
         # Construct a clone of tx1, to be malleated
         rawtx1 = self.nodes[0].getrawtransaction(txid1, 1)
@@ -82,10 +82,10 @@ class TxnMallTest(BitcoinTestFramework):
         # them if necessary.
         clone_tx = CTransaction()
         clone_tx.deserialize(io.BytesIO(bytes.fromhex(clone_raw)))
-        if (rawtx1["vout"][0]["value"] == 4 and
-                clone_tx.vout[0].nValue != 4 * COIN or
-                rawtx1["vout"][0]["value"] != 4 and
-                clone_tx.vout[0].nValue == 4 * COIN):
+        if (rawtx1["vout"][0]["value"] == 400 and
+                clone_tx.vout[0].nValue != 400 * COIN or
+                rawtx1["vout"][0]["value"] != 400 and
+                clone_tx.vout[0].nValue == 400 * COIN):
             (clone_tx.vout[0], clone_tx.vout[1]) = (clone_tx.vout[1],
                                                     clone_tx.vout[0])
 

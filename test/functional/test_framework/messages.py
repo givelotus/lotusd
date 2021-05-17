@@ -48,8 +48,9 @@ MAX_BLOOM_FILTER_SIZE = 36000
 MAX_BLOOM_HASH_FUNCS = 50
 
 # 1 BCH in satoshis
-COIN = 100000000
-MAX_MONEY = 21000000 * COIN
+LOTUS = 1000000
+COIN = LOTUS
+MAX_MONEY = 2100000000 * COIN
 
 NODE_NETWORK = (1 << 0)
 NODE_GETUTXO = (1 << 1)
@@ -439,7 +440,7 @@ class CTxOut:
         return r
 
     def __repr__(self):
-        return "CTxOut(nValue={}.{:08d} scriptPubKey={})".format(
+        return "CTxOut(nValue={}.{:06d} scriptPubKey={})".format(
             self.nValue // COIN, self.nValue % COIN, self.scriptPubKey.hex())
 
 

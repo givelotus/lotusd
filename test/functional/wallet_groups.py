@@ -19,7 +19,7 @@ class WalletGroupTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 4
         self.extra_args = [
-            [], [], ['-avoidpartialspends'], ["-maxapsfee=0.0001"]]
+            [], [], ['-avoidpartialspends'], ["-maxapsfee=0.01"]]
         self.rpc_timeout = 120
         self.supports_cli = False
 
@@ -54,7 +54,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # one output should be 0.2, the other should be ~0.3
         v = sorted([vout["value"] for vout in tx1["vout"]])
         assert_approx(v[0], 0.2)
-        assert_approx(v[1], 0.3, 0.0001)
+        assert_approx(v[1], 0.3, 0.01)
 
         txid2 = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), 0.2)
         tx2 = self.nodes[2].getrawtransaction(txid2, True)
@@ -64,7 +64,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # one output should be 0.2, the other should be ~1.3
         v = sorted([vout["value"] for vout in tx2["vout"]])
         assert_approx(v[0], 0.2)
-        assert_approx(v[1], 1.3, 0.0001)
+        assert_approx(v[1], 1.3, 0.01)
 
         # Test 'avoid partial if warranted, even if disabled'
         self.sync_all()
@@ -77,8 +77,8 @@ class WalletGroupTest(BitcoinTestFramework):
         # - C0 1.0      - E1 0.5
         # - C1 0.5      - F  ~1.3
         # - D ~0.3
-        assert_approx(self.nodes[1].getbalance(), 4.3, 0.0001)
-        assert_approx(self.nodes[2].getbalance(), 4.3, 0.0001)
+        assert_approx(self.nodes[1].getbalance(), 4.3, 0.01)
+        assert_approx(self.nodes[2].getbalance(), 4.3, 0.01)
         # Sending 1.4 btc should pick one 1.0 + one more. For node #1,
         # this could be (A / B0 / C0) + (B1 / C1 / D). We ensure that it is
         # B0 + B1 or C0 + C1, because this avoids partial spends while not being
@@ -91,7 +91,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # the accumulated value should be 1.5, so the outputs should be
         # ~0.1 and 1.4 and should come from the same destination
         values = sorted([vout["value"] for vout in tx3["vout"]])
-        assert_approx(values[0], 0.1, 0.0001)
+        assert_approx(values[0], 0.1, 0.01)
         assert_approx(values[1], 1.4)
 
         input_txids = [vin["txid"] for vin in tx3["vin"]]
@@ -123,7 +123,7 @@ class WalletGroupTest(BitcoinTestFramework):
         # scriptPubKey
         for i in range(5):
             raw_tx = self.nodes[0].createrawtransaction(
-                [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: Decimal('0.0005')}])
+                [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: Decimal('0.05')}])
             tx = FromHex(CTransaction(), raw_tx)
             tx.vin = []
             tx.vout = [tx.vout[0]] * 2000

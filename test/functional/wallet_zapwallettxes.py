@@ -41,13 +41,13 @@ class ZapWalletTXesTest (BitcoinTestFramework):
         self.sync_all()
 
         # This transaction will be confirmed
-        txid1 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('1'))
+        txid1 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('100'))
 
         self.nodes[0].generate(1)
         self.sync_all()
 
         # This transaction will not be confirmed
-        txid2 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('1.4'))
+        txid2 = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), Decimal('140'))
 
         # Confirmed and unconfirmed transactions are now in the wallet.
         assert_equal(self.nodes[0].gettransaction(txid1)['txid'], txid1)

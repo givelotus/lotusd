@@ -75,7 +75,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         coin = coins.pop()
         raw_tx_in_block = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{'txid': coin['txid'], 'vout': coin['vout']}],
-            outputs=[{node.getnewaddress(): 0.3}, {node.getnewaddress(): 0.7}],
+            outputs=[{node.getnewaddress(): 30}, {node.getnewaddress(): 70}],
         ))['hex']
         txid_in_block = node.sendrawtransaction(
             hexstring=raw_tx_in_block, maxfeerate=0)
@@ -88,11 +88,11 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         )
 
         self.log.info('A transaction not in the mempool')
-        fee = 0.00000700
+        fee = 0.000700
         raw_tx_0 = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{"txid": txid_in_block, "vout": 0,
                      "sequence": 0xfffffffd}],
-            outputs=[{node.getnewaddress(): 0.3 - fee}],
+            outputs=[{node.getnewaddress(): 30 - fee}],
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_0)
         tx.calc_txid()
@@ -108,7 +108,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         raw_tx_final = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{'txid': coin['txid'], 'vout': coin['vout'],
                      "sequence": 0xffffffff}],  # SEQUENCE_FINAL
-            outputs=[{node.getnewaddress(): 0.025}],
+            outputs=[{node.getnewaddress(): 2.5}],
             locktime=node.getblockcount() + 2000,  # Can be anything
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_final)
@@ -177,7 +177,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
                 {'txid': txid_0, 'vout': 0},
                 {'txid': txid_1, 'vout': 0},
             ],
-            outputs=[{node.getnewaddress(): 0.1}]
+            outputs=[{node.getnewaddress(): 10}]
         ))['hex']
         txid_spend_both = node.sendrawtransaction(
             hexstring=raw_tx_spend_both, maxfeerate=0)
@@ -199,7 +199,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         self.log.info('Create a signed "reference" tx for later use')
         raw_tx_reference = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{'txid': txid_spend_both, 'vout': 0}],
-            outputs=[{node.getnewaddress(): 0.05}],
+            outputs=[{node.getnewaddress(): 5}],
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_reference)
         tx.calc_txid()
