@@ -196,7 +196,7 @@
                 "reqSigs": 1,
                 "type": "pubkeyhash",
                 "addresses": [
-                    "1E7SGgAZFCHDnVZLuRViX3gUmxpMfdvd2o"
+                    "lotus_16PSJMWtSC9SNZo93u1QKxQk8m17xF9RvZwi8Xoxj"
                 ]
             }
         },
@@ -209,7 +209,7 @@
                 "reqSigs": 1,
                 "type": "pubkeyhash",
                 "addresses": [
-                    "1AtWkdmfmYkErU16d3KYykJUbEp9MAj9Sb"
+                    "lotus_16PSJLS6tQYrdEhn2rLpBvDqdbrgUADpiAqhUxBcJ"
                 ]
             }
         }

@@ -40,14 +40,13 @@ void GUIUtilTests::toCurrentEncodingTest() {
     const CChainParams &params = config.GetChainParams();
 
     // garbage in, garbage out
-    QVERIFY(GUIUtil::convertToCashAddr(params, "garbage") == "garbage");
+    QVERIFY(GUIUtil::convertToXAddress(params, "garbage") == "garbage");
 
+    QString lotus_pubkey = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ";
     QString cashaddr_pubkey =
         "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a";
-    QString base58_pubkey = "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu";
 
-    QVERIFY(GUIUtil::convertToCashAddr(params, cashaddr_pubkey) ==
-            cashaddr_pubkey);
-    QVERIFY(GUIUtil::convertToCashAddr(params, base58_pubkey) ==
-            cashaddr_pubkey);
+    QVERIFY(GUIUtil::convertToXAddress(params, cashaddr_pubkey) ==
+            lotus_pubkey);
+    QVERIFY(GUIUtil::convertToXAddress(params, lotus_pubkey) == lotus_pubkey);
 }
