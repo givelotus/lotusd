@@ -13,18 +13,16 @@ BitcoinUnits::BitcoinUnits(QObject *parent)
 
 QList<BitcoinUnits::Unit> BitcoinUnits::availableUnits() {
     QList<BitcoinUnits::Unit> unitlist;
-    unitlist.append(BCH);
-    unitlist.append(mBCH);
-    unitlist.append(uBCH);
+    unitlist.append(LOTUS);
+    unitlist.append(mLOTUS);
     unitlist.append(SAT);
     return unitlist;
 }
 
 bool BitcoinUnits::valid(int unit) {
     switch (unit) {
-        case BCH:
-        case mBCH:
-        case uBCH:
+        case LOTUS:
+        case mLOTUS:
         case SAT:
             return true;
         default:
@@ -34,12 +32,10 @@ bool BitcoinUnits::valid(int unit) {
 
 QString BitcoinUnits::longName(int unit) {
     switch (unit) {
-        case BCH:
+        case LOTUS:
             return QString(CURRENCY_UNIT.c_str());
-        case mBCH:
+        case mLOTUS:
             return QString("m") + QString(CURRENCY_UNIT.c_str());
-        case uBCH:
-            return QString::fromUtf8("μ") + QString(CURRENCY_UNIT.c_str());
         case SAT:
             return QString("Satoshi (sat)");
         default:
@@ -58,16 +54,13 @@ QString BitcoinUnits::shortName(int unit) {
 
 QString BitcoinUnits::description(int unit) {
     switch (unit) {
-        case BCH:
-            return QString("Bitcoins");
-        case mBCH:
-            return QString("Milli-Bitcoins (1 / 1" THIN_SP_UTF8 "000)");
-        case uBCH:
-            return QString("Micro-Bitcoins (1 / 1" THIN_SP_UTF8
-                           "000" THIN_SP_UTF8 "000)");
+        case LOTUS:
+            return QString("Lotus");
+        case mLOTUS:
+            return QString("Milli-Lotus (1 / 1" THIN_SP_UTF8 "000)");
         case SAT:
-            return QString("Satoshi (sat) (1 / 100" THIN_SP_UTF8
-                           "000" THIN_SP_UTF8 "000)");
+            return QString("Satoshi (sat) (1 / 1" THIN_SP_UTF8 "000" THIN_SP_UTF8
+                           "000)");
         default:
             return QString("???");
     }
@@ -75,12 +68,10 @@ QString BitcoinUnits::description(int unit) {
 
 qint64 BitcoinUnits::factor(int unit) {
     switch (unit) {
-        case BCH:
-            return 100000000;
-        case mBCH:
-            return 100000;
-        case uBCH:
-            return 100;
+        case LOTUS:
+            return 1000000;
+        case mLOTUS:
+            return 1000;
         case SAT:
             return 1;
         default:
@@ -90,12 +81,10 @@ qint64 BitcoinUnits::factor(int unit) {
 
 int BitcoinUnits::decimals(int unit) {
     switch (unit) {
-        case BCH:
-            return 8;
-        case mBCH:
-            return 5;
-        case uBCH:
-            return 2;
+        case LOTUS:
+            return 6;
+        case mLOTUS:
+            return 3;
         case SAT:
             return 0;
         default:

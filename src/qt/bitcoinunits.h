@@ -40,7 +40,7 @@ public:
      * @note Source: https://en.bitcoin.it/wiki/Units.
      * Please add only sensible ones.
      */
-    enum Unit { BCH, mBCH, uBCH, SAT };
+    enum Unit { LOTUS, mLOTUS, SAT };
 
     enum SeparatorStyle { separatorNever, separatorStandard, separatorAlways };
 
