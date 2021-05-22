@@ -164,7 +164,7 @@ void TestGUI(interfaces::Node &node) {
         int unit = walletModel.getOptionsModel()->getDisplayUnit();
         Amount balance = walletModel.wallet().getBalance();
         QString balanceComparison = BitcoinUnits::formatWithUnit(
-            unit, balance, false, BitcoinUnits::separatorAlways);
+            unit, balance, false, BitcoinUnits::separatorNever);
         QCOMPARE(balanceText, balanceComparison);
     }
 
@@ -228,7 +228,7 @@ void TestGUI(interfaces::Node &node) {
                     -1);
             QVERIFY(paymentTextList.at(2).indexOf(QString("Address:")) != -1);
             QCOMPARE(paymentTextList.at(3),
-                     QString("Amount: 0.00000001 ") +
+                     QString("Amount: 0.000001 ") +
                          QString::fromStdString(CURRENCY_UNIT));
             QCOMPARE(paymentTextList.at(4), QString("Label: TEST_LABEL_1"));
             QCOMPARE(paymentTextList.at(5), QString("Message: TEST_MESSAGE_1"));
