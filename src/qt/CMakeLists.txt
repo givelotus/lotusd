@@ -336,8 +336,8 @@ include(WindowsVersionInfo)
 generate_windows_version_info(lotus-qt
 	DESCRIPTION "GUI node for Bitcoin"
 	ICONS
-		"res/icons/bitcoin.ico"
-		"res/icons/bitcoin_testnet.ico"
+		"res/icons/lotus1024.ico"
+		"res/icons/lotus1024_testnet.ico"
 )
 target_link_libraries(lotus-qt lotus-qt-base)
 
@@ -350,7 +350,7 @@ install_target(lotus-qt)
 install_manpages(lotus-qt)
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
-	set(BITCOINQT_BUNDLE_ICON "res/icons/bitcoin.icns")
+	set(BITCOINQT_BUNDLE_ICON "res/icons/lotus1024.icns")
 	get_filename_component(BITCOINQT_BUNDLE_ICON_NAME
 		"${BITCOINQT_BUNDLE_ICON}"
 		NAME
