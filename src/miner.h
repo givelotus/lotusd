@@ -161,6 +161,7 @@ private:
     const CChainParams &chainParams;
 
     const CTxMemPool &m_mempool;
+    bool enableMinerFund;
 
 public:
     struct Options {
@@ -168,6 +169,7 @@ public:
         uint64_t nExcessiveBlockSize;
         uint64_t nMaxGeneratedBlockSize;
         CFeeRate blockMinFeeRate;
+        bool enableMinerFund;
     };
 
     BlockAssembler(const Config &config, const CTxMemPool &mempool);

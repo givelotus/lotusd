@@ -18,6 +18,7 @@ struct Params;
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
                                                 const Amount &blockReward);
 

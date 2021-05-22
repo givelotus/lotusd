@@ -25,12 +25,12 @@ static const CTxOut BurnOutput(const Amount amount) {
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
                                                 const Amount &blockReward) {
-    if (!gArgs.GetBoolArg("-enableminerfund", params.enableMinerFund)) {
+    if (!enableMinerFund) {
         return {};
     }
-
     const Amount shareAmount = blockReward / 26;
 
     return {

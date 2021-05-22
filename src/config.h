@@ -26,9 +26,19 @@ public:
 
     virtual void SetExcessUTXOCharge(Amount amt) = 0;
     virtual Amount GetExcessUTXOCharge() const = 0;
+
+    virtual void SetEnableMinerFund(bool) = 0;
+    virtual bool EnableMinerFund() const = 0;
 };
 
 class GlobalConfig final : public Config {
+private:
+    enum class MinerFundStatus {
+        Unset = 0,
+        Enabled = 1,
+        Disabled = 0,
+    };
+
 public:
     GlobalConfig();
     bool SetMaxBlockSize(uint64_t maxBlockSize) override;
@@ -40,8 +50,12 @@ public:
     void SetExcessUTXOCharge(Amount) override;
     Amount GetExcessUTXOCharge() const override;
 
+    void SetEnableMinerFund(bool) override;
+    bool EnableMinerFund() const override;
+
 private:
     bool useCashAddr;
+    MinerFundStatus enableMinerFund;
     Amount excessUTXOCharge;
 
     /** The largest block size this node will accept. */
@@ -66,8 +80,12 @@ public:
     void SetExcessUTXOCharge(Amount amt) override {}
     Amount GetExcessUTXOCharge() const override { return Amount::zero(); }
 
+    void SetEnableMinerFund(bool) override;
+    bool EnableMinerFund() const override;
+
 private:
     std::unique_ptr<CChainParams> chainParams;
+    bool enableMinerFund;
 };
 
 // Temporary woraround.

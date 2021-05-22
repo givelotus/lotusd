@@ -953,8 +953,9 @@ static UniValue getblocktemplate(const Config &config,
     UniValue aux(UniValue::VOBJ);
 
     UniValue requiredOutputsList(UniValue::VARR);
-    for (auto requiredOutput : GetMinerFundRequiredOutputs(
-             consensusParams, pindexPrev, coinbasevalue)) {
+    for (auto requiredOutput :
+         GetMinerFundRequiredOutputs(consensusParams, config.EnableMinerFund(),
+                                     pindexPrev, coinbasevalue)) {
         UniValue requiredOutputObj(UniValue::VOBJ);
         requiredOutputObj.pushKV("scriptPubKey",
                                  HexStr(requiredOutput.scriptPubKey));
