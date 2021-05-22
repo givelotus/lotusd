@@ -7,6 +7,7 @@
 #define BITCOIN_CONSENSUS_PARAMS_H
 
 #include <primitives/blockhash.h>
+#include <script/script.h>
 #include <uint256.h>
 
 #include <limits>
@@ -31,6 +32,7 @@ struct Params {
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
+    std::vector<std::vector<std::string>> payoutAddressSets;
 
     bool enableDifficultyBasedSubsidy;
 
