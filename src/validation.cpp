@@ -148,7 +148,7 @@ std::set<int> setDirtyFileInfo;
 
 BlockValidationOptions::BlockValidationOptions(const Config &config)
     : excessiveBlockSize(config.GetMaxBlockSize()), checkPoW(true),
-      checkMerkleRoot(true) {}
+      checkMerkleRoot(true), enableMinerFund(config.EnableMinerFund()) {}
 
 CBlockIndex *LookupBlockIndex(const BlockHash &hash) {
     AssertLockHeld(cs_main);
@@ -1902,7 +1902,8 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
     }
 
     const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
-        consensusParams, pindex->pprev, blockReward);
+        consensusParams, options.shouldValidateMinerFund(), pindex->pprev,
+        blockReward);
 
     if (!requiredOutputs.empty()) {
         auto nextRequiredOutput = requiredOutputs.begin();

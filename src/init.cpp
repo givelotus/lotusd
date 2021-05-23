@@ -2802,6 +2802,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     // We do this by default to avoid confusion with BTC addresses.
     config.SetCashAddrEncoding(args.GetBoolArg("-usecashaddr", true));
 
+    // Hidden Flag: Enable validation and addition of miner funding addresses
+    // for testing purposes
+    config.SetEnableMinerFund(args.GetBoolArg(
+        "-enableminerfund", chainparams.GetConsensus().enableMinerFund));
+
     // Step 8: load indexers
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
         g_txindex = std::make_unique<TxIndex>(nTxIndexCache, false, fReindex);

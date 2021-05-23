@@ -67,6 +67,7 @@ BlockAssembler::BlockAssembler(const CChainParams &params,
                                const Options &options)
     : chainParams(params), m_mempool(mempool) {
     blockMinFeeRate = options.blockMinFeeRate;
+    enableMinerFund = options.enableMinerFund;
     // Limit size to between 1K and options.nExcessiveBlockSize -1K for sanity:
     nMaxGeneratedBlockSize = std::max<uint64_t>(
         1000, std::min<uint64_t>(options.nExcessiveBlockSize - 1000,
@@ -99,6 +100,8 @@ static BlockAssembler::Options DefaultOptions(const Config &config) {
         ParseMoney(gArgs.GetArg("-blockmintxfee", ""), n)) {
         options.blockMinFeeRate = CFeeRate(n);
     }
+
+    options.enableMinerFund = config.EnableMinerFund();
 
     return options;
 }
@@ -209,8 +212,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
 
     const Amount coinbaseValue = coinbaseTx.vout[1].nValue;
-    const std::vector<CTxOut> requiredOutputs =
-        GetMinerFundRequiredOutputs(consensusParams, pindexPrev, coinbaseValue);
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, enableMinerFund, pindexPrev, coinbaseValue);
     for (const CTxOut &requiredOutput : requiredOutputs) {
         coinbaseTx.vout[1].nValue -= requiredOutput.nValue;
         coinbaseTx.vout.push_back(requiredOutput);
@@ -239,6 +242,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     BlockValidationState state;
     if (!TestBlockValidity(state, chainParams, *pblock, pindexPrev,
                            BlockValidationOptions(nMaxGeneratedBlockSize)
+                               .withMinerFund(enableMinerFund)
                                .withCheckPoW(false)
                                .withCheckMerkleRoot(false))) {
         throw std::runtime_error(strprintf("%s: TestBlockValidity failed: %s",

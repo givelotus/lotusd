@@ -8,7 +8,8 @@
 #include <consensus/consensus.h> // DEFAULT_MAX_BLOCK_SIZE
 
 GlobalConfig::GlobalConfig()
-    : useCashAddr(false), nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
+    : useCashAddr(false), enableMinerFund(MinerFundStatus::Unset),
+      nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
 
 bool GlobalConfig::SetMaxBlockSize(uint64_t maxBlockSize) {
     // Do not allow maxBlockSize to be set below historic 1MB limit
@@ -42,14 +43,26 @@ bool GlobalConfig::UseCashAddrEncoding() const {
     return useCashAddr;
 }
 
+void GlobalConfig::SetEnableMinerFund(bool c) {
+    enableMinerFund = c ? MinerFundStatus::Enabled : MinerFundStatus::Disabled;
+}
+bool GlobalConfig::EnableMinerFund() const {
+    return enableMinerFund == MinerFundStatus::Unset
+               ? GetChainParams().GetConsensus().enableMinerFund
+               : enableMinerFund == MinerFundStatus::Enabled;
+}
+
 DummyConfig::DummyConfig()
-    : chainParams(CreateChainParams(CBaseChainParams::REGTEST)) {}
+    : chainParams(CreateChainParams(CBaseChainParams::REGTEST)),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 DummyConfig::DummyConfig(std::string net)
-    : chainParams(CreateChainParams(net)) {}
+    : chainParams(CreateChainParams(net)),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 DummyConfig::DummyConfig(std::unique_ptr<CChainParams> chainParamsIn)
-    : chainParams(std::move(chainParamsIn)) {}
+    : chainParams(std::move(chainParamsIn)),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 void DummyConfig::SetChainParams(std::string net) {
     chainParams = CreateChainParams(net);
@@ -61,4 +74,11 @@ void GlobalConfig::SetExcessUTXOCharge(Amount fee) {
 
 Amount GlobalConfig::GetExcessUTXOCharge() const {
     return excessUTXOCharge;
+}
+
+void DummyConfig::SetEnableMinerFund(bool c) {
+    enableMinerFund = c;
+}
+bool DummyConfig::EnableMinerFund() const {
+    return enableMinerFund;
 }
