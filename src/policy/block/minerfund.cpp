@@ -5,7 +5,9 @@
 #include <policy/block/minerfund.h>
 
 #include <blockindex.h>
+#include <config.h>
 #include <consensus/activation.h>
+#include <consensus/params.h>
 #include <minerfund.h>
 
 bool MinerFundPolicy::operator()(BlockPolicyValidationState &state) {
@@ -16,7 +18,8 @@ bool MinerFundPolicy::operator()(BlockPolicyValidationState &state) {
     }
 
     assert(m_block.vtx.size());
-    if (!CheckMinerFund(m_consensusParams, m_block.vtx[0]->vout, m_blockReward,
+    if (!CheckMinerFund(m_consensusParams, GetConfig().EnableMinerFund(),
+                        m_block.vtx[0]->vout, m_blockReward,
                         m_blockIndex.pprev)) {
         return state.Invalid(BlockPolicyValidationResult::POLICY_VIOLATION,
                              "policy-bad-miner-fund",

@@ -116,7 +116,7 @@ bool fRequireStandardConsensus = true;
 
 BlockValidationOptions::BlockValidationOptions(const Config &config)
     : excessiveBlockSize(config.GetMaxBlockSize()), checkPoW(true),
-      checkMerkleRoot(true) {}
+      checkMerkleRoot(true), enableMinerFund(config.EnableMinerFund()) {}
 
 const CBlockIndex *
 Chainstate::FindForkInGlobalIndex(const CBlockLocator &locator) const {
@@ -2415,7 +2415,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     }
 
     const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
-        consensusParams, pindex->pprev, blockReward);
+        consensusParams, options.shouldValidateMinerFund(), pindex->pprev,
+        blockReward);
 
     if (!requiredOutputs.empty() && state.IsValid()) {
         auto nextRequiredOutput = requiredOutputs.begin();

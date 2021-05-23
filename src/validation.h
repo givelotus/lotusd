@@ -125,15 +125,18 @@ private:
     uint64_t excessiveBlockSize;
     bool checkPoW : 1;
     bool checkMerkleRoot : 1;
+    bool enableMinerFund : 1;
 
 public:
     // Do full validation by default
     explicit BlockValidationOptions(const Config &config);
     explicit BlockValidationOptions(uint64_t _excessiveBlockSize,
                                     bool _checkPow = true,
-                                    bool _checkMerkleRoot = true)
+                                    bool _checkMerkleRoot = true,
+                                    bool _enableMinerFund = true)
         : excessiveBlockSize(_excessiveBlockSize), checkPoW(_checkPow),
-          checkMerkleRoot(_checkMerkleRoot) {}
+          checkMerkleRoot(_checkMerkleRoot), enableMinerFund(_enableMinerFund) {
+    }
 
     BlockValidationOptions withCheckPoW(bool _checkPoW = true) const {
         BlockValidationOptions ret = *this;
@@ -148,9 +151,16 @@ public:
         return ret;
     }
 
+    BlockValidationOptions withMinerFund(bool _enableMinerFund = true) const {
+        BlockValidationOptions ret = *this;
+        ret.enableMinerFund = _enableMinerFund;
+        return ret;
+    }
+
     bool shouldValidatePoW() const { return checkPoW; }
     bool shouldValidateMerkleRoot() const { return checkMerkleRoot; }
     uint64_t getExcessiveBlockSize() const { return excessiveBlockSize; }
+    bool shouldValidateMinerFund() const { return enableMinerFund; }
 };
 
 Amount GetBlockSubsidy(uint32_t nBits,

@@ -18,6 +18,7 @@ struct Params;
 } // namespace Consensus
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
                                                 const Amount &blockReward);
 
@@ -25,6 +26,7 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
  * Returns false if there is an invalid miner fund. True otherwise.
  */
 bool CheckMinerFund(const Consensus::Params &params,
+                    const bool enableMinerFund,
                     const std::vector<CTxOut> &coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev);
 

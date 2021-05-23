@@ -368,8 +368,12 @@ public:
     void SetCashAddrEncoding(bool) override {}
     bool UseCashAddrEncoding() const override { return false; }
 
+    void SetEnableMinerFund(bool c) override { enableMinerFund = c; }
+    bool EnableMinerFund() const override { return enableMinerFund; }
+
 private:
     std::unique_ptr<const CChainParams> chainParams;
+    bool enableMinerFund;
 };
 
 inline uint160 uint160S(std::string_view str) {
