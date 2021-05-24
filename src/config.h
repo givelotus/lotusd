@@ -32,11 +32,13 @@ public:
 };
 
 class GlobalConfig final : public Config {
-private:
+    friend class GlobalConfigTest;
+
+public:
     enum class MinerFundStatus {
         Unset = 0,
         Enabled = 1,
-        Disabled = 0,
+        Disabled = 3,
     };
 
 public:

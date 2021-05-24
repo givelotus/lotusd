@@ -11,6 +11,14 @@
 
 #include <boost/test/unit_test.hpp>
 
+class GlobalConfigTest {
+public:
+    GlobalConfig::MinerFundStatus
+    GetInternalMinerFund(const GlobalConfig &config) {
+        return config.enableMinerFund;
+    }
+};
+
 BOOST_FIXTURE_TEST_SUITE(config_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(max_block_size) {
@@ -57,6 +65,19 @@ BOOST_AUTO_TEST_CASE(chain_params) {
 
     SelectParams(CBaseChainParams::REGTEST);
     BOOST_CHECK_EQUAL(&Params(), &config.GetChainParams());
+}
+
+BOOST_AUTO_TEST_CASE(enable_miner_fund) {
+    GlobalConfig config;
+
+    // Test enable miner fund.
+    // Minerfund should be whatever consensus is before manual setting.
+    BOOST_CHECK_EQUAL(config.EnableMinerFund(),
+                      config.GetChainParams().GetConsensus().enableMinerFund);
+    config.SetEnableMinerFund(false);
+    BOOST_CHECK_EQUAL(config.EnableMinerFund(), false);
+    config.SetEnableMinerFund(true);
+    BOOST_CHECK_EQUAL(config.EnableMinerFund(), true);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

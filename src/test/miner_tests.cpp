@@ -284,7 +284,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // Note that by default, these tests run with size accounting enabled.
     GlobalConfig config;
     // Don't check this functionality in this test.
-    config.SetEnableMinerFund(false);
+    config.SetEnableMinerFund(true);
     const CChainParams &chainparams = config.GetChainParams();
     CScript scriptPubKey =
         CScript() << ParseHex("04678afdb0fe5548271967f1a67130b7105cd6a828e03909"
