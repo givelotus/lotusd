@@ -65,28 +65,28 @@ BlockAssembler MinerTestingSetup::AssemblerForTest(const Config &config) {
 }
 
 constexpr uint64_t blockinfo[] = {
-    57137586545,  203906838680, 37341269554,  124675956107, 143498055326,
-    34221506364,  104198109,    39235918446,  86470147682,  178412698046,
-    11529010165,  73535899488,  49116792746,  4431721905,   9850823019,
-    80454294224,  4848789644,   111086237654, 82682535872,  29915475741,
-    12095352580,  32556579783,  10415626579,  55545333028,  250331715143,
-    143491684625, 208187975679, 229394364557, 19522049784,  4465616070,
-    105968788127, 15209329897,  62225562945,  164025189649, 115661654471,
-    2917315162,   200928144,    34310199100,  126198469056, 209410321226,
-    40250710375,  51755687307,  37235251287,  133614149050, 4495244887,
-    52624989304,  37820597512,  822816206,    32349072859,  39871789317,
-    38787280109,  118391407386, 82189705523,  201514131224, 41242290287,
-    77234567619,  87283561757,  22476264135,  26251475603,  14932055915,
-    64240910770,  62018122820,  42432154561,  87143303142,  39627815544,
-    97667634757,  60373793386,  4253033578,   1538871139,   24950353753,
-    198216687206, 109331536301, 20430148983,  55232661289,  5211076681,
-    51658728588,  38439646577,  15161928456,  36102571321,  9621738445,
-    242256854983, 33320293061,  13312935257,  25452450059,  68830410069,
-    212071500382, 25778229971,  59046383470,  35666902961,  95692818631,
-    48977939372,  9425169597,   32741731001,  245833627731, 135164885266,
-    14941674866,  27040000899,  71077792063,  132681785768, 5285283089,
-    247674599906, 154547963705, 24899201852,  18500443927,  11292961160,
-    25977402601,  69163360576,  12528959981,  109224017060, 9359153064,
+    138489447073, 2000123001,   35192735278,  30743516887,  90270421301,
+    4746156542,   269517074003, 50530474709,  201348804349, 131694823915,
+    96838508997,  54292234081,  146777944833, 194579551989, 17459672428,
+    239463286493, 35972158971,  131229981500, 288173081779, 8271781121,
+    14054617812,  1168893791,   67365635174,  196656931529, 35800309163,
+    17851574064,  26749261103,  14953015794,  22247598424,  16778982303,
+    119328830052, 19182627651,  133744171463, 161386696561, 5583120677,
+    37193104054,  74777620295,  240886925522, 202169284734, 37158187173,
+    180572907622, 34681770166,  218161288478, 5698624760,   123626801781,
+    8494330929,   134180517818, 380634240428, 1112112668,   19262695841,
+    727120508,    65255482113,  90905170725,  45882969013,  112934652766,
+    15470497544,  89665853312,  4833940537,   70579955079,  131318555366,
+    51087976648,  18737029675,  112319798991, 154404109467, 164492077002,
+    26800008678,  8462192695,   35955108190,  70609431501,  141973644757,
+    171937771431, 27571969114,  175359612626, 9514202569,   144770109340,
+    18542728507,  67998505071,  274075528823, 202967048402, 18535319865,
+    937791320,    60483413889,  43840334254,  38996608745,  135126199815,
+    136500720625, 3691630528,   85448072763,  75537584241,  205777394006,
+    22255213872,  170642741506, 130688629769, 219159895699, 97098261172,
+    118269396602, 87328266489,  185378645008, 10623915215,  7452183400,
+    14890598267,  671249038,    97235700784,  35390245092,  144350615945,
+    67256243540,  71934634370,  12275123663,  151449715016, 8967451371,
 };
 
 // In Logos, half of the block subsidy goes to the miner.
@@ -199,11 +199,16 @@ void MinerTestingSetup::TestPackageSelection(
     m_node.mempool->addUnchecked(entry.Fee(feeToUse + 2 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(config).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 6);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[1]->GetId(), freeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[2]->GetId(), lowFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), parentTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[4]->GetId(), highFeeTxId);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[5]->GetId(), mediumFeeTxId);
+    // Need pointers to be able to swap entries
+    const std::vector<TxId> txIds = {freeTxId, lowFeeTxId, parentTxId,
+                                     highFeeTxId, mediumFeeTxId};
+    // std::sort(std::begin(txIds), std::end(txIds));
+    for (const auto &txn : std::vector(pblocktemplate->block.vtx.begin() + 1,
+                                       pblocktemplate->block.vtx.end())) {
+        const auto found = std::find(txIds.begin(), txIds.end(), txn->GetId());
+        BOOST_CHECK_MESSAGE(found != txIds.end(),
+                            "Could not find: " << txn->GetId());
+    }
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as ancestor transactions get included in a block. Add a
@@ -242,7 +247,14 @@ void MinerTestingSetup::TestPackageSelection(
     tx.vout[0].nValue = (100000000 - 10000) * SATOSHI;
     m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
     pblocktemplate = AssemblerForTest(config).CreateNewBlock(scriptPubKey);
-    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx[3]->GetId(), lowFeeTxId2);
+    const auto foundTx = std::find_if(
+        pblocktemplate->block.vtx.begin(), pblocktemplate->block.vtx.end(),
+        [lowFeeTxId2](const CTransactionRef &a) -> bool {
+            return a->GetId() == lowFeeTxId2;
+        });
+
+    BOOST_CHECK_MESSAGE(foundTx != pblocktemplate->block.vtx.end(),
+                        "Did not find lowFeeTxId2");
 }
 
 void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
@@ -284,7 +296,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     // Note that by default, these tests run with size accounting enabled.
     GlobalConfig config;
     // Don't check this functionality in this test.
-    config.SetEnableMinerFund(true);
+    config.SetEnableMinerFund(false);
     const CChainParams &chainparams = config.GetChainParams();
     CScript scriptPubKey =
         CScript() << ParseHex("04678afdb0fe5548271967f1a67130b7105cd6a828e03909"
@@ -774,6 +786,43 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     TestPackageSelection(config, scriptPubKey, txFirst);
 
     fCheckpointsEnabled = true;
+}
+
+// NOTE: These tests rely on CreateNewBlock doing its own self-validation!
+BOOST_AUTO_TEST_CASE(CreateNewBlock_minerfund) {
+    // Note that by default, these tests run with size accounting enabled.
+    GlobalConfig config;
+    // Don't check this functionality in this test.
+    config.SetEnableMinerFund(true);
+    const CChainParams &chainparams = config.GetChainParams();
+    CScript scriptPubKey = CScript() << OP_1;
+    std::unique_ptr<CBlockTemplate> pblocktemplate;
+
+    fCheckpointsEnabled = false;
+
+    // Simple block creation
+    BOOST_CHECK(pblocktemplate =
+                    AssemblerForTest(config).CreateNewBlock(scriptPubKey));
+
+    const auto subsidy = GetBlockSubsidy(::ChainActive().Tip()->nBits,
+                                         chainparams.GetConsensus());
+    const auto outputs = GetMinerFundRequiredOutputs(
+        chainparams.GetConsensus(), true, ::ChainActive().Tip(), subsidy);
+    // outputs + 2 for OP_RETURN for block height unique hash, and coinbase
+    // output
+    BOOST_CHECK_MESSAGE(outputs.size() + 2 ==
+                            pblocktemplate->block.vtx[0]->vout.size(),
+                        "Mismatch coinbase size");
+    // Skip height and scriptpubkey outputs
+    auto coinbaseOutsIt = pblocktemplate->block.vtx[0]->vout.begin() + 2;
+    auto outputsIt = outputs.begin();
+    for (; outputsIt != outputs.end(); outputsIt++, coinbaseOutsIt++) {
+        BOOST_CHECK_MESSAGE(outputsIt->scriptPubKey ==
+                                coinbaseOutsIt->scriptPubKey,
+                            "Mismatched scriptPubKey on coinbase");
+        BOOST_CHECK_MESSAGE(outputsIt->nValue == coinbaseOutsIt->nValue,
+                            "Mismatched coinbase value of output");
+    }
 }
 
 void CheckBlockMaxSize(const Config &config, const CTxMemPool &mempool,
