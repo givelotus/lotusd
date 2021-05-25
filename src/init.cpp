@@ -143,7 +143,7 @@ static const bool DEFAULT_PROXYRANDOMIZE = true;
 static const bool DEFAULT_REST_ENABLE = false;
 static constexpr bool DEFAULT_STOPAFTERBLOCKIMPORT{false};
 static constexpr bool DEFAULT_CHRONIK = false;
-static constexpr bool DEFAULT_USEASHADDR = true;
+static constexpr bool DEFAULT_USEASHADDR = false;
 
 #ifdef WIN32
 // Win32 LevelDB doesn't use filedescriptors, and the ones used for accessing
@@ -2916,8 +2916,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                                      node.avalanche.get(), peerman_opts);
     validation_signals.RegisterValidationInterface(node.peerman.get());
 
-    // Encoded addresses using cashaddr instead of base58.
-    // We do this by default to avoid confusion with BTC addresses.
+    // By default, we use XAddress; this option will make it use the CashAddr
+    // format.
     config.SetCashAddrEncoding(
         args.GetBoolArg("-usecashaddr", DEFAULT_USEASHADDR));
 
