@@ -40,8 +40,8 @@ BOOST_AUTO_TEST_CASE(test_addresses) {
         "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a";
     std::string cashaddr_script =
         "bitcoincash:ppm2qsznhks23z7629mms6s4cwef74vcwvn0h829pq";
-    std::string base58_pubkey = "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu";
-    std::string base58_script = "3CWFddi6m4ndiGyKqzYvsFYagqDLPVMTzC";
+    std::string lotus_pubkey = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ";
+    std::string lotus_script = "lotus_1PrQz5R11Ae1YcbvUpGDSvzPP2GsVw6EDCvZqy";
 
     DummyCashAddrConfig config;
 
@@ -50,21 +50,21 @@ BOOST_AUTO_TEST_CASE(test_addresses) {
     BOOST_CHECK_EQUAL(cashaddr_pubkey, EncodeDestination(dstKey, config));
     BOOST_CHECK_EQUAL(cashaddr_script, EncodeDestination(dstScript, config));
     config.SetCashAddrEncoding(false);
-    BOOST_CHECK_EQUAL(base58_pubkey, EncodeDestination(dstKey, config));
-    BOOST_CHECK_EQUAL(base58_script, EncodeDestination(dstScript, config));
+    BOOST_CHECK_EQUAL(lotus_pubkey, EncodeDestination(dstKey, config));
+    BOOST_CHECK_EQUAL(lotus_script, EncodeDestination(dstScript, config));
 
     // Check decoding
     const CChainParams &params = config.GetChainParams();
     BOOST_CHECK(dstKey == DecodeDestination(cashaddr_pubkey, params));
     BOOST_CHECK(dstScript == DecodeDestination(cashaddr_script, params));
-    BOOST_CHECK(dstKey == DecodeDestination(base58_pubkey, params));
-    BOOST_CHECK(dstScript == DecodeDestination(base58_script, params));
+    BOOST_CHECK(dstKey == DecodeDestination(lotus_pubkey, params));
+    BOOST_CHECK(dstScript == DecodeDestination(lotus_script, params));
 
     // Validation
     BOOST_CHECK(IsValidDestinationString(cashaddr_pubkey, params));
     BOOST_CHECK(IsValidDestinationString(cashaddr_script, params));
-    BOOST_CHECK(IsValidDestinationString(base58_pubkey, params));
-    BOOST_CHECK(IsValidDestinationString(base58_script, params));
+    BOOST_CHECK(IsValidDestinationString(lotus_pubkey, params));
+    BOOST_CHECK(IsValidDestinationString(lotus_script, params));
     BOOST_CHECK(!IsValidDestinationString("notvalid", params));
 }
 

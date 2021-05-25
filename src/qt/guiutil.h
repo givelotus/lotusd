@@ -53,7 +53,7 @@ QFont fixedPitchFont();
 std::string DummyAddress(const CChainParams &params);
 
 // Convert any address into cashaddr
-QString convertToCashAddr(const CChainParams &params, const QString &addr);
+QString convertToXAddress(const CChainParams &params, const QString &addr);
 
 // Set up widget for address
 void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent);

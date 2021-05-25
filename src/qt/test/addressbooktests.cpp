@@ -11,7 +11,6 @@
 #include <qt/test/util.h>
 #include <qt/walletmodel.h>
 
-#include <cashaddrenc.h>
 #include <key.h>
 #include <key_io.h>
 #include <wallet/wallet.h>
@@ -75,7 +74,7 @@ void TestAddAddressesToSendBook(interfaces::Node &node) {
             key.GetPubKey(), wallet->m_default_address_type));
 
         return std::make_pair(
-            dest, QString::fromStdString(EncodeCashAddr(dest, Params())));
+            dest, QString::fromStdString(EncodeDestination(dest, Params())));
     };
 
     CTxDestination r_key_dest, s_key_dest;

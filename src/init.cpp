@@ -2798,9 +2798,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         return false;
     }
 
-    // Encoded addresses using cashaddr instead of base58.
-    // We do this by default to avoid confusion with BTC addresses.
-    config.SetCashAddrEncoding(args.GetBoolArg("-usecashaddr", true));
+    // By default, we use XAddress; this option will make it use the CashAddr
+    // format.
+    config.SetCashAddrEncoding(args.GetBoolArg("-usecashaddr", false));
 
     // Hidden Flag: Enable validation and addition of miner funding addresses
     // for testing purposes

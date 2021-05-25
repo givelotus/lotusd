@@ -1,7 +1,6 @@
 #include <qt/test/util.h>
 #include <qt/test/wallettests.h>
 
-#include <cashaddrenc.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <interfaces/chain.h>
@@ -64,7 +63,7 @@ TxId SendCoins(CWallet &wallet, SendCoinsDialog &sendCoinsDialog,
     SendCoinsEntry *entry =
         qobject_cast<SendCoinsEntry *>(entries->itemAt(0)->widget());
     entry->findChild<QValidatedLineEdit *>("payTo")->setText(
-        QString::fromStdString(EncodeCashAddr(address, Params())));
+        QString::fromStdString(EncodeDestination(address, Params())));
     entry->findChild<BitcoinAmountField *>("payAmount")->setValue(amount);
     TxId txid;
     boost::signals2::scoped_connection c =
@@ -224,7 +223,7 @@ void TestGUI(interfaces::Node &node) {
             QString paymentText = rlist->toPlainText();
             QStringList paymentTextList = paymentText.split('\n');
             QCOMPARE(paymentTextList.at(0), QString("Payment information"));
-            QVERIFY(paymentTextList.at(1).indexOf(QString("URI: bchreg:")) !=
+            QVERIFY(paymentTextList.at(1).indexOf(QString("URI: lotusR")) !=
                     -1);
             QVERIFY(paymentTextList.at(2).indexOf(QString("Address:")) != -1);
             QCOMPARE(paymentTextList.at(3),
