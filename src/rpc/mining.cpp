@@ -11,6 +11,7 @@
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/consensus.h>
+#include <consensus/merkle.h>
 #include <consensus/params.h>
 #include <consensus/validation.h>
 #include <core_io.h>
@@ -1006,6 +1007,88 @@ static UniValue getblocktemplate(const Config &config,
     return result;
 }
 
+static UniValue getrawunsolvedblock(const Config &config,
+                                    const JSONRPCRequest &request) {
+    RPCHelpMan{
+        "getrawunsolvedblock",
+        "Get a serialized block candidate with coinbase sending to the "
+        "specified address",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The address to send the newly generated coins to."},
+        },
+        RPCResult{
+            RPCResult::Type::STR_HEX,
+            "blockhex",
+            "Serialized block as hex.",
+        },
+        RPCExamples{"\nCreate an unsolved block to to myaddress\n" +
+                    HelpExampleCli("getrawunsolvedblock", "\"myaddress\"") +
+                    "If you are running the Lotus wallet, you can get a new "
+                    "address to send the newly generated coins to with:\n" +
+                    HelpExampleCli("getnewaddress", "")},
+    }
+        .Check(request);
+
+    CTxDestination destination =
+        DecodeDestination(request.params[0].get_str(), config.GetChainParams());
+    if (!IsValidDestination(destination)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "Error: Invalid address");
+    }
+
+    const CChainParams &chainparams = config.GetChainParams();
+
+    NodeContext &node = EnsureNodeContext(request.context);
+    if (!node.connman) {
+        throw JSONRPCError(
+            RPC_CLIENT_P2P_DISABLED,
+            "Error: Peer-to-peer functionality missing or disabled");
+    }
+
+    if (node.connman->GetNodeCount(CConnman::CONNECTIONS_ALL) == 0) {
+        throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Node is not connected!");
+    }
+
+    if (::ChainstateActive().IsInitialBlockDownload()) {
+        throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, PACKAGE_NAME
+                           " is in initial sync and waiting for blocks...");
+    }
+
+    LOCK(cs_main);
+    const CTxMemPool &mempool = EnsureMemPool(request.context);
+
+    // Store the pindexBest used before CreateNewBlock, to avoid races
+    CBlockIndex *pindexPrevNew = ::ChainActive().Tip();
+
+    // Create new block with provided coinbase output script.
+    CScript coinbase_script = GetScriptForDestination(destination);
+    std::unique_ptr<CBlockTemplate> pblocktemplate =
+        BlockAssembler(config, mempool).CreateNewBlock(coinbase_script);
+    if (!pblocktemplate) {
+        throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
+    }
+
+    // Need to update only after we know CreateNewBlock succeeded
+    CHECK_NONFATAL(pindexPrevNew);
+
+    // pointer for convenience
+    CBlock *pblock = &pblocktemplate->block;
+    // Update nTime (can update nBits on testnet)
+    UpdateTime(pblock, chainparams, pindexPrevNew);
+    pblock->nNonce = 0;
+    // Update merkle root so mining software need not touch it.
+    pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+
+    CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
+    ssBlock << *pblock;
+    arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("blockhex", HexStr(ssBlock));
+    result.pushKV("target", hashTarget.GetHex());
+    return result;
+}
+
 class submitblock_StateCatcher final : public CValidationInterface {
 public:
     uint256 hash;
@@ -1160,6 +1243,7 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         {"mining",     "getmininginfo",         getmininginfo,         {}},
         {"mining",     "prioritisetransaction", prioritisetransaction, {"txid", "dummy", "fee_delta"}},
         {"mining",     "getblocktemplate",      getblocktemplate,      {"template_request"}},
+        {"mining",     "getrawunsolvedblock",   getrawunsolvedblock,   {"address"}},
         {"mining",     "submitblock",           submitblock,           {"hexdata", "dummy"}},
         {"mining",     "submitheader",          submitheader,          {"hexdata"}},
 
