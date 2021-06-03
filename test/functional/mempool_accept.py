@@ -8,9 +8,9 @@ from decimal import Decimal
 from test_framework.hash import hash160
 from test_framework.key import ECKey
 from test_framework.messages import (
+    COIN,
     MAX_BLOCK_BASE_SIZE,
     MAX_MONEY,
-    XEC,
     COutPoint,
     CTransaction,
     CTxIn,
@@ -97,8 +97,8 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
             node.createrawtransaction(
                 inputs=[{"txid": coin["txid"], "vout": coin["vout"]}],
                 outputs=[
-                    {node.getnewaddress(): 300000},
-                    {node.getnewaddress(): 49000000},
+                    {node.getnewaddress(): 30},
+                    {node.getnewaddress(): 70},
                 ],
             )
         )["hex"]
@@ -117,11 +117,11 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         )
 
         self.log.info("A transaction not in the mempool")
-        fee = Decimal("7.00")
+        fee = Decimal("0.000700")
         raw_tx_0 = node.signrawtransactionwithwallet(
             node.createrawtransaction(
                 inputs=[{"txid": txid_in_block, "vout": 0, "sequence": 0xFFFFFFFD}],
-                outputs=[{node.getnewaddress(): Decimal(300_000) - fee}],
+                outputs=[{node.getnewaddress(): Decimal(30) - fee}],
             )
         )["hex"]
         tx = FromHex(CTransaction(), raw_tx_0)
@@ -141,7 +141,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         self.log.info("A final transaction not in the mempool")
         # Pick a random coin(base) to spend
         coin = coins.pop()
-        output_amount = Decimal(25_000)
+        output_amount = Decimal(2.5)
         raw_tx_final = node.signrawtransactionwithwallet(
             node.createrawtransaction(
                 inputs=[
@@ -191,7 +191,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         node.sendrawtransaction(hexstring=tx.serialize().hex(), maxfeerate=0)
         # take original raw_tx_0
         tx = FromHex(CTransaction(), raw_tx_0)
-        tx.vout[0].nValue -= int(4 * fee * XEC)  # Set more fee
+        tx.vout[0].nValue -= int(4 * fee * COIN)  # Set more fee
         # skip re-signing the tx
         self.check_mempool_result(
             result_expected=[
@@ -237,7 +237,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
                     {"txid": txid_0, "vout": 0},
                     {"txid": txid_1, "vout": 0},
                 ],
-                outputs=[{node.getnewaddress(): 100000}],
+                outputs=[{node.getnewaddress(): 10}],
             )
         )["hex"]
         txid_spend_both = node.sendrawtransaction(
@@ -264,7 +264,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         raw_tx_reference = node.signrawtransactionwithwallet(
             node.createrawtransaction(
                 inputs=[{"txid": txid_spend_both, "vout": 0}],
-                outputs=[{node.getnewaddress(): 50000}],
+                outputs=[{node.getnewaddress(): 5}],
             )
         )["hex"]
         tx = FromHex(CTransaction(), raw_tx_reference)
@@ -275,7 +275,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
                     "txid": tx.txid_hex,
                     "allowed": True,
                     "size": tx.billable_size(),
-                    "fees": {"base": Decimal(100_000 - 50_000)},
+                    "fees": {"base": Decimal(10 - 5)},
                 }
             ],
             rawtxs=[ToHex(tx)],
@@ -452,19 +452,6 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
             rawtxs=[ToHex(tx)],
         )
         tx = FromHex(CTransaction(), raw_tx_reference)
-        # Some too large scriptSig (>1650 bytes)
-        tx.vin[0].scriptSig = CScript([b"a" * 1648])
-        self.check_mempool_result(
-            result_expected=[
-                {
-                    "txid": tx.txid_hex,
-                    "allowed": False,
-                    "reject-reason": "scriptsig-size",
-                }
-            ],
-            rawtxs=[tx.serialize().hex()],
-        )
-        tx = FromHex(CTransaction(), raw_tx_reference)
         output_p2sh_burn = CTxOut(
             nValue=540, scriptPubKey=CScript([OP_HASH160, hash160(b"burn"), OP_EQUAL])
         )
@@ -534,6 +521,20 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
             ],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
+        )
+
+        tx = FromHex(CTransaction(), raw_tx_reference)
+        # script too large (10'001 bytes)
+        tx.vin[0].scriptSig = CScript(b"\0" * 10001)
+        self.check_mempool_result(
+            result_expected=[
+                {
+                    "txid": tx.txid_hex,
+                    "allowed": False,
+                    "reject-reason": "mandatory-script-verify-flag-failed (Script is too big)",
+                }
+            ],
+            rawtxs=[tx.serialize().hex()],
         )
 
 
