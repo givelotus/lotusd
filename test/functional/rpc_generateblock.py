@@ -66,7 +66,7 @@ class GenerateBlockTest(BitcoinTestFramework):
             node.sendtoaddress(address, 0.1)
 
         self.log.info('Generate block with txid')
-        txid = node.sendtoaddress(address, 1)
+        txid = node.sendtoaddress(address, 100)
         hash = node.generateblock(address, [txid])['hash']
         block = node.getblock(hash, 1)
         assert_equal(len(block['tx']), 2)
