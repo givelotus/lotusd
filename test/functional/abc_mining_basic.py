@@ -72,28 +72,14 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         # them are covered in mining_basic.py
         assert_equal(node.getmempoolinfo()['size'], 0)
         share_amount = SUBSIDY * COIN // 26
-        assert_getblocktemplate({
-            'coinbasetxn': {
-                # We expect to see the miner fund addresses in every block
-                'minerfund': {
-                    'outputs': [
-                        {'scriptPubKey': 'a914260617ebf668c9102f71ce24aba97fcaaf9c666a87',
-                        'value': share_amount},
-                        {'scriptPubKey': '76a91407d6f95a81155b7f706d5bc85106fbc77409e36e88ac',
-                        'value': share_amount},
-                        {'scriptPubKey': '76a914ba9113bbb9c6880bb877a284299f21d13365e52888ac',
-                        'value': share_amount},
-                        {'scriptPubKey': '6a1ac8e1f6e5a0ede5f2e3f9a0efeea0ede5aca0e1a0f3e9eeeee5f2',
-                        'value': 10 * share_amount},
-                    ],
-                },
-            },
-            # Although the coinbase value need not necessarily be the same as
-            # the last block due to halvings and fees, we know this to be true
-            # since we are not crossing a halving boundary and there are no
-            # transactions in the mempool.
-            'coinbasevalue': SUBSIDY * COIN,
-        })
+        block_template_data = node.getblocktemplate()
+        print(block_template_data)
+        expected_funding_outputs = 13
+        miner_fund_outputs = block_template_data['coinbasetxn']['minerfund']['outputs']
+        assert_equal(len(miner_fund_outputs), 13)
+        assert_equal(block_template_data['coinbasevalue'], SUBSIDY * COIN)
+        for output in miner_fund_outputs:
+            assert_equal(output['value'], share_amount)
 
 
 if __name__ == '__main__':

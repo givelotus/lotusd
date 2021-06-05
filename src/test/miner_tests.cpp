@@ -788,43 +788,6 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity) {
     fCheckpointsEnabled = true;
 }
 
-// NOTE: These tests rely on CreateNewBlock doing its own self-validation!
-BOOST_AUTO_TEST_CASE(CreateNewBlock_minerfund) {
-    // Note that by default, these tests run with size accounting enabled.
-    GlobalConfig config;
-    // Don't check this functionality in this test.
-    config.SetEnableMinerFund(true);
-    const CChainParams &chainparams = config.GetChainParams();
-    CScript scriptPubKey = CScript() << OP_1;
-    std::unique_ptr<CBlockTemplate> pblocktemplate;
-
-    fCheckpointsEnabled = false;
-
-    // Simple block creation
-    BOOST_CHECK(pblocktemplate =
-                    AssemblerForTest(config).CreateNewBlock(scriptPubKey));
-
-    const auto subsidy = GetBlockSubsidy(::ChainActive().Tip()->nBits,
-                                         chainparams.GetConsensus());
-    const auto outputs = GetMinerFundRequiredOutputs(
-        chainparams.GetConsensus(), true, ::ChainActive().Tip(), subsidy);
-    // outputs + 2 for OP_RETURN for block height unique hash, and coinbase
-    // output
-    BOOST_CHECK_MESSAGE(outputs.size() + 2 ==
-                            pblocktemplate->block.vtx[0]->vout.size(),
-                        "Mismatch coinbase size");
-    // Skip height and scriptpubkey outputs
-    auto coinbaseOutsIt = pblocktemplate->block.vtx[0]->vout.begin() + 2;
-    auto outputsIt = outputs.begin();
-    for (; outputsIt != outputs.end(); outputsIt++, coinbaseOutsIt++) {
-        BOOST_CHECK_MESSAGE(outputsIt->scriptPubKey ==
-                                coinbaseOutsIt->scriptPubKey,
-                            "Mismatched scriptPubKey on coinbase");
-        BOOST_CHECK_MESSAGE(outputsIt->nValue == coinbaseOutsIt->nValue,
-                            "Mismatched coinbase value of output");
-    }
-}
-
 void CheckBlockMaxSize(const Config &config, const CTxMemPool &mempool,
                        uint64_t size, uint64_t expected) {
     gArgs.ForceSetArg("-blockmaxsize", ToString(size));

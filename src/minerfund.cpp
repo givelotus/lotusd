@@ -17,11 +17,18 @@ static const CTxOut BuildOutput(const std::string &dest, const Amount amount) {
     return {amount, script};
 }
 
-static const CTxOut BurnOutput(const Amount amount) {
-    std::vector<uint8_t> burnPayload = {
-        200, 225, 246, 229, 160, 237, 229, 242, 227, 249, 160, 239, 238,
-        160, 237, 229, 172, 160, 225, 160, 243, 233, 238, 238, 229, 242};
-    return {amount, CScript() << OP_RETURN << burnPayload};
+const CTxOut BuildRandomOutput(const std::vector<std::string> &addressList,
+                               uint64_t slot, Amount shareAmount,
+                               uint256 epochBlockHash) {
+    CHashWriter hasher(SER_GETHASH, 0);
+    hasher << slot;
+    hasher << epochBlockHash;
+    uint256 hash = hasher.GetSHA256();
+    uint64_t weakHash = hash.GetUint64(0);
+    // Note: There is modulo bias here, but it is being ignored as the random
+    // domain is much much larger than injected range. Thus, the effect is
+    // small.
+    return BuildOutput(addressList[weakHash % addressList.size()], shareAmount);
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
@@ -31,16 +38,19 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
     if (!enableMinerFund) {
         return {};
     }
-    const Amount shareAmount = blockReward / 26;
 
-    return {
-        // Bitcoin ABC
-        BuildOutput("pqnqv9lt7e5vjyp0w88zf2af0l92l8rxdgnlxww9j9", shareAmount),
-        // Stamp
-        BuildOutput("qqrad726sy24klmsd4dus5gxl0rhgz0rdcjnagpmve", shareAmount),
-        // Tobias
-        BuildOutput("qzafzyamh8rgszacw73gg2vly8gnxe099qx6fqrdfd", shareAmount),
-        // Burn the remaining shares
-        BurnOutput(10 * shareAmount),
-    };
+    const auto epochBlockHash = Hash(pindexPrev->hashEpochBlock);
+    const auto numPayoutAddressSets = params.payoutAddressSets.size();
+    // Plus 1 for Foundation output
+    const Amount shareAmount =
+        blockReward / (int64_t(2 * (numPayoutAddressSets)));
+    std::vector<CTxOut> minerFundOutputs;
+    minerFundOutputs.reserve(numPayoutAddressSets);
+
+    for (const auto &addressSet : params.payoutAddressSets) {
+        minerFundOutputs.emplace_back(BuildRandomOutput(
+            addressSet, minerFundOutputs.size(), shareAmount, epochBlockHash));
+    }
+
+    return minerFundOutputs;
 }

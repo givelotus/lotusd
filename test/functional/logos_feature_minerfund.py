@@ -26,10 +26,10 @@ from test_framework.util import assert_equal
 class MinerFundTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 1
+        self.num_nodes = 2
         self.extra_args = [[
             '-enableminerfund',
-        ]]
+        ], ['-enableminerfund']]
 
     def run_test(self):
         node = self.nodes[0]
@@ -43,23 +43,16 @@ class MinerFundTest(BitcoinTestFramework):
 
         # 10 Lotus per share
         share_amount = SUBSIDY / 26
+        block_template = node.getblocktemplate()
+        expected_outputs = block_template['coinbasetxn']['minerfund']['outputs']
 
         # Now we send part of the coinbase to the fund.
-        coinbase = get_best_coinbase()
-        expected_outputs = [
-            {'scriptPubKey': 'a914260617ebf668c9102f71ce24aba97fcaaf9c666a87',
-             'value': share_amount},
-            {'scriptPubKey': '76a91407d6f95a81155b7f706d5bc85106fbc77409e36e88ac',
-             'value': share_amount},
-            {'scriptPubKey': '76a914ba9113bbb9c6880bb877a284299f21d13365e52888ac',
-             'value': share_amount},
-            {'scriptPubKey': '6a1ac8e1f6e5a0ede5f2e3f9a0efeea0ede5aca0e1a0f3e9eeeee5f2',
-             'value': 10 * share_amount},
-        ]
-        assert_equal(len(coinbase['vout']), 2 + len(expected_outputs))
-        for actual_output, expected_output in zip(coinbase['vout'][2:], expected_outputs):
-            assert_equal(actual_output['value'], expected_output['value'])
-            assert_equal(actual_output['scriptPubKey']['hex'], expected_output['scriptPubKey'])
+        best_coinbase = get_best_coinbase()
+        expected_number_of_outputs = 13
+        assert_equal(len(best_coinbase['vout']),
+                     2 + expected_number_of_outputs)
+        for actual_output in best_coinbase['vout'][2:]:
+            assert_equal(actual_output['value'], share_amount)
 
         best_block_hash = node.getbestblockhash()
         block_time = node.getblockheader(best_block_hash)['time']
@@ -68,10 +61,12 @@ class MinerFundTest(BitcoinTestFramework):
 
         # Submit a custom block that does not send anything
         # to the fund and check if it is rejected.
-        coinbase.vout[1].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
+        coinbase.vout[1].scriptPubKey = CScript(
+            [OP_HASH160, bytes(20), OP_EQUAL])
         coinbase.vout[1].nValue = int(SUBSIDY * COIN)
         coinbase.rehash()
-        block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
+        block = create_block(int(best_block_hash, 16),
+                             coinbase, block_time + 1)
         block.nHeight = block_height
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
@@ -81,21 +76,24 @@ class MinerFundTest(BitcoinTestFramework):
         # but with the outputs in the wrong order (which is not allowed)
         coinbase.vout[1:] = []
         for output in expected_outputs:
-            coinbase.vout.append(CTxOut(int(output['value'] * COIN),
+            coinbase.vout.append(CTxOut(int(output['value']),
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
         coinbase.vout.insert(2, CTxOut(int(SUBSIDY / 2 * COIN),
                                        CScript([OP_HASH160, bytes(20), OP_EQUAL])))
-        coinbase.vout[4], coinbase.vout[3] = coinbase.vout[3], coinbase.vout[4]
+        coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
         coinbase.rehash()
-        block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
+        block = create_block(int(best_block_hash, 16),
+                             coinbase, block_time + 1)
         block.nHeight = block_height
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
         # Fix the order and block is valid
-        coinbase.vout[4], coinbase.vout[3] = coinbase.vout[3], coinbase.vout[4]
+        coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
         coinbase.rehash()
-        block = create_block(int(best_block_hash, 16), coinbase, block_time + 1)
+        block = create_block(int(best_block_hash, 16),
+                             coinbase, block_time + 1)
+
         block.nHeight = block_height
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
@@ -117,10 +115,11 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[1] = CTxOut(int(share_multiplier * SUBSIDY / 2 * COIN),
                                   CScript([OP_HASH160, bytes(20), OP_EQUAL]))
         for output in expected_outputs:
-            coinbase.vout.append(CTxOut(int(share_multiplier * output['value'] * COIN),
+            coinbase.vout.append(CTxOut(int(share_multiplier * output['value']),
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
         coinbase.rehash()
-        block = create_block(int(best_block_hash, 16), coinbase, best_block_header['time'] + 1)
+        block = create_block(int(best_block_hash, 16),
+                             coinbase, best_block_header['time'] + 1)
         block.nHeight = block_height
         block.vtx.append(tx)
         prepare_block(block)
