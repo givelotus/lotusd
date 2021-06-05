@@ -7,6 +7,7 @@
 
 #include <chainparamsconstants.h>
 #include <chainparamsseeds.h>
+#include <consensus/addresses.h>
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <consensus/merkle.h>
@@ -90,6 +91,8 @@ public:
 
         // The miner fund is enabled by default on mainnet.
         consensus.enableMinerFund = true;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
+        assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
 
         // Mainnet rewards based on difficulty.
         consensus.enableDifficultyBasedSubsidy = true;
@@ -247,6 +250,8 @@ public:
 
         // The miner fund is enabled by default on testnet.
         consensus.enableMinerFund = true;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
+        assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
 
         // Testnet rewards based on difficulty.
         consensus.enableDifficultyBasedSubsidy = true;
@@ -382,6 +387,8 @@ public:
 
         // The miner fund is disabled by default on regtest.
         consensus.enableMinerFund = false;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
+        assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
 
         // Regtest rewards a constant amount independent of difficulty.
         consensus.enableDifficultyBasedSubsidy = false;

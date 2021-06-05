@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright (c) 2020 The Bitcoin developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -5,149 +6,90 @@
 Tests for Bitcoin ABC mining RPCs
 """
 
-from test_framework.address import SCRIPT_UNSPENDABLE_HEX
+from decimal import Decimal
+
+from test_framework.blocktools import SUBSIDY
 from test_framework.cdefs import (
     BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO,
     DEFAULT_MAX_BLOCK_SIZE,
 )
-from test_framework.messages import XEC
-from test_framework.p2p import P2PInterface
+from test_framework.messages import (
+    COIN,
+)
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_greater_than_or_equal
-
-MINER_FUND_ADDR = "ecregtest:prfhcnyqnl5cgrnmlfmms675w93ld7mvvq9jcw0zsn"
-MINER_FUND_LEGACY_ADDR = "2NCXTUCFd1Q3EteVpVVDTrBBoKqvMPAoeEn"
-
-MINER_FUND_RATIO = 32
-STAKING_REWARD_RATIO = 10
 
 
 class AbcMiningRPCTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-enableminerfund",
-                "-allownonstdtxnconsensus=1",
-            ],
-            [
-                "-enableminerfund",
-                "-usecashaddr=0",
-                "-allownonstdtxnconsensus=1",
-            ],
-        ]
+        self.extra_args = [[
+            '-enableminerfund',
+            '-allownonstdtxnconsensus=1',
+        ], [
+            '-enableminerfund',
+            '-allownonstdtxnconsensus=1',
+        ]]
 
     def setup_network(self):
         self.setup_nodes()
-        # Don't connect the nodes
 
-    def run_for_node(self, node, minerFundAddress):
-        # Connect to a peer so getblocktemplate will return results
-        # (getblocktemplate has a sanity check that ensures it's connected to a
-        # network).
-        node.add_p2p_connection(P2PInterface())
+        # Connect node0 to all other nodes so getblocktemplate will return results
+        # (getblocktemplate has a sanity check that ensures it's connected to a network)
+        # Since the other nodes are mining blocks "in the future" compared to node0,
+        # node0 will not broadcast blocks between the other nodes.
+        for n in range(1, len(self.nodes)):
+            self.connect_nodes(0, n)
+
+    def run_for_node(self, node):
+        address = node.get_deterministic_priv_key().address
 
         # Assert the results of getblocktemplate have expected values. Keys not
         # in 'expected' are not checked.
         def assert_getblocktemplate(expected):
             # Always test these values in addition to those passed in
-            expected = {
-                **expected,
-                **{
-                    "sigchecklimit": (
-                        DEFAULT_MAX_BLOCK_SIZE // BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO
-                    ),
-                },
-            }
+            expected = {**expected, **{
+                'sigchecklimit': DEFAULT_MAX_BLOCK_SIZE // BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO,
+            }}
 
             blockTemplate = node.getblocktemplate()
             for key, value in expected.items():
                 assert_equal(blockTemplate[key], value)
 
         def get_best_coinbase():
-            return node.getblock(node.getbestblockhash(), 2)["tx"][0]
+            return node.getblock(node.getbestblockhash(), 2)['tx'][0]
 
+        # TODO: Cannot use getblocktemplate for block after genesis
+        # JSONRPC error: Bitcoin ABC is in initial sync and waiting for blocks...
+
+        # Generate first block after genesis
+        self.generatetoaddress(node, 1, address)
+
+        # We expect the coinbase to uphold the mining rule
         coinbase = get_best_coinbase()
-        assert_greater_than_or_equal(len(coinbase["vout"]), 2)
-        block_reward = sum([vout["value"] for vout in coinbase["vout"]])
+        assert_greater_than_or_equal(len(coinbase['vout']), 5)
+        total = Decimal()
+        for o in coinbase['vout']:
+            total += o['value']
 
-        assert_equal(node.getmempoolinfo()["size"], 0)
-        assert_getblocktemplate(
-            {
-                "coinbasetxn": {
-                    "minerfund": {
-                        "addresses": [minerFundAddress],
-                        "minimumvalue": (block_reward * MINER_FUND_RATIO // 100 * XEC),
-                    },
-                },
-                # Although the coinbase value need not necessarily be the same as
-                # the last block due to halvings and fees, we know this to be true
-                # since we are not crossing a halving boundary and there are no
-                # transactions in the mempool.
-                "coinbasevalue": block_reward * XEC,
-            }
-        )
+        assert_equal(total, SUBSIDY)
 
-    def test_simplified_gbt(self):
-        self.restart_node(
-            0, extra_args=["-enableminerfund", "-avalanchestakingrewards"]
-        )
-
-        node = self.nodes[0]
-        node.add_p2p_connection(P2PInterface())
-
-        # Force a staking reward winner so we have an block template output
-        node.setstakingreward(node.getbestblockhash(), SCRIPT_UNSPENDABLE_HEX)
-
-        gbt = node.getblocktemplate()
-        assert "minerfund" not in gbt
-        assert "stakingrewards" not in gbt
-        assert "minerfund" in gbt["coinbasetxn"]
-        assert "stakingrewards" in gbt["coinbasetxn"]
-
-        self.restart_node(
-            0,
-            extra_args=["-enableminerfund", "-avalanchestakingrewards", "-simplegbt"],
-        )
-
-        node.add_p2p_connection(P2PInterface())
-
-        node.setstakingreward(node.getbestblockhash(), SCRIPT_UNSPENDABLE_HEX)
-
-        gbt = node.getblocktemplate()
-        assert "minerfund" in gbt
-        assert "stakingrewards" in gbt
-        assert "minerfund" not in gbt["coinbasetxn"]
-        assert "stakingrewards" not in gbt["coinbasetxn"]
-
-        coinbase = node.getblock(node.getbestblockhash(), 2)["tx"][0]
-        block_reward = sum([vout["value"] for vout in coinbase["vout"]])
-
-        assert_equal(
-            gbt["minerfund"]["script"],
-            node.validateaddress(MINER_FUND_ADDR)["scriptPubKey"],
-        )
-        assert_equal(
-            gbt["minerfund"]["amount"], block_reward * MINER_FUND_RATIO // 100 * XEC
-        )
-
-        assert_equal(gbt["stakingrewards"]["script"], SCRIPT_UNSPENDABLE_HEX)
-        assert_equal(
-            gbt["stakingrewards"]["amount"],
-            block_reward * STAKING_REWARD_RATIO // 100 * XEC,
-        )
+        # We don't need to test all fields in getblocktemplate since many of
+        # them are covered in mining_basic.py
+        assert_equal(node.getmempoolinfo()['size'], 0)
+        share_amount = SUBSIDY * COIN // 26
+        block_template_data = node.getblocktemplate()
+        miner_fund_outputs = block_template_data['coinbasetxn']['minerfund']['outputs']
+        assert_equal(len(miner_fund_outputs), 13)
+        assert_equal(block_template_data['coinbasevalue'], SUBSIDY * COIN)
+        for output in miner_fund_outputs:
+            assert_equal(output['value'], share_amount)
 
     def run_test(self):
-        self.run_for_node(
-            self.nodes[0],
-            MINER_FUND_ADDR,
-        )
-        self.run_for_node(
-            self.nodes[1],
-            MINER_FUND_LEGACY_ADDR,
-        )
-        self.test_simplified_gbt()
+        # node0 is for connectivity only and is not mined on (see
+        # setup_network)
+        self.run_for_node(self.nodes[1])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     AbcMiningRPCTest().main()
