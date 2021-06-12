@@ -1,7 +1,7 @@
 # Maintainer: Josh Ellithorpe <quest@mac.com>
 
 pkgname=lotus-qt
-pkgver=0.23.1
+pkgver=0.23.2
 pkgrel=0
 pkgdesc="Lotus with lotusd, lotus-cli, lotus-tx, lotus-seeder and lotus-qt"
 arch=('i686' 'x86_64')

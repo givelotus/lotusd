@@ -1,11 +1,11 @@
 /***********************************************************************
  * Copyright (c) 2017 Amaury SÉCHET                                    *
  * Distributed under the MIT software license, see the accompanying    *
- * file COPYING or http://www.opensource.org/licenses/mit-license.php. *
+ * file COPYING or https://www.opensource.org/licenses/mit-license.php.*
  ***********************************************************************/
 
-#ifndef _SECP256K1_MODULE_SCHNORR_H_
-#define _SECP256K1_MODULE_SCHNORR_H_
+#ifndef SECP256K1_MODULE_SCHNORR_H
+#define SECP256K1_MODULE_SCHNORR_H
 
 #include "scalar.h"
 #include "group.h"
