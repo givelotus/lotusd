@@ -6,10 +6,10 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 	"${CMAKE_SOURCE_DIR}/cmake/modules/OverrideInitFlags.cmake"
 )
 
-project(bitcoin-abc
+project(lotus
 	VERSION 0.23.1
 	DESCRIPTION "Lotus is a full node implementation of the Lotus protocol."
-	HOMEPAGE_URL "https://www.bitcoinabc.org"
+	HOMEPAGE_URL "https://www.givelotus.org"
 )
 
 add_custom_target(print-version
