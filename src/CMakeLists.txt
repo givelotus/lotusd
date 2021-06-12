@@ -1,6 +1,6 @@
 # Copyright (c) 2017 The Bitcoin developers
 
-project(lotusd)
+project(lotus-binaries)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

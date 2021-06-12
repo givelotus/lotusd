@@ -121,7 +121,7 @@ script: |
     -DCMAKE_TOOLCHAIN_FILE=${SOURCEDIR}/cmake/platforms/${CMAKE_TOOLCHAIN_FILE[${HOSTS[0]}]}
 
   ninja package_source
-  SOURCEDIST=`echo bitcoin-abc-*.tar.gz`
+  SOURCEDIST=`echo lotus-*.tar.gz`
   mv ${SOURCEDIST} ..
   popd
   DISTNAME=`echo ${SOURCEDIST} | sed 's/.tar.*//'`
@@ -130,7 +130,7 @@ script: |
   mkdir -p temp
   pushd temp
   tar -xf ../$SOURCEDIST
-  find bitcoin-abc-* | sort | tar --mtime="${REFERENCE_DATETIME}" --no-recursion --mode='u+rw,go+r-w,a+X' --owner=0 --group=0 -c -T - | gzip -9n > ../$SOURCEDIST
+  find lotus-* | sort | tar --mtime="${REFERENCE_DATETIME}" --no-recursion --mode='u+rw,go+r-w,a+X' --owner=0 --group=0 -c -T - | gzip -9n > ../$SOURCEDIST
   popd
 
   ORIGPATH="$PATH"
