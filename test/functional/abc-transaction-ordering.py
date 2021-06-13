@@ -67,12 +67,12 @@ class TransactionOrderingTest(BitcoinTestFramework):
         coinbase.rehash()
         if spend is None:
             # We need to have something to spend to fill the block.
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
         else:
             # Burn half of the fees
             coinbase.vout[0].nValue += spend.tx.vout[spend.n].nValue // 2
             coinbase.rehash()
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
 
             # Make sure we have plenty enough to spend going forward.
             spendable_outputs = deque([spend])
@@ -117,7 +117,6 @@ class TransactionOrderingTest(BitcoinTestFramework):
         if tx_count > 0:
             assert_equal(len(block.vtx), tx_count)
 
-        block.nHeight = height
         block.update_size()
         block.rehash_extended_metadata()
         block.solve()

@@ -66,8 +66,7 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[1].nValue = int(SUBSIDY * COIN)
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16),
-                             coinbase, block_time + 1)
-        block.nHeight = block_height
+                             coinbase, block_height, block_time + 1)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
@@ -83,8 +82,7 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16),
-                             coinbase, block_time + 1)
-        block.nHeight = block_height
+                             coinbase, block_height, block_time + 1)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
@@ -92,9 +90,8 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16),
-                             coinbase, block_time + 1)
+                             coinbase, block_height, block_time + 1)
 
-        block.nHeight = block_height
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 
@@ -119,8 +116,7 @@ class MinerFundTest(BitcoinTestFramework):
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16),
-                             coinbase, best_block_header['time'] + 1)
-        block.nHeight = block_height
+                             coinbase, block_height, best_block_header['time'] + 1)
         block.vtx.append(tx)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)

@@ -98,7 +98,7 @@ class TxDownloadTest(BitcoinTestFramework):
             inputs=[{
                 # coinbase
                 "txid": self.nodes[0].getblock(self.nodes[0].getblockhash(1))['tx'][0],
-                "vout": 0
+                "vout": 1
             }],
             outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.025')},
         )
@@ -107,11 +107,11 @@ class TxDownloadTest(BitcoinTestFramework):
             privkeys=[self.nodes[0].get_deterministic_priv_key().key],
         )['hex']
         ctx = FromHex(CTransaction(), tx)
-        txid = int(ctx.rehash(), 16)
+        ctx.rehash()
 
         self.log.info(
             "Announce the transaction to all nodes from all {} incoming peers, but never send it".format(NUM_INBOUND))
-        msg = msg_inv([CInv(t=MSG_TX, h=txid)])
+        msg = msg_inv([CInv(t=MSG_TX, h=ctx.txid)])
         for p in self.peers:
             p.send_and_ping(msg)
 

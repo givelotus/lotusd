@@ -59,8 +59,7 @@ class BIP66Test(BitcoinTestFramework):
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
         block = create_block(
-            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time)
-        block.nHeight = DERSIG_HEIGHT
+            int(tip, 16), create_coinbase(DERSIG_HEIGHT), DERSIG_HEIGHT, block_time)
         spendtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
                                      self.nodeaddress, amount=1.0, vout=1)
         unDERify(spendtx)

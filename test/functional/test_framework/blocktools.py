@@ -28,6 +28,7 @@ from .messages import (
     CTxOut,
     FromHex,
     ToHex,
+    hash256,
 )
 from .txtools import pad_tx
 from .util import assert_equal, satoshi_round
@@ -37,7 +38,7 @@ TIME_GENESIS_BLOCK = 1600000000
 SUBSIDY = Decimal('260')
 
 
-def create_block(hashprev, coinbase, ntime=None, *, version=1):
+def create_block(hashprev, coinbase, height, ntime=None, *, version=1):
     """Create a block (with regtest difficulty)."""
     block = CBlock()
     block.nHeaderVersion = version
@@ -46,6 +47,7 @@ def create_block(hashprev, coinbase, ntime=None, *, version=1):
         block.nTime = int(time.time() + 600)
     else:
         block.nTime = ntime
+    block.nHeight = height
     block.hashPrevBlock = hashprev
     # difficulty retargeting is disabled in REGTEST chainparams
     block.nBits = 0x207fffff

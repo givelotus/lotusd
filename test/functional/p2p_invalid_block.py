@@ -45,8 +45,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         self.log.info("Create a new block with an anyone-can-spend coinbase")
 
         height = 1
-        block = create_block(tip, create_coinbase(height), block_time)
-        block.nHeight = height
+        block = create_block(tip, create_coinbase(height), height, block_time)
         prepare_block(block)
         # Save the coinbase for later
         block1 = block
@@ -70,8 +69,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         # src/consensus/merkle.cpp.
         self.log.info("Test merkle root malleability.")
 
-        block2 = create_block(tip, create_coinbase(height), block_time)
-        block2.nHeight = height
+        block2 = create_block(tip, create_coinbase(height), height, block_time)
         block_time += 1
 
         # b'0x51' is OP_TRUE
@@ -113,8 +111,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         self.log.info("Test very broken block.")
 
-        block3 = create_block(tip, create_coinbase(height), block_time)
-        block3.nHeight = height
+        block3 = create_block(tip, create_coinbase(height), height,  block_time)
         block_time += 1
         block3.vtx[0].vout[0].nValue = int(2 * SUBSIDY * COIN)  # Too high!
         block3.vtx[0].rehash()
@@ -139,8 +136,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         # Complete testing of CVE-2018-17144, by checking for the inflation bug.
         # Create a block that spends the output of a tx in a previous block.
-        block4 = create_block(tip, create_coinbase(height), block_time)
-        block4.nHeight = height
+        block4 = create_block(tip, create_coinbase(height), height, block_time)
         tx3 = create_tx_with_script(tx2, 0, script_sig=b'\x51',
                                     amount=int(SUBSIDY * COIN))
 

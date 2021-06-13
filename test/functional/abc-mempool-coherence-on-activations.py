@@ -146,8 +146,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         height = self.block_heights[base_block_hash] + 1
         coinbase = create_coinbase(height)
         coinbase.rehash()
-        block = create_block(base_block_hash, coinbase, block_time)
-        block.nHeight = height
+        block = create_block(base_block_hash, coinbase, height, block_time)
         prepare_block(block)
 
         # Do PoW, which is cheap on regnet

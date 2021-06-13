@@ -20,6 +20,7 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.cdefs import (
     ONE_MEGABYTE,
@@ -37,6 +38,7 @@ from test_framework.script import (
     CScript,
     OP_RETURN,
     OP_TRUE,
+    OP_PUSHDATA1,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -60,7 +62,8 @@ class FullBlockTest(BitcoinTestFramework):
         self.blocks = {}
         self.excessive_block_size = 100 * ONE_MEGABYTE
         self.extra_args = [['-whitelist=noban@127.0.0.1',
-                            "-excessiveblocksize={}".format(self.excessive_block_size)]]
+                            "-excessiveblocksize={}".format(self.excessive_block_size), 
+                            '-acceptnonstdtxn=1']]
         self.supports_cli = False
         # The default timeout is not enough when submitting large blocks with
         # TSAN enabled
@@ -91,16 +94,15 @@ class FullBlockTest(BitcoinTestFramework):
         # First create the coinbase
         height = self.block_heights[base_block_hash] + 1
         coinbase = create_coinbase(height)
-        coinbase.rehash()
         if spend is None:
             # We need to have something to spend to fill the block.
             assert_equal(block_size, 0)
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
         else:
             # all but one satoshi to fees
-            coinbase.vout[0].nValue += spend.tx.vout[spend.n].nValue - 1
+            coinbase.vout[0].nValue += (spend.tx.vout[spend.n].nValue - 1) // 2
             coinbase.rehash()
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
 
             # Make sure we have plenty engough to spend going forward.
             spendable_outputs = deque([spend])
@@ -110,7 +112,7 @@ class FullBlockTest(BitcoinTestFramework):
                 tx = CTransaction()
                 # Spend from one of the spendable outputs
                 spend = spendable_outputs.popleft()
-                tx.vin.append(CTxIn(COutPoint(spend.tx.sha256, spend.n)))
+                tx.vin.append(CTxIn(COutPoint(spend.tx.txid, spend.n)))
                 # Add spendable outputs
                 for i in range(4):
                     tx.vout.append(CTxOut(0, CScript([OP_TRUE])))
@@ -171,7 +173,6 @@ class FullBlockTest(BitcoinTestFramework):
 
             # Now that we added a bunch of transaction, we need to recompute
             # the merkle root.
-            make_conform_to_ctor(block)
             block.hashMerkleRoot = block.calc_merkle_root()
 
         # Check that the block size is what's expected
@@ -179,6 +180,7 @@ class FullBlockTest(BitcoinTestFramework):
             assert_equal(len(block.serialize()), block_size)
 
         # Do PoW, which is cheap on regnet
+        prepare_block(block)
         block.solve()
         self.tip = block
         self.block_heights[block.sha256] = height
@@ -200,28 +202,11 @@ class FullBlockTest(BitcoinTestFramework):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # move the tip back to a previous block
         def tip(number):
             self.tip = self.blocks[number]
-
-        # adds transactions to the block and updates state
-        def update_block(block_number, new_transactions):
-            block = self.blocks[block_number]
-            self.add_transactions_to_block(block, new_transactions)
-            old_sha256 = block.sha256
-            make_conform_to_ctor(block)
-            block.hashMerkleRoot = block.calc_merkle_root()
-            block.solve()
-            # Update the internal state just like in next_block
-            self.tip = block
-            if block.sha256 != old_sha256:
-                self.block_heights[
-                    block.sha256] = self.block_heights[old_sha256]
-                del self.block_heights[old_sha256]
-            self.blocks[block_number] = block
-            return block
 
         # shorthand for functions
         block = self.next_block
@@ -257,7 +242,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Reject oversized blocks with bad-blk-length error
         block(18, spend=out[17], block_size=self.excessive_block_size + 1)
         node.p2p.send_blocks_and_test(
-            [self.tip], node, success=False, reject_reason='bad-blk-length')
+            [self.tip], node, success=False, force_send=True, reject_reason='bad-blk-size')
 
         # Rewind bad block.
         tip(17)

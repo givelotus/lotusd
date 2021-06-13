@@ -117,8 +117,7 @@ class BIP65Test(BitcoinTestFramework):
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
         block = create_block(int(tip, 16), create_coinbase(
-            CLTV_HEIGHT - 1), block_time)
-        block.nHeight = CLTV_HEIGHT - 1
+            CLTV_HEIGHT - 1), CLTV_HEIGHT,  block_time)
         block.vtx.append(fundtx)
         # include the -1 CLTV in block
         block.vtx.append(spendtx)
@@ -130,8 +129,7 @@ class BIP65Test(BitcoinTestFramework):
         
         # Create valid block to get over the threshold for the version enforcement
         block = create_block(int(tip, 16), create_coinbase(
-            CLTV_HEIGHT - 1), block_time)
-        block.nHeight = CLTV_HEIGHT - 1
+            CLTV_HEIGHT - 1), CLTV_HEIGHT - 1, block_time)
         prepare_block(block)
         self.nodes[0].p2p.send_and_ping(msg_block(block))
 
@@ -139,8 +137,7 @@ class BIP65Test(BitcoinTestFramework):
         block_time += 1
         self.log.info(
             "Test that invalid-according-to-cltv transactions cannot appear in a block")
-        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time)
-        block.nHeight = CLTV_HEIGHT
+        block = create_block(tip, create_coinbase(CLTV_HEIGHT), CLTV_HEIGHT, block_time)
 
         fundtx = create_transaction(self.nodes[0], self.coinbase_txids[1],
                                     self.nodeaddress, amount=SUBSIDY - Decimal('1'), vout=1)
@@ -178,8 +175,7 @@ class BIP65Test(BitcoinTestFramework):
         tip = block.hash
         block_time += 1
         block = create_block(
-            block.sha256, create_coinbase(CLTV_HEIGHT + 1), block_time)
-        block.nHeight = CLTV_HEIGHT + 1
+            block.sha256, create_coinbase(CLTV_HEIGHT + 1), CLTV_HEIGHT + 1, block_time)
         block.vtx.append(spendtx)
         prepare_block(block)
 

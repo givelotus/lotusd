@@ -150,8 +150,7 @@ class CompactBlocksTest(BitcoinTestFramework):
         tip = node.getbestblockhash()
         mtp = node.getblockheader(tip)['mediantime']
         block = create_block(
-            int(tip, 16), create_coinbase(height), mtp + 1)
-        block.nHeight = height
+            int(tip, 16), create_coinbase(height), height, mtp + 1)
         prepare_block(block)
         return block
 

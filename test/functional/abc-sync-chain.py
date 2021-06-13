@@ -49,8 +49,7 @@ class SyncChainTest(BitcoinTestFramework):
 
         blocks = []
         for i in range(NUM_IBD_BLOCKS * 2):
-            block = create_block(tip, create_coinbase(height), time)
-            block.nHeight = height
+            block = create_block(tip, create_coinbase(height), height, time)
             prepare_block(block)
             blocks.append(block)
             tip = block.sha256

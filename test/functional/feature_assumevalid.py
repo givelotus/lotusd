@@ -122,8 +122,7 @@ class AssumeValidTest(BitcoinTestFramework):
         # Create the first block with a coinbase output to our key
         height = 1
         block = create_block(self.tip, create_coinbase(
-            height, coinbase_pubkey), self.block_time)
-        block.nHeight = height
+            height, coinbase_pubkey), height, self.block_time)
         self.blocks.append(block)
         self.block_time += 1
         prepare_block(block)
@@ -135,8 +134,7 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the block 100 deep so the coinbase output is spendable
         for i in range(100):
             block = create_block(
-                self.tip, create_coinbase(height), self.block_time)
-            block.nHeight = height
+                self.tip, create_coinbase(height), height, self.block_time)
             prepare_block(block)
             self.blocks.append(block)
             self.tip = block.sha256
@@ -153,8 +151,7 @@ class AssumeValidTest(BitcoinTestFramework):
         tx.rehash()
 
         block102 = create_block(
-            self.tip, create_coinbase(height), self.block_time)
-        block102.nHeight = height
+            self.tip, create_coinbase(height), height, self.block_time)
         self.block_time += 1
         block102.vtx.extend([tx])
         prepare_block(block102)
@@ -166,8 +163,7 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the assumed valid block 3400 deep
         for i in range(3700):
             block = create_block(
-                self.tip, create_coinbase(height), self.block_time)
-            block.nHeight = height
+                self.tip, create_coinbase(height), height, self.block_time)
             prepare_block(block)
             self.blocks.append(block)
             self.tip = block.sha256
