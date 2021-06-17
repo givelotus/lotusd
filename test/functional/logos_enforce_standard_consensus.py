@@ -76,8 +76,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             coinbase.vout[1].scriptPubKey = p2sh_script
             coinbase.rehash()
             block = create_block(
-                int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
-            block.nHeight = height
+                int(parent_block_header['hash'], 16), coinbase, height, parent_block_header['time'] + 1)
             return block
 
         # make a few non-standard txs

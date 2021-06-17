@@ -153,7 +153,7 @@ class PruneTest(BitcoinTestFramework):
 
         # Wait for blk00000.dat to be pruned
         wait_until(lambda: not os.path.isfile(
-            os.path.join(self.prunedir, "blk00000.dat")), timeout=30)
+            os.path.join(self.prunedir, "blk00000.dat")), timeout=120)
 
         self.log.info("Success")
         usage = calc_usage(self.prunedir)

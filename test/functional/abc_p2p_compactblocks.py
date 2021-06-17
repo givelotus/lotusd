@@ -20,6 +20,7 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.cdefs import ONE_MEGABYTE
 from test_framework.messages import (
@@ -135,12 +136,12 @@ class FullBlockTest(BitcoinTestFramework):
         if spend is None:
             # We need to have something to spend to fill the block.
             assert_equal(block_size, 0)
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
         else:
             # all but one satoshi to fees
-            coinbase.vout[0].nValue += spend.tx.vout[spend.n].nValue - 1
+            coinbase.vout[0].nValue += (spend.tx.vout[spend.n].nValue - 1) // 2
             coinbase.rehash()
-            block = create_block(base_block_hash, coinbase, block_time)
+            block = create_block(base_block_hash, coinbase, height, block_time)
 
             # Make sure we have plenty enough to spend going forward.
             spendable_outputs = deque([spend])
@@ -150,7 +151,7 @@ class FullBlockTest(BitcoinTestFramework):
                 tx = CTransaction()
                 # Spend from one of the spendable outputs
                 spend = spendable_outputs.popleft()
-                tx.vin.append(CTxIn(COutPoint(spend.tx.sha256, spend.n)))
+                tx.vin.append(CTxIn(COutPoint(spend.tx.txid, spend.n)))
                 # Add spendable outputs
                 for i in range(4):
                     tx.vout.append(CTxOut(0, CScript([OP_TRUE])))
@@ -216,7 +217,6 @@ class FullBlockTest(BitcoinTestFramework):
 
             # Now that we added a bunch of transaction, we need to recompute
             # the merkle root.
-            make_conform_to_ctor(block)
             block.hashMerkleRoot = block.calc_merkle_root()
 
         # Check that the block size is what's expected
@@ -224,7 +224,7 @@ class FullBlockTest(BitcoinTestFramework):
             assert_equal(len(block.serialize()), block_size)
 
         # Do PoW, which is cheap on regnet
-        block.solve()
+        prepare_block(block)
         self.tip = block
         self.block_heights[block.sha256] = height
         assert number not in self.blocks
@@ -246,11 +246,7 @@ class FullBlockTest(BitcoinTestFramework):
 
         # get an output that we previously marked as spendable
         def get_spendable_output():
-            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 0)
-
-        # move the tip back to a previous block
-        def tip(number):
-            self.tip = self.blocks[number]
+            return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
         # shorthand for functions
         block = self.next_block
@@ -348,7 +344,7 @@ class FullBlockTest(BitcoinTestFramework):
         tx.rehash()
         b2.vtx[0] = tx
         b2.hashMerkleRoot = b2.calc_merkle_root()
-        b2.solve()
+        prepare_block(b2)
 
         # Now we create the compact block and send it
         comp_block = HeaderAndShortIDs()

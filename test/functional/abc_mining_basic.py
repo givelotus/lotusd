@@ -73,7 +73,6 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         assert_equal(node.getmempoolinfo()['size'], 0)
         share_amount = SUBSIDY * COIN // 26
         block_template_data = node.getblocktemplate()
-        print(block_template_data)
         expected_funding_outputs = 13
         miner_fund_outputs = block_template_data['coinbasetxn']['minerfund']['outputs']
         assert_equal(len(miner_fund_outputs), 13)

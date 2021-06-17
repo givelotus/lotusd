@@ -396,8 +396,7 @@ class BIP68Test(BitcoinTestFramework):
             self.nodes[0].getblockcount() - 1), 16)
         height = self.nodes[0].getblockcount()
         for i in range(2):
-            block = create_block(tip, create_coinbase(height), cur_time)
-            block.nHeight = height
+            block = create_block(tip, create_coinbase(height), height, cur_time)
             prepare_block(block)
             tip = block.sha256
             height += 1

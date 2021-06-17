@@ -101,8 +101,7 @@ class SchnorrTest(BitcoinTestFramework):
         block_time = (parent.nTime + 1) if nTime is None else nTime
 
         block = create_block(
-            parent.sha256, create_coinbase(block_height), block_time)
-        block.nHeight = block_height
+            parent.sha256, create_coinbase(block_height), block_height, block_time)
         block.vtx.extend(transactions)
         prepare_block(block)
         self.block_heights[block.sha256] = block_height

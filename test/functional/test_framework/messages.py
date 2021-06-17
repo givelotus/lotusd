@@ -523,6 +523,9 @@ class CTransaction:
         txid_bytes = hash256(r)
         self.txid_hex = txid_bytes[::-1].hex()
         self.txid = uint256_from_str(txid_bytes)
+    
+    def is_coinbase(self):
+        return self.vin[0].prevout.hash == 0
 
     def input_merkle_root(self):
         hashes = []

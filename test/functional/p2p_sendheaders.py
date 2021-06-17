@@ -269,7 +269,7 @@ class SendHeadersTest(BitcoinTestFramework):
             "Verify getheaders with null locator and invalid hashstop does not return headers.")
         height = tip["height"] + 1
         block = create_block(int(tip["hash"], 16), create_coinbase(height),
-            tip["mediantime"] + 1)
+            height, tip["mediantime"] + 1)
         block.nHeight = height
         prepare_block(block)
         test_node.send_header_for_blocks([block])
@@ -314,9 +314,8 @@ class SendHeadersTest(BitcoinTestFramework):
                 last_time = self.nodes[0].getblock(
                     self.nodes[0].getbestblockhash())['time']
                 block_time = last_time + 1
-                new_block = create_block(
-                    tip, create_coinbase(height + 1), block_time)
-                new_block.nHeight = height + 1
+                new_block = create_block(tip, create_coinbase(height + 1),
+                    height + 1, block_time)
                 prepare_block(new_block)
                 test_node.send_header_for_blocks([new_block])
                 test_node.wait_for_getdata([new_block.sha256])
@@ -356,8 +355,7 @@ class SendHeadersTest(BitcoinTestFramework):
                 blocks = []
                 for b in range(i + 1):
                     blocks.append(create_block(
-                        tip, create_coinbase(height), block_time))
-                    blocks[-1].nHeight = height
+                        tip, create_coinbase(height), height, block_time))
                     prepare_block(blocks[-1])
                     tip = blocks[-1].sha256
                     block_time += 1
@@ -480,8 +478,7 @@ class SendHeadersTest(BitcoinTestFramework):
         blocks = []
         for b in range(2):
             blocks.append(create_block(
-                tip, create_coinbase(height), block_time))
-            blocks[-1].nHeight = height
+                tip, create_coinbase(height), height, block_time))
             prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
@@ -500,8 +497,7 @@ class SendHeadersTest(BitcoinTestFramework):
         blocks = []
         for b in range(3):
             blocks.append(create_block(
-                tip, create_coinbase(height), block_time))
-            blocks[-1].nHeight = height
+                tip, create_coinbase(height), height, block_time))
             prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
@@ -524,8 +520,7 @@ class SendHeadersTest(BitcoinTestFramework):
         # Create extra blocks for later
         for b in range(20):
             blocks.append(create_block(
-                tip, create_coinbase(height), block_time))
-            blocks[-1].nHeight = height
+                tip, create_coinbase(height), height, block_time))
             prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1
@@ -575,8 +570,7 @@ class SendHeadersTest(BitcoinTestFramework):
             # Create two more blocks.
             for j in range(2):
                 blocks.append(create_block(
-                    tip, create_coinbase(height), block_time))
-                blocks[-1].nHeight = height
+                    tip, create_coinbase(height), height, block_time))
                 prepare_block(blocks[-1])
                 tip = blocks[-1].sha256
                 block_time += 1
@@ -599,8 +593,7 @@ class SendHeadersTest(BitcoinTestFramework):
         MAX_UNCONNECTING_HEADERS = 10
         for j in range(MAX_UNCONNECTING_HEADERS + 1):
             blocks.append(create_block(
-                tip, create_coinbase(height), block_time))
-            blocks[-1].nHeight = height
+                tip, create_coinbase(height), height, block_time))
             prepare_block(blocks[-1])
             tip = blocks[-1].sha256
             block_time += 1

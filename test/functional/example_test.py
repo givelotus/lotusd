@@ -179,13 +179,13 @@ class ExampleTest(BitcoinTestFramework):
         height = self.nodes[0].getblockcount()
 
         for i in range(10):
+            height += 1
             # Use the mininode and blocktools functionality to manually build a block
             # Calling the generate() rpc is easier, but this allows us to exactly
             # control the blocks and transactions.
             block = create_block(
                 self.tip, create_coinbase(
-                    height + 1), self.block_time)
-            block.nHeight = height + 1
+                    height), height, self.block_time)
             prepare_block(block)
             block_message = msg_block(block)
             # Send message is used to send a P2P message to the node over our
@@ -194,7 +194,6 @@ class ExampleTest(BitcoinTestFramework):
             self.tip = block.sha256
             blocks.append(self.tip)
             self.block_time += 1
-            height += 1
 
         self.log.info(
             "Wait for node1 to reach current tip (height 11) using RPC")

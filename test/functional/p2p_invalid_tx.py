@@ -73,8 +73,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         height = 1
         blocks = []
         for _ in invalid_txs.iter_all_templates():
-            block = create_block(tip, create_coinbase(height), block_time)
-            block.nHeight = height
+            block = create_block(tip, create_coinbase(height), height, block_time)
             prepare_block(block)
             block_time = block.nTime + 1
             height += 1

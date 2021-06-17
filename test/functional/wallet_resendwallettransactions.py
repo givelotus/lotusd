@@ -52,8 +52,7 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
         node.setmocktime(block_time)
         height = node.getblockcount() + 1
         block = create_block(int(node.getbestblockhash(), 16), create_coinbase(
-            height), block_time)
-        block.nHeight = height
+            height), height, block_time)
         prepare_block(block)
         node.submitblock(ToHex(block))
 

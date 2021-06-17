@@ -40,8 +40,7 @@ class InvalidChainsTest(BitcoinTestFramework):
         coinbase = create_coinbase(height, CScript([self.counter]))
         coinbase.rehash()
         self.counter += 1
-        block = create_block(base_block_hash, coinbase, block_time)
-        block.nHeight = height
+        block = create_block(base_block_hash, coinbase, height, block_time)
         prepare_block(block)
         self.tip = block
         self.block_heights[block.sha256] = height
