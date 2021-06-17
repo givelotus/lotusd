@@ -114,7 +114,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         # are sent out and in the orphan cache
         SCRIPT_PUB_KEY_OP_TRUE = CScript([OP_TRUE])
         tx_withhold = CTransaction()
-        tx_withhold.vin.append(CTxIn(outpoint=COutPoint(blocks[0].vtx[0].txid_int, 0)))
+        tx_withhold.vin.append(CTxIn(outpoint=COutPoint(blocks[0].vtx[0].txid_int, 1)))
         tx_withhold.vout = [
             CTxOut(nValue=25 * COIN - 12000, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE)
         ] * 2
@@ -259,9 +259,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         block_A.vtx.extend(
             [tx_withhold, tx_withhold_until_block_A, tx_orphan_include_by_block_A]
         )
-        make_conform_to_ctor(block_A)
-        block_A.hashMerkleRoot = block_A.calc_merkle_root()
-        block_A.solve()
+        prepare_block(block_A)
 
         self.log.info("Send the block that includes the previous orphan ... ")
         with node.assert_debug_log(
@@ -307,9 +305,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         height = node.getblockcount() + 1
         block_B = create_block(tip, create_coinbase(height))
         block_B.vtx.extend([tx_withhold_until_block_B, tx_orphan_include_by_block_B])
-        make_conform_to_ctor(block_B)
-        block_B.hashMerkleRoot = block_B.calc_merkle_root()
-        block_B.solve()
+        prepare_block(block_B)
 
         self.log.info(
             "Send the block that includes a transaction which conflicts with the previous orphan ... "

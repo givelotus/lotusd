@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from test_framework.address import ADDRESS_ECREG_P2SH_OP_TRUE
 from test_framework.blocktools import (
+    SUBSIDY,
     MAX_FUTURE_BLOCK_TIME,
     TIME_GENESIS_BLOCK,
     create_block,
@@ -287,7 +288,7 @@ class BlockchainTest(BitcoinTestFramework):
         node = self.nodes[0]
         res = node.gettxoutsetinfo()
 
-        assert_equal(res["total_amount"], Decimal("8725000000.00"))
+        assert_equal(res["total_amount"], HEIGHT * SUBSIDY)
         assert_equal(res["transactions"], HEIGHT)
         assert_equal(res["height"], HEIGHT)
         assert_equal(res["txouts"], HEIGHT)
@@ -472,8 +473,7 @@ class BlockchainTest(BitcoinTestFramework):
         fork_block = node.getblock(fork_hash)
 
         def solve_and_send_block(prevhash, height, time):
-            b = create_block(prevhash, create_coinbase(height), time)
-            b.nHeight = height
+            b = create_block(prevhash, create_coinbase(height), height, time)
             prepare_block(b)
             peer.send_and_ping(msg_block(b))
             return b
@@ -481,7 +481,7 @@ class BlockchainTest(BitcoinTestFramework):
         b1 = solve_and_send_block(
             int(fork_hash, 16), fork_height + 1, fork_block["time"] + 1
         )
-        b2 = solve_and_send_block(b1.hash_int, fork_height + 1, b1.nTime + 1)
+        b2 = solve_and_send_block(b1.hash_int, fork_height + 2, b1.nTime + 1)
 
         node.invalidateblock(b2.hash_hex)
 
@@ -540,7 +540,7 @@ class BlockchainTest(BitcoinTestFramework):
 
         miniwallet = MiniWallet(node)
 
-        fee_per_byte = Decimal("0.1")
+        fee_per_byte = Decimal("0.000010")
         fee_per_kb = 1000 * fee_per_byte
 
         miniwallet.send_self_transfer(fee_rate=fee_per_kb, from_node=node)

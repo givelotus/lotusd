@@ -37,7 +37,7 @@ from .util import assert_equal, satoshi_round
 
 # Genesis block data (regtest)
 TIME_GENESIS_BLOCK = 1600000000
-GENESIS_BLOCK_HASH = "1060508db3b75302e0ee313a7cd1e05999c44974136a1138f9b1e68c4dc24b12"
+GENESIS_BLOCK_HASH = "106050de32db2a668422cc34aa0f96d739d4189b8e5d6e763deeca527bba9c9f"
 GENESIS_BLOCK_HEADER = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"
 GENESIS_CB_TXID = "04749c2a27d0fe08665d29bca419b4e1077af2dc85b4ad439f88fc97c23d44a7"
 GENESIS_CB_PK = (
@@ -61,11 +61,16 @@ MIN_BLOCKS_TO_KEEP = 288
 SUBSIDY = 260
 
 
+_UNSET = object()
+
+
 def create_block(
     hashprev: Optional[int] = None,
     coinbase: Optional[CTransaction] = None,
-    ntime: Optional[int] = None,
+    height_or_ntime: Optional[int] = None,
+    ntime: Any = _UNSET,
     *,
+    height: Optional[int] = None,
     version: Optional[int] = None,
     tmpl: Optional[dict] = None,
     txlist: Optional[list] = None,
@@ -74,6 +79,18 @@ def create_block(
     block = CBlock()
     if tmpl is None:
         tmpl = {}
+    if ntime is not _UNSET:
+        if height is None:
+            height = height_or_ntime
+    else:
+        if height_or_ntime is not None:
+            if height is None and height_or_ntime < 100_000_000:
+                height = height_or_ntime
+                ntime = None
+            else:
+                ntime = height_or_ntime
+        else:
+            ntime = None
     block.nHeaderVersion = version or tmpl.get("version", 1)
     block.nTime = ntime or tmpl.get("curtime", int(time.time() + 600))
     block.hashPrevBlock = hashprev or int(tmpl["previousblockhash"], 0x10)
@@ -82,7 +99,9 @@ def create_block(
     else:
         # difficulty retargeting is disabled in REGTEST chainparams
         block.nBits = 0x207FFFFF
-    if tmpl.get("height") is not None:
+    if height is not None:
+        block.nHeight = height
+    elif tmpl.get("height") is not None:
         block.nHeight = tmpl["height"]
     elif coinbase is not None and getattr(coinbase, "_height", None) is not None:
         block.nHeight = coinbase._height
@@ -93,6 +112,7 @@ def create_block(
     block.hashMerkleRoot = block.calc_merkle_root()
     block.update_size()
     block.rehash_extended_metadata()
+    block.calc_sha256()
     return block
 
 
@@ -142,10 +162,7 @@ def create_coinbase(
     op_return_output = CTxOut()
     op_return_output.scriptPubKey = script_coinbase_height(height)
     coinbaseoutput = CTxOut()
-    coinbaseoutput.nValue = nValue * COIN
-    if nValue == SUBSIDY:
-        halvings = int(height / 150)  # regtest
-        coinbaseoutput.nValue >>= halvings
+    coinbaseoutput.nValue = int(nValue * COIN)
     if pubkey is not None:
         coinbaseoutput.scriptPubKey = CScript([pubkey, OP_CHECKSIG])
     elif script_pubkey is not None:

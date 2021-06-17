@@ -28,7 +28,7 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
         n_tx_to_mine=None,
         start_input_txid="",
         end_address="",
-        fee=Decimal(1000),
+        fee=Decimal("0.100000"),
     ):
         """Create an acyclic tournament (a type of directed graph) of
         transactions and use it for testing.
@@ -63,8 +63,8 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
             self.log.debug(f"Preparing transaction #{i}...")
             # Prepare inputs.
             if i == 0:
-                inputs = [{"txid": start_input_txid, "vout": 0}]
-                inputs_value = self.nodes[0].gettxout(start_input_txid, 0)["value"]
+                inputs = [{"txid": start_input_txid, "vout": 1}]
+                inputs_value = self.nodes[0].gettxout(start_input_txid, 1)["value"]
             else:
                 inputs = []
                 inputs_value = 0
