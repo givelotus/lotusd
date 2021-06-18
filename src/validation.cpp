@@ -996,11 +996,6 @@ bool CChainState::IsInitialBlockDownload() const {
 static CBlockIndex const *pindexBestForkTip = nullptr;
 static CBlockIndex const *pindexBestForkBase = nullptr;
 
-BlockMap &BlockIndex() {
-    LOCK(::cs_main);
-    return g_chainman.m_blockman.m_block_index;
-}
-
 static void AlertNotify(const std::string &strMessage) {
     uiInterface.NotifyAlertChanged();
 #if defined(HAVE_SYSTEM)
@@ -1119,14 +1114,14 @@ void CChainState::InvalidChainFound(CBlockIndex *pindexNew) {
         m_finalizedBlockIndex = pindexNew->pprev;
     }
 
-    LogPrintf("%s: invalid block=%s  height=%d  log2_work=%.8g  date=%s\n",
+    LogPrintf("%s: invalid block=%s  height=%d  log2_work=%f  date=%s\n",
               __func__, pindexNew->GetBlockHash().ToString(),
               pindexNew->nHeight,
               log(pindexNew->nChainWork.getdouble()) / log(2.0),
               FormatISO8601DateTime(pindexNew->GetBlockTime()));
     CBlockIndex *tip = ::ChainActive().Tip();
     assert(tip);
-    LogPrintf("%s:  current best=%s  height=%d  log2_work=%.8g  date=%s\n",
+    LogPrintf("%s:  current best=%s  height=%d  log2_work=%f  date=%s\n",
               __func__, tip->GetBlockHash().ToString(),
               ::ChainActive().Height(),
               log(tip->nChainWork.getdouble()) / log(2.0),
@@ -2200,7 +2195,7 @@ static void UpdateTip(const CChainParams &params, CBlockIndex *pindexNew)
         g_best_block_cv.notify_all();
     }
 
-    LogPrintf("%s: new best=%s height=%d version=0x%08x log2_work=%.8g tx=%ld "
+    LogPrintf("%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%ld "
               "date='%s' progress=%f cache=%.1fMiB(%utxo)\n",
               __func__, pindexNew->GetBlockHash().ToString(),
               pindexNew->nHeight, pindexNew->nHeaderVersion,

@@ -11,6 +11,7 @@
 #include <primitives/transaction.h>
 #include <pubkey.h>
 #include <serialize.h>
+#include <util/translation.h>
 
 #include <array>
 #include <cstdint>
@@ -80,21 +81,26 @@ class Proof {
     CPubKey master;
     std::vector<SignedStake> stakes;
 
+    LimitedProofId limitedProofId;
     ProofId proofid;
-    ProofId computeProofId() const;
+    void computeProofId();
 
 public:
     Proof() : sequence(0), expirationTime(0), master(), stakes(), proofid() {}
     Proof(uint64_t sequence_, int64_t expirationTime_, CPubKey master_,
           std::vector<SignedStake> stakes_)
         : sequence(sequence_), expirationTime(expirationTime_),
-          master(std::move(master_)), stakes(std::move(stakes_)),
-          proofid(computeProofId()) {}
+          master(std::move(master_)), stakes(std::move(stakes_)) {
+        computeProofId();
+    }
 
     SERIALIZE_METHODS(Proof, obj) {
         READWRITE(obj.sequence, obj.expirationTime, obj.master, obj.stakes);
-        SER_READ(obj, obj.proofid = obj.computeProofId());
+        SER_READ(obj, obj.computeProofId());
     }
+
+    static bool FromHex(Proof &proof, const std::string &hexProof,
+                        bilingual_str &errorOut);
 
     uint64_t getSequence() const { return sequence; }
     int64_t getExpirationTime() const { return expirationTime; }
@@ -102,6 +108,7 @@ public:
     const std::vector<SignedStake> &getStakes() const { return stakes; }
 
     const ProofId &getId() const { return proofid; }
+    const LimitedProofId &getLimitedId() const { return limitedProofId; }
     uint32_t getScore() const;
 
     bool verify(ProofValidationState &state) const;

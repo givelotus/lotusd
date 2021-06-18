@@ -24,7 +24,7 @@ from test_framework.messages import (
     msg_tx,
     ToHex,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PInterface,
 )
 from test_framework.script import (

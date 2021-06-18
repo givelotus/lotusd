@@ -566,6 +566,7 @@ add_library(server
 	init.cpp
 	interfaces/chain.cpp
 	interfaces/node.cpp
+	invrequest.cpp
 	miner.cpp
 	minerfund.cpp
 	net.cpp

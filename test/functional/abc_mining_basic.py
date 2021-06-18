@@ -18,6 +18,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
     assert_greater_than_or_equal,
+    connect_nodes,
 )
 
 from decimal import Decimal
@@ -25,17 +26,26 @@ from decimal import Decimal
 
 class AbcMiningRPCTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.setup_clean_chain = True
         self.num_nodes = 2
         self.extra_args = [[
             '-enableminerfund',
             '-allownonstdtxnconsensus=1',
         ], [
+            '-enableminerfund',
             '-allownonstdtxnconsensus=1',
         ]]
 
-    def run_test(self):
-        node = self.nodes[0]
+    def setup_network(self):
+        self.setup_nodes()
+
+        # Connect node0 to all other nodes so getblocktemplate will return results
+        # (getblocktemplate has a sanity check that ensures it's connected to a network)
+        # Since the other nodes are mining blocks "in the future" compared to node0,
+        # node0 will not broadcast blocks between the other nodes.
+        for n in range(1, len(self.nodes)):
+            connect_nodes(self.nodes[0], self.nodes[n])
+
+    def run_for_node(self, node):
         address = node.get_deterministic_priv_key().address
 
         # Assert the results of getblocktemplate have expected values. Keys not
@@ -79,6 +89,11 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         assert_equal(block_template_data['coinbasevalue'], SUBSIDY * COIN)
         for output in miner_fund_outputs:
             assert_equal(output['value'], share_amount)
+
+    def run_test(self):
+        # node0 is for connectivity only and is not mined on (see
+        # setup_network)
+        self.run_for_node(self.nodes[1])
 
 
 if __name__ == '__main__':

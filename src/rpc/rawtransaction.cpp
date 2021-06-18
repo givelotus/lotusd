@@ -1377,7 +1377,7 @@ static UniValue decodepsbt(const Config &config,
 
             UniValue out(UniValue::VOBJ);
 
-            out.pushKV("amount", ValueFromAmount(txout.nValue));
+            out.pushKV("amount", txout.nValue);
             if (MoneyRange(txout.nValue) &&
                 MoneyRange(total_in + txout.nValue)) {
                 total_in += txout.nValue;
@@ -1505,7 +1505,7 @@ static UniValue decodepsbt(const Config &config,
     }
     result.pushKV("outputs", outputs);
     if (have_all_utxos) {
-        result.pushKV("fee", ValueFromAmount(total_in - output_value));
+        result.pushKV("fee", total_in - output_value);
     }
 
     return result;
@@ -2147,10 +2147,10 @@ UniValue analyzepsbt(const Config &config, const JSONRPCRequest &request) {
     }
     if (psbta.estimated_feerate != std::nullopt) {
         result.pushKV("estimated_feerate",
-                      ValueFromAmount(psbta.estimated_feerate->GetFeePerK()));
+                      psbta.estimated_feerate->GetFeePerK());
     }
     if (psbta.fee != std::nullopt) {
-        result.pushKV("fee", ValueFromAmount(*psbta.fee));
+        result.pushKV("fee", *psbta.fee);
     }
     result.pushKV("next", PSBTRoleName(psbta.next));
     if (!psbta.error.empty()) {

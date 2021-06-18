@@ -3,6 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test building avalanche proofs and using them to add avalanche peers."""
+import base64
 from decimal import Decimal
 
 from test_framework.avatools import (
@@ -10,12 +11,17 @@ from test_framework.avatools import (
     create_stakes,
 )
 from test_framework.key import ECKey, bytes_to_wif
-from test_framework.messages import AvalancheDelegation
-from test_framework.mininode import P2PInterface
+from test_framework.messages import (
+    AvalancheDelegation,
+    AvalancheProof,
+    FromHex,
+)
+from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     append_config,
+    assert_equal,
     wait_until,
     assert_raises_rpc_error,
 )
@@ -62,9 +68,36 @@ class AvalancheProofTest(BitcoinTestFramework):
         proof_master = get_hex_pubkey(privkey)
         proof_sequence = 11
         proof_expiration = 12
+        stakes = create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key)
         proof = node.buildavalancheproof(
-            proof_sequence, proof_expiration, proof_master,
-            create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key))
+            proof_sequence, proof_expiration, proof_master, stakes)
+
+        self.log.info("Test decodeavalancheproof RPC")
+        proofobj = FromHex(AvalancheProof(), proof)
+        decodedproof = node.decodeavalancheproof(proof)
+        assert_equal(decodedproof["sequence"], proof_sequence)
+        assert_equal(decodedproof["expiration"], proof_expiration)
+        assert_equal(decodedproof["master"], proof_master)
+        assert_equal(decodedproof["proofid"], f"{proofobj.proofid:0{64}x}")
+        assert_equal(
+            decodedproof["limitedid"],
+            f"{proofobj.limited_proofid:0{64}x}")
+        assert_equal(decodedproof["stakes"][0]["txid"], stakes[0]["txid"])
+        assert_equal(decodedproof["stakes"][0]["vout"], stakes[0]["vout"])
+        assert_equal(decodedproof["stakes"][0]["height"], stakes[0]["height"])
+        assert_equal(
+            decodedproof["stakes"][0]["iscoinbase"],
+            stakes[0]["iscoinbase"])
+        assert_equal(
+            decodedproof["stakes"][0]["signature"],
+            base64.b64encode(proofobj.stakes[0].sig).decode("ascii"))
+
+        # Invalid hex (odd number of hex digits)
+        assert_raises_rpc_error(-22, "Proof must be an hexadecimal string",
+                                node.decodeavalancheproof, proof[:-1])
+        # Valid hex but invalid proof
+        assert_raises_rpc_error(-22, "Proof has invalid format",
+                                node.decodeavalancheproof, proof[:-2])
 
         # Restart the node, making sure it is initially in IBD mode
         minchainwork = int(node.getblockchaininfo()["chainwork"], 16) + 1
@@ -179,7 +212,6 @@ class AvalancheProofTest(BitcoinTestFramework):
                                 )
 
         # Test invalid proofs
-        self.log.info("Bad proof should be rejected at startup")
         dust = node.buildavalancheproof(
             proof_sequence, proof_expiration, proof_master,
             create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key, amount="0"))
@@ -201,6 +233,30 @@ class AvalancheProofTest(BitcoinTestFramework):
                    "8770a462b2d0e9fb2fc839ef5d3faf07f001dd38e9b4a43d07d5d449cc0"
                    "f7d2888d96b82962b3ce516d1083c0e031773487fc3c4f2e38acd1db974"
                    "1321b91a79b82d1c2cfd47793261e4ba003cf5")
+
+        self.log.info("Check the verifyavalancheproof RPC")
+
+        assert_raises_rpc_error(-8, "Proof must be an hexadecimal string",
+                                    node.verifyavalancheproof, "f00")
+        assert_raises_rpc_error(-8, "Proof has invalid format",
+                                    node.verifyavalancheproof, "f00d")
+
+        def check_verifyavalancheproof_failure(proof, message):
+            assert_raises_rpc_error(-8, "The proof is invalid: " + message,
+                                    node.verifyavalancheproof, proof)
+
+        check_verifyavalancheproof_failure(no_stake, "no-stake")
+        check_verifyavalancheproof_failure(dust, "amount-below-dust-threshold")
+        check_verifyavalancheproof_failure(duplicate_stake, "duplicated-stake")
+        check_verifyavalancheproof_failure(bad_sig, "invalid-signature")
+        if self.is_wallet_compiled():
+            check_verifyavalancheproof_failure(
+                too_many_utxos, "too-many-utxos")
+
+        # Good proof
+        assert node.verifyavalancheproof(proof)
+
+        self.log.info("Bad proof should be rejected at startup")
 
         self.stop_node(0)
 

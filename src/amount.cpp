@@ -7,10 +7,20 @@
 #include <amount.h>
 
 #include <network.h>
+#include <univalue.h>
 
 #include <tinyformat.h>
 
 std::string Amount::ToString() const {
     return strprintf("%d.%06d %s", *this / COIN, (*this % COIN) / SATOSHI,
                      CURRENCY_UNIT);
+}
+
+Amount::operator UniValue() const {
+    bool sign = *this < Amount::zero();
+    Amount n_abs(sign ? -amount : amount);
+    int64_t quotient = n_abs / COIN;
+    int64_t remainder = (n_abs % COIN) / SATOSHI;
+    return UniValue(UniValue::VNUM, strprintf("%s%d.%06d", sign ? "-" : "",
+                                              quotient, remainder));
 }
