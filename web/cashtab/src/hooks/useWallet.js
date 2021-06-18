@@ -14,7 +14,8 @@ import {
 } from '@utils/cashMethods';
 import localforage from 'localforage';
 import { currency } from '@components/Common/Ticker';
-import _ from 'lodash';
+import isEmpty from 'lodash.isempty';
+import isEqual from 'lodash.isequal';
 
 const useWallet = () => {
     const [wallet, setWallet] = useState(false);
@@ -174,26 +175,21 @@ const useWallet = () => {
             return true;
         }
 
-        // If utxo set is in wallet object, use that to compare instead of previousUtxos
-        let previousUtxosToCompare;
-        if (wallet.state && wallet.state.utxos) {
-            previousUtxosToCompare = wallet.state.utxos;
-        } else {
-            previousUtxosToCompare = previousUtxos;
+        // If wallet is valid, compare what exists in written wallet state instead of former api call
+        let utxosToCompare = previousUtxos;
+        if (isValidStoredWallet(wallet)) {
+            try {
+                utxosToCompare = wallet.state.utxos;
+            } catch (err) {
+                console.log(`Error setting utxos to wallet.state.utxos`, err);
+                console.log(`Wallet at err`, wallet);
+                // If this happens, assume utxo set has changed
+                return true;
+            }
         }
 
         // Compare utxo sets
-        const utxoArraysUnchanged = _.isEqual(utxos, previousUtxosToCompare);
-
-        // If utxos are not the same as previousUtxos
-        if (utxoArraysUnchanged) {
-            // then utxos have not changed
-            return false;
-            // otherwise,
-        } else {
-            // utxos have changed
-            return true;
-        }
+        return !isEqual(utxos, utxosToCompare);
     };
 
     const update = async ({ wallet, setWalletState }) => {
@@ -212,7 +208,7 @@ const useWallet = () => {
             const utxos = await getUtxos(BCH, cashAddresses);
 
             // If an error is returned or utxos from only 1 address are returned
-            if (!utxos || _.isEmpty(utxos) || utxos.error || utxos.length < 2) {
+            if (!utxos || isEmpty(utxos) || utxos.error || utxos.length < 2) {
                 // Throw error here to prevent more attempted api calls
                 // as you are likely already at rate limits
                 throw new Error('Error fetching utxos');

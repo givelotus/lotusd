@@ -541,6 +541,7 @@ add_library(server
 	addrman.cpp
 	avalanche/delegation.cpp
 	avalanche/delegationbuilder.cpp
+	avalanche/orphanproofpool.cpp
 	avalanche/peermanager.cpp
 	avalanche/processor.cpp
 	avalanche/proof.cpp

@@ -912,10 +912,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                 serror, ScriptError::INVALID_STACK_OPERATION);
                         }
                         valtype &vch = stacktop(-1);
-                        valtype vchHash((opcode == OP_RIPEMD160 ||
-                                         opcode == OP_HASH160)
-                                            ? 20
-                                            : 32);
+                        valtype vchHash(
+                            (opcode == OP_RIPEMD160 || opcode == OP_HASH160)
+                                ? 20
+                                : 32);
                         if (opcode == OP_RIPEMD160) {
                             CRIPEMD160()
                                 .Write(vch.data(), vch.size())
@@ -1706,7 +1706,7 @@ bool SignatureHashLegacy(uint256 &sighashOut, const CScript &scriptCode,
     if ((sigHashType.getBaseType() == BaseSigHashType::SINGLE) &&
         (nIn >= txTo.vout.size())) {
         //  nOut out of range
-        sighashOut = UINT256_ONE();
+        sighashOut = uint256::ONE;
         return true;
     }
 

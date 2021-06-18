@@ -57,9 +57,6 @@ class NodeNetworkLimitedTest(BitcoinTestFramework):
 
     def disconnect_all(self):
         disconnect_nodes(self.nodes[0], self.nodes[1])
-        disconnect_nodes(self.nodes[1], self.nodes[0])
-        disconnect_nodes(self.nodes[2], self.nodes[1])
-        disconnect_nodes(self.nodes[2], self.nodes[0])
         disconnect_nodes(self.nodes[0], self.nodes[2])
         disconnect_nodes(self.nodes[1], self.nodes[2])
 
@@ -107,7 +104,6 @@ class NodeNetworkLimitedTest(BitcoinTestFramework):
         assert_equal(node1.firstAddrnServices, expected_services)
 
         self.nodes[0].disconnect_p2ps()
-        node1.wait_for_disconnect()
 
         # connect unsynced node 2 with pruned NODE_NETWORK_LIMITED peer
         # because node 2 is in IBD and node 0 is a NODE_NETWORK_LIMITED peer,

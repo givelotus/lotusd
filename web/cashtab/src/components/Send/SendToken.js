@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { WalletContext } from '@utils/context';
-import { Form, notification, message, Spin, Row, Col, Alert } from 'antd';
+import {
+    Form,
+    notification,
+    message,
+    Spin,
+    Row,
+    Col,
+    Alert,
+    Descriptions,
+} from 'antd';
 import Paragraph from 'antd/lib/typography/Paragraph';
 import PrimaryButton, {
     SecondaryButton,
@@ -11,7 +20,7 @@ import {
     FormItemWithQRCodeAddon,
 } from '@components/Common/EnhancedInputs';
 import useBCH from '@hooks/useBCH';
-import { BalanceHeader } from './Send';
+import { BalanceHeader } from '@components/Common/Atoms';
 import { Redirect } from 'react-router-dom';
 import useWindowDimensions from '@hooks/useWindowDimensions';
 import { isMobile, isIOS, isSafari } from 'react-device-detect';
@@ -24,13 +33,23 @@ import {
     isValidTokenPrefix,
 } from '@components/Common/Ticker.js';
 import { Event } from '@utils/GoogleAnalytics';
-import { formatBalance } from '@utils/cashMethods';
+import { formatBalance, isValidStoredWallet } from '@utils/cashMethods';
 
-const SendToken = ({ tokenId }) => {
+const SendToken = ({ tokenId, jestBCH }) => {
     const { wallet, tokens, slpBalancesAndUtxos, apiError } = React.useContext(
         WalletContext,
     );
-    const token = tokens.find(token => token.tokenId === tokenId);
+    // If this wallet has migrated to latest storage structure, get token info from there
+    // If not, use the tokens object (unless it's undefined, in which case use an empty array)
+    const liveTokenState =
+        isValidStoredWallet(wallet) && wallet.state.tokens
+            ? wallet.state.tokens
+            : tokens
+            ? tokens
+            : [];
+    const token = liveTokenState.find(token => token.tokenId === tokenId);
+
+    const [tokenStats, setTokenStats] = useState(null);
     const [queryStringText, setQueryStringText] = useState(null);
     const [sendTokenAddressError, setSendTokenAddressError] = useState(false);
     const [sendTokenAmountError, setSendTokenAmountError] = useState(false);
@@ -47,11 +66,23 @@ const SendToken = ({ tokenId }) => {
     });
     const [loading, setLoading] = useState(false);
 
-    const { getBCH, getRestUrl, sendToken } = useBCH();
-    const BCH = getBCH();
+    const { getBCH, getRestUrl, sendToken, getTokenStats } = useBCH();
 
-    // Keep this function around for re-enabling later
-    // eslint-disable-next-line no-unused-vars
+    // jestBCH is only ever specified for unit tests, otherwise app will use getBCH();
+    const BCH = jestBCH ? jestBCH : getBCH();
+
+    // Fetch token stats if you do not have them and API did not return an error
+    if (tokenStats === null) {
+        getTokenStats(BCH, tokenId).then(
+            result => {
+                setTokenStats(result);
+            },
+            err => {
+                console.log(`Error getting token stats: ${err}`);
+            },
+        );
+    }
+
     async function submit() {
         setFormData({
             ...formData,
@@ -147,7 +178,10 @@ const SendToken = ({ tokenId }) => {
             }
         }
         setSendTokenAmountError(error);
-        setFormData(p => ({ ...p, [name]: value }));
+        setFormData(p => ({
+            ...p,
+            [name]: value,
+        }));
     };
 
     const handleTokenAddressChange = e => {
@@ -226,21 +260,23 @@ const SendToken = ({ tokenId }) => {
             {token && (
                 <>
                     <BalanceHeader>
-                        <p>Available balance</p>
-                        <h3>
-                            {formatBalance(token.balance)}{' '}
-                            {token.info.tokenTicker}
-                        </h3>
+                        {formatBalance(token.balance)} {token.info.tokenTicker}
                     </BalanceHeader>
 
                     <Row type="flex">
                         <Col span={24}>
                             <Spin
-                                style={{ color: 'red' }}
+                                style={{
+                                    color: 'red',
+                                }}
                                 spinning={loading}
                                 indicator={CashLoadingIcon}
                             >
-                                <Form style={{ width: 'auto' }}>
+                                <Form
+                                    style={{
+                                        width: 'auto',
+                                    }}
+                                >
                                     <FormItemWithQRCodeAddon
                                         loadWithCameraOpen={scannerSupported}
                                         validateStatus={
@@ -326,7 +362,11 @@ const SendToken = ({ tokenId }) => {
                                             value: formData.value,
                                         }}
                                     />
-                                    <div style={{ paddingTop: '12px' }}>
+                                    <div
+                                        style={{
+                                            paddingTop: '12px',
+                                        }}
+                                    >
                                         {apiError ||
                                         sendTokenAmountError ||
                                         sendTokenAddressError ? (
@@ -352,7 +392,11 @@ const SendToken = ({ tokenId }) => {
                                         />
                                     )}
                                     {apiError && (
-                                        <p style={{ color: 'red' }}>
+                                        <p
+                                            style={{
+                                                color: 'red',
+                                            }}
+                                        >
                                             <b>
                                                 An error occured on our end.
                                                 Reconnecting...
@@ -360,6 +404,50 @@ const SendToken = ({ tokenId }) => {
                                         </p>
                                     )}
                                 </Form>
+                                {tokenStats !== null && (
+                                    <Descriptions
+                                        column={1}
+                                        bordered
+                                        title={`Token info for "${token.info.tokenName}"`}
+                                    >
+                                        <Descriptions.Item label="Decimals">
+                                            {token.info.decimals}
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Token ID">
+                                            {token.tokenId}
+                                        </Descriptions.Item>
+                                        {tokenStats && (
+                                            <>
+                                                <Descriptions.Item label="Document URI">
+                                                    {tokenStats.documentUri}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Genesis Date">
+                                                    {new Date(
+                                                        tokenStats.timestampUnix *
+                                                            1000,
+                                                    ).toLocaleDateString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Fixed Supply?">
+                                                    {tokenStats.containsBaton
+                                                        ? 'No'
+                                                        : 'Yes'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Initial Quantity">
+                                                    {tokenStats.initialTokenQty.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Total Burned">
+                                                    {tokenStats.totalBurned.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Total Minted">
+                                                    {tokenStats.totalMinted.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Circulating Supply">
+                                                    {tokenStats.circulatingSupply.toLocaleString()}
+                                                </Descriptions.Item>
+                                            </>
+                                        )}
+                                    </Descriptions>
+                                )}
                             </Spin>
                         </Col>
                     </Row>

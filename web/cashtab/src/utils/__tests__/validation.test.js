@@ -1,5 +1,21 @@
-import { shouldRejectAmountInput, fiatToCrypto } from '../validation';
+import {
+    shouldRejectAmountInput,
+    fiatToCrypto,
+    isValidTokenName,
+    isValidTokenTicker,
+    isValidTokenDecimals,
+    isValidTokenInitialQty,
+    isValidTokenDocumentUrl,
+    isValidTokenStats,
+} from '../validation';
 import { currency } from '@components/Common/Ticker.js';
+import { fromSmallestDenomination } from '@utils/cashMethods';
+import {
+    stStatsValid,
+    noCovidStatsValid,
+    noCovidStatsInvalid,
+    cGenStatsValid,
+} from '../__mocks__/mockTokenStats';
 
 describe('Validation utils', () => {
     it(`Returns 'false' if ${currency.ticker} send amount is a valid send amount`, () => {
@@ -41,19 +57,34 @@ describe('Validation utils', () => {
             expectedValidationError,
         );
     });
-    it(`Returns error if ${currency.ticker} send amount is less than ${currency.dust} minimum`, () => {
-        const expectedValidationError = `Send amount must be at least ${currency.dust} ${currency.ticker}`;
+    it(`Returns error if ${
+        currency.ticker
+    } send amount is less than ${fromSmallestDenomination(
+        currency.dustSats,
+    ).toString()} minimum`, () => {
+        const expectedValidationError = `Send amount must be at least ${fromSmallestDenomination(
+            currency.dustSats,
+        ).toString()} ${currency.ticker}`;
         expect(
             shouldRejectAmountInput(
-                (currency.dust - 0.00000001).toString(),
+                (
+                    fromSmallestDenomination(currency.dustSats).toString() -
+                    0.00000001
+                ).toString(),
                 currency.ticker,
                 20.0,
                 3,
             ),
         ).toBe(expectedValidationError);
     });
-    it(`Returns error if ${currency.ticker} send amount is less than ${currency.dust} minimum in fiat currency`, () => {
-        const expectedValidationError = `Send amount must be at least ${currency.dust} ${currency.ticker}`;
+    it(`Returns error if ${
+        currency.ticker
+    } send amount is less than ${fromSmallestDenomination(
+        currency.dustSats,
+    ).toString()} minimum in fiat currency`, () => {
+        const expectedValidationError = `Send amount must be at least ${fromSmallestDenomination(
+            currency.dustSats,
+        ).toString()} ${currency.ticker}`;
         expect(
             shouldRejectAmountInput('0.0000005', 'USD', 14.63, 0.52574662),
         ).toBe(expectedValidationError);
@@ -78,5 +109,103 @@ describe('Validation utils', () => {
     });
     it(`Returns expected crypto amount with ${currency.cashDecimals} decimals of precision even if inputs have lower precision`, () => {
         expect(fiatToCrypto('10.94', 10)).toBe('1.09400000');
+    });
+    it(`Accepts a valid ${currency.tokenTicker} token name`, () => {
+        expect(isValidTokenName('Valid token name')).toBe(true);
+    });
+    it(`Accepts a valid ${currency.tokenTicker} token name that is a stringified number`, () => {
+        expect(isValidTokenName('123456789')).toBe(true);
+    });
+    it(`Rejects ${currency.tokenTicker} token name if longer than 68 characters`, () => {
+        expect(
+            isValidTokenName(
+                'This token name is not valid because it is longer than 68 characters which is really pretty long for a token name when you think about it and all',
+            ),
+        ).toBe(false);
+    });
+    it(`Rejects ${currency.tokenTicker} token name if empty string`, () => {
+        expect(isValidTokenName('')).toBe(false);
+    });
+    it(`Accepts a 4-char ${currency.tokenTicker} token ticker`, () => {
+        expect(isValidTokenTicker('DOGE')).toBe(true);
+    });
+    it(`Accepts a 12-char ${currency.tokenTicker} token ticker`, () => {
+        expect(isValidTokenTicker('123456789123')).toBe(true);
+    });
+    it(`Rejects ${currency.tokenTicker} token ticker if empty string`, () => {
+        expect(isValidTokenTicker('')).toBe(false);
+    });
+    it(`Rejects ${currency.tokenTicker} token ticker if > 12 chars`, () => {
+        expect(isValidTokenTicker('1234567891234')).toBe(false);
+    });
+    it(`Accepts ${currency.tokenDecimals} if zero`, () => {
+        expect(isValidTokenDecimals('0')).toBe(true);
+    });
+    it(`Accepts ${currency.tokenDecimals} if between 0 and 9 inclusive`, () => {
+        expect(isValidTokenDecimals('9')).toBe(true);
+    });
+    it(`Rejects ${currency.tokenDecimals} if empty string`, () => {
+        expect(isValidTokenDecimals('')).toBe(false);
+    });
+    it(`Rejects ${currency.tokenDecimals} if non-integer`, () => {
+        expect(isValidTokenDecimals('1.7')).toBe(false);
+    });
+    it(`Accepts ${currency.tokenDecimals} initial genesis quantity at minimum amount for 3 decimal places`, () => {
+        expect(isValidTokenInitialQty('0.001', '3')).toBe(true);
+    });
+    it(`Accepts ${currency.tokenDecimals} initial genesis quantity at minimum amount for 9 decimal places`, () => {
+        expect(isValidTokenInitialQty('0.000000001', '9')).toBe(true);
+    });
+    it(`Accepts ${currency.tokenDecimals} initial genesis quantity at amount below 100 billion`, () => {
+        expect(isValidTokenInitialQty('1000', '0')).toBe(true);
+    });
+    it(`Accepts highest possible ${currency.tokenDecimals} initial genesis quantity at amount below 100 billion`, () => {
+        expect(isValidTokenInitialQty('99999999999.999999999', '9')).toBe(true);
+    });
+    it(`Accepts ${currency.tokenDecimals} initial genesis quantity if decimal places equal tokenDecimals`, () => {
+        expect(isValidTokenInitialQty('0.123', '3')).toBe(true);
+    });
+    it(`Accepts ${currency.tokenDecimals} initial genesis quantity if decimal places are less than tokenDecimals`, () => {
+        expect(isValidTokenInitialQty('0.12345', '9')).toBe(true);
+    });
+    it(`Rejects ${currency.tokenDecimals} initial genesis quantity of zero`, () => {
+        expect(isValidTokenInitialQty('0', '9')).toBe(false);
+    });
+    it(`Rejects ${currency.tokenDecimals} initial genesis quantity if tokenDecimals is not valid`, () => {
+        expect(isValidTokenInitialQty('0', '')).toBe(false);
+    });
+    it(`Rejects ${currency.tokenDecimals} initial genesis quantity if 100 billion or higher`, () => {
+        expect(isValidTokenInitialQty('100000000000', '0')).toBe(false);
+    });
+    it(`Rejects ${currency.tokenDecimals} initial genesis quantity if it has more decimal places than tokenDecimals`, () => {
+        expect(isValidTokenInitialQty('1.5', '0')).toBe(false);
+    });
+    it(`Accepts a valid ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('cashtabapp.com')).toBe(true);
+    });
+    it(`Accepts a valid ${currency.tokenTicker} token document URL including special URL characters`, () => {
+        expect(isValidTokenDocumentUrl('https://cashtabapp.com/')).toBe(true);
+    });
+    it(`Accepts a blank string as a valid ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('')).toBe(true);
+    });
+    it(`Rejects ${currency.tokenTicker} token name if longer than 68 characters`, () => {
+        expect(
+            isValidTokenDocumentUrl(
+                'http://www.ThisTokenDocumentUrlIsActuallyMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchMuchTooLong.com/',
+            ),
+        ).toBe(false);
+    });
+    it(`Correctly validates token stats for token created before the ${currency.ticker} fork`, () => {
+        expect(isValidTokenStats(stStatsValid)).toBe(true);
+    });
+    it(`Correctly validates token stats for token created after the ${currency.ticker} fork`, () => {
+        expect(isValidTokenStats(noCovidStatsValid)).toBe(true);
+    });
+    it(`Correctly validates token stats for token with no minting baton`, () => {
+        expect(isValidTokenStats(cGenStatsValid)).toBe(true);
+    });
+    it(`Recognizes a token stats object with missing required keys as invalid`, () => {
+        expect(isValidTokenStats(noCovidStatsInvalid)).toBe(false);
     });
 });

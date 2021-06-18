@@ -11,9 +11,10 @@ export const currency = {
     prefixes: ['bitcoincash', 'ecash'],
     coingeckoId: 'bitcoin-cash-abc-2',
     defaultFee: 5.01,
-    dust: '0.00000546', // The minimum amount of BCHA that can be sent by the app
+    dustSats: 546,
     cashDecimals: 8,
     blockExplorerUrl: 'https://explorer.bitcoinabc.org',
+    tokenExplorerUrl: 'https://explorer.be.cash',
     blockExplorerUrlTestnet: 'https://texplorer.bitcoinabc.org',
     tokenName: 'Bitcoin ABC SLP',
     tokenTicker: 'SLPA',

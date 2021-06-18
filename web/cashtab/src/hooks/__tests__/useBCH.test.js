@@ -5,6 +5,7 @@ import mockReturnGetSlpBalancesAndUtxos from '../__mocks__/mockReturnGetSlpBalan
 import mockReturnGetHydratedUtxoDetailsWithZeroBalance from '../__mocks__/mockReturnGetHydratedUtxoDetailsWithZeroBalance';
 import mockReturnGetSlpBalancesAndUtxosNoZeroBalance from '../__mocks__/mockReturnGetSlpBalancesAndUtxosNoZeroBalance';
 import sendBCHMock from '../__mocks__/sendBCH';
+import createTokenMock from '../__mocks__/createToken';
 import mockTxHistory from '../__mocks__/mockTxHistory';
 import mockFlatTxHistory from '../__mocks__/mockFlatTxHistory';
 import mockTxDataWithPassthrough from '../__mocks__/mockTxDataWithPassthrough';
@@ -15,6 +16,7 @@ import {
 import {
     tokenSendWdt,
     tokenReceiveTBS,
+    tokenGenesisCashtabMintAlpha,
 } from '../__mocks__/mockParseTokenInfoForTxHistory';
 import {
     mockSentCashTx,
@@ -25,6 +27,7 @@ import {
 import BCHJS from '@psf/bch-js'; // TODO: should be removed when external lib not needed anymore
 import { currency } from '../../components/Common/Ticker';
 import BigNumber from 'bignumber.js';
+import { fromSmallestDenomination } from '@utils/cashMethods';
 
 describe('useBCH hook', () => {
     it('gets Rest Api Url on testnet', () => {
@@ -210,7 +213,9 @@ describe('useBCH hook', () => {
             wallet,
             utxos,
             destinationAddress,
-            new BigNumber(currency.dust)
+            new BigNumber(
+                fromSmallestDenomination(currency.dustSats).toString(),
+            )
                 .minus(new BigNumber('0.00000001'))
                 .toString(),
             1.01,
@@ -304,6 +309,43 @@ describe('useBCH hook', () => {
         );
     });
 
+    it('creates a token correctly', async () => {
+        const { createToken } = useBCH();
+        const BCH = new BCHJS();
+        const {
+            expectedTxId,
+            expectedHex,
+            wallet,
+            configObj,
+        } = createTokenMock;
+
+        BCH.RawTransactions.sendRawTransaction = jest
+            .fn()
+            .mockResolvedValue(expectedTxId);
+        expect(
+            await createToken(BCH, wallet, currency.defaultFee, configObj),
+        ).toBe(`${currency.tokenExplorerUrl}/tx/${expectedTxId}`);
+        expect(BCH.RawTransactions.sendRawTransaction).toHaveBeenCalledWith(
+            expectedHex,
+        );
+    });
+
+    it('Throws correct error if user attempts to create a token with an invalid wallet', async () => {
+        const { createToken } = useBCH();
+        const BCH = new BCHJS();
+        const { invalidWallet, configObj } = createTokenMock;
+
+        const invalidWalletTokenCreation = createToken(
+            BCH,
+            invalidWallet,
+            currency.defaultFee,
+            configObj,
+        );
+        await expect(invalidWalletTokenCreation).rejects.toThrow(
+            new Error('Invalid wallet'),
+        );
+    });
+
     it('Correctly flattens transaction history', () => {
         const { flattenTransactions } = useBCH();
         expect(flattenTransactions(mockTxHistory, 10)).toStrictEqual(
@@ -357,5 +399,15 @@ describe('useBCH hook', () => {
                 tokenReceiveTBS.tokenInfo,
             ),
         ).toStrictEqual(tokenReceiveTBS.cashtabTokenInfo);
+    });
+
+    it(`Correctly parses a "GENESIS ${currency.tokenTicker}" transaction with token details`, () => {
+        const { parseTokenInfoForTxHistory } = useBCH();
+        expect(
+            parseTokenInfoForTxHistory(
+                tokenGenesisCashtabMintAlpha.parsedTx,
+                tokenGenesisCashtabMintAlpha.tokenInfo,
+            ),
+        ).toStrictEqual(tokenGenesisCashtabMintAlpha.cashtabTokenInfo);
     });
 });

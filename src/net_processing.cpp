@@ -1735,44 +1735,38 @@ void PeerManager::BlockChecked(const CBlock &block,
 // Messages
 //
 
-static bool AlreadyHave(const CInv &inv, const CTxMemPool &mempool)
+static bool AlreadyHaveTx(const TxId &txid, const CTxMemPool &mempool)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
-    switch (inv.type) {
-        case MSG_TX: {
-            assert(recentRejects);
-            if (::ChainActive().Tip()->GetBlockHash() !=
-                hashRecentRejectsChainTip) {
-                // If the chain tip has changed previously rejected transactions
-                // might be now valid, e.g. due to a nLockTime'd tx becoming
-                // valid, or a double-spend. Reset the rejects filter and give
-                // those txs a second chance.
-                hashRecentRejectsChainTip =
-                    ::ChainActive().Tip()->GetBlockHash();
-                recentRejects->reset();
-            }
-
-            const TxId txid(inv.hash);
-            {
-                LOCK(g_cs_orphans);
-                if (mapOrphanTransactions.count(txid)) {
-                    return true;
-                }
-            }
-
-            {
-                LOCK(g_cs_recent_confirmed_transactions);
-                if (g_recent_confirmed_transactions->contains(txid)) {
-                    return true;
-                }
-            }
-
-            return recentRejects->contains(txid) || mempool.exists(txid);
-        }
-        case MSG_BLOCK:
-            return LookupBlockIndex(BlockHash(inv.hash)) != nullptr;
+    assert(recentRejects);
+    if (::ChainActive().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
+        // If the chain tip has changed previously rejected transactions
+        // might be now valid, e.g. due to a nLockTime'd tx becoming
+        // valid, or a double-spend. Reset the rejects filter and give
+        // those txs a second chance.
+        hashRecentRejectsChainTip = ::ChainActive().Tip()->GetBlockHash();
+        recentRejects->reset();
     }
-    // Don't know what it is, just say we already got one
-    return true;
+
+    {
+        LOCK(g_cs_orphans);
+        if (mapOrphanTransactions.count(txid)) {
+            return true;
+        }
+    }
+
+    {
+        LOCK(g_cs_recent_confirmed_transactions);
+        if (g_recent_confirmed_transactions->contains(txid)) {
+            return true;
+        }
+    }
+
+    return recentRejects->contains(txid) || mempool.exists(txid);
+}
+
+static bool AlreadyHaveBlock(const BlockHash &block_hash)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+    return LookupBlockIndex(block_hash) != nullptr;
 }
 
 void RelayTransaction(const TxId &txid, const CConnman &connman) {
@@ -1883,7 +1877,7 @@ static void ProcessGetBlockData(const Config &config, CNode &pfrom,
         (((pindexBestHeader != nullptr) &&
           (pindexBestHeader->GetBlockTime() - pindex->GetBlockTime() >
            HISTORICAL_BLOCK_AGE)) ||
-         inv.type == MSG_FILTERED_BLOCK) &&
+         inv.IsMsgFilteredBlk()) &&
         // nodes with the download permission may exceed target
         !pfrom.HasPermission(PF_DOWNLOAD)) {
         LogPrint(BCLog::NET,
@@ -1928,10 +1922,10 @@ static void ProcessGetBlockData(const Config &config, CNode &pfrom,
             }
             pblock = pblockRead;
         }
-        if (inv.type == MSG_BLOCK) {
+        if (inv.IsMsgBlk()) {
             connman.PushMessage(&pfrom,
                                 msgMaker.Make(NetMsgType::BLOCK, *pblock));
-        } else if (inv.type == MSG_FILTERED_BLOCK) {
+        } else if (inv.IsMsgFilteredBlk()) {
             bool sendMerkleBlock = false;
             CMerkleBlock merkleBlock;
             if (pfrom.m_tx_relay != nullptr) {
@@ -1964,7 +1958,7 @@ static void ProcessGetBlockData(const Config &config, CNode &pfrom,
             }
             // else
             // no response
-        } else if (inv.type == MSG_CMPCT_BLOCK) {
+        } else if (inv.IsMsgCmpctBlk()) {
             // If a peer is asking for old blocks, we're almost guaranteed they
             // won't have a useful mempool to match against a compact block, and
             // we don't feel like constructing the object for them, so instead
@@ -2056,7 +2050,7 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
     // Process as many TX items from the front of the getdata queue as
     // possible, since they're common and it's efficient to batch process
     // them.
-    while (it != pfrom.vRecvGetData.end() && it->type == MSG_TX) {
+    while (it != pfrom.vRecvGetData.end() && it->IsMsgTx()) {
         if (interruptMsgProc) {
             return;
         }
@@ -2109,8 +2103,7 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
     // expensive to process.
     if (it != pfrom.vRecvGetData.end() && !pfrom.fPauseSend) {
         const CInv &inv = *it++;
-        if (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK ||
-            inv.type == MSG_CMPCT_BLOCK) {
+        if (inv.IsGenBlkMsg()) {
             ProcessGetBlockData(config, pfrom, inv, connman, interruptMsgProc);
         }
         // else: If the first item on the queue is an unknown type, we erase it
@@ -2716,17 +2709,6 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         return;
     }
 
-    if (!(pfrom.GetLocalServices() & NODE_BLOOM) &&
-        (msg_type == NetMsgType::FILTERLOAD ||
-         msg_type == NetMsgType::FILTERADD)) {
-        if (pfrom.nVersion >= NO_BLOOM_VERSION) {
-            Misbehaving(pfrom, 100, "no-bloom-version");
-        } else {
-            pfrom.fDisconnect = true;
-        }
-        return;
-    }
-
     if (IsAvalancheMessageType(msg_type)) {
         if (!g_avalanche) {
             LogPrint(BCLog::NET,
@@ -2735,17 +2717,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             return;
         }
 
-        // Discourage avalanche messages if the service flag is not set.
         if (!gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
             Misbehaving(pfrom, 20, "unsolicited-" + msg_type);
-            return;
-        }
-        // Ignore avalanche requests while importing
-        if ((msg_type == NetMsgType::AVAPOLL ||
-             msg_type == NetMsgType::AVARESPONSE) &&
-            (fImporting || fReindex)) {
-            LogPrint(BCLog::NET, "Ignoring %s message while importing\n",
-                     msg_type);
             return;
         }
     }
@@ -3131,11 +3104,12 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                 return;
             }
 
-            bool fAlreadyHave = AlreadyHave(inv, m_mempool);
-            LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(),
-                     fAlreadyHave ? "have" : "new", pfrom.GetId());
+            if (inv.IsMsgBlk()) {
+                const bool fAlreadyHave = AlreadyHaveBlock(BlockHash(inv.hash));
+                LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n",
+                         inv.ToString(), fAlreadyHave ? "have" : "new",
+                         pfrom.GetId());
 
-            if (inv.type == MSG_BLOCK) {
                 const BlockHash hash{inv.hash};
                 UpdateBlockAvailability(pfrom.GetId(), hash);
                 if (!fAlreadyHave && !fImporting && !fReindex &&
@@ -3147,8 +3121,13 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                     // then fetch the blocks we need to catch up.
                     best_block = std::move(hash);
                 }
-            } else {
+            } else if (inv.IsMsgTx()) {
                 const TxId txid(inv.hash);
+                const bool fAlreadyHave = AlreadyHaveTx(txid, m_mempool);
+                LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n",
+                         inv.ToString(), fAlreadyHave ? "have" : "new",
+                         pfrom.GetId());
+
                 pfrom.AddKnownTx(txid);
                 if (fBlocksOnly) {
                     LogPrint(BCLog::NET,
@@ -3161,6 +3140,10 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                                                  .IsInitialBlockDownload()) {
                     RequestTx(State(pfrom.GetId()), txid, current_time);
                 }
+            } else {
+                LogPrint(BCLog::NET,
+                         "Unknown inv type \"%s\" received from peer=%d\n",
+                         inv.ToString(), pfrom.GetId());
             }
         }
 
@@ -3451,7 +3434,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         nodestate->m_tx_download.m_tx_in_flight.erase(txid);
         EraseTxRequest(txid);
 
-        if (!AlreadyHave(CInv(MSG_TX, txid), m_mempool) &&
+        if (!AlreadyHaveTx(txid, m_mempool) &&
             AcceptToMemoryPool(config, m_mempool, state, ptx,
                                false /* bypass_limits */,
                                Amount::zero() /* nAbsurdFee */)) {
@@ -3495,7 +3478,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                     // FIXME: MSG_TX should use a TxHash, not a TxId.
                     const TxId _txid = txin.prevout.GetTxId();
                     pfrom.AddKnownTx(_txid);
-                    if (!AlreadyHave(CInv(MSG_TX, _txid), m_mempool)) {
+                    if (!AlreadyHaveTx(_txid, m_mempool)) {
                         RequestTx(State(pfrom.GetId()), _txid, current_time);
                     }
                 }
@@ -4364,6 +4347,10 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
     }
 
     if (msg_type == NetMsgType::FILTERLOAD) {
+        if (!(pfrom.GetLocalServices() & NODE_BLOOM)) {
+            pfrom.fDisconnect = true;
+            return;
+        }
         CBloomFilter filter;
         vRecv >> filter;
 
@@ -4379,6 +4366,10 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
     }
 
     if (msg_type == NetMsgType::FILTERADD) {
+        if (!(pfrom.GetLocalServices() & NODE_BLOOM)) {
+            pfrom.fDisconnect = true;
+            return;
+        }
         std::vector<uint8_t> vData;
         vRecv >> vData;
 
@@ -4405,13 +4396,15 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
     }
 
     if (msg_type == NetMsgType::FILTERCLEAR) {
+        if (!(pfrom.GetLocalServices() & NODE_BLOOM)) {
+            pfrom.fDisconnect = true;
+            return;
+        }
         if (pfrom.m_tx_relay == nullptr) {
             return;
         }
         LOCK(pfrom.m_tx_relay->cs_filter);
-        if (pfrom.GetLocalServices() & NODE_BLOOM) {
-            pfrom.m_tx_relay->pfilter = nullptr;
-        }
+        pfrom.m_tx_relay->pfilter = nullptr;
         pfrom.m_tx_relay->fRelayTxes = true;
         return;
     }
@@ -4454,7 +4447,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         if (vInv.size() <=
             MAX_PEER_TX_IN_FLIGHT + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             for (CInv &inv : vInv) {
-                if (inv.type == MSG_TX) {
+                if (inv.IsMsgTx()) {
                     const TxId txid(inv.hash);
                     // If we receive a NOTFOUND message for a txid we requested,
                     // erase it from our data structures for this peer.
@@ -5189,6 +5182,15 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
         //
         std::vector<CInv> vInv;
         {
+            auto addInvAndMaybeFlush = [&](uint32_t type, const uint256 &hash) {
+                vInv.emplace_back(type, hash);
+                if (vInv.size() == MAX_INV_SZ) {
+                    m_connman.PushMessage(
+                        pto, msgMaker.Make(NetMsgType::INV, std::move(vInv)));
+                    vInv.clear();
+                }
+            };
+
             LOCK(pto->cs_inventory);
             vInv.reserve(std::max<size_t>(pto->vInventoryBlockToSend.size(),
                                           INVENTORY_BROADCAST_MAX_PER_MB *
@@ -5197,12 +5199,7 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
 
             // Add blocks
             for (const BlockHash &hash : pto->vInventoryBlockToSend) {
-                vInv.push_back(CInv(MSG_BLOCK, hash));
-                if (vInv.size() == MAX_INV_SZ) {
-                    m_connman.PushMessage(pto,
-                                          msgMaker.Make(NetMsgType::INV, vInv));
-                    vInv.clear();
-                }
+                addInvAndMaybeFlush(MSG_BLOCK, hash);
             }
             pto->vInventoryBlockToSend.clear();
 
@@ -5247,7 +5244,6 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
 
                     for (const auto &txinfo : vtxinfo) {
                         const TxId &txid = txinfo.tx->GetId();
-                        CInv inv(MSG_TX, txid);
                         pto->m_tx_relay->setInventoryTxToSend.erase(txid);
                         // Don't send transactions that peers will not put into
                         // their mempool
@@ -5262,12 +5258,7 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                         pto->m_tx_relay->filterInventoryKnown.insert(txid);
                         // Responses to MEMPOOL requests bypass the
                         // m_recently_announced_invs filter.
-                        vInv.push_back(inv);
-                        if (vInv.size() == MAX_INV_SZ) {
-                            m_connman.PushMessage(
-                                pto, msgMaker.Make(NetMsgType::INV, vInv));
-                            vInv.clear();
-                        }
+                        addInvAndMaybeFlush(MSG_TX, txid);
                     }
                     pto->m_tx_relay->m_last_mempool_req =
                         GetTime<std::chrono::seconds>();
@@ -5336,7 +5327,7 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                         // Send
                         State(pto->GetId())
                             ->m_recently_announced_invs.insert(txid);
-                        vInv.push_back(CInv(MSG_TX, txid));
+                        addInvAndMaybeFlush(MSG_TX, txid);
                         nRelayedTransactions++;
                         {
                             // Expire old relay messages
@@ -5356,11 +5347,6 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                                             .count(),
                                     ret.first));
                             }
-                        }
-                        if (vInv.size() == MAX_INV_SZ) {
-                            m_connman.PushMessage(
-                                pto, msgMaker.Make(NetMsgType::INV, vInv));
-                            vInv.clear();
                         }
                         pto->m_tx_relay->filterInventoryKnown.insert(txid);
                     }
@@ -5525,7 +5511,7 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
             // processing at a later time, see below)
             tx_process_time.erase(tx_process_time.begin());
             CInv inv(MSG_TX, txid);
-            if (!AlreadyHave(inv, m_mempool)) {
+            if (!AlreadyHaveTx(txid, m_mempool)) {
                 // If this transaction was last requested more than 1 minute
                 // ago, then request.
                 const auto last_request_time = GetTxRequestTime(txid);
