@@ -25,7 +25,7 @@ from test_framework.util import (
     wait_until,
     assert_equal,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PDataStore,
 )
 from test_framework.script import (

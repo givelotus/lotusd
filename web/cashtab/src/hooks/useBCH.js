@@ -1,7 +1,7 @@
 import BigNumber from 'bignumber.js';
 import { currency } from '@components/Common/Ticker';
 import { isValidTokenStats } from '@utils/validation';
-
+import SlpWallet from 'minimal-slp-wallet';
 import {
     toSmallestDenomination,
     fromSmallestDenomination,
@@ -519,13 +519,11 @@ export default function useBCH() {
             else transactionBuilder = new BCH.TransactionBuilder('testnet');
 
             let originalAmount = new BigNumber(0);
-            const tokenOutputDust = new BigNumber(
-                fromSmallestDenomination(currency.dustSats).toString(),
-            );
+
             let txFee = 0;
             for (let i = 0; i < utxos.length; i++) {
                 const utxo = utxos[i];
-                originalAmount = originalAmount.plus(utxo.value);
+                originalAmount = originalAmount.plus(new BigNumber(utxo.value));
                 const vout = utxo.vout;
                 const txid = utxo.txid;
                 // add input with txid and index of vout
@@ -534,15 +532,20 @@ export default function useBCH() {
                 inputUtxos.push(utxo);
                 txFee = calcFee(BCH, inputUtxos, 3, feeInSatsPerByte);
 
-                if (originalAmount.minus(tokenOutputDust).minus(txFee).gte(0)) {
+                if (
+                    originalAmount
+                        .minus(new BigNumber(currency.dustSats))
+                        .minus(new BigNumber(txFee))
+                        .gte(0)
+                ) {
                     break;
                 }
             }
 
             // amount to send back to the remainder address.
             const remainder = originalAmount
-                .minus(tokenOutputDust)
-                .minus(txFee);
+                .minus(new BigNumber(currency.dustSats))
+                .minus(new BigNumber(txFee));
 
             if (remainder.lt(0)) {
                 const error = new Error(`Insufficient funds`);
@@ -558,10 +561,7 @@ export default function useBCH() {
             transactionBuilder.addOutput(script, 0);
 
             // add output w/ address and amount to send
-            transactionBuilder.addOutput(
-                CREATION_ADDR,
-                parseInt(toSmallestDenomination(tokenOutputDust)),
-            );
+            transactionBuilder.addOutput(CREATION_ADDR, currency.dustSats);
 
             // Send change to own address
             if (remainder.gte(new BigNumber(currency.dustSats))) {
@@ -976,13 +976,13 @@ export default function useBCH() {
         }
     };
 
-    const getBCH = (apiIndex = 0, fromWindowObject = true) => {
-        if (fromWindowObject && window.SlpWallet) {
-            const SlpWallet = new window.SlpWallet('', {
-                restURL: getRestUrl(apiIndex),
-            });
-            return SlpWallet.bchjs;
-        }
+    const getBCH = (apiIndex = 0) => {
+        let ConstructedSlpWallet;
+
+        ConstructedSlpWallet = new SlpWallet('', {
+            restURL: getRestUrl(apiIndex),
+        });
+        return ConstructedSlpWallet.bchjs;
     };
 
     return {

@@ -37,7 +37,7 @@ from test_framework.util import hex_str_to_bytes, assert_equal
 MIN_VERSION_SUPPORTED = 60001
 # past bip-31 for ping/pong
 MY_VERSION = 70014
-MY_SUBVERSION = b"/python-mininode-tester:0.0.3/"
+MY_SUBVERSION = b"/python-p2p-tester:0.0.3/"
 # from version 70001 onwards, fRelay should be appended to version
 # messages (BIP37)
 MY_RELAY = 1
@@ -51,6 +51,11 @@ MAX_BLOOM_HASH_FUNCS = 50
 LOTUS = 1000000
 COIN = LOTUS
 MAX_MONEY = 2100000000 * COIN
+
+# Maximum length of incoming protocol messages
+MAX_PROTOCOL_MESSAGE_LENGTH = 2 * 1024 * 1024
+MAX_HEADERS_RESULTS = 2000  # Number of headers sent in one getheaders result
+MAX_INV_SIZE = 50000  # Maximum number of entries in an 'inv' protocol message
 
 NODE_NETWORK = (1 << 0)
 NODE_GETUTXO = (1 << 1)
@@ -1026,7 +1031,13 @@ class AvalancheSignedStake:
 
 
 class AvalancheProof:
-    __slots__ = ("sequence", "expiration", "master", "stakes", "proofid")
+    __slots__ = (
+        "sequence",
+        "expiration",
+        "master",
+        "stakes",
+        "limited_proofid",
+        "proofid")
 
     def __init__(self, sequence=0, expiration=0,
                  master=b"", signed_stakes=None):
@@ -1036,29 +1047,33 @@ class AvalancheProof:
 
         self.stakes: List[AvalancheSignedStake] = signed_stakes or [
             AvalancheSignedStake()]
-        self.proofid: int = self.compute_proof_id()
 
-    def compute_proof_id(self) -> int:
-        """Return Bitcoin's 256-bit hash (double SHA-256) of the
+        self.limited_proofid: int = None
+        self.proofid: int = None
+        self.compute_proof_id()
+
+    def compute_proof_id(self):
+        """Compute Bitcoin's 256-bit hash (double SHA-256) of the
         serialized proof data.
-        :return: bytes of length 32
         """
         ss = struct.pack("<Qq", self.sequence, self.expiration)
-        ss += ser_string(self.master)
         ss += ser_compact_size(len(self.stakes))
         # Use unsigned stakes
         for s in self.stakes:
             ss += s.stake.serialize()
         h = hash256(ss)
+        self.limited_proofid = uint256_from_str(h)
+        h += ser_string(self.master)
+        h = hash256(h)
         # make it an int, for comparing with Delegation.proofid
-        return uint256_from_str(h)
+        self.proofid = uint256_from_str(h)
 
     def deserialize(self, f):
         self.sequence = struct.unpack("<Q", f.read(8))[0]
         self.expiration = struct.unpack("<q", f.read(8))[0]
         self.master = deser_string(f)
         self.stakes = deser_vector(f, AvalancheSignedStake)
-        self.proofid = self.compute_proof_id()
+        self.compute_proof_id()
 
     def serialize(self):
         r = b""
@@ -2157,9 +2172,10 @@ class TestFrameworkMessages(unittest.TestCase):
         avaproof = FromHex(AvalancheProof(), proof_hex)
         self.assertEqual(ToHex(avaproof), proof_hex)
 
-        self.assertEqual(f"{avaproof.proofid:x}",
-                         "8ab9e9db85055cea7f541d464a84bd4fabaf284cc2815394868741bbe09b4735"
-                         )
+        self.assertEqual(
+            f"{avaproof.proofid:0{64}x}",
+            "cb33d7fac9092089f0d473c13befa012e6ee4d19abf9a42248f731d5e59e74a2"
+        )
         self.assertEqual(avaproof.sequence, 42)
         self.assertEqual(avaproof.expiration, 1699999999)
         # The master key is extracted from the key_tests.cpp.

@@ -19,7 +19,7 @@ from test_framework.script import (
     OP_HASH160,
     OP_EQUAL,
 )
-from test_framework.mininode import (
+from test_framework.p2p import (
     P2PDataStore,
 )
 from test_framework.test_framework import BitcoinTestFramework

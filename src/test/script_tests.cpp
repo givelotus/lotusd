@@ -602,7 +602,7 @@ public:
         UniValue array(UniValue::VARR);
         if (nValue != Amount::zero()) {
             UniValue amount(UniValue::VARR);
-            amount.push_back(ValueFromAmount(nValue));
+            amount.push_back(nValue);
             array.push_back(amount);
         }
 

@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from test_framework.blocktools import SUBSIDY
 from test_framework.messages import msg_tx, CTransaction, FromHex
-from test_framework.mininode import P2PInterface
+from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
