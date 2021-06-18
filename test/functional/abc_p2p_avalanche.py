@@ -5,7 +5,7 @@
 """Test the resolution of forks via avalanche."""
 import random
 
-from test_framework.avatools import get_stakes
+from test_framework.avatools import create_coinbase_stakes
 from test_framework.key import (
     ECKey,
     ECPubKey,
@@ -64,17 +64,14 @@ class TestNode(P2PInterface):
         self.remote_extra_entropy = message.nExtraEntropy
 
     def on_avaresponse(self, message):
-        with mininode_lock:
-            self.avaresponses.append(message.response)
+        self.avaresponses.append(message.response)
 
     def on_avapoll(self, message):
-        with mininode_lock:
-            self.avapolls.append(message.poll)
+        self.avapolls.append(message.poll)
 
     def on_avahello(self, message):
-        with mininode_lock:
-            assert(self.avahello is None)
-            self.avahello = message
+        assert(self.avahello is None)
+        self.avahello = message
 
     def send_avaresponse(self, round, votes, privkey):
         response = AvalancheResponse(round, 0, votes)
@@ -127,11 +124,6 @@ class AvalancheTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]
 
-        self.log.info("Check the node is signalling the avalanche service.")
-        assert_equal(
-            int(node.getnetworkinfo()['localservices'], 16) & NODE_AVALANCHE,
-            NODE_AVALANCHE)
-
         # Build a fake quorum of nodes.
         def get_node():
             n = TestNode()
@@ -155,7 +147,7 @@ class AvalancheTest(BitcoinTestFramework):
         addrkey0 = node.get_deterministic_priv_key()
         blockhashes = node.generatetoaddress(100, addrkey0.address)
         # Use the first coinbase to create a stake
-        stakes = get_stakes(node, [blockhashes[0]], addrkey0.key)
+        stakes = create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key)
 
         fork_node = self.nodes[1]
         # Make sure the fork node has synced the blocks
@@ -343,11 +335,21 @@ class AvalancheTest(BitcoinTestFramework):
         wait_until(has_parked_new_tip, timeout=15)
         assert_equal(node.getbestblockhash(), fork_tip)
 
+        self.log.info(
+            "Check the node is signalling the avalanche service bit only if there is a proof.")
+        assert_equal(
+            int(node.getnetworkinfo()['localservices'], 16) & NODE_AVALANCHE,
+            0)
+
         # Restart the node
         self.restart_node(0, self.extra_args[0] + [
             "-avaproof={}".format(proof),
             "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
         ])
+
+        assert_equal(
+            int(node.getnetworkinfo()['localservices'], 16) & NODE_AVALANCHE,
+            NODE_AVALANCHE)
 
         self.log.info("Test the avahello signature")
         quorum = get_quorum()

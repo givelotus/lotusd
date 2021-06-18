@@ -826,9 +826,9 @@ public:
     size_t nSendOffset{0};
     uint64_t nSendBytes GUARDED_BY(cs_vSend){0};
     std::deque<std::vector<uint8_t>> vSendMsg GUARDED_BY(cs_vSend);
-    RecursiveMutex cs_vSend;
-    RecursiveMutex cs_hSocket;
-    RecursiveMutex cs_vRecv;
+    Mutex cs_vSend;
+    Mutex cs_hSocket;
+    Mutex cs_vRecv;
 
     RecursiveMutex cs_vProcessMsg;
     std::list<CNetMessage> vProcessMsg GUARDED_BY(cs_vProcessMsg);
@@ -959,7 +959,7 @@ public:
     // There is no final sorting before sending, as they are always sent
     // immediately and in the order requested.
     std::vector<BlockHash> vInventoryBlockToSend GUARDED_BY(cs_inventory);
-    RecursiveMutex cs_inventory;
+    Mutex cs_inventory;
 
     struct TxRelay {
         mutable RecursiveMutex cs_filter;
@@ -1159,16 +1159,6 @@ public:
         if (!m_tx_relay->filterInventoryKnown.contains(txid)) {
             m_tx_relay->setInventoryTxToSend.insert(txid);
         }
-    }
-
-    void PushBlockInventory(const BlockHash &blockhash) {
-        LOCK(cs_inventory);
-        vInventoryBlockToSend.push_back(blockhash);
-    }
-
-    void PushBlockHash(const BlockHash &hash) {
-        LOCK(cs_inventory);
-        vBlockHashesToAnnounce.push_back(hash);
     }
 
     void CloseSocketDisconnect();

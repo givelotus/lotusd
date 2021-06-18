@@ -3,8 +3,12 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test building avalanche proofs and using them to add avalanche peers."""
+from decimal import Decimal
 
-from test_framework.avatools import get_stakes
+from test_framework.avatools import (
+    create_coinbase_stakes,
+    create_stakes,
+)
 from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import AvalancheDelegation
 from test_framework.mininode import P2PInterface
@@ -17,6 +21,9 @@ from test_framework.util import (
 )
 
 AVALANCHE_MAX_PROOF_STAKES = 1000
+
+PROOF_DUST_THRESHOLD = 1.0
+"""Minimum amount per UTXO in a proof (in coins, not in satoshis)"""
 
 
 def add_interface_node(test_node) -> str:
@@ -57,7 +64,7 @@ class AvalancheProofTest(BitcoinTestFramework):
         proof_expiration = 12
         proof = node.buildavalancheproof(
             proof_sequence, proof_expiration, proof_master,
-            get_stakes(node, [blockhashes[0]], addrkey0.key))
+            create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key))
 
         # Restart the node, making sure it is initially in IBD mode
         minchainwork = int(node.getblockchaininfo()["chainwork"], 16) + 1
@@ -78,25 +85,30 @@ class AvalancheProofTest(BitcoinTestFramework):
         assert node.getblockchaininfo()["initialblockdownload"] is False
         wait_until(lambda: len(node.getavalanchepeerinfo()) == 1, timeout=5)
 
-        self.log.info(
-            "A proof using the maximum number of stakes is accepted...")
-        blockhashes = node.generatetoaddress(AVALANCHE_MAX_PROOF_STAKES + 1,
-                                             addrkey0.address)
+        if self.is_wallet_compiled():
+            self.log.info(
+                "A proof using the maximum number of stakes is accepted...")
 
-        too_many_stakes = get_stakes(node, blockhashes, addrkey0.key)
-        maximum_stakes = get_stakes(node, blockhashes[:-1], addrkey0.key)
-        good_proof = node.buildavalancheproof(
-            proof_sequence, proof_expiration,
-            proof_master, maximum_stakes)
-        peerid1 = add_interface_node(node)
-        assert node.addavalanchenode(peerid1, proof_master, good_proof)
+            new_blocks = node.generate(AVALANCHE_MAX_PROOF_STAKES // 10 + 1)
+            # confirm the coinbase UTXOs
+            node.generate(101)
+            too_many_stakes = create_stakes(
+                node, new_blocks, AVALANCHE_MAX_PROOF_STAKES + 1)
+            maximum_stakes = too_many_stakes[:-1]
+            good_proof = node.buildavalancheproof(
+                proof_sequence, proof_expiration,
+                proof_master, maximum_stakes)
+            peerid1 = add_interface_node(node)
+            assert node.addavalanchenode(peerid1, proof_master, good_proof)
 
-        self.log.info("A proof using too many stakes should be rejected...")
-        too_many_utxos = node.buildavalancheproof(
-            proof_sequence, proof_expiration,
-            proof_master, too_many_stakes)
-        peerid2 = add_interface_node(node)
-        assert not node.addavalanchenode(peerid2, proof_master, too_many_utxos)
+            self.log.info(
+                "A proof using too many stakes should be rejected...")
+            too_many_utxos = node.buildavalancheproof(
+                proof_sequence, proof_expiration,
+                proof_master, too_many_stakes)
+            peerid2 = add_interface_node(node)
+            assert not node.addavalanchenode(
+                peerid2, proof_master, too_many_utxos)
 
         self.log.info("Generate delegations for the proof")
 
@@ -122,9 +134,11 @@ class AvalancheProofTest(BitcoinTestFramework):
         random_pubkey = get_hex_pubkey(random_privkey)
 
         # Invalid proof
+        no_stake = node.buildavalancheproof(
+            proof_sequence, proof_expiration, proof_master, [])
         assert_raises_rpc_error(-8, "The proof is invalid",
                                 node.delegateavalancheproof,
-                                too_many_utxos,
+                                no_stake,
                                 bytes_to_wif(privkey.get_bytes()),
                                 random_pubkey,
                                 )
@@ -166,16 +180,19 @@ class AvalancheProofTest(BitcoinTestFramework):
 
         # Test invalid proofs
         self.log.info("Bad proof should be rejected at startup")
-        no_stake = node.buildavalancheproof(
-            proof_sequence, proof_expiration, proof_master, [])
-
         dust = node.buildavalancheproof(
             proof_sequence, proof_expiration, proof_master,
-            get_stakes(node, [blockhashes[0]], addrkey0.key, amount="0"))
+            create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key, amount="0"))
+
+        dust_amount = Decimal(f"{PROOF_DUST_THRESHOLD * 0.9999:.4f}")
+        dust2 = node.buildavalancheproof(
+            proof_sequence, proof_expiration, proof_master,
+            create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key,
+                                   amount=str(dust_amount)))
 
         duplicate_stake = node.buildavalancheproof(
             proof_sequence, proof_expiration, proof_master,
-            get_stakes(node, [blockhashes[0]] * 2, addrkey0.key))
+            create_coinbase_stakes(node, [blockhashes[0]] * 2, addrkey0.key))
 
         bad_sig = ("0b000000000000000c0000000000000021030b4c866585dd868a9d62348"
                    "a9cd008d6a312937048fff31670e7e920cfc7a7440105c5f72f5d6da3085"
@@ -186,6 +203,28 @@ class AvalancheProofTest(BitcoinTestFramework):
                    "1321b91a79b82d1c2cfd47793261e4ba003cf5")
 
         self.stop_node(0)
+
+        node.assert_start_raises_init_error(
+            self.extra_args[0] + [
+                "-avasessionkey=0",
+            ],
+            expected_msg="Error: the avalanche session key is invalid",
+        )
+
+        node.assert_start_raises_init_error(
+            self.extra_args[0] + [
+                "-avaproof={}".format(proof),
+            ],
+            expected_msg="Error: the avalanche master key is missing for the avalanche proof",
+        )
+
+        node.assert_start_raises_init_error(
+            self.extra_args[0] + [
+                "-avaproof={}".format(proof),
+                "-avamasterkey=0",
+            ],
+            expected_msg="Error: the avalanche master key is invalid",
+        )
 
         def check_proof_init_error(proof, message):
             node.assert_start_raises_init_error(
@@ -200,20 +239,23 @@ class AvalancheProofTest(BitcoinTestFramework):
                                "the avalanche proof has no stake")
         check_proof_init_error(dust,
                                "the avalanche proof stake is too low")
+        check_proof_init_error(dust2,
+                               "the avalanche proof stake is too low")
         check_proof_init_error(duplicate_stake,
                                "the avalanche proof has duplicated stake")
         check_proof_init_error(bad_sig,
                                "the avalanche proof has invalid stake signatures")
-        # The too many utxos case creates a proof which is that large that it
-        # cannot fit on the command line
-        append_config(node.datadir, ["avaproof={}".format(too_many_utxos)])
-        node.assert_start_raises_init_error(
-            self.extra_args[0] + [
-                "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
-            ],
-            expected_msg="Error: the avalanche proof has too many utxos",
-            match=ErrorMatch.PARTIAL_REGEX,
-        )
+        if self.is_wallet_compiled():
+            # The too many utxos case creates a proof which is that large that it
+            # cannot fit on the command line
+            append_config(node.datadir, ["avaproof={}".format(too_many_utxos)])
+            node.assert_start_raises_init_error(
+                self.extra_args[0] + [
+                    "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
+                ],
+                expected_msg="Error: the avalanche proof has too many utxos",
+                match=ErrorMatch.PARTIAL_REGEX,
+            )
 
 
 if __name__ == '__main__':

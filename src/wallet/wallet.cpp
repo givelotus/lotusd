@@ -74,11 +74,6 @@ bool RemoveWallet(const std::shared_ptr<CWallet> &wallet) {
     return true;
 }
 
-bool HasWallets() {
-    LOCK(cs_wallets);
-    return !vpwallets.empty();
-}
-
 std::vector<std::shared_ptr<CWallet>> GetWallets() {
     LOCK(cs_wallets);
     return vpwallets;
@@ -828,7 +823,6 @@ void CWallet::SetSpentKeyState(WalletBatch &batch, const TxId &txid,
 
 bool CWallet::IsSpentKey(const TxId &txid, unsigned int n) const {
     AssertLockHeld(cs_wallet);
-    CTxDestination dst;
     const CWalletTx *srctx = GetWalletTx(txid);
     if (srctx) {
         assert(srctx->tx->vout.size() > n);

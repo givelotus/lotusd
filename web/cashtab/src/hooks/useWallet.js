@@ -7,7 +7,11 @@ import useAsyncTimeout from '@hooks/useAsyncTimeout';
 import usePrevious from '@hooks/usePrevious';
 import useBCH from '@hooks/useBCH';
 import BigNumber from 'bignumber.js';
-import { fromSmallestDenomination } from '@utils/cashMethods';
+import {
+    fromSmallestDenomination,
+    loadStoredWallet,
+    isValidStoredWallet,
+} from '@utils/cashMethods';
 import localforage from 'localforage';
 import { currency } from '@components/Common/Ticker';
 import _ from 'lodash';
@@ -19,9 +23,11 @@ const useWallet = () => {
     const [apiError, setApiError] = useState(false);
     const [walletState, setWalletState] = useState({
         balances: {},
+        hydratedUtxoDetails: {},
         tokens: [],
-        slpBalancesAndUtxos: [],
+        slpBalancesAndUtxos: {},
         parsedTxHistory: [],
+        utxos: [],
     });
     const {
         getBCH,
@@ -118,7 +124,23 @@ const useWallet = () => {
         };
     };
 
-    const haveUtxosChanged = (utxos, previousUtxos) => {
+    const loadWalletFromStorageOnStartup = async setWallet => {
+        // get wallet object from localforage
+        const wallet = await getWallet();
+        // If wallet object in storage is valid, use it to set state on startup
+        if (isValidStoredWallet(wallet)) {
+            // Convert all the token balance figures to big numbers
+            const liveWalletState = loadStoredWallet(wallet.state);
+            wallet.state = liveWalletState;
+
+            setWallet(wallet);
+            return setLoading(false);
+        }
+        // Loading will remain true until API calls populate this legacy wallet
+        setWallet(wallet);
+    };
+
+    const haveUtxosChanged = (wallet, utxos, previousUtxos) => {
         // Relevant points for this array comparing exercise
         // https://stackoverflow.com/questions/13757109/triple-equal-signs-return-false-for-arrays-in-javascript-why
         // https://stackoverflow.com/questions/7837456/how-to-compare-arrays-in-javascript
@@ -129,11 +151,22 @@ const useWallet = () => {
             return true;
         }
         // If this is the first time the wallet received utxos
-        if (
-            typeof previousUtxos === 'undefined' ||
-            typeof utxos === 'undefined'
-        ) {
+        if (typeof utxos === 'undefined') {
             // Then they have certainly changed
+            return true;
+        }
+        if (typeof previousUtxos === 'undefined') {
+            // Compare to what you have in localStorage on startup
+            // If previousUtxos are undefined, see if you have previousUtxos in wallet state
+            // If you do, and it has everything you need, set wallet state with that instead of calling hydrateUtxos on all utxos
+            if (isValidStoredWallet(wallet)) {
+                // Convert all the token balance figures to big numbers
+                const liveWalletState = loadStoredWallet(wallet.state);
+
+                return setWalletState(liveWalletState);
+            }
+            // If wallet in storage is a legacy wallet or otherwise does not have all state fields,
+            // then assume utxos have changed
             return true;
         }
         // return true for empty array, since this means you definitely do not want to skip the next API call
@@ -141,8 +174,16 @@ const useWallet = () => {
             return true;
         }
 
+        // If utxo set is in wallet object, use that to compare instead of previousUtxos
+        let previousUtxosToCompare;
+        if (wallet.state && wallet.state.utxos) {
+            previousUtxosToCompare = wallet.state.utxos;
+        } else {
+            previousUtxosToCompare = previousUtxos;
+        }
+
         // Compare utxo sets
-        const utxoArraysUnchanged = _.isEqual(utxos, previousUtxos);
+        const utxoArraysUnchanged = _.isEqual(utxos, previousUtxosToCompare);
 
         // If utxos are not the same as previousUtxos
         if (utxoArraysUnchanged) {
@@ -178,7 +219,12 @@ const useWallet = () => {
             }
             setUtxos(utxos);
 
-            const utxosHaveChanged = haveUtxosChanged(utxos, previousUtxos);
+            // Need to call with wallet as a parameter rather than trusting it is in state, otherwise can sometimes get wallet=false from haveUtxosChanged
+            const utxosHaveChanged = haveUtxosChanged(
+                wallet,
+                utxos,
+                previousUtxos,
+            );
 
             // If the utxo set has not changed,
             if (!utxosHaveChanged) {
@@ -227,7 +273,17 @@ const useWallet = () => {
 
             newState.parsedTxHistory = parsedWithTokens;
 
+            newState.utxos = utxos;
+
+            newState.hydratedUtxoDetails = hydratedUtxoDetails;
+
             setWalletState(newState);
+
+            // Set wallet with new state field
+            // Note: now that wallet carries state, maintaining a separate walletState object is redundant
+            // TODO clear up in future diff
+            wallet.state = wallet.newState;
+            setWallet(wallet);
 
             // Write this state to indexedDb using localForage
             writeWalletState(wallet, newState);
@@ -356,10 +412,8 @@ const useWallet = () => {
     const writeWalletState = async (wallet, newState) => {
         // Add new state as an object on the active wallet
         wallet.state = newState;
-        console.log(`wallet with state`, wallet);
         try {
             await localforage.setItem('wallet', wallet);
-            console.log(`Wallet new state successfully written`);
         } catch (err) {
             console.log(`Error in writeWalletState()`);
             console.log(err);
@@ -544,6 +598,12 @@ const useWallet = () => {
                 );
                 return false;
             }
+        }
+        // Make sure stored wallet is in correct format to be used as live wallet
+        if (isValidStoredWallet(walletToActivate)) {
+            // Convert all the token balance figures to big numbers
+            const liveWalletState = loadStoredWallet(walletToActivate.state);
+            walletToActivate.state = liveWalletState;
         }
 
         return walletToActivate;
@@ -740,8 +800,7 @@ const useWallet = () => {
     };
 
     const handleUpdateWallet = async setWallet => {
-        const wallet = await getWallet();
-        setWallet(wallet);
+        await loadWalletFromStorageOnStartup(setWallet);
     };
 
     // Parse for incoming BCH transactions
@@ -1253,10 +1312,17 @@ const useWallet = () => {
             setLoading(true);
             const newWallet = await activateWallet(walletToActivate);
             setWallet(newWallet);
-            update({
-                wallet: newWallet,
-                setWalletState,
-            }).finally(() => setLoading(false));
+            if (isValidStoredWallet(walletToActivate)) {
+                // If you have all state parameters needed in storage, immediately load the wallet
+                setLoading(false);
+            } else {
+                // If the wallet is missing state parameters in storage, wait for API info
+                // This handles case of unmigrated legacy wallet
+                update({
+                    wallet: newWallet,
+                    setWalletState,
+                }).finally(() => setLoading(false));
+            }
         },
         addNewSavedWallet,
         renameWallet,
