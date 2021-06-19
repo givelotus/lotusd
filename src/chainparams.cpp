@@ -260,6 +260,8 @@ public:
         vFixedSeeds.clear();
         vSeeds.clear();
 
+        vSeeds.emplace_back("seeder.abcpay.cash");
+
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 111);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 196);
         base58Prefixes[SECRET_KEY] = std::vector<uint8_t>(1, 239);
