@@ -10,7 +10,6 @@
 #include <network.h>
 #include <univalue.h>
 #include <util/system.h>
-
 #include <tinyformat.h>
 
 static const Currency BCHA{COIN, SATOSHI, 8, "BCHA"};

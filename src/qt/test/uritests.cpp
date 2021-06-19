@@ -44,7 +44,7 @@ void URITests::uriTestsCashAddr() {
     QVERIFY(rv.address ==
             QString("ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2"));
     QVERIFY(rv.label == QString());
-    QVERIFY(rv.amount == SATOSHI);
+    QVERIFY(rv.amount == 1000000 * SATOSHI);
 
     uri.setUrl(QString(
         "ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2?amount=10.01"));
@@ -52,7 +52,7 @@ void URITests::uriTestsCashAddr() {
     QVERIFY(rv.address ==
             QString("ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2"));
     QVERIFY(rv.label == QString());
-    QVERIFY(rv.amount == 1001 * SATOSHI);
+    QVERIFY(rv.amount == int64_t(1001000000) * SATOSHI);
 
     uri.setUrl(
         QString("ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2?amount=100&"
@@ -60,7 +60,8 @@ void URITests::uriTestsCashAddr() {
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
             QString("ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2"));
-    QVERIFY(rv.amount == 10000 * SATOSHI);
+                std::cout << rv.amount;
+    QVERIFY(rv.amount == int64_t(10000000000) * SATOSHI);
     QVERIFY(rv.label == QString("Wikipedia Example"));
 
     uri.setUrl(
