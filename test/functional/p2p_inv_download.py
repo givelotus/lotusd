@@ -170,7 +170,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
                 "txid": self.nodes[0].getblock(self.nodes[0].getblockhash(1))['tx'][0],
                 "vout": 0
             }],
-            outputs={ADDRESS_BCHREG_UNSPENDABLE: 50000000 - 250.00},
+            outputs={ADDRESS_BCHREG_UNSPENDABLE: 50 - 0.00025},
         )
         tx = self.nodes[0].signrawtransactionwithkey(
             hexstring=tx,

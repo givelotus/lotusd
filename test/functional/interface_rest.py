@@ -91,10 +91,9 @@ class RESTTest (BitcoinTestFramework):
         self.nodes[1].generatetoaddress(100, not_related_address)
         self.sync_all()
 
-        assert_equal(self.nodes[0].getbalance(), 50000000)
+        assert_equal(self.nodes[0].getbalance(), 50)
 
-        txid = self.nodes[0].sendtoaddress(
-            self.nodes[1].getnewaddress(), 100000)
+        txid = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 0.1)
         self.sync_all()
 
         self.log.info("Test the /tx URI")
@@ -111,8 +110,7 @@ class RESTTest (BitcoinTestFramework):
         # Get the vin to later check for utxo (should be spent by then)
         spent = (json_obj['vin'][0]['txid'], json_obj['vin'][0]['vout'])
         # Get n of 0.1 outpoint
-        n, = filter_output_indices_by_value(
-            json_obj['vout'], Decimal('100000'))
+        n, = filter_output_indices_by_value(json_obj['vout'], Decimal('0.1'))
         spending = (txid, n)
 
         self.log.info("Query an unspent TXO using the /getutxos URI")
@@ -121,7 +119,7 @@ class RESTTest (BitcoinTestFramework):
         self.sync_all()
         bb_hash = self.nodes[0].getbestblockhash()
 
-        assert_equal(self.nodes[1].getbalance(), Decimal("100000"))
+        assert_equal(self.nodes[1].getbalance(), Decimal("0.1"))
 
         # Check chainTip response
         json_obj = self.test_rest_request("/getutxos/{}-{}".format(*spending))
@@ -129,7 +127,7 @@ class RESTTest (BitcoinTestFramework):
 
         # Make sure there is one utxo
         assert_equal(len(json_obj['utxos']), 1)
-        assert_equal(json_obj['utxos'][0]['value'], Decimal('100000'))
+        assert_equal(json_obj['utxos'][0]['value'], Decimal('0.1'))
 
         self.log.info("Query a spent TXO using the /getutxos URI")
 
@@ -178,15 +176,13 @@ class RESTTest (BitcoinTestFramework):
         # found with or without /checkmempool.
 
         # Do a tx and don't sync
-        txid = self.nodes[0].sendtoaddress(
-            self.nodes[1].getnewaddress(), 100000)
+        txid = self.nodes[0].sendtoaddress(self.nodes[1].getnewaddress(), 0.1)
         json_obj = self.test_rest_request("/tx/{}".format(txid))
         # Get the spent output to later check for utxo (should be spent by
         # then)
         spent = (json_obj['vin'][0]['txid'], json_obj['vin'][0]['vout'])
         # Get n of 0.1 outpoint
-        n, = filter_output_indices_by_value(
-            json_obj['vout'], Decimal('100000'))
+        n, = filter_output_indices_by_value(json_obj['vout'], Decimal('0.1'))
         spending = (txid, n)
 
         json_obj = self.test_rest_request("/getutxos/{}-{}".format(*spending))

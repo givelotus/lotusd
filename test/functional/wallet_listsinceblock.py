@@ -37,8 +37,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
 
     def test_no_blockhash(self):
         self.log.info("Test no blockhash")
-        txid = self.nodes[2].sendtoaddress(
-            self.nodes[0].getnewaddress(), 1000000)
+        txid = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), 1)
         blockhash, = self.nodes[2].generate(1)
         blockheight = self.nodes[2].getblockheader(blockhash)['height']
         self.sync_all()
@@ -46,7 +45,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
         txs = self.nodes[0].listtransactions()
         assert_array_result(txs, {"txid": txid}, {
             "category": "receive",
-            "amount": 1000000,
+            "amount": 1,
             "blockhash": blockhash,
             "blockheight": blockheight,
             "confirmations": 1,
@@ -107,8 +106,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
         self.split_network()
 
         # send to nodes[0] from nodes[2]
-        senttx = self.nodes[2].sendtoaddress(
-            self.nodes[0].getnewaddress(), 1000000)
+        senttx = self.nodes[2].sendtoaddress(self.nodes[0].getnewaddress(), 1)
 
         # generate on both sides
         nodes1_last_blockhash = self.nodes[1].generate(6)[-1]
@@ -176,9 +174,9 @@ class ListSinceBlockTest(BitcoinTestFramework):
         self.nodes[1].importprivkey(privkey)
 
         # send from nodes[1] using utxo to nodes[0]
-        change = '{:.2f}'.format(float(utxo['amount']) - 1000300.00)
+        change = '{:.8f}'.format(float(utxo['amount']) - 1.0003)
         recipient_dict = {
-            self.nodes[0].getnewaddress(): 1000000,
+            self.nodes[0].getnewaddress(): 1,
             self.nodes[1].getnewaddress(): change,
         }
         utxo_dicts = [{
@@ -191,7 +189,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
 
         # send from nodes[2] using utxo to nodes[3]
         recipient_dict2 = {
-            self.nodes[3].getnewaddress(): 1000000,
+            self.nodes[3].getnewaddress(): 1,
             self.nodes[2].getnewaddress(): change,
         }
         self.nodes[2].sendrawtransaction(
@@ -255,9 +253,9 @@ class ListSinceBlockTest(BitcoinTestFramework):
         # create and sign a transaction
         utxos = self.nodes[2].listunspent()
         utxo = utxos[0]
-        change = '{:.2f}'.format(float(utxo['amount']) - 1000300.00)
+        change = '{:.8f}'.format(float(utxo['amount']) - 1.0003)
         recipient_dict = {
-            self.nodes[0].getnewaddress(): 1000000,
+            self.nodes[0].getnewaddress(): 1,
             self.nodes[2].getnewaddress(): change,
         }
         utxo_dicts = [{

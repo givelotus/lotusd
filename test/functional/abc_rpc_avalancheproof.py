@@ -31,7 +31,7 @@ from test_framework.util import (
 
 AVALANCHE_MAX_PROOF_STAKES = 1000
 
-PROOF_DUST_THRESHOLD = 1000000.0
+PROOF_DUST_THRESHOLD = 1.0
 """Minimum amount per UTXO in a proof (in coins, not in satoshis)"""
 
 
@@ -247,7 +247,7 @@ class AvalancheProofTest(BitcoinTestFramework):
             proof_sequence, proof_expiration, proof_master, [{
                 'txid': '0' * 64,
                 'vout': 0,
-                'amount': 10000000,
+                'amount': 10,
                 'height': 42,
                 'iscoinbase': False,
                 'privatekey': addrkey0.key,
@@ -315,7 +315,7 @@ class AvalancheProofTest(BitcoinTestFramework):
         raw_tx = node.createrawtransaction(
             [{"txid": stakes[-1]["txid"], "vout": 0}],
             {ADDRESS_BCHREG_UNSPENDABLE: stakes[-1]
-                ["amount"] - Decimal('10000')}
+                ["amount"] - Decimal('0.01')}
         )
         signed_tx = node.signrawtransactionwithkey(raw_tx, [addrkey0.key])
         node.sendrawtransaction(signed_tx["hex"])
