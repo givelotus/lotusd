@@ -275,12 +275,6 @@ public:
     /* Function to determine if a certain KV/key-type is a key (cryptographical
      * key) type */
     static bool IsKeyType(const std::string &strType);
-    /* verifies the database environment */
-    static bool VerifyEnvironment(const fs::path &wallet_path,
-                                  bilingual_str &errorStr);
-    /* verifies the database file */
-    static bool VerifyDatabaseFile(const fs::path &wallet_path,
-                                   bilingual_str &errorStr);
 
     //! write the hdchain model (external chain child index counter)
     bool WriteHDChain(const CHDChain &chain);
@@ -308,5 +302,16 @@ bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey, CDataStream &ssValue,
 
 /** Return whether a wallet database is currently loaded. */
 bool IsWalletLoaded(const fs::path &wallet_path);
+
+/** Return object for accessing database at specified path. */
+std::unique_ptr<BerkeleyDatabase> CreateWalletDatabase(const fs::path &path);
+
+/**
+ * Return object for accessing dummy database with no read/write capabilities.
+ */
+std::unique_ptr<BerkeleyDatabase> CreateDummyWalletDatabase();
+
+/** Return object for accessing temporary in-memory database. */
+std::unique_ptr<BerkeleyDatabase> CreateMockWalletDatabase();
 
 #endif // BITCOIN_WALLET_WALLETDB_H

@@ -35,11 +35,6 @@ namespace {
             return p.getSuitableNodeToQuery();
         }
 
-        static avalanche::PeerManager &getPeerManager(Processor &p) {
-            LOCK(p.cs_peerManager);
-            return *p.peerManager;
-        }
-
         static uint64_t getRound(const Processor &p) { return p.round; }
     };
 } // namespace
@@ -117,7 +112,7 @@ struct AvalancheTestingSetup : public TestChain100Setup {
     }
 
     size_t next_coinbase = 0;
-    Proof GetProof() {
+    std::shared_ptr<Proof> GetProof() {
         size_t current_coinbase = next_coinbase++;
         const CTransaction &coinbase = *m_coinbase_txns[current_coinbase];
         ProofBuilder pb(0, 0, masterpriv.GetPubKey());
@@ -125,24 +120,23 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         BOOST_CHECK(pb.addUTXO(COutPoint(coinbase.GetId(), 1),
                                coinbase.vout[1].nValue, current_coinbase + 1,
                                true, coinbaseKey));
-        return pb.build();
+        return std::make_shared<Proof>(pb.build());
     }
 
     bool addNode(NodeId nodeid) {
-        Proof proof = GetProof();
+        auto proof = GetProof();
         return m_processor->addNode(nodeid, proof,
-                                    DelegationBuilder(proof).build());
+                                    DelegationBuilder(*proof).build());
     }
 
     std::array<CNode *, 8> ConnectNodes() {
-        avalanche::PeerManager &pm = getPeerManager();
-        Proof proof = GetProof();
-        Delegation dg = DelegationBuilder(proof).build();
+        auto proof = GetProof();
+        Delegation dg = DelegationBuilder(*proof).build();
 
         std::array<CNode *, 8> nodes;
         for (CNode *&n : nodes) {
             n = ConnectNode(NODE_AVALANCHE);
-            BOOST_CHECK(pm.addNode(n->GetId(), proof, dg));
+            BOOST_CHECK(m_processor->addNode(n->GetId(), proof, dg));
         }
 
         return nodes;
@@ -156,10 +150,6 @@ struct AvalancheTestingSetup : public TestChain100Setup {
 
     std::vector<CInv> getInvsForNextPoll() {
         return AvalancheTest::getInvsForNextPoll(*m_processor);
-    }
-
-    avalanche::PeerManager &getPeerManager() {
-        return AvalancheTest::getPeerManager(*m_processor);
     }
 
     uint64_t getRound() const { return AvalancheTest::getRound(*m_processor); }
@@ -744,14 +734,13 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
 
 BOOST_AUTO_TEST_CASE(poll_inflight_count) {
     // Create enough nodes so that we run into the inflight request limit.
-    avalanche::PeerManager &pm = getPeerManager();
-    Proof proof = GetProof();
-    Delegation dg = DelegationBuilder(proof).build();
+    auto proof = GetProof();
+    Delegation dg = DelegationBuilder(*proof).build();
 
     std::array<CNode *, AVALANCHE_MAX_INFLIGHT_POLL + 1> nodes;
     for (auto &n : nodes) {
         n = ConnectNode(NODE_AVALANCHE);
-        BOOST_CHECK(pm.addNode(n->GetId(), proof, dg));
+        BOOST_CHECK(m_processor->addNode(n->GetId(), proof, dg));
     }
 
     // Add a block to poll
@@ -970,6 +959,55 @@ BOOST_AUTO_TEST_CASE(destructor) {
     // Wait for the scheduler to stop.
     s.stop(true);
     schedulerThread.join();
+}
+
+BOOST_AUTO_TEST_CASE(proof_accessors) {
+    constexpr int numProofs = 10;
+
+    std::vector<std::shared_ptr<Proof>> proofs;
+    proofs.reserve(numProofs);
+    for (int i = 0; i < numProofs; i++) {
+        proofs.push_back(GetProof());
+    }
+
+    const Peer::Timestamp checkpoint =
+        Peer::Timestamp(std::chrono::seconds(GetTime()));
+
+    for (int i = 0; i < numProofs; i++) {
+        BOOST_CHECK(m_processor->addProof(proofs[i]));
+        // Fail to add an existing proof
+        BOOST_CHECK(!m_processor->addProof(proofs[i]));
+
+        for (int added = 0; added <= i; added++) {
+            auto proof = m_processor->getProof(proofs[added]->getId());
+            BOOST_CHECK(proof != nullptr);
+
+            const ProofId &proofid = proof->getId();
+            BOOST_CHECK_EQUAL(proofid, proofs[added]->getId());
+
+            const Peer::Timestamp proofTime =
+                m_processor->getProofTime(proofid);
+            BOOST_CHECK(proofTime != Peer::Timestamp::max());
+            BOOST_CHECK(proofTime >= checkpoint);
+        }
+
+        for (int missing = i + 1; missing < numProofs; missing++) {
+            const ProofId &proofid = proofs[missing]->getId();
+            BOOST_CHECK(!m_processor->getProof(proofid));
+            BOOST_CHECK(m_processor->getProofTime(proofid) ==
+                        Peer::Timestamp::max());
+        }
+    }
+
+    // No stake, copied from proof_tests.cpp
+    const std::string badProofHex(
+        "96527eae083f1f24625f049d9e54bb9a2102a93d98bf42ab90cfc0bf9e7c634ed76a7"
+        "3e95b02cacfd357b64e4fb6c92e92dd00");
+    bilingual_str error;
+    Proof badProof;
+    BOOST_CHECK(Proof::FromHex(badProof, badProofHex, error));
+    BOOST_CHECK(
+        !m_processor->addProof(std::make_shared<Proof>(std::move(badProof))));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

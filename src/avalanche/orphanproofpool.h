@@ -10,19 +10,25 @@
 #include <boost/multi_index/sequenced_index.hpp>
 #include <boost/multi_index_container.hpp>
 
+#include <memory>
+
 namespace avalanche {
+
+class PeerManager;
 
 // Extracts a ProofId from a Proof
 struct proofid_extractor {
     using result_type = ProofId;
-    result_type operator()(const Proof &proof) const { return proof.getId(); }
+    result_type operator()(const std::shared_ptr<Proof> &proof) const {
+        return proof->getId();
+    }
 };
 
 struct by_sequence {};
 struct by_proofid {};
 
 using ProofContainer = boost::multi_index_container<
-    Proof,
+    std::shared_ptr<Proof>,
     boost::multi_index::indexed_by<
         // keep insertion order
         boost::multi_index::sequenced<boost::multi_index::tag<by_sequence>>,
@@ -57,7 +63,7 @@ public:
      * Add a proof to the pool.
      * The caller is responsible for checking the proof.
      */
-    bool addProof(Proof proof);
+    bool addProof(const std::shared_ptr<Proof> &proof);
 
     /** Remove a proof from the pool. */
     bool removeProof(const ProofId &proofId);
@@ -66,7 +72,13 @@ public:
      * Get a pointer to a proof by id, or nullptr if the proof is not in the
      * pool.
      */
-    const Proof *getProof(const ProofId &proofId) const;
+    std::shared_ptr<Proof> getProof(const ProofId &proofId) const;
+
+    /**
+     * Rescan the pool to remove previously orphaned proofs that have become
+     * good or permanently bad.
+     */
+    void rescan(PeerManager &peerManager);
 
     // For testing
     size_t getNProofs() const;

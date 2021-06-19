@@ -6,14 +6,21 @@
 
 #include <chainparams.h>
 #include <consensus/activation.h>
+#include <currencyunit.h>
 #include <key_io.h> // For DecodeDestination
+#include <cashaddrenc.h> // For DecodeCashAddrContent
 #include <util/system.h>
 #include <validation.h> // For VersionBitsBlockState
 
-static const CTxOut BuildOutput(const std::string &dest, const Amount amount) {
+static const CTxOut BuildOutput(const std::string &address, const Amount amount) {
     const auto mainNetParams = CreateChainParams(CBaseChainParams::MAIN);
+    auto dest = DecodeDestination(address, *mainNetParams);
+    if(!IsValidDestination(dest)) {
+        // Try the ecash cashaddr prefix.
+        dest = DecodeCashAddrDestination(DecodeCashAddrContent(address, "bitcoincash"));
+    }
     const CScript script =
-        GetScriptForDestination(DecodeDestination(dest, *mainNetParams));
+        GetScriptForDestination(dest);
     return {amount, script};
 }
 

@@ -560,7 +560,7 @@ void CoinControlDialog::updateLabels(CCoinControl &m_coin_control,
     }
 
     // actually update labels
-    int nDisplayUnit = BitcoinUnits::LOTUS;
+    int nDisplayUnit = BitcoinUnits::base;
     if (model && model->getOptionsModel()) {
         nDisplayUnit = model->getOptionsModel()->getDisplayUnit();
     }

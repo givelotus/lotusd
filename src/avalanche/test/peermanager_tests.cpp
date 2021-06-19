@@ -154,6 +154,10 @@ BOOST_AUTO_TEST_CASE(select_peer_random) {
     }
 }
 
+static std::shared_ptr<Proof> getRandomProofPtr(uint32_t score) {
+    return std::make_shared<Proof>(buildRandomProof(score));
+}
+
 BOOST_AUTO_TEST_CASE(peer_probabilities) {
     // No peers.
     avalanche::PeerManager pm;
@@ -162,14 +166,14 @@ BOOST_AUTO_TEST_CASE(peer_probabilities) {
     const NodeId node0 = 42, node1 = 69, node2 = 37;
 
     // One peer, we always return it.
-    Proof proof0 = buildRandomProof(MIN_VALID_PROOF_SCORE);
-    Delegation dg0 = DelegationBuilder(proof0).build();
+    auto proof0 = getRandomProofPtr(MIN_VALID_PROOF_SCORE);
+    Delegation dg0 = DelegationBuilder(*proof0).build();
     pm.addNode(node0, proof0, dg0);
     BOOST_CHECK_EQUAL(pm.selectNode(), node0);
 
     // Two peers, verify ratio.
-    Proof proof1 = buildRandomProof(2 * MIN_VALID_PROOF_SCORE);
-    Delegation dg1 = DelegationBuilder(proof1).build();
+    auto proof1 = getRandomProofPtr(2 * MIN_VALID_PROOF_SCORE);
+    Delegation dg1 = DelegationBuilder(*proof1).build();
     pm.addNode(node1, proof1, dg1);
 
     std::unordered_map<PeerId, int> results = {};
@@ -182,8 +186,8 @@ BOOST_AUTO_TEST_CASE(peer_probabilities) {
     BOOST_CHECK(abs(2 * results[0] - results[1]) < 500);
 
     // Three peers, verify ratio.
-    Proof proof2 = buildRandomProof(MIN_VALID_PROOF_SCORE);
-    Delegation dg2 = DelegationBuilder(proof2).build();
+    auto proof2 = getRandomProofPtr(MIN_VALID_PROOF_SCORE);
+    Delegation dg2 = DelegationBuilder(*proof2).build();
     pm.addNode(node2, proof2, dg2);
 
     results.clear();
@@ -204,10 +208,10 @@ BOOST_AUTO_TEST_CASE(remove_peer) {
     // Add 4 peers.
     std::array<PeerId, 8> peerids;
     for (int i = 0; i < 4; i++) {
-        Proof p = buildRandomProof(100);
+        auto p = getRandomProofPtr(100);
         peerids[i] = pm.getPeerId(p);
         BOOST_CHECK(
-            pm.addNode(InsecureRand32(), p, DelegationBuilder(p).build()));
+            pm.addNode(InsecureRand32(), p, DelegationBuilder(*p).build()));
     }
 
     BOOST_CHECK_EQUAL(pm.getSlotCount(), 400);
@@ -237,10 +241,10 @@ BOOST_AUTO_TEST_CASE(remove_peer) {
 
     // Add 4 more peers.
     for (int i = 0; i < 4; i++) {
-        Proof p = buildRandomProof(100);
+        auto p = getRandomProofPtr(100);
         peerids[i + 4] = pm.getPeerId(p);
         BOOST_CHECK(
-            pm.addNode(InsecureRand32(), p, DelegationBuilder(p).build()));
+            pm.addNode(InsecureRand32(), p, DelegationBuilder(*p).build()));
     }
 
     BOOST_CHECK_EQUAL(pm.getSlotCount(), 700);
@@ -280,10 +284,10 @@ BOOST_AUTO_TEST_CASE(compact_slots) {
     // Add 4 peers.
     std::array<PeerId, 4> peerids;
     for (int i = 0; i < 4; i++) {
-        Proof p = buildRandomProof(100);
+        auto p = getRandomProofPtr(100);
         peerids[i] = pm.getPeerId(p);
         BOOST_CHECK(
-            pm.addNode(InsecureRand32(), p, DelegationBuilder(p).build()));
+            pm.addNode(InsecureRand32(), p, DelegationBuilder(*p).build()));
     }
 
     // Remove all peers.
@@ -308,8 +312,8 @@ BOOST_AUTO_TEST_CASE(node_crud) {
     avalanche::PeerManager pm;
 
     // Create one peer.
-    Proof proof = buildRandomProof(10000000 * MIN_VALID_PROOF_SCORE);
-    Delegation dg = DelegationBuilder(proof).build();
+    auto proof = getRandomProofPtr(10000000 * MIN_VALID_PROOF_SCORE);
+    Delegation dg = DelegationBuilder(*proof).build();
     BOOST_CHECK_EQUAL(pm.selectNode(), NO_NODE);
 
     // Add 4 nodes.
@@ -347,8 +351,8 @@ BOOST_AUTO_TEST_CASE(node_crud) {
 
     // Move a node from a peer to another. This peer has a very low score such
     // as chances of being picked are 1 in 10 million.
-    Proof altproof = buildRandomProof(MIN_VALID_PROOF_SCORE);
-    Delegation altdg = DelegationBuilder(altproof).build();
+    auto altproof = getRandomProofPtr(MIN_VALID_PROOF_SCORE);
+    Delegation altdg = DelegationBuilder(*altproof).build();
     BOOST_CHECK(pm.addNode(3, altproof, altdg));
 
     int node3selected = 0;
@@ -396,7 +400,7 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
             pb.addUTXO(o, v, height, false, key);
         }
 
-        return pm.getPeerId(pb.build());
+        return pm.getPeerId(std::make_shared<Proof>(pb.build()));
     };
 
     // Add one peer.
@@ -436,6 +440,120 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
     // Mutliple inputs, collision on both inputs.
     BOOST_CHECK_EQUAL(getPeerId({COutPoint(txid1, 0), COutPoint(txid2, 2)}),
                       NO_PEER);
+}
+
+BOOST_AUTO_TEST_CASE(orphan_proofs) {
+    avalanche::PeerManager pm;
+
+    CKey key;
+    key.MakeNewKey(true);
+    const CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    COutPoint outpoint1 = COutPoint(TxId(GetRandHash()), 0);
+    COutPoint outpoint2 = COutPoint(TxId(GetRandHash()), 0);
+    COutPoint outpoint3 = COutPoint(TxId(GetRandHash()), 0);
+
+    const Amount v = 5 * COIN;
+    const int height = 1234;
+    const int wrongHeight = 12345;
+
+    const auto makeProof = [&](const COutPoint &outpoint, const int h) {
+        ProofBuilder pb(0, 0, CPubKey());
+        pb.addUTXO(outpoint, v, h, false, key);
+        return std::make_shared<Proof>(pb.build());
+    };
+
+    auto proof1 = makeProof(outpoint1, height);
+    auto proof2 = makeProof(outpoint2, height);
+    auto proof3 = makeProof(outpoint3, wrongHeight);
+
+    const Coin coin = Coin(CTxOut(v, script), height, false);
+
+    // Add outpoints 1 and 3, not 2
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint1, coin, false);
+        coins.AddCoin(outpoint3, coin, false);
+    }
+
+    // Add the proofs
+    BOOST_CHECK(pm.getPeerId(proof1) != NO_PEER);
+    BOOST_CHECK(pm.getPeerId(proof2) == NO_PEER);
+    BOOST_CHECK(pm.getPeerId(proof3) == NO_PEER);
+
+    // Good
+    BOOST_CHECK(!pm.isOrphan(proof1->getId()));
+    // MISSING_UTXO
+    BOOST_CHECK(pm.isOrphan(proof2->getId()));
+    // HEIGHT_MISMATCH
+    BOOST_CHECK(pm.isOrphan(proof3->getId()));
+
+    const auto isGoodPeer = [&pm](const std::shared_ptr<Proof> &p) {
+        for (const auto &peer : pm.getPeers()) {
+            if (p->getId() == peer.proof->getId()) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    BOOST_CHECK(isGoodPeer(proof1));
+    BOOST_CHECK(!isGoodPeer(proof2));
+    BOOST_CHECK(!isGoodPeer(proof3));
+
+    // Add outpoint2, proof2 is no longer considered orphan
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint2, coin, false);
+    }
+
+    pm.updatedBlockTip();
+    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
+    BOOST_CHECK(isGoodPeer(proof2));
+
+    // The status of proof1 and proof3 are unchanged
+    BOOST_CHECK(!pm.isOrphan(proof1->getId()));
+    BOOST_CHECK(isGoodPeer(proof1));
+    BOOST_CHECK(pm.isOrphan(proof3->getId()));
+    BOOST_CHECK(!isGoodPeer(proof3));
+
+    // Spend outpoint1, proof1 becomes orphan
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.SpendCoin(outpoint1);
+    }
+
+    pm.updatedBlockTip();
+    BOOST_CHECK(pm.isOrphan(proof1->getId()));
+    BOOST_CHECK(!isGoodPeer(proof1));
+
+    // The status of proof2 and proof3 are unchanged
+    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
+    BOOST_CHECK(isGoodPeer(proof2));
+    BOOST_CHECK(pm.isOrphan(proof3->getId()));
+    BOOST_CHECK(!isGoodPeer(proof3));
+
+    // A reorg could make a previous HEIGHT_MISMATCH become valid
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.SpendCoin(outpoint3);
+        coins.AddCoin(outpoint3, Coin(CTxOut(v, script), wrongHeight, false),
+                      false);
+    }
+
+    pm.updatedBlockTip();
+    BOOST_CHECK(!pm.isOrphan(proof3->getId()));
+    BOOST_CHECK(isGoodPeer(proof3));
+
+    // The status of proof 1 and proof2 are unchanged
+    BOOST_CHECK(pm.isOrphan(proof1->getId()));
+    BOOST_CHECK(!isGoodPeer(proof1));
+    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
+    BOOST_CHECK(isGoodPeer(proof2));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

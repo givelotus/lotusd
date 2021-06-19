@@ -116,7 +116,7 @@ void TestGUI(interfaces::Node &node) {
     node.setContext(&test.m_node);
     std::shared_ptr<CWallet> wallet =
         std::make_shared<CWallet>(node.context()->chain.get(), WalletLocation(),
-                                  WalletDatabase::CreateMock());
+                                  CreateMockWalletDatabase());
 
     bool firstRun;
     wallet->LoadWallet(firstRun);
@@ -228,7 +228,7 @@ void TestGUI(interfaces::Node &node) {
             QVERIFY(paymentTextList.at(2).indexOf(QString("Address:")) != -1);
             QCOMPARE(paymentTextList.at(3),
                      QString("Amount: 0.000001 ") +
-                         QString::fromStdString(CURRENCY_UNIT));
+                         QString::fromStdString(Currency::get().ticker));
             QCOMPARE(paymentTextList.at(4), QString("Label: TEST_LABEL_1"));
             QCOMPARE(paymentTextList.at(5), QString("Message: TEST_MESSAGE_1"));
         }

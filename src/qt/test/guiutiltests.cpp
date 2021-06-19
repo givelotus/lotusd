@@ -44,8 +44,7 @@ void GUIUtilTests::toCurrentEncodingTest() {
 
     QString lotus_pubkey = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ";
     QString cashaddr_pubkey =
-        "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a";
-
+        "ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2";
     QVERIFY(GUIUtil::convertToXAddress(params, cashaddr_pubkey) ==
             lotus_pubkey);
     QVERIFY(GUIUtil::convertToXAddress(params, lotus_pubkey) == lotus_pubkey);

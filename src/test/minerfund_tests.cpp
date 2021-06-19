@@ -4,6 +4,7 @@
 
 #include <addresses/xaddress.h>
 #include <blockdb.h>
+#include <cashaddrenc.h> // For DecodeCashAddrContent
 #include <chain.h>
 #include <chainparams.h>
 #include <coins.h>
@@ -119,8 +120,12 @@ BOOST_AUTO_TEST_CASE(test_outputs) {
     for (const auto &addressSet : consensus.payoutAddressSets) {
         payoutAddressDestinations.emplace_back(std::vector<CTxDestination>());
         for (const auto &address : addressSet) {
-            payoutAddressDestinations.back().emplace_back(
-                DecodeDestination(address, *mainNetParams));
+            auto dest = DecodeDestination(address, *mainNetParams);
+            if(!IsValidDestination(dest)) {
+            // Try the ecash cashaddr prefix.
+                dest = DecodeCashAddrDestination(DecodeCashAddrContent(address, "bitcoincash"));
+            }
+            payoutAddressDestinations.back().emplace_back(dest);
         }
     }
 

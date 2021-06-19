@@ -160,7 +160,7 @@ BerkeleyEnvironment::~BerkeleyEnvironment() {
     Close();
 }
 
-bool BerkeleyEnvironment::Open(bool retry) {
+bool BerkeleyEnvironment::Open(bilingual_str &err) {
     if (fDbEnvInit) {
         return true;
     }
@@ -171,6 +171,8 @@ bool BerkeleyEnvironment::Open(bool retry) {
         LogPrintf("Cannot obtain a lock on wallet directory %s. Another "
                   "instance of bitcoin may be using it.\n",
                   strPath);
+        err = strprintf(_("Error initializing wallet database environment %s!"),
+                        Directory());
         return false;
     }
 
@@ -213,27 +215,16 @@ bool BerkeleyEnvironment::Open(bool retry) {
                       ret2, DbEnv::strerror(ret2));
         }
         Reset();
-        if (retry) {
-            // try moving the database env out of the way
-            fs::path pathDatabaseBak =
-                pathIn / strprintf("database.%d.bak", GetTime());
-            try {
-                fs::rename(pathLogDir, pathDatabaseBak);
-                LogPrintf("Moved old %s to %s. Retrying.\n",
-                          pathLogDir.string(), pathDatabaseBak.string());
-            } catch (const fs::filesystem_error &) {
-                // failure is ok (well, not really, but it's not worse than what
-                // we started with)
-            }
-            // try opening it again one more time
-            if (!Open(false /* retry */)) {
-                // if it still fails, it probably means we can't even create the
-                // database env
-                return false;
-            }
-        } else {
-            return false;
+        err = strprintf(_("Error initializing wallet database environment %s!"),
+                        Directory());
+        if (ret == DB_RUNRECOVERY) {
+            err += Untranslated(" ") +
+                   _("This error could occur if this wallet was not shutdown "
+                     "cleanly and was last loaded using a build with a newer "
+                     "version of Berkeley DB. If so, please use the software "
+                     "that last loaded this wallet");
         }
+        return false;
     }
 
     fDbEnvInit = true;
@@ -318,9 +309,7 @@ bool BerkeleyDatabase::Verify(bilingual_str &errorStr) {
               DbEnv::version(nullptr, nullptr, nullptr));
     LogPrintf("Using wallet %s\n", file_path.string());
 
-    if (!env->Open(true /* retry */)) {
-        errorStr = strprintf(
-            _("Error initializing wallet database environment %s!"), walletDir);
+    if (!env->Open(errorStr)) {
         return false;
     }
 
@@ -365,11 +354,11 @@ BerkeleyBatch::BerkeleyBatch(BerkeleyDatabase &database, const char *pszMode,
 
     {
         LOCK(cs_db);
-        if (!env->Open(false /* retry */)) {
+        bilingual_str open_err;
+        if (!env->Open(open_err)) {
             throw std::runtime_error(
                 "BerkeleyBatch: Failed to open database environment.");
         }
-
         pdb = database.m_db.get();
         if (pdb == nullptr) {
             int ret;
@@ -521,7 +510,8 @@ void BerkeleyEnvironment::ReloadDbEnv() {
     // This will flush and close the environment
     Flush(true);
     Reset();
-    Open(true);
+    bilingual_str open_err;
+    Open(open_err);
 }
 
 bool BerkeleyDatabase::Rewrite(const char *pszSkip) {
@@ -853,4 +843,73 @@ bool BerkeleyBatch::TxnAbort() {
     int ret = activeTxn->abort();
     activeTxn = nullptr;
     return (ret == 0);
+}
+
+bool BerkeleyBatch::ReadKey(CDataStream &key, CDataStream &value) {
+    if (!pdb) {
+        return false;
+    }
+
+    // Key
+    SafeDbt datKey(key.data(), key.size());
+
+    // Read
+    SafeDbt datValue;
+    int ret = pdb->get(activeTxn, datKey, datValue, 0);
+    if (ret == 0 && datValue.get_data() != nullptr) {
+        value.write((char *)datValue.get_data(), datValue.get_size());
+        return true;
+    }
+    return false;
+}
+
+bool BerkeleyBatch::WriteKey(CDataStream &key, CDataStream &value,
+                             bool overwrite) {
+    if (!pdb) {
+        return true;
+    }
+
+    if (fReadOnly) {
+        assert(!"Write called on database in read-only mode");
+    }
+
+    // Key
+    SafeDbt datKey(key.data(), key.size());
+
+    // Value
+    SafeDbt datValue(value.data(), value.size());
+
+    // Write
+    int ret =
+        pdb->put(activeTxn, datKey, datValue, (overwrite ? 0 : DB_NOOVERWRITE));
+    return (ret == 0);
+}
+
+bool BerkeleyBatch::EraseKey(CDataStream &key) {
+    if (!pdb) {
+        return false;
+    }
+    if (fReadOnly) {
+        assert(!"Erase called on database in read-only mode");
+    }
+
+    // Key
+    SafeDbt datKey(key.data(), key.size());
+
+    // Erase
+    int ret = pdb->del(activeTxn, datKey, 0);
+    return (ret == 0 || ret == DB_NOTFOUND);
+}
+
+bool BerkeleyBatch::HasKey(CDataStream &key) {
+    if (!pdb) {
+        return false;
+    }
+
+    // Key
+    SafeDbt datKey(key.data(), key.size());
+
+    // Exists
+    int ret = pdb->exists(activeTxn, datKey, 0);
+    return ret == 0;
 }

@@ -4,26 +4,65 @@
 
 #include <qt/bitcoinunits.h>
 
+#include <currencyunit.h>
 #include <network.h>
+#include <util/system.h>
 
 #include <QStringList>
+
+// clang-format off
+using unitNameMap =
+    std::map<
+        BitcoinUnits::Unit,
+        std::tuple<
+            QString /* longname */,
+            QString /* description */
+        >
+    >;
+static const unitNameMap xecUnits = {
+    {BitcoinUnits::Unit::base,
+        {"XEC",
+        "eCash"}},
+    {BitcoinUnits::Unit::sub,
+        {"Satoshi (sat)",
+        "Satoshi (sat) (1 / 100)"}},
+};
+static const unitNameMap bchUnits = {
+    {BitcoinUnits::Unit::base,
+        {"BCHA",
+        "Bitcoins"}},
+    {BitcoinUnits::Unit::sub,
+        {"Satoshi (sat)",
+        "Satoshi (sat) (1 / 100" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)"}},
+};
+static const unitNameMap lotusUnits = {
+    {BitcoinUnits::Unit::base,
+        {"XPI",
+        "Lotus"}},
+    {BitcoinUnits::Unit::sub,
+        {"Satoshi (sat)",
+        "Satoshi (sat) (1 / 100" THIN_SP_UTF8 "000)"}},
+};
+// clang-format on
+
+static const unitNameMap &getUnitsAtRuntime() {
+    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? xecUnits : lotusUnits;
+}
 
 BitcoinUnits::BitcoinUnits(QObject *parent)
     : QAbstractListModel(parent), unitlist(availableUnits()) {}
 
 QList<BitcoinUnits::Unit> BitcoinUnits::availableUnits() {
     QList<BitcoinUnits::Unit> unitlist;
-    unitlist.append(LOTUS);
-    unitlist.append(mLOTUS);
-    unitlist.append(SAT);
+    unitlist.append(base);
+    unitlist.append(sub);
     return unitlist;
 }
 
 bool BitcoinUnits::valid(int unit) {
     switch (unit) {
-        case LOTUS:
-        case mLOTUS:
-        case SAT:
+        case base:
+        case sub:
             return true;
         default:
             return false;
@@ -31,64 +70,44 @@ bool BitcoinUnits::valid(int unit) {
 }
 
 QString BitcoinUnits::longName(int unit) {
-    switch (unit) {
-        case LOTUS:
-            return QString(CURRENCY_UNIT.c_str());
-        case mLOTUS:
-            return QString("m") + QString(CURRENCY_UNIT.c_str());
-        case SAT:
-            return QString("Satoshi (sat)");
-        default:
-            return QString("???");
-    }
+    const auto &units = getUnitsAtRuntime();
+    auto it = units.find(BitcoinUnits::Unit(unit));
+    return it != units.end() ? std::get<0>(it->second) : "???";
 }
 
 QString BitcoinUnits::shortName(int unit) {
-    switch (unit) {
-        case SAT:
-            return QString("sat");
-        default:
-            return longName(unit);
+    if (unit == sub) {
+        return QString("sat");
     }
+    return longName(unit);
 }
 
 QString BitcoinUnits::description(int unit) {
-    switch (unit) {
-        case LOTUS:
-            return QString("Lotus");
-        case mLOTUS:
-            return QString("Milli-Lotus (1 / 1" THIN_SP_UTF8 "000)");
-        case SAT:
-            return QString("Satoshi (sat) (1 / 1" THIN_SP_UTF8 "000" THIN_SP_UTF8
-                           "000)");
-        default:
-            return QString("???");
-    }
+    const auto &units = getUnitsAtRuntime();
+    auto it = units.find(BitcoinUnits::Unit(unit));
+    return it != units.end() ? std::get<1>(it->second) : "???";
 }
 
-qint64 BitcoinUnits::factor(int unit) {
+Amount BitcoinUnits::factor(int unit) {
+    const auto &currency = Currency::get();
     switch (unit) {
-        case LOTUS:
-            return 1000000;
-        case mLOTUS:
-            return 1000;
-        case SAT:
-            return 1;
+        case base:
+            return currency.baseunit;
+        case sub:
+            return currency.subunit;
         default:
-            return 100000000;
+            assert(false && "non-existent BitcoinUnits::Unit");
     }
 }
 
 int BitcoinUnits::decimals(int unit) {
     switch (unit) {
-        case LOTUS:
-            return 6;
-        case mLOTUS:
-            return 3;
-        case SAT:
+        case base:
+            return Currency::get().decimals;
+        case sub:
             return 0;
         default:
-            return 0;
+            assert(false && "non-existent BitcoinUnits::Unit");
     }
 }
 
@@ -101,7 +120,7 @@ QString BitcoinUnits::format(int unit, const Amount nIn, bool fPlus,
         return QString();
     }
     qint64 n = qint64(nIn / SATOSHI);
-    qint64 coin = factor(unit);
+    qint64 coin = factor(unit) / SATOSHI;
     int num_decimals = decimals(unit);
     qint64 n_abs = (n > 0 ? n : -n);
     qint64 quotient = n_abs / coin;

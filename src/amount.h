@@ -151,11 +151,19 @@ public:
 };
 
 static constexpr Amount SATOSHI = Amount::satoshi();
-static constexpr Amount CASH = 100 * SATOSHI;
 static constexpr Amount LOTUS = 1'000'000 * SATOSHI;
 static constexpr Amount COIN = LOTUS;
 
 static constexpr Amount SUBSIDY = 260 * LOTUS;
+
+struct Currency {
+    Amount baseunit;
+    Amount subunit;
+    uint8_t decimals;
+    std::string ticker;
+
+    static const Currency &get();
+};
 
 /**
  * No amount larger than this (in satoshi) is valid.

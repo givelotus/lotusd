@@ -7,12 +7,17 @@ Test inventory download behavior
 """
 
 from test_framework.address import ADDRESS_BCHREG_UNSPENDABLE
+from test_framework.avatools import wait_for_proof
+from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import (
+    AvalancheProof,
     CInv,
     CTransaction,
     FromHex,
+    MSG_AVA_PROOF,
     MSG_TX,
     MSG_TYPE_MASK,
+    msg_avaproof,
     msg_inv,
     msg_notfound,
 )
@@ -23,11 +28,13 @@ from test_framework.p2p import (
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
+    assert_raises_rpc_error,
     wait_until,
 )
 from test_framework.blocktools import SUBSIDY
 from decimal import Decimal
 
+import functools
 import time
 
 
@@ -52,6 +59,7 @@ class NetConstants:
                  overloaded_peer_delay,
                  max_getdata_in_flight,
                  max_peer_announcements,
+                 bypass_request_limits_permission_flags,
                  ):
         self.getdata_interval = getdata_interval
         self.inbound_peer_delay = inbound_peer_delay
@@ -59,25 +67,42 @@ class NetConstants:
         self.max_getdata_in_flight = max_getdata_in_flight
         self.max_peer_announcements = max_peer_announcements
         self.max_getdata_inbound_wait = self.getdata_interval + self.inbound_peer_delay
+        self.bypass_request_limits_permission_flags = bypass_request_limits_permission_flags
 
 
 class TestContext:
-    def __init__(self, inv_type, constants):
+    def __init__(self, inv_type, inv_name, constants):
         self.inv_type = inv_type
+        self.inv_name = inv_name
         self.constants = constants
 
     def p2p_conn(self):
         return TestP2PConn(self.inv_type)
 
 
-TX_TEST_CONTEXT = TestContext(
-    MSG_TX,
+PROOF_TEST_CONTEXT = TestContext(
+    MSG_AVA_PROOF,
+    "avalanche proof",
     NetConstants(
         getdata_interval=60,  # seconds
         inbound_peer_delay=2,  # seconds
         overloaded_peer_delay=2,  # seconds
         max_getdata_in_flight=100,
         max_peer_announcements=5000,
+        bypass_request_limits_permission_flags="bypass_proof_request_limits",
+    ),
+)
+
+TX_TEST_CONTEXT = TestContext(
+    MSG_TX,
+    "transaction",
+    NetConstants(
+        getdata_interval=60,  # seconds
+        inbound_peer_delay=2,  # seconds
+        overloaded_peer_delay=2,  # seconds
+        max_getdata_in_flight=100,
+        max_peer_announcements=5000,
+        bypass_request_limits_permission_flags="relay",
     ),
 )
 
@@ -85,10 +110,26 @@ TX_TEST_CONTEXT = TestContext(
 NUM_INBOUND = 10
 
 
+def skip(context):
+    def decorator(test):
+        @functools.wraps(test)
+        def wrapper(*args, **kwargs):
+            # Assume the signature is test(self, context) unless context is
+            # passed by name
+            call_context = kwargs.get("context", args[1])
+            if call_context == context:
+                return lambda *args, **kwargs: None
+            return test(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 class InventoryDownloadTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = False
         self.num_nodes = 2
+        self.extra_args = [['-enableavalanche=1',
+                            '-avacooldown=0']] * self.num_nodes
 
     def test_data_requests(self, context):
         self.log.info(
@@ -122,6 +163,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
         self.nodes[0].setmocktime(0)
         self.log.info("All outstanding peers received a getdata")
 
+    @skip(PROOF_TEST_CONTEXT)
     def test_inv_block(self, context):
         self.log.info("Generate a transaction on node 0")
         tx = self.nodes[0].createrawtransaction(
@@ -285,7 +327,10 @@ class InventoryDownloadTest(BitcoinTestFramework):
     def test_preferred_inv(self, context):
         self.log.info(
             'Check that invs from preferred peers are downloaded immediately')
-        self.restart_node(0, extra_args=['-whitelist=noban@127.0.0.1'])
+        self.restart_node(
+            0,
+            extra_args=self.extra_args[0] +
+            ['-whitelist=noban@127.0.0.1'])
         peer = self.nodes[0].add_p2p_connection(context.p2p_conn())
         peer.send_message(msg_inv([CInv(t=context.inv_type, h=0xff00ff00)]))
         peer.wait_until(lambda: peer.getdata_count >= 1, timeout=1)
@@ -294,9 +339,13 @@ class InventoryDownloadTest(BitcoinTestFramework):
 
     def test_large_inv_batch(self, context):
         max_peer_announcements = context.constants.max_peer_announcements
+        net_permissions = context.constants.bypass_request_limits_permission_flags
         self.log.info(
-            'Test how large inv batches are handled with relay permission')
-        self.restart_node(0, extra_args=['-whitelist=relay@127.0.0.1'])
+            'Test how large inv batches are handled with {} permission'.format(net_permissions))
+        self.restart_node(
+            0,
+            extra_args=self.extra_args[0] +
+            ['-whitelist={}@127.0.0.1'.format(net_permissions)])
         peer = self.nodes[0].add_p2p_connection(context.p2p_conn())
         peer.send_message(msg_inv([CInv(t=context.inv_type, h=invid)
                                    for invid in range(max_peer_announcements + 1)]))
@@ -304,7 +353,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
                         max_peer_announcements + 1)
 
         self.log.info(
-            'Test how large inv batches are handled without relay permission')
+            'Test how large inv batches are handled without {} permission'.format(net_permissions))
         self.restart_node(0)
         peer = self.nodes[0].add_p2p_connection(context.p2p_conn())
         peer.send_message(msg_inv([CInv(t=context.inv_type, h=invid)
@@ -320,35 +369,114 @@ class InventoryDownloadTest(BitcoinTestFramework):
         self.nodes[0].p2ps[0].send_message(
             msg_notfound(vec=[CInv(context.inv_type, 1)]))
 
+    @skip(TX_TEST_CONTEXT)
+    def test_orphan_download(self, context):
+        node = self.nodes[0]
+        privkey = ECKey()
+        privkey.generate()
+        privkey_wif = bytes_to_wif(privkey.get_bytes())
+
+        # Build a proof with missing utxos so it will be orphaned
+        orphan = node.buildavalancheproof(
+            42, 2000000000, privkey.get_pubkey().get_bytes().hex(), [{
+                'txid': '0' * 64,
+                'vout': 0,
+                'amount': 10e6,
+                'height': 42,
+                'iscoinbase': False,
+                'privatekey': privkey_wif,
+            }]
+        )
+        proofid = FromHex(AvalancheProof(), orphan).proofid
+        proofid_hex = "{:064x}".format(proofid)
+
+        self.restart_node(0, extra_args=self.extra_args[0] + [
+            "-avaproof={}".format(orphan),
+            "-avamasterkey={}".format(privkey_wif),
+        ])
+        node.generate(2)
+        wait_for_proof(node, proofid_hex)
+        assert_equal(node.getrawavalancheproof(proofid_hex)["orphan"], True)
+
+        peer = node.add_p2p_connection(context.p2p_conn())
+        peer.send_message(msg_inv([CInv(t=context.inv_type, h=proofid)]))
+
+        # Give enough time for the node to eventually request the proof.
+        node.setmocktime(int(time.time()) +
+                         context.constants.getdata_interval + 1)
+        peer.sync_with_ping()
+
+        assert_equal(peer.getdata_count, 0)
+
+    @skip(TX_TEST_CONTEXT)
+    def test_request_invalid_once(self, context):
+        node = self.nodes[0]
+        privkey = ECKey()
+        privkey.generate()
+
+        # Build an invalid proof (no stake)
+        no_stake_hex = node.buildavalancheproof(
+            42, 2000000000, privkey.get_pubkey().get_bytes().hex(), []
+        )
+        no_stake = FromHex(AvalancheProof(), no_stake_hex)
+        assert_raises_rpc_error(-8,
+                                "The proof is invalid: no-stake",
+                                node.verifyavalancheproof,
+                                no_stake_hex)
+
+        # Send the proof
+        msg = msg_avaproof()
+        msg.proof = no_stake
+        node.p2ps[0].send_message(msg)
+
+        # Check we get banned
+        node.p2ps[0].wait_for_disconnect()
+
+        # Now that the node knows the proof is invalid, it should not be
+        # requested anymore
+        node.p2ps[1].send_message(
+            msg_inv([CInv(t=context.inv_type, h=no_stake.proofid)]))
+
+        # Give enough time for the node to eventually request the proof
+        node.setmocktime(int(time.time()) +
+                         context.constants.getdata_interval + 1)
+        node.p2ps[1].sync_with_ping()
+
+        assert all(p.getdata_count == 0 for p in node.p2ps[1:])
+
     def run_test(self):
-        context = TX_TEST_CONTEXT
-
-        # Run tests without mocktime that only need one peer-connection first,
-        # to avoid restarting the nodes
-        self.test_expiry_fallback(context)
-        self.test_disconnect_fallback(context)
-        self.test_notfound_fallback(context)
-        self.test_preferred_inv(context)
-        self.test_large_inv_batch(context)
-        self.test_spurious_notfound(context)
-
-        # Run each test against new bitcoind instances, as setting mocktimes has long-term effects on when
-        # the next trickle relay event happens.
-        for test in [self.test_in_flight_max,
-                     self.test_inv_block, self.test_data_requests]:
-            self.stop_nodes()
-            self.start_nodes()
-            self.connect_nodes(1, 0)
-            # Setup the p2p connections
-            self.peers = []
-            for node in self.nodes:
-                for _ in range(NUM_INBOUND):
-                    self.peers.append(
-                        node.add_p2p_connection(
-                            context.p2p_conn()))
+        for context in [TX_TEST_CONTEXT, PROOF_TEST_CONTEXT]:
             self.log.info(
-                "Nodes are setup with {} incoming connections each".format(NUM_INBOUND))
-            test(context)
+                "Starting tests using " +
+                context.inv_name +
+                " inventory type")
+
+            # Run tests without mocktime that only need one peer-connection first,
+            # to avoid restarting the nodes
+            self.test_expiry_fallback(context)
+            self.test_disconnect_fallback(context)
+            self.test_notfound_fallback(context)
+            self.test_preferred_inv(context)
+            self.test_large_inv_batch(context)
+            self.test_spurious_notfound(context)
+
+            # Run each test against new bitcoind instances, as setting mocktimes has long-term effects on when
+            # the next trickle relay event happens.
+            for test in [self.test_in_flight_max, self.test_inv_block,
+                         self.test_data_requests, self.test_orphan_download, self.test_request_invalid_once]:
+                self.stop_nodes()
+                self.start_nodes()
+                self.connect_nodes(1, 0)
+                # Setup the p2p connections
+                self.peers = []
+                for node in self.nodes:
+                    for _ in range(NUM_INBOUND):
+                        self.peers.append(
+                            node.add_p2p_connection(
+                                context.p2p_conn()))
+                self.log.info(
+                    "Nodes are setup with {} incoming connections each".format(NUM_INBOUND))
+                test(context)
 
 
 if __name__ == '__main__':

@@ -607,12 +607,11 @@ static bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey,
         } else if (strType == DBKeys::HDCHAIN) {
             CHDChain chain;
             ssValue >> chain;
-            pwallet->GetOrCreateLegacyScriptPubKeyMan()->SetHDChain(chain,
-                                                                    true);
+            pwallet->GetOrCreateLegacyScriptPubKeyMan()->LoadHDChain(chain);
         } else if (strType == DBKeys::FLAGS) {
             uint64_t flags;
             ssValue >> flags;
-            if (!pwallet->SetWalletFlags(flags, true)) {
+            if (!pwallet->LoadWalletFlags(flags)) {
                 strErr = "Error reading wallet database: Unknown non-tolerable "
                          "wallet flags found";
                 return false;
@@ -830,14 +829,12 @@ DBErrors WalletBatch::LoadWallet(CWallet *pwallet) {
 
     // Set the active ScriptPubKeyMans
     for (auto spk_man_pair : wss.m_active_external_spks) {
-        pwallet->SetActiveScriptPubKeyMan(
-            spk_man_pair.second, spk_man_pair.first, /* internal */ false,
-            /* memonly */ true);
+        pwallet->LoadActiveScriptPubKeyMan(
+            spk_man_pair.second, spk_man_pair.first, /* internal */ false);
     }
     for (auto spk_man_pair : wss.m_active_internal_spks) {
-        pwallet->SetActiveScriptPubKeyMan(
-            spk_man_pair.second, spk_man_pair.first, /* internal */ true,
-            /* memonly */ true);
+        pwallet->LoadActiveScriptPubKeyMan(
+            spk_man_pair.second, spk_man_pair.first, /* internal */ true);
     }
 
     // Set the descriptor caches
@@ -1127,4 +1124,24 @@ bool WalletBatch::TxnAbort() {
 
 bool IsWalletLoaded(const fs::path &wallet_path) {
     return IsBDBWalletLoaded(wallet_path);
+}
+
+/** Return object for accessing database at specified path. */
+std::unique_ptr<BerkeleyDatabase> CreateWalletDatabase(const fs::path &path) {
+    std::string filename;
+    return std::make_unique<BerkeleyDatabase>(GetWalletEnv(path, filename),
+                                              std::move(filename));
+}
+
+/**
+ * Return object for accessing dummy database with no read/write capabilities.
+ */
+std::unique_ptr<BerkeleyDatabase> CreateDummyWalletDatabase() {
+    return std::make_unique<BerkeleyDatabase>();
+}
+
+/** Return object for accessing temporary in-memory database. */
+std::unique_ptr<BerkeleyDatabase> CreateMockWalletDatabase() {
+    return std::make_unique<BerkeleyDatabase>(
+        std::make_shared<BerkeleyEnvironment>(), "");
 }

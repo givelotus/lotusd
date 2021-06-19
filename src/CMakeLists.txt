@@ -359,6 +359,7 @@ add_library(util
 	clientversion.cpp
 	compat/glibcxx_sanity.cpp
 	compat/strnlen.cpp
+	currencyunit.cpp
 	fs.cpp
 	interfaces/handler.cpp
 	logging.cpp
@@ -539,12 +540,14 @@ endif()
 add_library(server
 	addrdb.cpp
 	addrman.cpp
+	avalanche/avalanche.cpp
 	avalanche/delegation.cpp
 	avalanche/delegationbuilder.cpp
 	avalanche/orphanproofpool.cpp
 	avalanche/peermanager.cpp
 	avalanche/processor.cpp
 	avalanche/proof.cpp
+	avalanche/proofid.cpp
 	avalanche/proofbuilder.cpp
 	banman.cpp
 	blockencodings.cpp

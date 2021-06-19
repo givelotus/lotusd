@@ -11,6 +11,7 @@
 
 #include <addrman.h>
 #include <amount.h>
+#include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <avalanche/validation.h>
 #include <banman.h>
@@ -22,6 +23,7 @@
 #include <compat/sanity.h>
 #include <config.h>
 #include <consensus/validation.h>
+#include <currencyunit.h>
 #include <flatfile.h>
 #include <fs.h>
 #include <hash.h>
@@ -380,6 +382,7 @@ void SetupServerArgs(NodeContext &node) {
     ArgsManager &argsman = *node.args;
 
     SetupHelpOptions(argsman);
+    SetupCurrencyUnitOptions(argsman);
     // server-only for now
     argsman.AddArg("-help-debug",
                    "Print help message with debugging options and exit", false,
@@ -1050,12 +1053,13 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_MAX_BLOCK_SIZE),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::NODE_RELAY);
+    const auto &ticker = Currency::get().ticker;
     argsman.AddArg(
         "-dustrelayfee=<amt>",
         strprintf("Fee rate (in %s/kB) used to define dust, the value of an "
                   "output such that it will cost about 1/3 of its value in "
                   "fees at this fee rate to spend it. (default: %s)",
-                  CURRENCY_UNIT, FormatMoney(DUST_RELAY_TX_FEE)),
+                  ticker, FormatMoney(DUST_RELAY_TX_FEE)),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
 
@@ -1079,7 +1083,7 @@ void SetupServerArgs(NodeContext &node) {
         "-minrelaytxfee=<amt>",
         strprintf("Fees (in %s/kB) smaller than this are rejected for "
                   "relaying, mining and transaction creation (default: %s)",
-                  CURRENCY_UNIT, FormatMoney(DEFAULT_MIN_RELAY_TX_FEE_PER_KB)),
+                  ticker, FormatMoney(DEFAULT_MIN_RELAY_TX_FEE_PER_KB)),
         ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
     argsman.AddArg(
         "-whitelistrelay",
@@ -1103,7 +1107,7 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg("-excessutxocharge=<amt>",
                    strprintf("Fees (in %s/kB) to charge per utxo created for "
                              "relaying, and mining (default: %s)",
-                             CURRENCY_UNIT, FormatMoney(DEFAULT_UTXO_FEE)),
+                             ticker, FormatMoney(DEFAULT_UTXO_FEE)),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::NODE_RELAY);
 
@@ -1115,7 +1119,7 @@ void SetupServerArgs(NodeContext &node) {
         "-blockmintxfee=<amt>",
         strprintf("Set lowest fee rate (in %s/kB) for transactions to "
                   "be included in block creation. (default: %s)",
-                  CURRENCY_UNIT, FormatMoney(DEFAULT_BLOCK_MIN_TX_FEE_PER_KB)),
+                  ticker, FormatMoney(DEFAULT_BLOCK_MIN_TX_FEE_PER_KB)),
         ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
     argsman.AddArg("-blockversion=<n>",
@@ -2457,7 +2461,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         return false;
     }
 
-    if (args.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED) &&
+    if (isAvalancheEnabled(args) &&
         g_avalanche->isAvalancheServiceAvailable()) {
         nLocalServices = ServiceFlags(nLocalServices | NODE_AVALANCHE);
     }

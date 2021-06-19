@@ -138,7 +138,7 @@ static bool IsWorthPolling(const CBlockIndex *pindex) {
 }
 
 struct Processor::PeerData {
-    Proof proof;
+    std::shared_ptr<Proof> proof;
     Delegation delegation;
 };
 
@@ -193,7 +193,7 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
     if (argsman.IsArgSet("-avasessionkey")) {
         sessionKey = DecodeSecret(argsman.GetArg("-avasessionkey", ""));
         if (!sessionKey.IsValid()) {
-            error = _("the avalanche session key is invalid");
+            error = _("The avalanche session key is invalid.");
             return nullptr;
         }
     } else {
@@ -204,53 +204,60 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
     if (argsman.IsArgSet("-avaproof")) {
         if (!argsman.IsArgSet("-avamasterkey")) {
             error = _(
-                "the avalanche master key is missing for the avalanche proof");
+                "The avalanche master key is missing for the avalanche proof.");
             return nullptr;
         }
 
         masterKey = DecodeSecret(argsman.GetArg("-avamasterkey", ""));
         if (!masterKey.IsValid()) {
-            error = _("the avalanche master key is invalid");
+            error = _("The avalanche master key is invalid.");
             return nullptr;
         }
 
         peerData = std::make_unique<PeerData>();
-        if (!Proof::FromHex(peerData->proof, argsman.GetArg("-avaproof", ""),
+        peerData->proof = std::make_shared<Proof>();
+        if (!Proof::FromHex(*peerData->proof, argsman.GetArg("-avaproof", ""),
                             error)) {
             // error is set by FromHex
             return nullptr;
         }
 
         ProofValidationState proof_state;
-        if (!peerData->proof.verify(proof_state)) {
+        if (!peerData->proof->verify(proof_state)) {
             switch (proof_state.GetResult()) {
                 case ProofValidationResult::NO_STAKE:
-                    error = _("the avalanche proof has no stake");
+                    error = _("The avalanche proof has no stake.");
                     return nullptr;
                 case ProofValidationResult::DUST_THRESOLD:
-                    error = _("the avalanche proof stake is too low");
+                    error = _("The avalanche proof stake is too low.");
                     return nullptr;
                 case ProofValidationResult::DUPLICATE_STAKE:
-                    error = _("the avalanche proof has duplicated stake");
+                    error = _("The avalanche proof has duplicated stake.");
                     return nullptr;
                 case ProofValidationResult::INVALID_SIGNATURE:
                     error =
-                        _("the avalanche proof has invalid stake signatures");
+                        _("The avalanche proof has invalid stake signatures.");
                     return nullptr;
                 case ProofValidationResult::TOO_MANY_UTXOS:
                     error = strprintf(
-                        _("the avalanche proof has too many utxos (max: %u)"),
+                        _("The avalanche proof has too many utxos (max: %u)."),
                         AVALANCHE_MAX_PROOF_STAKES);
                     return nullptr;
                 default:
-                    error = _("the avalanche proof is invalid");
+                    error = _("The avalanche proof is invalid.");
                     return nullptr;
             }
         }
 
+        const CPubKey masterPubKey = peerData->proof->getMaster();
+        if (masterKey.GetPubKey() != masterPubKey) {
+            error = _("The master key does not match the proof public key.");
+            return nullptr;
+        }
+
         // Generate the delegation to the session key.
-        DelegationBuilder dgb(peerData->proof);
-        if (sessionKey.GetPubKey() != peerData->proof.getMaster()) {
+        DelegationBuilder dgb(*peerData->proof);
+        if (sessionKey.GetPubKey() != masterPubKey) {
             dgb.addLevel(masterKey, sessionKey.GetPubKey());
         }
         peerData->delegation = dgb.build();
@@ -441,7 +448,7 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     return true;
 }
 
-bool Processor::addNode(NodeId nodeid, const Proof &proof,
+bool Processor::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
                         const Delegation &delegation) {
     LOCK(cs_peerManager);
     return peerManager->addNode(nodeid, proof, delegation);
@@ -498,7 +505,34 @@ bool Processor::sendHello(CNode *pfrom) const {
                                     .Make(NetMsgType::AVAHELLO,
                                           Hello(peerData->delegation, sig)));
 
+    pfrom->AddKnownProof(peerData->delegation.getProofId());
+
     return true;
+}
+
+bool Processor::addProof(const std::shared_ptr<Proof> &proof) {
+    LOCK(cs_peerManager);
+    return !peerManager->getProof(proof->getId()) &&
+           peerManager->getPeerId(proof) != NO_PEER;
+}
+
+std::shared_ptr<Proof> Processor::getProof(const ProofId &proofid) const {
+    LOCK(cs_peerManager);
+    return peerManager->getProof(proofid);
+}
+
+std::shared_ptr<Proof> Processor::getLocalProof() const {
+    return peerData ? peerData->proof : nullptr;
+}
+
+Peer::Timestamp Processor::getProofTime(const ProofId &proofid) const {
+    LOCK(cs_peerManager);
+    return peerManager->getProofTime(proofid);
+}
+
+std::shared_ptr<Proof> Processor::getOrphan(const ProofId &proofid) const {
+    LOCK(cs_peerManager);
+    return peerManager->getOrphan(proofid);
 }
 
 bool Processor::startEventLoop(CScheduler &scheduler) {

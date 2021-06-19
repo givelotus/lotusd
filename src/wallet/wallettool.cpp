@@ -32,7 +32,7 @@ static std::shared_ptr<CWallet> CreateWallet(const std::string &name,
     // dummy chain interface
     std::shared_ptr<CWallet> wallet_instance(
         new CWallet(nullptr /* chain */, WalletLocation(name),
-                    WalletDatabase::Create(path)),
+                    CreateWalletDatabase(path)),
         WalletToolReleaseWallet);
     LOCK(wallet_instance->cs_wallet);
     bool first_run = true;
@@ -64,7 +64,7 @@ static std::shared_ptr<CWallet> LoadWallet(const std::string &name,
     // dummy chain interface
     std::shared_ptr<CWallet> wallet_instance(
         new CWallet(nullptr /* chain */, WalletLocation(name),
-                    WalletDatabase::Create(path)),
+                    CreateWalletDatabase(path)),
         WalletToolReleaseWallet);
     DBErrors load_wallet_ret;
     try {
@@ -124,30 +124,6 @@ static void WalletShowInfo(CWallet *wallet_instance) {
                 wallet_instance->m_address_book.size());
 }
 
-static bool SalvageWallet(const fs::path &path) {
-    // Create a Database handle to allow for the db to be initialized before
-    // recovery
-    std::unique_ptr<WalletDatabase> database = WalletDatabase::Create(path);
-
-    // Initialize the environment before recovery
-    bilingual_str error_string;
-    try {
-        database->Verify(error_string);
-    } catch (const fs::filesystem_error &e) {
-        error_string =
-            Untranslated(strprintf("Error loading wallet. %s",
-                                   fsbridge::get_filesystem_error_message(e)));
-    }
-    if (!error_string.original.empty()) {
-        tfm::format(std::cerr, "Failed to open wallet for salvage :%s\n",
-                    error_string.original);
-        return false;
-    }
-
-    // Perform the recovery
-    return RecoverDatabaseFile(path);
-}
-
 bool ExecuteWalletToolFunc(const std::string &command,
                            const std::string &name) {
     fs::path path = fs::absolute(name, GetWalletDir());
@@ -172,7 +148,18 @@ bool ExecuteWalletToolFunc(const std::string &command,
             WalletShowInfo(wallet_instance.get());
             wallet_instance->Flush(true);
         } else if (command == "salvage") {
-            return SalvageWallet(path);
+            bilingual_str error;
+            std::vector<bilingual_str> warnings;
+            bool ret = RecoverDatabaseFile(path, error, warnings);
+            if (!ret) {
+                for (const auto &warning : warnings) {
+                    tfm::format(std::cerr, "%s\n", warning.original);
+                }
+                if (!error.empty()) {
+                    tfm::format(std::cerr, "%s\n", error.original);
+                }
+            }
+            return ret;
         }
     } else {
         tfm::format(std::cerr, "Invalid command: %s\n", command);

@@ -4,18 +4,28 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the resolution of forks via avalanche."""
 import random
+import struct
+import time
 
-from test_framework.avatools import create_coinbase_stakes
+from test_framework.avatools import create_coinbase_stakes, get_proof_ids
 from test_framework.key import (
+    bytes_to_wif,
     ECKey,
     ECPubKey,
 )
 from test_framework.p2p import P2PInterface, p2p_lock
 from test_framework.messages import (
+    AvalancheDelegation,
+    AvalancheProof,
     AvalancheResponse,
     AvalancheVote,
     CInv,
+    FromHex,
+    hash256,
+    msg_avahello,
     msg_avapoll,
+    MSG_AVA_PROOF,
+    msg_getdata,
     msg_tcpavaresponse,
     NODE_AVALANCHE,
     NODE_NETWORK,
@@ -36,6 +46,8 @@ BLOCK_MISSING = -2
 BLOCK_PENDING = -3
 
 QUORUM_NODE_COUNT = 16
+
+UNCONDITIONAL_RELAY_DELAY = 2 * 60
 
 
 class TestNode(P2PInterface):
@@ -110,6 +122,20 @@ class TestNode(P2PInterface):
         with p2p_lock:
             return self.avahello
 
+    def send_avahello(self, delegation_hex: str, delegated_privkey: ECKey):
+        delegation = FromHex(AvalancheDelegation(), delegation_hex)
+        local_sighash = hash256(
+            delegation.getid() +
+            struct.pack("<QQQQ", self.local_nonce, self.remote_nonce,
+                        self.local_extra_entropy, self.remote_extra_entropy))
+
+        msg = msg_avahello()
+        msg.hello.delegation = delegation
+        msg.hello.sig = delegated_privkey.sign_schnorr(local_sighash)
+        self.send_message(msg)
+
+        return delegation.proofid
+
 
 class AvalancheTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -125,10 +151,10 @@ class AvalancheTest(BitcoinTestFramework):
         node = self.nodes[0]
 
         # Build a fake quorum of nodes.
-        def get_node():
+        def get_node(services=NODE_NETWORK | NODE_AVALANCHE):
             n = TestNode()
             node.add_p2p_connection(
-                n, services=NODE_NETWORK | NODE_AVALANCHE)
+                n, services=services)
             n.wait_for_verack()
 
             # Get our own node id so we can use it later.
@@ -199,7 +225,7 @@ class AvalancheTest(BitcoinTestFramework):
         # We need to send the coin to a new address in order to make sure we do
         # not regenerate the same block.
         node.generatetoaddress(
-            26, 'bchreg:pqv2r67sgz3qumufap3h2uuj0zfmnzuv8v7ej0fffv')
+            26, 'ecregtest:pqv2r67sgz3qumufap3h2uuj0zfmnzuv8v38gtrh5v')
         node.reconsiderblock(invalidated_block)
 
         poll_node.send_poll(various_block_hashes)
@@ -354,15 +380,98 @@ class AvalancheTest(BitcoinTestFramework):
             int(node.getnetworkinfo()['localservices'], 16) & NODE_AVALANCHE,
             NODE_AVALANCHE)
 
-        self.log.info("Test the avahello signature")
-        quorum = get_quorum()
-        poll_node = quorum[0]
-
-        avahello = poll_node.wait_for_avahello().hello
+        self.log.info("Test the avahello signature (node -> P2PInterface)")
+        good_interface = get_node()
+        avahello = good_interface.wait_for_avahello().hello
 
         avakey.set(bytes.fromhex(node.getavalanchekey()))
         assert avakey.verify_schnorr(
-            avahello.sig, avahello.get_sighash(poll_node))
+            avahello.sig, avahello.get_sighash(good_interface))
+
+        stakes = create_coinbase_stakes(node, [blockhashes[1]], addrkey0.key)
+        interface_proof_hex = node.buildavalancheproof(
+            proof_sequence, proof_expiration, pubkey.get_bytes().hex(),
+            stakes)
+        limited_id = FromHex(
+            AvalancheProof(),
+            interface_proof_hex).limited_proofid
+
+        # delegate
+        delegated_key = ECKey()
+        delegated_key.generate()
+        interface_delegation_hex = node.delegateavalancheproof(
+            f"{limited_id:0{64}x}",
+            bytes_to_wif(privkey.get_bytes()),
+            delegated_key.get_pubkey().get_bytes().hex(),
+            None)
+
+        self.log.info("Test that wrong avahello signature causes a ban")
+        bad_interface = get_node()
+        wrong_key = ECKey()
+        wrong_key.generate()
+        with self.nodes[0].assert_debug_log(
+                ["Misbehaving",
+                 "peer=1 (0 -> 100) BAN THRESHOLD EXCEEDED: invalid-avahello-signature"]):
+            bad_interface.send_avahello(interface_delegation_hex, wrong_key)
+            bad_interface.wait_for_disconnect()
+
+        self.log.info(
+            'Check that receiving a valid avahello triggers a proof getdata request')
+        proofid = good_interface.send_avahello(
+            interface_delegation_hex, delegated_key)
+
+        def getdata_found():
+            with p2p_lock:
+                return good_interface.last_message.get(
+                    "getdata") and good_interface.last_message["getdata"].inv[-1].hash == proofid
+        wait_until(getdata_found)
+
+        self.log.info('Check that we can download the proof from our peer')
+
+        node_proofid = FromHex(AvalancheProof(), proof).proofid
+
+        def wait_for_proof_validation():
+            # Connect some blocks to trigger the proof verification
+            node.generate(2)
+            wait_until(lambda: node_proofid in get_proof_ids(node))
+
+        wait_for_proof_validation()
+
+        getdata = msg_getdata([CInv(MSG_AVA_PROOF, node_proofid)])
+
+        self.log.info(
+            "Proof has been inv'ed recently, check it can be requested")
+        good_interface.send_message(getdata)
+
+        def proof_received(peer):
+            with p2p_lock:
+                return peer.last_message.get(
+                    "avaproof") and peer.last_message["avaproof"].proof.proofid == node_proofid
+        wait_until(lambda: proof_received(good_interface))
+
+        # Restart the node
+        self.restart_node(0, self.extra_args[0] + [
+            "-avaproof={}".format(proof),
+            "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
+        ])
+        wait_for_proof_validation()
+
+        self.log.info(
+            "The proof has not been announced, it cannot be requested")
+        peer = get_node(services=NODE_NETWORK)
+        peer.send_message(getdata)
+
+        # Give enough time for the node to answer. Since we cannot check for a
+        # non-event this is the best we can do
+        time.sleep(2)
+        assert not proof_received(peer)
+
+        self.log.info("The proof is known for long enough to be requested")
+        current_time = int(time.time())
+        node.setmocktime(current_time + UNCONDITIONAL_RELAY_DELAY)
+
+        peer.send_message(getdata)
+        wait_until(lambda: proof_received(peer))
 
 
 if __name__ == '__main__':

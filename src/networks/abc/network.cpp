@@ -4,5 +4,4 @@
 
 #include <network.h>
 
-const std::string CURRENCY_UNIT = "Lotus";
 const bool ENABLE_MINER_FUND = true;

@@ -37,11 +37,6 @@ struct bilingual_str;
 using NodePeerManager = PeerManager;
 
 /**
- * Is avalanche enabled by default.
- */
-static constexpr bool AVALANCHE_DEFAULT_ENABLED = false;
-
-/**
  * Finalization score.
  */
 static constexpr int AVALANCHE_FINALIZATION_SCORE = 128;
@@ -50,10 +45,7 @@ static constexpr int AVALANCHE_FINALIZATION_SCORE = 128;
  * Maximum item that can be polled at once.
  */
 static constexpr size_t AVALANCHE_MAX_ELEMENT_POLL = 16;
-/**
- * Avalanche default cooldown in milliseconds.
- */
-static constexpr size_t AVALANCHE_DEFAULT_COOLDOWN = 100;
+
 /**
  * How long before we consider that a query timed out.
  */
@@ -289,7 +281,7 @@ public:
     bool registerVotes(NodeId nodeid, const Response &response,
                        std::vector<BlockUpdate> &updates);
 
-    bool addNode(NodeId nodeid, const Proof &proof,
+    bool addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
                  const Delegation &delegation);
     bool forNode(NodeId nodeid, std::function<bool(const Node &n)> func) const;
 
@@ -301,6 +293,12 @@ public:
      * include in his AVAHELLO message.
      */
     uint256 buildRemoteSighash(CNode *pfrom) const;
+
+    bool addProof(const std::shared_ptr<Proof> &proof);
+    std::shared_ptr<Proof> getProof(const ProofId &proofid) const;
+    std::shared_ptr<Proof> getLocalProof() const;
+    Peer::Timestamp getProofTime(const ProofId &proofid) const;
+    std::shared_ptr<Proof> getOrphan(const ProofId &proofid) const;
 
     /*
      * Return whether the avalanche service flag should be set.
@@ -329,10 +327,5 @@ private:
 };
 
 } // namespace avalanche
-
-/**
- * Global avalanche instance.
- */
-extern std::unique_ptr<avalanche::Processor> g_avalanche;
 
 #endif // BITCOIN_AVALANCHE_PROCESSOR_H

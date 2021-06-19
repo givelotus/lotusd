@@ -33,6 +33,7 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/system.h>
+#include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
 #include <warnings.h>
@@ -184,7 +185,12 @@ static UniValue generateBlocks(const Config &config,
         }
 
         CBlock *pblock = &pblocktemplate->block;
-        pblock->nHeight = nHeight + 1;
+        // TODO: This should be correct, but recent avalanche changes can cause
+        // blocks not to connect, so this loop will generate multiple blocks at
+        // the same height. Also, we don't need to touch this as the height is
+        // set in CreateNewBlock.
+
+        // pblock->nHeight = nHeight + 1;
 
         BlockHash block_hash;
         if (!GenerateBlock(config, chainman, *pblock, nMaxTries, nExtraNonce,
@@ -303,8 +309,8 @@ static UniValue generatetoaddress(const Config &config,
         RPCExamples{
             "\nGenerate 11 blocks to myaddress\n" +
             HelpExampleCli("generatetoaddress", "11 \"myaddress\"") +
-            "If you are running the Bitcoin ABC wallet, you can get a new "
-            "address to send the newly generated bitcoin to with:\n" +
+            "If you are using the " PACKAGE_NAME " wallet, you can "
+            "get a new address to send the newly generated bitcoin to with:\n" +
             HelpExampleCli("getnewaddress", "")},
     }
         .Check(request);
@@ -517,8 +523,7 @@ static UniValue getmininginfo(const Config &config,
     obj.pushKV("networkhashps", getnetworkhashps(config, request));
     obj.pushKV("pooledtx", uint64_t(mempool.size()));
     obj.pushKV("chain", config.GetChainParams().NetworkIDString());
-    obj.pushKV("warnings", GetWarnings(false));
-
+    obj.pushKV("warnings", GetWarnings(false).original);
     return obj;
 }
 

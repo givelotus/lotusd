@@ -6,6 +6,7 @@
 #include <net_processing.h>
 
 #include <addrman.h>
+#include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <avalanche/proof.h>
 #include <avalanche/validation.h>
@@ -102,34 +103,65 @@ static const unsigned int MAX_INV_SZ = 50000;
 static_assert(MAX_PROTOCOL_MESSAGE_LENGTH > MAX_INV_SZ * sizeof(CInv),
               "Max protocol message length must be greater than largest "
               "possible INV message");
-/**
- * Maximum number of in-flight transaction requests from a peer. It is not a
- * hard limit, but the threshold at which point the OVERLOADED_PEER_TX_DELAY
- * kicks in.
- */
-static constexpr int32_t MAX_PEER_TX_REQUEST_IN_FLIGHT = 100;
-/**
- * Maximum number of transactions to consider for requesting, per peer. It
- * provides a reasonable DoS limit to per-peer memory usage spent on
- * announcements, while covering peers continuously sending INVs at the maximum
- * rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for several
- * minutes, while not receiving the actual transaction (from any peer) in
- * response to requests for them.
- */
-static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 5000;
-/** How long to delay requesting transactions from non-preferred peers */
-static constexpr auto NONPREF_PEER_TX_DELAY = std::chrono::seconds{2};
-/**
- * How long to delay requesting transactions from overloaded peers (see
- * MAX_PEER_TX_REQUEST_IN_FLIGHT).
- */
-static constexpr auto OVERLOADED_PEER_TX_DELAY = std::chrono::seconds{2};
-/**
- * How long to wait (in microseconds) before downloading a transaction from an
- * additional peer.
- */
-static constexpr std::chrono::microseconds GETDATA_TX_INTERVAL{
-    std::chrono::seconds{60}};
+
+struct DataRequestParameters {
+    /**
+     * Maximum number of in-flight data requests from a peer. It is not a hard
+     * limit, but the threshold at which point the overloaded_peer_delay kicks
+     * in.
+     */
+    const size_t max_peer_request_in_flight;
+
+    /**
+     * Maximum number of inventories to consider for requesting, per peer. It
+     * provides a reasonable DoS limit to per-peer memory usage spent on
+     * announcements, while covering peers continuously sending INVs at the
+     * maximum rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for
+     * several minutes, while not receiving the actual data (from any peer) in
+     * response to requests for them.
+     */
+    const size_t max_peer_announcements;
+
+    /** How long to delay requesting data from non-preferred peers */
+    const std::chrono::seconds nonpref_peer_delay;
+
+    /**
+     * How long to delay requesting data from overloaded peers (see
+     * max_peer_request_in_flight).
+     */
+    const std::chrono::seconds overloaded_peer_delay;
+
+    /**
+     * How long to wait (in microseconds) before a data request from an
+     * additional peer.
+     */
+    const std::chrono::microseconds getdata_interval;
+
+    /**
+     * Permission flags a peer requires to bypass the request limits tracking
+     * limits and delay penalty.
+     */
+    const NetPermissionFlags bypass_request_limits_permissions;
+};
+
+static constexpr DataRequestParameters TX_REQUEST_PARAMS{
+    100,                      // max_peer_request_in_flight
+    5000,                     // max_peer_announcements
+    std::chrono::seconds(2),  // nonpref_peer_delay
+    std::chrono::seconds(2),  // overloaded_peer_delay
+    std::chrono::seconds(60), // getdata_interval
+    PF_RELAY,                 // bypass_request_limits_permissions
+};
+
+static constexpr DataRequestParameters PROOF_REQUEST_PARAMS{
+    100,                            // max_peer_request_in_flight
+    5000,                           // max_peer_announcements
+    std::chrono::seconds(2),        // nonpref_peer_delay
+    std::chrono::seconds(2),        // overloaded_peer_delay
+    std::chrono::seconds(60),       // getdata_interval
+    PF_BYPASS_PROOF_REQUEST_LIMITS, // bypass_request_limits_permissions
+};
+
 /**
  * Limit to avoid sending big packets. Not used in processing incoming GETDATA
  * for compatibility.
@@ -290,6 +322,20 @@ std::map<BlockHash, std::pair<NodeId, bool>> mapBlockSource GUARDED_BY(cs_main);
  */
 std::unique_ptr<CRollingBloomFilter> recentRejects GUARDED_BY(cs_main);
 uint256 hashRecentRejectsChainTip GUARDED_BY(cs_main);
+
+/**
+ * Filter for proofs that were recently rejected but not orphaned.
+ * These are not rerequested until they are rolled out of the filter.
+ *
+ * Without this filter we'd be re-requesting proofs from each of our peers,
+ * increasing bandwidth consumption considerably.
+ *
+ * Decreasing the false positive rate is fairly cheap, so we pick one in a
+ * million to make it highly unlikely for users to have issues with this filter.
+ */
+Mutex cs_rejectedProofs;
+std::unique_ptr<CRollingBloomFilter>
+    rejectedProofs GUARDED_BY(cs_rejectedProofs);
 
 /**
  * Filter for transactions that have been recently confirmed.
@@ -463,6 +509,10 @@ struct CNodeState {
     CRollingBloomFilter m_recently_announced_invs =
         CRollingBloomFilter{INVENTORY_MAX_RECENT_RELAY, 0.000001};
 
+    //! A rolling bloom filter of all announced Proofs CInvs to this peer.
+    CRollingBloomFilter m_recently_announced_proofs =
+        CRollingBloomFilter{INVENTORY_MAX_RECENT_RELAY, 0.000001};
+
     CNodeState(CAddress addrIn, bool is_inbound, bool is_manual)
         : address(addrIn), m_is_inbound(is_inbound),
           m_is_manual_connection(is_manual) {
@@ -486,6 +536,7 @@ struct CNodeState {
         m_chain_sync = {0, nullptr, false, false};
         m_last_block_announcement = 0;
         m_recently_announced_invs.reset();
+        m_recently_announced_proofs.reset();
     }
 };
 
@@ -546,6 +597,12 @@ static PeerRef GetPeerRef(NodeId id) {
     LOCK(g_peer_mutex);
     auto it = g_peer_map.find(id);
     return it != g_peer_map.end() ? it->second : nullptr;
+}
+
+static bool isPreferredDownloadPeer(const CNode &pfrom) {
+    LOCK(cs_main);
+    const CNodeState *state = State(pfrom.GetId());
+    return state && state->fPreferredDownload;
 }
 
 static void UpdatePreferredDownload(const CNode &node, CNodeState *state)
@@ -923,40 +980,74 @@ static void FindNextBlocksToDownload(NodeId nodeid, unsigned int count,
 
 } // namespace
 
+template <class InvId>
+static bool TooManyAnnouncements(const CNode &node,
+                                 const InvRequestTracker<InvId> &requestTracker,
+                                 const DataRequestParameters &requestParams) {
+    return !node.HasPermission(
+               requestParams.bypass_request_limits_permissions) &&
+           requestTracker.Count(node.GetId()) >=
+               requestParams.max_peer_announcements;
+}
+
+/**
+ * Compute the request time for this announcement, current time plus delays for:
+ *   - nonpref_peer_delay for announcements from non-preferred connections
+ *   - overloaded_peer_delay for announcements from peers which have at least
+ *     max_peer_request_in_flight requests in flight (and don't have PF_RELAY).
+ */
+template <class InvId>
+static std::chrono::microseconds
+ComputeRequestTime(const CNode &node,
+                   const InvRequestTracker<InvId> &requestTracker,
+                   const DataRequestParameters &requestParams,
+                   std::chrono::microseconds current_time, bool preferred) {
+    auto delay = std::chrono::microseconds{0};
+
+    if (!preferred) {
+        delay += requestParams.nonpref_peer_delay;
+    }
+
+    if (!node.HasPermission(requestParams.bypass_request_limits_permissions) &&
+        requestTracker.CountInFlight(node.GetId()) >=
+            requestParams.max_peer_request_in_flight) {
+        delay += requestParams.overloaded_peer_delay;
+    }
+
+    return current_time + delay;
+}
+
 void PeerManager::AddTxAnnouncement(const CNode &node, const TxId &txid,
                                     std::chrono::microseconds current_time) {
-    // For m_txrequest
+    // For m_txrequest and state
     AssertLockHeld(::cs_main);
-    NodeId nodeid = node.GetId();
-    if (!node.HasPermission(PF_RELAY) &&
-        m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
-        // Too many queued announcements from this peer
+
+    if (TooManyAnnouncements(node, m_txrequest, TX_REQUEST_PARAMS)) {
         return;
     }
-    const CNodeState *state = State(nodeid);
 
-    // Decide the InvRequestTracker parameters for this announcement:
-    // - "preferred": if fPreferredDownload is set (= outbound, or PF_NOBAN
-    //   permission)
-    // - "reqtime": current time plus delays for:
-    //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred
-    //     connections
-    //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at
-    //     least MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't
-    //     have PF_RELAY).
-    auto delay = std::chrono::microseconds{0};
-    const bool preferred = state->fPreferredDownload;
-    if (!preferred) {
-        delay += NONPREF_PEER_TX_DELAY;
+    const bool preferred = isPreferredDownloadPeer(node);
+    auto reqtime = ComputeRequestTime(node, m_txrequest, TX_REQUEST_PARAMS,
+                                      current_time, preferred);
+
+    m_txrequest.ReceivedInv(node.GetId(), txid, preferred, reqtime);
+}
+
+void PeerManager::AddProofAnnouncement(const CNode &node,
+                                       const avalanche::ProofId &proofid,
+                                       std::chrono::microseconds current_time,
+                                       bool preferred) {
+    // For m_proofrequest
+    AssertLockHeld(cs_proofrequest);
+
+    if (TooManyAnnouncements(node, m_proofrequest, PROOF_REQUEST_PARAMS)) {
+        return;
     }
 
-    const bool overloaded =
-        !node.HasPermission(PF_RELAY) &&
-        m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
-    if (overloaded) {
-        delay += OVERLOADED_PEER_TX_DELAY;
-    }
-    m_txrequest.ReceivedInv(nodeid, txid, preferred, current_time + delay);
+    auto reqtime = ComputeRequestTime(
+        node, m_proofrequest, PROOF_REQUEST_PARAMS, current_time, preferred);
+
+    m_proofrequest.ReceivedInv(node.GetId(), proofid, preferred, reqtime);
 }
 
 // This function is used for testing the stale tip eviction logic, see
@@ -1016,49 +1107,55 @@ void PeerManager::ReattemptInitialBroadcast(CScheduler &scheduler) const {
 void PeerManager::FinalizeNode(const Config &config, NodeId nodeid,
                                bool &fUpdateConnectionTime) {
     fUpdateConnectionTime = false;
-    LOCK(cs_main);
-    int misbehavior{0};
     {
-        PeerRef peer = GetPeerRef(nodeid);
-        assert(peer != nullptr);
-        misbehavior = WITH_LOCK(peer->m_misbehavior_mutex,
-                                return peer->m_misbehavior_score);
-        LOCK(g_peer_mutex);
-        g_peer_map.erase(nodeid);
-    }
-    CNodeState *state = State(nodeid);
-    assert(state != nullptr);
+        LOCK(cs_main);
+        int misbehavior{0};
+        {
+            PeerRef peer = GetPeerRef(nodeid);
+            assert(peer != nullptr);
+            misbehavior = WITH_LOCK(peer->m_misbehavior_mutex,
+                                    return peer->m_misbehavior_score);
+            LOCK(g_peer_mutex);
+            g_peer_map.erase(nodeid);
+        }
+        CNodeState *state = State(nodeid);
+        assert(state != nullptr);
 
-    if (state->fSyncStarted) {
-        nSyncStarted--;
+        if (state->fSyncStarted) {
+            nSyncStarted--;
+        }
+
+        if (misbehavior == 0 && state->fCurrentlyConnected) {
+            fUpdateConnectionTime = true;
+        }
+
+        for (const QueuedBlock &entry : state->vBlocksInFlight) {
+            mapBlocksInFlight.erase(entry.hash);
+        }
+        EraseOrphansFor(nodeid);
+        m_txrequest.DisconnectedPeer(nodeid);
+        nPreferredDownload -= state->fPreferredDownload;
+        nPeersWithValidatedDownloads -=
+            (state->nBlocksInFlightValidHeaders != 0);
+        assert(nPeersWithValidatedDownloads >= 0);
+        g_outbound_peers_with_protect_from_disconnect -=
+            state->m_chain_sync.m_protect;
+        assert(g_outbound_peers_with_protect_from_disconnect >= 0);
+
+        mapNodeState.erase(nodeid);
+
+        if (mapNodeState.empty()) {
+            // Do a consistency check after the last peer is removed.
+            assert(mapBlocksInFlight.empty());
+            assert(nPreferredDownload == 0);
+            assert(nPeersWithValidatedDownloads == 0);
+            assert(g_outbound_peers_with_protect_from_disconnect == 0);
+            assert(m_txrequest.Size() == 0);
+        }
     }
 
-    if (misbehavior == 0 && state->fCurrentlyConnected) {
-        fUpdateConnectionTime = true;
-    }
+    WITH_LOCK(cs_proofrequest, m_proofrequest.DisconnectedPeer(nodeid));
 
-    for (const QueuedBlock &entry : state->vBlocksInFlight) {
-        mapBlocksInFlight.erase(entry.hash);
-    }
-    EraseOrphansFor(nodeid);
-    m_txrequest.DisconnectedPeer(nodeid);
-    nPreferredDownload -= state->fPreferredDownload;
-    nPeersWithValidatedDownloads -= (state->nBlocksInFlightValidHeaders != 0);
-    assert(nPeersWithValidatedDownloads >= 0);
-    g_outbound_peers_with_protect_from_disconnect -=
-        state->m_chain_sync.m_protect;
-    assert(g_outbound_peers_with_protect_from_disconnect >= 0);
-
-    mapNodeState.erase(nodeid);
-
-    if (mapNodeState.empty()) {
-        // Do a consistency check after the last peer is removed.
-        assert(mapBlocksInFlight.empty());
-        assert(nPreferredDownload == 0);
-        assert(nPeersWithValidatedDownloads == 0);
-        assert(g_outbound_peers_with_protect_from_disconnect == 0);
-        assert(m_txrequest.Size() == 0);
-    }
     LogPrint(BCLog::NET, "Cleared nodestate for peer=%d\n", nodeid);
 }
 
@@ -1392,6 +1489,12 @@ PeerManager::PeerManager(const CChainParams &chainparams, CConnman &connman,
     // Initialize global variables that cannot be constructed at startup.
     recentRejects.reset(new CRollingBloomFilter(120000, 0.000001));
 
+    {
+        LOCK(cs_rejectedProofs);
+        rejectedProofs =
+            std::make_unique<CRollingBloomFilter>(100000, 0.000001);
+    }
+
     // Blocks don't typically have more than 4000 transactions, so this should
     // be at least six blocks (~1 hr) worth of transactions that we can store.
     // If the number of transactions appearing in a block goes up, or if we are
@@ -1676,9 +1779,21 @@ static bool AlreadyHaveBlock(const BlockHash &block_hash)
     return LookupBlockIndex(block_hash) != nullptr;
 }
 
+static bool AlreadyHaveProof(const avalanche::ProofId &proofid) {
+    assert(g_avalanche);
+    LOCK(cs_rejectedProofs);
+    return rejectedProofs->contains(proofid) ||
+           g_avalanche->getProof(proofid) || g_avalanche->getOrphan(proofid);
+}
+
 void RelayTransaction(const TxId &txid, const CConnman &connman) {
     connman.ForEachNode(
         [&txid](CNode *pnode) { pnode->PushTxInventory(txid); });
+}
+
+void RelayProof(const avalanche::ProofId &proofid, const CConnman &connman) {
+    connman.ForEachNode(
+        [&proofid](CNode *pnode) { pnode->PushProofInventory(proofid); });
 }
 
 static void RelayAddress(const CAddress &addr, bool fReachable,
@@ -1937,6 +2052,38 @@ CTransactionRef static FindTxForGetData(const CNode &peer, const TxId &txid,
     return {};
 }
 
+//! Determine whether or not a peer can request a proof, and return it (or
+//! nullptr if not found or not allowed).
+static std::shared_ptr<avalanche::Proof>
+FindProofForGetData(const CNode &peer, const avalanche::ProofId &proofid,
+                    const std::chrono::seconds now) {
+    auto proof = g_avalanche->getProof(proofid);
+
+    // We don't have this proof
+    if (!proof) {
+        return nullptr;
+    }
+
+    auto proofTime = std::chrono::duration_cast<std::chrono::seconds>(
+        g_avalanche->getProofTime(proofid).time_since_epoch());
+
+    // If we know that proof for long enough, allow for requesting it
+    if (proofTime <= now - UNCONDITIONAL_RELAY_DELAY) {
+        return proof;
+    }
+
+    {
+        LOCK(cs_main);
+        // Otherwise, the proofs must have been announced recently.
+        if (State(peer.GetId())
+                ->m_recently_announced_proofs.contains(proofid)) {
+            return proof;
+        }
+    }
+
+    return nullptr;
+}
+
 static void ProcessGetData(const Config &config, CNode &pfrom,
                            CConnman &connman, CTxMemPool &mempool,
                            const std::atomic<bool> &interruptMsgProc)
@@ -1954,10 +2101,10 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
             ? pfrom.m_tx_relay->m_last_mempool_req.load()
             : std::chrono::seconds::min();
 
-    // Process as many TX items from the front of the getdata queue as
-    // possible, since they're common and it's efficient to batch process
-    // them.
-    while (it != pfrom.vRecvGetData.end() && it->IsMsgTx()) {
+    // Process as many TX or AVA_PROOF items from the front of the getdata
+    // queue as possible, since they're common and it's efficient to batch
+    // process them.
+    while (it != pfrom.vRecvGetData.end()) {
         if (interruptMsgProc) {
             return;
         }
@@ -1967,43 +2114,67 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
             break;
         }
 
-        const CInv &inv = *it++;
+        const CInv &inv = *it;
 
-        if (pfrom.m_tx_relay == nullptr) {
-            // Ignore GETDATA requests for transactions from blocks-only
-            // peers.
+        if (it->IsMsgProof()) {
+            auto proof =
+                FindProofForGetData(pfrom, avalanche::ProofId{inv.hash}, now);
+            if (proof) {
+                connman.PushMessage(
+                    &pfrom, msgMaker.Make(NetMsgType::AVAPROOF, *proof));
+                // TODO Remove from the set of unbroadcasted proof ids
+            } else {
+                vNotFound.push_back(inv);
+            }
+
+            ++it;
             continue;
         }
 
-        CTransactionRef tx =
-            FindTxForGetData(pfrom, TxId{inv.hash}, mempool_req, now);
-        if (tx) {
-            int nSendFlags = 0;
-            connman.PushMessage(&pfrom,
-                                msgMaker.Make(nSendFlags, NetMsgType::TX, *tx));
-            mempool.RemoveUnbroadcastTx(TxId(inv.hash));
-            // As we're going to send tx, make sure its unconfirmed parents are
-            // made requestable.
-            for (const auto &txin : tx->vin) {
-                auto txinfo = mempool.info(txin.prevout.GetTxId());
-                if (txinfo.tx &&
-                    txinfo.m_time > now - UNCONDITIONAL_RELAY_DELAY) {
-                    // Relaying a transaction with a recent but unconfirmed
-                    // parent.
-                    if (WITH_LOCK(
-                            pfrom.m_tx_relay->cs_tx_inventory,
-                            return !pfrom.m_tx_relay->filterInventoryKnown
-                                        .contains(txin.prevout.GetTxId()))) {
-                        LOCK(cs_main);
-                        State(pfrom.GetId())
-                            ->m_recently_announced_invs.insert(
-                                txin.prevout.GetTxId());
+        if (it->IsMsgTx()) {
+            if (pfrom.m_tx_relay == nullptr) {
+                // Ignore GETDATA requests for transactions from blocks-only
+                // peers.
+                continue;
+            }
+
+            CTransactionRef tx =
+                FindTxForGetData(pfrom, TxId{inv.hash}, mempool_req, now);
+            if (tx) {
+                int nSendFlags = 0;
+                connman.PushMessage(
+                    &pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *tx));
+                mempool.RemoveUnbroadcastTx(TxId(inv.hash));
+                // As we're going to send tx, make sure its unconfirmed parents
+                // are made requestable.
+                for (const auto &txin : tx->vin) {
+                    auto txinfo = mempool.info(txin.prevout.GetTxId());
+                    if (txinfo.tx &&
+                        txinfo.m_time > now - UNCONDITIONAL_RELAY_DELAY) {
+                        // Relaying a transaction with a recent but unconfirmed
+                        // parent.
+                        if (WITH_LOCK(
+                                pfrom.m_tx_relay->cs_tx_inventory,
+                                return !pfrom.m_tx_relay->filterInventoryKnown
+                                            .contains(
+                                                txin.prevout.GetTxId()))) {
+                            LOCK(cs_main);
+                            State(pfrom.GetId())
+                                ->m_recently_announced_invs.insert(
+                                    txin.prevout.GetTxId());
+                        }
                     }
                 }
+            } else {
+                vNotFound.push_back(inv);
             }
-        } else {
-            vNotFound.push_back(inv);
+
+            ++it;
+            continue;
         }
+
+        // It's neither a proof nor a transaction
+        break;
     }
 
     // Only process one BLOCK item per call, since they're uncommon and can be
@@ -2600,7 +2771,8 @@ static void ProcessGetCFCheckPt(CNode &peer, CDataStream &vRecv,
 bool IsAvalancheMessageType(const std::string &msg_type) {
     return msg_type == NetMsgType::AVAHELLO ||
            msg_type == NetMsgType::AVAPOLL ||
-           msg_type == NetMsgType::AVARESPONSE;
+           msg_type == NetMsgType::AVARESPONSE ||
+           msg_type == NetMsgType::AVAPROOF;
 }
 
 void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
@@ -2624,7 +2796,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             return;
         }
 
-        if (!gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+        if (!isAvalancheEnabled(gArgs)) {
             Misbehaving(pfrom, 20, "unsolicited-" + msg_type);
             return;
         }
@@ -2859,10 +3031,21 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         }
 
         if ((pfrom.nServices & NODE_AVALANCHE) && g_avalanche &&
-            gArgs.GetBoolArg("-enableavalanche", AVALANCHE_DEFAULT_ENABLED)) {
+            isAvalancheEnabled(gArgs)) {
             if (g_avalanche->sendHello(&pfrom)) {
                 LogPrint(BCLog::NET, "Send avahello to peer %d\n",
                          pfrom.GetId());
+
+                auto localProof = g_avalanche->getLocalProof();
+                // If we sent a hello message, we should have a proof
+                assert(localProof);
+
+                // Add our proof id to the list or the recently announced proof
+                // INVs to this peer. This is used for filtering which INV can
+                // be requested for download.
+                LOCK(cs_main);
+                State(pfrom.GetId())
+                    ->m_recently_announced_proofs.insert(localProof->getId());
             }
         }
 
@@ -3030,6 +3213,22 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                     best_block = std::move(hash);
                 }
 
+                continue;
+            }
+
+            if (inv.IsMsgProof()) {
+                const avalanche::ProofId proofid(inv.hash);
+                const bool fAlreadyHave = AlreadyHaveProof(proofid);
+                logInv(inv, fAlreadyHave);
+                pfrom.AddKnownProof(proofid);
+
+                if (!fAlreadyHave && g_avalanche && isAvalancheEnabled(gArgs)) {
+                    const bool preferred = isPreferredDownloadPeer(pfrom);
+
+                    LOCK(cs_proofrequest);
+                    AddProofAnnouncement(pfrom, proofid, current_time,
+                                         preferred);
+                }
                 continue;
             }
 
@@ -3927,16 +4126,33 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         avalanche::Delegation &delegation = pfrom.m_avalanche_state->delegation;
         verifier >> delegation;
 
-        avalanche::Proof proof;
         avalanche::DelegationState state;
         CPubKey pubkey;
-        if (!delegation.verify(state, proof, pubkey)) {
+        if (!delegation.verify(state, pubkey)) {
             Misbehaving(pfrom, 100, "invalid-delegation");
             return;
         }
 
         SchnorrSig sig;
         verifier >> sig;
+        if (!pubkey.VerifySchnorr(g_avalanche->buildRemoteSighash(&pfrom),
+                                  sig)) {
+            Misbehaving(pfrom, 100, "invalid-avahello-signature");
+            return;
+        }
+
+        // If we don't know this proof already, add it to the tracker so it can
+        // be requested.
+        const avalanche::ProofId proofid(delegation.getProofId());
+        if (!AlreadyHaveProof(proofid)) {
+            const bool preferred = isPreferredDownloadPeer(pfrom);
+            LOCK(cs_proofrequest);
+            AddProofAnnouncement(pfrom, proofid,
+                                 GetTime<std::chrono::microseconds>(),
+                                 preferred);
+        }
+
+        return;
     }
 
     if (msg_type == NetMsgType::AVAPOLL) {
@@ -4098,6 +4314,46 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             if (!ActivateBestChain(config, state)) {
                 LogPrint(BCLog::NET, "failed to activate chain (%s)\n",
                          state.ToString());
+            }
+        }
+
+        return;
+    }
+
+    if (msg_type == NetMsgType::AVAPROOF) {
+        auto proof = std::make_shared<avalanche::Proof>();
+        vRecv >> *proof;
+        const avalanche::ProofId &proofid = proof->getId();
+
+        pfrom.AddKnownProof(proofid);
+
+        const NodeId nodeid = pfrom.GetId();
+
+        {
+            LOCK(cs_proofrequest);
+            m_proofrequest.ReceivedResponse(nodeid, proofid);
+
+            if (AlreadyHaveProof(proofid)) {
+                m_proofrequest.ForgetInvId(proofid);
+                return;
+            }
+        }
+
+        // addProof should not be called while cs_proofrequest because it holds
+        // cs_main and that creates a potential deadlock during shutdown
+        if (g_avalanche->addProof(proof)) {
+            WITH_LOCK(cs_proofrequest, m_proofrequest.ForgetInvId(proofid));
+            RelayProof(proofid, m_connman);
+
+            LogPrint(BCLog::NET, "New avalanche proof: peer=%d, proofid %s\n",
+                     nodeid, proofid.ToString());
+        } else {
+            // If the proof couldn't be added, it can be either orphan or
+            // invalid. In the latter case we should increase the ban score.
+            // TODO improve the ban reason by printing the validation state
+            if (!g_avalanche->getOrphan(proofid)) {
+                WITH_LOCK(cs_rejectedProofs, rejectedProofs->insert(proofid));
+                Misbehaving(nodeid, 100, "invalid-avaproof");
             }
         }
 
@@ -4359,15 +4615,23 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
     if (msg_type == NetMsgType::NOTFOUND) {
         std::vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() <=
-            MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
-            LOCK(::cs_main);
+        // A peer might send up to 1 notfound per getdata request, but no more
+        if (vInv.size() <= PROOF_REQUEST_PARAMS.max_peer_announcements +
+                               TX_REQUEST_PARAMS.max_peer_announcements +
+                               MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             for (CInv &inv : vInv) {
                 if (inv.IsMsgTx()) {
                     // If we receive a NOTFOUND message for a tx we requested,
                     // mark the announcement for it as completed in
                     // InvRequestTracker.
+                    LOCK(::cs_main);
                     m_txrequest.ReceivedResponse(pfrom.GetId(), TxId(inv.hash));
+                    continue;
+                }
+                if (inv.IsMsgProof()) {
+                    LOCK(cs_proofrequest);
+                    m_proofrequest.ReceivedResponse(
+                        pfrom.GetId(), avalanche::ProofId(inv.hash));
                 }
             }
         }
@@ -5112,23 +5376,55 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
         }
         pto->vInventoryBlockToSend.clear();
 
-        if (pto->m_tx_relay != nullptr) {
-            LOCK(pto->m_tx_relay->cs_tx_inventory);
-            // Check whether periodic sends should happen
+        auto computeNextInvSendTime =
+            [&](std::chrono::microseconds &next) -> bool {
             bool fSendTrickle = pto->HasPermission(PF_NOBAN);
-            if (pto->m_tx_relay->nNextInvSend < current_time) {
+
+            if (next < current_time) {
                 fSendTrickle = true;
                 if (pto->IsInboundConn()) {
-                    pto->m_tx_relay->nNextInvSend = std::chrono::microseconds{
+                    next = std::chrono::microseconds{
                         m_connman.PoissonNextSendInbound(
                             count_microseconds(current_time),
                             INVENTORY_BROADCAST_INTERVAL)};
                 } else {
-                    // Skip delay for outbound peers, as there is less
-                    // privacy concern for them.
-                    pto->m_tx_relay->nNextInvSend = current_time;
+                    // Skip delay for outbound peers, as there is less privacy
+                    // concern for them.
+                    next = current_time;
                 }
             }
+
+            return fSendTrickle;
+        };
+
+        // Add proofs to inventory
+        if (pto->m_proof_relay != nullptr) {
+            LOCK(pto->m_proof_relay->cs_proof_inventory);
+
+            if (computeNextInvSendTime(pto->m_proof_relay->nextInvSend)) {
+                auto it = pto->m_proof_relay->setInventoryProofToSend.begin();
+                while (it !=
+                       pto->m_proof_relay->setInventoryProofToSend.end()) {
+                    const avalanche::ProofId proofid = *it;
+
+                    it = pto->m_proof_relay->setInventoryProofToSend.erase(it);
+
+                    if (pto->m_proof_relay->filterProofKnown.contains(
+                            proofid)) {
+                        continue;
+                    }
+
+                    pto->m_proof_relay->filterProofKnown.insert(proofid);
+                    addInvAndMaybeFlush(MSG_AVA_PROOF, proofid);
+                }
+            }
+        }
+
+        if (pto->m_tx_relay != nullptr) {
+            LOCK(pto->m_tx_relay->cs_tx_inventory);
+            // Check whether periodic sends should happen
+            const bool fSendTrickle =
+                computeNextInvSendTime(pto->m_tx_relay->nNextInvSend);
 
             // Time to send but the peer has requested we not relay
             // transactions.
@@ -5408,6 +5704,34 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
     };
 
     //
+    // Message: getdata (proof)
+    //
+    {
+        LOCK(cs_proofrequest);
+        std::vector<std::pair<NodeId, avalanche::ProofId>> expired;
+        auto requestable =
+            m_proofrequest.GetRequestable(pto->GetId(), current_time, &expired);
+        for (const auto &entry : expired) {
+            LogPrint(BCLog::NET, "timeout of inflight proof %s from peer=%d\n",
+                     entry.second.ToString(), entry.first);
+        }
+        for (const auto &proofid : requestable) {
+            if (!AlreadyHaveProof(proofid)) {
+                addGetDataAndMaybeFlush(MSG_AVA_PROOF, proofid);
+                m_proofrequest.RequestedData(
+                    pto->GetId(), proofid,
+                    current_time + PROOF_REQUEST_PARAMS.getdata_interval);
+            } else {
+                // We have already seen this proof, no need to download.
+                // This is just a belt-and-suspenders, as this should
+                // already be called whenever a transaction becomes
+                // AlreadyHaveProof().
+                m_proofrequest.ForgetInvId(proofid);
+            }
+        }
+    } // release cs_proofrequest
+
+    //
     // Message: getdata (transactions)
     //
     {
@@ -5422,8 +5746,9 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
         for (const TxId &txid : requestable) {
             if (!AlreadyHaveTx(txid, m_mempool)) {
                 addGetDataAndMaybeFlush(MSG_TX, txid);
-                m_txrequest.RequestedData(pto->GetId(), txid,
-                                          current_time + GETDATA_TX_INTERVAL);
+                m_txrequest.RequestedData(
+                    pto->GetId(), txid,
+                    current_time + TX_REQUEST_PARAMS.getdata_interval);
             } else {
                 // We have already seen this transaction, no need to download.
                 // This is just a belt-and-suspenders, as this should already be

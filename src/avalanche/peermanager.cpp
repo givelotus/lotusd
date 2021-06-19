@@ -13,7 +13,12 @@
 
 namespace avalanche {
 
-bool PeerManager::addNode(NodeId nodeid, const Proof &proof,
+static bool isOrphanState(const ProofValidationState &state) {
+    return state.GetResult() == ProofValidationResult::MISSING_UTXO ||
+           state.GetResult() == ProofValidationResult::HEIGHT_MISMATCH;
+}
+
+bool PeerManager::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
                           const Delegation &delegation) {
     auto it = fetchOrCreatePeer(proof);
     if (it == peers.end()) {
@@ -24,7 +29,7 @@ bool PeerManager::addNode(NodeId nodeid, const Proof &proof,
 
     DelegationState state;
     CPubKey pubkey;
-    if (!delegation.verify(state, proof, pubkey)) {
+    if (!delegation.verify(state, pubkey)) {
         return false;
     }
 
@@ -162,6 +167,7 @@ NodeId PeerManager::selectNode() {
 
 void PeerManager::updatedBlockTip() {
     std::vector<PeerId> invalidPeers;
+    std::vector<std::shared_ptr<Proof>> newOrphans;
 
     {
         LOCK(cs_main);
@@ -169,10 +175,19 @@ void PeerManager::updatedBlockTip() {
         const CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
         for (const auto &p : peers) {
             ProofValidationState state;
-            if (!p.proof.verify(state, coins)) {
+            if (!p.proof->verify(state, coins)) {
+                if (isOrphanState(state)) {
+                    newOrphans.push_back(p.proof);
+                }
                 invalidPeers.push_back(p.peerid);
             }
         }
+    }
+
+    orphanProofs.rescan(*this);
+
+    for (auto &p : newOrphans) {
+        orphanProofs.addProof(p);
     }
 
     for (const auto &pid : invalidPeers) {
@@ -180,39 +195,59 @@ void PeerManager::updatedBlockTip() {
     }
 }
 
-PeerId PeerManager::getPeerId(const Proof &proof) {
+PeerId PeerManager::getPeerId(const std::shared_ptr<Proof> &proof) {
     auto it = fetchOrCreatePeer(proof);
     return it == peers.end() ? NO_PEER : it->peerid;
 }
 
+std::shared_ptr<Proof> PeerManager::getProof(const ProofId &proofid) const {
+    auto &pview = peers.get<proof_index>();
+    auto it = pview.find(proofid);
+    return it == pview.end() ? nullptr : it->proof;
+}
+
+Peer::Timestamp PeerManager::getProofTime(const ProofId &proofid) const {
+    auto &pview = peers.get<proof_index>();
+    auto it = pview.find(proofid);
+    return it == pview.end() ? Peer::Timestamp::max() : it->time;
+}
+
 PeerManager::PeerSet::iterator
-PeerManager::fetchOrCreatePeer(const Proof &proof) {
+PeerManager::fetchOrCreatePeer(const std::shared_ptr<Proof> &proof) {
     {
         // Check if we already know of that peer.
         auto &pview = peers.get<proof_index>();
-        auto it = pview.find(proof.getId());
+        auto it = pview.find(proof->getId());
         if (it != pview.end()) {
             return peers.project<0>(it);
         }
     }
 
-    {
-        // Reject invalid proof.
+    // Check the proof's validity.
+    ProofValidationState state;
+    bool valid = [&](ProofValidationState &state) {
         LOCK(cs_main);
         const CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        return proof->verify(state, coins);
+    }(state);
 
-        ProofValidationState state;
-        if (!proof.verify(state, coins)) {
-            return peers.end();
+    if (!valid) {
+        if (isOrphanState(state)) {
+            orphanProofs.addProof(proof);
         }
+
+        // Reject invalid proof.
+        return peers.end();
     }
+
+    orphanProofs.removeProof(proof->getId());
 
     // New peer means new peerid!
     const PeerId peerid = nextPeerId++;
 
     // Attach UTXOs to this proof.
     std::unordered_set<PeerId> conflicting_peerids;
-    for (const auto &s : proof.getStakes()) {
+    for (const auto &s : proof->getStakes()) {
         auto p = utxos.emplace(s.getStake().getUTXO(), peerid);
         if (!p.second) {
             // We have a collision with an existing proof.
@@ -222,7 +257,7 @@ PeerManager::fetchOrCreatePeer(const Proof &proof) {
 
     // For now, if there is a conflict, just ceanup the mess.
     if (conflicting_peerids.size() > 0) {
-        for (const auto &s : proof.getStakes()) {
+        for (const auto &s : proof->getStakes()) {
             auto it = utxos.find(s.getStake().getUTXO());
             assert(it != utxos.end());
 
@@ -260,7 +295,7 @@ bool PeerManager::removePeer(const PeerId peerid) {
                     peerid, std::chrono::steady_clock::now())));
 
     // Release UTXOs attached to this proof.
-    for (const auto &s : it->proof.getStakes()) {
+    for (const auto &s : it->proof->getStakes()) {
         bool deleted = utxos.erase(s.getStake().getUTXO()) > 0;
         assert(deleted);
     }
@@ -454,6 +489,14 @@ std::vector<NodeId> PeerManager::getNodeIdsForPeer(PeerId peerId) const {
         nodeids.emplace_back(it->nodeid);
     }
     return nodeids;
+}
+
+bool PeerManager::isOrphan(const ProofId &id) const {
+    return orphanProofs.getProof(id) != nullptr;
+}
+
+std::shared_ptr<Proof> PeerManager::getOrphan(const ProofId &id) const {
+    return orphanProofs.getProof(id);
 }
 
 } // namespace avalanche
