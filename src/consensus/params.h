@@ -20,8 +20,8 @@ namespace Consensus {
 struct Params {
     BlockHash hashGenesisBlock;
     int nSubsidyHalvingInterval;
-    /** Unix time used for MTP activation of 15 Nov 2021 12:00:00 UTC upgrade */
-    int selectronActivationTime;
+    /** Unix time used for MTP activation of 2021-12-21T15:59:00.000Z protocol upgrade */
+    int exodusActivationTime;
 
     /**
      * Don't warn about unknown BIP 9 activations below this height.

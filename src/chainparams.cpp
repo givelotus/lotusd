@@ -103,8 +103,8 @@ public:
         consensus.defaultAssumeValid =
             ChainParamsConstants::MAINNET_DEFAULT_ASSUME_VALID;
 
-        // Nov 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.selectronActivationTime = 1636977600;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -224,8 +224,8 @@ public:
         consensus.defaultAssumeValid =
             ChainParamsConstants::TESTNET_DEFAULT_ASSUME_VALID;
 
-        // Nov 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.selectronActivationTime = 1636977600;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -322,8 +322,8 @@ public:
         // valid.
         consensus.defaultAssumeValid = BlockHash();
 
-        // Nov 15, 2021 12:00:00 UTC protocol upgrade
-        consensus.selectronActivationTime = 1636977600;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
