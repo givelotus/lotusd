@@ -115,11 +115,13 @@ public:
         // Nov 15, 2023 12:00:00 UTC protocol upgrade
         consensus.cowperthwaiteHeight = 818669;
 
-        // Nov 15, 2026 12:00:00 UTC protocol upgrade
-        consensus.mengerActivationTime = 1794744000;
+        // May 15, 2025 12:00:00 UTC protocol upgrade
+        consensus.schumpeterActivationTime = 1747310400;
 
-        // May 15, 2027 12:00:00 UTC protocol upgrade
-        consensus.sandersActivationTime = 1810382400;
+        // May 15, 2026 12:00:00 UTC protocol upgrade
+        consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -193,7 +195,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0x2f783c045f353b4a900139f8a66c7bcbb62"
                                          "c93a4f298472d77dad9bfb0186665")},
-             .m_chain_tx_count = 299'407'257,
+             .nChainTx = 299'407'257,
              .blockhash =
                  BlockHash{uint256S("0x0000000000000000297efb200794348b44bff4bf"
                                     "b31716cf64dc45bac0a251ea")}},
@@ -202,7 +204,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0x20f077a8fcc08bb9cb3753df845c9a4257c"
                                          "e500684dfa5a95d1061701c4fa35d")},
-             .m_chain_tx_count = 299'856'530,
+             .nChainTx = 299'856'530,
              .blockhash =
                  BlockHash{uint256S("0x00000000000000003fc542691c35873ba4ba7a44"
                                     "05ce612a62f121988fb8a46d")}},
@@ -275,11 +277,13 @@ public:
         // Nov 15, 2023 12:00:00 UTC protocol upgrade
         consensus.cowperthwaiteHeight = 1584485;
 
-        // Nov 15, 2026 12:00:00 UTC protocol upgrade
-        consensus.mengerActivationTime = 1794744000;
+        // May 15, 2025 12:00:00 UTC protocol upgrade
+        consensus.schumpeterActivationTime = 1747310400;
 
-        // May 15, 2027 12:00:00 UTC protocol upgrade
-        consensus.sandersActivationTime = 1810382400;
+        // May 15, 2026 12:00:00 UTC protocol upgrade
+        consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -339,7 +343,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0xc7a2aa5dfdbafa2d6a6613d254d25a2ab9d"
                                          "893c01099d241f1e7a3785cb5f50f")},
-             .m_chain_tx_count = 63'977'749,
+             .nChainTx = 63'977'749,
              .blockhash =
                  BlockHash{uint256S("0x000000000000c7d18ee9b71a1ab4d8d21aa9d758"
                                     "7bf260e93df029ccb392d403")}},
@@ -348,7 +352,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0x53026f5c5f3bfdbfb3acda49d5531dfcbbb"
                                          "544cfa0e15e3fcecc22d681aa9986")},
-             .m_chain_tx_count = 63'999'716,
+             .nChainTx = 63'999'716,
              .blockhash =
                  BlockHash{uint256S("0x000000000003c4467ce74a73c902e80b5924cfdf"
                                     "2695bea8991963f26ac6f4b1")}},
@@ -410,11 +414,13 @@ public:
         // Nov 15, 2023 12:00:00 UTC protocol upgrade
         consensus.cowperthwaiteHeight = 0;
 
-        // Nov 15, 2026 12:00:00 UTC protocol upgrade
-        consensus.mengerActivationTime = 1794744000;
+        // May 15, 2025 12:00:00 UTC protocol upgrade
+        consensus.schumpeterActivationTime = 1747310400;
 
-        // May 15, 2027 12:00:00 UTC protocol upgrade
-        consensus.sandersActivationTime = 1810382400;
+        // May 15, 2026 12:00:00 UTC protocol upgrade
+        consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
@@ -460,7 +466,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0xd754ca97ef24c5132f8d2147c19310b7a6b"
                                          "d136766430304735a73372fe36213")},
-             .m_chain_tx_count = 111,
+             .nChainTx = 111,
              .blockhash =
                  BlockHash{uint256S("0x47cfb2b77860d250060e78d3248bb05092876545"
                                     "3cbcbdbc121e3c48b99a376c")}},
@@ -469,7 +475,7 @@ public:
              .hash_serialized =
                  AssumeutxoHash{uint256S("0xa966794ed5a2f9debaefc7ca48dbc5d5e12"
                                          "a89ff9fe45bd00ec5732d074580a9")},
-             .m_chain_tx_count = 334,
+             .nChainTx = 334,
              .blockhash =
                  BlockHash{uint256S("0x118a7d5473bccce9b314789e14ce426fc65fb09d"
                                     "feda0131032bb6d86ed2fd0b")}},
@@ -512,7 +518,7 @@ std::vector<int> CChainParams::GetAvailableSnapshotHeights() const {
 }
 
 std::optional<ChainType>
-GetNetworkForMagic(const CMessageHeader::MessageMagic &message) {
+GetNetworkForMagic(CMessageHeader::MessageMagic &message) {
     CChainParams::ChainOptions opts{};
     const auto mainnet_msg = CChainParams::Main(opts)->DiskMagic();
     const auto testnet_msg = CChainParams::TestNet(opts)->DiskMagic();
