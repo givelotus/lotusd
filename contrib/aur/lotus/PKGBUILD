@@ -1,12 +1,12 @@
 # Maintainer: Josh Ellithorpe <quest@mac.com>
 
 pkgname=lotusd
-pkgver=0.34.1
+pkgver=1.0.0
 pkgrel=0
 pkgdesc="Lotus with lotusd, lotus-tx, lotus-seeder and lotus-cli"
 arch=('i686' 'x86_64')
 url="https://givelotus.org"
-depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'jemalloc')
+depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'miniupnpc' 'libnatpmp' 'jemalloc')
 makedepends=('cmake' 'ninja' 'boost' 'python' 'help2man')
 license=('MIT')
 source=(https://github.com/LogosFoundation/lotusd/archive/v$pkgver.tar.gz
