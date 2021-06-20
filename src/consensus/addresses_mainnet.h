@@ -8,8 +8,8 @@ namespace MainNet {
         {"pzmv0yp3kuwcd2cdv9lpu8nsdmzwud9s0upp4rxwc9"},
         // Bitcoin ABC
         {"qzu2u8z8ala43ae0009gr8l8lsjjl8599cdwdr9mxq"},
-        // Be.Cash
-        {"qpwm9atcqdmr2dutnpp5h0t0hmy0y6k595qg0z5egm"},
+        // Tobias
+        {"qz6shp4gj0vqe83wuu43n9sjxa9hknqumq0xdtwprp"},
         // Saipan Institute
         {"qrd8dgcmvasdewg2535uzkt9mfhgqztwg504dhsfxc"},
         // Stamp
