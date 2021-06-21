@@ -154,6 +154,11 @@ public:
         // all service bits wanted by any release ASAP to avoid it where
         // possible.
         // Bitcoin ABC seeder
+        vFixedSeeds.clear();
+        vSeeds.clear();
+
+        vSeeds.emplace_back("mainnet.seeds.cash");
+        vSeeds.emplace_back("seed.be.cash");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 0);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 5);
@@ -266,6 +271,8 @@ public:
 
         vFixedSeeds.clear();
         vSeeds.clear();
+
+        vSeeds.emplace_back("testnet.seeds.cash");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 111);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 196);
