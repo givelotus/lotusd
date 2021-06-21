@@ -53,7 +53,7 @@ class ECashRPCTest(BitcoinTestFramework):
         # is adapted to XEC only.
         # In BCHA mode, it triggers a "-fallbackfee is set very high!" error.
         self.restart_node(0, ["-ecash=0", "-fallbackfee=0"])
-        self.test_currency(ticker="Lotus",
+        self.test_currency(ticker="XPI",
                            satoshis_per_unit=1_000_000,
                            decimals=6)
 
