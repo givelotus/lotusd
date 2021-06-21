@@ -53,4 +53,8 @@ void BitcoinAddressValidatorTests::inputTests() {
     // Only alphanumeric chars are accepted.
     in = "%";
     QVERIFY(v.validate(in, unused) == QValidator::Invalid);
+
+    // valid characters, invalid address
+    in = "lotus_poop";
+    QVERIFY(v.validate(in, unused) == QValidator::Acceptable);
 }
