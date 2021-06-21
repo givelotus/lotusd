@@ -62,7 +62,7 @@ PeerMessagingState CSeederNode::ProcessMessage(std::string strCommand,
         if (vAddr) {
             MessageWriter::WriteMessage(vSend, NetMsgType::GETADDR);
             std::vector<BlockHash> locatorHash(0);
-            if (Params().Checkpoints().mapCheckpoints.size() >= 2) {
+            if (Params().Checkpoints().mapCheckpoints.size() > 0) {
                 locatorHash = std::vector<BlockHash>(1, Params().Checkpoints().mapCheckpoints.rbegin()->second);
             }
             MessageWriter::WriteMessage(vSend, NetMsgType::GETHEADERS,
