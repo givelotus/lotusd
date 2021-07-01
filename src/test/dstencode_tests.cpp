@@ -40,8 +40,9 @@ BOOST_AUTO_TEST_CASE(test_addresses) {
         "ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2";
     std::string cashaddr_script =
         "ecash:ppm2qsznhks23z7629mms6s4cwef74vcwv2zrv3l8h";
-    std::string lotus_pubkey = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ";
-    std::string lotus_script = "lotus_1PrQz5R11Ae1YcbvUpGDSvzPP2GsVw6EDCvZqy";
+    std::string lotus_pubkey =
+        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN";
+    std::string lotus_script = "lotus_1PrQz5R11Ae1YcbvUpGDSvzPP2GsVw6E7mthMV";
 
     DummyCashAddrConfig config;
 

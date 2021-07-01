@@ -43,7 +43,7 @@
                 "reqSigs": 1,
                 "type": "pubkeyhash",
                 "addresses": [
-                    "lotus_16PSJJ5rwdsfaDb1FJZHyr8jodDyGZqBXD3gw9trF"
+                    "lotus_16PSJJ5rwdsfaDb1FJZHyr8jodDyGZqBXD3gpJBpm"
                 ]
             }
         },
@@ -56,7 +56,7 @@
                 "reqSigs": 1,
                 "type": "pubkeyhash",
                 "addresses": [
-                    "lotus_16PSJQYjnqavSN7kQKQCQ29cRFrot99aLLg4iHj7R"
+                    "lotus_16PSJQYjnqavSN7kQKQCQ29cRFrot99aLLg2FPcPP"
                 ]
             }
         }
