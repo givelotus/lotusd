@@ -6,6 +6,7 @@
 
 #include <avalanche/delegation.h>
 #include <avalanche/validation.h>
+#include <net_processing.h> // For RelayProof
 #include <random.h>
 #include <validation.h> // For ChainstateActive()
 
@@ -25,13 +26,20 @@ bool PeerManager::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
         return false;
     }
 
-    const PeerId peerid = it->peerid;
-
     DelegationState state;
     CPubKey pubkey;
     if (!delegation.verify(state, pubkey)) {
         return false;
     }
+
+    return addOrUpdateNode(it, nodeid, std::move(pubkey));
+}
+
+bool PeerManager::addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid,
+                                  CPubKey pubkey) {
+    assert(it != peers.end());
+
+    const PeerId peerid = it->peerid;
 
     auto nit = nodes.find(nodeid);
     if (nit == nodes.end()) {
@@ -50,9 +58,6 @@ bool PeerManager::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
         // We actually have this node already, we need to update it.
         bool success = removeNodeFromPeer(peers.find(oldpeerid));
         assert(success);
-
-        // Make sure it is not invalidated.
-        it = peers.find(peerid);
     }
 
     bool success = addNodeToPeer(it);
@@ -69,7 +74,7 @@ bool PeerManager::addNodeToPeer(const PeerSet::iterator &it) {
             return;
         }
 
-        // We ned to allocate this peer.
+        // We need to allocate this peer.
         p.index = uint32_t(slots.size());
         const uint32_t score = p.getScore();
         const uint64_t start = slotCount;
@@ -255,7 +260,7 @@ PeerManager::fetchOrCreatePeer(const std::shared_ptr<Proof> &proof) {
         }
     }
 
-    // For now, if there is a conflict, just ceanup the mess.
+    // For now, if there is a conflict, just cleanup the mess.
     if (conflicting_peerids.size() > 0) {
         for (const auto &s : proof->getStakes()) {
             auto it = utxos.find(s.getStake().getUTXO());
@@ -299,6 +304,8 @@ bool PeerManager::removePeer(const PeerId peerid) {
         bool deleted = utxos.erase(s.getStake().getUTXO()) > 0;
         assert(deleted);
     }
+
+    m_unbroadcast_proofids.erase(it->proof->getId());
 
     peers.erase(it);
     return true;
@@ -497,6 +504,31 @@ bool PeerManager::isOrphan(const ProofId &id) const {
 
 std::shared_ptr<Proof> PeerManager::getOrphan(const ProofId &id) const {
     return orphanProofs.getProof(id);
+}
+
+void PeerManager::addUnbroadcastProof(const ProofId &proofid) {
+    // The proof should be known
+    if (getProof(proofid)) {
+        m_unbroadcast_proofids.insert(proofid);
+    }
+}
+
+void PeerManager::removeUnbroadcastProof(const ProofId &proofid) {
+    m_unbroadcast_proofids.erase(proofid);
+}
+
+void PeerManager::broadcastProofs(const CConnman &connman) {
+    // For some reason SaltedProofIdHasher prevents the set from being swappable
+    std::unordered_set<ProofId, SaltedProofIdHasher>
+        previous_unbroadcasted_proofids = std::move(m_unbroadcast_proofids);
+    m_unbroadcast_proofids.clear();
+
+    for (auto &proofid : previous_unbroadcasted_proofids) {
+        if (getProof(proofid)) {
+            m_unbroadcast_proofids.insert(proofid);
+            RelayProof(proofid, connman);
+        }
+    }
 }
 
 } // namespace avalanche

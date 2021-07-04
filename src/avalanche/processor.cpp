@@ -137,6 +137,63 @@ static bool IsWorthPolling(const CBlockIndex *pindex) {
     return true;
 }
 
+static bool VerifyProof(const Proof &proof, bilingual_str &error) {
+    ProofValidationState proof_state;
+
+    if (!proof.verify(proof_state)) {
+        switch (proof_state.GetResult()) {
+            case ProofValidationResult::NO_STAKE:
+                error = _("The avalanche proof has no stake.");
+                return false;
+            case ProofValidationResult::DUST_THRESOLD:
+                error = _("The avalanche proof stake is too low.");
+                return false;
+            case ProofValidationResult::DUPLICATE_STAKE:
+                error = _("The avalanche proof has duplicated stake.");
+                return false;
+            case ProofValidationResult::INVALID_SIGNATURE:
+                error = _("The avalanche proof has invalid stake signatures.");
+                return false;
+            case ProofValidationResult::TOO_MANY_UTXOS:
+                error = strprintf(
+                    _("The avalanche proof has too many utxos (max: %u)."),
+                    AVALANCHE_MAX_PROOF_STAKES);
+                return false;
+            default:
+                error = _("The avalanche proof is invalid.");
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static bool VerifyDelegation(const Delegation &dg,
+                             const CPubKey &expectedPubKey,
+                             bilingual_str &error) {
+    DelegationState dg_state;
+
+    CPubKey auth;
+    if (!dg.verify(dg_state, auth)) {
+        switch (dg_state.GetResult()) {
+            case avalanche::DelegationResult::INVALID_SIGNATURE:
+                error = _("The avalanche delegation has invalid signatures.");
+                return false;
+            default:
+                error = _("The avalanche delegation is invalid.");
+                return false;
+        }
+    }
+
+    if (auth != expectedPubKey) {
+        error = _(
+            "The avalanche delegation does not match the expected public key.");
+        return false;
+    }
+
+    return true;
+}
+
 struct Processor::PeerData {
     std::shared_ptr<Proof> proof;
     Delegation delegation;
@@ -222,45 +279,58 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
             return nullptr;
         }
 
-        ProofValidationState proof_state;
-        if (!peerData->proof->verify(proof_state)) {
-            switch (proof_state.GetResult()) {
-                case ProofValidationResult::NO_STAKE:
-                    error = _("The avalanche proof has no stake.");
-                    return nullptr;
-                case ProofValidationResult::DUST_THRESOLD:
-                    error = _("The avalanche proof stake is too low.");
-                    return nullptr;
-                case ProofValidationResult::DUPLICATE_STAKE:
-                    error = _("The avalanche proof has duplicated stake.");
-                    return nullptr;
-                case ProofValidationResult::INVALID_SIGNATURE:
-                    error =
-                        _("The avalanche proof has invalid stake signatures.");
-                    return nullptr;
-                case ProofValidationResult::TOO_MANY_UTXOS:
-                    error = strprintf(
-                        _("The avalanche proof has too many utxos (max: %u)."),
-                        AVALANCHE_MAX_PROOF_STAKES);
-                    return nullptr;
-                default:
-                    error = _("The avalanche proof is invalid.");
-                    return nullptr;
-            }
-        }
-
-        const CPubKey masterPubKey = peerData->proof->getMaster();
-        if (masterKey.GetPubKey() != masterPubKey) {
-            error = _("The master key does not match the proof public key.");
+        if (!VerifyProof(*peerData->proof, error)) {
+            // error is set by VerifyProof
             return nullptr;
         }
 
-        // Generate the delegation to the session key.
-        DelegationBuilder dgb(*peerData->proof);
-        if (sessionKey.GetPubKey() != masterPubKey) {
-            dgb.addLevel(masterKey, sessionKey.GetPubKey());
+        std::unique_ptr<DelegationBuilder> dgb;
+        const CPubKey &masterPubKey = masterKey.GetPubKey();
+
+        if (argsman.IsArgSet("-avadelegation")) {
+            Delegation dg;
+            if (!Delegation::FromHex(dg, argsman.GetArg("-avadelegation", ""),
+                                     error)) {
+                // error is set by FromHex()
+                return nullptr;
+            }
+
+            if (dg.getProofId() != peerData->proof->getId()) {
+                error = _("The delegation does not match the proof.");
+                return nullptr;
+            }
+
+            if (masterPubKey != dg.getDelegatedPubkey()) {
+                error = _(
+                    "The master key does not match the delegation public key.");
+                return nullptr;
+            }
+
+            dgb = std::make_unique<DelegationBuilder>(dg);
+        } else {
+            if (masterPubKey != peerData->proof->getMaster()) {
+                error =
+                    _("The master key does not match the proof public key.");
+                return nullptr;
+            }
+
+            dgb = std::make_unique<DelegationBuilder>(*peerData->proof);
         }
-        peerData->delegation = dgb.build();
+
+        // Generate the delegation to the session key.
+        const CPubKey sessionPubKey = sessionKey.GetPubKey();
+        if (sessionPubKey != masterPubKey) {
+            if (!dgb->addLevel(masterKey, sessionPubKey)) {
+                error = _("Failed to generate a delegation for this session.");
+                return nullptr;
+            }
+        }
+        peerData->delegation = dgb->build();
+
+        if (!VerifyDelegation(peerData->delegation, sessionPubKey, error)) {
+            // error is set by VerifyDelegation
+            return nullptr;
+        }
     }
 
     // We can't use std::make_unique with a private constructor
@@ -708,6 +778,21 @@ std::vector<avalanche::Peer> Processor::getPeers() const {
 std::vector<NodeId> Processor::getNodeIdsForPeer(PeerId peerId) const {
     LOCK(cs_peerManager);
     return peerManager->getNodeIdsForPeer(peerId);
+}
+
+void Processor::addUnbroadcastProof(const ProofId &proofid) {
+    LOCK(cs_peerManager);
+    peerManager->addUnbroadcastProof(proofid);
+}
+
+void Processor::removeUnbroadcastProof(const ProofId &proofid) {
+    LOCK(cs_peerManager);
+    peerManager->removeUnbroadcastProof(proofid);
+}
+
+void Processor::broadcastProofs() {
+    LOCK(cs_peerManager);
+    peerManager->broadcastProofs(*connman);
 }
 
 } // namespace avalanche
