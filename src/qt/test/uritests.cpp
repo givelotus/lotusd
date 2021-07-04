@@ -19,81 +19,81 @@ void URITests::uriTestsLotus() {
     QString scheme = QString("payto");
     QUrl uri;
     uri.setUrl(QString(
-        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?req-dontexist="));
+        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?req-dontexist="));
     QVERIFY(!GUIUtil::parseBitcoinURI(scheme, uri, &rv));
 
     uri.setUrl(QString(
-        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?dontexist="));
+        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?dontexist="));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString());
     QVERIFY(rv.amount == Amount::zero());
 
     uri.setUrl(
-        QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?label="
+        QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?label="
                 "Wikipedia Example Address"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString("Wikipedia Example Address"));
     QVERIFY(rv.amount == Amount::zero());
 
     uri.setUrl(QString(
-        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?amount=100000"));
+        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?amount=100000"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString());
     QVERIFY(rv.amount == 100000 * LOTUS);
 
-    uri.setUrl(QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?"
+    uri.setUrl(QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?"
                        "amount=1001000"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString());
     QVERIFY(rv.amount == 1001000 * LOTUS);
 
-    uri.setUrl(QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?"
+    uri.setUrl(QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?"
                        "amount=100000000&"
                        "label=Wikipedia Example"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.amount == int64_t(100000000) * LOTUS);
     QVERIFY(rv.label == QString("Wikipedia Example"));
 
     uri.setUrl(
-        QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?message="
+        QString("payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?message="
                 "Wikipedia Example Address"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString());
 
     QVERIFY(GUIUtil::parseBitcoinURI(
         scheme,
         "payto://"
-        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?"
+        "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?"
         "message=Wikipedia Example Address",
         &rv));
     QVERIFY(rv.address ==
-            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ"));
+            QString("lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN"));
     QVERIFY(rv.label == QString());
 
     uri.setUrl(QString(
-        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?req-message="
+        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?req-message="
         "Wikipedia Example Address"));
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
 
     uri.setUrl(QString(
-        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?amount=1000000,"
+        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?amount=1000000,"
         "000&label=Wikipedia Example"));
     QVERIFY(!GUIUtil::parseBitcoinURI(scheme, uri, &rv));
 
     uri.setUrl(QString(
-        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?amount=1000000,"
+        "payto:lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?amount=1000000,"
         "000.0&label=Wikipedia Example"));
     QVERIFY(!GUIUtil::parseBitcoinURI(scheme, uri, &rv));
 }
@@ -146,7 +146,7 @@ void URITests::uriTestsCashAddr() {
     QVERIFY(GUIUtil::parseBitcoinURI(scheme, uri, &rv));
     QVERIFY(rv.address ==
             QString("ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2"));
-                std::cout << rv.amount;
+    std::cout << rv.amount;
     QVERIFY(rv.amount == 100 * LOTUS);
     QVERIFY(rv.label == QString("Wikipedia Example"));
 
@@ -191,17 +191,17 @@ void URITests::uriTestFormatURI() {
         r.address = "ecash:qpm2qsznhks23z7629mms6s4cwef74vcwva87rkuu2";
         r.message = "test";
         QString uri = GUIUtil::formatBitcoinURI(*params, r);
-        QVERIFY(uri == "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?"
+        QVERIFY(uri == "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?"
                        "message=test");
     }
 
     {
         SendCoinsRecipient r;
-        r.address = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ";
+        r.address = "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN";
         r.message = "test";
         QString uri = GUIUtil::formatBitcoinURI(*params, r);
 
-        QVERIFY(uri == "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQLVBwUQ?"
+        QVERIFY(uri == "lotus_16PSJLk9W86KAZp26x3uM176w6N9vUU8YNQQnQTHN?"
                        "message=test");
     }
 
@@ -220,7 +220,7 @@ void URITests::uriTestFormatURI() {
         r.address = "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX";
         r.message = "test";
         QString uri = GUIUtil::formatBitcoinURI(*params, r);
-        QVERIFY(uri == "lotus_16PSJHejVUZd1LPr51EAB4zK1Xi3D5qjQNtNHkof5?"
+        QVERIFY(uri == "lotus_16PSJHejVUZd1LPr51EAB4zK1Xi3D5qjQNtLnv8df?"
                        "message=test");
     }
 }

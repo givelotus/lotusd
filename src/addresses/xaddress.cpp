@@ -8,6 +8,7 @@
 #include <hash.h>
 #include <script/script.h>
 #include <script/standard.h>
+#include <span.h>
 #include <uint256.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -21,6 +22,24 @@ namespace XAddress {
  * Create SHA256 Hash of the address contents for integrity checks.
  */
 uint256 HashAddressContents(const Content &addressContent) {
+    CSHA256 hasher;
+    uint256 out;
+    const char *prefix = addressContent.m_token.c_str();
+    const auto payloadSpan = MakeSpan(addressContent.m_payload);
+    hasher.Write((uint8_t *)prefix, strlen(prefix));
+    hasher.Write((uint8_t *)&addressContent.m_network, 1);
+    hasher.Write((uint8_t *)&addressContent.m_type, 1);
+    hasher.Write(payloadSpan.begin(), payloadSpan.end() - payloadSpan.begin());
+    hasher.Finalize(out.begin());
+    return out;
+}
+
+/**
+ * Create SHA256 Hash of the address contents for integrity checks. This
+ * is a legacy function that will be deprecated. It is only for validating
+ * check bytes generated incorrectly in versions of lotusd 1.0.1 and prior.
+ */
+static uint256 LegacyHashAddressContents(const Content &addressContent) {
     CHashWriter hasher(SER_GETHASH, 0);
     hasher << addressContent.m_token;
     hasher << uint8_t(addressContent.m_network);
@@ -79,10 +98,14 @@ DecodeError Decode(const std::string &address, Content &parsedOutput) {
     parsedOutput = Content(token, networkByte, addressByte,
                            std::vector(vch.begin() + 1, vch.end() - 4));
     const uint256 check = HashAddressContents(parsedOutput);
-    if (memcmp(&check, &vch[vch.size() - 4], 4)) {
-        return INTEGRITY_CHECK_FAILED;
+    if (!memcmp(&check, &vch[vch.size() - 4], 4)) {
+        return DECODE_OK;
     }
-    return DECODE_OK;
+    const uint256 legacyCheck = LegacyHashAddressContents(parsedOutput);
+    if (!memcmp(&legacyCheck, &vch[vch.size() - 4], 4)) {
+        return DECODE_OK;
+    }
+    return INTEGRITY_CHECK_FAILED;
 }
 
 static NetworkType GetAddressNetworkByte(const CChainParams &p) {

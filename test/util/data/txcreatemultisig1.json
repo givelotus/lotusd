@@ -16,9 +16,9 @@
                 "reqSigs": 2,
                 "type": "multisig",
                 "addresses": [
-                    "lotus_16PSJN5kBhektivFSZFAupfjHMxpbtWptZNbLuyFM",
-                    "lotus_16PSJMzatzDc8DpNfUyFtaY1bapfUtGCJvoLbX2FP",
-                    "lotus_16PSJJEbZRoYf1RPfQTRTrKyFyqLTVAPDJd7vcE54"
+                    "lotus_16PSJN5kBhektivFSZFAupfjHMxpbtWptZNeKw6ob",
+                    "lotus_16PSJMzatzDc8DpNfUyFtaY1bapfUtGCJvoH6Xt3x",
+                    "lotus_16PSJJEbZRoYf1RPfQTRTrKyFyqLTVAPDJd5yJ6kT"
                 ]
             }
         }
