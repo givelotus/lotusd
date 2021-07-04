@@ -44,9 +44,9 @@ static_assert(MINIUPNPC_API_VERSION >= 10,
               "miniUPnPc API version >= 10 assumed");
 #endif
 
-#include <unordered_map>
-
 #include <cmath>
+#include <optional>
+#include <unordered_map>
 
 // How often to dump addresses to peers.dat
 static constexpr std::chrono::minutes DUMP_PEERS_INTERVAL{15};
@@ -836,20 +836,6 @@ size_t CConnman::SocketSendData(CNode *pnode) const
     return nSentSize;
 }
 
-struct NodeEvictionCandidate {
-    NodeId id;
-    int64_t nTimeConnected;
-    int64_t nMinPingUsecTime;
-    int64_t nLastBlockTime;
-    int64_t nLastTXTime;
-    bool fRelevantServices;
-    bool fRelayTxes;
-    bool fBloomFilter;
-    CAddress addr;
-    uint64_t nKeyedNetGroup;
-    bool prefer_evict;
-};
-
 static bool ReverseCompareNodeMinPingTime(const NodeEvictionCandidate &a,
                                           const NodeEvictionCandidate &b) {
     return a.nMinPingUsecTime > b.nMinPingUsecTime;
@@ -857,6 +843,15 @@ static bool ReverseCompareNodeMinPingTime(const NodeEvictionCandidate &a,
 
 static bool ReverseCompareNodeTimeConnected(const NodeEvictionCandidate &a,
                                             const NodeEvictionCandidate &b) {
+    return a.nTimeConnected > b.nTimeConnected;
+}
+
+static bool CompareLocalHostTimeConnected(const NodeEvictionCandidate &a,
+                                          const NodeEvictionCandidate &b) {
+    if (a.m_is_local != b.m_is_local) {
+        return b.m_is_local;
+    }
+
     return a.nTimeConnected > b.nTimeConnected;
 }
 
@@ -899,6 +894,25 @@ static bool CompareNodeTXTime(const NodeEvictionCandidate &a,
     return a.nTimeConnected > b.nTimeConnected;
 }
 
+// Pick out the potential block-relay only peers, and sort them by last block
+// time.
+static bool CompareNodeBlockRelayOnlyTime(const NodeEvictionCandidate &a,
+                                          const NodeEvictionCandidate &b) {
+    if (a.fRelayTxes != b.fRelayTxes) {
+        return a.fRelayTxes;
+    }
+
+    if (a.nLastBlockTime != b.nLastBlockTime) {
+        return a.nLastBlockTime < b.nLastBlockTime;
+    }
+
+    if (a.fRelevantServices != b.fRelevantServices) {
+        return b.fRelevantServices;
+    }
+
+    return a.nTimeConnected > b.nTimeConnected;
+}
+
 //! Sort an array by the specified comparator, then erase the last K elements.
 template <typename T, typename Comparator>
 static void EraseLastKElements(std::vector<T> &elements, Comparator comparator,
@@ -908,53 +922,8 @@ static void EraseLastKElements(std::vector<T> &elements, Comparator comparator,
     elements.erase(elements.end() - eraseSize, elements.end());
 }
 
-/**
- * Try to find a connection to evict when the node is full.
- * Extreme care must be taken to avoid opening the node to attacker triggered
- * network partitioning.
- * The strategy used here is to protect a small number of peers for each of
- * several distinct characteristics which are difficult to forge. In order to
- * partition a node the attacker must be simultaneously better at all of them
- * than honest peers.
- */
-bool CConnman::AttemptToEvictConnection() {
-    std::vector<NodeEvictionCandidate> vEvictionCandidates;
-    {
-        LOCK(cs_vNodes);
-
-        for (const CNode *node : vNodes) {
-            if (node->HasPermission(PF_NOBAN)) {
-                continue;
-            }
-            if (!node->IsInboundConn()) {
-                continue;
-            }
-            if (node->fDisconnect) {
-                continue;
-            }
-            bool peer_relay_txes = false;
-            bool peer_filter_not_null = false;
-            if (node->m_tx_relay != nullptr) {
-                LOCK(node->m_tx_relay->cs_filter);
-                peer_relay_txes = node->m_tx_relay->fRelayTxes;
-                peer_filter_not_null = node->m_tx_relay->pfilter != nullptr;
-            }
-            NodeEvictionCandidate candidate = {
-                node->GetId(),
-                node->nTimeConnected,
-                node->nMinPingUsecTime,
-                node->nLastBlockTime,
-                node->nLastTXTime,
-                HasAllDesirableServiceFlags(node->nServices),
-                peer_relay_txes,
-                peer_filter_not_null,
-                node->addr,
-                node->nKeyedNetGroup,
-                node->m_prefer_evict};
-            vEvictionCandidates.push_back(candidate);
-        }
-    }
-
+[[nodiscard]] std::optional<NodeId>
+SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
     // Protect connections with certain characteristics
 
     // Deterministically select 4 peers to protect by netgroup.
@@ -968,17 +937,49 @@ bool CConnman::AttemptToEvictConnection() {
     // into our mempool. An attacker cannot manipulate this metric without
     // performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeTXTime, 4);
+    // Protect up to 8 non-tx-relay peers that have sent us novel blocks.
+    std::sort(vEvictionCandidates.begin(), vEvictionCandidates.end(),
+              CompareNodeBlockRelayOnlyTime);
+    size_t erase_size = std::min(size_t(8), vEvictionCandidates.size());
+    vEvictionCandidates.erase(
+        std::remove_if(vEvictionCandidates.end() - erase_size,
+                       vEvictionCandidates.end(),
+                       [](NodeEvictionCandidate const &n) {
+                           return !n.fRelayTxes && n.fRelevantServices;
+                       }),
+        vEvictionCandidates.end());
+
     // Protect 4 nodes that most recently sent us novel blocks.
     // An attacker cannot manipulate this metric without performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeBlockTime, 4);
+
     // Protect the half of the remaining nodes which have been connected the
     // longest. This replicates the non-eviction implicit behavior, and
     // precludes attacks that start later.
+    // Reserve half of these protected spots for localhost peers, even if
+    // they're not longest-uptime overall. This helps protect tor peers, which
+    // tend to be otherwise disadvantaged under our eviction criteria.
+    size_t initial_size = vEvictionCandidates.size();
+    size_t total_protect_size = initial_size / 2;
+
+    // Pick out up to 1/4 peers that are localhost, sorted by longest uptime.
+    std::sort(vEvictionCandidates.begin(), vEvictionCandidates.end(),
+              CompareLocalHostTimeConnected);
+    size_t local_erase_size = total_protect_size / 2;
+    vEvictionCandidates.erase(
+        std::remove_if(
+            vEvictionCandidates.end() - local_erase_size,
+            vEvictionCandidates.end(),
+            [](NodeEvictionCandidate const &n) { return n.m_is_local; }),
+        vEvictionCandidates.end());
+    // Calculate how many we removed, and update our total number of peers that
+    // we want to protect based on uptime accordingly.
+    total_protect_size -= initial_size - vEvictionCandidates.size();
     EraseLastKElements(vEvictionCandidates, ReverseCompareNodeTimeConnected,
-                       vEvictionCandidates.size() / 2);
+                       total_protect_size);
 
     if (vEvictionCandidates.empty()) {
-        return false;
+        return std::nullopt;
     }
 
     // If any remaining peers are preferred for eviction consider only them.
@@ -1020,10 +1021,61 @@ bool CConnman::AttemptToEvictConnection() {
     vEvictionCandidates = std::move(mapNetGroupNodes[naMostConnections]);
 
     // Disconnect from the network group with the most connections
-    NodeId evicted = vEvictionCandidates.front().id;
+    return vEvictionCandidates.front().id;
+}
+
+/** Try to find a connection to evict when the node is full.
+ *  Extreme care must be taken to avoid opening the node to attacker
+ *   triggered network partitioning.
+ *  The strategy used here is to protect a small number of peers
+ *   for each of several distinct characteristics which are difficult
+ *   to forge.  In order to partition a node the attacker must be
+ *   simultaneously better at all of them than honest peers.
+ */
+bool CConnman::AttemptToEvictConnection() {
+    std::vector<NodeEvictionCandidate> vEvictionCandidates;
+    {
+        LOCK(cs_vNodes);
+        for (const CNode *node : vNodes) {
+            if (node->HasPermission(PF_NOBAN)) {
+                continue;
+            }
+            if (!node->IsInboundConn()) {
+                continue;
+            }
+            if (node->fDisconnect) {
+                continue;
+            }
+            bool peer_relay_txes = false;
+            bool peer_filter_not_null = false;
+            if (node->m_tx_relay != nullptr) {
+                LOCK(node->m_tx_relay->cs_filter);
+                peer_relay_txes = node->m_tx_relay->fRelayTxes;
+                peer_filter_not_null = node->m_tx_relay->pfilter != nullptr;
+            }
+            NodeEvictionCandidate candidate = {
+                node->GetId(),
+                node->nTimeConnected,
+                node->nMinPingUsecTime,
+                node->nLastBlockTime,
+                node->nLastTXTime,
+                HasAllDesirableServiceFlags(node->nServices),
+                peer_relay_txes,
+                peer_filter_not_null,
+                node->nKeyedNetGroup,
+                node->m_prefer_evict,
+                node->addr.IsLocal()};
+            vEvictionCandidates.push_back(candidate);
+        }
+    }
+    const std::optional<NodeId> node_id_to_evict =
+        SelectNodeToEvict(std::move(vEvictionCandidates));
+    if (!node_id_to_evict) {
+        return false;
+    }
     LOCK(cs_vNodes);
     for (CNode *pnode : vNodes) {
-        if (pnode->GetId() == evicted) {
+        if (pnode->GetId() == *node_id_to_evict) {
             pnode->fDisconnect = true;
             return true;
         }

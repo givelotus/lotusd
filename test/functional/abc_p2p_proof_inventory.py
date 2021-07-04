@@ -11,13 +11,16 @@ from test_framework.avatools import (
     get_proof_ids,
     wait_for_proof,
 )
+from test_framework.address import ADDRESS_BCHREG_UNSPENDABLE
 from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import (
     AvalancheProof,
+    CInv,
     FromHex,
     MSG_AVA_PROOF,
     MSG_TYPE_MASK,
     msg_avaproof,
+    msg_getdata,
 )
 from test_framework.p2p import (
     P2PInterface,
@@ -30,6 +33,15 @@ from test_framework.util import (
     connect_nodes,
     wait_until,
 )
+from test_framework.blocktools import SUBSIDY
+
+import time
+from decimal import Decimal
+
+# Broadcast reattempt occurs every 10 to 15 minutes
+MAX_INITIAL_BROADCAST_DELAY = 15 * 60
+# Delay to allow the node to respond to getdata requests
+UNCONDITIONAL_RELAY_DELAY = 2 * 60
 
 
 class ProofInvStoreP2PInterface(P2PInterface):
@@ -137,10 +149,7 @@ class ProofInventoryTest(BitcoinTestFramework):
         msg.proof = orphan
         peer.send_message(msg)
 
-        wait_for_proof(node, orphan_proofid)
-        raw_proof = node.getrawavalancheproof(orphan_proofid)
-        assert_equal(raw_proof["proof"], orphan_hex)
-        assert_equal(raw_proof["orphan"], True)
+        wait_for_proof(node, orphan_proofid, expect_orphan=True)
 
     def test_ban_invalid_proof(self):
         node = self.nodes[0]
@@ -188,11 +197,105 @@ class ProofInventoryTest(BitcoinTestFramework):
         for node in self.nodes:
             assert_equal(set(get_proof_ids(node)), proofids)
 
+    def test_unbroadcast(self):
+        self.log.info("Test broadcasting proofs")
+
+        node = self.nodes[0]
+
+        def add_peers(count):
+            peers = []
+            for i in range(count):
+                peer = node.add_p2p_connection(ProofInvStoreP2PInterface())
+                peer.wait_for_verack()
+                peers.append(peer)
+            return peers
+
+        _, proof = self.gen_proof(node)
+        proofid_hex = "{:064x}".format(proof.proofid)
+
+        # Broadcast the proof
+        peers = add_peers(3)
+        assert node.sendavalancheproof(proof.serialize().hex())
+        wait_for_proof(node, proofid_hex)
+
+        def proof_inv_received(peers):
+            with p2p_lock:
+                return all(p.last_message.get(
+                    "inv") and p.last_message["inv"].inv[-1].hash == proof.proofid for p in peers)
+
+        wait_until(lambda: proof_inv_received(peers))
+
+        # If no peer request the proof for download, the node should reattempt
+        # broadcasting to all new peers after 10 to 15 minutes.
+        peers = add_peers(3)
+        node.mockscheduler(MAX_INITIAL_BROADCAST_DELAY + 1)
+        peers[-1].sync_with_ping()
+        wait_until(lambda: proof_inv_received(peers))
+
+        # If at least one peer requests the proof, there is no more attempt to
+        # broadcast it
+        node.setmocktime(int(time.time()) + UNCONDITIONAL_RELAY_DELAY)
+        msg = msg_getdata([CInv(t=MSG_AVA_PROOF, h=proof.proofid)])
+        peers[-1].send_message(msg)
+
+        # Give enough time for the node to broadcast the proof again
+        peers = add_peers(3)
+        node.mockscheduler(MAX_INITIAL_BROADCAST_DELAY + 1)
+        peers[-1].sync_with_ping()
+
+        assert not proof_inv_received(peers)
+
+        self.log.info(
+            "Proofs that become invalid should no longer be broadcasted")
+
+        # Restart and add connect a new set of peers
+        self.restart_node(0)
+
+        # Broadcast the proof
+        peers = add_peers(3)
+        assert node.sendavalancheproof(proof.serialize().hex())
+        wait_until(lambda: proof_inv_received(peers))
+
+        # Sanity check our node knows the proof, and it is valid
+        wait_for_proof(node, proofid_hex, expect_orphan=False)
+
+        # Mature the utxo then spend it
+        node.generate(100)
+        utxo = proof.stakes[0].stake.utxo
+        raw_tx = node.createrawtransaction(
+            inputs=[{
+                # coinbase
+                "txid": "{:064x}".format(utxo.hash),
+                "vout": utxo.n
+            }],
+            outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.01')},
+        )
+        signed_tx = node.signrawtransactionwithkey(
+            hexstring=raw_tx,
+            privkeys=[node.get_deterministic_priv_key().key],
+        )
+        node.sendrawtransaction(signed_tx['hex'])
+
+        # Mine the tx in a block
+        node.generate(1)
+
+        # Wait for the proof to be orphaned
+        wait_until(lambda: node.getrawavalancheproof(
+            proofid_hex)["orphan"] is True)
+
+        # It should no longer be broadcasted
+        peers = add_peers(3)
+        node.mockscheduler(MAX_INITIAL_BROADCAST_DELAY + 1)
+        peers[-1].sync_with_ping()
+
+        assert not proof_inv_received(peers)
+
     def run_test(self):
         self.test_send_proof_inv()
         self.test_receive_proof()
         self.test_ban_invalid_proof()
         self.test_proof_relay()
+        self.test_unbroadcast()
 
 
 if __name__ == '__main__':

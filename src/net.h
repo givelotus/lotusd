@@ -24,6 +24,7 @@
 #include <sync.h>
 #include <threadinterrupt.h>
 #include <uint256.h>
+#include <util/check.h>
 #include <validation.h> // For cs_main
 
 #include <atomic>
@@ -32,6 +33,7 @@
 #include <deque>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #ifndef WIN32
 #include <arpa/inet.h>
@@ -1114,6 +1116,7 @@ public:
                          bool &complete);
 
     void SetCommonVersion(int greatest_common_version) {
+        Assume(m_greatest_common_version == INIT_PROTO_VERSION);
         m_greatest_common_version = greatest_common_version;
     }
     int GetCommonVersion() const { return m_greatest_common_version; }
@@ -1218,5 +1221,22 @@ PoissonNextSend(std::chrono::microseconds now,
 
 std::string getSubVersionEB(uint64_t MaxBlockSize);
 std::string userAgent(const Config &config);
+
+struct NodeEvictionCandidate {
+    NodeId id;
+    int64_t nTimeConnected;
+    int64_t nMinPingUsecTime;
+    int64_t nLastBlockTime;
+    int64_t nLastTXTime;
+    bool fRelevantServices;
+    bool fRelayTxes;
+    bool fBloomFilter;
+    uint64_t nKeyedNetGroup;
+    bool prefer_evict;
+    bool m_is_local;
+};
+
+[[nodiscard]] std::optional<NodeId>
+SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates);
 
 #endif // BITCOIN_NET_H
