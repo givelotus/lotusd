@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <string>
+#include<algorithm>
 
 namespace XAddress {
 /**
@@ -95,8 +96,9 @@ DecodeError Decode(const std::string &address, Content &parsedOutput) {
         return UNDERSIZED_PAYLOAD;
     }
     const AddressType addressByte = AddressType(vch[0]);
-    parsedOutput = Content(token, networkByte, addressByte,
-                           std::vector(vch.begin() + 1, vch.end() - 4));
+    std::vector<uint8_t> payload(vch.size() - 5);
+    std::copy(vch.begin() + 1, vch.end() - 4, payload.begin());
+    parsedOutput = Content(token, networkByte, addressByte, payload);
     const uint256 check = HashAddressContents(parsedOutput);
     if (!memcmp(&check, &vch[vch.size() - 4], 4)) {
         return DECODE_OK;
