@@ -36,6 +36,7 @@ Development Process
 This Github repository contains only source code of releases.
 
 If you would like to contribute, please read [CONTRIBUTING](CONTRIBUTING.md).
+
 If you would like you can also contribute to Lotus Wiki (Docs) [here](https://givelotus.org/docs/)
 
 Disclosure Policy
