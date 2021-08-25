@@ -1,9 +1,9 @@
 BACKPORTING
 ===========
 
-The official Bitcoin-ABC guide to backporting code from Bitcoin Core. When searching
+The official Lotus guide to backporting code from Bitcoin Core. When searching
 for items to backport, especially be on the lookout for bug fixes, code cleanup, and
-important refactors, as these help improve Bitcoin ABC despite consensus-level differences
+important refactors, as these help improve Lotus despite consensus-level differences
 between Bitcoin Cash and Bitcoin Core.
 
 Identifying commits
@@ -40,13 +40,13 @@ with this PR and likely to be needed.
 
 When trying to find a patch worth backporting, it's generally a good idea to
 backport significant refactors or bugfixes.  This will help clean up the code
-in the ABC repository, fix bugs, and make future backports significantly
+in the Lotus repository, fix bugs, and make future backports significantly
 easier.  Backports are easiest done in topological order of commits.
 
 Backporting
 -----------
 
-Before you begin backporting commits, you will need to add an additional remote to your Bitcoin-ABC repo.
+Before you begin backporting commits, you will need to add an additional remote to your Lotus repo.
 For Bitcoin Core, this repository would be added as:
 
 ```
