@@ -11,7 +11,7 @@ Identifying commits
 
 1. Check out a copy of a Satoshi Bitcoin client somewhere on your machine.
 2. Identify the subsystem you'd like to work on.
-3. Tag the fork commit as `fork-commit`. Bitcoin-ABC was forked from Bitcoin Core
+3. Tag the fork commit as `fork-commit`. Lotus was forked from Bitcoin Core
    at commit `964a185cc83af34587194a6ecda3ed9cf6b49263`.
    `> git tag -a fork-commit 964a185 -m 'Where the fun started'`
 4. `git log --topo-order --graph fork-commit..HEAD -- <file or folder of interest>`
