@@ -1,6 +1,6 @@
 UNIX BUILD NOTES
 ====================
-Some notes on how to build Bitcoin ABC in Unix.
+Some notes on how to build Lotus Core in Unix.
 
 To Build
 ---------------------
@@ -22,7 +22,7 @@ This will build lotus-qt as well.
 Dependencies
 ---------------------
 
-*Note: Bitcoin ABC provides a [Docker image with all the dependencies preinstalled](#build-using-a-docker-container).*
+*Note: Lotus provides a [Docker image with all the dependencies preinstalled](#build-using-a-docker-container).*
 
 These dependencies are required:
 
@@ -51,7 +51,7 @@ Memory Requirements
 --------------------
 
 C++ compilers are memory-hungry. It is recommended to have at least 1.5 GB of
-memory available when compiling Bitcoin ABC. On systems with less, gcc can be
+memory available when compiling Lotus Core. On systems with less, gcc can be
 tuned to conserve memory with additional CXXFLAGS:
 
     cmake -GNinja .. -DCMAKE_CXX_FLAGS="--param ggc-min-expand=1 --param ggc-min-heapsize=32768"
@@ -107,7 +107,7 @@ BerkeleyDB 5.3 or later is required for the wallet. This can be installed with:
 
         sudo apt-get install libdb-dev libdb++-dev
 
-See the section "Disable-wallet mode" to build Bitcoin ABC without wallet.
+See the section "Disable-wallet mode" to build Lotus Core without wallet.
 
 Minipupnc dependencies (can be disabled by passing `-DENABLE_UPNP=OFF` on the cmake command line):
 
@@ -180,7 +180,7 @@ For documentation on building Boost look at their official documentation: http:/
 
 Security
 --------
-To help make your Bitcoin ABC installation more secure by making certain attacks impossible to
+To help make your Lotus Core installation more secure by making certain attacks impossible to
 exploit even if a vulnerability is found, binaries are hardened by default.
 This can be disabled by passing `-DENABLE_HARDENING=OFF`.
 
@@ -204,7 +204,7 @@ Hardening enables the following features:
       ET_DYN
 
 * _Non-executable Stack_: If the stack is executable then trivial stack-based buffer overflow exploits are possible if
-    vulnerable buffers are found. By default, Bitcoin ABC should be built with a non-executable stack,
+    vulnerable buffers are found. By default, Lotus Core should be built with a non-executable stack,
     but if one of the libraries it uses asks for an executable stack or someone makes a mistake
     and uses a compiler extension which requires an executable stack, it will silently build an
     executable without the non-executable stack protection.
@@ -222,7 +222,7 @@ Hardening enables the following features:
 
 Disable-wallet mode
 --------------------
-When the intention is to run only a P2P node without a wallet, Bitcoin ABC may be compiled in
+When the intention is to run only a P2P node without a wallet, Lotus Core may be compiled in
 disable-wallet mode by passing `-DBUILD_BITCOIN_WALLET=OFF` on the cmake command line.
 
 Mining is also possible in disable-wallet mode using the `getblocktemplate` RPC call.
@@ -272,7 +272,7 @@ For further documentation on the depends system see [README.md](../depends/READM
 Build using a Docker container
 -------------------------------
 
-Bitcoin ABC provides a
+Lotus provides a
 [Docker image](https://hub.docker.com/r/bitcoinabc/bitcoin-abc-dev) with all the
 dependencies pre-installed, based on Debian. If the dependencies cannot be
 installed on your system but it can run a Docker container, this image can be
