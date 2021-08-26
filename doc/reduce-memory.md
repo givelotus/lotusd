@@ -12,7 +12,7 @@ The size of some in-memory caches can be reduced. As caches trade off memory usa
 
 ## Memory pool
 
-- In Bitcoin ABC there is a memory pool limiter which can be configured with `-maxmempool=<n>`, where `<n>` is the size in MB (1000). The default value is `300`.
+- In Lotus there is a memory pool limiter which can be configured with `-maxmempool=<n>`, where `<n>` is the size in MB (1000). The default value is `300`.
   - The minimum value for `-maxmempool` is 5.
   - A lower maximum mempool size means that transactions will be evicted sooner. This will affect any uses of `lotusd` that process unconfirmed transactions.
 
