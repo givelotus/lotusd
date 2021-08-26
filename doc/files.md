@@ -1,4 +1,4 @@
-# Bitcoin ABC file system
+# Lotus file system
 
 **Contents**
 
@@ -16,7 +16,7 @@
 
 ## Data directory location
 
-The data directory is the default location where the Bitcoin ABC files are stored.
+The data directory is the default location where the Lotus files are stored.
 
 1. The default data directory paths for supported platforms are:
 
@@ -88,7 +88,7 @@ Subdirectory | File(s)           | Description
 
 ## Legacy subdirectories and files
 
-These subdirectories and files are no longer used by the Bitcoin ABC:
+These subdirectories and files are no longer used by the Lotus:
 
 Path           | Description | Repository notes
 ---------------|-------------|-----------------
