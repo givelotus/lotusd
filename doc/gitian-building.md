@@ -1,10 +1,10 @@
 Gitian building
 ===============
 
-*Setup instructions for a Gitian build of Bitcoin ABC using a VM or physical system.*
+*Setup instructions for a Gitian build of Lotus Core using a VM or physical system.*
 
-Gitian is the deterministic build process that is used to build the Bitcoin
-ABC executables. It provides a way to be reasonably sure that the
+Gitian is the deterministic build process that is used to build the Lotus
+Core executables. It provides a way to be reasonably sure that the
 executables are really built from the source on GitHub. It also makes sure that
 the same, tested dependencies are used and statically built into the executable.
 
