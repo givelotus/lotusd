@@ -22,15 +22,15 @@ user inputs. Such environments include the Python3 command line interpreter or
 * Python3
 * `lotusd` built in the same repository as the `TestShell`.
 
-## 2. Importing `TestShell` from the Bitcoin ABC repository
+## 2. Importing `TestShell` from the Lotus repository
 
-We can import the `TestShell` by adding the path of the Bitcoin ABC
+We can import the `TestShell` by adding the path of the Lotus
 `test_framework` module to the beginning of the PATH variable, and then
 importing the `TestShell` class from the `test_shell` sub-package.
 
 ```
 >>> import sys
->>> sys.path.insert(0, "/path/to/bitcoin-abc/test/functional")
+>>> sys.path.insert(0, "/path/to/lotusd/test/functional")
 >>> from test_framework.test_shell import TestShell
 ```
 
@@ -52,7 +52,7 @@ The following sections demonstrate how to initialize, run, and shut down a
 
 ```
 >>> test = TestShell()
->>> test.setup(num_nodes=2, setup_clean_chain=True, configfile="/path/to/bitcoin-abc/build/test/config.ini")
+>>> test.setup(num_nodes=2, setup_clean_chain=True, configfile="/path/to/lotusd/build/test/config.ini")
 20XX-XX-XXTXX:XX:XX.XXXXXXX TestFramework (INFO): Initializing test directory /path/to/bitcoin_func_test_XXXXXXX
 ```
 The `TestShell` forwards all functional test parameters of the parent
