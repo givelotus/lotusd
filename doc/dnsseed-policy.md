@@ -1,12 +1,12 @@
-Bitcoin ABC BCH-relevant DNS seed information
+Lotus BCH-relevant DNS seed information
 =============================================
 
-Bitcoin ABC uses special seeds under the control of Bitcoin Cash (BCH)
+Lotus uses special seeds under the control of Bitcoin Cash (BCH)
 network supporting operators to increase the chance of a node
 to find suitable peers on the BCH network.
 
-The seeds used by ABC should distribute peers fairly but in a
-manner which increases the likelihood that ABC nodes are able
+The seeds used by Lotus should distribute peers fairly but in a
+manner which increases the likelihood that Lotus nodes are able
 to connect to BCH compatible peers.
 
 
