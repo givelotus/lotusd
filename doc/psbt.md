@@ -1,4 +1,4 @@
-# PSBT Howto for Bitcoin ABC
+# PSBT Howto for Lotus
 
 Since Bitcoin ABC v0.20.7, an RPC interface exists for Partially Signed Bitcoin
 Transactions (PSBTs, as specified in
@@ -46,7 +46,7 @@ The names above in bold are the names of the roles defined in BIP174. They're
 useful in understanding the underlying steps, but in practice, software and
 hardware implementations will typically implement multiple roles simultaneously.
 
-## PSBT in Bitcoin ABC
+## PSBT in Lotus
 
 ### RPCs
 
@@ -90,10 +90,10 @@ hardware implementations will typically implement multiple roles simultaneously.
 
 ### Workflows
 
-#### Multisig with multiple Bitcoin ABC instances
+#### Multisig with multiple Lotus instances
 
 Alice, Bob, and Carol want to create a 2-of-3 multisig address. They're all using
-Bitcoin ABC. We assume their wallets only contain the multisig funds. In case
+Lotus. We assume their wallets only contain the multisig funds. In case
 they also have a personal wallet, this can be accomplished through the
 multiwallet feature - possibly resulting in a need to add `-rpcwallet=name` to
 the command line in case `lotus-cli` is used.
