@@ -1,4 +1,4 @@
-Bitcoin ABC Release Process
+Lotus Release Process
 ===========================
 
 
@@ -53,8 +53,6 @@ Bitcoin ABC Release Process
 13. Publish signed checksums (various places, e.g. blog, reddit/r/BitcoinABC)
 
 14. Announce Release:
-    - [Reddit](https://www.reddit.com/r/BitcoinABC/)
-    - Twitter @Bitcoin_ABC
-    - Public slack channels friendly to Bitcoin ABC announcements
-      (eg. #abc-announce on BTCforks,  #hardfork on BTCchat)
+    - [Reddit](https://www.reddit.com/r/lotusproject/)
+    - Twitter @givelotus
 
