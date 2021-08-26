@@ -86,9 +86,9 @@ Type: `ssh-keygen -t rsa -b 4096 -C "your_email@example.com"`
 
 Enter a file in which to save the key (/home/*username*/.ssh/id_rsa): [Press enter]
 
-4. Upload your SSH public key to <https://reviews.bitcoinabc.org> # <----- need change
+4. Upload your SSH public key to <https://reviews.bitcoinabc.org>
 
-  - Go to: `https://reviews.bitcoinabc.org/settings/user/*username*/page/ssh/` # <----- need change
+  - Go to: `https://reviews.bitcoinabc.org/settings/user/*username*/page/ssh/`
 
   - Under "SSH Key Actions", Select "Upload Public Key"
 
@@ -97,9 +97,9 @@ Paste contents from: `/home/*username*/.ssh/id_rsa.pub`
 5. Clone the repository and install Arcanist certificate:
 
 ```
-git clone ssh://vcs@reviews.bitcoinabc.org:2221/source/bitcoin-abc.git  # <----- need change
+git clone ssh://vcs@reviews.bitcoinabc.org:2221/source/bitcoin-abc.git
 
-cd bitcoin-abc # <----- need change
+cd lotusd
 
 arc install-certificate
 ```
