@@ -7,6 +7,7 @@
 
 #include <addrman.h>
 #include <avalanche/avalanche.h>
+#include <avalanche/peermanager.h>
 #include <avalanche/processor.h>
 #include <avalanche/proof.h>
 #include <avalanche/validation.h>
@@ -1096,7 +1097,19 @@ void PeerManager::ReattemptInitialBroadcast(CScheduler &scheduler) const {
     }
 
     if (g_avalanche && isAvalancheEnabled(gArgs)) {
-        g_avalanche->broadcastProofs();
+        g_avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            auto unbroadcasted_proofids = pm.getUnbroadcastProofs();
+
+            for (const auto &proofid : unbroadcasted_proofids) {
+                // Sanity check: all unbroadcast proofs should exist in the
+                // peermanager
+                if (pm.exists(proofid)) {
+                    RelayProof(proofid, m_connman);
+                } else {
+                    pm.removeUnbroadcastProof(proofid);
+                }
+            }
+        });
     }
 
     // Schedule next run for 10-15 minutes in the future.
@@ -2061,28 +2074,33 @@ CTransactionRef static FindTxForGetData(const CNode &peer, const TxId &txid,
 static std::shared_ptr<avalanche::Proof>
 FindProofForGetData(const CNode &peer, const avalanche::ProofId &proofid,
                     const std::chrono::seconds now) {
-    auto proof = g_avalanche->getProof(proofid);
+    std::shared_ptr<avalanche::Proof> proof = nullptr;
+
+    bool send_unconditionally =
+        g_avalanche->withPeerManager([&](const avalanche::PeerManager &pm) {
+            return pm.forPeer(proofid, [&](const avalanche::Peer &peer) {
+                proof = peer.proof;
+
+                // If we know that proof for long enough, allow for requesting
+                // it.
+                return peer.registration_time <=
+                       now - UNCONDITIONAL_RELAY_DELAY;
+            });
+        });
 
     // We don't have this proof
     if (!proof) {
         return nullptr;
     }
 
-    auto proofTime = std::chrono::duration_cast<std::chrono::seconds>(
-        g_avalanche->getProofTime(proofid).time_since_epoch());
-
-    // If we know that proof for long enough, allow for requesting it
-    if (proofTime <= now - UNCONDITIONAL_RELAY_DELAY) {
+    if (send_unconditionally) {
         return proof;
     }
 
-    {
-        LOCK(cs_main);
-        // Otherwise, the proofs must have been announced recently.
-        if (State(peer.GetId())
-                ->m_recently_announced_proofs.contains(proofid)) {
-            return proof;
-        }
+    // Otherwise, the proofs must have been announced recently.
+    LOCK(cs_main);
+    if (State(peer.GetId())->m_recently_announced_proofs.contains(proofid)) {
+        return proof;
     }
 
     return nullptr;
@@ -2121,7 +2139,7 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
         const CInv &inv = *it;
 
         if (it->IsMsgProof()) {
-            const avalanche::ProofId proofid = avalanche::ProofId{inv.hash};
+            const avalanche::ProofId proofid(inv.hash);
             auto proof = FindProofForGetData(pfrom, proofid, now);
             if (proof) {
                 connman.PushMessage(
@@ -2142,13 +2160,14 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
                 continue;
             }
 
+            const TxId txid(inv.hash);
             CTransactionRef tx =
-                FindTxForGetData(pfrom, TxId{inv.hash}, mempool_req, now);
+                FindTxForGetData(pfrom, txid, mempool_req, now);
             if (tx) {
                 int nSendFlags = 0;
                 connman.PushMessage(
                     &pfrom, msgMaker.Make(nSendFlags, NetMsgType::TX, *tx));
-                mempool.RemoveUnbroadcastTx(TxId(inv.hash));
+                mempool.RemoveUnbroadcastTx(txid);
                 // As we're going to send tx, make sure its unconfirmed parents
                 // are made requestable.
                 for (const auto &txin : tx->vin) {
@@ -4127,20 +4146,26 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         }
 
         CHashVerifier<CDataStream> verifier(&vRecv);
-        avalanche::Delegation &delegation = pfrom.m_avalanche_state->delegation;
+        avalanche::Delegation delegation;
         verifier >> delegation;
 
         avalanche::DelegationState state;
-        CPubKey pubkey;
+        CPubKey &pubkey = pfrom.m_avalanche_state->pubkey;
         if (!delegation.verify(state, pubkey)) {
             Misbehaving(pfrom, 100, "invalid-delegation");
             return;
         }
 
+        CHashWriter sighasher(SER_GETHASH, 0);
+        sighasher << delegation.getId();
+        sighasher << pfrom.nRemoteHostNonce;
+        sighasher << pfrom.GetLocalNonce();
+        sighasher << pfrom.nRemoteExtraEntropy;
+        sighasher << pfrom.GetLocalExtraEntropy();
+
         SchnorrSig sig;
         verifier >> sig;
-        if (!pubkey.VerifySchnorr(g_avalanche->buildRemoteSighash(&pfrom),
-                                  sig)) {
+        if (!pubkey.VerifySchnorr(sighasher.GetHash(), sig)) {
             Misbehaving(pfrom, 100, "invalid-avahello-signature");
             return;
         }
@@ -4274,11 +4299,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         avalanche::Response response;
         verifier >> response;
 
-        if (!g_avalanche->forNode(pfrom.GetId(), [&](const avalanche::Node &n) {
-                SchnorrSig sig;
-                vRecv >> sig;
-                return n.pubkey.VerifySchnorr(verifier.GetHash(), sig);
-            })) {
+        SchnorrSig sig;
+        vRecv >> sig;
+        if (!pfrom.m_avalanche_state ||
+            !pfrom.m_avalanche_state->pubkey.VerifySchnorr(verifier.GetHash(),
+                                                           sig)) {
             Misbehaving(pfrom, 100, "invalid-ava-response-signature");
             return;
         }

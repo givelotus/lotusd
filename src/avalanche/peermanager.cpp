@@ -6,7 +6,6 @@
 
 #include <avalanche/delegation.h>
 #include <avalanche/validation.h>
-#include <net_processing.h> // For RelayProof
 #include <random.h>
 #include <validation.h> // For ChainstateActive()
 
@@ -14,44 +13,29 @@
 
 namespace avalanche {
 
-static bool isOrphanState(const ProofValidationState &state) {
-    return state.GetResult() == ProofValidationResult::MISSING_UTXO ||
-           state.GetResult() == ProofValidationResult::HEIGHT_MISMATCH;
-}
-
-bool PeerManager::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
-                          const Delegation &delegation) {
-    auto it = fetchOrCreatePeer(proof);
-    if (it == peers.end()) {
+bool PeerManager::addNode(NodeId nodeid, const ProofId &proofid) {
+    auto &pview = peers.get<proof_index>();
+    auto it = pview.find(proofid);
+    if (it == pview.end()) {
         return false;
     }
 
-    DelegationState state;
-    CPubKey pubkey;
-    if (!delegation.verify(state, pubkey)) {
-        return false;
-    }
-
-    return addOrUpdateNode(it, nodeid, std::move(pubkey));
+    return addOrUpdateNode(peers.project<0>(it), nodeid);
 }
 
-bool PeerManager::addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid,
-                                  CPubKey pubkey) {
+bool PeerManager::addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid) {
     assert(it != peers.end());
 
     const PeerId peerid = it->peerid;
 
     auto nit = nodes.find(nodeid);
     if (nit == nodes.end()) {
-        if (!nodes.emplace(nodeid, peerid, std::move(pubkey)).second) {
+        if (!nodes.emplace(nodeid, peerid).second) {
             return false;
         }
     } else {
         const PeerId oldpeerid = nit->peerid;
-        if (!nodes.modify(nit, [&](Node &n) {
-                n.peerid = peerid;
-                n.pubkey = std::move(pubkey);
-            })) {
+        if (!nodes.modify(nit, [&](Node &n) { n.peerid = peerid; })) {
             return false;
         }
 
@@ -101,7 +85,13 @@ bool PeerManager::removeNode(NodeId nodeid) {
 
 bool PeerManager::removeNodeFromPeer(const PeerSet::iterator &it,
                                      uint32_t count) {
-    assert(it != peers.end());
+    // It is possible for nodes to be dangling. If there was an inflight query
+    // when the peer gets removed, the node was not erased. In this case there
+    // is nothing to do.
+    if (it == peers.end()) {
+        return true;
+    }
+
     assert(count <= it->node_count);
     if (count == 0) {
         // This is a NOOP.
@@ -132,12 +122,6 @@ bool PeerManager::removeNodeFromPeer(const PeerSet::iterator &it,
     return true;
 }
 
-bool PeerManager::forNode(NodeId nodeid,
-                          std::function<bool(const Node &n)> func) const {
-    auto it = nodes.find(nodeid);
-    return it != nodes.end() && func(*it);
-}
-
 bool PeerManager::updateNextRequestTime(NodeId nodeid, TimePoint timeout) {
     auto it = nodes.find(nodeid);
     if (it == nodes.end()) {
@@ -145,6 +129,10 @@ bool PeerManager::updateNextRequestTime(NodeId nodeid, TimePoint timeout) {
     }
 
     return nodes.modify(it, [&](Node &n) { n.nextRequestTime = timeout; });
+}
+
+bool PeerManager::registerProof(const std::shared_ptr<Proof> &proof) {
+    return !getProof(proof->getId()) && getPeerId(proof) != NO_PEER;
 }
 
 NodeId PeerManager::selectNode() {
@@ -168,6 +156,11 @@ NodeId PeerManager::selectNode() {
     }
 
     return NO_NODE;
+}
+
+static bool isOrphanState(const ProofValidationState &state) {
+    return state.GetResult() == ProofValidationResult::MISSING_UTXO ||
+           state.GetResult() == ProofValidationResult::HEIGHT_MISMATCH;
 }
 
 void PeerManager::updatedBlockTip() {
@@ -206,23 +199,24 @@ PeerId PeerManager::getPeerId(const std::shared_ptr<Proof> &proof) {
 }
 
 std::shared_ptr<Proof> PeerManager::getProof(const ProofId &proofid) const {
-    auto &pview = peers.get<proof_index>();
-    auto it = pview.find(proofid);
-    return it == pview.end() ? nullptr : it->proof;
-}
+    std::shared_ptr<Proof> proof = nullptr;
 
-Peer::Timestamp PeerManager::getProofTime(const ProofId &proofid) const {
-    auto &pview = peers.get<proof_index>();
-    auto it = pview.find(proofid);
-    return it == pview.end() ? Peer::Timestamp::max() : it->time;
+    forPeer(proofid, [&](const Peer &p) {
+        proof = p.proof;
+        return true;
+    });
+
+    return proof;
 }
 
 PeerManager::PeerSet::iterator
 PeerManager::fetchOrCreatePeer(const std::shared_ptr<Proof> &proof) {
+    assert(proof);
+    const ProofId &proofid = proof->getId();
     {
         // Check if we already know of that peer.
         auto &pview = peers.get<proof_index>();
-        auto it = pview.find(proof->getId());
+        auto it = pview.find(proofid);
         if (it != pview.end()) {
             return peers.project<0>(it);
         }
@@ -245,7 +239,7 @@ PeerManager::fetchOrCreatePeer(const std::shared_ptr<Proof> &proof) {
         return peers.end();
     }
 
-    orphanProofs.removeProof(proof->getId());
+    orphanProofs.removeProof(proofid);
 
     // New peer means new peerid!
     const PeerId peerid = nextPeerId++;
@@ -480,24 +474,6 @@ PeerId selectPeerImpl(const std::vector<Slot> &slots, const uint64_t slot,
     return NO_PEER;
 }
 
-std::vector<Peer> PeerManager::getPeers() const {
-    std::vector<Peer> vpeers;
-    for (auto &it : peers.get<0>()) {
-        vpeers.emplace_back(it);
-    }
-    return vpeers;
-}
-
-std::vector<NodeId> PeerManager::getNodeIdsForPeer(PeerId peerId) const {
-    std::vector<NodeId> nodeids;
-    auto &nview = nodes.get<next_request_time>();
-    auto nodeRange = nview.equal_range(peerId);
-    for (auto it = nodeRange.first; it != nodeRange.second; ++it) {
-        nodeids.emplace_back(it->nodeid);
-    }
-    return nodeids;
-}
-
 bool PeerManager::isOrphan(const ProofId &id) const {
     return orphanProofs.getProof(id) != nullptr;
 }
@@ -515,20 +491,6 @@ void PeerManager::addUnbroadcastProof(const ProofId &proofid) {
 
 void PeerManager::removeUnbroadcastProof(const ProofId &proofid) {
     m_unbroadcast_proofids.erase(proofid);
-}
-
-void PeerManager::broadcastProofs(const CConnman &connman) {
-    // For some reason SaltedProofIdHasher prevents the set from being swappable
-    std::unordered_set<ProofId, SaltedProofIdHasher>
-        previous_unbroadcasted_proofids = std::move(m_unbroadcast_proofids);
-    m_unbroadcast_proofids.clear();
-
-    for (auto &proofid : previous_unbroadcasted_proofids) {
-        if (getProof(proofid)) {
-            m_unbroadcast_proofids.insert(proofid);
-            RelayProof(proofid, connman);
-        }
-    }
 }
 
 } // namespace avalanche

@@ -8,15 +8,13 @@
 #include <amount.h>
 #include <feerate.h>
 
-#include <boost/noncopyable.hpp>
-
 #include <cstdint>
 #include <memory>
 #include <string>
 
 class CChainParams;
 
-class Config : public boost::noncopyable {
+class Config {
 public:
     virtual bool SetMaxBlockSize(uint64_t maxBlockSize) = 0;
     virtual uint64_t GetMaxBlockSize() const = 0;
@@ -29,6 +27,10 @@ public:
 
     virtual void SetEnableMinerFund(bool) = 0;
     virtual bool EnableMinerFund() const = 0;
+    
+    Config() = default;
+    Config(const Config &) = delete;
+    Config &operator=(const Config &) = delete;
 };
 
 class GlobalConfig final : public Config {

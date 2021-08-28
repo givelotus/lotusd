@@ -518,10 +518,9 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     return true;
 }
 
-bool Processor::addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
-                        const Delegation &delegation) {
+bool Processor::addNode(NodeId nodeid, const ProofId &proofid) {
     LOCK(cs_peerManager);
-    return peerManager->addNode(nodeid, proof, delegation);
+    return peerManager->addNode(nodeid, proofid);
 }
 
 bool Processor::forNode(NodeId nodeid,
@@ -541,16 +540,6 @@ uint256 Processor::buildLocalSighash(CNode *pfrom) const {
     hasher << pfrom->nRemoteHostNonce;
     hasher << pfrom->GetLocalExtraEntropy();
     hasher << pfrom->nRemoteExtraEntropy;
-    return hasher.GetHash();
-}
-
-uint256 Processor::buildRemoteSighash(CNode *pfrom) const {
-    CHashWriter hasher(SER_GETHASH, 0);
-    hasher << pfrom->m_avalanche_state->delegation.getId();
-    hasher << pfrom->nRemoteHostNonce;
-    hasher << pfrom->GetLocalNonce();
-    hasher << pfrom->nRemoteExtraEntropy;
-    hasher << pfrom->GetLocalExtraEntropy();
     return hasher.GetHash();
 }
 
@@ -582,8 +571,7 @@ bool Processor::sendHello(CNode *pfrom) const {
 
 bool Processor::addProof(const std::shared_ptr<Proof> &proof) {
     LOCK(cs_peerManager);
-    return !peerManager->getProof(proof->getId()) &&
-           peerManager->getPeerId(proof) != NO_PEER;
+    return peerManager->registerProof(proof);
 }
 
 std::shared_ptr<Proof> Processor::getProof(const ProofId &proofid) const {
@@ -593,11 +581,6 @@ std::shared_ptr<Proof> Processor::getProof(const ProofId &proofid) const {
 
 std::shared_ptr<Proof> Processor::getLocalProof() const {
     return peerData ? peerData->proof : nullptr;
-}
-
-Peer::Timestamp Processor::getProofTime(const ProofId &proofid) const {
-    LOCK(cs_peerManager);
-    return peerManager->getProofTime(proofid);
 }
 
 std::shared_ptr<Proof> Processor::getOrphan(const ProofId &proofid) const {
@@ -770,16 +753,6 @@ void Processor::runEventLoop() {
     } while (nodeid != NO_NODE);
 }
 
-std::vector<avalanche::Peer> Processor::getPeers() const {
-    LOCK(cs_peerManager);
-    return peerManager->getPeers();
-}
-
-std::vector<NodeId> Processor::getNodeIdsForPeer(PeerId peerId) const {
-    LOCK(cs_peerManager);
-    return peerManager->getNodeIdsForPeer(peerId);
-}
-
 void Processor::addUnbroadcastProof(const ProofId &proofid) {
     LOCK(cs_peerManager);
     peerManager->addUnbroadcastProof(proofid);
@@ -788,11 +761,6 @@ void Processor::addUnbroadcastProof(const ProofId &proofid) {
 void Processor::removeUnbroadcastProof(const ProofId &proofid) {
     LOCK(cs_peerManager);
     peerManager->removeUnbroadcastProof(proofid);
-}
-
-void Processor::broadcastProofs() {
-    LOCK(cs_peerManager);
-    peerManager->broadcastProofs(*connman);
 }
 
 } // namespace avalanche
