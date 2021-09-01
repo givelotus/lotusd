@@ -80,7 +80,7 @@ static UniValue addavalanchenode(const Config &config,
     }
 
     const NodeId nodeid = request.params[0].get_int64();
-    const CPubKey key = ParsePubKey(request.params[1]);
+    CPubKey key = ParsePubKey(request.params[1]);
 
     auto proof = std::make_shared<avalanche::Proof>();
     bilingual_str error;
@@ -94,12 +94,31 @@ static UniValue addavalanchenode(const Config &config,
         return false;
     }
 
-    if (!g_avalanche->addNode(nodeid, proof,
-                              avalanche::DelegationBuilder(*proof).build())) {
+    const avalanche::ProofId &proofid = proof->getId();
+    if (!g_avalanche->getProof(proofid) && !g_avalanche->addProof(proof)) {
         return false;
     }
 
-    g_avalanche->addUnbroadcastProof(proof->getId());
+    NodeContext &node = EnsureNodeContext(request.context);
+    if (!node.connman->ForNode(nodeid, [&](CNode *pnode) {
+            // FIXME This is not thread safe, and might cause issues if the
+            // unlikely event the peer sends an avahello message at the same
+            // time.
+            if (!pnode->m_avalanche_state) {
+                pnode->m_avalanche_state =
+                    std::make_unique<CNode::AvalancheState>();
+            }
+            pnode->m_avalanche_state->pubkey = std::move(key);
+            return true;
+        })) {
+        return false;
+    }
+
+    if (!g_avalanche->addNode(nodeid, proofid)) {
+        return false;
+    }
+
+    g_avalanche->addUnbroadcastProof(proofid);
     return true;
 }
 
@@ -429,24 +448,27 @@ static UniValue getavalanchepeerinfo(const Config &config,
 
     UniValue ret(UniValue::VARR);
 
-    for (const auto &peer : g_avalanche->getPeers()) {
-        UniValue obj(UniValue::VOBJ);
+    g_avalanche->withPeerManager([&](const avalanche::PeerManager &pm) {
+        pm.forEachPeer([&](const avalanche::Peer &peer) {
+            UniValue obj(UniValue::VOBJ);
 
-        CDataStream serproof(SER_NETWORK, PROTOCOL_VERSION);
-        serproof << *peer.proof;
+            CDataStream serproof(SER_NETWORK, PROTOCOL_VERSION);
+            serproof << *peer.proof;
 
-        obj.pushKV("peerid", uint64_t(peer.peerid));
-        obj.pushKV("proof", HexStr(serproof));
+            obj.pushKV("peerid", uint64_t(peer.peerid));
+            obj.pushKV("proof", HexStr(serproof));
 
-        UniValue nodes(UniValue::VARR);
-        for (const auto &id : g_avalanche->getNodeIdsForPeer(peer.peerid)) {
-            nodes.push_back(id);
-        }
-        obj.pushKV("nodes", nodes);
-        obj.pushKV("nodecount", uint64_t(peer.node_count));
+            UniValue nodes(UniValue::VARR);
+            pm.forEachNode(peer, [&](const avalanche::Node &n) {
+                nodes.push_back(n.nodeid);
+            });
 
-        ret.push_back(obj);
-    }
+            obj.pushKV("nodes", nodes);
+            obj.pushKV("nodecount", uint64_t(peer.node_count));
+
+            ret.push_back(obj);
+        });
+    });
 
     return ret;
 }
