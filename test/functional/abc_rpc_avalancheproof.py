@@ -318,7 +318,6 @@ class AvalancheProofTest(BitcoinTestFramework):
                 ["amount"] - Decimal('0.01')}
         )
         signed_tx = node.signrawtransactionwithkey(raw_tx, [addrkey0.key])
-        print(signed_tx["hex"])
         node.sendrawtransaction(signed_tx["hex"])
         node.generate(1)
         wait_until(lambda: proofid not in get_proof_ids(node))
