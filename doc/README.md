@@ -65,7 +65,8 @@ Drag lotus to your applications folder, and then run lotus.
 
 * See the documentation at the [Bitcoin Wiki](https://en.bitcoin.it/wiki/Main_Page)
 for help and more information.
-* Ask for help on the [Lotus Subreddit](https://www.reddit.com/r/lotusproject/).
+* Ask for help on the [Lotus Subreddit](https://www.reddit.com/r/givelotus/).
+* Ask for help on the [Lotus Telegram Group](https://t.me/givelotus).
 
 Building
 ---------------------

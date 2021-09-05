@@ -20,11 +20,11 @@ When reporting a bug or vulnerability, please provide the following to security@
 
 ## Encrypting the Disclosure
 
-We highly encourage all disclosures to be encrypted to prevent interception and exploitation by third-parties prior to a fix being developed and deployed.  Please encrypt using the PGP public key with fingerprint: `5442AB0B9178E0D1567479B471A3ED7ECF82C6A7`
+We highly encourage all disclosures to be encrypted to prevent interception and exploitation by third-parties prior to a fix being developed and deployed.  Please encrypt using the PGP public key with fingerprint: `6EABDF34EF94B726A51C905192DB57784E1C67BB`
 
 It may be obtained via:
 ```
-gpg --recv-keys 5442AB0B9178E0D1567479B471A3ED7ECF82C6A7
+gpg --recv-keys 6EABDF34EF94B726A51C905192DB57784E1C67BB
 ```
 
 Below are some basic instructions for encrypting your disclosure on Linux if you are unfamiliar with GPG:
@@ -47,32 +47,26 @@ gpg --full-generate-key
 5. Follow the remaining prompts.
 6. Save your disclosure report to a plain text file, then encrypt:
 ```
-gpg --output mydisclosurefile.asc --encrypt --recipient security@lotus.org mydisclosurefile
+gpg --output mydisclosurefile.asc --encrypt --recipient shammah@cryptonumismatics.org mydisclosurefile
 ```
 
 ## Backup PGP Keys
 
 These PGP fingerprints and emails are provided only as backups in case you are unable to contact Lotus via the security email above.
 
-#### Amaury Sechet
+#### Shammah Chancellor
 ```
-Bitcoin ABC Lead Developer   #<----- change devs
-deadalnix at gmail dot com
-629D7E5DDDA0512BD5860F2C5D7922BBD649C4A7
-```
-
-#### Jason B. Cox
-```
-Bitcoin ABC Developer     #<----- change devs
-contact at jasonbcox dot com
-3BB16D00D9A6D281591BDC76E4486356E7A81D2C
+Bitcoin ABC Lead Developer
+shammah@cryptonumismatics.org
+6EABDF34EF94B726A51C905192DB57784E1C67BB
 ```
 
 ## Disclosure Relationships
 
 Neighboring projects that may be affected by bugs, potential exploits, or other security vulnerabilities that are disclosed to Lotus will be passed along information regarding disclosures that we believe could impact them.  As per the standard referenced above, we are disclosing these relationships here:
 
-* [ZCash](https://github.com/zcash/zcash/)
+* [eCash](https://github.com/Bitcoin-ABC/bitcoin-abc/blob/master/DISCLOSURE_POLICY.md)
+* [zCash](https://github.com/zcash/zcash/)
   * [Security Contact(s)](https://z.cash/support/security/)
   * [Disclosure Policy](https://github.com/zcash/zcash/blob/master/responsible_disclosure.md)
 

@@ -1,6 +1,6 @@
-# Support for Output Descriptors in Lotus Core
+# Support for Output Descriptors in Lotus
 
-Since Lotus Core v0.20.7, there is support for Output Descriptors. This is a
+Since Lotus v1.0.0, there is support for Output Descriptors. This is a
 simple language which can be used to describe collections of output scripts.
 Supporting RPCs are:
 - `scantxoutset` takes as input descriptors to scan for, and also reports
