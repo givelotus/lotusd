@@ -75,12 +75,12 @@ struct Peer {
 
     std::shared_ptr<Proof> proof;
 
-    using Timestamp = std::chrono::time_point<std::chrono::system_clock>;
-    Timestamp time;
+    // The network stack uses timestamp in seconds, so we oblige.
+    std::chrono::seconds registration_time;
 
     Peer(PeerId peerid_, std::shared_ptr<Proof> proof_)
         : peerid(peerid_), proof(std::move(proof_)),
-          time(std::chrono::seconds(GetTime())) {}
+          registration_time(GetTime<std::chrono::seconds>()) {}
 
     const ProofId &getProofId() const { return proof->getId(); }
     uint32_t getScore() const { return proof->getScore(); }
@@ -93,31 +93,24 @@ struct proof_index {
 
 struct next_request_time {};
 
+namespace bmi = boost::multi_index;
+
 class PeerManager {
     std::vector<Slot> slots;
     uint64_t slotCount = 0;
     uint64_t fragmentation = 0;
-
-    OrphanProofPool orphanProofs{AVALANCHE_ORPHANPROOFPOOL_SIZE};
-
-    /**
-     * Track proof ids to broadcast
-     */
-    std::unordered_set<ProofId, SaltedProofIdHasher> m_unbroadcast_proofids;
 
     /**
      * Several nodes can make an avalanche peer. In this case, all nodes are
      * considered interchangeable parts of the same peer.
      */
     using PeerSet = boost::multi_index_container<
-        Peer, boost::multi_index::indexed_by<
+        Peer, bmi::indexed_by<
                   // index by peerid
-                  boost::multi_index::hashed_unique<
-                      boost::multi_index::member<Peer, PeerId, &Peer::peerid>>,
+                  bmi::hashed_unique<bmi::member<Peer, PeerId, &Peer::peerid>>,
                   // index by proof
-                  boost::multi_index::hashed_unique<
-                      boost::multi_index::tag<proof_index>, proof_index,
-                      SaltedProofIdHasher>>>;
+                  bmi::hashed_unique<bmi::tag<proof_index>, proof_index,
+                                     SaltedProofIdHasher>>>;
 
     PeerId nextPeerId = 0;
     PeerSet peers;
@@ -126,44 +119,91 @@ class PeerManager {
 
     using NodeSet = boost::multi_index_container<
         Node,
-        boost::multi_index::indexed_by<
+        bmi::indexed_by<
             // index by nodeid
-            boost::multi_index::hashed_unique<
-                boost::multi_index::member<Node, NodeId, &Node::nodeid>>,
+            bmi::hashed_unique<bmi::member<Node, NodeId, &Node::nodeid>>,
             // sorted by peerid/nextRequestTime
-            boost::multi_index::ordered_non_unique<
-                boost::multi_index::tag<next_request_time>,
-                boost::multi_index::composite_key<
-                    Node,
-                    boost::multi_index::member<Node, PeerId, &Node::peerid>,
-                    boost::multi_index::member<Node, TimePoint,
-                                               &Node::nextRequestTime>>>>>;
+            bmi::ordered_non_unique<
+                bmi::tag<next_request_time>,
+                bmi::composite_key<
+                    Node, bmi::member<Node, PeerId, &Node::peerid>,
+                    bmi::member<Node, TimePoint, &Node::nextRequestTime>>>>>;
 
     NodeSet nodes;
 
     static constexpr int SELECT_PEER_MAX_RETRY = 3;
     static constexpr int SELECT_NODE_MAX_RETRY = 3;
 
+    /**
+     * Tracks proof which for which the UTXO are unavailable.
+     */
+    OrphanProofPool orphanProofs{AVALANCHE_ORPHANPROOFPOOL_SIZE};
+
+    /**
+     * Track proof ids to broadcast
+     */
+    std::unordered_set<ProofId, SaltedProofIdHasher> m_unbroadcast_proofids;
+
 public:
     /**
      * Node API.
      */
-    bool addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
-                 const Delegation &delegation);
+    bool addNode(NodeId nodeid, const ProofId &proofid);
     bool removeNode(NodeId nodeid);
 
-    bool forNode(NodeId nodeid, std::function<bool(const Node &n)> func) const;
+    // Update when a node is to be polled next.
     bool updateNextRequestTime(NodeId nodeid, TimePoint timeout);
 
-    /**
-     * Randomly select a node to poll.
-     */
+    // Randomly select a node to poll.
     NodeId selectNode();
+
+    template <typename Callable>
+    bool forNode(NodeId nodeid, Callable &&func) const {
+        auto it = nodes.find(nodeid);
+        return it != nodes.end() && func(*it);
+    }
+
+    template <typename Callable>
+    void forEachNode(const Peer &peer, Callable &&func) const {
+        auto &nview = nodes.get<next_request_time>();
+        auto range = nview.equal_range(peer.peerid);
+        for (auto it = range.first; it != range.second; ++it) {
+            func(*it);
+        }
+    }
+
+    /**
+     * Proof and Peer related API.
+     */
+    bool registerProof(const std::shared_ptr<Proof> &proof);
+    bool exists(const ProofId &proofid) const {
+        return getProof(proofid) != nullptr;
+    }
+
+    template <typename Callable>
+    bool forPeer(const ProofId &proofid, Callable &&func) const {
+        auto &pview = peers.get<proof_index>();
+        auto it = pview.find(proofid);
+        return it != pview.end() && func(*it);
+    }
+
+    template <typename Callable> void forEachPeer(Callable &&func) const {
+        for (const auto &p : peers) {
+            func(p);
+        }
+    }
 
     /**
      * Update the peer set when a new block is connected.
      */
     void updatedBlockTip();
+
+    /**
+     * Proof broadcast API.
+     */
+    void addUnbroadcastProof(const ProofId &proofid);
+    void removeUnbroadcastProof(const ProofId &proofid);
+    auto getUnbroadcastProofs() const { return m_unbroadcast_proofids; }
 
     /****************************************************
      * Functions which are public for testing purposes. *
@@ -199,23 +239,14 @@ public:
     uint64_t getSlotCount() const { return slotCount; }
     uint64_t getFragmentation() const { return fragmentation; }
 
-    std::vector<Peer> getPeers() const;
-    std::vector<NodeId> getNodeIdsForPeer(PeerId peerId) const;
-
     std::shared_ptr<Proof> getProof(const ProofId &proofid) const;
-    Peer::Timestamp getProofTime(const ProofId &proofid) const;
 
     bool isOrphan(const ProofId &id) const;
     std::shared_ptr<Proof> getOrphan(const ProofId &id) const;
 
-    void addUnbroadcastProof(const ProofId &proofid);
-    void removeUnbroadcastProof(const ProofId &proofid);
-    void broadcastProofs(const CConnman &connman);
-
 private:
     PeerSet::iterator fetchOrCreatePeer(const std::shared_ptr<Proof> &proof);
-    bool addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid,
-                         CPubKey pubkey);
+    bool addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid);
     bool addNodeToPeer(const PeerSet::iterator &it);
     bool removeNodeFromPeer(const PeerSet::iterator &it, uint32_t count = 1);
 };

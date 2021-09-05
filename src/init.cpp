@@ -32,6 +32,7 @@
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
 #include <interfaces/chain.h>
+#include <interfaces/node.h>
 #include <key.h>
 #include <miner.h>
 #include <net.h>
@@ -750,6 +751,10 @@ void SetupServerArgs(NodeContext &node) {
         "-seednode=<ip>",
         "Connect to a node to retrieve peer addresses, and disconnect",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    gArgs.AddArg("-networkactive",
+                 "Enable all P2P network activity (default: 1). Can be changed "
+                 "by the setnetworkactive RPC command",
+                 ArgsManager::ALLOW_BOOL, OptionsCategory::CONNECTION);
     argsman.AddArg("-timeout=<n>",
                    strprintf("Specify connection timeout in milliseconds "
                              "(minimum: 1, default: %d)",
@@ -1030,6 +1035,11 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg("-uacomment=<cmt>",
                    "Append comment to the user agent string",
                    ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-uaclientname=<clientname>", "Set user agent client name",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-uaclientversion=<clientversion>",
+                   "Set user agent client version", ArgsManager::ALLOW_ANY,
+                   OptionsCategory::DEBUG_TEST);
 
     SetupChainParamsBaseOptions(argsman);
 
@@ -1926,20 +1936,24 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     }
 
     // Configure excessive block size.
-    const uint64_t nProposedExcessiveBlockSize =
+    const int64_t nProposedExcessiveBlockSize =
         args.GetArg("-excessiveblocksize", DEFAULT_MAX_BLOCK_SIZE);
-    if (!config.SetMaxBlockSize(nProposedExcessiveBlockSize)) {
+    if (nProposedExcessiveBlockSize <= 0 ||
+        !config.SetMaxBlockSize(nProposedExcessiveBlockSize)) {
         return InitError(
             _("Excessive block size must be > 1,000,000 bytes (1MB)"));
     }
 
     // Check blockmaxsize does not exceed maximum accepted block size.
-    const uint64_t nProposedMaxGeneratedBlockSize =
+    const int64_t nProposedMaxGeneratedBlockSize =
         args.GetArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
-    if (nProposedMaxGeneratedBlockSize > config.GetMaxBlockSize()) {
-        auto msg = _("Max generated block size (blockmaxsize) cannot exceed "
-                     "the excessive block size (excessiveblocksize)");
-        return InitError(msg);
+    if (nProposedMaxGeneratedBlockSize <= 0) {
+        return InitError(_("Max generated block size must be greater than 0"));
+    }
+    if (uint64_t(nProposedMaxGeneratedBlockSize) > config.GetMaxBlockSize()) {
+        return InitError(_("Max generated block size (blockmaxsize) cannot "
+                           "exceed the excessive block size "
+                           "(excessiveblocksize)"));
     }
 
     // block pruning; get the amount of disk space (in MiB) to allot for block &
@@ -2120,7 +2134,8 @@ bool AppInitLockDataDirectory() {
 
 bool AppInitMain(Config &config, RPCServer &rpcServer,
                  HTTPRPCRequestProcessor &httpRPCRequestProcessor,
-                 NodeContext &node) {
+                 NodeContext &node,
+                 interfaces::BlockAndHeaderTipInfo *tip_info) {
     // Step 4a: application initialization
     const ArgsManager &args = *Assert(node.args);
     const CChainParams &chainparams = config.GetChainParams();
@@ -2287,7 +2302,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     assert(!node.connman);
     node.connman = std::make_unique<CConnman>(
         config, GetRand(std::numeric_limits<uint64_t>::max()),
-        GetRand(std::numeric_limits<uint64_t>::max()));
+        GetRand(std::numeric_limits<uint64_t>::max()),
+        gArgs.GetBoolArg("-networkactive", true));
 
     // Make mempool generally available in the node context. For example the
     // connection manager, wallet, or RPC threads, which are all started after
@@ -2313,8 +2329,21 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
         uacomments.push_back(cmt);
     }
+    const std::string client_name = args.GetArg("-uaclientname", CLIENT_NAME);
+    const std::string client_version =
+        args.GetArg("-uaclientversion", FormatVersion(CLIENT_VERSION));
+    if (client_name != SanitizeString(client_name, SAFE_CHARS_UA_COMMENT)) {
+        return InitError(strprintf(
+            _("-uaclientname (%s) contains invalid characters."), client_name));
+    }
+    if (client_version !=
+        SanitizeString(client_version, SAFE_CHARS_UA_COMMENT)) {
+        return InitError(
+            strprintf(_("-uaclientversion (%s) contains invalid characters."),
+                      client_version));
+    }
     const std::string strSubVersion =
-        FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, uacomments);
+        FormatUserAgent(client_name, client_version, uacomments);
     if (strSubVersion.size() > MAX_SUBVERSION_LENGTH) {
         return InitError(strprintf(
             _("Total length of network version string (%i) exceeds maximum "
@@ -2548,7 +2577,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 chainman.m_total_coinstip_cache = nCoinCacheUsage;
                 chainman.m_total_coinsdb_cache = nCoinDBCache;
 
-                UnloadBlockIndex();
+                UnloadBlockIndex(node.mempool);
 
                 // new CBlockTreeDB tries to delete the existing file, which
                 // fails if it's still open from the previous loop. Close it
@@ -2903,6 +2932,19 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         LOCK(cs_main);
         LogPrintf("block tree size = %u\n", chainman.BlockIndex().size());
         chain_active_height = chainman.ActiveChain().Height();
+        if (tip_info) {
+            tip_info->block_height = chain_active_height;
+            tip_info->block_time =
+                chainman.ActiveChain().Tip()
+                    ? chainman.ActiveChain().Tip()->GetBlockTime()
+                    : Params().GenesisBlock().GetBlockTime();
+            tip_info->verification_progress = GuessVerificationProgress(
+                Params().TxData(), chainman.ActiveChain().Tip());
+        }
+        if (tip_info && ::pindexBestHeader) {
+            tip_info->header_height = ::pindexBestHeader->nHeight;
+            tip_info->header_time = ::pindexBestHeader->GetBlockTime();
+        }
     }
     LogPrintf("nBestHeight = %d\n", chain_active_height);
 

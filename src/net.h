@@ -236,7 +236,8 @@ public:
         }
     }
 
-    CConnman(const Config &configIn, uint64_t seed0, uint64_t seed1);
+    CConnman(const Config &configIn, uint64_t seed0, uint64_t seed1,
+             bool network_active = true);
     ~CConnman();
 
     bool Start(CScheduler &scheduler, const Options &options);
@@ -1013,7 +1014,7 @@ public:
     struct AvalancheState {
         AvalancheState() {}
 
-        avalanche::Delegation delegation;
+        CPubKey pubkey;
     };
 
     // m_avalanche_state == nullptr if we're not using avalanche with this peer

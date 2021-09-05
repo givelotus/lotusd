@@ -6,7 +6,6 @@
 #define BITCOIN_AVALANCHE_PROCESSOR_H
 
 #include <avalanche/node.h>
-#include <avalanche/peermanager.h>
 #include <avalanche/protocol.h>
 #include <blockindexworkcomparator.h>
 #include <eventloop.h>
@@ -281,23 +280,20 @@ public:
     bool registerVotes(NodeId nodeid, const Response &response,
                        std::vector<BlockUpdate> &updates);
 
-    bool addNode(NodeId nodeid, const std::shared_ptr<Proof> &proof,
-                 const Delegation &delegation);
+    bool addNode(NodeId nodeid, const ProofId &proofid);
     bool forNode(NodeId nodeid, std::function<bool(const Node &n)> func) const;
+
+    template <typename Callable> auto withPeerManager(Callable &&func) const {
+        LOCK(cs_peerManager);
+        return func(*peerManager);
+    }
 
     CPubKey getSessionPubKey() const;
     bool sendHello(CNode *pfrom) const;
 
-    /**
-     * Build and return the challenge whose signature we expect a peer to
-     * include in his AVAHELLO message.
-     */
-    uint256 buildRemoteSighash(CNode *pfrom) const;
-
     bool addProof(const std::shared_ptr<Proof> &proof);
     std::shared_ptr<Proof> getProof(const ProofId &proofid) const;
     std::shared_ptr<Proof> getLocalProof() const;
-    Peer::Timestamp getProofTime(const ProofId &proofid) const;
     std::shared_ptr<Proof> getOrphan(const ProofId &proofid) const;
 
     /*
@@ -305,15 +301,11 @@ public:
      */
     bool isAvalancheServiceAvailable() { return !!peerData; }
 
-    std::vector<avalanche::Peer> getPeers() const;
-    std::vector<NodeId> getNodeIdsForPeer(PeerId peerId) const;
-
     bool startEventLoop(CScheduler &scheduler);
     bool stopEventLoop();
 
     void addUnbroadcastProof(const ProofId &proofid);
     void removeUnbroadcastProof(const ProofId &proofid);
-    void broadcastProofs();
 
 private:
     void runEventLoop();

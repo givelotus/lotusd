@@ -128,18 +128,19 @@ struct AvalancheTestingSetup : public TestChain100Setup {
 
     bool addNode(NodeId nodeid) {
         auto proof = GetProof();
-        return m_processor->addNode(nodeid, proof,
-                                    DelegationBuilder(*proof).build());
+        BOOST_CHECK(m_processor->addProof(proof));
+        return m_processor->addNode(nodeid, proof->getId());
     }
 
     std::array<CNode *, 8> ConnectNodes() {
         auto proof = GetProof();
-        Delegation dg = DelegationBuilder(*proof).build();
+        BOOST_CHECK(m_processor->addProof(proof));
+        const ProofId &proofid = proof->getId();
 
         std::array<CNode *, 8> nodes;
         for (CNode *&n : nodes) {
             n = ConnectNode(NODE_AVALANCHE);
-            BOOST_CHECK(m_processor->addNode(n->GetId(), proof, dg));
+            BOOST_CHECK(m_processor->addNode(n->GetId(), proofid));
         }
 
         return nodes;
@@ -738,12 +739,12 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
 BOOST_AUTO_TEST_CASE(poll_inflight_count) {
     // Create enough nodes so that we run into the inflight request limit.
     auto proof = GetProof();
-    Delegation dg = DelegationBuilder(*proof).build();
+    BOOST_CHECK(m_processor->addProof(proof));
 
     std::array<CNode *, AVALANCHE_MAX_INFLIGHT_POLL + 1> nodes;
     for (auto &n : nodes) {
         n = ConnectNode(NODE_AVALANCHE);
-        BOOST_CHECK(m_processor->addNode(n->GetId(), proof, dg));
+        BOOST_CHECK(m_processor->addNode(n->GetId(), proof->getId()));
     }
 
     // Add a block to poll
@@ -973,34 +974,21 @@ BOOST_AUTO_TEST_CASE(proof_accessors) {
         proofs.push_back(GetProof());
     }
 
-    const Peer::Timestamp checkpoint =
-        Peer::Timestamp(std::chrono::seconds(GetTime()));
+    m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+        for (int i = 0; i < numProofs; i++) {
+            BOOST_CHECK(pm.registerProof(proofs[i]));
+            // Fail to add an existing proof
+            BOOST_CHECK(!pm.registerProof(proofs[i]));
 
-    for (int i = 0; i < numProofs; i++) {
-        BOOST_CHECK(m_processor->addProof(proofs[i]));
-        // Fail to add an existing proof
-        BOOST_CHECK(!m_processor->addProof(proofs[i]));
+            for (int added = 0; added <= i; added++) {
+                auto proof = pm.getProof(proofs[added]->getId());
+                BOOST_CHECK(proof != nullptr);
 
-        for (int added = 0; added <= i; added++) {
-            auto proof = m_processor->getProof(proofs[added]->getId());
-            BOOST_CHECK(proof != nullptr);
-
-            const ProofId &proofid = proof->getId();
-            BOOST_CHECK_EQUAL(proofid, proofs[added]->getId());
-
-            const Peer::Timestamp proofTime =
-                m_processor->getProofTime(proofid);
-            BOOST_CHECK(proofTime != Peer::Timestamp::max());
-            BOOST_CHECK(proofTime >= checkpoint);
+                const ProofId &proofid = proof->getId();
+                BOOST_CHECK_EQUAL(proofid, proofs[added]->getId());
+            }
         }
-
-        for (int missing = i + 1; missing < numProofs; missing++) {
-            const ProofId &proofid = proofs[missing]->getId();
-            BOOST_CHECK(!m_processor->getProof(proofid));
-            BOOST_CHECK(m_processor->getProofTime(proofid) ==
-                        Peer::Timestamp::max());
-        }
-    }
+    });
 
     // No stake, copied from proof_tests.cpp
     const std::string badProofHex(
