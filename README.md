@@ -1,6 +1,6 @@
-[![Bitcoin ABC Logo](share/pixmaps/bitcoinabclogo.png "Bitcoin ABC")](https://www.bitcoinabc.org)
+[![Lotus Logo](https://raw.githubusercontent.com/JustFragger/lotusd/master/doc/logo/LOTUS_BANNER.png)](https://www.givelotus.org)
 
-The goal of Bitcoin ABC is to create sound money that is usable by everyone in
+The goal of Lotus is to create sound money that is usable by everyone in
 the world. We believe this is a civilization-changing technology which will
 dramatically increase human flourishing, freedom, and prosperity. The project
 aims to achieve this goal by implementing a series of optimizations and
@@ -26,7 +26,7 @@ software project.
 License
 -------
 
-Bitcoin ABC is released under the terms of the MIT license. See
+Lotus is released under the terms of the MIT license. See
 [COPYING](COPYING) for more information or see
 <https://opensource.org/licenses/MIT>.
 
@@ -35,9 +35,9 @@ Development Process
 
 This Github repository contains only source code of releases.
 
-Bitcoin ABC development takes place at [reviews.bitcoinabc.org](https://reviews.bitcoinabc.org/)
-
 If you would like to contribute, please read [CONTRIBUTING](CONTRIBUTING.md).
+
+If you would like you can also contribute to Lotus Wiki (Docs) [here](https://givelotus.org/docs/)
 
 Disclosure Policy
 -----------------

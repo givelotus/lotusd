@@ -1,10 +1,10 @@
 Gitian building
 ===============
 
-*Setup instructions for a Gitian build of Bitcoin ABC using a VM or physical system.*
+*Setup instructions for a Gitian build of Lotus Core using a VM or physical system.*
 
-Gitian is the deterministic build process that is used to build the Bitcoin
-ABC executables. It provides a way to be reasonably sure that the
+Gitian is the deterministic build process that is used to build the Lotus
+Core executables. It provides a way to be reasonably sure that the
 executables are really built from the source on GitHub. It also makes sure that
 the same, tested dependencies are used and statically built into the executable.
 
@@ -53,7 +53,7 @@ In order to sign builds for MacOS, you need to download the free SDK and extract
 It is possible to download the resulting archive directly for users that desire to do so:
 
 ```bash
-cd bitcoin-abc/contrib/gitian-builder
+cd lotusd/contrib/gitian-builder
 curl -LO https://storage.googleapis.com/27cd7b2a42a430926cc621acdc3bda72a8ed2b0efc080e3/Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz
 echo "a1b8af4c4d82d519dd5aff2135fe56184fa758c30e310b5fb4bfc8d9d3b45d8a Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz" | sha256sum -c
 mkdir -p inputs
@@ -67,7 +67,7 @@ Initial Gitian Setup
 The `gitian-build.py` script will checkout different release tags, so it's best to copy it:
 
 ```bash
-cp bitcoin-abc/contrib/gitian-build.py .
+cp lotusd/contrib/gitian-build.py .
 ```
 
 You only need to do this once:
