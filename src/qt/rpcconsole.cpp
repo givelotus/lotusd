@@ -23,7 +23,6 @@
 #include <util/system.h>
 
 #ifdef ENABLE_WALLET
-#include <wallet/bdb.h>
 #include <wallet/wallet.h>
 
 #include <db_cxx.h>
@@ -31,6 +30,7 @@
 
 #include <univalue.h>
 
+#include <QFont>
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMessageBox>
@@ -538,6 +538,7 @@ RPCConsole::RPCConsole(interfaces::Node &node,
 
     // Install event filter for up and down arrow
     ui->lineEdit->installEventFilter(this);
+    ui->lineEdit->setMaxLength(16 * 1024 * 1024);
     ui->messagesWidget->installEventFilter(this);
 
     connect(ui->clearButton, &QPushButton::clicked, this, &RPCConsole::clear);
@@ -571,8 +572,7 @@ RPCConsole::RPCConsole(interfaces::Node &node,
     ui->peerHeading->setText(tr("Select a peer to view detailed information."));
 
     consoleFontSize =
-        settings.value(fontSizeSettingsKey, QFontInfo(QFont()).pointSize())
-            .toInt();
+        settings.value(fontSizeSettingsKey, QFont().pointSize()).toInt();
     clear();
 
     GUIUtil::handleCloseWindowShortcut(this);
@@ -1297,8 +1297,16 @@ void RPCConsole::updateNodeDetail(const CNodeCombinedStats *stats) {
     ui->peerDirection->setText(stats->nodeStats.fInbound ? tr("Inbound")
                                                          : tr("Outbound"));
     ui->peerHeight->setText(QString::number(stats->nodeStats.nStartingHeight));
-    ui->peerWhitelisted->setText(
-        stats->nodeStats.m_legacyWhitelisted ? tr("Yes") : tr("No"));
+    if (stats->nodeStats.m_permissionFlags == PF_NONE) {
+        ui->peerPermissions->setText(tr("N/A"));
+    } else {
+        QStringList permissions;
+        for (const auto &permission :
+             NetPermissions::ToStrings(stats->nodeStats.m_permissionFlags)) {
+            permissions.append(QString::fromStdString(permission));
+        }
+        ui->peerPermissions->setText(permissions.join(" & "));
+    }
     ui->peerMappedAS->setText(
         stats->nodeStats.m_mapped_as != 0
             ? QString::number(stats->nodeStats.m_mapped_as)

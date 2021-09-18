@@ -32,6 +32,7 @@
 #include <script/standard.h>
 #include <txmempool.h>
 #include <uint256.h>
+#include <util/bip32.h>
 #include <util/error.h>
 #include <util/moneystr.h>
 #include <util/strencodings.h>
@@ -743,7 +744,7 @@ static UniValue combinerawtransaction(const Config &config,
         RPCResult{RPCResult::Type::STR, "",
                   "The hex-encoded raw transaction with signature(s)"},
         RPCExamples{HelpExampleCli("combinerawtransaction",
-                                   "[\"myhex1\", \"myhex2\", \"myhex3\"]")},
+                                   R"('["myhex1", "myhex2", "myhex3"]')")},
     }
         .Check(request);
 
@@ -1097,7 +1098,7 @@ static UniValue testmempoolaccept(const Config &config,
             "Sign the transaction, and get back the hex\n" +
             HelpExampleCli("signrawtransactionwithwallet", "\"myhex\"") +
             "\nTest acceptance of the transaction (signed hex)\n" +
-            HelpExampleCli("testmempoolaccept", "[\"signedhex\"]") +
+            HelpExampleCli("testmempoolaccept", R"('["signedhex"]')") +
             "\nAs a JSON-RPC call\n" +
             HelpExampleRpc("testmempoolaccept", "[\"signedhex\"]")},
     }
@@ -1160,24 +1161,6 @@ static UniValue testmempoolaccept(const Config &config,
 
     result.push_back(std::move(result_0));
     return result;
-}
-
-static std::string WriteHDKeypath(std::vector<uint32_t> &keypath) {
-    std::string keypath_str = "m";
-    for (uint32_t num : keypath) {
-        keypath_str += "/";
-        bool hardened = false;
-        if (num & 0x80000000) {
-            hardened = true;
-            num &= ~0x80000000;
-        }
-
-        keypath_str += ToString(num);
-        if (hardened) {
-            keypath_str += "'";
-        }
-    }
-    return keypath_str;
 }
 
 static UniValue decodepsbt(const Config &config,
@@ -1538,7 +1521,7 @@ static UniValue combinepsbt(const Config &config,
         RPCResult{RPCResult::Type::STR, "",
                   "The base64-encoded partially signed transaction"},
         RPCExamples{HelpExampleCli(
-            "combinepsbt", "[\"mybase64_1\", \"mybase64_2\", \"mybase64_3\"]")},
+            "combinepsbt", R"('["mybase64_1", "mybase64_2", "mybase64_3"]')")},
     }
         .Check(request);
 
@@ -1948,7 +1931,7 @@ UniValue joinpsbts(const Config &config, const JSONRPCRequest &request) {
                            "At least two PSBTs are required to join PSBTs.");
     }
 
-    int32_t best_version = 1;
+    uint32_t best_version = 1;
     uint32_t best_locktime = 0xffffffff;
     for (size_t i = 0; i < txs.size(); ++i) {
         PartiallySignedTransaction psbtx;
@@ -1959,8 +1942,8 @@ UniValue joinpsbts(const Config &config, const JSONRPCRequest &request) {
         }
         psbtxs.push_back(psbtx);
         // Choose the highest version number
-        if (psbtx.tx->nVersion > best_version) {
-            best_version = psbtx.tx->nVersion;
+        if (static_cast<uint32_t>(psbtx.tx->nVersion) > best_version) {
+            best_version = static_cast<uint32_t>(psbtx.tx->nVersion);
         }
         // Choose the lowest lock time
         if (psbtx.tx->nLockTime < best_locktime) {
@@ -1971,7 +1954,7 @@ UniValue joinpsbts(const Config &config, const JSONRPCRequest &request) {
     // Create a blank psbt where everything will be added
     PartiallySignedTransaction merged_psbt;
     merged_psbt.tx = CMutableTransaction();
-    merged_psbt.tx->nVersion = best_version;
+    merged_psbt.tx->nVersion = static_cast<int32_t>(best_version);
     merged_psbt.tx->nLockTime = best_locktime;
 
     // Merge

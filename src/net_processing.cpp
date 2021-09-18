@@ -230,8 +230,8 @@ static constexpr std::chrono::hours AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL{24};
 static const std::chrono::seconds AVG_ADDRESS_BROADCAST_INTERVAL{30};
 /**
  * Average delay between trickled inventory transmissions in seconds.
- * Blocks and whitelisted receivers bypass this, outbound peers get half this
- * delay.
+ * Blocks and peers with noban permission bypass this, outbound peers
+ * get half this delay.
  */
 static const unsigned int INVENTORY_BROADCAST_INTERVAL = 5;
 /**
@@ -1389,15 +1389,6 @@ void PeerManager::Misbehaving(const NodeId pnode, const int howmuch,
     }
 }
 
-/**
- * Returns true if the given validation state result may result in a peer
- * banning/disconnecting us. We use this to determine which unaccepted
- * transactions from a whitelisted peer that we can safely relay.
- */
-static bool TxRelayMayResultInDisconnect(const TxValidationState &state) {
-    return state.GetResult() == TxValidationResult::TX_CONSENSUS;
-}
-
 bool PeerManager::MaybePunishNodeForBlock(NodeId nodeid,
                                           const BlockValidationState &state,
                                           bool via_compact_block,
@@ -2465,8 +2456,8 @@ void PeerManager::ProcessHeadersMessage(
                 nodestate->pindexBestKnownBlock->nChainWork <
                     nMinimumChainWork) {
                 // This peer has too little work on their headers chain to help
-                // us sync -- disconnect if using an outbound slot (unless
-                // whitelisted or addnode).
+                // us sync -- disconnect if it is an outbound disconnection
+                // candidate.
                 // Note: We compare their tip to nMinimumChainWork (rather than
                 // ::ChainActive().Tip()) because we won't start block download
                 // until we have a headers chain that has at least
@@ -2555,8 +2546,10 @@ void PeerManager::ProcessOrphanTx(const Config &config,
             if (orphan_state.IsInvalid()) {
                 // Punish peer that gave us an invalid orphan tx
                 MaybePunishNodeForTx(fromPeer, orphan_state);
-                LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s\n",
-                         orphanTxId.ToString());
+                LogPrint(BCLog::MEMPOOL,
+                         "   invalid orphan tx %s from peer=%d. %s\n",
+                         orphanTxId.ToString(), fromPeer,
+                         orphan_state.ToString());
             }
             // Has inputs but not accepted to mempool
             // Probably non-standard or insufficient fee
@@ -3241,8 +3234,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         // block-relay-only peer
         bool fBlocksOnly = !g_relay_txes || (pfrom.m_tx_relay == nullptr);
 
-        // Allow whitelisted peers to send data other than blocks in blocks only
-        // mode if whitelistrelay is true
+        // Allow peers with relay permission to send data other than blocks
+        // in blocks only mode
         if (pfrom.HasPermission(PF_RELAY)) {
             fBlocksOnly = false;
         }
@@ -3692,20 +3685,16 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             }
 
             if (pfrom.HasPermission(PF_FORCERELAY)) {
-                // Always relay transactions received from whitelisted peers,
-                // even if they were already in the mempool or rejected from it
-                // due to policy, allowing the node to function as a gateway for
+                // Always relay transactions received from peers with
+                // forcerelay permission, even if they were already in the
+                // mempool, allowing the node to function as a gateway for
                 // nodes hidden behind it.
-                //
-                // Never relay transactions that might result in being
-                // disconnected (or banned).
-                if (state.IsInvalid() && TxRelayMayResultInDisconnect(state)) {
-                    LogPrintf("Not relaying invalid transaction %s from "
-                              "whitelisted peer=%d (%s)\n",
-                              tx.GetId().ToString(), pfrom.GetId(),
-                              state.ToString());
+                if (!m_mempool.exists(tx.GetId())) {
+                    LogPrintf("Not relaying non-mempool transaction %s from "
+                              "forcerelay peer=%d\n",
+                              tx.GetId().ToString(), pfrom.GetId());
                 } else {
-                    LogPrintf("Force relaying tx %s from whitelisted peer=%d\n",
+                    LogPrintf("Force relaying tx %s from peer=%d\n",
                               tx.GetId().ToString(), pfrom.GetId());
                     RelayTransaction(tx.GetId(), m_connman);
                 }
@@ -3885,7 +3874,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                     ReadStatus status =
                         partialBlock.InitData(cmpctblock, vExtraTxnForCompact);
                     if (status == READ_STATUS_INVALID) {
-                        // Reset in-flight state in case of whitelist
+                        // Reset in-flight state in case Misbehaving does not
+                        // result in a disconnect
                         MarkBlockAsReceived(pindex->GetBlockHash());
                         Misbehaving(pfrom, 100, "invalid compact block");
                         return;
@@ -4043,7 +4033,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                 *it->second.second->partialBlock;
             ReadStatus status = partialBlock.FillBlock(*pblock, resp.txn);
             if (status == READ_STATUS_INVALID) {
-                // Reset in-flight state in case of whitelist.
+                // Reset in-flight state in case of Misbehaving does not
+                // result in a disconnect.
                 MarkBlockAsReceived(resp.blockhash);
                 Misbehaving(
                     pfrom, 100,
@@ -5707,8 +5698,9 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                         state.nHeadersSyncTimeout &&
                     nSyncStarted == 1 &&
                     (nPreferredDownload - state.fPreferredDownload >= 1)) {
-                    // Disconnect a (non-whitelisted) peer if it is our only
-                    // sync peer, and we have others we could be using instead.
+                    // Disconnect a peer (without the noban permission) if it
+                    // is our only sync peer, and we have others we could be
+                    // using instead.
                     // Note: If all our peers are inbound, then we won't
                     // disconnect our sync peer for stalling; we have bigger
                     // problems if we can't get any outbound peers.
@@ -5719,10 +5711,9 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                         pto->fDisconnect = true;
                         return true;
                     } else {
-                        LogPrintf(
-                            "Timeout downloading headers from whitelisted "
-                            "peer=%d, not disconnecting\n",
-                            pto->GetId());
+                        LogPrintf("Timeout downloading headers from noban "
+                                  "peer=%d, not disconnecting\n",
+                                  pto->GetId());
                         // Reset the headers sync state so that we have a chance
                         // to try downloading from a different peer. Note: this
                         // will also result in at least one more getheaders

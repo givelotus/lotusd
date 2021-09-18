@@ -41,7 +41,7 @@ public:
      */
     enum Unit { base, sub };
 
-    enum SeparatorStyle { separatorNever, separatorStandard, separatorAlways };
+    enum class SeparatorStyle { NEVER, STANDARD, ALWAYS };
 
     //! @name Static API
     //! Unit conversion and formatting
@@ -63,15 +63,20 @@ public:
     static int decimals(int unit);
     //! Format as string
     static QString format(int unit, const Amount amount, bool plussign = false,
-                          SeparatorStyle separators = separatorStandard);
+                          SeparatorStyle separators = SeparatorStyle::STANDARD,
+                          bool justify = false);
     //! Format as string (with unit)
     static QString
     formatWithUnit(int unit, const Amount amount, bool plussign = false,
-                   SeparatorStyle separators = separatorStandard);
+                   SeparatorStyle separators = SeparatorStyle::STANDARD);
     //! Format as HTML string (with unit)
     static QString
     formatHtmlWithUnit(int unit, const Amount amount, bool plussign = false,
-                       SeparatorStyle separators = separatorStandard);
+                       SeparatorStyle separators = SeparatorStyle::STANDARD);
+    //! Format as string (with unit) of fixed length to preserve privacy, if it
+    //! is set.
+    static QString formatWithPrivacy(int unit, const Amount &amount,
+                                     SeparatorStyle separators, bool privacy);
     //! Parse string to coin amount
     static bool parse(int unit, const QString &value, Amount *val_out);
     //! Gets title for amount column including current display unit if

@@ -135,6 +135,25 @@ std::vector<uint8_t> ParseHexO(const UniValue &o, std::string strKey) {
     return ParseHexV(find_value(o, strKey), strKey);
 }
 
+CoinStatsHashType ParseHashType(const UniValue &param,
+                                const CoinStatsHashType default_type) {
+    if (param.isNull()) {
+        return default_type;
+    } else {
+        std::string hash_type_input = param.get_str();
+
+        if (hash_type_input == "hash_serialized") {
+            return CoinStatsHashType::HASH_SERIALIZED;
+        } else if (hash_type_input == "none") {
+            return CoinStatsHashType::NONE;
+        } else {
+            throw JSONRPCError(
+                RPC_INVALID_PARAMETER,
+                strprintf("%d is not a valid hash_type", hash_type_input));
+        }
+    }
+}
+
 std::string HelpExampleCli(const std::string &methodname,
                            const std::string &args) {
     return "> lotus-cli " + methodname + " " + args + "\n";
@@ -399,6 +418,10 @@ struct Sections {
         std::string ret;
         const size_t pad = m_max_pad + 4;
         for (const auto &s : m_sections) {
+            // The left part of a section is assumed to be a single line,
+            // usually it is the name of the JSON struct or a brace like
+            // {, }, [, or ]
+            CHECK_NONFATAL(s.m_left.find('\n') == std::string::npos);
             if (s.m_right.empty()) {
                 ret += s.m_left;
                 ret += "\n";

@@ -1,14 +1,15 @@
 import React from 'react';
-import { CashLoader } from '@components/Common/CustomIcons';
+import PropTypes from 'prop-types';
 import { WalletContext } from '@utils/context';
 import { fromSmallestDenomination, getWalletState } from '@utils/cashMethods';
 import CreateTokenForm from '@components/Tokens/CreateTokenForm';
 import { currency } from '@components/Common/Ticker.js';
 import TokenList from '@components/Wallet/TokenList';
 import useBCH from '@hooks/useBCH';
-import { BalanceHeader } from '@components/Common/BalanceHeader';
-import { BalanceHeaderFiat } from '@components/Common/BalanceHeaderFiat';
+import BalanceHeader from '@components/Common/BalanceHeader';
+import BalanceHeaderFiat from '@components/Common/BalanceHeaderFiat';
 import { ZeroBalanceHeader, AlertMsg } from '@components/Common/Atoms';
+import ApiError from '@components/Common/ApiError';
 
 const Tokens = ({ jestBCH, passLoadingStatus }) => {
     /*
@@ -60,19 +61,7 @@ const Tokens = ({ jestBCH, passLoadingStatus }) => {
                     )}
                 </>
             )}
-            {apiError && (
-                <>
-                    <p
-                        style={{
-                            color: 'red',
-                        }}
-                    >
-                        <b>An error occurred on our end.</b>
-                        <br></br> Re-establishing connection...
-                    </p>
-                    <CashLoader />
-                </>
-            )}
+            {apiError && <ApiError />}
             <CreateTokenForm
                 BCH={BCH}
                 getRestUrl={getRestUrl}
@@ -127,6 +116,11 @@ Tokens.defaultProps = {
     passLoadingStatus: status => {
         console.log(status);
     },
+};
+
+Tokens.propTypes = {
+    jestBCH: PropTypes.object,
+    passLoadingStatus: PropTypes.func,
 };
 
 export default Tokens;

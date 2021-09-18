@@ -42,9 +42,6 @@ class CWalletTx;
 class uint160;
 class uint256;
 
-/** Backend-agnostic database type. */
-using WalletDatabase = BerkeleyDatabase;
-
 /** Error statuses for the wallet database */
 enum class DBErrors {
     LOAD_OK,
@@ -180,23 +177,23 @@ class WalletBatch {
 private:
     template <typename K, typename T>
     bool WriteIC(const K &key, const T &value, bool fOverwrite = true) {
-        if (!m_batch.Write(key, value, fOverwrite)) {
+        if (!m_batch->Write(key, value, fOverwrite)) {
             return false;
         }
         m_database.IncrementUpdateCounter();
         if (m_database.nUpdateCounter % 1000 == 0) {
-            m_batch.Flush();
+            m_batch->Flush();
         }
         return true;
     }
 
     template <typename K> bool EraseIC(const K &key) {
-        if (!m_batch.Erase(key)) {
+        if (!m_batch->Erase(key)) {
             return false;
         }
         m_database.IncrementUpdateCounter();
         if (m_database.nUpdateCounter % 1000 == 0) {
-            m_batch.Flush();
+            m_batch->Flush();
         }
         return true;
     }
@@ -204,7 +201,8 @@ private:
 public:
     explicit WalletBatch(WalletDatabase &database, const char *pszMode = "r+",
                          bool _fFlushOnClose = true)
-        : m_batch(database, pszMode, _fFlushOnClose), m_database(database) {}
+        : m_batch(database.MakeBatch(pszMode, _fFlushOnClose)),
+          m_database(database) {}
     WalletBatch(const WalletBatch &) = delete;
     WalletBatch &operator=(const WalletBatch &) = delete;
 
@@ -288,7 +286,7 @@ public:
     bool TxnAbort();
 
 private:
-    BerkeleyBatch m_batch;
+    std::unique_ptr<DatabaseBatch> m_batch;
     WalletDatabase &m_database;
 };
 
@@ -304,14 +302,14 @@ bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey, CDataStream &ssValue,
 bool IsWalletLoaded(const fs::path &wallet_path);
 
 /** Return object for accessing database at specified path. */
-std::unique_ptr<BerkeleyDatabase> CreateWalletDatabase(const fs::path &path);
+std::unique_ptr<WalletDatabase> CreateWalletDatabase(const fs::path &path);
 
 /**
  * Return object for accessing dummy database with no read/write capabilities.
  */
-std::unique_ptr<BerkeleyDatabase> CreateDummyWalletDatabase();
+std::unique_ptr<WalletDatabase> CreateDummyWalletDatabase();
 
 /** Return object for accessing temporary in-memory database. */
-std::unique_ptr<BerkeleyDatabase> CreateMockWalletDatabase();
+std::unique_ptr<WalletDatabase> CreateMockWalletDatabase();
 
 #endif // BITCOIN_WALLET_WALLETDB_H

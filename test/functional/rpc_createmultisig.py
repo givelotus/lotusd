@@ -3,7 +3,6 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test multisig RPCs"""
-
 import binascii
 import itertools
 import json
@@ -12,12 +11,12 @@ from decimal import Decimal
 
 from test_framework.blocktools import SUBSIDY
 from test_framework.descriptors import descsum_create, drop_origins
+from test_framework.key import ECPubKey
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_raises_rpc_error,
     assert_equal,
 )
-from test_framework.key import ECPubKey
 
 
 class RpcCreateMultiSigTest(BitcoinTestFramework):

@@ -23,6 +23,7 @@
 #include <script/sighashtype.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
+#include <txmempool.h>
 #include <util/bip32.h>
 #include <util/check.h>
 #include <util/error.h>
@@ -100,9 +101,13 @@ HandleLoadWallet(LoadWalletFn load_wallet) {
     });
 }
 
+static Mutex g_loading_wallet_mutex;
 static Mutex g_wallet_release_mutex;
 static std::condition_variable g_wallet_release_cv;
-static std::set<std::string> g_unloading_wallet_set;
+static std::set<std::string>
+    g_loading_wallet_set GUARDED_BY(g_loading_wallet_mutex);
+static std::set<std::string>
+    g_unloading_wallet_set GUARDED_BY(g_wallet_release_mutex);
 
 // Custom deleter for shared_ptr<CWallet>.
 static void ReleaseWallet(CWallet *wallet) {
@@ -146,11 +151,11 @@ void UnloadWallet(std::shared_ptr<CWallet> &&wallet) {
 
 static const size_t OUTPUT_GROUP_MAX_ENTRIES = 10;
 
-std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
-                                    interfaces::Chain &chain,
-                                    const WalletLocation &location,
-                                    bilingual_str &error,
-                                    std::vector<bilingual_str> &warnings) {
+namespace {
+std::shared_ptr<CWallet>
+LoadWalletInternal(const CChainParams &chainParams, interfaces::Chain &chain,
+                   const WalletLocation &location, bilingual_str &error,
+                   std::vector<bilingual_str> &warnings) {
     try {
         if (!CWallet::Verify(chainParams, chain, location, error, warnings)) {
             error = Untranslated("Wallet file verification failed.") +
@@ -172,6 +177,25 @@ std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
         error = Untranslated(e.what());
         return nullptr;
     }
+}
+} // namespace
+
+std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
+                                    interfaces::Chain &chain,
+                                    const WalletLocation &location,
+                                    bilingual_str &error,
+                                    std::vector<bilingual_str> &warnings) {
+    auto result =
+        WITH_LOCK(g_loading_wallet_mutex,
+                  return g_loading_wallet_set.insert(location.GetName()));
+    if (!result.second) {
+        error = Untranslated("Wallet already being loading.");
+        return nullptr;
+    }
+    auto wallet =
+        LoadWalletInternal(chainParams, chain, location, error, warnings);
+    WITH_LOCK(g_loading_wallet_mutex, g_loading_wallet_set.erase(result.first));
+    return wallet;
 }
 
 std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
@@ -504,8 +528,12 @@ bool CWallet::HasWalletSpend(const TxId &txid) const {
     return (iter != mapTxSpends.end() && iter->first.GetTxId() == txid);
 }
 
-void CWallet::Flush(bool shutdown) {
-    database->Flush(shutdown);
+void CWallet::Flush() {
+    database->Flush();
+}
+
+void CWallet::Close() {
+    database->Close();
 }
 
 void CWallet::SyncMetaData(
@@ -1189,24 +1217,56 @@ void CWallet::SyncTransaction(const CTransactionRef &ptx,
     MarkInputsDirty(ptx);
 }
 
-void CWallet::transactionAddedToMempool(const CTransactionRef &ptx) {
+void CWallet::transactionAddedToMempool(const CTransactionRef &tx) {
     LOCK(cs_wallet);
-    CWalletTx::Confirmation confirm(CWalletTx::Status::UNCONFIRMED,
-                                    /* block_height */ 0, BlockHash(),
-                                    /* nIndex */ 0);
-    SyncTransaction(ptx, confirm);
 
-    auto it = mapWallet.find(ptx->GetId());
+    SyncTransaction(tx, {CWalletTx::Status::UNCONFIRMED, /* block_height */ 0,
+                         BlockHash(), /* nIndex */ 0});
+
+    auto it = mapWallet.find(tx->GetId());
     if (it != mapWallet.end()) {
         it->second.fInMempool = true;
     }
 }
 
-void CWallet::transactionRemovedFromMempool(const CTransactionRef &ptx) {
+void CWallet::transactionRemovedFromMempool(const CTransactionRef &tx,
+                                            MemPoolRemovalReason reason) {
     LOCK(cs_wallet);
-    auto it = mapWallet.find(ptx->GetId());
+    auto it = mapWallet.find(tx->GetId());
     if (it != mapWallet.end()) {
         it->second.fInMempool = false;
+    }
+    // Handle transactions that were removed from the mempool because they
+    // conflict with transactions in a newly connected block.
+    if (reason == MemPoolRemovalReason::CONFLICT) {
+        // Call SyncNotifications, so external -walletnotify notifications will
+        // be triggered for these transactions. Set Status::UNCONFIRMED instead
+        // of Status::CONFLICTED for a few reasons:
+        //
+        // 1. The transactionRemovedFromMempool callback does not currently
+        //    provide the conflicting block's hash and height, and for backwards
+        //    compatibility reasons it may not be not safe to store conflicted
+        //    wallet transactions with a null block hash. See
+        //    https://github.com/bitcoin/bitcoin/pull/18600#discussion_r420195993.
+        // 2. For most of these transactions, the wallet's internal conflict
+        //    detection in the blockConnected handler will subsequently call
+        //    MarkConflicted and update them with CONFLICTED status anyway. This
+        //    applies to any wallet transaction that has inputs spent in the
+        //    block, or that has ancestors in the wallet with inputs spent by
+        //    the block.
+        // 3. Longstanding behavior since the sync implementation in
+        //    https://github.com/bitcoin/bitcoin/pull/9371 and the prior sync
+        //    implementation before that was to mark these transactions
+        //    unconfirmed rather than conflicted.
+        //
+        // Nothing described above should be seen as an unchangeable requirement
+        // when improving this code in the future. The wallet's heuristics for
+        // distinguishing between conflicted and unconfirmed transactions are
+        // imperfect, and could be improved in general, see
+        // https://github.com/bitcoin-core/bitcoin-devwiki/wiki/Wallet-Transaction-Conflict-Tracking
+        SyncTransaction(tx,
+                        {CWalletTx::Status::UNCONFIRMED, /* block height  */ 0,
+                         BlockHash(), /* index */ 0});
     }
 }
 
@@ -1217,10 +1277,10 @@ void CWallet::blockConnected(const CBlock &block, int height) {
     m_last_block_processed_height = height;
     m_last_block_processed = block_hash;
     for (size_t index = 0; index < block.vtx.size(); index++) {
-        CWalletTx::Confirmation confirm(CWalletTx::Status::CONFIRMED, height,
-                                        block_hash, index);
-        SyncTransaction(block.vtx[index], confirm);
-        transactionRemovedFromMempool(block.vtx[index]);
+        SyncTransaction(block.vtx[index], {CWalletTx::Status::CONFIRMED, height,
+                                           block_hash, int(index)});
+        transactionRemovedFromMempool(block.vtx[index],
+                                      MemPoolRemovalReason::BLOCK);
     }
 }
 
@@ -1235,10 +1295,9 @@ void CWallet::blockDisconnected(const CBlock &block, int height) {
     m_last_block_processed_height = height - 1;
     m_last_block_processed = block.hashPrevBlock;
     for (const CTransactionRef &ptx : block.vtx) {
-        CWalletTx::Confirmation confirm(CWalletTx::Status::UNCONFIRMED,
-                                        /* block_height */ 0, BlockHash(),
-                                        /* nIndex */ 0);
-        SyncTransaction(ptx, confirm);
+        SyncTransaction(ptx,
+                        {CWalletTx::Status::UNCONFIRMED, /* block_height */ 0,
+                         BlockHash(), /* nIndex */ 0});
     }
 }
 
@@ -1500,8 +1559,8 @@ bool CWallet::LoadWalletFlags(uint64_t flags) {
 
 bool CWallet::AddWalletFlags(uint64_t flags) {
     LOCK(cs_wallet);
-    // We should never be writing unknown onon-tolerable wallet flags
-    assert(!(((flags & KNOWN_WALLET_FLAGS) >> 32) ^ (flags >> 32)));
+    // We should never be writing unknown non-tolerable wallet flags
+    assert(((flags & KNOWN_WALLET_FLAGS) >> 32) == (flags >> 32));
     if (!WalletBatch(*database).WriteWalletFlags(flags)) {
         throw std::runtime_error(std::string(__func__) +
                                  ": writing wallet flags failed");
@@ -1841,7 +1900,10 @@ CWallet::ScanResult CWallet::ScanForWalletTransactions(
                 CWalletTx::Confirmation confirm(CWalletTx::Status::CONFIRMED,
                                                 block_height, block_hash,
                                                 posInBlock);
-                SyncTransaction(block.vtx[posInBlock], confirm, fUpdate);
+                SyncTransaction(block.vtx[posInBlock],
+                                {CWalletTx::Status::CONFIRMED, block_height,
+                                 block_hash, int(posInBlock)},
+                                fUpdate);
             }
             // scan succeeded, record block as most recent successfully
             // scanned
@@ -2988,11 +3050,11 @@ static uint32_t GetLocktimeForNewTransaction(interfaces::Chain &chain,
 }
 
 OutputType
-CWallet::TransactionChangeType(OutputType change_type,
+CWallet::TransactionChangeType(const std::optional<OutputType> &change_type,
                                const std::vector<CRecipient> &vecSend) {
     // If -changetype is specified, always use that change type.
-    if (change_type != OutputType::CHANGE_AUTO) {
-        return change_type;
+    if (change_type) {
+        return *change_type;
     }
 
     // if m_default_address_type is legacy, use legacy address as change.
@@ -3088,6 +3150,16 @@ bool CWallet::CreateTransactionInternal(const std::vector<CRecipient> &vecSend,
 
         // Get the fee rate to use effective values in coin selection
         CFeeRate nFeeRateNeeded = GetMinimumFeeRate(*this, coin_control);
+        // Do not, ever, assume that it's fine to change the fee rate if the
+        // user has explicitly provided one
+        if (coin_control.m_feerate &&
+            nFeeRateNeeded > *coin_control.m_feerate) {
+            error = strprintf(_("Fee rate (%s) is lower than the minimum fee "
+                                "rate setting (%s)"),
+                              coin_control.m_feerate->ToString(),
+                              nFeeRateNeeded.ToString());
+            return false;
+        }
 
         nFeeRet = Amount::zero();
         bool pick_new_inputs = true;
@@ -3496,6 +3568,9 @@ DBErrors CWallet::ZapSelectTx(std::vector<TxId> &txIdsIn,
     for (const TxId &txid : txIdsOut) {
         const auto &it = mapWallet.find(txid);
         wtxOrdered.erase(it->second.m_it_wtxOrdered);
+        for (const auto &txin : it->second.tx->vin) {
+            mapTxSpends.erase(txin.prevout);
+        }
         mapWallet.erase(it);
         NotifyTransactionChanged(this, txid, CT_DELETED);
     }
@@ -4386,7 +4461,6 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
         gArgs.GetBoolArg("-spendzeroconfchange", DEFAULT_SPEND_ZEROCONF_CHANGE);
 
     walletInstance->m_default_address_type = DEFAULT_ADDRESS_TYPE;
-    walletInstance->m_default_change_type = DEFAULT_CHANGE_TYPE;
 
     walletInstance->WalletLogPrintf("Wallet completed loading in %15dms\n",
                                     GetTimeMillis() - nStart);
