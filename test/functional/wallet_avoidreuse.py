@@ -324,7 +324,7 @@ class AvoidReuseTest(BitcoinTestFramework):
         # getbalances should show 1000 used, 500 Lotus trusted
         assert_balances(self.nodes[1], mine={"used": 1000, "trusted": 500})
 
-        # node 1 should now have a balance of 5 (no dirty) or 15 (including
+        # node 1 should now have a balance of 500 (no dirty) or 1500 (including
         # dirty)
         assert_approx(self.nodes[1].getbalance(), 500, 0.1)
         assert_approx(self.nodes[1].getbalance(avoid_reuse=False), 1500, 0.1)

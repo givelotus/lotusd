@@ -6,7 +6,7 @@
 Test inventory download behavior
 """
 
-from test_framework.address import ADDRESS_BCHREG_UNSPENDABLE
+from test_framework.address import ADDRESS_ECREG_UNSPENDABLE
 from test_framework.avatools import wait_for_proof
 from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import (
@@ -109,6 +109,9 @@ TX_TEST_CONTEXT = TestContext(
 # Python test constants
 NUM_INBOUND = 10
 
+# Common network parameters
+UNCONDITIONAL_RELAY_DELAY = 2 * 60
+
 
 def skip(context):
     def decorator(test):
@@ -164,7 +167,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
         self.log.info("All outstanding peers received a getdata")
 
     @skip(PROOF_TEST_CONTEXT)
-    def test_inv_block(self, context):
+    def test_inv_tx(self, context):
         self.log.info("Generate a transaction on node 0")
         tx = self.nodes[0].createrawtransaction(
             inputs=[{
@@ -172,7 +175,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
                 "txid": self.nodes[0].getblock(self.nodes[0].getblockhash(1))['tx'][0],
                 "vout": 1
             }],
-            outputs={ADDRESS_BCHREG_UNSPENDABLE: SUBSIDY - Decimal('0.025')},
+            outputs={ADDRESS_ECREG_UNSPENDABLE: SUBSIDY - Decimal('0.025')},
         )
         tx = self.nodes[0].signrawtransactionwithkey(
             hexstring=tx,
@@ -190,20 +193,30 @@ class InventoryDownloadTest(BitcoinTestFramework):
         self.log.info("Put the tx in node 0's mempool")
         self.nodes[0].sendrawtransaction(tx)
 
+        # node1 is an inbound peer for node0, so the tx relay is delayed by a
+        # duration calculated using a poisson's law with a 5s average time.
+        # In order to make sure the inv is sent we move the time 2 minutes
+        # forward, which has the added side effect that the tx can be
+        # unconditionally requested.
+        with self.nodes[1].assert_debug_log([f"got inv: tx {txid:064x}  new peer=0"]):
+            self.nodes[0].setmocktime(
+                int(time.time()) + UNCONDITIONAL_RELAY_DELAY)
+
         # Since node 1 is connected outbound to an honest peer (node 0), it
-        # should get the tx within a timeout. (Assuming that node 0
-        # announced the tx within the timeout)
+        # should get the tx within a timeout.
         # The timeout is the sum of
         # * the worst case until the tx is first requested from an inbound
         #   peer, plus
         # * the first time it is re-requested from the outbound peer, plus
         # * 2 seconds to avoid races
         assert self.nodes[1].getpeerinfo()[0]['inbound'] is False
-        timeout = 2 + context.constants.inbound_peer_delay + \
+        max_delay = context.constants.inbound_peer_delay + \
             context.constants.getdata_interval
+        margin = 2
         self.log.info(
-            "Tx should be received at node 1 after {} seconds".format(timeout))
-        self.sync_mempools(timeout=timeout)
+            "Tx should be received at node 1 after {} seconds".format(max_delay + margin))
+        self.nodes[1].setmocktime(int(time.time()) + max_delay)
+        self.sync_mempools(timeout=margin)
 
     def test_in_flight_max(self, context):
         max_getdata_in_flight = context.constants.max_getdata_in_flight
@@ -269,7 +282,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
         self.nodes[0].setmocktime(
             int(time.time()) + context.constants.getdata_interval + 1)
         peer_fallback.wait_until(
-            lambda: peer_fallback.getdata_count >= 1, timeout=1)
+            lambda: peer_fallback.getdata_count >= 1)
         with p2p_lock:
             assert_equal(peer_fallback.getdata_count, 1)
         # reset mocktime
@@ -295,7 +308,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
         peer_disconnect.peer_disconnect()
         peer_disconnect.wait_for_disconnect()
         peer_fallback.wait_until(
-            lambda: peer_fallback.getdata_count >= 1, timeout=1)
+            lambda: peer_fallback.getdata_count >= 1)
         with p2p_lock:
             assert_equal(peer_fallback.getdata_count, 1)
 
@@ -320,7 +333,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
         peer_notfound.send_and_ping(msg_notfound(
             vec=[CInv(context.inv_type, 0xffdd)]))
         peer_fallback.wait_until(
-            lambda: peer_fallback.getdata_count >= 1, timeout=1)
+            lambda: peer_fallback.getdata_count >= 1)
         with p2p_lock:
             assert_equal(peer_fallback.getdata_count, 1)
 
@@ -333,7 +346,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
             ['-whitelist=noban@127.0.0.1'])
         peer = self.nodes[0].add_p2p_connection(context.p2p_conn())
         peer.send_message(msg_inv([CInv(t=context.inv_type, h=0xff00ff00)]))
-        peer.wait_until(lambda: peer.getdata_count >= 1, timeout=1)
+        peer.wait_until(lambda: peer.getdata_count >= 1)
         with p2p_lock:
             assert_equal(peer.getdata_count, 1)
 
@@ -461,7 +474,7 @@ class InventoryDownloadTest(BitcoinTestFramework):
 
             # Run each test against new bitcoind instances, as setting mocktimes has long-term effects on when
             # the next trickle relay event happens.
-            for test in [self.test_in_flight_max, self.test_inv_block,
+            for test in [self.test_in_flight_max, self.test_inv_tx,
                          self.test_data_requests, self.test_orphan_download, self.test_request_invalid_once]:
                 self.stop_nodes()
                 self.start_nodes()

@@ -89,15 +89,15 @@ class AbandonConflictTest(BitcoinTestFramework):
             self.nodes[0].createrawtransaction(inputs, outputs))
         txAB1 = self.nodes[0].sendrawtransaction(signed["hex"])
 
-        # Identify the 14.99998btc output
+        # Identify the 1499.9980 XPI output
         nAB = next(tx_out["vout"] for tx_out in self.nodes[0].gettransaction(
             txAB1)["details"] if tx_out["amount"] == Decimal('1499.998'))
 
         # Create a child tx spending AB1 and C
         inputs = []
-        # Amount 14.99998 BCH
+        # Amount 1499.9980 XPI
         inputs.append({"txid": txAB1, "vout": nAB})
-        # Amount 10 BCH
+        # Amount 1000.0000 XPI
         inputs.append({"txid": txC, "vout": nC})
         outputs = {}
         outputs[self.nodes[0].getnewaddress()] = Decimal('2499.96')
@@ -203,15 +203,16 @@ class AbandonConflictTest(BitcoinTestFramework):
         connect_nodes(self.nodes[0], self.nodes[1])
         self.sync_blocks()
 
-        # Verify that B and C's 10 BCH outputs are available for spending again
-        # because AB1 is now conflicted
+        # Verify that B and C's 1000.0000 XPI outputs are available for
+        # spending again because AB1 is now conflicted
         newbalance = self.nodes[0].getbalance()
         assert_equal(newbalance, balance + Decimal('2000'))
         balance = newbalance
 
-        # There is currently a minor bug around this and so this test doesn't work.  See Issue #7315
-        # Invalidate the block with the double spend and B's 10 BCH output should no longer be available
-        # Don't think C's should either
+        # There is currently a minor bug around this and so this test doesn't
+        # work.  See Issue #7315
+        # Invalidate the block with the double spend and B's 1000.0000 XPI
+        # output should no longer be available. Don't think C's should either
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
         newbalance = self.nodes[0].getbalance()
         # assert_equal(newbalance, balance - Decimal('1000'))

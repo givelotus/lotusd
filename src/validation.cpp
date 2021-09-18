@@ -123,8 +123,6 @@ arith_uint256 nMinimumChainWork;
 
 CFeeRate minRelayTxFee = CFeeRate(DEFAULT_MIN_RELAY_TX_FEE_PER_KB);
 
-CTxMemPool g_mempool;
-
 // Internal stuff
 namespace {
 CBlockIndex *pindexBestInvalid = nullptr;
@@ -179,13 +177,6 @@ CBlockIndex *FindForkInGlobalIndex(const CChain &chain,
 
 std::unique_ptr<CBlockTreeDB> pblocktree;
 
-// See definition for documentation
-static void FindFilesToPruneManual(ChainstateManager &chainman,
-                                   std::set<int> &setFilesToPrune,
-                                   int nManualPruneHeight);
-static void FindFilesToPrune(ChainstateManager &chainman,
-                             std::set<int> &setFilesToPrune,
-                             uint64_t nPruneAfterHeight);
 static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
                                         const CBlockIndex *pindex);
 
@@ -797,40 +788,38 @@ bool AcceptToMemoryPool(const Config &config, CTxMemPool &pool,
                                       bypass_limits, nAbsurdFee, test_accept);
 }
 
-/**
- * Return transaction in txOut, and if it was found inside a block, its hash is
- * placed in hashBlock. If blockIndex is provided, the transaction is fetched
- * from the corresponding block.
- */
-bool GetTransaction(const TxId &txid, CTransactionRef &txOut,
-                    const Consensus::Params &params, BlockHash &hashBlock,
-                    const CBlockIndex *const block_index) {
+CTransactionRef GetTransaction(const CBlockIndex *const block_index,
+                               const CTxMemPool *const mempool,
+                               const TxId &txid,
+                               const Consensus::Params &consensusParams,
+                               BlockHash &hashBlock) {
     LOCK(cs_main);
 
-    if (block_index == nullptr) {
-        CTransactionRef ptx = g_mempool.get(txid);
-        if (ptx) {
-            txOut = ptx;
-            return true;
-        }
-
-        if (g_txindex) {
-            return g_txindex->FindTx(txid, hashBlock, txOut);
-        }
-    } else {
+    if (block_index) {
         CBlock block;
-        if (ReadBlockFromDisk(block, block_index, params)) {
+        if (ReadBlockFromDisk(block, block_index, consensusParams)) {
             for (const auto &tx : block.vtx) {
                 if (tx->GetId() == txid) {
-                    txOut = tx;
                     hashBlock = block_index->GetBlockHash();
-                    return true;
+                    return tx;
                 }
             }
         }
+        return nullptr;
     }
-
-    return false;
+    if (mempool) {
+        CTransactionRef ptx = mempool->get(txid);
+        if (ptx) {
+            return ptx;
+        }
+    }
+    if (g_txindex) {
+        CTransactionRef tx;
+        if (g_txindex->FindTx(txid, hashBlock, tx)) {
+            return tx;
+        }
+    }
+    return nullptr;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -942,10 +931,10 @@ void CoinsViews::InitCache() {
     m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview);
 }
 
-CChainState::CChainState(BlockManager &blockman,
+CChainState::CChainState(CTxMemPool &mempool, BlockManager &blockman,
                          BlockHash from_snapshot_blockhash)
-    : m_blockman(blockman), m_from_snapshot_blockhash(from_snapshot_blockhash) {
-}
+    : m_blockman(blockman), m_mempool(mempool),
+      m_from_snapshot_blockhash(from_snapshot_blockhash) {}
 
 void CChainState::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                               bool should_wipe, std::string leveldb_name) {
@@ -2021,20 +2010,21 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
             bool fFlushForPrune = false;
             bool fDoFullFlush = false;
             CoinsCacheSizeState cache_state =
-                GetCoinsCacheSizeState(&::g_mempool);
+                GetCoinsCacheSizeState(&m_mempool);
             LOCK(cs_LastBlockFile);
             if (fPruneMode && (fCheckForPruning || nManualPruneHeight > 0) &&
                 !fReindex) {
                 if (nManualPruneHeight > 0) {
                     LOG_TIME_MILLIS_WITH_CATEGORY(
                         "find files to prune (manual)", BCLog::BENCH);
-                    FindFilesToPruneManual(g_chainman, setFilesToPrune,
-                                           nManualPruneHeight);
+                    m_blockman.FindFilesToPruneManual(
+                        setFilesToPrune, nManualPruneHeight, m_chain.Height());
                 } else {
                     LOG_TIME_MILLIS_WITH_CATEGORY("find files to prune",
                                                   BCLog::BENCH);
-                    FindFilesToPrune(g_chainman, setFilesToPrune,
-                                     chainparams.PruneAfterHeight());
+                    m_blockman.FindFilesToPrune(
+                        setFilesToPrune, chainparams.PruneAfterHeight(),
+                        m_chain.Height(), IsInitialBlockDownload());
                     fCheckForPruning = false;
                 }
                 if (!setFilesToPrune.empty()) {
@@ -2185,10 +2175,11 @@ void CChainState::PruneAndFlush() {
 }
 
 /** Check warning conditions and do some notifications on new chain tip set. */
-static void UpdateTip(const CChainParams &params, CBlockIndex *pindexNew)
+static void UpdateTip(CTxMemPool &mempool, const CChainParams &params,
+                      CBlockIndex *pindexNew)
     EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
     // New best block
-    g_mempool.AddTransactionsUpdated(1);
+    mempool.AddTransactionsUpdated(1);
 
     {
         LOCK(g_best_block_mutex);
@@ -2224,6 +2215,7 @@ bool CChainState::DisconnectTip(const CChainParams &params,
                                 BlockValidationState &state,
                                 DisconnectedBlockTransactions *disconnectpool) {
     AssertLockHeld(cs_main);
+    AssertLockHeld(m_mempool.cs);
     CBlockIndex *pindexDelete = m_chain.Tip();
     const Consensus::Params &consensusParams = params.GetConsensus();
 
@@ -2268,13 +2260,13 @@ bool CChainState::DisconnectTip(const CChainParams &params,
         LogPrint(BCLog::MEMPOOL,
                  "Disconnecting mempool due to rewind of upgrade block\n");
         if (disconnectpool) {
-            disconnectpool->importMempool(g_mempool);
+            disconnectpool->importMempool(m_mempool);
         }
-        g_mempool.clear();
+        m_mempool.clear();
     }
 
     if (disconnectpool) {
-        disconnectpool->addForBlock(block.vtx, g_mempool);
+        disconnectpool->addForBlock(block.vtx, m_mempool);
     }
 
     // If the tip is finalized, then undo it.
@@ -2285,7 +2277,7 @@ bool CChainState::DisconnectTip(const CChainParams &params,
     m_chain.SetTip(pindexDelete->pprev);
 
     // Update ::ChainActive() and related variables.
-    UpdateTip(params, pindexDelete->pprev);
+    UpdateTip(m_mempool, params, pindexDelete->pprev);
     // Let wallets know transactions went from 1-confirmed to
     // 0-confirmed or conflicted:
     GetMainSignals().BlockDisconnected(pblock, pindexDelete);
@@ -2432,7 +2424,7 @@ bool CChainState::ConnectTip(const Config &config, BlockValidationState &state,
                              ConnectTrace &connectTrace,
                              DisconnectedBlockTransactions &disconnectpool) {
     AssertLockHeld(cs_main);
-    AssertLockHeld(g_mempool.cs);
+    AssertLockHeld(m_mempool.cs);
 
     const CChainParams &params = config.GetChainParams();
     const Consensus::Params &consensusParams = params.GetConsensus();
@@ -2513,7 +2505,7 @@ bool CChainState::ConnectTip(const Config &config, BlockValidationState &state,
              nTimeChainState * MILLI / nBlocksTotal);
 
     // Remove conflicting transactions from the mempool.;
-    g_mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight);
+    m_mempool.removeForBlock(blockConnecting.vtx, pindexNew->nHeight);
     disconnectpool.removeForBlock(blockConnecting.vtx);
 
     // If this block is activating a fork, we move all mempool transactions
@@ -2524,12 +2516,12 @@ bool CChainState::ConnectTip(const Config &config, BlockValidationState &state,
             GetNextBlockScriptFlags(consensusParams, pindexNew->pprev)) {
         LogPrint(BCLog::MEMPOOL,
                  "Disconnecting mempool due to acceptance of upgrade block\n");
-        disconnectpool.importMempool(g_mempool);
+        disconnectpool.importMempool(m_mempool);
     }
 
     // Update m_chain & related variables.
     m_chain.SetTip(pindexNew);
-    UpdateTip(params, pindexNew);
+    UpdateTip(m_mempool, params, pindexNew);
 
     int64_t nTime6 = GetTimeMicros();
     nTimePostConnect += nTime6 - nTime5;
@@ -2742,6 +2734,7 @@ bool CChainState::ActivateBestChainStep(
     CBlockIndex *pindexMostWork, const std::shared_ptr<const CBlock> &pblock,
     bool &fInvalidFound, ConnectTrace &connectTrace) {
     AssertLockHeld(cs_main);
+    AssertLockHeld(m_mempool.cs);
 
     const CBlockIndex *pindexOldTip = m_chain.Tip();
     const CBlockIndex *pindexFork = m_chain.FindFork(pindexMostWork);
@@ -2753,7 +2746,7 @@ bool CChainState::ActivateBestChainStep(
         if (!DisconnectTip(config.GetChainParams(), state, &disconnectpool)) {
             // This is likely a fatal error, but keep the mempool consistent,
             // just in case. Only remove from the mempool in this case.
-            disconnectpool.updateMempoolForReorg(config, false, g_mempool);
+            disconnectpool.updateMempoolForReorg(config, false, m_mempool);
 
             // If we're unable to disconnect a block during normal operation,
             // then that is a failure of our local system -- we should abort
@@ -2806,7 +2799,7 @@ bool CChainState::ActivateBestChainStep(
                 // A system error occurred (disk space, database error, ...).
                 // Make the mempool consistent with the current tip, just in
                 // case any observers try to use it before shutdown.
-                disconnectpool.updateMempoolForReorg(config, false, g_mempool);
+                disconnectpool.updateMempoolForReorg(config, false, m_mempool);
                 return false;
             } else {
                 PruneBlockIndexCandidates();
@@ -2828,10 +2821,10 @@ bool CChainState::ActivateBestChainStep(
         // effect.
         LogPrint(BCLog::MEMPOOL, "Updating mempool due to reorganization or "
                                  "rules upgrade/downgrade\n");
-        disconnectpool.updateMempoolForReorg(config, true, g_mempool);
+        disconnectpool.updateMempoolForReorg(config, true, m_mempool);
     }
 
-    g_mempool.check(&CoinsTip());
+    m_mempool.check(&CoinsTip());
 
     // Callbacks/notifications for a new best chain.
     if (fInvalidFound) {
@@ -2918,9 +2911,10 @@ bool CChainState::ActivateBestChain(const Config &config,
         LimitValidationInterfaceQueue();
 
         {
+            LOCK(cs_main);
             // Lock transaction pool for at least as long as it takes for
             // connectTrace to be consumed
-            LOCK2(cs_main, ::g_mempool.cs);
+            LOCK(m_mempool.cs);
             CBlockIndex *starting_tip = m_chain.Tip();
             bool blocks_connected = false;
             do {
@@ -3127,7 +3121,7 @@ bool CChainState::UnwindBlock(const Config &config, BlockValidationState &state,
         // Lock for as long as disconnectpool is in scope to make sure
         // UpdateMempoolForReorg is called after DisconnectTip without unlocking
         // in between
-        LOCK(::g_mempool.cs);
+        LOCK(m_mempool.cs);
 
         if (!m_chain.Contains(pindex)) {
             break;
@@ -3150,7 +3144,7 @@ bool CChainState::UnwindBlock(const Config &config, BlockValidationState &state,
         // keeping the mempool up to date is probably futile anyway).
         disconnectpool.updateMempoolForReorg(
             config, /* fAddToMempool = */ (++disconnected <= 10) && ret,
-            ::g_mempool);
+            m_mempool);
 
         if (!ret) {
             return false;
@@ -4437,11 +4431,11 @@ uint64_t CalculateCurrentUsage() {
     return retval;
 }
 
-void ChainstateManager::PruneOneBlockFile(const int fileNumber) {
+void BlockManager::PruneOneBlockFile(const int fileNumber) {
     AssertLockHeld(cs_main);
     LOCK(cs_LastBlockFile);
 
-    for (const auto &entry : m_blockman.m_block_index) {
+    for (const auto &entry : m_block_index) {
         CBlockIndex *pindex = entry.second;
         if (pindex->nFile == fileNumber) {
             pindex->nStatus = pindex->nStatus.withData(false).withUndo(false);
@@ -4454,14 +4448,13 @@ void ChainstateManager::PruneOneBlockFile(const int fileNumber) {
             // to be downloaded again in order to consider its chain, at which
             // point it would be considered as a candidate for
             // m_blocks_unlinked or setBlockIndexCandidates.
-            auto range =
-                m_blockman.m_blocks_unlinked.equal_range(pindex->pprev);
+            auto range = m_blocks_unlinked.equal_range(pindex->pprev);
             while (range.first != range.second) {
                 std::multimap<CBlockIndex *, CBlockIndex *>::iterator _it =
                     range.first;
                 range.first++;
                 if (_it->second == pindex) {
-                    m_blockman.m_blocks_unlinked.erase(_it);
+                    m_blocks_unlinked.erase(_it);
                 }
             }
         }
@@ -4480,32 +4473,27 @@ void UnlinkPrunedFiles(const std::set<int> &setFilesToPrune) {
     }
 }
 
-/**
- * Calculate the block/rev files to delete based on height specified by user
- * with RPC command pruneblockchain
- */
-static void FindFilesToPruneManual(ChainstateManager &chainman,
-                                   std::set<int> &setFilesToPrune,
-                                   int nManualPruneHeight) {
+void BlockManager::FindFilesToPruneManual(std::set<int> &setFilesToPrune,
+                                          int nManualPruneHeight,
+                                          int chain_tip_height) {
     assert(fPruneMode && nManualPruneHeight > 0);
 
     LOCK2(cs_main, cs_LastBlockFile);
-    if (::ChainActive().Tip() == nullptr) {
+    if (chain_tip_height < 0) {
         return;
     }
 
     // last block to prune is the lesser of (user-specified height,
     // MIN_BLOCKS_TO_KEEP from the tip)
-    unsigned int nLastBlockWeCanPrune =
-        std::min((unsigned)nManualPruneHeight,
-                 ::ChainActive().Tip()->nHeight - MIN_BLOCKS_TO_KEEP);
+    unsigned int nLastBlockWeCanPrune = std::min(
+        (unsigned)nManualPruneHeight, chain_tip_height - MIN_BLOCKS_TO_KEEP);
     int count = 0;
     for (int fileNumber = 0; fileNumber < nLastBlockFile; fileNumber++) {
         if (vinfoBlockFile[fileNumber].nSize == 0 ||
             vinfoBlockFile[fileNumber].nHeightLast > nLastBlockWeCanPrune) {
             continue;
         }
-        chainman.PruneOneBlockFile(fileNumber);
+        PruneOneBlockFile(fileNumber);
         setFilesToPrune.insert(fileNumber);
         count++;
     }
@@ -4524,40 +4512,18 @@ void PruneBlockFilesManual(int nManualPruneHeight) {
     }
 }
 
-/**
- * Prune block and undo files (blk???.dat and undo???.dat) so that the disk
- * space used is less than a user-defined target. The user sets the target (in
- * MB) on the command line or in config file.  This will be run on startup and
- * whenever new space is allocated in a block or undo file, staying below the
- * target. Changing back to unpruned requires a reindex (which in this case
- * means the blockchain must be re-downloaded.)
- *
- * Pruning functions are called from FlushStateToDisk when the global
- * fCheckForPruning flag has been set. Block and undo files are deleted in
- * lock-step (when blk00003.dat is deleted, so is rev00003.dat.). Pruning cannot
- * take place until the longest chain is at least a certain length (100000 on
- * mainnet, 1000 on testnet, 1000 on regtest). Pruning will never delete a block
- * within a defined distance (currently 288) from the active chain's tip. The
- * block index is updated by unsetting HAVE_DATA and HAVE_UNDO for any blocks
- * that were stored in the deleted files. A db flag records the fact that at
- * least some block files have been pruned.
- *
- * @param[out]   setFilesToPrune   The set of file indices that can be unlinked
- * will be returned
- */
-static void FindFilesToPrune(ChainstateManager &chainman,
-                             std::set<int> &setFilesToPrune,
-                             uint64_t nPruneAfterHeight) {
+void BlockManager::FindFilesToPrune(std::set<int> &setFilesToPrune,
+                                    uint64_t nPruneAfterHeight,
+                                    int chain_tip_height, bool is_ibd) {
     LOCK2(cs_main, cs_LastBlockFile);
-    if (::ChainActive().Tip() == nullptr || nPruneTarget == 0) {
+    if (chain_tip_height < 0 || nPruneTarget == 0) {
         return;
     }
-    if (uint64_t(::ChainActive().Tip()->nHeight) <= nPruneAfterHeight) {
+    if (uint64_t(chain_tip_height) <= nPruneAfterHeight) {
         return;
     }
 
-    unsigned int nLastBlockWeCanPrune =
-        ::ChainActive().Tip()->nHeight - MIN_BLOCKS_TO_KEEP;
+    unsigned int nLastBlockWeCanPrune = chain_tip_height - MIN_BLOCKS_TO_KEEP;
     uint64_t nCurrentUsage = CalculateCurrentUsage();
     // We don't check to prune until after we've allocated new space for files,
     // so we should leave a buffer under our target to account for another
@@ -4572,7 +4538,7 @@ static void FindFilesToPrune(ChainstateManager &chainman,
         // values, we should not prune too rapidly.
         // So when pruning in IBD, increase the buffer a bit to avoid a re-prune
         // too soon.
-        if (::ChainstateActive().IsInitialBlockDownload()) {
+        if (is_ibd) {
             // Since this is only relevant during IBD, we use a fixed 10%
             nBuffer += nPruneTarget / 10;
         }
@@ -4596,7 +4562,7 @@ static void FindFilesToPrune(ChainstateManager &chainman,
                 continue;
             }
 
-            chainman.PruneOneBlockFile(fileNumber);
+            PruneOneBlockFile(fileNumber);
             // Queue up the files for removal
             setFilesToPrune.insert(fileNumber);
             nCurrentUsage -= nBytesToPrune;
@@ -4778,6 +4744,13 @@ static bool LoadBlockIndexDB(ChainstateManager &chainman,
     }
 
     return true;
+}
+
+void CChainState::LoadMempool(const Config &config, const ArgsManager &args) {
+    if (args.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
+        ::LoadMempool(config, m_mempool);
+    }
+    m_mempool.SetIsLoaded(!ShutdownRequested());
 }
 
 bool CChainState::LoadChainTip(const CChainParams &chainparams) {
@@ -5124,9 +5097,9 @@ void CChainState::UnloadBlockIndex() {
 // May NOT be used after any connections are up as much
 // of the peer-processing logic assumes a consistent
 // block index state
-void UnloadBlockIndex(CTxMemPool *mempool) {
+void UnloadBlockIndex(CTxMemPool *mempool, ChainstateManager &chainman) {
     LOCK(cs_main);
-    g_chainman.Unload();
+    chainman.Unload();
     pindexBestInvalid = nullptr;
     pindexBestParked = nullptr;
     pindexBestHeader = nullptr;
@@ -5928,20 +5901,6 @@ double GuessVerificationProgress(const ChainTxData &data,
     return std::min<double>(pindex->GetChainTxCount() / fTxTotal, 1.0);
 }
 
-class CMainCleanup {
-public:
-    CMainCleanup() {}
-    ~CMainCleanup() {
-        // block headers
-        for (const std::pair<const BlockHash, CBlockIndex *> &it :
-             g_chainman.BlockIndex()) {
-            delete it.second;
-        }
-        g_chainman.BlockIndex().clear();
-    }
-};
-static CMainCleanup instance_of_cmaincleanup;
-
 std::optional<BlockHash> ChainstateManager::SnapshotBlockhash() const {
     if (m_active_chainstate != nullptr) {
         // If a snapshot chainstate exists, it will always be our active.
@@ -5965,7 +5924,8 @@ std::vector<CChainState *> ChainstateManager::GetAll() {
 }
 
 CChainState &
-ChainstateManager::InitializeChainstate(const BlockHash &snapshot_blockhash) {
+ChainstateManager::InitializeChainstate(CTxMemPool &mempool,
+                                        const BlockHash &snapshot_blockhash) {
     bool is_snapshot = !snapshot_blockhash.IsNull();
     std::unique_ptr<CChainState> &to_modify =
         is_snapshot ? m_snapshot_chainstate : m_ibd_chainstate;
@@ -5973,8 +5933,7 @@ ChainstateManager::InitializeChainstate(const BlockHash &snapshot_blockhash) {
     if (to_modify) {
         throw std::logic_error("should not be overwriting a chainstate");
     }
-
-    to_modify.reset(new CChainState(m_blockman, snapshot_blockhash));
+    to_modify.reset(new CChainState(mempool, m_blockman, snapshot_blockhash));
 
     // Snapshot chainstates and initial IBD chaintates always become active.
     if (is_snapshot || (!is_snapshot && !m_active_chainstate)) {

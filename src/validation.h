@@ -43,6 +43,7 @@ class CBlockTreeDB;
 class CBlockUndo;
 class CChainParams;
 class CChain;
+class CChainState;
 class CConnman;
 class CInv;
 class ChainstateManager;
@@ -129,7 +130,6 @@ static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES = 550 * 1024 * 1024;
 enum class SynchronizationState { INIT_REINDEX, INIT_DOWNLOAD, POST_INIT };
 
 extern RecursiveMutex cs_main;
-extern CTxMemPool g_mempool;
 typedef std::unordered_map<BlockHash, CBlockIndex *, BlockHasher> BlockMap;
 extern Mutex g_best_block_mutex;
 extern std::condition_variable g_best_block_cv;
@@ -236,7 +236,7 @@ bool LoadGenesisBlock(const CChainParams &chainparams);
 /**
  * Unload database information.
  */
-void UnloadBlockIndex(CTxMemPool *mempool);
+void UnloadBlockIndex(CTxMemPool *mempool, ChainstateManager &chainman);
 
 /**
  * Run an instance of the script checking thread.
@@ -244,12 +244,25 @@ void UnloadBlockIndex(CTxMemPool *mempool);
 void ThreadScriptCheck(int worker_num);
 
 /**
- * Retrieve a transaction (from memory pool, or from disk, if possible).
+ * Return transaction from the block at block_index.
+ * If block_index is not provided, fall back to mempool.
+ * If mempool is not provided or the tx couldn't be found in mempool, fall back
+ * to g_txindex.
+ *
+ * @param[in]  block_index     The block to read from disk, or nullptr
+ * @param[in]  mempool         If block_index is not provided, look in the
+ *                             mempool, if provided
+ * @param[in]  txid            The txid
+ * @param[in]  consensusParams The params
+ * @param[out] hashBlock       The hash of block_index, if the tx was found via
+ *                             block_index
+ * @returns                    The tx if found, otherwise nullptr
  */
-bool GetTransaction(const TxId &txid, CTransactionRef &txOut,
-                    const Consensus::Params &params, BlockHash &hashBlock,
-                    const CBlockIndex *const blockIndex = nullptr);
-
+CTransactionRef GetTransaction(const CBlockIndex *const block_index,
+                               const CTxMemPool *const mempool,
+                               const TxId &txid,
+                               const Consensus::Params &consensusParams,
+                               BlockHash &hashBlock);
 /**
  * Find the best known block, and make it the tip of the block chain
  *
@@ -551,6 +564,41 @@ extern std::unique_ptr<CCoinsViewCache> pcoinsTip;
  * candidate tips is not maintained here.
  */
 class BlockManager {
+    friend CChainState;
+
+private:
+    /**
+     * Calculate the block/rev files to delete based on height specified
+     * by user with RPC command pruneblockchain
+     */
+    void FindFilesToPruneManual(std::set<int> &setFilesToPrune,
+                                int nManualPruneHeight, int chain_tip_height);
+
+    /**
+     * Prune block and undo files (blk???.dat and undo???.dat) so that the disk
+     * space used is less than a user-defined target. The user sets the target
+     * (in MB) on the command line or in config file.  This will be run on
+     * startup and whenever new space is allocated in a block or undo file,
+     * staying below the target. Changing back to unpruned requires a reindex
+     * (which in this case means the blockchain must be re-downloaded.)
+     *
+     * Pruning functions are called from FlushStateToDisk when the global
+     * fCheckForPruning flag has been set. Block and undo files are deleted in
+     * lock-step (when blk00003.dat is deleted, so is rev00003.dat.) Pruning
+     * cannot take place until the longest chain is at least a certain length
+     * (100000 on mainnet, 1000 on testnet, 1000 on regtest). Pruning will never
+     * delete a block within a defined distance (currently 288) from the active
+     * chain's tip. The block index is updated by unsetting HAVE_DATA and
+     * HAVE_UNDO for any blocks that were stored in the deleted files. A db flag
+     * records the fact that at least some block files have been pruned.
+     *
+     * @param[out]   setFilesToPrune   The set of file indices that can be
+     *                                 unlinked will be returned
+     */
+    void FindFilesToPrune(std::set<int> &setFilesToPrune,
+                          uint64_t nPruneAfterHeight, int chain_tip_height,
+                          bool is_ibd);
+
 public:
     BlockMap m_block_index GUARDED_BY(cs_main);
 
@@ -605,6 +653,10 @@ public:
     CBlockIndex *InsertBlockIndex(const BlockHash &hash)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+    //! Mark one block file as pruned (modify associated database entries)
+    void PruneOneBlockFile(const int fileNumber)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
     /**
      * If a block header hasn't already been seen, call CheckBlockHeader on it,
      * ensure that it doesn't descend from an invalid block, and then add it to
@@ -613,6 +665,8 @@ public:
     bool AcceptBlockHeader(const Config &config, const CBlockHeader &block,
                            BlockValidationState &state, CBlockIndex **ppindex)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    ~BlockManager() { Unload(); }
 };
 
 /**
@@ -708,6 +762,9 @@ private:
     //! easily as opposed to referencing a global.
     BlockManager &m_blockman;
 
+    //! mempool that is kept in sync with the chain
+    CTxMemPool &m_mempool;
+
     //! Manages the UTXO set, which is a reflection of the contents of
     //! `m_chain`.
     std::unique_ptr<CoinsViews> m_coins_views;
@@ -719,7 +776,7 @@ private:
     const CBlockIndex *m_finalizedBlockIndex GUARDED_BY(cs_main) = nullptr;
 
 public:
-    explicit CChainState(BlockManager &blockman,
+    explicit CChainState(CTxMemPool &mempool, BlockManager &blockman,
                          BlockHash from_snapshot_blockhash = BlockHash());
 
     /**
@@ -853,7 +910,7 @@ public:
     // Block disconnection on our pcoinsTip:
     bool DisconnectTip(const CChainParams &params, BlockValidationState &state,
                        DisconnectedBlockTransactions *disconnectpool)
-        EXCLUSIVE_LOCKS_REQUIRED(cs_main, ::g_mempool.cs);
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool.cs);
 
     // Manual block validity manipulation:
     bool PreciousBlock(const Config &config, BlockValidationState &state,
@@ -918,6 +975,9 @@ public:
      */
     void CheckBlockIndex(const Consensus::Params &consensusParams);
 
+    /** Load the persisted mempool from disk */
+    void LoadMempool(const Config &config, const ArgsManager &args);
+
     /** Update the chain tip based on database information, i.e. CoinsTip()'s
      * best block. */
     bool LoadChainTip(const CChainParams &chainparams)
@@ -941,13 +1001,13 @@ private:
                                CBlockIndex *pindexMostWork,
                                const std::shared_ptr<const CBlock> &pblock,
                                bool &fInvalidFound, ConnectTrace &connectTrace)
-        EXCLUSIVE_LOCKS_REQUIRED(cs_main, ::g_mempool.cs);
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool.cs);
     bool ConnectTip(const Config &config, BlockValidationState &state,
                     CBlockIndex *pindexNew,
                     const std::shared_ptr<const CBlock> &pblock,
                     ConnectTrace &connectTrace,
                     DisconnectedBlockTransactions &disconnectpool)
-        EXCLUSIVE_LOCKS_REQUIRED(cs_main, ::g_mempool.cs);
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool.cs);
     void InvalidBlockFound(CBlockIndex *pindex,
                            const BlockValidationState &state)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
@@ -1094,10 +1154,13 @@ public:
     //! Instantiate a new chainstate and assign it based upon whether it is
     //! from a snapshot.
     //!
+    //! @param[in] mempool              The mempool to pass to the chainstate
+    //                                  constructor
     //! @param[in] snapshot_blockhash   If given, signify that this chainstate
     //!                                 is based on a snapshot.
     CChainState &
-    InitializeChainstate(const BlockHash &snapshot_blockhash = BlockHash())
+    InitializeChainstate(CTxMemPool &mempool,
+                         const BlockHash &snapshot_blockhash = BlockHash())
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     //! Get all chainstates currently being used.
@@ -1180,10 +1243,6 @@ public:
                                 BlockValidationState &state,
                                 const CBlockIndex **ppindex = nullptr)
         LOCKS_EXCLUDED(cs_main);
-
-    //! Mark one block file as pruned (modify associated database entries)
-    void PruneOneBlockFile(const int fileNumber)
-        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     //! Load the block tree and coins database from disk, initializing state if
     //! we're running with -reindex

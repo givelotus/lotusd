@@ -101,9 +101,9 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         static NodeId id = 0;
 
         CAddress addr(ip(GetRandInt(0xffffffff)), NODE_NONE);
-        auto node =
-            new CNode(id++, ServiceFlags(NODE_NETWORK), 0, INVALID_SOCKET, addr,
-                      0, 0, 0, CAddress(), "", ConnectionType::OUTBOUND);
+        auto node = new CNode(id++, ServiceFlags(NODE_NETWORK), 0,
+                              INVALID_SOCKET, addr, 0, 0, 0, CAddress(), "",
+                              ConnectionType::OUTBOUND_FULL_RELAY);
         node->SetCommonVersion(PROTOCOL_VERSION);
         node->nServices = nServices;
         m_node.peerman->InitializeNode(config, node);
@@ -126,21 +126,32 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         return std::make_shared<Proof>(pb.build());
     }
 
+    bool addNode(NodeId nodeid, const ProofId &proofid) {
+        return m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.addNode(nodeid, proofid);
+        });
+    }
+
     bool addNode(NodeId nodeid) {
         auto proof = GetProof();
-        BOOST_CHECK(m_processor->addProof(proof));
-        return m_processor->addNode(nodeid, proof->getId());
+        return m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof) &&
+                   pm.addNode(nodeid, proof->getId());
+        });
     }
 
     std::array<CNode *, 8> ConnectNodes() {
         auto proof = GetProof();
-        BOOST_CHECK(m_processor->addProof(proof));
+        BOOST_CHECK(
+            m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+                return pm.registerProof(proof);
+            }));
         const ProofId &proofid = proof->getId();
 
         std::array<CNode *, 8> nodes;
         for (CNode *&n : nodes) {
             n = ConnectNode(NODE_AVALANCHE);
-            BOOST_CHECK(m_processor->addNode(n->GetId(), proofid));
+            BOOST_CHECK(addNode(n->GetId(), proofid));
         }
 
         return nodes;
@@ -739,12 +750,13 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
 BOOST_AUTO_TEST_CASE(poll_inflight_count) {
     // Create enough nodes so that we run into the inflight request limit.
     auto proof = GetProof();
-    BOOST_CHECK(m_processor->addProof(proof));
+    BOOST_CHECK(m_processor->withPeerManager(
+        [&](avalanche::PeerManager &pm) { return pm.registerProof(proof); }));
 
     std::array<CNode *, AVALANCHE_MAX_INFLIGHT_POLL + 1> nodes;
     for (auto &n : nodes) {
         n = ConnectNode(NODE_AVALANCHE);
-        BOOST_CHECK(m_processor->addNode(n->GetId(), proof->getId()));
+        BOOST_CHECK(addNode(n->GetId(), proof->getId()));
     }
 
     // Add a block to poll
@@ -762,7 +774,7 @@ BOOST_AUTO_TEST_CASE(poll_inflight_count) {
     for (int i = 0; i < AVALANCHE_MAX_INFLIGHT_POLL; i++) {
         NodeId nodeid = getSuitableNodeToQuery();
         BOOST_CHECK(node_round_map.find(nodeid) == node_round_map.end());
-        node_round_map[nodeid] = getRound();
+        node_round_map.insert(std::pair<NodeId, uint64_t>(nodeid, getRound()));
         auto invs = getInvsForNextPoll();
         BOOST_CHECK_EQUAL(invs.size(), 1);
         BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
@@ -963,42 +975,6 @@ BOOST_AUTO_TEST_CASE(destructor) {
     // Wait for the scheduler to stop.
     s.stop(true);
     schedulerThread.join();
-}
-
-BOOST_AUTO_TEST_CASE(proof_accessors) {
-    constexpr int numProofs = 10;
-
-    std::vector<std::shared_ptr<Proof>> proofs;
-    proofs.reserve(numProofs);
-    for (int i = 0; i < numProofs; i++) {
-        proofs.push_back(GetProof());
-    }
-
-    m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
-        for (int i = 0; i < numProofs; i++) {
-            BOOST_CHECK(pm.registerProof(proofs[i]));
-            // Fail to add an existing proof
-            BOOST_CHECK(!pm.registerProof(proofs[i]));
-
-            for (int added = 0; added <= i; added++) {
-                auto proof = pm.getProof(proofs[added]->getId());
-                BOOST_CHECK(proof != nullptr);
-
-                const ProofId &proofid = proof->getId();
-                BOOST_CHECK_EQUAL(proofid, proofs[added]->getId());
-            }
-        }
-    });
-
-    // No stake, copied from proof_tests.cpp
-    const std::string badProofHex(
-        "96527eae083f1f24625f049d9e54bb9a2102a93d98bf42ab90cfc0bf9e7c634ed76a7"
-        "3e95b02cacfd357b64e4fb6c92e92dd00");
-    bilingual_str error;
-    Proof badProof;
-    BOOST_CHECK(Proof::FromHex(badProof, badProofHex, error));
-    BOOST_CHECK(
-        !m_processor->addProof(std::make_shared<Proof>(std::move(badProof))));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

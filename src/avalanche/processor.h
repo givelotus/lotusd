@@ -249,12 +249,6 @@ class Processor {
     class NotificationsHandler;
     std::unique_ptr<interfaces::Handler> chainNotificationsHandler;
 
-    /**
-     * Flag indicating that the proof must be registered at first new block
-     * after IBD
-     */
-    bool mustRegisterProof = false;
-
     Processor(interfaces::Chain &chain, CConnman *connmanIn,
               NodePeerManager *nodePeerManagerIn,
               std::unique_ptr<PeerData> peerDataIn, CKey sessionKeyIn);
@@ -275,13 +269,10 @@ public:
     bool isAccepted(const CBlockIndex *pindex) const;
     int getConfidence(const CBlockIndex *pindex) const;
 
-    // TDOD: Refactor the API to remove the dependency on avalanche/protocol.h
+    // TODO: Refactor the API to remove the dependency on avalanche/protocol.h
     void sendResponse(CNode *pfrom, Response response) const;
     bool registerVotes(NodeId nodeid, const Response &response,
                        std::vector<BlockUpdate> &updates);
-
-    bool addNode(NodeId nodeid, const ProofId &proofid);
-    bool forNode(NodeId nodeid, std::function<bool(const Node &n)> func) const;
 
     template <typename Callable> auto withPeerManager(Callable &&func) const {
         LOCK(cs_peerManager);
@@ -291,10 +282,7 @@ public:
     CPubKey getSessionPubKey() const;
     bool sendHello(CNode *pfrom) const;
 
-    bool addProof(const std::shared_ptr<Proof> &proof);
-    std::shared_ptr<Proof> getProof(const ProofId &proofid) const;
     std::shared_ptr<Proof> getLocalProof() const;
-    std::shared_ptr<Proof> getOrphan(const ProofId &proofid) const;
 
     /*
      * Return whether the avalanche service flag should be set.
@@ -303,9 +291,6 @@ public:
 
     bool startEventLoop(CScheduler &scheduler);
     bool stopEventLoop();
-
-    void addUnbroadcastProof(const ProofId &proofid);
-    void removeUnbroadcastProof(const ProofId &proofid);
 
 private:
     void runEventLoop();

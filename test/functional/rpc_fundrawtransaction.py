@@ -517,7 +517,7 @@ class RawTransactionsTest(BitcoinTestFramework):
             ]
         )['address']
 
-        # Send 1.2 BCH to msig addr.
+        # Send 120 XPI to msig addr.
         self.nodes[0].sendtoaddress(mSigObj, 120)
         self.nodes[0].generate(1)
         self.sync_all()

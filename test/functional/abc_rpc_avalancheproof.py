@@ -6,11 +6,12 @@
 import base64
 from decimal import Decimal
 
-from test_framework.address import ADDRESS_BCHREG_UNSPENDABLE
+from test_framework.address import ADDRESS_ECREG_UNSPENDABLE
 from test_framework.avatools import (
     create_coinbase_stakes,
     create_stakes,
     get_proof_ids,
+    wait_for_proof,
 )
 from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import (
@@ -25,6 +26,7 @@ from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     append_config,
     assert_equal,
+    connect_nodes,
     wait_until,
     assert_raises_rpc_error,
 )
@@ -48,12 +50,17 @@ def add_interface_node(test_node) -> str:
 class AvalancheProofTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [['-enableavalanche=1', '-avacooldown=0'], ]
+        self.num_nodes = 2
+        self.extra_args = [['-enableavalanche=1', '-avacooldown=0'],
+                           ['-enableavalanche=1', '-avacooldown=0']]
         self.supports_cli = False
         self.rpc_timeout = 120
 
     def run_test(self):
+        # Turn off node 1 while node 0 mines blocks to generate stakes,
+        # so that we can later try starting node 1 with an orphan proof.
+        self.stop_node(1)
+
         node = self.nodes[0]
 
         addrkey0 = node.get_deterministic_priv_key()
@@ -101,49 +108,36 @@ class AvalancheProofTest(BitcoinTestFramework):
         assert_raises_rpc_error(-22, "Proof has invalid format",
                                 node.decodeavalancheproof, proof[:-2])
 
-        # Restart the node, making sure it is initially in IBD mode
-        minchainwork = int(node.getblockchaininfo()["chainwork"], 16) + 1
+        # Restart the node with this proof
         self.restart_node(0, self.extra_args[0] + [
             "-avaproof={}".format(proof),
             "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
-            "-minimumchainwork=0x{:x}".format(minchainwork),
         ])
 
-        self.log.info(
-            "The proof verification should be delayed until IBD is complete")
-        assert node.getblockchaininfo()["initialblockdownload"] is True
-        # Our proof cannot be verified during IBD, so we should have no peer
-        assert not node.getavalanchepeerinfo()
-        # Mining one more block should cause us to leave IBD
+        self.log.info("The proof is registered at first chaintip update")
+        assert_equal(len(node.getavalanchepeerinfo()), 0)
         node.generate(1)
-        # Our proof is now verified and our node is added as a peer
-        assert node.getblockchaininfo()["initialblockdownload"] is False
         wait_until(lambda: len(node.getavalanchepeerinfo()) == 1, timeout=5)
 
-        if self.is_wallet_compiled():
-            self.log.info(
-                "A proof using the maximum number of stakes is accepted...")
+        # This case will occur for users building proofs with a third party
+        # tool and then starting a new node that is not yet aware of the
+        # transactions used for stakes.
+        self.log.info("Start a node with an orphan proof")
 
-            new_blocks = node.generate(AVALANCHE_MAX_PROOF_STAKES // 10 + 1)
-            # confirm the coinbase UTXOs
-            node.generate(101)
-            too_many_stakes = create_stakes(
-                node, new_blocks, AVALANCHE_MAX_PROOF_STAKES + 1)
-            maximum_stakes = too_many_stakes[:-1]
-            good_proof = node.buildavalancheproof(
-                proof_sequence, proof_expiration,
-                proof_master, maximum_stakes)
-            peerid1 = add_interface_node(node)
-            assert node.addavalanchenode(peerid1, proof_master, good_proof)
+        self.start_node(1, self.extra_args[0] + [
+            "-avaproof={}".format(proof),
+            "-avamasterkey=cND2ZvtabDbJ1gucx9GWH6XT9kgTAqfb6cotPt5Q5CyxVDhid2EN",
+        ])
+        # Mine a block to trigger an attempt at registering the proof
+        self.nodes[1].generate(1)
+        wait_for_proof(self.nodes[1], f"{proofobj.proofid:0{64}x}",
+                       expect_orphan=True)
 
-            self.log.info(
-                "A proof using too many stakes should be rejected...")
-            too_many_utxos = node.buildavalancheproof(
-                proof_sequence, proof_expiration,
-                proof_master, too_many_stakes)
-            peerid2 = add_interface_node(node)
-            assert not node.addavalanchenode(
-                peerid2, proof_master, too_many_utxos)
+        self.log.info("Connect to an up-to-date node to unorphan the proof")
+        connect_nodes(self.nodes[1], node)
+        self.sync_all()
+        wait_for_proof(self.nodes[1], f"{proofobj.proofid:0{64}x}",
+                       expect_orphan=False)
 
         self.log.info("Generate delegations for the proof")
 
@@ -182,7 +176,7 @@ class AvalancheProofTest(BitcoinTestFramework):
 
         # Invalid delegation
         bad_dg = AvalancheDelegation()
-        assert_raises_rpc_error(-8, "The supplied delegation does not match the proof",
+        assert_raises_rpc_error(-8, "The delegation does not match the proof",
                                 node.delegateavalancheproof,
                                 limited_id_hex,
                                 bytes_to_wif(privkey.get_bytes()),
@@ -194,7 +188,7 @@ class AvalancheProofTest(BitcoinTestFramework):
         bad_dg.limited_proofid = proofobj.limited_proofid
         bad_dg.proof_master = proofobj.master
         bad_dg.levels = [AvalancheDelegationLevel()]
-        assert_raises_rpc_error(-8, "The supplied delegation is not valid",
+        assert_raises_rpc_error(-8, "The delegation is invalid",
                                 node.delegateavalancheproof,
                                 limited_id_hex,
                                 bytes_to_wif(privkey.get_bytes()),
@@ -203,7 +197,7 @@ class AvalancheProofTest(BitcoinTestFramework):
                                 )
 
         # Wrong privkey, match the proof but does not match the delegation
-        assert_raises_rpc_error(-8, "The supplied private key does not match the delegation",
+        assert_raises_rpc_error(-5, "The private key does not match the delegation",
                                 node.delegateavalancheproof,
                                 limited_id_hex,
                                 bytes_to_wif(privkey.get_bytes()),
@@ -264,6 +258,27 @@ class AvalancheProofTest(BitcoinTestFramework):
 
         self.log.info(
             "Check the verifyavalancheproof and sendavalancheproof RPCs")
+
+        if self.is_wallet_compiled():
+            self.log.info(
+                "Check a proof with the maximum number of UTXO is valid")
+            new_blocks = node.generate(AVALANCHE_MAX_PROOF_STAKES // 10 + 1)
+            # confirm the coinbase UTXOs
+            node.generate(101)
+            too_many_stakes = create_stakes(
+                node, new_blocks, AVALANCHE_MAX_PROOF_STAKES + 1)
+            maximum_stakes = too_many_stakes[:-1]
+
+            good_proof = node.buildavalancheproof(
+                proof_sequence, proof_expiration,
+                proof_master, maximum_stakes)
+
+            too_many_utxos = node.buildavalancheproof(
+                proof_sequence, proof_expiration,
+                proof_master, too_many_stakes)
+
+            assert node.verifyavalancheproof(good_proof)
+
         for rpc in [node.verifyavalancheproof, node.sendavalancheproof]:
             assert_raises_rpc_error(-22, "Proof must be an hexadecimal string",
                                     rpc, "f00")
@@ -314,7 +329,7 @@ class AvalancheProofTest(BitcoinTestFramework):
         # Orphan the proof by sending the stake
         raw_tx = node.createrawtransaction(
             [{"txid": stakes[-1]["txid"], "vout": 1}],
-            {ADDRESS_BCHREG_UNSPENDABLE: stakes[-1]
+            {ADDRESS_ECREG_UNSPENDABLE: stakes[-1]
                 ["amount"] - Decimal('0.01')}
         )
         signed_tx = node.signrawtransactionwithkey(raw_tx, [addrkey0.key])

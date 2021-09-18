@@ -179,13 +179,25 @@ const CashtabBase = (Wrapped: React.ComponentType<any>) => {
             if (walletProviderStatus) {
                 this.setState({ step: 'fresh' });
 
+                // Do not pass a token quantity to send, this is not yet supported in Cashtab
+                if (coinType === Ticker.tokenName) {
+                    return;
+                }
+
                 return window.postMessage(
                     {
                         type: 'FROM_PAGE',
                         text: 'CashTab',
                         txInfo: {
                             address: to,
-                            value: satoshis ? satoshis! / 1e8 : amount,
+                            value: satoshis
+                                ? parseFloat(
+                                      (
+                                          satoshis! *
+                                          10 ** (-1 * Ticker.coinDecimals)
+                                      ).toFixed(2),
+                                  )
+                                : amount,
                         },
                     },
                     '*',
@@ -301,7 +313,6 @@ const CashtabBase = (Wrapped: React.ComponentType<any>) => {
         };
 
         confirmCashTabProviderStatus = () => {
-            console.log(`confirmCashTabProviderStatus called`);
             const cashTabStatus = this.getCashTabProviderStatus();
             if (cashTabStatus) {
                 this.setState({ step: 'fresh' });

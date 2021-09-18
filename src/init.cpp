@@ -156,6 +156,8 @@ NODISCARD static bool CreatePidFile(const ArgsManager &args) {
 
 static std::unique_ptr<ECCVerifyHandle> globalVerifyHandle;
 
+static std::thread g_load_block;
+
 static boost::thread_group threadGroup;
 
 void Interrupt(NodeContext &node) {
@@ -193,7 +195,9 @@ void Shutdown(NodeContext &node) {
     /// be locked. Be sure that anything that writes files or flushes caches
     /// only does this if the respective module was initialized.
     util::ThreadRename("shutoff");
-    g_mempool.AddTransactionsUpdated(1);
+    if (node.mempool) {
+        node.mempool->AddTransactionsUpdated(1);
+    }
 
     StopHTTPRPC();
     StopREST();
@@ -238,9 +242,12 @@ void Shutdown(NodeContext &node) {
     StopTorControl();
 
     // After everything has been shut down, but before things get flushed, stop
-    // the CScheduler/checkqueue threadGroup
+    // the CScheduler/checkqueue, threadGroup and load block thread.
     if (node.scheduler) {
         node.scheduler->stop();
+    }
+    if (g_load_block.joinable()) {
+        g_load_block.join();
     }
     threadGroup.interrupt_all();
     threadGroup.join_all();
@@ -254,9 +261,9 @@ void Shutdown(NodeContext &node) {
     node.connman.reset();
     node.banman.reset();
 
-    if (::g_mempool.IsLoaded() &&
+    if (node.mempool && node.mempool->IsLoaded() &&
         node.args->GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
-        DumpMempool(::g_mempool);
+        DumpMempool(*node.mempool);
     }
 
     // FlushStateToDisk generates a ChainStateFlushed callback, which we should
@@ -315,7 +322,7 @@ void Shutdown(NodeContext &node) {
     GetMainSignals().UnregisterBackgroundSignalScheduler();
     globalVerifyHandle.reset();
     ECC_Stop();
-    node.mempool = nullptr;
+    node.mempool.reset();
     node.chainman = nullptr;
     node.scheduler.reset();
 
@@ -1241,6 +1248,10 @@ void SetupServerArgs(NodeContext &node) {
         "-enableavalanche",
         strprintf("Enable avalanche (default: %u)", AVALANCHE_DEFAULT_ENABLED),
         ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg("-enableavalanchepeerdiscovery",
+                   strprintf("Enable avalanche peer discovery (default: %u)",
+                             AVALANCHE_DEFAULT_PEER_DISCOVERY_ENABLED),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
     argsman.AddArg(
         "-avacooldown",
         strprintf("Mandatory cooldown between two avapoll (default: %u)",
@@ -1368,7 +1379,6 @@ static void CleanupBlockRevFiles() {
 static void ThreadImport(const Config &config, ChainstateManager &chainman,
                          std::vector<fs::path> vImportFiles,
                          const ArgsManager &args) {
-    util::ThreadRename("loadblk");
     ScheduleBatchPriority();
 
     {
@@ -1465,10 +1475,7 @@ static void ThreadImport(const Config &config, ChainstateManager &chainman,
             return;
         }
     } // End scope of CImportingNow
-    if (args.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
-        LoadMempool(config, ::g_mempool);
-    }
-    ::g_mempool.SetIsLoaded(!ShutdownRequested());
+    chainman.ActiveChainstate().LoadMempool(config, args);
 }
 
 /** Sanity checks
@@ -1873,16 +1880,6 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         }
     }
 
-    // Checkmempool and checkblockindex default to true in regtest mode
-    int ratio = std::min<int>(
-        std::max<int>(
-            args.GetArg("-checkmempool",
-                        chainparams.DefaultConsistencyChecks() ? 1 : 0),
-            0),
-        1000000);
-    if (ratio != 0) {
-        g_mempool.setSanityCheck(1.0 / ratio);
-    }
     fCheckBlockIndex = args.GetBoolArg("-checkblockindex",
                                        chainparams.DefaultConsistencyChecks());
     fCheckpointsEnabled =
@@ -2309,7 +2306,18 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     // connection manager, wallet, or RPC threads, which are all started after
     // this, may use it from the node context.
     assert(!node.mempool);
-    node.mempool = &::g_mempool;
+    node.mempool = std::make_unique<CTxMemPool>();
+    if (node.mempool) {
+        int ratio = std::min<int>(
+            std::max<int>(
+                args.GetArg("-checkmempool",
+                            chainparams.DefaultConsistencyChecks() ? 1 : 0),
+                0),
+            1000000);
+        if (ratio != 0) {
+            node.mempool->setSanityCheck(1.0 / ratio);
+        }
+    }
 
     assert(!node.chainman);
     node.chainman = &g_chainman;
@@ -2573,11 +2581,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             const int64_t load_block_index_start_time = GetTimeMillis();
             try {
                 LOCK(cs_main);
-                chainman.InitializeChainstate();
+                chainman.InitializeChainstate(*Assert(node.mempool));
                 chainman.m_total_coinstip_cache = nCoinCacheUsage;
                 chainman.m_total_coinsdb_cache = nCoinDBCache;
 
-                UnloadBlockIndex(node.mempool);
+                UnloadBlockIndex(node.mempool.get(), chainman);
 
                 // new CBlockTreeDB tries to delete the existing file, which
                 // fails if it's still open from the previous loop. Close it
@@ -2903,9 +2911,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         vImportFiles.push_back(strFile);
     }
 
-    threadGroup.create_thread([=, &config, &chainman, &args] {
-        ThreadImport(config, chainman, vImportFiles, args);
-    });
+    g_load_block =
+        std::thread(&TraceThread<std::function<void()>>, "loadblk",
+                    [=, &config, &chainman, &args] {
+                        ThreadImport(config, chainman, vImportFiles, args);
+                    });
 
     // Wait for genesis block to be processed
     {

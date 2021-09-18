@@ -103,7 +103,8 @@ class PSBTTest(BitcoinTestFramework):
         self.nodes[1].sendrawtransaction(
             self.nodes[1].finalizepsbt(walletprocesspsbt_out['psbt'])['hex'])
 
-        # feeRate of 0.1 BCH / KB produces a total fee slightly below -maxtxfee
+        # feeRate of 10.0000 XPI / KB produces a total fee slightly below
+        # -maxtxfee
         res = self.nodes[1].walletcreatefundedpsbt(
             [
                 {"txid": txid, "vout": p2sh_pos},

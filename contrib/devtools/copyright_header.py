@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2016 The Bitcoin Core developers
-# Copyright (c) 2017 The Bitcoin developers
+# Copyright (c) 2017-2019 The Bitcoin developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -20,6 +20,8 @@ EXCLUDE = [
     'src/qt/bitcoinstrings.cpp',
     'src/chainparamsseeds.h',
     # other external copyrights:
+    'src/reverse_iterator.h',
+    'src/test/fuzz/FuzzedDataProvider.h',
     'src/tinyformat.h',
     'src/bench/nanobench.h',
     'test/functional/test_framework/bignum.py',
@@ -37,7 +39,8 @@ EXCLUDE_DIRS = [
     "src/univalue/",
 ]
 
-INCLUDE = ['*.h', '*.cpp', '*.cc', '*.c', '*.py']
+INCLUDE = ['*.h', '*.cpp', '*.cc', '*.c', '*.mm', '*.py', '*.sh',
+           '*.bash-completion']
 INCLUDE_COMPILED = re.compile(
     '|'.join([fnmatch.translate(m) for m in INCLUDE]))
 
@@ -54,17 +57,25 @@ def applies_to_file(filename):
 ##########################################################################
 
 
-GIT_LS_CMD = 'git ls-files'
+GIT_LS_CMD = 'git ls-files --full-name'.split(' ')
+GIT_TOPLEVEL_CMD = 'git rev-parse --show-toplevel'.split(' ')
 
 
-def call_git_ls():
-    out = subprocess.check_output(GIT_LS_CMD.split(' '))
+def call_git_ls(base_directory):
+    out = subprocess.check_output([*GIT_LS_CMD, base_directory])
     return [f for f in out.decode("utf-8").split('\n') if f != '']
 
 
-def get_filenames_to_examine():
-    filenames = call_git_ls()
-    return sorted([filename for filename in filenames if
+def call_git_toplevel():
+    "Returns the absolute path to the project root"
+    return subprocess.check_output(GIT_TOPLEVEL_CMD).strip().decode("utf-8")
+
+
+def get_filenames_to_examine(base_directory):
+    "Returns an array of absolute paths to any project files in the base_directory that pass the include/exclude filters"
+    root = call_git_toplevel()
+    filenames = call_git_ls(base_directory)
+    return sorted([os.path.join(root, filename) for filename in filenames if
                    applies_to_file(filename)])
 
 ##########################################################################
@@ -93,26 +104,15 @@ def compile_copyright_regex(copyright_style, year_style, name):
 EXPECTED_HOLDER_NAMES = [
     r"Satoshi Nakamoto\n",
     r"The Bitcoin Core developers\n",
-    r"The Bitcoin Core developers \n",
-    r"Bitcoin Core Developers\n",
-    r"the Bitcoin Core developers\n",
     r"The Bitcoin developers\n",
-    r"The LevelDB Authors\. All rights reserved\.\n",
+    r"The Bitcoin ABC developers\n",
     r"BitPay Inc\.\n",
-    r"BitPay, Inc\.\n",
     r"University of Illinois at Urbana-Champaign\.\n",
-    r"MarcoFalke\n",
     r"Pieter Wuille\n",
-    r"Pieter Wuille +\*\n",
-    r"Pieter Wuille, Gregory Maxwell +\*\n",
-    r"Pieter Wuille, Andrew Poelstra +\*\n",
-    r"Andrew Poelstra +\*\n",
+    r"Pieter Wuille, Shammah Chancellor, Neil Booth",
     r"Wladimir J. van der Laan\n",
     r"Jeff Garzik\n",
-    r"Diederik Huys, Pieter Wuille +\*\n",
-    r"Thomas Daede, Cory Fields +\*\n",
     r"Jan-Klaas Kollhof\n",
-    r"Sam Rushing\n",
     r"ArtForz -- public domain half-a-node\n",
     r"Amaury SÉCHET\n",
     r"Intel Corporation\n",
@@ -162,7 +162,7 @@ def file_has_without_c_style_copyright_for_holder(contents, holder_name):
 
 
 def read_file(filename):
-    return open(os.path.abspath(filename), 'r', encoding="utf8").read()
+    return open(filename, 'r', encoding="utf8").read()
 
 
 def gather_file_info(filename):
@@ -282,12 +282,9 @@ def print_report(file_infos, verbose):
 
 
 def exec_report(base_directory, verbose):
-    original_cwd = os.getcwd()
-    os.chdir(base_directory)
-    filenames = get_filenames_to_examine()
+    filenames = get_filenames_to_examine(base_directory)
     file_infos = [gather_file_info(f) for f in filenames]
     print_report(file_infos, verbose)
-    os.chdir(original_cwd)
 
 ##########################################################################
 # report cmd
@@ -354,14 +351,14 @@ def get_most_recent_git_change_year(filename):
 
 
 def read_file_lines(filename):
-    f = open(os.path.abspath(filename), 'r', encoding="utf8")
+    f = open(filename, 'r', encoding="utf8")
     file_lines = f.readlines()
     f.close()
     return file_lines
 
 
 def write_file_lines(filename, file_lines):
-    f = open(os.path.abspath(filename), 'w', encoding="utf8")
+    f = open(filename, 'w', encoding="utf8")
     f.write(''.join(file_lines))
     f.close()
 
@@ -450,11 +447,8 @@ def update_updatable_copyright(filename):
 
 
 def exec_update_header_year(base_directory):
-    original_cwd = os.getcwd()
-    os.chdir(base_directory)
-    for filename in get_filenames_to_examine():
+    for filename in get_filenames_to_examine(base_directory):
         update_updatable_copyright(filename)
-    os.chdir(original_cwd)
 
 ##########################################################################
 # update cmd
@@ -526,15 +520,15 @@ def get_cpp_header_lines_to_insert(start_year, end_year):
     return reversed(get_header_lines(CPP_HEADER, start_year, end_year))
 
 
-PYTHON_HEADER = '''
+SCRIPT_HEADER = '''
 # Copyright (c) {} The Bitcoin developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 '''
 
 
-def get_python_header_lines_to_insert(start_year, end_year):
-    return reversed(get_header_lines(PYTHON_HEADER, start_year, end_year))
+def get_script_header_lines_to_insert(start_year, end_year):
+    return reversed(get_header_lines(SCRIPT_HEADER, start_year, end_year))
 
 ##########################################################################
 # query git for year of last change
@@ -567,8 +561,8 @@ def file_has_hashbang(file_lines):
     return file_lines[0][:2] == '#!'
 
 
-def insert_python_header(filename, file_lines, start_year, end_year):
-    header_lines = get_python_header_lines_to_insert(start_year, end_year)
+def insert_script_header(filename, file_lines, start_year, end_year):
+    header_lines = get_script_header_lines_to_insert(start_year, end_year)
     insert_idx = find_distribution_line_index(file_lines)
     if insert_idx is not None:
         file_lines.insert(insert_idx, list(header_lines)[-1])
@@ -583,6 +577,7 @@ def insert_python_header(filename, file_lines, start_year, end_year):
 
 
 def insert_cpp_header(filename, file_lines, start_year, end_year):
+    file_lines.insert(0, '\n')
     header_lines = get_cpp_header_lines_to_insert(start_year, end_year)
     insert_idx = find_distribution_line_index(file_lines)
     if insert_idx is not None:
@@ -599,8 +594,8 @@ def exec_insert_header(filename, style):
         sys.exit('*** {} already has a copyright by The Bitcoin developers'.format(
             filename))
     start_year, end_year = get_git_change_year_range(filename)
-    if style == 'python':
-        insert_python_header(filename, file_lines, start_year, end_year)
+    if style in ['python', 'shell']:
+        insert_script_header(filename, file_lines, start_year, end_year)
     else:
         insert_cpp_header(filename, file_lines, start_year, end_year)
 
@@ -643,11 +638,13 @@ def insert_cmd(argv):
     if not os.path.isfile(filename):
         sys.exit("*** bad filename: {}".format(filename))
     _, extension = os.path.splitext(filename)
-    if extension not in ['.h', '.cpp', '.cc', '.c', '.py']:
+    if extension not in ['.h', '.cpp', '.cc', '.c', '.py', '.sh']:
         sys.exit("*** cannot insert for file extension {}".format(extension))
 
     if extension == '.py':
         style = 'python'
+    elif extension == '.sh':
+        style = 'shell'
     else:
         style = 'cpp'
     exec_insert_header(filename, style)

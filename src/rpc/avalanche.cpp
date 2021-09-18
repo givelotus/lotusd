@@ -52,6 +52,45 @@ static CPubKey ParsePubKey(const UniValue &param) {
     return HexToPubKey(keyHex);
 }
 
+static bool registerProofIfNeeded(std::shared_ptr<avalanche::Proof> proof) {
+    return g_avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+        return pm.getProof(proof->getId()) ||
+               pm.registerProof(std::move(proof));
+    });
+}
+
+static void verifyDelegationOrThrow(avalanche::Delegation &dg,
+                                    const std::string &dgHex, CPubKey &auth) {
+    bilingual_str error;
+    if (!avalanche::Delegation::FromHex(dg, dgHex, error)) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, error.original);
+    }
+
+    avalanche::DelegationState state;
+    if (!dg.verify(state, auth)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "The delegation is invalid: " + state.ToString());
+    }
+}
+
+static void verifyProofOrThrow(const NodeContext &node, avalanche::Proof &proof,
+                               const std::string &proofHex) {
+    bilingual_str error;
+    if (!avalanche::Proof::FromHex(proof, proofHex, error)) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, error.original);
+    }
+
+    avalanche::ProofValidationState state;
+    {
+        LOCK(cs_main);
+        if (!proof.verify(state,
+                          node.chainman->ActiveChainstate().CoinsTip())) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "The proof is invalid: " + state.ToString());
+        }
+    }
+}
+
 static UniValue addavalanchenode(const Config &config,
                                  const JSONRPCRequest &request) {
     RPCHelpMan{
@@ -64,6 +103,8 @@ static UniValue addavalanchenode(const Config &config,
              "The public key of the node."},
             {"proof", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
              "Proof that the node is not a sybil."},
+            {"delegation", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
+             "The proof delegation the the node public key"},
         },
         RPCResult{RPCResult::Type::BOOL, "success",
                   "Whether the addition succeeded or not."},
@@ -83,23 +124,36 @@ static UniValue addavalanchenode(const Config &config,
     CPubKey key = ParsePubKey(request.params[1]);
 
     auto proof = std::make_shared<avalanche::Proof>();
-    bilingual_str error;
-    if (!avalanche::Proof::FromHex(*proof, request.params[2].get_str(),
-                                   error)) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, error.original);
-    }
-
-    if (key != proof->getMaster()) {
-        // TODO: we want to provide a proper delegation.
-        return false;
-    }
+    NodeContext &node = EnsureNodeContext(request.context);
+    verifyProofOrThrow(node, *proof, request.params[2].get_str());
 
     const avalanche::ProofId &proofid = proof->getId();
-    if (!g_avalanche->getProof(proofid) && !g_avalanche->addProof(proof)) {
-        return false;
+    if (key != proof->getMaster()) {
+        if (request.params.size() < 4 || request.params[3].isNull()) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                               "The public key does not match the proof");
+        }
+
+        avalanche::Delegation dg;
+        CPubKey auth;
+        verifyDelegationOrThrow(dg, request.params[3].get_str(), auth);
+
+        if (dg.getProofId() != proofid) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "The delegation does not match the proof");
+        }
+
+        if (key != auth) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                               "The public key does not match the delegation");
+        }
     }
 
-    NodeContext &node = EnsureNodeContext(request.context);
+    if (!registerProofIfNeeded(proof)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           "The proof has conflicting utxos");
+    }
+
     if (!node.connman->ForNode(nodeid, [&](CNode *pnode) {
             // FIXME This is not thread safe, and might cause issues if the
             // unlikely event the peer sends an avahello message at the same
@@ -111,15 +165,19 @@ static UniValue addavalanchenode(const Config &config,
             pnode->m_avalanche_state->pubkey = std::move(key);
             return true;
         })) {
-        return false;
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           strprintf("The node does not exist: %d", nodeid));
+        ;
     }
 
-    if (!g_avalanche->addNode(nodeid, proofid)) {
-        return false;
-    }
+    return g_avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+        if (!pm.addNode(nodeid, proofid)) {
+            return false;
+        }
 
-    g_avalanche->addUnbroadcastProof(proofid);
-    return true;
+        pm.addUnbroadcastProof(proofid);
+        return true;
+    });
 }
 
 static UniValue buildavalancheproof(const Config &config,
@@ -367,30 +425,18 @@ static UniValue delegateavalancheproof(const Config &config,
     std::unique_ptr<avalanche::DelegationBuilder> dgb;
     if (request.params.size() >= 4 && !request.params[3].isNull()) {
         avalanche::Delegation dg;
-        bilingual_str error;
-        if (!avalanche::Delegation::FromHex(dg, request.params[3].get_str(),
-                                            error)) {
-            throw JSONRPCError(RPC_DESERIALIZATION_ERROR, error.original);
-        }
+        CPubKey auth;
+        verifyDelegationOrThrow(dg, request.params[3].get_str(), auth);
 
         if (dg.getProofId() !=
             limitedProofId.computeProofId(dg.getProofMaster())) {
-            throw JSONRPCError(
-                RPC_INVALID_PARAMETER,
-                "The supplied delegation does not match the proof");
-        }
-
-        CPubKey auth;
-        avalanche::DelegationState dgState;
-        if (!dg.verify(dgState, auth)) {
             throw JSONRPCError(RPC_INVALID_PARAMETER,
-                               "The supplied delegation is not valid");
+                               "The delegation does not match the proof");
         }
 
         if (privkey.GetPubKey() != auth) {
-            throw JSONRPCError(
-                RPC_INVALID_PARAMETER,
-                "The supplied private key does not match the delegation");
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                               "The private key does not match the delegation");
         }
 
         dgb = std::make_unique<avalanche::DelegationBuilder>(dg);
@@ -505,11 +551,14 @@ static UniValue getrawavalancheproof(const Config &config,
         avalanche::ProofId::fromHex(request.params[0].get_str());
 
     bool isOrphan = false;
-    auto proof = g_avalanche->getProof(proofid);
-    if (!proof) {
-        proof = g_avalanche->getOrphan(proofid);
-        isOrphan = true;
-    }
+    auto proof = g_avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+        auto proof = pm.getProof(proofid);
+        if (!proof) {
+            proof = pm.getOrphan(proofid);
+            isOrphan = true;
+        }
+        return proof;
+    });
 
     if (!proof) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Proof not found");
@@ -523,24 +572,6 @@ static UniValue getrawavalancheproof(const Config &config,
     ret.pushKV("orphan", isOrphan);
 
     return ret;
-}
-
-static void verifyProofOrThrow(const NodeContext &node, avalanche::Proof &proof,
-                               const std::string &proofHex) {
-    bilingual_str error;
-    if (!avalanche::Proof::FromHex(proof, proofHex, error)) {
-        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, error.original);
-    }
-
-    avalanche::ProofValidationState state;
-    {
-        LOCK(cs_main);
-        if (!proof.verify(state,
-                          node.chainman->ActiveChainstate().CoinsTip())) {
-            throw JSONRPCError(RPC_INVALID_PARAMETER,
-                               "The proof is invalid: " + state.ToString());
-        }
-    }
 }
 
 static UniValue sendavalancheproof(const Config &config,
@@ -574,13 +605,15 @@ static UniValue sendavalancheproof(const Config &config,
     // verification has already been done, a failure likely indicates that there
     // already is a proof with conflicting utxos.
     const avalanche::ProofId &proofid = proof->getId();
-    if (!g_avalanche->getProof(proofid) && !g_avalanche->addProof(proof)) {
+    if (!registerProofIfNeeded(proof)) {
         throw JSONRPCError(
             RPC_INVALID_PARAMETER,
             "The proof has conflicting utxo with an existing proof");
     }
 
-    g_avalanche->addUnbroadcastProof(proofid);
+    g_avalanche->withPeerManager(
+        [&](avalanche::PeerManager &pm) { pm.addUnbroadcastProof(proofid); });
+
     RelayProof(proofid, *node.connman);
 
     return true;

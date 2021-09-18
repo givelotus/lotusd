@@ -134,28 +134,51 @@ struct CSerializedNetMsg {
  * connection. Aside from INBOUND, all types are initiated by us.
  */
 enum class ConnectionType {
-    /** Peer initiated connections. */
-    INBOUND,
     /**
-     * Full relay connections (blocks, addrs, txns) made automatically.
-     * Addresses selected from AddrMan.
+     * Inbound connections are those initiated by a peer. This is the only
+     * property we know at the time of connection, until P2P messages are
+     * exchanged.
      */
-    OUTBOUND,
+    INBOUND,
+
     /**
-     * Connections to addresses added via addnode or the connect command line
-     * argument.
+     * These are the default connections that we use to connect with the
+     * network. There is no restriction on what is relayed- by default we relay
+     * blocks, addresses & transactions. We automatically attempt to open
+     * MAX_OUTBOUND_FULL_RELAY_CONNECTIONS using addresses from our AddrMan.
+     */
+    OUTBOUND_FULL_RELAY,
+
+    /**
+     * We open manual connections to addresses that users explicitly inputted
+     * via the addnode RPC, or the -connect command line argument. Even if a
+     * manual connection is misbehaving, we do not automatically disconnect or
+     * add it to our discouragement filter.
      */
     MANUAL,
-    /** Short lived connections used to test address validity. */
-    FEELER,
+
     /**
-     * Only relay blocks to these automatic outbound connections.
-     * Addresses selected from AddrMan.
+     * Feeler connections are short lived connections used to increase the
+     * number of connectable addresses in our AddrMan. Approximately every
+     * FEELER_INTERVAL, we attempt to connect to a random address from the new
+     * table. If successful, we add it to the tried table.
+     */
+    FEELER,
+
+    /**
+     * We use block-relay-only connections to help prevent against partition
+     * attacks. By not relaying transactions or addresses, these connections
+     * are harder to detect by a third party, thus helping obfuscate the
+     * network topology. We automatically attempt to open
+     * MAX_BLOCK_RELAY_ONLY_CONNECTIONS using addresses from our AddrMan.
      */
     BLOCK_RELAY,
+
     /**
-     * Short lived connections used to solicit addrs when starting the node
-     * without a populated AddrMan.
+     * AddrFetch connections are short lived connections used to solicit
+     * addresses from peers. These are initiated to addresses submitted via the
+     * -seednode command line argument, or under certain conditions when the
+     * AddrMan is empty.
      */
     ADDR_FETCH,
 };
@@ -253,11 +276,9 @@ public:
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
-    void
-    OpenNetworkConnection(const CAddress &addrConnect, bool fCountFailure,
-                          CSemaphoreGrant *grantOutbound = nullptr,
-                          const char *strDest = nullptr,
-                          ConnectionType conn_type = ConnectionType::OUTBOUND);
+    void OpenNetworkConnection(const CAddress &addrConnect, bool fCountFailure,
+                               CSemaphoreGrant *grantOutbound,
+                               const char *strDest, ConnectionType conn_type);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode *pnode)> func);
@@ -653,6 +674,7 @@ struct CNodeStats {
     int64_t nLastSend;
     int64_t nLastRecv;
     int64_t nLastTXTime;
+    int64_t nLastProofTime;
     int64_t nLastBlockTime;
     int64_t nTimeConnected;
     int64_t nTimeOffset;
@@ -891,7 +913,7 @@ public:
 
     bool IsOutboundOrBlockRelayConn() const {
         switch (m_conn_type) {
-            case ConnectionType::OUTBOUND:
+            case ConnectionType::OUTBOUND_FULL_RELAY:
             case ConnectionType::BLOCK_RELAY:
                 return true;
             case ConnectionType::INBOUND:
@@ -899,13 +921,13 @@ public:
             case ConnectionType::ADDR_FETCH:
             case ConnectionType::FEELER:
                 return false;
-        }
+        } // no default case, so the compiler can warn about missing cases
 
         assert(false);
     }
 
     bool IsFullOutboundConn() const {
-        return m_conn_type == ConnectionType::OUTBOUND;
+        return m_conn_type == ConnectionType::OUTBOUND_FULL_RELAY;
     }
 
     bool IsManualConn() const { return m_conn_type == ConnectionType::MANUAL; }
@@ -924,17 +946,22 @@ public:
         return m_conn_type == ConnectionType::INBOUND;
     }
 
+    /* Whether we send addr messages over this connection */
+    bool RelayAddrsWithConn() const {
+        return m_conn_type != ConnectionType::BLOCK_RELAY;
+    }
+
     bool ExpectServicesFromConn() const {
         switch (m_conn_type) {
             case ConnectionType::INBOUND:
             case ConnectionType::MANUAL:
             case ConnectionType::FEELER:
                 return false;
-            case ConnectionType::OUTBOUND:
+            case ConnectionType::OUTBOUND_FULL_RELAY:
             case ConnectionType::BLOCK_RELAY:
             case ConnectionType::ADDR_FETCH:
                 return true;
-        }
+        } // no default case, so the compiler can warn about missing cases
 
         assert(false);
     }
@@ -954,8 +981,6 @@ public:
     std::chrono::microseconds m_next_addr_send GUARDED_BY(cs_sendProcessing){0};
     std::chrono::microseconds
         m_next_local_addr_send GUARDED_BY(cs_sendProcessing){0};
-
-    bool IsAddrRelayPeer() const { return m_addr_known != nullptr; }
 
     // List of block ids we still have to announce.
     // There is no final sorting before sending, as they are always sent
@@ -1039,6 +1064,14 @@ public:
      * in CConnman::AttemptToEvictConnection.
      */
     std::atomic<int64_t> nLastTXTime{0};
+
+    /**
+     * UNIX epoch time of the last proof received from this peer that we
+     * had not yet seen (e.g. not already received from another peer) and that
+     * was accepted into our proof pool. Used as an inbound peer eviction
+     * criterium in CConnman::AttemptToEvictConnection.
+     */
+    std::atomic<int64_t> nLastProofTime{0};
 
     // Ping time measurement:
     // The pong reply we're expecting, or 0 if no pong expected.

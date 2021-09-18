@@ -209,10 +209,9 @@ public:
     void updatedBlockTip() override {
         LOCK(m_processor->cs_peerManager);
 
-        if (m_processor->mustRegisterProof &&
-            !::ChainstateActive().IsInitialBlockDownload()) {
-            m_processor->peerManager->getPeerId(m_processor->peerData->proof);
-            m_processor->mustRegisterProof = false;
+        if (m_processor->peerData && m_processor->peerData->proof) {
+            m_processor->peerManager->registerProof(
+                m_processor->peerData->proof);
         }
 
         m_processor->peerManager->updatedBlockTip();
@@ -225,10 +224,7 @@ Processor::Processor(interfaces::Chain &chain, CConnman *connmanIn,
     : connman(connmanIn), nodePeerManager(nodePeerManagerIn),
       queryTimeoutDuration(AVALANCHE_DEFAULT_QUERY_TIMEOUT), round(0),
       peerManager(std::make_unique<PeerManager>()),
-      peerData(std::move(peerDataIn)), sessionKey(std::move(sessionKeyIn)),
-      // Schedule proof registration at the first new block after IBD.
-      // FIXME: get rid of this flag
-      mustRegisterProof(!!peerData) {
+      peerData(std::move(peerDataIn)), sessionKey(std::move(sessionKeyIn)) {
     // Make sure we get notified of chain state changes.
     chainNotificationsHandler =
         chain.handleNotifications(std::make_shared<NotificationsHandler>(this));
@@ -518,17 +514,6 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     return true;
 }
 
-bool Processor::addNode(NodeId nodeid, const ProofId &proofid) {
-    LOCK(cs_peerManager);
-    return peerManager->addNode(nodeid, proofid);
-}
-
-bool Processor::forNode(NodeId nodeid,
-                        std::function<bool(const Node &n)> func) const {
-    LOCK(cs_peerManager);
-    return peerManager->forNode(nodeid, std::move(func));
-}
-
 CPubKey Processor::getSessionPubKey() const {
     return sessionKey.GetPubKey();
 }
@@ -569,23 +554,8 @@ bool Processor::sendHello(CNode *pfrom) const {
     return true;
 }
 
-bool Processor::addProof(const std::shared_ptr<Proof> &proof) {
-    LOCK(cs_peerManager);
-    return peerManager->registerProof(proof);
-}
-
-std::shared_ptr<Proof> Processor::getProof(const ProofId &proofid) const {
-    LOCK(cs_peerManager);
-    return peerManager->getProof(proofid);
-}
-
 std::shared_ptr<Proof> Processor::getLocalProof() const {
     return peerData ? peerData->proof : nullptr;
-}
-
-std::shared_ptr<Proof> Processor::getOrphan(const ProofId &proofid) const {
-    LOCK(cs_peerManager);
-    return peerManager->getOrphan(proofid);
 }
 
 bool Processor::startEventLoop(CScheduler &scheduler) {
@@ -751,16 +721,6 @@ void Processor::runEventLoop() {
         // Get next suitable node to try again
         nodeid = getSuitableNodeToQuery();
     } while (nodeid != NO_NODE);
-}
-
-void Processor::addUnbroadcastProof(const ProofId &proofid) {
-    LOCK(cs_peerManager);
-    peerManager->addUnbroadcastProof(proofid);
-}
-
-void Processor::removeUnbroadcastProof(const ProofId &proofid) {
-    LOCK(cs_peerManager);
-    peerManager->removeUnbroadcastProof(proofid);
 }
 
 } // namespace avalanche

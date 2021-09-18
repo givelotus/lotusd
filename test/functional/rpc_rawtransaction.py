@@ -58,6 +58,10 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 3
         self.extra_args = [["-txindex"], ["-txindex"], ["-txindex"]]
+        # whitelist all peers to speed up tx relay / mempool sync
+        for args in self.extra_args:
+            args.append("-whitelist=noban@127.0.0.1")
+
         self.supports_cli = False
 
     def skip_test_if_missing_module(self):
@@ -357,7 +361,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         # use balance deltas instead of absolute values
         bal = self.nodes[2].getbalance()
 
-        # send 1.2 BCH to msig adr
+        # send 120 XPI to msig adr
         txId = self.nodes[0].sendtoaddress(mSigObj, 120)
         self.sync_all()
         self.nodes[0].generate(1)
@@ -608,7 +612,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         rawTx = self.nodes[2].createrawtransaction(inputs, outputs)
         rawTxSigned = self.nodes[2].signrawtransactionwithwallet(rawTx)
         assert_equal(rawTxSigned['complete'], True)
-        # Fee 10,000 satoshis, ~200 b transaction, fee rate should land around 50 sat/byte = 0.00050000 BCH/kB
+        # Fee 10,000 satoshis, ~200 b transaction, fee rate should land around 50 sat/byte = .05 XPI/kB
         # Thus, testmempoolaccept should reject
         testres = self.nodes[2].testmempoolaccept(
             [rawTxSigned['hex']], 0.00050000)[0]
@@ -640,7 +644,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         rawTx = self.nodes[2].createrawtransaction(inputs, outputs)
         rawTxSigned = self.nodes[2].signrawtransactionwithwallet(rawTx)
         assert_equal(rawTxSigned['complete'], True)
-        # Fee 2,000,000 satoshis, ~100 b transaction, fee rate should land around 20,000 sat/byte = 0.20000000 BCH/kB
+        # Fee 2,000,000 satoshis, ~100 b transaction, fee rate should land around 20,000 sat/byte = 20.0000 XPI/kB
         # Thus, testmempoolaccept should reject
         testres = self.nodes[2].testmempoolaccept([rawTxSigned['hex']])[0]
         assert_equal(testres['allowed'], False)

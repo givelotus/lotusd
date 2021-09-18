@@ -48,10 +48,10 @@ def assert_fee_amount(fee, tx_size, fee_per_kB, wiggleroom=2):
     target_fee = round(tx_size * fee_per_kB / 1000, 8)
     if fee < (tx_size - wiggleroom) * fee_per_kB / 1000:
         raise AssertionError(
-            "Fee of {} BCH too low! (Should be {} BCH)".format(str(fee), str(target_fee)))
+            "Fee of {} XPI too low! (Should be {} XPI)".format(str(fee), str(target_fee)))
     if fee > (tx_size + wiggleroom) * fee_per_kB / 1000:
         raise AssertionError(
-            "Fee of {} BCH too high! (Should be {} BCH)".format(str(fee), str(target_fee)))
+            "Fee of {} XPI too high! (Should be {} XPI)".format(str(fee), str(target_fee)))
 
 
 def assert_equal(thing1, thing2, *args):
