@@ -384,7 +384,9 @@ export default function useBCH() {
         // Do not classify any utxos that include token information as nonSlpUtxos
         const nonSlpUtxos = hydratedUtxos.filter(
             utxo =>
-                utxo.isValid === false && utxo.value !== 546 && !utxo.tokenName,
+                utxo.isValid === false &&
+                utxo.value !== currency.etokenSats &&
+                !utxo.tokenName,
         );
         // To be included in slpUtxos, the utxo must
         // have utxo.isValid = true
@@ -534,7 +536,7 @@ export default function useBCH() {
 
                 if (
                     originalAmount
-                        .minus(new BigNumber(currency.dustSats))
+                        .minus(new BigNumber(currency.etokenSats))
                         .minus(new BigNumber(txFee))
                         .gte(0)
                 ) {
@@ -544,7 +546,7 @@ export default function useBCH() {
 
             // amount to send back to the remainder address.
             const remainder = originalAmount
-                .minus(new BigNumber(currency.dustSats))
+                .minus(new BigNumber(currency.etokenSats))
                 .minus(new BigNumber(txFee));
 
             if (remainder.lt(0)) {
@@ -561,10 +563,10 @@ export default function useBCH() {
             transactionBuilder.addOutput(script, 0);
 
             // add output w/ address and amount to send
-            transactionBuilder.addOutput(CREATION_ADDR, currency.dustSats);
+            transactionBuilder.addOutput(CREATION_ADDR, currency.etokenSats);
 
             // Send change to own address
-            if (remainder.gte(new BigNumber(currency.dustSats))) {
+            if (remainder.gte(new BigNumber(currency.etokenSats))) {
                 transactionBuilder.addOutput(
                     CREATION_ADDR,
                     parseInt(remainder),
@@ -720,7 +722,7 @@ export default function useBCH() {
         // Send dust transaction representing tokens being sent.
         transactionBuilder.addOutput(
             BCH.SLP.Address.toLegacyAddress(tokenReceiverAddress),
-            546,
+            currency.etokenSats,
         );
 
         // Return any token change back to the sender.
@@ -730,7 +732,7 @@ export default function useBCH() {
                 BCH.SLP.Address.toLegacyAddress(
                     tokenUtxosBeingSpent[0].address,
                 ),
-                546,
+                currency.etokenSats,
             );
         }
 
@@ -744,7 +746,7 @@ export default function useBCH() {
         );
 
         // amount to send back to the sending address. It's the original amount - 1 sat/byte for tx size
-        const remainder = originalAmount - txFee - 546 * 2;
+        const remainder = originalAmount - txFee - currency.etokenSats * 2;
         if (remainder < 1) {
             throw new Error('Selected UTXO does not have enough satoshis');
         }
@@ -819,11 +821,7 @@ export default function useBCH() {
         destinationAddress,
         sendAmount,
         feeInSatsPerByte,
-        callbackTxId,
-        encodedOpReturn,
     ) => {
-        // Note: callbackTxId is a callback function that accepts a txid as its only parameter
-
         try {
             if (!sendAmount) {
                 return null;
@@ -871,9 +869,7 @@ export default function useBCH() {
                 transactionBuilder.addInput(txid, vout);
 
                 inputUtxos.push(utxo);
-                txFee = encodedOpReturn
-                    ? calcFee(BCH, inputUtxos, 3, feeInSatsPerByte)
-                    : calcFee(BCH, inputUtxos, 2, feeInSatsPerByte);
+                txFee = calcFee(BCH, inputUtxos, 2, feeInSatsPerByte);
 
                 if (originalAmount.minus(satoshisToSend).minus(txFee).gte(0)) {
                     break;
@@ -905,10 +901,6 @@ export default function useBCH() {
                 const error = new Error(`Insufficient funds`);
                 error.code = SEND_BCH_ERRORS.INSUFFICIENT_FUNDS;
                 throw error;
-            }
-
-            if (encodedOpReturn) {
-                transactionBuilder.addOutput(encodedOpReturn, 0);
             }
 
             // add output w/ address and amount to send
@@ -948,10 +940,6 @@ export default function useBCH() {
                 console.log(`${currency.ticker} txid`, txidStr[0]);
             }
             let link;
-
-            if (callbackTxId) {
-                callbackTxId(txidStr);
-            }
             if (process.env.REACT_APP_NETWORK === `mainnet`) {
                 link = `${currency.blockExplorerUrl}/tx/${txidStr}`;
             } else {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { WalletContext } from '@utils/context';
-import { Form, notification, message, Spin, Modal, Alert } from 'antd';
-import { CashLoader, CashLoadingIcon } from '@components/Common/CustomIcons';
+import { Form, notification, message, Modal, Alert } from 'antd';
+import { CashLoader } from '@components/Common/CustomIcons';
 import { Row, Col } from 'antd';
 import Paragraph from 'antd/lib/typography/Paragraph';
 import PrimaryButton, {
@@ -22,35 +22,26 @@ import {
 } from '@components/Common/Ticker.js';
 import { Event } from '@utils/GoogleAnalytics';
 import { fiatToCrypto, shouldRejectAmountInput } from '@utils/validation';
-import { formatBalance } from '@utils/cashMethods';
+import { BalanceHeader } from '@components/Common/BalanceHeader';
+import { BalanceHeaderFiat } from '@components/Common/BalanceHeaderFiat';
 import {
-    BalanceHeader,
-    BalanceHeaderFiat,
     ZeroBalanceHeader,
     ConvertAmount,
     AlertMsg,
 } from '@components/Common/Atoms';
+import { getWalletState } from '@utils/cashMethods';
 
 // Note jestBCH is only used for unit tests; BCHJS must be mocked for jest
-const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
+const SendBCH = ({ jestBCH, passLoadingStatus }) => {
     // use balance parameters from wallet.state object and not legacy balances parameter from walletState, if user has migrated wallet
     // this handles edge case of user with old wallet who has not opened latest Cashtab version yet
 
     // If the wallet object from ContextValue has a `state key`, then check which keys are in the wallet object
     // Else set it as blank
     const ContextValue = React.useContext(WalletContext);
-    const { wallet, fiatPrice, slpBalancesAndUtxos, apiError } = ContextValue;
-    let balances;
-    const paramsInWalletState = wallet.state ? Object.keys(wallet.state) : [];
-    // If wallet.state includes balances and parsedTxHistory params, use these
-    // These are saved in indexedDb in the latest version of the app, hence accessible more quickly
-    if (paramsInWalletState.includes('balances')) {
-        balances = wallet.state.balances;
-    } else {
-        // If balances and parsedTxHistory are not in the wallet.state object, load them from Context
-        // This is how the app used to work
-        balances = ContextValue.balances;
-    }
+    const { wallet, fiatPrice, apiError, cashtabSettings } = ContextValue;
+    const walletState = getWalletState(wallet);
+    const { balances, slpBalancesAndUtxos } = walletState;
 
     // Get device window width
     // If this is less than 769, the page will open with QR scanner open
@@ -61,9 +52,8 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
     const [formData, setFormData] = useState({
         dirty: true,
         value: '',
-        address: filledAddress || '',
+        address: '',
     });
-    const [loading, setLoading] = useState(false);
     const [queryStringText, setQueryStringText] = useState(null);
     const [sendBchAddressError, setSendBchAddressError] = useState(false);
     const [sendBchAmountError, setSendBchAmountError] = useState(false);
@@ -96,7 +86,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
     // If the balance has changed, unlock the UI
     // This is redundant, if backend has refreshed in 1.75s timeout below, UI will already be unlocked
     useEffect(() => {
-        setLoading(false);
+        passLoadingStatus(false);
     }, [balances.totalBalance]);
 
     useEffect(() => {
@@ -154,7 +144,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
         // are sending BCHA or USD
         Event('Send.js', 'Send', selectedCurrency);
 
-        setLoading(true);
+        passLoadingStatus(true);
         const { address, value } = formData;
 
         // Get the param-free address
@@ -177,7 +167,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
             // set loading to false and set address validation to false
             // Now that the no-prefix case is handled, this happens when user tries to send
             // BCHA to an SLPA address
-            setLoading(false);
+            passLoadingStatus(false);
             setSendBchAddressError(
                 `Destination is not a valid ${currency.ticker} address`,
             );
@@ -187,7 +177,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
         // Calculate the amount in BCH
         let bchValue = value;
 
-        if (selectedCurrency === 'USD') {
+        if (selectedCurrency !== 'XEC') {
             bchValue = fiatToCrypto(value, fiatPrice);
         }
 
@@ -196,10 +186,9 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
                 BCH,
                 wallet,
                 slpBalancesAndUtxos.nonSlpUtxos,
-                filledAddress || cleanAddress,
+                cleanAddress,
                 bchValue,
                 currency.defaultFee,
-                callbackTxId,
             );
 
             notification.success({
@@ -216,7 +205,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
             });
         } catch (e) {
             // Set loading to false here as well, as balance may not change depending on where error occured in try loop
-            setLoading(false);
+            passLoadingStatus(false);
             let message;
 
             if (!e.error && !e.message) {
@@ -366,9 +355,18 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
     let fiatPriceString = '';
     if (fiatPrice !== null && !isNaN(formData.value)) {
         if (selectedCurrency === currency.ticker) {
-            fiatPriceString = `$ ${(fiatPrice * Number(formData.value)).toFixed(
-                2,
-            )} USD`;
+            fiatPriceString = `${
+                cashtabSettings
+                    ? `${
+                          currency.fiatCurrencies[cashtabSettings.fiatCurrency]
+                              .symbol
+                      } `
+                    : '$ '
+            } ${(fiatPrice * Number(formData.value)).toFixed(2)} ${
+                cashtabSettings && cashtabSettings.fiatCurrency
+                    ? cashtabSettings.fiatCurrency.toUpperCase()
+                    : 'USD'
+            }`;
         } else {
             fiatPriceString = `${
                 formData.value ? fiatToCrypto(formData.value, fiatPrice) : '0'
@@ -376,7 +374,7 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
         }
     }
 
-    const priceApiError = fiatPrice === null && selectedCurrency === 'USD';
+    const priceApiError = fiatPrice === null && selectedCurrency !== 'XEC';
 
     return (
         <>
@@ -399,142 +397,149 @@ const SendBCH = ({ jestBCH, filledAddress, callbackTxId }) => {
                 </ZeroBalanceHeader>
             ) : (
                 <>
-                    <BalanceHeader>
-                        {formatBalance(balances.totalBalance)} {currency.ticker}
-                    </BalanceHeader>
+                    <BalanceHeader
+                        balance={balances.totalBalance}
+                        ticker={currency.ticker}
+                    />
                     {fiatPrice !== null && (
-                        <BalanceHeaderFiat>
-                            ${(balances.totalBalance * fiatPrice).toFixed(2)}{' '}
-                            USD
-                        </BalanceHeaderFiat>
+                        <BalanceHeaderFiat
+                            balance={balances.totalBalance}
+                            settings={cashtabSettings}
+                            fiatPrice={fiatPrice}
+                        />
                     )}
                 </>
             )}
 
             <Row type="flex">
                 <Col span={24}>
-                    <Spin spinning={loading} indicator={CashLoadingIcon}>
-                        <Form
+                    <Form
+                        style={{
+                            width: 'auto',
+                        }}
+                    >
+                        <FormItemWithQRCodeAddon
+                            loadWithCameraOpen={scannerSupported}
+                            validateStatus={sendBchAddressError ? 'error' : ''}
+                            help={
+                                sendBchAddressError ? sendBchAddressError : ''
+                            }
+                            onScan={result =>
+                                handleAddressChange({
+                                    target: {
+                                        name: 'address',
+                                        value: result,
+                                    },
+                                })
+                            }
+                            inputProps={{
+                                placeholder: `${currency.ticker} Address`,
+                                name: 'address',
+                                onChange: e => handleAddressChange(e),
+                                required: true,
+                                value: formData.address,
+                            }}
+                        ></FormItemWithQRCodeAddon>
+                        <SendBchInput
+                            activeFiatCode={
+                                cashtabSettings && cashtabSettings.fiatCurrency
+                                    ? cashtabSettings.fiatCurrency.toUpperCase()
+                                    : 'USD'
+                            }
+                            validateStatus={sendBchAmountError ? 'error' : ''}
+                            help={sendBchAmountError ? sendBchAmountError : ''}
+                            onMax={onMax}
+                            inputProps={{
+                                name: 'value',
+                                dollar: selectedCurrency === 'USD' ? 1 : 0,
+                                placeholder: 'Amount',
+                                onChange: e => handleBchAmountChange(e),
+                                required: true,
+                                value: formData.value,
+                            }}
+                            selectProps={{
+                                value: selectedCurrency,
+                                disabled: queryStringText !== null,
+                                onChange: e => handleSelectedCurrencyChange(e),
+                            }}
+                        ></SendBchInput>
+                        {priceApiError && (
+                            <AlertMsg>
+                                Error fetching fiat price. Setting send by{' '}
+                                {currency.fiatCurrencies[
+                                    cashtabSettings.fiatCurrency
+                                ].slug.toUpperCase()}{' '}
+                                disabled
+                            </AlertMsg>
+                        )}
+                        <ConvertAmount>
+                            {fiatPriceString !== '' && '='} {fiatPriceString}
+                        </ConvertAmount>
+                        <div
                             style={{
-                                width: 'auto',
+                                paddingTop: '12px',
                             }}
                         >
-                            <FormItemWithQRCodeAddon
-                                loadWithCameraOpen={scannerSupported}
-                                disabled={Boolean(filledAddress)}
-                                validateStatus={
-                                    sendBchAddressError ? 'error' : ''
-                                }
-                                help={
-                                    sendBchAddressError
-                                        ? sendBchAddressError
-                                        : ''
-                                }
-                                onScan={result =>
-                                    handleAddressChange({
-                                        target: {
-                                            name: 'address',
-                                            value: result,
-                                        },
-                                    })
-                                }
-                                inputProps={{
-                                    disabled: Boolean(filledAddress),
-                                    placeholder: `${currency.ticker} Address`,
-                                    name: 'address',
-                                    onChange: e => handleAddressChange(e),
-                                    required: true,
-                                    value: filledAddress || formData.address,
-                                }}
-                            ></FormItemWithQRCodeAddon>
-                            <SendBchInput
-                                validateStatus={
-                                    sendBchAmountError ? 'error' : ''
-                                }
-                                help={
-                                    sendBchAmountError ? sendBchAmountError : ''
-                                }
-                                onMax={onMax}
-                                inputProps={{
-                                    name: 'value',
-                                    dollar: selectedCurrency === 'USD' ? 1 : 0,
-                                    placeholder: 'Amount',
-                                    onChange: e => handleBchAmountChange(e),
-                                    required: true,
-                                    value: formData.value,
-                                }}
-                                selectProps={{
-                                    value: selectedCurrency,
-                                    disabled: queryStringText !== null,
-                                    onChange: e =>
-                                        handleSelectedCurrencyChange(e),
-                                }}
-                            ></SendBchInput>
-                            {priceApiError && (
-                                <AlertMsg>
-                                    Error fetching fiat price. Setting send by
-                                    USD disabled
-                                </AlertMsg>
-                            )}
-                            <ConvertAmount>
-                                {fiatPriceString !== '' && '='}{' '}
-                                {fiatPriceString}
-                            </ConvertAmount>
-                            <div
-                                style={{
-                                    paddingTop: '12px',
-                                }}
-                            >
-                                {!balances.totalBalance ||
-                                apiError ||
-                                sendBchAmountError ||
-                                sendBchAddressError ? (
-                                    <SecondaryButton>Send</SecondaryButton>
-                                ) : (
-                                    <>
-                                        {txInfoFromUrl ? (
-                                            <PrimaryButton
-                                                onClick={() => showModal()}
-                                            >
-                                                Send
-                                            </PrimaryButton>
-                                        ) : (
-                                            <PrimaryButton
-                                                onClick={() => submit()}
-                                            >
-                                                Send
-                                            </PrimaryButton>
-                                        )}
-                                    </>
-                                )}
-                            </div>
-                            {queryStringText && (
-                                <Alert
-                                    message={`You are sending a transaction to an address including query parameters "${queryStringText}." Only the "amount" parameter, in units of ${currency.ticker} satoshis, is currently supported.`}
-                                    type="warning"
-                                />
-                            )}
-                            {apiError && (
+                            {!balances.totalBalance ||
+                            apiError ||
+                            sendBchAmountError ||
+                            sendBchAddressError ? (
+                                <SecondaryButton>Send</SecondaryButton>
+                            ) : (
                                 <>
-                                    <CashLoader />
-                                    <p
-                                        style={{
-                                            color: 'red',
-                                        }}
-                                    >
-                                        <b>
-                                            An error occured on our end.
-                                            Reconnecting...
-                                        </b>
-                                    </p>
+                                    {txInfoFromUrl ? (
+                                        <PrimaryButton
+                                            onClick={() => showModal()}
+                                        >
+                                            Send
+                                        </PrimaryButton>
+                                    ) : (
+                                        <PrimaryButton onClick={() => submit()}>
+                                            Send
+                                        </PrimaryButton>
+                                    )}
                                 </>
                             )}
-                        </Form>
-                    </Spin>
+                        </div>
+                        {queryStringText && (
+                            <Alert
+                                message={`You are sending a transaction to an address including query parameters "${queryStringText}." Only the "amount" parameter, in units of ${currency.ticker} satoshis, is currently supported.`}
+                                type="warning"
+                            />
+                        )}
+                        {apiError && (
+                            <>
+                                <CashLoader />
+                                <p
+                                    style={{
+                                        color: 'red',
+                                    }}
+                                >
+                                    <b>
+                                        An error occured on our end.
+                                        Reconnecting...
+                                    </b>
+                                </p>
+                            </>
+                        )}
+                    </Form>
                 </Col>
             </Row>
         </>
     );
+};
+
+/*
+passLoadingStatus must receive a default prop that is a function
+in order to pass the rendering unit test in Send.test.js
+
+status => {console.log(status)} is an arbitrary stub function
+*/
+
+SendBCH.defaultProps = {
+    passLoadingStatus: status => {
+        console.log(status);
+    },
 };
 
 export default SendBCH;

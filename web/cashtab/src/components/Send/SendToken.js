@@ -4,7 +4,6 @@ import {
     Form,
     notification,
     message,
-    Spin,
     Row,
     Col,
     Alert,
@@ -14,13 +13,13 @@ import Paragraph from 'antd/lib/typography/Paragraph';
 import PrimaryButton, {
     SecondaryButton,
 } from '@components/Common/PrimaryButton';
-import { CashLoader, CashLoadingIcon } from '@components/Common/CustomIcons';
+import { CashLoader } from '@components/Common/CustomIcons';
 import {
     FormItemWithMaxAddon,
     FormItemWithQRCodeAddon,
 } from '@components/Common/EnhancedInputs';
 import useBCH from '@hooks/useBCH';
-import { BalanceHeader } from '@components/Common/Atoms';
+import { BalanceHeader } from '@components/Common/BalanceHeader';
 import { Redirect } from 'react-router-dom';
 import useWindowDimensions from '@hooks/useWindowDimensions';
 import { isMobile, isIOS, isSafari } from 'react-device-detect';
@@ -34,24 +33,15 @@ import {
 } from '@components/Common/Ticker.js';
 import { Event } from '@utils/GoogleAnalytics';
 import {
-    formatBalance,
-    isValidStoredWallet,
+    getWalletState,
     convertEtokenToSimpleledger,
 } from '@utils/cashMethods';
 
-const SendToken = ({ tokenId, jestBCH }) => {
-    const { wallet, tokens, slpBalancesAndUtxos, apiError } = React.useContext(
-        WalletContext,
-    );
-    // If this wallet has migrated to latest storage structure, get token info from there
-    // If not, use the tokens object (unless it's undefined, in which case use an empty array)
-    const liveTokenState =
-        isValidStoredWallet(wallet) && wallet.state.tokens
-            ? wallet.state.tokens
-            : tokens
-            ? tokens
-            : [];
-    const token = liveTokenState.find(token => token.tokenId === tokenId);
+const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
+    const { wallet, apiError } = React.useContext(WalletContext);
+    const walletState = getWalletState(wallet);
+    const { tokens, slpBalancesAndUtxos } = walletState;
+    const token = tokens.find(token => token.tokenId === tokenId);
 
     const [tokenStats, setTokenStats] = useState(null);
     const [queryStringText, setQueryStringText] = useState(null);
@@ -68,7 +58,6 @@ const SendToken = ({ tokenId, jestBCH }) => {
         value: '',
         address: '',
     });
-    const [loading, setLoading] = useState(false);
 
     const { getBCH, getRestUrl, sendToken, getTokenStats } = useBCH();
 
@@ -107,7 +96,7 @@ const SendToken = ({ tokenId, jestBCH }) => {
         // SLPA token IDs
         Event('SendToken.js', 'Send', tokenId);
 
-        setLoading(true);
+        passLoadingStatus(true);
         const { address, value } = formData;
 
         // Clear params from address
@@ -136,7 +125,7 @@ const SendToken = ({ tokenId, jestBCH }) => {
                 duration: 5,
             });
         } catch (e) {
-            setLoading(false);
+            passLoadingStatus(false);
             let message;
 
             if (!e.error && !e.message) {
@@ -199,8 +188,8 @@ const SendToken = ({ tokenId, jestBCH }) => {
 
         let error = false;
         let addressString = value;
-        // parse address
-        const addressInfo = parseAddress(BCH, addressString);
+
+        const addressInfo = parseAddress(BCH, addressString, true);
         /*
         Model
 
@@ -221,7 +210,7 @@ const SendToken = ({ tokenId, jestBCH }) => {
 
         // Is this valid address?
         if (!isValid) {
-            error = 'Address is not valid';
+            error = 'Address is not a valid etoken: address';
             // If valid address but token format
         } else if (!isValidTokenPrefix(address)) {
             error = `Cashtab only supports sending to ${currency.tokenPrefixes[0]} prefixed addresses`;
@@ -257,7 +246,7 @@ const SendToken = ({ tokenId, jestBCH }) => {
         // If the balance has changed, unlock the UI
         // This is redundant, if backend has refreshed in 1.75s timeout below, UI will already be unlocked
 
-        setLoading(false);
+        passLoadingStatus(false);
     }, [token]);
 
     return (
@@ -266,202 +255,205 @@ const SendToken = ({ tokenId, jestBCH }) => {
 
             {token && (
                 <>
-                    <BalanceHeader>
-                        {formatBalance(token.balance)} {token.info.tokenTicker}
-                    </BalanceHeader>
+                    <BalanceHeader
+                        balance={token.balance}
+                        ticker={token.info.tokenTicker}
+                    />
 
                     <Row type="flex">
                         <Col span={24}>
-                            <Spin
+                            <Form
                                 style={{
-                                    color: 'red',
+                                    width: 'auto',
                                 }}
-                                spinning={loading}
-                                indicator={CashLoadingIcon}
                             >
-                                <Form
+                                <FormItemWithQRCodeAddon
+                                    loadWithCameraOpen={scannerSupported}
+                                    validateStatus={
+                                        sendTokenAddressError ? 'error' : ''
+                                    }
+                                    help={
+                                        sendTokenAddressError
+                                            ? sendTokenAddressError
+                                            : ''
+                                    }
+                                    onScan={result =>
+                                        handleTokenAddressChange({
+                                            target: {
+                                                name: 'address',
+                                                value: result,
+                                            },
+                                        })
+                                    }
+                                    inputProps={{
+                                        placeholder: `${currency.tokenTicker} Address`,
+                                        name: 'address',
+                                        onChange: e =>
+                                            handleTokenAddressChange(e),
+                                        required: true,
+                                        value: formData.address,
+                                    }}
+                                />
+                                <FormItemWithMaxAddon
+                                    validateStatus={
+                                        sendTokenAmountError ? 'error' : ''
+                                    }
+                                    help={
+                                        sendTokenAmountError
+                                            ? sendTokenAmountError
+                                            : ''
+                                    }
+                                    onMax={onMax}
+                                    inputProps={{
+                                        name: 'value',
+                                        step: 1 / 10 ** token.info.decimals,
+                                        placeholder: 'Amount',
+                                        prefix:
+                                            currency.tokenIconsUrl !== '' ? (
+                                                <Img
+                                                    src={`${currency.tokenIconsUrl}/${tokenId}.png`}
+                                                    width={16}
+                                                    height={16}
+                                                    unloader={
+                                                        <img
+                                                            alt={`identicon of tokenId ${tokenId} `}
+                                                            heigh="16"
+                                                            width="16"
+                                                            style={{
+                                                                borderRadius:
+                                                                    '50%',
+                                                            }}
+                                                            key={`identicon-${tokenId}`}
+                                                            src={makeBlockie(
+                                                                tokenId,
+                                                            )}
+                                                        />
+                                                    }
+                                                />
+                                            ) : (
+                                                <img
+                                                    alt={`identicon of tokenId ${tokenId} `}
+                                                    heigh="16"
+                                                    width="16"
+                                                    style={{
+                                                        borderRadius: '50%',
+                                                    }}
+                                                    key={`identicon-${tokenId}`}
+                                                    src={makeBlockie(tokenId)}
+                                                />
+                                            ),
+                                        suffix: token.info.tokenTicker,
+                                        onChange: e => handleSlpAmountChange(e),
+                                        required: true,
+                                        value: formData.value,
+                                    }}
+                                />
+                                <div
                                     style={{
-                                        width: 'auto',
+                                        paddingTop: '12px',
                                     }}
                                 >
-                                    <FormItemWithQRCodeAddon
-                                        loadWithCameraOpen={scannerSupported}
-                                        validateStatus={
-                                            sendTokenAddressError ? 'error' : ''
-                                        }
-                                        help={
-                                            sendTokenAddressError
-                                                ? sendTokenAddressError
-                                                : ''
-                                        }
-                                        onScan={result =>
-                                            handleTokenAddressChange({
-                                                target: {
-                                                    name: 'address',
-                                                    value: result,
-                                                },
-                                            })
-                                        }
-                                        inputProps={{
-                                            placeholder: `${currency.tokenTicker} Address`,
-                                            name: 'address',
-                                            onChange: e =>
-                                                handleTokenAddressChange(e),
-                                            required: true,
-                                            value: formData.address,
-                                        }}
-                                    />
-                                    <FormItemWithMaxAddon
-                                        validateStatus={
-                                            sendTokenAmountError ? 'error' : ''
-                                        }
-                                        help={
-                                            sendTokenAmountError
-                                                ? sendTokenAmountError
-                                                : ''
-                                        }
-                                        onMax={onMax}
-                                        inputProps={{
-                                            name: 'value',
-                                            step: 1 / 10 ** token.info.decimals,
-                                            placeholder: 'Amount',
-                                            prefix:
-                                                currency.tokenIconsUrl !==
-                                                '' ? (
-                                                    <Img
-                                                        src={`${currency.tokenIconsUrl}/${tokenId}.png`}
-                                                        width={16}
-                                                        height={16}
-                                                        unloader={
-                                                            <img
-                                                                alt={`identicon of tokenId ${tokenId} `}
-                                                                heigh="16"
-                                                                width="16"
-                                                                style={{
-                                                                    borderRadius:
-                                                                        '50%',
-                                                                }}
-                                                                key={`identicon-${tokenId}`}
-                                                                src={makeBlockie(
-                                                                    tokenId,
-                                                                )}
-                                                            />
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <img
-                                                        alt={`identicon of tokenId ${tokenId} `}
-                                                        heigh="16"
-                                                        width="16"
-                                                        style={{
-                                                            borderRadius: '50%',
-                                                        }}
-                                                        key={`identicon-${tokenId}`}
-                                                        src={makeBlockie(
-                                                            tokenId,
-                                                        )}
-                                                    />
-                                                ),
-                                            suffix: token.info.tokenTicker,
-                                            onChange: e =>
-                                                handleSlpAmountChange(e),
-                                            required: true,
-                                            value: formData.value,
-                                        }}
-                                    />
-                                    <div
-                                        style={{
-                                            paddingTop: '12px',
-                                        }}
-                                    >
-                                        {apiError ||
-                                        sendTokenAmountError ||
-                                        sendTokenAddressError ? (
-                                            <>
-                                                <SecondaryButton>
-                                                    Send {token.info.tokenName}
-                                                </SecondaryButton>
-                                                {apiError && <CashLoader />}
-                                            </>
-                                        ) : (
-                                            <PrimaryButton
-                                                onClick={() => submit()}
-                                            >
+                                    {apiError ||
+                                    sendTokenAmountError ||
+                                    sendTokenAddressError ? (
+                                        <>
+                                            <SecondaryButton>
                                                 Send {token.info.tokenName}
-                                            </PrimaryButton>
-                                        )}
-                                    </div>
+                                            </SecondaryButton>
+                                            {apiError && <CashLoader />}
+                                        </>
+                                    ) : (
+                                        <PrimaryButton onClick={() => submit()}>
+                                            Send {token.info.tokenName}
+                                        </PrimaryButton>
+                                    )}
+                                </div>
 
-                                    {queryStringText && (
-                                        <Alert
-                                            message={`You are sending a transaction to an address including query parameters "${queryStringText}." Token transactions do not support query parameters and they will be ignored.`}
-                                            type="warning"
-                                        />
-                                    )}
-                                    {apiError && (
-                                        <p
-                                            style={{
-                                                color: 'red',
-                                            }}
-                                        >
-                                            <b>
-                                                An error occured on our end.
-                                                Reconnecting...
-                                            </b>
-                                        </p>
-                                    )}
-                                </Form>
-                                {tokenStats !== null && (
-                                    <Descriptions
-                                        column={1}
-                                        bordered
-                                        title={`Token info for "${token.info.tokenName}"`}
-                                    >
-                                        <Descriptions.Item label="Decimals">
-                                            {token.info.decimals}
-                                        </Descriptions.Item>
-                                        <Descriptions.Item label="Token ID">
-                                            {token.tokenId}
-                                        </Descriptions.Item>
-                                        {tokenStats && (
-                                            <>
-                                                <Descriptions.Item label="Document URI">
-                                                    {tokenStats.documentUri}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Genesis Date">
-                                                    {new Date(
-                                                        tokenStats.timestampUnix *
-                                                            1000,
-                                                    ).toLocaleDateString()}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Fixed Supply?">
-                                                    {tokenStats.containsBaton
-                                                        ? 'No'
-                                                        : 'Yes'}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Initial Quantity">
-                                                    {tokenStats.initialTokenQty.toLocaleString()}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Total Burned">
-                                                    {tokenStats.totalBurned.toLocaleString()}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Total Minted">
-                                                    {tokenStats.totalMinted.toLocaleString()}
-                                                </Descriptions.Item>
-                                                <Descriptions.Item label="Circulating Supply">
-                                                    {tokenStats.circulatingSupply.toLocaleString()}
-                                                </Descriptions.Item>
-                                            </>
-                                        )}
-                                    </Descriptions>
+                                {queryStringText && (
+                                    <Alert
+                                        message={`You are sending a transaction to an address including query parameters "${queryStringText}." Token transactions do not support query parameters and they will be ignored.`}
+                                        type="warning"
+                                    />
                                 )}
-                            </Spin>
+                                {apiError && (
+                                    <p
+                                        style={{
+                                            color: 'red',
+                                        }}
+                                    >
+                                        <b>
+                                            An error occured on our end.
+                                            Reconnecting...
+                                        </b>
+                                    </p>
+                                )}
+                            </Form>
+                            {tokenStats !== null && (
+                                <Descriptions
+                                    column={1}
+                                    bordered
+                                    title={`Token info for "${token.info.tokenName}"`}
+                                >
+                                    <Descriptions.Item label="Decimals">
+                                        {token.info.decimals}
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="Token ID">
+                                        {token.tokenId}
+                                    </Descriptions.Item>
+                                    {tokenStats && (
+                                        <>
+                                            <Descriptions.Item label="Document URI">
+                                                {tokenStats.documentUri}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Genesis Date">
+                                                {tokenStats.timestampUnix !==
+                                                null
+                                                    ? new Date(
+                                                          tokenStats.timestampUnix *
+                                                              1000,
+                                                      ).toLocaleDateString()
+                                                    : 'Just now (Genesis tx confirming)'}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Fixed Supply?">
+                                                {tokenStats.containsBaton
+                                                    ? 'No'
+                                                    : 'Yes'}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Initial Quantity">
+                                                {tokenStats.initialTokenQty.toLocaleString()}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Total Burned">
+                                                {tokenStats.totalBurned.toLocaleString()}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Total Minted">
+                                                {tokenStats.totalMinted.toLocaleString()}
+                                            </Descriptions.Item>
+                                            <Descriptions.Item label="Circulating Supply">
+                                                {tokenStats.circulatingSupply.toLocaleString()}
+                                            </Descriptions.Item>
+                                        </>
+                                    )}
+                                </Descriptions>
+                            )}
                         </Col>
                     </Row>
                 </>
             )}
         </>
     );
+};
+
+/*
+passLoadingStatus must receive a default prop that is a function
+in order to pass the rendering unit test in SendToken.test.js
+
+status => {console.log(status)} is an arbitrary stub function
+*/
+
+SendToken.defaultProps = {
+    passLoadingStatus: status => {
+        console.log(status);
+    },
 };
 
 export default SendToken;

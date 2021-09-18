@@ -141,7 +141,7 @@ const TxWrapper = styled.div`
     }
 `;
 
-const Tx = ({ data, fiatPrice }) => {
+const Tx = ({ data, fiatPrice, fiatCurrency }) => {
     const txDate =
         typeof data.blocktime === 'undefined'
             ? new Date().toLocaleDateString()
@@ -267,40 +267,52 @@ const Tx = ({ data, fiatPrice }) => {
                                 -{' '}
                                 {formatBalance(
                                     fromLegacyDecimals(data.amountSent),
-                                )}
+                                )}{' '}
                                 {currency.ticker}
                                 <br />
-                                {fiatPrice !== null &&
-                                    !isNaN(data.amountSent) && (
-                                        <TxFiatPrice>
-                                            - $
-                                            {(
-                                                fromLegacyDecimals(
-                                                    data.amountSent,
-                                                ) * fiatPrice
-                                            ).toFixed(2)}{' '}
-                                            USD
-                                        </TxFiatPrice>
-                                    )}
+                                {fiatPrice !== null && !isNaN(data.amountSent) && (
+                                    <TxFiatPrice>
+                                        -{' '}
+                                        {
+                                            currency.fiatCurrencies[
+                                                fiatCurrency
+                                            ].symbol
+                                        }
+                                        {(
+                                            fromLegacyDecimals(
+                                                data.amountSent,
+                                            ) * fiatPrice
+                                        ).toFixed(2)}{' '}
+                                        {currency.fiatCurrencies.fiatCurrency}
+                                    </TxFiatPrice>
+                                )}
                             </>
                         ) : (
                             <>
                                 +{' '}
                                 {formatBalance(
                                     fromLegacyDecimals(data.amountReceived),
-                                )}
+                                )}{' '}
                                 {currency.ticker}
                                 <br />
                                 {fiatPrice !== null &&
                                     !isNaN(data.amountReceived) && (
                                         <TxFiatPrice>
-                                            + $
+                                            +{' '}
+                                            {
+                                                currency.fiatCurrencies[
+                                                    fiatCurrency
+                                                ].symbol
+                                            }
                                             {(
                                                 fromLegacyDecimals(
                                                     data.amountReceived,
                                                 ) * fiatPrice
                                             ).toFixed(2)}{' '}
-                                            USD
+                                            {
+                                                currency.fiatCurrencies
+                                                    .fiatCurrency
+                                            }
                                         </TxFiatPrice>
                                     )}
                             </>

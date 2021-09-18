@@ -22,8 +22,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <ios>
 #include <memory>
+#include <numeric>
 #include <string>
 
 class CAddrManSerializationMock : public CAddrMan {
@@ -781,6 +783,8 @@ GetRandomNodeEvictionCandidates(const int n_candidates,
             static_cast<int64_t>(random_context.randrange(100)),
             /* nLastBlockTime */
             static_cast<int64_t>(random_context.randrange(100)),
+            /* nLastProofTime */
+            static_cast<int64_t>(random_context.randrange(100)),
             /* nLastTXTime */
             static_cast<int64_t>(random_context.randrange(100)),
             /* fRelevantServices */ random_context.randbool(),
@@ -789,6 +793,7 @@ GetRandomNodeEvictionCandidates(const int n_candidates,
             /* nKeyedNetGroup */ random_context.randrange(100),
             /* prefer_evict */ random_context.randbool(),
             /* m_is_local */ random_context.randbool(),
+            /* availabilityScore */ double(random_context.randrange(-1)),
         });
     }
     return candidates;
@@ -862,6 +867,15 @@ BOOST_AUTO_TEST_CASE(node_eviction_test) {
                 },
                 {0, 1, 2, 3}, random_context));
 
+            // Four nodes that most recently sent us novel proofs accepted
+            // into our proof pool should be protected from eviction.
+            BOOST_CHECK(!IsEvicted(
+                number_of_nodes,
+                [number_of_nodes](NodeEvictionCandidate &candidate) {
+                    candidate.nLastProofTime = number_of_nodes - candidate.id;
+                },
+                {0, 1, 2, 3}, random_context));
+
             // Up to eight non-tx-relay peers that most recently sent us novel
             // blocks should be protected from eviction.
             BOOST_CHECK(!IsEvicted(
@@ -905,28 +919,43 @@ BOOST_AUTO_TEST_CASE(node_eviction_test) {
                     candidate.nMinPingUsecTime = candidate.id; // 8 protected
                     candidate.nLastTXTime =
                         number_of_nodes - candidate.id; // 4 protected
+                    candidate.nLastProofTime =
+                        number_of_nodes - candidate.id; // 4 protected
                     candidate.nLastBlockTime =
                         number_of_nodes - candidate.id; // 4 protected
                 },
-                {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                 10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
+                {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
                 random_context));
 
-            // An eviction is expected given >= 29 random eviction candidates.
+            // 128 peers with the highest availability score should be protected
+            // from eviction.
+            std::vector<NodeId> protectedNodes(128);
+            std::iota(protectedNodes.begin(), protectedNodes.end(), 0);
+            BOOST_CHECK(!IsEvicted(
+                number_of_nodes,
+                [number_of_nodes](NodeEvictionCandidate &candidate) {
+                    candidate.availabilityScore =
+                        double(number_of_nodes - candidate.id);
+                },
+                protectedNodes, random_context));
+
+            // An eviction is expected given >= 161 random eviction candidates.
             // The eviction logic protects at most four peers by net group,
-            // eight by lowest ping time, four by last time of novel tx, up to
-            // eight non-tx-relay peers by last novel block time, and four more
-            // peers by last novel block time.
-            if (number_of_nodes >= 29) {
+            // eight by lowest ping time, four by last time of novel tx, four by
+            // last time of novel proof, up to eight non-tx-relay peers by last
+            // novel block time, four by last novel block time, and 128 more by
+            // avalanche availability score.
+            if (number_of_nodes >= 161) {
                 BOOST_CHECK(SelectNodeToEvict(GetRandomNodeEvictionCandidates(
                     number_of_nodes, random_context)));
             }
 
-            // No eviction is expected given <= 20 random eviction candidates.
+            // No eviction is expected given <= 24 random eviction candidates.
             // The eviction logic protects at least four peers by net group,
-            // eight by lowest ping time, four by last time of novel tx and four
-            // peers by last novel block time.
-            if (number_of_nodes <= 20) {
+            // eight by lowest ping time, four by last time of novel tx, four by
+            // last time of novel proof, four peers by last novel block time.
+            if (number_of_nodes <= 24) {
                 BOOST_CHECK(!SelectNodeToEvict(GetRandomNodeEvictionCandidates(
                     number_of_nodes, random_context)));
             }
@@ -942,6 +971,65 @@ BOOST_AUTO_TEST_CASE(node_eviction_test) {
             // youngest member. [...]"
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(avalanche_statistics) {
+    const uint32_t step = AVALANCHE_STATISTICS_REFRESH_PERIOD.count();
+    const uint32_t tau = AVALANCHE_STATISTICS_TIME_CONSTANT.count();
+
+    CNode::AvalancheState avastats;
+
+    double previousScore = avastats.getAvailabilityScore();
+    BOOST_CHECK_SMALL(previousScore, 1e-6);
+
+    // Check the statistics follow an exponential response for 1 to 10 tau
+    for (size_t i = 1; i <= 10; i++) {
+        for (uint32_t j = 0; j < tau; j += step) {
+            avastats.invsPolled(1);
+            // Always respond to everything correctly
+            avastats.invsVoted(1);
+
+            avastats.updateAvailabilityScore();
+
+            // Expect a monotonic rise
+            double currentScore = avastats.getAvailabilityScore();
+            BOOST_CHECK_GE(currentScore, previousScore);
+            previousScore = currentScore;
+        }
+
+        // We expect (1 - e^-i) after i * tau. The tolerance is expressed
+        // as a percentage, and we add a (large) 0.1% margin to account for
+        // floating point errors.
+        BOOST_CHECK_CLOSE(previousScore, -1 * std::expm1(-1. * i), 100.1 / tau);
+    }
+
+    // After 10 tau we should be very close to 100% (about 99.995%)
+    BOOST_CHECK_CLOSE(previousScore, 1., 0.01);
+
+    for (size_t i = 1; i <= 3; i++) {
+        for (uint32_t j = 0; j < tau; j += step) {
+            avastats.invsPolled(2);
+
+            // Stop responding to the polls.
+            avastats.invsVoted(1);
+
+            avastats.updateAvailabilityScore();
+
+            // Expect a monotonic fall
+            double currentScore = avastats.getAvailabilityScore();
+            BOOST_CHECK_LE(currentScore, previousScore);
+            previousScore = currentScore;
+        }
+
+        // There is a slight error in the expected value because we did not
+        // start the decay at exactly 100%, but the 0.1% margin is at least an
+        // order of magnitude larger than the expected error so it doesn't
+        // matter.
+        BOOST_CHECK_CLOSE(previousScore, 1. + std::expm1(-1. * i), 100.1 / tau);
+    }
+
+    // After 3 more tau we should be under 5%
+    BOOST_CHECK_LT(previousScore, .05);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1121,6 +1121,14 @@ void PeerManager::ReattemptInitialBroadcast(CScheduler &scheduler) const {
                               delta);
 }
 
+void PeerManager::UpdateAvalancheStatistics() const {
+    m_connman.ForEachNode([](CNode *pnode) {
+        if (pnode->m_avalanche_state) {
+            pnode->m_avalanche_state->updateAvailabilityScore();
+        }
+    });
+}
+
 void PeerManager::FinalizeNode(const Config &config, NodeId nodeid,
                                bool &fUpdateConnectionTime) {
     fUpdateConnectionTime = false;
@@ -1543,6 +1551,14 @@ PeerManager::PeerManager(const CChainParams &chainparams, CConnman &connman,
         std::chrono::minutes{10} + GetRandMillis(std::chrono::minutes{5});
     scheduler.scheduleFromNow([&] { ReattemptInitialBroadcast(scheduler); },
                               delta);
+
+    // Update the avalanche statistics on a schedule
+    scheduler.scheduleEvery(
+        [this]() {
+            UpdateAvalancheStatistics();
+            return true;
+        },
+        AVALANCHE_STATISTICS_REFRESH_PERIOD);
 }
 
 /**
@@ -4343,9 +4359,15 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         }
 
         std::vector<avalanche::BlockUpdate> updates;
-        if (!g_avalanche->registerVotes(pfrom.GetId(), response, updates)) {
+        int banscore;
+        std::string error;
+        if (!g_avalanche->registerVotes(pfrom.GetId(), response, updates,
+                                        banscore, error)) {
+            Misbehaving(pfrom, banscore, error);
             return;
         }
+
+        pfrom.m_avalanche_state->invsVoted(response.GetVotes().size());
 
         if (updates.size()) {
             for (avalanche::BlockUpdate &u : updates) {

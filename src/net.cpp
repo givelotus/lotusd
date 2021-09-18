@@ -44,7 +44,9 @@ static_assert(MINIUPNPC_API_VERSION >= 10,
               "miniUPnPc API version >= 10 assumed");
 #endif
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 
@@ -895,6 +897,18 @@ static bool CompareNodeTXTime(const NodeEvictionCandidate &a,
     return a.nTimeConnected > b.nTimeConnected;
 }
 
+static bool CompareNodeProofTime(const NodeEvictionCandidate &a,
+                                 const NodeEvictionCandidate &b) {
+    // There is a fall-through here because it is common for a node to have more
+    // than a few peers that have not yet relayed proofs. This fallback is also
+    // used in the case avalanche is not enabled.
+    if (a.nLastProofTime != b.nLastProofTime) {
+        return a.nLastProofTime < b.nLastProofTime;
+    }
+
+    return a.nTimeConnected > b.nTimeConnected;
+}
+
 // Pick out the potential block-relay only peers, and sort them by last block
 // time.
 static bool CompareNodeBlockRelayOnlyTime(const NodeEvictionCandidate &a,
@@ -914,6 +928,17 @@ static bool CompareNodeBlockRelayOnlyTime(const NodeEvictionCandidate &a,
     return a.nTimeConnected > b.nTimeConnected;
 }
 
+static bool CompareNodeAvailabilityScore(const NodeEvictionCandidate &a,
+                                         const NodeEvictionCandidate &b) {
+    // Equality can happen if the nodes have no score or it has not been
+    // computed yet.
+    if (a.availabilityScore != b.availabilityScore) {
+        return a.availabilityScore < b.availabilityScore;
+    }
+
+    return a.nTimeConnected > b.nTimeConnected;
+}
+
 //! Sort an array by the specified comparator, then erase the last K elements.
 template <typename T, typename Comparator>
 static void EraseLastKElements(std::vector<T> &elements, Comparator comparator,
@@ -921,6 +946,19 @@ static void EraseLastKElements(std::vector<T> &elements, Comparator comparator,
     std::sort(elements.begin(), elements.end(), comparator);
     size_t eraseSize = std::min(k, elements.size());
     elements.erase(elements.end() - eraseSize, elements.end());
+}
+
+//! Sort an array by the specified comparator, then erase up to K last elements
+//! which verify the condition.
+template <typename T, typename Comparator, typename Condition>
+static void EraseLastKElementsIf(std::vector<T> &elements,
+                                 Comparator comparator, size_t k,
+                                 Condition cond) {
+    std::sort(elements.begin(), elements.end(), comparator);
+    size_t eraseSize = std::min(k, elements.size());
+    elements.erase(
+        std::remove_if(elements.end() - eraseSize, elements.end(), cond),
+        elements.end());
 }
 
 [[nodiscard]] std::optional<NodeId>
@@ -938,21 +976,28 @@ SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
     // into our mempool. An attacker cannot manipulate this metric without
     // performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeTXTime, 4);
+    // Protect 4 nodes that most recently sent us novel proofs accepted
+    // into our proof pool. An attacker cannot manipulate this metric without
+    // performing useful work.
+    // TODO this filter must happen before the last tx time once avalanche is
+    // enabled for pre-consensus.
+    EraseLastKElements(vEvictionCandidates, CompareNodeProofTime, 4);
     // Protect up to 8 non-tx-relay peers that have sent us novel blocks.
-    std::sort(vEvictionCandidates.begin(), vEvictionCandidates.end(),
-              CompareNodeBlockRelayOnlyTime);
-    size_t erase_size = std::min(size_t(8), vEvictionCandidates.size());
-    vEvictionCandidates.erase(
-        std::remove_if(vEvictionCandidates.end() - erase_size,
-                       vEvictionCandidates.end(),
-                       [](NodeEvictionCandidate const &n) {
-                           return !n.fRelayTxes && n.fRelevantServices;
-                       }),
-        vEvictionCandidates.end());
+    EraseLastKElementsIf(vEvictionCandidates, CompareNodeBlockRelayOnlyTime, 8,
+                         [](NodeEvictionCandidate const &n) {
+                             return !n.fRelayTxes && n.fRelevantServices;
+                         });
 
     // Protect 4 nodes that most recently sent us novel blocks.
     // An attacker cannot manipulate this metric without performing useful work.
     EraseLastKElements(vEvictionCandidates, CompareNodeBlockTime, 4);
+
+    // Protect up to 128 nodes that have the highest avalanche availability
+    // score.
+    EraseLastKElementsIf(vEvictionCandidates, CompareNodeAvailabilityScore, 128,
+                         [](NodeEvictionCandidate const &n) {
+                             return n.availabilityScore > 0.;
+                         });
 
     // Protect the half of the remaining nodes which have been connected the
     // longest. This replicates the non-eviction implicit behavior, and
@@ -964,15 +1009,10 @@ SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
     size_t total_protect_size = initial_size / 2;
 
     // Pick out up to 1/4 peers that are localhost, sorted by longest uptime.
-    std::sort(vEvictionCandidates.begin(), vEvictionCandidates.end(),
-              CompareLocalHostTimeConnected);
-    size_t local_erase_size = total_protect_size / 2;
-    vEvictionCandidates.erase(
-        std::remove_if(
-            vEvictionCandidates.end() - local_erase_size,
-            vEvictionCandidates.end(),
-            [](NodeEvictionCandidate const &n) { return n.m_is_local; }),
-        vEvictionCandidates.end());
+    EraseLastKElementsIf(
+        vEvictionCandidates, CompareLocalHostTimeConnected,
+        total_protect_size / 2,
+        [](NodeEvictionCandidate const &n) { return n.m_is_local; });
     // Calculate how many we removed, and update our total number of peers that
     // we want to protect based on uptime accordingly.
     total_protect_size -= initial_size - vEvictionCandidates.size();
@@ -1054,18 +1094,23 @@ bool CConnman::AttemptToEvictConnection() {
                 peer_relay_txes = node->m_tx_relay->fRelayTxes;
                 peer_filter_not_null = node->m_tx_relay->pfilter != nullptr;
             }
+
             NodeEvictionCandidate candidate = {
                 node->GetId(),
                 node->nTimeConnected,
                 node->nMinPingUsecTime,
                 node->nLastBlockTime,
+                node->nLastProofTime,
                 node->nLastTXTime,
                 HasAllDesirableServiceFlags(node->nServices),
                 peer_relay_txes,
                 peer_filter_not_null,
                 node->nKeyedNetGroup,
                 node->m_prefer_evict,
-                node->addr.IsLocal()};
+                node->addr.IsLocal(),
+                node->m_avalanche_state
+                    ? node->m_avalanche_state->getAvailabilityScore()
+                    : -std::numeric_limits<double>::infinity()};
             vEvictionCandidates.push_back(candidate);
         }
     }
@@ -3025,6 +3070,34 @@ int CConnman::GetBestHeight() const {
 
 unsigned int CConnman::GetReceiveFloodSize() const {
     return nReceiveFloodSize;
+}
+
+void CNode::AvalancheState::invsPolled(uint32_t count) {
+    invCounters += count;
+}
+
+void CNode::AvalancheState::invsVoted(uint32_t count) {
+    invCounters += uint64_t(count) << 32;
+}
+
+void CNode::AvalancheState::updateAvailabilityScore() {
+    LOCK(cs_statistics);
+
+    uint64_t windowInvCounters = invCounters.exchange(0);
+    double previousScore = availabilityScore;
+
+    uint32_t polls = windowInvCounters & std::numeric_limits<uint32_t>::max();
+    uint32_t votes = windowInvCounters >> 32;
+
+    availabilityScore =
+        AVALANCHE_STATISTICS_DECAY_FACTOR * (2 * votes - polls) +
+        (1. - AVALANCHE_STATISTICS_DECAY_FACTOR) * previousScore;
+}
+
+double CNode::AvalancheState::getAvailabilityScore() const {
+    // The score is set atomically so there is no need to lock the statistics
+    // when reading.
+    return availabilityScore;
 }
 
 CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn,

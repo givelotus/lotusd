@@ -12,6 +12,7 @@ import {
     loadStoredWallet,
     isValidStoredWallet,
 } from '@utils/cashMethods';
+import { isValidCashtabSettings } from '@utils/validation';
 import localforage from 'localforage';
 import { currency } from '@components/Common/Ticker';
 import isEmpty from 'lodash.isempty';
@@ -19,17 +20,11 @@ import isEqual from 'lodash.isequal';
 
 const useWallet = () => {
     const [wallet, setWallet] = useState(false);
+    const [cashtabSettings, setCashtabSettings] = useState(false);
     const [fiatPrice, setFiatPrice] = useState(null);
     const [ws, setWs] = useState(null);
     const [apiError, setApiError] = useState(false);
-    const [walletState, setWalletState] = useState({
-        balances: {},
-        hydratedUtxoDetails: {},
-        tokens: [],
-        slpBalancesAndUtxos: {},
-        parsedTxHistory: [],
-        utxos: [],
-    });
+    const [checkFiatInterval, setCheckFiatInterval] = useState(null);
     const {
         getBCH,
         getUtxos,
@@ -43,12 +38,12 @@ const useWallet = () => {
     const [apiIndex, setApiIndex] = useState(0);
     const [BCH, setBCH] = useState(getBCH(apiIndex));
     const [utxos, setUtxos] = useState(null);
-    const {
-        balances,
-        tokens,
-        slpBalancesAndUtxos,
-        parsedTxHistory,
-    } = walletState;
+    const { balances, tokens } = isValidStoredWallet(wallet)
+        ? wallet.state
+        : {
+              balances: {},
+              tokens: [],
+          };
     const previousBalances = usePrevious(balances);
     const previousTokens = usePrevious(tokens);
     const previousWallet = usePrevious(wallet);
@@ -163,8 +158,9 @@ const useWallet = () => {
             if (isValidStoredWallet(wallet)) {
                 // Convert all the token balance figures to big numbers
                 const liveWalletState = loadStoredWallet(wallet.state);
+                wallet.state = liveWalletState;
 
-                return setWalletState(liveWalletState);
+                return setWallet(wallet);
             }
             // If wallet in storage is a legacy wallet or otherwise does not have all state fields,
             // then assume utxos have changed
@@ -192,7 +188,7 @@ const useWallet = () => {
         return !isEqual(utxos, utxosToCompare);
     };
 
-    const update = async ({ wallet, setWalletState }) => {
+    const update = async ({ wallet }) => {
         //console.log(`tick()`);
         //console.time("update");
         try {
@@ -227,7 +223,7 @@ const useWallet = () => {
                 // remove api error here; otherwise it will remain if recovering from a rate
                 // limit error with an unchanged utxo set
                 setApiError(false);
-                // then walletState has not changed and does not need to be updated
+                // then wallet.state has not changed and does not need to be updated
                 //console.timeEnd("update");
                 return;
             }
@@ -273,12 +269,8 @@ const useWallet = () => {
 
             newState.hydratedUtxoDetails = hydratedUtxoDetails;
 
-            setWalletState(newState);
-
             // Set wallet with new state field
-            // Note: now that wallet carries state, maintaining a separate walletState object is redundant
-            // TODO clear up in future diff
-            wallet.state = wallet.newState;
+            wallet.state = newState;
             setWallet(wallet);
 
             // Write this state to indexedDb using localForage
@@ -286,7 +278,7 @@ const useWallet = () => {
             // If everything executed correctly, remove apiError
             setApiError(false);
         } catch (error) {
-            console.log(`Error in update({wallet, setWalletState})`);
+            console.log(`Error in update({wallet})`);
             console.log(error);
             // Set this in state so that transactions are disabled until the issue is resolved
             setApiError(true);
@@ -799,6 +791,103 @@ const useWallet = () => {
         await loadWalletFromStorageOnStartup(setWallet);
     };
 
+    const loadCashtabSettings = async () => {
+        // get settings object from localforage
+        let localSettings;
+        try {
+            localSettings = await localforage.getItem('settings');
+            // If there is no keyvalue pair in localforage with key 'settings'
+            if (localSettings === null) {
+                // Create one with the default settings from Ticker.js
+                localforage.setItem('settings', currency.defaultSettings);
+                // Set state to default settings
+                setCashtabSettings(currency.defaultSettings);
+                return currency.defaultSettings;
+            }
+        } catch (err) {
+            console.log(`Error getting cashtabSettings`, err);
+            // TODO If they do not exist, write them
+            // TODO add function to change them
+            setCashtabSettings(currency.defaultSettings);
+            return currency.defaultSettings;
+        }
+        // If you found an object in localforage at the settings key, make sure it's valid
+        if (isValidCashtabSettings(localSettings)) {
+            setCashtabSettings(localSettings);
+            return localSettings;
+        }
+        // if not valid, also set cashtabSettings to default
+        setCashtabSettings(currency.defaultSettings);
+        return currency.defaultSettings;
+    };
+
+    // With different currency selections possible, need unique intervals for price checks
+    // Must be able to end them and set new ones with new currencies
+    const initializeFiatPriceApi = async selectedFiatCurrency => {
+        // Update fiat price and confirm it is set to make sure ap keeps loading state until this is updated
+        await fetchBchPrice(selectedFiatCurrency);
+        // Set interval for updating the price with given currency
+
+        const thisFiatInterval = setInterval(function () {
+            fetchBchPrice(selectedFiatCurrency);
+        }, 60000);
+
+        // set interval in state
+        setCheckFiatInterval(thisFiatInterval);
+    };
+
+    const clearFiatPriceApi = fiatPriceApi => {
+        // Clear fiat price check interval of previously selected currency
+        clearInterval(fiatPriceApi);
+    };
+
+    const changeCashtabSettings = async (key, newValue) => {
+        // Set loading to true as you do not want to display the fiat price of the last currency
+        // loading = true will lock the UI until the fiat price has updated
+        setLoading(true);
+        // Get settings from localforage
+        let currentSettings;
+        let newSettings;
+        try {
+            currentSettings = await localforage.getItem('settings');
+        } catch (err) {
+            console.log(`Error in changeCashtabSettings`, err);
+            // Set fiat price to null, which disables fiat sends throughout the app
+            setFiatPrice(null);
+            // Unlock the UI
+            setLoading(false);
+            return;
+        }
+        // Make sure function was called with valid params
+        if (
+            Object.keys(currentSettings).includes(key) &&
+            currency.settingsValidation[key].includes(newValue)
+        ) {
+            // Update settings
+            newSettings = currentSettings;
+            newSettings[key] = newValue;
+        }
+        // Set new settings in state so they are available in context throughout the app
+        setCashtabSettings(newSettings);
+        // If this settings change adjusted the fiat currency, update fiat price
+        if (key === 'fiatCurrency') {
+            clearFiatPriceApi(checkFiatInterval);
+            initializeFiatPriceApi(newValue);
+        }
+        // Write new settings in localforage
+        try {
+            await localforage.setItem('settings', newSettings);
+        } catch (err) {
+            console.log(
+                `Error writing newSettings object to localforage in changeCashtabSettings`,
+                err,
+            );
+            console.log(`newSettings`, newSettings);
+            // do nothing. If this happens, the user will see default currency next time they load the app.
+        }
+        setLoading(false);
+    };
+
     // Parse for incoming BCH transactions
     // Only notify if websocket is not connected
     if (
@@ -881,7 +970,7 @@ const useWallet = () => {
             // Notification if you received SLP
             if (receivedSlpQty > 0) {
                 notification.success({
-                    message: `${currency.tokenTicker} Transaction received: ${receivedSlpTicker}`,
+                    message: `${currency.tokenTicker} transaction received: ${receivedSlpTicker}`,
                     description: (
                         <Paragraph>
                             You received {receivedSlpQty} {receivedSlpName}
@@ -917,7 +1006,7 @@ const useWallet = () => {
                     const receivedSlpName = tokens[i].info.tokenName;
 
                     notification.success({
-                        message: `SLP Transaction received: ${receivedSlpTicker}`,
+                        message: `${currency.tokenTicker} Transaction received: ${receivedSlpTicker}`,
                         description: (
                             <Paragraph>
                                 You received {receivedSlpQty.toString()}{' '}
@@ -931,17 +1020,11 @@ const useWallet = () => {
         }
     }
 
-    //  Update price every 1 min
-    useAsyncTimeout(async () => {
-        fetchBchPrice();
-    }, 60000);
-
     // Update wallet every 10s
     useAsyncTimeout(async () => {
         const wallet = await getWallet();
         update({
             wallet,
-            setWalletState,
         }).finally(() => {
             setLoading(false);
         });
@@ -1223,11 +1306,11 @@ const useWallet = () => {
         }
     };
 
-    const fetchBchPrice = async () => {
+    const fetchBchPrice = async (
+        fiatCode = cashtabSettings ? cashtabSettings.fiatCurrency : 'usd',
+    ) => {
         // Split this variable out in case coingecko changes
         const cryptoId = currency.coingeckoId;
-        // Keep currency as a variable as eventually it will be a user setting
-        const fiatCode = 'usd';
         // Keep this in the code, because different URLs will have different outputs require different parsing
         const priceApiUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${cryptoId}&vs_currencies=${fiatCode}&include_last_updated_at=true`;
         let bchPrice;
@@ -1242,17 +1325,10 @@ const useWallet = () => {
         try {
             bchPriceJson = await bchPrice.json();
             //console.log(`bchPriceJson`, bchPriceJson);
-            let bchPriceInFiat = bchPriceJson[cryptoId][fiatCode] / 1e6;
+            let bchPriceInFiat = bchPriceJson[cryptoId][fiatCode];
 
-            // Error handling here
-            // Temp condition until price API has supported rebrand
-            // If eCash price is > 1, throw error
-            // If eCash price is < 0.0000001, throw error
-            // At BCHA price of $33, 1 XEC = 0.000033
-            // 0.000033
-            // 0.0000001 <== so if price is less than this, it's dividing an already correct price by 1,000,000
-            const validEcashPrice =
-                bchPriceInFiat < 1 && bchPriceInFiat > 0.0000001;
+            const validEcashPrice = typeof bchPriceInFiat === 'number';
+
             if (validEcashPrice) {
                 setFiatPrice(bchPriceInFiat);
             } else {
@@ -1265,9 +1341,10 @@ const useWallet = () => {
         }
     };
 
-    useEffect(() => {
+    useEffect(async () => {
         handleUpdateWallet(setWallet);
-        fetchBchPrice();
+        const initialSettings = await loadCashtabSettings();
+        initializeFiatPriceApi(initialSettings.fiatCurrency);
     }, []);
 
     useEffect(() => {
@@ -1291,31 +1368,22 @@ const useWallet = () => {
         BCH,
         wallet,
         fiatPrice,
-        slpBalancesAndUtxos,
-        balances,
-        tokens,
-        parsedTxHistory,
         loading,
         apiError,
+        cashtabSettings,
+        changeCashtabSettings,
         getActiveWalletFromLocalForage,
         getWallet,
         validateMnemonic,
         getWalletDetails,
         getSavedWallets,
         migrateLegacyWallet,
-        update: async () =>
-            update({
-                wallet: await getWallet(),
-                setLoading,
-                setWalletState,
-            }),
         createWallet: async importMnemonic => {
             setLoading(true);
             const newWallet = await createWallet(importMnemonic);
             setWallet(newWallet);
             update({
                 wallet: newWallet,
-                setWalletState,
             }).finally(() => setLoading(false));
         },
         activateWallet: async walletToActivate => {
@@ -1330,7 +1398,6 @@ const useWallet = () => {
                 // This handles case of unmigrated legacy wallet
                 update({
                     wallet: newWallet,
-                    setWalletState,
                 }).finally(() => setLoading(false));
             }
         },

@@ -548,6 +548,7 @@ add_library(server
 	avalanche/proof.cpp
 	avalanche/proofid.cpp
 	avalanche/proofbuilder.cpp
+	avalanche/voterecord.cpp
 	banman.cpp
 	blockencodings.cpp
 	blockfilter.cpp

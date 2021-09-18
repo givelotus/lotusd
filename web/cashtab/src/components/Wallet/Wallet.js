@@ -1,7 +1,5 @@
 import React from 'react';
 import styled from 'styled-components';
-import { Switch } from 'antd';
-import { LinkOutlined, LoadingOutlined } from '@ant-design/icons';
 import { WalletContext } from '@utils/context';
 import { OnBoarding } from '@components/OnBoarding/OnBoarding';
 import { QRCode } from '@components/Common/QRCode';
@@ -10,13 +8,10 @@ import { Link } from 'react-router-dom';
 import TokenList from './TokenList';
 import TxHistory from './TxHistory';
 import { CashLoader } from '@components/Common/CustomIcons';
-import { formatBalance } from '@utils/cashMethods';
-import {
-    LoadingCtn,
-    BalanceHeader,
-    BalanceHeaderFiat,
-    ZeroBalanceHeader,
-} from '@components/Common/Atoms';
+import { BalanceHeader } from '@components/Common/BalanceHeader';
+import { BalanceHeaderFiat } from '@components/Common/BalanceHeaderFiat';
+import { LoadingCtn, ZeroBalanceHeader } from '@components/Common/Atoms';
+import { getWalletState } from '@utils/cashMethods';
 
 export const Tabs = styled.div`
     margin: auto;
@@ -170,54 +165,19 @@ export const AddrSwitchContainer = styled.div`
     padding: 6px 0 12px 0;
 `;
 
-export const AddrPrefixSwitch = styled(Switch)``;
-
-export const AddrPrefixLabel = styled.span`
-    color: ${props => props.theme.wallet.text.primary}
-    margin-right: 4px;
-`;
-
 const WalletInfo = () => {
     const ContextValue = React.useContext(WalletContext);
-    const { wallet, fiatPrice, apiError } = ContextValue;
-    let balances;
-    let parsedTxHistory;
-    let tokens;
-    // use parameters from wallet.state object and not legacy separate parameters, if they are in state
-    // handle edge case of user with old wallet who has not opened latest Cashtab version yet
+    const { wallet, fiatPrice, apiError, cashtabSettings } = ContextValue;
+    const walletState = getWalletState(wallet);
+    const { balances, parsedTxHistory, tokens } = walletState;
 
-    // If the wallet object from ContextValue has a `state key`, then check which keys are in the wallet object
-    // Else set it as blank
-    const paramsInWalletState = wallet.state ? Object.keys(wallet.state) : [];
-    // If wallet.state includes balances and parsedTxHistory params, use these
-    // These are saved in indexedDb in the latest version of the app, hence accessible more quickly
-    if (
-        paramsInWalletState.includes('balances') &&
-        paramsInWalletState.includes('parsedTxHistory') &&
-        paramsInWalletState.includes('tokens')
-    ) {
-        balances = wallet.state.balances;
-        parsedTxHistory = wallet.state.parsedTxHistory;
-        tokens = wallet.state.tokens;
-    } else {
-        // If balances and parsedTxHistory are not in the wallet.state object, load them from Context
-        // This is how the app used to work
-        balances = ContextValue.balances;
-        parsedTxHistory = ContextValue.parsedTxHistory;
-        tokens = ContextValue.tokens;
-    }
     const [address, setAddress] = React.useState('cashAddress');
-    const [addressPrefix, setAddressPrefix] = React.useState('eCash');
     const [activeTab, setActiveTab] = React.useState('txHistory');
 
     const hasHistory = parsedTxHistory && parsedTxHistory.length > 0;
 
     const handleChangeAddress = () => {
         setAddress(address === 'cashAddress' ? 'slpAddress' : 'cashAddress');
-    };
-
-    const onAddressPrefixChange = () => {
-        setAddressPrefix(addressPrefix === 'eCash' ? 'bitcoincash' : 'eCash');
     };
 
     return (
@@ -236,18 +196,20 @@ const WalletInfo = () => {
                         {currency.ticker} payments, or load it up with{' '}
                         {currency.ticker} to send to others
                     </ZeroBalanceHeader>
-                    <BalanceHeader>0 {currency.ticker}</BalanceHeader>
+                    <BalanceHeader balance={0} ticker={currency.ticker} />
                 </>
             ) : (
                 <>
-                    <BalanceHeader>
-                        {formatBalance(balances.totalBalance)} {currency.ticker}
-                    </BalanceHeader>
+                    <BalanceHeader
+                        balance={balances.totalBalance}
+                        ticker={currency.ticker}
+                    />
                     {fiatPrice !== null && !isNaN(balances.totalBalance) && (
-                        <BalanceHeaderFiat>
-                            ${(balances.totalBalance * fiatPrice).toFixed(2)}{' '}
-                            USD
-                        </BalanceHeaderFiat>
+                        <BalanceHeaderFiat
+                            balance={balances.totalBalance}
+                            settings={cashtabSettings}
+                            fiatPrice={fiatPrice}
+                        />
                     )}
                 </>
             )}
@@ -272,37 +234,10 @@ const WalletInfo = () => {
                                         ? wallet.Path1899.slpAddress
                                         : wallet.Path1899.cashAddress
                                 }
-                                legacy={addressPrefix === 'bitcoincash'}
                             />
-                            <AddrSwitchContainer>
-                                <AddrPrefixLabel>
-                                    Address Format:
-                                </AddrPrefixLabel>
-                                <AddrPrefixSwitch
-                                    id="addrSwitch"
-                                    defaultChecked
-                                    checkedChildren={
-                                        address === 'slpAddress'
-                                            ? 'eToken'
-                                            : 'eCash'
-                                    }
-                                    unCheckedChildren={
-                                        address === 'slpAddress'
-                                            ? 'simpleledger'
-                                            : 'bitcoincash'
-                                    }
-                                    onChange={onAddressPrefixChange}
-                                />
-                            </AddrSwitchContainer>
                         </>
                     ) : (
                         <>
-                            <AddrPrefixSwitch
-                                defaultChecked
-                                checkedChildren="eCash"
-                                unCheckedChildren="Legacy"
-                                onChange={onAddressPrefixChange}
-                            />
                             <QRCode
                                 id="borderedQRCode"
                                 address={
@@ -356,6 +291,11 @@ const WalletInfo = () => {
                         <TxHistory
                             txs={parsedTxHistory}
                             fiatPrice={fiatPrice}
+                            fiatCurrency={
+                                cashtabSettings && cashtabSettings.fiatCurrency
+                                    ? cashtabSettings.fiatCurrency
+                                    : 'usd'
+                            }
                         />
                     </TabPane>
                     <TabPane active={activeTab === 'tokens'}>
@@ -380,16 +320,21 @@ const WalletInfo = () => {
 
 const Wallet = () => {
     const ContextValue = React.useContext(WalletContext);
-    const { wallet, loading } = ContextValue;
+    const { wallet, previousWallet, loading } = ContextValue;
 
     return (
         <>
             {loading ? (
-                <LoadingCtn>
-                    <LoadingOutlined />
-                </LoadingCtn>
+                <LoadingCtn />
             ) : (
-                <>{wallet.Path1899 ? <WalletInfo /> : <OnBoarding />}</>
+                <>
+                    {(wallet && wallet.Path1899) ||
+                    (previousWallet && previousWallet.path1899) ? (
+                        <WalletInfo />
+                    ) : (
+                        <OnBoarding />
+                    )}
+                </>
             )}
         </>
     );

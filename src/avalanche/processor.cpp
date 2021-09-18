@@ -7,9 +7,10 @@
 #include <avalanche/delegationbuilder.h>
 #include <avalanche/peermanager.h>
 #include <avalanche/validation.h>
+#include <avalanche/voterecord.h>
 #include <chain.h>
-#include <key_io.h>         // For DecodeSecret
-#include <net_processing.h> // For ::PeerManager
+#include <key_io.h> // For DecodeSecret
+#include <net.h>
 #include <netmessagemaker.h>
 #include <reverse_iterator.h>
 #include <scheduler.h>
@@ -30,97 +31,6 @@ static constexpr std::chrono::milliseconds AVALANCHE_TIME_STEP{10};
 std::unique_ptr<avalanche::Processor> g_avalanche;
 
 namespace avalanche {
-
-bool VoteRecord::registerVote(NodeId nodeid, uint32_t error) {
-    // We just got a new vote, so there is one less inflight request.
-    clearInflightRequest();
-
-    // We want to avoid having the same node voting twice in a quorum.
-    if (!addNodeToQuorum(nodeid)) {
-        return false;
-    }
-
-    /**
-     * The result of the vote is determined from the error code. If the error
-     * code is 0, there is no error and therefore the vote is yes. If there is
-     * an error, we check the most significant bit to decide if the vote is a no
-     * (for instance, the block is invalid) or is the vote inconclusive (for
-     * instance, the queried node does not have the block yet).
-     */
-    votes = (votes << 1) | (error == 0);
-    consider = (consider << 1) | (int32_t(error) >= 0);
-
-    /**
-     * We compute the number of yes and/or no votes as follow:
-     *
-     * votes:     1010
-     * consider:  1100
-     *
-     * yes votes: 1000 using votes & consider
-     * no votes:  0100 using ~votes & consider
-     */
-    bool yes = countBits(votes & consider & 0xff) > 6;
-    if (!yes) {
-        bool no = countBits(~votes & consider & 0xff) > 6;
-        if (!no) {
-            // The round is inconclusive.
-            return false;
-        }
-    }
-
-    // If the round is in agreement with previous rounds, increase confidence.
-    if (isAccepted() == yes) {
-        confidence += 2;
-        return getConfidence() == AVALANCHE_FINALIZATION_SCORE;
-    }
-
-    // The round changed our state. We reset the confidence.
-    confidence = yes;
-    return true;
-}
-
-bool VoteRecord::addNodeToQuorum(NodeId nodeid) {
-    if (nodeid == NO_NODE) {
-        // Helpful for testing.
-        return true;
-    }
-
-    // MMIX Linear Congruent Generator.
-    const uint64_t r1 =
-        6364136223846793005 * uint64_t(nodeid) + 1442695040888963407;
-    // Fibonacci hashing.
-    const uint64_t r2 = 11400714819323198485ull * (nodeid ^ seed);
-    // Combine and extract hash.
-    const uint16_t h = (r1 + r2) >> 48;
-
-    /**
-     * Check if the node is in the filter.
-     */
-    for (size_t i = 1; i < nodeFilter.size(); i++) {
-        if (nodeFilter[(successfulVotes + i) % nodeFilter.size()] == h) {
-            return false;
-        }
-    }
-
-    /**
-     * Add the node which just voted to the filter.
-     */
-    nodeFilter[successfulVotes % nodeFilter.size()] = h;
-    successfulVotes++;
-    return true;
-}
-
-bool VoteRecord::registerPoll() const {
-    uint8_t count = inflight.load();
-    while (count < AVALANCHE_MAX_INFLIGHT_POLL) {
-        if (inflight.compare_exchange_weak(count, count + 1)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static bool IsWorthPolling(const CBlockIndex *pindex) {
     AssertLockHeld(cs_main);
 
@@ -219,11 +129,9 @@ public:
 };
 
 Processor::Processor(interfaces::Chain &chain, CConnman *connmanIn,
-                     NodePeerManager *nodePeerManagerIn,
                      std::unique_ptr<PeerData> peerDataIn, CKey sessionKeyIn)
-    : connman(connmanIn), nodePeerManager(nodePeerManagerIn),
-      queryTimeoutDuration(AVALANCHE_DEFAULT_QUERY_TIMEOUT), round(0),
-      peerManager(std::make_unique<PeerManager>()),
+    : connman(connmanIn), queryTimeoutDuration(AVALANCHE_DEFAULT_QUERY_TIMEOUT),
+      round(0), peerManager(std::make_unique<PeerManager>()),
       peerData(std::move(peerDataIn)), sessionKey(std::move(sessionKeyIn)) {
     // Make sure we get notified of chain state changes.
     chainNotificationsHandler =
@@ -235,10 +143,10 @@ Processor::~Processor() {
     stopEventLoop();
 }
 
-std::unique_ptr<Processor>
-Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
-                         CConnman *connman, NodePeerManager *nodePeerManager,
-                         bilingual_str &error) {
+std::unique_ptr<Processor> Processor::MakeProcessor(const ArgsManager &argsman,
+                                                    interfaces::Chain &chain,
+                                                    CConnman *connman,
+                                                    bilingual_str &error) {
     std::unique_ptr<PeerData> peerData;
     CKey masterKey;
     CKey sessionKey;
@@ -330,9 +238,8 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
     }
 
     // We can't use std::make_unique with a private constructor
-    return std::unique_ptr<Processor>(
-        new Processor(chain, connman, nodePeerManager, std::move(peerData),
-                      std::move(sessionKey)));
+    return std::unique_ptr<Processor>(new Processor(
+        chain, connman, std::move(peerData), std::move(sessionKey)));
 }
 
 bool Processor::addBlockToReconcile(const CBlockIndex *pindex) {
@@ -410,7 +317,8 @@ void Processor::sendResponse(CNode *pfrom, Response response) const {
 }
 
 bool Processor::registerVotes(NodeId nodeid, const Response &response,
-                              std::vector<BlockUpdate> &updates) {
+                              std::vector<BlockUpdate> &updates, int &banscore,
+                              std::string &error) {
     {
         // Save the time at which we can query again.
         LOCK(cs_peerManager);
@@ -430,7 +338,8 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         auto w = queries.getWriteView();
         auto it = w->find(std::make_tuple(nodeid, response.getRound()));
         if (it == w.end()) {
-            nodePeerManager->Misbehaving(nodeid, 2, "unexpected-ava-response");
+            banscore = 2;
+            error = "unexpected-ava-response";
             return false;
         }
 
@@ -442,14 +351,15 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     const std::vector<Vote> &votes = response.GetVotes();
     size_t size = invs.size();
     if (votes.size() != size) {
-        nodePeerManager->Misbehaving(nodeid, 100, "invalid-ava-response-size");
+        banscore = 100;
+        error = "invalid-ava-response-size";
         return false;
     }
 
     for (size_t i = 0; i < size; i++) {
         if (invs[i].hash != votes[i].GetHash()) {
-            nodePeerManager->Misbehaving(nodeid, 100,
-                                         "invalid-ava-response-content");
+            banscore = 100;
+            error = "invalid-ava-response-content";
             return false;
         }
     }
@@ -698,6 +608,8 @@ void Processor::runEventLoop() {
                 LOCK(cs_peerManager);
                 peerManager->updateNextRequestTime(pnode->GetId(), timeout);
             }
+
+            pnode->m_avalanche_state->invsPolled(invs.size());
 
             // Send the query to the node.
             connman->PushMessage(

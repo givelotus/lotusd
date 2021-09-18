@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import 'antd/dist/antd.less';
+import { Spin } from 'antd';
+import { CashLoadingIcon } from '@components/Common/CustomIcons';
 import '../index.css';
 import styled, { ThemeProvider, createGlobalStyle } from 'styled-components';
 import { theme } from '@assets/styles/theme';
@@ -21,6 +23,7 @@ import ABC from '@assets/logo_topright.png';
 import './App.css';
 import { WalletContext } from '@utils/context';
 import { checkForTokenById } from '@utils/tokenMethods.js';
+import { isValidStoredWallet } from '@utils/cashMethods';
 import WalletLabel from '@components/Common/WalletLabel.js';
 import {
     Route,
@@ -29,8 +32,6 @@ import {
     useLocation,
     useHistory,
 } from 'react-router-dom';
-
-import fbt from 'fbt';
 
 const GlobalStyle = createGlobalStyle`    
     .ant-modal-wrap > div > div.ant-modal-content > div > div > div.ant-modal-confirm-btns > button, .ant-modal > button, .ant-modal-confirm-btns > button, .ant-modal-footer > button {
@@ -203,12 +204,17 @@ export const AbcLogo = styled.img`
 
 const App = () => {
     const ContextValue = React.useContext(WalletContext);
-    const { wallet, tokens } = ContextValue;
-
-    const hasTab = checkForTokenById(
-        tokens,
-        '50d8292c6255cda7afc6c8566fed3cf42a2794e9619740fe8f4c95431271410e',
-    );
+    const { wallet, loading } = ContextValue;
+    const [loadingUtxosAfterSend, setLoadingUtxosAfterSend] = useState(false);
+    // If wallet is unmigrated, do not show page until it has migrated
+    // An invalid wallet will be validated/populated after the next API call, ETA 10s
+    const validWallet = isValidStoredWallet(wallet);
+    const hasTab = validWallet
+        ? checkForTokenById(
+              wallet.state.tokens,
+              '50d8292c6255cda7afc6c8566fed3cf42a2794e9619740fe8f4c95431271410e',
+          )
+        : false;
     const location = useLocation();
     const history = useHistory();
     const selectedKey =
@@ -217,84 +223,102 @@ const App = () => {
     return (
         <ThemeProvider theme={theme}>
             <GlobalStyle />
-            <CustomApp>
-                <WalletBody>
-                    <WalletCtn>
-                        <HeaderCtn>
-                            <CashTabLogo src={CashTab} alt="cashtab" />
-                            {hasTab && (
-                                <EasterEgg src={TabCash} alt="tabcash" />
-                            )}
-                            <a
-                                href="https://e.cash/"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                <AbcLogo src={ABC} alt="abc" />
-                            </a>
-                        </HeaderCtn>
-                        <WalletLabel name={wallet.name}></WalletLabel>
-                        <Switch>
-                            <Route path="/wallet">
-                                <Wallet />
-                            </Route>
-                            <Route path="/tokens">
-                                <Tokens />
-                            </Route>
-                            <Route path="/send">
-                                <Send />
-                            </Route>
-                            <Route
-                                path="/send-token/:tokenId"
-                                render={props => (
-                                    <SendToken
-                                        tokenId={props.match.params.tokenId}
-                                    />
+            <Spin
+                spinning={
+                    loading || loadingUtxosAfterSend || (wallet && !validWallet)
+                }
+                indicator={CashLoadingIcon}
+            >
+                <CustomApp>
+                    <WalletBody>
+                        <WalletCtn>
+                            <HeaderCtn>
+                                <CashTabLogo src={CashTab} alt="cashtab" />
+                                {hasTab && (
+                                    <EasterEgg src={TabCash} alt="tabcash" />
                                 )}
-                            />
-                            <Route path="/configure">
-                                <Configure />
-                            </Route>
-                            <Redirect exact from="/" to="/wallet" />
-                            <Route component={NotFound} />
-                        </Switch>
-                    </WalletCtn>
-                    {wallet ? (
-                        <Footer>
-                            <NavButton
-                                active={selectedKey === 'wallet'}
-                                onClick={() => history.push('/wallet')}
-                            >
-                                <FolderOpenFilled />
-                                <fbt desc="Wallet menu button">Wallet</fbt>
-                            </NavButton>
+                                <a
+                                    href="https://e.cash/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    <AbcLogo src={ABC} alt="abc" />
+                                </a>
+                            </HeaderCtn>
+                            <WalletLabel name={wallet.name}></WalletLabel>
+                            <Switch>
+                                <Route path="/wallet">
+                                    <Wallet />
+                                </Route>
+                                <Route path="/tokens">
+                                    <Tokens
+                                        passLoadingStatus={
+                                            setLoadingUtxosAfterSend
+                                        }
+                                    />
+                                </Route>
+                                <Route path="/send">
+                                    <Send
+                                        passLoadingStatus={
+                                            setLoadingUtxosAfterSend
+                                        }
+                                    />
+                                </Route>
+                                <Route
+                                    path="/send-token/:tokenId"
+                                    render={props => (
+                                        <SendToken
+                                            tokenId={props.match.params.tokenId}
+                                            passLoadingStatus={
+                                                setLoadingUtxosAfterSend
+                                            }
+                                        />
+                                    )}
+                                />
+                                <Route path="/configure">
+                                    <Configure />
+                                </Route>
+                                <Redirect exact from="/" to="/wallet" />
+                                <Route component={NotFound} />
+                            </Switch>
+                        </WalletCtn>
+                        {wallet ? (
+                            <Footer>
+                                <NavButton
+                                    active={selectedKey === 'wallet'}
+                                    onClick={() => history.push('/wallet')}
+                                >
+                                    <FolderOpenFilled />
+                                    Wallet
+                                </NavButton>
 
-                            <NavButton
-                                active={selectedKey === 'tokens'}
-                                onClick={() => history.push('/tokens')}
-                            >
-                                <AppstoreAddOutlined />
-                                Tokens
-                            </NavButton>
+                                <NavButton
+                                    active={selectedKey === 'tokens'}
+                                    onClick={() => history.push('/tokens')}
+                                >
+                                    <AppstoreAddOutlined />
+                                    Tokens
+                                </NavButton>
 
-                            <NavButton
-                                active={selectedKey === 'send'}
-                                onClick={() => history.push('/send')}
-                            >
-                                <CaretRightOutlined />
-                                <fbt desc="Send menu button">Send</fbt>
-                            </NavButton>
-                            <NavButton
-                                active={selectedKey === 'configure'}
-                                onClick={() => history.push('/configure')}
-                            >
-                                <SettingFilled />
-                                <fbt desc="Settings menu button">Settings</fbt>
-                            </NavButton>
-                        </Footer>
-                    ) : null}
-                </WalletBody>
-            </CustomApp>
+                                <NavButton
+                                    active={selectedKey === 'send'}
+                                    onClick={() => history.push('/send')}
+                                >
+                                    <CaretRightOutlined />
+                                    Send
+                                </NavButton>
+                                <NavButton
+                                    active={selectedKey === 'configure'}
+                                    onClick={() => history.push('/configure')}
+                                >
+                                    <SettingFilled />
+                                    Settings
+                                </NavButton>
+                            </Footer>
+                        ) : null}
+                    </WalletBody>
+                </CustomApp>
+            </Spin>
         </ThemeProvider>
     );
 };
