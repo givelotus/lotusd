@@ -20,7 +20,8 @@ import re
 
 from test_framework import cashaddr
 from test_framework.blocktools import SUBSIDY
-from test_framework.key import ECKey, bytes_to_wif
+from test_framework.key import ECKey
+from test_framework.wallet_util import bytes_to_wif
 from test_framework.messages import (
     COIN,
     COutPoint,

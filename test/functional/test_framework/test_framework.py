@@ -33,6 +33,7 @@ from .util import (
     p2p_port,
     PortSeed,
     rpc_port,
+    wait_until,
 )
 
 
@@ -586,8 +587,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         rpc_connections = nodes or self.nodes
         timeout = int(timeout * self.options.timeout_factor)
         stop_time = time.time() + timeout
+
+        def format_ids(id_list):
+            """Convert ProodIDs to hex strings for easier debugging"""
+            return list(f"{i:064x}" for i in id_list)
+
         while time.time() <= stop_time:
-            nodes_proofs = [set(get_proof_ids(r)) for r in rpc_connections]
+            nodes_proofs = [
+                set(format_ids(get_proof_ids(r))) for r in rpc_connections]
             if nodes_proofs.count(nodes_proofs[0]) == len(rpc_connections):
                 return
             # Check that each peer has at least one connection
@@ -601,6 +608,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def sync_all(self, nodes=None):
         self.sync_blocks(nodes)
         self.sync_mempools(nodes)
+
+    def wait_until(self, test_function, timeout=60, lock=None):
+        return wait_until(test_function, timeout=timeout, lock=lock,
+                          timeout_factor=self.options.timeout_factor)
 
     # Private helper methods. These should not be accessed by the subclass
     # test scripts.

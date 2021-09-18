@@ -26,9 +26,6 @@ void CScheduler::serviceQueue() {
     // waiting or when the user's function is called.
     while (!shouldStop()) {
         try {
-            if (!shouldStop() && taskQueue.empty()) {
-                REVERSE_LOCK(lock);
-            }
             while (!shouldStop() && taskQueue.empty()) {
                 // Wait until there is something to do.
                 newTaskScheduled.wait(lock);
@@ -70,18 +67,6 @@ void CScheduler::serviceQueue() {
     }
     --nThreadsServicingQueue;
     newTaskScheduled.notify_one();
-}
-
-void CScheduler::stop(bool drain) {
-    {
-        LOCK(newTaskMutex);
-        if (drain) {
-            stopWhenEmpty = true;
-        } else {
-            stopRequested = true;
-        }
-    }
-    newTaskScheduled.notify_all();
 }
 
 void CScheduler::schedule(CScheduler::Function f,

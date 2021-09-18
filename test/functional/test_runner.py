@@ -354,13 +354,15 @@ def run_tests(test_list, build_dir, tests_dir, junitoutput, tmpdir, num_jobs, te
               enable_coverage=False, args=None, combined_logs_len=0, build_timings=None, failfast=False):
     args = args or []
 
-    # Warn if lotusd is already running (unix only)
+    # Warn if bitcoind is already running
     try:
-        pidofOutput = subprocess.check_output(["pidof", "lotusd"])
-        if pidofOutput is not None and pidofOutput != b'':
+        # pgrep exits with code zero when one or more matching processes found
+        if subprocess.run(["pgrep", "-x", "lotusd"],
+                          stdout=subprocess.DEVNULL).returncode == 0:
             print("{}WARNING!{} There is already a lotusd process running on this system. Tests may fail unexpectedly due to resource contention!".format(
                 BOLD[1], BOLD[0]))
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
+        # pgrep not supported
         pass
 
     # Warn if there is a cache directory

@@ -14,6 +14,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -40,7 +41,7 @@ public:
 };
 } // namespace
 
-static const unsigned short SERVICE_PORT = 12605;
+static const uint16_t SERVICE_PORT = 12605;
 
 struct SeederTestingSetup {
     SeederTestingSetup() {

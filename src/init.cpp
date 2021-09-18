@@ -462,9 +462,8 @@ void SetupServerArgs(NodeContext &node) {
         "-blocksonly",
         strprintf("Whether to reject transactions from network peers.  "
                   "Automatic broadcast and rebroadcast of any transactions "
-                  "from inbound peers is disabled, unless "
-                  "'-whitelistforcerelay' is '1', in which case whitelisted "
-                  "peers' transactions will be relayed. RPC transactions are"
+                  "from inbound peers is disabled, unless the peer has the "
+                  "'forcerelay' permission. RPC transactions are"
                   " not affected. (default: %u)",
                   DEFAULT_BLOCKSONLY),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -986,6 +985,7 @@ void SetupServerArgs(NodeContext &node) {
         strprintf("Prepend debug output with timestamp (default: %d)",
                   DEFAULT_LOGTIMESTAMPS),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+#ifdef HAVE_THREAD_LOCAL
     argsman.AddArg(
         "-logthreadnames",
         strprintf(
@@ -993,6 +993,9 @@ void SetupServerArgs(NodeContext &node) {
             "available on platforms supporting thread_local) (default: %u)",
             DEFAULT_LOGTHREADNAMES),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+#else
+    hidden_args.emplace_back("-logthreadnames");
+#endif
     argsman.AddArg(
         "-logtimemicros",
         strprintf("Add microsecond precision to debug timestamps (default: %d)",
@@ -1114,8 +1117,8 @@ void SetupServerArgs(NodeContext &node) {
         "-whitelistforcerelay",
         strprintf("Add 'forcerelay' permission to whitelisted inbound peers"
                   " with default permissions. This will relay transactions "
-                  "even if the transactions were already in the mempool or "
-                  "violate local relay policy (default: %d)",
+                  "even if the transactions were already in the mempool "
+                  "(default: %d)",
                   DEFAULT_WHITELISTFORCERELAY),
         ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
 
@@ -1648,8 +1651,10 @@ void InitLogging(const ArgsManager &args) {
         args.GetBoolArg("-logtimestamps", DEFAULT_LOGTIMESTAMPS);
     LogInstance().m_log_time_micros =
         args.GetBoolArg("-logtimemicros", DEFAULT_LOGTIMEMICROS);
+#ifdef HAVE_THREAD_LOCAL
     LogInstance().m_log_threadnames =
         args.GetBoolArg("-logthreadnames", DEFAULT_LOGTHREADNAMES);
+#endif
 
     fLogIPs = args.GetBoolArg("-logips", DEFAULT_LOGIPS);
 
@@ -2974,7 +2979,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     connOptions.m_max_outbound_full_relay = std::min(
         MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, connOptions.nMaxConnections);
     connOptions.m_max_outbound_block_relay = std::min(
-        MAX_BLOCKS_ONLY_CONNECTIONS,
+        MAX_BLOCK_RELAY_ONLY_CONNECTIONS,
         connOptions.nMaxConnections - connOptions.m_max_outbound_full_relay);
     connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
     connOptions.nMaxFeeler = MAX_FEELER_CONNECTIONS;

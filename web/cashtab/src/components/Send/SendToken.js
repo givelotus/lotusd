@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import PropTypes from 'prop-types';
 import { WalletContext } from '@utils/context';
 import {
     Form,
@@ -13,13 +14,12 @@ import Paragraph from 'antd/lib/typography/Paragraph';
 import PrimaryButton, {
     SecondaryButton,
 } from '@components/Common/PrimaryButton';
-import { CashLoader } from '@components/Common/CustomIcons';
 import {
     FormItemWithMaxAddon,
     FormItemWithQRCodeAddon,
 } from '@components/Common/EnhancedInputs';
 import useBCH from '@hooks/useBCH';
-import { BalanceHeader } from '@components/Common/BalanceHeader';
+import BalanceHeader from '@components/Common/BalanceHeader';
 import { Redirect } from 'react-router-dom';
 import useWindowDimensions from '@hooks/useWindowDimensions';
 import { isMobile, isIOS, isSafari } from 'react-device-detect';
@@ -36,6 +36,8 @@ import {
     getWalletState,
     convertEtokenToSimpleledger,
 } from '@utils/cashMethods';
+import { TokenReceivedNotificationIcon } from '@components/Common/CustomIcons';
+import ApiError from '@components/Common/ApiError';
 
 const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
     const { wallet, apiError } = React.useContext(WalletContext);
@@ -117,12 +119,14 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                 description: (
                     <a href={link} target="_blank" rel="noopener noreferrer">
                         <Paragraph>
-                            Transaction successful. Click or tap here for more
-                            details
+                            Transaction successful. Click to view in block
+                            explorer.
                         </Paragraph>
                     </a>
                 ),
-                duration: 5,
+                duration: 3,
+                icon: <TokenReceivedNotificationIcon />,
+                style: { width: '100%' },
             });
         } catch (e) {
             passLoadingStatus(false);
@@ -360,7 +364,6 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                             <SecondaryButton>
                                                 Send {token.info.tokenName}
                                             </SecondaryButton>
-                                            {apiError && <CashLoader />}
                                         </>
                                     ) : (
                                         <PrimaryButton onClick={() => submit()}>
@@ -375,18 +378,7 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                         type="warning"
                                     />
                                 )}
-                                {apiError && (
-                                    <p
-                                        style={{
-                                            color: 'red',
-                                        }}
-                                    >
-                                        <b>
-                                            An error occured on our end.
-                                            Reconnecting...
-                                        </b>
-                                    </p>
-                                )}
+                                {apiError && <ApiError />}
                             </Form>
                             {tokenStats !== null && (
                                 <Descriptions
@@ -454,6 +446,12 @@ SendToken.defaultProps = {
     passLoadingStatus: status => {
         console.log(status);
     },
+};
+
+SendToken.propTypes = {
+    tokenId: PropTypes.string,
+    jestBCH: PropTypes.object,
+    passLoadingStatus: PropTypes.func,
 };
 
 export default SendToken;

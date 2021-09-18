@@ -553,8 +553,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     Amount nFees = Amount::zero();
     if (!Consensus::CheckTxInputs(tx, state, m_view, GetSpendHeight(m_view),
                                   nFees)) {
-        return error("%s: Consensus::CheckTxInputs: %s, %s", __func__,
-                     tx.GetId().ToString(), state.ToString());
+        // state filled in by CheckTxInputs
+        return false;
     }
 
     // Check for non-standard pay-to-script-hash in inputs
@@ -4010,8 +4010,10 @@ bool BlockManager::AcceptBlockHeader(const Config &config,
 
         if (!CheckBlockHeader(block, state, chainparams.GetConsensus(),
                               BlockValidationOptions(config))) {
-            return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__,
-                         hash.ToString(), state.ToString());
+            LogPrint(BCLog::VALIDATION,
+                     "%s: Consensus::CheckBlockHeader: %s, %s\n", __func__,
+                     hash.ToString(), state.ToString());
+            return false;
         }
 
         // Get prev block index
@@ -5228,7 +5230,6 @@ void LoadExternalBlockFile(const Config &config, FILE *fileIn,
                     dbp->nPos = nBlockPos;
                 }
                 blkdat.SetLimit(nBlockPos + nSize);
-                blkdat.SetPos(nBlockPos);
                 std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
                 CBlock &block = *pblock;
                 blkdat >> block;

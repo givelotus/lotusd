@@ -6,6 +6,7 @@
 #define BITCOIN_QT_MODALOVERLAY_H
 
 #include <QDateTime>
+#include <QPropertyAnimation>
 #include <QWidget>
 
 //! The required delta of headers to the estimated number of available headers
@@ -24,16 +25,20 @@ public:
     explicit ModalOverlay(bool enable_wallet, QWidget *parent);
     ~ModalOverlay();
 
-public Q_SLOTS:
     void tipUpdate(int count, const QDateTime &blockDate,
                    double nVerificationProgress);
     void setKnownBestHeight(int count, const QDateTime &blockDate);
 
-    void toggleVisibility();
     // will show or hide the modal layer
     void showHide(bool hide = false, bool userRequested = false);
-    void closeClicked();
     bool isLayerVisible() const { return layerIsVisible; }
+
+public Q_SLOTS:
+    void toggleVisibility();
+    void closeClicked();
+
+Q_SIGNALS:
+    void triggered(bool hidden);
 
 protected:
     bool eventFilter(QObject *obj, QEvent *ev) override;
@@ -46,6 +51,7 @@ private:
     QVector<QPair<qint64, double>> blockProcessTime;
     bool layerIsVisible;
     bool userClosed;
+    QPropertyAnimation m_animation;
     void UpdateHeaderSyncLabel();
 };
 

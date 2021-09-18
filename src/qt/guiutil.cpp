@@ -44,6 +44,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QList>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QProcess>
 #include <QProgressDialog>
@@ -219,10 +220,10 @@ QString formatBitcoinURI(const CChainParams &params,
     int paramCount = 0;
 
     if (info.amount != Amount::zero()) {
-        ret +=
-            QString("?amount=%1")
-                .arg(BitcoinUnits::format(BitcoinUnits::base, info.amount,
-                                          false, BitcoinUnits::separatorNever));
+        ret += QString("?amount=%1")
+                   .arg(BitcoinUnits::format(
+                       BitcoinUnits::base, info.amount, false,
+                       BitcoinUnits::SeparatorStyle::NEVER));
         paramCount++;
     }
 
@@ -262,7 +263,7 @@ QString HtmlEscape(const std::string &str, bool fMultiLine) {
     return HtmlEscape(QString::fromStdString(str), fMultiLine);
 }
 
-void copyEntryData(QAbstractItemView *view, int column, int role) {
+void copyEntryData(const QAbstractItemView *view, int column, int role) {
     if (!view || !view->selectionModel()) {
         return;
     }
@@ -274,11 +275,19 @@ void copyEntryData(QAbstractItemView *view, int column, int role) {
     }
 }
 
-QList<QModelIndex> getEntryData(QAbstractItemView *view, int column) {
+QList<QModelIndex> getEntryData(const QAbstractItemView *view, int column) {
     if (!view || !view->selectionModel()) {
         return QList<QModelIndex>();
     }
     return view->selectionModel()->selectedRows(column);
+}
+
+bool hasEntryData(const QAbstractItemView *view, int column, int role) {
+    QModelIndexList selection = getEntryData(view, column);
+    if (selection.isEmpty()) {
+        return false;
+    }
+    return !selection.at(0).data(role).toString().isEmpty();
 }
 
 QString getDefaultDataDirectory() {
@@ -468,6 +477,25 @@ bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt) {
         }
     }
     return QObject::eventFilter(obj, evt);
+}
+
+LabelOutOfFocusEventFilter::LabelOutOfFocusEventFilter(QObject *parent)
+    : QObject(parent) {}
+
+bool LabelOutOfFocusEventFilter::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::FocusOut) {
+        auto focus_out = static_cast<QFocusEvent *>(event);
+        if (focus_out->reason() != Qt::PopupFocusReason) {
+            auto label = qobject_cast<QLabel *>(watched);
+            if (label) {
+                auto flags = label->textInteractionFlags();
+                label->setTextInteractionFlags(Qt::NoTextInteraction);
+                label->setTextInteractionFlags(flags);
+            }
+        }
+    }
+
+    return QObject::eventFilter(watched, event);
 }
 
 void TableViewLastColumnResizingFixer::connectViewHeadersSignals() {
@@ -933,6 +961,14 @@ void LogQtInfo() {
                   s->name().toStdString(), s->size().width(),
                   s->size().height(), s->devicePixelRatio());
     }
+}
+
+void PopupMenu(QMenu *menu, const QPoint &point, QAction *at_action) {
+    // The qminimal plugin does not provide window system integration.
+    if (QApplication::platformName() == "minimal") {
+        return;
+    }
+    menu->popup(point, at_action);
 }
 
 } // namespace GUIUtil

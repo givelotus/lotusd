@@ -1,15 +1,15 @@
 import React from 'react';
 import styled from 'styled-components';
 import { WalletContext } from '@utils/context';
-import { OnBoarding } from '@components/OnBoarding/OnBoarding';
+import OnBoarding from '@components/OnBoarding/OnBoarding';
 import { QRCode } from '@components/Common/QRCode';
 import { currency } from '@components/Common/Ticker.js';
 import { Link } from 'react-router-dom';
 import TokenList from './TokenList';
 import TxHistory from './TxHistory';
-import { CashLoader } from '@components/Common/CustomIcons';
-import { BalanceHeader } from '@components/Common/BalanceHeader';
-import { BalanceHeaderFiat } from '@components/Common/BalanceHeaderFiat';
+import ApiError from '@components/Common/ApiError';
+import BalanceHeader from '@components/Common/BalanceHeader';
+import BalanceHeaderFiat from '@components/Common/BalanceHeaderFiat';
 import { LoadingCtn, ZeroBalanceHeader } from '@components/Common/Atoms';
 import { getWalletState } from '@utils/cashMethods';
 
@@ -213,15 +213,7 @@ const WalletInfo = () => {
                     )}
                 </>
             )}
-            {apiError && (
-                <>
-                    <p style={{ color: 'red' }}>
-                        <b>An error occurred on our end.</b>
-                        <br></br> Re-establishing connection...
-                    </p>
-                    <CashLoader />
-                </>
-            )}
+            {apiError && <ApiError />}
 
             {wallet && ((wallet.Path245 && wallet.Path145) || wallet.Path1899) && (
                 <>
