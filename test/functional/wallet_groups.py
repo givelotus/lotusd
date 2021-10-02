@@ -17,9 +17,17 @@ from test_framework.util import (
 class WalletGroupTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 4
+        self.num_nodes = 5
         self.extra_args = [
-            [], [], ['-avoidpartialspends'], ["-maxapsfee=0.01"]]
+            [],
+            [],
+            ['-avoidpartialspends'],
+            # 2.93 XEC is the threshold that causes a node to prefer a
+            # non-grouped tx (3 inputs, 2 outputs) to a grouped tx (5 inputs,
+            # 2 outputs). The fee for the grouped tx is 294 sats higher than
+            # the fee for the non-grouped tx. See tx5 below.
+            ["-maxapsfee=2.93"],
+            ["-maxapsfee=2.94"]]
         self.rpc_timeout = 120
         self.supports_cli = False
 
@@ -31,8 +39,8 @@ class WalletGroupTest(BitcoinTestFramework):
         self.nodes[0].generate(110)
 
         # Get some addresses from the two nodes
-        addr1 = [self.nodes[1].getnewaddress() for i in range(3)]
-        addr2 = [self.nodes[2].getnewaddress() for i in range(3)]
+        addr1 = [self.nodes[1].getnewaddress() for _ in range(3)]
+        addr2 = [self.nodes[2].getnewaddress() for _ in range(3)]
         addrs = addr1 + addr2
 
         # Send 1 + 0.5 coin to each address
@@ -113,6 +121,34 @@ class WalletGroupTest(BitcoinTestFramework):
         assert_equal(2, len(tx4["vin"]))
         assert_equal(2, len(tx4["vout"]))
 
+        addr_aps2 = self.nodes[3].getnewaddress()
+        [self.nodes[0].sendtoaddress(addr_aps2, 1_000_000) for _ in range(5)]
+        self.nodes[0].generate(1)
+        self.sync_all()
+        with self.nodes[3].assert_debug_log([
+                'Fee non-grouped = 519, grouped = 813, using non-grouped']):
+            txid5 = self.nodes[3].sendtoaddress(self.nodes[0].getnewaddress(),
+                                                2_950_000)
+        tx5 = self.nodes[3].getrawtransaction(txid5, True)
+        # tx5 should have 3 inputs (1.0, 1.0, 1.0) and 2 outputs
+        assert_equal(3, len(tx5["vin"]))
+        assert_equal(2, len(tx5["vout"]))
+
+        # Test wallet option maxapsfee with node 4, which sets maxapsfee
+        # 1 sat higher, crossing the threshold from non-grouped to grouped.
+        addr_aps3 = self.nodes[4].getnewaddress()
+        [self.nodes[0].sendtoaddress(addr_aps3, 1_000_000) for _ in range(5)]
+        self.nodes[0].generate(1)
+        self.sync_all()
+        with self.nodes[4].assert_debug_log([
+                'Fee non-grouped = 519, grouped = 813, using grouped']):
+            txid6 = self.nodes[4].sendtoaddress(self.nodes[0].getnewaddress(),
+                                                2_950_000)
+        tx6 = self.nodes[4].getrawtransaction(txid6, True)
+        # tx6 should have 5 inputs and 2 outputs
+        assert_equal(5, len(tx6["vin"]))
+        assert_equal(2, len(tx6["vout"]))
+
         # Empty out node2's wallet
         self.nodes[2].sendtoaddress(address=self.nodes[0].getnewaddress(
         ), amount=self.nodes[2].getbalance(), subtractfeefromamount=True)
@@ -121,7 +157,7 @@ class WalletGroupTest(BitcoinTestFramework):
 
         # Fill node2's wallet with 10000 outputs corresponding to the same
         # scriptPubKey
-        for i in range(5):
+        for _ in range(5):
             raw_tx = self.nodes[0].createrawtransaction(
                 [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: Decimal('0.05')}])
             tx = FromHex(CTransaction(), raw_tx)

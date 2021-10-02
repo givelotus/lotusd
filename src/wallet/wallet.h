@@ -276,7 +276,7 @@ int CalculateMaximumSignedInputSize(const CTxOut &txout, const CWallet *pwallet,
  */
 class CWalletTx {
 private:
-    const CWallet *pwallet;
+    const CWallet *const pwallet;
 
     /**
      * Constant used in hashBlock to indicate tx has been abandoned, only used
@@ -523,7 +523,6 @@ public:
 
     bool InMempool() const;
     bool IsTrusted() const;
-    bool IsTrusted(std::set<TxId> &trusted_parents) const;
 
     int64_t GetTxTime() const;
 
@@ -896,7 +895,10 @@ public:
         return *m_chain;
     }
 
-    const CWalletTx *GetWalletTx(const TxId &txid) const;
+    const CWalletTx *GetWalletTx(const TxId &txid) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    bool IsTrusted(const CWalletTx &wtx, std::set<TxId> &trusted_parents) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     //! check whether we are allowed to upgrade (or already support) to the
     //! named feature
@@ -1254,20 +1256,29 @@ public:
     bool GetNewChangeDestination(const OutputType type, CTxDestination &dest,
                                  std::string &error);
 
-    isminetype IsMine(const CTxDestination &dest) const;
-    isminetype IsMine(const CScript &script) const;
-    isminetype IsMine(const CTxIn &txin) const;
+    isminetype IsMine(const CTxDestination &dest) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    isminetype IsMine(const CScript &script) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    isminetype IsMine(const CTxIn &txin) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     /**
      * Returns amount of debit if the input matches the filter, otherwise
      * returns 0
      */
     Amount GetDebit(const CTxIn &txin, const isminefilter &filter) const;
-    isminetype IsMine(const CTxOut &txout) const;
+    isminetype IsMine(const CTxOut &txout) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    ;
     Amount GetCredit(const CTxOut &txout, const isminefilter &filter) const;
-    bool IsChange(const CTxOut &txout) const;
-    bool IsChange(const CScript &script) const;
-    Amount GetChange(const CTxOut &txout) const;
-    bool IsMine(const CTransaction &tx) const;
+    bool IsChange(const CTxOut &txout) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    bool IsChange(const CScript &script) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    Amount GetChange(const CTxOut &txout) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    bool IsMine(const CTransaction &tx) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     /** should probably be renamed to IsRelevantToMe */
     bool IsFromMe(const CTransaction &tx) const;
     Amount GetDebit(const CTransaction &tx, const isminefilter &filter) const;

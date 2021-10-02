@@ -13,6 +13,12 @@
 
 class CBlockIndex;
 
+struct IndexSummary {
+    std::string name;
+    bool synced{false};
+    int best_block_height{0};
+};
+
 /**
  * Base class for indices of blockchain data. This implements
  * CValidationInterface and ensures blocks are indexed sequentially according
@@ -20,6 +26,13 @@ class CBlockIndex;
  */
 class BaseIndex : public CValidationInterface {
 protected:
+    /**
+     * The database stores a block locator of the chain the database is synced
+     * to so that the TxIndex can efficiently determine the point it last
+     * stopped at. A locator is used instead of a simple hash of the chain tip
+     * because blocks and block index entries may not be flushed to disk until
+     * after this database is updated.
+     */
     class DB : public CDBWrapper {
     public:
         DB(const fs::path &path, size_t n_cache_size, bool f_memory = false,
@@ -110,6 +123,9 @@ public:
 
     /// Stops the instance from staying in sync with blockchain updates.
     void Stop();
+
+    /// Get a summary of the index and its state.
+    IndexSummary GetSummary() const;
 };
 
 #endif // BITCOIN_INDEX_BASE_H

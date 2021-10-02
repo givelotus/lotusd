@@ -10,6 +10,7 @@
 #include <amount.h>
 #include <rpc/command.h>
 #include <rpc/request.h>
+#include <rpc/util.h>
 #include <rwcollection.h>
 #include <util/system.h>
 
@@ -50,7 +51,7 @@ public:
      * Attempts to execute an RPC command from the given request.
      * If no RPC command exists that matches the request, an error is returned.
      */
-    UniValue ExecuteCommand(Config &config,
+    UniValue ExecuteCommand(const Config &config,
                             const JSONRPCRequest &request) const;
 
     /**
@@ -141,10 +142,9 @@ void RPCUnsetTimerInterface(RPCTimerInterface *iface);
 void RPCRunLater(const std::string &name, std::function<void()> func,
                  int64_t nSeconds);
 
-using rpcfn_type = UniValue (*)(Config &config,
+using rpcfn_type = UniValue (*)(const Config &config,
                                 const JSONRPCRequest &jsonRequest);
-using const_rpcfn_type = UniValue (*)(const Config &config,
-                                      const JSONRPCRequest &jsonRequest);
+using RpcMethodFnType = RPCHelpMan (*)();
 
 class CRPCCommand {
 public:
@@ -152,7 +152,7 @@ public:
     //! true if request is fully handled, false if it should be passed on to
     //! subsequent handlers.
     using Actor =
-        std::function<bool(Config &config, const JSONRPCRequest &request,
+        std::function<bool(const Config &config, const JSONRPCRequest &request,
                            UniValue &result, bool last_handler)>;
 
     //! Constructor taking Actor callback supporting multiple handlers.
@@ -162,20 +162,23 @@ public:
           actor(std::move(_actor)), argNames(std::move(_args)),
           unique_id(_unique_id) {}
 
-    //! Simplified constructor taking plain rpcfn_type function pointer.
-    CRPCCommand(const char *_category, const char *_name, rpcfn_type _fn,
-                std::initializer_list<const char *> _args)
+    //! Simplified constructor taking plain RpcMethodFnType function pointer.
+    CRPCCommand(std::string _category, std::string name_in, RpcMethodFnType _fn,
+                std::vector<std::string> args_in)
         : CRPCCommand(
-              _category, _name,
-              [_fn](Config &config, const JSONRPCRequest &request,
+              _category, _fn().m_name,
+              [_fn](const Config &config, const JSONRPCRequest &request,
                     UniValue &result, bool) {
-                  result = _fn(config, request);
+                  result = _fn().HandleRequest(config, request);
                   return true;
               },
-              {_args.begin(), _args.end()}, intptr_t(_fn)) {}
+              _fn().GetArgNames(), intptr_t(_fn)) {
+        CHECK_NONFATAL(_fn().m_name == name_in);
+        CHECK_NONFATAL(_fn().GetArgNames() == args_in);
+    }
 
     //! Simplified constructor taking plain const_rpcfn_type function pointer.
-    CRPCCommand(const char *_category, const char *_name, const_rpcfn_type _fn,
+    CRPCCommand(const char *_category, const char *_name, rpcfn_type _fn,
                 std::initializer_list<const char *> _args)
         : CRPCCommand(
               _category, _name,
@@ -194,7 +197,7 @@ public:
 };
 
 /**
- * Bitcoin RPC command dispatcher.
+ * RPC command dispatcher.
  */
 class CRPCTable {
 private:
@@ -202,7 +205,7 @@ private:
 
 public:
     CRPCTable();
-    std::string help(Config &config, const std::string &name,
+    std::string help(const Config &config, const std::string &name,
                      const JSONRPCRequest &helpreq) const;
 
     /**
@@ -211,7 +214,7 @@ public:
      * @returns Result of the call.
      * @throws an exception (UniValue) when an error happens.
      */
-    UniValue execute(Config &config, const JSONRPCRequest &request) const;
+    UniValue execute(const Config &config, const JSONRPCRequest &request) const;
 
     /**
      * Returns a list of registered commands
@@ -222,8 +225,7 @@ public:
     /**
      * Appends a CRPCCommand to the dispatch table.
      *
-     * Returns false if RPC server is already running (dump concurrency
-     * protection).
+     * Precondition: RPC server is not running
      *
      * Commands with different method names but the same unique_id will
      * be considered aliases, and only the first registered method name will
@@ -232,7 +234,7 @@ public:
      * between calls based on method name, and aliased commands can also
      * register different names, types, and numbers of parameters.
      */
-    bool appendCommand(const std::string &name, const CRPCCommand *pcmd);
+    void appendCommand(const std::string &name, const CRPCCommand *pcmd);
     bool removeCommand(const std::string &name, const CRPCCommand *pcmd);
 };
 
@@ -243,7 +245,7 @@ extern CRPCTable tableRPC;
 void StartRPC();
 void InterruptRPC();
 void StopRPC();
-std::string JSONRPCExecBatch(Config &config, RPCServer &rpcServer,
+std::string JSONRPCExecBatch(const Config &config, RPCServer &rpcServer,
                              const JSONRPCRequest &req, const UniValue &vReq);
 
 /**

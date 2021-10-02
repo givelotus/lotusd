@@ -25,10 +25,11 @@ bool ProofBuilder::addUTXO(COutPoint utxo, Amount amount, uint32_t height,
         return false;
     }
 
-    stakes.emplace_back(
-        Stake(std::move(utxo), amount, height, is_coinbase, key.GetPubKey()),
-        std::move(key));
-    return true;
+    return stakes
+        .emplace(Stake(std::move(utxo), amount, height, is_coinbase,
+                       key.GetPubKey()),
+                 std::move(key))
+        .second;
 }
 
 Proof ProofBuilder::build() {
@@ -37,12 +38,12 @@ Proof ProofBuilder::build() {
     std::vector<SignedStake> signedStakes;
     signedStakes.reserve(stakes.size());
 
-    for (auto &s : stakes) {
-        signedStakes.push_back(s.sign(proofid));
+    while (!stakes.empty()) {
+        auto handle = stakes.extract(stakes.begin());
+        signedStakes.push_back(handle.value().sign(proofid));
     }
 
-    stakes.clear();
-    return Proof(sequence, expirationTime, std::move(master),
+    return Proof(sequence, expirationTime, masterKey.GetPubKey(),
                  std::move(signedStakes));
 }
 
@@ -58,16 +59,9 @@ ProofId ProofBuilder::getProofId() const {
 
     CHashWriter ss2(SER_GETHASH, 0);
     ss2 << ss.GetHash();
-    ss2 << master;
+    ss2 << masterKey.GetPubKey();
 
     return ProofId(ss2.GetHash());
-}
-
-Proof ProofBuilder::buildRandom(uint32_t score) {
-    ProofBuilder pb(0, std::numeric_limits<uint32_t>::max(), CPubKey());
-    pb.addUTXO(COutPoint(TxId(GetRandHash()), 0), (int64_t(score) * COIN), 0,
-               false, CKey::MakeCompressedKey());
-    return pb.build();
 }
 
 } // namespace avalanche

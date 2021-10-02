@@ -219,6 +219,7 @@ BitcoinApplication::BitcoinApplication()
     : QApplication(qt_argc, const_cast<char **>(&qt_argv)), coreThread(nullptr),
       optionsModel(nullptr), clientModel(nullptr), window(nullptr),
       pollShutdownTimer(nullptr), returnValue(0), platformStyle(nullptr) {
+    // Qt runs setlocale(LC_ALL, "") on initialization.
     RegisterMetaTypes();
     setQuitOnLastWindowClosed(false);
 }
@@ -279,6 +280,8 @@ void BitcoinApplication::createSplashScreen(const NetworkStyle *networkStyle) {
     // the splash screen will take care of deleting itself when finish()
     // happens.
     m_splash->show();
+    connect(this, &BitcoinApplication::requestedInitialize, m_splash,
+            &SplashScreen::handleLoadWallet);
     connect(this, &BitcoinApplication::splashFinished, m_splash,
             &SplashScreen::finish);
     connect(this, &BitcoinApplication::requestedShutdown, m_splash,

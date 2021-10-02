@@ -1805,11 +1805,12 @@ static UniValue listsinceblock(const Config &config,
                  }},
                 {RPCResult::Type::STR_HEX, "lastblock",
                  "The hash of the block (target_confirmations-1) from the best "
-                 "block on the main chain. This is typically used to feed back "
-                 "into listsinceblock the next time you call it. So you would "
-                 "generally use a target_confirmations of say 6, so you will "
-                 "be continually re-notified of transactions until they've "
-                 "reached 6 confirmations plus any new ones"},
+                 "block on the main chain, or the genesis hash if the "
+                 "referenced block does not exist yet. This is typically used "
+                 "to feed back into listsinceblock the next time you call it. "
+                 "So you would generally use a target_confirmations of say 6, "
+                 "so you will be continually re-notified of transactions until "
+                 "they've reached 6 confirmations plus any new ones"},
             }},
         RPCExamples{HelpExampleCli("listsinceblock", "") +
                     HelpExampleCli("listsinceblock",
@@ -1910,6 +1911,8 @@ static UniValue listsinceblock(const Config &config,
     }
 
     BlockHash lastblock;
+    target_confirms =
+        std::min(target_confirms, wallet.GetLastBlockHeight() + 1);
     CHECK_NONFATAL(wallet.chain().findAncestorByHeight(
         wallet.GetLastBlockHash(),
         wallet.GetLastBlockHeight() + 1 - target_confirms,
@@ -2533,6 +2536,7 @@ static UniValue lockunspent(const Config &config,
         "current locked transaction outputs are unlocked.\n"
         "A locked transaction output will not be chosen by automatic coin "
         "selection, when spending bitcoins.\n"
+        "Manually selected coins are automatically unlocked.\n"
         "Locks are stored in memory only. Nodes start with zero locked "
         "outputs, and the locked output list\n"
         "is always cleared (by virtue of process exit) when a node stops or "
@@ -2926,9 +2930,11 @@ static UniValue getwalletinfo(const Config &config,
                  "for change outputs, only appears if the wallet is using this "
                  "feature, otherwise external keys are used)"},
                 {RPCResult::Type::NUM_TIME, "unlocked_until",
+                 /* optional */ true,
                  "the " + UNIX_EPOCH_TIME +
                      " until which the wallet is unlocked for transfers, or 0 "
-                     "if the wallet is locked"},
+                     "if the wallet is locked (only present for "
+                     "passphrase-encrypted wallets)"},
                 {RPCResult::Type::STR_AMOUNT, "paytxfee",
                  "the transaction fee configuration, set in " +
                      Currency::get().ticker + "/kB"},
@@ -3528,6 +3534,15 @@ static UniValue listunspent(const Config &config,
     if (!request.params[4].isNull()) {
         const UniValue &options = request.params[4].get_obj();
 
+        RPCTypeCheckObj(options,
+                        {
+                            {"minimumAmount", UniValueType()},
+                            {"maximumAmount", UniValueType()},
+                            {"minimumSumAmount", UniValueType()},
+                            {"maximumCount", UniValueType(UniValue::VNUM)},
+                        },
+                        true, true);
+
         if (options.exists("minimumAmount")) {
             nMinimumAmount = AmountFromValue(options["minimumAmount"]);
         }
@@ -3938,6 +3953,7 @@ UniValue signrawtransactionwithwallet(const Config &config,
                  "If the transaction has a complete set of signatures"},
                 {RPCResult::Type::ARR,
                  "errors",
+                 /* optional */ true,
                  "Script verification errors (if there are any)",
                  {
                      {RPCResult::Type::OBJ,
@@ -4216,7 +4232,7 @@ static UniValue AddressBookDataToJSON(const CAddressBookData &data,
 UniValue getaddressinfo(const Config &config, const JSONRPCRequest &request) {
     RPCHelpMan{
         "getaddressinfo",
-        "\nReturn information about the given bitcoin address.\n"
+        "Return information about the given bitcoin address.\n"
         "Some of the information will only be present if the address is in the "
         "active wallet.\n",
         {
@@ -4890,7 +4906,7 @@ static UniValue walletcreatefundedpsbt(const Config &config,
 static UniValue upgradewallet(const Config &config,
                               const JSONRPCRequest &request) {
     RPCHelpMan{"upgradewallet",
-               "\nUpgrade the wallet. Upgrades to the latest version if no "
+               "Upgrade the wallet. Upgrades to the latest version if no "
                "version number is specified\n"
                "New keys may be generated and a new wallet backup will need to "
                "be made.",

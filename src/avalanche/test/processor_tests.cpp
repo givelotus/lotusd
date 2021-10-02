@@ -119,7 +119,7 @@ struct AvalancheTestingSetup : public TestChain100Setup {
     std::shared_ptr<Proof> GetProof() {
         size_t current_coinbase = next_coinbase++;
         const CTransaction &coinbase = *m_coinbase_txns[current_coinbase];
-        ProofBuilder pb(0, 0, masterpriv.GetPubKey());
+        ProofBuilder pb(0, 0, masterpriv);
         // vout 0 = OP_RETURN, vout 1 = miner reward
         BOOST_CHECK(pb.addUTXO(COutPoint(coinbase.GetId(), 1),
                                coinbase.vout[1].nValue, current_coinbase + 1,
@@ -861,9 +861,7 @@ BOOST_AUTO_TEST_CASE(quorum_diversity) {
     auto confidence = m_processor->getConfidence(pindex);
     BOOST_REQUIRE(confidence > 0);
 
-    for (auto &[nodeid, round] : node_round_map) {
-        uint64_t r = round;
-
+    for (auto &[nodeid, r] : node_round_map) {
         if (nodeid == firstNodeId) {
             // Node 0 is the only one which can vote at this stage.
             round = r;

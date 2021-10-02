@@ -458,13 +458,13 @@ BOOST_AUTO_TEST_CASE(node_binding) {
 BOOST_AUTO_TEST_CASE(node_binding_reorg) {
     avalanche::PeerManager pm;
 
-    ProofBuilder pb(0, 0, CPubKey());
+    ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
     auto key = CKey::MakeCompressedKey();
     const CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
     COutPoint utxo(TxId(GetRandHash()), 0);
     Amount amount = 1 * COIN;
     const int height = 1234;
-    pb.addUTXO(utxo, amount, height, false, key);
+    BOOST_CHECK(pb.addUTXO(utxo, amount, height, false, key));
     auto proof = std::make_shared<Proof>(pb.build());
     const ProofId &proofid = proof->getId();
 
@@ -545,10 +545,11 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
     }
 
     avalanche::PeerManager pm;
+    CKey masterKey = CKey::MakeCompressedKey();
     const auto getPeerId = [&](const std::vector<COutPoint> &outpoints) {
-        ProofBuilder pb(0, 0, CPubKey());
+        ProofBuilder pb(0, 0, masterKey);
         for (const auto &o : outpoints) {
-            pb.addUTXO(o, v, height, false, key);
+            BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
         }
 
         return pm.getPeerId(std::make_shared<Proof>(pb.build()));
@@ -577,8 +578,14 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
     BOOST_CHECK(peer4 != NO_PEER && peer4 != peer1);
 
     // Duplicated input.
-    BOOST_CHECK_EQUAL(getPeerId({COutPoint(txid1, 3), COutPoint(txid1, 3)}),
-                      NO_PEER);
+    {
+        ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
+        COutPoint o(txid1, 3);
+        BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
+        PeerId peerid = pm.getPeerId(std::make_shared<Proof>(
+            TestProofBuilder::buildDuplicatedStakes(pb)));
+        BOOST_CHECK_EQUAL(peerid, NO_PEER);
+    }
 
     // Multiple inputs, collision on first input.
     BOOST_CHECK_EQUAL(getPeerId({COutPoint(txid1, 0), COutPoint(txid2, 4)}),
@@ -608,8 +615,8 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     const int wrongHeight = 12345;
 
     const auto makeProof = [&](const COutPoint &outpoint, const int h) {
-        ProofBuilder pb(0, 0, CPubKey());
-        pb.addUTXO(outpoint, v, h, false, key);
+        ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
+        BOOST_CHECK(pb.addUTXO(outpoint, v, h, false, key));
         return std::make_shared<Proof>(pb.build());
     };
 

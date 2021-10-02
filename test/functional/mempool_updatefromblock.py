@@ -85,7 +85,7 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
                     Decimal(n_outputs)).quantize(
                     Decimal('0.000001'))
                 outputs = {}
-                for n in range(0, n_outputs):
+                for _ in range(n_outputs):
                     outputs[self.nodes[0].getnewaddress()] = output_value
             else:
                 output_value = (

@@ -903,6 +903,7 @@ static UniValue signrawtransactionwithkey(const Config &config,
                  "If the transaction has a complete set of signatures"},
                 {RPCResult::Type::ARR,
                  "errors",
+                 /* optional */ true,
                  "Script verification errors (if there are any)",
                  {
                      {RPCResult::Type::OBJ,
@@ -2077,8 +2078,8 @@ UniValue analyzepsbt(const Config &config, const JSONRPCRequest &request) {
                  "the PSBT have been filled"},
                 {RPCResult::Type::STR, "next",
                  "Role of the next person that this psbt needs to go to"},
-                {RPCResult::Type::STR, "error",
-                 "Error message if there is one"},
+                {RPCResult::Type::STR, "error", /* optional */ true,
+                 "Error message (if there is one)"},
             }},
         RPCExamples{HelpExampleCli("analyzepsbt", "\"psbt\"")}}
         .Check(request);
@@ -2173,8 +2174,7 @@ void RegisterRawTransactionRPCCommands(CRPCTable &t) {
         { "blockchain",         "verifytxoutproof",          verifytxoutproof,          {"proof"} },
     };
     // clang-format on
-
-    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++) {
-        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
+    for (const auto &c : commands) {
+        t.appendCommand(c.name, &c);
     }
 }

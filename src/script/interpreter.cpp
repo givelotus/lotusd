@@ -1107,7 +1107,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                                  iSig++, iKey++) {
                                 if ((checkBits >> iKey) == 0) {
                                     // This is a sanity check and should be
-                                    // unrecheable.
+                                    // unreachable.
                                     return set_error(
                                         serror, ScriptError::INVALID_BIT_RANGE);
                                 }
@@ -1119,7 +1119,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                                 if (iKey >= nKeysCount) {
                                     // This is a sanity check and should be
-                                    // unrecheable.
+                                    // unreachable.
                                     return set_error(serror,
                                                      ScriptError::PUBKEY_COUNT);
                                 }
@@ -1159,7 +1159,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                             if ((checkBits >> iKey) != 0) {
                                 // This is a sanity check and should be
-                                // unrecheable.
+                                // unreachable.
                                 return set_error(
                                     serror, ScriptError::INVALID_BIT_COUNT);
                             }

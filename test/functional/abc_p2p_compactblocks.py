@@ -41,10 +41,7 @@ from test_framework.p2p import (
 from test_framework.script import CScript, OP_RETURN, OP_TRUE
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
-from test_framework.util import (
-    assert_equal,
-    wait_until
-)
+from test_framework.util import assert_equal
 
 
 class PreviousSpendableOutput():
@@ -280,7 +277,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Wait for SENDCMPCT
         def received_sendcmpct():
             return (test_p2p.last_sendcmpct is not None)
-        wait_until(received_sendcmpct, timeout=30)
+        self.wait_until(received_sendcmpct, timeout=30)
 
         sendcmpct = msg_sendcmpct()
         sendcmpct.version = 1
@@ -290,7 +287,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Exchange headers
         def received_getheaders():
             return (test_p2p.last_getheaders is not None)
-        wait_until(received_getheaders, timeout=30)
+        self.wait_until(received_getheaders, timeout=30)
 
         # Return the favor
         test_p2p.send_message(test_p2p.last_getheaders)
@@ -298,7 +295,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Wait for the header list
         def received_headers():
             return (test_p2p.last_headers is not None)
-        wait_until(received_headers, timeout=30)
+        self.wait_until(received_headers, timeout=30)
 
         # It's like we know about the same headers !
         test_p2p.send_message(test_p2p.last_headers)
@@ -310,7 +307,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Checks the node to forward it via compact block
         def received_block():
             return (test_p2p.last_cmpctblock is not None)
-        wait_until(received_block, timeout=30)
+        self.wait_until(received_block, timeout=30)
 
         # Was it our block ?
         cmpctblk_header = test_p2p.last_cmpctblock.header_and_shortids.header
@@ -324,7 +321,7 @@ class FullBlockTest(BitcoinTestFramework):
         default_p2p.send_blocks_and_test([self.tip], node)
 
         # Checks the node forwards it via compact block
-        wait_until(received_block, timeout=30)
+        self.wait_until(received_block, timeout=30)
 
         # Was it our block ?
         cmpctblk_header = test_p2p.last_cmpctblock.header_and_shortids.header

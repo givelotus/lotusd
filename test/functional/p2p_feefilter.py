@@ -30,7 +30,6 @@ def allInvsMatch(invsExpected, testnode):
         time.sleep(1)
     return False
 
-
 class FeefilterConn(P2PInterface):
     feefilter_received = False
 
@@ -52,6 +51,10 @@ class TestP2PConn(P2PInterface):
             if (i.type == MSG_TX):
                 self.txinvs.append(hashToHex(i.hash))
 
+    def wait_for_invs_to_match(self, invs_expected):
+        invs_expected.sort()
+        self.wait_until(lambda: invs_expected == sorted(self.txinvs))
+
     def clear_invs(self):
         with p2p_lock:
             self.txinvs = []
@@ -65,8 +68,13 @@ class FeeFilterTest(BitcoinTestFramework):
         # mempool and wallet feerate calculation based on GetFee
         # rounding down 3 places, leading to stranded transactions.
         # See issue #16499
-        self.extra_args = [["-minrelaytxfee=0.000100",
-                            "-mintxfee=0.000100"]] * self.num_nodes
+        self.extra_args = [
+            [
+                "-minrelaytxfee=0.000100",
+                "-mintxfee=0.000100",
+                "-whitelist=noban@127.0.0.1"
+            ]
+        ] * self.num_nodes
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -105,7 +113,7 @@ class FeeFilterTest(BitcoinTestFramework):
         assert allInvsMatch(txids, conn)
         conn.clear_invs()
 
-        # Set a filter of .15 sat/byte on test connection
+        # Set a fee filter of 0.15 sat/byte on test connection
         conn.send_and_ping(msg_feefilter(150))
 
         # Test that txs are still being received by test connection
@@ -134,7 +142,7 @@ class FeeFilterTest(BitcoinTestFramework):
         assert allInvsMatch(txids, conn)
         conn.clear_invs()
 
-        # Remove fee filter and check that txs are received again
+        self.log.info("Remove fee filter and check txs are received again")
         conn.send_and_ping(msg_feefilter(0))
         txids = [node1.sendtoaddress(node1.getnewaddress(), 100)
                  for x in range(3)]
