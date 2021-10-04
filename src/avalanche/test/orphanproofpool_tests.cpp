@@ -22,11 +22,11 @@ BOOST_FIXTURE_TEST_SUITE(orphanproofpool_tests, TestingSetup)
 static std::shared_ptr<Proof> makeProof(const size_t nStakes) {
     const Amount v = 5 * COIN;
     const int height = 1234;
-    ProofBuilder pb(0, 0, CPubKey());
+    ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
     for (size_t i = 0; i < nStakes; i++) {
         TxId txid(GetRandHash());
-        pb.addUTXO(COutPoint(txid, 0), v, height, false,
-                   CKey::MakeCompressedKey());
+        BOOST_CHECK(pb.addUTXO(COutPoint(txid, 0), v, height, false,
+                               CKey::MakeCompressedKey()));
     }
     return std::make_shared<Proof>(pb.build());
 }

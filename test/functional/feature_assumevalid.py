@@ -16,8 +16,8 @@ transactions:
               output can be spent
     102:      a block containing a transaction spending the coinbase
               transaction output. The transaction has an invalid signature.
-    103-2202: bury the bad block with just over two weeks' worth of blocks
-              (2100 blocks)
+    103-3802: bury the bad block with just over two weeks' worth of blocks
+              (3802 blocks)
 
 Start three nodes:
 
@@ -132,7 +132,7 @@ class AssumeValidTest(BitcoinTestFramework):
         height += 1
 
         # Bury the block 100 deep so the coinbase output is spendable
-        for i in range(100):
+        for _ in range(100):
             block = create_block(
                 self.tip, create_coinbase(height), height, self.block_time)
             prepare_block(block)
@@ -160,8 +160,8 @@ class AssumeValidTest(BitcoinTestFramework):
         self.block_time += 1
         height += 1
 
-        # Bury the assumed valid block 3400 deep
-        for i in range(3700):
+        # Bury the assumed valid block 3802 deep
+        for _ in range(3802):
             block = create_block(
                 self.tip, create_coinbase(height), height, self.block_time)
             prepare_block(block)

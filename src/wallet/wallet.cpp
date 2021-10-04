@@ -198,15 +198,6 @@ std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
     return wallet;
 }
 
-std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
-                                    interfaces::Chain &chain,
-                                    const std::string &name,
-                                    bilingual_str &error,
-                                    std::vector<bilingual_str> &warnings) {
-    return LoadWallet(chainParams, chain, WalletLocation(name), error,
-                      warnings);
-}
-
 WalletCreationStatus CreateWallet(const CChainParams &params,
                                   interfaces::Chain &chain,
                                   const SecureString &passphrase,
@@ -317,7 +308,7 @@ const CChainParams &CWallet::GetChainParams() const {
 }
 
 const CWalletTx *CWallet::GetWalletTx(const TxId &txid) const {
-    LOCK(cs_wallet);
+    AssertLockHeld(cs_wallet);
     std::map<TxId, CWalletTx>::const_iterator it = mapWallet.find(txid);
     if (it == mapWallet.end()) {
         return nullptr;
@@ -1317,7 +1308,7 @@ void CWallet::BlockUntilSyncedToCurrentChain() const {
 }
 
 isminetype CWallet::IsMine(const CTxIn &txin) const {
-    LOCK(cs_wallet);
+    AssertLockHeld(cs_wallet);
     std::map<TxId, CWalletTx>::const_iterator mi =
         mapWallet.find(txin.prevout.GetTxId());
     if (mi != mapWallet.end()) {
@@ -1349,14 +1340,17 @@ Amount CWallet::GetDebit(const CTxIn &txin, const isminefilter &filter) const {
 }
 
 isminetype CWallet::IsMine(const CTxOut &txout) const {
+    AssertLockHeld(cs_wallet);
     return IsMine(txout.scriptPubKey);
 }
 
 isminetype CWallet::IsMine(const CTxDestination &dest) const {
+    AssertLockHeld(cs_wallet);
     return IsMine(GetScriptForDestination(dest));
 }
 
 isminetype CWallet::IsMine(const CScript &script) const {
+    AssertLockHeld(cs_wallet);
     isminetype result = ISMINE_NO;
     for (const auto &spk_man_pair : m_spk_managers) {
         result = std::max(result, spk_man_pair.second->IsMine(script));
@@ -1370,7 +1364,7 @@ Amount CWallet::GetCredit(const CTxOut &txout,
         throw std::runtime_error(std::string(__func__) +
                                  ": value out of range");
     }
-
+    LOCK(cs_wallet);
     return (IsMine(txout) & filter) ? txout.nValue : Amount::zero();
 }
 
@@ -1387,13 +1381,12 @@ bool CWallet::IsChange(const CScript &script) const {
     // outputs are 'the send' and which are 'the change' will need to be
     // implemented (maybe extend CWalletTx to remember which output, if any, was
     // change).
+    AssertLockHeld(cs_wallet);
     if (IsMine(script)) {
         CTxDestination address;
         if (!ExtractDestination(script, address)) {
             return true;
         }
-
-        LOCK(cs_wallet);
         if (!FindAddressBookEntry(address)) {
             return true;
         }
@@ -1403,6 +1396,7 @@ bool CWallet::IsChange(const CScript &script) const {
 }
 
 Amount CWallet::GetChange(const CTxOut &txout) const {
+    AssertLockHeld(cs_wallet);
     if (!MoneyRange(txout.nValue)) {
         throw std::runtime_error(std::string(__func__) +
                                  ": value out of range");
@@ -1412,6 +1406,7 @@ Amount CWallet::GetChange(const CTxOut &txout) const {
 }
 
 bool CWallet::IsMine(const CTransaction &tx) const {
+    AssertLockHeld(cs_wallet);
     for (const CTxOut &txout : tx.vout) {
         if (IsMine(txout)) {
             return true;
@@ -1480,6 +1475,7 @@ Amount CWallet::GetCredit(const CTransaction &tx,
 }
 
 Amount CWallet::GetChange(const CTransaction &tx) const {
+    LOCK(cs_wallet);
     Amount nChange = Amount::zero();
     for (const CTxOut &txout : tx.vout) {
         nChange += GetChange(txout);
@@ -1730,6 +1726,7 @@ void CWalletTx::GetAmounts(std::list<COutputEntry> &listReceived,
         nFee = (nDebit - nValueOut);
     }
 
+    LOCK(pwallet->cs_wallet);
     // Sent/received.
     for (unsigned int i = 0; i < tx->vout.size(); ++i) {
         const CTxOut &txout = tx->vout[i];
@@ -2168,19 +2165,21 @@ bool CWalletTx::InMempool() const {
 }
 
 bool CWalletTx::IsTrusted() const {
-    std::set<TxId> s;
-    return IsTrusted(s);
+    std::set<TxId> trusted_parents;
+    LOCK(pwallet->cs_wallet);
+    return pwallet->IsTrusted(*this, trusted_parents);
 }
 
-bool CWalletTx::IsTrusted(std::set<TxId> &trusted_parents) const {
+bool CWallet::IsTrusted(const CWalletTx &wtx,
+                        std::set<TxId> &trusted_parents) const {
+    AssertLockHeld(cs_wallet);
     // Quick answer in most cases
     TxValidationState state;
-    if (!pwallet->chain().contextualCheckTransactionForCurrentBlock(*tx,
-                                                                    state)) {
+    if (!chain().contextualCheckTransactionForCurrentBlock(*wtx.tx, state)) {
         return false;
     }
 
-    int nDepth = GetDepthInMainChain();
+    int nDepth = wtx.GetDepthInMainChain();
     if (nDepth >= 1) {
         return true;
     }
@@ -2190,27 +2189,27 @@ bool CWalletTx::IsTrusted(std::set<TxId> &trusted_parents) const {
     }
 
     // using wtx's cached debit
-    if (!pwallet->m_spend_zero_conf_change || !IsFromMe(ISMINE_ALL)) {
+    if (!m_spend_zero_conf_change || !wtx.IsFromMe(ISMINE_ALL)) {
         return false;
     }
 
     // Don't trust unconfirmed transactions from us unless they are in the
     // mempool.
-    if (!InMempool()) {
+    if (!wtx.InMempool()) {
         return false;
     }
 
     // Trusted if all inputs are from us and are in the mempool:
-    for (const CTxIn &txin : tx->vin) {
+    for (const CTxIn &txin : wtx.tx->vin) {
         // Transactions not sent by us: not trusted
-        const CWalletTx *parent = pwallet->GetWalletTx(txin.prevout.GetTxId());
+        const CWalletTx *parent = GetWalletTx(txin.prevout.GetTxId());
         if (parent == nullptr) {
             return false;
         }
 
         const CTxOut &parentOut = parent->tx->vout[txin.prevout.GetN()];
         // Check that this specific input being spent is trusted
-        if (pwallet->IsMine(parentOut) != ISMINE_SPENDABLE) {
+        if (IsMine(parentOut) != ISMINE_SPENDABLE) {
             return false;
         }
         // If we've already trusted this parent, continue
@@ -2218,7 +2217,7 @@ bool CWalletTx::IsTrusted(std::set<TxId> &trusted_parents) const {
             continue;
         }
         // Recurse to check that the parent is also trusted
-        if (!parent->IsTrusted(trusted_parents)) {
+        if (!IsTrusted(*parent, trusted_parents)) {
             return false;
         }
         trusted_parents.insert(parent->GetId());
@@ -2318,7 +2317,7 @@ CWallet::Balance CWallet::GetBalance(const int min_depth,
     std::set<TxId> trusted_parents;
     for (const auto &entry : mapWallet) {
         const CWalletTx &wtx = entry.second;
-        const bool is_trusted{wtx.IsTrusted(trusted_parents)};
+        const bool is_trusted{IsTrusted(wtx, trusted_parents)};
         const int tx_depth{wtx.GetDepthInMainChain()};
         const Amount tx_credit_mine{wtx.GetAvailableCredit(
             /* fUseCache */ true, ISMINE_SPENDABLE | reuse_filter)};
@@ -2401,7 +2400,7 @@ void CWallet::AvailableCoins(std::vector<COutput> &vCoins, bool fOnlySafe,
             continue;
         }
 
-        bool safeTx = wtx.IsTrusted(trusted_parents);
+        bool safeTx = IsTrusted(wtx, trusted_parents);
 
         // Bitcoin-ABC: Removed check that prevents consideration of coins from
         // transactions that are replacing other transactions. This check based
@@ -2597,42 +2596,20 @@ bool CWallet::SelectCoinsMinConf(
                 continue;
             }
 
-            group.fee = Amount::zero();
-            group.long_term_fee = Amount::zero();
-            group.effective_value = Amount::zero();
-            for (auto it = group.m_outputs.begin();
-                 it != group.m_outputs.end();) {
-                const CInputCoin &coin = *it;
-                Amount effective_value =
-                    coin.txout.nValue -
-                    (coin.m_input_bytes < 0
-                         ? Amount::zero()
-                         : coin_selection_params.effective_fee.GetFee(
-                               coin.m_input_bytes));
-                // Only include outputs that are positive effective value (i.e.
-                // not dust)
-                if (effective_value > Amount::zero()) {
-                    group.fee +=
-                        coin.m_input_bytes < 0
-                            ? Amount::zero()
-                            : coin_selection_params.effective_fee.GetFee(
-                                  coin.m_input_bytes);
-                    group.long_term_fee +=
-                        coin.m_input_bytes < 0
-                            ? Amount::zero()
-                            : long_term_feerate.GetFee(coin.m_input_bytes);
-                    if (coin_selection_params.m_subtract_fee_outputs) {
-                        group.effective_value += coin.txout.nValue;
-                    } else {
-                        group.effective_value += effective_value;
-                    }
-                    ++it;
-                } else {
-                    it = group.Discard(coin);
-                }
+            if (coin_selection_params.m_subtract_fee_outputs) {
+                // Set the effective feerate to 0 as we don't want to use the
+                // effective value since the fees will be deducted from the
+                // output
+                group.SetFees(CFeeRate(Amount::zero()) /* effective_feerate */,
+                              long_term_feerate);
+            } else {
+                group.SetFees(coin_selection_params.effective_fee,
+                              long_term_feerate);
             }
-            if (group.effective_value > Amount::zero()) {
-                utxo_pool.push_back(group);
+
+            OutputGroup pos_group = group.GetPositiveOnlyGroup();
+            if (pos_group.effective_value > Amount::zero()) {
+                utxo_pool.push_back(pos_group);
             }
         }
         // Calculate the fees for things that aren't inputs
@@ -2859,7 +2836,7 @@ bool CWallet::SignTransaction(CMutableTransaction &tx,
             continue;
         }
     }
-
+ 
     // When there are no available providers for the remaining inputs, use the
     // legacy provider so we can get proper error messages.
     auto legacy_spk_man = GetLegacyScriptPubKeyMan();
@@ -2974,10 +2951,9 @@ bool CWallet::FundTransaction(CMutableTransaction &tx, Amount &nFeeRet,
     for (const CTxIn &txin : tx_new->vin) {
         if (!coinControl.IsSelected(txin.prevout)) {
             tx.vin.push_back(txin);
-
-            if (lockUnspents) {
-                LockCoin(txin.prevout);
-            }
+        }
+        if (lockUnspents) {
+            LockCoin(txin.prevout);
         }
     }
 
@@ -3614,6 +3590,7 @@ bool CWallet::SetAddressBookWithDB(WalletBatch &batch,
                                    const std::string &strName,
                                    const std::string &strPurpose) {
     bool fUpdated = false;
+    bool is_mine;
     {
         LOCK(cs_wallet);
         std::map<CTxDestination, CAddressBookData>::iterator mi =
@@ -3624,10 +3601,10 @@ bool CWallet::SetAddressBookWithDB(WalletBatch &batch,
         if (!strPurpose.empty()) {
             m_address_book[address].purpose = strPurpose;
         }
+        is_mine = IsMine(address) != ISMINE_NO;
     }
 
-    NotifyAddressBookChanged(this, address, strName,
-                             IsMine(address) != ISMINE_NO, strPurpose,
+    NotifyAddressBookChanged(this, address, strName, is_mine, strPurpose,
                              (fUpdated ? CT_UPDATED : CT_NEW));
     if (!strPurpose.empty() && !batch.WritePurpose(address, strPurpose)) {
         return false;
@@ -3643,33 +3620,33 @@ bool CWallet::SetAddressBook(const CTxDestination &address,
 }
 
 bool CWallet::DelAddressBook(const CTxDestination &address) {
-    // If we want to delete receiving addresses, we need to take care that
-    // DestData "used" (and possibly newer DestData) gets preserved (and the
-    // "deleted" address transformed into a change entry instead of actually
-    // being deleted)
-    // NOTE: This isn't a problem for sending addresses because they never have
-    // any DestData yet! When adding new DestData, it should be considered here
-    // whether to retain or delete it (or move it?).
-    if (IsMine(address)) {
-        WalletLogPrintf("%s called with IsMine address, NOT SUPPORTED. Please "
-                        "report this bug! %s\n",
-                        __func__, PACKAGE_BUGREPORT);
-        return false;
-    }
-
+    bool is_mine;
     {
         LOCK(cs_wallet);
-
+        // If we want to delete receiving addresses, we need to take care that
+        // DestData "used" (and possibly newer DestData) gets preserved (and the
+        // "deleted" address transformed into a change entry instead of actually
+        // being deleted)
+        // NOTE: This isn't a problem for sending addresses because they never
+        // have any DestData yet! When adding new DestData, it should be
+        // considered here whether to retain or delete it (or move it?).
+        if (IsMine(address)) {
+            WalletLogPrintf(
+                "%s called with IsMine address, NOT SUPPORTED. Please "
+                "report this bug! %s\n",
+                __func__, PACKAGE_BUGREPORT);
+            return false;
+        }
         // Delete destdata tuples associated with address
         for (const std::pair<const std::string, std::string> &item :
              m_address_book[address].destdata) {
             WalletBatch(*database).EraseDestData(address, item.first);
         }
         m_address_book.erase(address);
+        is_mine = IsMine(address) != ISMINE_NO;
     }
 
-    NotifyAddressBookChanged(this, address, "", IsMine(address) != ISMINE_NO,
-                             "", CT_DELETED);
+    NotifyAddressBookChanged(this, address, "", is_mine, "", CT_DELETED);
 
     WalletBatch(*database).ErasePurpose(address);
     return WalletBatch(*database).EraseName(address);
@@ -3780,7 +3757,7 @@ std::map<CTxDestination, Amount> CWallet::GetAddressBalances() const {
     for (const auto &walletEntry : mapWallet) {
         const CWalletTx &wtx = walletEntry.second;
 
-        if (!wtx.IsTrusted(trusted_parents)) {
+        if (!IsTrusted(wtx, trusted_parents)) {
             continue;
         }
 
@@ -3806,10 +3783,6 @@ std::map<CTxDestination, Amount> CWallet::GetAddressBalances() const {
             Amount n = IsSpent(COutPoint(walletEntry.first, i))
                            ? Amount::zero()
                            : wtx.tx->vout[i].nValue;
-
-            if (!balances.count(addr)) {
-                balances[addr] = Amount::zero();
-            }
             balances[addr] += n;
         }
     }
@@ -4373,18 +4346,20 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
     }
 
     if (gArgs.IsArgSet("-maxapsfee")) {
+        const std::string max_aps_fee{gArgs.GetArg("-maxapsfee", "")};
         Amount n = Amount::zero();
-        if (gArgs.GetArg("-maxapsfee", "") == "-1") {
+        if (max_aps_fee == "-1") {
             n = -1 * SATOSHI;
-        } else if (!ParseMoney(gArgs.GetArg("-maxapsfee", ""), n)) {
-            error = AmountErrMsg("maxapsfee", gArgs.GetArg("-maxapsfee", ""));
+        } else if (!ParseMoney(max_aps_fee, n)) {
+            error = AmountErrMsg("maxapsfee", max_aps_fee);
             return nullptr;
         }
         if (n > HIGH_APS_FEE) {
             warnings.push_back(
                 AmountHighWarn("-maxapsfee") + Untranslated(" ") +
-                _("This is the maximum transaction fee you pay to prioritize "
-                  "partial spend avoidance over regular coin selection."));
+                _("This is the maximum transaction fee you pay (in addition to"
+                  " the normal fee) to prioritize partial spend avoidance over"
+                  " regular coin selection."));
         }
         walletInstance->m_max_aps_fee = n;
     }

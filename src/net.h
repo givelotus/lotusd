@@ -32,6 +32,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -58,8 +59,11 @@ static const bool DEFAULT_WHITELISTFORCERELAY = false;
 static const int TIMEOUT_INTERVAL = 20 * 60;
 /** Run the feeler connection loop once every 2 minutes or 120 seconds. **/
 static const int FEELER_INTERVAL = 120;
-/** The maximum number of new addresses to accumulate before announcing. */
-static const unsigned int MAX_ADDR_TO_SEND = 1000;
+/**
+ * The maximum number of addresses from our addrman to return in response to
+ * a getaddr message.
+ */
+static constexpr size_t MAX_ADDR_TO_SEND = 1000;
 /** Maximum length of the user agent string in `version` message */
 static const unsigned int MAX_SUBVERSION_LENGTH = 256;
 /**
@@ -334,9 +338,17 @@ public:
     // Addrman functions
     void SetServices(const CService &addr, ServiceFlags nServices);
     void MarkAddressGood(const CAddress &addr);
-    void AddNewAddresses(const std::vector<CAddress> &vAddr,
+    bool AddNewAddresses(const std::vector<CAddress> &vAddr,
                          const CAddress &addrFrom, int64_t nTimePenalty = 0);
-    std::vector<CAddress> GetAddresses();
+    std::vector<CAddress> GetAddresses(size_t max_addresses, size_t max_pct);
+    /**
+     * Cache is used to minimize topology leaks, so it should
+     * be used for all non-trusted calls, for example, p2p.
+     * A non-malicious call (from RPC or a peer with addr permission) should
+     * call the function without a parameter to avoid using the cache.
+     */
+    std::vector<CAddress> GetAddresses(Network requestor_network,
+                                       size_t max_addresses, size_t max_pct);
 
     // This allows temporarily exceeding m_max_outbound_full_relay, with the
     // goal of finding a peer that is better than all our current peers.
@@ -517,6 +529,29 @@ private:
     mutable RecursiveMutex cs_vNodes;
     std::atomic<NodeId> nLastNodeId{0};
     unsigned int nPrevNodeCount{0};
+
+    /**
+     * Cache responses to addr requests to minimize privacy leak.
+     * Attack example: scraping addrs in real-time may allow an attacker
+     * to infer new connections of the victim by detecting new records
+     * with fresh timestamps (per self-announcement).
+     */
+    struct CachedAddrResponse {
+        std::vector<CAddress> m_addrs_response_cache;
+        std::chrono::microseconds m_update_addr_response{0};
+    };
+
+    /**
+     * Addr responses stored in different caches
+     * per network prevent cross-network node identification.
+     * If a node for example is multi-homed under Tor and IPv6,
+     * a single cache (or no cache at all) would let an attacker
+     * to easily detect that it is the same node by comparing responses.
+     * The used memory equals to 1000 CAddress records (or around 32 bytes) per
+     * distinct Network (up to 5) we have/had an inbound peer from,
+     * resulting in at most ~160 KB.
+     */
+    std::map<Network, CachedAddrResponse> m_addr_response_caches;
 
     /**
      * Services this instance offers.

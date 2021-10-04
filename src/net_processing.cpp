@@ -273,6 +273,11 @@ static constexpr uint32_t MAX_GETCFILTERS_SIZE = 1000;
  * BIP 157.
  */
 static constexpr uint32_t MAX_GETCFHEADERS_SIZE = 2000;
+/**
+ * the maximum percentage of addresses from our addrman to return in response
+ * to a getaddr message.
+ */
+static constexpr size_t MAX_PCT_ADDR_TO_SEND = 23;
 
 /// How many non standard orphan do we consider from a node before ignoring it.
 static constexpr uint32_t MAX_NON_STANDARD_ORPHAN_PER_NODE = 5;
@@ -1459,6 +1464,7 @@ bool PeerManager::MaybePunishNodeForTx(NodeId nodeid,
             return true;
         // Conflicting (but not necessarily invalid) data or different policy:
         case TxValidationResult::TX_RECENT_CONSENSUS_CHANGE:
+        case TxValidationResult::TX_INPUTS_NOT_STANDARD:
         case TxValidationResult::TX_NOT_STANDARD:
         case TxValidationResult::TX_MISSING_INPUTS:
         case TxValidationResult::TX_PREMATURE_SPEND:
@@ -2185,22 +2191,32 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
                 mempool.RemoveUnbroadcastTx(txid);
                 // As we're going to send tx, make sure its unconfirmed parents
                 // are made requestable.
-                for (const auto &txin : tx->vin) {
-                    auto txinfo = mempool.info(txin.prevout.GetTxId());
-                    if (txinfo.tx &&
-                        txinfo.m_time > now - UNCONDITIONAL_RELAY_DELAY) {
-                        // Relaying a transaction with a recent but unconfirmed
-                        // parent.
-                        if (WITH_LOCK(
-                                pfrom.m_tx_relay->cs_tx_inventory,
-                                return !pfrom.m_tx_relay->filterInventoryKnown
-                                            .contains(
-                                                txin.prevout.GetTxId()))) {
-                            LOCK(cs_main);
-                            State(pfrom.GetId())
-                                ->m_recently_announced_invs.insert(
-                                    txin.prevout.GetTxId());
+                std::vector<TxId> parent_ids_to_add;
+                {
+                    LOCK(mempool.cs);
+                    auto txiter = mempool.GetIter(tx->GetId());
+                    if (txiter) {
+                        const CTxMemPool::setEntries &parents =
+                            mempool.GetMemPoolParents(*txiter);
+                        parent_ids_to_add.reserve(parents.size());
+                        for (CTxMemPool::txiter parent_iter : parents) {
+                            if (parent_iter->GetTime() >
+                                now - UNCONDITIONAL_RELAY_DELAY) {
+                                parent_ids_to_add.push_back(
+                                    parent_iter->GetTx().GetId());
+                            }
                         }
+                    }
+                }
+                for (const TxId &parent_txid : parent_ids_to_add) {
+                    // Relaying a transaction with a recent but unconfirmed
+                    // parent.
+                    if (WITH_LOCK(pfrom.m_tx_relay->cs_tx_inventory,
+                                  return !pfrom.m_tx_relay->filterInventoryKnown
+                                              .contains(parent_txid))) {
+                        LOCK(cs_main);
+                        State(pfrom.GetId())
+                            ->m_recently_announced_invs.insert(parent_txid);
                     }
                 }
             } else {
@@ -3133,7 +3149,7 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         if (!pfrom.RelayAddrsWithConn()) {
             return;
         }
-        if (vAddr.size() > 1000) {
+        if (vAddr.size() > MAX_ADDR_TO_SEND) {
             Misbehaving(
                 pfrom, 20,
                 strprintf("%s message size = %u", msg_type, vAddr.size()));
@@ -3633,8 +3649,21 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             // It may be the case that the orphans parents have all been
             // rejected.
             bool fRejectedParents = false;
+
+            // Deduplicate parent txids, so that we don't have to loop over
+            // the same parent txid more than once down below.
+            std::vector<TxId> unique_parents;
+            unique_parents.reserve(tx.vin.size());
             for (const CTxIn &txin : tx.vin) {
-                if (recentRejects->contains(txin.prevout.GetTxId())) {
+                // We start with all parents, and then remove duplicates below.
+                unique_parents.push_back(txin.prevout.GetTxId());
+            }
+            std::sort(unique_parents.begin(), unique_parents.end());
+            unique_parents.erase(
+                std::unique(unique_parents.begin(), unique_parents.end()),
+                unique_parents.end());
+            for (const TxId &parent_txid : unique_parents) {
+                if (recentRejects->contains(parent_txid)) {
                     fRejectedParents = true;
                     break;
                 }
@@ -3642,12 +3671,11 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             if (!fRejectedParents) {
                 const auto current_time = GetTime<std::chrono::microseconds>();
 
-                for (const CTxIn &txin : tx.vin) {
+                for (const TxId &parent_txid : unique_parents) {
                     // FIXME: MSG_TX should use a TxHash, not a TxId.
-                    const TxId _txid = txin.prevout.GetTxId();
-                    pfrom.AddKnownTx(_txid);
-                    if (!AlreadyHaveTx(_txid, m_mempool)) {
-                        AddTxAnnouncement(pfrom, _txid, current_time);
+                    pfrom.AddKnownTx(parent_txid);
+                    if (!AlreadyHaveTx(parent_txid, m_mempool)) {
+                        AddTxAnnouncement(pfrom, parent_txid, current_time);
                     }
                 }
                 AddOrphanTx(ptx, pfrom.GetId());
@@ -4472,15 +4500,18 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
         pfrom.fSentAddr = true;
 
         pfrom.vAddrToSend.clear();
-        std::vector<CAddress> vAddr = m_connman.GetAddresses();
+        std::vector<CAddress> vAddr;
+        if (pfrom.HasPermission(PF_ADDR)) {
+            vAddr =
+                m_connman.GetAddresses(MAX_ADDR_TO_SEND, MAX_PCT_ADDR_TO_SEND);
+        } else {
+            vAddr =
+                m_connman.GetAddresses(pfrom.addr.GetNetwork(),
+                                       MAX_ADDR_TO_SEND, MAX_PCT_ADDR_TO_SEND);
+        }
         FastRandomContext insecure_rand;
         for (const CAddress &addr : vAddr) {
-            bool banned_or_discouraged =
-                m_banman &&
-                (m_banman->IsDiscouraged(addr) || m_banman->IsBanned(addr));
-            if (!banned_or_discouraged) {
-                pfrom.PushAddress(addr, insecure_rand);
-            }
+            pfrom.PushAddress(addr, insecure_rand);
         }
         return;
     }
@@ -5198,8 +5229,9 @@ bool PeerManager::SendMessages(const Config &config, CNode *pto,
                 if (!pto->m_addr_known->contains(addr.GetKey())) {
                     pto->m_addr_known->insert(addr.GetKey());
                     vAddr.push_back(addr);
-                    // receiver rejects addr messages larger than 1000
-                    if (vAddr.size() >= 1000) {
+                    // receiver rejects addr messages larger than
+                    // MAX_ADDR_TO_SEND
+                    if (vAddr.size() >= MAX_ADDR_TO_SEND) {
                         m_connman.PushMessage(
                             pto, msgMaker.Make(make_flags, msg_type, vAddr));
                         vAddr.clear();

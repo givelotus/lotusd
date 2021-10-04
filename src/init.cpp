@@ -683,7 +683,7 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-listenonion",
-        strprintf("Automatically create Tor hidden service (default: %d)",
+        strprintf("Automatically create Tor onion service (default: %d)",
                   DEFAULT_LISTEN_ONION),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
@@ -713,7 +713,7 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-onion=<ip:port>",
                    strprintf("Use separate SOCKS5 proxy to reach peers via Tor "
-                             "hidden services (default: %s)",
+                             "onion services (default: %s)",
                              "-proxy"),
                    ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
@@ -2134,6 +2134,16 @@ bool AppInitLockDataDirectory() {
     return true;
 }
 
+bool AppInitInterfaces(NodeContext &node) {
+    node.chain = interfaces::MakeChain(node, Params());
+    // Create client interfaces for wallets that are supposed to be loaded
+    // according to -wallet and -disablewallet options. This only constructs
+    // the interfaces, it doesn't load wallet data. Wallets actually get loaded
+    // when load() and start() interface methods are called below.
+    g_wallet_init_interface.Construct(node);
+    return true;
+}
+
 bool AppInitMain(Config &config, RPCServer &rpcServer,
                  HTTPRPCRequestProcessor &httpRPCRequestProcessor,
                  NodeContext &node,
@@ -2250,12 +2260,6 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         std::chrono::minutes{1});
 
     GetMainSignals().RegisterBackgroundSignalScheduler(*node.scheduler);
-
-    // Create client interfaces for wallets that are supposed to be loaded
-    // according to -wallet and -disablewallet options. This only constructs
-    // the interfaces, it doesn't load wallet data. Wallets actually get loaded
-    // when load() and start() interface methods are called below.
-    g_wallet_init_interface.Construct(node);
 
     /**
      * Register RPC commands regardless of -server setting so they will be

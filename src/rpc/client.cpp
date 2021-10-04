@@ -127,7 +127,6 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     {"pruneblockchain", 0, "height"},
     {"keypoolrefill", 0, "newsize"},
     {"getrawmempool", 0, "verbose"},
-    {"estimatefee", 0, "nblocks"},
     {"prioritisetransaction", 1, "dummy"},
     {"prioritisetransaction", 2, "fee_delta"},
     {"setban", 2, "bantime"},
@@ -158,6 +157,7 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     {"createwallet", 4, "avoid_reuse"},
     {"createwallet", 5, "descriptors"},
     {"getnodeaddresses", 0, "count"},
+    {"addpeeraddress", 1, "port"},
     {"stop", 0, "wait"},
     // Avalanche
     {"addavalanchenode", 0, "nodeid"},

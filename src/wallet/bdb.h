@@ -45,7 +45,6 @@ private:
 
 public:
     std::unique_ptr<DbEnv> dbenv;
-    std::map<std::string, int> mapFileUseCount;
     std::map<std::string, std::reference_wrapper<BerkeleyDatabase>> m_databases;
     std::unordered_map<std::string, WalletDatabaseFileId> m_fileids;
     std::condition_variable_any m_db_in_use;
@@ -62,8 +61,6 @@ public:
         return m_databases.find(db_filename) != m_databases.end();
     }
     fs::path Directory() const { return strPath; }
-
-    bool Verify(const std::string &strFile);
 
     bool Open(bilingual_str &error);
     void Close();
@@ -97,11 +94,8 @@ class BerkeleyBatch;
  * For BerkeleyDB this is just a (env, strFile) tuple.
  */
 class BerkeleyDatabase : public WalletDatabase {
-    friend class BerkeleyBatch;
-
 public:
-    /** Create dummy DB handle */
-    BerkeleyDatabase() : WalletDatabase(), env(nullptr) {}
+    BerkeleyDatabase() = delete;
 
     /** Create DB handle to real database */
     BerkeleyDatabase(std::shared_ptr<BerkeleyEnvironment> envIn,
@@ -183,19 +177,11 @@ public:
      */
     std::unique_ptr<Db> m_db;
 
+    std::string strFile;
+
     /** Make a BerkeleyBatch connected to this database */
     std::unique_ptr<DatabaseBatch>
     MakeBatch(const char *mode = "r+", bool flush_on_close = true) override;
-
-private:
-    std::string strFile;
-
-    /**
-     * Return whether this database handle is a dummy for testing.
-     * Only to be used at a low level, application should ideally not care
-     * about this.
-     */
-    bool IsDummy() const { return env == nullptr; }
 };
 
 /** RAII class that provides access to a Berkeley database */
@@ -240,7 +226,7 @@ public:
     explicit BerkeleyBatch(BerkeleyDatabase &database,
                            const char *pszMode = "r+",
                            bool fFlushOnCloseIn = true);
-    ~BerkeleyBatch() override { Close(); }
+    ~BerkeleyBatch() override;
 
     BerkeleyBatch(const BerkeleyBatch &) = delete;
     BerkeleyBatch &operator=(const BerkeleyBatch &) = delete;

@@ -101,6 +101,7 @@ class P2PEvict(BitcoinTestFramework):
             "Create 4 peers and protect them from eviction by sending us a proof")
         privkey = ECKey()
         privkey.generate()
+        wif_privkey = bytes_to_wif(privkey.get_bytes())
         pubkey = privkey.get_pubkey()
 
         stakes = create_coinbase_stakes(
@@ -112,7 +113,7 @@ class P2PEvict(BitcoinTestFramework):
             proof_peer.sync_with_ping()
 
             proof = node.buildavalancheproof(
-                42, 2000000000, pubkey.get_bytes().hex(), [stakes[i]])
+                42, 2000000000, wif_privkey, [stakes[i]])
 
             avaproof_msg = msg_avaproof()
             avaproof_msg.proof = FromHex(AvalancheProof(), proof)
@@ -158,13 +159,14 @@ class P2PEvict(BitcoinTestFramework):
         for _ in range(8):
             fastpeer = node.add_p2p_connection(P2PInterface())
             current_peer += 1
-            wait_until(lambda: "ping" in fastpeer.last_message, timeout=10)
+            self.wait_until(lambda: "ping" in fastpeer.last_message,
+                            timeout=10)
 
         self.log.info(
             "Create 128 peers and protect them from eviction by sending an avahello message")
 
         proof = node.buildavalancheproof(
-            42, 2000000000, pubkey.get_bytes().hex(), [stakes[0]])
+            42, 2000000000, wif_privkey, [stakes[0]])
         proof_obj = FromHex(AvalancheProof(), proof)
         delegation = node.delegateavalancheproof(
             f"{proof_obj.limited_proofid:064x}",

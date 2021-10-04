@@ -200,7 +200,7 @@ static UniValue getblockcount(const Config &config,
                               const JSONRPCRequest &request) {
     RPCHelpMan{
         "getblockcount",
-        "\nReturns the height of the most-work fully-validated chain.\n"
+        "Returns the height of the most-work fully-validated chain.\n"
         "The genesis block has height 0.\n",
         {},
         RPCResult{RPCResult::Type::NUM, "", "The current block count"},
@@ -635,11 +635,11 @@ static UniValue getrawmempool(const Config &config,
                           {RPCResult::Type::STR_HEX, "", "The transaction id"},
                       }},
             RPCResult{"for verbose = true",
-                      RPCResult::Type::OBJ,
+                      RPCResult::Type::OBJ_DYN,
                       "",
                       "",
                       {
-                          {RPCResult::Type::OBJ_DYN, "transactionid", "",
+                          {RPCResult::Type::OBJ, "transactionid", "",
                            MempoolEntryDescription()},
                       }},
         },
@@ -675,8 +675,14 @@ static UniValue getmempoolancestors(const Config &config,
                 "",
                 {{RPCResult::Type::STR_HEX, "",
                   "The transaction id of an in-mempool ancestor transaction"}}},
-            RPCResult{"for verbose = true", RPCResult::Type::OBJ_DYN,
-                      "transactionid", "", MempoolEntryDescription()},
+            RPCResult{"for verbose = true",
+                      RPCResult::Type::OBJ_DYN,
+                      "",
+                      "",
+                      {
+                          {RPCResult::Type::OBJ, "transactionid", "",
+                           MempoolEntryDescription()},
+                      }},
         },
         RPCExamples{HelpExampleCli("getmempoolancestors", "\"mytxid\"") +
                     HelpExampleRpc("getmempoolancestors", "\"mytxid\"")},
@@ -710,7 +716,6 @@ static UniValue getmempoolancestors(const Config &config,
         for (CTxMemPool::txiter ancestorIt : setAncestors) {
             o.push_back(ancestorIt->GetTx().GetId().ToString());
         }
-
         return o;
     } else {
         UniValue o(UniValue::VOBJ);
@@ -745,11 +750,11 @@ static UniValue getmempooldescendants(const Config &config,
                         "The transaction id of an in-mempool descendant "
                         "transaction"}}},
             RPCResult{"for verbose = true",
-                      RPCResult::Type::OBJ,
+                      RPCResult::Type::OBJ_DYN,
                       "",
                       "",
                       {
-                          {RPCResult::Type::OBJ_DYN, "transactionid", "",
+                          {RPCResult::Type::OBJ, "transactionid", "",
                            MempoolEntryDescription()},
                       }},
         },
@@ -808,7 +813,7 @@ static UniValue getmempoolentry(const Config &config,
             {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
              "The transaction id (must be in mempool)"},
         },
-        RPCResult{RPCResult::Type::OBJ_DYN, "", "", MempoolEntryDescription()},
+        RPCResult{RPCResult::Type::OBJ, "", "", MempoolEntryDescription()},
         RPCExamples{HelpExampleCli("getmempoolentry", "\"mytxid\"") +
                     HelpExampleRpc("getmempoolentry", "\"mytxid\"")},
     }
@@ -2163,7 +2168,7 @@ static UniValue getblockstats(const Config &config,
                  "Total size of all non-coinbase transactions"},
                 {RPCResult::Type::NUM, "totalfee", "The fee total"},
                 {RPCResult::Type::NUM, "txs",
-                 "The number of transactions (excluding coinbase)"},
+                 "The number of transactions (including coinbase)"},
                 {RPCResult::Type::NUM, "utxo_increase",
                  "The increase/decrease in the number of unspent outputs"},
                 {RPCResult::Type::NUM, "utxo_size_inc",
@@ -2773,10 +2778,9 @@ static UniValue dumptxoutset(const Config &config,
                              const JSONRPCRequest &request) {
     RPCHelpMan{
         "dumptxoutset",
-        "\nWrite the serialized UTXO set to disk.\n",
+        "Write the serialized UTXO set to disk.\n",
         {
             {"path", RPCArg::Type::STR, RPCArg::Optional::NO,
-             /* default_val */ "",
              "path to the output file. If relative, will be prefixed by "
              "datadir."},
         },
@@ -2922,8 +2926,7 @@ void RegisterBlockchainRPCCommands(CRPCTable &t) {
         { "hidden",             "waitforblockheight",               waitforblockheight,               {"height","timeout"} },
     };
     // clang-format on
-
-    for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++) {
-        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
+    for (const auto &c : commands) {
+        t.appendCommand(c.name, &c);
     }
 }

@@ -176,6 +176,7 @@ struct RPCArg {
     //! aliases separated by | for named request arguments)
     const std::string m_names;
     const Type m_type;
+    const bool m_hidden;
     //! Only used for arrays or dicts
     const std::vector<RPCArg> m_inner;
     const Fallback m_fallback;
@@ -194,8 +195,9 @@ struct RPCArg {
     RPCArg(const std::string name, const Type type, const Fallback fallback,
            const std::string description,
            const std::string oneline_description = "",
-           const std::vector<std::string> type_str = {})
-        : m_names{std::move(name)}, m_type{std::move(type)},
+           const std::vector<std::string> type_str = {},
+           const bool hidden = false)
+        : m_names{std::move(name)}, m_type{std::move(type)}, m_hidden{hidden},
           m_fallback{std::move(fallback)}, m_description{std::move(
                                                description)},
           m_oneline_description{std::move(oneline_description)},
@@ -207,10 +209,9 @@ struct RPCArg {
            const std::string description, const std::vector<RPCArg> inner,
            const std::string oneline_description = "",
            const std::vector<std::string> type_str = {})
-        : m_names{std::move(name)}, m_type{std::move(type)}, m_inner{std::move(
-                                                                 inner)},
-          m_fallback{std::move(fallback)}, m_description{std::move(
-                                               description)},
+        : m_names{std::move(name)}, m_type{std::move(type)}, m_hidden{false},
+          m_inner{std::move(inner)}, m_fallback{std::move(fallback)},
+          m_description{std::move(description)},
           m_oneline_description{std::move(oneline_description)},
           m_type_str{std::move(type_str)} {
         CHECK_NONFATAL(type == Type::ARR || type == Type::OBJ);
@@ -334,8 +335,18 @@ public:
     RPCHelpMan(std::string name, std::string description,
                std::vector<RPCArg> args, RPCResults results,
                RPCExamples examples);
+    using RPCMethodImpl = std::function<UniValue(
+        const RPCHelpMan &, const Config &config, const JSONRPCRequest &)>;
+    RPCHelpMan(std::string name, std::string description,
+               std::vector<RPCArg> args, RPCResults results,
+               RPCExamples examples, RPCMethodImpl fun);
 
     std::string ToString() const;
+    UniValue HandleRequest(const Config &config,
+                           const JSONRPCRequest &request) {
+        Check(request);
+        return m_fun(*this, config, request);
+    }
     /** If the supplied number of args is neither too small nor too high */
     bool IsValidNumArgs(size_t num_args) const;
     /**
@@ -348,8 +359,12 @@ public:
         }
     }
 
-private:
+    std::vector<std::string> GetArgNames() const;
+
     const std::string m_name;
+
+private:
+    const RPCMethodImpl m_fun;
     const std::string m_description;
     const std::vector<RPCArg> m_args;
     const RPCResults m_results;
