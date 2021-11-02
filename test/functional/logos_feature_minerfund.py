@@ -22,6 +22,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
+ACTIVATION_TIME = 2000000000
 
 class MinerFundTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -29,7 +30,8 @@ class MinerFundTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.extra_args = [[
             '-enableminerfund',
-        ], ['-enableminerfund']]
+            f'-exodusactivationtime={ACTIVATION_TIME}',
+        ]] * 2
 
     def run_test(self):
         node = self.nodes[0]

@@ -6,6 +6,7 @@
 
 #include <cashaddrenc.h> // For DecodeCashAddrContent
 #include <chainparams.h>
+#include <consensus/activation.h>
 #include <key_io.h> // For DecodeDestination
 
 static const CTxOut BuildOutput(const std::string &address,
@@ -22,6 +23,15 @@ static const CTxOut BuildOutput(const std::string &address,
     return {amount, script};
 }
 
+static const std::vector<std::string> &
+GetPayoutAddresses(const Consensus::Params &params,
+                   const CBlockIndex *pindexPrev) {
+    if (IsExodusEnabled(params, pindexPrev)) {
+        return params.coinbasePayoutAddresses.exodus;
+    }
+    return params.coinbasePayoutAddresses.genesis;
+}
+
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
                                                 const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
@@ -31,8 +41,7 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
     }
 
     const std::vector<std::string> &addresses =
-        params.coinbasePayoutAddresses.genesis;
-
+        GetPayoutAddresses(params, pindexPrev);
     const size_t numAddresses = addresses.size();
     std::vector<CTxOut> minerFundOutputs;
     const Amount shareAmount = blockReward / (int64_t(2 * numAddresses));

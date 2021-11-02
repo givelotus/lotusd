@@ -33,6 +33,35 @@ namespace MainNet {
             "qp7s3y735fut4vn70tvjakyt6lww4lvr55ljvaxpyn",
             // Distro Bot
             "qp9cd8u62hzhqq7lz79aeqq3ssgfmyz03vc5c4g0ct",
-        }};
+        },
+        .exodus = {
+            // Aleph 0
+            "lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi",
+            // Maintainance
+            "lotus_16PSJNZhPZSyLeQaiEdy3a3gZdwQ2yAPqUm7WHRzN",
+            // Stamp
+            "lotus_16PSJHhULzYgupzGnvDysUFLxYxBVwx92JjXSyjNL",
+            // VN
+            "lotus_16PSJLMtCuFnyMb3rz4zbbhAtJgppp8GiY5NpGGev",
+            // Explorer
+            "lotus_16PSJJQGXSV1uMG2JHERQpVL3pVH7nwqu2YSiX96t",
+            // Distro
+            "lotus_16PSJHEXKQEL5M28Rc8rvYntymdKtPmVXJDEtbFLi",
+            // Evangelism
+            "lotus_16PSJNnGguQxEhHHW569L3g3MfhCNsS1Q6AWrJ8AH",
+            // Lotusia Citizen 1
+            "lotus_16PSJP5wAt1F45LycobZssN8Jk3TaR6QL9AXcRRty",
+            // Marketing
+            "lotus_16PSJHej3n56z43NC4PgYAAubk8opBXt7JXXfHjwc",
+            // Lotusia Citizen 2
+            "lotus_16PSJJSRTKjXKkvMtV6NX8SVEbTBwpjCWxQP7bHdi",
+            // Bots
+            "lotus_16PSJHuUsbDo5qZUjygQgtJLMsZgcpSB6wD459F6J",
+            // Bot
+            "lotus_16PSJJXVKnYb8xtUhHyBDSdd8P2xx6suUM7TaWBNx",
+            // Lotusia Citizen 3
+            "lotus_16PSJKHmQ2Lm8BNtnvPi1jC4rxJpCo8VqvJecj5Hb",
+        }
+    };
 } // namespace MainNet
 } // namespace RewardAddresses
