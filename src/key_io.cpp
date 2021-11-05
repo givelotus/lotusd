@@ -183,7 +183,7 @@ std::string EncodeDestination(const CTxDestination &dest,
 
 CTxDestination DecodeDestination(const std::string &addr,
                                  const CChainParams &params) {
-    CTxDestination dst = DecodeCashAddr(addr, params);
+    CTxDestination dst;
     if (XAddress::Parse(params, addr, dst)) {
         return dst;
     }

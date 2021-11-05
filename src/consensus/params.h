@@ -14,6 +14,10 @@
 
 namespace Consensus {
 
+struct CoinbaseAddresses {
+    std::vector<std::string> genesis;
+};
+
 /**
  * Parameters that influence chain consensus.
  */
@@ -32,7 +36,7 @@ struct Params {
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
-    std::vector<std::vector<std::string>> payoutAddressSets;
+    CoinbaseAddresses coinbasePayoutAddresses;
 
     bool enableDifficultyBasedSubsidy;
 
