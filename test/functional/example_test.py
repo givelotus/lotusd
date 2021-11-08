@@ -14,22 +14,15 @@ is testing and *how* it's being tested
 from collections import defaultdict
 
 # Avoid wildcard * imports if possible
-from test_framework.blocktools import create_block, create_coinbase, prepare_block
-from test_framework.messages import (
-    CInv,
-    MSG_BLOCK,
-    msg_block,
-    msg_getdata
+from test_framework.blocktools import (
+    create_block,
+    create_coinbase,
+    prepare_block,
 )
-from test_framework.p2p import (
-    P2PInterface,
-    p2p_lock,
-)
+from test_framework.messages import MSG_BLOCK, CInv, msg_block, msg_getdata
+from test_framework.p2p import P2PInterface, p2p_lock
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    connect_nodes,
-)
+from test_framework.util import assert_equal, connect_nodes
 
 # P2PInterface is a class containing callbacks to be executed when a P2P
 # message is received from the node-under-test. Subclass P2PInterface and
@@ -226,8 +219,8 @@ class ExampleTest(BitcoinTestFramework):
         self.log.info("Check that each block was received only once")
         # The network thread uses a global lock on data access to the P2PConnection objects when sending and receiving
         # messages. The test thread should acquire the global lock before accessing any P2PConnection data to avoid locking
-        # and synchronization issues. Note wait_until() acquires this global
-        # lock when testing the predicate.
+        # and synchronization issues. Note p2p.wait_until() acquires this
+        # global lock internally when testing the predicate.
         with p2p_lock:
             for block in self.nodes[2].p2p.block_receive_map.values():
                 assert_equal(block, 1)

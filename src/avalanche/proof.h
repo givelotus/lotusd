@@ -11,6 +11,7 @@
 #include <primitives/transaction.h>
 #include <pubkey.h>
 #include <serialize.h>
+#include <util/system.h>
 #include <util/translation.h>
 
 #include <array>
@@ -24,6 +25,11 @@ class CCoinsView;
  */
 static constexpr int AVALANCHE_MAX_PROOF_STAKES = 1000;
 
+/**
+ * Whether the legacy proof format should be used by default.
+ */
+static constexpr bool AVALANCHE_DEFAULT_LEGACY_PROOF = true;
+
 namespace avalanche {
 
 /** Minimum amount per utxo */
@@ -32,6 +38,11 @@ static constexpr Amount PROOF_DUST_THRESHOLD = 1 * COIN;
 class ProofValidationState;
 
 using StakeId = uint256;
+
+struct StakeCommitment : public uint256 {
+    explicit StakeCommitment() : uint256() {}
+    explicit StakeCommitment(const uint256 &b) : uint256(b) {}
+};
 
 class Stake {
     COutPoint utxo;
@@ -63,7 +74,7 @@ public:
     bool isCoinbase() const { return height & 1; }
     const CPubKey &getPubkey() const { return pubkey; }
 
-    uint256 getHash(const ProofId &proofid) const;
+    uint256 getHash(const StakeCommitment &commitment) const;
 
     const StakeId &getId() const { return stakeid; }
 };
@@ -82,7 +93,7 @@ public:
     const Stake &getStake() const { return stake; }
     const SchnorrSig &getSignature() const { return sig; }
 
-    bool verify(const ProofId &proofid) const;
+    bool verify(const StakeCommitment &commitment) const;
 };
 
 class Proof {
@@ -90,23 +101,36 @@ class Proof {
     int64_t expirationTime;
     CPubKey master;
     std::vector<SignedStake> stakes;
+    CScript payoutScriptPubKey;
 
     LimitedProofId limitedProofId;
     ProofId proofid;
     void computeProofId();
 
 public:
-    Proof() : sequence(0), expirationTime(0), master(), stakes(), proofid() {}
+    Proof()
+        : sequence(0), expirationTime(0), master(), stakes(),
+          payoutScriptPubKey(CScript()), limitedProofId(), proofid() {}
+
     Proof(uint64_t sequence_, int64_t expirationTime_, CPubKey master_,
-          std::vector<SignedStake> stakes_)
+          std::vector<SignedStake> stakes_, const CScript &payoutScriptPubKey_)
         : sequence(sequence_), expirationTime(expirationTime_),
-          master(std::move(master_)), stakes(std::move(stakes_)) {
+          master(std::move(master_)), stakes(std::move(stakes_)),
+          payoutScriptPubKey(payoutScriptPubKey_) {
         computeProofId();
     }
 
     SERIALIZE_METHODS(Proof, obj) {
         READWRITE(obj.sequence, obj.expirationTime, obj.master, obj.stakes);
+        if (!useLegacy(gArgs)) {
+            READWRITE(obj.payoutScriptPubKey);
+        }
         SER_READ(obj, obj.computeProofId());
+    }
+
+    static bool useLegacy(const ArgsManager &argsman) {
+        return argsman.GetBoolArg("-legacyavaproof",
+                                  AVALANCHE_DEFAULT_LEGACY_PROOF);
     }
 
     static bool FromHex(Proof &proof, const std::string &hexProof,
@@ -119,6 +143,9 @@ public:
 
     const ProofId &getId() const { return proofid; }
     const LimitedProofId &getLimitedId() const { return limitedProofId; }
+    const StakeCommitment getStakeCommitment() const {
+        return StakeCommitment(proofid);
+    }
     uint32_t getScore() const;
 
     bool verify(ProofValidationState &state) const;

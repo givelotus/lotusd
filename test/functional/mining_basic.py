@@ -11,19 +11,9 @@
 import copy
 from decimal import Decimal
 
-from test_framework.blocktools import (
-    create_coinbase,
-    prepare_block,
-    TIME_GENESIS_BLOCK,
-)
-from test_framework.messages import (
-    CBlock,
-    CBlockHeader,
-    BLOCK_HEADER_SIZE,
-)
-from test_framework.p2p import (
-    P2PDataStore,
-)
+from test_framework.blocktools import TIME_GENESIS_BLOCK, create_coinbase, prepare_block
+from test_framework.messages import BLOCK_HEADER_SIZE, CBlock, CBlockHeader
+from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,

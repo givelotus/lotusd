@@ -6,8 +6,8 @@
 
 from decimal import Decimal
 
+from test_framework.blocktools import SUBSIDY, create_raw_transaction
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.blocktools import create_raw_transaction, SUBSIDY
 from test_framework.util import assert_equal
 
 

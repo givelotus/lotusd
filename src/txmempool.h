@@ -52,6 +52,19 @@ struct LockPoints {
     LockPoints() : height(0), time(0), maxInputBlock(nullptr) {}
 };
 
+struct CompareIteratorById {
+    // SFINAE for T where T is either a pointer type (e.g., a txiter) or a
+    // reference_wrapper<T> (e.g. a wrapped CTxMemPoolEntry&)
+    template <typename T>
+    bool operator()(const std::reference_wrapper<T> &a,
+                    const std::reference_wrapper<T> &b) const {
+        return a.get().GetTx().GetId() < b.get().GetTx().GetId();
+    }
+    template <typename T> bool operator()(const T &a, const T &b) const {
+        return a->GetTx().GetId() < b->GetTx().GetId();
+    }
+};
+
 /** \class CTxMemPoolEntry
  *
  * CTxMemPoolEntry stores data about the corresponding transaction, as well as
@@ -64,8 +77,16 @@ struct LockPoints {
  */
 
 class CTxMemPoolEntry {
+public:
+    typedef std::reference_wrapper<const CTxMemPoolEntry> CTxMemPoolEntryRef;
+    // two aliases, should the types ever diverge
+    typedef std::set<CTxMemPoolEntryRef, CompareIteratorById> Parents;
+    typedef std::set<CTxMemPoolEntryRef, CompareIteratorById> Children;
+
 private:
     const CTransactionRef tx;
+    mutable Parents m_parents;
+    mutable Children m_children;
     //! Cached to avoid expensive parent-transaction lookups
     const Amount nFee;
     //! ... and avoid recomputing tx size
@@ -156,6 +177,11 @@ public:
     int64_t GetSigOpCountWithAncestors() const {
         return nSigOpCountWithAncestors;
     }
+
+    const Parents &GetMemPoolParentsConst() const { return m_parents; }
+    const Children &GetMemPoolChildrenConst() const { return m_children; }
+    Parents &GetMemPoolParents() const { return m_parents; }
+    Children &GetMemPoolChildren() const { return m_children; }
 
     //! Index in mempool's vTxHashes
     mutable size_t vTxHashesIdx;
@@ -550,33 +576,18 @@ public:
     //! All tx hashes/entries in mapTx, in random order
     std::vector<std::pair<TxHash, txiter>> vTxHashes GUARDED_BY(cs);
 
-    struct CompareIteratorById {
-        bool operator()(const txiter &a, const txiter &b) const {
-            return a->GetTx().GetId() < b->GetTx().GetId();
-        }
-    };
     typedef std::set<txiter, CompareIteratorById> setEntries;
 
-    const setEntries &GetMemPoolParents(txiter entry) const
-        EXCLUSIVE_LOCKS_REQUIRED(cs);
-    const setEntries &GetMemPoolChildren(txiter entry) const
-        EXCLUSIVE_LOCKS_REQUIRED(cs);
     uint64_t CalculateDescendantMaximum(txiter entry) const
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 private:
     typedef std::map<txiter, setEntries, CompareIteratorById> cacheMap;
 
-    struct TxLinks {
-        setEntries parents;
-        setEntries children;
-    };
-
-    typedef std::map<txiter, TxLinks, CompareIteratorById> txlinksMap;
-    txlinksMap mapLinks;
-
-    void UpdateParent(txiter entry, txiter parent, bool add);
-    void UpdateChild(txiter entry, txiter child, bool add);
+    void UpdateParent(txiter entry, txiter parent, bool add)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void UpdateChild(txiter entry, txiter child, bool add)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     std::vector<indexed_transaction_set::const_iterator>
     GetSortedDepthAndScore() const EXCLUSIVE_LOCKS_REQUIRED(cs);
@@ -648,8 +659,9 @@ public:
 
     /** Affect CreateNewBlock prioritisation of transactions */
     void PrioritiseTransaction(const TxId &txid, const Amount nFeeDelta);
-    void ApplyDelta(const TxId &txid, Amount &nFeeDelta) const;
-    void ClearPrioritisation(const TxId &txid);
+    void ApplyDelta(const TxId &txid, Amount &nFeeDelta) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void ClearPrioritisation(const TxId &txid) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Get the transaction in the pool that spends the same prevout */
     const CTransaction *GetConflictTx(const COutPoint &prevout) const
@@ -766,8 +778,8 @@ public:
         return mapTx.size();
     }
 
-    uint64_t GetTotalTxSize() const {
-        LOCK(cs);
+    uint64_t GetTotalTxSize() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        AssertLockHeld(cs);
         return totalTxSize;
     }
 
@@ -803,8 +815,8 @@ public:
     }
 
     /** Returns whether a txid is in the unbroadcast set */
-    bool IsUnbroadcastTx(const TxId &txid) const {
-        LOCK(cs);
+    bool IsUnbroadcastTx(const TxId &txid) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        AssertLockHeld(cs);
         return (m_unbroadcast_txids.count(txid) != 0);
     }
 

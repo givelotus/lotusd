@@ -6,7 +6,6 @@
 
 import argparse
 import configparser
-from enum import Enum
 import logging
 import os
 import pdb
@@ -15,25 +14,26 @@ import shutil
 import sys
 import tempfile
 import time
+from enum import Enum
 from typing import Optional
 
+from . import coverage
 from .authproxy import JSONRPCException
 from .avatools import get_proof_ids
-from . import coverage
 from .p2p import NetworkThread
 from .test_node import TestNode
 from .util import (
+    MAX_NODES,
+    PortSeed,
     assert_equal,
     check_json_precision,
     connect_nodes,
     disconnect_nodes,
     get_datadir_path,
     initialize_datadir,
-    MAX_NODES,
     p2p_port,
-    PortSeed,
     rpc_port,
-    wait_until,
+    wait_until_helper,
 )
 
 
@@ -609,9 +609,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.sync_blocks(nodes)
         self.sync_mempools(nodes)
 
-    def wait_until(self, test_function, timeout=60, lock=None):
-        return wait_until(test_function, timeout=timeout, lock=lock,
-                          timeout_factor=self.options.timeout_factor)
+    def wait_until(self, test_function, timeout=60):
+        return wait_until_helper(test_function, timeout=timeout,
+                                 timeout_factor=self.options.timeout_factor)
 
     # Private helper methods. These should not be accessed by the subclass
     # test scripts.

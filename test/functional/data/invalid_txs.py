@@ -20,29 +20,18 @@ Invalid tx cases not covered here can be found by running:
 
 """
 import abc
-
 from typing import Optional
+
+from test_framework import script as sc
+from test_framework.blocktools import create_tx_with_script
 from test_framework.messages import (
+    MAX_MONEY,
     COutPoint,
     CTransaction,
     CTxIn,
     CTxOut,
-    MAX_MONEY,
 )
-from test_framework import script as sc
-from test_framework.blocktools import create_tx_with_script
 from test_framework.txtools import pad_tx
-
-
-from test_framework.script import (
-    CScript,
-    OP_INVERT,
-    OP_2MUL,
-    OP_2DIV,
-    OP_MUL,
-    OP_HASH160,
-    OP_EQUAL,
-)
 
 basic_p2sh = sc.CScript(
     [sc.OP_HASH160, sc.hash160(sc.CScript([sc.OP_0])), sc.OP_EQUAL])
@@ -231,14 +220,14 @@ def getDisabledOpcodeTemplate(opcode):
     """ Creates disabled opcode tx template class"""
 
     def get_tx(self, tx):
-        return create_tx_with_script(tx, 0, amount=tx.vout[0].nValue - 10000, script_sig=CScript([CScript([opcode])]))
+        return create_tx_with_script(tx, 0, amount=tx.vout[0].nValue - 10000, script_sig=sc.CScript([sc.CScript([opcode])]))
 
     def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 1, amount=self.spend_tx.vout[1].nValue - 10000, script_pub_key=CScript([
-                OP_HASH160,
-                sc.hash160(CScript([opcode])),
-                OP_EQUAL,
+            self.spend_tx, 1, amount=self.spend_tx.vout[1].nValue - 10000, script_pub_key=sc.CScript([
+                sc.OP_HASH160,
+                sc.hash160(sc.CScript([opcode])),
+                sc.OP_EQUAL,
             ]))
         return tx
 
@@ -253,10 +242,10 @@ def getDisabledOpcodeTemplate(opcode):
 
 # Disabled opcode tx templates (CVE-2010-5137)
 DisabledOpcodeTemplates = [getDisabledOpcodeTemplate(opcode) for opcode in [
-    OP_INVERT,
-    OP_2MUL,
-    OP_2DIV,
-    OP_MUL]]
+    sc.OP_INVERT,
+    sc.OP_2MUL,
+    sc.OP_2DIV,
+    sc.OP_MUL]]
 
 
 def iter_all_templates():

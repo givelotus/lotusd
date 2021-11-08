@@ -6,12 +6,9 @@
 
 from decimal import Decimal
 
-from test_framework.test_framework import BitcoinTestFramework
 from test_framework.messages import CTransaction, FromHex, ToHex
-from test_framework.util import (
-    assert_approx,
-    assert_equal,
-)
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import assert_approx, assert_equal
 
 
 class WalletGroupTest(BitcoinTestFramework):

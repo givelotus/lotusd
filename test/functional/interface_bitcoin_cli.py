@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test lotus-cli"""
 from decimal import Decimal
+
 from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
@@ -81,7 +82,14 @@ class TestBitcoinCli(BitcoinTestFramework):
         assert_equal(cli_get_info['blocks'], blockchain_info['blocks'])
         assert_equal(cli_get_info['headers'], blockchain_info['headers'])
         assert_equal(cli_get_info['timeoffset'], network_info['timeoffset'])
-        assert_equal(cli_get_info['connections'], network_info['connections'])
+        assert_equal(
+            cli_get_info['connections'],
+            {
+                'in': network_info['connections_in'],
+                'out': network_info['connections_out'],
+                'total': network_info['connections']
+            }
+        )
         assert_equal(cli_get_info['proxy'],
                      network_info['networks'][0]['proxy'])
         assert_equal(cli_get_info['difficulty'], blockchain_info['difficulty'])

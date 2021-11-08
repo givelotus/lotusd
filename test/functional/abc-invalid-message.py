@@ -11,11 +11,7 @@ each case.
 import struct
 
 from test_framework.messages import NODE_NETWORK, msg_version
-from test_framework.p2p import (
-    p2p_lock,
-    msg_ping,
-    P2PInterface,
-)
+from test_framework.p2p import P2PInterface, msg_ping
 from test_framework.test_framework import BitcoinTestFramework
 
 
@@ -81,7 +77,7 @@ class InvalidMessageTest(BitcoinTestFramework):
                 if not interface.last_message.get("pong"):
                     return False
                 return interface.last_message["pong"].nonce == interface.ping_counter
-            self.wait_until(check_ping, lock=p2p_lock)
+            interface.wait_until(check_ping)
             interface.ping_counter += 1
 
         # The valid message is accepted

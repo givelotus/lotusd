@@ -12,8 +12,8 @@ import time
 
 from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import (
-    CInv,
     MSG_BLOCK,
+    CInv,
     msg_block,
     msg_getdata,
     msg_getheaders,

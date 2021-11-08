@@ -19,32 +19,28 @@ Test the following RPCs:
 Tests correspond to code in rpc/blockchain.cpp.
 """
 
-from decimal import Decimal
 import http.client
 import subprocess
+from decimal import Decimal
 
 from test_framework.blocktools import (
+    SUBSIDY,
+    TIME_GENESIS_BLOCK,
     create_block,
     create_coinbase,
     prepare_block,
-    TIME_GENESIS_BLOCK,
-    SUBSIDY,
 )
-from test_framework.messages import (
-    CBlockHeader,
-    FromHex,
-    msg_block,
-)
+from test_framework.messages import CBlockHeader, FromHex, msg_block
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_greater_than_or_equal,
+    assert_is_hash_string,
+    assert_is_hex_string,
     assert_raises,
     assert_raises_rpc_error,
-    assert_is_hex_string,
-    assert_is_hash_string,
 )
 
 

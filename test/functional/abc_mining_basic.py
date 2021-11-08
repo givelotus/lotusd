@@ -7,6 +7,8 @@ Tests for Bitcoin ABC mining RPCs
 """
 
 from test_framework.blocktools import SUBSIDY
+from decimal import Decimal
+
 from test_framework.cdefs import (
     BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO,
     DEFAULT_MAX_BLOCK_SIZE,
@@ -20,8 +22,6 @@ from test_framework.util import (
     assert_greater_than_or_equal,
     connect_nodes,
 )
-
-from decimal import Decimal
 
 
 class AbcMiningRPCTest(BitcoinTestFramework):

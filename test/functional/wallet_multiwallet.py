@@ -6,14 +6,14 @@
 
 Verify that a lotusd node can load multiple wallet files
 """
-from decimal import Decimal
-from threading import Thread
 import os
 import shutil
 import time
+from decimal import Decimal
+from threading import Thread
 
-from test_framework.blocktools import SUBSIDY
 from test_framework.authproxy import JSONRPCException
+from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
 from test_framework.util import (
@@ -157,26 +157,6 @@ class MultiWalletTest(BitcoinTestFramework):
         open(not_a_dir, 'a', encoding="utf8").close()
         self.nodes[0].assert_start_raises_init_error(
             ['-walletdir=' + not_a_dir], 'Error: Specified -walletdir "' + not_a_dir + '" is not a directory')
-
-        self.log.info("Do not allow -zapwallettxes with multiwallet")
-        self.nodes[0].assert_start_raises_init_error(
-            [
-                '-zapwallettxes',
-                '-wallet=w1',
-                '-wallet=w2'],
-            "Error: -zapwallettxes is only allowed with a single wallet file")
-        self.nodes[0].assert_start_raises_init_error(
-            [
-                '-zapwallettxes=1',
-                '-wallet=w1',
-                '-wallet=w2'],
-            "Error: -zapwallettxes is only allowed with a single wallet file")
-        self.nodes[0].assert_start_raises_init_error(
-            [
-                '-zapwallettxes=2',
-                '-wallet=w1',
-                '-wallet=w2'],
-            "Error: -zapwallettxes is only allowed with a single wallet file")
 
         # if wallets/ doesn't exist, datadir should be the default wallet dir
         wallet_dir2 = data_dir('walletdir')

@@ -29,7 +29,7 @@ from test_framework.messages import (
 from test_framework.p2p import P2PDataStore, P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.p2p import P2PInterface, P2PDataStore
-from test_framework.util import assert_equal, wait_until
+from test_framework.util import assert_equal
 from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import CTransaction, FromHex, msg_pong, msg_tx
 from test_framework.txtools import pad_tx

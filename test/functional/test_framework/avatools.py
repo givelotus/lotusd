@@ -5,33 +5,29 @@
 """Utilities for avalanche tests."""
 
 import struct
-from typing import Any, Optional, List, Dict
+from typing import Any, Dict, List, Optional
 
 from .authproxy import JSONRPCException
 from .key import ECKey
 from .messages import (
+    NODE_AVALANCHE,
+    NODE_NETWORK,
     AvalancheDelegation,
     AvalancheProof,
     AvalancheResponse,
     CInv,
     CTransaction,
     FromHex,
+    TCPAvalancheResponse,
+    ToHex,
     hash256,
     msg_avahello,
     msg_avapoll,
     msg_tcpavaresponse,
-    NODE_AVALANCHE,
-    NODE_NETWORK,
-    TCPAvalancheResponse,
-    ToHex,
 )
 from .p2p import P2PInterface, p2p_lock
 from .test_node import TestNode
-from .util import (
-    assert_equal,
-    satoshi_round,
-    wait_until,
-)
+from .util import assert_equal, satoshi_round, wait_until_helper
 from .wallet_util import bytes_to_wif
 
 
@@ -153,7 +149,7 @@ def wait_for_proof(node, proofid_hex, timeout=60, expect_orphan=None):
             return True
         except JSONRPCException:
             return False
-    wait_until(proof_found, timeout=timeout)
+    wait_until_helper(proof_found, timeout=timeout)
 
     if expect_orphan is not None:
         assert_equal(expect_orphan, wait_for_proof.is_orphan)
@@ -204,10 +200,9 @@ class AvaP2PInterface(P2PInterface):
         self.send_message(msg)
 
     def wait_for_avaresponse(self, timeout=5):
-        wait_until(
+        self.wait_until(
             lambda: len(self.avaresponses) > 0,
-            timeout=timeout,
-            lock=p2p_lock)
+            timeout=timeout)
 
         with p2p_lock:
             return self.avaresponses.pop(0)
@@ -225,10 +220,9 @@ class AvaP2PInterface(P2PInterface):
             return self.avapolls.pop(0) if len(self.avapolls) > 0 else None
 
     def wait_for_avahello(self, timeout=5):
-        wait_until(
+        self.wait_until(
             lambda: self.avahello is not None,
-            timeout=timeout,
-            lock=p2p_lock)
+            timeout=timeout)
 
         with p2p_lock:
             return self.avahello

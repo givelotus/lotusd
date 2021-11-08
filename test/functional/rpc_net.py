@@ -7,21 +7,21 @@
 Tests correspond to code in rpc/net.cpp.
 """
 
+import time
 from decimal import Decimal
 from itertools import product
-import time
 
+import test_framework.messages
 from test_framework.avatools import create_coinbase_stakes
 from test_framework.key import ECKey
-from test_framework.p2p import P2PInterface
-import test_framework.messages
 from test_framework.messages import NODE_NETWORK
+from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_approx,
     assert_equal,
-    assert_greater_than_or_equal,
     assert_greater_than,
+    assert_greater_than_or_equal,
     assert_raises_rpc_error,
     connect_nodes,
     p2p_port,
@@ -117,8 +117,11 @@ class NetTest(BitcoinTestFramework):
 
     def test_getnetworkinfo(self):
         self.log.info("Test getnetworkinfo")
-        assert_equal(self.nodes[0].getnetworkinfo()['networkactive'], True)
-        assert_equal(self.nodes[0].getnetworkinfo()['connections'], 2)
+        info = self.nodes[0].getnetworkinfo()
+        assert_equal(info['networkactive'], True)
+        assert_equal(info['connections'], 2)
+        assert_equal(info['connections_in'], 1)
+        assert_equal(info['connections_out'], 1)
 
         with self.nodes[0].assert_debug_log(expected_msgs=['SetNetworkActive: false\n']):
             self.nodes[0].setnetworkactive(state=False)
@@ -133,8 +136,11 @@ class NetTest(BitcoinTestFramework):
         connect_nodes(self.nodes[0], self.nodes[1])
         connect_nodes(self.nodes[1], self.nodes[0])
 
-        assert_equal(self.nodes[0].getnetworkinfo()['networkactive'], True)
-        assert_equal(self.nodes[0].getnetworkinfo()['connections'], 2)
+        info = self.nodes[0].getnetworkinfo()
+        assert_equal(info['networkactive'], True)
+        assert_equal(info['connections'], 2)
+        assert_equal(info['connections_in'], 1)
+        assert_equal(info['connections_out'], 1)
 
         # check the `servicesnames` field
         network_info = [node.getnetworkinfo() for node in self.nodes]

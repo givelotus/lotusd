@@ -7,6 +7,7 @@
 #include <avalanche/validation.h>
 #include <coins.h>
 #include <hash.h>
+#include <policy/policy.h>
 #include <script/standard.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -23,15 +24,15 @@ void Stake::computeStakeId() {
     stakeid = StakeId(ss.GetHash());
 }
 
-uint256 Stake::getHash(const ProofId &proofid) const {
+uint256 Stake::getHash(const StakeCommitment &commitment) const {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << proofid;
+    ss << commitment;
     ss << *this;
     return ss.GetHash();
 }
 
-bool SignedStake::verify(const ProofId &proofid) const {
-    return stake.getPubkey().VerifySchnorr(stake.getHash(proofid), sig);
+bool SignedStake::verify(const StakeCommitment &commitment) const {
+    return stake.getPubkey().VerifySchnorr(stake.getHash(commitment), sig);
 }
 
 bool Proof::FromHex(Proof &proof, const std::string &hexProof,
@@ -57,6 +58,9 @@ void Proof::computeProofId() {
     CHashWriter ss(SER_GETHASH, 0);
     ss << sequence;
     ss << expirationTime;
+    if (!useLegacy(gArgs)) {
+        ss << payoutScriptPubKey;
+    }
 
     WriteCompactSize(ss, stakes.size());
     for (const SignedStake &s : stakes) {
@@ -87,6 +91,14 @@ bool Proof::verify(ProofValidationState &state) const {
             strprintf("%u > %u", stakes.size(), AVALANCHE_MAX_PROOF_STAKES));
     }
 
+    if (!useLegacy(gArgs)) {
+        TxoutType scriptType;
+        if (!IsStandard(payoutScriptPubKey, scriptType)) {
+            return state.Invalid(ProofValidationResult::INVALID_PAYOUT_SCRIPT,
+                                 "payout-script-non-standard");
+        }
+    }
+
     StakeId prevId = uint256::ZERO;
     std::unordered_set<COutPoint, SaltedOutpointHasher> utxos;
     for (const SignedStake &ss : stakes) {
@@ -109,7 +121,7 @@ bool Proof::verify(ProofValidationState &state) const {
                                  "duplicated-stake");
         }
 
-        if (!ss.verify(proofid)) {
+        if (!ss.verify(getStakeCommitment())) {
             return state.Invalid(
                 ProofValidationResult::INVALID_STAKE_SIGNATURE,
                 "invalid-stake-signature",

@@ -55,25 +55,28 @@ struct bilingual_str;
 void UnloadWallet(std::shared_ptr<CWallet> &&wallet);
 
 bool AddWallet(const std::shared_ptr<CWallet> &wallet);
-bool RemoveWallet(const std::shared_ptr<CWallet> &wallet);
+bool RemoveWallet(const std::shared_ptr<CWallet> &wallet,
+                  std::optional<bool> load_on_start,
+                  std::vector<bilingual_str> &warnings);
+bool RemoveWallet(const std::shared_ptr<CWallet> &wallet,
+                  std::optional<bool> load_on_start);
 std::vector<std::shared_ptr<CWallet>> GetWallets();
 std::shared_ptr<CWallet> GetWallet(const std::string &name);
-std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
-                                    interfaces::Chain &chain,
+std::shared_ptr<CWallet> LoadWallet(interfaces::Chain &chain,
                                     const WalletLocation &location,
+                                    std::optional<bool> load_on_start,
                                     bilingual_str &error,
                                     std::vector<bilingual_str> &warnings);
 std::unique_ptr<interfaces::Handler> HandleLoadWallet(LoadWalletFn load_wallet);
 
 enum class WalletCreationStatus { SUCCESS, CREATION_FAILED, ENCRYPTION_FAILED };
 
-WalletCreationStatus CreateWallet(const CChainParams &params,
-                                  interfaces::Chain &chain,
-                                  const SecureString &passphrase,
-                                  uint64_t wallet_creation_flags,
-                                  const std::string &name, bilingual_str &error,
-                                  std::vector<bilingual_str> &warnings,
-                                  std::shared_ptr<CWallet> &result);
+WalletCreationStatus
+CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
+             uint64_t wallet_creation_flags, const std::string &name,
+             std::optional<bool> load_on_start, bilingual_str &error,
+             std::vector<bilingual_str> &warnings,
+             std::shared_ptr<CWallet> &result);
 //! -paytxfee default
 constexpr Amount DEFAULT_PAY_TX_FEE = Amount::zero();
 //! -fallbackfee default
@@ -1289,7 +1292,6 @@ public:
     void chainStateFlushed(const CBlockLocator &loc) override;
 
     DBErrors LoadWallet(bool &fFirstRunRet);
-    DBErrors ZapWalletTx(std::list<CWalletTx> &vWtx);
     DBErrors ZapSelectTx(std::vector<TxId> &txIdsIn,
                          std::vector<TxId> &txIdsOut)
         EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
@@ -1386,8 +1388,7 @@ public:
     bool AbandonTransaction(const TxId &txid);
 
     //! Verify wallet naming and perform salvage on the wallet if required
-    static bool Verify(const CChainParams &chainParams,
-                       interfaces::Chain &chain, const WalletLocation &location,
+    static bool Verify(interfaces::Chain &chain, const WalletLocation &location,
                        bilingual_str &error_string,
                        std::vector<bilingual_str> &warnings);
 
@@ -1396,8 +1397,7 @@ public:
      * in case of an error.
      */
     static std::shared_ptr<CWallet>
-    CreateWalletFromFile(const CChainParams &chainParams,
-                         interfaces::Chain &chain,
+    CreateWalletFromFile(interfaces::Chain &chain,
                          const WalletLocation &location, bilingual_str &error,
                          std::vector<bilingual_str> &warnings,
                          uint64_t wallet_creation_flags = 0);
@@ -1426,8 +1426,8 @@ public:
      * Obviously holding cs_main/cs_wallet when going into this call may cause
      * deadlock
      */
-    void BlockUntilSyncedToCurrentChain() const
-        LOCKS_EXCLUDED(cs_main, cs_wallet);
+    void BlockUntilSyncedToCurrentChain() const LOCKS_EXCLUDED(::cs_main)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_wallet);
 
     /**
      * Set a single wallet flag.
@@ -1570,7 +1570,7 @@ public:
     void LoadActiveScriptPubKeyMan(uint256 id, OutputType type, bool internal);
 
     //! Create new DescriptorScriptPubKeyMans and add them to the wallet
-    void SetupDescriptorScriptPubKeyMans();
+    void SetupDescriptorScriptPubKeyMans() EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     //! Return the DescriptorScriptPubKeyMan for a WalletDescriptor if it is
     //! already in the wallet
@@ -1636,5 +1636,13 @@ int64_t CalculateMaximumSignedTxSize(const CTransaction &tx,
                                      const CWallet *wallet,
                                      const std::vector<CTxOut> &txouts,
                                      bool use_max_sig = false);
+
+//! Add wallet name to persistent configuration so it will be loaded on startup.
+bool AddWalletSetting(interfaces::Chain &chain, const std::string &wallet_name);
+
+//! Remove wallet name from persistent configuration so it will not be loaded on
+//! startup.
+bool RemoveWalletSetting(interfaces::Chain &chain,
+                         const std::string &wallet_name);
 
 #endif // BITCOIN_WALLET_WALLET_H

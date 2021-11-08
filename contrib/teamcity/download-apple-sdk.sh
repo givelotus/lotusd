@@ -4,12 +4,15 @@ export LC_ALL=C
 
 set -euxo pipefail
 
+: "${SDK_DL_REMOTE:=}"
+
 usage() {
   echo "Usage: download-apple-sdk.sh dest_dir"
+  echo "The SDK_DL_REMOTE environment variable should be set to a URL pointing to the folder containing the SDK archive, with no trailing /."
   echo "Output: prints the SDK file name"
 }
 
-if [ $# -ne 1 ]; then
+if [ -z "${SDK_DL_REMOTE}" ] || [ $# -ne 1 ]; then
   usage
   exit 1
 fi

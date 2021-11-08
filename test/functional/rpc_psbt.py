@@ -7,7 +7,6 @@
 
 import json
 import os
-
 from decimal import Decimal
 
 from test_framework.blocktools import SUBSIDY

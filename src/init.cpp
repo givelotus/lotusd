@@ -13,6 +13,7 @@
 #include <amount.h>
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
+#include <avalanche/proof.h> // For AVALANCHE_LEGACY_PROOF_DEFAULT
 #include <avalanche/validation.h>
 #include <banman.h>
 #include <blockdb.h>
@@ -1269,6 +1270,11 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg("-avaproof",
                    "Avalanche proof to be used by this node (default: none)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-legacyavaproof",
+        strprintf("Use the legacy avalanche proof format (default: %u)",
+                  AVALANCHE_DEFAULT_LEGACY_PROOF),
+        ArgsManager::ALLOW_BOOL, OptionsCategory::AVALANCHE);
     argsman.AddArg("-avamasterkey",
                    "Master key associated with the proof. If a proof is "
                    "required, this is mandatory.",
@@ -2289,7 +2295,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Step 5: verify wallet database integrity
     for (const auto &client : node.chain_clients) {
-        if (!client->verify(chainparams)) {
+        if (!client->verify()) {
             return false;
         }
     }
@@ -2846,7 +2852,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Step 9: load wallet
     for (const auto &client : node.chain_clients) {
-        if (!client->load(chainparams)) {
+        if (!client->load()) {
             return false;
         }
     }
@@ -2892,25 +2898,21 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     }
 
 #if defined(HAVE_SYSTEM)
-    if (args.IsArgSet("-blocknotify")) {
-        const std::string block_notify = args.GetArg("-blocknotify", "");
-        const auto BlockNotifyCallback = [block_notify](
-                                             SynchronizationState sync_state,
-                                             const CBlockIndex *pBlockIndex) {
+    const std::string block_notify = args.GetArg("-blocknotify", "");
+    if (!block_notify.empty()) {
+        uiInterface.NotifyBlockTip_connect([block_notify](
+                                               SynchronizationState sync_state,
+                                               const CBlockIndex *pBlockIndex) {
             if (sync_state != SynchronizationState::POST_INIT || !pBlockIndex) {
                 return;
             }
-
-            std::string strCmd = block_notify;
-            if (!strCmd.empty()) {
-                boost::replace_all(strCmd, "%s",
-                                   pBlockIndex->GetBlockHash().GetHex());
-                std::thread t(runCommand, strCmd);
-                // thread runs free
-                t.detach();
-            }
-        };
-        uiInterface.NotifyBlockTip_connect(BlockNotifyCallback);
+            std::string command = block_notify;
+            boost::replace_all(command, "%s",
+                               pBlockIndex->GetBlockHash().GetHex());
+            std::thread t(runCommand, command);
+            // thread runs free
+            t.detach();
+        });
     }
 #endif
 

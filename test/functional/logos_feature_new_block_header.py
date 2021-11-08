@@ -8,12 +8,11 @@ import copy
 import time
 
 from test_framework.blocktools import (
-    create_block,
     create_coinbase,
     prepare_block,
     SUBSIDY,
 )
-from test_framework.messages import ToHex, CTxOut, CTxIn, COutPoint, CTransaction, COIN, CBlock, hash256, uint256_from_compact, CBlockMetadataField
+from test_framework.messages import ToHex, COIN, CBlock, hash256, uint256_from_compact, CBlockMetadataField
 from test_framework.script import (
     CScript,
     OP_HASH160,

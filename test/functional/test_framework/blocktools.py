@@ -7,21 +7,9 @@
 import unittest
 from decimal import Decimal
 
-from .script import (
-    CScript,
-    CScriptNum,
-    CScriptOp,
-    OP_1,
-    OP_CHECKSIG,
-    OP_DUP,
-    OP_EQUALVERIFY,
-    OP_HASH160,
-    OP_RETURN,
-    OP_TRUE,
-)
 from .messages import (
-    CBlock,
     COIN,
+    CBlock,
     COutPoint,
     CTransaction,
     CTxIn,
@@ -29,6 +17,18 @@ from .messages import (
     FromHex,
     ToHex,
     hash256,
+)
+from .script import (
+    OP_1,
+    OP_CHECKSIG,
+    OP_DUP,
+    OP_EQUALVERIFY,
+    OP_HASH160,
+    OP_RETURN,
+    OP_TRUE,
+    CScript,
+    CScriptNum,
+    CScriptOp,
 )
 from .txtools import pad_tx
 from .util import assert_equal, satoshi_round

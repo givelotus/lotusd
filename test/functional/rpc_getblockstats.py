@@ -3,18 +3,16 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+import json
+import os
+
 #
 # Test getblockstats rpc call
 #
 from decimal import Decimal
-import json
-import os
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_raises_rpc_error,
-)
+from test_framework.util import assert_equal, assert_raises_rpc_error
 
 TESTSDIR = os.path.dirname(os.path.realpath(__file__))
 

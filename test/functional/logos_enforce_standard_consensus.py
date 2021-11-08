@@ -21,10 +21,7 @@ from test_framework.messages import (
     CTxOut,
     COIN,
 )
-from test_framework.util import (
-    wait_until,
-    assert_equal,
-)
+from test_framework.util import assert_equal
 from test_framework.p2p import (
     P2PDataStore,
 )
@@ -244,7 +241,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             node.log.debug("Node stopped")
             return True
 
-        wait_until(is_node_stopped_with_error, timeout=5)
+        self.wait_until(is_node_stopped_with_error, timeout=5)
         node.stderr.flush()
         assert_equal(
             open(node.stderr.name).read(),

@@ -820,8 +820,9 @@ static void MaybeSetPeerAsAnnouncingHeaderAndIDs(NodeId nodeid,
             return;
         }
     }
-    connman.ForNode(nodeid, [&connman](CNode *pfrom) {
-        AssertLockHeld(cs_main);
+    connman.ForNode(nodeid, [&connman](CNode *pfrom) EXCLUSIVE_LOCKS_REQUIRED(
+                                ::cs_main) {
+        AssertLockHeld(::cs_main);
         uint64_t nCMPCTBLOCKVersion = 1;
         if (lNodesAnnouncingHeaderAndIDs.size() >= 3) {
             // As per BIP152, we only get 3 of our peers to announce
@@ -829,7 +830,6 @@ static void MaybeSetPeerAsAnnouncingHeaderAndIDs(NodeId nodeid,
             connman.ForNode(
                 lNodesAnnouncingHeaderAndIDs.front(),
                 [&connman, nCMPCTBLOCKVersion](CNode *pnodeStop) {
-                    AssertLockHeld(cs_main);
                     connman.PushMessage(
                         pnodeStop, CNetMsgMaker(pnodeStop->GetCommonVersion())
                                        .Make(NetMsgType::SENDCMPCT,
@@ -1528,7 +1528,6 @@ PeerManager::PeerManager(const CChainParams &chainparams, CConnman &connman,
     g_recent_confirmed_transactions.reset(
         new CRollingBloomFilter(24000, 0.000001));
 
-    const Consensus::Params &consensusParams = chainparams.GetConsensus();
     // Stale tip checking and peer eviction are on two different timers, but we
     // don't want them to get out of sync due to drift in the scheduler, so we
     // combine them in one function and schedule at the quicker (peer-eviction)
@@ -1537,8 +1536,8 @@ PeerManager::PeerManager(const CChainParams &chainparams, CConnman &connman,
         EXTRA_PEER_CHECK_INTERVAL < STALE_CHECK_INTERVAL,
         "peer eviction timer should be less than stale tip check timer");
     scheduler.scheduleEvery(
-        [this, &consensusParams]() {
-            this->CheckForStaleTipAndEvictPeers(consensusParams);
+        [this]() {
+            this->CheckForStaleTipAndEvictPeers();
             return true;
         },
         std::chrono::seconds{EXTRA_PEER_CHECK_INTERVAL});
@@ -1666,29 +1665,32 @@ void PeerManager::NewPoWValidBlock(
         most_recent_compact_block = pcmpctblock;
     }
 
-    m_connman.ForEachNode([this, &pcmpctblock, pindex, &msgMaker,
-                           &hashBlock](CNode *pnode) {
-        AssertLockHeld(cs_main);
+    m_connman.ForEachNode(
+        [this, &pcmpctblock, pindex, &msgMaker,
+         &hashBlock](CNode *pnode) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+            AssertLockHeld(::cs_main);
 
-        // TODO: Avoid the repeated-serialization here
-        if (pnode->GetCommonVersion() < INVALID_CB_NO_BAN_VERSION ||
-            pnode->fDisconnect) {
-            return;
-        }
-        ProcessBlockAvailability(pnode->GetId());
-        CNodeState &state = *State(pnode->GetId());
-        // If the peer has, or we announced to them the previous block already,
-        // but we don't think they have this one, go ahead and announce it.
-        if (state.fPreferHeaderAndIDs && !PeerHasHeader(&state, pindex) &&
-            PeerHasHeader(&state, pindex->pprev)) {
-            LogPrint(BCLog::NET, "%s sending header-and-ids %s to peer=%d\n",
-                     "PeerManager::NewPoWValidBlock", hashBlock.ToString(),
-                     pnode->GetId());
-            m_connman.PushMessage(
-                pnode, msgMaker.Make(NetMsgType::CMPCTBLOCK, *pcmpctblock));
-            state.pindexBestHeaderSent = pindex;
-        }
-    });
+            // TODO: Avoid the repeated-serialization here
+            if (pnode->GetCommonVersion() < INVALID_CB_NO_BAN_VERSION ||
+                pnode->fDisconnect) {
+                return;
+            }
+            ProcessBlockAvailability(pnode->GetId());
+            CNodeState &state = *State(pnode->GetId());
+            // If the peer has, or we announced to them the previous block
+            // already, but we don't think they have this one, go ahead and
+            // announce it.
+            if (state.fPreferHeaderAndIDs && !PeerHasHeader(&state, pindex) &&
+                PeerHasHeader(&state, pindex->pprev)) {
+                LogPrint(BCLog::NET,
+                         "%s sending header-and-ids %s to peer=%d\n",
+                         "PeerManager::NewPoWValidBlock", hashBlock.ToString(),
+                         pnode->GetId());
+                m_connman.PushMessage(
+                    pnode, msgMaker.Make(NetMsgType::CMPCTBLOCK, *pcmpctblock));
+                state.pindexBestHeaderSent = pindex;
+            }
+        });
 }
 
 /**
@@ -1833,9 +1835,6 @@ void RelayProof(const avalanche::ProofId &proofid, const CConnman &connman) {
 
 static void RelayAddress(const CAddress &addr, bool fReachable,
                          const CConnman &connman) {
-    // Limited relaying of addresses outside our network(s)
-    unsigned int nRelayNodes = fReachable ? 2 : 1;
-
     // Relay to a limited number of other nodes.
     // Use deterministic randomness to send to the same nodes for 24 hours at a
     // time so the m_addr_knowns of the chosen nodes prevent repeats
@@ -1846,6 +1845,9 @@ static void RelayAddress(const CAddress &addr, bool fReachable,
             .Write((GetTime() + hashAddr) / (24 * 60 * 60));
     FastRandomContext insecure_rand;
 
+    // Relay reachable addresses to 2 peers. Unreachable addresses are relayed
+    // randomly to 1 or 2 peers.
+    unsigned int nRelayNodes = (fReachable || (hasher.Finalize() & 1)) ? 2 : 1;
     std::array<std::pair<uint64_t, CNode *>, 2> best{
         {{0, nullptr}, {0, nullptr}}};
     assert(nRelayNodes <= best.size());
@@ -2196,14 +2198,14 @@ static void ProcessGetData(const Config &config, CNode &pfrom,
                     LOCK(mempool.cs);
                     auto txiter = mempool.GetIter(tx->GetId());
                     if (txiter) {
-                        const CTxMemPool::setEntries &parents =
-                            mempool.GetMemPoolParents(*txiter);
+                        const CTxMemPoolEntry::Parents &parents =
+                            (*txiter)->GetMemPoolParentsConst();
                         parent_ids_to_add.reserve(parents.size());
-                        for (CTxMemPool::txiter parent_iter : parents) {
-                            if (parent_iter->GetTime() >
+                        for (const CTxMemPoolEntry &parent : parents) {
+                            if (parent.GetTime() >
                                 now - UNCONDITIONAL_RELAY_DELAY) {
                                 parent_ids_to_add.push_back(
-                                    parent_iter->GetTx().GetId());
+                                    parent.GetTx().GetId());
                             }
                         }
                     }
@@ -4392,8 +4394,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             for (avalanche::BlockUpdate &u : updates) {
                 CBlockIndex *pindex = u.getBlockIndex();
                 switch (u.getStatus()) {
-                    case avalanche::BlockUpdate::Status::Invalid:
-                    case avalanche::BlockUpdate::Status::Rejected: {
+                    case avalanche::VoteStatus::Invalid:
+                    case avalanche::VoteStatus::Rejected: {
                         LogPrintf("Avalanche rejected %s, parking\n",
                                   pindex->GetBlockHash().GetHex());
                         BlockValidationState state;
@@ -4404,8 +4406,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
                             return;
                         }
                     } break;
-                    case avalanche::BlockUpdate::Status::Accepted:
-                    case avalanche::BlockUpdate::Status::Finalized: {
+                    case avalanche::VoteStatus::Accepted:
+                    case avalanche::VoteStatus::Finalized: {
                         LogPrintf("Avalanche accepted %s\n",
                                   pindex->GetBlockHash().GetHex());
                         LOCK(cs_main);
@@ -5024,8 +5026,9 @@ void PeerManager::EvictExtraOutboundPeers(int64_t time_in_seconds) {
     NodeId worst_peer = -1;
     int64_t oldest_block_announcement = std::numeric_limits<int64_t>::max();
 
-    m_connman.ForEachNode([&](CNode *pnode) {
-        AssertLockHeld(cs_main);
+    m_connman.ForEachNode([&](CNode *pnode) EXCLUSIVE_LOCKS_REQUIRED(
+                              ::cs_main) {
+        AssertLockHeld(::cs_main);
 
         // Ignore non-outbound peers, or nodes marked for disconnect already
         if (!pnode->IsOutboundOrBlockRelayConn() || pnode->fDisconnect) {
@@ -5057,31 +5060,33 @@ void PeerManager::EvictExtraOutboundPeers(int64_t time_in_seconds) {
         return;
     }
 
-    bool disconnected = m_connman.ForNode(worst_peer, [&](CNode *pnode) {
-        AssertLockHeld(cs_main);
+    bool disconnected = m_connman.ForNode(
+        worst_peer, [&](CNode *pnode) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+            AssertLockHeld(::cs_main);
 
-        // Only disconnect a peer that has been connected to us for some
-        // reasonable fraction of our check-frequency, to give it time for new
-        // information to have arrived.
-        // Also don't disconnect any peer we're trying to download a block from.
-        CNodeState &state = *State(pnode->GetId());
-        if (time_in_seconds - pnode->nTimeConnected > MINIMUM_CONNECT_TIME &&
-            state.nBlocksInFlight == 0) {
-            LogPrint(BCLog::NET,
-                     "disconnecting extra outbound peer=%d (last block "
-                     "announcement received at time %d)\n",
-                     pnode->GetId(), oldest_block_announcement);
-            pnode->fDisconnect = true;
-            return true;
-        } else {
-            LogPrint(BCLog::NET,
-                     "keeping outbound peer=%d chosen for eviction "
-                     "(connect time: %d, blocks_in_flight: %d)\n",
-                     pnode->GetId(), pnode->nTimeConnected,
-                     state.nBlocksInFlight);
-            return false;
-        }
-    });
+            // Only disconnect a peer that has been connected to us for some
+            // reasonable fraction of our check-frequency, to give it time for
+            // new information to have arrived. Also don't disconnect any peer
+            // we're trying to download a block from.
+            CNodeState &state = *State(pnode->GetId());
+            if (time_in_seconds - pnode->nTimeConnected >
+                    MINIMUM_CONNECT_TIME &&
+                state.nBlocksInFlight == 0) {
+                LogPrint(BCLog::NET,
+                         "disconnecting extra outbound peer=%d (last block "
+                         "announcement received at time %d)\n",
+                         pnode->GetId(), oldest_block_announcement);
+                pnode->fDisconnect = true;
+                return true;
+            } else {
+                LogPrint(BCLog::NET,
+                         "keeping outbound peer=%d chosen for eviction "
+                         "(connect time: %d, blocks_in_flight: %d)\n",
+                         pnode->GetId(), pnode->nTimeConnected,
+                         state.nBlocksInFlight);
+                return false;
+            }
+        });
 
     if (disconnected) {
         // If we disconnected an extra peer, that means we successfully
@@ -5093,8 +5098,7 @@ void PeerManager::EvictExtraOutboundPeers(int64_t time_in_seconds) {
     }
 }
 
-void PeerManager::CheckForStaleTipAndEvictPeers(
-    const Consensus::Params &consensusParams) {
+void PeerManager::CheckForStaleTipAndEvictPeers() {
     LOCK(cs_main);
 
     int64_t time_in_seconds = GetTime();
@@ -5108,7 +5112,8 @@ void PeerManager::CheckForStaleTipAndEvictPeers(
     // Check whether our tip is stale, and if so, allow using an extra outbound
     // peer.
     if (!fImporting && !fReindex && m_connman.GetNetworkActive() &&
-        m_connman.GetUseAddrmanOutgoing() && TipMayBeStale(consensusParams)) {
+        m_connman.GetUseAddrmanOutgoing() &&
+        TipMayBeStale(m_chainparams.GetConsensus())) {
         LogPrintf("Potential stale tip detected, will try using extra outbound "
                   "peer (last tip update: %d seconds ago)\n",
                   time_in_seconds - g_last_tip_update);
@@ -5138,8 +5143,7 @@ public:
 
 bool PeerManager::SendMessages(const Config &config, CNode *pto,
                                std::atomic<bool> &interruptMsgProc) {
-    const Consensus::Params &consensusParams =
-        config.GetChainParams().GetConsensus();
+    const Consensus::Params &consensusParams = m_chainparams.GetConsensus();
 
     // We must call MaybeDiscourageAndDisconnect first, to ensure that we'll
     // disconnect misbehaving peers even before the version handshake is

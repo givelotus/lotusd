@@ -6,7 +6,7 @@
 from decimal import Decimal
 
 from test_framework.blocktools import SUBSIDY
-from test_framework.messages import FromHex, CTransaction
+from test_framework.messages import CTransaction, FromHex
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_array_result,
@@ -491,8 +491,6 @@ class WalletTest(BitcoinTestFramework):
         maintenance = [
             '-rescan',
             '-reindex',
-            '-zapwallettxes=1',
-            '-zapwallettxes=2',
         ]
         chainlimit = 6
         for m in maintenance:
@@ -572,6 +570,10 @@ class WalletTest(BitcoinTestFramework):
         # wait until the wallet has submitted all transactions to the mempool
         self.wait_until(
             lambda: len(self.nodes[0].getrawmempool()) == chainlimit * 2)
+
+        # Prevent potential race condition when calling wallet RPCs right after
+        # restart
+        self.nodes[0].syncwithvalidationinterfacequeue()
 
         node0_balance = self.nodes[0].getbalance()
         # With walletrejectlongchains we will not create the tx and store it in

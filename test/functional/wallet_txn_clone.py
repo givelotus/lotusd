@@ -8,14 +8,10 @@ from decimal import Decimal
 import io
 
 from test_framework.blocktools import SUBSIDY
-from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    connect_nodes,
-    disconnect_nodes,
-)
 from test_framework.script import CScript, OP_RETURN
 from test_framework.messages import CTransaction, CTxOut, COIN
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import assert_equal, connect_nodes, disconnect_nodes
 
 
 class TxnMallTest(BitcoinTestFramework):

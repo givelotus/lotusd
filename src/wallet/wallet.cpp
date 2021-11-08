@@ -24,6 +24,7 @@
 #include <script/sign.h>
 #include <script/signingprovider.h>
 #include <txmempool.h>
+#include <univalue.h>
 #include <util/bip32.h>
 #include <util/check.h>
 #include <util/error.h>
@@ -48,6 +49,58 @@ static RecursiveMutex cs_wallets;
 static std::vector<std::shared_ptr<CWallet>> vpwallets GUARDED_BY(cs_wallets);
 static std::list<LoadWalletFn> g_load_wallet_fns GUARDED_BY(cs_wallets);
 
+bool AddWalletSetting(interfaces::Chain &chain,
+                      const std::string &wallet_name) {
+    util::SettingsValue setting_value = chain.getRwSetting("wallet");
+    if (!setting_value.isArray()) {
+        setting_value.setArray();
+    }
+    for (const util::SettingsValue &value : setting_value.getValues()) {
+        if (value.isStr() && value.get_str() == wallet_name) {
+            return true;
+        }
+    }
+    setting_value.push_back(wallet_name);
+    return chain.updateRwSetting("wallet", setting_value);
+}
+
+bool RemoveWalletSetting(interfaces::Chain &chain,
+                         const std::string &wallet_name) {
+    util::SettingsValue setting_value = chain.getRwSetting("wallet");
+    if (!setting_value.isArray()) {
+        return true;
+    }
+    util::SettingsValue new_value(util::SettingsValue::VARR);
+    for (const util::SettingsValue &value : setting_value.getValues()) {
+        if (!value.isStr() || value.get_str() != wallet_name) {
+            new_value.push_back(value);
+        }
+    }
+    if (new_value.size() == setting_value.size()) {
+        return true;
+    }
+    return chain.updateRwSetting("wallet", new_value);
+}
+
+static void UpdateWalletSetting(interfaces::Chain &chain,
+                                const std::string &wallet_name,
+                                std::optional<bool> load_on_startup,
+                                std::vector<bilingual_str> &warnings) {
+    if (!load_on_startup) {
+        return;
+    }
+    if (load_on_startup.value() && !AddWalletSetting(chain, wallet_name)) {
+        warnings.emplace_back(
+            Untranslated("Wallet load on startup setting could not be updated, "
+                         "so wallet may not be loaded next node startup."));
+    } else if (!load_on_startup.value() &&
+               !RemoveWalletSetting(chain, wallet_name)) {
+        warnings.emplace_back(
+            Untranslated("Wallet load on startup setting could not be updated, "
+                         "so wallet may still be loaded next node startup."));
+    }
+}
+
 bool AddWallet(const std::shared_ptr<CWallet> &wallet) {
     LOCK(cs_wallets);
     assert(wallet);
@@ -61,8 +114,14 @@ bool AddWallet(const std::shared_ptr<CWallet> &wallet) {
     return true;
 }
 
-bool RemoveWallet(const std::shared_ptr<CWallet> &wallet) {
+bool RemoveWallet(const std::shared_ptr<CWallet> &wallet,
+                  std::optional<bool> load_on_start,
+                  std::vector<bilingual_str> &warnings) {
     assert(wallet);
+
+    interfaces::Chain &chain = wallet->chain();
+    std::string name = wallet->GetName();
+
     // Unregister with the validation interface which also drops shared ponters.
     wallet->m_chain_notifications_handler.reset();
     LOCK(cs_wallets);
@@ -72,7 +131,17 @@ bool RemoveWallet(const std::shared_ptr<CWallet> &wallet) {
         return false;
     }
     vpwallets.erase(i);
+
+    // Write the wallet setting
+    UpdateWalletSetting(chain, name, load_on_start, warnings);
+
     return true;
+}
+
+bool RemoveWallet(const std::shared_ptr<CWallet> &wallet,
+                  std::optional<bool> load_on_start) {
+    std::vector<bilingual_str> warnings;
+    return RemoveWallet(wallet, load_on_start, warnings);
 }
 
 std::vector<std::shared_ptr<CWallet>> GetWallets() {
@@ -153,18 +222,18 @@ static const size_t OUTPUT_GROUP_MAX_ENTRIES = 10;
 
 namespace {
 std::shared_ptr<CWallet>
-LoadWalletInternal(const CChainParams &chainParams, interfaces::Chain &chain,
-                   const WalletLocation &location, bilingual_str &error,
+LoadWalletInternal(interfaces::Chain &chain, const WalletLocation &location,
+                   std::optional<bool> load_on_start, bilingual_str &error,
                    std::vector<bilingual_str> &warnings) {
     try {
-        if (!CWallet::Verify(chainParams, chain, location, error, warnings)) {
+        if (!CWallet::Verify(chain, location, error, warnings)) {
             error = Untranslated("Wallet file verification failed.") +
                     Untranslated(" ") + error;
             return nullptr;
         }
 
-        std::shared_ptr<CWallet> wallet = CWallet::CreateWalletFromFile(
-            chainParams, chain, location, error, warnings);
+        std::shared_ptr<CWallet> wallet =
+            CWallet::CreateWalletFromFile(chain, location, error, warnings);
         if (!wallet) {
             error = Untranslated("Wallet loading failed.") + Untranslated(" ") +
                     error;
@@ -172,6 +241,10 @@ LoadWalletInternal(const CChainParams &chainParams, interfaces::Chain &chain,
         }
         AddWallet(wallet);
         wallet->postInitProcess();
+
+        // Write the wallet setting
+        UpdateWalletSetting(chain, location.GetName(), load_on_start, warnings);
+
         return wallet;
     } catch (const std::runtime_error &e) {
         error = Untranslated(e.what());
@@ -180,9 +253,9 @@ LoadWalletInternal(const CChainParams &chainParams, interfaces::Chain &chain,
 }
 } // namespace
 
-std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
-                                    interfaces::Chain &chain,
+std::shared_ptr<CWallet> LoadWallet(interfaces::Chain &chain,
                                     const WalletLocation &location,
+                                    std::optional<bool> load_on_start,
                                     bilingual_str &error,
                                     std::vector<bilingual_str> &warnings) {
     auto result =
@@ -193,18 +266,17 @@ std::shared_ptr<CWallet> LoadWallet(const CChainParams &chainParams,
         return nullptr;
     }
     auto wallet =
-        LoadWalletInternal(chainParams, chain, location, error, warnings);
+        LoadWalletInternal(chain, location, load_on_start, error, warnings);
     WITH_LOCK(g_loading_wallet_mutex, g_loading_wallet_set.erase(result.first));
     return wallet;
 }
 
-WalletCreationStatus CreateWallet(const CChainParams &params,
-                                  interfaces::Chain &chain,
-                                  const SecureString &passphrase,
-                                  uint64_t wallet_creation_flags,
-                                  const std::string &name, bilingual_str &error,
-                                  std::vector<bilingual_str> &warnings,
-                                  std::shared_ptr<CWallet> &result) {
+WalletCreationStatus
+CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
+             uint64_t wallet_creation_flags, const std::string &name,
+             std::optional<bool> load_on_start, bilingual_str &error,
+             std::vector<bilingual_str> &warnings,
+             std::shared_ptr<CWallet> &result) {
     // Indicate that the wallet is actually supposed to be blank and not just
     // blank to make it encrypted
     bool create_blank = (wallet_creation_flags & WALLET_FLAG_BLANK_WALLET);
@@ -224,7 +296,7 @@ WalletCreationStatus CreateWallet(const CChainParams &params,
 
     // Wallet::Verify will check if we're trying to create a wallet with a
     // duplicate name.
-    if (!CWallet::Verify(params, chain, location, error, warnings)) {
+    if (!CWallet::Verify(chain, location, error, warnings)) {
         error = Untranslated("Wallet file verification failed.") +
                 Untranslated(" ") + error;
         return WalletCreationStatus::CREATION_FAILED;
@@ -242,7 +314,7 @@ WalletCreationStatus CreateWallet(const CChainParams &params,
 
     // Make the wallet
     std::shared_ptr<CWallet> wallet = CWallet::CreateWalletFromFile(
-        params, chain, location, error, warnings, wallet_creation_flags);
+        chain, location, error, warnings, wallet_creation_flags);
     if (!wallet) {
         error =
             Untranslated("Wallet creation failed.") + Untranslated(" ") + error;
@@ -288,6 +360,10 @@ WalletCreationStatus CreateWallet(const CChainParams &params,
     AddWallet(wallet);
     wallet->postInitProcess();
     result = wallet;
+
+    // Write the wallet settings
+    UpdateWalletSetting(chain, name, load_on_start, warnings);
+
     return WalletCreationStatus::SUCCESS;
 }
 
@@ -1859,8 +1935,14 @@ CWallet::ScanResult CWallet::ScanForWalletTransactions(
     double progress_current = progress_begin;
     int block_height = start_height;
     while (!fAbortRescan && !chain().shutdownRequested()) {
-        m_scanning_progress = (progress_current - progress_begin) /
-                              (progress_end - progress_begin);
+        if (progress_end - progress_begin > 0.0) {
+            m_scanning_progress = (progress_current - progress_begin) /
+                                  (progress_end - progress_begin);
+        } else {
+            // avoid divide-by-zero for single block scan range (i.e. start and
+            // stop hashes are equal)
+            m_scanning_progress = 0;
+        }
         if (block_height % 100 == 0 && progress_end - progress_begin > 0.0) {
             ShowProgress(
                 strprintf("%s " + _("Rescanning...").translated,
@@ -2552,6 +2634,7 @@ std::map<CTxDestination, std::vector<COutput>> CWallet::ListCoins() const {
 
 const CTxOut &CWallet::FindNonChangeParentOutput(const CTransaction &tx,
                                                  int output) const {
+    AssertLockHeld(cs_wallet);
     const CTransaction *ptx = &tx;
     int n = output;
     while (IsChange(ptx->vout[n]) && ptx->vin.size() > 0) {
@@ -3568,23 +3651,6 @@ DBErrors CWallet::ZapSelectTx(std::vector<TxId> &txIdsIn,
     return DBErrors::LOAD_OK;
 }
 
-DBErrors CWallet::ZapWalletTx(std::list<CWalletTx> &vWtx) {
-    DBErrors nZapWalletTxRet = WalletBatch(*database, "cr+").ZapWalletTx(vWtx);
-    if (nZapWalletTxRet == DBErrors::NEED_REWRITE) {
-        if (database->Rewrite("\x04pool")) {
-            for (const auto &spk_man_pair : m_spk_managers) {
-                spk_man_pair.second->RewriteDB();
-            }
-        }
-    }
-
-    if (nZapWalletTxRet != DBErrors::LOAD_OK) {
-        return nZapWalletTxRet;
-    }
-
-    return DBErrors::LOAD_OK;
-}
-
 bool CWallet::SetAddressBookWithDB(WalletBatch &batch,
                                    const CTxDestination &address,
                                    const std::string &strName,
@@ -3621,6 +3687,7 @@ bool CWallet::SetAddressBook(const CTxDestination &address,
 
 bool CWallet::DelAddressBook(const CTxDestination &address) {
     bool is_mine;
+    WalletBatch batch(*database);
     {
         LOCK(cs_wallet);
         // If we want to delete receiving addresses, we need to take care that
@@ -3640,7 +3707,7 @@ bool CWallet::DelAddressBook(const CTxDestination &address) {
         // Delete destdata tuples associated with address
         for (const std::pair<const std::string, std::string> &item :
              m_address_book[address].destdata) {
-            WalletBatch(*database).EraseDestData(address, item.first);
+            batch.EraseDestData(address, item.first);
         }
         m_address_book.erase(address);
         is_mine = IsMine(address) != ISMINE_NO;
@@ -3648,8 +3715,8 @@ bool CWallet::DelAddressBook(const CTxDestination &address) {
 
     NotifyAddressBookChanged(this, address, "", is_mine, "", CT_DELETED);
 
-    WalletBatch(*database).ErasePurpose(address);
-    return WalletBatch(*database).EraseName(address);
+    batch.ErasePurpose(address);
+    return batch.EraseName(address);
 }
 
 size_t CWallet::KeypoolCountExternalKeys() const {
@@ -4166,8 +4233,7 @@ CWallet::GetDestValues(const std::string &prefix) const {
     return values;
 }
 
-bool CWallet::Verify(const CChainParams &chainParams, interfaces::Chain &chain,
-                     const WalletLocation &location,
+bool CWallet::Verify(interfaces::Chain &chain, const WalletLocation &location,
                      bilingual_str &error_string,
                      std::vector<bilingual_str> &warnings) {
     // Do some checking on wallet path. It should be either a:
@@ -4218,28 +4284,11 @@ bool CWallet::Verify(const CChainParams &chainParams, interfaces::Chain &chain,
 }
 
 std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
-    const CChainParams &chainParams, interfaces::Chain &chain,
-    const WalletLocation &location, bilingual_str &error,
-    std::vector<bilingual_str> &warnings, uint64_t wallet_creation_flags) {
+    interfaces::Chain &chain, const WalletLocation &location,
+    bilingual_str &error, std::vector<bilingual_str> &warnings,
+    uint64_t wallet_creation_flags) {
     const std::string walletFile =
         WalletDataFilePath(location.GetPath()).string();
-
-    // Needed to restore wallet transaction meta data after -zapwallettxes
-    std::list<CWalletTx> vWtx;
-
-    if (gArgs.GetBoolArg("-zapwallettxes", false)) {
-        chain.initMessage(
-            _("Zapping all transactions from wallet...").translated);
-
-        std::unique_ptr<CWallet> tempWallet = std::make_unique<CWallet>(
-            &chain, location, CreateWalletDatabase(location.GetPath()));
-        DBErrors nZapWalletRet = tempWallet->ZapWalletTx(vWtx);
-        if (nZapWalletRet != DBErrors::LOAD_OK) {
-            error =
-                strprintf(_("Error loading %s: Wallet corrupted"), walletFile);
-            return nullptr;
-        }
-    }
 
     chain.initMessage(_("Loading wallet...").translated);
 
@@ -4540,29 +4589,6 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
         }
         walletInstance->chainStateFlushed(chain.getTipLocator());
         walletInstance->database->IncrementUpdateCounter();
-
-        // Restore wallet transaction metadata after -zapwallettxes=1
-        if (gArgs.GetBoolArg("-zapwallettxes", false) &&
-            gArgs.GetArg("-zapwallettxes", "1") != "2") {
-            WalletBatch batch(*walletInstance->database);
-
-            for (const CWalletTx &wtxOld : vWtx) {
-                const TxId txid = wtxOld.GetId();
-                std::map<TxId, CWalletTx>::iterator mi =
-                    walletInstance->mapWallet.find(txid);
-                if (mi != walletInstance->mapWallet.end()) {
-                    const CWalletTx *copyFrom = &wtxOld;
-                    CWalletTx *copyTo = &mi->second;
-                    copyTo->mapValue = copyFrom->mapValue;
-                    copyTo->vOrderForm = copyFrom->vOrderForm;
-                    copyTo->nTimeReceived = copyFrom->nTimeReceived;
-                    copyTo->nTimeSmart = copyFrom->nTimeSmart;
-                    copyTo->fFromMe = copyFrom->fFromMe;
-                    copyTo->nOrderPos = copyFrom->nOrderPos;
-                    batch.WriteTx(*copyTo);
-                }
-            }
-        }
     }
 
     {

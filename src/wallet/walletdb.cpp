@@ -294,13 +294,18 @@ public:
 
 static bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey,
                          CDataStream &ssValue, CWalletScanState &wss,
-                         std::string &strType, std::string &strErr)
+                         std::string &strType, std::string &strErr,
+                         const KeyFilterFn &filter_fn = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet) {
     try {
         // Unserialize
         // Taking advantage of the fact that pair serialization is just the two
         // items serialized one after the other.
         ssKey >> strType;
+        // If we have a filter, check if this matches the filter
+        if (filter_fn && !filter_fn(strType)) {
+            return true;
+        }
         if (strType == DBKeys::NAME) {
             std::string strAddress;
             ssKey >> strAddress;
@@ -745,10 +750,12 @@ static bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey,
 }
 
 bool ReadKeyValue(CWallet *pwallet, CDataStream &ssKey, CDataStream &ssValue,
-                  std::string &strType, std::string &strErr) {
+                  std::string &strType, std::string &strErr,
+                  const KeyFilterFn &filter_fn) {
     CWalletScanState dummy_wss;
     LOCK(pwallet->cs_wallet);
-    return ReadKeyValue(pwallet, ssKey, ssValue, dummy_wss, strType, strErr);
+    return ReadKeyValue(pwallet, ssKey, ssValue, dummy_wss, strType, strErr,
+                        filter_fn);
 }
 
 bool WalletBatch::IsKeyType(const std::string &strType) {
@@ -1029,24 +1036,6 @@ DBErrors WalletBatch::ZapSelectTx(std::vector<TxId> &txIdsIn,
     if (delerror) {
         return DBErrors::CORRUPT;
     }
-    return DBErrors::LOAD_OK;
-}
-
-DBErrors WalletBatch::ZapWalletTx(std::list<CWalletTx> &vWtx) {
-    // Build list of wallet TXs.
-    std::vector<TxId> txIds;
-    DBErrors err = FindWalletTx(txIds, vWtx);
-    if (err != DBErrors::LOAD_OK) {
-        return err;
-    }
-
-    // Erase each wallet TX.
-    for (const TxId &txid : txIds) {
-        if (!EraseTx(txid)) {
-            return DBErrors::CORRUPT;
-        }
-    }
-
     return DBErrors::LOAD_OK;
 }
 

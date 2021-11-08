@@ -18,21 +18,20 @@ ser_*, deser_*: functions that handle serialization/deserialization.
 Classes use __slots__ to ensure extraneous attributes aren't accidentally added
 by tests, compromising their intended effect.
 """
-from codecs import encode
 import copy
 import hashlib
-from io import BytesIO
 import random
 import socket
 import struct
 import time
 import unittest
-
+from codecs import encode
+from enum import IntEnum
+from io import BytesIO
 from typing import List
 
 from test_framework.siphash import siphash256
-from test_framework.util import hex_str_to_bytes, assert_equal
-
+from test_framework.util import assert_equal, hex_str_to_bytes
 
 MIN_VERSION_SUPPORTED = 60001
 # past bip-31 for ping/pong
@@ -1110,6 +1109,16 @@ class AvalanchePoll():
     def __repr__(self):
         return "AvalanchePoll(round={}, invs={})".format(
             self.round, repr(self.invs))
+
+
+class AvalancheVoteError(IntEnum):
+    ACCEPTED = 0
+    INVALID = 1
+    PARKED = 2
+    FORK = 3
+    UNKNOWN = -1
+    MISSING = -2
+    PENDING = -3
 
 
 class AvalancheVote():

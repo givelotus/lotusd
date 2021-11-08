@@ -4,36 +4,36 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Class for lotusd node under test"""
 
+import collections
 import contextlib
 import decimal
-from enum import Enum
 import errno
 import http.client
 import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.parse
-import collections
-import shlex
+from enum import Enum
 
 from .authproxy import JSONRPCException
 from .descriptors import descsum_create
-from .messages import COIN, CTransaction, FromHex, MY_SUBVERSION
+from .messages import COIN, MY_SUBVERSION, CTransaction, FromHex
 from .util import (
     MAX_NODES,
+    EncodeDecimal,
     append_config,
     delete_cookie_file,
     get_auth_cookie,
     get_rpc_proxy,
     p2p_port,
     rpc_url,
-    wait_until,
-    EncodeDecimal,
+    wait_until_helper,
 )
 
 BITCOIND_PROC_WAIT_TIMEOUT = 60
@@ -311,7 +311,8 @@ class TestNode():
                 rpc.getblockcount()
                 # If the call to getblockcount() succeeds then the RPC
                 # connection is up
-                wait_until(lambda: rpc.getmempoolinfo()['loaded'])
+                wait_until_helper(lambda: rpc.getmempoolinfo()['loaded'],
+                                  timeout_factor=self.timeout_factor)
                 # Wait for the node to finish reindex, block import, and
                 # loading the mempool. Usually importing happens fast or
                 # even "immediate" when the node is started. However, there
@@ -457,7 +458,7 @@ class TestNode():
         return True
 
     def wait_until_stopped(self, timeout=BITCOIND_PROC_WAIT_TIMEOUT):
-        wait_until(
+        wait_until_helper(
             self.is_node_stopped,
             timeout=timeout,
             timeout_factor=self.timeout_factor)
@@ -720,7 +721,8 @@ class TestNode():
         for p in self.p2ps:
             p.peer_disconnect()
         del self.p2ps[:]
-        wait_until(lambda: self.num_test_p2p_connections() == 0)
+        wait_until_helper(lambda: self.num_test_p2p_connections() == 0,
+                          timeout_factor=self.timeout_factor)
 
 
 class TestNodeCLIAttr:
@@ -738,6 +740,8 @@ class TestNodeCLIAttr:
 def arg_to_cli(arg):
     if isinstance(arg, bool):
         return str(arg).lower()
+    elif arg is None:
+        return 'null'
     elif isinstance(arg, dict) or isinstance(arg, list):
         return json.dumps(arg, default=EncodeDecimal)
     else:
@@ -810,20 +814,27 @@ class TestNodeCLI():
 
 
 class RPCOverloadWrapper():
-    def __init__(self, rpc, cli=False):
+    def __init__(self, rpc, cli=False, descriptors=False):
         self.rpc = rpc
         self.is_cli = cli
+        # FIXME: self.descriptors and createwallet are supposed to be
+        #  introduced by PR16528 but it will take more time to backport it,
+        #  so this is added now to be able to progress on other backports.
+        #  For now, descriptors is always False
+        self.descriptors = descriptors
 
     def __getattr__(self, name):
         return getattr(self.rpc, name)
 
+    def createwallet(self, wallet_name, disable_private_keys=None, blank=None,
+                     passphrase='', avoid_reuse=None, descriptors=None, load_on_startup=None):
+        if descriptors is None:
+            descriptors = self.descriptors
+        return self.__getattr__('createwallet')(
+            wallet_name, disable_private_keys, blank, passphrase, avoid_reuse, descriptors, load_on_startup)
+
     def importprivkey(self, privkey, label=None, rescan=None):
         wallet_info = self.getwalletinfo()
-        if self.is_cli:
-            if label is None:
-                label = 'null'
-            if rescan is None:
-                rescan = 'null'
         if 'descriptors' not in wallet_info or (
                 'descriptors' in wallet_info and not wallet_info['descriptors']):
             return self.__getattr__('importprivkey')(privkey, label, rescan)
@@ -840,9 +851,6 @@ class RPCOverloadWrapper():
     def addmultisigaddress(self, nrequired, keys,
                            label=None):
         wallet_info = self.getwalletinfo()
-        if self.is_cli:
-            if label is None:
-                label = 'null'
         if 'descriptors' not in wallet_info or (
                 'descriptors' in wallet_info and not wallet_info['descriptors']):
             return self.__getattr__('addmultisigaddress')(
@@ -860,11 +868,6 @@ class RPCOverloadWrapper():
 
     def importpubkey(self, pubkey, label=None, rescan=None):
         wallet_info = self.getwalletinfo()
-        if self.is_cli:
-            if label is None:
-                label = 'null'
-            if rescan is None:
-                rescan = 'null'
         if 'descriptors' not in wallet_info or (
                 'descriptors' in wallet_info and not wallet_info['descriptors']):
             return self.__getattr__('importpubkey')(pubkey, label, rescan)
@@ -880,13 +883,6 @@ class RPCOverloadWrapper():
 
     def importaddress(self, address, label=None, rescan=None, p2sh=None):
         wallet_info = self.getwalletinfo()
-        if self.is_cli:
-            if label is None:
-                label = 'null'
-            if rescan is None:
-                rescan = 'null'
-            if p2sh is None:
-                p2sh = 'null'
         if 'descriptors' not in wallet_info or (
                 'descriptors' in wallet_info and not wallet_info['descriptors']):
             return self.__getattr__('importaddress')(

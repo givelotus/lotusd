@@ -17,22 +17,15 @@ variants.
 
 from decimal import Decimal
 
-from test_framework.script import (
-    CScript,
-    OP_NOP,
-)
-from test_framework.test_framework import BitcoinTestFramework
 from test_framework.descriptors import descsum_create
+from test_framework.script import OP_NOP, CScript
+from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_raises_rpc_error,
 )
-from test_framework.wallet_util import (
-    get_key,
-    get_multisig,
-    test_address,
-)
+from test_framework.wallet_util import get_key, get_multisig, test_address
 
 
 class ImportMultiTest(BitcoinTestFramework):

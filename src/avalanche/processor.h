@@ -6,6 +6,7 @@
 #define BITCOIN_AVALANCHE_PROCESSOR_H
 
 #include <avalanche/node.h>
+#include <avalanche/proofcomparator.h>
 #include <avalanche/protocol.h>
 #include <blockindexworkcomparator.h>
 #include <eventloop.h>
@@ -53,6 +54,13 @@ class PeerManager;
 class Proof;
 struct VoteRecord;
 
+enum struct VoteStatus : uint8_t {
+    Invalid,
+    Rejected,
+    Accepted,
+    Finalized,
+};
+
 class BlockUpdate {
     union {
         CBlockIndex *pindex;
@@ -67,18 +75,11 @@ class BlockUpdate {
         "CBlockIndex alignement doesn't allow for Status to be stored.");
 
 public:
-    enum Status : uint8_t {
-        Invalid,
-        Rejected,
-        Accepted,
-        Finalized,
-    };
-
-    BlockUpdate(CBlockIndex *pindexIn, Status statusIn) : pindex(pindexIn) {
-        raw |= statusIn;
+    BlockUpdate(CBlockIndex *pindexIn, VoteStatus statusIn) : pindex(pindexIn) {
+        raw |= static_cast<uint8_t>(statusIn);
     }
 
-    Status getStatus() const { return Status(raw & MASK); }
+    VoteStatus getStatus() const { return VoteStatus(raw & MASK); }
 
     CBlockIndex *getBlockIndex() {
         return reinterpret_cast<CBlockIndex *>(raw & ~MASK);
@@ -91,6 +92,8 @@ public:
 
 using BlockVoteMap =
     std::map<const CBlockIndex *, VoteRecord, CBlockIndexWorkComparator>;
+using ProofVoteMap = std::map<const std::shared_ptr<Proof>, VoteRecord,
+                              ProofSharedPointerComparator>;
 
 struct query_timeout {};
 
@@ -105,7 +108,12 @@ class Processor {
     /**
      * Blocks to run avalanche on.
      */
-    RWCollection<BlockVoteMap> vote_records;
+    RWCollection<BlockVoteMap> blockVoteRecords;
+
+    /**
+     * Proofs to run avalanche on.
+     */
+    RWCollection<ProofVoteMap> proofVoteRecords;
 
     /**
      * Keep track of peers and queries sent.
@@ -176,6 +184,8 @@ public:
     }
 
     bool addBlockToReconcile(const CBlockIndex *pindex);
+    void addProofToReconcile(const std::shared_ptr<Proof> &proof,
+                             bool isAccepted);
     bool isAccepted(const CBlockIndex *pindex) const;
     int getConfidence(const CBlockIndex *pindex) const;
 

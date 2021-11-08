@@ -10,8 +10,6 @@ from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
-from decimal import Decimal
-
 
 class DumpCoinsTest(BitcoinTestFramework):
     def set_test_params(self):

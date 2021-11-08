@@ -31,7 +31,8 @@ static constexpr std::chrono::milliseconds AVALANCHE_TIME_STEP{10};
 std::unique_ptr<avalanche::Processor> g_avalanche;
 
 namespace avalanche {
-static bool IsWorthPolling(const CBlockIndex *pindex) {
+static bool IsWorthPolling(const CBlockIndex *pindex)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
 
     if (pindex->nStatus.isInvalid()) {
@@ -255,13 +256,22 @@ bool Processor::addBlockToReconcile(const CBlockIndex *pindex) {
         isAccepted = ::ChainActive().Contains(pindex);
     }
 
-    return vote_records.getWriteView()
+    return blockVoteRecords.getWriteView()
         ->insert(std::make_pair(pindex, VoteRecord(isAccepted)))
         .second;
 }
 
+void Processor::addProofToReconcile(const std::shared_ptr<Proof> &proof,
+                                    bool isAccepted) {
+    // TODO We don't want to accept an infinite number of conflicting proofs.
+    // They should be some rules to make them expensive and/or limited by
+    // design.
+    proofVoteRecords.getWriteView()->insert(
+        std::make_pair(proof, VoteRecord(isAccepted)));
+}
+
 bool Processor::isAccepted(const CBlockIndex *pindex) const {
-    auto r = vote_records.getReadView();
+    auto r = blockVoteRecords.getReadView();
     auto it = r->find(pindex);
     if (it == r.end()) {
         return false;
@@ -271,7 +281,7 @@ bool Processor::isAccepted(const CBlockIndex *pindex) const {
 }
 
 int Processor::getConfidence(const CBlockIndex *pindex) const {
-    auto r = vote_records.getReadView();
+    auto r = blockVoteRecords.getReadView();
     auto it = r->find(pindex);
     if (it == r.end()) {
         return -1;
@@ -386,7 +396,7 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
 
     {
         // Register votes.
-        auto w = vote_records.getWriteView();
+        auto w = blockVoteRecords.getWriteView();
         for (const auto &p : responseIndex) {
             CBlockIndex *pindex = p.first;
             const Vote &v = p.second;
@@ -406,17 +416,16 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
             if (!vr.hasFinalized()) {
                 // This item has note been finalized, so we have nothing more to
                 // do.
-                updates.emplace_back(
-                    pindex, vr.isAccepted() ? BlockUpdate::Status::Accepted
-                                            : BlockUpdate::Status::Rejected);
+                updates.emplace_back(pindex, vr.isAccepted()
+                                                 ? VoteStatus::Accepted
+                                                 : VoteStatus::Rejected);
                 continue;
             }
 
             // We just finalized a vote. If it is valid, then let the caller
             // know. Either way, remove the item from the map.
-            updates.emplace_back(pindex, vr.isAccepted()
-                                             ? BlockUpdate::Status::Finalized
-                                             : BlockUpdate::Status::Invalid);
+            updates.emplace_back(pindex, vr.isAccepted() ? VoteStatus::Finalized
+                                                         : VoteStatus::Invalid);
             w->erase(it);
         }
     }
@@ -480,10 +489,22 @@ bool Processor::stopEventLoop() {
 std::vector<CInv> Processor::getInvsForNextPoll(bool forPoll) {
     std::vector<CInv> invs;
 
+    auto proofVoteRecordsReadView = proofVoteRecords.getReadView();
+
+    auto pit = proofVoteRecordsReadView.begin();
+    // Clamp to AVALANCHE_MAX_ELEMENT_POLL - 1 so we're always able to poll
+    // for a new block. Since the proofs are sorted by score, the most
+    // valuable are voted first.
+    while (pit != proofVoteRecordsReadView.end() &&
+           invs.size() < AVALANCHE_MAX_ELEMENT_POLL - 1) {
+        invs.emplace_back(MSG_AVA_PROOF, pit->first->getId());
+        ++pit;
+    }
+
     // First remove all blocks that are not worth polling.
     {
         LOCK(cs_main);
-        auto w = vote_records.getWriteView();
+        auto w = blockVoteRecords.getWriteView();
         for (auto it = w->begin(); it != w->end();) {
             const CBlockIndex *pindex = it->first;
             if (!IsWorthPolling(pindex)) {
@@ -494,7 +515,7 @@ std::vector<CInv> Processor::getInvsForNextPoll(bool forPoll) {
         }
     }
 
-    auto r = vote_records.getReadView();
+    auto r = blockVoteRecords.getReadView();
     for (const std::pair<const CBlockIndex *const, VoteRecord> &p :
          reverse_iterate(r)) {
         // Check if we can run poll.
@@ -557,7 +578,7 @@ void Processor::clearTimedoutRequests() {
             }
         }
 
-        auto w = vote_records.getWriteView();
+        auto w = blockVoteRecords.getWriteView();
         auto it = w->find(pindex);
         if (it == w.end()) {
             continue;

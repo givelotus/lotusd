@@ -18,6 +18,7 @@
 // when LookupBlockIndex is refactored out of validation
 #include <validation.h>
 
+#include <avalanche/test/util.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
@@ -292,17 +293,19 @@ BOOST_AUTO_TEST_CASE(block_update) {
     CBlockIndex index;
     CBlockIndex *pindex = &index;
 
-    std::set<BlockUpdate::Status> status{
-        BlockUpdate::Status::Invalid,
-        BlockUpdate::Status::Rejected,
-        BlockUpdate::Status::Accepted,
-        BlockUpdate::Status::Finalized,
+    std::set<VoteStatus> status{
+        VoteStatus::Invalid,
+        VoteStatus::Rejected,
+        VoteStatus::Accepted,
+        VoteStatus::Finalized,
     };
 
     for (auto s : status) {
         BlockUpdate abu(pindex, s);
+        // The use of BOOST_CHECK instead of BOOST_CHECK_EQUAL prevents from
+        // having to define operator<<() for each argument type.
         BOOST_CHECK(abu.getBlockIndex() == pindex);
-        BOOST_CHECK_EQUAL(abu.getStatus(), s);
+        BOOST_CHECK(abu.getStatus() == s);
     }
 }
 
@@ -409,7 +412,7 @@ BOOST_AUTO_TEST_CASE(block_register) {
     registerNewVote(next(resp));
     BOOST_CHECK_EQUAL(updates.size(), 1);
     BOOST_CHECK(updates[0].getBlockIndex() == pindex);
-    BOOST_CHECK_EQUAL(updates[0].getStatus(), BlockUpdate::Status::Finalized);
+    BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
     updates = {};
 
     // Once the decision is finalized, there is no poll for it.
@@ -435,7 +438,7 @@ BOOST_AUTO_TEST_CASE(block_register) {
     BOOST_CHECK(!m_processor->isAccepted(pindex));
     BOOST_CHECK_EQUAL(updates.size(), 1);
     BOOST_CHECK(updates[0].getBlockIndex() == pindex);
-    BOOST_CHECK_EQUAL(updates[0].getStatus(), BlockUpdate::Status::Rejected);
+    BOOST_CHECK(updates[0].getStatus() == VoteStatus::Rejected);
     updates = {};
 
     // Now it is rejected, but we can vote for it numerous times.
@@ -456,7 +459,7 @@ BOOST_AUTO_TEST_CASE(block_register) {
     BOOST_CHECK(!m_processor->isAccepted(pindex));
     BOOST_CHECK_EQUAL(updates.size(), 1);
     BOOST_CHECK(updates[0].getBlockIndex() == pindex);
-    BOOST_CHECK_EQUAL(updates[0].getStatus(), BlockUpdate::Status::Invalid);
+    BOOST_CHECK(updates[0].getStatus() == VoteStatus::Invalid);
     updates = {};
 
     // Once the decision is finalized, there is no poll for it.
@@ -549,7 +552,7 @@ BOOST_AUTO_TEST_CASE(multi_block_register) {
     BOOST_CHECK(registerVotes(firstNodeid, next(resp), updates));
     BOOST_CHECK_EQUAL(updates.size(), 1);
     BOOST_CHECK(updates[0].getBlockIndex() == pindexA);
-    BOOST_CHECK_EQUAL(updates[0].getStatus(), BlockUpdate::Status::Finalized);
+    BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
     updates = {};
 
     // We do not vote on A anymore.
@@ -562,7 +565,7 @@ BOOST_AUTO_TEST_CASE(multi_block_register) {
     BOOST_CHECK(registerVotes(secondNodeid, resp, updates));
     BOOST_CHECK_EQUAL(updates.size(), 1);
     BOOST_CHECK(updates[0].getBlockIndex() == pindexB);
-    BOOST_CHECK_EQUAL(updates[0].getStatus(), BlockUpdate::Status::Finalized);
+    BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
     updates = {};
 
     // There is nothing left to vote on.
@@ -981,6 +984,55 @@ BOOST_AUTO_TEST_CASE(destructor) {
     // Wait for the scheduler to stop.
     s.StopWhenDrained();
     schedulerThread.join();
+}
+
+BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
+    uint32_t score = MIN_VALID_PROOF_SCORE;
+
+    auto addProofToReconcile = [&](uint32_t proofScore) {
+        auto proof = std::make_shared<Proof>(buildRandomProof(proofScore));
+        m_processor->addProofToReconcile(proof, GetRandInt(1));
+        return proof;
+    };
+
+    for (size_t i = 0; i < AVALANCHE_MAX_ELEMENT_POLL - 1; i++) {
+        auto proof = addProofToReconcile(++score);
+
+        auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
+        BOOST_CHECK_EQUAL(invs.size(), i + 1);
+        BOOST_CHECK(invs.front().IsMsgProof());
+        BOOST_CHECK_EQUAL(invs.front().hash, proof->getId());
+    }
+
+    // From here a new proof is only polled if its score is in the top
+    // AVALANCHE_MAX_ELEMENT_POLL - 1
+    ProofId lastProofId;
+    for (size_t i = 0; i < 10; i++) {
+        auto proof = addProofToReconcile(++score);
+
+        auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
+        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL - 1);
+        BOOST_CHECK(invs.front().IsMsgProof());
+        BOOST_CHECK_EQUAL(invs.front().hash, proof->getId());
+
+        lastProofId = proof->getId();
+    }
+
+    for (size_t i = 0; i < 10; i++) {
+        auto proof = addProofToReconcile(--score);
+
+        auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
+        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL - 1);
+        BOOST_CHECK(invs.front().IsMsgProof());
+        BOOST_CHECK_EQUAL(invs.front().hash, lastProofId);
+    }
+
+    // The score is not high enough to get polled
+    auto proof = addProofToReconcile(--score);
+    auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
+    for (auto &inv : invs) {
+        BOOST_CHECK_NE(inv.hash, proof->getId());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

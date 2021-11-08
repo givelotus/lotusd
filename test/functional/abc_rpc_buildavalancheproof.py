@@ -4,12 +4,11 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the buildavalancheproof RPC"""
 
+from test_framework.address import ADDRESS_ECREG_UNSPENDABLE
 from test_framework.avatools import create_coinbase_stakes
 from test_framework.key import ECKey
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_raises_rpc_error,
-)
+from test_framework.util import assert_raises_rpc_error
 from test_framework.wallet_util import bytes_to_wif
 
 
@@ -95,6 +94,39 @@ class BuildAvalancheProofTest(BitcoinTestFramework):
 
         self.log.info("Happy path")
         assert node.buildavalancheproof(0, 0, wif_privkey, [good_stake])
+
+        self.log.info("Check the payout address")
+        self.restart_node(
+            0,
+            extra_args=self.extra_args[0] +
+            ['-legacyavaproof=0'])
+
+        assert_raises_rpc_error(-8,
+                                "A payout address is required if `-legacyavaproof` is false",
+                                node.buildavalancheproof,
+                                0,
+                                0,
+                                wif_privkey,
+                                [good_stake],
+                                )
+
+        assert_raises_rpc_error(-8,
+                                "Invalid payout address",
+                                node.buildavalancheproof,
+                                0,
+                                0,
+                                wif_privkey,
+                                [good_stake],
+                                "ecregtest:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqcrl5mqkq",
+                                )
+
+        # Happy path
+        node.buildavalancheproof(
+            0,
+            0,
+            wif_privkey,
+            [good_stake],
+            ADDRESS_ECREG_UNSPENDABLE)
 
 
 if __name__ == '__main__':

@@ -11,14 +11,13 @@ this one can be extended, to cover the checks done for bigger blocks
 (e.g. sigops limits).
 """
 
-from collections import deque
 import random
 import time
+from collections import deque
 
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    create_tx_with_script,
     make_conform_to_ctor,
     prepare_block,
 )
@@ -33,12 +32,8 @@ from test_framework.messages import (
     msg_sendcmpct,
     ser_compact_size,
 )
-from test_framework.p2p import (
-    p2p_lock,
-    P2PDataStore,
-    P2PInterface,
-)
-from test_framework.script import CScript, OP_RETURN, OP_TRUE
+from test_framework.p2p import P2PDataStore, P2PInterface, p2p_lock
+from test_framework.script import OP_RETURN, OP_TRUE, CScript
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
@@ -112,11 +107,6 @@ class FullBlockTest(BitcoinTestFramework):
     def add_transactions_to_block(self, block, tx_list):
         [tx.rehash() for tx in tx_list]
         block.vtx.extend(tx_list)
-
-    # this is a little handier to use than the version in blocktools.py
-    def create_tx(self, spend_tx, n, value, script=CScript([OP_TRUE])):
-        tx = create_tx_with_script(spend_tx, n, b"", value, script)
-        return tx
 
     def next_block(self, number, spend=None, script=CScript(
             [OP_TRUE]), block_size=0, extra_txns=0):

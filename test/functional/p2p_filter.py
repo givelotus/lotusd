@@ -9,11 +9,11 @@ Test BIP 37
 from decimal import Decimal
 
 from test_framework.messages import (
-    CInv,
     MAX_BLOOM_FILTER_SIZE,
     MAX_BLOOM_HASH_FUNCS,
     MSG_BLOCK,
     MSG_FILTERED_BLOCK,
+    CInv,
     msg_filteradd,
     msg_filterclear,
     msg_filterload,

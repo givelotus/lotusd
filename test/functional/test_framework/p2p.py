@@ -21,25 +21,27 @@ P2PTxInvStore: A p2p interface class that inherits from P2PDataStore, and keeps
               a count of how many times each txid has been announced."""
 
 import asyncio
-from collections import defaultdict
-from io import BytesIO
 import logging
 import struct
 import sys
 import threading
+from collections import defaultdict
+from io import BytesIO
 
 from test_framework.messages import (
-    CBlockHeader,
     MAX_HEADERS_RESULTS,
     MIN_VERSION_SUPPORTED,
+    MSG_BLOCK,
+    MSG_TX,
+    MSG_TYPE_MASK,
+    NODE_NETWORK,
+    CBlockHeader,
     msg_addr,
     msg_addrv2,
+    msg_avahello,
     msg_avapoll,
     msg_avaproof,
-    msg_tcpavaresponse,
-    msg_avahello,
     msg_block,
-    MSG_BLOCK,
     msg_blocktxn,
     msg_cfcheckpt,
     msg_cfheaders,
@@ -64,15 +66,13 @@ from test_framework.messages import (
     msg_sendaddrv2,
     msg_sendcmpct,
     msg_sendheaders,
+    msg_tcpavaresponse,
     msg_tx,
-    MSG_TX,
-    MSG_TYPE_MASK,
     msg_verack,
     msg_version,
-    NODE_NETWORK,
     sha256,
 )
-from test_framework.util import wait_until
+from test_framework.util import wait_until_helper
 
 logger = logging.getLogger("TestFramework.p2p")
 
@@ -334,7 +334,7 @@ class P2PInterface(P2PConnection):
 
         # Track the most recent message of each type.
         # To wait for a message to be received, pop that message from
-        # this and use wait_until.
+        # this and use self.wait_until.
         self.last_message = {}
 
         # A count of the number of ping messages we've sent to the node
@@ -481,8 +481,8 @@ class P2PInterface(P2PConnection):
                 assert self.is_connected
             return test_function_in()
 
-        wait_until(test_function, timeout=timeout, lock=p2p_lock,
-                   timeout_factor=self.timeout_factor)
+        wait_until_helper(test_function, timeout=timeout, lock=p2p_lock,
+                          timeout_factor=self.timeout_factor)
 
     def wait_for_disconnect(self, timeout=60):
         def test_function(): return not self.is_connected
@@ -612,8 +612,8 @@ class NetworkThread(threading.Thread):
         """Close the connections and network event loop."""
         self.network_event_loop.call_soon_threadsafe(
             self.network_event_loop.stop)
-        wait_until(lambda: not self.network_event_loop.is_running(),
-                   timeout=timeout)
+        wait_until_helper(lambda: not self.network_event_loop.is_running(),
+                          timeout=timeout)
         self.network_event_loop.close()
         self.join(timeout)
         # Safe to remove event loop.
