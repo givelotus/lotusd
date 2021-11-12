@@ -5,7 +5,14 @@
 #ifndef BITCOIN_CONSENSUS_ACTIVATION_H
 #define BITCOIN_CONSENSUS_ACTIVATION_H
 
+class CBlockIndex;
 
-/* Place future activation logic here. */
+namespace Consensus {
+struct Params;
+}
+
+/** Check if December 21st, 2021 protocol upgrade has activated. */
+bool IsExodusEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev);
 
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H

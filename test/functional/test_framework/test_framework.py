@@ -178,8 +178,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                             help="run nodes under the valgrind memory error detector: expect at least a ~10x slowdown, valgrind 3.14 or later required")
         parser.add_argument("--randomseed", type=int,
                             help="set a random seed for deterministically reproducing a previous test run")
-        parser.add_argument("--with-axionactivation", dest="axionactivation", default=False, action="store_true",
-                            help="Activate axion update on timestamp {}".format(TIMESTAMP_IN_THE_PAST))
+        parser.add_argument("--with-exodusactivation", dest="exodusactivation", default=False, action="store_true",
+                            help="Activate exodus update on timestamp {}".format(TIMESTAMP_IN_THE_PAST))
         parser.add_argument(
             '--timeout-factor',
             dest="timeout_factor",
@@ -455,9 +455,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 start_perf=self.options.perf,
                 use_valgrind=self.options.valgrind,
             ))
-            if self.options.axionactivation:
+            if self.options.exodusactivation:
                 self.nodes[i].extend_default_args(
-                    ["-axionactivationtime={}".format(TIMESTAMP_IN_THE_PAST)])
+                    ["-exodusactivationtime={}".format(TIMESTAMP_IN_THE_PAST)])
 
     def start_node(self, i, *args, **kwargs):
         """Start a lotusd"""
@@ -688,9 +688,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     emulator=self.options.emulator,
                 ))
 
-            if self.options.axionactivation:
+            if self.options.exodusactivation:
                 self.nodes[CACHE_NODE_ID].extend_default_args(
-                    ["-axionactivationtime={}".format(TIMESTAMP_IN_THE_PAST)])
+                    ["-exodusactivationtime={}".format(TIMESTAMP_IN_THE_PAST)])
 
             self.start_node(CACHE_NODE_ID)
             cache_node = self.nodes[CACHE_NODE_ID]
