@@ -43,6 +43,8 @@ struct Params {
     int nSubsidyHalvingInterval;
     /** Unix time used for MTP activation of 2021-12-21T15:59:00.000Z protocol upgrade */
     int exodusActivationTime;
+    /** Unix time used for MTP activation of 2022-06-21T09:14:00.000Z protocol upgrade */
+    int leviticusActivationTime;
     /** Block height at which BIP16 becomes active */
     int BIP16Height;
     /** Block height and hash at which BIP34 becomes active */

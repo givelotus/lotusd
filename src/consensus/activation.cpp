@@ -47,3 +47,13 @@ bool IsMengerEnabled(const Consensus::Params &params,
 
     return IsMengerEnabled(params, pindexPrev->GetMedianTimePast());
 }
+
+bool IsExodusEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-exodusactivationtime", params.exodusActivationTime);
+}

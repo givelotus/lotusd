@@ -12,4 +12,28 @@ BOOST_AUTO_TEST_CASE(activationtest) {
     /* Place future activation logic tests here. */
 }
 
+BOOST_AUTO_TEST_CASE(isexodusenabled) {
+    const Consensus::Params &params = m_node.chainman->GetParams().GetConsensus();
+    const auto activation =
+        gArgs.GetIntArg("-exodusactivationtime", params.exodusActivationTime);
+    SetMockTime(activation - 1000000);
+
+    BOOST_CHECK(!IsExodusEnabled(params, nullptr));
+
+    std::array<CBlockIndex, 12> blocks;
+    for (size_t i = 1; i < blocks.size(); ++i) {
+        blocks[i].pprev = &blocks[i - 1];
+    }
+    BOOST_CHECK(!IsExodusEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation - 1);
+    BOOST_CHECK(!IsExodusEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation);
+    BOOST_CHECK(IsExodusEnabled(params, &blocks.back()));
+
+    SetMTP(blocks, activation + 1);
+    BOOST_CHECK(IsExodusEnabled(params, &blocks.back()));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
