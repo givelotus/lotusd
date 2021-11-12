@@ -4,38 +4,22 @@
 
 #include <minerfund.h>
 
-#include <chainparams.h>
-#include <consensus/activation.h>
-#include <currencyunit.h>
-#include <key_io.h> // For DecodeDestination
 #include <cashaddrenc.h> // For DecodeCashAddrContent
-#include <util/system.h>
-#include <validation.h> // For VersionBitsBlockState
+#include <chainparams.h>
+#include <key_io.h> // For DecodeDestination
 
-static const CTxOut BuildOutput(const std::string &address, const Amount amount) {
-    const auto mainNetParams = CreateChainParams(CBaseChainParams::MAIN);
-    auto dest = DecodeDestination(address, *mainNetParams);
-    if(!IsValidDestination(dest)) {
+static const CTxOut BuildOutput(const std::string &address,
+                                const Amount amount) {
+    const std::unique_ptr<CChainParams> mainNetParams =
+        CreateChainParams(CBaseChainParams::MAIN);
+    CTxDestination dest = DecodeDestination(address, *mainNetParams);
+    if (!IsValidDestination(dest)) {
         // Try the ecash cashaddr prefix.
-        dest = DecodeCashAddrDestination(DecodeCashAddrContent(address, "bitcoincash"));
+        dest = DecodeCashAddrDestination(
+            DecodeCashAddrContent(address, "bitcoincash"));
     }
-    const CScript script =
-        GetScriptForDestination(dest);
+    const CScript script = GetScriptForDestination(dest);
     return {amount, script};
-}
-
-const CTxOut BuildRandomOutput(const std::vector<std::string> &addressList,
-                               uint64_t slot, Amount shareAmount,
-                               uint256 epochBlockHash) {
-    CHashWriter hasher(SER_GETHASH, 0);
-    hasher << slot;
-    hasher << epochBlockHash;
-    uint256 hash = hasher.GetSHA256();
-    uint64_t weakHash = hash.GetUint64(0);
-    // Note: There is modulo bias here, but it is being ignored as the random
-    // domain is much much larger than injected range. Thus, the effect is
-    // small.
-    return BuildOutput(addressList[weakHash % addressList.size()], shareAmount);
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
@@ -46,17 +30,15 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
-    const auto epochBlockHash = Hash(pindexPrev->hashEpochBlock);
-    const auto numPayoutAddressSets = params.payoutAddressSets.size();
-    // Plus 1 for Foundation output
-    const Amount shareAmount =
-        blockReward / (int64_t(2 * (numPayoutAddressSets)));
-    std::vector<CTxOut> minerFundOutputs;
-    minerFundOutputs.reserve(numPayoutAddressSets);
+    const std::vector<std::string> &addresses =
+        params.coinbasePayoutAddresses.genesis;
 
-    for (const auto &addressSet : params.payoutAddressSets) {
-        minerFundOutputs.emplace_back(BuildRandomOutput(
-            addressSet, minerFundOutputs.size(), shareAmount, epochBlockHash));
+    const size_t numAddresses = addresses.size();
+    std::vector<CTxOut> minerFundOutputs;
+    const Amount shareAmount = blockReward / (int64_t(2 * numAddresses));
+    minerFundOutputs.reserve(numAddresses);
+    for (const std::string &address : addresses) {
+        minerFundOutputs.emplace_back(BuildOutput(address, shareAmount));
     }
 
     return minerFundOutputs;

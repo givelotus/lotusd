@@ -17,10 +17,6 @@ namespace Consensus {
 struct Params;
 }
 
-const CTxOut BuildRandomOutput(const std::vector<std::string> &addressList,
-                               uint64_t slot, Amount shareAmount,
-                               uint256 epochBlockHash);
-
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
                                                 const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
