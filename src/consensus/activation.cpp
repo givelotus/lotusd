@@ -4,4 +4,16 @@
 
 #include <consensus/activation.h>
 
-/* Place future activation logic here. */
+#include <chain.h>
+#include <consensus/params.h>
+#include <util/system.h>
+
+bool IsExodusEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetArg("-exodusactivationtime", params.exodusActivationTime);
+}
