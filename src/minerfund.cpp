@@ -36,8 +36,13 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
-    const std::vector<std::string> &addresses =
-        params.coinbasePayoutAddresses.genesis;
+    static auto GetPayoutAddresses = [](const Consensus::Params &p, const CBlockIndex *prev) -> const std::vector<std::string> & {
+        if (IsExodusEnabled(p, prev)) {
+            return p.coinbasePayoutAddresses.exodus;
+        }
+        return p.coinbasePayoutAddresses.genesis;
+    };
+    const std::vector<std::string> &addresses = GetPayoutAddresses(params, pindexPrev);
 
     const size_t numAddresses = addresses.size();
     std::vector<CTxOut> minerFundOutputs;
