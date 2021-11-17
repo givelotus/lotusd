@@ -39,9 +39,9 @@
 BOOST_FIXTURE_TEST_SUITE(minerfund_tests, TestChain100Setup)
 
 static void
-CheckMinerfundOutputs(const std::vector<CTxOut> &outputs,
-                      const std::vector<std::string> &expectedAddresses,
-                      const Amount expectedAmount) {
+CheckPayoutOutputs(const std::vector<CTxOut> &outputs,
+                   const std::vector<std::string> &expectedAddresses,
+                   const Amount expectedAmount) {
     BOOST_CHECK_EQUAL(outputs.size(), expectedAddresses.size());
     const CChainParams mainNetParams =
         *CreateChainParams(CBaseChainParams::MAIN);
@@ -73,17 +73,32 @@ BOOST_AUTO_TEST_CASE(test_minerfund_required_outputs) {
     options.enableMinerFund = config.EnableMinerFund();
     BlockAssembler testAssembler(chainparams, *m_node.mempool, options);
 
+    const int64_t activationTime =
+        gArgs.GetArg("-exodusactivationtime", consensus.exodusActivationTime);
+
+    if (::ChainActive().Tip()->GetMedianTimePast() > activationTime) {
+        // This test doesn't work if -exodusactivationtime is in the past
+        return;
+    }
+
     // Simple consensus transaction.
     CScript scriptPubKey = CScript() << OP_RETURN;
     std::unique_ptr<CBlockTemplate> pblocktemplate;
 
     fCheckpointsEnabled = false;
 
-    for (size_t i = 0; i < 100; i++) {
+    // Some block num where the activation occurrs
+    size_t forkBlockNum = 50;
+
+    for (size_t blockNum = 0; blockNum < 100; blockNum++) {
         // Simple block creation
         BOOST_CHECK(pblocktemplate =
                         testAssembler.CreateNewBlock(scriptPubKey));
         CBlock *pblock = &pblocktemplate->block;
+        if (blockNum == forkBlockNum) {
+            SetMockTime(activationTime);
+            pblock->SetBlockTime(activationTime);
+        }
         const std::vector<CTxOut> &coinbaseOutputs = pblock->vtx[0]->vout;
         const CBlockIndex *pPrev = ::ChainActive().Tip();
 
@@ -99,8 +114,16 @@ BOOST_AUTO_TEST_CASE(test_minerfund_required_outputs) {
         BOOST_CHECK_EQUAL(coinbaseOutputs.size(), 15);
 
         // Check funding address outputs
-        CheckMinerfundOutputs(
-            outputs, consensus.coinbasePayoutAddresses.genesis, subsidy / 26);
+        // New addresses activate 6 blocks after the block time got bumped (MTP)
+        if (blockNum < forkBlockNum + 6) {
+            CheckPayoutOutputs(outputs,
+                               consensus.coinbasePayoutAddresses.genesis,
+                               subsidy / 26);
+        } else {
+            CheckPayoutOutputs(outputs,
+                               consensus.coinbasePayoutAddresses.exodus,
+                               subsidy / 26);
+        }
 
         // Update block so it can be connected, and the epoch will update
         // through this test.
