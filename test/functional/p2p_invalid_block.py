@@ -35,7 +35,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
     def run_test(self):
         # Add p2p connection to node0
         node = self.nodes[0]  # convenience reference to the node
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
 
         best_block = node.getblock(node.getbestblockhash())
         tip = int(node.getbestblockhash(), 16)
@@ -50,7 +50,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         # Save the coinbase for later
         block1 = block
         tip = block.sha256
-        node.p2p.send_blocks_and_test([block1], node, success=True)
+        peer.send_blocks_and_test([block1], node, success=True)
 
         self.log.info("Mature the block.")
         node.generatetoaddress(100, node.get_deterministic_priv_key().address)
@@ -95,7 +95,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2.solve()
         assert orig_hash != block2.rehash()
 
-        node.p2p.send_blocks_and_test(
+        peer.send_blocks_and_test(
             [block2], node, success=False, reject_reason='tx-duplicate')
 
         # Check transactions for duplicate inputs (CVE-2018-17144)
@@ -105,7 +105,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2_dup.vtx[2].vin.append(block2_dup.vtx[2].vin[0])
         block2_dup.vtx[2].rehash()
         prepare_block(block2_dup)
-        node.p2p.send_blocks_and_test(
+        peer.send_blocks_and_test(
             [block2_dup], node, success=False,
             reject_reason='bad-txns-inputs-duplicate')
 
@@ -117,7 +117,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block3.vtx[0].rehash()
         prepare_block(block3)
 
-        node.p2p.send_blocks_and_test(
+        peer.send_blocks_and_test(
             [block3], node, success=False, reject_reason='bad-cb-amount')
 
         # Complete testing of CVE-2012-2459 by sending the original block.
@@ -126,8 +126,8 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         self.log.info("Test accepting original block after rejecting its"
                       " mutated version.")
-        node.p2p.send_blocks_and_test([block2_orig], node, success=True,
-                                      timeout=5)
+        peer.send_blocks_and_test([block2_orig], node, success=True,
+                                  timeout=5)
 
         # Update tip info
         height += 1
@@ -146,8 +146,8 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block4.vtx.append(tx3)
         prepare_block(block4)
         self.log.info("Test inflation by duplicating input")
-        node.p2p.send_blocks_and_test([block4], node, success=False,
-                                      reject_reason='bad-txns-inputs-duplicate')
+        peer.send_blocks_and_test([block4], node, success=False,
+                                  reject_reason='bad-txns-inputs-duplicate')
 
 
 if __name__ == '__main__':

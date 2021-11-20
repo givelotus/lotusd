@@ -80,6 +80,7 @@ TEST_FRAMEWORK_MODULES = [
     "messages",
     "muhash",
     "script",
+    "txtools",
     "util",
 ]
 
@@ -102,11 +103,20 @@ TEST_PARAMS = {
     #    testName --param1 --param2
     #    testname --param3
     "rpc_bind.py": [["--ipv4"], ["--ipv6"], ["--nonloopback"]],
+    "rpc_createmultisig.py": [["--descriptors"]],
     "rpc_deriveaddresses.py": [["--usecli"]],
+    # FIXME: "rpc_psbt.py": [["--descriptors"]],
+    "wallet_avoidreuse.py": [["--descriptors"]],
+    # FIXME: "wallet_basic.py": [["--descriptors"]],
+    "wallet_createwallet.py": [["--usecli"]],
+    "wallet_encryption.py": [["--descriptors"]],
+    "wallet_hd.py": [["--descriptors"]],
+    # FIXME: "wallet_keypool.py": [["--descriptors"]],
+    "wallet_keypool_topup.py": [["--descriptors"]],
+    "wallet_labels.py": [["--descriptors"]],
+    "wallet_multiwallet.py": [["--usecli"]],
     "wallet_txn_doublespend.py": [["--mineblock"]],
     "wallet_txn_clone.py": [["--mineblock"]],
-    "wallet_createwallet.py": [["--usecli"]],
-    "wallet_multiwallet.py": [["--usecli"]],
     "wallet_watchonly.py": [["--usecli"]],
 }
 
@@ -549,7 +559,7 @@ def execute_test_processes(
     resultCollector.start()
 
     # Start some worker threads
-    for job in range(num_jobs):
+    for _ in range(num_jobs):
         t = threading.Thread(target=handle_test_cases)
         t.daemon = True
         t.start()
@@ -566,7 +576,7 @@ def execute_test_processes(
 
     # Flush our queues so the threads exit
     update_queue.put(None)
-    for job in range(num_jobs):
+    for _ in range(num_jobs):
         job_queue.put(None)
 
     return test_results

@@ -220,7 +220,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         """Sends blocks to test node. Syncs and verifies that tip has advanced to most recent block.
 
         Call with success = False if the tip shouldn't advance to the most recent block."""
-        self.nodes[0].p2p.send_blocks_and_test(
+        self.helper_peer.send_blocks_and_test(
             blocks, self.nodes[0], success=success)
 
     def send_failure_blocks(self, failure_blocks):
@@ -235,7 +235,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         assert not any_succeeded
 
     def run_test(self):
-        self.nodes[0].add_p2p_connection(P2PDataStore())
+        self.helper_peer = self.nodes[0].add_p2p_connection(P2PDataStore())
 
         self.log.info("Generate blocks in the past for coinbase outputs.")
         # Enough to build up to 1000 blocks 10 minutes apart without worrying

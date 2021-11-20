@@ -46,7 +46,7 @@ class SyncChainTest(BitcoinTestFramework):
         time = node0.getblock(node0.getbestblockhash())['time'] + 1
 
         blocks = []
-        for i in range(NUM_IBD_BLOCKS * 2):
+        for _ in range(NUM_IBD_BLOCKS * 2):
             block = create_block(tip, create_coinbase(height), height, time)
             prepare_block(block)
             blocks.append(block)
