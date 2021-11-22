@@ -4,7 +4,7 @@ export LC_ALL=C
 
 set -euxo pipefail
 
-: "${SDK_DL_REMOTE:=}"
+: "${SDK_DL_REMOTE:=https://bitcoincore.org/depends-sources/sdks/}"
 
 usage() {
   echo "Usage: download-apple-sdk.sh dest_dir"
@@ -27,7 +27,7 @@ OSX_SDK_SHA256="436df6dfc7073365d12f8ef6c1fdb060777c720602cc67c2dcf9a59d94290e38
 pushd "${DEST_DIR}" > /dev/null
 if ! echo "${OSX_SDK_SHA256}  ${OSX_SDK}" | sha256sum --quiet -c > /dev/null 2>&1; then
   rm -f "${OSX_SDK}"
-  wget -q https://bitcoincore.org/depends-sources/sdks/"${OSX_SDK}"
+  wget -q "${SDK_DL_REMOTE}/${OSX_SDK}"
   echo "${OSX_SDK_SHA256}  ${OSX_SDK}" | sha256sum --quiet -c
 fi
 popd > /dev/null
