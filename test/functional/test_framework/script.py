@@ -7,7 +7,6 @@
 This file is modified from python-bitcoinlib.
 """
 
-import hashlib
 import struct
 import unittest
 from typing import Dict, List
@@ -22,13 +21,14 @@ from .messages import (
     sha256,
     uint256_from_str,
 )
+from .ripemd160 import ripemd160
 
 MAX_SCRIPT_ELEMENT_SIZE = 520
 OPCODE_NAMES: Dict["CScriptOp", str] = {}
 
 
-def hash160(s):
-    return hashlib.new('ripemd160', sha256(s)).digest()
+def hash160(s: bytes) -> bytes:
+    return ripemd160(sha256(s))
 
 
 def bn2vch(v):
@@ -756,10 +756,10 @@ def SignatureHashForkId(script, txTo, inIdx, hashtype, amount):
 
 
 def TaggedHash(tag, data):
-    ss = hashlib.sha256(tag.encode('utf-8')).digest()
+    ss = sha256(tag.encode('utf-8'))
     ss += ss
     ss += data
-    return hashlib.sha256(ss).digest()
+    return sha256(ss)
 
 
 def SignatureHashLotus(
