@@ -72,7 +72,9 @@ namespace {
             std::shared_ptr<Chain::Notifications> notifications)
             : m_notifications(std::move(notifications)) {}
         virtual ~NotificationsProxy() = default;
-        void TransactionAddedToMempool(const CTransactionRef &tx) override {
+        void TransactionAddedToMempool(
+            const CTransactionRef &tx,
+            const std::vector<Coin> &spent_coins) override {
             m_notifications->transactionAddedToMempool(tx);
         }
         void

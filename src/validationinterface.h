@@ -6,6 +6,7 @@
 #ifndef BITCOIN_VALIDATIONINTERFACE_H
 #define BITCOIN_VALIDATIONINTERFACE_H
 
+#include <coins.h>
 #include <primitives/transaction.h> // CTransaction(Ref)
 #include <sync.h>
 
@@ -105,7 +106,9 @@ protected:
      *
      * Called on a background thread.
      */
-    virtual void TransactionAddedToMempool(const CTransactionRef &tx) {}
+    virtual void
+    TransactionAddedToMempool(const CTransactionRef &tx,
+                              const std::vector<Coin> &spent_coins) {}
     /**
      * Notifies listeners of a transaction leaving mempool.
      *
@@ -219,7 +222,8 @@ public:
 
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *,
                          bool fInitialDownload);
-    void TransactionAddedToMempool(const CTransactionRef &);
+    void TransactionAddedToMempool(const CTransactionRef &,
+                                   const std::vector<Coin> &);
     void TransactionRemovedFromMempool(const CTransactionRef &,
                                        MemPoolRemovalReason);
     void BlockConnected(const std::shared_ptr<const CBlock> &,
