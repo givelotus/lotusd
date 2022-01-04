@@ -118,7 +118,10 @@ script: |
   BASEPREFIX=`pwd`/depends
   # Build dependencies for each host
   for i in ${HOSTS[@]}; do
-    make ${MAKEOPTS} -C ${BASEPREFIX} HOST="${i}"
+    make ${MAKEOPTS} -C ${BASEPREFIX} \
+      HOST="${i}" \
+      CMAKE_TOOLCHAIN_FILE="${SOURCEDIR}/cmake/platforms/${CMAKE_TOOLCHAIN_FILE[${i}]}" \
+      BASEPREFIX="${BASEPREFIX}"
   done
 
   # Faketime for binaries
@@ -133,7 +136,8 @@ script: |
   # Any toolchain file will work for building the source package, just pick the
   # first one
   cmake -GNinja .. \
-    -DCMAKE_TOOLCHAIN_FILE=${SOURCEDIR}/cmake/platforms/${CMAKE_TOOLCHAIN_FILE[${HOSTS[0]}]}
+    -DCMAKE_TOOLCHAIN_FILE=${SOURCEDIR}/cmake/platforms/${CMAKE_TOOLCHAIN_FILE[${HOSTS[0]}]} \
+    -DBASEPREFIX=${BASEPREFIX}
 
   ninja package_source
   SOURCEDIST=`echo lotus-*.tar.gz`
@@ -166,6 +170,7 @@ script: |
 
     cmake -GNinja .. \
       -DCMAKE_TOOLCHAIN_FILE=${SOURCEDIR}/cmake/platforms/${CMAKE_TOOLCHAIN_FILE[${i}]} \
+      -DBASEPREFIX=${BASEPREFIX} \
       -DCLIENT_VERSION_IS_RELEASE=ON \
       -DENABLE_CLANG_TIDY=OFF \
       -DENABLE_REDUCE_EXPORTS=ON \
