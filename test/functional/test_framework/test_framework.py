@@ -221,6 +221,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             config['environment']['BUILDDIR'] + os.path.sep + "qt" + os.pathsep + \
             os.environ['PATH']
 
+        # Add generated NNG flatbuffer files to PYTHONPATH
+        sys.path.append(os.path.join(config['environment']['BUILDDIR'],
+                                     'src',
+                                     'nng_interface'))
+
         # Set up temp directory and start logging
         if self.options.tmpdir:
             self.options.tmpdir = os.path.abspath(self.options.tmpdir)
@@ -760,6 +765,25 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if not self.is_zmq_compiled():
             raise SkipTest("lotusd has not been built with zmq enabled.")
 
+    def skip_if_no_py3_pynng(self):
+        """Attempt to import the pynng package and skip the test if the import fails."""
+        try:
+            import pynng  # noqa
+        except ImportError:
+            raise SkipTest("pynng module not available.")
+
+    def skip_if_no_py3_flatbuffers(self):
+        """Attempt to import the flatbuffers package and skip the test if the import fails."""
+        try:
+            import flatbuffers  # noqa
+        except ImportError:
+            raise SkipTest("flatbuffers module not available.")
+
+    def skip_if_no_bitcoind_nng_interface(self):
+        """Skip the running test if bitcoind has not been compiled with NNG interface support."""
+        if not self.is_nng_interface_compiled():
+            raise SkipTest("bitcoind has not been built with NNG interface support endabled.")
+
     def skip_if_no_wallet(self):
         """Skip the running test if wallet has not been compiled."""
         if not self.is_wallet_compiled():
@@ -790,3 +814,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def is_zmq_compiled(self):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")
+
+    def is_nng_interface_compiled(self):
+        """Checks whether the NNG inferface module was compiled."""
+        return self.config["components"].getboolean("ENABLE_NNG")

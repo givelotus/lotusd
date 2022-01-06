@@ -135,6 +135,7 @@ enum class OptionsCategory {
     GUI,
     COMMANDS,
     REGISTER_COMMANDS,
+    NNG_INTERFACE,
 
     // Always the last option to avoid printing these in the help
     HIDDEN,
