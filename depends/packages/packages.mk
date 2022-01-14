@@ -26,5 +26,7 @@ endif
 
 jemalloc_packages = jemalloc
 
+nng_packages=nng
+
 Flatbuffers_packages=Flatbuffers
 Flatbuffers_native_packages=native_Flatbuffers
