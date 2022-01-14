@@ -39,6 +39,7 @@ NO_WALLET ?=
 NO_ZMQ ?=
 NO_UPNP ?=
 NO_JEMALLOC ?=
+NO_FLATBUFFERS ?=
 FALLBACK_DOWNLOAD_PATH ?= https://download.bitcoinabc.org/depends-sources
 
 BUILD = $(shell ./config.guess)
@@ -140,6 +141,8 @@ protobuf_packages_$(NO_PROTOBUF) = $(protobuf_packages)
 
 jemalloc_packages_$(NO_JEMALLOC) = $(jemalloc_packages)
 
+Flatbuffers_packages_$(NO_FLATBUFFERS) = $(Flatbuffers_packages)
+
 packages += $($(host_arch)_$(host_os)_packages) $($(host_os)_packages) $(qt_packages_) $(wallet_packages_) $(upnp_packages_)
 native_packages += $($(host_arch)_$(host_os)_native_packages) $($(host_os)_native_packages)
 
@@ -154,6 +157,11 @@ endif
 
 ifneq ($(jemalloc_packages_),)
 packages += $(jemalloc_packages)
+endif
+
+ifneq ($(Flatbuffers_packages_),)
+packages += $(Flatbuffers_packages)
+native_packages += $(Flatbuffers_native_packages)
 endif
 
 all_packages = $(packages) $(native_packages)

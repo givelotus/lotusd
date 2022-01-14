@@ -25,3 +25,6 @@ darwin_native_packages += native_cctools native_cdrkit native_libdmg-hfsplus
 endif
 
 jemalloc_packages = jemalloc
+
+Flatbuffers_packages=Flatbuffers
+Flatbuffers_native_packages=native_Flatbuffers
