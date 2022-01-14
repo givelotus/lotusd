@@ -739,7 +739,15 @@ bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
         return false;
     }
 
-    GetMainSignals().TransactionAddedToMempool(ptx);
+    std::vector<Coin> spent_coins;
+    spent_coins.reserve(ptx->vin.size());
+    for (const CTxIn &input : ptx->vin) {
+        Coin coin;
+        m_view.GetCoin(input.prevout, coin);
+        spent_coins.push_back(coin);
+    }
+    GetMainSignals().TransactionAddedToMempool(ptx, spent_coins);
+
     return true;
 }
 

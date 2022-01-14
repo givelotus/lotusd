@@ -203,10 +203,11 @@ void CMainSignals::UpdatedBlockTip(const CBlockIndex *pindexNew,
         fInitialDownload);
 }
 
-void CMainSignals::TransactionAddedToMempool(const CTransactionRef &tx) {
-    auto event = [tx, this] {
+void CMainSignals::TransactionAddedToMempool(
+    const CTransactionRef &tx, const std::vector<Coin> &spent_coins) {
+    auto event = [tx, spent_coins, this] {
         m_internals->Iterate([&](CValidationInterface &callbacks) {
-            callbacks.TransactionAddedToMempool(tx);
+            callbacks.TransactionAddedToMempool(tx, spent_coins);
         });
     };
     ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s", __func__,
