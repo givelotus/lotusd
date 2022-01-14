@@ -117,22 +117,43 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y $(join_by ' ' "${LLVM_PACKAGES
 update-alternatives --set x86_64-w64-mingw32-g++ $(command -v x86_64-w64-mingw32-g++-posix)
 update-alternatives --set x86_64-w64-mingw32-gcc $(command -v x86_64-w64-mingw32-gcc-posix)
 
-# Python library for merging nested structures
-pip3 install deepmerge
-# For running Python test suites
-pip3 install pytest
-
-# Up-to-date mypy and isort packages are required python linters
-pip3 install isort==5.6.4 mypy==0.780
-echo "export PATH=\"$(python3 -m site --user-base)/bin:\$PATH\"" >> ~/.bashrc
-# shellcheck source=/dev/null
-source ~/.bashrc
-
 # Install pandoc. The version from buster is outdated, so get a more recent one
 # from github.
 wget https://github.com/jgm/pandoc/releases/download/2.10.1/pandoc-2.10.1-1-amd64.deb
 echo "4515d6fe2bf8b82765d8dfa1e1b63ccb0ff3332d60389f948672eaa37932e936 pandoc-2.10.1-1-amd64.deb" | sha256sum -c
 DEBIAN_FRONTEND=noninteractive dpkg -i pandoc-2.10.1-1-amd64.deb
+
+wget https://github.com/google/flatbuffers/archive/refs/tags/v2.0.0.tar.gz
+echo "9ddb9031798f4f8754d00fca2f1a68ecf9d0f83dfac7239af1311e4fd9a565c4 v2.0.0.tar.gz" | sha256sum -c
+tar -zxf v2.0.0.tar.gz
+(
+  cd flatbuffers-2.0.0
+  mkdir build
+  cd build
+  cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
+  ninja install
+)
+
+wget https://github.com/nanomsg/nng/archive/refs/tags/v1.5.2.tar.gz
+echo "f8b25ab86738864b1f2e3128e8badab581510fa8085ff5ca9bb980d317334c46 v1.5.2.tar.gz" | sha256sum -c
+tar -zxf v1.5.2.tar.gz
+(
+  cd nng-1.5.2
+  mkdir build
+  cd build
+  cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
+  ninja install
+)
+
+# Python library for merging nested structures
+pip3 install deepmerge
+# For running Python test suites
+pip3 install pytest pynng flatbuffers
+# Up-to-date mypy and isort packages are required python linters
+pip3 install isort==5.6.4 mypy==0.780
+echo "export PATH=\"$(python3 -m site --user-base)/bin:\$PATH\"" >> ~/.bashrc
+# shellcheck source=/dev/null
+source ~/.bashrc
 
 # Install npm v7.x and nodejs v15.x
 curl -sL https://deb.nodesource.com/setup_15.x | bash -
