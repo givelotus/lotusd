@@ -19,17 +19,17 @@ set(SDK_XCODE_BUILD_ID 11C505)
 set(LD64_VERSION 530)
 
 # On OSX we use various stuff from Apple's SDK.
-set(OSX_SDK_PATH "${CMAKE_CURRENT_SOURCE_DIR}/depends/SDKs/Xcode-${SDK_XCODE_VERSION}-${SDK_XCODE_BUILD_ID}-extracted-SDK-with-libcxx-headers")
+set(OSX_SDK_PATH "${BASEPREFIX}/SDKs/Xcode-${SDK_XCODE_VERSION}-${SDK_XCODE_BUILD_ID}-extracted-SDK-with-libcxx-headers")
 set(CMAKE_OSX_SYSROOT "${OSX_SDK_PATH}")
 set(CMAKE_OSX_DEPLOYMENT_TARGET ${OSX_MIN_VERSION})
 set(CMAKE_OSX_ARCHITECTURES x86_64)
 
 # target environment on the build host system
 #   set 1st to dir with the cross compiler's C/C++ headers/libs
-set(CMAKE_FIND_ROOT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/depends/${TOOLCHAIN_PREFIX};${OSX_SDK_PATH}")
+set(CMAKE_FIND_ROOT_PATH "${BASEPREFIX}/${TOOLCHAIN_PREFIX};${OSX_SDK_PATH}")
 
 # We also may have built dependencies for the native plateform.
-set(CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/depends/${TOOLCHAIN_PREFIX}/native")
+set(CMAKE_PREFIX_PATH "${BASEPREFIX}/${TOOLCHAIN_PREFIX}/native")
 
 # modify default behavior of FIND_XXX() commands to
 # search for headers/libs in the target environment and
