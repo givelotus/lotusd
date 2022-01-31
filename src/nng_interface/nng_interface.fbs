@@ -1,0 +1,302 @@
+// Copyright (c) 2021 The Logos Foundation
+
+namespace NngInterface;
+
+// Union for all RPC requests
+union RpcRequest {
+    GetBlockRequest,
+    GetBlockRangeRequest,
+    GetBlockSliceRequest,
+    GetUndoSliceRequest,
+    GetMempoolRequest,
+}
+
+// Result of an RPC call
+table RpcResult {
+    // true if the RPC call was successful, false otherwise
+    is_success: bool;
+    // Numeric code for the error; 0 if no error
+    error_code: int32;
+    // Human-readable error message; empty if no error
+    error_msg: string;
+    // Serialized RPC response, encoded as the corresponding *Response table
+    data: [ubyte];
+}
+
+// Table used for serializing NNG RPC calls
+table RpcCall {
+    // RPC request union
+    rpc: RpcRequest;
+}
+
+// 32-byte hash, used for txids and block hashes
+struct Hash {
+    // Bytes of the hash
+    data: [ubyte:32];
+}
+
+// Unique identifier of a transaction.
+// On BTC/BCH/XEC, this is the SHA256d of the raw transaction.
+// On XPI, this is a special serialization using merkle trees of inputs and outputs.
+table TxId {
+    // 32-byte hash of the txid
+    hash: Hash;
+}
+
+// Serialized transaction with txid
+table Tx {
+    // 32-byte txid of the tx
+    txid: TxId;
+    // Raw serialized transaction
+    raw: [ubyte];
+    // Coin spent by this tx. Empty for coinbase txs.
+    spent_coins: [Coin];
+}
+
+// Transaction that's mined in a block
+table BlockTx {
+    // Serialized Tx
+    tx: Tx;
+    // Position of the transaction within the block file.
+    // This can be used to later slice out the serialized transaction from a
+    // block using GetBlockSlice.
+    data_pos: uint32;
+    // Position of the undo data within the undo file.
+    // This can be used to later slice out the serialized undo data from a
+    // block using GetUndoSlice.
+    undo_pos: uint32;
+    // Size of the undo data within the undo file.
+    undo_size: uint32;
+}
+
+// Transaction that's part of the mempool.
+table MempoolTx {
+    // Serialized Tx
+    tx: Tx;
+    // Node timestamp when the tx has been added to the mempool.
+    time: int64;
+}
+
+table Coin {
+    // Output of the coin
+    tx_out: TxOut;
+    // Whether this coin is a coinbase output
+    is_coinbase: bool;
+    // Height of the output, -1 if the output is in the mempool
+    height: int32;
+}
+
+table TxOut {
+    // nValue of the coin
+    amount: uint64;
+    // scriptPubKey of the coin
+    script: [ubyte];
+}
+
+// Height case for BlockIdentifier. Fetches a block using its height.
+table BlockHeight {
+    // Height of the block
+    height: int32;
+}
+
+// Hash case for BlockIdentifier. Fetches a block using its hash.
+table BlockHash {
+    // Hash of the block
+    hash: Hash;
+}
+
+// Union for fetching a block
+union BlockIdentifier {
+    Height: BlockHeight,
+    Hash: BlockHash,
+}
+
+// Block header of a block
+table BlockHeader {
+    // Serialized blockheader
+    raw: [ubyte];
+    // Hash of the block
+    block_hash: BlockHash;
+    // Hash of the previous block (hashPrevBlock)
+    prev_block_hash: BlockHash;
+    // Target of the block in compact uint256 encoding
+    n_bits: uint32;
+    // Timestamp of the block
+    timestamp: uint64;
+}
+
+// Block
+table Block {
+    // Block header of the block
+    header: BlockHeader;
+    // List of metadata of this block
+    metadata: [BlockMetadata];
+    // Txs occuring in this block
+    txs: [BlockTx];
+    // File number of the block file this block is stored in.
+    // This can be used to later slice out transactions from a block using
+    // GetBlockSlice.
+    file_num: uint32;
+    // Position of the block within the block file, starting at the block header.
+    data_pos: uint32;
+    // Position of the undo data within the undo file.
+    undo_pos: uint32;
+}
+
+// Field entry for block metadata
+table BlockMetadata {
+    // Field ID for the block
+    field_id: uint32;
+    // Payload of the field
+    field_value: [ubyte];
+}
+
+// Notifies listeners when the block chain tip advances.
+//
+// When multiple blocks are connected at once, UpdatedBlockTip will be
+// sent on the final tip but may not be sent on every intermediate tip.
+// If the latter behavior is desired, subscribe to BlockConnected instead.
+table UpdatedBlockTip {
+    // Hash of the block that's now tip
+    block_hash: BlockHash;
+}
+
+// Notifies listeners of a transaction having been added to mempool.
+table TransactionAddedToMempool {
+    // Encoded transaction
+    mempool_tx: MempoolTx;
+}
+
+// Notifies listeners of a transaction leaving mempool.
+//
+// This notification gets sent for transactions that are removed from the
+// mempool for the following reasons:
+//
+// - EXPIRY (expired from mempool after -mempoolexpiry hours)
+// - SIZELIMIT (removed in size limiting if the mempool exceeds -maxmempool
+//   megabytes)
+// - REORG (removed during a reorg)
+// - CONFLICT (removed because it conflicts with in-block transaction)
+//
+// This does not get sent for transactions that are removed from the mempool
+// because they have been included in a block. Any client that is interested
+// in transactions removed from the mempool for inclusion in a block can
+// learn about those transactions from the BlockConnected notification.
+//
+// Transactions that are removed from the mempool because they conflict
+// with a transaction in the new block will have
+// TransactionRemovedFromMempool events fired *before* the BlockConnected
+// event is fired. If multiple blocks are connected in one step, then the
+// ordering could be:
+//
+// - TransactionRemovedFromMempool(tx1 from block A)
+// - TransactionRemovedFromMempool(tx2 from block A)
+// - TransactionRemovedFromMempool(tx1 from block B)
+// - TransactionRemovedFromMempool(tx2 from block B)
+// - BlockConnected(A)
+// - BlockConnected(B)
+table TransactionRemovedFromMempool {
+    // TxId of the tx removed from the mempool
+    txid: TxId;
+}
+
+// Notifies listeners of a block being connected.
+table BlockConnected {
+    // Block added to the blockchain
+    block: Block;
+    // Conflicting transactions evicted from the mempool
+    // Empty if conflicts are notified using TransactionRemovedFromMempool
+    txs_conflicted: [TxId];
+}
+
+// Notifies listeners of a block being disconnected
+table BlockDisconnected {
+    // Block being disconnected
+    block: Block;
+}
+
+// Notifies listeners of the new active block chain on-disk.
+//
+// Prior to this message, any updates are not guaranteed to persist on disk
+// (ie clients need to handle shutdown/restart safety by being able to
+// understand when some updates were lost due to unclean shutdown).
+//
+// When this message is sent, the validation changes done by any prior
+// message are guaranteed to exist on disk and survive a restart, including
+// an unclean shutdown.
+table ChainStateFlushed {
+    // Hash of the latest block persisted on disk.
+    block_hash: BlockHash;
+}
+
+// Fetches a single block
+table GetBlockRequest {
+    // Identifier of the block; either height or hash
+    block_id: BlockIdentifier;
+}
+
+// Response for fetching a single block
+table GetBlockResponse {
+    // Fetched block
+    block: Block;
+}
+
+// Fetches a range of blocks by height.
+// Fetches at most num_blocks, but returns fewer blocks if the slice is too big.
+table GetBlockRangeRequest {
+    // Height of the first fetched block
+    start_height: int32;
+    // Number of blocks
+    num_blocks: uint32;
+}
+
+// Result of fetching a range of blocks by height
+table GetBlockRangeResponse {
+    // List of result blocks
+    blocks: [Block];
+}
+
+// Fetches a byte range of a block file
+// This can be used to slice out the bytes of a transaction efficiently.
+table GetBlockSliceRequest {
+    // File number of the block file (as in blk?????.dat and Block.file_num)
+    file_num: uint32;
+    // Position where to start reading within the block file
+    // (as in BlockTx.data_pos)
+    data_pos: uint32;
+    // Number of bytes to be read from the block file, starting from data_pos
+    num_bytes: uint32;
+}
+
+// Result of fetching a byte slice from a block file
+table GetBlockSliceResponse {
+    // Sliced data from the block file
+    data: [ubyte];
+}
+
+// Fetches a byte range of a undo file
+// This can be used to slice out the bytes of spent outputs efficiently.
+table GetUndoSliceRequest {
+    // File number of the block file (as in rev?????.dat and Block.file_num)
+    file_num: uint32;
+    // Position where to start reading within the undo file
+    // (as in BlockTx.undo_pos)
+    undo_pos: uint32;
+    // Number of bytes to be read from the undo file, starting from undo_pos
+    num_bytes: uint32;
+}
+
+// Result of fetching a byte slice from a undo file
+table GetUndoSliceResponse {
+    // Sliced data from the undo file
+    data: [ubyte];
+}
+
+// Fetches all transactions from the mempool
+table GetMempoolRequest {}
+
+// Result of fetching all transactions from the mempool
+table GetMempoolResponse {
+    // List of txs in the mempool
+    txs: [MempoolTx];
+}
