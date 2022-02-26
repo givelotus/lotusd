@@ -15,4 +15,8 @@ struct Params;
 bool IsExodusEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev);
 
+/** Check if June 21st, 2022 protocol upgrade has activated. */
+bool IsLeviticusEnabled(const Consensus::Params &params,
+                        const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H

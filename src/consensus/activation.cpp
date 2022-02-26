@@ -17,3 +17,13 @@ bool IsExodusEnabled(const Consensus::Params &params,
     return pindexPrev->GetMedianTimePast() >=
            gArgs.GetArg("-exodusactivationtime", params.exodusActivationTime);
 }
+
+bool IsLeviticusEnabled(const Consensus::Params &params,
+                        const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetArg("-leviticusactivationtime", params.leviticusActivationTime);
+}
