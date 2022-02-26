@@ -124,6 +124,8 @@ public:
         consensus.exodusActivationTime = 1640102340;
         // 2022-06-21T09:14:00.000Z protocol upgrade
         consensus.leviticusActivationTime = 1655802840;
+        // 2022-12-12T21:48:00.000Z protocol upgrade
+        consensus.numbersActivationTime = 1670881680;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -284,10 +286,18 @@ public:
 
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
+        // Testnet activation times are 21 days before mainnet
+        Consensus::Params mainnetConsensus = CMainParams(opts).GetConsensus();
+        const int testnetActivationOffset = 21 * 24 * 3600;
         // 2021-12-21T15:59:00.000Z protocol upgrade
-        consensus.exodusActivationTime = 1640102340;
+        consensus.exodusActivationTime =
+            mainnetConsensus.exodusActivationTime - testnetActivationOffset;
         // 2022-06-21T09:14:00.000Z protocol upgrade
-        consensus.leviticusActivationTime = 1655802840;
+        consensus.leviticusActivationTime =
+            mainnetConsensus.leviticusActivationTime - testnetActivationOffset;
+        // 2022-12-12T21:48:00.000Z protocol upgrade
+        consensus.numbersActivationTime =
+            mainnetConsensus.numbersActivationTime - testnetActivationOffset;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -423,10 +433,16 @@ public:
 
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
+        // Regtest activation times are the same as mainnet
+        Consensus::Params mainnetConsensus = CMainParams(opts).GetConsensus();
         // 2021-12-21T15:59:00.000Z protocol upgrade
-        consensus.exodusActivationTime = 1640102340;
+        consensus.exodusActivationTime = mainnetConsensus.exodusActivationTime;
         // 2022-06-21T09:14:00.000Z protocol upgrade
-        consensus.leviticusActivationTime = 1655802840;
+        consensus.leviticusActivationTime =
+            mainnetConsensus.leviticusActivationTime;
+        // 2022-12-12T21:48:00.000Z protocol upgrade
+        consensus.numbersActivationTime =
+            mainnetConsensus.numbersActivationTime;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;

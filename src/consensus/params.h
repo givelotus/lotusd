@@ -20,6 +20,7 @@ namespace Consensus {
 struct CoinbaseAddresses {
     std::vector<std::string> genesis;
     std::vector<std::string> exodus;
+    std::vector<std::string> leviticus;
 };
 
 enum BuriedDeployment : int16_t {
@@ -46,6 +47,9 @@ struct Params {
     int exodusActivationTime;
     /** Unix time used for MTP activation of 2022-06-21T09:14:00.000Z protocol upgrade */
     int leviticusActivationTime;
+    /** Unix time used for MTP activation of 2022-12-21T21:48:00.000Z protocol
+     * upgrade */
+    int numbersActivationTime;
     /** Block height at which BIP16 becomes active */
     int BIP16Height;
     /** Block height and hash at which BIP34 becomes active */

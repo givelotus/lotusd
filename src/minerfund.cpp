@@ -37,6 +37,9 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
     }
 
     static auto GetPayoutAddresses = [](const Consensus::Params &p, const CBlockIndex *prev) -> const std::vector<std::string> & {
+        if (IsLeviticusEnabled(p, prev)) {
+            return p.coinbasePayoutAddresses.leviticus;
+        }
         if (IsExodusEnabled(p, prev)) {
             return p.coinbasePayoutAddresses.exodus;
         }
