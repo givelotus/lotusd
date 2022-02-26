@@ -237,6 +237,14 @@ def get_merkle_root(hashes):
     return hashes[0], num_layers
 
 
+def to_epoch_nbits(nBits):
+    nSize = nBits >> 24
+    nWord = nBits & 0x007f_ffff
+    nSizeEpoch = nSize - 1
+    nWordEpoch = (nWord << 8) // 5040
+    return (nSizeEpoch << 24) | nWordEpoch
+
+
 # Objects that map to lotusd objects, which can be serialized/deserialized
 
 class CAddress:
@@ -739,6 +747,21 @@ class CBlock(CBlockHeader):
         self.rehash()
         target = uint256_from_compact(self.nBits)
         while self.sha256 > target:
+            self.nNonce += 1
+            self.rehash()
+
+    def solve_epoch(self):
+        self.rehash()
+        epoch_target = uint256_from_compact(to_epoch_nbits(self.nBits))
+        while self.sha256 > epoch_target:
+            self.nNonce += 1
+            self.rehash()
+
+    def solve_non_epoch(self):
+        self.rehash()
+        target = uint256_from_compact(self.nBits)
+        epoch_target = uint256_from_compact(to_epoch_nbits(self.nBits))
+        while self.sha256 <= epoch_target or self.sha256 > target:
             self.nNonce += 1
             self.rehash()
 
