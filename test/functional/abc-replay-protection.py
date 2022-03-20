@@ -41,6 +41,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 # far into the future
 REPLAY_PROTECTION_START_TIME = 2000000000
+LATER_ACTIVATION_TIME = 2100000000
 
 # Error due to invalid signature
 RPC_INVALID_SIGNATURE_ERROR = "mandatory-script-verify-flag-failed (Signature must be zero for failed CHECK(MULTI)SIG operation)"
@@ -64,6 +65,7 @@ class ReplayProtectionTest(BitcoinTestFramework):
         self.extra_args = [['-whitelist=noban@127.0.0.1',
                             "-replayprotectionactivationtime={}".format(
                                 REPLAY_PROTECTION_START_TIME),
+                            f'-leviticusactivationtime={LATER_ACTIVATION_TIME}',
                             "-acceptnonstdtxn=1"]]
 
     def next_block(self, number):

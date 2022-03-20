@@ -25,7 +25,8 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
-ACTIVATION_TIME = 2000000000
+EXODUS_ACTIVATION_TIME = 2000000000
+LEVITICUS_ACTIVATION_TIME = 2100000000
 
 # see consensus/addresses_mainnet.h
 GENESIS_SCRIPTS = [
@@ -65,7 +66,8 @@ class MinerFundActivationTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.extra_args = [[
             '-enableminerfund',
-            f'-exodusactivationtime={ACTIVATION_TIME}',
+            f'-exodusactivationtime={EXODUS_ACTIVATION_TIME}',
+            f'-leviticusactivationtime={LEVITICUS_ACTIVATION_TIME}',
         ]]
 
     def run_test(self):
@@ -107,13 +109,13 @@ class MinerFundActivationTest(BitcoinTestFramework):
         assert_equal(node.submitblock(ToHex(block)), None)
 
         # Set mocktime
-        node.setmocktime(ACTIVATION_TIME)
+        node.setmocktime(EXODUS_ACTIVATION_TIME)
 
-        # Mine 11 blocks with ACTIVATION_TIME in the middle
-        # That moves MTP exactly to ACTIVATION_TIME
+        # Mine 11 blocks with EXODUS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to EXODUS_ACTIVATION_TIME
         for i in range(-6, 6):
             block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
-            block.nTime = ACTIVATION_TIME + i
+            block.nTime = EXODUS_ACTIVATION_TIME + i
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
 

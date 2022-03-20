@@ -58,7 +58,8 @@ static CBlock CreateGenesisBlock(uint32_t nBits, uint64_t nTime,
     genesis.nReserved = 0;
     genesis.nNonce = nNonce;
     genesis.nHeaderVersion = 1;
-    genesis.hashExtendedMetadata = SerializeHash(std::vector<uint8_t>());
+    genesis.hashExtendedMetadata =
+        SerializeHash(std::vector<CBlockMetadataField>());
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
     genesis.SetSize(GetSerializeSize(genesis, PROTOCOL_VERSION));
     genesis.nHeight = 0;

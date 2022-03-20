@@ -183,7 +183,6 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         assert_equal(block_template.pop('version'), 1)
         assert_equal(block_template.pop('previousblockhash'), prevblockhash)
         assert_equal(block_template.pop('epochblockhash'), '0000000000000000000000000000000000000000000000000000000000000000')
-        assert_equal(block_template.pop('extendedmetadatahash'), '9a538906e6466ebd2617d321f71bc94e56056ce213d366773699e28158e00614')
         assert_equal(block_template.pop('transactions'), [])
         assert_equal(block_template.pop('coinbaseaux'), {})
         assert_equal(block_template.pop('coinbasevalue'), int(SUBSIDY * COIN))

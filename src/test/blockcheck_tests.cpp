@@ -67,11 +67,8 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     block.SetSize(config.GetMaxBlockSize() + 1);
     RunCheckOnBlock(config, block, "bad-blk-size");
 
-    // vMetadata must be empty (for now)
+    // Reset size to valid
     block.SetSize(0);
-    block.vMetadata = {{0, {}}};
-    block.hashExtendedMetadata = SerializeHash(block.vMetadata);
-    RunCheckOnBlock(config, block, "bad-metadata");
 
     // Block must have at least a coinbase tx
     block.vMetadata.clear();

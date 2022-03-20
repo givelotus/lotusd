@@ -12,6 +12,7 @@
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/consensus.h>
+#include <consensus/extendedmetadata.h>
 #include <consensus/merkle.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
@@ -166,8 +167,12 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     pblock->nNonce = 0;
     pblock->nHeight = nHeight;
 
-    pblock->hashEpochBlock =
-        GetNextEpochBlockHash(consensusParams, pindexPrev);
+    pblock->hashEpochBlock = GetNextEpochBlockHash(consensusParams, pindexPrev);
+
+    // Building extended metadata is expensive, therefore we only build a dummy
+    // here. It will be filled once the block merkle root is known.
+    pblock->vMetadata = BuildExtendedMetadata(consensusParams, *pblock,
+                                              pindexPrev, /*isDummy=*/true);
     pblock->hashExtendedMetadata = SerializeHash(pblock->vMetadata);
 
     nLockTimeCutoff = pindexPrev->GetMedianTimePast();

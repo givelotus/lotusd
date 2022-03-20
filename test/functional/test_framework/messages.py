@@ -774,7 +774,7 @@ class CBlock(CBlockHeader):
 class CBlockMetadataField:
     __slots__ = ("fieldId", "data")
 
-    def __init__(self, fieldId, data):
+    def __init__(self, fieldId=0, data=b''):
         self.fieldId = fieldId
         self.data = data
 
@@ -787,6 +787,12 @@ class CBlockMetadataField:
         r += self.fieldId.to_bytes(4, 'little')
         r += ser_string(self.data)
         return r
+
+    def __repr__(self):
+        return f'CBlockMetadataField(fieldId={self.fieldId}, data=bytes.fromhex({repr(self.data.hex())}))'
+
+    def __eq__(self, other):
+        return isinstance(self, CBlockMetadataField) and self.fieldId == other.fieldId and self.data == other.data
 
 
 class PrefilledTransaction:
