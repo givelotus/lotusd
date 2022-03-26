@@ -16,6 +16,7 @@
 #include <checkqueue.h>
 #include <config.h>
 #include <consensus/activation.h>
+#include <consensus/extendedmetadata.h>
 #include <consensus/merkle.h>
 #include <consensus/tx_check.h>
 #include <consensus/tx_verify.h>
@@ -1661,6 +1662,12 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
         }
 
         return true;
+    }
+
+    // We have to make this check here and in ContextualCheckBlock
+    if (!ContextualCheckExtendedMetadata(consensusParams, block, pindex->pprev,
+                                         state, options)) {
+        return false; // state filled in by ContextualCheckExtendedMetadata
     }
 
     bool fScriptChecks = true;
@@ -3713,13 +3720,6 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
     // transaction validation, as otherwise we may mark the header as invalid
     // because we receive the wrong transactions or metadata for it.
 
-    // Metadata must be empty (for now)
-    if (!block.vMetadata.empty()) {
-        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-metadata",
-                             "forbidden extended metadata field");
-    }
-
     // First transaction must be coinbase.
     if (block.vtx.empty()) {
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
@@ -3913,7 +3913,8 @@ bool ContextualCheckTransactionForCurrentBlock(const Consensus::Params &params,
 static bool ContextualCheckBlock(const CBlock &block,
                                  BlockValidationState &state,
                                  const Consensus::Params &params,
-                                 const CBlockIndex *pindexPrev) {
+                                 const CBlockIndex *pindexPrev,
+                                 BlockValidationOptions validationOptions) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
     // Always enforce BIP113 (Median Time Past).
@@ -3956,6 +3957,11 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  tx_state.GetRejectReason(),
                                  tx_state.GetDebugMessage());
         }
+    }
+
+    if (!ContextualCheckExtendedMetadata(params, block, pindexPrev, state,
+                                         validationOptions)) {
+        return false; // state filled in by ContextualCheckExtendedMetadata
     }
 
     // Enforce rule that coinbase OP_RETURN starts with serialized block height
@@ -4270,9 +4276,10 @@ bool CChainState::AcceptBlock(const Config &config,
     const CChainParams &chainparams = config.GetChainParams();
     const Consensus::Params &consensusParams = chainparams.GetConsensus();
 
-    if (!CheckBlock(block, state, consensusParams,
-                    BlockValidationOptions(config)) ||
-        !ContextualCheckBlock(block, state, consensusParams, pindex->pprev)) {
+    BlockValidationOptions validationOptions(config);
+    if (!CheckBlock(block, state, consensusParams, validationOptions) ||
+        !ContextualCheckBlock(block, state, consensusParams, pindex->pprev,
+                              validationOptions)) {
         if (state.IsInvalid() &&
             state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
             pindex->nStatus = pindex->nStatus.withFailed();
@@ -4404,7 +4411,7 @@ bool TestBlockValidity(BlockValidationState &state, const CChainParams &params,
     }
 
     if (!ContextualCheckBlock(block, state, params.GetConsensus(),
-                              pindexPrev)) {
+                              pindexPrev, validationOptions)) {
         return error("%s: Consensus::ContextualCheckBlock: %s", __func__,
                      state.ToString());
     }

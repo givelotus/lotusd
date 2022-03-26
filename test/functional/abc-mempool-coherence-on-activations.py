@@ -52,6 +52,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 # It might change depending on the activation code currently existing in the
 # client software. We use the replay protection activation for this test.
 ACTIVATION_TIME = 2000000000
+LATER_ACTIVATION_TIME = 2100000000
 EXTRA_ARG = "-replayprotectionactivationtime={}".format(ACTIVATION_TIME)
 
 # simulation starts before activation
@@ -132,6 +133,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         self.blocks = {}
         self.extra_args = [['-whitelist=noban@127.0.0.1',
                             EXTRA_ARG,
+                            f'-leviticusactivationtime={LATER_ACTIVATION_TIME}',
                             '-acceptnonstdtxn=1']]
 
     def next_block(self, number):

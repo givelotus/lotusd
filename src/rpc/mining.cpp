@@ -11,6 +11,7 @@
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/consensus.h>
+#include <consensus/extendedmetadata.h>
 #include <consensus/merkle.h>
 #include <consensus/params.h>
 #include <consensus/validation.h>
@@ -132,8 +133,12 @@ static bool GenerateBlock(const Config &config, ChainstateManager &chainman,
                             extra_nonce);
     }
 
-    block.SetSize(GetSerializeSize(block));
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
+
+    block.vMetadata = BuildExtendedMetadata(
+        params, block, ::ChainActive().Tip(), /*isDummy=*/ false);
+    block.hashExtendedMetadata = SerializeHash(block.vMetadata);
+    block.SetSize(GetSerializeSize(block));
 
     while (max_tries > 0 &&
            block.nNonce < std::numeric_limits<uint64_t>::max() &&
@@ -1023,7 +1028,6 @@ static RPCHelpMan getblocktemplate() {
 
             result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
             result.pushKV("epochblockhash", pblock->hashEpochBlock.GetHex());
-            result.pushKV("extendedmetadatahash", pblock->hashExtendedMetadata.GetHex());
             result.pushKV("transactions", transactions);
             result.pushKV("coinbaseaux", aux);
             result.pushKV("coinbasetxn", coinbasetxn);
@@ -1119,16 +1123,20 @@ static RPCHelpMan getrawunsolvedblock() {
             pblock->nNonce = 0;
             // Update merkle root so mining software need not touch it.
             pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+            pblock->vMetadata =
+                BuildExtendedMetadata(chainparams.GetConsensus(), *pblock,
+                                      pindexPrevNew, /*isDummy=*/false);
+            pblock->hashExtendedMetadata = SerializeHash(pblock->vMetadata);
 
             CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
             ssBlock << *pblock;
-            arith_uint256 hashTarget = arith_uint256().SetCompact(pblock->nBits);
+            arith_uint256 hashTarget =
+                arith_uint256().SetCompact(pblock->nBits);
             UniValue result(UniValue::VOBJ);
             result.pushKV("blockhex", HexStr(ssBlock));
             result.pushKV("target", hashTarget.GetHex());
             return result;
-        }
-    };
+        }};
 }
 
 class submitblock_StateCatcher final : public CValidationInterface {

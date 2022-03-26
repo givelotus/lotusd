@@ -135,6 +135,10 @@ public:
     }
 };
 
+enum class MetadataFieldId : uint32_t {
+    EPOCH_MERKLE_ROOT = 1,
+};
+
 class CBlockMetadataField {
 public:
     uint32_t nFieldId;

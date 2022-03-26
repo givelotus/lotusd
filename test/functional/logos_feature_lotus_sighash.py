@@ -222,13 +222,15 @@ TESTCASES = [
 ]
 
 ACTIVATION_TIME = 2000000000
+LATER_ACTIVATION_TIME = 2100000000
 
 class Bip341Sighash(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
-                            f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
+                            f'-replayprotectionactivationtime={ACTIVATION_TIME}',
+                            f'-leviticusactivationtime={LATER_ACTIVATION_TIME}']]
 
     BASE_TYPES = {
         SIGHASH_ALL: 'ALL',

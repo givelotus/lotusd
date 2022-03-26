@@ -362,6 +362,7 @@ TX_CASES = [
 ]
 
 ACTIVATION_TIME = 2000000000
+LATER_ACTIVATION_TIME = 2100000000
 
 def ser_script(script: bytes) -> bytes:
     if len(script) < 0xfd:
@@ -396,7 +397,8 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
-                            f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
+                            f'-replayprotectionactivationtime={ACTIVATION_TIME}',
+                            f'-leviticusactivationtime={LATER_ACTIVATION_TIME}']]
 
     def run_test(self):
         node = self.nodes[0]
