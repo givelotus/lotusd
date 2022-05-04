@@ -26,6 +26,9 @@ static const CTxOut BuildOutput(const std::string &address,
 static const std::vector<std::string> &
 GetPayoutAddresses(const Consensus::Params &params,
                    const CBlockIndex *pindexPrev) {
+    if (IsLeviticusEnabled(params, pindexPrev)) {
+        return params.coinbasePayoutAddresses.leviticus;
+    }
     if (IsExodusEnabled(params, pindexPrev)) {
         return params.coinbasePayoutAddresses.exodus;
     }

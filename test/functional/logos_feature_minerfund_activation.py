@@ -25,7 +25,8 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
-ACTIVATION_TIME = 2000000000
+EXODUS_ACTIVATION_TIME = 2000000000
+LEVITICUS_ACTIVATION_TIME = 2010000000
 
 # see consensus/addresses_mainnet.h
 GENESIS_SCRIPTS = [
@@ -58,6 +59,21 @@ EXODUS_SCRIPTS = [
     "76a9142e2f1b2961a548b7107fdd4520c743afeabc991d88ac",
     "76a914471d545492d9c94c1f630ba0507d3e378854f3d088ac",
 ]
+LEVITICUS_SCRIPTS = [
+    "76a914efd3d5363e91d73406f673022d9f9932ac7a6e2188ac",
+    "76a91431bd7246ae1a24718c7ff6307f44b1d29a88e88188ac",
+    "76a9141325d2d8ba6e8c7d99ff66d21530917cc73429d288ac",
+    "76a9146a171891ab9443020bd2755ef79c6e59efc5926588ac",
+    "76a91484f1dbc598d1adce41e1ad3011e60b7502c0d0db88ac",
+    "76a914e25ff1cb0a6000b56115ac4b178393f8a0ad215488ac",
+    "76a91434ed5cae3056b8f990506aec8f2bd94cbf469c7588ac",
+    "76a914e8d6cc8137617e2156baf25f2de823860d1579a888ac",
+    "76a914b6284fbf3145dc2687fa02d00417cf094dd801cf88ac",
+    "76a914453596826cff68b6206b7739ff9a911a22cae72d88ac",
+    "76a9149dadb10adf30160eda6defe210983fb471b88a8e88ac",
+    "76a91419e8d8d0edab6ec43f04b656bff72af78d63ff6588ac",
+    "76a914a77122c592e9d24d51ad1dae37de73d77d7bc7f788ac",
+]
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -65,7 +81,8 @@ class MinerFundActivationTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.extra_args = [[
             '-enableminerfund',
-            f'-exodusactivationtime={ACTIVATION_TIME}',
+            f'-exodusactivationtime={EXODUS_ACTIVATION_TIME}',
+            f'-leviticusactivationtime={LEVITICUS_ACTIVATION_TIME}',
         ]]
 
     def run_test(self):
@@ -94,6 +111,9 @@ class MinerFundActivationTest(BitcoinTestFramework):
         block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
         # With correct scripts, except last script
         block = make_block_with_cb_scripts(
@@ -106,24 +126,56 @@ class MinerFundActivationTest(BitcoinTestFramework):
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 
-        # Set mocktime
-        node.setmocktime(ACTIVATION_TIME)
+        # Set mocktime for Exodus activation
+        node.setmocktime(EXODUS_ACTIVATION_TIME)
 
-        # Mine 11 blocks with ACTIVATION_TIME in the middle
-        # That moves MTP exactly to ACTIVATION_TIME
+        # Mine 11 blocks with EXODUS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to EXODUS_ACTIVATION_TIME
         for i in range(-6, 6):
             block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
-            block.nTime = ACTIVATION_TIME + i
+            block.nTime = EXODUS_ACTIVATION_TIME + i
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'], EXODUS_ACTIVATION_TIME)
 
         # Now the using the genesis addresses fails
         block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
+        # Now the using the leviticus addresses fails
+        block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
         # Using new scripts now works
         block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Set mocktime for Leviticus activation
+        node.setmocktime(LEVITICUS_ACTIVATION_TIME)
+        # Mine 11 blocks with LEVITICUS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to LEVITICUS_ACTIVATION_TIME
+        for i in range(-6, 6):
+            block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
+            block.nTime = LEVITICUS_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'], LEVITICUS_ACTIVATION_TIME)
+
+        # Now the using the genesis addresses fails
+        block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Now the using the exodus addresses fails
+        block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Using new scripts now works
+        block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 

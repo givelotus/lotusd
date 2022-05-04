@@ -61,6 +61,34 @@ namespace RegTest {
             "lotus_16PSJJXVKnYb8xtUhHyBDSdd8P2xx6suUM7TaWBNx",
             // Lotusia Citizen 3
             "lotus_16PSJKHmQ2Lm8BNtnvPi1jC4rxJpCo8VqvJecj5Hb",
+        },
+        .leviticus = {
+            // Aleph 0
+            "lotus_16PSJQTQMPHoT5AuGLm2UHcmbKLEFR43gHJChzTUy",
+            // Maintainance
+            "lotus_16PSJJdodJ4VMACYzBd1ey1MiPaaT5XSWVnoxQvci",
+            // Stamp
+            "lotus_16PSJHhULzYgupzGnvDysUFLxYxBVwx92JjXSyjNL",
+            // VN
+            "lotus_16PSJLMtCuFnyMb3rz4zbbhAtJgppp8GiY5NpGGev",
+            // Explorer 2
+            "lotus_16PSJMBaU1g7jvzCrXUCK5gxP6GHnSxEBYR3geqtX",
+            // Sales
+            "lotus_16PSJQ3Wby3uP6XkPtKTULTFzMXU9JJXfr1UrzTZJ",
+            // Radical Evangelism
+            "lotus_16PSJJjTw855ea3eJqEPTsuG6PkmLJw5eW4WVUjS7",
+            // Buddhism
+            "lotus_16PSJQEzUwA2bpbkzvAiDtAviX1Ep5x9x5UhdcBV6",
+            // VN 2
+            "lotus_16PSJNgypXoCzC2yQqz7wTGFCSL25qv4XZhxvQ28A",
+            // Ministry Of Truth
+            "lotus_16PSJKEP97unf4XFVR6zzS3j2s3qJp8omSJkyyDWH",
+            // Podcasters
+            "lotus_16PSJMwWGF6jNTbF8WgMuM49DZNmsWgY3b5e4itvd",
+            // Bots
+            "lotus_16PSJHuUsbDo5qZUjygQgtJLMsZgcpSB6wD459F6J",
+            // Lotus Citizen 4
+            "lotus_16PSJNEqzEoLhBigDN8Hf93FzERrPQKJXaYdzRCNT",
         }};
 } // namespace RegTest
 } // namespace RewardAddresses
