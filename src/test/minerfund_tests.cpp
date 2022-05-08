@@ -74,10 +74,10 @@ BOOST_AUTO_TEST_CASE(test_minerfund_required_outputs) {
     BlockAssembler testAssembler(chainparams, *m_node.mempool, options);
 
     const int64_t activationTime =
-        gArgs.GetArg("-exodusactivationtime", consensus.exodusActivationTime);
+        gArgs.GetArg("-leviticusactivationtime", consensus.leviticusActivationTime);
 
     if (::ChainActive().Tip()->GetMedianTimePast() > activationTime) {
-        // This test doesn't work if -exodusactivationtime is in the past
+        // This test doesn't work if -leviticusactivationtime is in the past
         return;
     }
 
@@ -117,11 +117,11 @@ BOOST_AUTO_TEST_CASE(test_minerfund_required_outputs) {
         // New addresses activate 6 blocks after the block time got bumped (MTP)
         if (blockNum < forkBlockNum + 6) {
             CheckPayoutOutputs(outputs,
-                               consensus.coinbasePayoutAddresses.genesis,
+                               consensus.coinbasePayoutAddresses.exodus,
                                subsidy / 26);
         } else {
             CheckPayoutOutputs(outputs,
-                               consensus.coinbasePayoutAddresses.exodus,
+                               consensus.coinbasePayoutAddresses.leviticus,
                                subsidy / 26);
         }
 
