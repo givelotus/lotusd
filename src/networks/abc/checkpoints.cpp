@@ -7,7 +7,9 @@
 
 static CCheckpointData mainNetCheckpointData = {
     .mapCheckpoints = {
-        /* Fill in checkpoints once there are any */
+        // Leviticus activation
+        {273562, BlockHash::fromHex("0000000000049e558f98d76240a0469720dee51bc2"
+                                    "7fd4c7f4e8946b6c50fb99")},
     }};
 
 static CCheckpointData testNetCheckpointData = {
