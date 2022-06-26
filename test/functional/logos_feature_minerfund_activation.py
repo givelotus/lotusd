@@ -28,7 +28,7 @@ from test_framework.util import assert_equal
 EXODUS_ACTIVATION_TIME = 2000000000
 LEVITICUS_ACTIVATION_TIME = 2010000000
 
-# see consensus/addresses_mainnet.h
+# see consensus/addresses.h
 GENESIS_SCRIPTS = [
     "a914b6c79031b71d86ab0d617e1e1e706ec4ee34b07f87",
     "76a914b8ae1c47effb58f72f7bca819fe7fc252f9e852e88ac",

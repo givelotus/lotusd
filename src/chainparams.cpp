@@ -17,9 +17,7 @@
 #include <util/strencodings.h>
 #include <util/system.h>
 
-#include <consensus/addresses_mainnet.h>
-#include <consensus/addresses_regtest.h>
-#include <consensus/addresses_testnet.h>
+#include <consensus/addresses.h>
 
 #include <cassert>
 
@@ -91,8 +89,7 @@ public:
 
         // The miner fund is enabled by default on mainnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
-        consensus.coinbasePayoutAddresses =
-            RewardAddresses::MainNet::AddressSets;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
         assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
         // Mainnet rewards based on difficulty.
         consensus.enableDifficultyBasedSubsidy = true;
@@ -220,8 +217,7 @@ public:
 
         // The miner fund is enabled by default on testnet.
         consensus.enableMinerFund = ENABLE_MINER_FUND;
-        consensus.coinbasePayoutAddresses =
-            RewardAddresses::TestNet::AddressSets;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
         assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
 
         // Testnet rewards based on difficulty.
@@ -327,8 +323,7 @@ public:
 
         // The miner fund is disabled by default on regnet.
         consensus.enableMinerFund = false;
-        consensus.coinbasePayoutAddresses =
-            RewardAddresses::RegTest::AddressSets;
+        consensus.coinbasePayoutAddresses = RewardAddresses::AddressSets;
         assert(consensus.coinbasePayoutAddresses.genesis.size() == 13);
         // Regtest rewards a constant amount independent of difficulty.
         consensus.enableDifficultyBasedSubsidy = false;
