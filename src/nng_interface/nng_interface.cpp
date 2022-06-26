@@ -399,7 +399,7 @@ size_t GetFirstBlockTxOffset(const CBlock &block, const CBlockIndex *pindex) {
 }
 
 size_t GetFirstUndoOffset(const CBlock &block, const CBlockIndex *pindex) {
-    return pindex->nUndoPos + GetSizeOfCompactSize(block.vtx.size());
+    return pindex->nUndoPos + GetSizeOfCompactSize(block.vtx.size() - 1);
 }
 
 flatbuffers::Offset<NngInterface::Block>
