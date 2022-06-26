@@ -245,7 +245,7 @@ public:
         consensus.CSVHeight = 0;
 
         consensus.powLimit = uint256S(
-            "0000000010000000000000000000000000000000000000000000000000000000");
+            "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         // two weeks
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60;
         consensus.nPowTargetSpacing = 2 * 60;
