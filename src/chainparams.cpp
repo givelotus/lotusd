@@ -232,12 +232,18 @@ public:
         consensus.defaultAssumeValid =
             ChainParamsConstants::TESTNET_DEFAULT_ASSUME_VALID;
 
+        // Testnet activation times are 21 days before mainnet
+        Consensus::Params mainnetConsensus = CMainParams().GetConsensus();
+        const int testnetActivationOffset = 21 * 24 * 3600;
         // 2021-12-21T15:59:00.000Z protocol upgrade
-        consensus.exodusActivationTime = 1640102340;
+        consensus.exodusActivationTime =
+            mainnetConsensus.exodusActivationTime - testnetActivationOffset;
         // 2022-06-21T09:14:00.000Z protocol upgrade
-        consensus.leviticusActivationTime = 1655802840;
+        consensus.leviticusActivationTime =
+            mainnetConsensus.leviticusActivationTime - testnetActivationOffset;
         // 2022-12-12T21:48:00.000Z protocol upgrade
-        consensus.numbersActivationTime = 1670881680;
+        consensus.numbersActivationTime =
+            mainnetConsensus.numbersActivationTime - testnetActivationOffset;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -335,12 +341,16 @@ public:
         // valid.
         consensus.defaultAssumeValid = BlockHash();
 
+        // Regtest activation times are the same as mainnet
+        Consensus::Params mainnetConsensus = CMainParams().GetConsensus();
         // 2021-12-21T15:59:00.000Z protocol upgrade
-        consensus.exodusActivationTime = 1640102340;
+        consensus.exodusActivationTime = mainnetConsensus.exodusActivationTime;
         // 2022-06-21T09:14:00.000Z protocol upgrade
-        consensus.leviticusActivationTime = 1655802840;
+        consensus.leviticusActivationTime =
+            mainnetConsensus.leviticusActivationTime;
         // 2022-12-12T21:48:00.000Z protocol upgrade
-        consensus.numbersActivationTime = 1670881680;
+        consensus.numbersActivationTime =
+            mainnetConsensus.numbersActivationTime;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
