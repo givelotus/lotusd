@@ -85,6 +85,8 @@ static void TestBlockSubsidyLogarithmic(const Consensus::Params &params) {
         {0x1000ffff, int64_t(26'260'005'725) * SATOSHI},
         {0x0500ffff, int64_t(49'140'005'725) * SATOSHI},
         {0x0300ffff, int64_t(53'300'005'725) * SATOSHI},
+        {0x1c100001, 1 * SUBSIDY}, // for testnet
+        {0x1d00ffff, 1 * SUBSIDY}, // for testnet
     };
     for (const auto &pair : test_cases) {
         const Amount subsidy = GetBlockSubsidy(pair.first, params);
