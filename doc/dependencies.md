@@ -10,6 +10,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | Clang |  | [5](https://releases.llvm.org/download.html) (C++17 support) |  |  |  |
 | CMake |  | [3.16](https://cmake.org/download/) |  |  |  |
 | Expat | [2.2.7](https://libexpat.github.io/) |  | No | Yes |  |
+| FlatBuffers |  | [2.0.0](https://github.com/google/flatbuffers/releases) |  |  |  |
 | fontconfig | [2.12.6](https://www.freedesktop.org/software/fontconfig/release/) |  | No | Yes |  |
 | FreeType | [2.7.1](http://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
 | GCC |  | [7](https://gcc.gnu.org/) (C++17 support) |  |  |  |
@@ -20,6 +21,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | librsvg | |  |  |  |  |
 | MiniUPnPc | [2.0.20180203](https://miniupnp.tuxfamily.org/files) | 1.9 | No |  |  |
 | Ninja |  | [1.5.1](https://github.com/ninja-build/ninja/releases) |  |  |  |
+| nng |  | [1.5.2](https://github.com/nanomsg/nng/releases) |  |  |  |
 | OpenSSL | [1.0.1k](https://www.openssl.org/source) |  | Yes |  |  |
 | PCRE |  |  |  |  | Yes |
 | protobuf | [2.6.1](https://github.com/google/protobuf/releases) |  | No |  |  |
@@ -43,6 +45,7 @@ factors that affect the dependency list.
 * Qt is not needed with `-DBUILD_BITCOIN_QT=OFF`.
 * qrencode is not needed with `-DENABLE_QRCODE=OFF`.
 * ZeroMQ is not needed with the `-DBUILD_BITCOIN_ZMQ=OFF`.
+* nng and FlatBuffers are not needed with the `-DBUILD_BITCOIN_NNG=OFF`.
 
 #### Other
 * librsvg is only needed if you need to run `ninja osx-dmg` on

@@ -44,6 +44,9 @@ Optional dependencies:
  libqrencode | QR codes in GUI  | Optional for generating QR codes (only needed when GUI enabled)
  univalue    | Utility          | JSON parsing and encoding (bundled version will be used unless --with-system-univalue passed to configure)
  libzmq3     | ZMQ notification | Optional, allows generating ZMQ notifications (requires ZMQ version >= 4.1.5)
+ nng         | NNG interface    | See [nng.md](nng.md)
+ flatbuffers | Serialization    | Used by the NNG interface
+
 
 For the versions used, see [dependencies.md](dependencies.md)
 
@@ -120,6 +123,27 @@ ZMQ dependencies (provides ZMQ API, can be disabled by passing `-DBUILD_BITCOIN_
 jemalloc dependencies (provides the jemalloc library, can be disabled by passing `-DUSE_JEMALLOC=OFF` on the cmake command line):
 
     sudo apt-get install libjemalloc-dev
+
+nng dependencies (can be disabled by passing `-DBUILD_BITCOIN_NNG=OFF` on the cmake command line):
+
+    sudo apt-get install libnng-dev
+
+FlatBuffers (if 2.0.0 is available in the package repository):
+
+    sudo apt-get install libflatbuffers-dev
+
+If the repository does not have the correct version, install it from source:
+
+    wget https://github.com/google/flatbuffers/archive/refs/tags/v2.0.0.tar.gz
+    echo "9ddb9031798f4f8754d00fca2f1a68ecf9d0f83dfac7239af1311e4fd9a565c4 v2.0.0.tar.gz" | sha256sum -c
+    tar -zxf v2.0.0.tar.gz
+    (
+      cd flatbuffers-2.0.0
+      mkdir build
+      cd build
+      cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
+      sudo ninja install
+    )
 
 Dependencies for the GUI: Ubuntu & Debian
 -----------------------------------------
