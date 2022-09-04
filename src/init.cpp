@@ -599,6 +599,10 @@ void SetupServerArgs(NodeContext &node) {
             "paths will be prefixed by datadir location. (default: %s)",
             BITCOIN_CONF_FILENAME, BITCOIN_SETTINGS_FILENAME),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#if HAVE_SYSTEM
+    argsman.AddArg("-startupnotify=<cmd>", "Execute command on startup.",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#endif
 #ifndef WIN32
     argsman.AddArg(
         "-sysperms",
@@ -845,12 +849,15 @@ void SetupServerArgs(NodeContext &node) {
     argsman.AddArg("-zmqpubrawtx=<address>",
                    "Enable publish raw transaction in <address>",
                    ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
+    argsman.AddArg("-zmqpubsequence=<address>",
+                   "Enable publish hash block and tx sequence in <address>",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
     argsman.AddArg(
         "-zmqpubhashblockhwm=<n>",
         strprintf("Set publish hash block outbound message high water "
                   "mark (default: %d)",
                   CZMQAbstractNotifier::DEFAULT_ZMQ_SNDHWM),
-        false, OptionsCategory::ZMQ);
+        ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
     argsman.AddArg(
         "-zmqpubhashtxhwm=<n>",
         strprintf("Set publish hash transaction outbound message high "
@@ -862,22 +869,29 @@ void SetupServerArgs(NodeContext &node) {
         strprintf("Set publish raw block outbound message high water "
                   "mark (default: %d)",
                   CZMQAbstractNotifier::DEFAULT_ZMQ_SNDHWM),
-        false, OptionsCategory::ZMQ);
+        ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
     argsman.AddArg(
         "-zmqpubrawtxhwm=<n>",
         strprintf("Set publish raw transaction outbound message high "
                   "water mark (default: %d)",
                   CZMQAbstractNotifier::DEFAULT_ZMQ_SNDHWM),
-        false, OptionsCategory::ZMQ);
+        ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
+    argsman.AddArg("-zmqpubsequencehwm=<n>",
+                   strprintf("Set publish hash sequence message high water mark"
+                             " (default: %d)",
+                             CZMQAbstractNotifier::DEFAULT_ZMQ_SNDHWM),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::ZMQ);
 #else
     hidden_args.emplace_back("-zmqpubhashblock=<address>");
     hidden_args.emplace_back("-zmqpubhashtx=<address>");
     hidden_args.emplace_back("-zmqpubrawblock=<address>");
     hidden_args.emplace_back("-zmqpubrawtx=<address>");
+    hidden_args.emplace_back("-zmqpubsequence=<n>");
     hidden_args.emplace_back("-zmqpubhashblockhwm=<n>");
     hidden_args.emplace_back("-zmqpubhashtxhwm=<n>");
     hidden_args.emplace_back("-zmqpubrawblockhwm=<n>");
     hidden_args.emplace_back("-zmqpubrawtxhwm=<n>");
+    hidden_args.emplace_back("-zmqpubsequencehwm=<n>");
 #endif
 
     argsman.AddArg(
@@ -1410,6 +1424,17 @@ static void CleanupBlockRevFiles() {
         remove(item.second);
     }
 }
+
+#if HAVE_SYSTEM
+static void StartupNotify(const ArgsManager &args) {
+    std::string cmd = args.GetArg("-startupnotify", "");
+    if (!cmd.empty()) {
+        std::thread t(runCommand, cmd);
+        // thread runs free
+        t.detach();
+    }
+}
+#endif
 
 static void ThreadImport(const Config &config, ChainstateManager &chainman,
                          std::vector<fs::path> vImportFiles,
@@ -3094,6 +3119,10 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Start Avalanche's event loop.
     g_avalanche->startEventLoop(*node.scheduler);
+
+#if HAVE_SYSTEM
+    StartupNotify(args);
+#endif
 
     return true;
 }

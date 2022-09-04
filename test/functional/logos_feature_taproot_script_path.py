@@ -400,7 +400,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # Allocate as many UTXOs as are needed
         num_utxos = sum(len(tx_case['inputs'])
                         for tx_case in TX_CASES
@@ -449,7 +449,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         tx_fan_out.vout = spendable_outputs
         tx_fan_out.rehash()
 
-        node.p2p.send_txs_and_test([tx_fan_out], node)
+        peer.send_txs_and_test([tx_fan_out], node)
 
         utxo_idx = 0
         for tx_case in TX_CASES:
@@ -515,9 +515,9 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
             # Broadcast transaction and check success/failure
             tx.rehash()
             if 'error' not in tx_case:
-                node.p2p.send_txs_and_test([tx], node)
+                peer.send_txs_and_test([tx], node)
             else:
-                node.p2p.send_txs_and_test([tx], node, success=False, reject_reason=tx_case['error'])
+                peer.send_txs_and_test([tx], node, success=False, reject_reason=tx_case['error'])
 
 
 if __name__ == '__main__':

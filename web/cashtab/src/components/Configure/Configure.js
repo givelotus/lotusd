@@ -27,6 +27,7 @@ import { ReactComponent as Trashcan } from '@assets/trashcan.svg';
 import { ReactComponent as Edit } from '@assets/edit.svg';
 import { Event } from '@utils/GoogleAnalytics';
 import ApiError from '@components/Common/ApiError';
+import { formatSavedBalance } from '@utils/validation';
 
 const { Panel } = Collapse;
 
@@ -73,10 +74,55 @@ const SWName = styled.div`
         font-size: 16px;
         color: ${props => props.theme.wallet.text.secondary};
         margin: 0;
-        text-align: left;
+        text-align: center;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    h3.overflow {
+        width: 100px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    h3.overflow:hover {
+        background-color: #eee;
+        overflow: visible;
+        inline-size: 100px;
+        white-space: normal;
+    }
+`;
+
+const SWBalance = styled.div`
+    width: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    word-wrap: break-word;
+    hyphens: auto;
+    @media (max-width: 500px) {
+        width: 100%;
+        justify-content: center;
+        margin-bottom: 15px;
+    }
+    div {
+        font-size: 13px;
+        color: ${props => props.theme.wallet.text.secondary};
+        margin: 0;
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    div.overflow {
+        width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    div.overflow:hover {
+        background-color: #eee;
+        overflow: visible;
+        inline-size: 150px;
+        white-space: normal;
     }
 `;
 
@@ -195,6 +241,7 @@ const Configure = () => {
     const [newWalletNameIsValid, setNewWalletNameIsValid] = useState(null);
     const [walletDeleteValid, setWalletDeleteValid] = useState(null);
     const [seedInput, openSeedInput] = useState(false);
+    const [showTranslationWarning, setShowTranslationWarning] = useState(false);
 
     const showPopulatedDeleteWalletModal = walletInfo => {
         setWalletToBeDeleted(walletInfo);
@@ -234,6 +281,13 @@ const Configure = () => {
         // Update savedWallets every time the active wallet changes
         updateSavedWallets(wallet);
     }, [wallet]);
+
+    useEffect(() => {
+        const detectedBrowserLang = navigator.language;
+        if (!detectedBrowserLang.includes('en-')) {
+            setShowTranslationWarning(true);
+        }
+    }, []);
 
     // Need this function to ensure that savedWallets are updated on new wallet creation
     const updateSavedWalletsOnCreate = async importMnemonic => {
@@ -460,6 +514,14 @@ const Configure = () => {
                 type="warning"
                 showIcon
             />
+            {showTranslationWarning && (
+                <Alert
+                    style={{ marginBottom: '12px' }}
+                    description="Please do not translate your seed phrase. Store your seed phrase in English. You must re-enter these exact English words to restore your wallet from seed."
+                    type="warning"
+                    showIcon
+                />
+            )}
             {wallet && wallet.mnemonic && (
                 <StyledCollapse>
                     <Panel header="Click to reveal seed phrase" key="1">
@@ -532,16 +594,29 @@ const Configure = () => {
                     <StyledCollapse>
                         <Panel header="Saved wallets" key="2">
                             <AWRow>
-                                <h3>{wallet.name}</h3>
+                                <h3 className="notranslate">{wallet.name}</h3>
                                 <h4>Currently active</h4>
                             </AWRow>
                             <div>
                                 {savedWallets.map(sw => (
                                     <SWRow key={sw.name}>
                                         <SWName>
-                                            <h3>{sw.name}</h3>
+                                            <h3 className="overflow notranslate">
+                                                {sw.name}
+                                            </h3>
                                         </SWName>
-
+                                        <SWBalance>
+                                            <div className="overflow">
+                                                [
+                                                {sw && sw.state
+                                                    ? formatSavedBalance(
+                                                          sw.state.balances
+                                                              .totalBalance,
+                                                      )
+                                                    : 'N/A'}{' '}
+                                                XEC]
+                                            </div>
+                                        </SWBalance>
                                         <SWButtonCtn>
                                             <Edit
                                                 onClick={() =>

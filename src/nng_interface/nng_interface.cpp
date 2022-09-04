@@ -590,7 +590,8 @@ private:
 
     void
     TransactionAddedToMempool(const CTransactionRef &ptx,
-                              const std::vector<Coin> &spent_coins) override {
+                              const std::vector<Coin> &spent_coins,
+                              uint64_t mempool_sequence) override {
         if (!IsMessageEnabled(MSG_MEMPOOLTXADD)) {
             return;
         }
@@ -603,7 +604,8 @@ private:
     }
 
     void TransactionRemovedFromMempool(const CTransactionRef &ptx,
-                                       MemPoolRemovalReason reason) override {
+                                       MemPoolRemovalReason reason,
+                                       uint64_t mempool_sequence) override {
         if (!IsMessageEnabled(MSG_MEMPOOLTXREM)) {
             return;
         }

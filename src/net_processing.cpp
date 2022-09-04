@@ -2092,10 +2092,10 @@ static CTransactionRef FindTxForGetData(const CTxMemPool &mempool,
 
 //! Determine whether or not a peer can request a proof, and return it (or
 //! nullptr if not found or not allowed).
-static std::shared_ptr<avalanche::Proof>
+static avalanche::ProofRef
 FindProofForGetData(const CNode &peer, const avalanche::ProofId &proofid,
                     const std::chrono::seconds now) {
-    std::shared_ptr<avalanche::Proof> proof = nullptr;
+    avalanche::ProofRef proof = nullptr;
 
     bool send_unconditionally =
         g_avalanche->withPeerManager([&](const avalanche::PeerManager &pm) {
@@ -4379,20 +4379,21 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             return;
         }
 
-        std::vector<avalanche::BlockUpdate> updates;
+        std::vector<avalanche::BlockUpdate> blockUpdates;
+        std::vector<avalanche::ProofUpdate> proofUpdates;
         int banscore;
         std::string error;
-        if (!g_avalanche->registerVotes(pfrom.GetId(), response, updates,
-                                        banscore, error)) {
+        if (!g_avalanche->registerVotes(pfrom.GetId(), response, blockUpdates,
+                                        proofUpdates, banscore, error)) {
             Misbehaving(pfrom, banscore, error);
             return;
         }
 
         pfrom.m_avalanche_state->invsVoted(response.GetVotes().size());
 
-        if (updates.size()) {
-            for (avalanche::BlockUpdate &u : updates) {
-                CBlockIndex *pindex = u.getBlockIndex();
+        if (blockUpdates.size()) {
+            for (avalanche::BlockUpdate &u : blockUpdates) {
+                CBlockIndex *pindex = u.getVoteItem();
                 switch (u.getStatus()) {
                     case avalanche::VoteStatus::Invalid:
                     case avalanche::VoteStatus::Rejected: {
@@ -4507,9 +4508,8 @@ void PeerManager::ProcessMessage(const Config &config, CNode &pfrom,
             vAddr =
                 m_connman.GetAddresses(MAX_ADDR_TO_SEND, MAX_PCT_ADDR_TO_SEND);
         } else {
-            vAddr =
-                m_connman.GetAddresses(pfrom.addr.GetNetwork(),
-                                       MAX_ADDR_TO_SEND, MAX_PCT_ADDR_TO_SEND);
+            vAddr = m_connman.GetAddresses(pfrom, MAX_ADDR_TO_SEND,
+                                           MAX_PCT_ADDR_TO_SEND);
         }
         FastRandomContext insecure_rand;
         for (const CAddress &addr : vAddr) {

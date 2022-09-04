@@ -423,7 +423,7 @@ class NngInterfaceTest(BitcoinTestFramework):
         assert_equal(block.Txs(1).DataPos(), 31673)
         assert_equal(block.Txs(1).UndoPos(), 4519)
         assert_equal(block.Txs(1).UndoSize(), 26)
-        assert_equal(block.Txs(2).DataPos(), 31774)
+        assert_equal(block.Txs(2).DataPos(), 31773)
         assert_equal(block.Txs(2).UndoPos(), 4519 + 26)
         assert_equal(block.Txs(2).UndoSize(), 29)
         tx0_raw = get_fb_bytes(block.Txs(0).Tx(), 'Raw')

@@ -222,61 +222,69 @@ static const size_t OUTPUT_GROUP_MAX_ENTRIES = 10;
 
 namespace {
 std::shared_ptr<CWallet>
-LoadWalletInternal(interfaces::Chain &chain, const WalletLocation &location,
-                   std::optional<bool> load_on_start, bilingual_str &error,
-                   std::vector<bilingual_str> &warnings) {
+LoadWalletInternal(interfaces::Chain &chain, const std::string &name,
+                   std::optional<bool> load_on_start,
+                   const DatabaseOptions &options, DatabaseStatus &status,
+                   bilingual_str &error, std::vector<bilingual_str> &warnings) {
     try {
-        if (!CWallet::Verify(chain, location, error, warnings)) {
+        std::unique_ptr<WalletDatabase> database =
+            MakeWalletDatabase(name, options, status, error);
+        if (!database) {
             error = Untranslated("Wallet file verification failed.") +
                     Untranslated(" ") + error;
             return nullptr;
         }
 
         std::shared_ptr<CWallet> wallet =
-            CWallet::CreateWalletFromFile(chain, location, error, warnings);
+            CWallet::Create(chain, name, std::move(database),
+                            options.create_flags, error, warnings);
         if (!wallet) {
             error = Untranslated("Wallet loading failed.") + Untranslated(" ") +
                     error;
+            status = DatabaseStatus::FAILED_LOAD;
             return nullptr;
         }
         AddWallet(wallet);
         wallet->postInitProcess();
 
         // Write the wallet setting
-        UpdateWalletSetting(chain, location.GetName(), load_on_start, warnings);
+        UpdateWalletSetting(chain, name, load_on_start, warnings);
 
         return wallet;
     } catch (const std::runtime_error &e) {
         error = Untranslated(e.what());
+        status = DatabaseStatus::FAILED_LOAD;
         return nullptr;
     }
 }
 } // namespace
 
-std::shared_ptr<CWallet> LoadWallet(interfaces::Chain &chain,
-                                    const WalletLocation &location,
-                                    std::optional<bool> load_on_start,
-                                    bilingual_str &error,
-                                    std::vector<bilingual_str> &warnings) {
-    auto result =
-        WITH_LOCK(g_loading_wallet_mutex,
-                  return g_loading_wallet_set.insert(location.GetName()));
+std::shared_ptr<CWallet>
+LoadWallet(interfaces::Chain &chain, const std::string &name,
+           std::optional<bool> load_on_start, const DatabaseOptions &options,
+           DatabaseStatus &status, bilingual_str &error,
+           std::vector<bilingual_str> &warnings) {
+    auto result = WITH_LOCK(g_loading_wallet_mutex,
+                            return g_loading_wallet_set.insert(name));
     if (!result.second) {
         error = Untranslated("Wallet already being loading.");
+        status = DatabaseStatus::FAILED_LOAD;
         return nullptr;
     }
-    auto wallet =
-        LoadWalletInternal(chain, location, load_on_start, error, warnings);
+    auto wallet = LoadWalletInternal(chain, name, load_on_start, options,
+                                     status, error, warnings);
     WITH_LOCK(g_loading_wallet_mutex, g_loading_wallet_set.erase(result.first));
     return wallet;
 }
 
-WalletCreationStatus
-CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
-             uint64_t wallet_creation_flags, const std::string &name,
-             std::optional<bool> load_on_start, bilingual_str &error,
-             std::vector<bilingual_str> &warnings,
-             std::shared_ptr<CWallet> &result) {
+std::shared_ptr<CWallet>
+CreateWallet(interfaces::Chain &chain, const std::string &name,
+             std::optional<bool> load_on_start, const DatabaseOptions &options,
+             DatabaseStatus &status, bilingual_str &error,
+             std::vector<bilingual_str> &warnings) {
+    uint64_t wallet_creation_flags = options.create_flags;
+    const SecureString &passphrase = options.create_passphrase;
+
     // Indicate that the wallet is actually supposed to be blank and not just
     // blank to make it encrypted
     bool create_blank = (wallet_creation_flags & WALLET_FLAG_BLANK_WALLET);
@@ -286,20 +294,15 @@ CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
         wallet_creation_flags |= WALLET_FLAG_BLANK_WALLET;
     }
 
-    // Check the wallet file location
-    WalletLocation location(name);
-    if (location.Exists()) {
-        error = strprintf(Untranslated("Wallet %s already exists."),
-                          location.GetName());
-        return WalletCreationStatus::CREATION_FAILED;
-    }
-
     // Wallet::Verify will check if we're trying to create a wallet with a
     // duplicate name.
-    if (!CWallet::Verify(chain, location, error, warnings)) {
+    std::unique_ptr<WalletDatabase> database =
+        MakeWalletDatabase(name, options, status, error);
+    if (!database) {
         error = Untranslated("Wallet file verification failed.") +
                 Untranslated(" ") + error;
-        return WalletCreationStatus::CREATION_FAILED;
+        status = DatabaseStatus::FAILED_VERIFY;
+        return nullptr;
     }
 
     // Do not allow a passphrase when private keys are disabled
@@ -309,16 +312,19 @@ CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
             "Passphrase provided but private keys are disabled. A passphrase "
             "is only used to encrypt private keys, so cannot be used for "
             "wallets with private keys disabled.");
-        return WalletCreationStatus::CREATION_FAILED;
+        status = DatabaseStatus::FAILED_CREATE;
+        return nullptr;
     }
 
     // Make the wallet
-    std::shared_ptr<CWallet> wallet = CWallet::CreateWalletFromFile(
-        chain, location, error, warnings, wallet_creation_flags);
+    std::shared_ptr<CWallet> wallet =
+        CWallet::Create(chain, name, std::move(database), wallet_creation_flags,
+                        error, warnings);
     if (!wallet) {
         error =
             Untranslated("Wallet creation failed.") + Untranslated(" ") + error;
-        return WalletCreationStatus::CREATION_FAILED;
+        status = DatabaseStatus::FAILED_CREATE;
+        return nullptr;
     }
 
     // Encrypt the wallet
@@ -327,14 +333,16 @@ CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
         if (!wallet->EncryptWallet(passphrase)) {
             error =
                 Untranslated("Error: Wallet created but failed to encrypt.");
-            return WalletCreationStatus::ENCRYPTION_FAILED;
+            status = DatabaseStatus::FAILED_ENCRYPT;
+            return nullptr;
         }
         if (!create_blank) {
             // Unlock the wallet
             if (!wallet->Unlock(passphrase)) {
                 error = Untranslated(
                     "Error: Wallet was encrypted but could not be unlocked");
-                return WalletCreationStatus::ENCRYPTION_FAILED;
+                status = DatabaseStatus::FAILED_ENCRYPT;
+                return nullptr;
             }
 
             // Set a seed for the wallet
@@ -347,7 +355,8 @@ CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
                         if (!spk_man->SetupGeneration()) {
                             error =
                                 Untranslated("Unable to generate initial keys");
-                            return WalletCreationStatus::CREATION_FAILED;
+                            status = DatabaseStatus::FAILED_CREATE;
+                            return nullptr;
                         }
                     }
                 }
@@ -359,12 +368,12 @@ CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
     }
     AddWallet(wallet);
     wallet->postInitProcess();
-    result = wallet;
 
     // Write the wallet settings
     UpdateWalletSetting(chain, name, load_on_start, warnings);
 
-    return WalletCreationStatus::SUCCESS;
+    status = DatabaseStatus::SUCCESS;
+    return wallet;
 }
 
 /** @defgroup mapWallet
@@ -1284,7 +1293,8 @@ void CWallet::SyncTransaction(const CTransactionRef &ptx,
     MarkInputsDirty(ptx);
 }
 
-void CWallet::transactionAddedToMempool(const CTransactionRef &tx) {
+void CWallet::transactionAddedToMempool(const CTransactionRef &tx,
+                                        uint64_t mempool_sequence) {
     LOCK(cs_wallet);
 
     SyncTransaction(tx, {CWalletTx::Status::UNCONFIRMED, /* block_height */ 0,
@@ -1297,7 +1307,8 @@ void CWallet::transactionAddedToMempool(const CTransactionRef &tx) {
 }
 
 void CWallet::transactionRemovedFromMempool(const CTransactionRef &tx,
-                                            MemPoolRemovalReason reason) {
+                                            MemPoolRemovalReason reason,
+                                            uint64_t mempool_sequence) {
     LOCK(cs_wallet);
     auto it = mapWallet.find(tx->GetId());
     if (it != mapWallet.end()) {
@@ -1347,7 +1358,8 @@ void CWallet::blockConnected(const CBlock &block, int height) {
         SyncTransaction(block.vtx[index], {CWalletTx::Status::CONFIRMED, height,
                                            block_hash, int(index)});
         transactionRemovedFromMempool(block.vtx[index],
-                                      MemPoolRemovalReason::BLOCK);
+                                      MemPoolRemovalReason::BLOCK,
+                                      0 /* mempool_sequence */);
     }
 }
 
@@ -4233,22 +4245,21 @@ CWallet::GetDestValues(const std::string &prefix) const {
     return values;
 }
 
-bool CWallet::Verify(interfaces::Chain &chain, const WalletLocation &location,
-                     bilingual_str &error_string,
-                     std::vector<bilingual_str> &warnings) {
+std::unique_ptr<WalletDatabase>
+MakeWalletDatabase(const std::string &name, const DatabaseOptions &options,
+                   DatabaseStatus &status, bilingual_str &error_string) {
     // Do some checking on wallet path. It should be either a:
     //
     // 1. Path where a directory can be created.
     // 2. Path to an existing directory.
     // 3. Path to a symlink to a directory.
     // 4. For backwards compatibility, the name of a data file in -walletdir.
-    LOCK(cs_wallets);
-    const fs::path &wallet_path = location.GetPath();
+    const fs::path &wallet_path = fs::absolute(name, GetWalletDir());
     fs::file_type path_type = fs::symlink_status(wallet_path).type();
     if (!(path_type == fs::file_not_found || path_type == fs::directory_file ||
           (path_type == fs::symlink_file && fs::is_directory(wallet_path)) ||
           (path_type == fs::regular_file &&
-           fs::path(location.GetName()).filename() == location.GetName()))) {
+           fs::path(name).filename() == name))) {
         error_string = Untranslated(
             strprintf("Invalid -wallet path '%s'. -wallet path should point to "
                       "a directory where wallet.dat and "
@@ -4256,39 +4267,19 @@ bool CWallet::Verify(interfaces::Chain &chain, const WalletLocation &location,
                       "where such a directory could be created, "
                       "or (for backwards compatibility) the name of an "
                       "existing data file in -walletdir (%s)",
-                      location.GetName(), GetWalletDir()));
-        return false;
+                      name, GetWalletDir()));
+        status = DatabaseStatus::FAILED_BAD_PATH;
+        return nullptr;
     }
-
-    // Make sure that the wallet path doesn't clash with an existing wallet path
-    if (IsWalletLoaded(wallet_path)) {
-        error_string = Untranslated(strprintf(
-            "Error loading wallet %s. Duplicate -wallet filename specified.",
-            location.GetName()));
-        return false;
-    }
-
-    // Keep same database environment instance across Verify/Recover calls
-    // below.
-    std::unique_ptr<WalletDatabase> database =
-        CreateWalletDatabase(wallet_path);
-
-    try {
-        return database->Verify(error_string);
-    } catch (const fs::filesystem_error &e) {
-        error_string = Untranslated(
-            strprintf("Error loading wallet %s. %s", location.GetName(),
-                      fsbridge::get_filesystem_error_message(e)));
-        return false;
-    }
+    return MakeDatabase(wallet_path, options, status, error_string);
 }
 
-std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
-    interfaces::Chain &chain, const WalletLocation &location,
-    bilingual_str &error, std::vector<bilingual_str> &warnings,
-    uint64_t wallet_creation_flags) {
-    const std::string walletFile =
-        WalletDataFilePath(location.GetPath()).string();
+std::shared_ptr<CWallet>
+CWallet::Create(interfaces::Chain &chain, const std::string &name,
+                std::unique_ptr<WalletDatabase> database,
+                uint64_t wallet_creation_flags, bilingual_str &error,
+                std::vector<bilingual_str> &warnings) {
+    const std::string &walletFile = database->Filename();
 
     chain.initMessage(_("Loading wallet...").translated);
 
@@ -4297,8 +4288,7 @@ std::shared_ptr<CWallet> CWallet::CreateWalletFromFile(
     // TODO: Can't use std::make_shared because we need a custom deleter but
     // should be possible to use std::allocate_shared.
     std::shared_ptr<CWallet> walletInstance(
-        new CWallet(&chain, location, CreateWalletDatabase(location.GetPath())),
-        ReleaseWallet);
+        new CWallet(&chain, name, std::move(database)), ReleaseWallet);
     DBErrors nLoadWalletRet = walletInstance->LoadWallet(fFirstRun);
     if (nLoadWalletRet != DBErrors::LOAD_OK) {
         if (nLoadWalletRet == DBErrors::CORRUPT) {

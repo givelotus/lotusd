@@ -12,9 +12,8 @@
 class CBlock;
 class CBlockIndex;
 class ChainstateManager;
-class Config;
 class CTxMemPool;
-class JSONRPCRequest;
+class RPCHelpMan;
 struct NodeContext;
 namespace util {
 class Ref;
@@ -22,7 +21,7 @@ class Ref;
 
 extern RecursiveMutex cs_main;
 
-UniValue getblockchaininfo(const Config &config, const JSONRPCRequest &request);
+RPCHelpMan getblockchaininfo();
 
 /**
  * Get the required difficulty of the next block w/r/t the given block index.
@@ -44,7 +43,8 @@ UniValue blockToJSON(const CBlock &block, const CBlockIndex *tip,
 UniValue MempoolInfoToJSON(const CTxMemPool &pool);
 
 /** Mempool to JSON */
-UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose = false);
+UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose = false,
+                       bool include_mempool_sequence = false);
 
 /** Block header to JSON */
 UniValue blockheaderToJSON(const CBlockIndex *tip,

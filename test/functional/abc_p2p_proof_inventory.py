@@ -16,9 +16,9 @@ from test_framework.key import ECKey
 from test_framework.messages import (
     MSG_AVA_PROOF,
     MSG_TYPE_MASK,
-    AvalancheProof,
     CInv,
     FromHex,
+    LegacyAvalancheProof,
     msg_avaproof,
     msg_getdata,
 )
@@ -120,7 +120,7 @@ class ProofInventoryTest(BitcoinTestFramework):
             }]
         )
 
-        orphan = FromHex(AvalancheProof(), orphan_hex)
+        orphan = FromHex(LegacyAvalancheProof(), orphan_hex)
         orphan_proofid = "{:064x}".format(orphan.proofid)
 
         msg = msg_avaproof()

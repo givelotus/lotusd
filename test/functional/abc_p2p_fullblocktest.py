@@ -177,7 +177,7 @@ class FullBlockTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
 
         self.genesis_hash = int(node.getbestblockhash(), 16)
         self.block_heights[self.genesis_hash] = 0
@@ -191,9 +191,22 @@ class FullBlockTest(BitcoinTestFramework):
         def get_spendable_output():
             return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
 
-        # move the tip back to a previous block
-        def tip(number):
-            self.tip = self.blocks[number]
+        # adds transactions to the block and updates state
+        def update_block(block_number, new_transactions):
+            block = self.blocks[block_number]
+            self.add_transactions_to_block(block, new_transactions)
+            old_sha256 = block.sha256
+            make_conform_to_ctor(block)
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            # Update the internal state just like in next_block
+            self.tip = block
+            if block.sha256 != old_sha256:
+                self.block_heights[
+                    block.sha256] = self.block_heights[old_sha256]
+                del self.block_heights[old_sha256]
+            self.blocks[block_number] = block
+            return block
 
         # shorthand for functions
         block = self.next_block
@@ -201,7 +214,7 @@ class FullBlockTest(BitcoinTestFramework):
         # Create a new block
         block(0)
         save_spendable_output()
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
 
         # Now we need that block to mature so we can spend the coinbase.
         maturity_blocks = []
@@ -209,7 +222,7 @@ class FullBlockTest(BitcoinTestFramework):
             block(5000 + i)
             maturity_blocks.append(self.tip)
             save_spendable_output()
-        node.p2p.send_blocks_and_test(maturity_blocks, node)
+        peer.send_blocks_and_test(maturity_blocks, node)
 
         # collect spendable outputs now to avoid cluttering the code later on
         out = []
@@ -220,19 +233,19 @@ class FullBlockTest(BitcoinTestFramework):
         for i in range(16):
             n = i + 1
             block(n, spend=out[i], block_size=n * ONE_MEGABYTE)
-            node.p2p.send_blocks_and_test([self.tip], node)
+            peer.send_blocks_and_test([self.tip], node)
 
         # block of maximal size
         block(17, spend=out[16], block_size=self.excessive_block_size)
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
 
         # Reject oversized blocks with bad-blk-length error
         block(18, spend=out[17], block_size=self.excessive_block_size + 1)
-        node.p2p.send_blocks_and_test(
+        peer.send_blocks_and_test(
             [self.tip], node, success=False, force_send=True, reject_reason='bad-blk-size')
 
         # Rewind bad block.
-        tip(17)
+        self.tip = self.blocks[17]
 
         # Submit a very large block via RPC
         large_block = block(

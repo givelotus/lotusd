@@ -35,7 +35,6 @@ class CWallet;
 enum class FeeReason;
 enum class OutputType;
 enum class TransactionError;
-enum class WalletCreationStatus;
 enum isminetype : unsigned int;
 struct CRecipient;
 struct PartiallySignedTransaction;
@@ -311,8 +310,7 @@ public:
     //! Create new wallet.
     virtual std::unique_ptr<Wallet>
     createWallet(const std::string &name, const SecureString &passphrase,
-                 uint64_t wallet_creation_flags, WalletCreationStatus &status,
-                 bilingual_str &error,
+                 uint64_t wallet_creation_flags, bilingual_str &error,
                  std::vector<bilingual_str> &warnings) = 0;
 
     //! Load existing wallet.
@@ -413,9 +411,7 @@ std::unique_ptr<Wallet> MakeWallet(const std::shared_ptr<CWallet> &wallet);
 
 //! Return implementation of ChainClient interface for a wallet client. This
 //! function will be undefined in builds where ENABLE_WALLET is false.
-std::unique_ptr<WalletClient>
-MakeWalletClient(Chain &chain, ArgsManager &args,
-                 std::vector<std::string> wallet_filenames);
+std::unique_ptr<WalletClient> MakeWalletClient(Chain &chain, ArgsManager &args);
 
 } // namespace interfaces
 

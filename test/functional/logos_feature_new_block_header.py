@@ -36,7 +36,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         self.extra_args = [['-whitelist=noban@127.0.0.1']]
 
     def fail_block(self, block, reject_reason, force_send=False):
-        self.nodes[0].p2p.send_blocks_and_test([block], self.nodes[0], success=False, force_send=force_send, reject_reason=reject_reason)
+        self.nodes[0].p2ps[0].send_blocks_and_test([block], self.nodes[0], success=False, force_send=force_send, reject_reason=reject_reason)
 
     def block_from_template(self, block_template):
         coinbase = create_coinbase(block_template['height'])
@@ -52,7 +52,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
 
         # OP_TRUE in P2SH
         address = node.decodescript('51')['p2sh']
@@ -207,9 +207,9 @@ class NewBlockHeaderTest(BitcoinTestFramework):
             block = self.block_from_template(block_template)
             block.hashEpochBlock = 0
             prepare_block(block)
-            node.p2p.send_blocks_and_test([block], node)
+            peer.send_blocks_and_test([block], node)
             del block
-    
+
         # Move to end of epoch
         node.generatetoaddress(4819, address)
         assert_equal(node.getblockcount(), 5039)
@@ -232,7 +232,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         # Setting current tip as epoch hash makes the block valid
         block.hashEpochBlock = int(epochblockhash, 16)
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
+        peer.send_blocks_and_test([block], node)
         del block
 
         # getblocktemplate still gives us the same epoch block hash
@@ -244,7 +244,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         block = self.block_from_template(block_template)
         block.hashEpochBlock = int(epochblockhash, 16)
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
+        peer.send_blocks_and_test([block], node)
         del block
 
         # Test 48-bit nTime
@@ -254,7 +254,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         block = self.block_from_template(block_template)
         block.nTime = 2**32
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
+        peer.send_blocks_and_test([block], node)
         del block
 
         node.setmocktime(2**48 - 1)  # biggest possible 48-bit number
@@ -263,7 +263,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         block = self.block_from_template(block_template)
         block.nTime = 2**48 - 1
         prepare_block(block)
-        node.p2p.send_blocks_and_test([block], node)
+        peer.send_blocks_and_test([block], node)
         del block
 
 

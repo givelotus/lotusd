@@ -11,6 +11,7 @@
 #include <chain.h>
 #include <config.h>
 #include <net_processing.h> // For ::PeerManager
+#include <reverse_iterator.h>
 #include <scheduler.h>
 #include <util/time.h>
 #include <util/translation.h> // For bilingual_str
@@ -21,6 +22,7 @@
 #include <avalanche/test/util.h>
 #include <test/util/setup_common.h>
 
+#include <boost/mpl/list.hpp>
 #include <boost/test/unit_test.hpp>
 
 using namespace avalanche;
@@ -117,7 +119,7 @@ struct AvalancheTestingSetup : public TestChain100Setup {
     }
 
     size_t next_coinbase = 0;
-    std::shared_ptr<Proof> GetProof() {
+    ProofRef GetProof() {
         size_t current_coinbase = next_coinbase++;
         const CTransaction &coinbase = *m_coinbase_txns[current_coinbase];
         ProofBuilder pb(0, 0, masterpriv);
@@ -172,16 +174,124 @@ struct AvalancheTestingSetup : public TestChain100Setup {
     uint64_t getRound() const { return AvalancheTest::getRound(*m_processor); }
 
     bool registerVotes(NodeId nodeid, const avalanche::Response &response,
-                       std::vector<avalanche::BlockUpdate> &updates) {
+                       std::vector<avalanche::BlockUpdate> &blockUpdates) {
         int banscore;
         std::string error;
-        return m_processor->registerVotes(nodeid, response, updates, banscore,
-                                          error);
+        std::vector<avalanche::ProofUpdate> proofUpdates;
+        return m_processor->registerVotes(nodeid, response, blockUpdates,
+                                          proofUpdates, banscore, error);
     }
 };
+
+struct BlockProvider {
+    AvalancheTestingSetup *fixture;
+
+    std::vector<BlockUpdate> updates;
+    uint32_t invType;
+
+    BlockProvider(AvalancheTestingSetup *_fixture)
+        : fixture(_fixture), invType(MSG_BLOCK) {}
+
+    CBlockIndex *buildVoteItem() const {
+        CBlock block = fixture->CreateAndProcessBlock({}, CScript());
+        const BlockHash blockHash = block.GetHash();
+
+        LOCK(cs_main);
+        return LookupBlockIndex(blockHash);
+    }
+
+    uint256 getVoteItemId(const CBlockIndex *pindex) const {
+        return pindex->GetBlockHash();
+    }
+
+    bool registerVotes(NodeId nodeid, const avalanche::Response &response,
+                       std::string &error) {
+        int banscore;
+        std::vector<avalanche::ProofUpdate> proofUpdates;
+        return fixture->m_processor->registerVotes(
+            nodeid, response, updates, proofUpdates, banscore, error);
+    }
+    bool registerVotes(NodeId nodeid, const avalanche::Response &response) {
+        std::string error;
+        return registerVotes(nodeid, response, error);
+    }
+
+    bool addToReconcile(const CBlockIndex *pindex) {
+        return fixture->m_processor->addBlockToReconcile(pindex);
+    }
+
+    std::vector<Vote> buildVotesForItems(uint32_t error,
+                                         std::vector<CBlockIndex *> &&items) {
+        size_t numItems = items.size();
+
+        std::vector<Vote> votes;
+        votes.reserve(numItems);
+
+        // Votes are sorted by most work first
+        std::sort(items.begin(), items.end(), CBlockIndexWorkComparator());
+        for (auto &item : reverse_iterate(items)) {
+            votes.emplace_back(error, item->GetBlockHash());
+        }
+
+        return votes;
+    }
+};
+
+struct ProofProvider {
+    AvalancheTestingSetup *fixture;
+
+    std::vector<ProofUpdate> updates;
+    uint32_t invType;
+
+    ProofProvider(AvalancheTestingSetup *_fixture)
+        : fixture(_fixture), invType(MSG_AVA_PROOF) {}
+
+    ProofRef buildVoteItem() const { return fixture->GetProof(); }
+
+    uint256 getVoteItemId(const ProofRef &proof) const {
+        return proof->getId();
+    }
+
+    bool registerVotes(NodeId nodeid, const avalanche::Response &response,
+                       std::string &error) {
+        int banscore;
+        std::vector<avalanche::BlockUpdate> blockUpdates;
+        return fixture->m_processor->registerVotes(
+            nodeid, response, blockUpdates, updates, banscore, error);
+    }
+    bool registerVotes(NodeId nodeid, const avalanche::Response &response) {
+        std::string error;
+        return registerVotes(nodeid, response, error);
+    }
+
+    bool addToReconcile(const ProofRef &proof) {
+        fixture->m_processor->addProofToReconcile(proof, true);
+        return true;
+    }
+
+    std::vector<Vote> buildVotesForItems(uint32_t error,
+                                         std::vector<ProofRef> &&items) {
+        size_t numItems = items.size();
+
+        std::vector<Vote> votes;
+        votes.reserve(numItems);
+
+        // Votes are sorted by high score first
+        std::sort(items.begin(), items.end(), ProofComparator());
+        for (auto &item : items) {
+            votes.emplace_back(error, item->getId());
+        }
+
+        return votes;
+    }
+};
+
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(processor_tests, AvalancheTestingSetup)
+
+// FIXME A std::tuple can be used instead of boost::mpl::list after boost 1.67
+using VoteItemProviders = boost::mpl::list<BlockProvider, ProofProvider>;
 
 #define REGISTER_VOTE_AND_CHECK(vr, vote, state, finalized, confidence)        \
     vr.registerVote(NO_NODE, vote);                                            \
@@ -304,9 +414,24 @@ BOOST_AUTO_TEST_CASE(block_update) {
         BlockUpdate abu(pindex, s);
         // The use of BOOST_CHECK instead of BOOST_CHECK_EQUAL prevents from
         // having to define operator<<() for each argument type.
-        BOOST_CHECK(abu.getBlockIndex() == pindex);
+        BOOST_CHECK(abu.getVoteItem() == pindex);
         BOOST_CHECK(abu.getStatus() == s);
     }
+}
+
+BOOST_AUTO_TEST_CASE(block_reconcile_twice) {
+    CBlock block = CreateAndProcessBlock({}, CScript());
+    const BlockHash blockHash = block.GetHash();
+    CBlockIndex *pindex;
+    {
+        LOCK(cs_main);
+        pindex = LookupBlockIndex(blockHash);
+    }
+
+    // Adding the block twice does nothing.
+    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    BOOST_CHECK(!m_processor->addBlockToReconcile(pindex));
+    BOOST_CHECK(m_processor->isAccepted(pindex));
 }
 
 namespace {
@@ -317,217 +442,201 @@ Response next(Response &r) {
 }
 } // namespace
 
-BOOST_AUTO_TEST_CASE(block_register) {
-    std::vector<BlockUpdate> updates;
+BOOST_AUTO_TEST_CASE_TEMPLATE(vote_item_register, P, VoteItemProviders) {
+    P provider(this);
+    auto &updates = provider.updates;
+    const uint32_t invType = provider.invType;
 
-    CBlock block = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHash = block.GetHash();
-    const CBlockIndex *pindex;
-    {
-        LOCK(cs_main);
-        pindex = LookupBlockIndex(blockHash);
-    }
+    const auto item = provider.buildVoteItem();
+    const auto itemid = provider.getVoteItemId(item);
 
     // Create nodes that supports avalanche.
     auto avanodes = ConnectNodes();
 
-    // Querying for random block returns false.
-    BOOST_CHECK(!m_processor->isAccepted(pindex));
+    // Querying for random item returns false.
+    BOOST_CHECK(!m_processor->isAccepted(item));
 
-    // Add a new block. Check it is added to the polls.
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    // Add a new item. Check it is added to the polls.
+    BOOST_CHECK(provider.addToReconcile(item));
     auto invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 
-    // Newly added blocks' state reflect the blockchain.
-    BOOST_CHECK(m_processor->isAccepted(pindex));
+    BOOST_CHECK(m_processor->isAccepted(item));
 
     int nextNodeIndex = 0;
     auto registerNewVote = [&](const Response &resp) {
         runEventLoop();
         auto nodeid = avanodes[nextNodeIndex++ % avanodes.size()]->GetId();
-        BOOST_CHECK(registerVotes(nodeid, resp, updates));
+        BOOST_CHECK(provider.registerVotes(nodeid, resp));
     };
 
-    // Let's vote for this block a few times.
-    Response resp{0, 0, {Vote(0, blockHash)}};
+    // Let's vote for this item a few times.
+    Response resp{0, 0, {Vote(0, itemid)}};
     for (int i = 0; i < 6; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(m_processor->isAccepted(pindex));
-        BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), 0);
+        BOOST_CHECK(m_processor->isAccepted(item));
+        BOOST_CHECK_EQUAL(m_processor->getConfidence(item), 0);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // A single neutral vote do not change anything.
-    resp = {getRound(), 0, {Vote(-1, blockHash)}};
+    resp = {getRound(), 0, {Vote(-1, itemid)}};
     registerNewVote(next(resp));
-    BOOST_CHECK(m_processor->isAccepted(pindex));
-    BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), 0);
+    BOOST_CHECK(m_processor->isAccepted(item));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(item), 0);
     BOOST_CHECK_EQUAL(updates.size(), 0);
 
-    resp = {getRound(), 0, {Vote(0, blockHash)}};
+    resp = {getRound(), 0, {Vote(0, itemid)}};
     for (int i = 1; i < 7; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(m_processor->isAccepted(pindex));
-        BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), i);
+        BOOST_CHECK(m_processor->isAccepted(item));
+        BOOST_CHECK_EQUAL(m_processor->getConfidence(item), i);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // Two neutral votes will stall progress.
-    resp = {getRound(), 0, {Vote(-1, blockHash)}};
+    resp = {getRound(), 0, {Vote(-1, itemid)}};
     registerNewVote(next(resp));
-    BOOST_CHECK(m_processor->isAccepted(pindex));
-    BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), 6);
+    BOOST_CHECK(m_processor->isAccepted(item));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(item), 6);
     BOOST_CHECK_EQUAL(updates.size(), 0);
     registerNewVote(next(resp));
-    BOOST_CHECK(m_processor->isAccepted(pindex));
-    BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), 6);
+    BOOST_CHECK(m_processor->isAccepted(item));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(item), 6);
     BOOST_CHECK_EQUAL(updates.size(), 0);
 
-    resp = {getRound(), 0, {Vote(0, blockHash)}};
+    resp = {getRound(), 0, {Vote(0, itemid)}};
     for (int i = 2; i < 8; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(m_processor->isAccepted(pindex));
-        BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), 6);
+        BOOST_CHECK(m_processor->isAccepted(item));
+        BOOST_CHECK_EQUAL(m_processor->getConfidence(item), 6);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // We vote for it numerous times to finalize it.
     for (int i = 7; i < AVALANCHE_FINALIZATION_SCORE; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(m_processor->isAccepted(pindex));
-        BOOST_CHECK_EQUAL(m_processor->getConfidence(pindex), i);
+        BOOST_CHECK(m_processor->isAccepted(item));
+        BOOST_CHECK_EQUAL(m_processor->getConfidence(item), i);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // As long as it is not finalized, we poll.
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 
     // Now finalize the decision.
     registerNewVote(next(resp));
     BOOST_CHECK_EQUAL(updates.size(), 1);
-    BOOST_CHECK(updates[0].getBlockIndex() == pindex);
+    BOOST_CHECK(updates[0].getVoteItem() == item);
     BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
-    updates = {};
+    updates.clear();
 
     // Once the decision is finalized, there is no poll for it.
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 0);
 
     // Now let's undo this and finalize rejection.
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    BOOST_CHECK(provider.addToReconcile(item));
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 
-    resp = {getRound(), 0, {Vote(1, blockHash)}};
+    resp = {getRound(), 0, {Vote(1, itemid)}};
     for (int i = 0; i < 6; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(m_processor->isAccepted(pindex));
+        BOOST_CHECK(m_processor->isAccepted(item));
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // Now the state will flip.
     registerNewVote(next(resp));
-    BOOST_CHECK(!m_processor->isAccepted(pindex));
+    BOOST_CHECK(!m_processor->isAccepted(item));
     BOOST_CHECK_EQUAL(updates.size(), 1);
-    BOOST_CHECK(updates[0].getBlockIndex() == pindex);
+    BOOST_CHECK(updates[0].getVoteItem() == item);
     BOOST_CHECK(updates[0].getStatus() == VoteStatus::Rejected);
-    updates = {};
+    updates.clear();
 
     // Now it is rejected, but we can vote for it numerous times.
     for (int i = 1; i < AVALANCHE_FINALIZATION_SCORE; i++) {
         registerNewVote(next(resp));
-        BOOST_CHECK(!m_processor->isAccepted(pindex));
+        BOOST_CHECK(!m_processor->isAccepted(item));
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
     // As long as it is not finalized, we poll.
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 
     // Now finalize the decision.
     registerNewVote(next(resp));
-    BOOST_CHECK(!m_processor->isAccepted(pindex));
+    BOOST_CHECK(!m_processor->isAccepted(item));
     BOOST_CHECK_EQUAL(updates.size(), 1);
-    BOOST_CHECK(updates[0].getBlockIndex() == pindex);
+    BOOST_CHECK(updates[0].getVoteItem() == item);
     BOOST_CHECK(updates[0].getStatus() == VoteStatus::Invalid);
-    updates = {};
+    updates.clear();
 
     // Once the decision is finalized, there is no poll for it.
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 0);
-
-    // Adding the block twice does nothing.
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
-    BOOST_CHECK(!m_processor->addBlockToReconcile(pindex));
-    BOOST_CHECK(m_processor->isAccepted(pindex));
 }
 
-BOOST_AUTO_TEST_CASE(multi_block_register) {
-    CBlockIndex indexA, indexB;
+BOOST_AUTO_TEST_CASE_TEMPLATE(multi_item_register, P, VoteItemProviders) {
+    P provider(this);
+    auto &updates = provider.updates;
+    const uint32_t invType = provider.invType;
 
-    std::vector<BlockUpdate> updates;
+    auto itemA = provider.buildVoteItem();
+    auto itemidA = provider.getVoteItemId(itemA);
+
+    auto itemB = provider.buildVoteItem();
+    auto itemidB = provider.getVoteItemId(itemB);
 
     // Create several nodes that support avalanche.
     auto avanodes = ConnectNodes();
 
-    // Make sure the block has a hash.
-    CBlock blockA = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHashA = blockA.GetHash();
+    // Querying for random item returns false.
+    BOOST_CHECK(!m_processor->isAccepted(itemA));
+    BOOST_CHECK(!m_processor->isAccepted(itemB));
 
-    CBlock blockB = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHashB = blockB.GetHash();
-    const CBlockIndex *pindexA;
-    const CBlockIndex *pindexB;
-    {
-        LOCK(cs_main);
-        pindexA = LookupBlockIndex(blockHashA);
-        pindexB = LookupBlockIndex(blockHashB);
-    }
-
-    // Querying for random block returns false.
-    BOOST_CHECK(!m_processor->isAccepted(pindexA));
-    BOOST_CHECK(!m_processor->isAccepted(pindexB));
-
-    // Start voting on block A.
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindexA));
+    // Start voting on item A.
+    BOOST_CHECK(provider.addToReconcile(itemA));
     auto invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHashA);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemidA);
 
     uint64_t round = getRound();
     runEventLoop();
-    BOOST_CHECK(registerVotes(avanodes[0]->GetId(),
-                              {round, 0, {Vote(0, blockHashA)}}, updates));
+    BOOST_CHECK(provider.registerVotes(avanodes[0]->GetId(),
+                                       {round, 0, {Vote(0, itemidA)}}));
     BOOST_CHECK_EQUAL(updates.size(), 0);
 
-    // Start voting on block B after one vote.
-    Response resp{round + 1, 0, {Vote(0, blockHashB), Vote(0, blockHashA)}};
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindexB));
+    // Start voting on item B after one vote.
+    std::vector<Vote> votes = provider.buildVotesForItems(0, {itemA, itemB});
+    Response resp{round + 1, 0, votes};
+    BOOST_CHECK(provider.addToReconcile(itemB));
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 2);
 
-    // Ensure B comes before A because it has accumulated more PoW.
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHashB);
-    BOOST_CHECK_EQUAL(invs[1].type, MSG_BLOCK);
-    BOOST_CHECK(invs[1].hash == blockHashA);
+    // Ensure the inv ordering is as expected
+    for (size_t i = 0; i < invs.size(); i++) {
+        BOOST_CHECK_EQUAL(invs[i].type, invType);
+        BOOST_CHECK(invs[i].hash == votes[i].GetHash());
+    }
 
-    // Let's vote for these blocks a few times.
+    // Let's vote for these items a few times.
     for (int i = 0; i < 4; i++) {
         NodeId nodeid = getSuitableNodeToQuery();
         runEventLoop();
-        BOOST_CHECK(registerVotes(nodeid, next(resp), updates));
+        BOOST_CHECK(provider.registerVotes(nodeid, next(resp)));
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
@@ -535,7 +644,7 @@ BOOST_AUTO_TEST_CASE(multi_block_register) {
     for (int i = 0; i < AVALANCHE_FINALIZATION_SCORE; i++) {
         NodeId nodeid = getSuitableNodeToQuery();
         runEventLoop();
-        BOOST_CHECK(registerVotes(nodeid, next(resp), updates));
+        BOOST_CHECK(provider.registerVotes(nodeid, next(resp)));
         BOOST_CHECK_EQUAL(updates.size(), 0);
     }
 
@@ -548,23 +657,23 @@ BOOST_AUTO_TEST_CASE(multi_block_register) {
 
     BOOST_CHECK(firstNodeid != secondNodeid);
 
-    // Next vote will finalize block A.
-    BOOST_CHECK(registerVotes(firstNodeid, next(resp), updates));
+    // Next vote will finalize item A.
+    BOOST_CHECK(provider.registerVotes(firstNodeid, next(resp)));
     BOOST_CHECK_EQUAL(updates.size(), 1);
-    BOOST_CHECK(updates[0].getBlockIndex() == pindexA);
+    BOOST_CHECK(updates[0].getVoteItem() == itemA);
     BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
     updates = {};
 
     // We do not vote on A anymore.
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHashB);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemidB);
 
-    // Next vote will finalize block B.
-    BOOST_CHECK(registerVotes(secondNodeid, resp, updates));
+    // Next vote will finalize item B.
+    BOOST_CHECK(provider.registerVotes(secondNodeid, resp));
     BOOST_CHECK_EQUAL(updates.size(), 1);
-    BOOST_CHECK(updates[0].getBlockIndex() == pindexB);
+    BOOST_CHECK(updates[0].getVoteItem() == itemB);
     BOOST_CHECK(updates[0].getStatus() == VoteStatus::Finalized);
     updates = {};
 
@@ -573,16 +682,13 @@ BOOST_AUTO_TEST_CASE(multi_block_register) {
     BOOST_CHECK_EQUAL(invs.size(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(poll_and_response) {
-    std::vector<BlockUpdate> updates;
+BOOST_AUTO_TEST_CASE_TEMPLATE(poll_and_response, P, VoteItemProviders) {
+    P provider(this);
+    auto &updates = provider.updates;
+    const uint32_t invType = provider.invType;
 
-    CBlock block = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHash = block.GetHash();
-    const CBlockIndex *pindex;
-    {
-        LOCK(cs_main);
-        pindex = LookupBlockIndex(blockHash);
-    }
+    const auto item = provider.buildVoteItem();
+    const auto itemid = provider.getVoteItemId(item);
 
     // There is no node to query.
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), NO_NODE);
@@ -596,12 +702,12 @@ BOOST_AUTO_TEST_CASE(poll_and_response) {
     // It returns the avalanche peer.
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
 
-    // Register a block and check it is added to the list of elements to poll.
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    // Register an item and check it is added to the list of elements to poll.
+    BOOST_CHECK(provider.addToReconcile(item));
     auto invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 
     // Trigger a poll on avanode.
     uint64_t round = getRound();
@@ -611,8 +717,8 @@ BOOST_AUTO_TEST_CASE(poll_and_response) {
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), NO_NODE);
 
     // Respond to the request.
-    Response resp = {round, 0, {Vote(0, blockHash)}};
-    BOOST_CHECK(registerVotes(avanodeid, resp, updates));
+    Response resp = {round, 0, {Vote(0, itemid)}};
+    BOOST_CHECK(provider.registerVotes(avanodeid, resp));
     BOOST_CHECK_EQUAL(updates.size(), 0);
 
     // Now that avanode fullfilled his request, it is added back to the list of
@@ -622,10 +728,8 @@ BOOST_AUTO_TEST_CASE(poll_and_response) {
     auto checkRegisterVotesError = [&](NodeId nodeid,
                                        const avalanche::Response &response,
                                        const std::string &expectedError) {
-        int banscore;
         std::string error;
-        BOOST_CHECK(!m_processor->registerVotes(nodeid, response, updates,
-                                                banscore, error));
+        BOOST_CHECK(!provider.registerVotes(nodeid, response, error));
         BOOST_CHECK_EQUAL(error, expectedError);
         BOOST_CHECK_EQUAL(updates.size(), 0);
     };
@@ -640,7 +744,7 @@ BOOST_AUTO_TEST_CASE(poll_and_response) {
 
     // Sending responses that do not match the request also fails.
     // 1. Too many results.
-    resp = {round, 0, {Vote(0, blockHash), Vote(0, blockHash)}};
+    resp = {round, 0, {Vote(0, itemid), Vote(0, itemid)}};
     runEventLoop();
     checkRegisterVotesError(avanodeid, resp, "invalid-ava-response-size");
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
@@ -669,59 +773,78 @@ BOOST_AUTO_TEST_CASE(poll_and_response) {
 
     // 5. Making request for invalid nodes do not work. Request is not
     // discarded.
-    resp = {queryRound, 0, {Vote(0, blockHash)}};
+    resp = {queryRound, 0, {Vote(0, itemid)}};
     checkRegisterVotesError(avanodeid + 1234, resp, "unexpected-ava-response");
 
     // Proper response gets processed and avanode is available again.
-    resp = {queryRound, 0, {Vote(0, blockHash)}};
-    BOOST_CHECK(registerVotes(avanodeid, resp, updates));
+    resp = {queryRound, 0, {Vote(0, itemid)}};
+    BOOST_CHECK(provider.registerVotes(avanodeid, resp));
     BOOST_CHECK_EQUAL(updates.size(), 0);
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
 
     // Out of order response are rejected.
-    CBlock block2 = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHash2 = block2.GetHash();
-    CBlockIndex *pindex2;
-    {
-        LOCK(cs_main);
-        pindex2 = LookupBlockIndex(blockHash2);
-    }
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex2));
+    const auto item2 = provider.buildVoteItem();
+    BOOST_CHECK(provider.addToReconcile(item2));
 
-    resp = {getRound(), 0, {Vote(0, blockHash), Vote(0, blockHash2)}};
+    std::vector<Vote> votes = provider.buildVotesForItems(0, {item, item2});
+    resp = {getRound(), 0, {votes[1], votes[0]}};
     runEventLoop();
     checkRegisterVotesError(avanodeid, resp, "invalid-ava-response-content");
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
 
     // But they are accepted in order.
-    resp = {getRound(), 0, {Vote(0, blockHash2), Vote(0, blockHash)}};
+    resp = {getRound(), 0, votes};
     runEventLoop();
-    BOOST_CHECK(registerVotes(avanodeid, resp, updates));
-    BOOST_CHECK_EQUAL(updates.size(), 0);
-    BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
-
-    // When a block is marked invalid, stop polling.
-    pindex2->nStatus = pindex2->nStatus.withFailed();
-    resp = {getRound(), 0, {Vote(0, blockHash)}};
-    runEventLoop();
-    BOOST_CHECK(registerVotes(avanodeid, resp, updates));
+    BOOST_CHECK(provider.registerVotes(avanodeid, resp));
     BOOST_CHECK_EQUAL(updates.size(), 0);
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), avanodeid);
 }
 
-BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(dont_poll_invalid_block) {
     std::vector<BlockUpdate> updates;
 
-    CBlock block = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHash = block.GetHash();
-    const CBlockIndex *pindex;
+    CBlock blockA = CreateAndProcessBlock({}, CScript());
+    CBlock blockB = CreateAndProcessBlock({}, CScript());
+    const BlockHash blockHashA = blockA.GetHash();
+    const BlockHash blockHashB = blockB.GetHash();
+    const CBlockIndex *pindexA;
+    CBlockIndex *pindexB;
     {
         LOCK(cs_main);
-        pindex = LookupBlockIndex(blockHash);
+        pindexA = LookupBlockIndex(blockHashA);
+        pindexB = LookupBlockIndex(blockHashB);
     }
 
-    // Add the block
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    auto avanodes = ConnectNodes();
+
+    // Register the blocks and check they are added to the list of elements to
+    // poll.
+    BOOST_CHECK(m_processor->addBlockToReconcile(pindexA));
+    BOOST_CHECK(m_processor->addBlockToReconcile(pindexB));
+    auto invs = getInvsForNextPoll();
+    BOOST_CHECK_EQUAL(invs.size(), 2);
+    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
+    BOOST_CHECK(invs[0].hash == blockHashB);
+    BOOST_CHECK_EQUAL(invs[1].type, MSG_BLOCK);
+    BOOST_CHECK(invs[1].hash == blockHashA);
+
+    // When a block is marked invalid, stop polling.
+    pindexB->nStatus = pindexB->nStatus.withFailed();
+    Response resp{getRound(), 0, {Vote(0, blockHashA)}};
+    runEventLoop();
+    BOOST_CHECK(registerVotes(avanodes[0]->GetId(), resp, updates));
+    BOOST_CHECK_EQUAL(updates.size(), 0);
+}
+
+BOOST_TEST_DECORATOR(*boost::unit_test::timeout(60))
+BOOST_AUTO_TEST_CASE_TEMPLATE(poll_inflight_timeout, P, VoteItemProviders) {
+    P provider(this);
+
+    const auto item = provider.buildVoteItem();
+    const auto itemid = provider.getVoteItemId(item);
+
+    // Add the item
+    BOOST_CHECK(provider.addToReconcile(item));
 
     // Create a node that supports avalanche.
     auto avanode = ConnectNode(NODE_AVALANCHE);
@@ -732,7 +855,7 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
     auto queryTimeDuration = std::chrono::milliseconds(10);
     m_processor->setQueryTimeoutDuration(queryTimeDuration);
     for (int i = 0; i < 10; i++) {
-        Response resp = {getRound(), 0, {Vote(0, blockHash)}};
+        Response resp = {getRound(), 0, {Vote(0, itemid)}};
 
         auto start = std::chrono::steady_clock::now();
         runEventLoop();
@@ -741,7 +864,7 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         runEventLoop();
 
-        bool ret = registerVotes(avanodeid, next(resp), updates);
+        bool ret = provider.registerVotes(avanodeid, next(resp));
         if (std::chrono::steady_clock::now() > start + queryTimeDuration) {
             // We waited for too long, bail. Because we can't know for sure when
             // previous steps ran, ret is not deterministic and we do not check
@@ -757,11 +880,14 @@ BOOST_AUTO_TEST_CASE(poll_inflight_timeout, *boost::unit_test::timeout(60)) {
         runEventLoop();
         std::this_thread::sleep_for(queryTimeDuration);
         runEventLoop();
-        BOOST_CHECK(!registerVotes(avanodeid, next(resp), updates));
+        BOOST_CHECK(!provider.registerVotes(avanodeid, next(resp)));
     }
 }
 
-BOOST_AUTO_TEST_CASE(poll_inflight_count) {
+BOOST_AUTO_TEST_CASE_TEMPLATE(poll_inflight_count, P, VoteItemProviders) {
+    P provider(this);
+    const uint32_t invType = provider.invType;
+
     // Create enough nodes so that we run into the inflight request limit.
     auto proof = GetProof();
     BOOST_CHECK(m_processor->withPeerManager(
@@ -773,15 +899,10 @@ BOOST_AUTO_TEST_CASE(poll_inflight_count) {
         BOOST_CHECK(addNode(n->GetId(), proof->getId()));
     }
 
-    // Add a block to poll
-    CBlock block = CreateAndProcessBlock({}, CScript());
-    const BlockHash blockHash = block.GetHash();
-    const CBlockIndex *pindex;
-    {
-        LOCK(cs_main);
-        pindex = LookupBlockIndex(blockHash);
-    }
-    BOOST_CHECK(m_processor->addBlockToReconcile(pindex));
+    // Add an item to poll
+    const auto item = provider.buildVoteItem();
+    const auto itemid = provider.getVoteItemId(item);
+    BOOST_CHECK(provider.addToReconcile(item));
 
     // Ensure there are enough requests in flight.
     std::map<NodeId, uint64_t> node_round_map;
@@ -791,8 +912,8 @@ BOOST_AUTO_TEST_CASE(poll_inflight_count) {
         node_round_map.insert(std::pair<NodeId, uint64_t>(nodeid, getRound()));
         auto invs = getInvsForNextPoll();
         BOOST_CHECK_EQUAL(invs.size(), 1);
-        BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-        BOOST_CHECK(invs[0].hash == blockHash);
+        BOOST_CHECK_EQUAL(invs[0].type, invType);
+        BOOST_CHECK(invs[0].hash == itemid);
         runEventLoop();
     }
 
@@ -804,18 +925,16 @@ BOOST_AUTO_TEST_CASE(poll_inflight_count) {
     runEventLoop();
     BOOST_CHECK_EQUAL(getSuitableNodeToQuery(), suitablenodeid);
 
-    std::vector<BlockUpdate> updates;
-
     // Send one response, now we can poll again.
     auto it = node_round_map.begin();
-    Response resp = {it->second, 0, {Vote(0, blockHash)}};
-    BOOST_CHECK(registerVotes(it->first, resp, updates));
+    Response resp = {it->second, 0, {Vote(0, itemid)}};
+    BOOST_CHECK(provider.registerVotes(it->first, resp));
     node_round_map.erase(it);
 
     invs = getInvsForNextPoll();
     BOOST_CHECK_EQUAL(invs.size(), 1);
-    BOOST_CHECK_EQUAL(invs[0].type, MSG_BLOCK);
-    BOOST_CHECK(invs[0].hash == blockHash);
+    BOOST_CHECK_EQUAL(invs[0].type, invType);
+    BOOST_CHECK(invs[0].hash == itemid);
 }
 
 BOOST_AUTO_TEST_CASE(quorum_diversity) {
@@ -990,7 +1109,7 @@ BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
     uint32_t score = MIN_VALID_PROOF_SCORE;
 
     auto addProofToReconcile = [&](uint32_t proofScore) {
-        auto proof = std::make_shared<Proof>(buildRandomProof(proofScore));
+        auto proof = buildRandomProof(proofScore);
         m_processor->addProofToReconcile(proof, GetRandInt(1));
         return proof;
     };
@@ -1033,6 +1152,31 @@ BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
     for (auto &inv : invs) {
         BOOST_CHECK_NE(inv.hash, proof->getId());
     }
+}
+
+BOOST_AUTO_TEST_CASE(proof_record) {
+    BOOST_CHECK(!m_processor->isAccepted(nullptr));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(nullptr), -1);
+
+    auto proofA = GetProof();
+    auto proofB = GetProof();
+
+    BOOST_CHECK(!m_processor->isAccepted(proofA));
+    BOOST_CHECK(!m_processor->isAccepted(proofB));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), -1);
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofB), -1);
+
+    m_processor->addProofToReconcile(proofA, false);
+    BOOST_CHECK(!m_processor->isAccepted(proofA));
+    BOOST_CHECK(!m_processor->isAccepted(proofB));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), 0);
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofB), -1);
+
+    m_processor->addProofToReconcile(proofB, true);
+    BOOST_CHECK(!m_processor->isAccepted(proofA));
+    BOOST_CHECK(m_processor->isAccepted(proofB));
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), 0);
+    BOOST_CHECK_EQUAL(m_processor->getConfidence(proofB), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

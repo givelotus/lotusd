@@ -45,7 +45,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         # OP_TRUE in P2SH to keep txs standard
         address = node.decodescript('51')['p2sh']
         num_mature_coins = 10
@@ -95,7 +95,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         version_3_tx = make_tx(3)
         version_3_tx.nVersion = 3
         pad_tx(version_3_tx)
-        nonstd_txs.append(([version_3_tx], 'version'))        
+        nonstd_txs.append(([version_3_tx], 'version'))
 
         # dust is non-standard (but ok in blocks)
         dust_tx = make_tx(4)
@@ -119,7 +119,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             CTxIn(COutPoint(nop10_fund_tx.txid, 0), CScript([nop10_script])))
         pad_tx(nop10_spend_tx)
         nonstd_txs.append(([nop10_fund_tx, nop10_spend_tx], 'non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)'))
-        
+
         # also make a few standard txs to check if they still work
         std_txs = []
         p2sh_tx = make_tx(6)
@@ -139,7 +139,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         version_2_tx.nVersion = 2
         pad_tx(version_2_tx)
         std_txs.append(version_2_tx)
-        
+
         # amount above dust limit is standard
         non_dust_tx = make_tx(9)
         non_dust_tx.vout.append(
@@ -151,18 +151,18 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
 
         # ==== FIRST TEST ====
         # -acceptnonstdtxn=0 -allownonstdtxnconsensus=1
-        # Original Bitcoin behavior: standardness is policy but not consensus 
+        # Original Bitcoin behavior: standardness is policy but not consensus
         # ====            ====
 
         # verify non-standard txs are rejected from mempool
         for txs, reason in nonstd_txs:
             if len(txs) > 1:
                 # txs before last one treated as setup txs
-                node.p2p.send_txs_and_test(txs[:-1], node)
-            node.p2p.send_txs_and_test(txs[-1:], node, success=False, reject_reason=reason)
+                peer.send_txs_and_test(txs[:-1], node)
+            peer.send_txs_and_test(txs[-1:], node, success=False, reject_reason=reason)
 
         # verify standard txs are accepted into mempool
-        node.p2p.send_txs_and_test(std_txs, node)
+        peer.send_txs_and_test(std_txs, node)
 
         # verify both sets of txs are accepted as blocks
         nonstd_block = make_block()
@@ -174,7 +174,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         nonstd_block.vtx.extend(std_txs)
         prepare_block(nonstd_block)
         # send nonstd_block, expected accept
-        node.p2p.send_blocks_and_test([nonstd_block], node)
+        peer.send_blocks_and_test([nonstd_block], node)
         node.invalidateblock(node.getbestblockhash())
 
 
@@ -185,17 +185,17 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
 
         # This is default behavior and doesn't require parameters
         self.restart_node(0, ["-whitelist=noban@127.0.0.1"])
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
 
         # verify txs are rejected from mempool
         for txs, reason in nonstd_txs:
             if len(txs) > 1:
                 # txs before last one treated as setup txs
-                node.p2p.send_txs_and_test(txs[:-1], node)
-            node.p2p.send_txs_and_test(txs[-1:], node, success=False, reject_reason=reason)
+                peer.send_txs_and_test(txs[:-1], node)
+            peer.send_txs_and_test(txs[-1:], node, success=False, reject_reason=reason)
 
         # verify standard txs are accepted into mempool
-        node.p2p.send_txs_and_test(std_txs, node)
+        peer.send_txs_and_test(std_txs, node)
 
         # verify txs in blocks are rejected
         for txs, reason in nonstd_txs:
@@ -204,21 +204,21 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             prepare_block(block)
             if reason == 'dust':
                 # verify dust is actually allowed in block
-                node.p2p.send_blocks_and_test([block], node)
+                peer.send_blocks_and_test([block], node)
                 node.invalidateblock(node.getbestblockhash())
             else:
                 if 'NOPx' in reason:
                     reason = 'blk-bad-inputs'
                 else:
                     reason = 'contains a non-standard transaction (and fRequireStandardConsensus is true)'
-                node.p2p.send_blocks_and_test([block], node, success=False, reject_reason=reason)
+                peer.send_blocks_and_test([block], node, success=False, reject_reason=reason)
 
         # verify std txs are accepted as blocks
         std_block = make_block()
         std_block.vtx.extend(std_txs)
         prepare_block(std_block)
         # send std_block, expected accept
-        node.p2p.send_blocks_and_test([std_block], node)
+        peer.send_blocks_and_test([std_block], node)
         node.invalidateblock(node.getbestblockhash())
 
         # ==== THIRD TEST ====
@@ -256,10 +256,10 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         node.start(["-acceptnonstdtxn=1",
                     "-allownonstdtxnconsensus=1"])
         node.wait_for_rpc_connection()
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
 
         # verify non-standard txs are accepted to mempool (except OP_NOP10)
-        node.p2p.send_txs_and_test(
+        peer.send_txs_and_test(
             [
                 tx
                 for txs, _ in nonstd_txs[:-1]
@@ -268,15 +268,15 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             node)
 
         # verify standard txs are accepted into mempool
-        node.p2p.send_txs_and_test(std_txs, node)
+        peer.send_txs_and_test(std_txs, node)
         # fund tx for OP_NOP10 is accepted
-        node.p2p.send_txs_and_test([nop10_fund_tx], node)
+        peer.send_txs_and_test([nop10_fund_tx], node)
         # spend tx for OP_NOP10 is still rejected
-        node.p2p.send_txs_and_test([nop10_spend_tx], node, success=False)
+        peer.send_txs_and_test([nop10_spend_tx], node, success=False)
         nonstd_block.nTime += 1  # tweak time so we don't collide with invalidateblock
         nonstd_block.solve()
         # verify (tweaked) non-standard block from before is valid
-        node.p2p.send_blocks_and_test([nonstd_block], node)
+        peer.send_blocks_and_test([nonstd_block], node)
 
 
 if __name__ == '__main__':

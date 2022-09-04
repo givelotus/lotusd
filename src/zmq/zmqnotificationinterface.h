@@ -8,6 +8,7 @@
 #include <validationinterface.h>
 
 #include <list>
+#include <memory>
 
 class CBlockIndex;
 class CZMQAbstractNotifier;
@@ -27,7 +28,11 @@ protected:
     // CValidationInterface
     void
     TransactionAddedToMempool(const CTransactionRef &tx,
-                              const std::vector<Coin> &spent_coins) override;
+                              const std::vector<Coin> &spent_coins,
+                              uint64_t mempool_sequence) override;
+    void TransactionRemovedFromMempool(const CTransactionRef &tx,
+                                       MemPoolRemovalReason reason,
+                                       uint64_t mempool_sequence) override;
     void BlockConnected(const std::shared_ptr<const CBlock> &pblock,
                         const CBlockIndex *pindexConnected) override;
     void BlockDisconnected(const std::shared_ptr<const CBlock> &pblock,
@@ -40,7 +45,7 @@ private:
     CZMQNotificationInterface();
 
     void *pcontext;
-    std::list<CZMQAbstractNotifier *> notifiers;
+    std::list<std::unique_ptr<CZMQAbstractNotifier>> notifiers;
 };
 
 extern CZMQNotificationInterface *g_zmq_notification_interface;
