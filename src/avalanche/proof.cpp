@@ -11,12 +11,27 @@
 #include <script/standard.h>
 #include <streams.h>
 #include <util/strencodings.h>
+#include <util/system.h>
+#include <util/translation.h>
 
 #include <tinyformat.h>
 
 #include <unordered_set>
 
 namespace avalanche {
+
+StakeCommitment::StakeCommitment(const ProofId &proofid, int64_t expirationTime,
+                                 const CPubKey &master) {
+    if (Proof::useLegacy(gArgs)) {
+        memcpy(m_data, proofid.data(), sizeof(m_data));
+    } else {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << expirationTime;
+        ss << master;
+        const uint256 &hash = ss.GetHash();
+        memcpy(m_data, hash.data(), sizeof(m_data));
+    }
+}
 
 void Stake::computeStakeId() {
     CHashWriter ss(SER_GETHASH, 0);
@@ -33,6 +48,15 @@ uint256 Stake::getHash(const StakeCommitment &commitment) const {
 
 bool SignedStake::verify(const StakeCommitment &commitment) const {
     return stake.getPubkey().VerifySchnorr(stake.getHash(commitment), sig);
+}
+
+bool Proof::useLegacy() {
+    return useLegacy(gArgs);
+}
+
+bool Proof::useLegacy(const ArgsManager &argsman) {
+    return argsman.GetBoolArg("-legacyavaproof",
+                              AVALANCHE_DEFAULT_LEGACY_PROOF);
 }
 
 bool Proof::FromHex(Proof &proof, const std::string &hexProof,
@@ -96,6 +120,11 @@ bool Proof::verify(ProofValidationState &state) const {
         if (!IsStandard(payoutScriptPubKey, scriptType)) {
             return state.Invalid(ProofValidationResult::INVALID_PAYOUT_SCRIPT,
                                  "payout-script-non-standard");
+        }
+
+        if (!master.VerifySchnorr(limitedProofId, signature)) {
+            return state.Invalid(ProofValidationResult::INVALID_PROOF_SIGNATURE,
+                                 "invalid-proof-signature");
         }
     }
 

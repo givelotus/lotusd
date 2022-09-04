@@ -23,7 +23,7 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]  # alias
 
-        node.add_p2p_connection(P2PTxInvStore())
+        peer_first = node.add_p2p_connection(P2PTxInvStore())
 
         self.log.info("Create a new transaction and wait until it's broadcast")
         txid = node.sendtoaddress(node.getnewaddress(), 1)
@@ -35,11 +35,11 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
         node.mockscheduler(1)
 
         # Can take a few seconds due to transaction trickling
-        node.p2p.wait_for_broadcast([txid])
+        peer_first.wait_for_broadcast([txid])
 
         # Add a second peer since txs aren't rebroadcast to the same peer (see
         # filterInventoryKnown)
-        node.add_p2p_connection(P2PTxInvStore())
+        peer_second = node.add_p2p_connection(P2PTxInvStore())
 
         self.log.info("Create a block")
         # Create and submit a block without the transaction.
@@ -64,7 +64,7 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
         node.setmocktime(now + twelve_hrs - two_min)
         # Tell scheduler to call MaybeResendWalletTxn now
         node.mockscheduler(1)
-        assert_equal(int(txid, 16) in node.p2ps[1].get_invs(), False)
+        assert_equal(int(txid, 16) in peer_second.get_invs(), False)
 
         self.log.info("Bump time & check that transaction is rebroadcast")
         # Transaction should be rebroadcast approximately 24 hours in the future,
@@ -75,7 +75,7 @@ class ResendWalletTransactionsTest(BitcoinTestFramework):
             node.mockscheduler(1)
         # Give some time for trickle to occur
         node.setmocktime(now + 36 * 60 * 60 + 600)
-        node.p2p.wait_for_broadcast([txid])
+        peer_second.wait_for_broadcast([txid])
 
 
 if __name__ == '__main__':

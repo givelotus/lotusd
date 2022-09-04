@@ -106,7 +106,7 @@ static bool VerifyDelegation(const Delegation &dg,
 }
 
 struct Processor::PeerData {
-    std::shared_ptr<Proof> proof;
+    ProofRef proof;
     Delegation delegation;
 };
 
@@ -177,12 +177,12 @@ std::unique_ptr<Processor> Processor::MakeProcessor(const ArgsManager &argsman,
         }
 
         peerData = std::make_unique<PeerData>();
-        peerData->proof = std::make_shared<Proof>();
-        if (!Proof::FromHex(*peerData->proof, argsman.GetArg("-avaproof", ""),
-                            error)) {
+        Proof proof;
+        if (!Proof::FromHex(proof, argsman.GetArg("-avaproof", ""), error)) {
             // error is set by FromHex
             return nullptr;
         }
+        peerData->proof = std::make_shared<Proof>(std::move(proof));
 
         if (!VerifyProof(*peerData->proof, error)) {
             // error is set by VerifyProof
@@ -261,8 +261,7 @@ bool Processor::addBlockToReconcile(const CBlockIndex *pindex) {
         .second;
 }
 
-void Processor::addProofToReconcile(const std::shared_ptr<Proof> &proof,
-                                    bool isAccepted) {
+void Processor::addProofToReconcile(const ProofRef &proof, bool isAccepted) {
     // TODO We don't want to accept an infinite number of conflicting proofs.
     // They should be some rules to make them expensive and/or limited by
     // design.
@@ -280,9 +279,29 @@ bool Processor::isAccepted(const CBlockIndex *pindex) const {
     return it->second.isAccepted();
 }
 
+bool Processor::isAccepted(const ProofRef &proof) const {
+    auto r = proofVoteRecords.getReadView();
+    auto it = r->find(proof);
+    if (it == r.end()) {
+        return false;
+    }
+
+    return it->second.isAccepted();
+}
+
 int Processor::getConfidence(const CBlockIndex *pindex) const {
     auto r = blockVoteRecords.getReadView();
     auto it = r->find(pindex);
+    if (it == r.end()) {
+        return -1;
+    }
+
+    return it->second.getConfidence();
+}
+
+int Processor::getConfidence(const ProofRef &proof) const {
+    auto r = proofVoteRecords.getReadView();
+    auto it = r->find(proof);
     if (it == r.end()) {
         return -1;
     }
@@ -327,8 +346,9 @@ void Processor::sendResponse(CNode *pfrom, Response response) const {
 }
 
 bool Processor::registerVotes(NodeId nodeid, const Response &response,
-                              std::vector<BlockUpdate> &updates, int &banscore,
-                              std::string &error) {
+                              std::vector<BlockUpdate> &blockUpdates,
+                              std::vector<ProofUpdate> &proofUpdates,
+                              int &banscore, std::string &error) {
     {
         // Save the time at which we can query again.
         LOCK(cs_peerManager);
@@ -375,11 +395,14 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     }
 
     std::map<CBlockIndex *, Vote> responseIndex;
+    std::map<ProofRef, Vote> responseProof;
 
-    {
-        LOCK(cs_main);
-        for (const auto &v : votes) {
-            auto pindex = LookupBlockIndex(BlockHash(v.GetHash()));
+    // At this stage we are certain that invs[i] matches votes[i], so we can use
+    // the inv type to retrieve what is being voted on.
+    for (size_t i = 0; i < size; i++) {
+        if (invs[i].IsMsgBlk()) {
+            LOCK(cs_main);
+            auto pindex = LookupBlockIndex(BlockHash(votes[i].GetHash()));
             if (!pindex) {
                 // This should not happen, but just in case...
                 continue;
@@ -390,19 +413,35 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
                 continue;
             }
 
-            responseIndex.insert(std::make_pair(pindex, v));
+            responseIndex.insert(std::make_pair(pindex, votes[i]));
+        }
+
+        if (invs[i].IsMsgProof()) {
+            const ProofId proofid(votes[i].GetHash());
+
+            // TODO Use an unordered map or similar to avoid the loop
+            auto proofVoteRecordsReadView = proofVoteRecords.getReadView();
+            for (auto it = proofVoteRecordsReadView.begin();
+                 it != proofVoteRecordsReadView.end(); it++) {
+                if (it->first->getId() == proofid) {
+                    responseProof.insert(std::make_pair(it->first, votes[i]));
+                    break;
+                }
+            }
         }
     }
 
-    {
+    // Thanks to C++14 generic lambdas, we can apply the same logic to various
+    // parameter types sharing the same interface.
+    auto registerVoteItems = [&](auto voteRecordsWriteView, auto &updates,
+                                 auto responseItems) {
         // Register votes.
-        auto w = blockVoteRecords.getWriteView();
-        for (const auto &p : responseIndex) {
-            CBlockIndex *pindex = p.first;
+        for (const auto &p : responseItems) {
+            auto item = p.first;
             const Vote &v = p.second;
 
-            auto it = w->find(pindex);
-            if (it == w.end()) {
+            auto it = voteRecordsWriteView->find(item);
+            if (it == voteRecordsWriteView.end()) {
                 // We are not voting on that item anymore.
                 continue;
             }
@@ -416,19 +455,24 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
             if (!vr.hasFinalized()) {
                 // This item has note been finalized, so we have nothing more to
                 // do.
-                updates.emplace_back(pindex, vr.isAccepted()
-                                                 ? VoteStatus::Accepted
-                                                 : VoteStatus::Rejected);
+                updates.emplace_back(item, vr.isAccepted()
+                                               ? VoteStatus::Accepted
+                                               : VoteStatus::Rejected);
                 continue;
             }
 
             // We just finalized a vote. If it is valid, then let the caller
             // know. Either way, remove the item from the map.
-            updates.emplace_back(pindex, vr.isAccepted() ? VoteStatus::Finalized
-                                                         : VoteStatus::Invalid);
-            w->erase(it);
+            updates.emplace_back(item, vr.isAccepted() ? VoteStatus::Finalized
+                                                       : VoteStatus::Invalid);
+            voteRecordsWriteView->erase(it);
         }
-    }
+    };
+
+    registerVoteItems(blockVoteRecords.getWriteView(), blockUpdates,
+                      responseIndex);
+    registerVoteItems(proofVoteRecords.getWriteView(), proofUpdates,
+                      responseProof);
 
     return true;
 }
@@ -473,7 +517,7 @@ bool Processor::sendHello(CNode *pfrom) const {
     return true;
 }
 
-std::shared_ptr<Proof> Processor::getLocalProof() const {
+ProofRef Processor::getLocalProof() const {
     return peerData ? peerData->proof : nullptr;
 }
 
@@ -497,7 +541,11 @@ std::vector<CInv> Processor::getInvsForNextPoll(bool forPoll) {
     // valuable are voted first.
     while (pit != proofVoteRecordsReadView.end() &&
            invs.size() < AVALANCHE_MAX_ELEMENT_POLL - 1) {
-        invs.emplace_back(MSG_AVA_PROOF, pit->first->getId());
+        const bool shouldPoll =
+            forPoll ? pit->second.registerPoll() : pit->second.shouldPoll();
+        if (shouldPoll) {
+            invs.emplace_back(MSG_AVA_PROOF, pit->first->getId());
+        }
         ++pit;
     }
 
@@ -566,25 +614,34 @@ void Processor::clearTimedoutRequests() {
     // In flight request accounting.
     for (const auto &p : timedout_items) {
         const CInv &inv = p.first;
-        assert(inv.type == MSG_BLOCK);
+        if (inv.IsMsgBlk()) {
+            CBlockIndex *pindex;
 
-        CBlockIndex *pindex;
+            {
+                LOCK(cs_main);
+                pindex = LookupBlockIndex(BlockHash(inv.hash));
+                if (!pindex) {
+                    continue;
+                }
+            }
 
-        {
-            LOCK(cs_main);
-            pindex = LookupBlockIndex(BlockHash(inv.hash));
-            if (!pindex) {
+            auto w = blockVoteRecords.getWriteView();
+            auto it = w->find(pindex);
+            if (it == w.end()) {
                 continue;
             }
+
+            it->second.clearInflightRequest(p.second);
         }
 
-        auto w = blockVoteRecords.getWriteView();
-        auto it = w->find(pindex);
-        if (it == w.end()) {
-            continue;
+        if (inv.IsMsgProof()) {
+            auto w = proofVoteRecords.getWriteView();
+            for (auto it = w.begin(); it != w.end(); it++) {
+                if (it->first->getId() == inv.hash) {
+                    it->second.clearInflightRequest(p.second);
+                }
+            }
         }
-
-        it->second.clearInflightRequest(p.second);
     }
 }
 

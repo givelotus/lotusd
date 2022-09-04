@@ -13,6 +13,7 @@
 #include <interfaces/handler.h>
 #include <interfaces/node.h>
 #include <util/string.h>
+#include <util/threadnames.h>
 #include <util/translation.h>
 #include <wallet/wallet.h>
 
@@ -42,6 +43,8 @@ WalletController::WalletController(ClientModel &client_model,
 
     m_activity_worker->moveToThread(m_activity_thread);
     m_activity_thread->start();
+    QTimer::singleShot(0, m_activity_worker,
+                       []() { util::ThreadRename("qt-walletctrl"); });
 }
 
 // Not using the default destructor because not all member types definitions are
@@ -252,13 +255,11 @@ void CreateWalletActivity::createWallet() {
     }
 
     QTimer::singleShot(500, worker(), [this, name, flags] {
-        WalletCreationStatus status;
         std::unique_ptr<interfaces::Wallet> wallet =
-            node().walletClient().createWallet(name, m_passphrase, flags,
-                                               status, m_error_message,
-                                               m_warning_message);
+            node().walletClient().createWallet(
+                name, m_passphrase, flags, m_error_message, m_warning_message);
 
-        if (status == WalletCreationStatus::SUCCESS) {
+        if (wallet) {
             m_wallet_model =
                 m_wallet_controller->getOrCreateWallet(std::move(wallet));
         }

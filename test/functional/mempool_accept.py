@@ -4,6 +4,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test mempool acceptance of raw transactions."""
 
+from decimal import Decimal
+
 from test_framework.key import ECKey
 from test_framework.messages import (
     COIN,
@@ -95,23 +97,29 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.calc_txid()
         txid_0 = tx.txid_hex
         self.check_mempool_result(
-            result_expected=[{'txid': txid_0, 'allowed': True}],
+            result_expected=[{'txid': txid_0, 'allowed': True,
+                              'size': tx.billable_size(),
+                              'fees': {'base': Decimal(str(fee))}}],
             rawtxs=[raw_tx_0],
         )
 
         self.log.info('A final transaction not in the mempool')
         # Pick a random coin(base) to spend
         coin = coins.pop()
+        output_amount = 2.5
         raw_tx_final = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{'txid': coin['txid'], 'vout': coin['vout'],
                      "sequence": 0xffffffff}],  # SEQUENCE_FINAL
-            outputs=[{node.getnewaddress(): 2.5}],
+            outputs=[{node.getnewaddress(): output_amount}],
             locktime=node.getblockcount() + 2000,  # Can be anything
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_final)
         tx.calc_txid()
+        fee_expected = int(coin['amount']) - output_amount
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True,
+                              'size': tx.billable_size(),
+                              'fees': {'base': Decimal(str(fee_expected))}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
         )
@@ -202,7 +210,9 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.calc_txid()
         # Reference tx should be valid on itself
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True,
+                              'size': tx.billable_size(),
+                              'fees': {'base': Decimal(10 - 5)}}],
             rawtxs=[ToHex(tx)],
             maxfeerate=0,
         )

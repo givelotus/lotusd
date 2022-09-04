@@ -158,7 +158,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.add_p2p_connection(P2PDataStore())
+        peer = node.add_p2p_connection(P2PDataStore())
         node.setmocktime(ACTIVATION_TIME)
 
         self.genesis_hash = int(node.getbestblockhash(), 16)
@@ -172,10 +172,6 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         # get an output that we previously marked as spendable
         def get_spendable_output():
             return PreviousSpendableOutput(spendable_outputs.pop(0).vtx[0], 1)
-
-        # move the tip back to a previous block
-        def tip(number):
-            self.tip = self.blocks[number]
 
         # adds transactions to the block and updates state
         def update_block(block_number, new_transactions):
@@ -217,7 +213,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         # Create a new block
         block(0)
         save_spendable_output()
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
 
         # Now we need that block to mature so we can spend the coinbase.
         maturity_blocks = []
@@ -225,7 +221,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
             block(5000 + i)
             maturity_blocks.append(self.tip)
             save_spendable_output()
-        node.p2p.send_blocks_and_test(maturity_blocks, node)
+        peer.send_blocks_and_test(maturity_blocks, node)
 
         # collect spendable outputs now to avoid cluttering the code later on
         out = []
@@ -246,10 +242,10 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         bfork = block(5555)
         bfork.nTime = ACTIVATION_TIME - 1
         update_block(5555, [txfund0, txfund1, txfund2, txfund3])
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
 
         for i in range(5):
-            node.p2p.send_blocks_and_test([block(5200 + i)], node)
+            peer.send_blocks_and_test([block(5200 + i)], node)
 
         # Check we are just before the activation time
         assert_equal(
@@ -276,7 +272,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         # pre-fork-only txn.
         block(5556)
         update_block(5556, [tx_chain0, tx_pre0])
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
         forkblockid = node.getbestblockhash()
 
         # Check we just activated the fork
@@ -301,7 +297,7 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         # Mine the 2nd always-valid chained txn and a post-fork-only txn.
         block(5557)
         update_block(5557, [tx_chain1, tx_post0])
-        node.p2p.send_blocks_and_test([self.tip], node)
+        peer.send_blocks_and_test([self.tip], node)
         postforkblockid = node.getbestblockhash()
         # The mempool contains the 3rd chained txn and a post-fork-only txn.
         check_mempool_equal([tx_chain2, tx_post1])
@@ -354,13 +350,13 @@ class MempoolCoherenceOnActivationsTest(BitcoinTestFramework):
         # Set up a longer competing chain that doesn't confirm any of our txns.
         # This starts after 5204, so it contains neither the forkblockid nor
         # the postforkblockid from above.
-        tip(5204)
+        self.tip = self.blocks[5204]
         reorg_blocks = []
         for i in range(3):
             reorg_blocks.append(block(5900 + i))
 
         # Perform the reorg
-        node.p2p.send_blocks_and_test(reorg_blocks, node)
+        peer.send_blocks_and_test(reorg_blocks, node)
         # reorg finishes after the fork
         assert_equal(
             node.getblockchaininfo()['mediantime'],

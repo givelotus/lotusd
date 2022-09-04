@@ -17,7 +17,7 @@
 
 namespace avalanche {
 
-Proof buildRandomProof(uint32_t score, const CKey &masterKey) {
+ProofRef buildRandomProof(uint32_t score, const CKey &masterKey) {
     auto key = CKey::MakeCompressedKey();
 
     const COutPoint o(TxId(GetRandHash()), 0);
@@ -35,11 +35,11 @@ Proof buildRandomProof(uint32_t score, const CKey &masterKey) {
 
     ProofBuilder pb(0, std::numeric_limits<uint32_t>::max(), masterKey);
     BOOST_CHECK(pb.addUTXO(o, v, height, is_coinbase, std::move(key)));
-    return pb.build();
+    return std::make_shared<Proof>(pb.build());
 }
 
-bool hasDustStake(const Proof &proof) {
-    for (const SignedStake &s : proof.getStakes()) {
+bool hasDustStake(const ProofRef &proof) {
+    for (const SignedStake &s : proof->getStakes()) {
         if (s.getStake().getAmount() < PROOF_DUST_THRESHOLD) {
             return true;
         }
@@ -79,7 +79,7 @@ Proof TestProofBuilder::buildWithReversedOrderStakes(ProofBuilder &pb) {
     }
 
     return Proof(pb.sequence, pb.expirationTime, pb.masterKey.GetPubKey(),
-                 std::move(signedStakes), pb.payoutScriptPubKey);
+                 std::move(signedStakes), pb.payoutScriptPubKey, SchnorrSig());
 }
 
 ProofId TestProofBuilder::getDuplicatedStakeProofId(ProofBuilder &pb) {
@@ -115,7 +115,7 @@ Proof TestProofBuilder::buildDuplicatedStakes(ProofBuilder &pb) {
     }
 
     return Proof(pb.sequence, pb.expirationTime, pb.masterKey.GetPubKey(),
-                 std::move(signedStakes), pb.payoutScriptPubKey);
+                 std::move(signedStakes), pb.payoutScriptPubKey, SchnorrSig());
 }
 
 } // namespace avalanche

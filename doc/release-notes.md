@@ -1,41 +1,25 @@
-# Bitcoin ABC 0.24.3 Release Notes
+# Bitcoin ABC 0.24.4 Release Notes
 
-Bitcoin ABC version 0.24.3 is now available from:
+Bitcoin ABC version 0.24.4 is now available from:
 
-  <https://download.bitcoinabc.org/0.24.3/>
+  <https://download.bitcoinabc.org/0.24.4/>
 
 This release includes the following features and fixes:
 
-Wallet
-------
-
-- The `-zapwallettxes` startup option has been removed and its functionality removed
-  from the wallet. This functionality has been superseded with the abandon transaction
-  feature.
-
-Configuration
--------------
-
-Wallets created or loaded in the GUI will now be automatically loaded on
-startup, so they don't need to be manually reloaded next time Bitcoin is
-started. The list of wallets to load on startup is stored in
-`\<datadir\>/settings.json` and augments any command line or `bitcoin.conf`
-`-wallet=` settings that specify more wallets to load. Wallets that are
-unloaded in the GUI get removed from the settings list so they won't load again
-automatically next startup.
-
-The `createwallet`, `loadwallet`, and `unloadwallet` RPCs now accept
-`load_on_startup` options to modify the settings list. Unless these options are
-explicitly set to true or false, the list is not modified, so the RPC methods
-remain backwards compatible.
-
-RPCs
-----
-
-- `getnetworkinfo` now returns two new fields, `connections_in` and
-  `connections_out`, that provide the number of inbound and outbound peer
-  connections. These new fields are in addition to the existing `connections`
-  field, which returns the total number of peer connections.
-- The `connections` field of `bitcoin-cli -getinfo` is expanded to return a JSON
-  object with `in`, `out` and `total` numbers of peer connections. It previously
-  returned a single integer value for the total number of peer connections.
+- Bitcoin ABC will no longer create an unnamed `""` wallet by default when no wallet is
+  specified on the command line or in the configuration files. For backwards compatibility,
+  if an unnamed `""` wallet already exists and would have been loaded previously, then it
+  will still be loaded. Users without an unnamed `""` wallet and without any other wallets
+  to be loaded on startup  will be prompted to either choose a wallet to load, or to
+  create a new wallet.
+- A new `send` RPC with similar syntax to `walletcreatefundedpsbt`, including
+  support for coin selection and a custom fee rate. Using the new `send` method
+  is encouraged: `sendmany` and `sendtoaddress` may be deprecated in a future release.
+- The `testmempoolaccept` RPC returns `size` and a `fee` object with the `base` fee
+  if the transaction passes validation.
+- A "sequence" notifier is added to ZeroMQ notifications, enabling client-side mempool
+  tracking.
+- The same ZeroMQ notification (e.g. `-zmqpubhashtx=address`) can now be specified multiple
+  times to publish the same notification to different ZeroMQ sockets.
+- The `-startupnotify` option can be used to specify a command to execute when Bitcoin ABC
+  has finished with its startup sequence.

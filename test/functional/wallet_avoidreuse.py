@@ -149,7 +149,8 @@ class AvoidReuseTest(BitcoinTestFramework):
         tempwallet = ".wallet_avoidreuse.py_test_immutable_wallet.dat"
 
         # Create a wallet with disable_private_keys set; this should work
-        self.nodes[1].createwallet(tempwallet, True)
+        self.nodes[1].createwallet(wallet_name=tempwallet,
+                                   disable_private_keys=True)
         w = self.nodes[1].get_wallet_rpc(tempwallet)
 
         # Attempt to unset the disable_private_keys flag; this should not work
@@ -303,52 +304,69 @@ class AvoidReuseTest(BitcoinTestFramework):
         # getbalances should show no used, 500 Lotus trusted
         assert_balances(self.nodes[1], mine={"used": 0, "trusted": 500})
 
-        # For the second send, we transmute it to a related single-key address
-        # to make sure it's also detected as re-use
-        # NB: this is not very useful for ABC, but we keep the new variable
-        # name for consistency.
-        new_fundaddr = fundaddr
+        if not self.options.descriptors:
+            # For the second send, we transmute it to a related single-key address
+            # to make sure it's also detected as re-use
+            # NB: this is not very useful for ABC, but we keep the new variable
+            # name for consistency.
+            new_fundaddr = fundaddr
 
-        self.nodes[0].sendtoaddress(new_fundaddr, 1000)
-        self.nodes[0].generate(1)
-        self.sync_all()
+            self.nodes[0].sendtoaddress(new_fundaddr, 1000)
+            self.nodes[0].generate(1)
+            self.sync_all()
 
-        # listunspent should show 2 total outputs (500, 1000 Lotus), one unused (5),
-        # one reused (10)
-        assert_unspent(
-            self.nodes[1],
-            total_count=2,
-            total_sum=1500,
-            reused_count=1,
-            reused_sum=1000)
-        # getbalances should show 1000 used, 500 Lotus trusted
-        assert_balances(self.nodes[1], mine={"used": 1000, "trusted": 500})
+            # listunspent should show 2 total outputs (500, 1000 Lotus), one unused
+            # (500), one reused (1000)
+            assert_unspent(
+                self.nodes[1],
+                total_count=2,
+                total_sum=1500,
+                reused_count=1,
+                reused_sum=1000)
+            # getbalances should show 1000 used, 500 Lotus trusted
+            assert_balances(
+                self.nodes[1],
+                mine={
+                    "used": 1000,
+                    "trusted": 500})
 
-        # node 1 should now have a balance of 500 (no dirty) or 1500 (including
-        # dirty)
-        assert_approx(self.nodes[1].getbalance(), 500, 0.1)
-        assert_approx(self.nodes[1].getbalance(avoid_reuse=False), 1500, 0.1)
+            # node 1 should now have a balance of 500 (no dirty) or 1500
+            # (including dirty)
+            assert_approx(self.nodes[1].getbalance(), 500, 0.1)
+            assert_approx(
+                self.nodes[1].getbalance(
+                    avoid_reuse=False),
+                1500,
+                0.1)
 
-        assert_raises_rpc_error(-6, "Insufficient funds",
-                                self.nodes[1].sendtoaddress, retaddr, 1000)
+            assert_raises_rpc_error(-6, "Insufficient funds",
+                                    self.nodes[1].sendtoaddress, retaddr, 1000)
 
-        self.nodes[1].sendtoaddress(retaddr, 400)
+            self.nodes[1].sendtoaddress(retaddr, 400)
 
-        # listunspent should show 2 total outputs (1, 1000 Lotus), one unused (1),
-        # one reused (10)
-        assert_unspent(
-            self.nodes[1],
-            total_count=2,
-            total_sum=1100,
-            reused_count=1,
-            reused_sum=1000)
-        # getbalances should show 10 used, 100 Lotus trusted
-        assert_balances(self.nodes[1], mine={"used": 1000, "trusted": 100})
+            # listunspent should show 2 total outputs (100, 1000 Lotus), one unused
+            # (100), one reused (1000)
+            assert_unspent(
+                self.nodes[1],
+                total_count=2,
+                total_sum=1100,
+                reused_count=1,
+                reused_sum=1000)
+            # getbalances should show 1000 used, 100 Lotus trusted
+            assert_balances(
+                self.nodes[1],
+                mine={
+                    "used": 1000,
+                    "trusted": 100})
 
-        # node 1 should now have about 100 Lotus left (no dirty) and 11 (including
-        # dirty)
-        assert_approx(self.nodes[1].getbalance(), 100, 0.1)
-        assert_approx(self.nodes[1].getbalance(avoid_reuse=False), 1100, 0.1)
+            # node 1 should now have about 100 Lotus left (no dirty) and 1100
+            # (including dirty)
+            assert_approx(self.nodes[1].getbalance(), 100, 0.1)
+            assert_approx(
+                self.nodes[1].getbalance(
+                    avoid_reuse=False),
+                1100,
+                0.1)
 
     def test_getbalances_used(self):
         '''

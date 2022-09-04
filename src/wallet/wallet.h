@@ -62,21 +62,21 @@ bool RemoveWallet(const std::shared_ptr<CWallet> &wallet,
                   std::optional<bool> load_on_start);
 std::vector<std::shared_ptr<CWallet>> GetWallets();
 std::shared_ptr<CWallet> GetWallet(const std::string &name);
-std::shared_ptr<CWallet> LoadWallet(interfaces::Chain &chain,
-                                    const WalletLocation &location,
-                                    std::optional<bool> load_on_start,
-                                    bilingual_str &error,
-                                    std::vector<bilingual_str> &warnings);
+std::shared_ptr<CWallet>
+LoadWallet(interfaces::Chain &chain, const std::string &name,
+           std::optional<bool> load_on_start, const DatabaseOptions &options,
+           DatabaseStatus &status, bilingual_str &error,
+           std::vector<bilingual_str> &warnings);
+std::shared_ptr<CWallet>
+CreateWallet(interfaces::Chain &chain, const std::string &name,
+             std::optional<bool> load_on_start, const DatabaseOptions &options,
+             DatabaseStatus &status, bilingual_str &error,
+             std::vector<bilingual_str> &warnings);
 std::unique_ptr<interfaces::Handler> HandleLoadWallet(LoadWalletFn load_wallet);
+std::unique_ptr<WalletDatabase>
+MakeWalletDatabase(const std::string &name, const DatabaseOptions &options,
+                   DatabaseStatus &status, bilingual_str &error);
 
-enum class WalletCreationStatus { SUCCESS, CREATION_FAILED, ENCRYPTION_FAILED };
-
-WalletCreationStatus
-CreateWallet(interfaces::Chain &chain, const SecureString &passphrase,
-             uint64_t wallet_creation_flags, const std::string &name,
-             std::optional<bool> load_on_start, bilingual_str &error,
-             std::vector<bilingual_str> &warnings,
-             std::shared_ptr<CWallet> &result);
 //! -paytxfee default
 constexpr Amount DEFAULT_PAY_TX_FEE = Amount::zero();
 //! -fallbackfee default
@@ -776,10 +776,8 @@ private:
     /** Interface for accessing chain state. */
     interfaces::Chain *m_chain;
 
-    /**
-     * Wallet location which includes wallet name (see WalletLocation).
-     */
-    WalletLocation m_location;
+    /** Wallet name: relative directory name or "" for default wallet. */
+    std::string m_name;
 
     /** Internal database handle. */
     std::unique_ptr<WalletDatabase> database;
@@ -840,22 +838,19 @@ public:
                      CoinSelectionParams &coin_selection_params,
                      bool &bnb_used) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
-    const WalletLocation &GetLocation() const { return m_location; }
-
     /**
      * Get a name for this wallet for logging/debugging purposes.
      */
-    const std::string &GetName() const { return m_location.GetName(); }
+    const std::string &GetName() const { return m_name; }
 
     typedef std::map<unsigned int, CMasterKey> MasterKeyMap;
     MasterKeyMap mapMasterKeys;
     unsigned int nMasterKeyMaxID = 0;
 
     /** Construct wallet with specified name and database implementation. */
-    CWallet(interfaces::Chain *chain, const WalletLocation &location,
+    CWallet(interfaces::Chain *chain, const std::string &name,
             std::unique_ptr<WalletDatabase> _database)
-        : m_chain(chain), m_location(location), database(std::move(_database)) {
-    }
+        : m_chain(chain), m_name(name), database(std::move(_database)) {}
 
     ~CWallet() {
         // Should not have slots connected at this point.
@@ -1065,7 +1060,8 @@ public:
                            bool fFlushOnClose = true);
     bool LoadToWallet(const TxId &txid, const UpdateWalletTxFn &fill_wtx)
         EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
-    void transactionAddedToMempool(const CTransactionRef &tx) override;
+    void transactionAddedToMempool(const CTransactionRef &tx,
+                                   uint64_t mempool_sequence) override;
     void blockConnected(const CBlock &block, int height) override;
     void blockDisconnected(const CBlock &block, int height) override;
     void updatedBlockTip() override;
@@ -1093,7 +1089,8 @@ public:
                                          const WalletRescanReserver &reserver,
                                          bool fUpdate);
     void transactionRemovedFromMempool(const CTransactionRef &tx,
-                                       MemPoolRemovalReason reason) override;
+                                       MemPoolRemovalReason reason,
+                                       uint64_t mempool_sequence) override;
     void ReacceptWalletTransactions() EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     void ResendWalletTransactions();
     struct Balance {
@@ -1387,20 +1384,15 @@ public:
      */
     bool AbandonTransaction(const TxId &txid);
 
-    //! Verify wallet naming and perform salvage on the wallet if required
-    static bool Verify(interfaces::Chain &chain, const WalletLocation &location,
-                       bilingual_str &error_string,
-                       std::vector<bilingual_str> &warnings);
-
     /**
      * Initializes the wallet, returns a new CWallet instance or a null pointer
      * in case of an error.
      */
     static std::shared_ptr<CWallet>
-    CreateWalletFromFile(interfaces::Chain &chain,
-                         const WalletLocation &location, bilingual_str &error,
-                         std::vector<bilingual_str> &warnings,
-                         uint64_t wallet_creation_flags = 0);
+    Create(interfaces::Chain &chain, const std::string &name,
+           std::unique_ptr<WalletDatabase> database,
+           uint64_t wallet_creation_flags, bilingual_str &error,
+           std::vector<bilingual_str> &warnings);
 
     /**
      * Wallet post-init setup
