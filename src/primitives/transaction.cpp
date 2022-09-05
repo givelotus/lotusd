@@ -33,9 +33,14 @@ std::string CTxIn::ToString() const {
 }
 
 std::string CTxOut::ToString() const {
-    return strprintf("CTxOut(nValue=%d.%06d, scriptPubKey=%s)", nValue / COIN,
-                     (nValue % COIN) / SATOSHI,
-                     HexStr(scriptPubKey).substr(0, 30));
+    return strprintf("CTxOut(nValue=%d.%06d, scriptPubKey=%s, carryover=%s)",
+                     nValue / COIN, (nValue % COIN) / SATOSHI,
+                     HexStr(scriptPubKey).substr(0, 30), HexStr(carryover));
+}
+
+std::string CTxPreamble::ToString() const {
+    return strprintf("CTxPreamble(predicateScript=%s, loopCounts=%s)",
+                     HexStr(predicateScript), HexStr(loopCounts));
 }
 
 CMutableTransaction::CMutableTransaction()
@@ -83,13 +88,15 @@ uint256 CTransaction::ComputeId() const {
  * TODO: remove the need for this default constructor entirely.
  */
 CTransaction::CTransaction()
-    : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
-      hash() {}
+    : vin(), vout(), preambles(), nVersion(CTransaction::CURRENT_VERSION),
+      nLockTime(0), hash() {}
 CTransaction::CTransaction(const CMutableTransaction &tx)
-    : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
+    : vin(tx.vin), vout(tx.vout), preambles(tx.preambles),
+      nVersion(tx.nVersion), nLockTime(tx.nLockTime), hash(ComputeHash()),
+      id(ComputeId()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
-    : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
+    : vin(std::move(tx.vin)), vout(std::move(tx.vout)),
+      preambles(std::move(tx.preambles)), nVersion(tx.nVersion),
       nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
 
 Amount CTransaction::GetValueOut() const {
