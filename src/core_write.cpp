@@ -230,6 +230,25 @@ void TxToUniv(const CTransaction &tx, const uint256 &hashBlock, UniValue &entry,
     entry.pushKV("size", (int)::GetSerializeSize(tx, PROTOCOL_VERSION));
     entry.pushKV("locktime", (int64_t)tx.nLockTime);
 
+    if (tx.nVersion == TX_VERSION_MITRA) {
+        UniValue preambles(UniValue::VARR);
+        for (const CTxPreamble &preamble : tx.preambles) {
+            UniValue p(UniValue::VOBJ);
+            UniValue script(UniValue::VOBJ);
+            script.pushKV("asm", ScriptToAsmStr(preamble.predicateScript));
+            script.pushKV("hex", HexStr(preamble.predicateScript));
+            p.pushKV("predicateScript", script);
+            UniValue witnesses(UniValue::VARR);
+            for (const std::vector<uint8_t> &witness : preamble.witnesses) {
+                witnesses.push_back(HexStr(witness));
+            }
+            p.pushKV("witnesses", witnesses);
+            p.pushKV("loopCounts", HexStr(preamble.loopCounts));
+            preambles.push_back(p);
+        }
+        entry.pushKV("preambles", preambles);
+    }
+
     UniValue vin(UniValue::VARR);
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
         const CTxIn &txin = tx.vin[i];
@@ -242,7 +261,23 @@ void TxToUniv(const CTransaction &tx, const uint256 &hashBlock, UniValue &entry,
             UniValue o(UniValue::VOBJ);
             o.pushKV("asm", ScriptToAsmStr(txin.scriptSig, true));
             o.pushKV("hex", HexStr(txin.scriptSig));
-            in.pushKV("scriptSig", o);
+            if (tx.nVersion == TX_VERSION_MITRA) {
+                in.pushKV("preambleMerkleRoot",
+                          txin.preambleMerkleRoot.GetHex());
+                in.pushKV("value", txin.output.nValue);
+                UniValue o(UniValue::VOBJ);
+                ScriptPubKeyToUniv(txin.output.scriptPubKey, o, true);
+                in.pushKV("scriptPubKey", o);
+                in.pushKV("carryover", HexStr(txin.output.carryover));
+                UniValue witnesses(UniValue::VARR);
+                for (const std::vector<uint8_t> &witness : txin.witnesses) {
+                    witnesses.push_back(HexStr(witness));
+                }
+                in.pushKV("witnesses", witnesses);
+                in.pushKV("loopCounts", HexStr(txin.loopCounts));
+            } else {
+                in.pushKV("scriptSig", o);
+            }
         }
 
         in.pushKV("sequence", (int64_t)txin.nSequence);
@@ -263,6 +298,9 @@ void TxToUniv(const CTransaction &tx, const uint256 &hashBlock, UniValue &entry,
         UniValue o(UniValue::VOBJ);
         ScriptPubKeyToUniv(txout.scriptPubKey, o, true);
         out.pushKV("scriptPubKey", o);
+        if (tx.nVersion == TX_VERSION_MITRA) {
+            out.pushKV("carryover", HexStr(txout.carryover));
+        }
         vout.push_back(out);
     }
 
