@@ -300,7 +300,8 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         // we can test later that block validation works fine in the absence of
         // cached successes.
         ValidateCheckInputsForAllFlags(
-            tx, SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS, 0, false, 0);
+            tx, SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS | SCRIPT_ENABLE_MITRA,
+            0, false, 0);
     }
 
     // And if we produce a block with this tx, it should be valid, even though
@@ -471,7 +472,8 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         // during script execution), the tx fails.
         ValidateCheckInputsForAllFlags(CTransaction(tx),
                                        SCRIPT_ENABLE_REPLAY_PROTECTION |
-                                           SCRIPT_TAPROOT_KEY_SPEND_PATH,
+                                           SCRIPT_TAPROOT_KEY_SPEND_PATH |
+                                           SCRIPT_ENABLE_MITRA,
                                        SCRIPT_ENABLE_SIGHASH_FORKID, true, 2);
 
         {

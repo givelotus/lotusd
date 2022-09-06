@@ -168,6 +168,15 @@ bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
         const Coin &coin = inputs.AccessCoin(prevout);
         assert(!coin.IsSpent());
 
+        if (tx.nVersion == TX_VERSION_MITRA) {
+            if (in.output != coin.GetTxOut()) {
+                return state.Invalid(
+                    TxValidationResult::TX_CONSENSUS,
+                    "bad-txns-input-output-mismatch",
+                    "input's output doesn't match UTXO's");
+            }
+        }
+
         // If prev is coinbase, check that it's matured
         if (coin.IsCoinBase() &&
             nSpendHeight - coin.GetHeight() < COINBASE_MATURITY) {

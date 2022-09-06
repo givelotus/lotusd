@@ -104,17 +104,21 @@ static inline bool EvalScript(std::vector<std::vector<uint8_t>> &stack,
  * Upon success, metrics will hold the accumulated script metrics.
  * (upon failure, the results should not be relied on)
  */
-bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
-                  uint32_t flags, const BaseSignatureChecker &checker,
+bool VerifyScript(const CScript &scriptSig,
+                  const std::vector<std::vector<uint8_t>> &witnesses,
+                  const CScript &scriptPubKey, uint32_t flags,
+                  const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut,
                   ScriptError *serror = nullptr);
-static inline bool VerifyScript(const CScript &scriptSig,
-                                const CScript &scriptPubKey, uint32_t flags,
-                                const BaseSignatureChecker &checker,
-                                ScriptError *serror = nullptr) {
+static inline bool
+VerifyScript(const CScript &scriptSig,
+             const std::vector<std::vector<uint8_t>> &witnesses,
+             const CScript &scriptPubKey, uint32_t flags,
+             const BaseSignatureChecker &checker,
+             ScriptError *serror = nullptr) {
     ScriptExecutionMetrics dummymetrics;
-    return VerifyScript(scriptSig, scriptPubKey, flags, checker, dummymetrics,
-                        serror);
+    return VerifyScript(scriptSig, witnesses, scriptPubKey, flags, checker,
+                        dummymetrics, serror);
 }
 
 int FindAndDelete(CScript &script, const CScript &b);

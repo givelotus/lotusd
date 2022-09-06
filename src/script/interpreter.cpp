@@ -2029,7 +2029,9 @@ template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
 bool VerifyScriptPostConditions(const std::vector<valtype> stack,
-                                const CScript &scriptSig, uint32_t flags,
+                                const CScript &scriptSig,
+                                const std::vector<valtype> &witnesses,
+                                uint32_t flags,
                                 const ScriptExecutionMetrics &metrics,
                                 ScriptError *serror) {
     // The CLEANSTACK check is only performed after potential P2SH evaluation,
@@ -2060,7 +2062,11 @@ bool VerifyScriptPostConditions(const std::vector<valtype> stack,
         static_assert(INT_MAX / 43 / 3 > MAX_OPS_PER_SCRIPT,
                       "overflow sanity check on maximum possible sigchecks "
                       "from sig+redeem+pub scripts");
-        if (int(scriptSig.size()) < metrics.nSigChecks * 43 - 60) {
+        const size_t witnesses_size =
+            (flags & SCRIPT_ENABLE_MITRA)
+                ? GetSerializeSize(witnesses, PROTOCOL_VERSION)
+                : scriptSig.size();
+        if (int(witnesses_size) < metrics.nSigChecks * 43 - 60) {
             return set_error(serror, ScriptError::INPUT_SIGCHECKS);
         }
     }
@@ -2069,6 +2075,7 @@ bool VerifyScriptPostConditions(const std::vector<valtype> stack,
 
 static bool VerifyTaprootSpend(std::vector<valtype> stack,
                                const CScript &script_sig,
+                               const std::vector<valtype> &witnesses,
                                const CScript &script_pubkey, uint32_t flags,
                                const BaseSignatureChecker &checker,
                                ScriptExecutionMetrics &metrics,
@@ -2140,8 +2147,8 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
     if (stack.empty() || CastToBool(stack.back()) == false) {
         return set_error(serror, ScriptError::EVAL_FALSE);
     }
-    if (!VerifyScriptPostConditions(stack, script_sig, flags, metrics,
-                                    serror)) {
+    if (!VerifyScriptPostConditions(stack, script_sig, witnesses, flags,
+                                    metrics, serror)) {
         // serror is set
         return false;
     }
@@ -2150,6 +2157,7 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
 
 static bool VerifyScriptType(std::vector<valtype> stack,
                              const CScript &script_sig,
+                             const std::vector<valtype> &witnesses,
                              const CScript &script_pubkey, uint32_t flags,
                              const BaseSignatureChecker &checker,
                              ScriptExecutionMetrics &metrics,
@@ -2158,16 +2166,18 @@ static bool VerifyScriptType(std::vector<valtype> stack,
         return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
     }
     if (script_pubkey[1] == TAPROOT_SCRIPTTYPE) { // Taproot script version
-        return VerifyTaprootSpend(stack, script_sig, script_pubkey, flags,
-                                  checker, metrics, serror);
+        return VerifyTaprootSpend(stack, script_sig, witnesses, script_pubkey,
+                                  flags, checker, metrics, serror);
     } else {
         // Script type not defined
         return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
     }
 }
 
-bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
-                  uint32_t flags, const BaseSignatureChecker &checker,
+bool VerifyScript(const CScript &scriptSig,
+                  const std::vector<valtype> &witnesses,
+                  const CScript &scriptPubKey, uint32_t flags,
+                  const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
     set_error(serror, ScriptError::UNKNOWN);
 
@@ -2177,10 +2187,14 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
 
     ScriptExecutionMetrics metrics = {};
 
-    // scriptSig and scriptPubKey must be evaluated sequentially on the same
-    // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
-    {
+    if (flags & SCRIPT_ENABLE_MITRA) {
+        // In Mitra, we get the witnesses directly
+        stack = witnesses;
+    } else {
+        // scriptSig and scriptPubKey must be evaluated sequentially on the
+        // same stack rather than being simply concatenated (see
+        // CVE-2010-5141)
         ScriptExecutionData execdata{CScript()}; // unused in scriptSig
         if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
                         serror)) {
@@ -2189,8 +2203,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         }
     }
     if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_SCRIPTTYPE) {
-        if (!VerifyScriptType(stack, scriptSig, scriptPubKey, flags, checker,
-                              metrics, serror)) {
+        if (!VerifyScriptType(stack, scriptSig, witnesses, scriptPubKey, flags,
+                              checker, metrics, serror)) {
             // serror is set
             return false;
         }
@@ -2248,7 +2262,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         }
     }
 
-    if (!VerifyScriptPostConditions(stack, scriptSig, flags, metrics, serror)) {
+    if (!VerifyScriptPostConditions(stack, scriptSig, witnesses, flags, metrics,
+                                    serror)) {
         // serror is set
         return false;
     }

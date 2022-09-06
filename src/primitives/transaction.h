@@ -450,6 +450,10 @@ struct PrecomputedTransactionData {
     PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
         default;
 
+    // added to silence deprecation warning
+    PrecomputedTransactionData &
+    operator=(const PrecomputedTransactionData &other) = default;
+
     template <class T>
     explicit PrecomputedTransactionData(const T &tx,
                                         std::vector<CTxOut> &&spent_outputs);
