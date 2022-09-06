@@ -311,6 +311,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         break;
 
                     case OP_CHECKLOCKTIMEVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         if (stack.size() < 1) {
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
@@ -353,6 +357,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                     }
 
                     case OP_CHECKSEQUENCEVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         if (stack.size() < 1) {
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
@@ -941,6 +949,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_CHECKSIG:
                     case OP_CHECKSIGVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         // (sig pubkey -- bool)
                         if (stack.size() < 2) {
                             return set_error(
@@ -1020,6 +1032,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_CHECKMULTISIG:
                     case OP_CHECKMULTISIGVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         // ([dummy] [sig ...] num_of_signatures [pubkey ...]
                         // num_of_pubkeys -- bool)
                         const size_t idxKeyCount = 1;

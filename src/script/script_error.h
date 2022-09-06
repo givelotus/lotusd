@@ -108,6 +108,9 @@ enum class ScriptError {
     /* Taproot leaf version not supported */
     TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
 
+    /* Indicates that an opcode is not supported in the preamble execution */
+    PREAMBLE_UNSUPPORTED_OPCODE,
+
     ERROR_COUNT,
 };
 

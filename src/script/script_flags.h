@@ -48,9 +48,13 @@ enum {
     //
     SCRIPT_ENABLE_REPLAY_PROTECTION = (1U << 17),
 
-    // Is the Mitra transaction format enabled
+    // Is the Mitra transaction format is enabled
     //
     SCRIPT_ENABLE_MITRA = (1U << 18),
+
+    // If we're executing a preamble
+    //
+    SCRIPT_PREAMBLE = (1U << 19),
 
     // Require the number of sigchecks in an input to satisfy a specific
     // bound, defined by scriptSig length.

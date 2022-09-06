@@ -1234,6 +1234,40 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
     const uint32_t txScriptFlags =
         tx.nVersion == TX_VERSION_MITRA ? SCRIPT_ENABLE_MITRA : 0;
 
+    for (size_t i = 0; i < tx.preambles.size(); i++) {
+        const CTxPreamble &preamble = tx.preambles[i];
+        ScriptExecutionMetrics metrics;
+        ScriptError error;
+        if (!VerifyScript({}, preamble.witnesses, preamble.predicateScript,
+                          flags | txScriptFlags | SCRIPT_PREAMBLE,
+                          CachingTransactionSignatureChecker(
+                              &tx, i, Amount::zero(), sigCacheStore, txdata),
+                          metrics, &error)) {
+            // This definitely needs refactoring...
+            uint32_t mandatoryFlags =
+                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
+            if (flags != mandatoryFlags) {
+                ScriptExecutionMetrics metrics2;
+                ScriptError error2;
+                if (VerifyScript({}, preamble.witnesses, preamble.predicateScript,
+                                mandatoryFlags | txScriptFlags | SCRIPT_PREAMBLE,
+                                CachingTransactionSignatureChecker(
+                                    &tx, i, Amount::zero(), sigCacheStore, txdata),
+                                metrics2, &error2)) {
+                    return state.Invalid(
+                        TxValidationResult::TX_NOT_STANDARD,
+                        strprintf("non-mandatory-script-verify-flag (%s)",
+                                  ScriptErrorString(error)));
+                }
+                error = error2;
+            }
+            return state.Invalid(
+                TxValidationResult::TX_CONSENSUS,
+                strprintf("mandatory-script-verify-flag-failed (%s)",
+                          ScriptErrorString(error)));
+        }
+    }
+
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const COutPoint &prevout = tx.vin[i].prevout;
         const Coin &coin = inputs.AccessCoin(prevout);

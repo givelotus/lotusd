@@ -473,7 +473,8 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         ValidateCheckInputsForAllFlags(CTransaction(tx),
                                        SCRIPT_ENABLE_REPLAY_PROTECTION |
                                            SCRIPT_TAPROOT_KEY_SPEND_PATH |
-                                           SCRIPT_ENABLE_MITRA,
+                                           SCRIPT_ENABLE_MITRA |
+                                           SCRIPT_PREAMBLE,
                                        SCRIPT_ENABLE_SIGHASH_FORKID, true, 2);
 
         {
