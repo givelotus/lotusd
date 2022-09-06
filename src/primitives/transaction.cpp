@@ -54,14 +54,17 @@ static uint256 ComputeCMutableTransactionHash(const CMutableTransaction &tx) {
 }
 
 static uint256 ComputeTxId(int32_t nVersion, const std::vector<CTxIn> &vin,
-                           const std::vector<CTxOut> &vout,
-                           uint32_t nLockTime) {
+                           const std::vector<CTxOut> &vout, uint32_t nLockTime,
+                           const uint256 &preambleMerkleRoot) {
     CHashWriter txid(SER_GETHASH, 0);
     size_t height;
     txid << nVersion;
-    txid << TxInputsMerkleRoot(vin, height);
+    if (nVersion == TX_VERSION_MITRA) {
+        txid << preambleMerkleRoot;
+    }
+    txid << TxInputsMerkleRoot(nVersion, vin, height);
     txid << uint8_t(height);
-    txid << TxOutputsMerkleRoot(vout, height);
+    txid << TxOutputsMerkleRoot(nVersion, vout, height);
     txid << uint8_t(height);
     txid << nLockTime;
     return txid.GetHash();
@@ -82,7 +85,8 @@ PreamblesComputeMerkleRoot(const std::vector<CTxPreamble> preambles) {
 }
 
 TxId CMutableTransaction::GetId() const {
-    return TxId(ComputeTxId(nVersion, vin, vout, nLockTime));
+    return TxId(
+        ComputeTxId(nVersion, vin, vout, nLockTime, GetPreambleMerkleRoot()));
 }
 
 uint256 CMutableTransaction::GetPreambleMerkleRoot() const {
@@ -98,7 +102,7 @@ uint256 CTransaction::ComputeHash() const {
 }
 
 uint256 CTransaction::ComputeId() const {
-    return ComputeTxId(nVersion, vin, vout, nLockTime);
+    return ComputeTxId(nVersion, vin, vout, nLockTime, preambleMerkleRoot);
 }
 
 uint256 CTransaction::ComputePreambleMerkleRoot() const {
@@ -110,17 +114,18 @@ uint256 CTransaction::ComputePreambleMerkleRoot() const {
  * TODO: remove the need for this default constructor entirely.
  */
 CTransaction::CTransaction()
-    : vin(), vout(), preambles(), nVersion(CTransaction::CURRENT_VERSION),
-      nLockTime(0), hash() {}
+    : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
+      preambles(), hash() {}
 CTransaction::CTransaction(const CMutableTransaction &tx)
-    : vin(tx.vin), vout(tx.vout), preambles(tx.preambles),
-      nVersion(tx.nVersion), nLockTime(tx.nLockTime), hash(ComputeHash()),
-      id(ComputeId()), preambleMerkleRoot(ComputePreambleMerkleRoot()) {}
+    : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion),
+      nLockTime(tx.nLockTime), preambles(tx.preambles),
+      preambleMerkleRoot(ComputePreambleMerkleRoot()), hash(ComputeHash()),
+      id(ComputeId()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
-    : vin(std::move(tx.vin)), vout(std::move(tx.vout)),
-      preambles(std::move(tx.preambles)), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()),
-      preambleMerkleRoot(ComputePreambleMerkleRoot()) {}
+    : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
+      nLockTime(tx.nLockTime), preambles(std::move(tx.preambles)),
+      preambleMerkleRoot(ComputePreambleMerkleRoot()), hash(ComputeHash()),
+      id(ComputeId()) {}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();

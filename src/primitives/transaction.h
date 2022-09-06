@@ -312,9 +312,9 @@ public:
 
 private:
     /** Memory only. */
+    const uint256 preambleMerkleRoot;
     const uint256 hash;
     const uint256 id;
-    const uint256 preambleMerkleRoot;
 
     uint256 ComputeHash() const;
     uint256 ComputeId() const;

@@ -1673,9 +1673,9 @@ PrecomputedTransactionData::PrecomputedTransactionData(
         return;
     }
     m_inputs_merkle_root =
-        TxInputsMerkleRoot(txTo.vin, m_inputs_merkle_height);
+        TxInputsMerkleRoot(txTo.nVersion, txTo.vin, m_inputs_merkle_height);
     m_outputs_merkle_root =
-        TxOutputsMerkleRoot(txTo.vout, m_outputs_merkle_height);
+        TxOutputsMerkleRoot(txTo.nVersion, txTo.vout, m_outputs_merkle_height);
     for (const CTxOut &output : txTo.vout) {
         m_amount_outputs_sum += output.nValue;
     }
