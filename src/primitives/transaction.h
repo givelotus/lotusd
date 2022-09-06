@@ -173,7 +173,9 @@ public:
 
     friend bool operator==(const CTxIn &a, const CTxIn &b) {
         return (a.prevout == b.prevout && a.scriptSig == b.scriptSig &&
-                a.nSequence == b.nSequence);
+                a.nSequence == b.nSequence && a.output == b.output &&
+                a.preambleMerkleRoot == b.preambleMerkleRoot &&
+                a.witnesses == b.witnesses && a.loopCounts == b.loopCounts);
     }
 
     friend bool operator!=(const CTxIn &a, const CTxIn &b) { return !(a == b); }
