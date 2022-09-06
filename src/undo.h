@@ -54,26 +54,24 @@ struct TxInUndoFormatter {
         ::Unserialize(s, VARINT(nCode));
         uint32_t nHeight = nCode / 2;
         bool fCoinBase = nCode & 1;
+        CTxOut out;
+        uint256 preambleMerkleRoot;
         if (nHeight > 0) {
             // Re-use the dummy byte from the older undo format for Mitra data.
             uint32_t requiresMitra = 0;
             ::Unserialize(s, VARINT(requiresMitra));
             if (requiresMitra) {
-                ::Unserialize(s, txout.GetTxOut().carryover);
+                ::Unserialize(s, out.carryover);
                 uint8_t hasPreamble;
                 ::Unserialize(s, hasPreamble);
                 if (hasPreamble) {
-                    ::Unserialize(s, txout.GetPreambleMerkleRoot());
-                } else {
-                    txout.GetPreambleMerkleRoot() = uint256();
+                    ::Unserialize(s, preambleMerkleRoot);
                 }
             }
         }
-
-        CTxOut out;
         ::Unserialize(s, Using<TxOutCompression>(out));
 
-        txout = Coin(std::move(out), nHeight, fCoinBase);
+        txout = Coin(std::move(out), nHeight, fCoinBase, preambleMerkleRoot);
     }
 };
 

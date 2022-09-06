@@ -67,8 +67,26 @@ static uint256 ComputeTxId(int32_t nVersion, const std::vector<CTxIn> &vin,
     return txid.GetHash();
 }
 
+static uint256
+PreamblesComputeMerkleRoot(const std::vector<CTxPreamble> preambles) {
+    size_t height;
+    std::vector<uint256> leaves;
+    leaves.resize(preambles.size());
+    for (size_t i = 0; i < preambles.size(); i++) {
+        CHashWriter leaf_hash(SER_GETHASH, 0);
+        const CScript &script = preambles[i].predicateScript;
+        leaf_hash.write((const char *)script.data(), script.size());
+        leaves[i] = leaf_hash.GetHash();
+    }
+    return ComputeMerkleRoot(std::move(leaves), height);
+}
+
 TxId CMutableTransaction::GetId() const {
     return TxId(ComputeTxId(nVersion, vin, vout, nLockTime));
+}
+
+uint256 CMutableTransaction::GetPreambleMerkleRoot() const {
+    return PreamblesComputeMerkleRoot(preambles);
 }
 
 TxHash CMutableTransaction::GetHash() const {
@@ -83,6 +101,10 @@ uint256 CTransaction::ComputeId() const {
     return ComputeTxId(nVersion, vin, vout, nLockTime);
 }
 
+uint256 CTransaction::ComputePreambleMerkleRoot() const {
+    return PreamblesComputeMerkleRoot(preambles);
+}
+
 /**
  * For backward compatibility, the hash is initialized to 0.
  * TODO: remove the need for this default constructor entirely.
@@ -93,11 +115,12 @@ CTransaction::CTransaction()
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : vin(tx.vin), vout(tx.vout), preambles(tx.preambles),
       nVersion(tx.nVersion), nLockTime(tx.nLockTime), hash(ComputeHash()),
-      id(ComputeId()) {}
+      id(ComputeId()), preambleMerkleRoot(ComputePreambleMerkleRoot()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
     : vin(std::move(tx.vin)), vout(std::move(tx.vout)),
       preambles(std::move(tx.preambles)), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
+      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()),
+      preambleMerkleRoot(ComputePreambleMerkleRoot()) {}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();

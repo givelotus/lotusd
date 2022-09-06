@@ -314,9 +314,11 @@ private:
     /** Memory only. */
     const uint256 hash;
     const uint256 id;
+    const uint256 preambleMerkleRoot;
 
     uint256 ComputeHash() const;
     uint256 ComputeId() const;
+    uint256 ComputePreambleMerkleRoot() const;
 
 public:
     /** Construct a CTransaction that qualifies as IsNull() */
@@ -343,6 +345,7 @@ public:
 
     const TxId GetId() const { return TxId(id); }
     const TxHash GetHash() const { return TxHash(hash); }
+    const uint256 GetPreambleMerkleRoot() const { return preambleMerkleRoot; }
 
     // Return sum of txouts.
     Amount GetValueOut() const;
@@ -407,6 +410,7 @@ public:
      */
     TxId GetId() const;
     TxHash GetHash() const;
+    uint256 GetPreambleMerkleRoot() const;
 
     friend bool operator==(const CMutableTransaction &a,
                            const CMutableTransaction &b) {

@@ -39,9 +39,11 @@ public:
     Coin() : nHeightAndIsCoinBase(0) {}
 
     //! Constructor from a CTxOut and height/coinbase information.
-    Coin(CTxOut outIn, uint32_t nHeightIn, bool IsCoinbase)
+    Coin(CTxOut outIn, uint32_t nHeightIn, bool IsCoinbase,
+         uint256 preambleMerkleRootIn = uint256())
         : out(std::move(outIn)),
-          nHeightAndIsCoinBase((nHeightIn << 1) | IsCoinbase) {}
+          nHeightAndIsCoinBase((nHeightIn << 1) | IsCoinbase),
+          preambleMerkleRoot(preambleMerkleRootIn) {}
 
     uint32_t GetHeight() const { return nHeightAndIsCoinBase >> 1; }
     bool IsCoinBase() const { return nHeightAndIsCoinBase & 0x01; }

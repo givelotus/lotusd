@@ -1062,7 +1062,8 @@ bool CCoinsViewMemPool::GetCoin(const COutPoint &outpoint, Coin &coin) const {
     CTransactionRef ptx = mempool.get(outpoint.GetTxId());
     if (ptx) {
         if (outpoint.GetN() < ptx->vout.size()) {
-            coin = Coin(ptx->vout[outpoint.GetN()], MEMPOOL_HEIGHT, false);
+            coin = Coin(ptx->vout[outpoint.GetN()], MEMPOOL_HEIGHT, false,
+                        ptx->GetPreambleMerkleRoot());
             return true;
         }
         return false;

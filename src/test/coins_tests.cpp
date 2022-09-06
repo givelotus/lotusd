@@ -561,16 +561,16 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
                           "8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
 
     // Smallest possible example
-    CDataStream ss3(ParseHex("000006"), SER_DISK, CLIENT_VERSION);
+    CDataStream ss3(ParseHex("020006"), SER_DISK, CLIENT_VERSION);
     Coin c3;
     ss3 >> c3;
     BOOST_CHECK_EQUAL(c3.IsCoinBase(), false);
-    BOOST_CHECK_EQUAL(c3.GetHeight(), 0U);
+    BOOST_CHECK_EQUAL(c3.GetHeight(), 1U);
     BOOST_CHECK_EQUAL(c3.GetTxOut().nValue, Amount::zero());
     BOOST_CHECK_EQUAL(c3.GetTxOut().scriptPubKey.size(), 0U);
 
     // scriptPubKey that ends beyond the end of the stream
-    CDataStream ss4(ParseHex("000007"), SER_DISK, CLIENT_VERSION);
+    CDataStream ss4(ParseHex("020007"), SER_DISK, CLIENT_VERSION);
     try {
         Coin c4;
         ss4 >> c4;
@@ -583,13 +583,48 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
     uint64_t x = 3000000000ULL;
     tmp << VARINT(x);
     BOOST_CHECK_EQUAL(HexStr(tmp), "8a95c0bb00");
-    CDataStream ss5(ParseHex("00008a95c0bb00"), SER_DISK, CLIENT_VERSION);
+    CDataStream ss5(ParseHex("02008a95c0bb00"), SER_DISK, CLIENT_VERSION);
     try {
         Coin c5;
         ss5 >> c5;
         BOOST_CHECK_MESSAGE(false, "We should have thrown");
     } catch (const std::ios_base::failure &) {
     }
+
+    // Mitra test (without preamble merkle root)
+    CDataStream ss6(
+        ParseHex(
+            "008ddf77bbd123008c988f1a4a4de2161e0f50aac7f17e7f9555caa402112200"),
+        SER_DISK, CLIENT_VERSION);
+    Coin c6;
+    ss6 >> c6;
+    BOOST_CHECK_EQUAL(c6.IsCoinBase(), true);
+    BOOST_CHECK_EQUAL(c6.GetHeight(), 120891U);
+    BOOST_CHECK_EQUAL(c6.GetTxOut().nValue, 110397 * SATOSHI);
+    BOOST_CHECK_EQUAL(HexStr(c6.GetTxOut().scriptPubKey),
+                      HexStr(GetScriptForDestination(PKHash(uint160(ParseHex(
+                          "8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
+    BOOST_CHECK_EQUAL(HexStr(c6.GetTxOut().carryover), "1122");
+    BOOST_CHECK_EQUAL(HexStr(c6.GetPreambleMerkleRoot()), HexStr(uint256()));
+
+    // Mitra test (with preamble merkle root)
+    CDataStream ss7(
+        ParseHex(
+            "008ddf77bbd123008c988f1a4a4de2161e0f50aac7f17e7f9555caa40311223301"
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+        SER_DISK, CLIENT_VERSION);
+    Coin c7;
+    ss7 >> c7;
+    BOOST_CHECK_EQUAL(c7.IsCoinBase(), true);
+    BOOST_CHECK_EQUAL(c7.GetHeight(), 120891U);
+    BOOST_CHECK_EQUAL(c7.GetTxOut().nValue, 110397 * SATOSHI);
+    BOOST_CHECK_EQUAL(HexStr(c7.GetTxOut().scriptPubKey),
+                      HexStr(GetScriptForDestination(PKHash(uint160(ParseHex(
+                          "8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
+    BOOST_CHECK_EQUAL(HexStr(c7.GetTxOut().carryover), "112233");
+    BOOST_CHECK_EQUAL(
+        HexStr(c7.GetPreambleMerkleRoot()),
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
 }
 
 static const COutPoint OUTPOINT;

@@ -1417,8 +1417,9 @@ DisconnectResult UndoCoinSpend(const Coin &undo, CCoinsViewCache &view,
         // This is somewhat ugly, but hopefully utility is limited. This is only
         // useful when working from legacy on disck data. In any case, putting
         // the correct information in there doesn't hurt.
-        const_cast<Coin &>(undo) = Coin(undo.GetTxOut(), alternate.GetHeight(),
-                                        alternate.IsCoinBase());
+        const_cast<Coin &>(undo) =
+            Coin(undo.GetTxOut(), alternate.GetHeight(), alternate.IsCoinBase(),
+                 alternate.GetPreambleMerkleRoot());
     }
 
     // If the coin already exists as an unspent coin in the cache, then the
