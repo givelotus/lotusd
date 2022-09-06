@@ -32,8 +32,19 @@ struct TxInUndoFormatter {
         ::Serialize(
             s, VARINT(txout.GetHeight() * 2 + (txout.IsCoinBase() ? 1 : 0)));
         if (txout.GetHeight() > 0) {
-            // Required to maintain compatibility with older undo format.
-            ::Serialize(s, uint8_t(0));
+            // Re-use the dummy byte from the older undo format for Mitra data.
+            if (txout.RequiresMitra()) {
+                ::Serialize(s, uint8_t(1));
+                ::Serialize(s, txout.GetTxOut().carryover);
+                if (txout.GetPreambleMerkleRoot().IsNull()) {
+                    ::Serialize(s, uint8_t(0));
+                } else {
+                    ::Serialize(s, uint8_t(1));
+                    ::Serialize(s, txout.GetPreambleMerkleRoot());
+                }
+            } else {
+                ::Serialize(s, uint8_t(0));
+            }
         }
         ::Serialize(s, Using<TxOutCompression>(txout.GetTxOut()));
     }
@@ -44,11 +55,19 @@ struct TxInUndoFormatter {
         uint32_t nHeight = nCode / 2;
         bool fCoinBase = nCode & 1;
         if (nHeight > 0) {
-            // Old versions stored the version number for the last spend of a
-            // transaction's outputs. Non-final spends were indicated with
-            // height = 0.
-            unsigned int nVersionDummy = 0;
-            ::Unserialize(s, VARINT(nVersionDummy));
+            // Re-use the dummy byte from the older undo format for Mitra data.
+            uint32_t requiresMitra = 0;
+            ::Unserialize(s, VARINT(requiresMitra));
+            if (requiresMitra) {
+                ::Unserialize(s, txout.GetTxOut().carryover);
+                uint8_t hasPreamble;
+                ::Unserialize(s, hasPreamble);
+                if (hasPreamble) {
+                    ::Unserialize(s, txout.GetPreambleMerkleRoot());
+                } else {
+                    txout.GetPreambleMerkleRoot() = uint256();
+                }
+            }
         }
 
         CTxOut out;

@@ -81,7 +81,8 @@ public:
     bool IsNull() const { return nValue == -SATOSHI; }
 
     friend bool operator==(const CTxOut &a, const CTxOut &b) {
-        return (a.nValue == b.nValue && a.scriptPubKey == b.scriptPubKey);
+        return (a.nValue == b.nValue && a.scriptPubKey == b.scriptPubKey &&
+                a.carryover == b.carryover);
     }
 
     friend bool operator!=(const CTxOut &a, const CTxOut &b) {

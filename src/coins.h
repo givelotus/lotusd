@@ -32,6 +32,8 @@ class Coin {
     //! transaction was included into a block.
     uint32_t nHeightAndIsCoinBase;
 
+    uint256 preambleMerkleRoot;
+
 public:
     //! Empty constructor
     Coin() : nHeightAndIsCoinBase(0) {}
@@ -44,9 +46,15 @@ public:
     uint32_t GetHeight() const { return nHeightAndIsCoinBase >> 1; }
     bool IsCoinBase() const { return nHeightAndIsCoinBase & 0x01; }
     bool IsSpent() const { return out.IsNull(); }
+    bool RequiresMitra() const {
+        return !preambleMerkleRoot.IsNull() || !out.carryover.empty();
+    }
 
     CTxOut &GetTxOut() { return out; }
     const CTxOut &GetTxOut() const { return out; }
+
+    uint256 &GetPreambleMerkleRoot() { return preambleMerkleRoot; }
+    const uint256 &GetPreambleMerkleRoot() const { return preambleMerkleRoot; }
 
     void Clear() {
         out.SetNull();
@@ -55,13 +63,39 @@ public:
 
     template <typename Stream> void Serialize(Stream &s) const {
         assert(!IsSpent());
+        if (RequiresMitra()) {
+            ::Serialize(s, uint8_t(0));
+        }
         ::Serialize(s, VARINT(nHeightAndIsCoinBase));
         ::Serialize(s, Using<TxOutCompression>(out));
+        if (RequiresMitra()) {
+            ::Serialize(s, out.carryover);
+            if (preambleMerkleRoot.IsNull()) {
+                ::Serialize(s, uint8_t(0));
+            } else {
+                ::Serialize(s, uint8_t(1));
+                ::Serialize(s, preambleMerkleRoot);
+            }
+        }
     }
 
     template <typename Stream> void Unserialize(Stream &s) {
         ::Unserialize(s, VARINT(nHeightAndIsCoinBase));
+        const bool requiresMitra = nHeightAndIsCoinBase == 0;
+        if (requiresMitra) {
+            ::Unserialize(s, VARINT(nHeightAndIsCoinBase));
+        }
         ::Unserialize(s, Using<TxOutCompression>(out));
+        if (requiresMitra) {
+            ::Unserialize(s, out.carryover);
+            uint8_t hasPreamble;
+            ::Unserialize(s, hasPreamble);
+            if (hasPreamble) {
+                ::Unserialize(s, preambleMerkleRoot);
+            } else {
+                preambleMerkleRoot = uint256();
+            }
+        }
     }
 
     size_t DynamicMemoryUsage() const {
