@@ -257,6 +257,12 @@ std::string GetOpName(opcodetype opcode) {
         case OP_NOP10:
             return "OP_NOP10";
 
+        // loops
+        case OP_LOOP:
+            return "OP_LOOP";
+        case OP_ENDLOOP:
+            return "OP_ENDLOOP";
+
         case OP_INVALIDOPCODE:
             return "OP_INVALIDOPCODE";
 

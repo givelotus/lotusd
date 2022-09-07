@@ -63,6 +63,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "OP_RETURN was encountered";
         case ScriptError::UNBALANCED_CONDITIONAL:
             return "Invalid OP_IF construction";
+        case ScriptError::UNBALANCED_LOOP:
+            return "Invalid OP_LOOP construction";
         case ScriptError::DIV_BY_ZERO:
             return "Division by zero error";
         case ScriptError::MOD_BY_ZERO:

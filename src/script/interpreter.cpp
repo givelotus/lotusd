@@ -231,6 +231,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
     valtype vchPushValue;
     ConditionStack vfExec;
     std::vector<valtype> altstack;
+    std::vector<CScript::const_iterator> loopstack;
     set_error(serror, ScriptError::UNKNOWN);
     if (script.size() > MAX_SCRIPT_SIZE) {
         return set_error(serror, ScriptError::SCRIPT_SIZE);
@@ -476,6 +477,39 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_RETURN: {
                         return set_error(serror, ScriptError::OP_RETURN);
+                    } break;
+
+                    case OP_LOOP: {
+                        if (!(flags & SCRIPT_ENABLE_MITRA)) {
+                            return set_error(serror, ScriptError::DISABLED_OPCODE);
+                        }
+                        // Push program counter so we can jump back if necessary
+                        loopstack.push_back(pc);
+                    } break;
+
+                    case OP_ENDLOOP: {
+                        if (!(flags & SCRIPT_ENABLE_MITRA)) {
+                            return set_error(serror, ScriptError::DISABLED_OPCODE);
+                        }
+                        // (true -- <jump to beginning of loop>)
+                        // (false -- <exit loop>)
+                        if (loopstack.empty()) {
+                            return set_error(
+                                serror, ScriptError::UNBALANCED_LOOP);
+                        }
+                        if (stack.empty()) {
+                            return set_error(
+                                serror, ScriptError::INVALID_STACK_OPERATION);
+                        }
+                        bool fValue = CastToBool(stacktop(-1));
+                        if (fValue) {
+                            // true -> jump back
+                            pc = loopstack.at(loopstack.size() - 1);
+                        } else {
+                            // false -> leave loop
+                            loopstack.pop_back();
+                        }
+                        popstack(stack);
                     } break;
 
                     //

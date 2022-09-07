@@ -188,6 +188,9 @@ enum opcodetype {
     // additional byte string operations
     OP_REVERSEBYTES = 0xbc,
 
+    OP_LOOP = 0xbd,
+    OP_ENDLOOP = 0xbe,
+
     // The first op_code value after all defined opcodes
     FIRST_UNDEFINED_OP_VALUE,
 

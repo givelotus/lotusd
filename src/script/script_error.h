@@ -44,6 +44,7 @@ enum class ScriptError {
     INVALID_STACK_OPERATION,
     INVALID_ALTSTACK_OPERATION,
     UNBALANCED_CONDITIONAL,
+    UNBALANCED_LOOP,
 
     /* Divisor errors */
     DIV_BY_ZERO,
