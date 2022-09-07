@@ -263,6 +263,34 @@ std::string GetOpName(opcodetype opcode) {
         case OP_ENDLOOP:
             return "OP_ENDLOOP";
 
+        // introspection
+        case OP_THISINDEX:
+            return "OP_THISINDEX";
+        case OP_NUMPREAMBLES:
+            return "OP_NUMPREAMBLES";
+        case OP_NUMINPUTS:
+            return "OP_NUMINPUTS";
+        case OP_NUMOUTPUTS:
+            return "OP_NUMOUTPUTS";
+        case OP_PICKPREAMBLEHASH:
+            return "OP_PICKPREAMBLEHASH";
+        case OP_PICKINPUTOUTPOINT:
+            return "OP_PICKINPUTOUTPOINT";
+        case OP_PICKINPUTVALUE:
+            return "OP_PICKINPUTVALUE";
+        case OP_PICKINPUTSCRIPTPUBKEY:
+            return "OP_PICKINPUTSCRIPTPUBKEY";
+        case OP_PICKINPUTCARRYOVER:
+            return "OP_PICKINPUTCARRYOVER";
+        case OP_PICKINPUTPREAMBLEMERKLEROOT:
+            return "OP_PICKINPUTPREAMBLEMERKLEROOT";
+        case OP_PICKOUTPUTVALUE:
+            return "OP_PICKOUTPUTVALUE";
+        case OP_PICKOUTPUTSCRIPTPUBKEY:
+            return "OP_PICKOUTPUTSCRIPTPUBKEY";
+        case OP_PICKOUTPUTCARRYOVER:
+            return "OP_PICKOUTPUTCARRYOVER";
+
         case OP_INVALIDOPCODE:
             return "OP_INVALIDOPCODE";
 

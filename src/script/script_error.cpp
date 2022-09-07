@@ -132,6 +132,10 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Unsupported taproot script leaf version";
         case ScriptError::PREAMBLE_UNSUPPORTED_OPCODE:
             return "Opcode is not supported in preamble execution";
+        case ScriptError::REQUIRES_MITRA:
+            return "Opcode requires Mitra transaction format";
+        case ScriptError::INTROSPECTION_OUT_OF_BOUNDS:
+            return "Introspection opcode out of bounds";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

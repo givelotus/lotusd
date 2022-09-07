@@ -52,6 +52,12 @@ public:
         return false;
     }
 
+    virtual bool PickFromTx(opcodetype opcode,
+                            std::vector<std::vector<uint8_t>> &stack,
+                            ScriptError *serror) const {
+        return false;
+    }
+
     virtual ~BaseSignatureChecker() {}
 };
 
@@ -77,6 +83,8 @@ public:
                   uint32_t flags) const final override;
     bool CheckLockTime(const CScriptNum &nLockTime) const final override;
     bool CheckSequence(const CScriptNum &nSequence) const final override;
+    bool PickFromTx(opcodetype opcode, std::vector<std::vector<uint8_t>> &stack,
+                    ScriptError *serror) const final override;
 };
 
 using TransactionSignatureChecker =

@@ -2997,7 +2997,7 @@ BOOST_AUTO_TEST_CASE(script_HasValidOps) {
     script = ScriptFromHex("ff88ac");
     BOOST_CHECK(!script.HasValidOps());
     // Script with undefined opcode
-    script = ScriptFromHex("88acc0");
+    script = ScriptFromHex("88accc");
     BOOST_CHECK(!script.HasValidOps());
 
     // Check all non push opcodes.

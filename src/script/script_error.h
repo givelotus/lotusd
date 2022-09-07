@@ -111,6 +111,10 @@ enum class ScriptError {
 
     /* Indicates that an opcode is not supported in the preamble execution */
     PREAMBLE_UNSUPPORTED_OPCODE,
+    /* Opcode only available in Mitra transactions */
+    REQUIRES_MITRA,
+    /* Introspection out of bounds */
+    INTROSPECTION_OUT_OF_BOUNDS,
 
     ERROR_COUNT,
 };

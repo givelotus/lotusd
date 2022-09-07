@@ -15,6 +15,7 @@
 #include <script/script.h>
 #include <script/sigencoding.h>
 #include <script/taproot.h>
+#include <streams.h>
 #include <uint256.h>
 #include <util/bitmanip.h>
 
@@ -1528,6 +1529,24 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
                     } break;
 
+                    case OP_THISINDEX:
+                    case OP_NUMPREAMBLES:
+                    case OP_NUMINPUTS:
+                    case OP_NUMOUTPUTS:
+                    case OP_PICKPREAMBLEHASH:
+                    case OP_PICKINPUTOUTPOINT:
+                    case OP_PICKINPUTVALUE:
+                    case OP_PICKINPUTSCRIPTPUBKEY:
+                    case OP_PICKINPUTCARRYOVER:
+                    case OP_PICKINPUTPREAMBLEMERKLEROOT:
+                    case OP_PICKOUTPUTVALUE:
+                    case OP_PICKOUTPUTSCRIPTPUBKEY:
+                    case OP_PICKOUTPUTCARRYOVER: {
+                        if (!checker.PickFromTx(opcode, stack, serror)) {
+                            return false; // error set
+                        }
+                    } break;
+
                     default:
                         return set_error(serror, ScriptError::BAD_OPCODE);
                 }
@@ -2072,6 +2091,127 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(
     }
 
     return true;
+}
+
+template <class T>
+bool GenericTransactionSignatureChecker<T>::PickFromTx(
+    opcodetype opcode, std::vector<valtype> &stack, ScriptError *serror) const {
+    if (txTo->nVersion != TX_VERSION_MITRA) {
+        return set_error(serror, ScriptError::REQUIRES_MITRA);
+    }
+    switch (opcode) {
+        case OP_THISINDEX: {
+            CScriptNum bn(nIn);
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMPREAMBLES: {
+            CScriptNum bn(txTo->preambles.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMINPUTS: {
+            CScriptNum bn(txTo->vin.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMOUTPUTS: {
+            CScriptNum bn(txTo->vout.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        default:
+            break;
+    }
+    if (stack.size() < 1) {
+        return set_error(serror, ScriptError::INVALID_STACK_OPERATION);
+    }
+    CScriptNum bn(stacktop(-1), true);
+    size_t idx = bn.getint();
+    popstack(stack);
+    switch (opcode) {
+        case OP_PICKPREAMBLEHASH: {
+            if (idx >= txTo->preambles.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            valtype vchHash(32);
+            CHash256()
+                .Write(txTo->preambles[idx].predicateScript)
+                .Finalize(vchHash);
+            stack.push_back(std::move(vchHash));
+            return true;
+        }
+        case OP_PICKINPUTOUTPOINT:
+        case OP_PICKINPUTVALUE:
+        case OP_PICKINPUTSCRIPTPUBKEY:
+        case OP_PICKINPUTCARRYOVER:
+        case OP_PICKINPUTPREAMBLEMERKLEROOT: {
+            if (idx >= txTo->vin.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            const CTxIn &input = txTo->vin[idx];
+            switch (opcode) {
+                case OP_PICKINPUTOUTPOINT: {
+                    CDataStream s(SER_NETWORK, PROTOCOL_VERSION);
+                    s << input.prevout;
+                    stack.push_back({s.begin(), s.end()});
+                    return true;
+                }
+                case OP_PICKINPUTVALUE: {
+                    CScriptNum bn(input.output.nValue / SATOSHI);
+                    stack.push_back(bn.getvch());
+                    return true;
+                }
+                case OP_PICKINPUTSCRIPTPUBKEY: {
+                    stack.push_back({input.output.scriptPubKey.begin(),
+                                     input.output.scriptPubKey.end()});
+                    return true;
+                }
+                case OP_PICKINPUTCARRYOVER: {
+                    stack.push_back(input.output.carryover);
+                    return true;
+                }
+                case OP_PICKINPUTPREAMBLEMERKLEROOT: {
+                    stack.push_back({input.preambleMerkleRoot.begin(),
+                                     input.preambleMerkleRoot.end()});
+                    return true;
+                }
+                default:
+                    return false; // impossible
+            }
+        }
+        case OP_PICKOUTPUTVALUE:
+        case OP_PICKOUTPUTSCRIPTPUBKEY:
+        case OP_PICKOUTPUTCARRYOVER: {
+            if (idx >= txTo->vout.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            const CTxOut &output = txTo->vout[idx];
+            switch (opcode) {
+                case OP_PICKOUTPUTVALUE: {
+                    CScriptNum bn(output.nValue / SATOSHI);
+                    stack.push_back(bn.getvch());
+                    return true;
+                }
+                case OP_PICKOUTPUTSCRIPTPUBKEY: {
+                    stack.push_back({output.scriptPubKey.begin(),
+                                     output.scriptPubKey.end()});
+                    return true;
+                }
+                case OP_PICKOUTPUTCARRYOVER: {
+                    stack.push_back(output.carryover);
+                    return true;
+                }
+                default:
+                    return false; // impossible
+            }
+        }
+        default:
+            return false;
+    }
 }
 
 // explicit instantiation
