@@ -261,10 +261,13 @@ bool Processor::addBlockToReconcile(const CBlockIndex *pindex) {
         .second;
 }
 
-void Processor::addProofToReconcile(const ProofRef &proof, bool isAccepted) {
+void Processor::addProofToReconcile(const ProofRef &proof) {
     // TODO We don't want to accept an infinite number of conflicting proofs.
     // They should be some rules to make them expensive and/or limited by
     // design.
+    const bool isAccepted =
+        WITH_LOCK(cs_peerManager, return peerManager->isValid(proof->getId()));
+
     proofVoteRecords.getWriteView()->insert(
         std::make_pair(proof, VoteRecord(isAccepted)));
 }
@@ -533,20 +536,34 @@ bool Processor::stopEventLoop() {
 std::vector<CInv> Processor::getInvsForNextPoll(bool forPoll) {
     std::vector<CInv> invs;
 
-    auto proofVoteRecordsReadView = proofVoteRecords.getReadView();
+    auto extractVoteRecordsToInvs = [&](const auto &itemVoteRecordRange,
+                                        auto buildInvFromVoteItem) {
+        for (const auto &[item, voteRecord] : itemVoteRecordRange) {
+            if (invs.size() >= AVALANCHE_MAX_ELEMENT_POLL) {
+                // Make sure we do not produce more invs than specified by the
+                // protocol.
+                return true;
+            }
 
-    auto pit = proofVoteRecordsReadView.begin();
-    // Clamp to AVALANCHE_MAX_ELEMENT_POLL - 1 so we're always able to poll
-    // for a new block. Since the proofs are sorted by score, the most
-    // valuable are voted first.
-    while (pit != proofVoteRecordsReadView.end() &&
-           invs.size() < AVALANCHE_MAX_ELEMENT_POLL - 1) {
-        const bool shouldPoll =
-            forPoll ? pit->second.registerPoll() : pit->second.shouldPoll();
-        if (shouldPoll) {
-            invs.emplace_back(MSG_AVA_PROOF, pit->first->getId());
+            const bool shouldPoll =
+                forPoll ? voteRecord.registerPoll() : voteRecord.shouldPoll();
+
+            if (!shouldPoll) {
+                continue;
+            }
+
+            invs.emplace_back(buildInvFromVoteItem(item));
         }
-        ++pit;
+
+        return invs.size() >= AVALANCHE_MAX_ELEMENT_POLL;
+    };
+
+    if (extractVoteRecordsToInvs(proofVoteRecords.getReadView(),
+                                 [](const ProofRef &proof) {
+                                     return CInv(MSG_AVA_PROOF, proof->getId());
+                                 })) {
+        // The inventory vector is full, we're done
+        return invs;
     }
 
     // First remove all blocks that are not worth polling.
@@ -564,23 +581,9 @@ std::vector<CInv> Processor::getInvsForNextPoll(bool forPoll) {
     }
 
     auto r = blockVoteRecords.getReadView();
-    for (const std::pair<const CBlockIndex *const, VoteRecord> &p :
-         reverse_iterate(r)) {
-        // Check if we can run poll.
-        const bool shouldPoll =
-            forPoll ? p.second.registerPoll() : p.second.shouldPoll();
-        if (!shouldPoll) {
-            continue;
-        }
-
-        // We don't have a decision, we need more votes.
-        invs.emplace_back(MSG_BLOCK, p.first->GetBlockHash());
-        if (invs.size() >= AVALANCHE_MAX_ELEMENT_POLL) {
-            // Make sure we do not produce more invs than specified by the
-            // protocol.
-            return invs;
-        }
-    }
+    extractVoteRecordsToInvs(reverse_iterate(r), [](const CBlockIndex *pindex) {
+        return CInv(MSG_BLOCK, pindex->GetBlockHash());
+    });
 
     return invs;
 }
@@ -611,35 +614,48 @@ void Processor::clearTimedoutRequests() {
         return;
     }
 
+    auto clearInflightRequest = [&](auto &voteRecords, const auto &voteItem,
+                                    uint8_t count) {
+        if (!voteItem) {
+            return false;
+        }
+
+        auto voteRecordsWriteView = voteRecords.getWriteView();
+        auto it = voteRecordsWriteView->find(voteItem);
+        if (it == voteRecordsWriteView.end()) {
+            return false;
+        }
+
+        it->second.clearInflightRequest(count);
+
+        return true;
+    };
+
     // In flight request accounting.
     for (const auto &p : timedout_items) {
         const CInv &inv = p.first;
         if (inv.IsMsgBlk()) {
-            CBlockIndex *pindex;
+            const CBlockIndex *pindex = WITH_LOCK(
+                cs_main, return LookupBlockIndex(BlockHash(inv.hash)));
 
-            {
-                LOCK(cs_main);
-                pindex = LookupBlockIndex(BlockHash(inv.hash));
-                if (!pindex) {
-                    continue;
-                }
-            }
-
-            auto w = blockVoteRecords.getWriteView();
-            auto it = w->find(pindex);
-            if (it == w.end()) {
+            if (!clearInflightRequest(blockVoteRecords, pindex, p.second)) {
                 continue;
             }
-
-            it->second.clearInflightRequest(p.second);
         }
 
         if (inv.IsMsgProof()) {
-            auto w = proofVoteRecords.getWriteView();
-            for (auto it = w.begin(); it != w.end(); it++) {
-                if (it->first->getId() == inv.hash) {
-                    it->second.clearInflightRequest(p.second);
+            ProofRef proof;
+            {
+                auto w = proofVoteRecords.getWriteView();
+                for (auto it = w.begin(); it != w.end(); it++) {
+                    if (it->first->getId() == inv.hash) {
+                        proof = it->first;
+                    }
                 }
+            }
+
+            if (!clearInflightRequest(proofVoteRecords, proof, p.second)) {
+                continue;
             }
         }
     }

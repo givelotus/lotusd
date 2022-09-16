@@ -13,11 +13,13 @@ import {
 } from '@utils/validation';
 import { PlusSquareOutlined } from '@ant-design/icons';
 import { SmartButton } from '@components/Common/PrimaryButton';
-import { Collapse, Form, Input, Modal, notification } from 'antd';
+import { Collapse, Form, Input, Modal } from 'antd';
 const { Panel } = Collapse;
-import Paragraph from 'antd/lib/typography/Paragraph';
 import { TokenParamLabel } from '@components/Common/Atoms';
-import { TokenReceivedNotificationIcon } from '@components/Common/CustomIcons';
+import {
+    createTokenNotification,
+    errorNotification,
+} from '@components/Common/Notifications';
 
 const CreateTokenForm = ({
     BCH,
@@ -50,9 +52,8 @@ const CreateTokenForm = ({
 
     // New Token Decimals
     const [newTokenDecimals, setNewTokenDecimals] = useState(0);
-    const [newTokenDecimalsIsValid, setNewTokenDecimalsIsValid] = useState(
-        true,
-    );
+    const [newTokenDecimalsIsValid, setNewTokenDecimalsIsValid] =
+        useState(true);
     const handleNewTokenDecimalsInput = e => {
         const { value } = e.target;
         // validation
@@ -69,9 +70,8 @@ const CreateTokenForm = ({
 
     // New Token Initial Quantity
     const [newTokenInitialQty, setNewTokenInitialQty] = useState('');
-    const [newTokenInitialQtyIsValid, setNewTokenInitialQtyIsValid] = useState(
-        null,
-    );
+    const [newTokenInitialQtyIsValid, setNewTokenInitialQtyIsValid] =
+        useState(null);
     const handleNewTokenInitialQtyInput = e => {
         const { value } = e.target;
         // validation
@@ -83,10 +83,8 @@ const CreateTokenForm = ({
     // New Token document URL
     const [newTokenDocumentUrl, setNewTokenDocumentUrl] = useState('');
     // Start with this as true, field is not required
-    const [
-        newTokenDocumentUrlIsValid,
-        setNewTokenDocumentUrlIsValid,
-    ] = useState(true);
+    const [newTokenDocumentUrlIsValid, setNewTokenDocumentUrlIsValid] =
+        useState(true);
 
     const handleNewTokenDocumentUrlInput = e => {
         const { value } = e.target;
@@ -140,19 +138,7 @@ const CreateTokenForm = ({
                 currency.defaultFee,
                 configObj,
             );
-
-            notification.success({
-                message: 'Success',
-                description: (
-                    <a href={link} target="_blank" rel="noopener noreferrer">
-                        <Paragraph>
-                            Token created! Click to view in block explorer.
-                        </Paragraph>
-                    </a>
-                ),
-                icon: <TokenReceivedNotificationIcon />,
-                style: { width: '100%' },
-            });
+            createTokenNotification(link);
         } catch (e) {
             // Set loading to false here as well, as balance may not change depending on where error occured in try loop
             passLoadingStatus(false);
@@ -176,13 +162,7 @@ const CreateTokenForm = ({
             } else {
                 message = e.message || e.error || JSON.stringify(e);
             }
-
-            notification.error({
-                message: 'Error',
-                description: message,
-                duration: 5,
-            });
-            console.error(e);
+            errorNotification(e, message, 'Creating eToken');
         }
         // Hide the modal
         setShowConfirmCreateToken(false);
@@ -219,7 +199,7 @@ const CreateTokenForm = ({
                         marginBottom: '24px',
                     }}
                 >
-                    <Panel header="Create Token" key="1">
+                    <Panel header="Create eToken" key="1">
                         <AntdFormWrapper>
                             <Form
                                 size="small"
@@ -356,7 +336,7 @@ const CreateTokenForm = ({
                             disabled={!tokenGenesisDataIsValid}
                         >
                             <PlusSquareOutlined />
-                            &nbsp;Create Token
+                            &nbsp;Create eToken
                         </SmartButton>
                     </Panel>
                 </TokenCollapse>

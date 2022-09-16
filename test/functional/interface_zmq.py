@@ -292,12 +292,11 @@ class ZMQTest (BitcoinTestFramework):
             called. Return the TxId."""
             address = self.nodes[1].getnewaddress()
             change_address = self.nodes[1].getrawchangeaddress()
-            print(utxo["amount"])
             tx = self.nodes[1].signrawtransactionwithwallet(
                 self.nodes[1].createrawtransaction(
                     inputs=[{"txid": utxo["txid"], "vout": utxo["vout"]}],
-                    outputs=[{address: 200},
-                             {change_address: utxo["amount"] - Decimal("200.1")}]
+                    outputs=[{address: 5},
+                             {change_address: utxo["amount"] - Decimal("5.1")}]
                 )
             )
             return send_node.sendrawtransaction(tx["hex"])

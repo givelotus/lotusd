@@ -444,7 +444,7 @@ BOOST_AUTO_TEST_CASE(node_binding) {
 
     // Remove the peer, the nodes should be pending again
     BOOST_CHECK(pm.removePeer(peerid));
-    BOOST_CHECK(!pm.getProof(proof->getId()));
+    BOOST_CHECK(!pm.exists(proof->getId()));
     for (int i = 0; i < 10; i++) {
         BOOST_CHECK(TestPeerManager::isNodePending(pm, i));
         BOOST_CHECK(!TestPeerManager::nodeBelongToPeer(pm, i, peerid));
@@ -462,7 +462,7 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
     Amount amount = 1 * COIN;
     const int height = 1234;
     BOOST_CHECK(pb.addUTXO(utxo, amount, height, false, key));
-    auto proof = std::make_shared<Proof>(pb.build());
+    auto proof = pb.build();
     const ProofId &proofid = proof->getId();
 
     {
@@ -491,7 +491,7 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
 
     pm.updatedBlockTip();
     BOOST_CHECK(pm.isOrphan(proofid));
-    BOOST_CHECK(!pm.getProof(proofid));
+    BOOST_CHECK(!pm.isValid(proofid));
     for (int i = 0; i < 10; i++) {
         BOOST_CHECK(TestPeerManager::isNodePending(pm, i));
         BOOST_CHECK(!TestPeerManager::nodeBelongToPeer(pm, i, peerid));
@@ -507,7 +507,7 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
 
     pm.updatedBlockTip();
     BOOST_CHECK(!pm.isOrphan(proofid));
-    BOOST_CHECK(pm.getProof(proofid));
+    BOOST_CHECK(pm.isValid(proofid));
     // The peerid has certainly been updated
     peerid = pm.getPeerId(proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
@@ -549,7 +549,7 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
             BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
         }
 
-        return pm.getPeerId(std::make_shared<Proof>(pb.build()));
+        return pm.getPeerId(pb.build());
     };
 
     // Add one peer.
@@ -579,8 +579,8 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
         ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
         COutPoint o(txid1, 3);
         BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
-        PeerId peerid = pm.getPeerId(std::make_shared<Proof>(
-            TestProofBuilder::buildDuplicatedStakes(pb)));
+        PeerId peerid =
+            pm.getPeerId(TestProofBuilder::buildDuplicatedStakes(pb));
         BOOST_CHECK_EQUAL(peerid, NO_PEER);
     }
 
@@ -614,7 +614,7 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     const auto makeProof = [&](const COutPoint &outpoint, const int h) {
         ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
         BOOST_CHECK(pb.addUTXO(outpoint, v, h, false, key));
-        return std::make_shared<Proof>(pb.build());
+        return pb.build();
     };
 
     auto proof1 = makeProof(outpoint1, height);
@@ -636,26 +636,28 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     BOOST_CHECK(pm.getPeerId(proof2) == NO_PEER);
     BOOST_CHECK(pm.getPeerId(proof3) == NO_PEER);
 
-    // Good
-    BOOST_CHECK(!pm.isOrphan(proof1->getId()));
-    // MISSING_UTXO
-    BOOST_CHECK(pm.isOrphan(proof2->getId()));
-    // HEIGHT_MISMATCH
-    BOOST_CHECK(pm.isOrphan(proof3->getId()));
+    auto checkOrphan = [&](const ProofRef &proof, bool expectedOrphan) {
+        const ProofId &proofid = proof->getId();
+        BOOST_CHECK(pm.exists(proofid));
 
-    const auto isGoodPeer = [&pm](const ProofRef &p) {
+        BOOST_CHECK_EQUAL(pm.isOrphan(proofid), expectedOrphan);
+        BOOST_CHECK_EQUAL(pm.isValid(proofid), !expectedOrphan);
+
         bool ret = false;
         pm.forEachPeer([&](const Peer &peer) {
-            if (p->getId() == peer.proof->getId()) {
+            if (proof->getId() == peer.proof->getId()) {
                 ret = true;
             }
         });
-        return ret;
+        BOOST_CHECK_EQUAL(ret, !expectedOrphan);
     };
 
-    BOOST_CHECK(isGoodPeer(proof1));
-    BOOST_CHECK(!isGoodPeer(proof2));
-    BOOST_CHECK(!isGoodPeer(proof3));
+    // Good
+    checkOrphan(proof1, false);
+    // MISSING_UTXO
+    checkOrphan(proof2, true);
+    // HEIGHT_MISMATCH
+    checkOrphan(proof3, true);
 
     // Add outpoint2, proof2 is no longer considered orphan
     {
@@ -665,14 +667,11 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     }
 
     pm.updatedBlockTip();
-    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
-    BOOST_CHECK(isGoodPeer(proof2));
+    checkOrphan(proof2, false);
 
     // The status of proof1 and proof3 are unchanged
-    BOOST_CHECK(!pm.isOrphan(proof1->getId()));
-    BOOST_CHECK(isGoodPeer(proof1));
-    BOOST_CHECK(pm.isOrphan(proof3->getId()));
-    BOOST_CHECK(!isGoodPeer(proof3));
+    checkOrphan(proof1, false);
+    checkOrphan(proof3, true);
 
     // Spend outpoint1, proof1 becomes orphan
     {
@@ -682,14 +681,11 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     }
 
     pm.updatedBlockTip();
-    BOOST_CHECK(pm.isOrphan(proof1->getId()));
-    BOOST_CHECK(!isGoodPeer(proof1));
+    checkOrphan(proof1, true);
 
     // The status of proof2 and proof3 are unchanged
-    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
-    BOOST_CHECK(isGoodPeer(proof2));
-    BOOST_CHECK(pm.isOrphan(proof3->getId()));
-    BOOST_CHECK(!isGoodPeer(proof3));
+    checkOrphan(proof2, false);
+    checkOrphan(proof3, true);
 
     // A reorg could make a previous HEIGHT_MISMATCH become valid
     {
@@ -701,14 +697,11 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     }
 
     pm.updatedBlockTip();
-    BOOST_CHECK(!pm.isOrphan(proof3->getId()));
-    BOOST_CHECK(isGoodPeer(proof3));
+    checkOrphan(proof3, false);
 
     // The status of proof 1 and proof2 are unchanged
-    BOOST_CHECK(pm.isOrphan(proof1->getId()));
-    BOOST_CHECK(!isGoodPeer(proof1));
-    BOOST_CHECK(!pm.isOrphan(proof2->getId()));
-    BOOST_CHECK(isGoodPeer(proof2));
+    checkOrphan(proof1, true);
+    checkOrphan(proof2, false);
 }
 
 BOOST_AUTO_TEST_CASE(dangling_node) {
@@ -790,6 +783,169 @@ BOOST_AUTO_TEST_CASE(proof_accessors) {
     BOOST_CHECK(Proof::FromHex(badProof, badProofHex, error));
     BOOST_CHECK(
         !pm.registerProof(std::make_shared<Proof>(std::move(badProof))));
+}
+
+BOOST_AUTO_TEST_CASE(conflicting_proof_rescan) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const Amount amount = 10 * COIN;
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    auto addCoin = [&]() {
+        LOCK(cs_main);
+        COutPoint outpoint(TxId(GetRandHash()), 0);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+
+        return outpoint;
+    };
+
+    const COutPoint conflictingOutpoint = addCoin();
+    const COutPoint outpointToSend = addCoin();
+
+    ProofRef proofToInvalidate;
+    {
+        ProofBuilder pb(0, 0, key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+        BOOST_CHECK(
+            pb.addUTXO(outpointToSend, amount, height, is_coinbase, key));
+        proofToInvalidate = pb.build();
+    }
+
+    BOOST_CHECK(pm.registerProof(proofToInvalidate));
+
+    ProofRef conflictingProof;
+    {
+        ProofBuilder pb(0, 0, key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+        BOOST_CHECK(pb.addUTXO(addCoin(), amount, height, is_coinbase, key));
+        conflictingProof = pb.build();
+    }
+
+    BOOST_CHECK(!pm.registerProof(conflictingProof));
+    // The conflicting proof is orphaned
+    BOOST_CHECK(pm.isOrphan(conflictingProof->getId()));
+
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        // Make proofToInvalidate invalid
+        coins.SpendCoin(outpointToSend);
+    }
+
+    pm.updatedBlockTip();
+
+    BOOST_CHECK(pm.isOrphan(proofToInvalidate->getId()));
+
+    BOOST_CHECK(!pm.isOrphan(conflictingProof->getId()));
+    BOOST_CHECK(pm.isValid(conflictingProof->getId()));
+}
+
+BOOST_AUTO_TEST_CASE(conflicting_proof_same_pubkey) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const COutPoint outpoint(TxId(GetRandHash()), 0);
+    const Amount amount(10 * COIN);
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+    }
+
+    auto buildProofWithSequence = [&](uint64_t sequence) {
+        ProofBuilder pb(sequence, GetRandInt(std::numeric_limits<int>::max()),
+                        key);
+        BOOST_CHECK(pb.addUTXO(outpoint, amount, height, is_coinbase, key));
+        return pb.build();
+    };
+
+    auto proof_base = buildProofWithSequence(10);
+
+    auto proof_lowSequence = buildProofWithSequence(9);
+    BOOST_CHECK(!isConflictingProofPreferred(proof_lowSequence, proof_base));
+
+    auto proof_sameSequence = buildProofWithSequence(10);
+    // Collision might occur here, but it's so unlikely that it's not a concern
+    BOOST_CHECK(!isConflictingProofPreferred(proof_sameSequence, proof_base));
+
+    auto proof_highSequence = buildProofWithSequence(11);
+    BOOST_CHECK(isConflictingProofPreferred(proof_highSequence, proof_base));
+}
+
+BOOST_AUTO_TEST_CASE(conflicting_proof_different_pubkey) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    auto addCoin = [&](const Amount &amount) {
+        LOCK(cs_main);
+        COutPoint outpoint(TxId(GetRandHash()), 0);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+
+        return outpoint;
+    };
+
+    const Amount conflictingOutpointAmount = 10 * COIN;
+    // This is the outpoint that will conflict through the test
+    COutPoint conflictingOutpoint = addCoin(conflictingOutpointAmount);
+
+    auto buildProofFromAmounts = [&](std::vector<Amount> amounts) {
+        CKey master = CKey::MakeCompressedKey();
+        ProofBuilder pb(0, 0, std::move(master));
+        BOOST_CHECK(pb.addUTXO(conflictingOutpoint, conflictingOutpointAmount,
+                               height, is_coinbase, key));
+        for (Amount &amount : amounts) {
+            auto outpoint = addCoin(amount);
+            BOOST_CHECK(pb.addUTXO(std::move(outpoint), amount, height,
+                                   is_coinbase, key));
+        }
+        return pb.build();
+    };
+
+    auto proof_base = buildProofFromAmounts({10 * COIN, 10 * COIN});
+
+    auto proof_lowAmount = buildProofFromAmounts({10 * COIN, 9 * COIN});
+    BOOST_CHECK(!isConflictingProofPreferred(proof_lowAmount, proof_base));
+
+    auto proof_highAmount = buildProofFromAmounts({10 * COIN, 11 * COIN});
+    BOOST_CHECK(isConflictingProofPreferred(proof_highAmount, proof_base));
+
+    auto proof_lowStakeCount = buildProofFromAmounts({21 * COIN});
+    BOOST_CHECK(
+        isConflictingProofPreferred(proof_lowStakeCount, proof_highAmount));
+
+    auto proof_highStakeCount =
+        buildProofFromAmounts({1 * COIN, 5 * COIN, 5 * COIN});
+    BOOST_CHECK(!isConflictingProofPreferred(proof_highStakeCount,
+                                             proof_lowStakeCount));
+
+    auto proof_similar = buildProofFromAmounts({21 * COIN});
+    BOOST_CHECK_EQUAL(
+        isConflictingProofPreferred(proof_similar, proof_lowStakeCount),
+        proof_similar->getId() < proof_lowStakeCount->getId());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
