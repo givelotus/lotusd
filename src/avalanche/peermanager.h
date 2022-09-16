@@ -269,9 +269,8 @@ public:
     uint64_t getFragmentation() const { return fragmentation; }
 
     ProofRef getProof(const ProofId &proofid) const;
-
-    bool isOrphan(const ProofId &id) const;
-    ProofRef getOrphan(const ProofId &id) const;
+    bool isValid(const ProofId &proofid) const;
+    bool isOrphan(const ProofId &proofid) const;
 
 private:
     PeerSet::iterator fetchOrCreatePeer(const ProofRef &proof);
@@ -283,10 +282,13 @@ private:
 };
 
 /**
- * This is an internal method that is exposed for testing purposes.
+ * Internal methods that are exposed for testing purposes.
  */
 PeerId selectPeerImpl(const std::vector<Slot> &slots, const uint64_t slot,
                       const uint64_t max);
+
+bool isConflictingProofPreferred(const ProofRef &conflicting,
+                                 const ProofRef &current);
 
 } // namespace avalanche
 

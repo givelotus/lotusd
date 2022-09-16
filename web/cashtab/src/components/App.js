@@ -54,7 +54,7 @@ const GlobalStyle = createGlobalStyle`
         background-color: ${props => props.theme.contrast} !important;
     }
     .cashLoadingIcon {
-        color: ${props => props.theme.primary} !important
+        color: ${props => props.theme.primary} !important;
         font-size: 48px !important;
     }
     .selectedCurrencyOption:hover {
@@ -110,7 +110,7 @@ export const NavButton = styled.button`
     }
     background-color: ${props => props.theme.footer.background};
     border: none;
-    font-size: 12px;
+    font-size: 10.5px;
     font-weight: bold;
     .anticon {
         display: block;
@@ -352,7 +352,7 @@ const App = () => {
                                     onClick={() => history.push('/tokens')}
                                 >
                                     <AppstoreAddOutlined />
-                                    Tokens
+                                    eTokens
                                 </NavButton>
 
                                 <NavButton

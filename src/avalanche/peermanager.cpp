@@ -143,7 +143,7 @@ bool PeerManager::updateNextRequestTime(NodeId nodeid, TimePoint timeout) {
 }
 
 bool PeerManager::registerProof(const ProofRef &proof) {
-    return !getProof(proof->getId()) && getPeerId(proof) != NO_PEER;
+    return !exists(proof->getId()) && getPeerId(proof) != NO_PEER;
 }
 
 NodeId PeerManager::selectNode() {
@@ -193,14 +193,17 @@ void PeerManager::updatedBlockTip() {
         }
     }
 
+    // Remove the invalid peers before the orphans rescan. This makes it
+    // possible to pull back proofs with utxos that conflicted with these
+    // invalid peers.
+    for (const auto &pid : invalidPeers) {
+        removePeer(pid);
+    }
+
     orphanProofs.rescan(*this);
 
     for (auto &p : newOrphans) {
         orphanProofs.addProof(p);
-    }
-
-    for (const auto &pid : invalidPeers) {
-        removePeer(pid);
     }
 }
 
@@ -217,7 +220,49 @@ ProofRef PeerManager::getProof(const ProofId &proofid) const {
         return true;
     });
 
+    if (!proof) {
+        proof = orphanProofs.getProof(proofid);
+    }
+
     return proof;
+}
+
+bool PeerManager::isValid(const ProofId &proofid) const {
+    auto &pview = peers.get<proof_index>();
+    return pview.find(proofid) != pview.end();
+}
+
+bool PeerManager::isOrphan(const ProofId &proofid) const {
+    return orphanProofs.getProof(proofid) != nullptr;
+}
+
+bool isConflictingProofPreferred(const ProofRef &conflicting,
+                                 const ProofRef &current) {
+    // If the proof master is the same, assume the sequence number is the
+    // righteous discriminant; otherwise, use costly parameters.
+    // This is so to prevent a user participating in an aggregated proof with
+    // other users from being able to invalidate the proof for free and make the
+    // aggregation mechanism inefficient.
+    // TODO this only makes sense if the staked coins are locked.
+    if (conflicting->getMaster() == current->getMaster()) {
+        return conflicting->getSequence() > current->getSequence();
+    }
+
+    // Favor the proof which is the most likely to be selected, i.e. the one
+    // with the highest staked amount.
+    if (conflicting->getScore() != current->getScore()) {
+        return conflicting->getScore() > current->getScore();
+    }
+
+    // Select the proof with the least stakes, as this means the individual
+    // stakes have higher amount in average.
+    if (conflicting->getStakes().size() != current->getStakes().size()) {
+        return conflicting->getStakes().size() < current->getStakes().size();
+    }
+
+    // When there is no better discriminant, use the proof id which is
+    // guaranteed to be unique so equality is not possible.
+    return conflicting->getId() < current->getId();
 }
 
 PeerManager::PeerSet::iterator
@@ -276,6 +321,10 @@ PeerManager::fetchOrCreatePeer(const ProofRef &proof) {
                 utxos.erase(it);
             }
         }
+
+        // Orphan the proof so it can be pulled back if the conflicting ones are
+        // invalidated.
+        orphanProofs.addProof(proof);
 
         return peers.end();
     }
@@ -411,7 +460,29 @@ bool PeerManager::verify() const {
         }
     }
 
+    std::unordered_set<COutPoint, SaltedOutpointHasher> peersUtxos;
     for (const auto &p : peers) {
+        // A peer should have a proof attached
+        if (!p.proof) {
+            return false;
+        }
+
+        // Check utxos consistency
+        for (const auto &ss : p.proof->getStakes()) {
+            auto it = utxos.find(ss.getStake().getUTXO());
+
+            if (it == utxos.end()) {
+                return false;
+            }
+            if (it->second != p.peerid) {
+                return false;
+            }
+
+            if (!peersUtxos.emplace(it->first).second) {
+                return false;
+            }
+        }
+
         // Count node attached to this peer.
         const auto count_nodes = [&]() {
             size_t count = 0;
@@ -444,6 +515,13 @@ bool PeerManager::verify() const {
 
         // If the score do not match, same thing.
         if (slots[p.index].getScore() != p.getScore()) {
+            return false;
+        }
+    }
+
+    // Check there is no dangling utxo
+    for (const auto &[outpoint, peerid] : utxos) {
+        if (!peersUtxos.count(outpoint)) {
             return false;
         }
     }
@@ -508,17 +586,9 @@ PeerId selectPeerImpl(const std::vector<Slot> &slots, const uint64_t slot,
     return NO_PEER;
 }
 
-bool PeerManager::isOrphan(const ProofId &id) const {
-    return orphanProofs.getProof(id) != nullptr;
-}
-
-ProofRef PeerManager::getOrphan(const ProofId &id) const {
-    return orphanProofs.getProof(id);
-}
-
 void PeerManager::addUnbroadcastProof(const ProofId &proofid) {
-    // The proof should be known
-    if (getProof(proofid)) {
+    // The proof should be valid
+    if (isValid(proofid)) {
         m_unbroadcast_proofids.insert(proofid);
     }
 }

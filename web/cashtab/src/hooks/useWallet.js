@@ -18,10 +18,13 @@ import { currency } from '@components/Common/Ticker';
 import isEmpty from 'lodash.isempty';
 import isEqual from 'lodash.isequal';
 import {
+    xecReceivedNotification,
+    eTokenReceivedNotification,
+} from '@components/Common/Notifications';
+import {
     CashReceivedNotificationIcon,
     TokenReceivedNotificationIcon,
 } from '@components/Common/CustomIcons';
-
 const useWallet = () => {
     const [wallet, setWallet] = useState(false);
     const [cashtabSettings, setCashtabSettings] = useState(false);
@@ -506,7 +509,7 @@ const useWallet = () => {
             return false;
         }
         /*
-        When a legacy user runs cashtabapp.com/, their active wallet will be migrated to Path1899 by 
+        When a legacy user runs cashtab.com/, their active wallet will be migrated to Path1899 by 
         the getWallet function
 
         Wallets in savedWallets are migrated when they are activated, in this function
@@ -900,38 +903,12 @@ const useWallet = () => {
             .minus(previousBalances.totalBalance)
             .gt(0)
     ) {
-        notification.success({
-            message: 'Transaction received',
-            description: (
-                <Paragraph>
-                    +{' '}
-                    {parseFloat(
-                        Number(
-                            balances.totalBalance -
-                                previousBalances.totalBalance,
-                        ).toFixed(currency.cashDecimals),
-                    ).toLocaleString()}{' '}
-                    {currency.ticker}{' '}
-                    {cashtabSettings &&
-                        cashtabSettings.fiatCurrency &&
-                        `(${
-                            currency.fiatCurrencies[
-                                cashtabSettings.fiatCurrency
-                            ].symbol
-                        }${(
-                            Number(
-                                balances.totalBalance -
-                                    previousBalances.totalBalance,
-                            ) * fiatPrice
-                        ).toFixed(
-                            currency.cashDecimals,
-                        )} ${cashtabSettings.fiatCurrency.toUpperCase()})`}
-                </Paragraph>
-            ),
-            duration: 3,
-            icon: <CashReceivedNotificationIcon />,
-            style: { width: '100%' },
-        });
+        xecReceivedNotification(
+            balances,
+            previousBalances,
+            cashtabSettings,
+            fiatPrice,
+        );
     }
 
     // Parse for incoming eToken transactions
@@ -977,9 +954,8 @@ const useWallet = () => {
             // Calculate amount received
             //console.log(`receivedTokenObject:`, tokens[receivedTokenObjectIndex]);
 
-            const receivedSlpQty = tokens[
-                receivedTokenObjectIndex
-            ].balance.toString();
+            const receivedSlpQty =
+                tokens[receivedTokenObjectIndex].balance.toString();
             const receivedSlpTicker =
                 tokens[receivedTokenObjectIndex].info.tokenTicker;
             const receivedSlpName =
@@ -988,19 +964,13 @@ const useWallet = () => {
 
             // Notification if you received SLP
             if (receivedSlpQty > 0) {
-                notification.success({
-                    message: `${currency.tokenTicker} transaction received: ${receivedSlpTicker}`,
-                    description: (
-                        <Paragraph>
-                            You received {receivedSlpQty} {receivedSlpName}
-                        </Paragraph>
-                    ),
-                    duration: 3,
-                    icon: <TokenReceivedNotificationIcon />,
-                    style: { width: '100%' },
-                });
+                eTokenReceivedNotification(
+                    currency,
+                    receivedSlpTicker,
+                    receivedSlpQty,
+                    receivedSlpName,
+                );
             }
-
             //
         } else {
             // If tokens[i].balance > previousTokens[i].balance, a new SLP tx of an existing token has been received
@@ -1026,18 +996,12 @@ const useWallet = () => {
                     const receivedSlpTicker = tokens[i].info.tokenTicker;
                     const receivedSlpName = tokens[i].info.tokenName;
 
-                    notification.success({
-                        message: `${currency.tokenTicker} transaction received: ${receivedSlpTicker}`,
-                        description: (
-                            <Paragraph>
-                                You received {receivedSlpQty.toString()}{' '}
-                                {receivedSlpName}
-                            </Paragraph>
-                        ),
-                        duration: 3,
-                        icon: <TokenReceivedNotificationIcon />,
-                        style: { width: '100%' },
-                    });
+                    eTokenReceivedNotification(
+                        currency,
+                        receivedSlpTicker,
+                        receivedSlpQty,
+                        receivedSlpName,
+                    );
                 }
             }
         }

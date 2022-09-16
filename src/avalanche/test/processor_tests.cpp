@@ -127,7 +127,7 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         BOOST_CHECK(pb.addUTXO(COutPoint(coinbase.GetId(), 1),
                                coinbase.vout[1].nValue, current_coinbase + 1,
                                true, coinbaseKey));
-        return std::make_shared<Proof>(pb.build());
+        return pb.build();
     }
 
     bool addNode(NodeId nodeid, const ProofId &proofid) {
@@ -246,7 +246,13 @@ struct ProofProvider {
     ProofProvider(AvalancheTestingSetup *_fixture)
         : fixture(_fixture), invType(MSG_AVA_PROOF) {}
 
-    ProofRef buildVoteItem() const { return fixture->GetProof(); }
+    ProofRef buildVoteItem() const {
+        const ProofRef proof = fixture->GetProof();
+        fixture->m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.registerProof(proof));
+        });
+        return proof;
+    }
 
     uint256 getVoteItemId(const ProofRef &proof) const {
         return proof->getId();
@@ -265,7 +271,7 @@ struct ProofProvider {
     }
 
     bool addToReconcile(const ProofRef &proof) {
-        fixture->m_processor->addProofToReconcile(proof, true);
+        fixture->m_processor->addProofToReconcile(proof);
         return true;
     }
 
@@ -1110,11 +1116,11 @@ BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
 
     auto addProofToReconcile = [&](uint32_t proofScore) {
         auto proof = buildRandomProof(proofScore);
-        m_processor->addProofToReconcile(proof, GetRandInt(1));
+        m_processor->addProofToReconcile(proof);
         return proof;
     };
 
-    for (size_t i = 0; i < AVALANCHE_MAX_ELEMENT_POLL - 1; i++) {
+    for (size_t i = 0; i < AVALANCHE_MAX_ELEMENT_POLL; i++) {
         auto proof = addProofToReconcile(++score);
 
         auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
@@ -1124,13 +1130,13 @@ BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
     }
 
     // From here a new proof is only polled if its score is in the top
-    // AVALANCHE_MAX_ELEMENT_POLL - 1
+    // AVALANCHE_MAX_ELEMENT_POLL
     ProofId lastProofId;
     for (size_t i = 0; i < 10; i++) {
         auto proof = addProofToReconcile(++score);
 
         auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
-        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL - 1);
+        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL);
         BOOST_CHECK(invs.front().IsMsgProof());
         BOOST_CHECK_EQUAL(invs.front().hash, proof->getId());
 
@@ -1141,7 +1147,7 @@ BOOST_AUTO_TEST_CASE(add_proof_to_reconcile) {
         auto proof = addProofToReconcile(--score);
 
         auto invs = AvalancheTest::getInvsForNextPoll(*m_processor);
-        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL - 1);
+        BOOST_CHECK_EQUAL(invs.size(), AVALANCHE_MAX_ELEMENT_POLL);
         BOOST_CHECK(invs.front().IsMsgProof());
         BOOST_CHECK_EQUAL(invs.front().hash, lastProofId);
     }
@@ -1166,13 +1172,16 @@ BOOST_AUTO_TEST_CASE(proof_record) {
     BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), -1);
     BOOST_CHECK_EQUAL(m_processor->getConfidence(proofB), -1);
 
-    m_processor->addProofToReconcile(proofA, false);
+    m_processor->addProofToReconcile(proofA);
     BOOST_CHECK(!m_processor->isAccepted(proofA));
     BOOST_CHECK(!m_processor->isAccepted(proofB));
     BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), 0);
     BOOST_CHECK_EQUAL(m_processor->getConfidence(proofB), -1);
 
-    m_processor->addProofToReconcile(proofB, true);
+    m_processor->withPeerManager([&](avalanche::PeerManager &pm) {
+        BOOST_CHECK(pm.registerProof(proofB));
+    });
+    m_processor->addProofToReconcile(proofB);
     BOOST_CHECK(!m_processor->isAccepted(proofA));
     BOOST_CHECK(m_processor->isAccepted(proofB));
     BOOST_CHECK_EQUAL(m_processor->getConfidence(proofA), 0);
