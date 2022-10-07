@@ -360,7 +360,6 @@ public:
         TxValidationState &m_state;
         const int64_t m_accept_time;
         const bool m_bypass_limits;
-        const Amount &m_absurd_fee;
         /*
          * Return any outpoints which were not previously present in the coins
          * cache, but were added as a result of validating the tx for mempool
@@ -445,7 +444,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     TxValidationState &state = args.m_state;
     const int64_t nAcceptTime = args.m_accept_time;
     const bool bypass_limits = args.m_bypass_limits;
-    const Amount &nAbsurdFee = args.m_absurd_fee;
     std::vector<COutPoint> &coins_to_uncache = args.m_coins_to_uncache;
 
     // Alias what we need out of ws
@@ -595,12 +593,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
         return state.Invalid(
             TxValidationResult::TX_MEMPOOL_POLICY, "min relay fee not met",
             strprintf("%d < %d", nModifiedFees, ::minRelayTxFee.GetFee(nSize)));
-    }
-
-    if (nAbsurdFee != Amount::zero() && nFees > nAbsurdFee) {
-        return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
-                             "absurdly-high-fee",
-                             strprintf("%d > %d", nFees, nAbsurdFee));
     }
 
     // Validate input scripts against standard script flags.
@@ -763,16 +755,17 @@ bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
 /**
  * (try to) add transaction to memory pool with a specified acceptance time.
  */
-static bool AcceptToMemoryPoolWithTime(
-    const Config &config, CTxMemPool &pool, TxValidationState &state,
-    const CTransactionRef &tx, int64_t nAcceptTime, bool bypass_limits,
-    const Amount nAbsurdFee, bool test_accept, Amount *fee_out = nullptr)
+static bool
+AcceptToMemoryPoolWithTime(const Config &config, CTxMemPool &pool,
+                           TxValidationState &state, const CTransactionRef &tx,
+                           int64_t nAcceptTime, bool bypass_limits,
+                           bool test_accept, Amount *fee_out = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
     std::vector<COutPoint> coins_to_uncache;
-    MemPoolAccept::ATMPArgs args{config,        state,      nAcceptTime,
-                                 bypass_limits, nAbsurdFee, coins_to_uncache,
-                                 test_accept,   fee_out};
+    MemPoolAccept::ATMPArgs args{
+        config,           state,       nAcceptTime, bypass_limits,
+        coins_to_uncache, test_accept, fee_out};
     bool res = MemPoolAccept(pool).AcceptSingleTransaction(tx, args);
     if (!res) {
         // Remove coins that were not present in the coins cache before calling
@@ -796,11 +789,9 @@ static bool AcceptToMemoryPoolWithTime(
 
 bool AcceptToMemoryPool(const Config &config, CTxMemPool &pool,
                         TxValidationState &state, const CTransactionRef &tx,
-                        bool bypass_limits, const Amount nAbsurdFee,
-                        bool test_accept, Amount *fee_out) {
+                        bool bypass_limits, bool test_accept, Amount *fee_out) {
     return AcceptToMemoryPoolWithTime(config, pool, state, tx, GetTime(),
-                                      bypass_limits, nAbsurdFee, test_accept,
-                                      fee_out);
+                                      bypass_limits, test_accept, fee_out);
 }
 
 CTransactionRef GetTransaction(const CBlockIndex *const block_index,
@@ -2078,7 +2069,7 @@ bool CChainState::FlushStateToDisk(const CChainParams &chainparams,
             // Write blocks and block index to disk.
             if (fDoFullFlush || fPeriodicWrite) {
                 // Depend on nMinDiskSpace to ensure we can write block index
-                if (!CheckDiskSpace(GetBlocksDir())) {
+                if (!CheckDiskSpace(gArgs.GetBlocksDirPath())) {
                     return AbortNode(state, "Disk space is too low!",
                                      _("Disk space is too low!"));
                 }
@@ -3661,7 +3652,8 @@ static bool CheckBlockHeader(const CBlockHeader &block,
                              "block's reserved field must be 0");
     }
 
-    if (block.nHeaderVersion != 1) {
+    // Allow manually changing block version to test forking scenarios
+    if (block.nHeaderVersion != 1 && !gArgs.IsArgSet("-blockversion")) {
         LogPrintf("ERROR: expected block version 1 but got %d\n",
                   block.nHeaderVersion);
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
@@ -5763,11 +5755,11 @@ bool LoadMempool(const Config &config, CTxMemPool &pool) {
                 pool.PrioritiseTransaction(tx->GetId(), amountdelta);
             }
             TxValidationState state;
-            if (nTime + nExpiryTimeout > nNow) {
+            if (nTime > nNow - nExpiryTimeout) {
                 LOCK(cs_main);
-                AcceptToMemoryPoolWithTime(
-                    config, pool, state, tx, nTime, false /* bypass_limits */,
-                    Amount::zero() /* nAbsurdFee */, false /* test_accept */);
+                AcceptToMemoryPoolWithTime(config, pool, state, tx, nTime,
+                                           false /* bypass_limits */,
+                                           false /* test_accept */);
                 if (state.IsValid()) {
                     ++count;
                 } else {
@@ -5876,8 +5868,10 @@ bool DumpMempool(const CTxMemPool &pool) {
             throw std::runtime_error("FileCommit failed");
         }
         file.fclose();
-        RenameOver(GetDataDir() / "mempool.dat.new",
-                   GetDataDir() / "mempool.dat");
+        if (!RenameOver(GetDataDir() / "mempool.dat.new",
+                        GetDataDir() / "mempool.dat")) {
+            throw std::runtime_error("Rename failed");
+        }
         int64_t last = GetTimeMicros();
         LogPrintf("Dumped mempool: %gs to copy, %gs to dump\n",
                   (mid - start) * MICRO, (last - mid) * MICRO);

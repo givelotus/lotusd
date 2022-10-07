@@ -83,9 +83,9 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         auto connman = std::make_unique<CConnmanTest>(config, 0x1337, 0x1337);
         m_connman = connman.get();
         m_node.connman = std::move(connman);
-        m_node.peerman = std::make_unique<::PeerManager>(
+        m_node.peerman = ::PeerManager::make(
             config.GetChainParams(), *m_connman, m_node.banman.get(),
-            *m_node.scheduler, *m_node.chainman, *m_node.mempool);
+            *m_node.scheduler, *m_node.chainman, *m_node.mempool, false);
         m_node.chain = interfaces::MakeChain(m_node, config.GetChainParams());
 
         // Get the processor ready.
@@ -104,9 +104,13 @@ struct AvalancheTestingSetup : public TestChain100Setup {
         static NodeId id = 0;
 
         CAddress addr(ip(GetRandInt(0xffffffff)), NODE_NONE);
-        auto node = new CNode(id++, ServiceFlags(NODE_NETWORK), 0,
-                              INVALID_SOCKET, addr, 0, 0, 0, CAddress(), "",
-                              ConnectionType::OUTBOUND_FULL_RELAY);
+        auto node =
+            new CNode(id++, ServiceFlags(NODE_NETWORK), INVALID_SOCKET, addr,
+                      /* nKeyedNetGroupIn */ 0,
+                      /* nLocalHostNonceIn */ 0,
+                      /* nLocalExtraEntropyIn */ 0, CAddress(),
+                      /* pszDest */ "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      /* inbound_onion */ false);
         node->SetCommonVersion(PROTOCOL_VERSION);
         node->nServices = nServices;
         m_node.peerman->InitializeNode(config, node);

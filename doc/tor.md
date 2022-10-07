@@ -45,11 +45,12 @@ config file): *Needed for Tor version 0.2.7.0 and older versions of Tor only. Fo
 versions of Tor see [Section 3](#3-automatically-listen-on-tor).*
 
 	HiddenServiceDir /var/lib/tor/bitcoin-service/
-	HiddenServicePort 10605 127.0.0.1:10605
-	HiddenServicePort 11605 127.0.0.1:11605
+	HiddenServicePort 10605 127.0.0.1:10606
+	HiddenServicePort 11605 127.0.0.1:11606
 
-The directory can be different of course, but (both) port numbers should be equal to
-your lotusd's P2P listen port (10605 by default).
+The directory can be different of course, but virtual port numbers should be equal to
+your lotusd's P2P listen port (10605 by default), and target addresses and ports
+should be equal to binding address and port for inbound Tor connections (127.0.0.1:10606 by default).
 
 	-externalip=X   You can tell bitcoin about its publicly reachable address using
 	                this option, and this can be a .onion address. Given the above

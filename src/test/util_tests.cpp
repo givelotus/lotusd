@@ -29,6 +29,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <utility>
 #ifndef WIN32
@@ -39,12 +40,39 @@
 #include <thread>
 #include <vector>
 
+using namespace std::literals;
+
 /* defined in logging.cpp */
 namespace BCLog {
 std::string LogEscapeMessage(const std::string &str);
 }
 
 BOOST_FIXTURE_TEST_SUITE(util_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(util_datadir) {
+    // Use local args variable instead of m_args to avoid making assumptions
+    // about test setup
+    ArgsManager args;
+    args.ForceSetArg("-datadir", fs::PathToString(m_path_root));
+
+    const fs::path dd_norm = args.GetDataDirPath();
+
+    args.ForceSetArg("-datadir", fs::PathToString(dd_norm) + "/");
+    args.ClearPathCache();
+    BOOST_CHECK_EQUAL(dd_norm, args.GetDataDirPath());
+
+    args.ForceSetArg("-datadir", fs::PathToString(dd_norm) + "/.");
+    args.ClearPathCache();
+    BOOST_CHECK_EQUAL(dd_norm, args.GetDataDirPath());
+
+    args.ForceSetArg("-datadir", fs::PathToString(dd_norm) + "/./");
+    args.ClearPathCache();
+    BOOST_CHECK_EQUAL(dd_norm, args.GetDataDirPath());
+
+    args.ForceSetArg("-datadir", fs::PathToString(dd_norm) + "/.//");
+    args.ClearPathCache();
+    BOOST_CHECK_EQUAL(dd_norm, args.GetDataDirPath());
+}
 
 BOOST_AUTO_TEST_CASE(util_check) {
     // Check that Assert can forward
@@ -53,6 +81,9 @@ BOOST_AUTO_TEST_CASE(util_check) {
     const int two = *Assert(p_two);
     Assert(two == 2);
     Assert(true);
+    // Check that Assume can be used as unary expression
+    const bool result{Assume(two == 2)};
+    Assert(result);
 }
 
 BOOST_AUTO_TEST_CASE(util_criticalsection) {
@@ -152,7 +183,7 @@ BOOST_AUTO_TEST_CASE(util_FormatParseISO8601DateTime) {
     BOOST_CHECK_EQUAL(ParseISO8601DateTime("1960-01-01T00:00:00Z"), 0);
     BOOST_CHECK_EQUAL(ParseISO8601DateTime("2011-09-30T23:36:17Z"), 1317425777);
 
-    auto time = GetSystemTimeInSeconds();
+    auto time = GetTimeSeconds();
     BOOST_CHECK_EQUAL(ParseISO8601DateTime(FormatISO8601DateTime(time)), time);
 }
 
@@ -1345,6 +1376,7 @@ BOOST_FIXTURE_TEST_CASE(util_ChainMerge, ChainMergeTestingSetup) {
 BOOST_AUTO_TEST_CASE(util_ReadWriteSettings) {
     // Test writing setting.
     TestArgsManager args1;
+    args1.ForceSetArg("-datadir", fs::PathToString(m_path_root));
     args1.LockSettings([&](util::Settings &settings) {
         settings.rw_settings["name"] = "value";
     });
@@ -1352,6 +1384,7 @@ BOOST_AUTO_TEST_CASE(util_ReadWriteSettings) {
 
     // Test reading setting.
     TestArgsManager args2;
+    args2.ForceSetArg("-datadir", fs::PathToString(m_path_root));
     args2.ReadSettingsFile();
     args2.LockSettings([&](util::Settings &settings) {
         BOOST_CHECK_EQUAL(settings.rw_settings["name"].get_str(), "value");
@@ -1360,10 +1393,10 @@ BOOST_AUTO_TEST_CASE(util_ReadWriteSettings) {
     // Test error logging, and remove previously written setting.
     {
         ASSERT_DEBUG_LOG("Failed renaming settings file");
-        fs::remove(GetDataDir() / "settings.json");
-        fs::create_directory(GetDataDir() / "settings.json");
+        fs::remove(args1.GetDataDirPath() / "settings.json");
+        fs::create_directory(args1.GetDataDirPath() / "settings.json");
         args2.WriteSettingsFile();
-        fs::remove(GetDataDir() / "settings.json");
+        fs::remove(args1.GetDataDirPath() / "settings.json");
     }
 }
 
@@ -1457,9 +1490,11 @@ BOOST_AUTO_TEST_CASE(util_ParseMoney) {
     BOOST_CHECK(!ParseMoney("-1", ret));
 
     // Parsing strings with embedded NUL characters should fail
-    BOOST_CHECK(!ParseMoney(std::string("\0-1", 3), ret));
-    BOOST_CHECK(!ParseMoney(std::string("\01", 2), ret));
-    BOOST_CHECK(!ParseMoney(std::string("1\0", 2), ret));
+    BOOST_CHECK(!ParseMoney("\0-1"s, ret));
+    BOOST_CHECK(!ParseMoney("\0"
+                            "1"s,
+                            ret));
+    BOOST_CHECK(!ParseMoney("1\0"s, ret));
 }
 
 BOOST_AUTO_TEST_CASE(util_IsHex) {
@@ -1967,7 +2002,7 @@ static void TestOtherProcess(fs::path dirname, std::string lockname, int fd) {
 #endif
 
 BOOST_AUTO_TEST_CASE(test_LockDirectory) {
-    fs::path dirname = GetDataDir() / "lock_dir";
+    fs::path dirname = m_args.GetDataDirPath() / "lock_dir";
     const std::string lockname = ".lock";
 #ifndef WIN32
     // Revert SIGCHLD to default, otherwise boost.test will catch and fail on
@@ -2058,7 +2093,7 @@ BOOST_AUTO_TEST_CASE(test_LockDirectory) {
 
 BOOST_AUTO_TEST_CASE(test_DirIsWritable) {
     // Should be able to write to the data dir.
-    fs::path tmpdirname = GetDataDir();
+    fs::path tmpdirname = m_args.GetDataDirPath();
     BOOST_CHECK_EQUAL(DirIsWritable(tmpdirname), true);
 
     // Should not be able to write to a non-existent dir.
@@ -2504,6 +2539,18 @@ BOOST_AUTO_TEST_CASE(message_hash) {
 
     BOOST_CHECK_EQUAL(message_hash1, message_hash2);
     BOOST_CHECK_NE(message_hash1, signature_hash);
+}
+
+BOOST_AUTO_TEST_CASE(remove_prefix) {
+    BOOST_CHECK_EQUAL(RemovePrefix("./util/system.h", "./"), "util/system.h");
+    BOOST_CHECK_EQUAL(RemovePrefix("foo", "foo"), "");
+    BOOST_CHECK_EQUAL(RemovePrefix("foo", "fo"), "o");
+    BOOST_CHECK_EQUAL(RemovePrefix("foo", "f"), "oo");
+    BOOST_CHECK_EQUAL(RemovePrefix("foo", ""), "foo");
+    BOOST_CHECK_EQUAL(RemovePrefix("fo", "foo"), "fo");
+    BOOST_CHECK_EQUAL(RemovePrefix("f", "foo"), "f");
+    BOOST_CHECK_EQUAL(RemovePrefix("", "foo"), "");
+    BOOST_CHECK_EQUAL(RemovePrefix("", ""), "");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

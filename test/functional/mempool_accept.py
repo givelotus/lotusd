@@ -87,11 +87,11 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         )
 
         self.log.info('A transaction not in the mempool')
-        fee = 0.000700
+        fee = Decimal("0.000700")
         raw_tx_0 = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{"txid": txid_in_block, "vout": 0,
                      "sequence": 0xfffffffd}],
-            outputs=[{node.getnewaddress(): 30 - fee}],
+            outputs=[{node.getnewaddress(): Decimal(30) - fee}],
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_0)
         tx.calc_txid()
@@ -99,14 +99,14 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         self.check_mempool_result(
             result_expected=[{'txid': txid_0, 'allowed': True,
                               'size': tx.billable_size(),
-                              'fees': {'base': Decimal(str(fee))}}],
+                              'fees': {'base': fee}}],
             rawtxs=[raw_tx_0],
         )
 
         self.log.info('A final transaction not in the mempool')
         # Pick a random coin(base) to spend
         coin = coins.pop()
-        output_amount = 2.5
+        output_amount = Decimal(2.5)
         raw_tx_final = node.signrawtransactionwithwallet(node.createrawtransaction(
             inputs=[{'txid': coin['txid'], 'vout': coin['vout'],
                      "sequence": 0xffffffff}],  # SEQUENCE_FINAL
@@ -115,11 +115,11 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         ))['hex']
         tx = FromHex(CTransaction(), raw_tx_final)
         tx.calc_txid()
-        fee_expected = int(coin['amount']) - output_amount
+        fee_expected = coin['amount'] - output_amount
         self.check_mempool_result(
             result_expected=[{'txid': tx.txid_hex, 'allowed': True,
                               'size': tx.billable_size(),
-                              'fees': {'base': Decimal(str(fee_expected))}}],
+                              'fees': {'base': fee_expected}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
         )

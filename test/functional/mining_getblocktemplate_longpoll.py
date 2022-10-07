@@ -4,11 +4,13 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test longpolling with getblocktemplate."""
 
+import random
 import threading
 from decimal import Decimal
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import get_rpc_proxy, random_transaction
+from test_framework.util import get_rpc_proxy
+from test_framework.wallet import MiniWallet
 
 
 class LongpollThread(threading.Thread):
@@ -32,12 +34,11 @@ class GetBlockTemplateLPTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
-
     def run_test(self):
         self.log.info(
             "Warning: this test will take about 70 seconds in the best case. Be patient.")
+        self.log.info(
+            "Test that longpollid doesn't change between successive getblocktemplate() invocations if nothing else happens")
         self.nodes[0].generate(10)
         templat = self.nodes[0].getblocktemplate()
         longpollid = templat['longpollid']
@@ -46,7 +47,7 @@ class GetBlockTemplateLPTest(BitcoinTestFramework):
         templat2 = self.nodes[0].getblocktemplate()
         assert templat2['longpollid'] == longpollid
 
-        # Test 1: test that the longpolling wait if we do nothing
+        self.log.info("Test that longpoll waits if we do nothing")
         thr = LongpollThread(self.nodes[0])
         thr.start()
         # check that thread still lives
@@ -54,34 +55,40 @@ class GetBlockTemplateLPTest(BitcoinTestFramework):
         thr.join(5)
         assert thr.is_alive()
 
-        # Test 2: test that longpoll will terminate if another node generates a block
+        miniwallets = [MiniWallet(node) for node in self.nodes]
+        self.log.info(
+            "Test that longpoll will terminate if another node generates a block")
         # generate a block on another node
-        self.nodes[1].generate(1)
+        miniwallets[1].generate(1)
         # check that thread will exit now that new transaction entered mempool
         # wait 5 seconds or until thread exits
         thr.join(5)
         assert not thr.is_alive()
 
-        # Test 3: test that longpoll will terminate if we generate a block
-        # ourselves
+        self.log.info(
+            "Test that longpoll will terminate if we generate a block ourselves")
         thr = LongpollThread(self.nodes[0])
         thr.start()
-        # generate a block on another node
-        self.nodes[0].generate(1)
+        # generate a block on own node
+        miniwallets[0].generate(1)
         # wait 5 seconds or until thread exits
         thr.join(5)
         assert not thr.is_alive()
 
-        # Test 4: test that introducing a new transaction into the mempool will
-        # terminate the longpoll
+        # Add enough mature utxos to the wallets, so that all txs spend
+        # confirmed coins
+        self.nodes[0].generate(100)
+        self.sync_blocks()
+
+        self.log.info(
+            "Test that introducing a new transaction into the mempool will terminate the longpoll")
         thr = LongpollThread(self.nodes[0])
         thr.start()
         # generate a random transaction and submit it
         min_relay_fee = self.nodes[0].getnetworkinfo()["relayfee"]
-        # min_relay_fee is fee per 1000 bytes, which should be more than
-        # enough.
-        (txid, txhex, fee) = random_transaction(self.nodes,
-                                                Decimal('110'), min_relay_fee, Decimal('0.1'), 20)
+        fee_rate = min_relay_fee + Decimal('0.000010') * random.randint(0, 20)
+        miniwallets[0].send_self_transfer(from_node=random.choice(self.nodes),
+                                          fee_rate=fee_rate)
         # after one minute, every 10 seconds the mempool is probed, so in 80
         # seconds it should have returned
         thr.join(60 + 20)

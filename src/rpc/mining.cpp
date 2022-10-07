@@ -298,12 +298,8 @@ static RPCHelpMan generate() {
                       RPCExamples{""},
                       [&](const RPCHelpMan &self, const Config &config,
                           const JSONRPCRequest &request) -> UniValue {
-                          if (request.fHelp) {
-                              throw std::runtime_error(self.ToString());
-                          } else {
-                              throw JSONRPCError(RPC_METHOD_NOT_FOUND,
-                                                 self.ToString());
-                          }
+                          throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+                                             self.ToString());
                       }};
 }
 
@@ -1283,23 +1279,23 @@ static RPCHelpMan estimatefee() {
 void RegisterMiningRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
-        //  category   name                     actor (function)       argNames
-        //  ---------- ------------------------ ---------------------- ----------
-        {"mining",     "getnetworkhashps",      getnetworkhashps,      {"nblocks", "height"}},
-        {"mining",     "getmininginfo",         getmininginfo,         {}},
-        {"mining",     "prioritisetransaction", prioritisetransaction, {"txid", "dummy", "fee_delta"}},
-        {"mining",     "getblocktemplate",      getblocktemplate,      {"template_request"}},
-        {"mining",     "getrawunsolvedblock",   getrawunsolvedblock,   {"address"}},
-        {"mining",     "submitblock",           submitblock,           {"hexdata", "dummy"}},
-        {"mining",     "submitheader",          submitheader,          {"hexdata"}},
+        //  category    actor (function)
+        //  ----------  ----------------------
+        {"mining",      getnetworkhashps,      },
+        {"mining",      getmininginfo,         },
+        {"mining",      prioritisetransaction, },
+        {"mining",      getblocktemplate,      },
+        {"mining",      getrawunsolvedblock,   },
+        {"mining",      submitblock,           },
+        {"mining",      submitheader,          },
 
-        {"generating", "generatetoaddress",     generatetoaddress,     {"nblocks", "address", "maxtries"}},
-        {"generating", "generatetodescriptor",  generatetodescriptor,  {"num_blocks","descriptor","maxtries"}},
-        {"generating", "generateblock",         generateblock,         {"output","transactions"}},
+        {"generating",  generatetoaddress,     },
+        {"generating",  generatetodescriptor,  },
+        {"generating",  generateblock,         },
 
-        {"util",       "estimatefee",           estimatefee,           {}},
+        {"util",        estimatefee,           },
 
-        {"hidden",     "generate",              generate,              {}},
+        {"hidden",      generate,              },
     };
     // clang-format on
     for (const auto &c : commands) {

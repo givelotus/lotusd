@@ -18,7 +18,7 @@ import shutil
 from decimal import Decimal
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, connect_nodes, disconnect_nodes
+from test_framework.util import assert_equal
 
 
 class ReorgsRestoreTest(BitcoinTestFramework):
@@ -37,9 +37,9 @@ class ReorgsRestoreTest(BitcoinTestFramework):
         self.sync_blocks()
 
         # Disconnect node1 from others to reorg its chain later
-        disconnect_nodes(self.nodes[0], self.nodes[1])
-        disconnect_nodes(self.nodes[1], self.nodes[2])
-        connect_nodes(self.nodes[0], self.nodes[2])
+        self.disconnect_nodes(0, 1)
+        self.disconnect_nodes(1, 2)
+        self.connect_nodes(0, 2)
 
         # Send a tx to be unconfirmed later
         txid = self.nodes[0].sendtoaddress(
@@ -51,7 +51,7 @@ class ReorgsRestoreTest(BitcoinTestFramework):
 
         # Disconnect node0 from node2 to broadcast a conflict on their
         # respective chains
-        disconnect_nodes(self.nodes[0], self.nodes[2])
+        self.disconnect_nodes(0, 2)
         nA = next(tx_out["vout"] for tx_out in self.nodes[0].gettransaction(
             txid_conflict_from)["details"] if tx_out["amount"] == Decimal('100'))
         inputs = []
@@ -75,7 +75,7 @@ class ReorgsRestoreTest(BitcoinTestFramework):
 
         # Reconnect node0 and node2 and check that conflicted_txid is
         # effectively conflicted
-        connect_nodes(self.nodes[0], self.nodes[2])
+        self.connect_nodes(0, 2)
         self.sync_blocks([self.nodes[0], self.nodes[2]])
         conflicted = self.nodes[0].gettransaction(conflicted_txid)
         conflicting = self.nodes[0].gettransaction(conflicting_txid)
@@ -105,7 +105,8 @@ class ReorgsRestoreTest(BitcoinTestFramework):
             os.path.join(
                 self.nodes[1].datadir,
                 self.chain,
-                'wallet.dat'))
+                self.default_wallet_name,
+                self.wallet_data_filename))
         self.start_node(1)
         tx_after_reorg = self.nodes[1].gettransaction(txid)
         # Check that normal confirmed tx is confirmed again but with different

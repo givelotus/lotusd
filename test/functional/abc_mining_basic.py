@@ -17,11 +17,7 @@ from test_framework.messages import (
     COIN,
 )
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_greater_than_or_equal,
-    connect_nodes,
-)
+from test_framework.util import assert_equal, assert_greater_than_or_equal
 
 
 class AbcMiningRPCTest(BitcoinTestFramework):
@@ -43,7 +39,7 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         # Since the other nodes are mining blocks "in the future" compared to node0,
         # node0 will not broadcast blocks between the other nodes.
         for n in range(1, len(self.nodes)):
-            connect_nodes(self.nodes[0], self.nodes[n])
+            self.connect_nodes(0, n)
 
     def run_for_node(self, node):
         address = node.get_deterministic_priv_key().address

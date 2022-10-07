@@ -92,12 +92,14 @@ std::vector<const char *> fixture_extra_args{};
 BasicTestingSetup::BasicTestingSetup(
     const std::string &chainName, const std::vector<const char *> &extra_args)
     : m_path_root{fs::temp_directory_path() / "test_common_" PACKAGE_NAME /
-                  g_insecure_rand_ctx_temp_path.rand256().ToString()} {
+                  g_insecure_rand_ctx_temp_path.rand256().ToString()},
+      m_args{} {
     // clang-format off
     std::vector<const char *> arguments = Cat(
         {
             "dummy",
             "-printtoconsole=0",
+            "-logsourcelocations",
             "-logtimemicros",
             "-debug",
             "-debugexclude=libevent",
@@ -111,8 +113,9 @@ BasicTestingSetup::BasicTestingSetup(
     auto &config = const_cast<Config &>(GetConfig());
     SetMockTime(0);
     fs::create_directories(m_path_root);
-    gArgs.ForceSetArg("-datadir", m_path_root.string());
-    ClearDatadirCache();
+    m_args.ForceSetArg("-datadir", fs::PathToString(m_path_root));
+    gArgs.ForceSetArg("-datadir", fs::PathToString(m_path_root));
+    gArgs.ClearPathCache();
     {
         SetupServerArgs(m_node);
         std::string error;
@@ -181,8 +184,7 @@ TestingSetup::TestingSetup(const std::string &chainName,
 
     pblocktree.reset(new CBlockTreeDB(1 << 20, true));
 
-    m_node.mempool = std::make_unique<CTxMemPool>();
-    m_node.mempool->setSanityCheck(1.0);
+    m_node.mempool = std::make_unique<CTxMemPool>(1);
 
     m_node.chainman = &::g_chainman;
     m_node.chainman->InitializeChainstate(*m_node.mempool);
@@ -207,14 +209,14 @@ TestingSetup::TestingSetup(const std::string &chainName,
         threadGroup.create_thread([i]() { return ThreadScriptCheck(i); });
     }
 
-    m_node.banman =
-        std::make_unique<BanMan>(GetDataDir() / "banlist.dat", chainparams,
-                                 nullptr, DEFAULT_MISBEHAVING_BANTIME);
+    m_node.banman = std::make_unique<BanMan>(
+        m_args.GetDataDirPath() / "banlist.dat", chainparams, nullptr,
+        DEFAULT_MISBEHAVING_BANTIME);
     // Deterministic randomness for tests.
     m_node.connman = std::make_unique<CConnman>(config, 0x1337, 0x1337);
-    m_node.peerman = std::make_unique<PeerManager>(
+    m_node.peerman = PeerManager::make(
         chainparams, *m_node.connman, m_node.banman.get(), *m_node.scheduler,
-        *m_node.chainman, *m_node.mempool);
+        *m_node.chainman, *m_node.mempool, false);
     {
         CConnman::Options options;
         options.m_msgproc = m_node.peerman.get();

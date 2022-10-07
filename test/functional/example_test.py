@@ -22,7 +22,7 @@ from test_framework.blocktools import (
 from test_framework.messages import MSG_BLOCK, CInv, msg_block, msg_getdata
 from test_framework.p2p import P2PInterface, p2p_lock
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, connect_nodes
+from test_framework.util import assert_equal
 
 # P2PInterface is a class containing callbacks to be executed when a P2P
 # message is received from the node-under-test. Subclass P2PInterface and
@@ -76,7 +76,10 @@ class ExampleTest(BitcoinTestFramework):
     def set_test_params(self):
         """Override test parameters for your individual test.
 
-        This method must be overridden and num_nodes must be exlicitly set."""
+        This method must be overridden and num_nodes must be explicitly set."""
+        # By default every test loads a pre-mined chain of 200 blocks from cache.
+        # Set setup_clean_chain to True to skip this and start from the Genesis
+        # block.
         self.setup_clean_chain = True
         self.num_nodes = 3
         # Use self.extra_args to change command-line arguments for the nodes
@@ -118,7 +121,7 @@ class ExampleTest(BitcoinTestFramework):
         # In this test, we're not connecting node2 to node0 or node1. Calls to
         # sync_all() should not include node2, since we're not expecting it to
         # sync.
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
         self.sync_all(self.nodes[0:2])
 
     # Use setup_nodes() to customize the node start behaviour (for example if
@@ -192,7 +195,7 @@ class ExampleTest(BitcoinTestFramework):
         self.nodes[1].waitforblockheight(11)
 
         self.log.info("Connect node2 and node1")
-        connect_nodes(self.nodes[1], self.nodes[2])
+        self.connect_nodes(1, 2)
 
         self.log.info("Wait for node2 to receive all the blocks from node1")
         self.sync_all()

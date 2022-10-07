@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { WalletContext } from '@utils/context';
-import { Form, message, Row, Col, Alert, Descriptions } from 'antd';
+import { Form, message, Row, Col, Alert, Descriptions, Popover } from 'antd';
+import TokenIconAlert from '@components/Common/Alerts.js';
 import PrimaryButton, {
     SecondaryButton,
 } from '@components/Common/PrimaryButton';
 import {
-    FormItemWithMaxAddon,
-    FormItemWithQRCodeAddon,
+    DestinationAmount,
+    DestinationAddressSingle,
 } from '@components/Common/EnhancedInputs';
 import useBCH from '@hooks/useBCH';
 import BalanceHeader from '@components/Common/BalanceHeader';
@@ -17,21 +18,29 @@ import { isMobile, isIOS, isSafari } from 'react-device-detect';
 import { Img } from 'react-image';
 import makeBlockie from 'ethereum-blockies-base64';
 import BigNumber from 'bignumber.js';
-import {
-    currency,
-    parseAddress,
-    isValidTokenPrefix,
-} from '@components/Common/Ticker.js';
+import { currency, parseAddressForParams } from '@components/Common/Ticker.js';
 import { Event } from '@utils/GoogleAnalytics';
-import {
-    getWalletState,
-    convertEtokenToSimpleledger,
-} from '@utils/cashMethods';
+import { getWalletState, toLegacyToken } from '@utils/cashMethods';
 import ApiError from '@components/Common/ApiError';
 import {
     sendTokenNotification,
     errorNotification,
 } from '@components/Common/Notifications';
+import { isValidXecAddress, isValidEtokenAddress } from '@utils/validation';
+import { formatDate } from '@utils/formatting';
+import styled, { css } from 'styled-components';
+
+const AntdDescriptionsCss = css`
+    .ant-descriptions-item-label,
+    .ant-descriptions-item-content {
+        background-color: ${props =>
+            props.theme.tokenListItem.background} !important;
+        color: ${props => props.theme.tokenListItem.color};
+    }
+`;
+const AntdDescriptionsWrapper = styled.div`
+    ${AntdDescriptionsCss}
+`;
 
 const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
     const { wallet, apiError } = React.useContext(WalletContext);
@@ -50,7 +59,6 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
     const scannerSupported = width < 769 && isMobile && !(isIOS && !isSafari);
 
     const [formData, setFormData] = useState({
-        dirty: true,
         value: '',
         address: '',
     });
@@ -71,11 +79,17 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
             },
         );
     }
+    // Clears address and amount fields following sendTokenNotification
+    const clearInputForms = () => {
+        setFormData({
+            value: '',
+            address: '',
+        });
+    };
 
     async function submit() {
         setFormData({
             ...formData,
-            dirty: false,
         });
 
         if (
@@ -99,7 +113,7 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
         let cleanAddress = address.split('?')[0];
 
         // Convert to simpleledger prefix if etoken
-        cleanAddress = convertEtokenToSimpleledger(cleanAddress);
+        cleanAddress = toLegacyToken(cleanAddress);
 
         try {
             const link = await sendToken(BCH, wallet, slpBalancesAndUtxos, {
@@ -107,8 +121,8 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                 tokenReceiverAddress: cleanAddress,
                 amount: value,
             });
-
             sendTokenNotification(link);
+            clearInputForms();
         } catch (e) {
             passLoadingStatus(false);
             let message;
@@ -168,20 +182,21 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
         let error = false;
         let addressString = value;
 
-        const addressInfo = parseAddress(BCH, addressString, true);
+        const isValid = isValidEtokenAddress(addressString);
+
+        const addressInfo = parseAddressForParams(addressString);
         /*
         Model
 
         addressInfo = 
         {
             address: '',
-            isValid: false,
             queryString: '',
             amount: null,
         };
         */
 
-        const { address, isValid, queryString } = addressInfo;
+        const { address, queryString } = addressInfo;
 
         // If query string,
         // Show an alert that only amount and currency.ticker are supported
@@ -190,9 +205,10 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
         // Is this valid address?
         if (!isValid) {
             error = 'Address is not a valid etoken: address';
-            // If valid address but token format
-        } else if (!isValidTokenPrefix(address)) {
-            error = `Cashtab only supports sending to ${currency.tokenPrefixes[0]} prefixed addresses`;
+            // If valid address but xec format
+            if (isValidXecAddress(address)) {
+                error = `Cashtab does not support sending eTokens to XEC addresses. Please convert to an eToken address.`;
+            }
         }
         setSendTokenAddressError(error);
 
@@ -231,14 +247,13 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
     return (
         <>
             {!token && <Redirect to="/" />}
-
             {token && (
                 <>
                     <BalanceHeader
                         balance={token.balance}
                         ticker={token.info.tokenTicker}
                     />
-
+                    <TokenIconAlert />
                     <Row type="flex">
                         <Col span={24}>
                             <Form
@@ -246,7 +261,7 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                     width: 'auto',
                                 }}
                             >
-                                <FormItemWithQRCodeAddon
+                                <DestinationAddressSingle
                                     loadWithCameraOpen={scannerSupported}
                                     validateStatus={
                                         sendTokenAddressError ? 'error' : ''
@@ -273,7 +288,7 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                         value: formData.address,
                                     }}
                                 />
-                                <FormItemWithMaxAddon
+                                <DestinationAmount
                                     validateStatus={
                                         sendTokenAmountError ? 'error' : ''
                                     }
@@ -290,7 +305,7 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                         prefix:
                                             currency.tokenIconsUrl !== '' ? (
                                                 <Img
-                                                    src={`${currency.tokenIconsUrl}/${tokenId}.png`}
+                                                    src={`${currency.tokenIconsUrl}/32/${tokenId}.png`}
                                                     width={16}
                                                     height={16}
                                                     unloader={
@@ -356,51 +371,99 @@ const SendToken = ({ tokenId, jestBCH, passLoadingStatus }) => {
                                 {apiError && <ApiError />}
                             </Form>
                             {tokenStats !== null && (
-                                <Descriptions
-                                    column={1}
-                                    bordered
-                                    title={`Token info for "${token.info.tokenName}"`}
-                                >
-                                    <Descriptions.Item label="Decimals">
-                                        {token.info.decimals}
-                                    </Descriptions.Item>
-                                    <Descriptions.Item label="Token ID">
-                                        {token.tokenId}
-                                    </Descriptions.Item>
-                                    {tokenStats && (
-                                        <>
-                                            <Descriptions.Item label="Document URI">
-                                                {tokenStats.documentUri}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Genesis Date">
-                                                {tokenStats.timestampUnix !==
-                                                null
-                                                    ? new Date(
-                                                          tokenStats.timestampUnix *
-                                                              1000,
-                                                      ).toLocaleDateString()
-                                                    : 'Just now (Genesis tx confirming)'}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Fixed Supply?">
-                                                {tokenStats.containsBaton
-                                                    ? 'No'
-                                                    : 'Yes'}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Initial Quantity">
-                                                {tokenStats.initialTokenQty.toLocaleString()}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Total Burned">
-                                                {tokenStats.totalBurned.toLocaleString()}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Total Minted">
-                                                {tokenStats.totalMinted.toLocaleString()}
-                                            </Descriptions.Item>
-                                            <Descriptions.Item label="Circulating Supply">
-                                                {tokenStats.circulatingSupply.toLocaleString()}
-                                            </Descriptions.Item>
-                                        </>
-                                    )}
-                                </Descriptions>
+                                <AntdDescriptionsWrapper>
+                                    <Descriptions
+                                        column={1}
+                                        bordered
+                                        title={`Token info for "${token.info.tokenName}"`}
+                                    >
+                                        <Descriptions.Item label="Icon">
+                                            {currency.tokenIconsUrl !== '' ? (
+                                                <Popover
+                                                    style={{ width: 256 }}
+                                                    content={
+                                                        <Img
+                                                            src={`${currency.tokenIconsUrl}/256/${tokenId}.png`}
+                                                        />
+                                                    }
+                                                    trigger="click"
+                                                    color="transparent"
+                                                >
+                                                    <Img
+                                                        src={`${currency.tokenIconsUrl}/32/${tokenId}.png`}
+                                                        width={32}
+                                                        height={32}
+                                                        unloader={
+                                                            <img
+                                                                alt={`identicon of tokenId ${tokenId} `}
+                                                                height="32"
+                                                                width="32"
+                                                                style={{
+                                                                    borderRadius:
+                                                                        '50%',
+                                                                }}
+                                                                key={`identicon-${tokenId}`}
+                                                                src={makeBlockie(
+                                                                    tokenId,
+                                                                )}
+                                                            />
+                                                        }
+                                                    />
+                                                </Popover>
+                                            ) : (
+                                                <img
+                                                    alt={`identicon of tokenId ${tokenId} `}
+                                                    height="32"
+                                                    width="32"
+                                                    style={{
+                                                        borderRadius: '50%',
+                                                    }}
+                                                    key={`identicon-${tokenId}`}
+                                                    src={makeBlockie(tokenId)}
+                                                />
+                                            )}
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Decimals">
+                                            {token.info.decimals}
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Token ID">
+                                            {token.tokenId}
+                                        </Descriptions.Item>
+                                        {tokenStats && (
+                                            <>
+                                                <Descriptions.Item label="Document URI">
+                                                    {tokenStats.documentUri}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Genesis Date">
+                                                    {tokenStats.timestampUnix !==
+                                                    null
+                                                        ? formatDate(
+                                                              tokenStats.timestampUnix,
+                                                              navigator.language,
+                                                          )
+                                                        : 'Just now (Genesis tx confirming)'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Fixed Supply?">
+                                                    {tokenStats.containsBaton
+                                                        ? 'No'
+                                                        : 'Yes'}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Initial Quantity">
+                                                    {tokenStats.initialTokenQty.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Total Burned">
+                                                    {tokenStats.totalBurned.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Total Minted">
+                                                    {tokenStats.totalMinted.toLocaleString()}
+                                                </Descriptions.Item>
+                                                <Descriptions.Item label="Circulating Supply">
+                                                    {tokenStats.circulatingSupply.toLocaleString()}
+                                                </Descriptions.Item>
+                                            </>
+                                        )}
+                                    </Descriptions>
+                                </AntdDescriptionsWrapper>
                             )}
                         </Col>
                     </Row>

@@ -111,6 +111,7 @@ bool AddWallet(const std::shared_ptr<CWallet> &wallet) {
     }
     vpwallets.push_back(wallet);
     wallet->ConnectScriptPubKeyManNotifiers();
+    wallet->NotifyCanGetAddressesChanged();
     return true;
 }
 
@@ -956,7 +957,7 @@ CWalletTx *CWallet::AddToWallet(CTransactionRef tx,
                                 bool fFlushOnClose) {
     LOCK(cs_wallet);
 
-    WalletBatch batch(*database, "r+", fFlushOnClose);
+    WalletBatch batch(*database, fFlushOnClose);
 
     const TxId &txid = tx->GetId();
 
@@ -1167,7 +1168,7 @@ void CWallet::MarkInputsDirty(const CTransactionRef &tx) {
 bool CWallet::AbandonTransaction(const TxId &txid) {
     LOCK(cs_wallet);
 
-    WalletBatch batch(*database, "r+");
+    WalletBatch batch(*database);
 
     std::set<TxId> todo;
     std::set<TxId> done;
@@ -1238,7 +1239,7 @@ void CWallet::MarkConflicted(const BlockHash &hashBlock, int conflicting_height,
     }
 
     // Do not flush the wallet here for performance reasons.
-    WalletBatch batch(*database, "r+", false);
+    WalletBatch batch(*database, false);
 
     std::set<TxId> todo;
     std::set<TxId> done;
@@ -3605,7 +3606,7 @@ DBErrors CWallet::LoadWallet(bool &fFirstRunRet) {
     LOCK(cs_wallet);
 
     fFirstRunRet = false;
-    DBErrors nLoadWalletRet = WalletBatch(*database, "cr+").LoadWallet(this);
+    DBErrors nLoadWalletRet = WalletBatch(*database).LoadWallet(this);
     if (nLoadWalletRet == DBErrors::NEED_REWRITE) {
         if (database->Rewrite("\x04pool")) {
             for (const auto &spk_man_pair : m_spk_managers) {
@@ -3635,7 +3636,7 @@ DBErrors CWallet::ZapSelectTx(std::vector<TxId> &txIdsIn,
                               std::vector<TxId> &txIdsOut) {
     AssertLockHeld(cs_wallet);
     DBErrors nZapSelectTxRet =
-        WalletBatch(*database, "cr+").ZapSelectTx(txIdsIn, txIdsOut);
+        WalletBatch(*database).ZapSelectTx(txIdsIn, txIdsOut);
     for (const TxId &txid : txIdsOut) {
         const auto &it = mapWallet.find(txid);
         wtxOrdered.erase(it->second.m_it_wtxOrdered);
@@ -4254,12 +4255,13 @@ MakeWalletDatabase(const std::string &name, const DatabaseOptions &options,
     // 2. Path to an existing directory.
     // 3. Path to a symlink to a directory.
     // 4. For backwards compatibility, the name of a data file in -walletdir.
-    const fs::path &wallet_path = fs::absolute(name, GetWalletDir());
+    const fs::path &wallet_path =
+        fs::absolute(fs::PathFromString(name), GetWalletDir());
     fs::file_type path_type = fs::symlink_status(wallet_path).type();
     if (!(path_type == fs::file_not_found || path_type == fs::directory_file ||
           (path_type == fs::symlink_file && fs::is_directory(wallet_path)) ||
           (path_type == fs::regular_file &&
-           fs::path(name).filename() == name))) {
+           fs::PathFromString(name).filename() == fs::PathFromString(name)))) {
         error_string = Untranslated(
             strprintf("Invalid -wallet path '%s'. -wallet path should point to "
                       "a directory where wallet.dat and "
@@ -4267,7 +4269,7 @@ MakeWalletDatabase(const std::string &name, const DatabaseOptions &options,
                       "where such a directory could be created, "
                       "or (for backwards compatibility) the name of an "
                       "existing data file in -walletdir (%s)",
-                      name, GetWalletDir()));
+                      name, fs::quoted(fs::PathToString(GetWalletDir()))));
         status = DatabaseStatus::FAILED_BAD_PATH;
         return nullptr;
     }
@@ -4614,8 +4616,7 @@ CWallet::FindAddressBookEntry(const CTxDestination &dest,
     return &address_book_it->second;
 }
 
-bool CWallet::UpgradeWallet(int version, bilingual_str &error,
-                            std::vector<bilingual_str> &warnings) {
+bool CWallet::UpgradeWallet(int version, bilingual_str &error) {
     int prev_version = GetVersion();
     int nMaxVersion = version;
     // The -upgradewallet without argument case
@@ -5045,7 +5046,7 @@ CWallet::GetDescriptorScriptPubKeyMan(const WalletDescriptor &desc) const {
 ScriptPubKeyMan *
 CWallet::AddWalletDescriptor(WalletDescriptor &desc,
                              const FlatSigningProvider &signing_provider,
-                             const std::string &label) {
+                             const std::string &label, bool internal) {
     if (!IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
         WalletLogPrintf(
             "Cannot add WalletDescriptor to a non-descriptor wallet\n");
@@ -5069,12 +5070,12 @@ CWallet::AddWalletDescriptor(WalletDescriptor &desc,
 
         // Remove from maps of active spkMans
         auto old_spk_man_id = old_spk_man->GetID();
-        for (bool internal : {false, true}) {
+        for (bool internal_ : {false, true}) {
             for (OutputType t : OUTPUT_TYPES) {
-                auto active_spk_man = GetScriptPubKeyMan(t, internal);
+                auto active_spk_man = GetScriptPubKeyMan(t, internal_);
                 if (active_spk_man &&
                     active_spk_man->GetID() == old_spk_man_id) {
-                    if (internal) {
+                    if (internal_) {
                         m_internal_spk_managers.erase(t);
                     } else {
                         m_external_spk_managers.erase(t);
@@ -5093,7 +5094,10 @@ CWallet::AddWalletDescriptor(WalletDescriptor &desc,
     }
 
     // Top up key pool, the manager will generate new scriptPubKeys internally
-    new_spk_man->TopUp();
+    if (!new_spk_man->TopUp()) {
+        WalletLogPrintf("Could not top up scriptPubKeys\n");
+        return nullptr;
+    }
 
     // Apply the label if necessary
     // Note: we disable labels for ranged descriptors
@@ -5106,7 +5110,7 @@ CWallet::AddWalletDescriptor(WalletDescriptor &desc,
         }
 
         CTxDestination dest;
-        if (ExtractDestination(script_pub_keys.at(0), dest)) {
+        if (!internal && ExtractDestination(script_pub_keys.at(0), dest)) {
             SetAddressBook(dest, label, "receive");
         }
     }

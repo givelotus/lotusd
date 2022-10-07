@@ -63,7 +63,7 @@ top priority, more important than completing other tasks.
 Here are some handy links for development practices aligned with Bitcoin ABC:
 
 - [Developer Notes](doc/developer-notes.md)
-- [Statement of Bitcoin ABC Values and Visions](https://www.yours.org/content/bitcoin-abc---our-values-and-vision-a282afaade7c)
+- [Statement of Bitcoin ABC Values and Visions](https://archive.md/ulgFI)
 - [How to Make Your Code Reviewer Fall in Love with You](https://mtlynch.io/code-review-love/)
 - [Large Diffs Are Hurting Your Ability To Ship](https://medium.com/@kurtisnusbaum/large-diffs-are-hurting-your-ability-to-ship-e0b2b41e8acf)
 - [Stacked Diffs: Keeping Phabricator Diffs Small](https://medium.com/@kurtisnusbaum/stacked-diffs-keeping-phabricator-diffs-small-d9964f4dcfa6)
@@ -77,6 +77,8 @@ Here are some handy links for development practices aligned with Bitcoin ABC:
 - [Accelerate: The Science of Lean Software and DevOps](https://www.amazon.com/Accelerate-Software-Performing-Technology-Organizations/dp/1942788339)
 - [Facebook Engineering Process with Kent Beck](https://softwareengineeringdaily.com/2019/08/28/facebook-engineering-process-with-kent-beck/)
 - [Trunk Based Development](https://trunkbaseddevelopment.com/)
+- [Step-by-step: Programming incrementally](https://ourmachinery.com/post/step-by-step-programming-incrementally/)
+- [Semantic Compression](https://caseymuratori.com/blog_0015)
 
 Getting set up with the Bitcoin ABC Repository
 ----------------------------------------------

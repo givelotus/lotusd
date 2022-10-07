@@ -5,6 +5,7 @@
 #include <avalanche/delegationbuilder.h>
 #include <avalanche/peermanager.h>
 #include <avalanche/proofbuilder.h>
+#include <avalanche/proofcomparator.h>
 #include <avalanche/test/util.h>
 #include <script/standard.h>
 #include <util/translation.h>
@@ -29,6 +30,15 @@ namespace {
         static bool isNodePending(const PeerManager &pm, NodeId nodeid) {
             auto &pendingNodesView = pm.pendingNodes.get<by_nodeid>();
             return pendingNodesView.find(nodeid) != pendingNodesView.end();
+        }
+
+        static PeerId registerAndGetPeerId(PeerManager &pm,
+                                           const ProofRef &proof) {
+            pm.registerProof(proof);
+
+            auto &pview = pm.peers.get<by_proofid>();
+            auto it = pview.find(proof->getId());
+            return it == pview.end() ? NO_PEER : it->peerid;
         }
     };
 } // namespace
@@ -176,7 +186,7 @@ BOOST_AUTO_TEST_CASE(select_peer_random) {
 static void addNodeWithScore(avalanche::PeerManager &pm, NodeId node,
                              uint32_t score) {
     auto proof = buildRandomProof(score);
-    BOOST_CHECK_NE(pm.getPeerId(proof), NO_PEER);
+    BOOST_CHECK(pm.registerProof(proof));
     BOOST_CHECK(pm.addNode(node, proof->getId()));
 };
 
@@ -225,7 +235,7 @@ BOOST_AUTO_TEST_CASE(remove_peer) {
     std::array<PeerId, 8> peerids;
     for (int i = 0; i < 4; i++) {
         auto p = buildRandomProof(100);
-        peerids[i] = pm.getPeerId(p);
+        peerids[i] = TestPeerManager::registerAndGetPeerId(pm, p);
         BOOST_CHECK(pm.addNode(InsecureRand32(), p->getId()));
     }
 
@@ -257,7 +267,7 @@ BOOST_AUTO_TEST_CASE(remove_peer) {
     // Add 4 more peers.
     for (int i = 0; i < 4; i++) {
         auto p = buildRandomProof(100);
-        peerids[i + 4] = pm.getPeerId(p);
+        peerids[i + 4] = TestPeerManager::registerAndGetPeerId(pm, p);
         BOOST_CHECK(pm.addNode(InsecureRand32(), p->getId()));
     }
 
@@ -299,7 +309,7 @@ BOOST_AUTO_TEST_CASE(compact_slots) {
     std::array<PeerId, 4> peerids;
     for (int i = 0; i < 4; i++) {
         auto p = buildRandomProof(100);
-        peerids[i] = pm.getPeerId(p);
+        peerids[i] = TestPeerManager::registerAndGetPeerId(pm, p);
         BOOST_CHECK(pm.addNode(InsecureRand32(), p->getId()));
     }
 
@@ -326,7 +336,7 @@ BOOST_AUTO_TEST_CASE(node_crud) {
 
     // Create one peer.
     auto proof = buildRandomProof(10000000 * MIN_VALID_PROOF_SCORE);
-    BOOST_CHECK_NE(pm.getPeerId(proof), NO_PEER);
+    BOOST_CHECK(pm.registerProof(proof));
     BOOST_CHECK_EQUAL(pm.selectNode(), NO_NODE);
 
     // Add 4 nodes.
@@ -394,7 +404,7 @@ BOOST_AUTO_TEST_CASE(node_binding) {
     }
 
     // Now create the peer and check all the nodes are bound
-    const PeerId peerid = pm.getPeerId(proof);
+    const PeerId peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
     for (int i = 0; i < 10; i++) {
         BOOST_CHECK(!TestPeerManager::isNodePending(pm, i));
@@ -471,7 +481,7 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
         coins.AddCoin(utxo, Coin(CTxOut(amount, script), height, false), false);
     }
 
-    PeerId peerid = pm.getPeerId(proof);
+    PeerId peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
     BOOST_CHECK(pm.verify());
 
@@ -491,7 +501,7 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
 
     pm.updatedBlockTip();
     BOOST_CHECK(pm.isOrphan(proofid));
-    BOOST_CHECK(!pm.isValid(proofid));
+    BOOST_CHECK(!pm.isBoundToPeer(proofid));
     for (int i = 0; i < 10; i++) {
         BOOST_CHECK(TestPeerManager::isNodePending(pm, i));
         BOOST_CHECK(!TestPeerManager::nodeBelongToPeer(pm, i, peerid));
@@ -507,9 +517,9 @@ BOOST_AUTO_TEST_CASE(node_binding_reorg) {
 
     pm.updatedBlockTip();
     BOOST_CHECK(!pm.isOrphan(proofid));
-    BOOST_CHECK(pm.isValid(proofid));
+    BOOST_CHECK(pm.isBoundToPeer(proofid));
     // The peerid has certainly been updated
-    peerid = pm.getPeerId(proof);
+    peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
     for (int i = 0; i < 10; i++) {
         BOOST_CHECK(!TestPeerManager::isNodePending(pm, i));
@@ -549,7 +559,7 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
             BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
         }
 
-        return pm.getPeerId(pb.build());
+        return TestPeerManager::registerAndGetPeerId(pm, pb.build());
     };
 
     // Add one peer.
@@ -579,9 +589,8 @@ BOOST_AUTO_TEST_CASE(proof_conflict) {
         ProofBuilder pb(0, 0, CKey::MakeCompressedKey());
         COutPoint o(txid1, 3);
         BOOST_CHECK(pb.addUTXO(o, v, height, false, key));
-        PeerId peerid =
-            pm.getPeerId(TestProofBuilder::buildDuplicatedStakes(pb));
-        BOOST_CHECK_EQUAL(peerid, NO_PEER);
+        BOOST_CHECK(
+            !pm.registerProof(TestProofBuilder::buildDuplicatedStakes(pb)));
     }
 
     // Multiple inputs, collision on first input.
@@ -632,16 +641,23 @@ BOOST_AUTO_TEST_CASE(orphan_proofs) {
     }
 
     // Add the proofs
-    BOOST_CHECK(pm.getPeerId(proof1) != NO_PEER);
-    BOOST_CHECK(pm.getPeerId(proof2) == NO_PEER);
-    BOOST_CHECK(pm.getPeerId(proof3) == NO_PEER);
+    BOOST_CHECK(pm.registerProof(proof1));
+
+    auto registerOrphan = [&](const ProofRef &proof) {
+        ProofRegistrationState state;
+        BOOST_CHECK(!pm.registerProof(proof, state));
+        BOOST_CHECK(state.GetResult() == ProofRegistrationResult::ORPHAN);
+    };
+
+    registerOrphan(proof2);
+    registerOrphan(proof3);
 
     auto checkOrphan = [&](const ProofRef &proof, bool expectedOrphan) {
         const ProofId &proofid = proof->getId();
         BOOST_CHECK(pm.exists(proofid));
 
         BOOST_CHECK_EQUAL(pm.isOrphan(proofid), expectedOrphan);
-        BOOST_CHECK_EQUAL(pm.isValid(proofid), !expectedOrphan);
+        BOOST_CHECK_EQUAL(pm.isBoundToPeer(proofid), !expectedOrphan);
 
         bool ret = false;
         pm.forEachPeer([&](const Peer &peer) {
@@ -708,7 +724,7 @@ BOOST_AUTO_TEST_CASE(dangling_node) {
     avalanche::PeerManager pm;
 
     auto proof = buildRandomProof(MIN_VALID_PROOF_SCORE);
-    PeerId peerid = pm.getPeerId(proof);
+    PeerId peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
 
     const TimePoint theFuture(std::chrono::steady_clock::now() +
@@ -730,7 +746,7 @@ BOOST_AUTO_TEST_CASE(dangling_node) {
 
     // Build a new one
     proof = buildRandomProof(MIN_VALID_PROOF_SCORE);
-    peerid = pm.getPeerId(proof);
+    peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
     BOOST_CHECK_NE(peerid, NO_PEER);
 
     // Update the nodes with the new proof
@@ -762,8 +778,14 @@ BOOST_AUTO_TEST_CASE(proof_accessors) {
 
     for (int i = 0; i < numProofs; i++) {
         BOOST_CHECK(pm.registerProof(proofs[i]));
-        // Fail to add an existing proof
-        BOOST_CHECK(!pm.registerProof(proofs[i]));
+
+        {
+            ProofRegistrationState state;
+            // Fail to add an existing proof
+            BOOST_CHECK(!pm.registerProof(proofs[i], state));
+            BOOST_CHECK(state.GetResult() ==
+                        ProofRegistrationResult::ALREADY_REGISTERED);
+        }
 
         for (int added = 0; added <= i; added++) {
             auto proof = pm.getProof(proofs[added]->getId());
@@ -781,8 +803,11 @@ BOOST_AUTO_TEST_CASE(proof_accessors) {
     bilingual_str error;
     Proof badProof;
     BOOST_CHECK(Proof::FromHex(badProof, badProofHex, error));
+
+    ProofRegistrationState state;
     BOOST_CHECK(
-        !pm.registerProof(std::make_shared<Proof>(std::move(badProof))));
+        !pm.registerProof(std::make_shared<Proof>(std::move(badProof)), state));
+    BOOST_CHECK(state.GetResult() == ProofRegistrationResult::INVALID);
 }
 
 BOOST_AUTO_TEST_CASE(conflicting_proof_rescan) {
@@ -830,9 +855,10 @@ BOOST_AUTO_TEST_CASE(conflicting_proof_rescan) {
         conflictingProof = pb.build();
     }
 
-    BOOST_CHECK(!pm.registerProof(conflictingProof));
-    // The conflicting proof is orphaned
-    BOOST_CHECK(pm.isOrphan(conflictingProof->getId()));
+    ProofRegistrationState state;
+    BOOST_CHECK(!pm.registerProof(conflictingProof, state));
+    BOOST_CHECK(state.GetResult() == ProofRegistrationResult::CONFLICTING);
+    BOOST_CHECK(pm.isInConflictingPool(conflictingProof->getId()));
 
     {
         LOCK(cs_main);
@@ -845,54 +871,16 @@ BOOST_AUTO_TEST_CASE(conflicting_proof_rescan) {
 
     BOOST_CHECK(pm.isOrphan(proofToInvalidate->getId()));
 
-    BOOST_CHECK(!pm.isOrphan(conflictingProof->getId()));
-    BOOST_CHECK(pm.isValid(conflictingProof->getId()));
+    BOOST_CHECK(!pm.isInConflictingPool(conflictingProof->getId()));
+    BOOST_CHECK(pm.isBoundToPeer(conflictingProof->getId()));
 }
 
-BOOST_AUTO_TEST_CASE(conflicting_proof_same_pubkey) {
+BOOST_AUTO_TEST_CASE(conflicting_proof_selection) {
     avalanche::PeerManager pm;
 
     const CKey key = CKey::MakeCompressedKey();
 
-    const COutPoint outpoint(TxId(GetRandHash()), 0);
     const Amount amount(10 * COIN);
-    const uint32_t height = 100;
-    const bool is_coinbase = false;
-
-    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
-
-    {
-        LOCK(cs_main);
-        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
-        coins.AddCoin(outpoint,
-                      Coin(CTxOut(amount, script), height, is_coinbase), false);
-    }
-
-    auto buildProofWithSequence = [&](uint64_t sequence) {
-        ProofBuilder pb(sequence, GetRandInt(std::numeric_limits<int>::max()),
-                        key);
-        BOOST_CHECK(pb.addUTXO(outpoint, amount, height, is_coinbase, key));
-        return pb.build();
-    };
-
-    auto proof_base = buildProofWithSequence(10);
-
-    auto proof_lowSequence = buildProofWithSequence(9);
-    BOOST_CHECK(!isConflictingProofPreferred(proof_lowSequence, proof_base));
-
-    auto proof_sameSequence = buildProofWithSequence(10);
-    // Collision might occur here, but it's so unlikely that it's not a concern
-    BOOST_CHECK(!isConflictingProofPreferred(proof_sameSequence, proof_base));
-
-    auto proof_highSequence = buildProofWithSequence(11);
-    BOOST_CHECK(isConflictingProofPreferred(proof_highSequence, proof_base));
-}
-
-BOOST_AUTO_TEST_CASE(conflicting_proof_different_pubkey) {
-    avalanche::PeerManager pm;
-
-    const CKey key = CKey::MakeCompressedKey();
-
     const uint32_t height = 100;
     const bool is_coinbase = false;
 
@@ -900,52 +888,360 @@ BOOST_AUTO_TEST_CASE(conflicting_proof_different_pubkey) {
 
     auto addCoin = [&](const Amount &amount) {
         LOCK(cs_main);
-        COutPoint outpoint(TxId(GetRandHash()), 0);
+        const COutPoint outpoint(TxId(GetRandHash()), 0);
         CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
         coins.AddCoin(outpoint,
                       Coin(CTxOut(amount, script), height, is_coinbase), false);
-
         return outpoint;
     };
 
-    const Amount conflictingOutpointAmount = 10 * COIN;
-    // This is the outpoint that will conflict through the test
-    COutPoint conflictingOutpoint = addCoin(conflictingOutpointAmount);
+    // This will be the conflicting UTXO for all the following proofs
+    auto conflictingOutpoint = addCoin(amount);
 
-    auto buildProofFromAmounts = [&](std::vector<Amount> amounts) {
-        CKey master = CKey::MakeCompressedKey();
-        ProofBuilder pb(0, 0, std::move(master));
-        BOOST_CHECK(pb.addUTXO(conflictingOutpoint, conflictingOutpointAmount,
-                               height, is_coinbase, key));
-        for (Amount &amount : amounts) {
-            auto outpoint = addCoin(amount);
-            BOOST_CHECK(pb.addUTXO(std::move(outpoint), amount, height,
-                                   is_coinbase, key));
+    auto buildProofWithSequence = [&](uint64_t sequence) {
+        ProofBuilder pb(sequence, GetRandInt(std::numeric_limits<int>::max()),
+                        key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+
+        return pb.build();
+    };
+
+    auto proof_base = buildProofWithSequence(10);
+
+    ConflictingProofComparator comparator;
+    auto checkPreferred = [&](const ProofRef &candidate,
+                              const ProofRef &reference, bool expectAccepted) {
+        BOOST_CHECK_EQUAL(comparator(candidate, reference), expectAccepted);
+        BOOST_CHECK_EQUAL(comparator(reference, candidate), !expectAccepted);
+    };
+
+    // Same master key, lower sequence number
+    checkPreferred(buildProofWithSequence(9), proof_base, false);
+    // Same master key, higher sequence number
+    checkPreferred(buildProofWithSequence(11), proof_base, true);
+
+    auto buildProofFromAmounts = [&](const CKey &master,
+                                     std::vector<Amount> &&amounts) {
+        ProofBuilder pb(0, 0, master);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+        for (const Amount &v : amounts) {
+            auto outpoint = addCoin(v);
+            BOOST_CHECK(
+                pb.addUTXO(std::move(outpoint), v, height, is_coinbase, key));
         }
         return pb.build();
     };
 
-    auto proof_base = buildProofFromAmounts({10 * COIN, 10 * COIN});
+    auto proof_multiUtxo = buildProofFromAmounts(key, {10 * COIN, 10 * COIN});
 
-    auto proof_lowAmount = buildProofFromAmounts({10 * COIN, 9 * COIN});
-    BOOST_CHECK(!isConflictingProofPreferred(proof_lowAmount, proof_base));
+    // Test for both the same master and a different one. The sequence number
+    // is the same for all these tests.
+    for (const CKey &k : {key, CKey::MakeCompressedKey()}) {
+        // Low amount
+        checkPreferred(buildProofFromAmounts(k, {10 * COIN, 5 * COIN}),
+                       proof_multiUtxo, false);
+        // High amount
+        checkPreferred(buildProofFromAmounts(k, {10 * COIN, 15 * COIN}),
+                       proof_multiUtxo, true);
+        // Same amount, low stake count
+        checkPreferred(buildProofFromAmounts(k, {20 * COIN}), proof_multiUtxo,
+                       true);
+        // Same amount, high stake count
+        checkPreferred(
+            buildProofFromAmounts(k, {10 * COIN, 5 * COIN, 5 * COIN}),
+            proof_multiUtxo, false);
+        // Same amount, same stake count, selection is done on proof id
+        auto proofSimilar = buildProofFromAmounts(k, {10 * COIN, 10 * COIN});
+        checkPreferred(proofSimilar, proof_multiUtxo,
+                       proofSimilar->getId() < proof_multiUtxo->getId());
+    }
+}
 
-    auto proof_highAmount = buildProofFromAmounts({10 * COIN, 11 * COIN});
-    BOOST_CHECK(isConflictingProofPreferred(proof_highAmount, proof_base));
+BOOST_AUTO_TEST_CASE(conflicting_orphans) {
+    avalanche::PeerManager pm;
 
-    auto proof_lowStakeCount = buildProofFromAmounts({21 * COIN});
-    BOOST_CHECK(
-        isConflictingProofPreferred(proof_lowStakeCount, proof_highAmount));
+    const CKey key = CKey::MakeCompressedKey();
 
-    auto proof_highStakeCount =
-        buildProofFromAmounts({1 * COIN, 5 * COIN, 5 * COIN});
-    BOOST_CHECK(!isConflictingProofPreferred(proof_highStakeCount,
-                                             proof_lowStakeCount));
+    const Amount amount(10 * COIN);
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
 
-    auto proof_similar = buildProofFromAmounts({21 * COIN});
-    BOOST_CHECK_EQUAL(
-        isConflictingProofPreferred(proof_similar, proof_lowStakeCount),
-        proof_similar->getId() < proof_lowStakeCount->getId());
+    auto buildProofWithSequence = [&](uint64_t sequence,
+                                      const std::vector<COutPoint> &outpoints) {
+        ProofBuilder pb(sequence, 0, key);
+
+        for (const COutPoint &outpoint : outpoints) {
+            BOOST_CHECK(pb.addUTXO(outpoint, amount, height, is_coinbase, key));
+        }
+
+        return pb.build();
+    };
+
+    const COutPoint conflictingOutpoint(TxId(GetRandHash()), 0);
+    const COutPoint randomOutpoint1(TxId(GetRandHash()), 0);
+
+    auto orphan10 = buildProofWithSequence(10, {conflictingOutpoint});
+    auto orphan20 =
+        buildProofWithSequence(20, {conflictingOutpoint, randomOutpoint1});
+
+    BOOST_CHECK(!pm.registerProof(orphan10));
+    BOOST_CHECK(pm.isOrphan(orphan10->getId()));
+
+    BOOST_CHECK(!pm.registerProof(orphan20));
+    BOOST_CHECK(pm.isOrphan(orphan20->getId()));
+    BOOST_CHECK(!pm.exists(orphan10->getId()));
+
+    auto addCoin = [&](const COutPoint &outpoint) {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(outpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+    };
+
+    const COutPoint outpointToSend(TxId(GetRandHash()), 0);
+    // Add both randomOutpoint1 and outpointToSend to the UTXO set. The orphan20
+    // proof is still an orphan because the conflictingOutpoint is unknown.
+    addCoin(randomOutpoint1);
+    addCoin(outpointToSend);
+
+    // Build and register proof valid proof that will conflict with the orphan
+    auto proof30 =
+        buildProofWithSequence(30, {randomOutpoint1, outpointToSend});
+    BOOST_CHECK(pm.registerProof(proof30));
+    BOOST_CHECK(pm.isBoundToPeer(proof30->getId()));
+
+    // Spend the outpointToSend to orphan proof30
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.SpendCoin(outpointToSend);
+    }
+
+    // Check that a rescan will also select the preferred orphan, in this case
+    // proof30 will replace orphan20.
+    pm.updatedBlockTip();
+
+    BOOST_CHECK(!pm.isBoundToPeer(proof30->getId()));
+    BOOST_CHECK(pm.isOrphan(proof30->getId()));
+    BOOST_CHECK(!pm.exists(orphan20->getId()));
+}
+
+BOOST_AUTO_TEST_CASE(preferred_conflicting_proof) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const Amount amount(10 * COIN);
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    const COutPoint conflictingOutpoint(TxId(GetRandHash()), 0);
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(conflictingOutpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+    }
+
+    auto buildProofWithSequence = [&](uint64_t sequence) {
+        ProofBuilder pb(sequence, 0, key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+
+        return pb.build();
+    };
+
+    auto proofSeq10 = buildProofWithSequence(10);
+    auto proofSeq20 = buildProofWithSequence(20);
+    auto proofSeq30 = buildProofWithSequence(30);
+
+    BOOST_CHECK(pm.registerProof(proofSeq30));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+    BOOST_CHECK(!pm.isInConflictingPool(proofSeq30->getId()));
+
+    // proofSeq10 is a worst candidate than proofSeq30, so it goes to the
+    // conflicting pool.
+    BOOST_CHECK(!pm.registerProof(proofSeq10));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+    BOOST_CHECK(!pm.isBoundToPeer(proofSeq10->getId()));
+    BOOST_CHECK(pm.isInConflictingPool(proofSeq10->getId()));
+
+    // proofSeq20 is a worst candidate than proofSeq30 but a better one than
+    // proogSeq10, so it replaces it in the conflicting pool and proofSeq10 is
+    // evicted.
+    BOOST_CHECK(!pm.registerProof(proofSeq20));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+    BOOST_CHECK(!pm.isBoundToPeer(proofSeq20->getId()));
+    BOOST_CHECK(pm.isInConflictingPool(proofSeq20->getId()));
+    BOOST_CHECK(!pm.exists(proofSeq10->getId()));
+}
+
+BOOST_AUTO_TEST_CASE(update_next_conflict_time) {
+    avalanche::PeerManager pm;
+
+    auto now = GetTime<std::chrono::seconds>();
+    SetMockTime(now.count());
+
+    // Updating the time of an unknown peer should fail
+    for (size_t i = 0; i < 10; i++) {
+        BOOST_CHECK(
+            !pm.updateNextPossibleConflictTime(PeerId(GetRandInt(1000)), now));
+    }
+
+    auto proof = buildRandomProof(MIN_VALID_PROOF_SCORE);
+    PeerId peerid = TestPeerManager::registerAndGetPeerId(pm, proof);
+
+    auto checkNextPossibleConflictTime = [&](std::chrono::seconds expected) {
+        BOOST_CHECK(pm.forPeer(proof->getId(), [&](const Peer &p) {
+            return p.nextPossibleConflictTime == expected;
+        }));
+    };
+
+    checkNextPossibleConflictTime(now);
+
+    // Move the time in the past is not possible
+    BOOST_CHECK(!pm.updateNextPossibleConflictTime(
+        peerid, now - std::chrono::seconds{1}));
+    checkNextPossibleConflictTime(now);
+
+    BOOST_CHECK(pm.updateNextPossibleConflictTime(
+        peerid, now + std::chrono::seconds{1}));
+    checkNextPossibleConflictTime(now + std::chrono::seconds{1});
+}
+
+BOOST_AUTO_TEST_CASE(register_force_accept) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const Amount amount(10 * COIN);
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    const COutPoint conflictingOutpoint(TxId(GetRandHash()), 0);
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(conflictingOutpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+    }
+
+    auto buildProofWithSequence = [&](uint64_t sequence) {
+        ProofBuilder pb(sequence, 0, key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+
+        return pb.build();
+    };
+
+    auto proofSeq10 = buildProofWithSequence(10);
+    auto proofSeq20 = buildProofWithSequence(20);
+    auto proofSeq30 = buildProofWithSequence(30);
+
+    BOOST_CHECK(pm.registerProof(proofSeq30));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+    BOOST_CHECK(!pm.isInConflictingPool(proofSeq30->getId()));
+
+    // proofSeq20 is a worst candidate than proofSeq30, so it goes to the
+    // conflicting pool.
+    BOOST_CHECK(!pm.registerProof(proofSeq20));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+    BOOST_CHECK(pm.isInConflictingPool(proofSeq20->getId()));
+
+    // We can force the acceptance of proofSeq20
+    using RegistrationMode = avalanche::PeerManager::RegistrationMode;
+    BOOST_CHECK(pm.registerProof(proofSeq20, RegistrationMode::FORCE_ACCEPT));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq20->getId()));
+    BOOST_CHECK(pm.isInConflictingPool(proofSeq30->getId()));
+
+    // We can also force the acceptance of a proof which is not already in the
+    // conflicting pool.
+    BOOST_CHECK(!pm.registerProof(proofSeq10));
+    BOOST_CHECK(!pm.exists(proofSeq10->getId()));
+
+    BOOST_CHECK(pm.registerProof(proofSeq10, RegistrationMode::FORCE_ACCEPT));
+    BOOST_CHECK(pm.isBoundToPeer(proofSeq10->getId()));
+    BOOST_CHECK(!pm.exists(proofSeq20->getId()));
+    BOOST_CHECK(pm.isInConflictingPool(proofSeq30->getId()));
+
+    // Attempting to register again fails, and has no impact on the pools
+    for (size_t i = 0; i < 10; i++) {
+        BOOST_CHECK(!pm.registerProof(proofSeq10));
+        BOOST_CHECK(
+            !pm.registerProof(proofSeq10, RegistrationMode::FORCE_ACCEPT));
+
+        BOOST_CHECK(pm.isBoundToPeer(proofSeq10->getId()));
+        BOOST_CHECK(!pm.exists(proofSeq20->getId()));
+        BOOST_CHECK(pm.isInConflictingPool(proofSeq30->getId()));
+    }
+
+    // Revert between proofSeq10 and proofSeq30 a few times
+    for (size_t i = 0; i < 10; i++) {
+        BOOST_CHECK(
+            pm.registerProof(proofSeq30, RegistrationMode::FORCE_ACCEPT));
+
+        BOOST_CHECK(pm.isBoundToPeer(proofSeq30->getId()));
+        BOOST_CHECK(pm.isInConflictingPool(proofSeq10->getId()));
+
+        BOOST_CHECK(
+            pm.registerProof(proofSeq10, RegistrationMode::FORCE_ACCEPT));
+
+        BOOST_CHECK(pm.isBoundToPeer(proofSeq10->getId()));
+        BOOST_CHECK(pm.isInConflictingPool(proofSeq30->getId()));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(evicted_proof) {
+    avalanche::PeerManager pm;
+
+    const CKey key = CKey::MakeCompressedKey();
+
+    const Amount amount(10 * COIN);
+    const uint32_t height = 100;
+    const bool is_coinbase = false;
+    CScript script = GetScriptForDestination(PKHash(key.GetPubKey()));
+
+    const COutPoint conflictingOutpoint(TxId(GetRandHash()), 0);
+    {
+        LOCK(cs_main);
+        CCoinsViewCache &coins = ::ChainstateActive().CoinsTip();
+        coins.AddCoin(conflictingOutpoint,
+                      Coin(CTxOut(amount, script), height, is_coinbase), false);
+    }
+
+    auto buildProofWithSequence = [&](uint64_t sequence) {
+        ProofBuilder pb(sequence, 0, key);
+        BOOST_CHECK(
+            pb.addUTXO(conflictingOutpoint, amount, height, is_coinbase, key));
+        return pb.build();
+    };
+
+    auto proofSeq10 = buildProofWithSequence(10);
+    auto proofSeq20 = buildProofWithSequence(20);
+    auto proofSeq30 = buildProofWithSequence(30);
+
+    {
+        ProofRegistrationState state;
+        BOOST_CHECK(pm.registerProof(proofSeq30, state));
+        BOOST_CHECK(state.IsValid());
+    }
+
+    {
+        ProofRegistrationState state;
+        BOOST_CHECK(!pm.registerProof(proofSeq20, state));
+        BOOST_CHECK(state.GetResult() == ProofRegistrationResult::CONFLICTING);
+    }
+
+    {
+        ProofRegistrationState state;
+        BOOST_CHECK(!pm.registerProof(proofSeq10, state));
+        BOOST_CHECK(state.GetResult() == ProofRegistrationResult::REJECTED);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

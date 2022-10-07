@@ -16,7 +16,7 @@ Therefore, this test is limited to the remaining protection criteria.
 import time
 
 from test_framework.avatools import AvaP2PInterface, create_coinbase_stakes
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.key import ECKey
 from test_framework.messages import (
     CTransaction,
@@ -28,10 +28,7 @@ from test_framework.messages import (
 )
 from test_framework.p2p import P2PDataStore, P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.p2p import P2PInterface, P2PDataStore
 from test_framework.util import assert_equal
-from test_framework.blocktools import create_block, create_coinbase, prepare_block
-from test_framework.messages import CTransaction, FromHex, msg_pong, msg_tx
 from test_framework.txtools import pad_tx
 from test_framework.wallet_util import bytes_to_wif
 
@@ -58,14 +55,14 @@ class P2PEvict(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
-        # The choice of maxconnections=164 results in a maximum of 153 inbound
-        # connections (164 - 10 outbound - 1 feeler). 152 inbound peers are
+        # The choice of maxconnections=172 results in a maximum of 153 inbound
+        # connections (172 - 18 outbound - 1 feeler). 152 inbound peers are
         # protected from eviction:
         # 4 by netgroup, 4 that sent us blocks, 4 that sent us proofs, 4 that
         # sent us transactions, 8 via lowest ping time, 128 with the best
         # avalanche availability score
         self.extra_args = [[
-            "-maxconnections=164",
+            "-maxconnections=172",
             "-enableavalanche=1",
             # OP_TRUE coinbases are non-standard.
             "-acceptnonstdtxn=1"]]

@@ -1105,7 +1105,7 @@ class FullBlockTest(BitcoinTestFramework):
 
         self.log.info("Reject a block with an invalid block height in coinbase")
         self.move_tip(chain1_tip + 2)
-        b_cb34 = self.next_block('b_cb34', version=1)
+        b_cb34 = self.next_block('b_cb34')
         b_cb34.vtx[0] = create_coinbase(height=b_cb34.nHeight+1)
         b_cb34 = self.update_block('b_cb34', [])
         self.log.info(b_cb34.hash)

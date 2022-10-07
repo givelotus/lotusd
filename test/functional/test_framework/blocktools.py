@@ -4,7 +4,11 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Utilities for manipulating blocks and transactions."""
 
+import struct
+import time
 import unittest
+
+from binascii import a2b_hex
 from decimal import Decimal
 
 from .messages import (
@@ -38,20 +42,23 @@ TIME_GENESIS_BLOCK = 1600000000
 SUBSIDY = Decimal('260')
 
 
-def create_block(hashprev, coinbase, height, ntime=None, *, version=1):
+def create_block(hashprev=None, coinbase=None, height=None, ntime=None,
+                 *, version=None, tmpl=None):
     """Create a block (with regtest difficulty)."""
     block = CBlock()
-    block.nHeaderVersion = version
-    if ntime is None:
-        import time
-        block.nTime = int(time.time() + 600)
+    if tmpl is None:
+        tmpl = {}
+    block.nHeaderVersion = version or tmpl.get('version', 1)
+    block.nTime = ntime or tmpl.get('curtime', int(time.time() + 600))
+    block.nHeight = height or tmpl.get("height")
+    assert block.nHeight is not None
+    block.hashPrevBlock = hashprev or int(tmpl['previousblockhash'], 0x10)
+    if tmpl.get('bits') is not None:
+        block.nBits = struct.unpack('>I', a2b_hex(tmpl['bits']))[0]
     else:
-        block.nTime = ntime
-    block.nHeight = height
-    block.hashPrevBlock = hashprev
-    # difficulty retargeting is disabled in REGTEST chainparams
-    block.nBits = 0x207fffff
-    block.vtx.append(coinbase)
+        # difficulty retargeting is disabled in REGTEST chainparams
+        block.nBits = 0x207fffff
+    block.vtx.append(coinbase or create_coinbase(height=tmpl['height']))
     block.hashMerkleRoot = block.calc_merkle_root()
     block.calc_sha256()
     return block

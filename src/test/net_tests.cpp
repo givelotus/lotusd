@@ -26,8 +26,9 @@
 #include <cstdint>
 #include <ios>
 #include <memory>
-#include <numeric>
 #include <string>
+
+using namespace std::literals;
 
 class CAddrManSerializationMock : public CAddrMan {
 public:
@@ -112,9 +113,8 @@ BOOST_AUTO_TEST_CASE(caddrdb_read) {
     BOOST_CHECK(Lookup("250.7.1.1", addr1, 10605, false));
     BOOST_CHECK(Lookup("250.7.2.2", addr2, 9999, false));
     BOOST_CHECK(Lookup("250.7.3.3", addr3, 9999, false));
-    BOOST_CHECK(Lookup(std::string("250.7.3.3", 9), addr3, 9999, false));
-    BOOST_CHECK(
-        !Lookup(std::string("250.7.3.3\0example.com", 21), addr3, 9999, false));
+    BOOST_CHECK(Lookup("250.7.3.3"s, addr3, 9999, false));
+    BOOST_CHECK(!Lookup("250.7.3.3\0example.com"s, addr3, 9999, false));
 
     // Add three addresses to new table.
     CService source;
@@ -186,7 +186,6 @@ BOOST_AUTO_TEST_CASE(caddrdb_read_corrupted) {
 BOOST_AUTO_TEST_CASE(cnode_simple_test) {
     SOCKET hSocket = INVALID_SOCKET;
     NodeId id = 0;
-    int height = 0;
 
     in_addr ipv4Addr;
     ipv4Addr.s_addr = 0xa0b0c001;
@@ -194,25 +193,57 @@ BOOST_AUTO_TEST_CASE(cnode_simple_test) {
     CAddress addr = CAddress(CService(ipv4Addr, 7777), NODE_NETWORK);
     std::string pszDest;
 
-    auto pnode1 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket,
-                                          addr, 0, 0, 0, CAddress(), pszDest,
-                                          ConnectionType::OUTBOUND_FULL_RELAY);
+    auto pnode1 =
+        std::make_unique<CNode>(id++, NODE_NETWORK, hSocket, addr,
+                                /* nKeyedNetGroupIn = */ 0,
+                                /* nLocalHostNonceIn = */ 0,
+                                /* nLocalExtraEntropyIn */ 0, CAddress(),
+                                pszDest, ConnectionType::OUTBOUND_FULL_RELAY,
+                                /* inbound_onion = */ false);
     BOOST_CHECK(pnode1->IsFullOutboundConn() == true);
     BOOST_CHECK(pnode1->IsManualConn() == false);
     BOOST_CHECK(pnode1->IsBlockOnlyConn() == false);
     BOOST_CHECK(pnode1->IsFeelerConn() == false);
     BOOST_CHECK(pnode1->IsAddrFetchConn() == false);
     BOOST_CHECK(pnode1->IsInboundConn() == false);
+    BOOST_CHECK(pnode1->m_inbound_onion == false);
+    BOOST_CHECK_EQUAL(pnode1->ConnectedThroughNetwork(), Network::NET_IPV4);
 
-    auto pnode2 = std::make_unique<CNode>(id++, NODE_NETWORK, height, hSocket,
-                                          addr, 1, 1, 1, CAddress(), pszDest,
-                                          ConnectionType::INBOUND);
+    auto pnode2 = std::make_unique<CNode>(id++, NODE_NETWORK, hSocket, addr, 1,
+                                          1, 1, CAddress(), pszDest,
+                                          ConnectionType::INBOUND, false);
     BOOST_CHECK(pnode2->IsFullOutboundConn() == false);
     BOOST_CHECK(pnode2->IsManualConn() == false);
     BOOST_CHECK(pnode2->IsBlockOnlyConn() == false);
     BOOST_CHECK(pnode2->IsFeelerConn() == false);
     BOOST_CHECK(pnode2->IsAddrFetchConn() == false);
     BOOST_CHECK(pnode2->IsInboundConn() == true);
+    BOOST_CHECK(pnode2->m_inbound_onion == false);
+    BOOST_CHECK_EQUAL(pnode2->ConnectedThroughNetwork(), Network::NET_IPV4);
+
+    auto pnode3 = std::make_unique<CNode>(
+        id++, NODE_NETWORK, hSocket, addr, 0, 0, 0, CAddress(), pszDest,
+        ConnectionType::OUTBOUND_FULL_RELAY, false);
+    BOOST_CHECK(pnode3->IsFullOutboundConn() == true);
+    BOOST_CHECK(pnode3->IsManualConn() == false);
+    BOOST_CHECK(pnode3->IsBlockOnlyConn() == false);
+    BOOST_CHECK(pnode3->IsFeelerConn() == false);
+    BOOST_CHECK(pnode3->IsAddrFetchConn() == false);
+    BOOST_CHECK(pnode3->IsInboundConn() == false);
+    BOOST_CHECK(pnode3->m_inbound_onion == false);
+    BOOST_CHECK_EQUAL(pnode3->ConnectedThroughNetwork(), Network::NET_IPV4);
+
+    auto pnode4 = std::make_unique<CNode>(id++, NODE_NETWORK, hSocket, addr, 1,
+                                          1, 1, CAddress(), pszDest,
+                                          ConnectionType::INBOUND, true);
+    BOOST_CHECK(pnode4->IsFullOutboundConn() == false);
+    BOOST_CHECK(pnode4->IsManualConn() == false);
+    BOOST_CHECK(pnode4->IsBlockOnlyConn() == false);
+    BOOST_CHECK(pnode4->IsFeelerConn() == false);
+    BOOST_CHECK(pnode4->IsAddrFetchConn() == false);
+    BOOST_CHECK(pnode4->IsInboundConn() == true);
+    BOOST_CHECK(pnode4->m_inbound_onion == true);
+    BOOST_CHECK_EQUAL(pnode4->ConnectedThroughNetwork(), Network::NET_ONION);
 }
 
 BOOST_AUTO_TEST_CASE(test_getSubVersionEB) {
@@ -363,6 +394,26 @@ BOOST_AUTO_TEST_CASE(cnetaddr_basic) {
     BOOST_CHECK(addr.IsAddrV1Compatible());
     BOOST_CHECK_EQUAL(addr.ToString(),
                       "1122:3344:5566:7788:9900:aabb:ccdd:eeff");
+
+    // IPv6, scoped/link-local. See https://tools.ietf.org/html/rfc4007
+    // We support non-negative decimal integers (uint32_t) as zone id indices.
+    // Test with a fairly-high value, e.g. 32, to avoid locally reserved ids.
+    const std::string link_local{"fe80::1"};
+    const std::string scoped_addr{link_local + "%32"};
+    BOOST_REQUIRE(LookupHost(scoped_addr, addr, false));
+    BOOST_REQUIRE(addr.IsValid());
+    BOOST_REQUIRE(addr.IsIPv6());
+    BOOST_CHECK(!addr.IsBindAny());
+    const std::string addr_str{addr.ToString()};
+    BOOST_CHECK(addr_str == scoped_addr || addr_str == "fe80:0:0:0:0:0:0:1");
+    // The fallback case "fe80:0:0:0:0:0:0:1" is needed for macOS 10.14/10.15
+    // and (probably) later. Test that the delimiter "%" and default zone id of
+    // 0 can be omitted for the default scope.
+    BOOST_REQUIRE(LookupHost(link_local + "%0", addr, false));
+    BOOST_REQUIRE(addr.IsValid());
+    BOOST_REQUIRE(addr.IsIPv6());
+    BOOST_CHECK(!addr.IsBindAny());
+    BOOST_CHECK_EQUAL(addr.ToString(), link_local);
 
     // TORv2
     BOOST_REQUIRE(addr.SetSpecial("6hzph5hv6337r6p2.onion"));
@@ -735,8 +786,10 @@ BOOST_AUTO_TEST_CASE(ipv4_peer_with_ipv6_addrMe_test) {
     ipv4AddrPeer.s_addr = 0xa0b0c001;
     CAddress addr = CAddress(CService(ipv4AddrPeer, 7777), NODE_NETWORK);
     std::unique_ptr<CNode> pnode = std::make_unique<CNode>(
-        0, NODE_NETWORK, 0, INVALID_SOCKET, addr, 0, 0, 0, CAddress{},
-        std::string{}, ConnectionType::OUTBOUND_FULL_RELAY);
+        0, NODE_NETWORK, INVALID_SOCKET, addr, /* nKeyedNetGroupIn */ 0,
+        /* nLocalHostNonceIn */ 0, /* nLocalExtraEntropyIn */ 0, CAddress{},
+        /* pszDest */ std::string{}, ConnectionType::OUTBOUND_FULL_RELAY,
+        /* inbound_onion = */ false);
     pnode->fSuccessfullyConnected.store(true);
 
     // the peer claims to be reaching us via IPv6
@@ -748,230 +801,11 @@ BOOST_AUTO_TEST_CASE(ipv4_peer_with_ipv6_addrMe_test) {
 
     // before patch, this causes undefined behavior detectable with clang's
     // -fsanitize=memory
-    AdvertiseLocal(&*pnode);
+    GetLocalAddrForPeer(&*pnode);
 
     // suppress no-checks-run warning; if this test fails, it's by triggering a
     // sanitizer
     BOOST_CHECK(1);
-}
-
-BOOST_AUTO_TEST_CASE(PoissonNextSend) {
-    g_mock_deterministic_tests = true;
-
-    int64_t now = 5000;
-    int average_interval_seconds = 600;
-
-    auto poisson = ::PoissonNextSend(now, average_interval_seconds);
-    std::chrono::microseconds poisson_chrono =
-        ::PoissonNextSend(std::chrono::microseconds{now},
-                          std::chrono::seconds{average_interval_seconds});
-
-    BOOST_CHECK_EQUAL(poisson, poisson_chrono.count());
-
-    g_mock_deterministic_tests = false;
-}
-
-std::vector<NodeEvictionCandidate>
-GetRandomNodeEvictionCandidates(const int n_candidates,
-                                FastRandomContext &random_context) {
-    std::vector<NodeEvictionCandidate> candidates;
-    for (int id = 0; id < n_candidates; ++id) {
-        candidates.push_back({
-            /* id */ id,
-            /* nTimeConnected */
-            static_cast<int64_t>(random_context.randrange(100)),
-            /* nMinPingUsecTime */
-            static_cast<int64_t>(random_context.randrange(100)),
-            /* nLastBlockTime */
-            static_cast<int64_t>(random_context.randrange(100)),
-            /* nLastProofTime */
-            static_cast<int64_t>(random_context.randrange(100)),
-            /* nLastTXTime */
-            static_cast<int64_t>(random_context.randrange(100)),
-            /* fRelevantServices */ random_context.randbool(),
-            /* fRelayTxes */ random_context.randbool(),
-            /* fBloomFilter */ random_context.randbool(),
-            /* nKeyedNetGroup */ random_context.randrange(100),
-            /* prefer_evict */ random_context.randbool(),
-            /* m_is_local */ random_context.randbool(),
-            /* availabilityScore */ double(random_context.randrange(-1)),
-        });
-    }
-    return candidates;
-}
-
-// Returns true if any of the node ids in node_ids are selected for eviction.
-bool IsEvicted(std::vector<NodeEvictionCandidate> candidates,
-               const std::vector<NodeId> &node_ids,
-               FastRandomContext &random_context) {
-    Shuffle(candidates.begin(), candidates.end(), random_context);
-    const std::optional<NodeId> evicted_node_id =
-        SelectNodeToEvict(std::move(candidates));
-    if (!evicted_node_id) {
-        return false;
-    }
-    return std::find(node_ids.begin(), node_ids.end(), *evicted_node_id) !=
-           node_ids.end();
-}
-
-// Create number_of_nodes random nodes, apply setup function candidate_setup_fn,
-// apply eviction logic and then return true if any of the node ids in node_ids
-// are selected for eviction.
-bool IsEvicted(const int number_of_nodes,
-               std::function<void(NodeEvictionCandidate &)> candidate_setup_fn,
-               const std::vector<NodeId> &node_ids,
-               FastRandomContext &random_context) {
-    std::vector<NodeEvictionCandidate> candidates =
-        GetRandomNodeEvictionCandidates(number_of_nodes, random_context);
-    for (NodeEvictionCandidate &candidate : candidates) {
-        candidate_setup_fn(candidate);
-    }
-    return IsEvicted(candidates, node_ids, random_context);
-}
-
-namespace {
-constexpr int NODE_EVICTION_TEST_ROUNDS{10};
-constexpr int NODE_EVICTION_TEST_UP_TO_N_NODES{200};
-} // namespace
-
-BOOST_AUTO_TEST_CASE(node_eviction_test) {
-    FastRandomContext random_context{true};
-
-    for (int i = 0; i < NODE_EVICTION_TEST_ROUNDS; ++i) {
-        for (int number_of_nodes = 0;
-             number_of_nodes < NODE_EVICTION_TEST_UP_TO_N_NODES;
-             ++number_of_nodes) {
-            // Four nodes with the highest keyed netgroup values should be
-            // protected from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nKeyedNetGroup = number_of_nodes - candidate.id;
-                },
-                {0, 1, 2, 3}, random_context));
-
-            // Eight nodes with the lowest minimum ping time should be protected
-            // from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [](NodeEvictionCandidate &candidate) {
-                    candidate.nMinPingUsecTime = candidate.id;
-                },
-                {0, 1, 2, 3, 4, 5, 6, 7}, random_context));
-
-            // Four nodes that most recently sent us novel transactions accepted
-            // into our mempool should be protected from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nLastTXTime = number_of_nodes - candidate.id;
-                },
-                {0, 1, 2, 3}, random_context));
-
-            // Four nodes that most recently sent us novel proofs accepted
-            // into our proof pool should be protected from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nLastProofTime = number_of_nodes - candidate.id;
-                },
-                {0, 1, 2, 3}, random_context));
-
-            // Up to eight non-tx-relay peers that most recently sent us novel
-            // blocks should be protected from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nLastBlockTime = number_of_nodes - candidate.id;
-                    if (candidate.id <= 7) {
-                        candidate.fRelayTxes = false;
-                        candidate.fRelevantServices = true;
-                    }
-                },
-                {0, 1, 2, 3, 4, 5, 6, 7}, random_context));
-
-            // Four peers that most recently sent us novel blocks should be
-            // protected from eviction.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nLastBlockTime = number_of_nodes - candidate.id;
-                },
-                {0, 1, 2, 3}, random_context));
-
-            // Combination of the previous two tests.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nLastBlockTime = number_of_nodes - candidate.id;
-                    if (candidate.id <= 7) {
-                        candidate.fRelayTxes = false;
-                        candidate.fRelevantServices = true;
-                    }
-                },
-                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, random_context));
-
-            // Combination of all tests above.
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.nKeyedNetGroup =
-                        number_of_nodes - candidate.id;        // 4 protected
-                    candidate.nMinPingUsecTime = candidate.id; // 8 protected
-                    candidate.nLastTXTime =
-                        number_of_nodes - candidate.id; // 4 protected
-                    candidate.nLastProofTime =
-                        number_of_nodes - candidate.id; // 4 protected
-                    candidate.nLastBlockTime =
-                        number_of_nodes - candidate.id; // 4 protected
-                },
-                {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
-                 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
-                random_context));
-
-            // 128 peers with the highest availability score should be protected
-            // from eviction.
-            std::vector<NodeId> protectedNodes(128);
-            std::iota(protectedNodes.begin(), protectedNodes.end(), 0);
-            BOOST_CHECK(!IsEvicted(
-                number_of_nodes,
-                [number_of_nodes](NodeEvictionCandidate &candidate) {
-                    candidate.availabilityScore =
-                        double(number_of_nodes - candidate.id);
-                },
-                protectedNodes, random_context));
-
-            // An eviction is expected given >= 161 random eviction candidates.
-            // The eviction logic protects at most four peers by net group,
-            // eight by lowest ping time, four by last time of novel tx, four by
-            // last time of novel proof, up to eight non-tx-relay peers by last
-            // novel block time, four by last novel block time, and 128 more by
-            // avalanche availability score.
-            if (number_of_nodes >= 161) {
-                BOOST_CHECK(SelectNodeToEvict(GetRandomNodeEvictionCandidates(
-                    number_of_nodes, random_context)));
-            }
-
-            // No eviction is expected given <= 24 random eviction candidates.
-            // The eviction logic protects at least four peers by net group,
-            // eight by lowest ping time, four by last time of novel tx, four by
-            // last time of novel proof, four peers by last novel block time.
-            if (number_of_nodes <= 24) {
-                BOOST_CHECK(!SelectNodeToEvict(GetRandomNodeEvictionCandidates(
-                    number_of_nodes, random_context)));
-            }
-
-            // Cases left to test:
-            // * "Protect the half of the remaining nodes which have been
-            // connected the longest. [...]"
-            // * "Pick out up to 1/4 peers that are localhost, sorted by longest
-            // uptime. [...]"
-            // * "If any remaining peers are preferred for eviction consider
-            // only them. [...]"
-            // * "Identify the network group with the most connections and
-            // youngest member. [...]"
-        }
-    }
 }
 
 BOOST_AUTO_TEST_CASE(avalanche_statistics) {
@@ -1031,6 +865,21 @@ BOOST_AUTO_TEST_CASE(avalanche_statistics) {
 
     // After 3 more tau we should be under 5%
     BOOST_CHECK_LT(previousScore, .05);
+
+    for (size_t i = 1; i <= 100; i++) {
+        avastats.invsPolled(10);
+
+        // Completely stop responding to the polls.
+        avastats.invsVoted(0);
+
+        avastats.updateAvailabilityScore();
+
+        // It's still a monotonic fall, and the score should turn negative.
+        double currentScore = avastats.getAvailabilityScore();
+        BOOST_CHECK_LE(currentScore, previousScore);
+        BOOST_CHECK_LE(currentScore, 0.);
+        previousScore = currentScore;
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

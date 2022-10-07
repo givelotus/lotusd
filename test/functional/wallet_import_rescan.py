@@ -26,7 +26,7 @@ import random
 from decimal import Decimal
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, connect_nodes, set_node_times
+from test_framework.util import assert_equal, set_node_times
 
 Call = enum.Enum("Call", "single multiaddress multiscript")
 Data = enum.Enum("Data", "address pub priv")
@@ -152,7 +152,7 @@ class ImportRescanTest(BitcoinTestFramework):
         self.skip_if_no_wallet()
 
     def setup_network(self):
-        self.extra_args = [["-wallet="] for _ in range(self.num_nodes)]
+        self.extra_args = [[] for _ in range(self.num_nodes)]
         for i, import_node in enumerate(IMPORT_NODES, 2):
             if import_node.prune:
                 self.extra_args[i] += ["-prune=1"]
@@ -160,16 +160,13 @@ class ImportRescanTest(BitcoinTestFramework):
         self.add_nodes(self.num_nodes, extra_args=self.extra_args)
 
         # Import keys with pruning disabled
-        self.start_nodes(extra_args=[["-wallet="]] * self.num_nodes)
-        for n in self.nodes:
-            n.importprivkey(
-                privkey=n.get_deterministic_priv_key().key,
-                label='coinbase')
+        self.start_nodes(extra_args=[[]] * self.num_nodes)
+        self.import_deterministic_coinbase_privkeys()
         self.stop_nodes()
 
         self.start_nodes()
         for i in range(1, self.num_nodes):
-            connect_nodes(self.nodes[i], self.nodes[0])
+            self.connect_nodes(i, 0)
 
     def run_test(self):
         # Create one transaction on node 0 with a unique amount for
@@ -187,6 +184,8 @@ class ImportRescanTest(BitcoinTestFramework):
             variant.confirmation_height = self.nodes[0].getblockcount()
             variant.timestamp = self.nodes[0].getblockheader(
                 self.nodes[0].getbestblockhash())["time"]
+        # Conclude sync before calling setmocktime to avoid timeouts
+        self.sync_all()
 
         # Generate a block further in the future (past the rescan window).
         assert_equal(self.nodes[0].getrawmempool(), [])

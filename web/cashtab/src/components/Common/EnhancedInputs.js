@@ -1,6 +1,7 @@
 import * as React from 'react';
 import PropTypes from 'prop-types';
 import { Form, Input, Select } from 'antd';
+const { TextArea } = Input;
 import {
     ThemedDollarOutlined,
     ThemedWalletOutlined,
@@ -28,6 +29,18 @@ export const AntdFormCss = css`
         opacity: 1;
         height: 50px;
     }
+    textarea.ant-input,
+    .ant-select-selection {
+        background-color: ${props =>
+            props.theme.forms.selectionBackground} !important;
+        box-shadow: none !important;
+        border-radius: 4px;
+        font-weight: bold;
+        color: ${props => props.theme.forms.text};
+        opacity: 1;
+        height: 50px;
+        min-height: 100px;
+    }
     .ant-input-affix-wrapper {
         background-color: ${props => props.theme.forms.selectionBackground};
         border: 1px solid ${props => props.theme.wallet.borders.color} !important;
@@ -35,6 +48,8 @@ export const AntdFormCss = css`
     .ant-select-selector {
         height: 60px !important;
         border: 1px solid ${props => props.theme.wallet.borders.color} !important;
+        background-color: ${props =>
+            props.theme.forms.selectionBackground}!important;
     }
     .ant-form-item-has-error
         > div
@@ -203,7 +218,7 @@ SendBchInput.propTypes = {
     activeFiatCode: PropTypes.string,
 };
 
-export const FormItemWithMaxAddon = ({ onMax, inputProps, ...otherProps }) => {
+export const DestinationAmount = ({ onMax, inputProps, ...otherProps }) => {
     return (
         <AntdFormWrapper>
             <Form.Item {...otherProps}>
@@ -232,13 +247,13 @@ export const FormItemWithMaxAddon = ({ onMax, inputProps, ...otherProps }) => {
     );
 };
 
-FormItemWithMaxAddon.propTypes = {
+DestinationAmount.propTypes = {
     onMax: PropTypes.func,
     inputProps: PropTypes.object,
 };
 
 // loadWithCameraOpen prop: if true, load page with camera scanning open
-export const FormItemWithQRCodeAddon = ({
+export const DestinationAddressSingle = ({
     onScan,
     loadWithCameraOpen,
     inputProps,
@@ -263,9 +278,27 @@ export const FormItemWithQRCodeAddon = ({
     );
 };
 
-FormItemWithQRCodeAddon.propTypes = {
+DestinationAddressSingle.propTypes = {
     onScan: PropTypes.func,
     loadWithCameraOpen: PropTypes.bool,
+    inputProps: PropTypes.object,
+};
+
+export const DestinationAddressMulti = ({ inputProps, ...otherProps }) => {
+    return (
+        <AntdFormWrapper>
+            <Form.Item {...otherProps}>
+                <TextArea
+                    prefix={<ThemedWalletOutlined />}
+                    autoComplete="off"
+                    {...inputProps}
+                />
+            </Form.Item>
+        </AntdFormWrapper>
+    );
+};
+
+DestinationAddressMulti.propTypes = {
     inputProps: PropTypes.object,
 };
 

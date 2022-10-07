@@ -680,7 +680,7 @@ RPCHelpMan importwallet() {
                 EnsureWalletIsUnlocked(pwallet);
 
                 fsbridge::ifstream file;
-                file.open(request.params[0].get_str(),
+                file.open(fs::u8path(request.params[0].get_str()),
                           std::ios::in | std::ios::ate);
                 if (!file.is_open()) {
                     throw JSONRPCError(RPC_INVALID_PARAMETER,
@@ -940,7 +940,7 @@ RPCHelpMan dumpwallet() {
 
             EnsureWalletIsUnlocked(&wallet);
 
-            fs::path filepath = request.params[0].get_str();
+            fs::path filepath = fs::u8path(request.params[0].get_str());
             filepath = fs::absolute(filepath);
 
             /**
@@ -951,7 +951,7 @@ RPCHelpMan dumpwallet() {
              */
             if (fs::exists(filepath)) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                   filepath.string() +
+                                   filepath.u8string() +
                                        " already exists. If you are "
                                        "sure this is what you want, "
                                        "move it out of the way first");
@@ -980,7 +980,7 @@ RPCHelpMan dumpwallet() {
             std::sort(vKeyBirth.begin(), vKeyBirth.end());
 
             // produce output
-            file << strprintf("# Wallet dump created by Bitcoin %s\n",
+            file << strprintf("# Wallet dump created by %s %s\n", CLIENT_NAME,
                               CLIENT_BUILD);
             file << strprintf("# * Created on %s\n",
                               FormatISO8601DateTime(GetTime()));
@@ -1059,7 +1059,7 @@ RPCHelpMan dumpwallet() {
             file.close();
 
             UniValue reply(UniValue::VOBJ);
-            reply.pushKV("filename", filepath.string());
+            reply.pushKV("filename", filepath.u8string());
 
             return reply;
         },
@@ -2046,7 +2046,12 @@ static UniValue ProcessDescriptorImport(CWallet *const pwallet,
         // pubkeys
         FlatSigningProvider expand_keys;
         std::vector<CScript> scripts;
-        parsed_desc->Expand(0, keys, scripts, expand_keys);
+        if (!parsed_desc->Expand(0, keys, scripts, expand_keys)) {
+            throw JSONRPCError(
+                RPC_WALLET_ERROR,
+                "Cannot expand descriptor. Probably because of hardened "
+                "derivations without private keys provided");
+        }
         parsed_desc->ExpandPrivate(0, keys, expand_keys);
 
         // Check if all private keys are provided
@@ -2096,7 +2101,8 @@ static UniValue ProcessDescriptorImport(CWallet *const pwallet,
         }
 
         // Add descriptor to the wallet
-        auto spk_manager = pwallet->AddWalletDescriptor(w_desc, keys, label);
+        auto spk_manager =
+            pwallet->AddWalletDescriptor(w_desc, keys, label, internal);
         if (spk_manager == nullptr) {
             throw JSONRPCError(
                 RPC_WALLET_ERROR,
@@ -2356,20 +2362,20 @@ RPCHelpMan importdescriptors() {
 Span<const CRPCCommand> GetWalletDumpRPCCommands() {
     // clang-format off
     static const CRPCCommand commands[] = {
-        //  category            name                        actor (function)          argNames
-        //  ------------------- ------------------------    ----------------------    ----------
-        { "wallet",             "abortrescan",              abortrescan,              {} },
-        { "wallet",             "dumpprivkey",              dumpprivkey,              {"address"}  },
-        { "wallet",             "dumpwallet",               dumpwallet,               {"filename"} },
-        { "wallet",             "dumpcoins",                dumpcoins,                {} },
-        { "wallet",             "importdescriptors",        importdescriptors,        {"requests"} },
-        { "wallet",             "importmulti",              importmulti,              {"requests","options"} },
-        { "wallet",             "importprivkey",            importprivkey,            {"privkey","label","rescan"} },
-        { "wallet",             "importwallet",             importwallet,             {"filename"} },
-        { "wallet",             "importaddress",            importaddress,            {"address","label","rescan","p2sh"} },
-        { "wallet",             "importprunedfunds",        importprunedfunds,        {"rawtransaction","txoutproof"} },
-        { "wallet",             "importpubkey",             importpubkey,             {"pubkey","label","rescan"} },
-        { "wallet",             "removeprunedfunds",        removeprunedfunds,        {"txid"} },
+        //  category            actor (function)
+        //  ------------------  ----------------------
+        { "wallet",             abortrescan,              },
+        { "wallet",             dumpprivkey,              },
+        { "wallet",             dumpwallet,               },
+        { "wallet",             dumpcoins,                },
+        { "wallet",             importdescriptors,        },
+        { "wallet",             importmulti,              },
+        { "wallet",             importprivkey,            },
+        { "wallet",             importwallet,             },
+        { "wallet",             importaddress,            },
+        { "wallet",             importprunedfunds,        },
+        { "wallet",             importpubkey,             },
+        { "wallet",             removeprunedfunds,        },
     };
     // clang-format on
 

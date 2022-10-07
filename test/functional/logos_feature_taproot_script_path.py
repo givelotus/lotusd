@@ -193,7 +193,7 @@ TX_CASES = [
              0,
              [SIGHASH_ALL | SIGHASH_LOTUS]),
         ],
-        error='Extra items left on stack after execution',
+        error='Stack size must be exactly one after execution',
     ),
     dict(
         outputs=1,

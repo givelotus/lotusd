@@ -33,17 +33,18 @@ import {
 import TabCash from '@assets/tabcash.png';
 import ABC from '@assets/logo_topright.png';
 import { checkForTokenById } from '@utils/tokenMethods.js';
-import { currency } from './Common/Ticker';
+// Biometric security import not used in extension/src/components/App.js
+import ProtectableComponentWrapper from './Authentication/ProtectableComponentWrapper';
 
 const GlobalStyle = createGlobalStyle`    
-    .ant-modal-wrap > div > div.ant-modal-content > div > div > div.ant-modal-confirm-btns > button, .ant-modal > button, .ant-modal-confirm-btns > button, .ant-modal-footer > button {
+    .ant-modal-wrap > div > div.ant-modal-content > div > div > div.ant-modal-confirm-btns > button, .ant-modal > button, .ant-modal-confirm-btns > button, .ant-modal-footer > button, #cropControlsConfirm {
         border-radius: 8px;
         background-color: ${props => props.theme.modals.buttons.background};
         color: ${props => props.theme.wallet.text.secondary};
         font-weight: bold;
     }    
     
-    .ant-modal-wrap > div > div.ant-modal-content > div > div > div.ant-modal-confirm-btns > button:hover,.ant-modal-confirm-btns > button:hover, .ant-modal-footer > button:hover {
+    .ant-modal-wrap > div > div.ant-modal-content > div > div > div.ant-modal-confirm-btns > button:hover,.ant-modal-confirm-btns > button:hover, .ant-modal-footer > button:hover, #cropControlsConfirm:hover {
         color: ${props => props.theme.primary};
         transition: color 0.3s;
         background-color: ${props => props.theme.modals.buttons.background};
@@ -61,14 +62,21 @@ const GlobalStyle = createGlobalStyle`
         color: ${props => props.theme.contrast} !important;
         background-color: ${props => props.theme.primary} !important;
     }
-    #addrSwitch {
+    #addrSwitch, #cropSwitch {
         .ant-switch-checked {
             background-color: white !important;
         }
     }
-    #addrSwitch.ant-switch-checked {
+    #addrSwitch.ant-switch-checked, #cropSwitch.ant-switch-checked {
         background-image: ${props =>
             props.theme.buttons.primary.backgroundImage} !important;
+    }
+
+    .ant-slider-rail {
+        background-color: ${props => props.theme.forms.border} !important;
+    }
+    .ant-slider-track {
+        background-color: ${props => props.theme.primary} !important;
     }
 `;
 
@@ -81,14 +89,15 @@ const CustomApp = styled.div`
 const Footer = styled.div`
     z-index: 2;
     background-color: ${props => props.theme.footer.background};
-    border-radius: 20px;
+    border-radius: 20px 20px 0 0;
     position: fixed;
     bottom: 0;
     width: 500px;
+    box-shadow: rgb(136 172 243 / 25%) 0px 10px 30px,
+        rgb(0 0 0 / 3%) 0px 1px 1px, rgb(0 51 167 / 10%) 0px 10px 20px;
     @media (max-width: 768px) {
         width: 100%;
     }
-    border-top: 1px solid ${props => props.theme.wallet.borders.color};
 `;
 
 export const NavButton = styled.button`
@@ -164,7 +173,6 @@ export const HeaderCtn = styled.div`
     padding: 20px 0 30px;
     margin-bottom: 20px;
     justify-content: space-between;
-    border-bottom: 1px solid ${props => props.theme.wallet.borders.color};
 
     a {
         color: ${props => props.theme.wallet.text.secondary};
@@ -236,41 +244,6 @@ const App = () => {
           )
         : false;
 
-    useEffect(() => {
-        // If URL is not as specified in currency.appURL in Ticker.js, show a popup
-        const currentUrl = window.location.hostname;
-        if (currentUrl !== currency.appUrl) {
-            console.log(
-                `Loaded URL ${currentUrl} does not match app URL ${currency.appUrl}!`,
-            );
-            Modal.warning({
-                title: 'Cashtab is moving!',
-                content: (
-                    <div>
-                        <p>
-                            Cashtab is moving to a new home at{' '}
-                            <a
-                                href="https://cashtab.com/"
-                                target="_blank"
-                                rel="noreferrer"
-                            >
-                                Cashtab.com
-                            </a>
-                        </p>
-                        <p>
-                            Please write down your wallet 12-word seed and
-                            import it at the new domain.
-                        </p>
-                        <p>
-                            At the end of the month, cashtabapp.com will
-                            auto-fwd to cashtab.com after one minute.
-                        </p>
-                    </div>
-                ),
-            });
-        }
-    }, []);
-
     return (
         <ThemeProvider theme={theme}>
             <GlobalStyle />
@@ -300,42 +273,46 @@ const App = () => {
                                 </a>
                                 {/*Begin component not included in extension as replaced by open in tab link*/}
                             </HeaderCtn>
-                            <WalletLabel name={wallet.name}></WalletLabel>
-                            <Switch>
-                                <Route path="/wallet">
-                                    <Wallet />
-                                </Route>
-                                <Route path="/tokens">
-                                    <Tokens
-                                        passLoadingStatus={
-                                            setLoadingUtxosAfterSend
-                                        }
-                                    />
-                                </Route>
-                                <Route path="/send">
-                                    <Send
-                                        passLoadingStatus={
-                                            setLoadingUtxosAfterSend
-                                        }
-                                    />
-                                </Route>
-                                <Route
-                                    path="/send-token/:tokenId"
-                                    render={props => (
-                                        <SendToken
-                                            tokenId={props.match.params.tokenId}
+                            <ProtectableComponentWrapper>
+                                <WalletLabel name={wallet.name}></WalletLabel>
+                                <Switch>
+                                    <Route path="/wallet">
+                                        <Wallet />
+                                    </Route>
+                                    <Route path="/tokens">
+                                        <Tokens
                                             passLoadingStatus={
                                                 setLoadingUtxosAfterSend
                                             }
                                         />
-                                    )}
-                                />
-                                <Route path="/configure">
-                                    <Configure />
-                                </Route>
-                                <Redirect exact from="/" to="/wallet" />
-                                <Route component={NotFound} />
-                            </Switch>
+                                    </Route>
+                                    <Route path="/send">
+                                        <Send
+                                            passLoadingStatus={
+                                                setLoadingUtxosAfterSend
+                                            }
+                                        />
+                                    </Route>
+                                    <Route
+                                        path="/send-token/:tokenId"
+                                        render={props => (
+                                            <SendToken
+                                                tokenId={
+                                                    props.match.params.tokenId
+                                                }
+                                                passLoadingStatus={
+                                                    setLoadingUtxosAfterSend
+                                                }
+                                            />
+                                        )}
+                                    />
+                                    <Route path="/configure">
+                                        <Configure />
+                                    </Route>
+                                    <Redirect exact from="/" to="/wallet" />
+                                    <Route component={NotFound} />
+                                </Switch>
+                            </ProtectableComponentWrapper>
                         </WalletCtn>
                         {wallet ? (
                             <Footer>

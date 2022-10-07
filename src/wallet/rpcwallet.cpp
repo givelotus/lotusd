@@ -105,7 +105,7 @@ bool GetWalletNameFromJSONRPCRequest(const JSONRPCRequest &request,
 
 std::shared_ptr<CWallet>
 GetWalletForJSONRPCRequest(const JSONRPCRequest &request) {
-    CHECK_NONFATAL(!request.fHelp);
+    CHECK_NONFATAL(request.mode == JSONRPCRequest::EXECUTE);
     std::string wallet_name;
     if (GetWalletNameFromJSONRPCRequest(request, wallet_name)) {
         std::shared_ptr<CWallet> pwallet = GetWallet(wallet_name);
@@ -123,9 +123,11 @@ GetWalletForJSONRPCRequest(const JSONRPCRequest &request) {
     }
 
     if (wallets.empty()) {
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
-                           "Method not found (wallet method is disabled "
-                           "because no wallet is loaded)");
+        throw JSONRPCError(
+            RPC_WALLET_NOT_FOUND,
+            "No wallet is loaded. Load a wallet using loadwallet or create a "
+            "new one with createwallet. (Note: A default wallet is no longer "
+            "automatically created)");
     }
 
     throw JSONRPCError(RPC_WALLET_NOT_SPECIFIED,
@@ -2726,7 +2728,7 @@ static RPCHelpMan lockunspent() {
                 if (nOutput < 0) {
                     throw JSONRPCError(
                         RPC_INVALID_PARAMETER,
-                        "Invalid parameter, vout must be positive");
+                        "Invalid parameter, vout cannot be negative");
                 }
 
                 const TxId txid(ParseHashO(o, "txid"));
@@ -3161,7 +3163,7 @@ static RPCHelpMan listwalletdir() {
             UniValue wallets(UniValue::VARR);
             for (const auto &path : ListWalletDir()) {
                 UniValue wallet(UniValue::VOBJ);
-                wallet.pushKV("name", path.string());
+                wallet.pushKV("name", path.u8string());
                 wallets.push_back(wallet);
             }
 
@@ -3798,8 +3800,8 @@ static RPCHelpMan listunspent() {
 }
 
 void FundTransaction(CWallet *const pwallet, CMutableTransaction &tx,
-                     Amount &fee_out, int &change_position, UniValue options,
-                     CCoinControl &coinControl) {
+                     Amount &fee_out, int &change_position,
+                     const UniValue &options, CCoinControl &coinControl) {
     // Make sure the results are valid at least up to the most recent block
     // the user could have gotten from another RPC command prior to now
     pwallet->BlockUntilSyncedToCurrentChain();
@@ -4837,7 +4839,8 @@ static RPCHelpMan send() {
                      "subtract_fee_from_outputs",
                      RPCArg::Type::ARR,
                      /* default */ "empty array",
-                     "A JSON array of integers.\n"
+                     "Outputs to subtract the fee from, specified as integer "
+                     "indices.\n"
                      "The fee will be equally deducted from the amount of each "
                      "specified output.\n"
                      "Those recipients will receive less bitcoins than you "
@@ -5396,10 +5399,8 @@ static RPCHelpMan upgradewallet() {
             if (!request.params[0].isNull()) {
                 version = request.params[0].get_int();
             }
-
             bilingual_str error;
-            std::vector<bilingual_str> warnings;
-            if (!pwallet->UpgradeWallet(version, error, warnings)) {
+            if (!pwallet->UpgradeWallet(version, error)) {
                 throw JSONRPCError(RPC_WALLET_ERROR, error.original);
             }
             return error.original;
@@ -5410,55 +5411,55 @@ static RPCHelpMan upgradewallet() {
 Span<const CRPCCommand> GetWalletRPCCommands() {
     // clang-format off
     static const CRPCCommand commands[] = {
-        //  category            name                            actor (function)              argNames
-        //  ------------------- ------------------------        ----------------------        ----------
-        { "rawtransactions",    "fundrawtransaction",           fundrawtransaction,           {"hexstring","options"} },
-        { "wallet",             "abandontransaction",           abandontransaction,           {"txid"} },
-        { "wallet",             "addmultisigaddress",           addmultisigaddress,           {"nrequired","keys","label"} },
-        { "wallet",             "backupwallet",                 backupwallet,                 {"destination"} },
-        { "wallet",             "createwallet",                 createwallet,                 {"wallet_name", "disable_private_keys", "blank", "passphrase", "avoid_reuse", "descriptors", "load_on_startup"} },
-        { "wallet",             "encryptwallet",                encryptwallet,                {"passphrase"} },
-        { "wallet",             "getaddressesbylabel",          getaddressesbylabel,          {"label"} },
-        { "wallet",             "getaddressinfo",               getaddressinfo,               {"address"} },
-        { "wallet",             "getbalance",                   getbalance,                   {"dummy","minconf","include_watchonly","avoid_reuse"} },
-        { "wallet",             "getnewaddress",                getnewaddress,                {"label", "address_type"} },
-        { "wallet",             "getrawchangeaddress",          getrawchangeaddress,          {} },
-        { "wallet",             "getreceivedbyaddress",         getreceivedbyaddress,         {"address","minconf"} },
-        { "wallet",             "getreceivedbylabel",           getreceivedbylabel,           {"label","minconf"} },
-        { "wallet",             "gettransaction",               gettransaction,               {"txid","include_watchonly","verbose"} },
-        { "wallet",             "getunconfirmedbalance",         getunconfirmedbalance,         {} },
-        { "wallet",             "getbalances",                  getbalances,                  {} },
-        { "wallet",             "getwalletinfo",                getwalletinfo,                {} },
-        { "wallet",             "keypoolrefill",                 keypoolrefill,                 {"newsize"} },
-        { "wallet",             "listaddressgroupings",         listaddressgroupings,         {} },
-        { "wallet",             "listlabels",                   listlabels,                   {"purpose"} },
-        { "wallet",             "listlockunspent",              listlockunspent,              {} },
-        { "wallet",             "listreceivedbyaddress",        listreceivedbyaddress,        {"minconf","include_empty","include_watchonly","address_filter"} },
-        { "wallet",             "listreceivedbylabel",          listreceivedbylabel,          {"minconf","include_empty","include_watchonly"} },
-        { "wallet",             "listsinceblock",               listsinceblock,               {"blockhash","target_confirmations","include_watchonly","include_removed"} },
-        { "wallet",             "listtransactions",             listtransactions,             {"label|dummy","count","skip","include_watchonly"} },
-        { "wallet",             "listunspent",                  listunspent,                  {"minconf","maxconf","addresses","include_unsafe","query_options"} },
-        { "wallet",             "listwalletdir",                listwalletdir,                {} },
-        { "wallet",             "listwallets",                  listwallets,                  {} },
-        { "wallet",             "loadwallet",                   loadwallet,                   {"filename", "load_on_startup"} },
-        { "wallet",             "lockunspent",                  lockunspent,                  {"unlock","transactions"} },
-        { "wallet",             "rescanblockchain",             rescanblockchain,             {"start_height", "stop_height"} },
-        { "wallet",             "send",                         send,                         {"outputs", "options"} },
-        { "wallet",             "sendmany",                     sendmany,                     {"dummy","amounts","minconf","comment","subtractfeefrom"} },
-        { "wallet",             "sendtoaddress",                sendtoaddress,                {"address","amount","comment","comment_to","subtractfeefromamount","avoid_reuse"} },
-        { "wallet",             "sethdseed",                    sethdseed,                    {"newkeypool","seed"} },
-        { "wallet",             "setlabel",                     setlabel,                     {"address","label"} },
-        { "wallet",             "settxfee",                     settxfee,                     {"amount"} },
-        { "wallet",             "setwalletflag",                 setwalletflag,                 {"flag","value"} },
-        { "wallet",             "signmessage",                  signmessage,                  {"address","message"} },
-        { "wallet",             "signrawtransactionwithwallet", signrawtransactionwithwallet, {"hexstring", "prevtxs", "sighashtype"} },
-        { "wallet",             "unloadwallet",                 unloadwallet,                 {"wallet_name", "load_on_startup"} },
-        { "wallet",             "upgradewallet",                upgradewallet,                {"version"} },
-        { "wallet",             "walletcreatefundedpsbt",       walletcreatefundedpsbt,       {"inputs","outputs","locktime","options","bip32derivs"} },
-        { "wallet",             "walletlock",                   walletlock,                   {} },
-        { "wallet",             "walletpassphrase",             walletpassphrase,             {"passphrase","timeout"} },
-        { "wallet",             "walletpassphrasechange",       walletpassphrasechange,       {"oldpassphrase","newpassphrase"} },
-        { "wallet",             "walletprocesspsbt",            walletprocesspsbt,            {"psbt","sign","sighashtype","bip32derivs"} },
+        //  category            actor (function)
+        //  ------------------  ----------------------
+        { "rawtransactions",    fundrawtransaction,            },
+        { "wallet",             abandontransaction,            },
+        { "wallet",             addmultisigaddress,            },
+        { "wallet",             backupwallet,                  },
+        { "wallet",             createwallet,                  },
+        { "wallet",             encryptwallet,                 },
+        { "wallet",             getaddressesbylabel,           },
+        { "wallet",             getaddressinfo,                },
+        { "wallet",             getbalance,                    },
+        { "wallet",             getnewaddress,                 },
+        { "wallet",             getrawchangeaddress,           },
+        { "wallet",             getreceivedbyaddress,          },
+        { "wallet",             getreceivedbylabel,            },
+        { "wallet",             gettransaction,                },
+        { "wallet",             getunconfirmedbalance,         },
+        { "wallet",             getbalances,                   },
+        { "wallet",             getwalletinfo,                 },
+        { "wallet",             keypoolrefill,                 },
+        { "wallet",             listaddressgroupings,          },
+        { "wallet",             listlabels,                    },
+        { "wallet",             listlockunspent,               },
+        { "wallet",             listreceivedbyaddress,         },
+        { "wallet",             listreceivedbylabel,           },
+        { "wallet",             listsinceblock,                },
+        { "wallet",             listtransactions,              },
+        { "wallet",             listunspent,                   },
+        { "wallet",             listwalletdir,                 },
+        { "wallet",             listwallets,                   },
+        { "wallet",             loadwallet,                    },
+        { "wallet",             lockunspent,                   },
+        { "wallet",             rescanblockchain,              },
+        { "wallet",             send,                          },
+        { "wallet",             sendmany,                      },
+        { "wallet",             sendtoaddress,                 },
+        { "wallet",             sethdseed,                     },
+        { "wallet",             setlabel,                      },
+        { "wallet",             settxfee,                      },
+        { "wallet",             setwalletflag,                 },
+        { "wallet",             signmessage,                   },
+        { "wallet",             signrawtransactionwithwallet,  },
+        { "wallet",             unloadwallet,                  },
+        { "wallet",             upgradewallet,                 },
+        { "wallet",             walletcreatefundedpsbt,        },
+        { "wallet",             walletlock,                    },
+        { "wallet",             walletpassphrase,              },
+        { "wallet",             walletpassphrasechange,        },
+        { "wallet",             walletprocesspsbt,             },
     };
     // clang-format on
 

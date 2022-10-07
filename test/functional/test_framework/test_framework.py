@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 from enum import Enum
-from typing import Optional
+from typing import List
 
 from . import coverage
 from .authproxy import JSONRPCException
@@ -27,8 +27,6 @@ from .util import (
     PortSeed,
     assert_equal,
     check_json_precision,
-    connect_nodes,
-    disconnect_nodes,
     get_datadir_path,
     initialize_datadir,
     p2p_port,
@@ -96,22 +94,28 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     This class also contains various public and private helper methods."""
 
-    chain: Optional[str] = None
-    setup_clean_chain: Optional[bool] = None
-
     def __init__(self):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method"""
-        self.chain = 'regtest'
-        self.setup_clean_chain = False
-        self.nodes = []
+        self.chain: str = 'regtest'
+        self.setup_clean_chain: bool = False
+        self.nodes: List[TestNode] = []
         self.network_thread = None
         # Wait for up to 60 seconds for the RPC server to respond
         self.rpc_timeout = 60
         self.supports_cli = True
         self.bind_to_localhost_only = True
-        # We run parse_args before set_test_params for tests who need to
-        # know the parser options during setup.
         self.parse_args()
+        self.default_wallet_name = ""
+        self.wallet_data_filename = "wallet.dat"
+        # Optional list of wallet names that can be set in set_test_params to
+        # create and import keys to. If unset, default is len(nodes) *
+        # [default_wallet_name]. If wallet names are None, wallet creation is
+        # skipped. If list is truncated, wallet creation is skipped and keys
+        # are not imported.
+        self.wallet_names = None
+        # Disable ThreadOpenConnections by default, so that adding entries to
+        # addrman will not result in automatic connections to them.
+        self.disable_autoconnect = True
         self.set_test_params()
         if self.options.timeout_factor == 0:
             self.options.timeout_factor = 99999
@@ -386,27 +390,12 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def setup_nodes(self):
         """Override this method to customize test node setup"""
         extra_args = [[]] * self.num_nodes
-        wallets = [[]] * self.num_nodes
         if hasattr(self, "extra_args"):
             extra_args = self.extra_args
-            wallets = [[x for x in eargs if x.startswith('-wallet=')]
-                       for eargs in extra_args]
-        extra_args = [x + ['-nowallet'] for x in extra_args]
         self.add_nodes(self.num_nodes, extra_args)
         self.start_nodes()
-        for i, n in enumerate(self.nodes):
-            n.extra_args.pop()
-            if '-wallet=0' in n.extra_args or '-nowallet' in n.extra_args or '-disablewallet' in n.extra_args or not self.is_wallet_compiled():
-                continue
-            if '-wallet=' not in wallets[i] and not any(
-                    [x.startswith('-wallet=') for x in wallets[i]]):
-                wallets[i].append('-wallet=')
-            for w in wallets[i]:
-                wallet_name = w.split('=', 1)[1]
-                n.createwallet(
-                    wallet_name=wallet_name,
-                    descriptors=self.options.descriptors)
-        self.import_deterministic_coinbase_privkeys()
+        if self.is_wallet_compiled():
+            self.import_deterministic_coinbase_privkeys()
         if not self.setup_clean_chain:
             for n in self.nodes:
                 assert_equal(n.getblockchaininfo()["blocks"], 199)
@@ -422,13 +411,17 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 assert_equal(chain_info["initialblockdownload"], False)
 
     def import_deterministic_coinbase_privkeys(self):
-        for n in self.nodes:
-            try:
-                n.getwalletinfo()
-            except JSONRPCException as e:
-                assert str(e).startswith('Method not found')
-                continue
-
+        wallet_names = (
+            [self.default_wallet_name] * len(self.nodes)
+            if self.wallet_names is None else self.wallet_names
+        )
+        assert len(wallet_names) <= len(self.nodes)
+        for wallet_name, n in zip(wallet_names, self.nodes):
+            if wallet_name is not None:
+                n.createwallet(
+                    wallet_name=wallet_name,
+                    descriptors=self.options.descriptors,
+                    load_on_startup=True)
             n.importprivkey(
                 privkey=n.get_deterministic_priv_key().key,
                 label='coinbase')
@@ -538,10 +531,55 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.nodes[i].process.wait(timeout)
 
     def connect_nodes(self, a, b):
-        connect_nodes(self.nodes[a], self.nodes[b])
+        from_node = self.nodes[a]
+        to_node = self.nodes[b]
+
+        host = to_node.host
+        if host is None:
+            host = '127.0.0.1'
+        ip_port = host + ':' + str(to_node.p2p_port)
+        from_node.addnode(ip_port, "onetry")
+        # poll until version handshake complete to avoid race conditions
+        # with transaction relaying
+        # See comments in net_processing:
+        # * Must have a version message before anything else
+        # * Must have a verack message before anything else
+        wait_until_helper(
+            lambda: all(peer['version'] != 0
+                        for peer in from_node.getpeerinfo()))
+        wait_until_helper(
+            lambda: all(peer['bytesrecv_per_msg'].pop('verack', 0) == 24
+                        for peer in from_node.getpeerinfo()))
 
     def disconnect_nodes(self, a, b):
-        disconnect_nodes(self.nodes[a], self.nodes[b])
+        from_node = self.nodes[a]
+        to_node = self.nodes[b]
+
+        def get_peer_ids():
+            result = []
+            for peer in from_node.getpeerinfo():
+                if to_node.name in peer['subver']:
+                    result.append(peer['id'])
+            return result
+
+        peer_ids = get_peer_ids()
+        if not peer_ids:
+            self.log.warning(
+                f"disconnect_nodes: {from_node.index} and {to_node.index} were not connected")
+            return
+        for peer_id in peer_ids:
+            try:
+                from_node.disconnectnode(nodeid=peer_id)
+            except JSONRPCException as e:
+                # If this node is disconnected between calculating the peer id
+                # and issuing the disconnect, don't worry about it.
+                # This avoids a race condition if we're mass-disconnecting
+                # peers.
+                if e.error['code'] != -29:  # RPC_CLIENT_NODE_NOT_CONNECTED
+                    raise
+
+        # wait to disconnect
+        wait_until_helper(lambda: not get_peer_ids(), timeout=5)
 
     def split_network(self):
         """
@@ -692,7 +730,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             initialize_datadir(
                 self.options.cachedir,
                 CACHE_NODE_ID,
-                self.chain)
+                self.chain,
+                self.disable_autoconnect)
             self.nodes.append(
                 TestNode(
                     CACHE_NODE_ID,
@@ -763,7 +802,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             to_dir = get_datadir_path(self.options.tmpdir, i)
             shutil.copytree(cache_node_dir, to_dir)
             # Overwrite port/rpcport in lotus.conf
-            initialize_datadir(self.options.tmpdir, i, self.chain)
+            initialize_datadir(
+                self.options.tmpdir,
+                i,
+                self.chain,
+                self.disable_autoconnect)
 
     def _initialize_chain_clean(self):
         """Initialize empty blockchain for use by the test.
@@ -771,7 +814,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         Create an empty blockchain and num_nodes wallets.
         Useful if a test case wants complete control over initialization."""
         for i in range(self.num_nodes):
-            initialize_datadir(self.options.tmpdir, i, self.chain)
+            initialize_datadir(
+                self.options.tmpdir,
+                i,
+                self.chain,
+                self.disable_autoconnect)
 
     def skip_if_no_py3_zmq(self):
         """Attempt to import the zmq package and skip the test if the import fails."""

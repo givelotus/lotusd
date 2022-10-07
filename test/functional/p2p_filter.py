@@ -21,7 +21,13 @@ from test_framework.messages import (
     msg_mempool,
     msg_version,
 )
-from test_framework.p2p import P2PInterface, p2p_lock
+from test_framework.p2p import (
+    P2P_SERVICES,
+    P2P_SUBVERSION,
+    P2P_VERSION,
+    P2PInterface,
+    p2p_lock,
+)
 from test_framework.script import MAX_SCRIPT_ELEMENT_SIZE
 from test_framework.test_framework import BitcoinTestFramework
 
@@ -84,7 +90,6 @@ class P2PBloomFilter(P2PInterface):
 
 class FilterTest(BitcoinTestFramework):
     def set_test_params(self):
-        self.setup_clean_chain = False
         self.num_nodes = 1
         self.extra_args = [[
             '-peerbloomfilters',
@@ -202,7 +207,6 @@ class FilterTest(BitcoinTestFramework):
         filter_peer.tx_received = False
         self.nodes[0].sendtoaddress(self.nodes[0].getnewaddress(), Decimal('400'))
         filter_peer.sync_with_ping()
-        filter_peer.sync_with_ping()
         assert not filter_peer.merkleblock_received
         assert not filter_peer.tx_received
 
@@ -262,9 +266,12 @@ class FilterTest(BitcoinTestFramework):
         # Add peer but do not send version yet
         filter_peer_without_nrelay = self.nodes[0].add_p2p_connection(
             P2PBloomFilter(), send_version=False, wait_for_verack=False)
-        # Send version with fRelay=False
+        # Send version with relay=False
         version_without_fRelay = msg_version()
-        version_without_fRelay.nRelay = 0
+        version_without_fRelay.nVersion = P2P_VERSION
+        version_without_fRelay.strSubVer = P2P_SUBVERSION
+        version_without_fRelay.nServices = P2P_SERVICES
+        version_without_fRelay.relay = 0
         filter_peer_without_nrelay.send_message(version_without_fRelay)
         filter_peer_without_nrelay.wait_for_verack()
         assert not self.nodes[0].getpeerinfo()[0]['relaytxes']
