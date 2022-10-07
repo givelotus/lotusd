@@ -1474,8 +1474,7 @@ public:
     };
 
     /** Upgrade the wallet */
-    bool UpgradeWallet(int version, bilingual_str &error,
-                       std::vector<bilingual_str> &warnings);
+    bool UpgradeWallet(int version, bilingual_str &error);
 
     //! Returns all unique ScriptPubKeyMans in m_internal_spk_managers and
     //! m_external_spk_managers
@@ -1574,7 +1573,7 @@ public:
     ScriptPubKeyMan *
     AddWalletDescriptor(WalletDescriptor &desc,
                         const FlatSigningProvider &signing_provider,
-                        const std::string &label);
+                        const std::string &label, bool internal);
 };
 
 /**

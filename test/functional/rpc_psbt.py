@@ -24,7 +24,6 @@ from test_framework.util import (
 class PSBTTest(BitcoinTestFramework):
 
     def set_test_params(self):
-        self.setup_clean_chain = False
         self.num_nodes = 3
         self.supports_cli = False
 
@@ -120,43 +119,30 @@ class PSBTTest(BitcoinTestFramework):
         self.nodes[1].sendrawtransaction(
             self.nodes[1].finalizepsbt(walletprocesspsbt_out['psbt'])['hex'])
 
-        # feeRate of 10.0000 XPI / KB produces a total fee slightly below
-        # -maxtxfee
+        inputs = [{"txid": txid, "vout": p2sh_pos},
+                  {"txid": txid, "vout": p2pkh_pos}]
+        output = {self.nodes[1].getnewaddress(): Decimal('499')}
+        self.log.info(
+            "Test walletcreatefundedpsbt feeRate of 10.0000 XPI/kB produces a "
+            "total fee at or slightly below -maxtxfee")
         res = self.nodes[1].walletcreatefundedpsbt(
-            [
-                {"txid": txid, "vout": p2sh_pos},
-                {"txid": txid, "vout": p2pkh_pos},
-            ],
-            {self.nodes[1].getnewaddress(): Decimal('499')},
-            0,
-            {"feeRate": Decimal('10'), "add_inputs": True})
+            inputs, output, 0, {"feeRate": Decimal('10'), "add_inputs": True})
         assert_approx(res["fee"], 6.5, 0.5)
 
-        # feeRate of 1 coin / KB produces a total fee well above -maxtxfee
-        # previously this was silently capped at -maxtxfee
-        assert_raises_rpc_error(-4,
-                                "Fee exceeds maximum configured by -maxtxfee",
-                                self.nodes[1].walletcreatefundedpsbt,
-                                [{"txid": txid,
-                                  "vout": p2sh_pos},
-                                 {"txid": txid,
-                                  "vout": p2pkh_pos}],
-                                {self.nodes[1].getnewaddress(): Decimal('699')},
-                                0,
-                                {"feeRate": 100,
-                                    "add_inputs": True})
-        assert_raises_rpc_error(-4,
-                                "Fee exceeds maximum configured by -maxtxfee",
-                                self.nodes[1].walletcreatefundedpsbt,
-                                [{"txid": txid,
-                                  "vout": p2sh_pos},
-                                    {"txid": txid,
-                                     "vout": p2pkh_pos}],
-                                {self.nodes[1].getnewaddress(): 100},
-                                0,
-                                {"feeRate": 100,
-                                    "add_inputs": False})
+        self.log.info(
+            "Test walletcreatefundedpsbt feeRate of 1000 XPI/kB  produces "
+            "a total fee well above -maxtxfee and raises RPC error")
+        for bool_add, output_ in (
+            (True, {self.nodes[1].getnewaddress(): Decimal('699')}),
+            (False, {self.nodes[1].getnewaddress(): 100})):
+            assert_raises_rpc_error(
+                -4,
+                "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)",
+                self.nodes[1].walletcreatefundedpsbt,
+                inputs, output_, 0,
+                {"feeRate": 100, "add_inputs": bool_add})
 
+        self.log.info("Test various PSBT operations")
         # partially sign multisig things with node 1
         psbtx = self.nodes[1].walletcreatefundedpsbt(
             [{"txid": txid, "vout": p2sh_pos}], {

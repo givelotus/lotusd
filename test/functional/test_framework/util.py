@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 import os
-import random
 import re
 import time
 import unittest
@@ -17,6 +16,7 @@ from binascii import unhexlify
 from decimal import ROUND_DOWN, Decimal
 from io import BytesIO
 from subprocess import CalledProcessError
+from typing import Callable, Optional
 
 from . import coverage
 from .authproxy import AuthServiceProxy, JSONRPCException
@@ -93,7 +93,8 @@ def assert_raises_message(exc, message, fun, *args, **kwds):
         raise AssertionError("No exception raised")
 
 
-def assert_raises_process_error(returncode, output, fun, *args, **kwds):
+def assert_raises_process_error(
+        returncode: int, output: str, fun: Callable, *args, **kwds):
     """Execute a process and asserts the process return code and output.
 
     Calls function `fun` with arguments `args` and `kwds`. Catches a CalledProcessError
@@ -101,9 +102,9 @@ def assert_raises_process_error(returncode, output, fun, *args, **kwds):
     no CalledProcessError was raised or if the return code and output are not as expected.
 
     Args:
-        returncode (int): the process return code.
-        output (string): [a substring of] the process output.
-        fun (function): the function to call. This should execute a process.
+        returncode: the process return code.
+        output: [a substring of] the process output.
+        fun: the function to call. This should execute a process.
         args*: positional arguments for the function.
         kwds**: named arguments for the function.
     """
@@ -119,7 +120,8 @@ def assert_raises_process_error(returncode, output, fun, *args, **kwds):
         raise AssertionError("No exception raised")
 
 
-def assert_raises_rpc_error(code, message, fun, *args, **kwds):
+def assert_raises_rpc_error(
+        code: Optional[int], message: Optional[str], fun: Callable, *args, **kwds):
     """Run an RPC and verify that a specific JSONRPC exception code and message is raised.
 
     Calls function `fun` with arguments `args` and `kwds`. Catches a JSONRPCException
@@ -127,11 +129,11 @@ def assert_raises_rpc_error(code, message, fun, *args, **kwds):
     no JSONRPCException was raised or if the error code/message are not as expected.
 
     Args:
-        code (int), optional: the error code returned by the RPC call (defined
-            in src/rpc/protocol.h). Set to None if checking the error code is not required.
-        message (string), optional: [a substring of] the error string returned by the
-            RPC call. Set to None if checking the error string is not required.
-        fun (function): the function to call. This should be the name of an RPC.
+        code: the error code returned by the RPC call (defined in src/rpc/protocol.h).
+            Set to None if checking the error code is not required.
+        message: [a substring of] the error string returned by the RPC call.
+            Set to None if checking the error string is not required.
+        fun: the function to call. This should be the name of an RPC.
         args*: positional arguments for the function.
         kwds**: named arguments for the function.
     """
@@ -291,7 +293,7 @@ def wait_until_helper(predicate, *, attempts=float('inf'),
 
 
 # The maximum number of nodes a single test can spawn
-MAX_NODES = 12
+MAX_NODES = 64
 # Don't assign rpc or p2p ports lower than this (for example: 11605 is the
 # default testnet port)
 PORT_MIN = int(os.getenv('TEST_RUNNER_PORT_MIN', default=20000))
@@ -352,7 +354,7 @@ def rpc_url(datadir, chain, host, port):
 ################
 
 
-def initialize_datadir(dirname, n, chain):
+def initialize_datadir(dirname, n, chain, disable_autoconnect=True):
     datadir = get_datadir_path(dirname, n)
     if not os.path.isdir(datadir):
         os.makedirs(datadir)
@@ -373,9 +375,17 @@ def initialize_datadir(dirname, n, chain):
         f.write("keypool=1\n")
         f.write("discover=0\n")
         f.write("dnsseed=0\n")
+        f.write("fixedseeds=0\n")
         f.write("listenonion=0\n")
         f.write("usecashaddr=1\n")
+        # Increase peertimeout to avoid disconnects while using mocktime.
+        # peertimeout is measured in mock time, so setting it large enough to
+        # cover any duration in mock time is sufficient. It can be overridden
+        # in tests.
+        f.write("peertimeout=999999999\n")
         f.write("shrinkdebugfile=0\n")
+        if disable_autoconnect:
+            f.write("connect=0\n")
         os.makedirs(os.path.join(datadir, 'stderr'), exist_ok=True)
         os.makedirs(os.path.join(datadir, 'stdout'), exist_ok=True)
     return datadir
@@ -428,50 +438,10 @@ def set_node_times(nodes, t):
         node.setmocktime(t)
 
 
-def disconnect_nodes(from_node, to_node):
-    def get_peer_ids():
-        result = []
-        for peer in from_node.getpeerinfo():
-            if to_node.name in peer['subver']:
-                result.append(peer['id'])
-        return result
-
-    peer_ids = get_peer_ids()
-    if not peer_ids:
-        logger.warning(
-            f"disconnect_nodes: {from_node.index} and {to_node.index} were not connected")
-        return
-    for peer_id in peer_ids:
-        try:
-            from_node.disconnectnode(nodeid=peer_id)
-        except JSONRPCException as e:
-            # If this node is disconnected between calculating the peer id
-            # and issuing the disconnect, don't worry about it.
-            # This avoids a race condition if we're mass-disconnecting peers.
-            if e.error['code'] != -29:  # RPC_CLIENT_NODE_NOT_CONNECTED
-                raise
-
-    # wait to disconnect
-    wait_until_helper(lambda: not get_peer_ids(), timeout=5)
-
-
-def connect_nodes(from_node, to_node):
-    host = to_node.host
-    if host is None:
-        host = '127.0.0.1'
-    ip_port = host + ':' + str(to_node.p2p_port)
-    from_node.addnode(ip_port, "onetry")
-    # poll until version handshake complete to avoid race conditions
-    # with transaction relaying
-    # See comments in net_processing:
-    # * Must have a version message before anything else
-    # * Must have a verack message before anything else
-    wait_until_helper(
-        lambda: all(peer['version'] != 0
-                    for peer in from_node.getpeerinfo()))
-    wait_until_helper(
-        lambda: all(peer['bytesrecv_per_msg'].pop('verack', 0) == 24
-                    for peer in from_node.getpeerinfo()))
+def check_node_connections(*, node, num_in, num_out):
+    info = node.getnetworkinfo()
+    assert_equal(info["connections_in"], num_in)
+    assert_equal(info["connections_out"], num_out)
 
 
 # Transaction/Block functions
@@ -490,64 +460,6 @@ def find_output(node, txid, amount, *, blockhash=None):
     raise RuntimeError("find_output txid {} : {} not found".format(
         txid, str(amount)))
 
-
-def gather_inputs(from_node, amount_needed, confirmations_required=1):
-    """
-    Return a random set of unspent txouts that are enough to pay amount_needed
-    """
-    assert confirmations_required >= 0
-    utxo = from_node.listunspent(confirmations_required)
-    random.shuffle(utxo)
-    inputs = []
-    total_in = Decimal('0.000000')
-    while total_in < amount_needed and len(utxo) > 0:
-        t = utxo.pop()
-        total_in += t["amount"]
-        inputs.append(
-            {"txid": t["txid"], "vout": t["vout"], "address": t["address"]})
-    if total_in < amount_needed:
-        raise RuntimeError("Insufficient funds: need {}, have {}".format(
-            amount_needed, total_in))
-    return (total_in, inputs)
-
-
-def make_change(from_node, amount_in, amount_out, fee):
-    """
-    Create change output(s), return them
-    """
-    outputs = {}
-    amount = amount_out + fee
-    change = amount_in - amount
-    if change > amount * 2:
-        # Create an extra change output to break up big inputs
-        change_address = from_node.getnewaddress()
-        # Split change in two, being careful of rounding:
-        outputs[change_address] = Decimal(
-            change / 2).quantize(Decimal('0.000001'), rounding=ROUND_DOWN)
-        change = amount_in - amount - outputs[change_address]
-    if change > 0:
-        outputs[from_node.getnewaddress()] = change
-    return outputs
-
-
-def random_transaction(nodes, amount, min_fee, fee_increment, fee_variants):
-    """
-    Create a random transaction.
-    Returns (txid, hex-encoded-transaction-data, fee)
-    """
-    from_node = random.choice(nodes)
-    to_node = random.choice(nodes)
-    fee = min_fee + fee_increment * random.randint(0, fee_variants)
-
-    (total_in, inputs) = gather_inputs(from_node, amount + fee)
-    outputs = make_change(from_node, total_in, amount, fee)
-    outputs[to_node.getnewaddress()] = float(amount)
-
-    rawtx = from_node.createrawtransaction(inputs, outputs)
-    signresult = from_node.signrawtransactionwithwallet(rawtx)
-    txid = from_node.sendrawtransaction(signresult["hex"], 0)
-
-    return (txid, signresult["hex"], fee)
 
 # Create large OP_RETURN txouts that can be appended to a transaction
 # to make it large (helper for constructing large transactions).

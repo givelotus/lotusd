@@ -352,6 +352,8 @@ struct PrecomputedTransactionData {
 
     PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
         default;
+    PrecomputedTransactionData &
+    operator=(const PrecomputedTransactionData &txdata) = default;
 
     template <class T>
     explicit PrecomputedTransactionData(const T &tx,

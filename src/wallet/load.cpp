@@ -18,33 +18,35 @@
 
 bool VerifyWallets(interfaces::Chain &chain) {
     if (gArgs.IsArgSet("-walletdir")) {
-        fs::path wallet_dir = gArgs.GetArg("-walletdir", "");
+        fs::path wallet_dir =
+            fs::PathFromString(gArgs.GetArg("-walletdir", ""));
         boost::system::error_code error;
         // The canonical path cleans the path, preventing >1 Berkeley
         // environment instances for the same directory
-        fs::path canonical_wallet_dir = fs::canonical(wallet_dir, error);
+        fs::path canonical_wallet_dir =
+            fs::canonical(wallet_dir, error).remove_trailing_separator();
         if (error || !fs::exists(wallet_dir)) {
             chain.initError(
                 strprintf(_("Specified -walletdir \"%s\" does not exist"),
-                          wallet_dir.string()));
+                          fs::PathToString(wallet_dir)));
             return false;
         } else if (!fs::is_directory(wallet_dir)) {
             chain.initError(
                 strprintf(_("Specified -walletdir \"%s\" is not a directory"),
-                          wallet_dir.string()));
+                          fs::PathToString(wallet_dir)));
             return false;
             // The canonical path transforms relative paths into absolute ones,
             // so we check the non-canonical version
         } else if (!wallet_dir.is_absolute()) {
             chain.initError(
                 strprintf(_("Specified -walletdir \"%s\" is a relative path"),
-                          wallet_dir.string()));
+                          fs::PathToString(wallet_dir)));
             return false;
         }
-        gArgs.ForceSetArg("-walletdir", canonical_wallet_dir.string());
+        gArgs.ForceSetArg("-walletdir", fs::PathToString(canonical_wallet_dir));
     }
 
-    LogPrintf("Using wallet directory %s\n", GetWalletDir().string());
+    LogPrintf("Using wallet directory %s\n", fs::PathToString(GetWalletDir()));
 
     chain.initMessage(_("Verifying wallet(s)...").translated);
 
@@ -70,13 +72,13 @@ bool VerifyWallets(interfaces::Chain &chain) {
     std::set<fs::path> wallet_paths;
 
     for (const auto &wallet_file : gArgs.GetArgs("-wallet")) {
-        const fs::path path = fs::absolute(wallet_file, GetWalletDir());
+        const fs::path path =
+            fs::absolute(fs::PathFromString(wallet_file), GetWalletDir());
 
         if (!wallet_paths.insert(path).second) {
-            chain.initError(strprintf(_("Error loading wallet %s. Duplicate "
-                                        "-wallet filename specified."),
-                                      wallet_file));
-            return false;
+            chain.initWarning(
+                strprintf(_("Ignoring duplicate -wallet %s."), wallet_file));
+            continue;
         }
 
         DatabaseOptions options;
@@ -94,7 +96,11 @@ bool VerifyWallets(interfaces::Chain &chain) {
 
 bool LoadWallets(interfaces::Chain &chain) {
     try {
+        std::set<fs::path> wallet_paths;
         for (const std::string &name : gArgs.GetArgs("-wallet")) {
+            if (!wallet_paths.insert(fs::PathFromString(name)).second) {
+                continue;
+            }
             DatabaseOptions options;
             DatabaseStatus status;
             // No need to verify, assuming verified earlier in VerifyWallets()

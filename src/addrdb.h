@@ -10,10 +10,10 @@
 #include <net_types.h> // For banmap_t
 #include <serialize.h>
 
-#include <map>
 #include <string>
+#include <vector>
 
-class CSubNet;
+class CAddress;
 class CAddrMan;
 class CDataStream;
 class CChainParams;
@@ -69,5 +69,25 @@ public:
     bool Write(const banmap_t &banSet);
     bool Read(banmap_t &banSet);
 };
+
+/**
+ * Dump the anchor IP address database (anchors.dat)
+ *
+ * Anchors are last known outgoing block-relay-only peers that are
+ * tried to re-connect to on startup.
+ */
+void DumpAnchors(const CChainParams &chainParams,
+                 const fs::path &anchors_db_path,
+                 const std::vector<CAddress> &anchors);
+
+/**
+ * Read the anchor IP address database (anchors.dat)
+ *
+ * Deleting anchors.dat is intentional as it avoids renewed peering to anchors
+ * after an unclean shutdown and thus potential exploitation of the anchor peer
+ * policy.
+ */
+std::vector<CAddress> ReadAnchors(const CChainParams &chainParams,
+                                  const fs::path &anchors_db_path);
 
 #endif // BITCOIN_ADDRDB_H

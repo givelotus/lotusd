@@ -21,9 +21,7 @@ from test_framework.util import (
     assert_approx,
     assert_equal,
     assert_greater_than,
-    assert_greater_than_or_equal,
     assert_raises_rpc_error,
-    connect_nodes,
     p2p_port,
 )
 from test_framework.wallet_util import bytes_to_wif
@@ -55,8 +53,8 @@ class NetTest(BitcoinTestFramework):
         # Get out of IBD for the minfeefilter and getpeerinfo tests.
         self.nodes[0].generate(101)
         # Connect nodes both ways.
-        connect_nodes(self.nodes[0], self.nodes[1])
-        connect_nodes(self.nodes[1], self.nodes[0])
+        self.connect_nodes(0, 1)
+        self.connect_nodes(1, 0)
         self.sync_all()
 
         self.test_connection_count()
@@ -74,46 +72,40 @@ class NetTest(BitcoinTestFramework):
 
     def test_getnettotals(self):
         self.log.info("Test getnettotals")
-        # getnettotals totalbytesrecv and totalbytessent should be
-        # consistent with getpeerinfo. Since the RPC calls are not atomic,
-        # and messages might have been recvd or sent between RPC calls, call
-        # getnettotals before and after and verify that the returned values
-        # from getpeerinfo are bounded by those values.
+        # Test getnettotals and getpeerinfo by doing a ping. The bytes
+        # sent/received should increase by at least the size of one ping (32
+        # bytes) and one pong (32 bytes).
         net_totals_before = self.nodes[0].getnettotals()
-        peer_info = self.nodes[0].getpeerinfo()
-        net_totals_after = self.nodes[0].getnettotals()
-        assert_equal(len(peer_info), 2)
-        peers_recv = sum([peer['bytesrecv'] for peer in peer_info])
-        peers_sent = sum([peer['bytessent'] for peer in peer_info])
-
-        assert_greater_than_or_equal(
-            peers_recv, net_totals_before['totalbytesrecv'])
-        assert_greater_than_or_equal(
-            net_totals_after['totalbytesrecv'], peers_recv)
-        assert_greater_than_or_equal(
-            peers_sent, net_totals_before['totalbytessent'])
-        assert_greater_than_or_equal(
-            net_totals_after['totalbytessent'], peers_sent)
-
-        # test getnettotals and getpeerinfo by doing a ping
-        # the bytes sent/received should change
-        # note ping and pong are 32 bytes each
+        peer_info_before = self.nodes[0].getpeerinfo()
         self.nodes[0].ping()
-        self.wait_until(lambda: (self.nodes[0].getnettotals()[
-            'totalbytessent'] >= net_totals_after['totalbytessent'] + 32 * 2), timeout=1)
-        self.wait_until(lambda: (self.nodes[0].getnettotals()[
-            'totalbytesrecv'] >= net_totals_after['totalbytesrecv'] + 32 * 2), timeout=1)
+        self.wait_until(
+            lambda:
+                self.nodes[0].getnettotals()['totalbytessent']
+                >= net_totals_before['totalbytessent'] + 32 * 2,
+            timeout=10)
+        self.wait_until(
+            lambda:
+                self.nodes[0].getnettotals()['totalbytesrecv']
+                >= net_totals_before['totalbytesrecv'] + 32 * 2,
+            timeout=10)
 
-        peer_info_after_ping = self.nodes[0].getpeerinfo()
-        for before, after in zip(peer_info, peer_info_after_ping):
-            assert_greater_than_or_equal(
-                after['bytesrecv_per_msg'].get(
-                    'pong', 0), before['bytesrecv_per_msg'].get(
-                    'pong', 0) + 32)
-            assert_greater_than_or_equal(
-                after['bytessent_per_msg'].get(
-                    'ping', 0), before['bytessent_per_msg'].get(
-                    'ping', 0) + 32)
+        for peer_before in peer_info_before:
+            def peer_after():
+                return next(
+                    p for p in self.nodes[0].getpeerinfo()
+                    if p['id'] == peer_before['id']
+                )
+            self.wait_until(
+                lambda:
+                    peer_after()['bytesrecv_per_msg'].get('pong', 0)
+                    >= peer_before['bytesrecv_per_msg'].get('pong', 0) + 32,
+                timeout=10
+            )
+            self.wait_until(
+                lambda:
+                    peer_after()['bytessent_per_msg'].get('ping', 0)
+                    >= peer_before['bytessent_per_msg'].get('ping', 0) + 32,
+                timeout=10)
 
     def test_getnetworkinfo(self):
         self.log.info("Test getnetworkinfo")
@@ -133,8 +125,8 @@ class NetTest(BitcoinTestFramework):
         with self.nodes[0].assert_debug_log(expected_msgs=['SetNetworkActive: true\n']):
             self.nodes[0].setnetworkactive(state=True)
         # Connect nodes both ways.
-        connect_nodes(self.nodes[0], self.nodes[1])
-        connect_nodes(self.nodes[1], self.nodes[0])
+        self.connect_nodes(0, 1)
+        self.connect_nodes(1, 0)
 
         info = self.nodes[0].getnetworkinfo()
         assert_equal(info['networkactive'], True)
@@ -220,6 +212,11 @@ class NetTest(BitcoinTestFramework):
 
         assert_equal(peer_info[1][0]['connection_type'], 'manual')
         assert_equal(peer_info[1][1]['connection_type'], 'inbound')
+
+        # Node state fields
+        for node, peer, field in product(range(self.num_nodes), range(2),
+                                         ['startingheight', 'synced_headers', 'synced_blocks', 'inflight']):
+            assert field in peer_info[node][peer].keys()
 
     def test_service_flags(self):
         self.log.info("Test service flags")

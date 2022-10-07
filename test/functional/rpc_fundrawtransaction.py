@@ -6,6 +6,7 @@
 from decimal import Decimal
 
 from test_framework.blocktools import SUBSIDY
+from test_framework.descriptors import descsum_create
 from test_framework.messages import CTransaction, FromHex
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
@@ -14,7 +15,6 @@ from test_framework.util import (
     assert_greater_than,
     assert_greater_than_or_equal,
     assert_raises_rpc_error,
-    connect_nodes,
     find_vout_for_address,
 )
 
@@ -41,10 +41,10 @@ class RawTransactionsTest(BitcoinTestFramework):
     def setup_network(self):
         self.setup_nodes()
 
-        connect_nodes(self.nodes[0], self.nodes[1])
-        connect_nodes(self.nodes[1], self.nodes[2])
-        connect_nodes(self.nodes[0], self.nodes[2])
-        connect_nodes(self.nodes[0], self.nodes[3])
+        self.connect_nodes(0, 1)
+        self.connect_nodes(1, 2)
+        self.connect_nodes(0, 2)
+        self.connect_nodes(0, 3)
 
     def run_test(self):
         self.log.info("Connect nodes, set fees, generate blocks, and sync")
@@ -106,11 +106,14 @@ class RawTransactionsTest(BitcoinTestFramework):
             rawmatch, {"changePosition": 1, "subtractFeeFromOutputs": [0]})
         assert_equal(rawmatch["changepos"], -1)
 
+        self.nodes[3].createwallet(wallet_name="wwatch",
+                                   disable_private_keys=True)
+        wwatch = self.nodes[3].get_wallet_rpc('wwatch')
         watchonly_address = self.nodes[0].getnewaddress()
         watchonly_pubkey = self.nodes[0].getaddressinfo(watchonly_address)[
             "pubkey"]
         self.watchonly_amount = Decimal('1000')
-        self.nodes[3].importpubkey(watchonly_pubkey, "", True)
+        wwatch.importpubkey(watchonly_pubkey, "", True)
         self.watchonly_txid = self.nodes[0].sendtoaddress(
             watchonly_address, self.watchonly_amount)
 
@@ -121,7 +124,8 @@ class RawTransactionsTest(BitcoinTestFramework):
             False, [{"txid": self.watchonly_txid, "vout": self.watchonly_vout}])
 
         self.nodes[0].sendtoaddress(
-            self.nodes[3].getnewaddress(),
+            self.nodes[3].get_wallet_rpc(
+                self.default_wallet_name).getnewaddress(),
             self.watchonly_amount / 10)
 
         self.nodes[0].sendtoaddress(self.nodes[2].getnewaddress(), 150)
@@ -130,6 +134,8 @@ class RawTransactionsTest(BitcoinTestFramework):
 
         self.nodes[0].generate(1)
         self.sync_all()
+
+        wwatch.unloadwallet()
 
     def test_simple(self):
         self.log.info("Test fundrawtxn")
@@ -441,7 +447,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         addr1Obj = self.nodes[1].getaddressinfo(addr1)
         addr2Obj = self.nodes[1].getaddressinfo(addr2)
 
-        mSigObj = self.nodes[1].addmultisigaddress(
+        mSigObj = self.nodes[3].createmultisig(
             2, [addr1Obj['pubkey'], addr2Obj['pubkey']])['address']
 
         inputs = []
@@ -474,7 +480,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         addr4Obj = self.nodes[1].getaddressinfo(addr4)
         addr5Obj = self.nodes[1].getaddressinfo(addr5)
 
-        mSigObj = self.nodes[1].addmultisigaddress(
+        mSigObj = self.nodes[1].createmultisig(
             4,
             [
                 addr1Obj['pubkey'],
@@ -500,7 +506,7 @@ class RawTransactionsTest(BitcoinTestFramework):
 
     def test_spend_2of2(self):
         """Spend a 2-of-2 multisig transaction over fundraw."""
-        self.log.info("Test fundrawtxn spending 2-of-2 multisig")
+        self.log.info("Test fundpsbt spending 2-of-2 multisig")
 
         # Create 2-of-2 addr.
         addr1 = self.nodes[2].getnewaddress()
@@ -509,13 +515,19 @@ class RawTransactionsTest(BitcoinTestFramework):
         addr1Obj = self.nodes[2].getaddressinfo(addr1)
         addr2Obj = self.nodes[2].getaddressinfo(addr2)
 
-        mSigObj = self.nodes[2].addmultisigaddress(
+        self.nodes[2].createwallet(wallet_name='wmulti',
+                                   disable_private_keys=True)
+        wmulti = self.nodes[2].get_wallet_rpc('wmulti')
+        w2 = self.nodes[2].get_wallet_rpc(self.default_wallet_name)
+        mSigObj = wmulti.addmultisigaddress(
             2,
             [
                 addr1Obj['pubkey'],
                 addr2Obj['pubkey'],
             ]
         )['address']
+        if not self.options.descriptors:
+            wmulti.importaddress(mSigObj)
 
         # Send 120 XPI to msig addr.
         self.nodes[0].sendtoaddress(mSigObj, 120)
@@ -525,11 +537,13 @@ class RawTransactionsTest(BitcoinTestFramework):
         oldBalance = self.nodes[1].getbalance()
         inputs = []
         outputs = {self.nodes[1].getnewaddress(): 110}
-        rawTx = self.nodes[2].createrawtransaction(inputs, outputs)
-        fundedTx = self.nodes[2].fundrawtransaction(rawTx)
+        funded_psbt = wmulti.walletcreatefundedpsbt(
+            inputs=inputs, outputs=outputs,
+            options={'changeAddress': w2.getrawchangeaddress()})['psbt']
 
-        signedTx = self.nodes[2].signrawtransactionwithwallet(fundedTx['hex'])
-        self.nodes[2].sendrawtransaction(signedTx['hex'])
+        signed_psbt = w2.walletprocesspsbt(funded_psbt)
+        final_psbt = w2.finalizepsbt(signed_psbt['psbt'])
+        self.nodes[2].sendrawtransaction(final_psbt['hex'])
         self.nodes[2].generate(1)
         self.sync_all()
 
@@ -537,10 +551,28 @@ class RawTransactionsTest(BitcoinTestFramework):
         assert_equal(
             oldBalance + Decimal('110.000000'), self.nodes[1].getbalance())
 
+        wmulti.unloadwallet()
+
     def test_locked_wallet(self):
-        self.log.info("Test fundrawtxn with locked wallet")
+        self.log.info(
+            "Test fundrawtxn with locked wallet and hardened derivation")
 
         self.nodes[1].encryptwallet("test")
+
+        if self.options.descriptors:
+            self.nodes[1].walletpassphrase('test', 10)
+            self.nodes[1].importdescriptors([{
+                'desc': descsum_create('pkh(tprv8ZgxMBicQKsPdYeeZbPSKd2KYLmeVKtcFA7kqCxDvDR13MQ6us8HopUR2wLcS2ZKPhLyKsqpDL2FtL73LMHcgoCL7DXsciA8eX8nbjCR2eG/0h/*h)'),
+                'timestamp': 'now',
+                'active': True
+            },
+                {
+                'desc': descsum_create('pkh(tprv8ZgxMBicQKsPdYeeZbPSKd2KYLmeVKtcFA7kqCxDvDR13MQ6us8HopUR2wLcS2ZKPhLyKsqpDL2FtL73LMHcgoCL7DXsciA8eX8nbjCR2eG/1h/*h)'),
+                'timestamp': 'now',
+                'active': True,
+                'internal': True
+            }])
+            self.nodes[1].walletlock()
 
         # Drain the keypool.
         self.nodes[1].getnewaddress()
@@ -675,14 +707,34 @@ class RawTransactionsTest(BitcoinTestFramework):
         outputs = {self.nodes[2].getnewaddress(): self.watchonly_amount / 2}
         rawTx = self.nodes[3].createrawtransaction(inputs, outputs)
 
-        result = self.nodes[3].fundrawtransaction(
-            rawTx, {'includeWatching': True})
+        self.nodes[3].loadwallet('wwatch')
+        wwatch = self.nodes[3].get_wallet_rpc('wwatch')
+        # Setup change addresses for the watchonly wallet
+        desc_import = [{
+            "desc": descsum_create(
+                "pkh(tpubD6NzVbkrYhZ4YNXVQbNhMK1WqguFsUXceaVJKbmno2aZ3B6QfbMeraaYvnBSGpV3vxLyTTK9DYT1yoEck4XUScMzXoQ2U2oSmE2JyMedq3H/1/*)"),
+            "timestamp": "now",
+            "internal": True,
+            "active": True,
+            "keypool": True,
+            "range": [0, 100],
+            "watchonly": True,
+        }]
+        if self.options.descriptors:
+            wwatch.importdescriptors(desc_import)
+        else:
+            wwatch.importmulti(desc_import)
+
+        # Backward compatibility test (2nd params is includeWatching)
+        result = wwatch.fundrawtransaction(rawTx, True)
         res_dec = self.nodes[0].decoderawtransaction(result["hex"])
         assert_equal(len(res_dec["vin"]), 1)
         assert_equal(res_dec["vin"][0]["txid"], self.watchonly_txid)
 
         assert "fee" in result.keys()
         assert_greater_than(result["changepos"], -1)
+
+        wwatch.unloadwallet()
 
     def test_all_watched_funds(self):
         self.log.info("Test fundrawtxn using entirety of watched funds")
@@ -691,25 +743,31 @@ class RawTransactionsTest(BitcoinTestFramework):
         outputs = {self.nodes[2].getnewaddress(): self.watchonly_amount}
         rawTx = self.nodes[3].createrawtransaction(inputs, outputs)
 
-        # Backward compatibility test (2nd param is includeWatching).
-        result = self.nodes[3].fundrawtransaction(rawTx, True)
+        self.nodes[3].loadwallet('wwatch')
+        wwatch = self.nodes[3].get_wallet_rpc('wwatch')
+        w3 = self.nodes[3].get_wallet_rpc(self.default_wallet_name)
+        result = wwatch.fundrawtransaction(
+            rawTx,
+            {'includeWatching': True, 'changeAddress': w3.getrawchangeaddress(),
+             'subtractFeeFromOutputs': [0]})
         res_dec = self.nodes[0].decoderawtransaction(result["hex"])
-        assert_equal(len(res_dec["vin"]), 2)
-        assert res_dec["vin"][0]["txid"] == self.watchonly_txid or res_dec[
-            "vin"][1]["txid"] == self.watchonly_txid
+        assert_equal(len(res_dec["vin"]), 1)
+        assert res_dec["vin"][0]["txid"] == self.watchonly_txid
 
         assert_greater_than(result["fee"], 0)
-        assert_greater_than(result["changepos"], -1)
-        assert_equal(result["fee"] + res_dec["vout"][
-                     result["changepos"]]["value"], self.watchonly_amount / 10)
+        assert_equal(result["changepos"], -1)
+        assert_equal(result["fee"] + res_dec["vout"][0]["value"],
+                     self.watchonly_amount)
 
-        signedtx = self.nodes[3].signrawtransactionwithwallet(result["hex"])
+        signedtx = wwatch.signrawtransactionwithwallet(result["hex"])
         assert not signedtx["complete"]
         signedtx = self.nodes[0].signrawtransactionwithwallet(signedtx["hex"])
         assert signedtx["complete"]
         self.nodes[0].sendrawtransaction(signedtx["hex"])
         self.nodes[0].generate(1)
         self.sync_all()
+
+        wwatch.unloadwallet()
 
     def test_option_feerate(self):
         self.log.info("Test fundrawtxn feeRate option")
@@ -733,7 +791,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         result3 = self.nodes[3].fundrawtransaction(
             rawTx, {"feeRate": 10 * self.min_relay_tx_fee})
         assert_raises_rpc_error(-4,
-                                "Fee exceeds maximum configured by -maxtxfee",
+                                "Fee exceeds maximum configured by user (e.g. -maxtxfee, maxfeerate)",
                                 self.nodes[3].fundrawtransaction,
                                 rawTx,
                                 {"feeRate": 100})
@@ -838,7 +896,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         # Output 0 takes at least as much share of the fee, and no more than 2
         # satoshis more, than outputs 2 and 3.
         assert_greater_than_or_equal(share[0], share[2])
-        assert_greater_than_or_equal(share[2] + Decimal(2e-6), share[0])
+        assert_greater_than_or_equal(share[2] + Decimal("2e-6"), share[0])
 
         # The fee is the same in both transactions.
         assert_equal(result[0]['fee'], result[1]['fee'])

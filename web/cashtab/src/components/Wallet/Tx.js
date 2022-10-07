@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import styled from 'styled-components';
 import {
@@ -10,8 +11,8 @@ import {
 import { currency } from '@components/Common/Ticker';
 import makeBlockie from 'ethereum-blockies-base64';
 import { Img } from 'react-image';
-import { formatBalance, fromLegacyDecimals } from '@utils/cashMethods';
-
+import { fromLegacyDecimals } from '@utils/cashMethods';
+import { formatBalance, formatDate } from '@utils/formatting';
 const SentTx = styled(ArrowUpOutlined)`
     color: ${props => props.theme.secondary} !important;
 `;
@@ -31,14 +32,58 @@ const DateType = styled.div`
         font-size: 0.8rem;
     }
 `;
-
+const OpReturnType = styled.span`
+    text-align: left;
+    width: 300%;
+    max-height: 200px;
+    padding: 3px;
+    margin: auto;
+    word-break: break-word;
+    padding-left: 13px;
+    padding-right: 30px;
+    /* invisible scrollbar */
+    overflow: hidden;
+    height: 100%;
+    margin-right: -50px; /* Maximum width of scrollbar */
+    padding-right: 50px; /* Maximum width of scrollbar */
+    overflow-y: scroll;
+    ::-webkit-scrollbar {
+        display: none;
+    }
+`;
 const SentLabel = styled.span`
     font-weight: bold;
-
     color: ${props => props.theme.secondary} !important;
 `;
 const ReceivedLabel = styled.span`
     font-weight: bold;
+    color: ${props => props.theme.primary} !important;
+`;
+const CashtabMessageLabel = styled.span`
+    text-align: left;
+    font-weight: bold;
+    color: ${props => props.theme.primary} !important;
+    white-space: nowrap;
+`;
+const EncryptionMessageLabel = styled.span`
+    text-align: left;
+    font-weight: bold;
+    color: ${props => props.theme.wallet.encryption};
+    white-space: nowrap;
+`;
+const UnauthorizedDecryptionMessage = styled.span`
+    text-align: left;
+    color: ${props => props.theme.wallet.encryption};
+    white-space: nowrap;
+    font-style: italic;
+`;
+const MessageLabel = styled.span`
+    text-align: left;
+    font-weight: bold;
+    color: ${props => props.theme.secondary} !important;
+    white-space: nowrap;
+`;
+const ReplyMessageLabel = styled.span`
     color: ${props => props.theme.primary} !important;
 `;
 const TxIcon = styled.div`
@@ -131,14 +176,16 @@ const TxWrapper = styled.div`
     justify-content: space-between;
     align-items: center;
     padding: 15px 25px;
-    border-radius: 3px;
+    border-radius: 16px;
     background: ${props => props.theme.tokenListItem.background};
-    margin-bottom: 3px;
+    margin-bottom: 12px;
     box-shadow: ${props => props.theme.tokenListItem.boxShadow};
-    border: 1px solid ${props => props.theme.tokenListItem.border};
 
     :hover {
-        border-color: ${props => props.theme.primary};
+        transform: translateY(-2px);
+        box-shadow: rgb(136 172 243 / 25%) 0px 10px 30px,
+            rgb(0 0 0 / 3%) 0px 1px 1px, rgb(0 51 167 / 10%) 0px 10px 20px;
+        transition: all 0.8s cubic-bezier(0.075, 0.82, 0.165, 1) 0s;
     }
     @media screen and (max-width: 500px) {
         grid-template-columns: 24px 30% 50%;
@@ -149,8 +196,8 @@ const TxWrapper = styled.div`
 const Tx = ({ data, fiatPrice, fiatCurrency }) => {
     const txDate =
         typeof data.blocktime === 'undefined'
-            ? new Date().toLocaleDateString()
-            : new Date(data.blocktime * 1000).toLocaleDateString();
+            ? formatDate()
+            : formatDate(data.blocktime, navigator.language);
     // if data only includes height and txid, then the tx could not be parsed by cashtab
     // render as such but keep link to block explorer
     let unparsedTx = false;
@@ -210,7 +257,7 @@ const Tx = ({ data, fiatPrice, fiatCurrency }) => {
                                     <TxTokenIcon>
                                         {currency.tokenIconsUrl !== '' ? (
                                             <Img
-                                                src={`${currency.tokenIconsUrl}/${data.tokenInfo.tokenId}.png`}
+                                                src={`${currency.tokenIconsUrl}/32/${data.tokenInfo.tokenId}.png`}
                                                 unloader={
                                                     <img
                                                         alt={`identicon of tokenId ${data.tokenInfo.tokenId} `}
@@ -362,6 +409,69 @@ const Tx = ({ data, fiatPrice, fiatCurrency }) => {
                                     </>
                                 )}
                             </TxInfo>
+                        </>
+                    )}
+                    {data.opReturnMessage && (
+                        <>
+                            <br />
+                            <OpReturnType>
+                                {data.isCashtabMessage ? (
+                                    <CashtabMessageLabel>
+                                        Cashtab Message
+                                    </CashtabMessageLabel>
+                                ) : (
+                                    <MessageLabel>
+                                        External Message
+                                    </MessageLabel>
+                                )}
+                                {data.isEncryptedMessage ? (
+                                    <EncryptionMessageLabel>
+                                        &nbsp;-&nbsp;Encrypted
+                                    </EncryptionMessageLabel>
+                                ) : (
+                                    ''
+                                )}
+                                <br />
+                                {/*unencrypted OP_RETURN Message*/}
+                                {data.opReturnMessage &&
+                                !data.isEncryptedMessage
+                                    ? data.opReturnMessage
+                                    : ''}
+                                {/*encrypted and wallet is authorized to view OP_RETURN Message*/}
+                                {data.opReturnMessage &&
+                                data.isEncryptedMessage &&
+                                data.decryptionSuccess
+                                    ? data.opReturnMessage
+                                    : ''}
+                                {/*encrypted but wallet is not authorized to view OP_RETURN Message*/}
+                                {data.opReturnMessage &&
+                                data.isEncryptedMessage &&
+                                !data.decryptionSuccess ? (
+                                    <UnauthorizedDecryptionMessage>
+                                        {data.opReturnMessage}
+                                    </UnauthorizedDecryptionMessage>
+                                ) : (
+                                    ''
+                                )}
+                                {!data.outgoingTx && data.replyAddress ? (
+                                    <Link
+                                        to={{
+                                            pathname: `/send`,
+                                            state: {
+                                                replyAddress: data.replyAddress,
+                                            },
+                                        }}
+                                    >
+                                        <br />
+                                        <br />
+                                        <ReplyMessageLabel>
+                                            Reply To Message
+                                        </ReplyMessageLabel>
+                                    </Link>
+                                ) : (
+                                    ''
+                                )}
+                            </OpReturnType>
                         </>
                     )}
                 </TxWrapper>

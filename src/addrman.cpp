@@ -8,6 +8,7 @@
 #include <hash.h>
 #include <logging.h>
 #include <serialize.h>
+#include <util/check.h>
 
 #include <cmath>
 
@@ -174,11 +175,16 @@ void CAddrMan::ClearNew(int nUBucket, int nUBucketPos) {
 
 void CAddrMan::MakeTried(CAddrInfo &info, int nId) {
     // remove the entry from all new buckets
-    for (int bucket = 0; bucket < ADDRMAN_NEW_BUCKET_COUNT; bucket++) {
-        int pos = info.GetBucketPosition(nKey, true, bucket);
+    const int start_bucket{info.GetNewBucket(nKey, m_asmap)};
+    for (int n = 0; n < ADDRMAN_NEW_BUCKET_COUNT; ++n) {
+        const int bucket{(start_bucket + n) % ADDRMAN_NEW_BUCKET_COUNT};
+        const int pos{info.GetBucketPosition(nKey, true, bucket)};
         if (vvNew[bucket][pos] == nId) {
             vvNew[bucket][pos] = -1;
             info.nRefCount--;
+            if (info.nRefCount == 0) {
+                break;
+            }
         }
     }
     nNew--;
@@ -253,21 +259,8 @@ void CAddrMan::Good_(const CService &addr, bool test_before_evict,
         return;
     }
 
-    // find a bucket it is in now
-    int nRnd = insecure_rand.randrange(ADDRMAN_NEW_BUCKET_COUNT);
-    int nUBucket = -1;
-    for (unsigned int n = 0; n < ADDRMAN_NEW_BUCKET_COUNT; n++) {
-        int nB = (n + nRnd) % ADDRMAN_NEW_BUCKET_COUNT;
-        int nBpos = info.GetBucketPosition(nKey, true, nB);
-        if (vvNew[nB][nBpos] == nId) {
-            nUBucket = nB;
-            break;
-        }
-    }
-
-    // if no bucket is found, something bad happened;
-    // TODO: maybe re-add the node, but for now, just bail out
-    if (nUBucket == -1) {
+    // if it is not in new, something bad happened
+    if (!Assume(info.nRefCount > 0)) {
         return;
     }
 
@@ -741,30 +734,4 @@ CAddrInfo CAddrMan::SelectTriedCollision_() {
     int id_old = vvTried[tried_bucket][tried_bucket_pos];
 
     return mapInfo[id_old];
-}
-
-std::vector<bool> CAddrMan::DecodeAsmap(fs::path path) {
-    std::vector<bool> bits;
-    FILE *filestr = fsbridge::fopen(path, "rb");
-    CAutoFile file(filestr, SER_DISK, CLIENT_VERSION);
-    if (file.IsNull()) {
-        LogPrintf("Failed to open asmap file from disk\n");
-        return bits;
-    }
-    fseek(filestr, 0, SEEK_END);
-    int length = ftell(filestr);
-    LogPrintf("Opened asmap file %s (%d bytes) from disk\n", path, length);
-    fseek(filestr, 0, SEEK_SET);
-    char cur_byte;
-    for (int i = 0; i < length; ++i) {
-        file >> cur_byte;
-        for (int bit = 0; bit < 8; ++bit) {
-            bits.push_back((cur_byte >> bit) & 1);
-        }
-    }
-    if (!SanityCheckASMap(bits)) {
-        LogPrintf("Sanity check of asmap file %s failed\n", path);
-        return {};
-    }
-    return bits;
 }

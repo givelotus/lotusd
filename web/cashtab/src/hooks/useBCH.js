@@ -8,7 +8,15 @@ import {
     batchArray,
     flattenBatchedHydratedUtxos,
     isValidStoredWallet,
+    checkNullUtxosForTokenStatus,
+    confirmNonEtokenUtxos,
+    convertToEncryptStruct,
+    getPublicKey,
+    parseOpReturn,
 } from '@utils/cashMethods';
+import cashaddr from 'ecashaddrjs';
+import ecies from 'ecies-lite';
+import wif from 'wif';
 
 export default function useBCH() {
     const SEND_BCH_ERRORS = {
@@ -69,7 +77,7 @@ export default function useBCH() {
         return flatTxHistory.splice(0, txCount);
     };
 
-    const parseTxData = txData => {
+    const parseTxData = async (BCH, txData, publicKeys, wallet) => {
         /*
         Desired output
         [
@@ -84,6 +92,7 @@ export default function useBCH() {
             tokenQty:
             txType: mint, send, other
         }
+        opReturnMessage: 'message extracted from asm' or ''
         }
         ]
         */
@@ -99,8 +108,7 @@ export default function useBCH() {
             parsedTx.height = tx.height;
             let destinationAddress = tx.address;
 
-            // If this tx had too many inputs to be parsed by getTxDataWithPassThrough, skip it
-            // When this occurs, the tx will only have txid and height
+            // if there was an error in getting the tx data from api, the tx will only have txid and height
             // So, it will not have 'vin'
             if (!Object.keys(tx).includes('vin')) {
                 // Populate as a limited-info tx that can be expanded in a block explorer
@@ -112,30 +120,164 @@ export default function useBCH() {
             parsedTx.blocktime = tx.blocktime;
             let amountSent = 0;
             let amountReceived = 0;
+            let opReturnMessage = '';
+            let isCashtabMessage = false;
+            let isEncryptedMessage = false;
+            let decryptionSuccess = false;
             // Assume an incoming transaction
             let outgoingTx = false;
             let tokenTx = false;
+            let substring = '';
 
-            // If vin includes tx address, this is an outgoing tx
-            // Note that with bch-input data, we do not have input amounts
+            // If vin's scriptSig contains one of the publicKeys of this wallet
+            // This is an outgoing tx
             for (let j = 0; j < tx.vin.length; j += 1) {
-                const thisInput = tx.vin[j];
-                if (thisInput.address === tx.address) {
-                    // This is an outgoing transaction
-                    outgoingTx = true;
+                // Since Cashtab only concerns with utxos of Path145, Path245 and Path1899 addresses,
+                // which are hashes of thier public keys. We can safely assume that Cashtab can only
+                // consumes utxos of type 'pubkeyhash'
+                // Therefore, only tx with vin's scriptSig of type 'pubkeyhash' can potentially be an outgoing tx.
+                // any other scriptSig type indicates that the tx is incoming.
+                try {
+                    const thisInputScriptSig = tx.vin[j].scriptSig;
+                    let inputPubKey = undefined;
+                    const inputType = BCH.Script.classifyInput(
+                        BCH.Script.decode(
+                            Buffer.from(thisInputScriptSig.hex, 'hex'),
+                        ),
+                    );
+                    if (inputType === 'pubkeyhash') {
+                        inputPubKey = thisInputScriptSig.hex.substring(
+                            thisInputScriptSig.hex.length - 66,
+                        );
+                    }
+                    publicKeys.forEach(pubKey => {
+                        if (pubKey === inputPubKey) {
+                            // This is an outgoing transaction
+                            outgoingTx = true;
+                        }
+                    });
+                    if (outgoingTx === true) break;
+                } catch (err) {
+                    console.log(
+                        "useBCH.parsedTxHistory() error: in trying to classify Input' scriptSig",
+                    );
                 }
             }
+
             // Iterate over vout to find how much was sent or received
             for (let j = 0; j < tx.vout.length; j += 1) {
                 const thisOutput = tx.vout[j];
 
-                // If there is no addresses object in the output, OP_RETURN or token tx
+                // If there is no addresses object in the output, it's either an OP_RETURN msg or token tx
                 if (
                     !Object.keys(thisOutput.scriptPubKey).includes('addresses')
                 ) {
-                    // For now, assume this is a token tx
-                    tokenTx = true;
-                    continue;
+                    let hex = thisOutput.scriptPubKey.hex;
+                    let parsedOpReturnArray = parseOpReturn(hex);
+
+                    if (!parsedOpReturnArray) {
+                        console.log(
+                            'useBCH.parsedTxData() error: parsed array is empty',
+                        );
+                        break;
+                    }
+
+                    let message = '';
+                    let txType = parsedOpReturnArray[0];
+                    if (txType === currency.opReturn.appPrefixesHex.eToken) {
+                        // this is an eToken transaction
+                        tokenTx = true;
+                    } else if (
+                        txType === currency.opReturn.appPrefixesHex.cashtab
+                    ) {
+                        // this is a Cashtab message
+                        try {
+                            opReturnMessage = Buffer.from(
+                                parsedOpReturnArray[1],
+                                'hex',
+                            );
+                            isCashtabMessage = true;
+                        } catch (err) {
+                            // soft error if an unexpected or invalid cashtab hex is encountered
+                            opReturnMessage = '';
+                            console.log(
+                                'useBCH.parsedTxData() error: invalid cashtab msg hex: ' +
+                                    parsedOpReturnArray[1],
+                            );
+                        }
+                    } else if (
+                        txType ===
+                        currency.opReturn.appPrefixesHex.cashtabEncrypted
+                    ) {
+                        // this is an encrypted Cashtab message
+                        let msgString = parsedOpReturnArray[1];
+                        let fundingWif, privateKeyObj, privateKeyBuff;
+                        if (
+                            wallet &&
+                            wallet.state &&
+                            wallet.state.slpBalancesAndUtxos &&
+                            wallet.state.slpBalancesAndUtxos.nonSlpUtxos[0]
+                        ) {
+                            fundingWif =
+                                wallet.state.slpBalancesAndUtxos.nonSlpUtxos[0]
+                                    .wif;
+                            privateKeyObj = wif.decode(fundingWif);
+                            privateKeyBuff = privateKeyObj.privateKey;
+                            if (!privateKeyBuff) {
+                                throw new Error('Private key extraction error');
+                            }
+                        } else {
+                            break;
+                        }
+
+                        let structData;
+                        let decryptedMessage;
+
+                        try {
+                            // Convert the hex encoded message to a buffer
+                            const msgBuf = Buffer.from(msgString, 'hex');
+
+                            // Convert the bufer into a structured object.
+                            structData = convertToEncryptStruct(msgBuf);
+
+                            decryptedMessage = await ecies.decrypt(
+                                privateKeyBuff,
+                                structData,
+                            );
+                            decryptionSuccess = true;
+                        } catch (err) {
+                            console.log(
+                                'useBCH.parsedTxData() decryption error: ' +
+                                    err,
+                            );
+                            decryptedMessage =
+                                'Only the message recipient can view this';
+                        }
+                        isCashtabMessage = true;
+                        isEncryptedMessage = true;
+                        opReturnMessage = decryptedMessage;
+                    } else {
+                        // this is an externally generated message
+                        message = txType; // index 0 is the message content in this instance
+
+                        // if there are more than one part to the external message
+                        const arrayLength = parsedOpReturnArray.length;
+                        for (let i = 1; i < arrayLength; i++) {
+                            message = message + parsedOpReturnArray[i];
+                        }
+
+                        try {
+                            opReturnMessage = Buffer.from(message, 'hex');
+                        } catch (err) {
+                            // soft error if an unexpected or invalid cashtab hex is encountered
+                            opReturnMessage = '';
+                            console.log(
+                                'useBCH.parsedTxData() error: invalid external msg hex: ' +
+                                    substring,
+                            );
+                        }
+                    }
+                    continue; // skipping the remainder of tx data parsing logic in both token and OP_RETURN tx cases
                 }
                 if (
                     thisOutput.scriptPubKey.addresses &&
@@ -152,13 +294,42 @@ export default function useBCH() {
                     destinationAddress = thisOutput.scriptPubKey.addresses[0];
                 }
             }
+
+            // If the tx is incoming and have a message attached
+            // get the address of the sender for this tx and encode into eCash address
+            let senderAddress = null;
+            if (!outgoingTx && opReturnMessage !== '') {
+                const firstVin = tx.vin[0];
+                try {
+                    // get the tx that generated the first vin of this tx
+                    const firstVinTxData =
+                        await BCH.RawTransactions.getRawTransaction(
+                            firstVin.txid,
+                            true,
+                        );
+                    // extract the address of the tx output
+                    let senderBchAddress =
+                        firstVinTxData.vout[firstVin.vout].scriptPubKey
+                            .addresses[0];
+                    const { type, hash } = cashaddr.decode(senderBchAddress);
+                    senderAddress = cashaddr.encode('ecash', type, hash);
+                } catch (err) {
+                    console.log(
+                        `Error in BCH.RawTransactions.getRawTransaction(${firstVin.txid}, true)`,
+                    );
+                }
+            }
             // Construct parsedTx
             parsedTx.amountSent = amountSent;
             parsedTx.amountReceived = amountReceived;
             parsedTx.tokenTx = tokenTx;
             parsedTx.outgoingTx = outgoingTx;
+            parsedTx.replyAddress = senderAddress;
             parsedTx.destinationAddress = destinationAddress;
-
+            parsedTx.opReturnMessage = Buffer.from(opReturnMessage).toString();
+            parsedTx.isCashtabMessage = isCashtabMessage;
+            parsedTx.isEncryptedMessage = isEncryptedMessage;
+            parsedTx.decryptionSuccess = decryptionSuccess;
             parsedTxHistory.push(parsedTx);
         }
         return parsedTxHistory;
@@ -187,15 +358,16 @@ export default function useBCH() {
     };
 
     const getTxDataWithPassThrough = async (BCH, flatTx) => {
-        // necessary as BCH.RawTransactions.getTxData does not return address or blockheight
+        // necessary as BCH.RawTransactions.getRawTransaction does not return address or blockheight
         let txDataWithPassThrough = {};
         try {
-            txDataWithPassThrough = await BCH.RawTransactions.getTxData(
+            txDataWithPassThrough = await BCH.RawTransactions.getRawTransaction(
                 flatTx.txid,
+                true,
             );
         } catch (err) {
             console.log(
-                `Error in BCH.RawTransactions.getTxData(${flatTx.txid})`,
+                `Error in BCH.RawTransactions.getRawTransaction(${flatTx.txid}, true)`,
             );
             console.log(err);
             // Include txid if you don't get it from the attempted response
@@ -206,30 +378,39 @@ export default function useBCH() {
         return txDataWithPassThrough;
     };
 
-    const getTxData = async (BCH, txHistory) => {
+    const getTxData = async (BCH, txHistory, publicKeys, wallet) => {
         // Flatten tx history
         let flatTxs = flattenTransactions(txHistory);
 
         // Build array of promises to get tx data for all 10 transactions
-        let txDataPromises = [];
+        let getTxDataWithPassThroughPromises = [];
         for (let i = 0; i < flatTxs.length; i += 1) {
-            const txDataPromise = await getTxDataWithPassThrough(
-                BCH,
-                flatTxs[i],
+            const getTxDataWithPassThroughPromise =
+                returnGetTxDataWithPassThroughPromise(BCH, flatTxs[i]);
+            getTxDataWithPassThroughPromises.push(
+                getTxDataWithPassThroughPromise,
             );
-            txDataPromises.push(txDataPromise);
         }
 
         // Get txData for the 10 most recent transactions
-        let txDataPromiseResponse;
+        let getTxDataWithPassThroughPromisesResponse;
         try {
-            txDataPromiseResponse = await Promise.all(txDataPromises);
+            getTxDataWithPassThroughPromisesResponse = await Promise.all(
+                getTxDataWithPassThroughPromises,
+            );
 
-            const parsed = parseTxData(txDataPromiseResponse);
+            const parsed = parseTxData(
+                BCH,
+                getTxDataWithPassThroughPromisesResponse,
+                publicKeys,
+                wallet,
+            );
 
             return parsed;
         } catch (err) {
-            console.log(`Error in Promise.all(txDataPromises):`);
+            console.log(
+                `Error in Promise.all(getTxDataWithPassThroughPromises):`,
+            );
             console.log(err);
             return err;
         }
@@ -329,21 +510,24 @@ export default function useBCH() {
         // Get txData for the 10 most recent transactions
 
         // Build array of promises to get tx data for all 10 transactions
-        let tokenTxDataPromises = [];
+        let addTokenTxDataToSingleTxPromises = [];
         for (let i = 0; i < parsedTxs.length; i += 1) {
-            const txDataPromise = await addTokenTxDataToSingleTx(
-                BCH,
-                parsedTxs[i],
+            const addTokenTxDataToSingleTxPromise =
+                returnAddTokenTxDataToSingleTxPromise(BCH, parsedTxs[i]);
+            addTokenTxDataToSingleTxPromises.push(
+                addTokenTxDataToSingleTxPromise,
             );
-            tokenTxDataPromises.push(txDataPromise);
         }
-        let tokenTxDataPromiseResponse;
+        let addTokenTxDataToSingleTxPromisesResponse;
         try {
-            tokenTxDataPromiseResponse = await Promise.all(tokenTxDataPromises);
-
-            return tokenTxDataPromiseResponse;
+            addTokenTxDataToSingleTxPromisesResponse = await Promise.all(
+                addTokenTxDataToSingleTxPromises,
+            );
+            return addTokenTxDataToSingleTxPromisesResponse;
         } catch (err) {
-            console.log(`Error in Promise.all(tokenTxDataPromises):`);
+            console.log(
+                `Error in Promise.all(addTokenTxDataToSingleTxPromises):`,
+            );
             console.log(err);
             return err;
         }
@@ -374,7 +558,7 @@ export default function useBCH() {
             let theseUtxos = utxos[i].utxos;
             const batchedUtxos = batchArray(
                 theseUtxos,
-                currency.hydrateUtxoBatchSize,
+                currency.xecApiBatchSize,
             );
 
             // Iterate over each utxo in this address field
@@ -382,18 +566,21 @@ export default function useBCH() {
                 const utxoSetForThisPromise = [
                     { utxos: batchedUtxos[j], address: thisAddress },
                 ];
-                const thisPromise = BCH.SLP.Utils.hydrateUtxos(
+                const hydrateUtxosPromise = returnHydrateUtxosPromise(
+                    BCH,
                     utxoSetForThisPromise,
                 );
-                hydrateUtxosPromises.push(thisPromise);
+                hydrateUtxosPromises.push(hydrateUtxosPromise);
             }
         }
-        let hydratedUtxoDetails;
-
+        let hydrateUtxosPromisesResponse;
         try {
-            hydratedUtxoDetails = await Promise.all(hydrateUtxosPromises);
-            const flattenedBatchedHydratedUtxos =
-                flattenBatchedHydratedUtxos(hydratedUtxoDetails);
+            hydrateUtxosPromisesResponse = await Promise.all(
+                hydrateUtxosPromises,
+            );
+            const flattenedBatchedHydratedUtxos = flattenBatchedHydratedUtxos(
+                hydrateUtxosPromisesResponse,
+            );
             return flattenedBatchedHydratedUtxos;
         } catch (err) {
             console.log(`Error in Promise.all(hydrateUtxosPromises)`);
@@ -402,8 +589,106 @@ export default function useBCH() {
         }
     };
 
-    const getSlpBalancesAndUtxos = hydratedUtxoDetails => {
-        const hydratedUtxos = [];
+    const returnTxDataPromise = (BCH, txidBatch) => {
+        return new Promise((resolve, reject) => {
+            BCH.Electrumx.txData(txidBatch).then(
+                result => {
+                    resolve(result);
+                },
+                err => {
+                    reject(err);
+                },
+            );
+        });
+    };
+
+    const returnGetTxDataWithPassThroughPromise = (BCH, flatTx) => {
+        return new Promise((resolve, reject) => {
+            getTxDataWithPassThrough(BCH, flatTx).then(
+                result => {
+                    resolve(result);
+                },
+                err => {
+                    reject(err);
+                },
+            );
+        });
+    };
+
+    const returnAddTokenTxDataToSingleTxPromise = (BCH, parsedTx) => {
+        return new Promise((resolve, reject) => {
+            addTokenTxDataToSingleTx(BCH, parsedTx).then(
+                result => {
+                    resolve(result);
+                },
+                err => {
+                    reject(err);
+                },
+            );
+        });
+    };
+
+    const returnHydrateUtxosPromise = (BCH, utxoSetForThisPromise) => {
+        return new Promise((resolve, reject) => {
+            BCH.SLP.Utils.hydrateUtxos(utxoSetForThisPromise).then(
+                result => {
+                    resolve(result);
+                },
+                err => {
+                    reject(err);
+                },
+            );
+        });
+    };
+
+    const fetchTxDataForNullUtxos = async (BCH, nullUtxos) => {
+        // Check nullUtxos. If they aren't eToken txs, count them
+        console.log(
+            `Null utxos found, checking OP_RETURN fields to confirm they are not eToken txs.`,
+        );
+        const txids = [];
+        for (let i = 0; i < nullUtxos.length; i += 1) {
+            // Batch API call to get their OP_RETURN asm info
+            txids.push(nullUtxos[i].tx_hash);
+        }
+
+        // segment the txids array into chunks under the api limit
+        const batchedTxids = batchArray(txids, currency.xecApiBatchSize);
+
+        // build an array of promises
+        let txDataPromises = [];
+        // loop through each batch of 20 txids
+        for (let j = 0; j < batchedTxids.length; j += 1) {
+            const txidsForThisPromise = batchedTxids[j];
+            // build the promise for the api call with the 20 txids in current batch
+            const txDataPromise = returnTxDataPromise(BCH, txidsForThisPromise);
+            txDataPromises.push(txDataPromise);
+        }
+
+        try {
+            const txDataPromisesResponse = await Promise.all(txDataPromises);
+            // Scan tx data for each utxo to confirm they are not eToken txs
+            let thisTxDataResult;
+            let nonEtokenUtxos = [];
+            for (let k = 0; k < txDataPromisesResponse.length; k += 1) {
+                thisTxDataResult = txDataPromisesResponse[k].transactions;
+                nonEtokenUtxos = nonEtokenUtxos.concat(
+                    checkNullUtxosForTokenStatus(thisTxDataResult),
+                );
+            }
+            return nonEtokenUtxos;
+        } catch (err) {
+            console.log(
+                `Error in checkNullUtxosForTokenStatus(nullUtxos)` + err,
+            );
+            console.log(`nullUtxos`, nullUtxos);
+            // If error, ignore these utxos, will be updated next utxo set refresh
+            return [];
+        }
+    };
+
+    const getSlpBalancesAndUtxos = async (BCH, hydratedUtxoDetails) => {
+        let hydratedUtxos = [];
         for (let i = 0; i < hydratedUtxoDetails.slpUtxos.length; i += 1) {
             const hydratedUtxosAtAddress = hydratedUtxoDetails.slpUtxos[i];
             for (let j = 0; j < hydratedUtxosAtAddress.utxos.length; j += 1) {
@@ -423,11 +708,20 @@ export default function useBCH() {
         if (nullUtxos.length > 0) {
             console.log(`${nullUtxos.length} null utxos found!`);
             console.log('nullUtxos', nullUtxos);
+            const nullNonEtokenUtxos = await fetchTxDataForNullUtxos(
+                BCH,
+                nullUtxos,
+            );
+
+            // Set isValid === false for nullUtxos that are confirmed non-eToken
+            hydratedUtxos = confirmNonEtokenUtxos(
+                hydratedUtxos,
+                nullNonEtokenUtxos,
+            );
         }
 
         // Prevent app from treating slpUtxos as nonSlpUtxos
         // Must enforce === false as api will occasionally return utxo.isValid === null
-        // Do not classify utxos with 546 satoshis as nonSlpUtxos as a precaution
         // Do not classify any utxos that include token information as nonSlpUtxos
         const nonSlpUtxos = hydratedUtxos.filter(
             utxo =>
@@ -704,18 +998,16 @@ export default function useBCH() {
         );
 
         const bchECPair = BCH.ECPair.fromWIF(largestBchUtxo.wif);
-        const tokenUtxos = slpBalancesAndUtxos.slpUtxos.filter(
-            (utxo, index) => {
-                if (
-                    utxo && // UTXO is associated with a token.
-                    utxo.tokenId === tokenId && // UTXO matches the token ID.
-                    utxo.utxoType === 'token' // UTXO is not a minting baton.
-                ) {
-                    return true;
-                }
-                return false;
-            },
-        );
+        const tokenUtxos = slpBalancesAndUtxos.slpUtxos.filter(utxo => {
+            if (
+                utxo && // UTXO is associated with a token.
+                utxo.tokenId === tokenId && // UTXO matches the token ID.
+                utxo.utxoType === 'token' // UTXO is not a minting baton.
+            ) {
+                return true;
+            }
+            return false;
+        });
 
         if (tokenUtxos.length === 0) {
             throw new Error(
@@ -860,31 +1152,143 @@ export default function useBCH() {
         return link;
     };
 
-    const sendBch = async (
+    const signPkMessage = async (BCH, pk, message) => {
+        try {
+            let signature = await BCH.BitcoinCash.signMessageWithPrivKey(
+                pk,
+                message,
+            );
+            return signature;
+        } catch (err) {
+            console.log(`useBCH.signPkMessage() error: `, err);
+            throw err;
+        }
+    };
+
+    const getRecipientPublicKey = async (BCH, recipientAddress) => {
+        let recipientPubKey;
+        try {
+            recipientPubKey = await getPublicKey(BCH, recipientAddress);
+        } catch (err) {
+            console.log(`useBCH.getRecipientPublicKey() error: ` + err);
+            throw err;
+        }
+        return recipientPubKey;
+    };
+
+    const handleEncryptedOpReturn = async (
+        BCH,
+        destinationAddress,
+        optionalOpReturnMsg,
+    ) => {
+        let recipientPubKey, encryptedEj;
+        try {
+            recipientPubKey = await getRecipientPublicKey(
+                BCH,
+                destinationAddress,
+            );
+        } catch (err) {
+            console.log(`useBCH.handleEncryptedOpReturn() error: ` + err);
+            throw err;
+        }
+
+        if (recipientPubKey === 'not found') {
+            // if the API can't find a pub key, it is due to the wallet having no outbound tx
+            throw new Error(
+                'Cannot send an encrypted message to a wallet with no outgoing transactions',
+            );
+        }
+
+        try {
+            const pubKeyBuf = Buffer.from(recipientPubKey, 'hex');
+            const bufferedFile = Buffer.from(optionalOpReturnMsg);
+            const structuredEj = await ecies.encrypt(pubKeyBuf, bufferedFile);
+
+            // Serialize the encrypted data object
+            encryptedEj = Buffer.concat([
+                structuredEj.epk,
+                structuredEj.iv,
+                structuredEj.ct,
+                structuredEj.mac,
+            ]);
+        } catch (err) {
+            console.log(`useBCH.handleEncryptedOpReturn() error: ` + err);
+            throw err;
+        }
+
+        return encryptedEj;
+    };
+
+    const sendXec = async (
         BCH,
         wallet,
         utxos,
+        feeInSatsPerByte,
+        optionalOpReturnMsg,
+        isOneToMany,
+        destinationAddressAndValueArray,
         destinationAddress,
         sendAmount,
-        feeInSatsPerByte,
+        encryptionFlag,
     ) => {
         try {
-            if (!sendAmount) {
-                return null;
-            }
+            let value = new BigNumber(0);
 
-            const value = new BigNumber(sendAmount);
+            if (isOneToMany) {
+                // this is a one to many XEC transaction
+                if (
+                    !destinationAddressAndValueArray ||
+                    !destinationAddressAndValueArray.length
+                ) {
+                    throw new Error('Invalid destinationAddressAndValueArray');
+                }
+                const arrayLength = destinationAddressAndValueArray.length;
+                for (let i = 0; i < arrayLength; i++) {
+                    // add the total value being sent in this array of recipients
+                    value = BigNumber.sum(
+                        value,
+                        new BigNumber(
+                            destinationAddressAndValueArray[i].split(',')[1],
+                        ),
+                    );
+                }
 
-            // If user is attempting to send less than minimum accepted by the backend
-            if (
-                value.lt(
-                    new BigNumber(
-                        fromSmallestDenomination(currency.dustSats).toString(),
-                    ),
-                )
-            ) {
-                // Throw the same error given by the backend attempting to broadcast such a tx
-                throw new Error('dust');
+                // If user is attempting to send an aggregate value that is less than minimum accepted by the backend
+                if (
+                    value.lt(
+                        new BigNumber(
+                            fromSmallestDenomination(
+                                currency.dustSats,
+                            ).toString(),
+                        ),
+                    )
+                ) {
+                    // Throw the same error given by the backend attempting to broadcast such a tx
+                    throw new Error('dust');
+                }
+            } else {
+                // this is a one to one XEC transaction then check sendAmount
+                // note: one to many transactions won't be sending a single sendAmount
+
+                if (!sendAmount) {
+                    return null;
+                }
+
+                value = new BigNumber(sendAmount);
+
+                // If user is attempting to send less than minimum accepted by the backend
+                if (
+                    value.lt(
+                        new BigNumber(
+                            fromSmallestDenomination(
+                                currency.dustSats,
+                            ).toString(),
+                        ),
+                    )
+                ) {
+                    // Throw the same error given by the backend attempting to broadcast such a tx
+                    throw new Error('dust');
+                }
             }
 
             const inputUtxos = [];
@@ -904,6 +1308,54 @@ export default function useBCH() {
                 );
                 throw error;
             }
+
+            let script;
+            // Start of building the OP_RETURN output.
+            // only build the OP_RETURN output if the user supplied it
+            if (
+                optionalOpReturnMsg &&
+                typeof optionalOpReturnMsg !== 'undefined' &&
+                optionalOpReturnMsg.trim() !== ''
+            ) {
+                if (encryptionFlag) {
+                    // if the user has opted to encrypt this message
+                    let encryptedEj;
+                    try {
+                        encryptedEj = await handleEncryptedOpReturn(
+                            BCH,
+                            destinationAddress,
+                            optionalOpReturnMsg,
+                        );
+                    } catch (err) {
+                        console.log(`useBCH.sendXec() encryption error.`);
+                        throw err;
+                    }
+
+                    // build the OP_RETURN script with the encryption prefix
+                    script = [
+                        BCH.Script.opcodes.OP_RETURN, // 6a
+                        Buffer.from(
+                            currency.opReturn.appPrefixesHex.cashtabEncrypted,
+                            'hex',
+                        ), // 65746162
+                        Buffer.from(encryptedEj),
+                    ];
+                } else {
+                    // this is an un-encrypted message
+                    script = [
+                        BCH.Script.opcodes.OP_RETURN, // 6a
+                        Buffer.from(
+                            currency.opReturn.appPrefixesHex.cashtab,
+                            'hex',
+                        ), // 00746162
+                        Buffer.from(optionalOpReturnMsg),
+                    ];
+                }
+                const data = BCH.Script.encode(script);
+                transactionBuilder.addOutput(data, 0);
+            }
+            // End of building the OP_RETURN output.
+
             let originalAmount = new BigNumber(0);
             let txFee = 0;
             for (let i = 0; i < utxos.length; i++) {
@@ -948,11 +1400,28 @@ export default function useBCH() {
                 throw error;
             }
 
-            // add output w/ address and amount to send
-            transactionBuilder.addOutput(
-                BCH.Address.toCashAddress(destinationAddress),
-                parseInt(toSmallestDenomination(value)),
-            );
+            if (isOneToMany) {
+                // for one to many mode, add the multiple outputs from the array
+                let arrayLength = destinationAddressAndValueArray.length;
+                for (let i = 0; i < arrayLength; i++) {
+                    // add each send tx from the array as an output
+                    let outputAddress =
+                        destinationAddressAndValueArray[i].split(',')[0];
+                    let outputValue = new BigNumber(
+                        destinationAddressAndValueArray[i].split(',')[1],
+                    );
+                    transactionBuilder.addOutput(
+                        BCH.Address.toCashAddress(outputAddress),
+                        parseInt(toSmallestDenomination(outputValue)),
+                    );
+                }
+            } else {
+                // for one to one mode, add output w/ single address and amount to send
+                transactionBuilder.addOutput(
+                    BCH.Address.toCashAddress(destinationAddress),
+                    parseInt(toSmallestDenomination(value)),
+                );
+            }
 
             if (remainder.gte(new BigNumber(currency.dustSats))) {
                 transactionBuilder.addOutput(
@@ -1033,9 +1502,12 @@ export default function useBCH() {
         parseTokenInfoForTxHistory,
         getTxData,
         getRestUrl,
-        sendBch,
+        signPkMessage,
+        sendXec,
         sendToken,
         createToken,
         getTokenStats,
+        handleEncryptedOpReturn,
+        getRecipientPublicKey,
     };
 }

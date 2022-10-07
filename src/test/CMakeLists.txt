@@ -175,6 +175,7 @@ add_boost_unit_tests_to_suite(bitcoin test_lotus
 		minerfund_tests.cpp
 		monolith_opcodes_tests.cpp
 		multisig_tests.cpp
+		net_peer_eviction_tests.cpp
 		net_tests.cpp
 		netbase_tests.cpp
 		op_mulpow2_tests.cpp

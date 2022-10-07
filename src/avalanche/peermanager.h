@@ -6,15 +6,17 @@
 #define BITCOIN_AVALANCHE_PEERMANAGER_H
 
 #include <avalanche/node.h>
-#include <avalanche/orphanproofpool.h>
 #include <avalanche/proof.h>
+#include <avalanche/proofpool.h>
 #include <coins.h>
+#include <consensus/validation.h>
 #include <pubkey.h>
 #include <salteduint256hasher.h>
 #include <util/time.h>
 
 #include <boost/multi_index/composite_key.hpp>
 #include <boost/multi_index/hashed_index.hpp>
+#include <boost/multi_index/mem_fun.hpp>
 #include <boost/multi_index/member.hpp>
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index_container.hpp>
@@ -26,13 +28,6 @@
 #include <vector>
 
 namespace avalanche {
-
-/**
- * Maximum number of stakes in the orphanProofs.
- * Benchmarking on a consumer grade computer shows that 10000 stakes can be
- * verified in less than 1 second.
- */
-static constexpr size_t AVALANCHE_ORPHANPROOFPOOL_SIZE = 10000;
 
 class Delegation;
 
@@ -81,10 +76,12 @@ struct Peer {
 
     // The network stack uses timestamp in seconds, so we oblige.
     std::chrono::seconds registration_time;
+    std::chrono::seconds nextPossibleConflictTime;
 
     Peer(PeerId peerid_, ProofRef proof_)
         : peerid(peerid_), proof(std::move(proof_)),
-          registration_time(GetTime<std::chrono::seconds>()) {}
+          registration_time(GetTime<std::chrono::seconds>()),
+          nextPossibleConflictTime(registration_time) {}
 
     const ProofId &getProofId() const { return proof->getId(); }
     uint32_t getScore() const { return proof->getScore(); }
@@ -108,6 +105,18 @@ struct PendingNode {
 struct by_proofid;
 struct by_nodeid;
 
+enum class ProofRegistrationResult {
+    NONE = 0,
+    ALREADY_REGISTERED,
+    ORPHAN,
+    INVALID,
+    CONFLICTING,
+    REJECTED,
+};
+
+class ProofRegistrationState : public ValidationState<ProofRegistrationResult> {
+};
+
 namespace bmi = boost::multi_index;
 
 class PeerManager {
@@ -124,13 +133,15 @@ class PeerManager {
                   // index by peerid
                   bmi::hashed_unique<bmi::member<Peer, PeerId, &Peer::peerid>>,
                   // index by proof
-                  bmi::hashed_unique<bmi::tag<proof_index>, proof_index,
+                  bmi::hashed_unique<bmi::tag<by_proofid>, proof_index,
                                      SaltedProofIdHasher>>>;
 
     PeerId nextPeerId = 0;
     PeerSet peers;
 
-    std::unordered_map<COutPoint, PeerId, SaltedOutpointHasher> utxos;
+    ProofPool validProofPool;
+    ProofPool conflictingProofPool;
+    ProofPool orphanProofPool;
 
     using NodeSet = boost::multi_index_container<
         Node,
@@ -162,11 +173,6 @@ class PeerManager {
 
     static constexpr int SELECT_PEER_MAX_RETRY = 3;
     static constexpr int SELECT_NODE_MAX_RETRY = 3;
-
-    /**
-     * Tracks proof which for which the UTXO are unavailable.
-     */
-    OrphanProofPool orphanProofs{AVALANCHE_ORPHANPROOFPOOL_SIZE};
 
     /**
      * Track proof ids to broadcast
@@ -204,14 +210,42 @@ public:
     /**
      * Proof and Peer related API.
      */
-    bool registerProof(const ProofRef &proof);
+
+    /**
+     * Update the time before which a proof is not allowed to have conflicting
+     * UTXO with this peer's proof.
+     */
+    bool updateNextPossibleConflictTime(PeerId peerid,
+                                        const std::chrono::seconds &nextTime);
+
+    /**
+     * Registration mode
+     *  - DEFAULT: Default policy, register only if the proof is unknown and has
+     *    no conflict.
+     *  - FORCE_ACCEPT: Turn a valid proof into a peer even if it has conflicts
+     *    and is not the best candidate.
+     */
+    enum class RegistrationMode {
+        DEFAULT,
+        FORCE_ACCEPT,
+    };
+
+    bool registerProof(const ProofRef &proof,
+                       ProofRegistrationState &registrationState,
+                       RegistrationMode mode = RegistrationMode::DEFAULT);
+    bool registerProof(const ProofRef &proof,
+                       RegistrationMode mode = RegistrationMode::DEFAULT) {
+        ProofRegistrationState dummy;
+        return registerProof(proof, dummy, mode);
+    }
+
     bool exists(const ProofId &proofid) const {
         return getProof(proofid) != nullptr;
     }
 
     template <typename Callable>
     bool forPeer(const ProofId &proofid, Callable &&func) const {
-        auto &pview = peers.get<proof_index>();
+        auto &pview = peers.get<by_proofid>();
         auto it = pview.find(proofid);
         return it != pview.end() && func(*it);
     }
@@ -237,11 +271,6 @@ public:
     /****************************************************
      * Functions which are public for testing purposes. *
      ****************************************************/
-    /**
-     * Provide the PeerId associated with the given proof. If the peer does not
-     * exist, then it is created.
-     */
-    PeerId getPeerId(const ProofRef &proof);
 
     /**
      * Remove an existing peer.
@@ -269,11 +298,11 @@ public:
     uint64_t getFragmentation() const { return fragmentation; }
 
     ProofRef getProof(const ProofId &proofid) const;
-    bool isValid(const ProofId &proofid) const;
+    bool isBoundToPeer(const ProofId &proofid) const;
     bool isOrphan(const ProofId &proofid) const;
+    bool isInConflictingPool(const ProofId &proofid) const;
 
 private:
-    PeerSet::iterator fetchOrCreatePeer(const ProofRef &proof);
     bool addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid);
     bool addNodeToPeer(const PeerSet::iterator &it);
     bool removeNodeFromPeer(const PeerSet::iterator &it, uint32_t count = 1);
@@ -286,9 +315,6 @@ private:
  */
 PeerId selectPeerImpl(const std::vector<Slot> &slots, const uint64_t slot,
                       const uint64_t max);
-
-bool isConflictingProofPreferred(const ProofRef &conflicting,
-                                 const ProofRef &current);
 
 } // namespace avalanche
 

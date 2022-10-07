@@ -6,11 +6,7 @@
 
 import time
 
-from test_framework.blocktools import (
-    create_block,
-    create_coinbase,
-    prepare_block,
-)
+from test_framework.blocktools import create_block, prepare_block
 from test_framework.messages import (
     COIN,
     COutPoint,
@@ -27,8 +23,6 @@ from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_raises_rpc_error,
-    connect_nodes,
-    disconnect_nodes,
     satoshi_round,
 )
 
@@ -52,8 +46,6 @@ class BIP68Test(BitcoinTestFramework):
                 "-maxreorgdepth=-1",
                 "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=1",
-                # bump because mocktime might cause a disconnect otherwise
-                "-peertimeout=9999",
             ],
             [
                 "-allownonstdtxnconsensus=1",
@@ -344,6 +336,9 @@ class BIP68Test(BitcoinTestFramework):
 
         # Advance the time on the node so that we can test timelocks
         self.nodes[0].setmocktime(cur_time + 600)
+        # Save block template now to use for the reorg later
+        tmpl = self.nodes[0].getblocktemplate()
+        print(tmpl)
         self.nodes[0].generate(1)
         assert tx2.txid_hex not in self.nodes[0].getrawmempool()
 
@@ -392,18 +387,17 @@ class BIP68Test(BitcoinTestFramework):
         # diagram above).
         # This would cause tx2 to be added back to the mempool, which in turn causes
         # tx3 to be removed.
-        tip = int(self.nodes[0].getblockhash(
-            self.nodes[0].getblockcount() - 1), 16)
-        height = self.nodes[0].getblockcount()
         for i in range(2):
-            block = create_block(tip, create_coinbase(height), height, cur_time)
+            block = create_block(tmpl=tmpl, ntime=cur_time)
             prepare_block(block)
             tip = block.sha256
-            height += 1
             assert_equal(
                 None if i == 1 else 'inconclusive',
                 self.nodes[0].submitblock(
                     ToHex(block)))
+            tmpl = self.nodes[0].getblocktemplate()
+            tmpl['previousblockhash'] = f"{tip:x}"
+            tmpl['transactions'] = []
             cur_time += 1
 
         mempool = self.nodes[0].getrawmempool()
@@ -427,13 +421,13 @@ class BIP68Test(BitcoinTestFramework):
         assert_greater_than(csv_activation_height - height, 1)
         self.nodes[0].generate(csv_activation_height - height - 1)
         assert_equal(self.get_csv_status(), False)
-        disconnect_nodes(self.nodes[0], self.nodes[1])
+        self.disconnect_nodes(0, 1)
         self.nodes[0].generate(1)
         assert_equal(self.get_csv_status(), True)
         # We have a block that has CSV activated, but we want to be at
         # the activation point, so we invalidate the tip.
         self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
         self.sync_blocks()
 
     # Use self.nodes[1] to test that version 2 transactions are standard.

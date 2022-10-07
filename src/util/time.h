@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <string>
 
+using namespace std::chrono_literals;
+
 void UninterruptibleSleep(const std::chrono::microseconds &n);
 
 /**
@@ -22,16 +24,29 @@ void UninterruptibleSleep(const std::chrono::microseconds &n);
  * This helper is used to convert durations before passing them over an
  * interface that doesn't support std::chrono (e.g. RPC, debug log, or the GUI)
  */
-inline int64_t count_seconds(std::chrono::seconds t) {
+constexpr int64_t count_seconds(std::chrono::seconds t) {
     return t.count();
 }
-inline int64_t count_microseconds(std::chrono::microseconds t) {
+constexpr int64_t count_milliseconds(std::chrono::milliseconds t) {
+    return t.count();
+}
+constexpr int64_t count_microseconds(std::chrono::microseconds t) {
+    return t.count();
+}
+
+using SecondsDouble =
+    std::chrono::duration<double, std::chrono::seconds::period>;
+
+/**
+ * Helper to count the seconds in any std::chrono::duration type
+ */
+inline double CountSecondsDouble(SecondsDouble t) {
     return t.count();
 }
 
 /**
  * DEPRECATED
- * Use either GetSystemTimeInSeconds (not mockable) or GetTime<T> (mockable)
+ * Use either GetTimeSeconds (not mockable) or GetTime<T> (mockable)
  */
 int64_t GetTime();
 
@@ -41,7 +56,7 @@ int64_t GetTimeMillis();
 int64_t GetTimeMicros();
 /** Returns the system time (not mockable) */
 // Like GetTime(), but not mockable
-int64_t GetSystemTimeInSeconds();
+int64_t GetTimeSeconds();
 
 /** For testing. Set e.g. with the setmocktime rpc, or -mocktime argument */
 void SetMockTime(int64_t nMockTimeIn);

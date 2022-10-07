@@ -20,6 +20,7 @@
 #include <script/standard.h>
 #include <util/strencodings.h>
 #include <util/system.h>
+#include <util/time.h>
 
 #ifdef WIN32
 #ifndef NOMINMAX
@@ -57,6 +58,8 @@
 #include <QThread>
 #include <QUrlQuery>
 #include <QtGlobal>
+
+#include <chrono>
 
 #if defined(Q_OS_MAC)
 
@@ -783,14 +786,37 @@ void setClipboard(const QString &str) {
 }
 
 fs::path qstringToBoostPath(const QString &path) {
-    return fs::path(path.toStdString());
+    return fs::u8path(path.toStdString());
 }
 
 QString boostPathToQString(const fs::path &path) {
-    return QString::fromStdString(path.string());
+    return QString::fromStdString(path.u8string());
 }
 
-QString formatDurationStr(int secs) {
+QString NetworkToQString(Network net) {
+    switch (net) {
+        case NET_UNROUTABLE:
+            return QObject::tr("Unroutable");
+        case NET_IPV4:
+            return "IPv4";
+        case NET_IPV6:
+            return "IPv6";
+        case NET_ONION:
+            return "Onion";
+        case NET_I2P:
+            return "I2P";
+        case NET_CJDNS:
+            return "CJDNS";
+        case NET_INTERNAL:
+            return QObject::tr("Internal");
+        case NET_MAX:
+            assert(false);
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+QString formatDurationStr(std::chrono::seconds dur) {
+    const auto secs = count_seconds(dur);
     QStringList strList;
     int days = secs / 86400;
     int hours = (secs % 86400) / 3600;
@@ -829,11 +855,12 @@ QString formatServicesStr(quint64 mask) {
     }
 }
 
-QString formatPingTime(int64_t ping_usec) {
-    return (ping_usec == std::numeric_limits<int64_t>::max() || ping_usec == 0)
+QString formatPingTime(std::chrono::microseconds ping_time) {
+    return (ping_time == std::chrono::microseconds::max() || ping_time == 0us)
                ? QObject::tr("N/A")
                : QString(QObject::tr("%1 ms"))
-                     .arg(QString::number(int(ping_usec / 1000), 10));
+                     .arg(QString::number(
+                         int(count_microseconds(ping_time) / 1000), 10));
 }
 
 QString formatTimeOffset(int64_t nTimeOffset) {

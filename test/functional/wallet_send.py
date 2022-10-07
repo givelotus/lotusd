@@ -171,7 +171,7 @@ class WalletSendTest(BitcoinTestFramework):
     def run_test(self):
         self.log.info("Setup wallets...")
         # w0 is a wallet with coinbase rewards
-        w0 = self.nodes[0].get_wallet_rpc("")
+        w0 = self.nodes[0].get_wallet_rpc(self.default_wallet_name)
         # w1 is a regular wallet
         self.nodes[1].createwallet(wallet_name="w1")
         w1 = self.nodes[1].get_wallet_rpc("w1")
@@ -295,7 +295,7 @@ class WalletSendTest(BitcoinTestFramework):
             add_to_wallet=False)
         fee = self.nodes[1].decodepsbt(res["psbt"])["fee"]
         assert_fee_amount(fee,
-                          Decimal(len(res["hex"]) / 2),
+                          len(res["hex"]) // 2,
                           Decimal("0.002000"))
         self.test_send(from_wallet=w0, to_wallet=w1, amount=100, fee_rate=-1,
                        expect_error=(-3, "Amount out of range"))
@@ -390,6 +390,7 @@ class WalletSendTest(BitcoinTestFramework):
         res = self.nodes[0].sendrawtransaction(hex)
         self.nodes[0].generate(1)
         assert_equal(self.nodes[0].gettransaction(txid)["confirmations"], 1)
+        self.sync_all()
 
         self.log.info("Lock unspents...")
         utxo1 = w0.listunspent()[0]

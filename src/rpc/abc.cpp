@@ -13,29 +13,29 @@
 
 #include <univalue.h>
 
-static UniValue getexcessiveblock(const Config &config,
-                                  const JSONRPCRequest &request) {
-    RPCHelpMan{
+static RPCHelpMan getexcessiveblock() {
+    return RPCHelpMan{
         "getexcessiveblock",
         "Return the excessive block size.",
         {},
         RPCResult{RPCResult::Type::NUM, "", "excessive block size in bytes"},
         RPCExamples{HelpExampleCli("getexcessiveblock", "") +
                     HelpExampleRpc("getexcessiveblock", "")},
-    }
-        .Check(request);
-
-    UniValue ret(UniValue::VOBJ);
-    ret.pushKV("excessiveBlockSize", config.GetMaxBlockSize());
-    return ret;
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("excessiveBlockSize", config.GetMaxBlockSize());
+            return ret;
+        },
+    };
 }
 
 void RegisterABCRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
-        //  category            name                      actor (function)        argNames
-        //  ------------------- ------------------------  ----------------------  ----------
-        { "network",            "getexcessiveblock",      getexcessiveblock,      {}},
+        //  category            actor (function)
+        //  ------------------  ----------------------
+        { "network",            getexcessiveblock,    },
     };
     // clang-format on
 

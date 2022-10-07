@@ -64,24 +64,30 @@ bool ReadSettings(const fs::path &path,
     values.clear();
     errors.clear();
 
+    // Ok for file to not exist
+    if (!fs::exists(path)) {
+        return true;
+    }
+
     fsbridge::ifstream file;
     file.open(path);
     if (!file.is_open()) {
-        // Ok for file not to exist.
-        return true;
+        errors.emplace_back(
+            strprintf("%s. Please check permissions.", fs::PathToString(path)));
+        return false;
     }
 
     SettingsValue in;
     if (!in.read(std::string{std::istreambuf_iterator<char>(file),
                              std::istreambuf_iterator<char>()})) {
-        errors.emplace_back(
-            strprintf("Unable to parse settings file %s", path.string()));
+        errors.emplace_back(strprintf("Unable to parse settings file %s",
+                                      fs::PathToString(path)));
         return false;
     }
 
     if (file.fail()) {
-        errors.emplace_back(
-            strprintf("Failed reading settings file %s", path.string()));
+        errors.emplace_back(strprintf("Failed reading settings file %s",
+                                      fs::PathToString(path)));
         return false;
     }
     // Done with file descriptor. Release while copying data.
@@ -90,7 +96,7 @@ bool ReadSettings(const fs::path &path,
     if (!in.isObject()) {
         errors.emplace_back(
             strprintf("Found non-object value %s in settings file %s",
-                      in.write(), path.string()));
+                      in.write(), fs::PathToString(path)));
         return false;
     }
 
@@ -101,7 +107,7 @@ bool ReadSettings(const fs::path &path,
         if (!inserted.second) {
             errors.emplace_back(
                 strprintf("Found duplicate key %s in settings file %s",
-                          in_keys[i], path.string()));
+                          in_keys[i], fs::PathToString(path)));
         }
     }
     return errors.empty();
@@ -119,7 +125,7 @@ bool WriteSettings(const fs::path &path,
     if (file.fail()) {
         errors.emplace_back(
             strprintf("Error: Unable to open settings file %s for writing",
-                      path.string()));
+                      fs::PathToString(path)));
         return false;
     }
     file << out.write(/* prettyIndent= */ 1, /* indentLevel= */ 4) << std::endl;

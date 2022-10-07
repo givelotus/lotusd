@@ -113,10 +113,10 @@ static const char *BITCOIN_PID_FILENAME = "lotusd.pid";
 
 static fs::path GetPidFile(const ArgsManager &args) {
     return AbsPathForConfigVal(
-        fs::path(args.GetArg("-pid", BITCOIN_PID_FILENAME)));
+        fs::PathFromString(args.GetArg("-pid", BITCOIN_PID_FILENAME)));
 }
 
-NODISCARD static bool CreatePidFile(const ArgsManager &args) {
+[[nodiscard]] static bool CreatePidFile(const ArgsManager &args) {
     fsbridge::ofstream file{GetPidFile(args)};
     if (file) {
 #ifdef WIN32
@@ -127,7 +127,7 @@ NODISCARD static bool CreatePidFile(const ArgsManager &args) {
         return true;
     } else {
         return InitError(strprintf(_("Unable to create the PID file '%s': %s"),
-                                   GetPidFile(args).string(),
+                                   fs::PathToString(GetPidFile(args)),
                                    std::strerror(errno)));
     }
 }
@@ -227,7 +227,7 @@ void Shutdown(NodeContext &node) {
     }
     // Follow the lock order requirements:
     // * CheckForStaleTipAndEvictPeers locks cs_main before indirectly calling
-    //   GetExtraOutboundCount which locks cs_vNodes.
+    //   GetExtraFullOutboundCount which locks cs_vNodes.
     // * ProcessMessage locks cs_main and g_cs_orphans before indirectly calling
     //   ForEachNode which locks cs_vNodes.
     // * CConnman::Stop calls DeleteNode, which calls FinalizeNode, which locks
@@ -416,7 +416,7 @@ void SetupServerArgs(NodeContext &node) {
 
     // Hidden Options
     std::vector<std::string> hidden_args = {
-        "-dbcrashratio", "-forcecompactdb", "-parkdeepreorg",
+        "-dbcrashratio", "-forcecompactdb", "-maxaddrtosend", "-parkdeepreorg",
         "-automaticunparking", "-replayprotectionactivationtime",
         "-enableminerfund",
         // GUI args. These will be overwritten by SetupUIArgs for the GUI
@@ -648,11 +648,18 @@ void SetupServerArgs(NodeContext &node) {
                              "configured bans (default: %u)",
                              DEFAULT_MISBEHAVING_BANTIME),
                    ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-    argsman.AddArg("-bind=<addr>",
-                   "Bind to given address and always listen on it. Use "
-                   "[host]:port notation for IPv6",
-                   ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
-                   OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-bind=<addr>[:<port>][=onion]",
+        strprintf("Bind to given address and always listen on it (default: "
+                  "0.0.0.0). Use [host]:port notation for IPv6. Append =onion "
+                  "to tag any incoming connections to that address and port as "
+                  "incoming Tor connections (default: 127.0.0.1:%u=onion, "
+                  "testnet: 127.0.0.1:%u=onion, regtest: 127.0.0.1:%u=onion)",
+                  defaultBaseParams->OnionServiceTargetPort(),
+                  testnetBaseParams->OnionServiceTargetPort(),
+                  regtestBaseParams->OnionServiceTargetPort()),
+        ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
+        OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-connect=<ip>",
         "Connect only to the specified node(s); -connect=0 disables automatic "
@@ -671,12 +678,19 @@ void SetupServerArgs(NodeContext &node) {
                    ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-dnsseed",
-        "Query for peer addresses via DNS lookup, if low on addresses "
-        "(default: 1 unless -connect used)",
-        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-
+        strprintf(
+            "Query for peer addresses via DNS lookup, if low on addresses "
+            "(default: %u unless -connect used)",
+            DEFAULT_DNSSEED),
+        ArgsManager::ALLOW_BOOL, OptionsCategory::CONNECTION);
     argsman.AddArg("-externalip=<ip>", "Specify your own public address",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-fixedseeds",
+        strprintf(
+            "Allow fixed seeds if DNS seeds don't provide peers (default: %u)",
+            DEFAULT_FIXEDSEEDS),
+        ArgsManager::ALLOW_BOOL, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-forcednsseed",
         strprintf(
@@ -932,10 +946,6 @@ void SetupServerArgs(NodeContext &node) {
                    "Allows deprecated RPC method(s) to be used",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::DEBUG_TEST);
-    argsman.AddArg("-dropmessagestest=<n>",
-                   "Randomly drop 1 of every <n> network messages",
-                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-                   OptionsCategory::DEBUG_TEST);
     argsman.AddArg(
         "-stopafterblockimport",
         strprintf("Stop running after importing blocks from disk (default: %d)",
@@ -1016,6 +1026,13 @@ void SetupServerArgs(NodeContext &node) {
 #else
     hidden_args.emplace_back("-logthreadnames");
 #endif
+    argsman.AddArg(
+        "-logsourcelocations",
+        strprintf(
+            "Prepend debug output with name of the originating source location "
+            "(source file, line number and function name) (default: %u)",
+            DEFAULT_LOGSOURCELOCATIONS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg(
         "-logtimemicros",
         strprintf("Add microsecond precision to debug timestamps (default: %d)",
@@ -1163,7 +1180,8 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
     argsman.AddArg("-blockversion=<n>",
-                   "Override block version to test forking scenarios",
+                   "Override block version to test forking scenarios (must be "
+                   "a positive integer lower than 255)",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::BLOCK_CREATION);
 
@@ -1398,14 +1416,13 @@ static void CleanupBlockRevFiles() {
     // ordered map keyed by block file index.
     LogPrintf("Removing unusable blk?????.dat and rev?????.dat files for "
               "-reindex with -prune\n");
-    const auto directoryIterator = fs::directory_iterator{GetBlocksDir()};
-    for (const auto &file : directoryIterator) {
-        const auto fileName = file.path().filename().string();
-        if (fs::is_regular_file(file) && fileName.length() == 12 &&
-            fileName.substr(8, 4) == ".dat") {
-            if (fileName.substr(0, 3) == "blk") {
-                mapBlockFiles[fileName.substr(3, 5)] = file.path();
-            } else if (fileName.substr(0, 3) == "rev") {
+    for (const auto &file : fs::directory_iterator{gArgs.GetBlocksDirPath()}) {
+        const std::string path = fs::PathToString(file.path().filename());
+        if (fs::is_regular_file(file) && path.length() == 12 &&
+            path.substr(8, 4) == ".dat") {
+            if (path.substr(0, 3) == "blk") {
+                mapBlockFiles[path.substr(3, 5)] = file.path();
+            } else if (path.substr(0, 3) == "rev") {
                 remove(file.path());
             }
         }
@@ -1481,7 +1498,8 @@ static void ThreadImport(const Config &config, ChainstateManager &chainman,
         for (const fs::path &path : vImportFiles) {
             FILE *file = fsbridge::fopen(path, "rb");
             if (file) {
-                LogPrintf("Importing blocks file %s...\n", path.string());
+                LogPrintf("Importing blocks file %s...\n",
+                          fs::PathToString(path));
                 LoadExternalBlockFile(config, file);
                 if (ShutdownRequested()) {
                     LogPrintf("Shutdown requested. Exit %s\n", __func__);
@@ -1489,7 +1507,7 @@ static void ThreadImport(const Config &config, ChainstateManager &chainman,
                 }
             } else {
                 LogPrintf("Warning: Could not open blocks file %s\n",
-                          path.string());
+                          fs::PathToString(path));
             }
         }
 
@@ -1699,8 +1717,8 @@ void InitParameterInteraction(ArgsManager &args) {
  */
 void InitLogging(const ArgsManager &args) {
     LogInstance().m_print_to_file = !args.IsArgNegated("-debuglogfile");
-    LogInstance().m_file_path =
-        AbsPathForConfigVal(args.GetArg("-debuglogfile", DEFAULT_DEBUGLOGFILE));
+    LogInstance().m_file_path = AbsPathForConfigVal(
+        fs::PathFromString(args.GetArg("-debuglogfile", DEFAULT_DEBUGLOGFILE)));
 
     LogInstance().m_print_to_console =
         args.GetBoolArg("-printtoconsole", !args.GetBoolArg("-daemon", false));
@@ -1712,6 +1730,8 @@ void InitLogging(const ArgsManager &args) {
     LogInstance().m_log_threadnames =
         args.GetBoolArg("-logthreadnames", DEFAULT_LOGTHREADNAMES);
 #endif
+    LogInstance().m_log_sourcelocations =
+        args.GetBoolArg("-logsourcelocations", DEFAULT_LOGSOURCELOCATIONS);
 
     fLogIPs = args.GetBoolArg("-logips", DEFAULT_LOGIPS);
 
@@ -1824,7 +1844,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         InitWarning(warnings);
     }
 
-    if (!fs::is_directory(GetBlocksDir())) {
+    if (!fs::is_directory(gArgs.GetBlocksDirPath())) {
         return InitError(
             strprintf(_("Specified blocks directory \"%s\" does not exist."),
                       args.GetArg("-blocksdir", "")));
@@ -2075,7 +2095,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
             return InitError(AmountErrMsg("minrelaytxfee",
                                           args.GetArg("-minrelaytxfee", "")));
         }
-        // High fee check is done afterward in CWallet::CreateWalletFromFile()
+        // High fee check is done afterward in CWallet::Create()
         ::minRelayTxFee = CFeeRate(n);
     }
 
@@ -2151,12 +2171,12 @@ static bool LockDataDirectory(bool probeOnly) {
     if (!DirIsWritable(datadir)) {
         return InitError(strprintf(
             _("Cannot write to data directory '%s'; check permissions."),
-            datadir.string()));
+            fs::PathToString(datadir)));
     }
     if (!LockDirectory(datadir, ".lock", probeOnly)) {
         return InitError(strprintf(_("Cannot obtain a lock on data directory "
                                      "%s. %s is probably already running."),
-                                   datadir.string(), PACKAGE_NAME));
+                                   fs::PathToString(datadir), PACKAGE_NAME));
     }
     return true;
 }
@@ -2233,29 +2253,30 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     if (!logger.StartLogging()) {
         return InitError(
             strprintf(Untranslated("Could not open debug log file %s"),
-                      logger.m_file_path.string()));
+                      fs::PathToString(logger.m_file_path)));
     }
 
     if (!logger.m_log_timestamps) {
         LogPrintf("Startup time: %s\n", FormatISO8601DateTime(GetTime()));
     }
-    LogPrintf("Default data directory %s\n", GetDefaultDataDir().string());
-    LogPrintf("Using data directory %s\n", GetDataDir().string());
+    LogPrintf("Default data directory %s\n",
+              fs::PathToString(GetDefaultDataDir()));
+    LogPrintf("Using data directory %s\n", fs::PathToString(GetDataDir()));
 
     // Only log conf file usage message if conf file actually exists.
     fs::path config_file_path =
         GetConfigFile(args.GetArg("-conf", BITCOIN_CONF_FILENAME));
     if (fs::exists(config_file_path)) {
-        LogPrintf("Config file: %s\n", config_file_path.string());
+        LogPrintf("Config file: %s\n", fs::PathToString(config_file_path));
     } else if (args.IsArgSet("-conf")) {
         // Warn if no conf file exists at path provided by user
         InitWarning(
             strprintf(_("The specified config file %s does not exist\n"),
-                      config_file_path.string()));
+                      fs::PathToString(config_file_path)));
     } else {
         // Not categorizing as "Warning" because it's the default behavior
         LogPrintf("Config file: %s (not found, skipping)\n",
-                  config_file_path.string());
+                  fs::PathToString(config_file_path));
     }
 
     // Log the config arguments to debug.log
@@ -2267,7 +2288,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Warn about relative -datadir path.
     if (args.IsArgSet("-datadir") &&
-        !fs::path(args.GetArg("-datadir", "")).is_absolute()) {
+        !fs::PathFromString(args.GetArg("-datadir", "")).is_absolute()) {
         LogPrintf("Warning: relative datadir option '%s' specified, which will "
                   "be interpreted relative to the current working directory "
                   "'%s'. This is fragile, because if bitcoin is started in the "
@@ -2275,7 +2296,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                   "locate the current data files. There could also be data "
                   "loss if bitcoin is started while in a temporary "
                   "directory.\n",
-                  args.GetArg("-datadir", ""), fs::current_path().string());
+                  args.GetArg("-datadir", ""),
+                  fs::PathToString(fs::current_path()));
     }
 
     InitSignatureCache();
@@ -2373,30 +2395,24 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         GetRand(std::numeric_limits<uint64_t>::max()),
         gArgs.GetBoolArg("-networkactive", true));
 
-    // Make mempool generally available in the node context. For example the
-    // connection manager, wallet, or RPC threads, which are all started after
-    // this, may use it from the node context.
     assert(!node.mempool);
-    node.mempool = std::make_unique<CTxMemPool>();
-    if (node.mempool) {
-        int ratio = std::min<int>(
-            std::max<int>(
-                args.GetArg("-checkmempool",
-                            chainparams.DefaultConsistencyChecks() ? 1 : 0),
-                0),
-            1000000);
-        if (ratio != 0) {
-            node.mempool->setSanityCheck(1.0 / ratio);
-        }
-    }
+    int check_ratio = std::min<int>(
+        std::max<int>(
+            args.GetArg("-checkmempool",
+                        chainparams.DefaultConsistencyChecks() ? 1 : 0),
+            0),
+        1000000);
+    node.mempool = std::make_unique<CTxMemPool>(check_ratio);
 
     assert(!node.chainman);
     node.chainman = &g_chainman;
     ChainstateManager &chainman = *Assert(node.chainman);
 
-    node.peerman.reset(new PeerManager(chainparams, *node.connman,
-                                       node.banman.get(), *node.scheduler,
-                                       chainman, *node.mempool));
+    assert(!node.peerman);
+    node.peerman =
+        PeerManager::make(chainparams, *node.connman, node.banman.get(),
+                          *node.scheduler, chainman, *node.mempool,
+                          args.GetBoolArg("-blocksonly", DEFAULT_BLOCKSONLY));
     RegisterValidationInterface(node.peerman.get());
 
     // sanitize comments per BIP-0014, format user agent and check total size
@@ -2506,10 +2522,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
     }
 
-    // see Step 2: parameter interactions for more information about these
     fListen = args.GetBoolArg("-listen", DEFAULT_LISTEN);
     fDiscover = args.GetBoolArg("-discover", true);
-    g_relay_txes = !args.GetBoolArg("-blocksonly", DEFAULT_BLOCKSONLY);
 
     for (const std::string &strAddr : args.GetArgs("-externalip")) {
         CService addrLocal;
@@ -2523,21 +2537,22 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Read asmap file if configured
     if (args.IsArgSet("-asmap")) {
-        fs::path asmap_path = fs::path(args.GetArg("-asmap", ""));
+        fs::path asmap_path = fs::PathFromString(args.GetArg("-asmap", ""));
         if (asmap_path.empty()) {
-            asmap_path = DEFAULT_ASMAP_FILENAME;
+            asmap_path = fs::PathFromString(DEFAULT_ASMAP_FILENAME);
         }
         if (!asmap_path.is_absolute()) {
             asmap_path = GetDataDir() / asmap_path;
         }
         if (!fs::exists(asmap_path)) {
-            InitError(strprintf(_("Could not find asmap file %s"), asmap_path));
+            InitError(strprintf(_("Could not find asmap file %s"),
+                                fs::quoted(fs::PathToString(asmap_path))));
             return false;
         }
-        std::vector<bool> asmap = CAddrMan::DecodeAsmap(asmap_path);
+        std::vector<bool> asmap = DecodeAsmap(asmap_path);
         if (asmap.size() == 0) {
-            InitError(
-                strprintf(_("Could not parse asmap file %s"), asmap_path));
+            InitError(strprintf(_("Could not parse asmap file %s"),
+                                fs::quoted(fs::PathToString(asmap_path))));
             return false;
         }
         const uint256 asmap_version = SerializeHash(asmap);
@@ -2555,15 +2570,6 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         RegisterValidationInterface(g_zmq_notification_interface);
     }
 #endif
-    // unlimited unless -maxuploadtarget is set
-    uint64_t nMaxOutboundLimit = 0;
-    uint64_t nMaxOutboundTimeframe = MAX_UPLOAD_TIMEFRAME;
-
-    if (args.IsArgSet("-maxuploadtarget")) {
-        nMaxOutboundLimit =
-            args.GetArg("-maxuploadtarget", DEFAULT_MAX_UPLOAD_TARGET) * 1024 *
-            1024;
-    }
 
     // Step 6.5 (I guess ?): Initialize Avalanche.
     bilingual_str avalancheError;
@@ -2737,8 +2743,6 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 bool failed_chainstate_init = false;
 
                 for (CChainState *chainstate : chainman.GetAll()) {
-                    LogPrintf("Initializing chainstate %s\n",
-                              chainstate->ToString());
                     chainstate->InitCoinsDB(
                         /* cache_size_bytes */ nCoinDBCache,
                         /* in_memory */ false,
@@ -2937,13 +2941,14 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     // Step 11: import blocks
     if (!CheckDiskSpace(GetDataDir())) {
-        InitError(
-            strprintf(_("Error: Disk space is low for %s"), GetDataDir()));
+        InitError(strprintf(_("Error: Disk space is low for %s"),
+                            fs::quoted(fs::PathToString(GetDataDir()))));
         return false;
     }
-    if (!CheckDiskSpace(GetBlocksDir())) {
+    if (!CheckDiskSpace(gArgs.GetBlocksDirPath())) {
         InitError(
-            strprintf(_("Error: Disk space is low for %s"), GetBlocksDir()));
+            strprintf(_("Error: Disk space is low for %s"),
+                      fs::quoted(fs::PathToString(gArgs.GetBlocksDirPath()))));
         return false;
     }
 
@@ -2980,7 +2985,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     std::vector<fs::path> vImportFiles;
     for (const std::string &strFile : args.GetArgs("-loadblock")) {
-        vImportFiles.push_back(strFile);
+        vImportFiles.push_back(fs::PathFromString(strFile));
     }
 
     g_load_block =
@@ -3029,9 +3034,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
     }
     LogPrintf("nBestHeight = %d\n", chain_active_height);
-
-    if (args.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION)) {
-        StartTorControl();
+    if (node.peerman) {
+        node.peerman->SetBestHeight(chain_active_height);
     }
 
     Discover();
@@ -3051,7 +3055,6 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         connOptions.nMaxConnections - connOptions.m_max_outbound_full_relay);
     connOptions.nMaxAddnode = MAX_ADDNODE_CONNECTIONS;
     connOptions.nMaxFeeler = MAX_FEELER_CONNECTIONS;
-    connOptions.nBestHeight = chain_active_height;
     connOptions.uiInterface = &uiInterface;
     connOptions.m_banman = node.banman.get();
     connOptions.m_msgproc = node.peerman.get();
@@ -3061,16 +3064,47 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         1000 * args.GetArg("-maxreceivebuffer", DEFAULT_MAXRECEIVEBUFFER);
     connOptions.m_added_nodes = args.GetArgs("-addnode");
 
-    connOptions.nMaxOutboundTimeframe = nMaxOutboundTimeframe;
-    connOptions.nMaxOutboundLimit = nMaxOutboundLimit;
+    connOptions.nMaxOutboundLimit =
+        1024 * 1024 *
+        args.GetArg("-maxuploadtarget", DEFAULT_MAX_UPLOAD_TARGET);
     connOptions.m_peer_connect_timeout = peer_connect_timeout;
 
-    for (const std::string &strBind : args.GetArgs("-bind")) {
-        CService addrBind;
-        if (!Lookup(strBind, addrBind, GetListenPort(), false)) {
-            return InitError(ResolveErrMsg("bind", strBind));
+    for (const std::string &bind_arg : args.GetArgs("-bind")) {
+        CService bind_addr;
+        const size_t index = bind_arg.rfind('=');
+        if (index == std::string::npos) {
+            if (Lookup(bind_arg, bind_addr, GetListenPort(), false)) {
+                connOptions.vBinds.push_back(bind_addr);
+                continue;
+            }
+        } else {
+            const std::string network_type = bind_arg.substr(index + 1);
+            if (network_type == "onion") {
+                const std::string truncated_bind_arg =
+                    bind_arg.substr(0, index);
+                if (Lookup(truncated_bind_arg, bind_addr,
+                           BaseParams().OnionServiceTargetPort(), false)) {
+                    connOptions.onion_binds.push_back(bind_addr);
+                    continue;
+                }
+            }
         }
-        connOptions.vBinds.push_back(addrBind);
+        return InitError(ResolveErrMsg("bind", bind_arg));
+    }
+
+    if (connOptions.onion_binds.empty()) {
+        connOptions.onion_binds.push_back(DefaultOnionServiceTarget());
+    }
+
+    if (args.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION)) {
+        const auto bind_addr = connOptions.onion_binds.front();
+        if (connOptions.onion_binds.size() > 1) {
+            InitWarning(strprintf(
+                _("More than one onion bind address is provided. Using %s for "
+                  "the automatically created Tor onion service."),
+                bind_addr.ToStringIPPort()));
+        }
+        StartTorControl(bind_addr);
     }
 
     for (const std::string &strBind : args.GetArgs("-whitebind")) {

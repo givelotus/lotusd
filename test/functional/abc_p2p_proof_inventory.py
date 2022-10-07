@@ -24,11 +24,7 @@ from test_framework.messages import (
 )
 from test_framework.p2p import P2PInterface, p2p_lock
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_greater_than,
-    connect_nodes,
-)
+from test_framework.util import assert_equal, assert_greater_than
 from test_framework.wallet_util import bytes_to_wif
 
 # Broadcast reattempt occurs every 10 to 15 minutes
@@ -140,7 +136,7 @@ class ProofInventoryTest(BitcoinTestFramework):
         msg.proof = bad_proof
         with node.assert_debug_log([
             'Misbehaving',
-            'invalid-avaproof',
+            'invalid-proof',
         ]):
             peer.send_message(msg)
             peer.wait_for_disconnect()
@@ -164,7 +160,7 @@ class ProofInventoryTest(BitcoinTestFramework):
                 node.generate(1)
                 self.wait_until(lambda: proof.proofid in get_proof_ids(node))
 
-                [connect_nodes(node, n) for n in nodes[:i]]
+                [self.connect_nodes(node.index, j) for j in range(node.index)]
 
             return proofids
 

@@ -21,12 +21,7 @@ from test_framework.blocktools import (
 from test_framework.messages import CTransaction, FromHex
 from test_framework.script import CScript, OP_HASH160, OP_EQUAL
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_raises_rpc_error,
-    connect_nodes,
-    disconnect_nodes,
-)
+from test_framework.util import assert_equal, assert_raises_rpc_error
 
 # Test may be skipped and not have zmq installed
 try:
@@ -46,28 +41,32 @@ def block_hash_reversed(blk_hdr):
 
 class ZMQSubscriber:
     def __init__(self, socket, topic):
-        self.sequence = 0
+        # no sequence number received yet
+        self.sequence = None
         self.socket = socket
         self.topic = topic
 
         self.socket.setsockopt(zmq.SUBSCRIBE, self.topic)
 
-    def receive(self):
+    # Receive message from publisher and verify that topic and sequence match
+    def _receive_from_publisher_and_check(self):
         topic, body, seq = self.socket.recv_multipart()
         # Topic should match the subscriber topic.
         assert_equal(topic, self.topic)
         # Sequence should be incremental.
-        assert_equal(struct.unpack('<I', seq)[-1], self.sequence)
+        received_seq = struct.unpack('<I', seq)[-1]
+        if self.sequence is None:
+            self.sequence = received_seq
+        else:
+            assert_equal(received_seq, self.sequence)
         self.sequence += 1
         return body
 
+    def receive(self):
+        return self._receive_from_publisher_and_check()
+
     def receive_sequence(self):
-        topic, body, seq = self.socket.recv_multipart()
-        # Topic should match the subscriber topic.
-        assert_equal(topic, self.topic)
-        # Sequence should be incremental.
-        assert_equal(struct.unpack('<I', seq)[-1], self.sequence)
-        self.sequence += 1
+        body = self._receive_from_publisher_and_check()
         hash = body[:32].hex()
         label = chr(body[32])
         mempool_sequence = None if len(
@@ -101,38 +100,70 @@ class ZMQTest (BitcoinTestFramework):
             self.log.debug("Destroying ZMQ context")
             self.ctx.destroy(linger=None)
 
+    # Restart node with the specified zmq notifications enabled, subscribe to
+    # all of them and return the corresponding ZMQSubscriber objects.
+    def setup_zmq_test(self, services, *, recv_timeout=60, sync_blocks=True):
+        subscribers = []
+        for topic, address in services:
+            socket = self.ctx.socket(zmq.SUB)
+            subscribers.append(ZMQSubscriber(socket, topic.encode()))
+
+        self.restart_node(
+            0,
+            self.extra_args[0] + [
+                f"-zmqpub{topic}={address}" for topic, address in services
+            ])
+
+        for i, sub in enumerate(subscribers):
+            sub.socket.connect(services[i][1])
+
+        # Ensure that all zmq publisher notification interfaces are ready by
+        # running the following "sync up" procedure:
+        #   1. Generate a block on the node
+        #   2. Try to receive a notification on all subscribers
+        #   3. If all subscribers get a message within the timeout (1 second),
+        #      we are done, otherwise repeat starting from step 1
+        for sub in subscribers:
+            sub.socket.set(zmq.RCVTIMEO, 1000)
+        while True:
+            self.nodes[0].generate(1)
+            recv_failed = False
+            for sub in subscribers:
+                try:
+                    sub.receive()
+                except zmq.error.Again:
+                    self.log.debug(
+                        "Didn't receive sync-up notification, trying again.")
+                    recv_failed = True
+            if not recv_failed:
+                self.log.debug(
+                    "ZMQ sync-up completed, all subscribers are ready.")
+                break
+
+        # set subscriber's desired timeout for the test
+        for sub in subscribers:
+            sub.socket.set(zmq.RCVTIMEO, recv_timeout * 1000)
+
+        self.connect_nodes(0, 1)
+        if sync_blocks:
+            self.sync_blocks()
+
+        return subscribers
+
     def test_basic(self):
 
         # Invalid zmq arguments don't take down the node, see #17185.
         self.restart_node(0, ["-zmqpubrawtx=foo", "-zmqpubhashtx=bar"])
 
         address = 'tcp://127.0.0.1:13604'
-        sockets = []
-        subs = []
-        services = [b"hashblock", b"hashtx", b"rawblock", b"rawtx"]
-        for service in services:
-            sockets.append(self.ctx.socket(zmq.SUB))
-            sockets[-1].set(zmq.RCVTIMEO, 60000)
-            subs.append(ZMQSubscriber(sockets[-1], service))
+        subs = self.setup_zmq_test(
+            [(topic, address)
+             for topic in ["hashblock", "hashtx", "rawblock", "rawtx"]])
 
-        # Subscribe to all available topics.
         hashblock = subs[0]
         hashtx = subs[1]
         rawblock = subs[2]
         rawtx = subs[3]
-
-        self.restart_node(
-            0,
-            self.extra_args[0] + [
-                f"-zmqpub{sub.topic.decode()}={address}" for sub in [
-                    hashblock, hashtx, rawblock, rawtx]]
-        )
-
-        connect_nodes(self.nodes[0], self.nodes[1])
-        for socket in sockets:
-            socket.connect(address)
-        # Relax so that the subscriber is ready before publishing zmq messages
-        sleep(0.2)
 
         num_blocks = 5
         self.log.info(
@@ -204,27 +235,12 @@ class ZMQTest (BitcoinTestFramework):
 
         address = 'tcp://127.0.0.1:28333'
 
-        services = [b"hashblock", b"hashtx"]
-        sockets = []
-        subs = []
-        for service in services:
-            sockets.append(self.ctx.socket(zmq.SUB))
-            # 2 second timeout to check end of notifications
-            sockets[-1].set(zmq.RCVTIMEO, 2000)
-            subs.append(ZMQSubscriber(sockets[-1], service))
-
-        # Subscribe to all available topics.
-        hashblock = subs[0]
-        hashtx = subs[1]
-
         # Should only notify the tip if a reorg occurs
-        self.restart_node(
-            0, self.extra_args[0] + [f'-zmqpub{sub.topic.decode()}={address}'
-                                     for sub in [hashblock, hashtx]])
-        for socket in sockets:
-            socket.connect(address)
-        # Relax so that the subscriber is ready before publishing zmq messages
-        sleep(0.2)
+        hashblock, hashtx = self.setup_zmq_test(
+            [(topic, address) for topic in ["hashblock", "hashtx"]],
+            # 2 second timeout to check end of notifications
+            recv_timeout=2)
+        self.disconnect_nodes(0, 1)
 
         # Generate 1 block in nodes[0] with 1 mempool tx and receive all
         # notifications
@@ -244,7 +260,7 @@ class ZMQTest (BitcoinTestFramework):
             2, ADDRESS_ECREG_P2SH_OP_TRUE)
 
         # nodes[0] will reorg chain after connecting back nodes[1]
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
         # tx in mempool valid but not advertised
         self.sync_blocks()
 
@@ -301,12 +317,12 @@ class ZMQTest (BitcoinTestFramework):
             )
             return send_node.sendrawtransaction(tx["hex"])
 
-        disconnect_nodes(self.nodes[0], self.nodes[1])
+        self.disconnect_nodes(0, 1)
         txid_to_be_replaced = send_conflicting_transaction(self.nodes[0])
         replacement_txid = send_conflicting_transaction(self.nodes[1])
         block_hash = self.nodes[1].generatetoaddress(
             1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
         self.sync_all()
 
         return block_hash, txid_to_be_replaced, replacement_txid
@@ -323,16 +339,8 @@ class ZMQTest (BitcoinTestFramework):
         <32-byte hash>A<8-byte LE uint> : Transactionhash added mempool
         """
         self.log.info("Testing 'sequence' publisher")
-        address = 'tcp://127.0.0.1:28333'
-        socket = self.ctx.socket(zmq.SUB)
-        socket.set(zmq.RCVTIMEO, 60000)
-        seq = ZMQSubscriber(socket, b'sequence')
-
-        self.restart_node(
-            0, self.extra_args[0] + [f'-zmqpub{seq.topic.decode()}={address}'])
-        socket.connect(address)
-        # Relax so that the subscriber is ready before publishing zmq messages
-        sleep(0.2)
+        [seq] = self.setup_zmq_test([("sequence", "tcp://127.0.0.1:28333")])
+        self.disconnect_nodes(0, 1)
 
         # Mempool sequence number starts at 1
         seq_num = 1
@@ -351,7 +359,7 @@ class ZMQTest (BitcoinTestFramework):
         self.nodes[1].generatetoaddress(2, ADDRESS_ECREG_P2SH_OP_TRUE)
 
         # nodes[0] will reorg chain after connecting back nodes[1]
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
 
         # Then we receive all block (dis)connect notifications for the
         # 2 block reorg
@@ -527,17 +535,7 @@ class ZMQTest (BitcoinTestFramework):
             return
 
         self.log.info("Testing 'mempool sync' usage of sequence notifier")
-        address = 'tcp://127.0.0.1:28333'
-        socket = self.ctx.socket(zmq.SUB)
-        socket.set(zmq.RCVTIMEO, 60000)
-        seq = ZMQSubscriber(socket, b'sequence')
-
-        self.restart_node(
-            0, self.extra_args[0] + [f'-zmqpub{seq.topic.decode()}={address}'])
-        connect_nodes(self.nodes[0], self.nodes[1])
-        socket.connect(address)
-        # Relax so that the subscriber is ready before publishing zmq messages
-        sleep(0.2)
+        [seq] = self.setup_zmq_test([("sequence", "tcp://127.0.0.1:28333")])
 
         # In-memory counter, should always start at 1
         next_mempool_seq = self.nodes[0].getrawmempool(
@@ -637,31 +635,22 @@ class ZMQTest (BitcoinTestFramework):
 
     def test_multiple_interfaces(self):
         # Set up two subscribers with different addresses
-        subscribers = []
-        for i in range(2):
-            address = f"tcp://127.0.0.1:{28334 + i}"
-            socket = self.ctx.socket(zmq.SUB)
-            socket.set(zmq.RCVTIMEO, 60000)
-            hashblock = ZMQSubscriber(socket, b"hashblock")
-            socket.connect(address)
-            subscribers.append({'address': address, 'hashblock': hashblock})
-
-        self.restart_node(
-            0,
-            [f'-zmqpub{subscriber["hashblock"].topic.decode()}={subscriber["address"]}'
-             for subscriber in subscribers])
-
-        # Relax so that the subscriber is ready before publishing zmq messages
-        sleep(0.2)
+        # (note that after the reorg test, syncing would fail due to different
+        # chain lengths on node0 and node1; for this test we only need node0, so
+        # we can disable syncing blocks on the setup)
+        subscribers = self.setup_zmq_test([
+            ("hashblock", "tcp://127.0.0.1:28334"),
+            ("hashblock", "tcp://127.0.0.1:28335"),
+        ], sync_blocks=False)
 
         # Generate 1 block in nodes[0] and receive all notifications
         self.nodes[0].generatetoaddress(1, ADDRESS_ECREG_UNSPENDABLE)
 
         # Should receive the same block hash on both subscribers
         assert_equal(self.nodes[0].getbestblockhash(),
-                     subscribers[0]['hashblock'].receive().hex())
+                     subscribers[0].receive().hex())
         assert_equal(self.nodes[0].getbestblockhash(),
-                     subscribers[1]['hashblock'].receive().hex())
+                     subscribers[1].receive().hex())
 
 
 if __name__ == '__main__':

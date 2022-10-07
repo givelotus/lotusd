@@ -399,15 +399,9 @@ void CTxMemPoolEntry::UpdateAncestorState(int64_t modifySize, Amount modifyFee,
     assert(int(nSigOpCountWithAncestors) >= 0);
 }
 
-CTxMemPool::CTxMemPool()
-    : nTransactionsUpdated(0), m_epoch(0), m_has_epoch_guard(false) {
+CTxMemPool::CTxMemPool(int check_ratio) : m_check_ratio(check_ratio) {
     // lock free clear
     _clear();
-
-    // Sanity checks off by default for performance, because otherwise accepting
-    // transactions becomes O(N^2) where N is the number of transactions in the
-    // pool
-    nCheckFrequency = 0;
 }
 
 CTxMemPool::~CTxMemPool() {}
@@ -606,7 +600,7 @@ void CTxMemPool::removeForReorg(const Config &config,
                 }
 
                 const Coin &coin = pcoins->AccessCoin(txin.prevout);
-                if (nCheckFrequency != 0) {
+                if (m_check_ratio != 0) {
                     assert(!coin.IsSpent());
                 }
 
@@ -717,15 +711,16 @@ static void CheckInputsAndUpdateCoins(const CTransaction &tx,
 }
 
 void CTxMemPool::check(const CCoinsViewCache *pcoins) const {
+    if (m_check_ratio == 0) {
+        return;
+    }
+
+    if (GetRand(m_check_ratio) >= 1) {
+        return;
+    }
+
+    AssertLockHeld(::cs_main);
     LOCK(cs);
-    if (nCheckFrequency == 0) {
-        return;
-    }
-
-    if (GetRand(std::numeric_limits<uint32_t>::max()) >= nCheckFrequency) {
-        return;
-    }
-
     LogPrint(BCLog::MEMPOOL,
              "Checking mempool with %u transactions and %u inputs\n",
              (unsigned int)mapTx.size(), (unsigned int)mapNextTx.size());
@@ -1415,8 +1410,7 @@ void DisconnectedBlockTransactions::updateMempoolForReorg(const Config &config,
         TxValidationState stateDummy;
         if (!fAddToMempool || tx->IsCoinBase() ||
             !AcceptToMemoryPool(config, pool, stateDummy, tx,
-                                true /* bypass_limits */,
-                                Amount::zero() /* nAbsurdFee */)) {
+                                true /* bypass_limits */)) {
             // If the transaction doesn't make it in to the mempool, remove any
             // transactions that depend on it (which would now be orphans).
             pool.removeRecursive(*tx, MemPoolRemovalReason::REORG);

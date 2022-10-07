@@ -494,10 +494,10 @@ public:
  */
 class CTxMemPool {
 private:
-    //! Value n means that n times in 2^32 we check.
-    uint32_t nCheckFrequency GUARDED_BY(cs);
+    //! Value n means that 1 times in n we check.
+    const int m_check_ratio;
     //! Used by getblocktemplate to trigger CreateNewBlock() invocation
-    std::atomic<uint32_t> nTransactionsUpdated;
+    std::atomic<uint32_t> nTransactionsUpdated{0};
 
     //! sum of all mempool tx's sizes.
     uint64_t totalTxSize;
@@ -509,8 +509,8 @@ private:
     mutable bool blockSinceLastRollingFeeBump;
     //! minimum fee to get into the pool, decreases exponentially
     mutable double rollingMinimumFeeRate;
-    mutable uint64_t m_epoch;
-    mutable bool m_has_epoch_guard;
+    mutable uint64_t m_epoch{0};
+    mutable bool m_has_epoch_guard{false};
 
     // In-memory counter for external mempool tracking purposes.
     // This number is incremented once every time a transaction
@@ -609,8 +609,14 @@ public:
 
     /**
      * Create a new CTxMemPool.
+     * Sanity checks will be off by default for performance, because otherwise
+     * accepting transactions becomes O(N^2) where N is the number of
+     * transactions in the pool.
+     *
+     * @param[in] check_ratio is the ratio used to determine how often sanity
+     *     checks will run.
      */
-    CTxMemPool();
+    CTxMemPool(int check_ratio = 0);
     ~CTxMemPool();
 
     /**
@@ -619,11 +625,8 @@ public:
      * are in the mapNextTx array). If sanity-checking is turned off, check does
      * nothing.
      */
-    void check(const CCoinsViewCache *pcoins) const;
-    void setSanityCheck(double dFrequency = 1.0) {
-        LOCK(cs);
-        nCheckFrequency = static_cast<uint32_t>(dFrequency * 4294967295.0);
-    }
+    void check(const CCoinsViewCache *pcoins) const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     // addUnchecked must updated state for all ancestors of a given transaction,
     // to track size/count of descendant transactions. First version of

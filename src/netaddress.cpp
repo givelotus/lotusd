@@ -261,11 +261,14 @@ bool CNetAddr::SetSpecial(const std::string &str) {
                                                   torv3::CHECKSUM_LEN,
                                               sizeof(torv3::VERSION)};
 
+            if (input_version != torv3::VERSION) {
+                return false;
+            }
+
             uint8_t calculated_checksum[torv3::CHECKSUM_LEN];
             torv3::Checksum(input_pubkey, calculated_checksum);
 
-            if (input_checksum != calculated_checksum ||
-                input_version != torv3::VERSION) {
+            if (input_checksum != calculated_checksum) {
                 return false;
             }
 
@@ -287,7 +290,7 @@ CNetAddr::CNetAddr(const struct in_addr &ipv4Addr) {
 CNetAddr::CNetAddr(const struct in6_addr &ipv6Addr, const uint32_t scope) {
     SetLegacyIPv6(Span<const uint8_t>(
         reinterpret_cast<const uint8_t *>(&ipv6Addr), sizeof(ipv6Addr)));
-    scopeId = scope;
+    m_scope_id = scope;
 }
 
 bool CNetAddr::IsBindAny() const {
@@ -667,7 +670,7 @@ uint32_t CNetAddr::GetLinkedIPv4() const {
     assert(false);
 }
 
-uint32_t CNetAddr::GetNetClass() const {
+Network CNetAddr::GetNetClass() const {
     // Make sure that if we return NET_IPV6, then IsIPv6() is true. The callers
     // expect that.
 
@@ -985,7 +988,7 @@ bool CService::GetSockAddr(struct sockaddr *paddr, socklen_t *addrlen) const {
         if (!GetIn6Addr(&paddrin6->sin6_addr)) {
             return false;
         }
-        paddrin6->sin6_scope_id = scopeId;
+        paddrin6->sin6_scope_id = m_scope_id;
         paddrin6->sin6_family = AF_INET6;
         paddrin6->sin6_port = htons(port);
         return true;
@@ -1178,9 +1181,4 @@ bool operator==(const CSubNet &a, const CSubNet &b) {
 bool operator<(const CSubNet &a, const CSubNet &b) {
     return (a.network < b.network ||
             (a.network == b.network && memcmp(a.netmask, b.netmask, 16) < 0));
-}
-
-bool SanityCheckASMap(const std::vector<bool> &asmap) {
-    // For IP address lookups, the input is 128 bits
-    return SanityCheckASMap(asmap, 128);
 }

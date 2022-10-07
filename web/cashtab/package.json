@@ -12,6 +12,7 @@
         "dotenv": "^8.2.0",
         "dotenv-expand": "^5.1.0",
         "ecashaddrjs": "^1.0.1",
+        "ecies-lite": "^1.0.7",
         "ethereum-blockies-base64": "^1.0.2",
         "localforage": "^1.9.0",
         "lodash.isempty": "^4.4.0",
@@ -24,11 +25,13 @@
         "react-dev-utils": "^11.0.4",
         "react-device-detect": "^1.15.0",
         "react-dom": "^17.0.1",
+        "react-easy-crop": "^3.5.3",
         "react-ga": "^3.3.0",
         "react-image": "^4.0.3",
         "react-router": "^5.2.0",
         "react-router-dom": "^5.2.0",
-        "styled-components": "^4.4.0"
+        "styled-components": "^4.4.0",
+        "wif": "^2.0.6"
     },
     "lint-staged": {
         "src/**/*.{js,jsx,ts,tsx,json,css,scss,md}": [
@@ -41,6 +44,7 @@
         "build": "node scripts/build.js",
         "extension": "./scripts/extension.sh",
         "predeploy": "npm run build",
+        "posttest": "./scripts/addGenerated.sh",
         "test": "node scripts/test.js",
         "test:coverage": "CI=true npm run test --coverage",
         "debug": "node --inspect-brk=9229 scripts/start.js"
@@ -148,6 +152,7 @@
         "eslint-config-react-app": "^6.0.0",
         "eslint-plugin-flowtype": "^5.2.0",
         "eslint-plugin-import": "^2.22.1",
+        "eslint-plugin-jest": "^25.3.4",
         "eslint-plugin-jsx-a11y": "^6.4.1",
         "eslint-plugin-react": "^7.22.0",
         "eslint-plugin-react-hooks": "^4.2.0",
@@ -186,6 +191,6 @@
         "webpack": "^4.44.2",
         "webpack-dev-server": "^3.11.1",
         "webpack-manifest-plugin": "^2.2.0",
-        "workbox-webpack-plugin": "^4.3.1"
+        "workbox-webpack-plugin": "^6.4.2"
     }
 }

@@ -8,8 +8,10 @@ import {
     isValidTokenDocumentUrl,
     isValidTokenStats,
     isValidCashtabSettings,
-    formatSavedBalance,
-    formatFiatBalance,
+    isValidXecAddress,
+    isValidEtokenAddress,
+    isValidXecSendAmount,
+    isValidSendToMany,
 } from '../validation';
 import { currency } from '@components/Common/Ticker.js';
 import { fromSmallestDenomination } from '@utils/cashMethods';
@@ -204,6 +206,24 @@ describe('Validation utils', () => {
             ),
         ).toBe(false);
     });
+    it(`Accepts a domain input with https protocol as ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('https://google.com')).toBe(true);
+    });
+    it(`Accepts a domain input with http protocol as ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('http://test.com')).toBe(true);
+    });
+    it(`Accepts a domain input with a primary and secondary top level domain as ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('http://test.co.uk')).toBe(true);
+    });
+    it(`Accepts a domain input with just a subdomain as ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('www.test.co.uk')).toBe(true);
+    });
+    it(`Rejects a domain input with no top level domain, protocol or subdomain  ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl('mywebsite')).toBe(false);
+    });
+    it(`Rejects a domain input as numbers ${currency.tokenTicker} token document URL`, () => {
+        expect(isValidTokenDocumentUrl(12345)).toBe(false);
+    });
     it(`Correctly validates token stats for token created before the ${currency.ticker} fork`, () => {
         expect(isValidTokenStats(stStatsValid)).toBe(true);
     });
@@ -227,58 +247,123 @@ describe('Validation utils', () => {
             false,
         );
     });
-    it(`test formatSavedBalance with zero XEC balance input`, () => {
-        expect(formatSavedBalance('0', 'en-US')).toBe('0');
+    it(`isValidXecAddress correctly validates a valid XEC address with ecash: prefix`, () => {
+        const addr = 'ecash:qz2708636snqhsxu8wnlka78h6fdp77ar59jrf5035';
+        expect(isValidXecAddress(addr)).toBe(true);
     });
-    it(`test formatSavedBalance with a small XEC balance input with 2+ decimal figures`, () => {
-        expect(formatSavedBalance('1574.5445', 'en-US')).toBe('1,574.54');
+    it(`isValidXecAddress correctly validates a valid XEC address without ecash: prefix`, () => {
+        const addr = 'qz2708636snqhsxu8wnlka78h6fdp77ar59jrf5035';
+        expect(isValidXecAddress(addr)).toBe(true);
     });
-    it(`test formatSavedBalance with 1 Million XEC balance input`, () => {
-        expect(formatSavedBalance('1000000', 'en-US')).toBe('1,000,000');
+    it(`isValidXecAddress rejects a valid legacy address`, () => {
+        const addr = '1Efd9z9GRVJK2r73nUpFmBnsKUmfXNm2y2';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with 1 Billion XEC balance input`, () => {
-        expect(formatSavedBalance('1000000000', 'en-US')).toBe('1,000,000,000');
+    it(`isValidXecAddress rejects a valid bitcoincash: address`, () => {
+        const addr = 'bitcoincash:qz2708636snqhsxu8wnlka78h6fdp77ar5ulhz04hr';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with total supply as XEC balance input`, () => {
-        expect(formatSavedBalance('21000000000000', 'en-US')).toBe(
-            '21,000,000,000,000',
-        );
+    it(`isValidXecAddress rejects a valid etoken: address with prefix`, () => {
+        const addr = 'etoken:qz2708636snqhsxu8wnlka78h6fdp77ar5tv2tzg4r';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with > total supply as XEC balance input`, () => {
-        expect(formatSavedBalance('31000000000000', 'en-US')).toBe(
-            '31,000,000,000,000',
-        );
+    it(`isValidXecAddress rejects a valid etoken: address without prefix`, () => {
+        const addr = 'qz2708636snqhsxu8wnlka78h6fdp77ar5tv2tzg4r';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with no balance`, () => {
-        expect(formatSavedBalance('', 'en-US')).toBe('0');
+    it(`isValidXecAddress rejects a valid simpleledger: address with prefix`, () => {
+        const addr = 'simpleledger:qrujw0wrzncyxw8q3d0xkfet4jafrqhk6csev0v6y3';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with null input`, () => {
-        expect(formatSavedBalance(null, 'en-US')).toBe('0');
+    it(`isValidXecAddress rejects a valid simpleledger: address without prefix`, () => {
+        const addr = 'qrujw0wrzncyxw8q3d0xkfet4jafrqhk6csev0v6y3';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with undefined sw.state.balance or sw.state.balance.totalBalance as input`, () => {
-        expect(formatSavedBalance(undefined, 'en-US')).toBe('N/A');
+    it(`isValidXecAddress rejects an invalid address`, () => {
+        const addr = 'wtf is this definitely not an address';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatSavedBalance with non-numeric input`, () => {
-        expect(formatSavedBalance('CainBCHA', 'en-US')).toBe('NaN');
+    it(`isValidXecAddress rejects a null input`, () => {
+        const addr = null;
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with zero XEC balance input`, () => {
-        expect(formatFiatBalance(Number('0'), 'en-US')).toBe('0.00');
+    it(`isValidXecAddress rejects an empty string input`, () => {
+        const addr = '';
+        expect(isValidXecAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with a small XEC balance input with 2+ decimal figures`, () => {
-        expect(formatFiatBalance(Number('565.54111'), 'en-US')).toBe('565.54');
+    it(`isValidEtokenAddress rejects a valid XEC address with ecash: prefix`, () => {
+        const addr = 'ecash:qz2708636snqhsxu8wnlka78h6fdp77ar59jrf5035';
+        expect(isValidEtokenAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with a large XEC balance input with 2+ decimal figures`, () => {
-        expect(formatFiatBalance(Number('131646565.54111'), 'en-US')).toBe(
-            '131,646,565.54',
-        );
+    it(`isValidEtokenAddress rejects a valid XEC address without ecash: prefix`, () => {
+        const addr = 'qz2708636snqhsxu8wnlka78h6fdp77ar59jrf5035';
+        expect(isValidEtokenAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with no balance`, () => {
-        expect(formatFiatBalance('', 'en-US')).toBe('');
+    it(`isValidEtokenAddress rejects a valid legacy address`, () => {
+        const addr = '1Efd9z9GRVJK2r73nUpFmBnsKUmfXNm2y2';
+        expect(isValidEtokenAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with null input`, () => {
-        expect(formatFiatBalance(null, 'en-US')).toBe(null);
+    it(`isValidEtokenAddress rejects a valid bitcoincash: address`, () => {
+        const addr = 'bitcoincash:qz2708636snqhsxu8wnlka78h6fdp77ar5ulhz04hr';
+        expect(isValidEtokenAddress(addr)).toBe(false);
     });
-    it(`test formatFiatBalance with undefined input`, () => {
-        expect(formatFiatBalance(undefined, 'en-US')).toBe(undefined);
+    it(`isValidEtokenAddress correctly validates a valid etoken: address with prefix`, () => {
+        const addr = 'etoken:qz2708636snqhsxu8wnlka78h6fdp77ar5tv2tzg4r';
+        expect(isValidEtokenAddress(addr)).toBe(true);
+    });
+    it(`isValidEtokenAddress correctly validates a valid etoken: address without prefix`, () => {
+        const addr = 'qz2708636snqhsxu8wnlka78h6fdp77ar5tv2tzg4r';
+        expect(isValidEtokenAddress(addr)).toBe(true);
+    });
+    it(`isValidEtokenAddress rejects a valid simpleledger: address with prefix`, () => {
+        const addr = 'simpleledger:qrujw0wrzncyxw8q3d0xkfet4jafrqhk6csev0v6y3';
+        expect(isValidEtokenAddress(addr)).toBe(false);
+    });
+    it(`isValidEtokenAddress rejects a valid simpleledger: address without prefix`, () => {
+        const addr = 'qrujw0wrzncyxw8q3d0xkfet4jafrqhk6csev0v6y3';
+        expect(isValidEtokenAddress(addr)).toBe(false);
+    });
+    it(`isValidEtokenAddress rejects an invalid address`, () => {
+        const addr = 'wtf is this definitely not an address';
+        expect(isValidEtokenAddress(addr)).toBe(false);
+    });
+    it(`isValidEtokenAddress rejects a null input`, () => {
+        const addr = null;
+        expect(isValidEtokenAddress(addr)).toBe(false);
+    });
+    it(`isValidEtokenAddress rejects an empty string input`, () => {
+        const addr = '';
+        expect(isValidEtokenAddress(addr)).toBe(false);
+    });
+    it(`isValidXecSendAmount accepts the dust minimum`, () => {
+        const testXecSendAmount = fromSmallestDenomination(currency.dustSats);
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(true);
+    });
+    it(`isValidXecSendAmount accepts arbitrary number above dust minimum`, () => {
+        const testXecSendAmount =
+            fromSmallestDenomination(currency.dustSats) + 1.75;
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(true);
+    });
+    it(`isValidXecSendAmount rejects zero`, () => {
+        const testXecSendAmount = 0;
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(false);
+    });
+    it(`isValidXecSendAmount rejects a non-number string`, () => {
+        const testXecSendAmount = 'not a number';
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(false);
+    });
+    it(`isValidXecSendAmount accepts arbitrary number above dust minimum as a string`, () => {
+        const testXecSendAmount = `${
+            fromSmallestDenomination(currency.dustSats) + 1.75
+        }`;
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(true);
+    });
+    it(`isValidXecSendAmount rejects null`, () => {
+        const testXecSendAmount = null;
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(false);
+    });
+    it(`isValidXecSendAmount rejects undefined`, () => {
+        const testXecSendAmount = undefined;
+        expect(isValidXecSendAmount(testXecSendAmount)).toBe(false);
     });
 });
