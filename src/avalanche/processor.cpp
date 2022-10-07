@@ -265,8 +265,8 @@ void Processor::addProofToReconcile(const ProofRef &proof) {
     // TODO We don't want to accept an infinite number of conflicting proofs.
     // They should be some rules to make them expensive and/or limited by
     // design.
-    const bool isAccepted =
-        WITH_LOCK(cs_peerManager, return peerManager->isValid(proof->getId()));
+    const bool isAccepted = WITH_LOCK(
+        cs_peerManager, return peerManager->isBoundToPeer(proof->getId()));
 
     proofVoteRecords.getWriteView()->insert(
         std::make_pair(proof, VoteRecord(isAccepted)));
@@ -404,16 +404,19 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     // the inv type to retrieve what is being voted on.
     for (size_t i = 0; i < size; i++) {
         if (invs[i].IsMsgBlk()) {
-            LOCK(cs_main);
-            auto pindex = LookupBlockIndex(BlockHash(votes[i].GetHash()));
-            if (!pindex) {
-                // This should not happen, but just in case...
-                continue;
-            }
+            CBlockIndex *pindex;
+            {
+                LOCK(cs_main);
+                pindex = LookupBlockIndex(BlockHash(votes[i].GetHash()));
+                if (!pindex) {
+                    // This should not happen, but just in case...
+                    continue;
+                }
 
-            if (!IsWorthPolling(pindex)) {
-                // There is no point polling this block.
-                continue;
+                if (!IsWorthPolling(pindex)) {
+                    // There is no point polling this block.
+                    continue;
+                }
             }
 
             responseIndex.insert(std::make_pair(pindex, votes[i]));
@@ -422,15 +425,13 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         if (invs[i].IsMsgProof()) {
             const ProofId proofid(votes[i].GetHash());
 
-            // TODO Use an unordered map or similar to avoid the loop
-            auto proofVoteRecordsReadView = proofVoteRecords.getReadView();
-            for (auto it = proofVoteRecordsReadView.begin();
-                 it != proofVoteRecordsReadView.end(); it++) {
-                if (it->first->getId() == proofid) {
-                    responseProof.insert(std::make_pair(it->first, votes[i]));
-                    break;
-                }
+            const ProofRef proof = WITH_LOCK(
+                cs_peerManager, return peerManager->getProof(proofid));
+            if (!proof) {
+                continue;
             }
+
+            responseProof.insert(std::make_pair(proof, votes[i]));
         }
     }
 
@@ -644,15 +645,9 @@ void Processor::clearTimedoutRequests() {
         }
 
         if (inv.IsMsgProof()) {
-            ProofRef proof;
-            {
-                auto w = proofVoteRecords.getWriteView();
-                for (auto it = w.begin(); it != w.end(); it++) {
-                    if (it->first->getId() == inv.hash) {
-                        proof = it->first;
-                    }
-                }
-            }
+            const ProofRef proof =
+                WITH_LOCK(cs_peerManager,
+                          return peerManager->getProof(ProofId(inv.hash)));
 
             if (!clearInflightRequest(proofVoteRecords, proof, p.second)) {
                 continue;

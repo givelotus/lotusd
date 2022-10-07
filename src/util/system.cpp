@@ -36,6 +36,7 @@
 #endif // __linux__
 
 #include <algorithm>
+#include <cassert>
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/resource.h>
@@ -91,7 +92,7 @@ bool LockDirectory(const fs::path &directory, const std::string lockfile_name,
 
     // If a lock for this directory already exists in the map, don't try to
     // re-lock it
-    if (dir_locks.count(pathLockFile.string())) {
+    if (dir_locks.count(fs::PathToString(pathLockFile))) {
         return true;
     }
 
@@ -103,11 +104,11 @@ bool LockDirectory(const fs::path &directory, const std::string lockfile_name,
     auto lock = std::make_unique<fsbridge::FileLock>(pathLockFile);
     if (!lock->TryLock()) {
         return error("Error while attempting to lock directory %s: %s",
-                     directory.string(), lock->GetReason());
+                     fs::PathToString(directory), lock->GetReason());
     }
     if (!probe_only) {
         // Lock successful and we're not just probing, put it into the map
-        dir_locks.emplace(pathLockFile.string(), std::move(lock));
+        dir_locks.emplace(fs::PathToString(pathLockFile), std::move(lock));
     }
     return true;
 }
@@ -115,7 +116,7 @@ bool LockDirectory(const fs::path &directory, const std::string lockfile_name,
 void UnlockDirectory(const fs::path &directory,
                      const std::string &lockfile_name) {
     LOCK(cs_dir_locks);
-    dir_locks.erase((directory / lockfile_name).string());
+    dir_locks.erase(fs::PathToString(directory / lockfile_name));
 }
 
 void ReleaseDirectoryLocks() {
@@ -239,6 +240,18 @@ static bool CheckValid(const std::string &key, const util::SettingsValue &val,
     }
     return true;
 }
+
+namespace {
+fs::path StripRedundantLastElementsOfPath(const fs::path &path) {
+    auto result = path;
+    while (fs::PathToString(result.filename()) == ".") {
+        result = result.parent_path();
+    }
+
+    assert(fs::equivalent(result, path));
+    return result;
+}
+} // namespace
 
 // Define default constructor and destructor that are not inline, so code
 // instantiating this class doesn't need to #include class definitions for all
@@ -388,6 +401,75 @@ ArgsManager::GetArgFlags(const std::string &name) const {
     return std::nullopt;
 }
 
+const fs::path &ArgsManager::GetBlocksDirPath() {
+    LOCK(cs_args);
+    fs::path &path = m_cached_blocks_path;
+
+    // Cache the path to avoid calling fs::create_directories on every call of
+    // this function
+    if (!path.empty()) {
+        return path;
+    }
+
+    if (IsArgSet("-blocksdir")) {
+        path =
+            fs::system_complete(fs::PathFromString(GetArg("-blocksdir", "")));
+        if (!fs::is_directory(path)) {
+            path = "";
+            return path;
+        }
+    } else {
+        path = GetDataDirPath(false);
+    }
+
+    path /= fs::PathFromString(BaseParams().DataDir());
+    path /= "blocks";
+    fs::create_directories(path);
+    path = StripRedundantLastElementsOfPath(path);
+    return path;
+}
+
+const fs::path &ArgsManager::GetDataDirPath(bool net_specific) const {
+    LOCK(cs_args);
+    fs::path &path =
+        net_specific ? m_cached_network_datadir_path : m_cached_datadir_path;
+
+    // Cache the path to avoid calling fs::create_directories on every call of
+    // this function
+    if (!path.empty()) {
+        return path;
+    }
+    std::string datadir = GetArg("-datadir", "");
+    if (!datadir.empty()) {
+        path = fs::system_complete(fs::PathFromString(datadir));
+        if (!fs::is_directory(path)) {
+            path = "";
+            return path;
+        }
+    } else {
+        path = GetDefaultDataDir();
+    }
+    if (net_specific) {
+        path /= fs::PathFromString(BaseParams().DataDir());
+    }
+
+    if (fs::create_directories(path)) {
+        // This is the first run, create wallets subdirectory too
+        fs::create_directories(path / "wallets");
+    }
+
+    path = StripRedundantLastElementsOfPath(path);
+    return path;
+}
+
+void ArgsManager::ClearPathCache() {
+    LOCK(cs_args);
+
+    m_cached_datadir_path = fs::path();
+    m_cached_network_datadir_path = fs::path();
+    m_cached_blocks_path = fs::path();
+}
+
 std::vector<std::string> ArgsManager::GetArgs(const std::string &strArg) const {
     std::vector<std::string> result;
     for (const util::SettingsValue &value : GetSettingsList(strArg)) {
@@ -426,8 +508,9 @@ bool ArgsManager::GetSettingsPath(fs::path *filepath, bool temp) const {
     }
     if (filepath) {
         std::string settings = GetArg("-settings", BITCOIN_SETTINGS_FILENAME);
-        *filepath = fs::absolute(temp ? settings + ".tmp" : settings,
-                                 GetDataDir(/* net_specific= */ true));
+        *filepath = fs::absolute(
+            fs::PathFromString(temp ? settings + ".tmp" : settings),
+            GetDataDirPath(/* net_specific= */ true));
     }
     return true;
 }
@@ -456,6 +539,15 @@ bool ArgsManager::ReadSettingsFile(std::vector<std::string> *errors) {
         SaveErrors(read_errors, errors);
         return false;
     }
+    for (const auto &setting : m_settings.rw_settings) {
+        std::string section;
+        std::string key = setting.first;
+        // Split setting key into section and argname
+        (void)InterpretOption(section, key, /* value */ {});
+        if (!GetArgFlags('-' + key)) {
+            LogPrintf("Ignoring unknown rw_settings value %s\n", setting.first);
+        }
+    }
     return true;
 }
 
@@ -474,9 +566,10 @@ bool ArgsManager::WriteSettingsFile(std::vector<std::string> *errors) const {
         return false;
     }
     if (!RenameOver(path_tmp, path)) {
-        SaveErrors({strprintf("Failed renaming settings file %s to %s\n",
-                              path_tmp.string(), path.string())},
-                   errors);
+        SaveErrors(
+            {strprintf("Failed renaming settings file %s to %s\n",
+                       fs::PathToString(path_tmp), fs::PathToString(path))},
+            errors);
         return false;
     }
     return true;
@@ -587,7 +680,7 @@ void ArgsManager::ClearForcedArg(const std::string &strArg) {
 }
 
 std::string ArgsManager::GetHelpMessage() const {
-    const bool show_debug = gArgs.GetBoolArg("-help-debug", false);
+    const bool show_debug = GetBoolArg("-help-debug", false);
 
     std::string usage = "";
     LOCK(cs_args);
@@ -714,10 +807,9 @@ void PrintExceptionContinue(const std::exception *pex, const char *pszThread) {
 }
 
 fs::path GetDefaultDataDir() {
-// Windows < Vista: C:\Documents and Settings\Username\Application Data\Lotus
-// Windows >= Vista: C:\Users\Username\AppData\Roaming\Lotus
-// Mac: ~/Library/Application Support/Lotus
-// Unix: ~/.lotus
+    // Windows: C:\Users\Username\AppData\Roaming\Lotus
+    // macOS: ~/Library/Application Support/Lotus
+    // Unix-like: ~/.lotus
 #ifdef WIN32
     // Windows
     return GetSpecialFolderPath(CSIDL_APPDATA) / "Lotus";
@@ -730,100 +822,27 @@ fs::path GetDefaultDataDir() {
         pathRet = fs::path(pszHome);
     }
 #ifdef MAC_OSX
-    // Mac
+    // macOS
     return pathRet / "Library/Application Support/Lotus";
 #else
-    // Unix
+    // Unix-like
     return pathRet / ".lotus";
 #endif
 #endif
 }
 
-static fs::path g_blocks_path_cache_net_specific;
-static fs::path pathCached;
-static fs::path pathCachedNetSpecific;
-static RecursiveMutex csPathCached;
-
-const fs::path &GetBlocksDir() {
-    LOCK(csPathCached);
-    fs::path &path = g_blocks_path_cache_net_specific;
-
-    // Cache the path to avoid calling fs::create_directories on every call of
-    // this function
-    if (!path.empty()) {
-        return path;
-    }
-
-    if (gArgs.IsArgSet("-blocksdir")) {
-        path = fs::system_complete(gArgs.GetArg("-blocksdir", ""));
-        if (!fs::is_directory(path)) {
-            path = "";
-            return path;
-        }
-    } else {
-        path = GetDataDir(false);
-    }
-
-    path /= BaseParams().DataDir();
-    path /= "blocks";
-    fs::create_directories(path);
-    return path;
-}
-
 const fs::path &GetDataDir(bool fNetSpecific) {
-    LOCK(csPathCached);
-    fs::path &path = fNetSpecific ? pathCachedNetSpecific : pathCached;
-
-    // Cache the path to avoid calling fs::create_directories on every call of
-    // this function
-    if (!path.empty()) {
-        return path;
-    }
-
-    std::string datadir = gArgs.GetArg("-datadir", "");
-    if (!datadir.empty()) {
-        path = fs::system_complete(datadir);
-        if (!fs::is_directory(path)) {
-            path = "";
-            return path;
-        }
-    } else {
-        path = GetDefaultDataDir();
-    }
-
-    if (fNetSpecific) {
-        path /= BaseParams().DataDir();
-    }
-
-    if (fs::create_directories(path)) {
-        // This is the first run, create wallets subdirectory too
-        //
-        // TODO: this is an ugly way to create the wallets/ directory and
-        // really shouldn't be done here. Once this is fixed, please
-        // also remove the corresponding line in lotusd.cpp AppInit.
-        // See more info at:
-        // https://reviews.bitcoinabc.org/D3312
-        fs::create_directories(path / "wallets");
-    }
-
-    return path;
+    return gArgs.GetDataDirPath(fNetSpecific);
 }
 
 bool CheckDataDirOption() {
     std::string datadir = gArgs.GetArg("-datadir", "");
-    return datadir.empty() || fs::is_directory(fs::system_complete(datadir));
-}
-
-void ClearDatadirCache() {
-    LOCK(csPathCached);
-
-    pathCached = fs::path();
-    pathCachedNetSpecific = fs::path();
-    g_blocks_path_cache_net_specific = fs::path();
+    return datadir.empty() ||
+           fs::is_directory(fs::system_complete(fs::PathFromString(datadir)));
 }
 
 fs::path GetConfigFile(const std::string &confPath) {
-    return AbsPathForConfigVal(fs::path(confPath), false);
+    return AbsPathForConfigVal(fs::PathFromString(confPath), false);
 }
 
 static bool
@@ -1015,10 +1034,10 @@ bool ArgsManager::ReadConfigFiles(std::string &error,
     }
 
     // If datadir is changed in .conf file:
-    ClearDatadirCache();
+    gArgs.ClearPathCache();
     if (!CheckDataDirOption()) {
         error = strprintf("specified data directory \"%s\" does not exist.",
-                          gArgs.GetArg("-datadir", "").c_str());
+                          GetArg("-datadir", "").c_str());
         return false;
     }
     return true;
@@ -1103,10 +1122,10 @@ void ArgsManager::LogArgs() const {
 
 bool RenameOver(fs::path src, fs::path dest) {
 #ifdef WIN32
-    return MoveFileExA(src.string().c_str(), dest.string().c_str(),
+    return MoveFileExW(src.wstring().c_str(), dest.wstring().c_str(),
                        MOVEFILE_REPLACE_EXISTING) != 0;
 #else
-    int rc = std::rename(src.string().c_str(), dest.string().c_str());
+    int rc = std::rename(src.c_str(), dest.c_str());
     return (rc == 0);
 #endif /* WIN32 */
 }

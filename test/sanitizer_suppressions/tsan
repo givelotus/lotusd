@@ -13,9 +13,10 @@ mutex:CConnman::ThreadOpenConnections
 mutex:CConnman::ThreadOpenAddedConnections
 mutex:CConnman::SocketHandler
 mutex:UpdateTip
-mutex:PeerManager::UpdatedBlockTip
+mutex:PeerManagerImpl::UpdatedBlockTip
 mutex:g_best_block_mutex
 mutex:rcu_tests::synchronize_test
+
 # race (TODO fix)
 race:CConnman::WakeMessageHandler
 race:CConnman::ThreadMessageHandler
@@ -25,14 +26,16 @@ race:ThreadImport
 race:WalletBatch::WriteHDChain
 race:CZMQAbstractPublishNotifier::SendMessage
 race:BerkeleyBatch
+race:BerkeleyDatabase
 race:leveldb::DBImpl::DeleteObsoleteFiles
 race:lotus-qt
+
 # deadlock (TODO fix)
 deadlock:CConnman::ForNode
 deadlock:CConnman::GetNodeStats
 deadlock:CChainState::ConnectTip
 deadlock:UpdateTip
-deadlock:wallet_tests::CreateWalletFromFile
+deadlock:wallet_tests::CreateWallet
 
 # Lock order inversion due to the large cs_main lock from Shutdown, which comes
 # before the cs_proofrequest lock
@@ -52,6 +55,7 @@ deadlock:src/qt/test/*
 # External libraries
 deadlock:libdb
 thread:src/leveldb/*
+race:epoll_ctl
 
 # Intermittent issues
 # -------------------

@@ -97,6 +97,8 @@ private Q_SLOTS:
     void showOrHideBanTableIfRequired();
     /** clear the selected node */
     void clearSelectedNode();
+    /** show detailed information on ui about selected node */
+    void updateDetailWidget();
 
 public Q_SLOTS:
     void clear(bool clearHistory = true);
@@ -122,9 +124,6 @@ public Q_SLOTS:
     void browseHistory(int offset);
     /** Scroll console view to end */
     void scrollToEnd();
-    /** Handle selection of peer in peers list */
-    void peerSelected(const QItemSelection &selected,
-                      const QItemSelection &deselected);
     /** Handle selection caching before update */
     void peerLayoutAboutToChange();
     /** Handle updated peer information */
@@ -145,8 +144,6 @@ Q_SIGNALS:
 private:
     void startExecutor();
     void setTrafficGraphRange(int mins);
-    /** show detailed information on ui about selected node */
-    void updateNodeDetail(const CNodeCombinedStats *stats);
 
     enum ColumnWidths {
         ADDRESS_COLUMN_WIDTH = 200,
@@ -175,6 +172,17 @@ private:
 
     /** Update UI with latest network info from model. */
     void updateNetworkState();
+
+    /**
+     * Helper for the output of a time duration field. Inputs are UNIX epoch
+     * times.
+     */
+    QString TimeDurationField(std::chrono::seconds time_now,
+                              std::chrono::seconds time_at_event) const {
+        return time_at_event.count()
+                   ? GUIUtil::formatDurationStr(time_now - time_at_event)
+                   : tr("Never");
+    }
 
 private Q_SLOTS:
     void updateAlerts(const QString &warnings);

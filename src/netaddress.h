@@ -29,7 +29,7 @@
  * should be serialized in (unserialized from) v2 format (BIP155).
  * Make sure that this does not collide with any of the values in `version.h`.
  */
-static const int ADDRV2_FORMAT = 0x20000000;
+static constexpr int ADDRV2_FORMAT = 0x20000000;
 
 /**
  * A network type.
@@ -127,8 +127,11 @@ protected:
      */
     Network m_net{NET_IPV6};
 
-    // for scoped/link-local ipv6 addresses
-    uint32_t scopeId{0};
+    /**
+     * Scope id if scoped/link-local IPV6 address.
+     * See https://tools.ietf.org/html/rfc4007
+     */
+    uint32_t m_scope_id{0};
 
 public:
     CNetAddr();
@@ -204,7 +207,7 @@ public:
     std::string ToStringIP() const;
     uint64_t GetHash() const;
     bool GetInAddr(struct in_addr *pipv4Addr) const;
-    uint32_t GetNetClass() const;
+    Network GetNetClass() const;
 
     //! For IPv4, mapped IPv4, SIIT translated IPv4, Teredo, 6to4 tunneled
     //! addresses, return the relevant IPv4 address as a uint32.
@@ -230,6 +233,12 @@ public:
         return !(a == b);
     }
     friend bool operator<(const CNetAddr &a, const CNetAddr &b);
+
+    /**
+     * Whether this address should be relayed to other peers even if we can't
+     * reach it ourselves.
+     */
+    bool IsRelayable() const { return IsIPv4() || IsIPv6() || IsTor(); }
 
     /**
      * Serialize to a stream.
@@ -408,7 +417,7 @@ private:
                 "Address too long: %u > %u", address_size, MAX_ADDRV2_SIZE));
         }
 
-        scopeId = 0;
+        m_scope_id = 0;
 
         if (SetNetFromBIP155Network(bip155_net, address_size)) {
             m_addr.resize(address_size);
@@ -533,7 +542,5 @@ public:
         READWRITE(Using<BigEndianFormatter<2>>(obj.port));
     }
 };
-
-bool SanityCheckASMap(const std::vector<bool> &asmap);
 
 #endif // BITCOIN_NETADDRESS_H

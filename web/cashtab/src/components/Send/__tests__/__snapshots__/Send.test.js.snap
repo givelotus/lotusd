@@ -3,7 +3,7 @@
 exports[`Wallet with BCH balances 1`] = `
 Array [
   <div
-    className="sc-cSHVUG evOoHm"
+    className="sc-kpOJdX GoEyB"
   >
     You currently have 0 
     XEC
@@ -29,11 +29,22 @@ Array [
           }
         }
       >
-        <div
-          className="sc-gZMcBi bZwSTm"
+        <button
+          className="ant-btn ant-btn-text ant-btn-block"
+          onClick={[Function]}
+          type="button"
         >
           <div
-            className="ant-row ant-form-item"
+            className="sc-kEYyzF IFceh"
+          >
+            Switch to multiple recipients
+          </div>
+        </button>
+        <div
+          className="sc-iwsKbI ebAbAb"
+        >
+          <div
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -99,7 +110,7 @@ Array [
                         className="ant-input-group-addon"
                       >
                         <span
-                          className="sc-htoDjs clindv"
+                          className="sc-gzVnrw eqRDUd"
                           onClick={[Function]}
                         >
                           <span
@@ -128,9 +139,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -140,10 +152,10 @@ Array [
           </div>
         </div>
         <div
-          className="sc-gZMcBi bZwSTm"
+          className="sc-iwsKbI ebAbAb"
         >
           <div
-            className="ant-row ant-form-item"
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -285,7 +297,7 @@ Array [
                       </span>
                     </div>
                     <span
-                      className="sc-VigVT hzxqG"
+                      className="sc-gqjmRU cFeeUJ"
                       disabled={false}
                       onClick={[Function]}
                       style={
@@ -302,9 +314,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -313,12 +326,72 @@ Array [
             </div>
           </div>
         </div>
+        <h3
+          className="sc-iAyFgw bGmpty"
+        >
+          0
+           
+          XEC
+        </h3>
         <div
-          className="sc-kgoBCf kMQqjE"
+          className="sc-jKJlTe hccxef"
         >
           =
            
           $  NaN USD
+        </div>
+        <div
+          style={
+            Object {
+              "paddingTop": "32px",
+            }
+          }
+        >
+          <div
+            className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+            role={null}
+            style={
+              Object {
+                "marginBottom": "24px",
+              }
+            }
+          >
+            <div
+              className="ant-collapse-item"
+            >
+              <div
+                aria-expanded={false}
+                className="ant-collapse-header"
+                onClick={[Function]}
+                onKeyPress={[Function]}
+                role="button"
+                tabIndex={0}
+              >
+                <div>
+                  <span
+                    aria-label="right"
+                    className="anticon anticon-right ant-collapse-arrow"
+                    role="img"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      data-icon="right"
+                      fill="currentColor"
+                      focusable="false"
+                      height="1em"
+                      viewBox="64 64 896 896"
+                      width="1em"
+                    >
+                      <path
+                        d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+                      />
+                    </svg>
+                  </span>
+                </div>
+                Advanced
+              </div>
+            </div>
+          </div>
         </div>
         <div
           style={
@@ -328,12 +401,62 @@ Array [
           }
         >
           <button
-            className="sc-bZQynM hlOQYo"
+            className="sc-cSHVUG eNOONn"
           >
             Send
           </button>
         </div>
       </form>
+    </div>
+  </div>,
+  <div
+    className="sc-eNQAEJ fJrcEs"
+  >
+    Signatures
+  </div>,
+  <div
+    className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+    role={null}
+    style={
+      Object {
+        "marginBottom": "24px",
+      }
+    }
+  >
+    <div
+      className="ant-collapse-item"
+    >
+      <div
+        aria-expanded={false}
+        className="ant-collapse-header"
+        onClick={[Function]}
+        onKeyPress={[Function]}
+        role="button"
+        tabIndex={0}
+      >
+        <div>
+          <span
+            aria-label="right"
+            className="anticon anticon-right ant-collapse-arrow"
+            role="img"
+          >
+            <svg
+              aria-hidden="true"
+              data-icon="right"
+              fill="currentColor"
+              focusable="false"
+              height="1em"
+              viewBox="64 64 896 896"
+              width="1em"
+            >
+              <path
+                d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+              />
+            </svg>
+          </span>
+        </div>
+        Sign Message
+      </div>
     </div>
   </div>,
 ]
@@ -342,7 +465,7 @@ Array [
 exports[`Wallet with BCH balances and tokens 1`] = `
 Array [
   <div
-    className="sc-cSHVUG evOoHm"
+    className="sc-kpOJdX GoEyB"
   >
     You currently have 0 
     XEC
@@ -368,11 +491,22 @@ Array [
           }
         }
       >
-        <div
-          className="sc-gZMcBi bZwSTm"
+        <button
+          className="ant-btn ant-btn-text ant-btn-block"
+          onClick={[Function]}
+          type="button"
         >
           <div
-            className="ant-row ant-form-item"
+            className="sc-kEYyzF IFceh"
+          >
+            Switch to multiple recipients
+          </div>
+        </button>
+        <div
+          className="sc-iwsKbI ebAbAb"
+        >
+          <div
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -438,7 +572,7 @@ Array [
                         className="ant-input-group-addon"
                       >
                         <span
-                          className="sc-htoDjs clindv"
+                          className="sc-gzVnrw eqRDUd"
                           onClick={[Function]}
                         >
                           <span
@@ -467,9 +601,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -479,10 +614,10 @@ Array [
           </div>
         </div>
         <div
-          className="sc-gZMcBi bZwSTm"
+          className="sc-iwsKbI ebAbAb"
         >
           <div
-            className="ant-row ant-form-item"
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -624,7 +759,7 @@ Array [
                       </span>
                     </div>
                     <span
-                      className="sc-VigVT hzxqG"
+                      className="sc-gqjmRU cFeeUJ"
                       disabled={false}
                       onClick={[Function]}
                       style={
@@ -641,9 +776,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -652,12 +788,72 @@ Array [
             </div>
           </div>
         </div>
+        <h3
+          className="sc-iAyFgw bGmpty"
+        >
+          0
+           
+          XEC
+        </h3>
         <div
-          className="sc-kgoBCf kMQqjE"
+          className="sc-jKJlTe hccxef"
         >
           =
            
           $  NaN USD
+        </div>
+        <div
+          style={
+            Object {
+              "paddingTop": "32px",
+            }
+          }
+        >
+          <div
+            className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+            role={null}
+            style={
+              Object {
+                "marginBottom": "24px",
+              }
+            }
+          >
+            <div
+              className="ant-collapse-item"
+            >
+              <div
+                aria-expanded={false}
+                className="ant-collapse-header"
+                onClick={[Function]}
+                onKeyPress={[Function]}
+                role="button"
+                tabIndex={0}
+              >
+                <div>
+                  <span
+                    aria-label="right"
+                    className="anticon anticon-right ant-collapse-arrow"
+                    role="img"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      data-icon="right"
+                      fill="currentColor"
+                      focusable="false"
+                      height="1em"
+                      viewBox="64 64 896 896"
+                      width="1em"
+                    >
+                      <path
+                        d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+                      />
+                    </svg>
+                  </span>
+                </div>
+                Advanced
+              </div>
+            </div>
+          </div>
         </div>
         <div
           style={
@@ -667,12 +863,62 @@ Array [
           }
         >
           <button
-            className="sc-bZQynM hlOQYo"
+            className="sc-cSHVUG eNOONn"
           >
             Send
           </button>
         </div>
       </form>
+    </div>
+  </div>,
+  <div
+    className="sc-eNQAEJ fJrcEs"
+  >
+    Signatures
+  </div>,
+  <div
+    className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+    role={null}
+    style={
+      Object {
+        "marginBottom": "24px",
+      }
+    }
+  >
+    <div
+      className="ant-collapse-item"
+    >
+      <div
+        aria-expanded={false}
+        className="ant-collapse-header"
+        onClick={[Function]}
+        onKeyPress={[Function]}
+        role="button"
+        tabIndex={0}
+      >
+        <div>
+          <span
+            aria-label="right"
+            className="anticon anticon-right ant-collapse-arrow"
+            role="img"
+          >
+            <svg
+              aria-hidden="true"
+              data-icon="right"
+              fill="currentColor"
+              focusable="false"
+              height="1em"
+              viewBox="64 64 896 896"
+              width="1em"
+            >
+              <path
+                d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+              />
+            </svg>
+          </span>
+        </div>
+        Sign Message
+      </div>
     </div>
   </div>,
 ]
@@ -681,14 +927,14 @@ Array [
 exports[`Wallet with BCH balances and tokens and state field 1`] = `
 Array [
   <div
-    className="sc-fjdhpX llHaIR"
+    className="sc-kgoBCf kfjVlq"
   >
     0.06
      
     XEC
   </div>,
   <div
-    className="sc-jzJRlG fVAWpo"
+    className="sc-kGXeez kiHoFA"
   >
     $ 
     NaN
@@ -714,11 +960,22 @@ Array [
           }
         }
       >
-        <div
-          className="sc-gZMcBi bZwSTm"
+        <button
+          className="ant-btn ant-btn-text ant-btn-block"
+          onClick={[Function]}
+          type="button"
         >
           <div
-            className="ant-row ant-form-item"
+            className="sc-kEYyzF IFceh"
+          >
+            Switch to multiple recipients
+          </div>
+        </button>
+        <div
+          className="sc-iwsKbI ebAbAb"
+        >
+          <div
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -784,7 +1041,7 @@ Array [
                         className="ant-input-group-addon"
                       >
                         <span
-                          className="sc-htoDjs clindv"
+                          className="sc-gzVnrw eqRDUd"
                           onClick={[Function]}
                         >
                           <span
@@ -813,9 +1070,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -825,10 +1083,10 @@ Array [
           </div>
         </div>
         <div
-          className="sc-gZMcBi bZwSTm"
+          className="sc-iwsKbI ebAbAb"
         >
           <div
-            className="ant-row ant-form-item"
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -970,7 +1228,7 @@ Array [
                       </span>
                     </div>
                     <span
-                      className="sc-VigVT hzxqG"
+                      className="sc-gqjmRU cFeeUJ"
                       disabled={false}
                       onClick={[Function]}
                       style={
@@ -987,9 +1245,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -998,12 +1257,72 @@ Array [
             </div>
           </div>
         </div>
+        <h3
+          className="sc-iAyFgw bGmpty"
+        >
+          0
+           
+          XEC
+        </h3>
         <div
-          className="sc-kgoBCf kMQqjE"
+          className="sc-jKJlTe hccxef"
         >
           =
            
           $  NaN USD
+        </div>
+        <div
+          style={
+            Object {
+              "paddingTop": "32px",
+            }
+          }
+        >
+          <div
+            className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+            role={null}
+            style={
+              Object {
+                "marginBottom": "24px",
+              }
+            }
+          >
+            <div
+              className="ant-collapse-item"
+            >
+              <div
+                aria-expanded={false}
+                className="ant-collapse-header"
+                onClick={[Function]}
+                onKeyPress={[Function]}
+                role="button"
+                tabIndex={0}
+              >
+                <div>
+                  <span
+                    aria-label="right"
+                    className="anticon anticon-right ant-collapse-arrow"
+                    role="img"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      data-icon="right"
+                      fill="currentColor"
+                      focusable="false"
+                      height="1em"
+                      viewBox="64 64 896 896"
+                      width="1em"
+                    >
+                      <path
+                        d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+                      />
+                    </svg>
+                  </span>
+                </div>
+                Advanced
+              </div>
+            </div>
+          </div>
         </div>
         <div
           style={
@@ -1013,7 +1332,7 @@ Array [
           }
         >
           <button
-            className="sc-EHOje bfWfmf"
+            className="sc-jzJRlG fiDUki"
             onClick={[Function]}
           >
             Send
@@ -1022,13 +1341,63 @@ Array [
       </form>
     </div>
   </div>,
+  <div
+    className="sc-eNQAEJ fJrcEs"
+  >
+    Signatures
+  </div>,
+  <div
+    className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+    role={null}
+    style={
+      Object {
+        "marginBottom": "24px",
+      }
+    }
+  >
+    <div
+      className="ant-collapse-item"
+    >
+      <div
+        aria-expanded={false}
+        className="ant-collapse-header"
+        onClick={[Function]}
+        onKeyPress={[Function]}
+        role="button"
+        tabIndex={0}
+      >
+        <div>
+          <span
+            aria-label="right"
+            className="anticon anticon-right ant-collapse-arrow"
+            role="img"
+          >
+            <svg
+              aria-hidden="true"
+              data-icon="right"
+              fill="currentColor"
+              focusable="false"
+              height="1em"
+              viewBox="64 64 896 896"
+              width="1em"
+            >
+              <path
+                d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+              />
+            </svg>
+          </span>
+        </div>
+        Sign Message
+      </div>
+    </div>
+  </div>,
 ]
 `;
 
 exports[`Wallet without BCH balance 1`] = `
 Array [
   <div
-    className="sc-cSHVUG evOoHm"
+    className="sc-kpOJdX GoEyB"
   >
     You currently have 0 
     XEC
@@ -1054,11 +1423,22 @@ Array [
           }
         }
       >
-        <div
-          className="sc-gZMcBi bZwSTm"
+        <button
+          className="ant-btn ant-btn-text ant-btn-block"
+          onClick={[Function]}
+          type="button"
         >
           <div
-            className="ant-row ant-form-item"
+            className="sc-kEYyzF IFceh"
+          >
+            Switch to multiple recipients
+          </div>
+        </button>
+        <div
+          className="sc-iwsKbI ebAbAb"
+        >
+          <div
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -1124,7 +1504,7 @@ Array [
                         className="ant-input-group-addon"
                       >
                         <span
-                          className="sc-htoDjs clindv"
+                          className="sc-gzVnrw eqRDUd"
                           onClick={[Function]}
                         >
                           <span
@@ -1153,9 +1533,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -1165,10 +1546,10 @@ Array [
           </div>
         </div>
         <div
-          className="sc-gZMcBi bZwSTm"
+          className="sc-iwsKbI ebAbAb"
         >
           <div
-            className="ant-row ant-form-item"
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -1310,7 +1691,7 @@ Array [
                       </span>
                     </div>
                     <span
-                      className="sc-VigVT hzxqG"
+                      className="sc-gqjmRU cFeeUJ"
                       disabled={false}
                       onClick={[Function]}
                       style={
@@ -1327,9 +1708,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -1338,12 +1720,72 @@ Array [
             </div>
           </div>
         </div>
+        <h3
+          className="sc-iAyFgw bGmpty"
+        >
+          0
+           
+          XEC
+        </h3>
         <div
-          className="sc-kgoBCf kMQqjE"
+          className="sc-jKJlTe hccxef"
         >
           =
            
           $  NaN USD
+        </div>
+        <div
+          style={
+            Object {
+              "paddingTop": "32px",
+            }
+          }
+        >
+          <div
+            className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+            role={null}
+            style={
+              Object {
+                "marginBottom": "24px",
+              }
+            }
+          >
+            <div
+              className="ant-collapse-item"
+            >
+              <div
+                aria-expanded={false}
+                className="ant-collapse-header"
+                onClick={[Function]}
+                onKeyPress={[Function]}
+                role="button"
+                tabIndex={0}
+              >
+                <div>
+                  <span
+                    aria-label="right"
+                    className="anticon anticon-right ant-collapse-arrow"
+                    role="img"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      data-icon="right"
+                      fill="currentColor"
+                      focusable="false"
+                      height="1em"
+                      viewBox="64 64 896 896"
+                      width="1em"
+                    >
+                      <path
+                        d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+                      />
+                    </svg>
+                  </span>
+                </div>
+                Advanced
+              </div>
+            </div>
+          </div>
         </div>
         <div
           style={
@@ -1353,12 +1795,62 @@ Array [
           }
         >
           <button
-            className="sc-bZQynM hlOQYo"
+            className="sc-cSHVUG eNOONn"
           >
             Send
           </button>
         </div>
       </form>
+    </div>
+  </div>,
+  <div
+    className="sc-eNQAEJ fJrcEs"
+  >
+    Signatures
+  </div>,
+  <div
+    className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+    role={null}
+    style={
+      Object {
+        "marginBottom": "24px",
+      }
+    }
+  >
+    <div
+      className="ant-collapse-item"
+    >
+      <div
+        aria-expanded={false}
+        className="ant-collapse-header"
+        onClick={[Function]}
+        onKeyPress={[Function]}
+        role="button"
+        tabIndex={0}
+      >
+        <div>
+          <span
+            aria-label="right"
+            className="anticon anticon-right ant-collapse-arrow"
+            role="img"
+          >
+            <svg
+              aria-hidden="true"
+              data-icon="right"
+              fill="currentColor"
+              focusable="false"
+              height="1em"
+              viewBox="64 64 896 896"
+              width="1em"
+            >
+              <path
+                d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+              />
+            </svg>
+          </span>
+        </div>
+        Sign Message
+      </div>
     </div>
   </div>,
 ]
@@ -1367,7 +1859,7 @@ Array [
 exports[`Without wallet defined 1`] = `
 Array [
   <div
-    className="sc-cSHVUG evOoHm"
+    className="sc-kpOJdX GoEyB"
   >
     You currently have 0 
     XEC
@@ -1393,11 +1885,22 @@ Array [
           }
         }
       >
-        <div
-          className="sc-gZMcBi bZwSTm"
+        <button
+          className="ant-btn ant-btn-text ant-btn-block"
+          onClick={[Function]}
+          type="button"
         >
           <div
-            className="ant-row ant-form-item"
+            className="sc-kEYyzF IFceh"
+          >
+            Switch to multiple recipients
+          </div>
+        </button>
+        <div
+          className="sc-iwsKbI ebAbAb"
+        >
+          <div
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -1463,7 +1966,7 @@ Array [
                         className="ant-input-group-addon"
                       >
                         <span
-                          className="sc-htoDjs clindv"
+                          className="sc-gzVnrw eqRDUd"
                           onClick={[Function]}
                         >
                           <span
@@ -1492,9 +1995,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -1504,10 +2008,10 @@ Array [
           </div>
         </div>
         <div
-          className="sc-gZMcBi bZwSTm"
+          className="sc-iwsKbI ebAbAb"
         >
           <div
-            className="ant-row ant-form-item"
+            className="ant-row ant-form-item ant-form-item-with-help"
             style={Object {}}
           >
             <div
@@ -1649,7 +2153,7 @@ Array [
                       </span>
                     </div>
                     <span
-                      className="sc-VigVT hzxqG"
+                      className="sc-gqjmRU cFeeUJ"
                       disabled={false}
                       onClick={[Function]}
                       style={
@@ -1666,9 +2170,10 @@ Array [
                 </div>
               </div>
               <div
-                className="ant-form-item-explain"
+                className="ant-form-item-explain ant-form-item-explain-connected"
               >
                 <div
+                  className=""
                   role="alert"
                 >
                   
@@ -1677,12 +2182,72 @@ Array [
             </div>
           </div>
         </div>
+        <h3
+          className="sc-iAyFgw bGmpty"
+        >
+          0
+           
+          XEC
+        </h3>
         <div
-          className="sc-kgoBCf kMQqjE"
+          className="sc-jKJlTe hccxef"
         >
           =
            
           $  NaN USD
+        </div>
+        <div
+          style={
+            Object {
+              "paddingTop": "32px",
+            }
+          }
+        >
+          <div
+            className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+            role={null}
+            style={
+              Object {
+                "marginBottom": "24px",
+              }
+            }
+          >
+            <div
+              className="ant-collapse-item"
+            >
+              <div
+                aria-expanded={false}
+                className="ant-collapse-header"
+                onClick={[Function]}
+                onKeyPress={[Function]}
+                role="button"
+                tabIndex={0}
+              >
+                <div>
+                  <span
+                    aria-label="right"
+                    className="anticon anticon-right ant-collapse-arrow"
+                    role="img"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      data-icon="right"
+                      fill="currentColor"
+                      focusable="false"
+                      height="1em"
+                      viewBox="64 64 896 896"
+                      width="1em"
+                    >
+                      <path
+                        d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+                      />
+                    </svg>
+                  </span>
+                </div>
+                Advanced
+              </div>
+            </div>
+          </div>
         </div>
         <div
           style={
@@ -1692,12 +2257,62 @@ Array [
           }
         >
           <button
-            className="sc-bZQynM hlOQYo"
+            className="sc-cSHVUG eNOONn"
           >
             Send
           </button>
         </div>
       </form>
+    </div>
+  </div>,
+  <div
+    className="sc-eNQAEJ fJrcEs"
+  >
+    Signatures
+  </div>,
+  <div
+    className="ant-collapse ant-collapse-icon-position-left sc-fjdhpX ddFLEP"
+    role={null}
+    style={
+      Object {
+        "marginBottom": "24px",
+      }
+    }
+  >
+    <div
+      className="ant-collapse-item"
+    >
+      <div
+        aria-expanded={false}
+        className="ant-collapse-header"
+        onClick={[Function]}
+        onKeyPress={[Function]}
+        role="button"
+        tabIndex={0}
+      >
+        <div>
+          <span
+            aria-label="right"
+            className="anticon anticon-right ant-collapse-arrow"
+            role="img"
+          >
+            <svg
+              aria-hidden="true"
+              data-icon="right"
+              fill="currentColor"
+              focusable="false"
+              height="1em"
+              viewBox="64 64 896 896"
+              width="1em"
+            >
+              <path
+                d="M765.7 486.8L314.9 134.7A7.97 7.97 0 00302 141v77.3c0 4.9 2.3 9.6 6.1 12.6l360 281.1-360 281.1c-3.9 3-6.1 7.7-6.1 12.6V883c0 6.7 7.7 10.4 12.9 6.3l450.8-352.1a31.96 31.96 0 000-50.4z"
+              />
+            </svg>
+          </span>
+        </div>
+        Sign Message
+      </div>
     </div>
   </div>,
 ]

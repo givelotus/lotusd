@@ -128,7 +128,7 @@ std::string CRPCTable::help(const Config &config, const std::string &strCommand,
     sort(vCommands.begin(), vCommands.end());
 
     JSONRPCRequest jreq(helpreq);
-    jreq.fHelp = true;
+    jreq.mode = JSONRPCRequest::GET_HELP;
     jreq.params = UniValue();
 
     for (const std::pair<std::string, const CRPCCommand *> &command :
@@ -189,6 +189,10 @@ static RPCHelpMan help() {
             std::string strCommand;
             if (jsonRequest.params.size() > 0) {
                 strCommand = jsonRequest.params[0].get_str();
+            }
+            if (strCommand == "dump_all_command_conversions") {
+                // Used for testing only, undocumented
+                return tableRPC.dumpArgMap(config, jsonRequest);
             }
 
             return tableRPC.help(config, strCommand, jsonRequest);
@@ -289,7 +293,7 @@ static RPCHelpMan getrpcinfo() {
             UniValue result(UniValue::VOBJ);
             result.pushKV("active_commands", active_commands);
 
-            const std::string path = LogInstance().m_file_path.string();
+            const std::string path = LogInstance().m_file_path.u8string();
             UniValue log_path(UniValue::VSTR, path);
             result.pushKV("logpath", log_path);
 
@@ -299,13 +303,13 @@ static RPCHelpMan getrpcinfo() {
 
 // clang-format off
 static const CRPCCommand vRPCCommands[] = {
-    //  category            name                      actor (function)        argNames
-    //  ------------------- ------------------------  ----------------------  ----------
+    //  category             actor (function)
+    //  -------------------  ----------------------
     /* Overall control/query calls */
-    { "control",            "getrpcinfo",             getrpcinfo,             {}  },
-    { "control",            "help",                   help,                   {"command"}  },
-    { "control",            "stop",                   stop,                   {"wait"}  },
-    { "control",            "uptime",                 uptime,                 {}  },
+    { "control",             getrpcinfo,           },
+    { "control",             help,                 },
+    { "control",             stop,                 },
+    { "control",             uptime,               },
 };
 // clang-format on
 
@@ -486,6 +490,18 @@ transformNamedArguments(const JSONRPCRequest &in,
     return out;
 }
 
+static bool ExecuteCommands(const Config &config,
+                            const std::vector<const CRPCCommand *> &commands,
+                            const JSONRPCRequest &request, UniValue &result) {
+    for (const auto &command : commands) {
+        if (ExecuteCommand(config, *command, request, result,
+                           &command == &commands.back())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 UniValue CRPCTable::execute(const Config &config,
                             const JSONRPCRequest &request) const {
     // Return immediately if in warmup
@@ -500,11 +516,8 @@ UniValue CRPCTable::execute(const Config &config,
     auto it = mapCommands.find(request.strMethod);
     if (it != mapCommands.end()) {
         UniValue result;
-        for (const auto &command : it->second) {
-            if (ExecuteCommand(config, *command, request, result,
-                               &command == &it->second.back())) {
-                return result;
-            }
+        if (ExecuteCommands(config, it->second, request, result)) {
+            return result;
         }
     }
     throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Method not found");
@@ -534,6 +547,23 @@ std::vector<std::string> CRPCTable::listCommands() const {
         commandList.emplace_back(i.first);
     }
     return commandList;
+}
+
+UniValue CRPCTable::dumpArgMap(const Config &config,
+                               const JSONRPCRequest &args_request) const {
+    JSONRPCRequest request(args_request);
+    request.mode = JSONRPCRequest::GET_ARGS;
+
+    UniValue ret{UniValue::VARR};
+    for (const auto &cmd : mapCommands) {
+        UniValue result;
+        if (ExecuteCommands(config, cmd.second, request, result)) {
+            for (const auto &values : result.getValues()) {
+                ret.push_back(values);
+            }
+        }
+    }
+    return ret;
 }
 
 void RPCSetTimerInterfaceIfUnset(RPCTimerInterface *iface) {

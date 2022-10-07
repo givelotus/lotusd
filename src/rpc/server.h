@@ -142,8 +142,6 @@ void RPCUnsetTimerInterface(RPCTimerInterface *iface);
 void RPCRunLater(const std::string &name, std::function<void()> func,
                  int64_t nSeconds);
 
-using rpcfn_type = UniValue (*)(const Config &config,
-                                const JSONRPCRequest &jsonRequest);
 using RpcMethodFnType = RPCHelpMan (*)();
 
 class CRPCCommand {
@@ -163,8 +161,7 @@ public:
           unique_id(_unique_id) {}
 
     //! Simplified constructor taking plain RpcMethodFnType function pointer.
-    CRPCCommand(std::string _category, std::string name_in, RpcMethodFnType _fn,
-                std::vector<std::string> args_in)
+    CRPCCommand(std::string _category, RpcMethodFnType _fn)
         : CRPCCommand(
               _category, _fn().m_name,
               [_fn](const Config &config, const JSONRPCRequest &request,
@@ -172,22 +169,7 @@ public:
                   result = _fn().HandleRequest(config, request);
                   return true;
               },
-              _fn().GetArgNames(), intptr_t(_fn)) {
-        CHECK_NONFATAL(_fn().m_name == name_in);
-        CHECK_NONFATAL(_fn().GetArgNames() == args_in);
-    }
-
-    //! Simplified constructor taking plain const_rpcfn_type function pointer.
-    CRPCCommand(const char *_category, const char *_name, rpcfn_type _fn,
-                std::initializer_list<const char *> _args)
-        : CRPCCommand(
-              _category, _name,
-              [_fn](const Config &config, const JSONRPCRequest &request,
-                    UniValue &result, bool) {
-                  result = _fn(config, request);
-                  return true;
-              },
-              {_args.begin(), _args.end()}, intptr_t(_fn)) {}
+              _fn().GetArgNames(), intptr_t(_fn)) {}
 
     std::string category;
     std::string name;
@@ -221,6 +203,13 @@ public:
      * @returns List of registered commands.
      */
     std::vector<std::string> listCommands() const;
+
+    /**
+     * Return all named arguments that need to be converted by the client from
+     * string to another JSON type
+     */
+    UniValue dumpArgMap(const Config &config,
+                        const JSONRPCRequest &request) const;
 
     /**
      * Appends a CRPCCommand to the dispatch table.

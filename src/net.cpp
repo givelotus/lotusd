@@ -51,6 +51,15 @@ static_assert(MINIUPNPC_API_VERSION >= 10,
 #include <optional>
 #include <unordered_map>
 
+/** Maximum number of block-relay-only anchor connections */
+static constexpr size_t MAX_BLOCK_RELAY_ONLY_ANCHORS = 2;
+static_assert(MAX_BLOCK_RELAY_ONLY_ANCHORS <=
+                  static_cast<size_t>(MAX_BLOCK_RELAY_ONLY_CONNECTIONS),
+              "MAX_BLOCK_RELAY_ONLY_ANCHORS must not exceed "
+              "MAX_BLOCK_RELAY_ONLY_CONNECTIONS.");
+/** Anchor IP address database file name */
+const char *const ANCHORS_DATABASE_FILENAME = "anchors.dat";
+
 // How often to dump addresses to peers.dat
 static constexpr std::chrono::minutes DUMP_PEERS_INTERVAL{15};
 
@@ -74,6 +83,9 @@ static constexpr std::chrono::minutes DNSSEEDS_DELAY_MANY_PEERS{5};
 // "many" vs "few" peers
 static constexpr int DNSSEEDS_DELAY_PEER_THRESHOLD = 1000;
 
+/** The default timeframe for -maxuploadtarget. 1 day. */
+static constexpr std::chrono::seconds MAX_UPLOAD_TIMEFRAME{60 * 60 * 24};
+
 // We add a random period time (0 to 1 seconds) to feeler connections to prevent
 // synchronization.
 #define FEELER_SLEEP_WINDOW 1
@@ -95,6 +107,11 @@ enum BindFlags {
     BF_NONE = 0,
     BF_EXPLICIT = (1U << 0),
     BF_REPORT_ERROR = (1U << 1),
+    /**
+     * Do not call AddLocal() for our special addresses, e.g., for incoming
+     * Tor connections, to prevent gossiping them over the network.
+     */
+    BF_DONT_ADVERTISE = (1U << 2),
 };
 
 // The set of sockets cannot be modified while waiting
@@ -116,7 +133,6 @@ static const uint64_t RANDOMIZER_ID_ADDRCACHE = 0x1cf2e4ddd306dda9ULL;
 //
 bool fDiscover = true;
 bool fListen = true;
-bool g_relay_txes = !DEFAULT_BLOCKSONLY;
 RecursiveMutex cs_mapLocalHost;
 std::map<CNetAddr, LocalServiceInfo> mapLocalHost GUARDED_BY(cs_mapLocalHost);
 static bool vfLimited[NET_MAX] GUARDED_BY(cs_mapLocalHost) = {};
@@ -204,33 +220,31 @@ bool IsPeerAddrLocalGood(CNode *pnode) {
            IsReachable(addrLocal.GetNetwork());
 }
 
-// Pushes our own address to a peer.
-void AdvertiseLocal(CNode *pnode) {
-    if (fListen && pnode->fSuccessfullyConnected) {
-        CAddress addrLocal =
-            GetLocalAddress(&pnode->addr, pnode->GetLocalServices());
-        if (gArgs.GetBoolArg("-addrmantest", false)) {
-            // use IPv4 loopback during addrmantest
-            addrLocal =
-                CAddress(CService(LookupNumeric("127.0.0.1", GetListenPort())),
-                         pnode->GetLocalServices());
-        }
-        // If discovery is enabled, sometimes give our peer the address it
-        // tells us that it sees us as in case it has a better idea of our
-        // address than we do.
-        FastRandomContext rng;
-        if (IsPeerAddrLocalGood(pnode) &&
-            (!addrLocal.IsRoutable() ||
-             rng.randbits((GetnScore(addrLocal) > LOCAL_MANUAL) ? 3 : 1) ==
-                 0)) {
-            addrLocal.SetIP(pnode->GetAddrLocal());
-        }
-        if (addrLocal.IsRoutable() || gArgs.GetBoolArg("-addrmantest", false)) {
-            LogPrint(BCLog::NET, "AdvertiseLocal: advertising address %s\n",
-                     addrLocal.ToString());
-            pnode->PushAddress(addrLocal, rng);
-        }
+std::optional<CAddress> GetLocalAddrForPeer(CNode *pnode) {
+    CAddress addrLocal =
+        GetLocalAddress(&pnode->addr, pnode->GetLocalServices());
+    if (gArgs.GetBoolArg("-addrmantest", false)) {
+        // use IPv4 loopback during addrmantest
+        addrLocal =
+            CAddress(CService(LookupNumeric("127.0.0.1", GetListenPort())),
+                     pnode->GetLocalServices());
     }
+    // If discovery is enabled, sometimes give our peer the address it
+    // tells us that it sees us as in case it has a better idea of our
+    // address than we do.
+    FastRandomContext rng;
+    if (IsPeerAddrLocalGood(pnode) &&
+        (!addrLocal.IsRoutable() ||
+         rng.randbits((GetnScore(addrLocal) > LOCAL_MANUAL) ? 3 : 1) == 0)) {
+        addrLocal.SetIP(pnode->GetAddrLocal());
+    }
+    if (addrLocal.IsRoutable() || gArgs.GetBoolArg("-addrmantest", false)) {
+        LogPrint(BCLog::NET, "Advertising address %s to peer=%d\n",
+                 addrLocal.ToString(), pnode->GetId());
+        return addrLocal;
+    }
+    // Address is unroutable. Don't advertise.
+    return std::nullopt;
 }
 
 // Learn a new local address.
@@ -343,6 +357,11 @@ CNode *CConnman::FindNode(const CService &addr) {
         }
     }
     return nullptr;
+}
+
+bool CConnman::AlreadyConnectedToAddress(const CAddress &addr) {
+    return FindNode(static_cast<CNetAddr>(addr)) ||
+           FindNode(addr.ToStringIPPort());
 }
 
 bool CConnman::CheckIncomingNonce(uint64_t nonce) {
@@ -485,9 +504,10 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
             .Finalize();
     CAddress addr_bind = GetBindAddress(hSocket);
     CNode *pnode =
-        new CNode(id, nLocalServices, GetBestHeight(), hSocket, addrConnect,
+        new CNode(id, nLocalServices, hSocket, addrConnect,
                   CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy,
-                  addr_bind, pszDest ? pszDest : "", conn_type);
+                  addr_bind, pszDest ? pszDest : "", conn_type,
+                  /* inbound_onion */ false);
     pnode->AddRef();
 
     // We're making a new connection, harvest entropy from the time (and our
@@ -562,20 +582,24 @@ void CNode::SetAddrLocal(const CService &addrLocalIn) {
     }
 }
 
-void CNode::copyStats(CNodeStats &stats, const std::vector<bool> &m_asmap) {
+Network CNode::ConnectedThroughNetwork() const {
+    return m_inbound_onion ? NET_ONION : addr.GetNetClass();
+}
+
+void CNode::copyStats(CNodeStats &stats) {
     stats.nodeid = this->GetId();
     stats.nServices = nServices;
     stats.addr = addr;
     stats.addrBind = addrBind;
-    stats.m_mapped_as = addr.GetMappedAS(m_asmap);
+    stats.m_network = ConnectedThroughNetwork();
     if (m_tx_relay != nullptr) {
         LOCK(m_tx_relay->cs_filter);
         stats.fRelayTxes = m_tx_relay->fRelayTxes;
     } else {
         stats.fRelayTxes = false;
     }
-    stats.nLastSend = nLastSend;
-    stats.nLastRecv = nLastRecv;
+    stats.m_last_send = m_last_send;
+    stats.m_last_recv = m_last_recv;
     stats.nLastTXTime = nLastTXTime;
     stats.nLastProofTime = nLastProofTime;
     stats.nLastBlockTime = nLastBlockTime;
@@ -589,7 +613,8 @@ void CNode::copyStats(CNodeStats &stats, const std::vector<bool> &m_asmap) {
     }
     stats.fInbound = IsInboundConn();
     stats.m_manual_connection = IsManualConn();
-    stats.nStartingHeight = nStartingHeight;
+    stats.m_bip152_highbandwidth_to = m_bip152_highbandwidth_to;
+    stats.m_bip152_highbandwidth_from = m_bip152_highbandwidth_from;
     {
         LOCK(cs_vSend);
         stats.mapSendBytesPerMsgCmd = mapSendBytesPerMsgCmd;
@@ -609,23 +634,8 @@ void CNode::copyStats(CNodeStats &stats, const std::vector<bool> &m_asmap) {
         stats.minFeeFilter = Amount::zero();
     }
 
-    // It is common for nodes with good ping times to suddenly become lagged,
-    // due to a new block arriving or other large transfer. Merely reporting
-    // pingtime might fool the caller into thinking the node was still
-    // responsive, since pingtime does not update until the ping is complete,
-    // which might take a while. So, if a ping is taking an unusually long time
-    // in flight, the caller can immediately detect that this is happening.
-    std::chrono::microseconds ping_wait{0};
-    if ((0 != nPingNonceSent) && (0 != m_ping_start.load().count())) {
-        ping_wait = GetTime<std::chrono::microseconds>() - m_ping_start.load();
-    }
-
-    // Raw ping time is in microseconds, but show it to user as whole seconds
-    // (Bitcoin users should be well used to small numbers with many decimal
-    // places by now :)
-    stats.m_ping_usec = nPingUsecTime;
-    stats.m_min_ping_usec = nMinPingUsecTime;
-    stats.m_ping_wait_usec = count_microseconds(ping_wait);
+    stats.m_last_ping_time = m_last_ping_time;
+    stats.m_min_ping_time = m_min_ping_time;
 
     // Leave string empty if addrLocal invalid (not filled in yet)
     CService addrLocalUnlocked = GetAddrLocal();
@@ -635,23 +645,19 @@ void CNode::copyStats(CNodeStats &stats, const std::vector<bool> &m_asmap) {
     stats.m_conn_type_string = ConnectionTypeAsString();
 }
 
-bool CNode::ReceiveMsgBytes(const Config &config, const char *pch,
-                            uint32_t nBytes, bool &complete) {
+bool CNode::ReceiveMsgBytes(const Config &config, Span<const char> msg_bytes,
+                            bool &complete) {
     complete = false;
     const auto time = GetTime<std::chrono::microseconds>();
     LOCK(cs_vRecv);
-    nLastRecv = std::chrono::duration_cast<std::chrono::seconds>(time).count();
-    nRecvBytes += nBytes;
-    while (nBytes > 0) {
+    m_last_recv = std::chrono::duration_cast<std::chrono::seconds>(time);
+    nRecvBytes += msg_bytes.size();
+    while (msg_bytes.size() > 0) {
         // Absorb network data.
-        int handled = m_deserializer->Read(config, pch, nBytes);
-
+        int handled = m_deserializer->Read(config, msg_bytes);
         if (handled < 0) {
             return false;
         }
-
-        pch += handled;
-        nBytes -= handled;
 
         if (m_deserializer->Complete()) {
             // decompose a transport agnostic CNetMessage from the deserializer
@@ -678,13 +684,13 @@ bool CNode::ReceiveMsgBytes(const Config &config, const char *pch,
     return true;
 }
 
-int V1TransportDeserializer::readHeader(const Config &config, const char *pch,
-                                        uint32_t nBytes) {
+int V1TransportDeserializer::readHeader(const Config &config,
+                                        Span<const char> msg_bytes) {
     // copy data to temporary parsing buffer
     uint32_t nRemaining = CMessageHeader::HEADER_SIZE - nHdrPos;
-    uint32_t nCopy = std::min(nRemaining, nBytes);
+    uint32_t nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
 
-    memcpy(&hdrbuf[nHdrPos], pch, nCopy);
+    memcpy(&hdrbuf[nHdrPos], msg_bytes.data(), nCopy);
     nHdrPos += nCopy;
 
     // if header incomplete, exit
@@ -711,9 +717,9 @@ int V1TransportDeserializer::readHeader(const Config &config, const char *pch,
     return nCopy;
 }
 
-int V1TransportDeserializer::readData(const char *pch, uint32_t nBytes) {
+int V1TransportDeserializer::readData(Span<const char> msg_bytes) {
     unsigned int nRemaining = hdr.nMessageSize - nDataPos;
-    unsigned int nCopy = std::min(nRemaining, nBytes);
+    unsigned int nCopy = std::min<unsigned int>(nRemaining, msg_bytes.size());
 
     if (vRecv.size() < nDataPos + nCopy) {
         // Allocate up to 256 KiB ahead, but never more than the total message
@@ -721,8 +727,8 @@ int V1TransportDeserializer::readData(const char *pch, uint32_t nBytes) {
         vRecv.resize(std::min(hdr.nMessageSize, nDataPos + nCopy + 256 * 1024));
     }
 
-    hasher.Write({(const uint8_t *)pch, nCopy});
-    memcpy(&vRecv[nDataPos], pch, nCopy);
+    hasher.Write(MakeUCharSpan(msg_bytes.first(nCopy)));
+    memcpy(&vRecv[nDataPos], msg_bytes.data(), nCopy);
     nDataPos += nCopy;
 
     return nCopy;
@@ -797,26 +803,24 @@ void V1TransportSerializer::prepareForTransport(const Config &config,
     CVectorWriter{SER_NETWORK, INIT_PROTO_VERSION, header, 0, hdr};
 }
 
-size_t CConnman::SocketSendData(CNode *pnode) const
-    EXCLUSIVE_LOCKS_REQUIRED(pnode->cs_vSend) {
+size_t CConnman::SocketSendData(CNode &node) const {
     size_t nSentSize = 0;
     size_t nMsgCount = 0;
 
-    for (const auto &data : pnode->vSendMsg) {
-        assert(data.size() > pnode->nSendOffset);
+    for (const auto &data : node.vSendMsg) {
+        assert(data.size() > node.nSendOffset);
         int nBytes = 0;
 
         {
-            LOCK(pnode->cs_hSocket);
-            if (pnode->hSocket == INVALID_SOCKET) {
+            LOCK(node.cs_hSocket);
+            if (node.hSocket == INVALID_SOCKET) {
                 break;
             }
 
-            nBytes = send(pnode->hSocket,
-                          reinterpret_cast<const char *>(data.data()) +
-                              pnode->nSendOffset,
-                          data.size() - pnode->nSendOffset,
-                          MSG_NOSIGNAL | MSG_DONTWAIT);
+            nBytes = send(
+                node.hSocket,
+                reinterpret_cast<const char *>(data.data()) + node.nSendOffset,
+                data.size() - node.nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
         }
 
         if (nBytes == 0) {
@@ -829,35 +833,36 @@ size_t CConnman::SocketSendData(CNode *pnode) const
             int nErr = WSAGetLastError();
             if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE &&
                 nErr != WSAEINTR && nErr != WSAEINPROGRESS) {
-                LogPrintf("socket send error %s\n", NetworkErrorString(nErr));
-                pnode->CloseSocketDisconnect();
+                LogPrint(BCLog::NET, "socket send error for peer=%d: %s\n",
+                         node.GetId(), NetworkErrorString(nErr));
+                node.CloseSocketDisconnect();
             }
 
             break;
         }
 
         assert(nBytes > 0);
-        pnode->nLastSend = GetSystemTimeInSeconds();
-        pnode->nSendBytes += nBytes;
-        pnode->nSendOffset += nBytes;
+        node.m_last_send = GetTime<std::chrono::seconds>();
+        node.nSendBytes += nBytes;
+        node.nSendOffset += nBytes;
         nSentSize += nBytes;
-        if (pnode->nSendOffset != data.size()) {
+        if (node.nSendOffset != data.size()) {
             // could not send full message; stop sending more
             break;
         }
 
-        pnode->nSendOffset = 0;
-        pnode->nSendSize -= data.size();
-        pnode->fPauseSend = pnode->nSendSize > nSendBufferMaxSize;
+        node.nSendOffset = 0;
+        node.nSendSize -= data.size();
+        node.fPauseSend = node.nSendSize > nSendBufferMaxSize;
         nMsgCount++;
     }
 
-    pnode->vSendMsg.erase(pnode->vSendMsg.begin(),
-                          pnode->vSendMsg.begin() + nMsgCount);
+    node.vSendMsg.erase(node.vSendMsg.begin(),
+                        node.vSendMsg.begin() + nMsgCount);
 
-    if (pnode->vSendMsg.empty()) {
-        assert(pnode->nSendOffset == 0);
-        assert(pnode->nSendSize == 0);
+    if (node.vSendMsg.empty()) {
+        assert(node.nSendOffset == 0);
+        assert(node.nSendSize == 0);
     }
 
     return nSentSize;
@@ -865,7 +870,7 @@ size_t CConnman::SocketSendData(CNode *pnode) const
 
 static bool ReverseCompareNodeMinPingTime(const NodeEvictionCandidate &a,
                                           const NodeEvictionCandidate &b) {
-    return a.nMinPingUsecTime > b.nMinPingUsecTime;
+    return a.m_min_ping_time > b.m_min_ping_time;
 }
 
 static bool ReverseCompareNodeTimeConnected(const NodeEvictionCandidate &a,
@@ -879,6 +884,14 @@ static bool CompareLocalHostTimeConnected(const NodeEvictionCandidate &a,
         return b.m_is_local;
     }
 
+    return a.nTimeConnected > b.nTimeConnected;
+}
+
+static bool CompareOnionTimeConnected(const NodeEvictionCandidate &a,
+                                      const NodeEvictionCandidate &b) {
+    if (a.m_is_onion != b.m_is_onion) {
+        return b.m_is_onion;
+    }
     return a.nTimeConnected > b.nTimeConnected;
 }
 
@@ -963,26 +976,63 @@ static bool CompareNodeAvailabilityScore(const NodeEvictionCandidate &a,
     return a.nTimeConnected > b.nTimeConnected;
 }
 
-//! Sort an array by the specified comparator, then erase the last K elements.
+//! Sort an array by the specified comparator, then erase the last K elements
+//! where predicate is true.
 template <typename T, typename Comparator>
-static void EraseLastKElements(std::vector<T> &elements, Comparator comparator,
-                               size_t k) {
-    std::sort(elements.begin(), elements.end(), comparator);
-    size_t eraseSize = std::min(k, elements.size());
-    elements.erase(elements.end() - eraseSize, elements.end());
-}
-
-//! Sort an array by the specified comparator, then erase up to K last elements
-//! which verify the condition.
-template <typename T, typename Comparator, typename Condition>
-static void EraseLastKElementsIf(std::vector<T> &elements,
-                                 Comparator comparator, size_t k,
-                                 Condition cond) {
+static void EraseLastKElements(
+    std::vector<T> &elements, Comparator comparator, size_t k,
+    std::function<bool(const NodeEvictionCandidate &)> predicate =
+        [](const NodeEvictionCandidate &n) { return true; }) {
     std::sort(elements.begin(), elements.end(), comparator);
     size_t eraseSize = std::min(k, elements.size());
     elements.erase(
-        std::remove_if(elements.end() - eraseSize, elements.end(), cond),
+        std::remove_if(elements.end() - eraseSize, elements.end(), predicate),
         elements.end());
+}
+
+void ProtectEvictionCandidatesByRatio(
+    std::vector<NodeEvictionCandidate> &vEvictionCandidates) {
+    // Protect the half of the remaining nodes which have been connected the
+    // longest. This replicates the non-eviction implicit behavior, and
+    // precludes attacks that start later.
+    // To promote the diversity of our peer connections, reserve up to
+    // (half + 2) of these protected spots for onion and localhost peers, if
+    // any, even if they're not the longest uptime overall. This helps protect
+    // tor peers, which tend to be otherwise disadvantaged under our eviction
+    // criteria.
+    const size_t initial_size = vEvictionCandidates.size();
+    size_t total_protect_size = initial_size / 2;
+    const size_t onion_protect_size = total_protect_size / 2;
+
+    if (onion_protect_size) {
+        // Pick out up to 1/4 peers connected via our onion service, sorted by
+        // longest uptime.
+        EraseLastKElements(
+            vEvictionCandidates, CompareOnionTimeConnected, onion_protect_size,
+            [](const NodeEvictionCandidate &n) { return n.m_is_onion; });
+    }
+
+    const size_t localhost_min_protect_size{2};
+    if (onion_protect_size >= localhost_min_protect_size) {
+        // Allocate any remaining slots of the 1/4, or minimum 2 additional
+        // slots, to localhost peers, sorted by longest uptime, as manually
+        // configured hidden services not using `-bind=addr[:port]=onion` will
+        // not be detected as inbound onion connections.
+        const size_t remaining_tor_slots{
+            onion_protect_size - (initial_size - vEvictionCandidates.size())};
+        const size_t localhost_protect_size{
+            std::max(remaining_tor_slots, localhost_min_protect_size)};
+        EraseLastKElements(
+            vEvictionCandidates, CompareLocalHostTimeConnected,
+            localhost_protect_size,
+            [](const NodeEvictionCandidate &n) { return n.m_is_local; });
+    }
+
+    // Calculate how many we removed, and update our total number of peers that
+    // we want to protect based on uptime accordingly.
+    total_protect_size -= initial_size - vEvictionCandidates.size();
+    EraseLastKElements(vEvictionCandidates, ReverseCompareNodeTimeConnected,
+                       total_protect_size);
 }
 
 [[nodiscard]] std::optional<NodeId>
@@ -1007,10 +1057,11 @@ SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
     // enabled for pre-consensus.
     EraseLastKElements(vEvictionCandidates, CompareNodeProofTime, 4);
     // Protect up to 8 non-tx-relay peers that have sent us novel blocks.
-    EraseLastKElementsIf(vEvictionCandidates, CompareNodeBlockRelayOnlyTime, 8,
-                         [](NodeEvictionCandidate const &n) {
-                             return !n.fRelayTxes && n.fRelevantServices;
-                         });
+    const size_t erase_size = std::min(size_t(8), vEvictionCandidates.size());
+    EraseLastKElements(vEvictionCandidates, CompareNodeBlockRelayOnlyTime,
+                       erase_size, [](const NodeEvictionCandidate &n) {
+                           return !n.fRelayTxes && n.fRelevantServices;
+                       });
 
     // Protect 4 nodes that most recently sent us novel blocks.
     // An attacker cannot manipulate this metric without performing useful work.
@@ -1018,30 +1069,14 @@ SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
 
     // Protect up to 128 nodes that have the highest avalanche availability
     // score.
-    EraseLastKElementsIf(vEvictionCandidates, CompareNodeAvailabilityScore, 128,
-                         [](NodeEvictionCandidate const &n) {
-                             return n.availabilityScore > 0.;
-                         });
+    EraseLastKElements(vEvictionCandidates, CompareNodeAvailabilityScore, 128,
+                       [](NodeEvictionCandidate const &n) {
+                           return n.availabilityScore > 0.;
+                       });
 
-    // Protect the half of the remaining nodes which have been connected the
-    // longest. This replicates the non-eviction implicit behavior, and
-    // precludes attacks that start later.
-    // Reserve half of these protected spots for localhost peers, even if
-    // they're not longest-uptime overall. This helps protect tor peers, which
-    // tend to be otherwise disadvantaged under our eviction criteria.
-    size_t initial_size = vEvictionCandidates.size();
-    size_t total_protect_size = initial_size / 2;
-
-    // Pick out up to 1/4 peers that are localhost, sorted by longest uptime.
-    EraseLastKElementsIf(
-        vEvictionCandidates, CompareLocalHostTimeConnected,
-        total_protect_size / 2,
-        [](NodeEvictionCandidate const &n) { return n.m_is_local; });
-    // Calculate how many we removed, and update our total number of peers that
-    // we want to protect based on uptime accordingly.
-    total_protect_size -= initial_size - vEvictionCandidates.size();
-    EraseLastKElements(vEvictionCandidates, ReverseCompareNodeTimeConnected,
-                       total_protect_size);
+    // Protect some of the remaining eviction candidates by ratios of desirable
+    // or disadvantaged characteristics.
+    ProtectEvictionCandidatesByRatio(vEvictionCandidates);
 
     if (vEvictionCandidates.empty()) {
         return std::nullopt;
@@ -1071,7 +1106,7 @@ SelectNodeToEvict(std::vector<NodeEvictionCandidate> &&vEvictionCandidates) {
         std::vector<NodeEvictionCandidate> &group =
             mapNetGroupNodes[node.nKeyedNetGroup];
         group.push_back(node);
-        int64_t grouptime = group[0].nTimeConnected;
+        const int64_t grouptime = group[0].nTimeConnected;
         size_t group_size = group.size();
         if (group_size > nMostConnections ||
             (group_size == nMostConnections &&
@@ -1122,7 +1157,7 @@ bool CConnman::AttemptToEvictConnection() {
             NodeEvictionCandidate candidate = {
                 node->GetId(),
                 node->nTimeConnected,
-                node->nMinPingUsecTime,
+                node->m_min_ping_time,
                 node->nLastBlockTime,
                 node->nLastProofTime,
                 node->nLastTXTime,
@@ -1132,6 +1167,7 @@ bool CConnman::AttemptToEvictConnection() {
                 node->nKeyedNetGroup,
                 node->m_prefer_evict,
                 node->addr.IsLocal(),
+                node->m_inbound_onion,
                 node->m_avalanche_state
                     ? node->m_avalanche_state->getAvailabilityScore()
                     : -std::numeric_limits<double>::infinity()};
@@ -1146,6 +1182,10 @@ bool CConnman::AttemptToEvictConnection() {
     LOCK(cs_vNodes);
     for (CNode *pnode : vNodes) {
         if (pnode->GetId() == *node_id_to_evict) {
+            LogPrint(
+                BCLog::NET,
+                "selected %s connection for eviction peer=%d; disconnecting\n",
+                pnode->ConnectionTypeAsString(), pnode->GetId());
             pnode->fDisconnect = true;
             return true;
         }
@@ -1206,8 +1246,9 @@ void CConnman::AcceptConnection(const ListenSocket &hListenSocket) {
     }
 
     if (!fNetworkActive) {
-        LogPrintf("connection from %s dropped: not accepting new connections\n",
-                  addr.ToString());
+        LogPrint(BCLog::NET,
+                 "connection from %s dropped: not accepting new connections\n",
+                 addr.ToString());
         CloseSocket(hSocket);
         return;
     }
@@ -1270,9 +1311,13 @@ void CConnman::AcceptConnection(const ListenSocket &hListenSocket) {
     if (NetPermissions::HasFlag(permissionFlags, PF_BLOOMFILTER)) {
         nodeServices = static_cast<ServiceFlags>(nodeServices | NODE_BLOOM);
     }
-    CNode *pnode = new CNode(id, nodeServices, GetBestHeight(), hSocket, addr,
-                             CalculateKeyedNetGroup(addr), nonce, extra_entropy,
-                             addr_bind, "", ConnectionType::INBOUND);
+
+    const bool inbound_onion =
+        std::find(m_onion_binds.begin(), m_onion_binds.end(), addr_bind) !=
+        m_onion_binds.end();
+    CNode *pnode = new CNode(
+        id, nodeServices, hSocket, addr, CalculateKeyedNetGroup(addr), nonce,
+        extra_entropy, addr_bind, "", ConnectionType::INBOUND, inbound_onion);
     pnode->AddRef();
     pnode->m_permissionFlags = permissionFlags;
     // If this flag is present, the user probably expect that RPC and QT report
@@ -1291,6 +1336,51 @@ void CConnman::AcceptConnection(const ListenSocket &hListenSocket) {
     // We received a new connection, harvest entropy from the time (and our peer
     // count)
     RandAddEvent(uint32_t(id));
+}
+
+bool CConnman::AddConnection(const std::string &address,
+                             ConnectionType conn_type) {
+    std::optional<int> max_connections;
+    switch (conn_type) {
+        case ConnectionType::INBOUND:
+        case ConnectionType::MANUAL:
+            return false;
+        case ConnectionType::OUTBOUND_FULL_RELAY:
+            max_connections = m_max_outbound_full_relay;
+            break;
+        case ConnectionType::BLOCK_RELAY:
+            max_connections = m_max_outbound_block_relay;
+            break;
+        // no limit for ADDR_FETCH because -seednode has no limit either
+        case ConnectionType::ADDR_FETCH:
+            break;
+        // no limit for FEELER connections since they're short-lived
+        case ConnectionType::FEELER:
+            break;
+    } // no default case, so the compiler can warn about missing cases
+
+    // Count existing connections
+    int existing_connections = WITH_LOCK(
+        cs_vNodes, return std::count_if(
+                       vNodes.begin(), vNodes.end(), [conn_type](CNode *node) {
+                           return node->m_conn_type == conn_type;
+                       }););
+
+    // Max connections of specified type already exist
+    if (max_connections != std::nullopt &&
+        existing_connections >= max_connections) {
+        return false;
+    }
+
+    // Max total outbound connections already exist
+    CSemaphoreGrant grant(*semOutbound, true);
+    if (!grant) {
+        return false;
+    }
+
+    OpenNetworkConnection(CAddress(), false, &grant, address.c_str(),
+                          conn_type);
+    return true;
 }
 
 void CConnman::DisconnectNodes() {
@@ -1365,41 +1455,50 @@ void CConnman::NotifyNumConnectionsChanged() {
     }
 }
 
-void CConnman::InactivityCheck(CNode *pnode) {
-    int64_t nTime = GetSystemTimeInSeconds();
-    if (nTime - pnode->nTimeConnected > m_peer_connect_timeout) {
-        if (pnode->nLastRecv == 0 || pnode->nLastSend == 0) {
-            LogPrint(BCLog::NET,
-                     "socket no message in first %i seconds, %d %d from %d\n",
-                     m_peer_connect_timeout, pnode->nLastRecv != 0,
-                     pnode->nLastSend != 0, pnode->GetId());
-            pnode->fDisconnect = true;
-        } else if (nTime - pnode->nLastSend > TIMEOUT_INTERVAL) {
-            LogPrintf("socket sending timeout: %is\n",
-                      nTime - pnode->nLastSend);
-            pnode->fDisconnect = true;
-        } else if (nTime - pnode->nLastRecv >
-                   (pnode->GetCommonVersion() > BIP0031_VERSION
-                        ? TIMEOUT_INTERVAL
-                        : 90 * 60)) {
-            LogPrintf("socket receive timeout: %is\n",
-                      nTime - pnode->nLastRecv);
-            pnode->fDisconnect = true;
-        } else if (pnode->nPingNonceSent &&
-                   pnode->m_ping_start.load() +
-                           std::chrono::seconds{TIMEOUT_INTERVAL} <
-                       GetTime<std::chrono::microseconds>()) {
-            LogPrintf("ping timeout: %fs\n",
-                      0.000001 * count_microseconds(
-                                     GetTime<std::chrono::microseconds>() -
-                                     pnode->m_ping_start.load()));
-            pnode->fDisconnect = true;
-        } else if (!pnode->fSuccessfullyConnected) {
-            LogPrint(BCLog::NET, "version handshake timeout from %d\n",
-                     pnode->GetId());
-            pnode->fDisconnect = true;
-        }
+bool CConnman::ShouldRunInactivityChecks(const CNode &node,
+                                         std::chrono::seconds now) const {
+    return std::chrono::seconds{node.nTimeConnected} + m_peer_connect_timeout <
+           now;
+}
+
+bool CConnman::InactivityCheck(const CNode &node) const {
+    // Tests that see disconnects after using mocktime can start nodes with a
+    // large timeout. For example, -peertimeout=999999999.
+    const auto now{GetTime<std::chrono::seconds>()};
+    const auto last_send{node.m_last_send.load()};
+    const auto last_recv{node.m_last_recv.load()};
+
+    if (!ShouldRunInactivityChecks(node, now)) {
+        return false;
     }
+
+    if (last_recv.count() == 0 || last_send.count() == 0) {
+        LogPrint(BCLog::NET,
+                 "socket no message in first %i seconds, %d %d peer=%d\n",
+                 count_seconds(m_peer_connect_timeout), last_recv.count() != 0,
+                 last_send.count() != 0, node.GetId());
+        return true;
+    }
+
+    if (now > last_send + TIMEOUT_INTERVAL) {
+        LogPrint(BCLog::NET, "socket sending timeout: %is peer=%d\n",
+                 count_seconds(now - last_send), node.GetId());
+        return true;
+    }
+
+    if (now > last_recv + TIMEOUT_INTERVAL) {
+        LogPrint(BCLog::NET, "socket receive timeout: %is peer=%d\n",
+                 count_seconds(now - last_recv), node.GetId());
+        return true;
+    }
+
+    if (!node.fSuccessfullyConnected) {
+        LogPrint(BCLog::NET, "version handshake timeout peer=%d\n",
+                 node.GetId());
+        return true;
+    }
+
+    return false;
 }
 
 bool CConnman::GenerateSelectSet(std::set<SOCKET> &recv_set,
@@ -1653,7 +1752,8 @@ void CConnman::SocketHandler() {
             }
             if (nBytes > 0) {
                 bool notify = false;
-                if (!pnode->ReceiveMsgBytes(*config, pchBuf, nBytes, notify)) {
+                if (!pnode->ReceiveMsgBytes(
+                        *config, Span<const char>(pchBuf, nBytes), notify)) {
                     pnode->CloseSocketDisconnect();
                 }
                 RecordBytesRecv(nBytes);
@@ -1704,13 +1804,15 @@ void CConnman::SocketHandler() {
         //
         if (sendSet) {
             LOCK(pnode->cs_vSend);
-            size_t nBytes = SocketSendData(pnode);
+            size_t nBytes = SocketSendData(*pnode);
             if (nBytes) {
                 RecordBytesSent(nBytes);
             }
         }
 
-        InactivityCheck(pnode);
+        if (InactivityCheck(*pnode)) {
+            pnode->fDisconnect = true;
+        }
     }
     {
         LOCK(cs_vNodes);
@@ -2020,23 +2122,36 @@ void CConnman::SetTryNewOutboundPeer(bool flag) {
 
 // Return the number of peers we have over our outbound connection limit.
 // Exclude peers that are marked for disconnect, or are going to be disconnected
-// soon (eg one-shots and feelers).
+// soon (eg ADDR_FETCH and FEELER).
 // Also exclude peers that haven't finished initial connection handshake yet (so
 // that we don't decide we're over our desired connection limit, and then evict
 // some peer that has finished the handshake).
-int CConnman::GetExtraOutboundCount() {
-    int nOutbound = 0;
+int CConnman::GetExtraFullOutboundCount() {
+    int full_outbound_peers = 0;
     {
         LOCK(cs_vNodes);
         for (const CNode *pnode : vNodes) {
             if (pnode->fSuccessfullyConnected && !pnode->fDisconnect &&
-                pnode->IsOutboundOrBlockRelayConn()) {
-                ++nOutbound;
+                pnode->IsFullOutboundConn()) {
+                ++full_outbound_peers;
             }
         }
     }
-    return std::max(
-        nOutbound - m_max_outbound_full_relay - m_max_outbound_block_relay, 0);
+    return std::max(full_outbound_peers - m_max_outbound_full_relay, 0);
+}
+
+int CConnman::GetExtraBlockRelayCount() {
+    int block_relay_peers = 0;
+    {
+        LOCK(cs_vNodes);
+        for (const CNode *pnode : vNodes) {
+            if (pnode->fSuccessfullyConnected && !pnode->fDisconnect &&
+                pnode->IsBlockOnlyConn()) {
+                ++block_relay_peers;
+            }
+        }
+    }
+    return std::max(block_relay_peers - m_max_outbound_block_relay, 0);
 }
 
 void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
@@ -2062,11 +2177,19 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
     }
 
     // Initiate network connections
-    int64_t nStart = GetTime();
+    auto start = GetTime<std::chrono::microseconds>();
 
     // Minimum time before next feeler connection (in microseconds).
-    int64_t nNextFeeler =
-        PoissonNextSend(nStart * 1000 * 1000, FEELER_INTERVAL);
+    auto next_feeler = PoissonNextSend(start, FEELER_INTERVAL);
+    auto next_extra_block_relay =
+        PoissonNextSend(start, EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL);
+    const bool dnsseed = gArgs.GetBoolArg("-dnsseed", DEFAULT_DNSSEED);
+    bool add_fixed_seeds = gArgs.GetBoolArg("-fixedseeds", DEFAULT_FIXEDSEEDS);
+
+    if (!add_fixed_seeds) {
+        LogPrintf("Fixed seeds are disabled\n");
+    }
+
     while (!interruptNet) {
         ProcessAddrFetch();
 
@@ -2079,20 +2202,38 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
             return;
         }
 
-        // Add seed nodes if DNS seeds are all down (an infrastructure attack?).
-        // Note that we only do this if we started with an empty peers.dat,
-        // (in which case we will query DNS seeds immediately) *and* the DNS
-        // seeds have not returned any results.
-        if (addrman.size() == 0 && (GetTime() - nStart > 60)) {
-            static bool done = false;
-            if (!done) {
-                LogPrintf("Adding fixed seed nodes as DNS doesn't seem to be "
-                          "available.\n");
+        if (add_fixed_seeds && addrman.size() == 0) {
+            // When the node starts with an empty peers.dat, there are a few
+            // other sources of peers before we fallback on to fixed seeds:
+            // -dnsseed, -seednode, -addnode If none of those are available, we
+            // fallback on to fixed seeds immediately, else we allow 60 seconds
+            // for any of those sources to populate addrman.
+            bool add_fixed_seeds_now = false;
+            // It is cheapest to check if enough time has passed first.
+            if (GetTime<std::chrono::seconds>() >
+                start + std::chrono::minutes{1}) {
+                add_fixed_seeds_now = true;
+                LogPrintf("Adding fixed seeds as 60 seconds have passed and "
+                          "addrman is empty\n");
+            }
+
+            // Checking !dnsseed is cheaper before locking 2 mutexes.
+            if (!add_fixed_seeds_now && !dnsseed) {
+                LOCK2(m_addr_fetches_mutex, cs_vAddedNodes);
+                if (m_addr_fetches.empty() && vAddedNodes.empty()) {
+                    add_fixed_seeds_now = true;
+                    LogPrintf(
+                        "Adding fixed seeds as -dnsseed=0, -addnode is not "
+                        "provided and all -seednode(s) attempted\n");
+                }
+            }
+
+            if (add_fixed_seeds_now) {
                 CNetAddr local;
                 local.SetInternal("fixedseeds");
                 addrman.Add(convertSeed6(config->GetChainParams().FixedSeeds()),
                             local);
-                done = true;
+                add_fixed_seeds = false;
             }
         }
 
@@ -2139,26 +2280,60 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
         }
 
         ConnectionType conn_type = ConnectionType::OUTBOUND_FULL_RELAY;
-        int64_t nTime = GetTimeMicros();
+        auto now = GetTime<std::chrono::microseconds>();
+        bool anchor = false;
         bool fFeeler = false;
 
         // Determine what type of connection to open. Opening
-        // OUTBOUND_FULL_RELAY connections gets the highest priority until we
+        // BLOCK_RELAY connections to addresses from anchors.dat gets the
+        // highest priority. Then we open OUTBOUND_FULL_RELAY priority until we
         // meet our full-relay capacity. Then we open BLOCK_RELAY connection
         // until we hit our block-relay-only peer limit.
         // GetTryNewOutboundPeer() gets set when a stale tip is detected, so we
         // try opening an additional OUTBOUND_FULL_RELAY connection. If none of
-        // these conditions are met, check the nNextFeeler timer to decide if
-        // we should open a FEELER.
+        // these conditions are met, check to see if it's time to try an extra
+        // block-relay-only peer (to confirm our tip is current, see below) or
+        // the next_feeler timer to decide if we should open a FEELER.
 
-        if (nOutboundFullRelay < m_max_outbound_full_relay) {
+        if (!m_anchors.empty() &&
+            (nOutboundBlockRelay < m_max_outbound_block_relay)) {
+            conn_type = ConnectionType::BLOCK_RELAY;
+            anchor = true;
+        } else if (nOutboundFullRelay < m_max_outbound_full_relay) {
             // OUTBOUND_FULL_RELAY
         } else if (nOutboundBlockRelay < m_max_outbound_block_relay) {
             conn_type = ConnectionType::BLOCK_RELAY;
         } else if (GetTryNewOutboundPeer()) {
             // OUTBOUND_FULL_RELAY
-        } else if (nTime > nNextFeeler) {
-            nNextFeeler = PoissonNextSend(nTime, FEELER_INTERVAL);
+        } else if (now > next_extra_block_relay &&
+                   m_start_extra_block_relay_peers) {
+            // Periodically connect to a peer (using regular outbound selection
+            // methodology from addrman) and stay connected long enough to sync
+            // headers, but not much else.
+            //
+            // Then disconnect the peer, if we haven't learned anything new.
+            //
+            // The idea is to make eclipse attacks very difficult to pull off,
+            // because every few minutes we're finding a new peer to learn
+            // headers from.
+            //
+            // This is similar to the logic for trying extra outbound
+            // (full-relay) peers, except:
+            // - we do this all the time on a poisson timer, rather than just
+            //   when our tip is stale
+            // - we potentially disconnect our next-youngest block-relay-only
+            //   peer, if our newest block-relay-only peer delivers a block more
+            //   recently.
+            //   See the eviction logic in net_processing.cpp.
+            //
+            // Because we can promote these connections to block-relay-only
+            // connections, they do not get their own ConnectionType enum
+            // (similar to how we deal with extra outbound peers).
+            next_extra_block_relay =
+                PoissonNextSend(now, EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL);
+            conn_type = ConnectionType::BLOCK_RELAY;
+        } else if (now > next_feeler) {
+            next_feeler = PoissonNextSend(now, FEELER_INTERVAL);
             conn_type = ConnectionType::FEELER;
             fFeeler = true;
         } else {
@@ -2171,11 +2346,55 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
         int64_t nANow = GetAdjustedTime();
         int nTries = 0;
         while (!interruptNet) {
-            CAddrInfo addr = addrman.SelectTriedCollision();
+            if (anchor && !m_anchors.empty()) {
+                const CAddress addr = m_anchors.back();
+                m_anchors.pop_back();
+                if (!addr.IsValid() || IsLocal(addr) || !IsReachable(addr) ||
+                    !HasAllDesirableServiceFlags(addr.nServices) ||
+                    setConnected.count(addr.GetGroup(addrman.m_asmap))) {
+                    continue;
+                }
+                addrConnect = addr;
+                LogPrint(BCLog::NET,
+                         "Trying to make an anchor connection to %s\n",
+                         addrConnect.ToString());
+                break;
+            }
+            // If we didn't find an appropriate destination after trying 100
+            // addresses fetched from addrman, stop this loop, and let the outer
+            // loop run again (which sleeps, adds seed nodes, recalculates
+            // already-connected network ranges, ...) before trying new addrman
+            // addresses.
+            nTries++;
+            if (nTries > 100) {
+                break;
+            }
 
-            // SelectTriedCollision returns an invalid address if it is empty.
-            if (!fFeeler || !addr.IsValid()) {
-                addr = addrman.Select(fFeeler);
+            CAddrInfo addr;
+
+            if (fFeeler) {
+                // First, try to get a tried table collision address. This
+                // returns an empty (invalid) address if there are no collisions
+                // to try.
+                addr = addrman.SelectTriedCollision();
+
+                if (!addr.IsValid()) {
+                    // No tried table collisions. Select a new table address
+                    // for our feeler.
+                    addr = addrman.Select(true);
+                } else if (AlreadyConnectedToAddress(addr)) {
+                    // If test-before-evict logic would have us connect to a
+                    // peer that we're already connected to, just mark that
+                    // address as Good(). We won't be able to initiate the
+                    // connection anyway, so this avoids inadvertently evicting
+                    // a currently-connected peer.
+                    addrman.Good(addr);
+                    // Select a new table address for our feeler instead.
+                    addr = addrman.Select(true);
+                }
+            } else {
+                // Not a feeler
+                addr = addrman.Select();
             }
 
             // Require outbound connections, other than feelers, to be to
@@ -2187,16 +2406,6 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
 
             // if we selected an invalid or local address, restart
             if (!addr.IsValid() || IsLocal(addr)) {
-                break;
-            }
-
-            // If we didn't find an appropriate destination after trying 100
-            // addresses fetched from addrman, stop this loop, and let the outer
-            // loop run again (which sleeps, adds seed nodes, recalculates
-            // already-connected network ranges, ...) before trying new addrman
-            // addresses.
-            nTries++;
-            if (nTries > 100) {
                 break;
             }
 
@@ -2250,6 +2459,18 @@ void CConnman::ThreadOpenConnections(const std::vector<std::string> connect) {
                                   &grant, nullptr, conn_type);
         }
     }
+}
+
+std::vector<CAddress> CConnman::GetCurrentBlockRelayOnlyConns() const {
+    std::vector<CAddress> ret;
+    LOCK(cs_vNodes);
+    for (const CNode *pnode : vNodes) {
+        if (pnode->IsBlockOnlyConn()) {
+            ret.push_back(pnode->addr);
+        }
+    }
+
+    return ret;
 }
 
 std::vector<AddedNodeInfo> CConnman::GetAddedNodeInfo() {
@@ -2360,9 +2581,8 @@ void CConnman::OpenNetworkConnection(const CAddress &addrConnect,
         bool banned_or_discouraged =
             m_banman && (m_banman->IsDiscouraged(addrConnect) ||
                          m_banman->IsBanned(addrConnect));
-        if (IsLocal(addrConnect) ||
-            FindNode(static_cast<CNetAddr>(addrConnect)) ||
-            banned_or_discouraged || FindNode(addrConnect.ToStringIPPort())) {
+        if (IsLocal(addrConnect) || banned_or_discouraged ||
+            AlreadyConnectedToAddress(addrConnect)) {
             return;
         }
     } else if (FindNode(std::string(pszDest))) {
@@ -2414,7 +2634,7 @@ void CConnman::ThreadMessageHandler() {
             // Send messages
             {
                 LOCK(pnode->cs_sendProcessing);
-                m_msgproc->SendMessages(*config, pnode, flagInterruptMsgProc);
+                m_msgproc->SendMessages(*config, pnode);
             }
 
             if (flagInterruptMsgProc) {
@@ -2515,11 +2735,6 @@ bool CConnman::BindListenPort(const CService &addrBind, bilingual_str &strError,
     }
 
     vhListenSocket.push_back(ListenSocket(hListenSocket, permissions));
-
-    if (addrBind.IsRoutable() && fDiscover && (permissions & PF_NOBAN) == 0) {
-        AddLocal(addrBind, LOCAL_BIND);
-    }
-
     return true;
 }
 
@@ -2614,12 +2829,18 @@ bool CConnman::Bind(const CService &addr, unsigned int flags,
         }
         return false;
     }
+
+    if (addr.IsRoutable() && fDiscover && !(flags & BF_DONT_ADVERTISE) &&
+        !(permissions & PF_NOBAN)) {
+        AddLocal(addr, LOCAL_BIND);
+    }
+
     return true;
 }
 
-bool CConnman::InitBinds(
-    const std::vector<CService> &binds,
-    const std::vector<NetWhitebindPermissions> &whiteBinds) {
+bool CConnman::InitBinds(const std::vector<CService> &binds,
+                         const std::vector<NetWhitebindPermissions> &whiteBinds,
+                         const std::vector<CService> &onion_binds) {
     bool fBound = false;
     for (const auto &addrBind : binds) {
         fBound |= Bind(addrBind, (BF_EXPLICIT | BF_REPORT_ERROR),
@@ -2631,7 +2852,7 @@ bool CConnman::InitBinds(
     }
     if (binds.empty() && whiteBinds.empty()) {
         struct in_addr inaddr_any;
-        inaddr_any.s_addr = INADDR_ANY;
+        inaddr_any.s_addr = htonl(INADDR_ANY);
         struct in6_addr inaddr6_any = IN6ADDR_ANY_INIT;
         fBound |= Bind(CService(inaddr6_any, GetListenPort()), BF_NONE,
                        NetPermissionFlags::PF_NONE);
@@ -2639,24 +2860,20 @@ bool CConnman::InitBinds(
                        !fBound ? BF_REPORT_ERROR : BF_NONE,
                        NetPermissionFlags::PF_NONE);
     }
+
+    for (const auto &addr_bind : onion_binds) {
+        fBound |= Bind(addr_bind, BF_EXPLICIT | BF_DONT_ADVERTISE,
+                       NetPermissionFlags::PF_NONE);
+    }
+
     return fBound;
 }
 
 bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
     Init(connOptions);
 
-    {
-        LOCK(cs_totalBytesRecv);
-        nTotalBytesRecv = 0;
-    }
-    {
-        LOCK(cs_totalBytesSent);
-        nTotalBytesSent = 0;
-        nMaxOutboundTotalBytesSentInCycle = 0;
-        nMaxOutboundCycleStartTime = 0;
-    }
-
-    if (fListen && !InitBinds(connOptions.vBinds, connOptions.vWhiteBinds)) {
+    if (fListen && !InitBinds(connOptions.vBinds, connOptions.vWhiteBinds,
+                              connOptions.onion_binds)) {
         if (clientInterface) {
             clientInterface->ThreadSafeMessageBox(
                 _("Failed to listen on any port. Use -listen=0 if you want "
@@ -2686,6 +2903,18 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
             LogPrintf("Invalid or missing peers.dat; recreating\n");
             DumpAddresses();
         }
+    }
+
+    if (m_use_addrman_outgoing) {
+        // Load addresses from anchors.dat
+        m_anchors = ReadAnchors(config->GetChainParams(),
+                                GetDataDir() / ANCHORS_DATABASE_FILENAME);
+        if (m_anchors.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+            m_anchors.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
+        }
+        LogPrintf(
+            "%i block-relay-only anchors will be tried for connections.\n",
+            m_anchors.size());
     }
 
     uiInterface.InitMessage(_("Starting network threads...").translated);
@@ -2720,7 +2949,7 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
         &TraceThread<std::function<void()>>, "net",
         std::function<void()>(std::bind(&CConnman::ThreadSocketHandler, this)));
 
-    if (!gArgs.GetBoolArg("-dnsseed", true)) {
+    if (!gArgs.GetBoolArg("-dnsseed", DEFAULT_DNSSEED)) {
         LogPrintf("DNS seeding disabled\n");
     } else {
         threadDNSAddressSeed =
@@ -2829,6 +3058,18 @@ void CConnman::StopNodes() {
     if (fAddressesInitialized) {
         DumpAddresses();
         fAddressesInitialized = false;
+
+        if (m_use_addrman_outgoing) {
+            // Anchor connections are only dumped during clean shutdown.
+            std::vector<CAddress> anchors_to_dump =
+                GetCurrentBlockRelayOnlyConns();
+            if (anchors_to_dump.size() > MAX_BLOCK_RELAY_ONLY_ANCHORS) {
+                anchors_to_dump.resize(MAX_BLOCK_RELAY_ONLY_ANCHORS);
+            }
+            DumpAnchors(config->GetChainParams(),
+                        GetDataDir() / ANCHORS_DATABASE_FILENAME,
+                        anchors_to_dump);
+        }
     }
 
     // Close sockets
@@ -2862,7 +3103,7 @@ void CConnman::StopNodes() {
 void CConnman::DeleteNode(CNode *pnode) {
     assert(pnode);
     bool fUpdateConnectionTime = false;
-    m_msgproc->FinalizeNode(*config, pnode->GetId(), fUpdateConnectionTime);
+    m_msgproc->FinalizeNode(*config, *pnode, fUpdateConnectionTime);
     if (fUpdateConnectionTime) {
         addrman.Connected(pnode->addr);
     }
@@ -3002,13 +3243,17 @@ void CConnman::GetNodeStats(std::vector<CNodeStats> &vstats) {
     vstats.reserve(vNodes.size());
     for (CNode *pnode : vNodes) {
         vstats.emplace_back();
-        pnode->copyStats(vstats.back(), addrman.m_asmap);
+        pnode->copyStats(vstats.back());
+        vstats.back().m_mapped_as = pnode->addr.GetMappedAS(addrman.m_asmap);
     }
 }
 
 bool CConnman::DisconnectNode(const std::string &strNode) {
     LOCK(cs_vNodes);
     if (CNode *pnode = FindNode(strNode)) {
+        LogPrint(BCLog::NET,
+                 "disconnect by address%s matched peer=%d; disconnecting\n",
+                 (fLogIPs ? strprintf("=%s", strNode) : ""), pnode->GetId());
         pnode->fDisconnect = true;
         return true;
     }
@@ -3020,6 +3265,10 @@ bool CConnman::DisconnectNode(const CSubNet &subnet) {
     LOCK(cs_vNodes);
     for (CNode *pnode : vNodes) {
         if (subnet.Match(pnode->addr)) {
+            LogPrint(BCLog::NET,
+                     "disconnect by subnet%s matched peer=%d; disconnecting\n",
+                     (fLogIPs ? strprintf("=%s", subnet.ToString()) : ""),
+                     pnode->GetId());
             pnode->fDisconnect = true;
             disconnected = true;
         }
@@ -3035,6 +3284,8 @@ bool CConnman::DisconnectNode(NodeId id) {
     LOCK(cs_vNodes);
     for (CNode *pnode : vNodes) {
         if (id == pnode->GetId()) {
+            LogPrint(BCLog::NET, "disconnect by id peer=%d; disconnecting\n",
+                     pnode->GetId());
             pnode->fDisconnect = true;
             return true;
         }
@@ -3051,8 +3302,8 @@ void CConnman::RecordBytesSent(uint64_t bytes) {
     LOCK(cs_totalBytesSent);
     nTotalBytesSent += bytes;
 
-    uint64_t now = GetTime();
-    if (nMaxOutboundCycleStartTime + nMaxOutboundTimeframe < now) {
+    const auto now = GetTime<std::chrono::seconds>();
+    if (nMaxOutboundCycleStartTime + MAX_UPLOAD_TIMEFRAME < now) {
         // timeframe expired, reset cycle
         nMaxOutboundCycleStartTime = now;
         nMaxOutboundTotalBytesSentInCycle = 0;
@@ -3062,43 +3313,29 @@ void CConnman::RecordBytesSent(uint64_t bytes) {
     nMaxOutboundTotalBytesSentInCycle += bytes;
 }
 
-void CConnman::SetMaxOutboundTarget(uint64_t limit) {
-    LOCK(cs_totalBytesSent);
-    nMaxOutboundLimit = limit;
-}
-
 uint64_t CConnman::GetMaxOutboundTarget() {
     LOCK(cs_totalBytesSent);
     return nMaxOutboundLimit;
 }
 
-uint64_t CConnman::GetMaxOutboundTimeframe() {
-    LOCK(cs_totalBytesSent);
-    return nMaxOutboundTimeframe;
+std::chrono::seconds CConnman::GetMaxOutboundTimeframe() {
+    return MAX_UPLOAD_TIMEFRAME;
 }
 
-uint64_t CConnman::GetMaxOutboundTimeLeftInCycle() {
+std::chrono::seconds CConnman::GetMaxOutboundTimeLeftInCycle() {
     LOCK(cs_totalBytesSent);
     if (nMaxOutboundLimit == 0) {
-        return 0;
+        return 0s;
     }
 
-    if (nMaxOutboundCycleStartTime == 0) {
-        return nMaxOutboundTimeframe;
+    if (nMaxOutboundCycleStartTime.count() == 0) {
+        return MAX_UPLOAD_TIMEFRAME;
     }
 
-    uint64_t cycleEndTime = nMaxOutboundCycleStartTime + nMaxOutboundTimeframe;
-    uint64_t now = GetTime();
-    return (cycleEndTime < now) ? 0 : cycleEndTime - GetTime();
-}
-
-void CConnman::SetMaxOutboundTimeframe(uint64_t timeframe) {
-    LOCK(cs_totalBytesSent);
-    if (nMaxOutboundTimeframe != timeframe) {
-        // reset measure-cycle in case of changing the timeframe.
-        nMaxOutboundCycleStartTime = GetTime();
-    }
-    nMaxOutboundTimeframe = timeframe;
+    const std::chrono::seconds cycleEndTime =
+        nMaxOutboundCycleStartTime + MAX_UPLOAD_TIMEFRAME;
+    const auto now = GetTime<std::chrono::seconds>();
+    return (cycleEndTime < now) ? 0s : cycleEndTime - now;
 }
 
 bool CConnman::OutboundTargetReached(bool historicalBlockServingLimit) {
@@ -3109,8 +3346,10 @@ bool CConnman::OutboundTargetReached(bool historicalBlockServingLimit) {
 
     if (historicalBlockServingLimit) {
         // keep a large enough buffer to at least relay each block once.
-        uint64_t timeLeftInCycle = GetMaxOutboundTimeLeftInCycle();
-        uint64_t buffer = timeLeftInCycle / 600 * ONE_MEGABYTE;
+        const std::chrono::seconds timeLeftInCycle =
+            GetMaxOutboundTimeLeftInCycle();
+        const uint64_t buffer =
+            timeLeftInCycle / std::chrono::minutes{10} * ONE_MEGABYTE;
         if (buffer >= nMaxOutboundLimit ||
             nMaxOutboundTotalBytesSentInCycle >= nMaxOutboundLimit - buffer) {
             return true;
@@ -3147,14 +3386,6 @@ ServiceFlags CConnman::GetLocalServices() const {
     return nLocalServices;
 }
 
-void CConnman::SetBestHeight(int height) {
-    nBestHeight.store(height, std::memory_order_release);
-}
-
-int CConnman::GetBestHeight() const {
-    return nBestHeight.load(std::memory_order_acquire);
-}
-
 unsigned int CConnman::GetReceiveFloodSize() const {
     return nReceiveFloodSize;
 }
@@ -3173,8 +3404,8 @@ void CNode::AvalancheState::updateAvailabilityScore() {
     uint64_t windowInvCounters = invCounters.exchange(0);
     double previousScore = availabilityScore;
 
-    uint32_t polls = windowInvCounters & std::numeric_limits<uint32_t>::max();
-    uint32_t votes = windowInvCounters >> 32;
+    int64_t polls = windowInvCounters & std::numeric_limits<uint32_t>::max();
+    int64_t votes = windowInvCounters >> 32;
 
     availabilityScore =
         AVALANCHE_STATISTICS_DECAY_FACTOR * (2 * votes - polls) +
@@ -3187,28 +3418,26 @@ double CNode::AvalancheState::getAvailabilityScore() const {
     return availabilityScore;
 }
 
-CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn,
-             int nMyStartingHeightIn, SOCKET hSocketIn, const CAddress &addrIn,
-             uint64_t nKeyedNetGroupIn, uint64_t nLocalHostNonceIn,
-             uint64_t nLocalExtraEntropyIn, const CAddress &addrBindIn,
-             const std::string &addrNameIn, ConnectionType conn_type_in)
-    : nTimeConnected(GetSystemTimeInSeconds()), addr(addrIn),
-      addrBind(addrBindIn), nKeyedNetGroup(nKeyedNetGroupIn),
+CNode::CNode(NodeId idIn, ServiceFlags nLocalServicesIn, SOCKET hSocketIn,
+             const CAddress &addrIn, uint64_t nKeyedNetGroupIn,
+             uint64_t nLocalHostNonceIn, uint64_t nLocalExtraEntropyIn,
+             const CAddress &addrBindIn, const std::string &addrNameIn,
+             ConnectionType conn_type_in, bool inbound_onion)
+    : nTimeConnected(GetTimeSeconds()), addr(addrIn), addrBind(addrBindIn),
+      m_inbound_onion(inbound_onion), nKeyedNetGroup(nKeyedNetGroupIn),
       // Don't relay addr messages to peers that we connect to as
       // block-relay-only peers (to prevent adversaries from inferring these
       // links from addr traffic).
       id(idIn), nLocalHostNonce(nLocalHostNonceIn),
       nLocalExtraEntropy(nLocalExtraEntropyIn), m_conn_type(conn_type_in),
-      nLocalServices(nLocalServicesIn), nMyStartingHeight(nMyStartingHeightIn) {
+      nLocalServices(nLocalServicesIn) {
+    if (inbound_onion) {
+        assert(conn_type_in == ConnectionType::INBOUND);
+    }
     hSocket = hSocketIn;
     addrName = addrNameIn == "" ? addr.ToStringIPPort() : addrNameIn;
-    hashContinue = BlockHash();
     if (conn_type_in != ConnectionType::BLOCK_RELAY) {
         m_tx_relay = std::make_unique<TxRelay>();
-    }
-
-    if (RelayAddrsWithConn()) {
-        m_addr_known = std::make_unique<CRollingBloomFilter>(5000, 0.001);
     }
 
     // Don't relay proofs if avalanche is disabled
@@ -3271,7 +3500,7 @@ void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
 
         // If write queue empty, attempt "optimistic write"
         if (optimisticSend == true) {
-            nBytesSent = SocketSendData(pnode);
+            nBytesSent = SocketSendData(*pnode);
         }
     }
     if (nBytesSent) {
@@ -3291,24 +3520,26 @@ bool CConnman::ForNode(NodeId id, std::function<bool(CNode *pnode)> func) {
     return found != nullptr && NodeFullyConnected(found) && func(found);
 }
 
-int64_t CConnman::PoissonNextSendInbound(int64_t now,
-                                         int average_interval_seconds) {
-    if (m_next_send_inv_to_incoming < now) {
+std::chrono::microseconds
+CConnman::PoissonNextSendInbound(std::chrono::microseconds now,
+                                 std::chrono::seconds average_interval) {
+    if (m_next_send_inv_to_incoming.load() < now) {
         // If this function were called from multiple threads simultaneously
         // it would be possible that both update the next send variable, and
         // return a different result to their caller. This is not possible in
         // practice as only the net processing thread invokes this function.
-        m_next_send_inv_to_incoming =
-            PoissonNextSend(now, average_interval_seconds);
+        m_next_send_inv_to_incoming = PoissonNextSend(now, average_interval);
     }
     return m_next_send_inv_to_incoming;
 }
 
-int64_t PoissonNextSend(int64_t now, int average_interval_seconds) {
-    return now + int64_t(log1p(GetRand(1ULL << 48) *
-                               -0.0000000000000035527136788 /* -1/2^48 */) *
-                             average_interval_seconds * -1000000.0 +
-                         0.5);
+std::chrono::microseconds
+PoissonNextSend(std::chrono::microseconds now,
+                std::chrono::seconds average_interval) {
+    double unscaled = -log1p(GetRand(1ULL << 48) *
+                             -0.0000000000000035527136788 /* -1/2^48 */);
+    return now + std::chrono::duration_cast<std::chrono::microseconds>(
+                     unscaled * average_interval + 0.5us);
 }
 
 CSipHasher CConnman::GetDeterministicRandomizer(uint64_t id) const {

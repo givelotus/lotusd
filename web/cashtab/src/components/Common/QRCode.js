@@ -1,22 +1,17 @@
 import React, { useState } from 'react';
 import styled from 'styled-components';
 import RawQRCode from 'qrcode.react';
-import {
-    currency,
-    isValidCashPrefix,
-    isValidTokenPrefix,
-} from '@components/Common/Ticker.js';
+import { currency } from '@components/Common/Ticker.js';
 import { CopyToClipboard } from 'react-copy-to-clipboard';
 import { Event } from '@utils/GoogleAnalytics';
 import { convertToEcashPrefix } from '@utils/cashMethods';
 
 export const StyledRawQRCode = styled(RawQRCode)`
     cursor: pointer;
-    border-radius: 23px;
+    border-radius: 26px;
     background: ${props => props.theme.qr.background};
     box-shadow: ${props => props.theme.qr.shadow};
     margin-bottom: 10px;
-    border: 1px solid ${props => props.theme.wallet.borders.color};
     path:first-child {
         fill: ${props => props.theme.qr.background};
     }
@@ -145,6 +140,7 @@ const CustomInput = styled.div`
 
 export const QRCode = ({
     address,
+    isCashAddress,
     size = 210,
     onClick = () => null,
     ...otherProps
@@ -157,8 +153,6 @@ export const QRCode = ({
     const addressSplit = address ? address.split(':') : [''];
     const addressPrefix = addressSplit[0];
     const prefixLength = addressPrefix.length + 1;
-
-    const isCash = isValidCashPrefix(address);
 
     const txtRef = React.useRef(null);
 
@@ -174,11 +168,8 @@ export const QRCode = ({
         // Event.("Category", "Action", "Label")
         // xec or etoken?
         let eventLabel = currency.ticker;
-        if (address) {
-            const isToken = isValidTokenPrefix(address);
-            if (isToken) {
-                eventLabel = currency.tokenTicker;
-            }
+        if (address && !isCashAddress) {
+            eventLabel = currency.tokenTicker;
             // Event('Category', 'Action', 'Label')
             Event('Wallet', 'Copy Address', eventLabel);
         }
@@ -201,7 +192,7 @@ export const QRCode = ({
         >
             <div style={{ position: 'relative' }} onClick={handleOnClick}>
                 <Copied
-                    xec={address && isCash ? 1 : 0}
+                    xec={address && isCashAddress ? 1 : 0}
                     style={{ display: visible ? null : 'none' }}
                 >
                     Copied <br />
@@ -212,12 +203,12 @@ export const QRCode = ({
                     id="borderedQRCode"
                     value={address || ''}
                     size={size}
-                    xec={address && isCash ? 1 : 0}
+                    xec={address && isCashAddress ? 1 : 0}
                     renderAs={'svg'}
                     includeMargin
                     imageSettings={{
                         src:
-                            address && isCash
+                            address && isCashAddress
                                 ? currency.logo
                                 : currency.tokenLogo,
                         x: null,
@@ -231,7 +222,7 @@ export const QRCode = ({
                 {address && (
                     <CustomInput
                         className="notranslate"
-                        xec={address && isCash ? 1 : 0}
+                        xec={address && isCashAddress ? 1 : 0}
                     >
                         <input
                             ref={txtRef}

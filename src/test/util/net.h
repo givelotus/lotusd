@@ -9,6 +9,11 @@
 
 struct ConnmanTestMsg : public CConnman {
     using CConnman::CConnman;
+
+    void SetPeerConnectTimeout(std::chrono::seconds timeout) {
+        m_peer_connect_timeout = timeout;
+    }
+
     void AddTestNode(CNode &node) {
         LOCK(cs_vNodes);
         vNodes.push_back(&node);
@@ -25,7 +30,7 @@ struct ConnmanTestMsg : public CConnman {
         m_msgproc->ProcessMessages(*config, &node, flagInterruptMsgProc);
     }
 
-    void NodeReceiveMsgBytes(CNode &node, const char *pch, unsigned int nBytes,
+    void NodeReceiveMsgBytes(CNode &node, Span<const char> msg_bytes,
                              bool &complete) const;
 
     bool ReceiveMsgFrom(CNode &node, CSerializedNetMsg &ser_msg) const;

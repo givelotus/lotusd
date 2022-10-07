@@ -113,7 +113,7 @@ class TestBitcoinCli(BitcoinTestFramework):
 
             # Setup to test -getinfo, -generate, and -rpcwallet= with multiple
             # wallets.
-            wallets = ['', 'Encrypted', 'secret']
+            wallets = [self.default_wallet_name, 'Encrypted', 'secret']
             amounts = [
                 # 2 block rewards - 1
                 2 * SUBSIDY - Decimal('200.000450'),

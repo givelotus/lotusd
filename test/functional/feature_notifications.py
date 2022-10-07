@@ -8,12 +8,7 @@ import os
 
 from test_framework.address import ADDRESS_ECREG_UNSPENDABLE, keyhash_to_p2pkh
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    connect_nodes,
-    disconnect_nodes,
-    hex_str_to_bytes,
-)
+from test_framework.util import assert_equal, hex_str_to_bytes
 
 FORK_WARNING_MESSAGE = "Warning: Large-work fork detected, forking after block {}"
 
@@ -51,8 +46,8 @@ class NotificationsTest(BitcoinTestFramework):
             os.path.join(self.alertnotify_dir, '%s')),
             "-blocknotify=echo > {}".format(os.path.join(self.blocknotify_dir, '%s'))],
             ["-rescan",
-             "-wallet={}".format(self.wallet),
              "-walletnotify=echo > {}".format(os.path.join(self.walletnotify_dir, notify_outputname('%w', '%s')))]]
+        self.wallet_names = [self.default_wallet_name, self.wallet]
         super().setup_network()
 
     def run_test(self):
@@ -95,7 +90,7 @@ class NotificationsTest(BitcoinTestFramework):
             self.log.info("test -walletnotify after rescan")
             # restart node to rescan to force wallet notifications
             self.start_node(1)
-            connect_nodes(self.nodes[0], self.nodes[1])
+            self.connect_nodes(0, 1)
 
             self.wait_until(
                 lambda: len(os.listdir(self.walletnotify_dir)) == block_count,
@@ -143,7 +138,7 @@ class NotificationsTest(BitcoinTestFramework):
             # with a slightly different amount, ensures that there will be
             # a conflict.
             balance = self.nodes[0].getbalance()
-            disconnect_nodes(self.nodes[0], self.nodes[1])
+            self.disconnect_nodes(0, 1)
             tx2_node0 = self.nodes[0].sendtoaddress(
                 address=ADDRESS_ECREG_UNSPENDABLE, amount=balance - 20)
             tx2_node1 = self.nodes[1].sendtoaddress(
@@ -157,7 +152,7 @@ class NotificationsTest(BitcoinTestFramework):
             # Mine a block on node0, reconnect the nodes, check that tx2_node1
             # has a conflicting tx after syncing with node0.
             self.nodes[0].generatetoaddress(1, ADDRESS_ECREG_UNSPENDABLE)
-            connect_nodes(self.nodes[0], self.nodes[1])
+            self.connect_nodes(0, 1)
             self.sync_blocks()
             assert tx2_node0 in self.nodes[1].gettransaction(tx2_node1)[
                 'walletconflicts']

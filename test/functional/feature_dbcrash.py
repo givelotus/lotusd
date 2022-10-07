@@ -47,7 +47,6 @@ from test_framework.util import assert_equal, hex_str_to_bytes
 class ChainstateWriteCrashTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 4
-        self.setup_clean_chain = False
         self.rpc_timeout = 480
         self.supports_cli = False
 
@@ -56,7 +55,7 @@ class ChainstateWriteCrashTest(BitcoinTestFramework):
         # long-running test
         self.base_args = ["-limitdescendantsize=0", "-maxmempool=0",
                           "-rpcservertimeout=900", "-dbbatchsize=200000",
-                          "-wallet=", "-noparkdeepreorg"]
+                          "-noparkdeepreorg"]
 
         # Set different crash ratios and cache sizes.  Note that not all of
         # -dbcache goes to the in-memory coins cache.
@@ -68,7 +67,7 @@ class ChainstateWriteCrashTest(BitcoinTestFramework):
         # and non-standard txs (e.g. txs with "dust" outputs)
         self.node3_args = [
             "-blockmaxsize={}".format(DEFAULT_MAX_BLOCK_SIZE),
-            "-acceptnonstdtxn", "-wallet="]
+            "-acceptnonstdtxn"]
         self.extra_args = [self.node0_args, self.node1_args,
                            self.node2_args, self.node3_args]
 

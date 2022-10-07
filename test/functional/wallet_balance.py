@@ -9,11 +9,7 @@ from decimal import Decimal
 from test_framework.address import ADDRESS_ECREG_UNSPENDABLE as ADDRESS_WATCHONLY
 from test_framework.blocktools import SUBSIDY
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_raises_rpc_error,
-    connect_nodes,
-)
+from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 def create_transactions(node, address, amt, fees):
@@ -62,14 +58,17 @@ class WalletTest(BitcoinTestFramework):
         self.skip_if_no_wallet()
 
     def run_test(self):
-        self.nodes[0].importaddress(ADDRESS_WATCHONLY)
-        # Check that nodes don't own any UTXOs
-        assert_equal(len(self.nodes[0].listunspent()), 0)
-        assert_equal(len(self.nodes[1].listunspent()), 0)
+        if not self.options.descriptors:
+            # Tests legacy watchonly behavior which is not present (and does
+            # not need to be tested) in descriptor wallets
+            self.nodes[0].importaddress(ADDRESS_WATCHONLY)
+            # Check that nodes don't own any UTXOs
+            assert_equal(len(self.nodes[0].listunspent()), 0)
+            assert_equal(len(self.nodes[1].listunspent()), 0)
 
-        self.log.info("Check that only node 0 is watching an address")
-        assert 'watchonly' in self.nodes[0].getbalances()
-        assert 'watchonly' not in self.nodes[1].getbalances()
+            self.log.info("Check that only node 0 is watching an address")
+            assert 'watchonly' in self.nodes[0].getbalances()
+            assert 'watchonly' not in self.nodes[1].getbalances()
 
         self.log.info("Mining blocks ...")
         self.nodes[0].generate(1)
@@ -78,27 +77,37 @@ class WalletTest(BitcoinTestFramework):
         self.nodes[1].generatetoaddress(101, ADDRESS_WATCHONLY)
         self.sync_all()
 
-        assert_equal(self.nodes[0].getbalances()['mine']['trusted'], SUBSIDY)
-        assert_equal(self.nodes[0].getwalletinfo()['balance'], SUBSIDY)
-        assert_equal(self.nodes[1].getbalances()['mine']['trusted'], SUBSIDY)
+        if not self.options.descriptors:
+            # Tests legacy watchonly behavior which is not present (and does not
+            # need to be tested) in descriptor wallets
+            assert_equal(self.nodes[0].getbalances()['mine']['trusted'], SUBSIDY)
+            assert_equal(self.nodes[0].getwalletinfo()['balance'], SUBSIDY)
+            assert_equal(self.nodes[1].getbalances()['mine']['trusted'], SUBSIDY)
 
-        assert_equal(self.nodes[0].getbalances()['watchonly']['immature'],
-                     100 * SUBSIDY)
-        assert 'watchonly' not in self.nodes[1].getbalances()
+            assert_equal(self.nodes[0].getbalances()['watchonly']['immature'],
+                         100 * SUBSIDY)
+            assert 'watchonly' not in self.nodes[1].getbalances()
 
-        assert_equal(self.nodes[0].getbalance(), SUBSIDY)
-        assert_equal(self.nodes[1].getbalance(), SUBSIDY)
+            assert_equal(self.nodes[0].getbalance(), SUBSIDY)
+            assert_equal(self.nodes[1].getbalance(), SUBSIDY)
 
         self.log.info("Test getbalance with different arguments")
         assert_equal(self.nodes[0].getbalance("*"), SUBSIDY)
         assert_equal(self.nodes[0].getbalance("*", 1), SUBSIDY)
-        assert_equal(self.nodes[0].getbalance("*", 1, True), 2 * SUBSIDY)
+
         assert_equal(self.nodes[0].getbalance(minconf=1), SUBSIDY)
-        assert_equal(
-            self.nodes[0].getbalance(
-                minconf=0,
-                include_watchonly=True),
-            2 * SUBSIDY)
+
+        if not self.options.descriptors:
+            assert_equal(self.nodes[0].getbalance(minconf=0,
+                                                  include_watchonly=True),
+                         2 * SUBSIDY)
+            assert_equal(self.nodes[0].getbalance("*", 1, True), 2 * SUBSIDY)
+        else:
+            assert_equal(self.nodes[0].getbalance(minconf=0,
+                                                  include_watchonly=True),
+                         SUBSIDY)
+            assert_equal(self.nodes[0].getbalance("*", 1, True), SUBSIDY)
+
         assert_equal(
             self.nodes[1].getbalance(
                 minconf=0,
@@ -180,6 +189,8 @@ class WalletTest(BitcoinTestFramework):
                                             # Doesn't include output of node
                                             # 0's send since it was spent
                                             'untrusted_pending': SUBSIDY - Decimal('20') - fee_node_1}}
+            if self.options.descriptors:
+                del expected_balances_0["watchonly"]
             assert_equal(self.nodes[0].getbalances(), expected_balances_0)
             assert_equal(self.nodes[1].getbalances(), expected_balances_1)
             # getbalance without any arguments includes unconfirmed transactions, but not untrusted transactions
@@ -253,10 +264,10 @@ class WalletTest(BitcoinTestFramework):
         # dynamically loading the wallet.
         before = self.nodes[1].getbalances()['mine']['untrusted_pending']
         dst = self.nodes[1].getnewaddress()
-        self.nodes[1].unloadwallet('')
+        self.nodes[1].unloadwallet(self.default_wallet_name)
         self.nodes[0].sendtoaddress(dst, 10)
         self.sync_all()
-        self.nodes[1].loadwallet('')
+        self.nodes[1].loadwallet(self.default_wallet_name)
         after = self.nodes[1].getbalances()['mine']['untrusted_pending']
         assert_equal(before + Decimal('10'), after)
 
@@ -295,8 +306,6 @@ class WalletTest(BitcoinTestFramework):
         self.log.info('Put txs back into mempool of node 1 (not node 0)')
         self.nodes[0].invalidateblock(block_reorg)
         self.nodes[1].invalidateblock(block_reorg)
-        self.sync_blocks()
-        self.nodes[0].syncwithvalidationinterfacequeue()
         # wallet txs not in the mempool are untrusted
         assert_equal(self.nodes[0].getbalance(minconf=0), 0)
         self.nodes[0].generatetoaddress(1, ADDRESS_WATCHONLY)
@@ -305,7 +314,7 @@ class WalletTest(BitcoinTestFramework):
 
         # Now confirm tx_orig
         self.restart_node(1, ['-persistmempool=0'])
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
         self.sync_blocks()
         self.nodes[1].sendrawtransaction(tx_orig)
         self.nodes[1].generatetoaddress(1, ADDRESS_WATCHONLY)

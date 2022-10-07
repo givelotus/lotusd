@@ -28,7 +28,6 @@ from test_framework.util import (
     append_config,
     assert_equal,
     assert_raises_rpc_error,
-    connect_nodes,
 )
 from test_framework.wallet_util import bytes_to_wif
 
@@ -189,7 +188,7 @@ class LegacyAvalancheProofTest(BitcoinTestFramework):
                        expect_orphan=True)
 
         self.log.info("Connect to an up-to-date node to unorphan the proof")
-        connect_nodes(self.nodes[1], node)
+        self.connect_nodes(1, node.index)
         self.sync_all()
         wait_for_proof(self.nodes[1], f"{proofobj.proofid:0{64}x}",
                        expect_orphan=False)
@@ -282,11 +281,10 @@ class LegacyAvalancheProofTest(BitcoinTestFramework):
             proof_sequence, proof_expiration, wif_privkey,
             create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key, amount="0"))
 
-        dust_amount = Decimal(f"{PROOF_DUST_THRESHOLD * 0.9999:.4f}")
         dust2 = node.buildavalancheproof(
             proof_sequence, proof_expiration, wif_privkey,
             create_coinbase_stakes(node, [blockhashes[0]], addrkey0.key,
-                                   amount=str(dust_amount)))
+                                   amount=f"{PROOF_DUST_THRESHOLD * 0.99:.2f}"))
 
         missing_stake = node.buildavalancheproof(
             proof_sequence, proof_expiration, wif_privkey, [{
@@ -388,6 +386,9 @@ class LegacyAvalancheProofTest(BitcoinTestFramework):
         assert_raises_rpc_error(-8, "The proof has conflicting utxo with an existing proof",
                                     node.sendavalancheproof, conflicting_utxo)
 
+        # Clear the proof pool
+        self.restart_node(0)
+
         # Good proof
         assert node.verifyavalancheproof(proof)
 
@@ -408,6 +409,7 @@ class LegacyAvalancheProofTest(BitcoinTestFramework):
         raw_proof = node.getrawavalancheproof("{:064x}".format(proofid))
         assert_equal(raw_proof['proof'], proof)
         assert_equal(raw_proof['orphan'], False)
+        assert_equal(raw_proof['isBoundToPeer'], True)
 
         assert_raises_rpc_error(-8, "Proof not found",
                                 node.getrawavalancheproof, '0' * 64)
@@ -426,6 +428,7 @@ class LegacyAvalancheProofTest(BitcoinTestFramework):
         raw_proof = node.getrawavalancheproof("{:064x}".format(proofid))
         assert_equal(raw_proof['proof'], proof)
         assert_equal(raw_proof['orphan'], True)
+        assert_equal(raw_proof['isBoundToPeer'], False)
 
         self.log.info("Bad proof should be rejected at startup")
 

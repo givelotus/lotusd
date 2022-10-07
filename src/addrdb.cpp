@@ -9,6 +9,7 @@
 #include <chainparams.h>
 #include <clientversion.h>
 #include <hash.h>
+#include <logging/timer.h>
 #include <random.h>
 #include <streams.h>
 #include <tinyformat.h>
@@ -49,7 +50,8 @@ bool SerializeFileDB(const CChainParams &chainParams, const std::string &prefix,
     if (fileout.IsNull()) {
         fileout.fclose();
         remove(pathTmp);
-        return error("%s: Failed to open file %s", __func__, pathTmp.string());
+        return error("%s: Failed to open file %s", __func__,
+                     fs::PathToString(pathTmp));
     }
 
     // Serialize
@@ -61,7 +63,8 @@ bool SerializeFileDB(const CChainParams &chainParams, const std::string &prefix,
     if (!FileCommit(fileout.Get())) {
         fileout.fclose();
         remove(pathTmp);
-        return error("%s: Failed to flush file %s", __func__, pathTmp.string());
+        return error("%s: Failed to flush file %s", __func__,
+                     fs::PathToString(pathTmp));
     }
     fileout.fclose();
 
@@ -113,7 +116,8 @@ bool DeserializeFileDB(const CChainParams &chainParams, const fs::path &path,
     FILE *file = fsbridge::fopen(path, "rb");
     CAutoFile filein(file, SER_DISK, CLIENT_VERSION);
     if (filein.IsNull()) {
-        return error("%s: Failed to open file %s", __func__, path.string());
+        return error("%s: Failed to open file %s", __func__,
+                     fs::PathToString(path));
     }
 
     return DeserializeDB(chainParams, filein, data);
@@ -152,4 +156,27 @@ bool CAddrDB::Read(CAddrMan &addr, CDataStream &ssPeers) {
         addr.Clear();
     }
     return ret;
+}
+
+void DumpAnchors(const CChainParams &chainParams,
+                 const fs::path &anchors_db_path,
+                 const std::vector<CAddress> &anchors) {
+    LOG_TIME_SECONDS(strprintf(
+        "Flush %d outbound block-relay-only peer addresses to anchors.dat",
+        anchors.size()));
+    SerializeFileDB(chainParams, "anchors", anchors_db_path, anchors);
+}
+
+std::vector<CAddress> ReadAnchors(const CChainParams &chainParams,
+                                  const fs::path &anchors_db_path) {
+    std::vector<CAddress> anchors;
+    if (DeserializeFileDB(chainParams, anchors_db_path, anchors)) {
+        LogPrintf("Loaded %i addresses from %s\n", anchors.size(),
+                  fs::quoted(fs::PathToString(anchors_db_path.filename())));
+    } else {
+        anchors.clear();
+    }
+
+    fs::remove(anchors_db_path);
+    return anchors;
 }

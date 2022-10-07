@@ -16,6 +16,8 @@
 
 #ifndef WIN32
 #include <fcntl.h>
+#else
+#include <codecvt>
 #endif
 
 #ifdef USE_POLL
@@ -59,15 +61,25 @@ enum Network ParseNetwork(const std::string &net_in) {
 
 std::string GetNetworkName(enum Network net) {
     switch (net) {
+        case NET_UNROUTABLE:
+            return "unroutable";
         case NET_IPV4:
             return "ipv4";
         case NET_IPV6:
             return "ipv6";
         case NET_ONION:
             return "onion";
-        default:
-            return "";
-    }
+        case NET_I2P:
+            return "i2p";
+        case NET_CJDNS:
+            return "cjdns";
+        case NET_INTERNAL:
+            return "internal";
+        case NET_MAX:
+            assert(false);
+    } // no default case, so the compiler can warn about missing cases
+
+    assert(false);
 }
 
 static bool LookupIntern(const std::string &name, std::vector<CNetAddr> &vIP,
@@ -925,14 +937,18 @@ bool LookupSubNet(const std::string &strSubnet, CSubNet &ret) {
 
 #ifdef WIN32
 std::string NetworkErrorString(int err) {
-    char buf[256];
+    wchar_t buf[256];
     buf[0] = 0;
-    if (FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM |
+    if (FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM |
                            FORMAT_MESSAGE_IGNORE_INSERTS |
                            FORMAT_MESSAGE_MAX_WIDTH_MASK,
                        nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                       buf, sizeof(buf), nullptr)) {
-        return strprintf("%s (%d)", buf, err);
+                       buf, ARRAYSIZE(buf), nullptr)) {
+        return strprintf(
+            "%s (%d)",
+            std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t>()
+                .to_bytes(buf),
+            err);
     } else {
         return strprintf("Unknown error (%d)", err);
     }

@@ -63,6 +63,7 @@ class ImportMultiTest(BitcoinTestFramework):
         self.nodes[1].generate(1)
         timestamp = self.nodes[1].getblock(
             self.nodes[1].getbestblockhash())['mediantime']
+        # Sync the timestamp to the wallet, so that importmulti works
         self.nodes[1].syncwithvalidationinterfacequeue()
 
         node0_address1 = self.nodes[0].getaddressinfo(
@@ -744,7 +745,7 @@ class ImportMultiTest(BitcoinTestFramework):
         # Cannot import those pubkeys to keypool of wallet with privkeys
         self.log.info(
             "Pubkeys cannot be added to the keypool of a wallet with private keys")
-        wrpc = self.nodes[1].get_wallet_rpc("")
+        wrpc = self.nodes[1].get_wallet_rpc(self.default_wallet_name)
         assert wrpc.getwalletinfo()['private_keys_enabled']
         result = wrpc.importmulti(
             [{

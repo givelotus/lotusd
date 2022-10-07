@@ -7,6 +7,7 @@
 
 #include <amount.h>
 #include <fs.h>
+#include <netaddress.h>
 
 #include <QEvent>
 #include <QHeaderView>
@@ -17,6 +18,8 @@
 #include <QProgressBar>
 #include <QString>
 #include <QTableView>
+
+#include <chrono>
 
 class QValidatedLineEdit;
 class SendCoinsRecipient;
@@ -254,25 +257,28 @@ private Q_SLOTS:
 bool GetStartOnSystemStartup();
 bool SetStartOnSystemStartup(bool fAutoStart);
 
-/* Convert QString to OS specific boost path through UTF-8 */
+/** Convert QString to OS specific boost path through UTF-8 */
 fs::path qstringToBoostPath(const QString &path);
 
-/* Convert OS specific boost path to QString through UTF-8 */
+/** Convert OS specific boost path to QString through UTF-8 */
 QString boostPathToQString(const fs::path &path);
 
-/* Convert seconds into a QString with days, hours, mins, secs */
-QString formatDurationStr(int secs);
+/** Convert enum Network to QString */
+QString NetworkToQString(Network net);
 
-/* Format CNodeStats.nServices bitmask into a user-readable string */
+/** Convert seconds into a QString with days, hours, mins, secs */
+QString formatDurationStr(std::chrono::seconds dur);
+
+/** Format CNodeStats.nServices bitmask into a user-readable string */
 QString formatServicesStr(quint64 mask);
 
-/*
- * Format a CNodeStats.m_ping_usec into a user-readable string or display N/A,
- * if 0.
+/**
+ * Format a CNodeStats.m_last_ping_time into a user-readable string or display
+ * N/A, if 0.
  */
-QString formatPingTime(int64_t ping_usec);
+QString formatPingTime(std::chrono::microseconds ping_time);
 
-/* Format a CNodeCombinedStats.nTimeOffset into a user-readable string. */
+/** Format a CNodeCombinedStats.nTimeOffset into a user-readable string. */
 QString formatTimeOffset(int64_t nTimeOffset);
 
 QString formatNiceTimeOffset(qint64 secs);

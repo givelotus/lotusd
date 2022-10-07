@@ -65,7 +65,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
 
         self.log.info("Feed all fork headers (succeeds without checkpoint)")
         # On node 0 it succeeds because checkpoints are disabled
-        self.restart_node(0, extra_args=['-nocheckpoints'])
+        self.restart_node(0, ['-nocheckpoints'])
         peer_no_checkpoint = self.nodes[0].add_p2p_connection(P2PInterface())
         peer_no_checkpoint.send_and_ping(msg_headers(self.headers_fork))
         assert {

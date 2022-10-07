@@ -287,7 +287,7 @@ BOOST_FIXTURE_TEST_CASE(importwallet_rescan, TestChain100Setup) {
     NodeContext node;
     auto chain = interfaces::MakeChain(node, Params());
 
-    std::string backup_file = (GetDataDir() / "wallet.backup").string();
+    std::string backup_file = fs::PathToString(GetDataDir() / "wallet.backup");
 
     // Import key into wallet and call dumpwallet to create backup file.
     {
@@ -732,7 +732,7 @@ BOOST_FIXTURE_TEST_CASE(wallet_descriptor_test, BasicTestingSetup) {
                           malformed_descriptor);
 }
 
-//! Test CreateWalletFromFile function and its behavior handling potential race
+//! Test CWallet::Create() and its behavior handling potential race
 //! conditions if it's called the same time an incoming transaction shows up in
 //! the mempool or a new block.
 //!
@@ -750,7 +750,7 @@ BOOST_FIXTURE_TEST_CASE(wallet_descriptor_test, BasicTestingSetup) {
 //! wallet rescan and notifications are immediately synced, to verify the wallet
 //! must already have a handler in place for them, and there's no gap after
 //! rescanning where new transactions in new blocks could be lost.
-BOOST_FIXTURE_TEST_CASE(CreateWalletFromFile, TestChain100Setup) {
+BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
     // Create new wallet with known key and unload it.
     auto chain = interfaces::MakeChain(m_node, Params());
     auto wallet = TestLoadWallet(*chain);

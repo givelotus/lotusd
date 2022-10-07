@@ -15,11 +15,7 @@ from test_framework.blocktools import TIME_GENESIS_BLOCK, create_coinbase, prepa
 from test_framework.messages import BLOCK_HEADER_SIZE, CBlock, CBlockHeader
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_raises_rpc_error,
-    connect_nodes,
-)
+from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 def assert_template(node, block, expect, rehash=True):
@@ -51,8 +47,18 @@ class MiningTest(BitcoinTestFramework):
         assert_equal(mining_info['blocks'], 200)
         assert_equal(mining_info['currentblocktx'], 0)
         assert_equal(mining_info['currentblocksize'], 1000)
+
+        self.log.info('test blockversion')
+        # Note: the block version is encoded as a uint8 (allowed range 0 -- 254)
+        self.restart_node(
+            0, extra_args=['-mocktime={}'.format(t), '-blockversion=254'])
+        self.connect_nodes(0, 1)
+        assert_equal(254, self.nodes[0].getblocktemplate()['version'])
+        self.restart_node(0, extra_args=['-mocktime={}'.format(t)])
+        self.connect_nodes(0, 1)
+        assert_equal(1, self.nodes[0].getblocktemplate()['version'])
         self.restart_node(0)
-        connect_nodes(self.nodes[0], self.nodes[1])
+        self.connect_nodes(0, 1)
 
     def run_test(self):
         self.mine_chain()

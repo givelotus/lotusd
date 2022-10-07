@@ -45,6 +45,8 @@ public:
 
     void showOutOfSyncWarning(bool fShow);
 
+    QSize sizeHint() const override { return m_size_hint; }
+
 Q_SIGNALS:
     /** Notify that the user has requested more information about the
      * out-of-sync warning */
@@ -59,6 +61,8 @@ private:
     bool bOutOfSync;
 
     const PlatformStyle *platformStyle;
+
+    const QSize m_size_hint;
 
 public:
     WalletView *currentWalletView() const;
@@ -83,7 +87,7 @@ public Q_SLOTS:
     void gotoLoadPSBT();
 
     /** Encrypt the wallet */
-    void encryptWallet(bool status);
+    void encryptWallet();
     /** Backup the wallet */
     void backupWallet();
     /** Change encrypted wallet passphrase */
