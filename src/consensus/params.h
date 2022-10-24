@@ -35,6 +35,9 @@ struct Params {
     /** Unix time used for MTP activation of 2022-12-12T21:48:00.000Z protocol
      * upgrade */
     int numbersActivationTime;
+    /** Unix time used for MTP activation of 2023-06-21T14:58:00.000Z protocol
+     * upgrade */
+    int deuteronomyActivationTime;
 
     /**
      * Don't warn about unknown BIP 9 activations below this height.

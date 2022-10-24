@@ -49,8 +49,8 @@ BOOST_AUTO_TEST_CASE(isexodusenabled) {
 
 BOOST_AUTO_TEST_CASE(isleviticusenabled) {
     const Consensus::Params &params = Params().GetConsensus();
-    const auto activation =
-        gArgs.GetArg("-leviticusactivationtime", params.leviticusActivationTime);
+    const auto activation = gArgs.GetArg("-leviticusactivationtime",
+                                         params.leviticusActivationTime);
     SetMockTime(activation - 1000000);
 
     BOOST_CHECK(!IsLeviticusEnabled(params, nullptr));
@@ -69,6 +69,42 @@ BOOST_AUTO_TEST_CASE(isleviticusenabled) {
 
     SetMTP(blocks, activation + 1);
     BOOST_CHECK(IsLeviticusEnabled(params, &blocks.back()));
+}
+
+BOOST_AUTO_TEST_CASE(isnumbersenabled) {
+    const Consensus::Params &params = Params().GetConsensus();
+    const auto activation =
+        gArgs.GetArg("-numbersactivationtime", params.numbersActivationTime);
+    SetMockTime(activation - 1000000);
+
+    BOOST_CHECK(!IsNumbersEnabled(params, nullptr));
+
+    std::array<CBlockIndex, 12> blocks;
+    for (size_t i = 1; i < blocks.size(); ++i) {
+        blocks[i].pprev = &blocks[i - 1];
+    }
+    BOOST_CHECK(!IsNumbersEnabled(params, &blocks.back()));
+    BOOST_CHECK_EQUAL(
+        IsNumbersEnabled(params, &blocks.back()),
+        IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
+
+    SetMTP(blocks, activation - 1);
+    BOOST_CHECK(!IsNumbersEnabled(params, &blocks.back()));
+    BOOST_CHECK_EQUAL(
+        IsNumbersEnabled(params, &blocks.back()),
+        IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
+
+    SetMTP(blocks, activation);
+    BOOST_CHECK(IsNumbersEnabled(params, &blocks.back()));
+    BOOST_CHECK_EQUAL(
+        IsNumbersEnabled(params, &blocks.back()),
+        IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
+
+    SetMTP(blocks, activation + 1);
+    BOOST_CHECK(IsNumbersEnabled(params, &blocks.back()));
+    BOOST_CHECK_EQUAL(
+        IsNumbersEnabled(params, &blocks.back()),
+        IsNumbersEnabled(params, blocks.back().GetMedianTimePast()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

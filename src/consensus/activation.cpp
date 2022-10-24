@@ -27,3 +27,18 @@ bool IsLeviticusEnabled(const Consensus::Params &params,
     return pindexPrev->GetMedianTimePast() >=
            gArgs.GetArg("-leviticusactivationtime", params.leviticusActivationTime);
 }
+
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const int64_t nMedianTimePast) {
+    return nMedianTimePast >=
+           gArgs.GetArg("-numbersactivationtime", params.numbersActivationTime);
+}
+
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return IsNumbersEnabled(params, pindexPrev->GetMedianTimePast());
+}
