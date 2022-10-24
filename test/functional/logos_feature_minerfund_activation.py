@@ -27,6 +27,7 @@ from test_framework.util import assert_equal
 
 EXODUS_ACTIVATION_TIME = 2000000000
 LEVITICUS_ACTIVATION_TIME = 2010000000
+NUMBERS_ACTIVATION_TIME = 2020000000
 
 # see consensus/addresses.h
 GENESIS_SCRIPTS = [
@@ -83,6 +84,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
             '-enableminerfund',
             f'-exodusactivationtime={EXODUS_ACTIVATION_TIME}',
             f'-leviticusactivationtime={LEVITICUS_ACTIVATION_TIME}',
+            f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
         ]]
 
     def run_test(self):
