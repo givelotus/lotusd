@@ -29,7 +29,7 @@ EXODUS_ACTIVATION_TIME = 2000000000
 LEVITICUS_ACTIVATION_TIME = 2010000000
 NUMBERS_ACTIVATION_TIME = 2020000000
 
-# see consensus/addresses.h
+# see consensus/addresses.h, use getaddressinfo to get the scriptPubKey
 GENESIS_SCRIPTS = [
     "a914b6c79031b71d86ab0d617e1e1e706ec4ee34b07f87",
     "76a914b8ae1c47effb58f72f7bca819fe7fc252f9e852e88ac",
@@ -75,6 +75,22 @@ LEVITICUS_SCRIPTS = [
     "76a91419e8d8d0edab6ec43f04b656bff72af78d63ff6588ac",
     "76a914a77122c592e9d24d51ad1dae37de73d77d7bc7f788ac",
 ]
+NUMBERS_SCRIPTS = [
+    "76a9145e38e8e232aca63350fb59a0d8465189c7d0549188ac",
+    "76a91468ca4557da600a9eb6b49525a44b0207839f57fa88ac",
+    "76a9141325d2d8ba6e8c7d99ff66d21530917cc73429d288ac",
+    "76a9146d2c8cb2d031c09862c5fbde900ae8cc0570d1ce88ac",
+    "76a914d64134ac890bd18831560f0c4ef5cea5c976484888ac",
+    "76a914a05d68eaceaefe5cdc1b0794a762f21cf578c5d688ac",
+    "76a9149bef68961730d891b117424de78f47891b7d8c5f88ac",
+    "76a9146a171891ab9443020bd2755ef79c6e59efc5926588ac",
+    "76a914c0dba2b28f0fb9b49b58135ce37fef8ce978b75888ac",
+    "76a914b9e0eeacd624c507796bce80316eb836c495d2cc88ac",
+    "76a9147f66047ab92de6ad4d62f609fc123c49fb63d4ff88ac",
+    "76a91461cebabeaa6365887bb95d95e62b848fa365506388ac",
+    "76a914b59008144c4f883e3b1fd9e18e479bc2f877fca788ac",
+]
+
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -106,7 +122,22 @@ class MinerFundActivationTest(BitcoinTestFramework):
                 coinbase.vout.append(CTxOut(int(SUBSIDY * COIN) // 26, CScript(bytes.fromhex(script))))
             coinbase.rehash()
             block = create_block(int(best_block_hash, 16),
-                                coinbase, block_height, block_time + 1)
+                                 coinbase, block_height, block_time + 1)
+            return block
+
+        # Make a block with the appropriate coinbase output post-numbers upgrade
+        def make_block_cb_post_numbers(scripts):
+            best_block_hash = node.getbestblockhash()
+            block_time = node.getblockheader(best_block_hash)['time']
+            block_height = node.getblockcount() + 1
+            coinbase = create_coinbase(block_height)
+            coinbase.vout[1].nValue = int(SUBSIDY * COIN) // 2
+            coinbase.vout[1].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
+            script = scripts[block_height % len(scripts)]
+            coinbase.vout.append(CTxOut(int(SUBSIDY * COIN) // 2, CScript(bytes.fromhex(script))))
+            coinbase.rehash()
+            block = create_block(int(best_block_hash, 16),
+                                 coinbase, block_height, block_time + 1)
             return block
 
         # Pre-fork minerfund with wrong (i.e. post-fork) scripts
@@ -180,6 +211,38 @@ class MinerFundActivationTest(BitcoinTestFramework):
         block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Set mocktime for Leviticus activation
+        node.setmocktime(NUMBERS_ACTIVATION_TIME)
+        # Mine 11 blocks with LEVITICUS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to LEVITICUS_ACTIVATION_TIME
+        for i in range(-6, 6):
+            block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+            block.nTime = NUMBERS_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'], NUMBERS_ACTIVATION_TIME)
+
+        # Now the using the genesis addresses fails
+        block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Now the using the exodus addresses fails
+        block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Using new scripts now works
+        block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # now mine 26 blocks to ensure all addresses pass
+        for i in range(0, 26):
+            block = make_block_cb_post_numbers(NUMBERS_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
 
 
 if __name__ == '__main__':
