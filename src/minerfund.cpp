@@ -5,6 +5,7 @@
 #include <minerfund.h>
 
 #include <cashaddrenc.h> // For DecodeCashAddrContent
+#include <chain.h>       // CBlockIndexClass
 #include <chainparams.h>
 #include <consensus/activation.h>
 #include <key_io.h> // For DecodeDestination
@@ -26,6 +27,9 @@ static const CTxOut BuildOutput(const std::string &address,
 static const std::vector<std::string> &
 GetPayoutAddresses(const Consensus::Params &params,
                    const CBlockIndex *pindexPrev) {
+    if (IsNumbersEnabled(params, pindexPrev)) {
+        return params.coinbasePayoutAddresses.numbers;
+    }
     if (IsLeviticusEnabled(params, pindexPrev)) {
         return params.coinbasePayoutAddresses.leviticus;
     }
@@ -41,6 +45,17 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
                                                 const Amount &blockReward) {
     if (!enableMinerFund) {
         return {};
+    }
+
+    if (IsNumbersEnabled(params, pindexPrev)) {
+        const std::vector<std::string> &addresses =
+            GetPayoutAddresses(params, pindexPrev);
+        const size_t numAddresses = addresses.size();
+        const Amount shareAmount = blockReward / int64_t(2);
+        const auto blockHeight = pindexPrev->nHeight + 1;
+        const auto addressIndx = blockHeight % numAddresses;
+        const auto address = addresses[addressIndx];
+        return std::vector<CTxOut>({BuildOutput(address, shareAmount)});
     }
 
     const std::vector<std::string> &addresses =

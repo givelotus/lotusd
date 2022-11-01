@@ -75,6 +75,22 @@ LEVITICUS_SCRIPTS = [
     "76a91419e8d8d0edab6ec43f04b656bff72af78d63ff6588ac",
     "76a914a77122c592e9d24d51ad1dae37de73d77d7bc7f788ac",
 ]
+NUMBERS_SCRIPTS = [
+    "76a914efd3d5363e91d73406f673022d9f9932ac7a6e2188ac",
+    "76a91431bd7246ae1a24718c7ff6307f44b1d29a88e88188ac",
+    "76a9141325d2d8ba6e8c7d99ff66d21530917cc73429d288ac",
+    "76a9146a171891ab9443020bd2755ef79c6e59efc5926588ac",
+    "76a91484f1dbc598d1adce41e1ad3011e60b7502c0d0db88ac",
+    "76a914e25ff1cb0a6000b56115ac4b178393f8a0ad215488ac",
+    "76a91434ed5cae3056b8f990506aec8f2bd94cbf469c7588ac",
+    "76a914e8d6cc8137617e2156baf25f2de823860d1579a888ac",
+    "76a914b6284fbf3145dc2687fa02d00417cf094dd801cf88ac",
+    "76a914453596826cff68b6206b7739ff9a911a22cae72d88ac",
+    "76a9149dadb10adf30160eda6defe210983fb471b88a8e88ac",
+    "76a91419e8d8d0edab6ec43f04b656bff72af78d63ff6588ac",
+    "76a914a77122c592e9d24d51ad1dae37de73d77d7bc7f788ac",
+]
+
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -106,7 +122,22 @@ class MinerFundActivationTest(BitcoinTestFramework):
                 coinbase.vout.append(CTxOut(int(SUBSIDY * COIN) // 26, CScript(bytes.fromhex(script))))
             coinbase.rehash()
             block = create_block(int(best_block_hash, 16),
-                                coinbase, block_height, block_time + 1)
+                                 coinbase, block_height, block_time + 1)
+            return block
+
+        # Make a block with the appropriate coinbase output post-numbers upgrade
+        def make_block_cb_post_numbers(scripts):
+            best_block_hash = node.getbestblockhash()
+            block_time = node.getblockheader(best_block_hash)['time']
+            block_height = node.getblockcount() + 1
+            coinbase = create_coinbase(block_height)
+            coinbase.vout[1].nValue = int(SUBSIDY * COIN) // 2
+            coinbase.vout[1].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
+            script = scripts[block_height % len(scripts)]
+            coinbase.vout.append(CTxOut(int(SUBSIDY * COIN) // 2, CScript(bytes.fromhex(script))))
+            coinbase.rehash()
+            block = create_block(int(best_block_hash, 16),
+                                 coinbase, block_height, block_time + 1)
             return block
 
         # Pre-fork minerfund with wrong (i.e. post-fork) scripts
@@ -180,6 +211,39 @@ class MinerFundActivationTest(BitcoinTestFramework):
         block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Set mocktime for Leviticus activation
+        node.setmocktime(NUMBERS_ACTIVATION_TIME)
+        # Mine 11 blocks with LEVITICUS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to LEVITICUS_ACTIVATION_TIME
+        for i in range(-6, 6):
+            block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+            block.nTime = NUMBERS_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'], NUMBERS_ACTIVATION_TIME)
+
+        # Now the using the genesis addresses fails
+        block = make_block_with_cb_scripts(GENESIS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Now the using the exodus addresses fails
+        block = make_block_with_cb_scripts(EXODUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Using new scripts now works
+        block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # now mine 26 blocks to ensure all addresses pass
+        for i in range(0, 26):
+            print("Hello")
+            block = make_block_cb_post_numbers(NUMBERS_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
 
 
 if __name__ == '__main__':
