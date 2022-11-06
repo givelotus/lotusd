@@ -57,7 +57,8 @@ class NngInterfaceTest(BitcoinTestFramework):
         self.anyone_script = self.nodes[0].validateaddress(self.anyone_addr)['scriptPubKey']
         self.anyone_addr2 = self.nodes[0].decodescript('52')['p2sh']
         self.anyone_script2 = self.nodes[0].validateaddress(self.anyone_addr2)['scriptPubKey']
-        asyncio.get_event_loop().run_until_complete(self._nng_test())
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(self._nng_test())
 
     async def _nng_test(self):
         import pynng, flatbuffers
