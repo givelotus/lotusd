@@ -1583,6 +1583,12 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
 
     // We make sure this node will have replay protection during the next hard
     // fork.
+    if (IsNumbersEnabled(params, pindex)) {
+        flags |= SCRIPT_NUMBERS_ENABLED;
+    }
+
+    // We make sure this node will have replay protection during the next hard
+    // fork.
     if (IsReplayProtectionEnabled(params, pindex)) {
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
@@ -1791,6 +1797,19 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
                              tx.GetId().ToString(), state.ToString());
             }
             nFees += txfee;
+        }
+
+        if (IsNumbersEnabled(consensusParams, pindex)) {
+            TxoutType whichType;
+            for (const CTxOut &txout : tx.vout) {
+                std::vector<std::vector<uint8_t>> vSolutions;
+                whichType = Solver(txout.scriptPubKey, vSolutions);
+
+                if (whichType == TxoutType::TAPROOT) {
+                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                         "scriptpubkey");
+                }
+            }
         }
 
         // Enforce standardness on all txs.

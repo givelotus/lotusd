@@ -2158,6 +2158,9 @@ static bool VerifyScriptType(std::vector<valtype> stack,
         return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
     }
     if (script_pubkey[1] == TAPROOT_SCRIPTTYPE) { // Taproot script version
+        if (flags & SCRIPT_NUMBERS_ENABLED) {
+            return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
+        }
         return VerifyTaprootSpend(stack, script_sig, script_pubkey, flags,
                                   checker, metrics, serror);
     } else {

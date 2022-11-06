@@ -13,6 +13,7 @@
 #include <consensus/validation.h>
 #include <primitives/transaction.h>
 #include <script/script_flags.h>
+#include <script/standard.h>
 #include <util/moneystr.h> // For FormatMoney
 #include <version.h>       // For PROTOCOL_VERSION
 
@@ -47,6 +48,19 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
         // ensure continuity with other clients.
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-nonfinal", "non-final transaction");
+    }
+
+    if (IsNumbersEnabled(params, nMedianTimePast)) {
+        TxoutType whichType;
+        for (const CTxOut &txout : tx.vout) {
+            std::vector<std::vector<uint8_t>> vSolutions;
+            whichType = Solver(txout.scriptPubKey, vSolutions);
+
+            if (whichType == TxoutType::TAPROOT) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "scriptpubkey");
+            }
+        }
     }
 
     // Size limit

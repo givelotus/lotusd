@@ -15,6 +15,10 @@ enum {
     // (spending without revealing the script) in Taproot.
     // Only used for checking signatures, not during script execution.
     SCRIPT_TAPROOT_KEY_SPEND_PATH = (1U << 0),
+    // Require Lotus sighash and Schnorr signatures for key spend path
+    // (spending without revealing the script) in Taproot.
+    // Only used for checking signatures, not during script execution.
+    SCRIPT_NUMBERS_ENABLED = (1U << 1),
 
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //

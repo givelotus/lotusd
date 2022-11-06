@@ -9,6 +9,7 @@
 #include <coins.h>
 #include <policy/policy.h>
 #include <script/interpreter.h>
+#include <script/standard.h>
 #include <util/system.h>
 
 Amount GetDustThreshold(const CTxOut &txout, const CFeeRate &dustRelayFeeIn) {
