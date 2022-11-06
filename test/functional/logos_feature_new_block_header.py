@@ -33,7 +33,9 @@ def hash256_int(x):
 class NewBlockHeaderTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
-        self.extra_args = [['-whitelist=noban@127.0.0.1']]
+        # Add a long peer disconnect timeout due to mocktime below (2^46)
+        self.extra_args = [['-whitelist=noban@127.0.0.1', '-peertimeout=70368744177664']]
+        self.rpc_timeout = 600
 
     def fail_block(self, block, reject_reason, force_send=False):
         self.nodes[0].p2ps[0].send_blocks_and_test([block], self.nodes[0], success=False, force_send=force_send, reject_reason=reject_reason)
@@ -257,11 +259,14 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         peer.send_blocks_and_test([block], node)
         del block
 
-        node.setmocktime(2**48 - 1)  # biggest possible 48-bit number
+        # set big block time. not quite full amount possible, as mocktime in the
+        # node only supports up to 64 bits and 2*48 this would exceed that by quite a
+        # bit
+        node.setmocktime(2**43)  # smallest number that does not fit in 32-bit number
         block_template = node.getblocktemplate()
-        assert_equal(block_template['curtime'], 2**48 - 1)
+        assert_equal(block_template['curtime'], 2**43)
         block = self.block_from_template(block_template)
-        block.nTime = 2**48 - 1
+        block.nTime = 2**43 - 1
         prepare_block(block)
         peer.send_blocks_and_test([block], node)
         del block
