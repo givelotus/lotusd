@@ -66,3 +66,43 @@ bool CheckProofOfWork(const BlockHash &hash, uint32_t nBits,
 
     return true;
 }
+
+bool IsEpochBlockHash(const BlockHash &hash, const uint32_t nBits) {
+    bool fNegative;
+    bool fOverflow;
+    arith_uint256 bnTarget;
+
+    const uint32_t nSize = nBits >> 24;
+    const uint32_t nWord = nBits & 0x007f'ffff;
+
+    assert(EPOCH_NUM_BLOCKS > 0x100); // otherwise we might build invalid nWord
+    // Shift by 8 first to retain some precision, ...
+    const uint32_t nWordEpoch = (nWord << 8) / EPOCH_NUM_BLOCKS;
+    // ... and adjust nSize accordingly.
+    const uint32_t nSizeEpoch = nSize - 1;
+    // Build new epoch nBits.
+    const uint32_t nBitsEpoch = (nSizeEpoch << 24) | nWordEpoch;
+
+    bnTarget.SetCompact(nBitsEpoch, &fNegative, &fOverflow);
+
+    // Check if proof of work is sufficient to be an epoch hash
+    return UintToArith256(hash) <= bnTarget;
+}
+
+bool IsEpochBlock(const Consensus::Params &params, const CBlockIndex *pindex) {
+    // Old epoch block mechanism, rolls over every 5040 blocks
+    if (!IsLeviticusEnabled(params, pindex)) {
+        return (pindex->nHeight + 1) % EPOCH_NUM_BLOCKS == 0;
+    }
+
+    // New PoW-based epoch block hash, requires 5040x PoW
+    return IsEpochBlockHash(pindex->GetBlockHash(), pindex->nBits);
+}
+
+uint256 GetNextEpochBlockHash(const Consensus::Params &params,
+                              const CBlockIndex *pindex) {
+    if (IsEpochBlock(params, pindex)) {
+        return pindex->GetBlockHash();
+    }
+    return pindex->hashEpochBlock;
+}

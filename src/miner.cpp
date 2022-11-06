@@ -165,11 +165,9 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
     pblock->nNonce = 0;
     pblock->nHeight = nHeight;
-    if (nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
-        pblock->hashEpochBlock = pblock->hashPrevBlock;
-    } else {
-        pblock->hashEpochBlock = pindexPrev->hashEpochBlock;
-    }
+
+    pblock->hashEpochBlock =
+        GetNextEpochBlockHash(consensusParams, pindexPrev);
     pblock->hashExtendedMetadata = SerializeHash(pblock->vMetadata);
 
     nLockTimeCutoff = pindexPrev->GetMedianTimePast();
