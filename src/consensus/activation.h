@@ -5,6 +5,8 @@
 #ifndef BITCOIN_CONSENSUS_ACTIVATION_H
 #define BITCOIN_CONSENSUS_ACTIVATION_H
 
+#include <cstdint>
+
 class CBlockIndex;
 
 namespace Consensus {
@@ -18,5 +20,11 @@ bool IsExodusEnabled(const Consensus::Params &params,
 /** Check if June 21st, 2022 protocol upgrade has activated. */
 bool IsLeviticusEnabled(const Consensus::Params &params,
                         const CBlockIndex *pindexPrev);
+
+/** Check if December 21st, 2022 protocol upgrade has activated. */
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const int64_t nMedianTimePast);
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const CBlockIndex *pindexPrev);
 
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H

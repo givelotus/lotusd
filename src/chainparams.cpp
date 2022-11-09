@@ -109,6 +109,8 @@ public:
         consensus.leviticusActivationTime = 1655802840;
         // 2022-12-21T21:48:00.000Z protocol upgrade
         consensus.numbersActivationTime = 1671659280;
+        // 2023-06-21T14:58:00.000Z protocol upgrade
+        consensus.deuteronomyActivationTime = 1687359480;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -244,6 +246,10 @@ public:
         // 2022-12-12T21:48:00.000Z protocol upgrade
         consensus.numbersActivationTime =
             mainnetConsensus.numbersActivationTime - testnetActivationOffset;
+        // 2023-06-21T14:58:00.000Z protocol upgrade
+        consensus.deuteronomyActivationTime =
+            mainnetConsensus.deuteronomyActivationTime -
+            testnetActivationOffset;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -351,6 +357,9 @@ public:
         // 2022-12-12T21:48:00.000Z protocol upgrade
         consensus.numbersActivationTime =
             mainnetConsensus.numbersActivationTime;
+        // 2023-06-21T14:58:00.000Z protocol upgrade
+        consensus.deuteronomyActivationTime =
+            mainnetConsensus.deuteronomyActivationTime;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;

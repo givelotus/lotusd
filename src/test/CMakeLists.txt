@@ -277,7 +277,7 @@ function(add_boost_test_runners_with_upgrade_activated SUITE EXECUTABLE)
 			# Dec. 1st, 2019 at 00:00:00
 			--
 			"-testsuitename=Bitcoin ABC unit tests with next upgrade activated"
-			-leviticusactivationtime=1575158400
+			-numbersactivationtime=1575158400
 		)
 	endforeach()
 endfunction()
