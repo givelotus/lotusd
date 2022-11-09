@@ -271,8 +271,8 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
         peer.send_txs_and_test(std_txs, node)
         # fund tx for OP_NOP10 is accepted
         peer.send_txs_and_test([nop10_fund_tx], node)
-        # spend tx for OP_NOP10 is still rejected
-        peer.send_txs_and_test([nop10_spend_tx], node, success=False)
+        # spend tx for OP_NOP10 is accepted too
+        peer.send_txs_and_test([nop10_spend_tx], node)
         nonstd_block.nTime += 1  # tweak time so we don't collide with invalidateblock
         nonstd_block.solve()
         # verify (tweaked) non-standard block from before is valid

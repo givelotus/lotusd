@@ -595,9 +595,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
             strprintf("%d < %d", nModifiedFees, ::minRelayTxFee.GetFee(nSize)));
     }
 
+    const uint32_t extraFlags = fRequireStandardPolicy
+                                    ? STANDARD_SCRIPT_VERIFY_FLAGS
+                                    : MANDATORY_SCRIPT_VERIFY_FLAGS;
+
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
-        ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
+        ws.m_next_block_script_verify_flags | extraFlags;
     PrecomputedTransactionData txdata =
         PrecomputedTransactionData::FromCoinsView(tx, m_view);
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false,
