@@ -7,9 +7,13 @@
 
 static CCheckpointData mainNetCheckpointData = {
     .mapCheckpoints = {
+        // Exodus activation
+        {143509, BlockHash::fromHex("00000000000df2347fd05d10e9ce5846f3089ef7e6"
+                                    "0b650a2725f9c462c5b601")},
         // Leviticus activation
-        {273562, BlockHash::fromHex("0000000000049e558f98d76240a0469720dee51bc2"
-                                    "7fd4c7f4e8946b6c50fb99")},
+        {273561, BlockHash::fromHex("000000000006a214caf1b62fdc5fa9746aa90d2887"
+                                    "8868561dcc1741da19eade")},
+
     }};
 
 static CCheckpointData testNetCheckpointData = {
