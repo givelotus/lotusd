@@ -32,4 +32,10 @@ bool IsExodusEnabled(const Consensus::Params &params,
 bool IsLeviticusEnabled(const Consensus::Params &params,
                         const CBlockIndex *pindexPrev);
 
+/** Check if 2022-12-21T21:48:00.000Z protocol upgrade has activated. */
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const int64_t nMedianTimePast);
+bool IsNumbersEnabled(const Consensus::Params &params,
+                      const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
