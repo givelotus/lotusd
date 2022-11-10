@@ -105,17 +105,6 @@ TX_CASES = [
         ],
     ),
     dict(
-        outputs=8,
-        inputs=[
-            (dict(script_inputs=[],
-                  script=[PUBLIC_KEYS[4]] + [OP_2DUP, OP_CHECKSIGVERIFY] * 40 + [OP_CHECKSIG],
-                  keys=[PRIVATE_KEYS[4]],
-                  schnorr=True),
-             0, [SIGHASH_ALL | SIGHASH_LOTUS])
-        ],
-        error='Input SigChecks limit exceeded',
-    ),
-    dict(
         outputs=6,
         inputs=[
             (dict(script_inputs=[0],
@@ -362,6 +351,7 @@ TX_CASES = [
 ]
 
 ACTIVATION_TIME = 2000000000
+NUMBERS_ACTIVATION_TIME = 2010000000
 
 def ser_script(script: bytes) -> bytes:
     if len(script) < 0xfd:
@@ -396,6 +386,9 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
+                            '-acceptnonstdtxn=1',
+                            '-allownonstdtxnconsensus=1',
+                            f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     def run_test(self):

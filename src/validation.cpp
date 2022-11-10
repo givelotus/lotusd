@@ -39,6 +39,7 @@
 #include <script/script.h>
 #include <script/scriptcache.h>
 #include <script/sigcache.h>
+#include <script/taproot.h>
 #include <shutdown.h>
 #include <timedata.h>
 #include <tinyformat.h>
@@ -461,6 +462,11 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     std::string reason;
     if (fRequireStandardPolicy && !IsStandardTx(tx, reason)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
+
+    if (fRequireStandardPolicy && TxHasPayToTaproot(tx)) {
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
+                             "bad-taproot-phased-out");
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next
@@ -1722,6 +1728,11 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // the mempool, otherwise we might mine invalid blocks.
         assert(fRequireStandardPolicy);
         extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+
+        // Before the Numbers upgrade, we don't deny Taproot or SIGHASH_LOTUS
+        if (!IsNumbersEnabled(consensusParams, pindex->pprev)) {
+            extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+        }
     }
 
     const uint32_t flags =
@@ -1807,6 +1818,13 @@ bool CChainState::ConnectBlock(const CBlock &block, BlockValidationState &state,
                           __func__);
                 return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                      reason);
+            }
+            // Taproot is phased out after the Numbers update
+            if (IsNumbersEnabled(consensusParams, pindex->pprev)) {
+                if (TxHasPayToTaproot(tx)) {
+                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                         "bad-taproot-phased-out");
+                }
             }
         }
 

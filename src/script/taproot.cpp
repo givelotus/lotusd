@@ -4,6 +4,7 @@
 
 #include <hash.h>
 #include <pubkey.h>
+#include <primitives/transaction.h>
 #include <script/script.h>
 #include <script/taproot.h>
 
@@ -83,4 +84,13 @@ bool IsPayToTaproot(const CScript &script) {
     // Otherwise, we need a state with 32 bytes.
     return script.size() == TAPROOT_SIZE_WITH_STATE &&
            script[TAPROOT_SIZE_WITHOUT_STATE] == CSHA256::OUTPUT_SIZE;
+}
+
+bool TxHasPayToTaproot(const CTransaction &tx) {
+    for (CTxOut output : tx.vout) {
+        if (IsPayToTaproot(output.scriptPubKey)) {
+            return true;
+        }
+    }
+    return false;
 }
