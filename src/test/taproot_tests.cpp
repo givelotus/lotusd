@@ -331,7 +331,7 @@ void CheckTxScripts(const std::vector<TestUtxo> &inputs,
         ScriptExecutionMetrics metrics;
         ScriptError serror;
         bool result =
-            VerifyScript(inputs[i].script_sig, inputs[i].script_pubkey, flags,
+            VerifyScript(inputs[i].script_sig, {}, inputs[i].script_pubkey, flags,
                          sig_checker, metrics, &serror);
         BOOST_CHECK_EQUAL(serror, expected_error);
         std::string script_asm = ScriptToAsmStr(inputs[i].exec_script);

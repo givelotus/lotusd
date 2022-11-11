@@ -44,6 +44,7 @@ enum class ScriptError {
     INVALID_STACK_OPERATION,
     INVALID_ALTSTACK_OPERATION,
     UNBALANCED_CONDITIONAL,
+    UNBALANCED_LOOP,
 
     /* Divisor errors */
     DIV_BY_ZERO,
@@ -107,6 +108,13 @@ enum class ScriptError {
     TAPROOT_VERIFY_COMMITMENT_FAILED,
     /* Taproot leaf version not supported */
     TAPROOT_LEAF_VERSION_NOT_SUPPORTED,
+
+    /* Indicates that an opcode is not supported in the preamble execution */
+    PREAMBLE_UNSUPPORTED_OPCODE,
+    /* Opcode only available in Mitra transactions */
+    REQUIRES_MITRA,
+    /* Introspection out of bounds */
+    INTROSPECTION_OUT_OF_BOUNDS,
 
     ERROR_COUNT,
 };

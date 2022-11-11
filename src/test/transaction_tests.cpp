@@ -141,7 +141,7 @@ BOOST_AUTO_TEST_CASE(tx_valid) {
                 uint32_t verify_flags = ParseScriptFlags(test[2].get_str());
                 BOOST_CHECK_MESSAGE(
                     VerifyScript(
-                        tx.vin[i].scriptSig,
+                        tx.vin[i].scriptSig, tx.vin[i].witnesses,
                         mapprevOutScriptPubKeys[tx.vin[i].prevout],
                         verify_flags,
                         TransactionSignatureChecker(&tx, i, amount, txdata),
@@ -235,7 +235,7 @@ BOOST_AUTO_TEST_CASE(tx_invalid) {
 
                 uint32_t verify_flags = ParseScriptFlags(test[2].get_str());
                 fValid = VerifyScript(
-                    tx.vin[i].scriptSig,
+                    tx.vin[i].scriptSig, tx.vin[i].witnesses,
                     mapprevOutScriptPubKeys[tx.vin[i].prevout], verify_flags,
                     TransactionSignatureChecker(&tx, i, amount, txdata), &err);
             }
@@ -359,8 +359,8 @@ static void CheckWithFlag(const CTransactionRef &output,
     CTransaction inputi(input);
     const PrecomputedTransactionData txdata(inputi, {output->vout[0]});
     bool ret = VerifyScript(
-        inputi.vin[0].scriptSig, output->vout[0].scriptPubKey,
-        flags | SCRIPT_ENABLE_SIGHASH_FORKID,
+        inputi.vin[0].scriptSig, inputi.vin[0].witnesses,
+        output->vout[0].scriptPubKey, flags | SCRIPT_ENABLE_SIGHASH_FORKID,
         TransactionSignatureChecker(&inputi, 0, output->vout[0].nValue, txdata),
         &error);
     BOOST_CHECK_EQUAL(ret, success);

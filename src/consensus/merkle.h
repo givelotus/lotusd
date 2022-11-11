@@ -17,8 +17,9 @@ uint256 ComputeMerkleRoot(std::vector<uint256> hashes, size_t &num_layers);
  */
 uint256 BlockMerkleRoot(const CBlock &block);
 
-uint256 TxInputsMerkleRoot(const std::vector<CTxIn> &vin, size_t &num_layers);
-uint256 TxOutputsMerkleRoot(const std::vector<CTxOut> &vout,
+uint256 TxInputsMerkleRoot(int32_t nVersion, const std::vector<CTxIn> &vin,
+                           size_t &num_layers);
+uint256 TxOutputsMerkleRoot(int32_t nVersion, const std::vector<CTxOut> &vout,
                             size_t &num_layers);
 
 #endif // BITCOIN_CONSENSUS_MERKLE_H

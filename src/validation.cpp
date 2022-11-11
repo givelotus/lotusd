@@ -1171,7 +1171,9 @@ void UpdateCoins(CCoinsViewCache &view, const CTransaction &tx, int nHeight) {
 
 bool CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
-    if (!VerifyScript(scriptSig, m_tx_out.scriptPubKey, nFlags,
+    const std::vector<std::vector<uint8_t>> &witnesses =
+        ptxTo->vin[nIn].witnesses;
+    if (!VerifyScript(scriptSig, witnesses, m_tx_out.scriptPubKey, nFlags,
                       CachingTransactionSignatureChecker(
                           ptxTo, nIn, m_tx_out.nValue, cacheStore, txdata),
                       metrics, &error)) {
@@ -1227,6 +1229,43 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
 
     int nSigChecksTotal = 0;
 
+    const uint32_t txScriptFlags =
+        tx.nVersion == TX_VERSION_MITRA ? SCRIPT_ENABLE_MITRA : 0;
+
+    for (size_t i = 0; i < tx.preambles.size(); i++) {
+        const CTxPreamble &preamble = tx.preambles[i];
+        ScriptExecutionMetrics metrics;
+        ScriptError error;
+        if (!VerifyScript({}, preamble.witnesses, preamble.predicateScript,
+                          flags | txScriptFlags | SCRIPT_PREAMBLE,
+                          CachingTransactionSignatureChecker(
+                              &tx, i, Amount::zero(), sigCacheStore, txdata),
+                          metrics, &error)) {
+            // This definitely needs refactoring...
+            uint32_t mandatoryFlags =
+                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
+            if (flags != mandatoryFlags) {
+                ScriptExecutionMetrics metrics2;
+                ScriptError error2;
+                if (VerifyScript({}, preamble.witnesses, preamble.predicateScript,
+                                mandatoryFlags | txScriptFlags | SCRIPT_PREAMBLE,
+                                CachingTransactionSignatureChecker(
+                                    &tx, i, Amount::zero(), sigCacheStore, txdata),
+                                metrics2, &error2)) {
+                    return state.Invalid(
+                        TxValidationResult::TX_NOT_STANDARD,
+                        strprintf("non-mandatory-script-verify-flag (%s)",
+                                  ScriptErrorString(error)));
+                }
+                error = error2;
+            }
+            return state.Invalid(
+                TxValidationResult::TX_CONSENSUS,
+                strprintf("mandatory-script-verify-flag-failed (%s)",
+                          ScriptErrorString(error)));
+        }
+    }
+
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const COutPoint &prevout = tx.vin[i].prevout;
         const Coin &coin = inputs.AccessCoin(prevout);
@@ -1239,8 +1278,9 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         // of CScriptCheck.
 
         // Verify signature
-        CScriptCheck check(coin.GetTxOut(), tx, i, flags, sigCacheStore, txdata,
-                           &txLimitSigChecks, pBlockLimitSigChecks);
+        CScriptCheck check(coin.GetTxOut(), tx, i, flags | txScriptFlags,
+                           sigCacheStore, txdata, &txLimitSigChecks,
+                           pBlockLimitSigChecks);
 
         // If pvChecks is not null, defer the check execution to the caller.
         if (pvChecks) {
@@ -1262,7 +1302,8 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
                 // NOT_STANDARD instead of CONSENSUS to avoid downstream users
                 // splitting the network between upgraded and non-upgraded nodes
                 // by banning CONSENSUS-failing data providers.
-                CScriptCheck check2(coin.GetTxOut(), tx, i, mandatoryFlags,
+                CScriptCheck check2(coin.GetTxOut(), tx, i,
+                                    mandatoryFlags | txScriptFlags,
                                     sigCacheStore, txdata);
                 if (check2()) {
                     return state.Invalid(
@@ -1408,8 +1449,9 @@ DisconnectResult UndoCoinSpend(const Coin &undo, CCoinsViewCache &view,
         // This is somewhat ugly, but hopefully utility is limited. This is only
         // useful when working from legacy on disck data. In any case, putting
         // the correct information in there doesn't hurt.
-        const_cast<Coin &>(undo) = Coin(undo.GetTxOut(), alternate.GetHeight(),
-                                        alternate.IsCoinBase());
+        const_cast<Coin &>(undo) =
+            Coin(undo.GetTxOut(), alternate.GetHeight(), alternate.IsCoinBase(),
+                 alternate.GetPreambleMerkleRoot());
     }
 
     // If the coin already exists as an unspent coin in the cache, then the

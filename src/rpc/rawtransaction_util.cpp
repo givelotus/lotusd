@@ -238,7 +238,7 @@ void ParsePrevouts(const UniValue &prevTxsUnival,
                     // eg getbalance returns "3.14152" rather than 3.14152
                     throw JSONRPCError(RPC_INVALID_PARAMETER, "Missing amount");
                 }
-                coins[out] = Coin(txout, 1, false);
+                coins[out] = Coin(txout, 1, false, uint256()); // TODO: fill this from JSON
             }
 
             // If redeemScript and private keys were given, add redeemScript to

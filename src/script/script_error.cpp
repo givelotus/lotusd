@@ -63,6 +63,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "OP_RETURN was encountered";
         case ScriptError::UNBALANCED_CONDITIONAL:
             return "Invalid OP_IF construction";
+        case ScriptError::UNBALANCED_LOOP:
+            return "Invalid OP_LOOP construction";
         case ScriptError::DIV_BY_ZERO:
             return "Division by zero error";
         case ScriptError::MOD_BY_ZERO:
@@ -128,6 +130,12 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Taproot control does not verify the script";
         case ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED:
             return "Unsupported taproot script leaf version";
+        case ScriptError::PREAMBLE_UNSUPPORTED_OPCODE:
+            return "Opcode is not supported in preamble execution";
+        case ScriptError::REQUIRES_MITRA:
+            return "Opcode requires Mitra transaction format";
+        case ScriptError::INTROSPECTION_OUT_OF_BOUNDS:
+            return "Introspection opcode out of bounds";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

@@ -148,7 +148,7 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
     CMutableTransaction tx2 = tx;
     const PrecomputedTransactionData txdata(tx, std::vector(txCredit.vout));
     BOOST_CHECK_MESSAGE(
-        VerifyScript(scriptSig, scriptPubKey, flags,
+        VerifyScript(scriptSig, {}, scriptPubKey, flags,
                      MutableTransactionSignatureChecker(
                          &tx, 0, txCredit.vout[0].nValue, txdata),
                      &err) == expect,
@@ -163,13 +163,13 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
         uint32_t extra_flags = InsecureRandBits(32);
         // Some flags are not purely-restrictive and thus we can't assume
         // anything about what happens when they are flipped. Keep them as-is.
-        extra_flags &=
-            ~(SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
+        extra_flags &= ~(SCRIPT_ENABLE_SIGHASH_FORKID |
+                         SCRIPT_ENABLE_REPLAY_PROTECTION | SCRIPT_ENABLE_MITRA);
         uint32_t combined_flags =
             expect ? (flags & ~extra_flags) : (flags | extra_flags);
 
         BOOST_CHECK_MESSAGE(
-            VerifyScript(scriptSig, scriptPubKey, combined_flags,
+            VerifyScript(scriptSig, {}, scriptPubKey, combined_flags,
                          MutableTransactionSignatureChecker(
                              &tx, 0, txCredit.vout[0].nValue, txdata),
                          &err) == expect,
@@ -241,7 +241,7 @@ static void DoTest(const CScript &scriptPubKey, const CScript &scriptSig,
         const PrecomputedTransactionData txdata_taproot(
             tx_taproot, std::vector(tx_credit_taproot.vout));
         BOOST_CHECK_MESSAGE(
-            VerifyScript(script_sig_taproot, script_pubkey_taproot, flags,
+            VerifyScript(script_sig_taproot, {}, script_pubkey_taproot, flags,
                          MutableTransactionSignatureChecker(
                              &tx_taproot, 0, nValue, txdata_taproot),
                          &err) == expect,
@@ -2252,8 +2252,7 @@ BOOST_AUTO_TEST_CASE(script_cltv_truncated) {
 
     std::vector<std::vector<uint8_t>> stack_ignore;
     ScriptError err;
-    BOOST_CHECK(!EvalScript(stack_ignore, script_cltv_trunc,
-                            SCRIPT_VERIFY_NONE,
+    BOOST_CHECK(!EvalScript(stack_ignore, script_cltv_trunc, SCRIPT_VERIFY_NONE,
                             BaseSignatureChecker(), &err));
     BOOST_CHECK_EQUAL(err, ScriptError::INVALID_STACK_OPERATION);
 }
@@ -2310,13 +2309,13 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG12) {
 
     CScript goodsig1 =
         sign_multisig(scriptPubKey12, key1, CTransaction(txTo12));
-    BOOST_CHECK(VerifyScript(goodsig1, scriptPubKey12, gFlags,
+    BOOST_CHECK(VerifyScript(goodsig1, {}, scriptPubKey12, gFlags,
                              MutableTransactionSignatureChecker(
                                  &txTo12, 0, txFrom12.vout[0].nValue, txdata),
                              &err));
     BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
     txTo12.vout[0].nValue = 2 * SATOSHI;
-    BOOST_CHECK(!VerifyScript(goodsig1, scriptPubKey12, gFlags,
+    BOOST_CHECK(!VerifyScript(goodsig1, {}, scriptPubKey12, gFlags,
                               MutableTransactionSignatureChecker(
                                   &txTo12, 0, txFrom12.vout[0].nValue, txdata),
                               &err));
@@ -2325,14 +2324,14 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG12) {
 
     CScript goodsig2 =
         sign_multisig(scriptPubKey12, key2, CTransaction(txTo12));
-    BOOST_CHECK(VerifyScript(goodsig2, scriptPubKey12, gFlags,
+    BOOST_CHECK(VerifyScript(goodsig2, {}, scriptPubKey12, gFlags,
                              MutableTransactionSignatureChecker(
                                  &txTo12, 0, txFrom12.vout[0].nValue, txdata),
                              &err));
     BOOST_CHECK_MESSAGE(err == ScriptError::OK, ScriptErrorString(err));
 
     CScript badsig1 = sign_multisig(scriptPubKey12, key3, CTransaction(txTo12));
-    BOOST_CHECK(!VerifyScript(badsig1, scriptPubKey12, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig1, {}, scriptPubKey12, gFlags,
                               MutableTransactionSignatureChecker(
                                   &txTo12, 0, txFrom12.vout[0].nValue, txdata),
                               &err));
@@ -2369,7 +2368,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key1);
     keys.push_back(key2);
     CScript goodsig1 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(VerifyScript(goodsig1, scriptPubKey23, gFlags,
+    BOOST_CHECK(VerifyScript(goodsig1, {}, scriptPubKey23, gFlags,
                              TransactionSignatureChecker(
                                  &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                              &err));
@@ -2379,7 +2378,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key1);
     keys.push_back(key3);
     CScript goodsig2 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(VerifyScript(goodsig2, scriptPubKey23, gFlags,
+    BOOST_CHECK(VerifyScript(goodsig2, {}, scriptPubKey23, gFlags,
                              TransactionSignatureChecker(
                                  &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                              &err));
@@ -2389,7 +2388,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key2);
     keys.push_back(key3);
     CScript goodsig3 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(VerifyScript(goodsig3, scriptPubKey23, gFlags,
+    BOOST_CHECK(VerifyScript(goodsig3, {}, scriptPubKey23, gFlags,
                              TransactionSignatureChecker(
                                  &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                              &err));
@@ -2399,7 +2398,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key2);
     keys.push_back(key2); // Can't re-use sig
     CScript badsig1 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig1, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig1, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2410,7 +2409,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key2);
     keys.push_back(key1); // sigs must be in correct order
     CScript badsig2 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig2, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig2, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2421,7 +2420,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key3);
     keys.push_back(key2); // sigs must be in correct order
     CScript badsig3 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig3, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig3, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2432,7 +2431,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key4);
     keys.push_back(key2); // sigs must match pubkeys
     CScript badsig4 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig4, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig4, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2443,7 +2442,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
     keys.push_back(key1);
     keys.push_back(key4); // sigs must match pubkeys
     CScript badsig5 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig5, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig5, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2452,7 +2451,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23) {
 
     keys.clear(); // Must have signatures
     CScript badsig6 = sign_multisig(scriptPubKey23, keys, txTo23);
-    BOOST_CHECK(!VerifyScript(badsig6, scriptPubKey23, gFlags,
+    BOOST_CHECK(!VerifyScript(badsig6, {}, scriptPubKey23, gFlags,
                               TransactionSignatureChecker(
                                   &txTo23, 0, txFrom23.vout[0].nValue, txdata),
                               &err));
@@ -2640,7 +2639,7 @@ BOOST_AUTO_TEST_CASE(script_standard_push) {
         script << i;
         BOOST_CHECK_MESSAGE(script.IsPushOnly(),
                             "Number " << i << " is not pure push.");
-        BOOST_CHECK_MESSAGE(VerifyScript(script, CScript() << OP_1,
+        BOOST_CHECK_MESSAGE(VerifyScript(script, {}, CScript() << OP_1,
                                          SCRIPT_VERIFY_NONE,
                                          BaseSignatureChecker(), &err),
                             "Number " << i << " push is not minimal data.");
@@ -2653,7 +2652,7 @@ BOOST_AUTO_TEST_CASE(script_standard_push) {
         script << data;
         BOOST_CHECK_MESSAGE(script.IsPushOnly(),
                             "Length " << i << " is not pure push.");
-        BOOST_CHECK_MESSAGE(VerifyScript(script, CScript() << OP_1,
+        BOOST_CHECK_MESSAGE(VerifyScript(script, {}, CScript() << OP_1,
                                          SCRIPT_VERIFY_NONE,
                                          BaseSignatureChecker(), &err),
                             "Length " << i << " push is not minimal data.");
@@ -2998,7 +2997,7 @@ BOOST_AUTO_TEST_CASE(script_HasValidOps) {
     script = ScriptFromHex("ff88ac");
     BOOST_CHECK(!script.HasValidOps());
     // Script with undefined opcode
-    script = ScriptFromHex("88acc0");
+    script = ScriptFromHex("88accc");
     BOOST_CHECK(!script.HasValidOps());
 
     // Check all non push opcodes.

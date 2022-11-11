@@ -62,6 +62,7 @@ void test_one_input(const std::vector<uint8_t> &buffer) {
                      flags, FuzzedSignatureChecker(fuzzed_data_provider),
                      metrics, &serror);
     (void)VerifyScript({script_bytes_1.begin(), script_bytes_1.end()},
+                       {},
                        {script_bytes_2.begin(), script_bytes_2.end()}, flags,
                        FuzzedSignatureChecker(fuzzed_data_provider), metrics,
                        &serror);

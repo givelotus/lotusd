@@ -14,6 +14,7 @@
 #include <serialize.h>
 
 static const int SERIALIZE_TRANSACTION = 0x00;
+static const uint32_t TX_VERSION_MITRA = 0x07;
 
 /**
  * An outpoint - a combination of a transaction hash and an index n into its
@@ -54,6 +55,58 @@ public:
 };
 
 /**
+ * An output of a transaction.  It contains the public key that the next input
+ * must be able to sign with to claim it.
+ */
+class CTxOut {
+public:
+    Amount nValue;
+    CScript scriptPubKey;
+    std::vector<uint8_t> carryover;
+
+    CTxOut() { SetNull(); }
+
+    CTxOut(Amount nValueIn, CScript scriptPubKeyIn,
+           std::vector<uint8_t> carryoverIn = {})
+        : nValue(nValueIn), scriptPubKey(scriptPubKeyIn),
+          carryover(carryoverIn) {}
+
+    SERIALIZE_METHODS(CTxOut, obj) { READWRITE(obj.nValue, obj.scriptPubKey); }
+
+    void SetNull() {
+        nValue = -SATOSHI;
+        scriptPubKey.clear();
+    }
+
+    bool IsNull() const { return nValue == -SATOSHI; }
+
+    friend bool operator==(const CTxOut &a, const CTxOut &b) {
+        return (a.nValue == b.nValue && a.scriptPubKey == b.scriptPubKey &&
+                a.carryover == b.carryover);
+    }
+
+    friend bool operator!=(const CTxOut &a, const CTxOut &b) {
+        return !(a == b);
+    }
+
+    std::string ToString() const;
+};
+
+struct CTxOutMitraFormatter {
+    template <typename Stream> void Ser(Stream &s, const CTxOut &txout) {
+        s << txout.nValue;
+        s << txout.scriptPubKey;
+        s << txout.carryover;
+    }
+
+    template <typename Stream> void Unser(Stream &s, CTxOut &txout) {
+        s >> txout.nValue;
+        s >> txout.scriptPubKey;
+        s >> txout.carryover;
+    }
+};
+
+/**
  * An input of a transaction. It contains the location of the previous
  * transaction's output that it claims and a signature that matches the output's
  * public key.
@@ -63,6 +116,11 @@ public:
     COutPoint prevout;
     CScript scriptSig;
     uint32_t nSequence;
+    // Mitra:
+    CTxOut output;
+    uint256 preambleMerkleRoot;
+    std::vector<std::vector<uint8_t>> witnesses;
+    std::vector<uint8_t> loopCounts;
 
     /**
      * Setting nSequence to this value for every input in a transaction disables
@@ -115,7 +173,9 @@ public:
 
     friend bool operator==(const CTxIn &a, const CTxIn &b) {
         return (a.prevout == b.prevout && a.scriptSig == b.scriptSig &&
-                a.nSequence == b.nSequence);
+                a.nSequence == b.nSequence && a.output == b.output &&
+                a.preambleMerkleRoot == b.preambleMerkleRoot &&
+                a.witnesses == b.witnesses && a.loopCounts == b.loopCounts);
     }
 
     friend bool operator!=(const CTxIn &a, const CTxIn &b) { return !(a == b); }
@@ -123,41 +183,67 @@ public:
     std::string ToString() const;
 };
 
-/**
- * An output of a transaction.  It contains the public key that the next input
- * must be able to sign with to claim it.
- */
-class CTxOut {
+class CMutableTransaction;
+
+struct CTxInMitraFormatter {
+    template <typename Stream> void Ser(Stream &s, const CTxIn &txin) {
+        s << txin.prevout;
+        s << txin.nSequence;
+        s << Using<CTxOutMitraFormatter>(txin.output);
+        if (txin.preambleMerkleRoot.IsNull()) {
+            s << uint8_t(0);
+        } else {
+            s << uint8_t(1);
+            s << txin.preambleMerkleRoot;
+        }
+        s << txin.witnesses;
+        s << txin.loopCounts;
+    }
+
+    template <typename Stream> void Unser(Stream &s, CTxIn &txin) {
+        s >> txin.prevout;
+        s >> txin.nSequence;
+        s >> Using<CTxOutMitraFormatter>(txin.output);
+        uint8_t hasPreamble;
+        s >> hasPreamble;
+        if (hasPreamble) {
+            s >> txin.preambleMerkleRoot;
+        } else {
+            txin.preambleMerkleRoot = uint256();
+        }
+        s >> txin.witnesses;
+        s >> txin.loopCounts;
+    }
+};
+
+class CTxPreamble {
 public:
-    Amount nValue;
-    CScript scriptPubKey;
+    CScript predicateScript;
+    std::vector<std::vector<uint8_t>> witnesses;
+    std::vector<uint8_t> loopCounts;
 
-    CTxOut() { SetNull(); }
+    CTxPreamble() : predicateScript(), witnesses(), loopCounts() {}
+    CTxPreamble(CScript predicateScriptIn,
+                std::vector<std::vector<uint8_t>> witnessesIn,
+                std::vector<uint8_t> loopCountsIn)
+        : predicateScript(predicateScriptIn), witnesses(witnessesIn),
+          loopCounts(loopCountsIn) {}
 
-    CTxOut(Amount nValueIn, CScript scriptPubKeyIn)
-        : nValue(nValueIn), scriptPubKey(scriptPubKeyIn) {}
-
-    SERIALIZE_METHODS(CTxOut, obj) { READWRITE(obj.nValue, obj.scriptPubKey); }
-
-    void SetNull() {
-        nValue = -SATOSHI;
-        scriptPubKey.clear();
+    SERIALIZE_METHODS(CTxPreamble, obj) {
+        READWRITE(obj.predicateScript, obj.witnesses, obj.loopCounts);
     }
 
-    bool IsNull() const { return nValue == -SATOSHI; }
-
-    friend bool operator==(const CTxOut &a, const CTxOut &b) {
-        return (a.nValue == b.nValue && a.scriptPubKey == b.scriptPubKey);
+    friend bool operator==(const CTxPreamble &a, const CTxPreamble &b) {
+        return (a.predicateScript == b.predicateScript &&
+                a.witnesses == b.witnesses && a.loopCounts == b.loopCounts);
     }
 
-    friend bool operator!=(const CTxOut &a, const CTxOut &b) {
+    friend bool operator!=(const CTxPreamble &a, const CTxPreamble &b) {
         return !(a == b);
     }
 
     std::string ToString() const;
 };
-
-class CMutableTransaction;
 
 /**
  * Basic transaction serialization format:
@@ -169,21 +255,31 @@ class CMutableTransaction;
 template <typename Stream, typename TxType>
 inline void UnserializeTransaction(TxType &tx, Stream &s) {
     s >> tx.nVersion;
+    tx.preambles.clear();
     tx.vin.clear();
     tx.vout.clear();
-    /* Try to read the vin. In case the dummy is there, this will be read as an
-     * empty vector. */
-    s >> tx.vin;
-    /* We read a non-empty vin. Assume a normal vout follows. */
-    s >> tx.vout;
+    if (tx.nVersion == TX_VERSION_MITRA) {
+        s >> tx.preambles;
+        s >> Using<VectorFormatter<CTxInMitraFormatter>>(tx.vin);
+        s >> Using<VectorFormatter<CTxOutMitraFormatter>>(tx.vout);
+    } else {
+        s >> tx.vin;
+        s >> tx.vout;
+    }
     s >> tx.nLockTime;
 }
 
 template <typename Stream, typename TxType>
 inline void SerializeTransaction(const TxType &tx, Stream &s) {
     s << tx.nVersion;
-    s << tx.vin;
-    s << tx.vout;
+    if (tx.nVersion == TX_VERSION_MITRA) {
+        s << tx.preambles;
+        s << Using<VectorFormatter<CTxInMitraFormatter>>(tx.vin);
+        s << Using<VectorFormatter<CTxOutMitraFormatter>>(tx.vout);
+    } else {
+        s << tx.vin;
+        s << tx.vout;
+    }
     s << tx.nLockTime;
 }
 
@@ -211,14 +307,18 @@ public:
     const std::vector<CTxOut> vout;
     const int32_t nVersion;
     const uint32_t nLockTime;
+    // Mitra:
+    const std::vector<CTxPreamble> preambles;
 
 private:
     /** Memory only. */
+    const uint256 preambleMerkleRoot;
     const uint256 hash;
     const uint256 id;
 
     uint256 ComputeHash() const;
     uint256 ComputeId() const;
+    uint256 ComputePreambleMerkleRoot() const;
 
 public:
     /** Construct a CTransaction that qualifies as IsNull() */
@@ -245,6 +345,7 @@ public:
 
     const TxId GetId() const { return TxId(id); }
     const TxHash GetHash() const { return TxHash(hash); }
+    const uint256 GetPreambleMerkleRoot() const { return preambleMerkleRoot; }
 
     // Return sum of txouts.
     Amount GetValueOut() const;
@@ -283,6 +384,8 @@ public:
     std::vector<CTxOut> vout;
     int32_t nVersion;
     uint32_t nLockTime;
+    // Mitra:
+    std::vector<CTxPreamble> preambles;
 
     CMutableTransaction();
     explicit CMutableTransaction(const CTransaction &tx);
@@ -307,6 +410,7 @@ public:
      */
     TxId GetId() const;
     TxHash GetHash() const;
+    uint256 GetPreambleMerkleRoot() const;
 
     friend bool operator==(const CMutableTransaction &a,
                            const CMutableTransaction &b) {
@@ -354,6 +458,10 @@ struct PrecomputedTransactionData {
         default;
     PrecomputedTransactionData &
     operator=(const PrecomputedTransactionData &txdata) = default;
+
+    // added to silence deprecation warning
+    PrecomputedTransactionData &
+    operator=(const PrecomputedTransactionData &other) = default;
 
     template <class T>
     explicit PrecomputedTransactionData(const T &tx,

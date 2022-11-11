@@ -33,9 +33,14 @@ std::string CTxIn::ToString() const {
 }
 
 std::string CTxOut::ToString() const {
-    return strprintf("CTxOut(nValue=%d.%06d, scriptPubKey=%s)", nValue / COIN,
-                     (nValue % COIN) / SATOSHI,
-                     HexStr(scriptPubKey).substr(0, 30));
+    return strprintf("CTxOut(nValue=%d.%06d, scriptPubKey=%s, carryover=%s)",
+                     nValue / COIN, (nValue % COIN) / SATOSHI,
+                     HexStr(scriptPubKey).substr(0, 30), HexStr(carryover));
+}
+
+std::string CTxPreamble::ToString() const {
+    return strprintf("CTxPreamble(predicateScript=%s, loopCounts=%s)",
+                     HexStr(predicateScript), HexStr(loopCounts));
 }
 
 CMutableTransaction::CMutableTransaction()
@@ -49,21 +54,43 @@ static uint256 ComputeCMutableTransactionHash(const CMutableTransaction &tx) {
 }
 
 static uint256 ComputeTxId(int32_t nVersion, const std::vector<CTxIn> &vin,
-                           const std::vector<CTxOut> &vout,
-                           uint32_t nLockTime) {
+                           const std::vector<CTxOut> &vout, uint32_t nLockTime,
+                           const uint256 &preambleMerkleRoot) {
     CHashWriter txid(SER_GETHASH, 0);
     size_t height;
     txid << nVersion;
-    txid << TxInputsMerkleRoot(vin, height);
+    if (nVersion == TX_VERSION_MITRA) {
+        txid << preambleMerkleRoot;
+    }
+    txid << TxInputsMerkleRoot(nVersion, vin, height);
     txid << uint8_t(height);
-    txid << TxOutputsMerkleRoot(vout, height);
+    txid << TxOutputsMerkleRoot(nVersion, vout, height);
     txid << uint8_t(height);
     txid << nLockTime;
     return txid.GetHash();
 }
 
+static uint256
+PreamblesComputeMerkleRoot(const std::vector<CTxPreamble> preambles) {
+    size_t height;
+    std::vector<uint256> leaves;
+    leaves.resize(preambles.size());
+    for (size_t i = 0; i < preambles.size(); i++) {
+        CHashWriter leaf_hash(SER_GETHASH, 0);
+        const CScript &script = preambles[i].predicateScript;
+        leaf_hash.write((const char *)script.data(), script.size());
+        leaves[i] = leaf_hash.GetHash();
+    }
+    return ComputeMerkleRoot(std::move(leaves), height);
+}
+
 TxId CMutableTransaction::GetId() const {
-    return TxId(ComputeTxId(nVersion, vin, vout, nLockTime));
+    return TxId(
+        ComputeTxId(nVersion, vin, vout, nLockTime, GetPreambleMerkleRoot()));
+}
+
+uint256 CMutableTransaction::GetPreambleMerkleRoot() const {
+    return PreamblesComputeMerkleRoot(preambles);
 }
 
 TxHash CMutableTransaction::GetHash() const {
@@ -75,7 +102,11 @@ uint256 CTransaction::ComputeHash() const {
 }
 
 uint256 CTransaction::ComputeId() const {
-    return ComputeTxId(nVersion, vin, vout, nLockTime);
+    return ComputeTxId(nVersion, vin, vout, nLockTime, preambleMerkleRoot);
+}
+
+uint256 CTransaction::ComputePreambleMerkleRoot() const {
+    return PreamblesComputeMerkleRoot(preambles);
 }
 
 /**
@@ -84,13 +115,17 @@ uint256 CTransaction::ComputeId() const {
  */
 CTransaction::CTransaction()
     : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
-      hash() {}
+      preambles(), hash() {}
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
+      nLockTime(tx.nLockTime), preambles(tx.preambles),
+      preambleMerkleRoot(ComputePreambleMerkleRoot()), hash(ComputeHash()),
+      id(ComputeId()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
     : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()), id(ComputeId()) {}
+      nLockTime(tx.nLockTime), preambles(std::move(tx.preambles)),
+      preambleMerkleRoot(ComputePreambleMerkleRoot()), hash(ComputeHash()),
+      id(ComputeId()) {}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();

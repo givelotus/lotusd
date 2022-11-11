@@ -15,6 +15,7 @@
 #include <script/script.h>
 #include <script/sigencoding.h>
 #include <script/taproot.h>
+#include <streams.h>
 #include <uint256.h>
 #include <util/bitmanip.h>
 
@@ -231,6 +232,7 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
     valtype vchPushValue;
     ConditionStack vfExec;
     std::vector<valtype> altstack;
+    std::vector<CScript::const_iterator> loopstack;
     set_error(serror, ScriptError::UNKNOWN);
     if (script.size() > MAX_SCRIPT_SIZE) {
         return set_error(serror, ScriptError::SCRIPT_SIZE);
@@ -311,6 +313,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         break;
 
                     case OP_CHECKLOCKTIMEVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         if (stack.size() < 1) {
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
@@ -353,6 +359,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                     }
 
                     case OP_CHECKSEQUENCEVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         if (stack.size() < 1) {
                             return set_error(
                                 serror, ScriptError::INVALID_STACK_OPERATION);
@@ -468,6 +478,39 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_RETURN: {
                         return set_error(serror, ScriptError::OP_RETURN);
+                    } break;
+
+                    case OP_LOOP: {
+                        if (!(flags & SCRIPT_ENABLE_MITRA)) {
+                            return set_error(serror, ScriptError::DISABLED_OPCODE);
+                        }
+                        // Push program counter so we can jump back if necessary
+                        loopstack.push_back(pc);
+                    } break;
+
+                    case OP_ENDLOOP: {
+                        if (!(flags & SCRIPT_ENABLE_MITRA)) {
+                            return set_error(serror, ScriptError::DISABLED_OPCODE);
+                        }
+                        // (true -- <jump to beginning of loop>)
+                        // (false -- <exit loop>)
+                        if (loopstack.empty()) {
+                            return set_error(
+                                serror, ScriptError::UNBALANCED_LOOP);
+                        }
+                        if (stack.empty()) {
+                            return set_error(
+                                serror, ScriptError::INVALID_STACK_OPERATION);
+                        }
+                        bool fValue = CastToBool(stacktop(-1));
+                        if (fValue) {
+                            // true -> jump back
+                            pc = loopstack.at(loopstack.size() - 1);
+                        } else {
+                            // false -> leave loop
+                            loopstack.pop_back();
+                        }
+                        popstack(stack);
                     } break;
 
                     //
@@ -941,6 +984,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_CHECKSIG:
                     case OP_CHECKSIGVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         // (sig pubkey -- bool)
                         if (stack.size() < 2) {
                             return set_error(
@@ -1020,6 +1067,10 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
 
                     case OP_CHECKMULTISIG:
                     case OP_CHECKMULTISIGVERIFY: {
+                        if (flags & SCRIPT_PREAMBLE) {
+                            return set_error(serror,
+                                             ScriptError::PREAMBLE_UNSUPPORTED_OPCODE);
+                        }
                         // ([dummy] [sig ...] num_of_signatures [pubkey ...]
                         // num_of_pubkeys -- bool)
                         const size_t idxKeyCount = 1;
@@ -1478,6 +1529,24 @@ bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                         }
                     } break;
 
+                    case OP_THISINDEX:
+                    case OP_NUMPREAMBLES:
+                    case OP_NUMINPUTS:
+                    case OP_NUMOUTPUTS:
+                    case OP_PICKPREAMBLEHASH:
+                    case OP_PICKINPUTOUTPOINT:
+                    case OP_PICKINPUTVALUE:
+                    case OP_PICKINPUTSCRIPTPUBKEY:
+                    case OP_PICKINPUTCARRYOVER:
+                    case OP_PICKINPUTPREAMBLEMERKLEROOT:
+                    case OP_PICKOUTPUTVALUE:
+                    case OP_PICKOUTPUTSCRIPTPUBKEY:
+                    case OP_PICKOUTPUTCARRYOVER: {
+                        if (!checker.PickFromTx(opcode, stack, serror)) {
+                            return false; // error set
+                        }
+                    } break;
+
                     default:
                         return set_error(serror, ScriptError::BAD_OPCODE);
                 }
@@ -1657,9 +1726,9 @@ PrecomputedTransactionData::PrecomputedTransactionData(
         return;
     }
     m_inputs_merkle_root =
-        TxInputsMerkleRoot(txTo.vin, m_inputs_merkle_height);
+        TxInputsMerkleRoot(txTo.nVersion, txTo.vin, m_inputs_merkle_height);
     m_outputs_merkle_root =
-        TxOutputsMerkleRoot(txTo.vout, m_outputs_merkle_height);
+        TxOutputsMerkleRoot(txTo.nVersion, txTo.vout, m_outputs_merkle_height);
     for (const CTxOut &output : txTo.vout) {
         m_amount_outputs_sum += output.nValue;
     }
@@ -2024,12 +2093,135 @@ bool GenericTransactionSignatureChecker<T>::CheckSequence(
     return true;
 }
 
+template <class T>
+bool GenericTransactionSignatureChecker<T>::PickFromTx(
+    opcodetype opcode, std::vector<valtype> &stack, ScriptError *serror) const {
+    if (txTo->nVersion != TX_VERSION_MITRA) {
+        return set_error(serror, ScriptError::REQUIRES_MITRA);
+    }
+    switch (opcode) {
+        case OP_THISINDEX: {
+            CScriptNum bn(nIn);
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMPREAMBLES: {
+            CScriptNum bn(txTo->preambles.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMINPUTS: {
+            CScriptNum bn(txTo->vin.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        case OP_NUMOUTPUTS: {
+            CScriptNum bn(txTo->vout.size());
+            stack.push_back(bn.getvch());
+            return true;
+        }
+        default:
+            break;
+    }
+    if (stack.size() < 1) {
+        return set_error(serror, ScriptError::INVALID_STACK_OPERATION);
+    }
+    CScriptNum bn(stacktop(-1), true);
+    size_t idx = bn.getint();
+    popstack(stack);
+    switch (opcode) {
+        case OP_PICKPREAMBLEHASH: {
+            if (idx >= txTo->preambles.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            valtype vchHash(32);
+            CHash256()
+                .Write(txTo->preambles[idx].predicateScript)
+                .Finalize(vchHash);
+            stack.push_back(std::move(vchHash));
+            return true;
+        }
+        case OP_PICKINPUTOUTPOINT:
+        case OP_PICKINPUTVALUE:
+        case OP_PICKINPUTSCRIPTPUBKEY:
+        case OP_PICKINPUTCARRYOVER:
+        case OP_PICKINPUTPREAMBLEMERKLEROOT: {
+            if (idx >= txTo->vin.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            const CTxIn &input = txTo->vin[idx];
+            switch (opcode) {
+                case OP_PICKINPUTOUTPOINT: {
+                    CDataStream s(SER_NETWORK, PROTOCOL_VERSION);
+                    s << input.prevout;
+                    stack.push_back({s.begin(), s.end()});
+                    return true;
+                }
+                case OP_PICKINPUTVALUE: {
+                    CScriptNum bn(input.output.nValue / SATOSHI);
+                    stack.push_back(bn.getvch());
+                    return true;
+                }
+                case OP_PICKINPUTSCRIPTPUBKEY: {
+                    stack.push_back({input.output.scriptPubKey.begin(),
+                                     input.output.scriptPubKey.end()});
+                    return true;
+                }
+                case OP_PICKINPUTCARRYOVER: {
+                    stack.push_back(input.output.carryover);
+                    return true;
+                }
+                case OP_PICKINPUTPREAMBLEMERKLEROOT: {
+                    stack.push_back({input.preambleMerkleRoot.begin(),
+                                     input.preambleMerkleRoot.end()});
+                    return true;
+                }
+                default:
+                    return false; // impossible
+            }
+        }
+        case OP_PICKOUTPUTVALUE:
+        case OP_PICKOUTPUTSCRIPTPUBKEY:
+        case OP_PICKOUTPUTCARRYOVER: {
+            if (idx >= txTo->vout.size()) {
+                return set_error(serror,
+                                 ScriptError::INTROSPECTION_OUT_OF_BOUNDS);
+            }
+            const CTxOut &output = txTo->vout[idx];
+            switch (opcode) {
+                case OP_PICKOUTPUTVALUE: {
+                    CScriptNum bn(output.nValue / SATOSHI);
+                    stack.push_back(bn.getvch());
+                    return true;
+                }
+                case OP_PICKOUTPUTSCRIPTPUBKEY: {
+                    stack.push_back({output.scriptPubKey.begin(),
+                                     output.scriptPubKey.end()});
+                    return true;
+                }
+                case OP_PICKOUTPUTCARRYOVER: {
+                    stack.push_back(output.carryover);
+                    return true;
+                }
+                default:
+                    return false; // impossible
+            }
+        }
+        default:
+            return false;
+    }
+}
+
 // explicit instantiation
 template class GenericTransactionSignatureChecker<CTransaction>;
 template class GenericTransactionSignatureChecker<CMutableTransaction>;
 
 bool VerifyScriptPostConditions(const std::vector<valtype> stack,
-                                const CScript &scriptSig, uint32_t flags,
+                                const CScript &scriptSig,
+                                const std::vector<valtype> &witnesses,
+                                uint32_t flags,
                                 const ScriptExecutionMetrics &metrics,
                                 ScriptError *serror) {
     // The CLEANSTACK check is only performed after potential P2SH evaluation,
@@ -2060,7 +2252,11 @@ bool VerifyScriptPostConditions(const std::vector<valtype> stack,
         static_assert(INT_MAX / 43 / 3 > MAX_OPS_PER_SCRIPT,
                       "overflow sanity check on maximum possible sigchecks "
                       "from sig+redeem+pub scripts");
-        if (int(scriptSig.size()) < metrics.nSigChecks * 43 - 60) {
+        const size_t witnesses_size =
+            (flags & SCRIPT_ENABLE_MITRA)
+                ? GetSerializeSize(witnesses, PROTOCOL_VERSION)
+                : scriptSig.size();
+        if (int(witnesses_size) < metrics.nSigChecks * 43 - 60) {
             return set_error(serror, ScriptError::INPUT_SIGCHECKS);
         }
     }
@@ -2069,6 +2265,7 @@ bool VerifyScriptPostConditions(const std::vector<valtype> stack,
 
 static bool VerifyTaprootSpend(std::vector<valtype> stack,
                                const CScript &script_sig,
+                               const std::vector<valtype> &witnesses,
                                const CScript &script_pubkey, uint32_t flags,
                                const BaseSignatureChecker &checker,
                                ScriptExecutionMetrics &metrics,
@@ -2140,8 +2337,8 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
     if (stack.empty() || CastToBool(stack.back()) == false) {
         return set_error(serror, ScriptError::EVAL_FALSE);
     }
-    if (!VerifyScriptPostConditions(stack, script_sig, flags, metrics,
-                                    serror)) {
+    if (!VerifyScriptPostConditions(stack, script_sig, witnesses, flags,
+                                    metrics, serror)) {
         // serror is set
         return false;
     }
@@ -2150,6 +2347,7 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
 
 static bool VerifyScriptType(std::vector<valtype> stack,
                              const CScript &script_sig,
+                             const std::vector<valtype> &witnesses,
                              const CScript &script_pubkey, uint32_t flags,
                              const BaseSignatureChecker &checker,
                              ScriptExecutionMetrics &metrics,
@@ -2158,16 +2356,18 @@ static bool VerifyScriptType(std::vector<valtype> stack,
         return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
     }
     if (script_pubkey[1] == TAPROOT_SCRIPTTYPE) { // Taproot script version
-        return VerifyTaprootSpend(stack, script_sig, script_pubkey, flags,
-                                  checker, metrics, serror);
+        return VerifyTaprootSpend(stack, script_sig, witnesses, script_pubkey,
+                                  flags, checker, metrics, serror);
     } else {
         // Script type not defined
         return set_error(serror, ScriptError::SCRIPTTYPE_INVALID_TYPE);
     }
 }
 
-bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
-                  uint32_t flags, const BaseSignatureChecker &checker,
+bool VerifyScript(const CScript &scriptSig,
+                  const std::vector<valtype> &witnesses,
+                  const CScript &scriptPubKey, uint32_t flags,
+                  const BaseSignatureChecker &checker,
                   ScriptExecutionMetrics &metricsOut, ScriptError *serror) {
     set_error(serror, ScriptError::UNKNOWN);
 
@@ -2177,10 +2377,14 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
 
     ScriptExecutionMetrics metrics = {};
 
-    // scriptSig and scriptPubKey must be evaluated sequentially on the same
-    // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
-    {
+    if (flags & SCRIPT_ENABLE_MITRA) {
+        // In Mitra, we get the witnesses directly
+        stack = witnesses;
+    } else {
+        // scriptSig and scriptPubKey must be evaluated sequentially on the
+        // same stack rather than being simply concatenated (see
+        // CVE-2010-5141)
         ScriptExecutionData execdata{CScript()}; // unused in scriptSig
         if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
                         serror)) {
@@ -2189,8 +2393,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         }
     }
     if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_SCRIPTTYPE) {
-        if (!VerifyScriptType(stack, scriptSig, scriptPubKey, flags, checker,
-                              metrics, serror)) {
+        if (!VerifyScriptType(stack, scriptSig, witnesses, scriptPubKey, flags,
+                              checker, metrics, serror)) {
             // serror is set
             return false;
         }
@@ -2248,7 +2452,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         }
     }
 
-    if (!VerifyScriptPostConditions(stack, scriptSig, flags, metrics, serror)) {
+    if (!VerifyScriptPostConditions(stack, scriptSig, witnesses, flags, metrics,
+                                    serror)) {
         // serror is set
         return false;
     }

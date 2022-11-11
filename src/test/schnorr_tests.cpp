@@ -94,6 +94,8 @@ BOOST_AUTO_TEST_CASE(opcodes_random_flags) {
         uint32_t flags = lcg.next();
         // Flag cannot occur in script execution, only in Taproot key spend
         flags &= ~SCRIPT_TAPROOT_KEY_SPEND_PATH;
+        // Sig checks (except OP_CHECKDATASIG(VERIFY)) disabled in preambles
+        flags &= ~SCRIPT_PREAMBLE;
 
         const bool hasForkId = (flags & SCRIPT_ENABLE_SIGHASH_FORKID) != 0;
         const SigHashType sigHashType = SigHashType().withAlgorithm(

@@ -73,6 +73,7 @@ struct SignatureData {
     /// The scriptSig of an input. Contains complete signatures or the
     /// traditional partial signatures format.
     CScript scriptSig;
+    std::vector<std::vector<uint8_t>> witnesses;
     /// The redeemScript (if any) for the input.
     CScript redeem_script;
     /// BIP 174 style partial signatures for the input. May contain all

@@ -2883,7 +2883,7 @@ bool CWallet::SignTransaction(CMutableTransaction &tx) const {
         const CWalletTx &wtx = mi->second;
         coins[input.prevout] =
             Coin(wtx.tx->vout[input.prevout.GetN()], wtx.m_confirm.block_height,
-                 wtx.IsCoinBase());
+                 wtx.IsCoinBase(), wtx.tx->GetPreambleMerkleRoot());
     }
     std::map<int, std::string> input_errors;
     return SignTransaction(tx, coins, SigHashType().withForkId(), input_errors);

@@ -40,7 +40,7 @@ static bool Verify(const CScript &scriptSig, const CScript &scriptPubKey,
     txTo.vout[0].nValue = SATOSHI;
 
     PrecomputedTransactionData txdata(txTo, std::vector(txTo.vout));
-    return VerifyScript(scriptSig, scriptPubKey, SCRIPT_ENABLE_SIGHASH_FORKID,
+    return VerifyScript(scriptSig, {}, scriptPubKey, SCRIPT_ENABLE_SIGHASH_FORKID,
                         MutableTransactionSignatureChecker(
                             &txTo, 0, txFrom.vout[0].nValue, txdata),
                         &err);

@@ -129,8 +129,10 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx) {
                 break;
             } else {
                 mtx.vin[i].scriptSig = input.final_script_sig;
-                view.AddCoin(psbtx.tx->vin[i].prevout, Coin(newUtxo, 1, false),
-                             true);
+                view.AddCoin(
+                    psbtx.tx->vin[i].prevout,
+                    Coin(newUtxo, 1, false, psbtx.tx->GetPreambleMerkleRoot()),
+                    true);
             }
         }
 

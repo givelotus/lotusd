@@ -103,6 +103,7 @@ static int verify_script(const uint8_t *scriptPubKey,
         PrecomputedTransactionData txdata(tx, std::move(spentOutputs));
         return VerifyScript(
             tx.vin[nIn].scriptSig,
+            tx.vin[nIn].witnesses,
             CScript(scriptPubKey, scriptPubKey + scriptPubKeyLen), flags,
             TransactionSignatureChecker(&tx, nIn, amount, txdata), nullptr);
     } catch (const std::exception &) {

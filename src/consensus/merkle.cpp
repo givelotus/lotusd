@@ -35,24 +35,33 @@ uint256 BlockMerkleRoot(const CBlock &block) {
     return ComputeMerkleRoot(std::move(leaves), num_layers);
 }
 
-uint256 TxInputsMerkleRoot(const std::vector<CTxIn> &vin, size_t &num_layers) {
+uint256 TxInputsMerkleRoot(int32_t nVersion, const std::vector<CTxIn> &vin,
+                           size_t &num_layers) {
     std::vector<uint256> leaves;
     leaves.resize(vin.size());
     for (size_t i = 0; i < vin.size(); i++) {
         CHashWriter leaf_hash(SER_GETHASH, 0);
         leaf_hash << vin[i].prevout;
         leaf_hash << vin[i].nSequence;
+        if (nVersion == TX_VERSION_MITRA) {
+            leaf_hash << Using<CTxOutMitraFormatter>(vin[i].output);
+            leaf_hash << vin[i].preambleMerkleRoot;
+        }
         leaves[i] = leaf_hash.GetHash();
     }
     return ComputeMerkleRoot(std::move(leaves), num_layers);
 }
 
-uint256 TxOutputsMerkleRoot(const std::vector<CTxOut> &vout,
+uint256 TxOutputsMerkleRoot(int32_t nVersion, const std::vector<CTxOut> &vout,
                             size_t &num_layers) {
     std::vector<uint256> leaves;
     leaves.resize(vout.size());
     for (size_t i = 0; i < vout.size(); i++) {
-        leaves[i] = SerializeHash(vout[i]);
+        if (nVersion == TX_VERSION_MITRA) {
+            leaves[i] = SerializeHash(Using<CTxOutMitraFormatter>(vout[i]));
+        } else {
+            leaves[i] = SerializeHash(vout[i]);
+        }
     }
     return ComputeMerkleRoot(std::move(leaves), num_layers);
 }

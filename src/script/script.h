@@ -188,6 +188,24 @@ enum opcodetype {
     // additional byte string operations
     OP_REVERSEBYTES = 0xbc,
 
+    OP_LOOP = 0xbd,
+    OP_ENDLOOP = 0xbe,
+
+    // introspection opcodes
+    OP_THISINDEX = 0xbf,
+    OP_NUMPREAMBLES = 0xc0,
+    OP_NUMINPUTS = 0xc1,
+    OP_NUMOUTPUTS = 0xc2,
+    OP_PICKPREAMBLEHASH = 0xc3,
+    OP_PICKINPUTOUTPOINT = 0xc4,
+    OP_PICKINPUTVALUE = 0xc5,
+    OP_PICKINPUTSCRIPTPUBKEY = 0xc6,
+    OP_PICKINPUTCARRYOVER = 0xc7,
+    OP_PICKINPUTPREAMBLEMERKLEROOT = 0xc8,
+    OP_PICKOUTPUTVALUE = 0xc9,
+    OP_PICKOUTPUTSCRIPTPUBKEY = 0xca,
+    OP_PICKOUTPUTCARRYOVER = 0xcb,
+
     // The first op_code value after all defined opcodes
     FIRST_UNDEFINED_OP_VALUE,
 

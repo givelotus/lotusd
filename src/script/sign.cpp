@@ -231,10 +231,11 @@ bool ProduceSignature(const SigningProvider &provider,
     }
 
     sigdata.scriptSig = PushAll(result);
+    sigdata.witnesses = std::move(result);
 
     // Test solution
     sigdata.complete =
-        solved && VerifyScript(sigdata.scriptSig, fromPubKey,
+        solved && VerifyScript(sigdata.scriptSig, sigdata.witnesses, fromPubKey,
                                STANDARD_SCRIPT_VERIFY_FLAGS, creator.Checker());
     return sigdata.complete;
 }
@@ -287,6 +288,7 @@ SignatureData DataFromTransaction(const CMutableTransaction &tx,
     SignatureData data;
     assert(tx.vin.size() > nIn);
     data.scriptSig = tx.vin[nIn].scriptSig;
+    data.witnesses = tx.vin[nIn].witnesses;
     Stacks stack(data);
     const CTxOut &txout = txdata.m_spent_outputs[nIn];
 
@@ -294,7 +296,7 @@ SignatureData DataFromTransaction(const CMutableTransaction &tx,
     MutableTransactionSignatureChecker tx_checker(&tx, nIn, txout.nValue,
                                                   txdata);
     SignatureExtractorChecker extractor_checker(data, tx_checker);
-    if (VerifyScript(data.scriptSig, txout.scriptPubKey,
+    if (VerifyScript(data.scriptSig, data.witnesses, txout.scriptPubKey,
                      STANDARD_SCRIPT_VERIFY_FLAGS, extractor_checker)) {
         data.complete = true;
         return data;
@@ -458,8 +460,8 @@ bool IsSolvable(const SigningProvider &provider, const CScript &script) {
     if (ProduceSignature(provider, DUMMY_SIGNATURE_CREATOR, script, sigs)) {
         // VerifyScript check is just defensive, and should never fail.
         bool verified =
-            VerifyScript(sigs.scriptSig, script, STANDARD_SCRIPT_VERIFY_FLAGS,
-                         DUMMY_CHECKER);
+            VerifyScript(sigs.scriptSig, sigs.witnesses, script,
+                         STANDARD_SCRIPT_VERIFY_FLAGS, DUMMY_CHECKER);
         assert(verified);
         return true;
     }
@@ -518,7 +520,8 @@ bool SignTransaction(CMutableTransaction &mtx, const SigningProvider *keystore,
 
         ScriptError serror = ScriptError::OK;
         if (!VerifyScript(
-                txin.scriptSig, prevPubKey, STANDARD_SCRIPT_VERIFY_FLAGS,
+                txin.scriptSig, txin.witnesses, prevPubKey,
+                STANDARD_SCRIPT_VERIFY_FLAGS,
                 TransactionSignatureChecker(&txConst, i, amount, txdata),
                 &serror)) {
             if (serror == ScriptError::INVALID_STACK_OPERATION) {

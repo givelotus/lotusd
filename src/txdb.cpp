@@ -436,7 +436,7 @@ bool CCoinsViewDB::Upgrade() {
             if (!old_coins.vout[i].IsNull() &&
                 !old_coins.vout[i].scriptPubKey.IsUnspendable()) {
                 Coin newcoin(std::move(old_coins.vout[i]), old_coins.nHeight,
-                             old_coins.fCoinBase);
+                             old_coins.fCoinBase, uint256());
                 COutPoint outpoint(id, i);
                 CoinEntry entry(&outpoint);
                 batch.Write(entry, newcoin);

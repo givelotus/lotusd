@@ -47,10 +47,9 @@ private:
                   const uint256 &sighash) const;
 
 public:
-    CachingTransactionSignatureChecker(const CTransaction *txToIn,
-                                       unsigned int nInIn,
-                                       const Amount amountIn, bool storeIn,
-                                       PrecomputedTransactionData &txdataIn)
+    CachingTransactionSignatureChecker(
+        const CTransaction *txToIn, unsigned int nInIn, const Amount amountIn,
+        bool storeIn, const PrecomputedTransactionData &txdataIn)
         : TransactionSignatureChecker(txToIn, nInIn, amountIn, txdataIn),
           store(storeIn) {}
 
