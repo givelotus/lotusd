@@ -4,8 +4,9 @@
 #include <consensus/params.h>
 
 namespace RewardAddresses {
-    Consensus::CoinbaseAddresses AddressSets = {
-        .genesis = {
+Consensus::CoinbaseAddresses AddressSets = {
+    .genesis =
+        {
             // Foundation
             "pzmv0yp3kuwcd2cdv9lpu8nsdmzwud9s0upp4rxwc9",
             // Bitcoin ABC
@@ -33,7 +34,8 @@ namespace RewardAddresses {
             // Distro Bot
             "qp9cd8u62hzhqq7lz79aeqq3ssgfmyz03vc5c4g0ct",
         },
-        .exodus = {
+    .exodus =
+        {
             // Aleph 0
             "lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi",
             // Maintainance
@@ -61,7 +63,8 @@ namespace RewardAddresses {
             // Lotusia Citizen 3
             "lotus_16PSJKHmQ2Lm8BNtnvPi1jC4rxJpCo8VqvJecj5Hb",
         },
-        .leviticus = {
+    .leviticus =
+        {
             // Aleph 0
             "lotus_16PSJQTQMPHoT5AuGLm2UHcmbKLEFR43gHJChzTUy",
             // Maintainance
@@ -88,5 +91,6 @@ namespace RewardAddresses {
             "lotus_16PSJHuUsbDo5qZUjygQgtJLMsZgcpSB6wD459F6J",
             // Lotus Citizen 4
             "lotus_16PSJNEqzEoLhBigDN8Hf93FzERrPQKJXaYdzRCNT",
-        }};
+        },
+};
 } // namespace RewardAddresses
