@@ -95,7 +95,7 @@ Consensus::CoinbaseAddresses AddressSets = {
     .numbers =
         {
             "lotus_16PSJKzohkeX3G5BKpbeESKZZCHWrQymNRwjsu42Y",
-            "lotus_16PSJLKaHS94EcXFWMgxRuosFo87AQiDzfvquWAJf",
+            "lotus_16PSJHtDqN7ibmc4NSziqbrmAXoSLE46F9LceMUDx",
             "lotus_16PSJHhULzYgupzGnvDysUFLxYxBVwx92JjXSyjNL",
             "lotus_16PSJLTMsACkicNJVmAPBQgmEeagvkXKuF8gR2qE8",
             "lotus_16PSJPfz8J1KkScQUMZK8GabJgTGxr8c5WWidEQYS",
