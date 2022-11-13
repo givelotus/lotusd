@@ -128,6 +128,8 @@ std::string ScriptErrorString(const ScriptError serror) {
             return "Taproot control does not verify the script";
         case ScriptError::TAPROOT_LEAF_VERSION_NOT_SUPPORTED:
             return "Unsupported taproot script leaf version";
+        case ScriptError::TAPROOT_PHASEOUT:
+            return "Taproot is being phased out";
         case ScriptError::UNKNOWN:
         case ScriptError::ERROR_COUNT:
         default:

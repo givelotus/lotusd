@@ -133,12 +133,16 @@ TESTCASES = [
 ]
 
 ACTIVATION_TIME = 2000000000
+NUMBERS_ACTIVATION_TIME = 2010000000
 
 class TaprootKeySpendTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
+                            '-acceptnonstdtxn=1',
+                            '-allownonstdtxnconsensus=1',
+                            f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     def run_test(self):
