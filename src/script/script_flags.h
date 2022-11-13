@@ -16,6 +16,10 @@ enum {
     // Only used for checking signatures, not during script execution.
     SCRIPT_TAPROOT_KEY_SPEND_PATH = (1U << 0),
 
+    // Disable the execution of Taproot scripts, as well as SIGHASH_LOTUS
+    // sighash types.
+    SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS = (1U << 1),
+
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
