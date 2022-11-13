@@ -1597,6 +1597,10 @@ static uint32_t GetNextBlockScriptFlags(const Consensus::Params &params,
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
 
+    if (IsNumbersEnabled(params, pindex)) {
+        flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+    }
+
     return flags;
 }
 
