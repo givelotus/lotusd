@@ -23,13 +23,18 @@ while [ "${INDEX}" -lt "${#ARGS[@]}" ]; do
   ((INDEX+=1))
   TESTNET_PORT="${ARGS[${INDEX}]}"
   ((INDEX+=1))
+  if [[ -z "$CONFIG_FILE" ]]; then
+    CONFIG_FLAG="--config=~/.lotus/lotus.conf"
+  else
+    CONFIG_FLAG="--config=${CONFIG_FILE}"
+  fi
 
   CHAINPARAMS_MAINNET_TXT="${NETWORK}/chainparams_main.txt"
-  ./make_chainparams.py -a 127.0.0.1:"${MAINNET_PORT}"> "${CHAINPARAMS_MAINNET_TXT}"
+  ./make_chainparams.py -a 127.0.0.1:"${MAINNET_PORT}" "${CONFIG_FLAG}" > "${CHAINPARAMS_MAINNET_TXT}"
   git add "${CHAINPARAMS_MAINNET_TXT}"
 
   CHAINPARAMS_TESTNET_TXT="${NETWORK}/chainparams_test.txt"
-  ./make_chainparams.py -a 127.0.0.1:"${TESTNET_PORT}" > "${CHAINPARAMS_TESTNET_TXT}"
+  ./make_chainparams.py -a 127.0.0.1:"${TESTNET_PORT}" "${CONFIG_FLAG}" > "${CHAINPARAMS_TESTNET_TXT}"
   git add "${CHAINPARAMS_TESTNET_TXT}"
 
   CHAINPARAMS_CONSTANTS="${TOPLEVEL}"/src/networks/"${NETWORK}"/chainparamsconstants.cpp
