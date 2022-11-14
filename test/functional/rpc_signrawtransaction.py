@@ -180,12 +180,6 @@ class SignRawTransactionsTest(BitcoinTestFramework):
             "ALL|FORKID|ANYONECANPAY",
             "NONE|FORKID|ANYONECANPAY",
             "SINGLE|FORKID|ANYONECANPAY",
-            "ALL|LOTUS",
-            "NONE|LOTUS",
-            "SINGLE|LOTUS",
-            "ALL|LOTUS|ANYONECANPAY",
-            "NONE|LOTUS|ANYONECANPAY",
-            "SINGLE|LOTUS|ANYONECANPAY",
         ]
         no_forkid_sighashes = [
             "ALL",

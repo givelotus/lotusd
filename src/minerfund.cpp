@@ -5,6 +5,7 @@
 #include <minerfund.h>
 
 #include <cashaddrenc.h> // For DecodeCashAddrContent
+#include <chain.h>       // For CBlockIndex class
 #include <chainparams.h>
 #include <consensus/activation.h>
 #include <key_io.h> // For DecodeDestination
@@ -23,16 +24,28 @@ static const CTxOut BuildOutput(const std::string &address,
     return {amount, script};
 }
 
-static const std::vector<std::string> &
-GetPayoutAddresses(const Consensus::Params &params,
-                   const CBlockIndex *pindexPrev) {
-    if (IsLeviticusEnabled(params, pindexPrev)) {
-        return params.coinbasePayoutAddresses.leviticus;
+static const std::vector<CTxOut>
+BuildOutputsCycling(const std::vector<std::string> &addresses,
+                    const CBlockIndex *pindexPrev, const Amount blockReward) {
+    const size_t numAddresses = addresses.size();
+    const Amount shareAmount = blockReward / 2;
+    const auto blockHeight = pindexPrev->nHeight + 1;
+    const auto addressIndx = blockHeight % numAddresses;
+    const auto address = addresses[addressIndx];
+    return std::vector<CTxOut>({BuildOutput(address, shareAmount)});
+}
+
+static const std::vector<CTxOut>
+BuildOutputsFanOut(const std::vector<std::string> &addresses,
+                   const CBlockIndex *pindexPrev, const Amount blockReward) {
+    const size_t numAddresses = addresses.size();
+    std::vector<CTxOut> minerFundOutputs;
+    const Amount shareAmount = blockReward / (int64_t(2 * numAddresses));
+    minerFundOutputs.reserve(numAddresses);
+    for (const std::string &address : addresses) {
+        minerFundOutputs.emplace_back(BuildOutput(address, shareAmount));
     }
-    if (IsExodusEnabled(params, pindexPrev)) {
-        return params.coinbasePayoutAddresses.exodus;
-    }
-    return params.coinbasePayoutAddresses.genesis;
+    return minerFundOutputs;
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
@@ -43,15 +56,21 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
-    const std::vector<std::string> &addresses =
-        GetPayoutAddresses(params, pindexPrev);
-    const size_t numAddresses = addresses.size();
-    std::vector<CTxOut> minerFundOutputs;
-    const Amount shareAmount = blockReward / (int64_t(2 * numAddresses));
-    minerFundOutputs.reserve(numAddresses);
-    for (const std::string &address : addresses) {
-        minerFundOutputs.emplace_back(BuildOutput(address, shareAmount));
+    if (IsNumbersEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.numbers,
+                                   pindexPrev, blockReward);
     }
 
-    return minerFundOutputs;
+    if (IsLeviticusEnabled(params, pindexPrev)) {
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.leviticus,
+                                  pindexPrev, blockReward);
+    }
+
+    if (IsExodusEnabled(params, pindexPrev)) {
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.exodus,
+                                  pindexPrev, blockReward);
+    }
+
+    return BuildOutputsFanOut(params.coinbasePayoutAddresses.genesis,
+                              pindexPrev, blockReward);
 }

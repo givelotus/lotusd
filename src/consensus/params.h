@@ -18,6 +18,7 @@ struct CoinbaseAddresses {
     std::vector<std::string> genesis;
     std::vector<std::string> exodus;
     std::vector<std::string> leviticus;
+    std::vector<std::string> numbers;
 };
 
 /**

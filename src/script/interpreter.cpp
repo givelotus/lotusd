@@ -1869,6 +1869,10 @@ bool SignatureHash(uint256 &sighashOut,
                                    sigHashType, amount, cache);
     } else if (sigHashType.hasLotus()) {
         assert(cache);
+        if (flags & SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS) {
+            // SIGHASH_LOTUS phaseout
+            return false;
+        }
         return SignatureHashLotus(sighashOut, execdata, txTo, nIn, sigHashType,
                                    *cache);
     } else {
@@ -2073,6 +2077,9 @@ static bool VerifyTaprootSpend(std::vector<valtype> stack,
                                const BaseSignatureChecker &checker,
                                ScriptExecutionMetrics &metrics,
                                ScriptError *serror) {
+    if (flags & SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS) {
+        return set_error(serror, ScriptError::TAPROOT_PHASEOUT);
+    }
     if (!IsPayToTaproot(script_pubkey)) {
         return set_error(serror, ScriptError::SCRIPTTYPE_MALFORMED_SCRIPT);
     }
