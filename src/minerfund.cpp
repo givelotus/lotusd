@@ -56,6 +56,11 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
+    if (IsDeuteronomyEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.deuteronomy,
+                                   pindexPrev, blockReward);
+    }
+
     if (IsNumbersEnabled(params, pindexPrev)) {
         return BuildOutputsCycling(params.coinbasePayoutAddresses.numbers,
                                    pindexPrev, blockReward);
