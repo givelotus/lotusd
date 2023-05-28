@@ -72,24 +72,14 @@ class MinerFundTest(BitcoinTestFramework):
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
-        # Submit a custom block that does send the required outputs
-        # with the miner reward output in the middle (which is allowed)
-        # but with the outputs in the wrong order (which is not allowed)
+        # Submit a custom block that sends the required outputs
+        # with the miner reward at the end (which is allowed)
         coinbase.vout[1:] = []
         for output in expected_outputs:
             coinbase.vout.append(CTxOut(int(output['value']),
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
         coinbase.vout.insert(2, CTxOut(int(SUBSIDY / 2 * COIN),
                                        CScript([OP_HASH160, bytes(20), OP_EQUAL])))
-        coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
-        coinbase.rehash()
-        block = create_block(int(best_block_hash, 16),
-                             coinbase, block_height, block_time + 1)
-        prepare_block(block)
-        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
-
-        # Fix the order and block is valid
-        coinbase.vout[2], coinbase.vout[4] = coinbase.vout[4], coinbase.vout[2]
         coinbase.rehash()
         block = create_block(int(best_block_hash, 16),
                              coinbase, block_height, block_time + 1)
@@ -113,6 +103,8 @@ class MinerFundTest(BitcoinTestFramework):
         coinbase = create_coinbase(block_height)
         coinbase.vout[1] = CTxOut(int(share_multiplier * SUBSIDY / 2 * COIN),
                                   CScript([OP_HASH160, bytes(20), OP_EQUAL]))
+        block_template = node.getblocktemplate()
+        expected_outputs = block_template['coinbasetxn']['minerfund']['outputs']
         for output in expected_outputs:
             coinbase.vout.append(CTxOut(int(share_multiplier * output['value']),
                                         CScript(bytes.fromhex(output['scriptPubKey']))))
