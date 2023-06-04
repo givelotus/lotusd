@@ -424,7 +424,8 @@ void SetupServerArgs(NodeContext &node) {
         "-min", "-resetguisettings", "-rootcertificates=<file>", "-splash",
         "-uiplatform",
         // TODO remove after the December 2021 upgrade
-        "-exodusactivationtime", "-leviticusactivationtime", "-numbersactivationtime"};
+        "-exodusactivationtime", "-leviticusactivationtime",
+        "-numbersactivationtime", "-deuteronomyactivationtime"};
 
     // Set all of the args and their help
     // When adding new options to the categories, please keep and ensure
