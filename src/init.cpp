@@ -472,7 +472,7 @@ void SetupServerArgs(NodeContext &node) {
         "-splash",
         "-uiplatform",
         // TODO remove after the May 2026 upgrade
-        "-obolenskyactivationtime", "-exodusactivationtime", "-leviticusactivationtime", "-numbersactivationtime",
+        "-obolenskyactivationtime", "-exodusactivationtime", "-leviticusactivationtime", "-numbersactivationtime", "-deuteronomyactivationtime",
     };
 
     // Set all of the args and their help
