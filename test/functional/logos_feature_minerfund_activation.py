@@ -95,19 +95,9 @@ NUMBERS_SCRIPTS = [
     "76a914b59008144c4f883e3b1fd9e18e479bc2f877fca788ac",
 ]
 DEUTERONOMY_SCRIPTS = [
-    "76a9149f9c4d8a7b187bda082aaa151f504284210f937c88ac",
-    "76a914f19444ce2d31e7cc825123dd695bc3f0d5aa8d7188ac",
-    "76a914cb60a8cacd4fefc5843d30c57af8a097d3092c0b88ac",
-    "76a914816d58bec68acb2df40ed1edb791af22d8741b1e88ac",
-    "76a914f3ab5b4edc3d4c7a8f4036c8874eb1924325dd1688ac",
-    "76a9149b769ea034cd3bba1349c78d045806a4657d3fac88ac",
-    "76a914f950726f65f10bf3ec7f1bbd236a1254769608be88ac",
-    "76a9147f3bb0818f6f715b9609c0bf624d8741dbadce2f88ac",
-    "76a914f6e7383b4c2e3caf6a0360f04fb2274195ca9c0488ac",
-    "76a914b1967870fea5b1cf9b197841965758aa5aebc4cf88ac",
-    "76a914be81d86c6caa6fea587b5e9d26ddffe662dd3bb888ac",
-    "76a914fc8db0e10f08058d707c36ec57bd1d2f88fee47c88ac",
-    "76a914f7f5779b38137107294ab6f75adf5f2b94fc25b688ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
 ]
 
 
@@ -284,7 +274,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
 
         assert_equal(node.getblockchaininfo()['mediantime'],
                      DEUTERONOMY_ACTIVATION_TIME)
-        
+
         # Now the using the genesis, exodus, leviticus, or numbers addresses fails
         for block in [
             make_block_with_cb_scripts(GENESIS_SCRIPTS),
