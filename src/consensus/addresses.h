@@ -112,6 +112,7 @@ Consensus::CoinbaseAddresses AddressSets = {
         {
             "lotus_16PSJHaDBFwmD1HPVWv3zLo3dbXMZTnCgBRzqFusu",
             "lotus_16PSJMKqnLMJYonvMdn4mVqMb3bG5C76spwKuW4DL",
+            "lotus_16PSJHedfWvFixJzv5pV7g3FY2Z62kT9NprSqfYxW",
             "lotus_16PSJJeYibqH7K189RbonEcoR7djvw54HWBebPQLY",
             "lotus_16PSJJPzQYbd5JCX8UpukirFGz9hmCWFjGAhByDip",
             "lotus_16PSJLr6AKaWTgioeJbjUWFAdq7yVDG17PQ1WoFn1",
