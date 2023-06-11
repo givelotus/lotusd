@@ -110,10 +110,27 @@ Consensus::CoinbaseAddresses AddressSets = {
         },
     .deuteronomy =
         {
+            "lotus_16PSJHaDBFwmD1HPVWv3zLo3dbXMZTnCgBRzqFusu",
+            "lotus_16PSJMKqnLMJYonvMdn4mVqMb3bG5C76spwKuW4DL",
+            "lotus_16PSJJeYibqH7K189RbonEcoR7djvw54HWBebPQLY",
+            "lotus_16PSJJPzQYbd5JCX8UpukirFGz9hmCWFjGAhByDip",
+            "lotus_16PSJLr6AKaWTgioeJbjUWFAdq7yVDG17PQ1WoFn1",
+            "lotus_16PSJLr6AKaWTgioeJbjUWFAdq7yVDG17PQ1WoFn1",
+            "lotus_16PSJMStv9sve3DfhDpiwUCa7RtqkyNBoS8RjFZSt",
+            "lotus_16PSJMStv9sve3DfhDpiwUCa7RtqkyNBoS8RjFZSt",
+            "lotus_16PSJLMtCuFnyMb3rz4zbbhAtJgppp8GiY5NpGGev",
+            "lotus_16PSJLMtCuFnyMb3rz4zbbhAtJgppp8GiY5NpGGev",
+            "lotus_16PSJMzCWkYt58BCiBTkgBGJ9usFfNTRKq6anVLbG",
+            "lotus_16PSJMzCWkYt58BCiBTkgBGJ9usFfNTRKq6anVLbG",
+            "lotus_16PSJMzCWkYt58BCiBTkgBGJ9usFfNTRKq6anVLbG",
             "lotus_16PSJMzCdB851yS4m59RUG5CKfjhJxTSWBo8EK1os",
             "lotus_16PSJMzCdB851yS4m59RUG5CKfjhJxTSWBo8EK1os",
             "lotus_16PSJMzCdB851yS4m59RUG5CKfjhJxTSWBo8EK1os",
-
+            "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
+            "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
+            "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
+            "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
+            "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
         },
 };
 } // namespace RewardAddresses
