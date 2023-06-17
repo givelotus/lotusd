@@ -42,3 +42,13 @@ bool IsNumbersEnabled(const Consensus::Params &params,
 
     return IsNumbersEnabled(params, pindexPrev->GetMedianTimePast());
 }
+
+bool IsDeuteronomyEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetArg("-deuteronomyactivationtime", params.deuteronomyActivationTime);
+}

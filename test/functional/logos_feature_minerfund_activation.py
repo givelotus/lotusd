@@ -28,6 +28,10 @@ from test_framework.util import assert_equal
 EXODUS_ACTIVATION_TIME = 2000000000
 LEVITICUS_ACTIVATION_TIME = 2010000000
 NUMBERS_ACTIVATION_TIME = 2020000000
+DEUTERONOMY_ACTIVATION_TIME = 2030000000
+JOSHUA_ACTIVATION_TIME = 2040000000
+
+REPLAYPROTECTION_ACTIVATION_TIME = JOSHUA_ACTIVATION_TIME
 
 # see consensus/addresses.h, use getaddressinfo to get the scriptPubKey
 GENESIS_SCRIPTS = [
@@ -90,6 +94,30 @@ NUMBERS_SCRIPTS = [
     "76a91461cebabeaa6365887bb95d95e62b848fa365506388ac",
     "76a914b59008144c4f883e3b1fd9e18e479bc2f877fca788ac",
 ]
+DEUTERONOMY_SCRIPTS = [
+    "76a9140f0f21219533cc9cdd692887d9bd4aa2d8de2a5688ac",
+    "76a91489991036959af60a1a08625fb5695f4967268e1f88ac",
+    "76a914118c8e65b8fe0f33c175bc039f94a15225fe409e88ac",
+    "76a914322889c5791a7daa1ad0cd1ade6487e85696968f88ac",
+    "76a91429f63d6931bf0d782aab1c230c178be2446ab02488ac",
+    "76a91479f8cda245128982b9c49169a7453a94a1af332d88ac",
+    "76a91479f8cda245128982b9c49169a7453a94a1af332d88ac",
+    "76a9148d91da546b8689c0b366e05b96fd1acb9c4f5b7688ac",
+    "76a9148d91da546b8689c0b366e05b96fd1acb9c4f5b7688ac",
+    "76a9146a171891ab9443020bd2755ef79c6e59efc5926588ac",
+    "76a9146a171891ab9443020bd2755ef79c6e59efc5926588ac",
+    "76a9149f3201e09dc27f8ac71672118ae28ae7c804326e88ac",
+    "76a9149f3201e09dc27f8ac71672118ae28ae7c804326e88ac",
+    "76a9149f3201e09dc27f8ac71672118ae28ae7c804326e88ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
+    "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
+    "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
+    "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
+    "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
+]
 
 
 class MinerFundActivationTest(BitcoinTestFramework):
@@ -101,15 +129,19 @@ class MinerFundActivationTest(BitcoinTestFramework):
             f'-exodusactivationtime={EXODUS_ACTIVATION_TIME}',
             f'-leviticusactivationtime={LEVITICUS_ACTIVATION_TIME}',
             f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
+            f'-deuteronomyactivationtime={DEUTERONOMY_ACTIVATION_TIME}',
+            f'-replayprotectionactivationtime={REPLAYPROTECTION_ACTIVATION_TIME}',
         ]]
 
     def run_test(self):
         node = self.nodes[0]
         node.add_p2p_connection(P2PDataStore())
 
-        # Mine a block, contains coinbase with miner fund
-        anyonecanspend_address = node.decodescript('51')['p2sh']
-        node.generatetoaddress(1, anyonecanspend_address)
+        # Mine a block, use coin to test replay protection
+        key = node.get_deterministic_priv_key()
+        key_script = node.validateaddress(key.address)['scriptPubKey']
+        coinblockhash = node.generatetoaddress(1, key.address)[0]
+        cointxid = node.getblock(coinblockhash)['tx'][0]
 
         def make_block_with_cb_scripts(scripts):
             best_block_hash = node.getbestblockhash()
@@ -212,10 +244,10 @@ class MinerFundActivationTest(BitcoinTestFramework):
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), None)
 
-        # Set mocktime for Leviticus activation
+        # Set mocktime for Numbers activation
         node.setmocktime(NUMBERS_ACTIVATION_TIME)
-        # Mine 11 blocks with LEVITICUS_ACTIVATION_TIME in the middle
-        # That moves MTP exactly to LEVITICUS_ACTIVATION_TIME
+        # Mine 11 blocks with NUMBERS_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to NUMBERS_ACTIVATION_TIME
         for i in range(-6, 6):
             block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
             block.nTime = NUMBERS_ACTIVATION_TIME + i
@@ -233,7 +265,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
 
-        # Using new scripts now works
+        # Now the using the leviticus addresses fails
         block = make_block_with_cb_scripts(LEVITICUS_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
@@ -243,6 +275,48 @@ class MinerFundActivationTest(BitcoinTestFramework):
             block = make_block_cb_post_numbers(NUMBERS_SCRIPTS)
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Using the deuteronomy addresses before upgrade fails
+        block = make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Set mocktime for Deuteronomy activation
+        node.setmocktime(DEUTERONOMY_ACTIVATION_TIME)
+        # Mine 11 blocks with DEUTERONOMY_ACTIVATION_TIME in the middle
+        # That moves MTP exactly to DEUTERONOMY_ACTIVATION_TIME
+        for i in range(-6, 6):
+            block = make_block_cb_post_numbers(NUMBERS_SCRIPTS)
+            block.nTime = DEUTERONOMY_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+
+        assert_equal(node.getblockchaininfo()['mediantime'],
+                     DEUTERONOMY_ACTIVATION_TIME)
+        
+        # Now the using the genesis, exodus, leviticus, or numbers addresses fails
+        for block in [
+            make_block_with_cb_scripts(GENESIS_SCRIPTS),
+            make_block_with_cb_scripts(EXODUS_SCRIPTS),
+            make_block_with_cb_scripts(LEVITICUS_SCRIPTS),
+            make_block_cb_post_numbers(NUMBERS_SCRIPTS),
+        ]:
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Using the Deuteronomy scripts now works
+        for i in range(0, 26):
+            block = make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Check replay protection is not enabled yet
+        tx = CTransaction()
+        tx.vin = [CTxIn(COutPoint(int(cointxid, 16), 1))]
+        tx.vout = [CTxOut(int(SUBSIDY * COIN) // 2 - 1000,
+                          CScript.fromhex(key_script))]
+        raw_tx = node.signrawtransactionwithkey(tx.serialize().hex(), [key.key])
+        node.sendrawtransaction(raw_tx['hex'])
 
 
 if __name__ == '__main__':
