@@ -133,5 +133,9 @@ Consensus::CoinbaseAddresses AddressSets = {
             "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
             "lotus_16PSJHA7AxHkiV4XACtMRSzKmw8F1pT3ZbsEnzJ4s",
         },
+    .joshua =
+        {
+
+        },
 };
 } // namespace RewardAddresses
