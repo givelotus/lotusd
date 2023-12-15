@@ -425,7 +425,8 @@ void SetupServerArgs(NodeContext &node) {
         "-uiplatform",
         // TODO remove after the December 2021 upgrade
         "-exodusactivationtime", "-leviticusactivationtime",
-        "-numbersactivationtime", "-deuteronomyactivationtime"};
+        "-numbersactivationtime", "-deuteronomyactivationtime",
+        "-joshuaactivationtime"};
 
     // Set all of the args and their help
     // When adding new options to the categories, please keep and ensure

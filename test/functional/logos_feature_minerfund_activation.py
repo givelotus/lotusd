@@ -30,8 +30,9 @@ LEVITICUS_ACTIVATION_TIME = 2010000000
 NUMBERS_ACTIVATION_TIME = 2020000000
 DEUTERONOMY_ACTIVATION_TIME = 2030000000
 JOSHUA_ACTIVATION_TIME = 2040000000
+JUDGES_ACTIVATION_TIME = 2050000000
 
-REPLAYPROTECTION_ACTIVATION_TIME = JOSHUA_ACTIVATION_TIME
+REPLAYPROTECTION_ACTIVATION_TIME = JUDGES_ACTIVATION_TIME
 
 # see consensus/addresses.h, use getaddressinfo to get the scriptPubKey
 GENESIS_SCRIPTS = [
@@ -118,7 +119,9 @@ DEUTERONOMY_SCRIPTS = [
     "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
     "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
 ]
-
+JOSHUA_SCRIPTS = [
+    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+]
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -130,6 +133,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
             f'-leviticusactivationtime={LEVITICUS_ACTIVATION_TIME}',
             f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
             f'-deuteronomyactivationtime={DEUTERONOMY_ACTIVATION_TIME}',
+            f'-joshuaactivationtime={JOSHUA_ACTIVATION_TIME}',
             f'-replayprotectionactivationtime={REPLAYPROTECTION_ACTIVATION_TIME}',
         ]]
 
@@ -307,6 +311,40 @@ class MinerFundActivationTest(BitcoinTestFramework):
         # Using the Deuteronomy scripts now works
         for i in range(0, 26):
             block = make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Using the joshua addresses before upgrade fails
+        block = make_block_cb_post_numbers(JOSHUA_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        node.setmocktime(JOSHUA_ACTIVATION_TIME)
+
+        # Mine 11 blocks with JOSHUA_ACTIVATION in the middle
+        # That moves MTP exactly to JOSHUA_ACTIVATION
+        for i in range(-6, 6):
+            block = make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS)
+            block.nTime = JOSHUA_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+
+        assert_equal(node.getblockchaininfo()['mediantime'],
+                     JOSHUA_ACTIVATION_TIME)
+        
+        # Now the using the genesis, exodus, leviticus, or numbers, and deuteronomy addresses fails
+        for block in [
+            make_block_with_cb_scripts(GENESIS_SCRIPTS),
+            make_block_with_cb_scripts(EXODUS_SCRIPTS),
+            make_block_with_cb_scripts(LEVITICUS_SCRIPTS),
+            make_block_cb_post_numbers(NUMBERS_SCRIPTS),
+            make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS),
+        ]:
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+       
+        # Using the Joshua scripts now works
+        for i in range(0, 12):
+            block = make_block_cb_post_numbers(JOSHUA_SCRIPTS)
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
 
