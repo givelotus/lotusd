@@ -120,7 +120,7 @@ DEUTERONOMY_SCRIPTS = [
     "76a914017cc7d3bb5512f21835cac23bd92b361393dcd288ac",
 ]
 JOSHUA_SCRIPTS = [
-    "76a9149f3248570eff3658b794f29e6e59f394eca8f69988ac",
+    "76a9142eedc5ad3d142181417daea01076846edfba998088ac",
 ]
 
 class MinerFundActivationTest(BitcoinTestFramework):
