@@ -124,7 +124,7 @@ JOSHUA_SCRIPTS = [
     "76a9142eedc5ad3d142181417daea01076846edfba998088ac",
 ]
 JUDGES_SCRIPTS = [
-    "76a9149208ecc785c92968481a92aee7024b77e54d27dc88ac"
+    "76a9149208ecc785c92968481a92aee7024b77e54d27dc88ac",
 ]
 
 class MinerFundActivationTest(BitcoinTestFramework):
@@ -352,10 +352,6 @@ class MinerFundActivationTest(BitcoinTestFramework):
             block = make_block_cb_post_numbers(JOSHUA_SCRIPTS)
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
-
-        ###
-        ### 2024-12-21T09:20:00.000Z Judges protocol upgrade
-        ###
 
         # Using the judges addresses before upgrade fails
         block = make_block_cb_post_numbers(JUDGES_SCRIPTS)
