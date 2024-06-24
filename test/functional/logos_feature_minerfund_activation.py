@@ -357,7 +357,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
         block = make_block_cb_post_numbers(JUDGES_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
-        node.setmocktime(JOSHUA_ACTIVATION_TIME)
+        node.setmocktime(JUDGES_ACTIVATION_TIME)
 
         # Mine 11 blocks with JUDGES_ACTIVATION in the middle
         # That moves MTP exactly to JUDGES_ACTIVATION
