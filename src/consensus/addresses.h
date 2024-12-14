@@ -137,5 +137,9 @@ Consensus::CoinbaseAddresses AddressSets = {
         {
             "lotus_16PSJJYp3YkVyctW8LRbp6UhbsrQMJghL3jjze3b7",
         },
+    .judges =
+        {
+            "lotus_16PSJMaps9sQg7aBQgyY1RdHb2fZYdmWhQPbgus75"
+        }
 };
 } // namespace RewardAddresses
