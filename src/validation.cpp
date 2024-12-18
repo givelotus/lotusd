@@ -3871,13 +3871,8 @@ static bool ContextualCheckBlockHeader(const CChainParams &params,
             "block height is not one higher than previous block");
     }
 
-    uint256 expectedEpochHash;
-    if (block.nHeight % EPOCH_NUM_BLOCKS == 0) { // new epoch started
-        expectedEpochHash = block.hashPrevBlock;
-    } else {
-        expectedEpochHash = pindexPrev->hashEpochBlock;
-    }
-
+    const uint256 expectedEpochHash =
+        GetNextEpochBlockHash(params.GetConsensus(), pindexPrev);
     if (expectedEpochHash != block.hashEpochBlock) {
         LogPrintf("ERROR: expected epoch hash %s but got %s",
                   expectedEpochHash.ToString(),

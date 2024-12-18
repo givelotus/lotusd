@@ -13,6 +13,7 @@ add_boost_unit_tests_to_suite(pow test-pow
 
 	TESTS
 		aserti32d_tests.cpp
+		epoch_tests.cpp
 )
 
 target_link_libraries(test-pow server testutil)
