@@ -28,7 +28,7 @@ PATTERN_ONION = re.compile(r"^([abcdefghijklmnopqrstuvwxyz234567]{16}\.onion):(\
 
 # Used to only select nodes with a user agent string compatible with the
 # eCash network.
-PATTERN_AGENT = re.compile(r"^(/lotusd:3.(\d+).(\d+)\(.+\)/)")
+PATTERN_AGENT = re.compile(r"^(/lotusd:11.(\d+).(\d+)\(.+\)/)")
 
 
 def parseline(line: str) -> Union[dict, None]:
