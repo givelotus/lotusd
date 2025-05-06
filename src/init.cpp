@@ -2000,7 +2000,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // Check blockmaxsize does not exceed maximum accepted block size.
     const int64_t nProposedMaxGeneratedBlockSize =
         args.GetIntArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
-    if (nProposedMaxGeneratedBlockSize <= 0) {
+    if (nProposedMaxGeneratedBlockSize <= 0 && args.IsArgSet("-blockmaxsize")) {
         return InitError(_("Max generated block size must be greater than 0"));
     }
     if (uint64_t(nProposedMaxGeneratedBlockSize) > config.GetMaxBlockSize()) {
