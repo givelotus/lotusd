@@ -54,4 +54,8 @@ bool IsJudgesEnabled(const Consensus::Params &params,
 bool IsRuthEnabled(const Consensus::Params &params,
                    const CBlockIndex *pindexPrev);
 
+/** Check if 2025-06-21T02:42:00.000Z protocol upgrade has activated. */
+bool IsFirstSamuelEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
