@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 
 /**
  * Parse an HD keypaths like "m/7/0'/2000".

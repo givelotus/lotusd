@@ -58,6 +58,8 @@ uint64_t CTxMemPoolModifiedEntry::GetVirtualSizeWithAncestors() const {
 }
 
 BlockAssembler::Options::Options()
+    // : nExcessiveBlockSize(1024 * 16),
+    //   nMaxGeneratedBlockSize(1024 * 16),
     : nExcessiveBlockSize(DEFAULT_MAX_BLOCK_SIZE),
       nMaxGeneratedBlockSize(DEFAULT_MAX_GENERATED_BLOCK_SIZE),
       blockMinFeeRate(DEFAULT_BLOCK_MIN_TX_FEE_PER_KB) {}
@@ -88,13 +90,51 @@ static BlockAssembler::Options DefaultOptions(const Config &config) {
     // If both are given, restrict both.
     BlockAssembler::Options options;
 
+    // Get the excessive block size from configuration
     options.nExcessiveBlockSize = config.GetMaxBlockSize();
+    
+    // Log the excessive block size for debugging
+    LogPrint(BCLog::MINING, "DefaultOptions: Excessive block size: %u bytes\n", 
+             options.nExcessiveBlockSize);
+    
+    // Default the maximum generated block size to either the excessive block size - 1000 bytes
+    // or the DEFAULT_MAX_GENERATED_BLOCK_SIZE, whichever is smaller
+    options.nMaxGeneratedBlockSize = std::min<uint64_t>(
+        options.nExcessiveBlockSize - 1000, DEFAULT_MAX_GENERATED_BLOCK_SIZE);
 
+    // If the blockmaxsize parameter is set, use that value instead (but still
+    // capped by the excessive block size)
     if (gArgs.IsArgSet("-blockmaxsize")) {
-        options.nMaxGeneratedBlockSize =
-            gArgs.GetArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
+        // Convert the value to a number and log it
+        uint64_t requestedMaxBlockSize = gArgs.GetArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
+        LogPrintf("DefaultOptions: User requested maximum block size: %u bytes\n", requestedMaxBlockSize);
+        
+        // Apply a safety margin of 3000 bytes to account for:
+        // 1. Coinbase transaction size variations
+        // 2. Block metadata overhead
+        // 3. Other potential size discrepancies in accounting
+        // This ensures the final block size will be below the specified limit
+        uint64_t adjustedMaxBlockSize = requestedMaxBlockSize > 3000 ? requestedMaxBlockSize - 3000 : requestedMaxBlockSize;
+        
+        // Cap by the excessive block size
+        uint64_t cappedMaxBlockSize = std::min<uint64_t>(
+            adjustedMaxBlockSize, options.nExcessiveBlockSize - 1000);
+            
+        // Print detailed information about how we arrived at the final value
+        LogPrintf("DefaultOptions: Processing -blockmaxsize parameter:\n"
+                  "  - Raw parameter value: %u bytes\n"
+                  "  - After safety margin: %u bytes\n"
+                  "  - After capping by excessive block size: %u bytes\n", 
+                  requestedMaxBlockSize,
+                  adjustedMaxBlockSize,
+                  cappedMaxBlockSize);
+        
+        options.nMaxGeneratedBlockSize = cappedMaxBlockSize;
     }
-
+    
+    LogPrintf("DefaultOptions: Final maximum generated block size: %u bytes\n", 
+              options.nMaxGeneratedBlockSize);
+    
     Amount n = Amount::zero();
     if (gArgs.IsArgSet("-blockmintxfee") &&
         ParseMoney(gArgs.GetArg("-blockmintxfee", ""), n)) {
@@ -231,9 +271,33 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     pblock->vtx[0] = pblocktemplate->entries[0].tx;
 
     uint64_t nSerializeSize = GetSerializeSize(*pblock, PROTOCOL_VERSION);
+    uint64_t calculatedBlockSize = 0;
+    for (const auto& tx : pblock->vtx) {
+        calculatedBlockSize += GetSerializeSize(*tx, PROTOCOL_VERSION);
+    }
+    int64_t realOverhead = nSerializeSize - calculatedBlockSize;
+    if (realOverhead < 0) {
+        LogPrintf("WARNING: Block size calculation error detected! nSerializeSize=%u, sum of tx sizes=%lld\n", 
+                 nSerializeSize, calculatedBlockSize);
+        realOverhead = 0;
+    }
 
     LogPrintf("CreateNewBlock(): total size: %u txs: %u fees: %ld sigops %d\n",
               nSerializeSize, nBlockTx, nFees, nBlockSigOps);
+
+    // Always log detailed size information to help diagnose issues
+    uint64_t requestedMaxBlockSize = gArgs.IsArgSet("-blockmaxsize") ? 
+                                    gArgs.GetArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE) : 
+                                    DEFAULT_MAX_GENERATED_BLOCK_SIZE;
+    LogPrintf("CreateNewBlock(): size details - requested max: %u, internal limit: %u, coinbase size: %u, overhead: %lld\n",
+              requestedMaxBlockSize, nMaxGeneratedBlockSize, 
+              coinbaseSize, realOverhead);
+    
+    // Add detailed information about all transaction sizes for debugging
+    LogPrint(BCLog::MINING, "Block transaction sizes:\n");
+    for (size_t i = 0; i < pblock->vtx.size(); i++) {
+        LogPrint(BCLog::MINING, "  tx[%zu]: %u bytes\n", i, GetSerializeSize(*pblock->vtx[i], PROTOCOL_VERSION));
+    }
 
     // Fill in size
     pblock->SetSize(nSerializeSize);
@@ -275,7 +339,12 @@ void BlockAssembler::onlyUnconfirmed(CTxMemPool::setEntries &testSet) {
 bool BlockAssembler::TestPackage(uint64_t packageSize,
                                  int64_t packageSigOps) const {
     auto blockSizeWithPackage = nBlockSize + packageSize;
-    if (blockSizeWithPackage >= nMaxGeneratedBlockSize) {
+    
+    // Be more conservative with the size limit - leave more room for the coinbase
+    // transaction and other overhead that might be added later
+    if (blockSizeWithPackage >= nMaxGeneratedBlockSize - 1000) {
+        LogPrint(BCLog::MINING, "TestPackage: package of size %u would exceed block size limit (current: %u, max: %u)\n",
+                packageSize, nBlockSize, nMaxGeneratedBlockSize);
         return false;
     }
 
@@ -553,6 +622,12 @@ void BlockAssembler::addPackageTxs(int &nPackagesSelected,
         // Update transactions that depend on each of these
         nDescendantsUpdated += UpdatePackagesForAdded(ancestors, mapModifiedTx);
     }
+    
+    // Log the final block size as a percentage of the maximum allowed size
+    LogPrintf("addPackageTxs(): Final block size: %u bytes (%.2f%% of max %u bytes)\n", 
+              nBlockSize, 
+              (nBlockSize * 100.0) / nMaxGeneratedBlockSize, 
+              nMaxGeneratedBlockSize);
 }
 
 static const std::vector<uint8_t>

@@ -33,6 +33,18 @@ bool IsDeuteronomyEnabled(const Consensus::Params &params,
 
 /** Check if December 22nd, 2023 protocol upgrade has activated. */
 bool IsJoshuaEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev);
+
+/** Check if June 20th, 2024 protocol upgrade has activated. */
+bool IsJudgesEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev);
+
+/** Check if December 21st, 2024 protocol upgrade has activated. */
+bool IsRuthEnabled(const Consensus::Params &params,
+                   const CBlockIndex *pindexPrev);
+
+/** Check if June 21st, 2025 protocol upgrade has activated. */
+bool IsFirstSamuelEnabled(const Consensus::Params &params,
                           const CBlockIndex *pindexPrev);
 
 /** Check if June 20th, 2024 protocol upgrade has activated. */

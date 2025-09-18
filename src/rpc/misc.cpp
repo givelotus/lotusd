@@ -33,6 +33,11 @@
 #include <malloc.h>
 #endif
 
+#include <wallet/wallet.h>
+#include <wallet/walletdb.h>
+#include <wallet/walletutil.h>
+#include <txmempool.h>
+
 static RPCHelpMan validateaddress() {
     return RPCHelpMan{
         "validateaddress",
@@ -912,3 +917,4 @@ void RegisterMiscRPCCommands(CRPCTable &t) {
         t.appendCommand(c.name, &c);
     }
 }
+

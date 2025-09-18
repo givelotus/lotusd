@@ -1,11 +1,11 @@
 # Maintainer: Josh Ellithorpe <quest@mac.com>
 
 pkgname=lotusd
-pkgver=6.3.3
+pkgver=9.4.3
 pkgrel=0
 pkgdesc="Lotus with lotusd, lotus-tx, lotus-seeder and lotus-cli"
 arch=('i686' 'x86_64')
-url="https://givelotus.org"
+url="https://lotusia.org"
 depends=('boost-libs' 'libevent' 'openssl' 'zeromq' 'miniupnpc' 'jemalloc')
 makedepends=('cmake' 'ninja' 'boost' 'python' 'help2man')
 license=('MIT')

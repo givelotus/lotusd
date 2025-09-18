@@ -36,7 +36,7 @@ PATTERN_ONION = re.compile(
 
 # Used to only select nodes with a user agent string compatible with the
 # eCash network.
-PATTERN_AGENT = re.compile(r"^(/lotusd:3.(\d+).(\d+)\(.+\)/)")
+PATTERN_AGENT = re.compile(r"^(/lotusd:9.(\d+).(\d+)\(.+\)/)")
 
 def parseline(line):
     sline = line.split()

@@ -95,6 +95,7 @@ int CDnsSeedOpts::ParseCommandLine(int argc, const char **argv) {
         filter_whitelist.insert(NODE_NETWORK | NODE_BLOOM);
         filter_whitelist.insert(NODE_NETWORK_LIMITED);
         filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_BLOOM);
+        filter_whitelist.insert(NODE_NETWORK | NODE_BLOOM | NODE_NETWORK_LIMITED);
     }
     return CONTINUE_EXECUTION;
 }

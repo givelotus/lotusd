@@ -5,6 +5,7 @@
 #ifndef BITCOIN_SEEDER_OPTIONS_H
 #define BITCOIN_SEEDER_OPTIONS_H
 
+#include <cstdint>
 #include <set>
 #include <string>
 

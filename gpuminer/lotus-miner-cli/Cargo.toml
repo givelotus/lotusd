@@ -1,0 +1,21 @@
+[package]
+name = "lotus-miner-cli"
+version = "0.4.0"
+authors = [
+    "Tobias Ruck <ruck.tobias@gmail.com>",
+    "Alexandre Guillioud - FrenchBTC <alexandre@burnlotus.org>"
+]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+lotus-miner-lib = { path = "../lotus-miner-lib" }
+config = "0.11"
+tokio = { version = "1.2", features = ["full"] }
+serde = "1.0"
+serde_derive = "1.0"
+thiserror = "1.0"
+ctrlc = "3.1"
+log = "0.4"
+clap = { version = "4.5", features = ["derive"] }

@@ -125,6 +125,16 @@
 #ifndef TINYFORMAT_H_INCLUDED
 #define TINYFORMAT_H_INCLUDED
 
+#include <algorithm>
+#include <cassert>
+#include <iostream>
+#include <sstream>
+#include <stdexcept> // Added for Bitcoin
+#include <cstddef>
+#include <cstdint>  // For uint8_t
+#include <cstring>
+#include <cstdio>
+
 namespace tinyformat {}
 //------------------------------------------------------------------------------
 // Config section.  Customize to your liking!
@@ -142,19 +152,10 @@ namespace tfm = tinyformat;
 
 //------------------------------------------------------------------------------
 // Implementation details.
-#include <algorithm>
-#include <iostream>
-#include <sstream>
-#include <stdexcept> // Added for Bitcoin
 
 #ifndef TINYFORMAT_ASSERT
 #include <cassert>
 #define TINYFORMAT_ASSERT(cond) assert(cond)
-#endif
-
-#ifndef TINYFORMAT_ERROR
-#include <cassert>
-#define TINYFORMAT_ERROR(reason) assert(0 && reason)
 #endif
 
 #if !defined(TINYFORMAT_USE_VARIADIC_TEMPLATES) &&                             \

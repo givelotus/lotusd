@@ -1,0 +1,159 @@
+FROM rust:slim-bookworm AS builder
+
+# Install minimal build dependencies for Rust and OpenCL headers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ocl-icd-opencl-dev \
+    opencl-headers \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /lotus-source
+
+# Copy only the necessary files for building
+COPY gpuminer/ /lotus-source/gpuminer/
+WORKDIR /lotus-source/gpuminer
+
+# Build the application
+RUN cargo build --release
+
+# Stage to build startup script (same logic as NVIDIA image)
+FROM debian:bookworm-slim AS script-builder
+
+RUN echo '#!/bin/bash\n\
+ADDRESSES=(\n\
+  "lotus_16PSJLP8LK3q14N9xMFDPUsMPxi8yqvdoy1p4woLz"\n\
+  "lotus_16PSJKo9nqwWTiNsqdNkU1haXyxaS2pi15WoNQPX4"\n\
+  "lotus_16PSJLkXR2zHXC4JCFmLcY6Tpxb9qLbP9rzcsGSgo"\n\
+  "lotus_16PSJNvBpeApatcZVJKAkjSuttJTE3rsYcCCmkoFd"\n\
+  "lotus_16PSJHErRNz6nBEsy4rNdm9XcVWRd4EnkUvNMpF28"\n\
+  "lotus_16PSJKLDyRfjecZdHipKW3nKiYZNyii5HKWmR25sw"\n\
+  "lotus_16PSJNuGwhhcPjHTJ9zukMTVLccaUkAJTEVKB4jFR"\n\
+  "lotus_16PSJKLDyRfjecZdHipKW3nKiYZNyii5HKWmR25sw"\n\
+  "lotus_16PSJNsKV3q6jpHZfyBeWN36pq161LrMqw2dMbnLZ"\n\
+  "lotus_16PSJPtwpyHe4AyvgqEGGaX5HYQQX67KaDKKM4FxF"\n\
+  "lotus_16PSJPeRBEy23rYkEJur222qNrFMm6yv1mertXhMu"\n\
+  "lotus_16PSJJbXGkMuHJGARrtaazXJ67fC2UEh1YqLZCujF"\n\
+  "lotus_16PSJQvP79yJRMqg4gv2raoVVL2uSbwsWBEHvAi8V"\n\
+  "lotus_16PSJPCoX9JqXrec5TwuAMtYkvh1fiZ9sTTpfQ31P"\n\
+  "lotus_16PSJKoAGBUgtQx8XMRKWMvJee3WMcNS6xt12sGrS"\n\
+  "lotus_16PSJMJXAGa66QFhkKhwatUyW962KBhhs3EqEmQbb"\n\
+  "lotus_16PSJK7bcJJ9TRhWCvRrM6u8ujQFLSPDUgPWdX1ii"\n\
+  "lotus_16PSJLNUo6rjn6SQ3iTM443cRNTWgNqBWaiKwdjjF"\n\
+  "lotus_16PSJPexSJkdiaYtF2UUCYCxQXmVtGB1hDnVwDawF"\n\
+  "lotus_16PSJMJNsKWckFqsTHUwnAdFr1XJ6HRhN4s7Mdk67"\n\
+  "lotus_16PSJLBXesQhGkNfosUXQzwYJZjBjiN6jui799rfu"\n\
+  "lotus_16PSJPx5PmS7BiXSGjiG91K2JBxATwLXE15b2FPVx"\n\
+  "lotus_16PSJMshen3qpKEVYu5WCTxkU5XAqTYBV2HzRikwa"\n\
+  "lotus_16PSJNkBJahGpkhYu4fLt3USVvWxSnD6qYiT7Ssgj"\n\
+  "lotus_16PSJNxzcVBciuHukm3pJ5frC19rAjhoPEVYNYJz7"\n\
+  "lotus_16PSJNaTGZ2aA7dyCPugNzmSodvE1W2dauNJPJjR9"\n\
+  "lotus_16PSJQm6taghN5LUd8kKT9StUcJKDkBGCU6BnCyM3"\n\
+)\n\
+if command -v clinfo &> /dev/null; then\n\
+  GPU_COUNT=$(clinfo -l 2>/dev/null | grep -c "Device #")\n\
+else\n\
+  GPU_COUNT=1\n\
+fi\n\
+echo "Detected $GPU_COUNT OpenCL device(s)"\n\
+GPU_INDEX=${GPU_INDEX:-0}\n\
+KERNEL_SIZE=${KERNEL_SIZE:-22}\n\
+RPC_URL=${RPC_URL:-"https://burnlotus.org"}\n\
+RPC_USER=${RPC_USER:-"miner"}\n\
+RPC_PASSWORD=${RPC_PASSWORD:-"password"}\n\
+RPC_POLL_INTERVAL=${RPC_POLL_INTERVAL:-1}\n\
+POOL_MINING=${POOL_MINING:-true}\n\
+INSTANCES_PER_GPU=${INSTANCES_PER_GPU:-4}\n\
+CONFIG_FILE=${CONFIG_FILE:-""}\n\
+PASSTHROUGH_ARGS=""\n\
+ADDR_FOUND=false\n\
+if [[ $# -eq 1 && "$1" == lotus_* ]]; then\n\
+  MINER_ADDRESS="$1"\n\
+  ADDR_FOUND=true\n\
+else\n\
+  while [[ $# -gt 0 ]]; do\n\
+    case "$1" in\n\
+      -o|--mine-to-address) MINER_ADDRESS="$2"; ADDR_FOUND=true; shift 2;;\n\
+      -g|--gpu-index) GPU_INDEX="$2"; shift 2;;\n\
+      -s|--kernel-size) KERNEL_SIZE="$2"; shift 2;;\n\
+      -i|--rpc-poll-interval) RPC_POLL_INTERVAL="$2"; shift 2;;\n\
+      -a|--rpc-url) RPC_URL="$2"; shift 2;;\n\
+      -u|--rpc-user) RPC_USER="$2"; shift 2;;\n\
+      -p|--rpc-password) RPC_PASSWORD="$2"; shift 2;;\n\
+      -c|--config) CONFIG_FILE="$2"; shift 2;;\n\
+      -m|--poolmining) POOL_MINING=true; shift;;\n\
+      -d|--debug) DEBUG=true; PASSTHROUGH_ARGS="$PASSTHROUGH_ARGS $1"; shift;;\n\
+      *) PASSTHROUGH_ARGS="$PASSTHROUGH_ARGS $1"; shift;;\n\
+    esac\n\
+  done\n\
+fi\n\
+POOL_MINING_FLAG=""\n\
+if [[ "$POOL_MINING" == "true" ]]; then\n\
+  POOL_MINING_FLAG="--poolmining"\n\
+fi\n\
+CONFIG_PARAM=""\n\
+if [[ -n "$CONFIG_FILE" ]]; then\n\
+  CONFIG_PARAM="--config $CONFIG_FILE"\n\
+fi\n\
+if [[ -n "$MINER_ADDRESS" ]]; then\n\
+  echo "Using provided miner address: $MINER_ADDRESS"\n\
+  ADDR_FOUND=true\n\
+fi\n\
+get_random_address() {\n\
+  if [[ -n "$MINER_ADDRESS" ]]; then\n\
+    echo "$MINER_ADDRESS"; return;\n\
+  fi\n\
+  local idx=$((RANDOM % ${#ADDRESSES[@]}))\n\
+  echo ${ADDRESSES[$idx]}\n\
+}\n\
+echo "Miner configuration:"\n\
+echo "  Kernel size: $KERNEL_SIZE"\n\
+echo "  RPC URL: $RPC_URL"\n\
+echo "  RPC user: $RPC_USER"\n\
+echo "  RPC poll interval: $RPC_POLL_INTERVAL"\n\
+echo "  Pool mining: ${POOL_MINING}"\n\
+echo "  Instances per GPU: $INSTANCES_PER_GPU"\n\
+if [[ -n "$CONFIG_FILE" ]]; then echo "  Config file: $CONFIG_FILE"; fi\n\
+for ((i=0; i<$GPU_COUNT; i++)); do\n\
+  for ((j=0; j<$INSTANCES_PER_GPU; j++)); do\n\
+    ADDRESS=$(get_random_address)\n\
+    echo "Starting miner instance $((j+1)) on GPU $i with address $ADDRESS"\n\
+    /opt/lotus/bin/lotus-miner-cli \\\n+      -g $i \\\n+      -s $KERNEL_SIZE \\\n+      -o $ADDRESS \\\n+      -i $RPC_POLL_INTERVAL \\\n+      -a $RPC_URL \\\n+      -u $RPC_USER \\\n+      -p $RPC_PASSWORD \\\n+      $POOL_MINING_FLAG \\\n+      $CONFIG_PARAM \\\n+      $PASSTHROUGH_ARGS &\n\
+  done\n\
+done\n\
+wait\n' > /start-miners.sh && chmod +x /start-miners.sh
+
+# Runtime stage for AMD/OpenCL via Mesa (host must provide /dev/kfd and /dev/dri)
+FROM ubuntu:22.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ocl-icd-libopencl1 \
+    mesa-opencl-icd \
+    clinfo \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure OpenCL vendors directory exists (mesa-opencl-icd drops mesa.icd here)
+RUN mkdir -p /etc/OpenCL/vendors
+
+RUN mkdir -p /opt/lotus/bin
+
+COPY --from=builder /lotus-source/gpuminer/target/release/lotus-miner-cli /opt/lotus/bin/lotus-miner-cli
+
+RUN ln -sf /opt/lotus/bin/lotus-miner-cli /opt/lotus/bin/lotus-gpu-miner
+
+COPY --from=script-builder /start-miners.sh /opt/lotus/start-miners.sh
+
+RUN chmod +x /opt/lotus/bin/* /opt/lotus/start-miners.sh
+
+ENV PATH="/opt/lotus/bin:${PATH}"
+
+WORKDIR /opt/lotus
+
+ENTRYPOINT ["/opt/lotus/start-miners.sh"]
+
+

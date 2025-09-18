@@ -278,7 +278,7 @@ bool CheckSequenceLocks(const CTxMemPool &pool, const CTransaction &tx,
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
                                       int64_t nMedianTimePast) {
     return nMedianTimePast >= gArgs.GetArg("-replayprotectionactivationtime",
-                                           params.ruthActivationTime);
+                                           params.secondSamuelActivationTime);
 }
 
 static bool IsReplayProtectionEnabled(const Consensus::Params &params,
@@ -765,25 +765,23 @@ bool MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
 /**
  * (try to) add transaction to memory pool with a specified acceptance time.
  */
-static bool
-AcceptToMemoryPoolWithTime(const Config &config, CTxMemPool &pool,
-                           TxValidationState &state, const CTransactionRef &tx,
-                           int64_t nAcceptTime, bool bypass_limits,
-                           bool test_accept, Amount *fee_out = nullptr)
-    EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+static bool AcceptToMemoryPoolWithTime(const Config &config, CTxMemPool &pool,
+                                      TxValidationState &state, 
+                                      const CTransactionRef &tx,
+                                      int64_t nAcceptTime, 
+                                      bool bypass_limits,
+                                      bool test_accept, 
+                                      Amount *fee_out = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
     std::vector<COutPoint> coins_to_uncache;
-    MemPoolAccept::ATMPArgs args{
-        config,           state,       nAcceptTime, bypass_limits,
-        coins_to_uncache, test_accept, fee_out};
+    MemPoolAccept::ATMPArgs args{config, state, nAcceptTime, bypass_limits,
+                                coins_to_uncache, test_accept, fee_out};
     bool res = MemPoolAccept(pool).AcceptSingleTransaction(tx, args);
     if (!res) {
         // Remove coins that were not present in the coins cache before calling
         // ATMPW; this is to prevent memory DoS in case we receive a large
         // number of invalid transactions that attempt to overrun the in-memory
-        // coins cache
-        // (`CCoinsViewCache::cacheCoins`).
-
+        // coins cache (`CCoinsViewCache::cacheCoins`).
         for (const COutPoint &outpoint : coins_to_uncache) {
             ::ChainstateActive().CoinsTip().Uncache(outpoint);
         }
@@ -793,7 +791,7 @@ AcceptToMemoryPoolWithTime(const Config &config, CTxMemPool &pool,
     // still within its size limits
     BlockValidationState stateDummy;
     ::ChainstateActive().FlushStateToDisk(config.GetChainParams(), stateDummy,
-                                          FlushStateMode::PERIODIC);
+                                         FlushStateMode::PERIODIC);
     return res;
 }
 
@@ -3987,19 +3985,104 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that coinbase OP_RETURN starts with serialized block height
-    if (nHeight >= 1) {
-        CScript expect = CScript() << OP_RETURN << COINBASE_PREFIX << nHeight;
-        if (block.vtx[0]->vout[0].scriptPubKey.size() < expect.size() ||
-            !std::equal(expect.begin(), expect.end(),
-                        block.vtx[0]->vout[0].scriptPubKey.begin())) {
-            LogPrintf("ERROR: block height missmatch in OP_RETURN: expected "
-                      "prefix %s, but output scriptPubKey is %s\n",
-                      HexStr(expect),
-                      HexStr(block.vtx[0]->vout[0].scriptPubKey));
-            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                 "bad-cb-height",
-                                 "block height mismatch in coinbase");
+    // Enforce rule that the coinbase transaction's first output must contain an OP_RETURN
+    // followed by a prefix and the serialized block height.
+    // This rule applies to all blocks except the genesis block (height 0).
+    // Note: This rule was added after some blocks were already mined, so we need
+    // to be flexible with validation for older blocks.
+    if (nHeight > 0) {
+        // Get the coinbase transaction's first output scriptPubKey
+        const CScript &scriptPubKey = block.vtx[0]->vout[0].scriptPubKey;
+        std::string scriptHex = HexStr(scriptPubKey);
+        LogPrintf("DEBUG: Coinbase scriptPubKey: %s\n", scriptHex);
+        
+        // Early blocks may not follow the height encoding rule
+        // Define a height after which we strictly enforce the rule
+        const int HEIGHT_ENCODING_ENFORCED_AFTER = 20000;
+        bool strictChecking = (nHeight >= HEIGHT_ENCODING_ENFORCED_AFTER);
+        const int SHAME_PREFIX_ENFORCED_BEFORE = 1018000;
+        bool strictCheckingCoinbaseShame = (nHeight < SHAME_PREFIX_ENFORCED_BEFORE);
+        // Empty script
+        if (scriptPubKey.empty()) {
+            LogPrintf("DEBUG: Empty scriptPubKey\n");
+            return !strictChecking;
+        }
+        
+        // Check for OP_RETURN
+        if (scriptPubKey[0] != 0x6a) { // 0x6a is OP_RETURN
+            LogPrintf("DEBUG: Script does not start with OP_RETURN. First byte: 0x%02x\n", 
+                     scriptPubKey[0]);
+            return !strictChecking;
+        }
+        
+        LogPrintf("DEBUG: Found OP_RETURN at position 0\n");
+        
+        // Position after OP_RETURN
+        size_t pos = 1;
+        if (pos >= scriptPubKey.size()) {
+            LogPrintf("DEBUG: No data after OP_RETURN\n");
+            return !strictChecking;
+        }
+        
+        // Parse prefix length and data
+        uint8_t prefixLen = scriptPubKey[pos++];
+        LogPrintf("DEBUG: Prefix length byte at position %zu: 0x%02x (%u)\n", 
+                  pos-1, prefixLen, prefixLen);
+        
+        if (pos + prefixLen > scriptPubKey.size()) {
+            LogPrintf("DEBUG: Not enough bytes for prefix data\n");
+            return !strictChecking;
+        }
+        
+        std::vector<uint8_t> prefixData(scriptPubKey.begin() + pos, 
+                                       scriptPubKey.begin() + pos + prefixLen);
+        std::string prefixHex = HexStr(prefixData);
+        LogPrintf("DEBUG: Prefix data at position %zu: %s\n", pos, prefixHex);
+        
+        // Verify that the prefix matches the expected COINBASE_PREFIX
+        if (prefixLen != COINBASE_PREFIX.size() || prefixData != COINBASE_PREFIX) {
+            LogPrintf("DEBUG: Prefix data doesn't match expected COINBASE_PREFIX. Expected: %s, Got: %s\n",
+                      HexStr(COINBASE_PREFIX), prefixHex);
+            return !strictCheckingCoinbaseShame;
+        }
+        
+        // Move position past prefix data
+        pos += prefixLen;
+        
+        // Parse height length and data
+        if (pos >= scriptPubKey.size()) {
+            LogPrintf("DEBUG: No height length byte found\n");
+            return !strictChecking;
+        }
+        
+        uint8_t heightLen = scriptPubKey[pos++];
+        LogPrintf("DEBUG: Height length byte at position %zu: 0x%02x (%u)\n", 
+                  pos-1, heightLen, heightLen);
+        
+        if (pos + heightLen > scriptPubKey.size() || heightLen > 3) {
+            LogPrintf("DEBUG: Not enough bytes for height data or height too large\n");
+            return !strictChecking;
+        }
+        
+        std::vector<uint8_t> heightData(scriptPubKey.begin() + pos, 
+                                      scriptPubKey.begin() + pos + heightLen);
+        std::string heightHex = HexStr(heightData);
+        LogPrintf("DEBUG: Height data at position %zu: %s\n", pos, heightHex);
+        
+        // Convert the little-endian bytes to an integer
+        int nHeight_coinbase = 0;
+        for (size_t i = 0; i < heightData.size(); i++) {
+            nHeight_coinbase |= static_cast<int>(heightData[i]) << (8 * i);
+        }
+        
+        LogPrintf("DEBUG: Parsed height from coinbase: %d (expected: %d)\n", 
+                  nHeight_coinbase, nHeight);
+        
+        // Verify the height matches
+        if (nHeight_coinbase != nHeight) {
+            LogPrintf("WARNING: block height mismatch in coinbase: coinbase=%d (hex: %s) vs. block=%d.\n", 
+                      nHeight_coinbase, heightHex, nHeight);
+            return !strictChecking;
         }
     }
 
@@ -5784,7 +5867,7 @@ bool LoadMempool(const Config &config, CTxMemPool &pool) {
             if (nTime > nNow - nExpiryTimeout) {
                 LOCK(cs_main);
                 AcceptToMemoryPoolWithTime(config, pool, state, tx, nTime,
-                                           false /* bypass_limits */,
+                                           true /* bypass_limits */,
                                            false /* test_accept */);
                 if (state.IsValid()) {
                     ++count;

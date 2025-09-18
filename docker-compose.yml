@@ -1,0 +1,116 @@
+services:
+  lotus-node:
+    image: ghcr.io/lotus-node:latest
+    container_name: lotus-node
+    restart: unless-stopped
+    volumes:
+      - /data/lotus/node:/root/.lotus
+    ports:
+      - "58526:58526"  # P2P network port
+      - "58525:58525"  # RPC interface port
+    environment:
+      - TZ=UTC
+    # Resource limits for stability
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '8'
+        reservations:
+          memory: 4G
+          cpus: '4'
+    command:
+      # Core settings
+      - "-printtoconsole"
+      - "-datadir=/root/.lotus"
+      - "-port=58526"
+      - "-rpcport=58525"
+      - "-server"
+      
+      
+      # Manual peer connections
+      - "-addnode=65.21.89.182"      # Finland
+      - "-addnode=116.103.232.62"    # Vietnam
+      - "-addnode=113.161.48.238"    # Vietnam  
+      - "-addnode=188.253.121.107"   # Singapore
+      - "-addnode=45.119.84.253"     # Vietnam
+      - "-addnode=69.234.67.246"     # USA
+      - "-addnode=146.70.211.96"           # Additional peer
+      - "-addnode=70.92.25.116"            # Additional peer
+
+
+      - "-addnode=147.135.88.232:10605"    # USA
+      - "-addnode=147.135.88.233:10605"           # Additional peer
+      - "-addnode=45.119.84.253:10605"           # Additional peer
+      - "-addnode=35.184.152.63:10605"           # Additional peer
+
+      - "-maxuploadtarget=0"     # Disable upload limit for high bandwidth mode
+      - "-maxreceivebuffer=16000" # Increase receive buffer for high bandwidth
+      - "-maxsendbuffer=16000"    # Increase send buffer for high bandwidth
+      - "-peertimeout=5"       # Longer timeout for peer connections
+      
+      - "-bytespersigop=100"      # Increase bytes per sigop for better throughput
+      - "-datacarriersize=446"    # Double default data carrier size
+      - "-blockmaxsize=32000000"  # Increase max block size to 32MB
+
+
+
+
+
+
+      # DNS seeding and peer discovery
+      - "-forcednsseed=1"        # Force DNS seed node discovery
+      - "-dnsseed=1"             # Enable DNS seeding
+      - "-dns=1"                 # Enable DNS lookups
+      - "-listenonion=1"        # Enable Tor hidden services
+      - "-onlynet=ipv4"         # Only connect to IPv4 peers for stability
+      - "-seednode=dnsseed.lotus.io"  # Primary DNS seed
+      - "-seednode=dnsseed.lotuschain.org"  # Backup DNS seed
+
+      # Multiple external IPs configuration
+      - "-externalip=82.65.223.81"     # Replace with your first public IP
+      - "-externalip=80.14.214.145"      # Replace with your second public IP
+      # Add more -externalip parameters as needed
+      - "-discover=1"                   # Enable automatic IP discovery
+      - "-listen=1"                     # Enable accepting connections
+      
+      # Memory and performance optimization
+      - "-dbcache=4096"          # Increase to 4GB for faster block verification
+      - "-maxmempool=600"        # Double default mempool size to 600MB
+      - "-persistmempool=1"      # Save mempool on shutdown
+      - "-txindex=1"             # Full transaction index
+      - "-par=4"                 # Script verification threads
+      - "-blockreconstructionextratxn=200"  # Extra transactions for block reconstruction
+      
+      # Network resilience
+      - "-maxconnections=1024"    # Increased max connections
+      # - "-maxuploadtarget=5000"  # 5GB per day upload limit, to prevent bandwidth exhaustion
+      - "-minrelaytxfee=0.00001"   # Minimum relay fee to prevent spam transactions
+      
+      # RPC settings
+      - "-rpcbind=0.0.0.0:58525"
+      - "-rpcallowip=10.128.0.0/16"
+      - "-rpcthreads=8"          # More threads for RPC processing
+      - "-rpcuser=lotus"
+      - "-rpcpassword=lotus"
+      - "-rest=1"                # Enable REST interface for additional API access
+      # Wallet settings
+      - "-spendzeroconfchange=1"  # Allow spending unconfirmed change
+      - "-keypool=1000"          # Pre-generate more key pairs
+      - "-disablewallet=0"       # Ensure wallet is enabled
+      - "-walletnotify=1"        # Enable wallet notifications
+      - "-salvagewallet=1"       # Enable wallet salvaging if corrupted
+      - "-zapwallettxes=0"       # Don't clear wallet transactions on startup
+      - "-upgradewallet=1"       # Allow wallet upgrades
+      # Additional stability flags
+      - "-maxreorgdepth=10"      # Limit reorg depth
+      - "-timeout=10000"         # Connection timeout in milliseconds
+      - "-maxtxfee=500.00"        # Maximum transaction fee
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16 

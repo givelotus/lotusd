@@ -1,0 +1,52 @@
+name: Lotus GPU Miner
+args:
+      - config:
+                short: c
+                long: config
+                help: Configuration file
+                takes_value: true
+      - rpc_url:
+                long: rpc-url
+                short: a
+                help: Lotus RPC address
+                takes_value: true
+      - rpc_poll_interval:
+                long: rpc-poll-interval
+                short: i
+                help: Lotus RPC getblocktemplate poll interval
+                takes_value: true
+      - rpc_user:
+                long: rpc-user
+                short: u
+                help: Lotus RPC username
+                takes_value: true
+      - rpc_password:
+                long: rpc-password
+                short: p
+                help: Lotus RPC password
+                takes_value: true
+      - mine_to_address:
+                short: o
+                long: mine-to-address
+                help: Coinbase Output Address
+                takes_value: true
+      - kernel_size:
+                short: s
+                long: kernel-size
+                help: Kernel size
+                takes_value: true
+      - gpu_index:
+                short: g
+                long: gpu-index
+                help: GPU index
+                takes_value: true
+      - pool_mining:
+                long: poolmining
+                short: m
+                help: Enable pool mining mode
+                takes_value: false
+      - debug:
+                long: debug
+                short: d
+                help: Enable debug mode
+                takes_value: false

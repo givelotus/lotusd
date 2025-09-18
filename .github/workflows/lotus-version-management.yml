@@ -1,0 +1,156 @@
+on:
+  workflow_call:
+    outputs:
+      current_version:
+        description: "The current version from CMakeLists.txt"
+        value: ${{ jobs.version-check.outputs.current_version }}
+      should_bump:
+        description: "Whether the version should be bumped"
+        value: ${{ jobs.version-check.outputs.should_bump }}
+      version_bumped:
+        description: "Whether the version was actually bumped"
+        value: ${{ jobs.version-bump.outputs.version_bumped || 'false' }}
+      version:
+        description: "The final version (either current or bumped)"
+        value: ${{ jobs.version-bump.outputs.new_version || jobs.version-check.outputs.current_version }}
+      prev_version:
+        description: "The previous version (for potential revert)"
+        value: ${{ jobs.prepare-revert.outputs.prev_version || '' }}
+
+# Global defaults for all jobs
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Check current version
+  version-check:
+    name: 🔍 Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.get-version.outputs.version }}
+      should_bump: ${{ steps.check-bump.outputs.should_bump }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Get current version
+      id: get-version
+      run: |
+        VERSION=$(grep -Po "VERSION\s+\K[0-9]+\.[0-9]+\.[0-9]+" CMakeLists.txt)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Current version: $VERSION"
+
+    - name: Check if version bump is needed
+      id: check-bump
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+        echo "Latest tag: $LATEST_TAG"
+
+        if [[ "$LATEST_TAG" == "none" ]]; then
+          echo "should_bump=true" >> $GITHUB_OUTPUT
+          echo "Version bump needed: No tags exist yet"
+        else
+          # Count commits since last tag
+          COMMITS_SINCE_TAG=$(git rev-list $LATEST_TAG..HEAD --count)
+          echo "Commits since last tag: $COMMITS_SINCE_TAG"
+          
+          if [[ "$COMMITS_SINCE_TAG" -gt 0 ]]; then
+            echo "should_bump=true" >> $GITHUB_OUTPUT
+            echo "Version bump needed: $COMMITS_SINCE_TAG commits since last tag"
+          else
+            echo "should_bump=false" >> $GITHUB_OUTPUT
+            echo "Version bump not needed: Only $COMMITS_SINCE_TAG commits since last tag"
+          fi
+        fi
+
+  # Bump version if needed
+  version-bump:
+    name: 📈 Bump Version
+    needs: [ version-check ]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.version-check.outputs.should_bump == 'true'
+    outputs:
+      new_version: ${{ steps.bump-version.outputs.new_version }}
+      version_bumped: ${{ steps.commit.outputs.version_bumped }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Bump version
+      id: bump-version
+      run: |
+        # Extract version components
+        CURRENT_VERSION="${{ needs.version-check.outputs.current_version }}"
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+        # Increment patch version
+        PATCH=$((PATCH + 1))
+        NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+        echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "Current: $CURRENT_VERSION -> New: $NEW_VERSION"
+
+        # Update CMakeLists.txt
+        sed -i "s/VERSION $CURRENT_VERSION/VERSION $NEW_VERSION/" CMakeLists.txt
+
+        # Update PKGBUILD
+        sed -i "s/pkgver=$CURRENT_VERSION/pkgver=$NEW_VERSION/" contrib/aur/lotus/PKGBUILD
+
+    - name: Commit version bump
+      id: commit
+      run: |
+        git config --global user.name "Mrs Turtle"
+        git config --global user.email "mrs.turtle@lotusia.org"
+
+        # Add the version bump changes
+        git add CMakeLists.txt contrib/aur/lotus/PKGBUILD
+        git commit -m "Bump version to ${{ steps.bump-version.outputs.new_version }}"
+        
+        # Pull latest changes with rebase strategy to avoid merge commits
+        git fetch origin master
+        
+        # Rebase our changes on top of the latest master
+        git rebase origin/master
+        
+        # Push with force-with-lease for safety
+        git push --force-with-lease origin HEAD:master
+
+        echo "version_bumped=true" >> $GITHUB_OUTPUT
+        echo "Version bumped and committed successfully"
+
+  # Prepare for potential revert
+  prepare-revert:
+    name: 🔄 Prepare Revert
+    needs: [ version-check ]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.version-check.outputs.should_bump == 'true'
+    outputs:
+      prev_version: ${{ steps.calculate-prev-version.outputs.prev_version }}
+
+    steps:
+    - name: Calculate previous version
+      id: calculate-prev-version
+      run: |
+        CURRENT_VERSION="${{ needs.version-check.outputs.current_version }}"
+        # Split version into components
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+        # Calculate the previous version
+        PREV_PATCH=$((PATCH - 1))
+        PREV_VERSION="$MAJOR.$MINOR.$PREV_PATCH"
+        echo "prev_version=$PREV_VERSION" >> $GITHUB_OUTPUT
+        echo "Current version: $CURRENT_VERSION, Previous version: $PREV_VERSION"
+
+    # This job will be referenced by other workflows, but doesn't do anything unless told to
+    # It simply provides a hook for the main workflow to monitor build statuses and revert if needed
+    - name: Mark status
+      id: mark-status
+      run: |
+        echo "revert_status=ready" >> $GITHUB_OUTPUT
+        echo "Revert preparation completed successfully" 

@@ -426,7 +426,8 @@ void SetupServerArgs(NodeContext &node) {
         // TODO remove after the December 2021 upgrade
         "-exodusactivationtime", "-leviticusactivationtime",
         "-numbersactivationtime", "-deuteronomyactivationtime",
-        "-joshuaactivationtime", "-judgesactivationtime"};
+        "-joshuaactivationtime", "-judgesactivationtime",
+        "-ruthactivationtime", "-firstsamuelactivationtime"};
 
     // Set all of the args and their help
     // When adding new options to the categories, please keep and ensure
@@ -2028,7 +2029,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // Check blockmaxsize does not exceed maximum accepted block size.
     const int64_t nProposedMaxGeneratedBlockSize =
         args.GetArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
-    if (nProposedMaxGeneratedBlockSize <= 0) {
+    if (nProposedMaxGeneratedBlockSize <= 0 && args.IsArgSet("-blockmaxsize")) {
         return InitError(_("Max generated block size must be greater than 0"));
     }
     if (uint64_t(nProposedMaxGeneratedBlockSize) > config.GetMaxBlockSize()) {

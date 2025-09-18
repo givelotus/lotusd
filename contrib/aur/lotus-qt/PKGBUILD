@@ -1,11 +1,11 @@
 # Maintainer: Josh Ellithorpe <quest@mac.com>
 
 pkgname=lotus-qt
-pkgver=6.3.3
+pkgver=9.4.0
 pkgrel=0
 pkgdesc="Lotus with lotusd, lotus-cli, lotus-tx, lotus-seeder and lotus-qt"
 arch=('i686' 'x86_64')
-url="https://givelotus.org"
+url="https://lotusia.org"
 depends=('boost-libs' 'libevent' 'desktop-file-utils' 'qt5-base' 'protobuf' 'openssl' 'miniupnpc' 'zeromq' 'qrencode' 'jemalloc')
 makedepends=('cmake' 'ninja' 'boost' 'qt5-tools' 'python' 'help2man' 'xorg-server-xvfb')
 license=('MIT')

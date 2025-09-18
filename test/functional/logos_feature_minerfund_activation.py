@@ -32,9 +32,10 @@ DEUTERONOMY_ACTIVATION_TIME = 2030000000
 JOSHUA_ACTIVATION_TIME = 2040000000
 JUDGES_ACTIVATION_TIME = 2050000000
 RUTH_ACTIVATION_TIME = 2060000000
+FIRST_SAMUEL_ACTIVATION_TIME = 2070000000
+SECOND_SAMUEL_ACTIVATION_TIME = 2080000000
 
-REPLAYPROTECTION_ACTIVATION_TIME = RUTH_ACTIVATION_TIME
-
+REPLAYPROTECTION_ACTIVATION_TIME = SECOND_SAMUEL_ACTIVATION_TIME
 # see consensus/addresses.h, use getaddressinfo to get the scriptPubKey
 GENESIS_SCRIPTS = [
     "a914b6c79031b71d86ab0d617e1e1e706ec4ee34b07f87",
@@ -126,6 +127,12 @@ JOSHUA_SCRIPTS = [
 JUDGES_SCRIPTS = [
     "76a9149208ecc785c92968481a92aee7024b77e54d27dc88ac",
 ]
+RUTH_SCRIPTS = [
+    "76a914d7756030f4292b70cb70dc4df231b14109c6806188ac",
+]
+FIRST_SAMUEL_SCRIPTS = [
+    "76a91454cc452f58721cbefd412eb82cb6f4f0d8049b0288ac",
+]
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -139,6 +146,8 @@ class MinerFundActivationTest(BitcoinTestFramework):
             f'-deuteronomyactivationtime={DEUTERONOMY_ACTIVATION_TIME}',
             f'-joshuaactivationtime={JOSHUA_ACTIVATION_TIME}',
             f'-judgesactivationtime={JUDGES_ACTIVATION_TIME}',
+            f'-ruthactivationtime={RUTH_ACTIVATION_TIME}',
+            f'-firstsamuelactivationtime={FIRST_SAMUEL_ACTIVATION_TIME}',
             f'-replayprotectionactivationtime={REPLAYPROTECTION_ACTIVATION_TIME}',
         ]]
 
@@ -357,7 +366,7 @@ class MinerFundActivationTest(BitcoinTestFramework):
         block = make_block_cb_post_numbers(JUDGES_SCRIPTS)
         prepare_block(block)
         assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
-        node.setmocktime(JUDGES_ACTIVATION_TIME)
+        node.setmocktime(JOSHUA_ACTIVATION_TIME)
 
         # Mine 11 blocks with JUDGES_ACTIVATION in the middle
         # That moves MTP exactly to JUDGES_ACTIVATION
@@ -387,7 +396,84 @@ class MinerFundActivationTest(BitcoinTestFramework):
             block = make_block_cb_post_numbers(JUDGES_SCRIPTS)
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
-
+        #
+        #   Begin Winter 2024 Upgrade Test
+        #
+        # Using the ruth addresses before upgrade fails
+        block = make_block_cb_post_numbers(RUTH_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        node.setmocktime(JUDGES_ACTIVATION_TIME)
+        # Mine 11 blocks with RUTH_ACTIVATION in the middle
+        # That moves MTP exactly to RUTH_ACTIVATION
+        for i in range(-6, 6):
+            block = make_block_cb_post_numbers(JUDGES_SCRIPTS)
+            block.nTime = RUTH_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'],
+                     RUTH_ACTIVATION_TIME)
+        
+        # Now the using the genesis, exodus, leviticus, or numbers, and deuteronomy addresses fails
+        for block in [
+            make_block_with_cb_scripts(GENESIS_SCRIPTS),
+            make_block_with_cb_scripts(EXODUS_SCRIPTS),
+            make_block_with_cb_scripts(LEVITICUS_SCRIPTS),
+            make_block_cb_post_numbers(NUMBERS_SCRIPTS),
+            make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS),
+            make_block_cb_post_numbers(JOSHUA_SCRIPTS),
+            make_block_cb_post_numbers(JUDGES_SCRIPTS),
+        ]:
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+       
+        # Using the Ruth scripts now works
+        for i in range(0, 12):
+            block = make_block_cb_post_numbers(RUTH_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        #
+        #   End Winter 2024 Upgrade Test
+        #
+        #   Begin Summer 2025 Upgrade Test
+        #
+        # Using the first samuel addresses before upgrade fails
+        block = make_block_cb_post_numbers(FIRST_SAMUEL_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        node.setmocktime(FIRST_SAMUEL_ACTIVATION_TIME)
+        # Mine 11 blocks with FIRST_SAMUEL_ACTIVATION in the middle
+        # That moves MTP exactly to FIRST_SAMUEL_ACTIVATION
+        for i in range(-6, 6):
+            block = make_block_cb_post_numbers(RUTH_SCRIPTS)
+            block.nTime = FIRST_SAMUEL_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'],
+                     FIRST_SAMUEL_ACTIVATION_TIME)
+        
+        # Now the using the genesis, exodus, leviticus, or numbers, and deuteronomy addresses fails
+        for block in [
+            make_block_with_cb_scripts(GENESIS_SCRIPTS),
+            make_block_with_cb_scripts(EXODUS_SCRIPTS),
+            make_block_with_cb_scripts(LEVITICUS_SCRIPTS),
+            make_block_cb_post_numbers(NUMBERS_SCRIPTS),
+            make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS),
+            make_block_cb_post_numbers(JOSHUA_SCRIPTS), 
+            make_block_cb_post_numbers(JUDGES_SCRIPTS),
+            make_block_cb_post_numbers(RUTH_SCRIPTS),
+        ]:
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        
+        # Using the first samuel scripts now works
+        for i in range(0, 12):
+            block = make_block_cb_post_numbers(FIRST_SAMUEL_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        #
+        #   End Summer 2025 Upgrade Test
+        #
         # Check replay protection is not enabled yet
         tx = CTransaction()
         tx.vin = [CTxIn(COutPoint(int(cointxid, 16), 1))]

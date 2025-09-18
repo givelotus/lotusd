@@ -1,0 +1,406 @@
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version to package and release"
+        required: true
+        type: string
+
+jobs:
+  # Package artifacts
+  package-artifacts:
+    name: 📦 Package Artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      package_status: ${{ job.status }}
+
+    steps:
+    - name: Create artifacts directory
+      run: |
+        mkdir -p ./artifacts
+        mkdir -p ./individual-packages
+        mkdir -p ./debug-info
+
+    # Download all artifacts with improved debugging
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: "*-${{ inputs.version }}"
+        path: ./artifacts/
+        merge-multiple: true
+    
+    # Debug output of downloaded artifacts
+    - name: Debug output of downloaded artifacts
+      run: |
+        echo "Contents of ./artifacts directory:"
+        ls -la ./artifacts/
+        find ./artifacts -type f | sort > ./debug-info/found-artifacts.txt
+        cat ./debug-info/found-artifacts.txt
+
+    # Make sure all binaries are executable
+    - name: Set permissions
+      run: |
+        chmod +x ./artifacts/*
+
+    # Create combined packages (tarball and zip)
+    - name: Create combined packages
+      run: |
+        cd ./artifacts
+
+        # Create directory structure
+        mkdir -p gpu-miner-package
+
+        # Copy all binaries with verbose output
+        cp -v lotus* gpu-miner-package/ || true
+        
+        # Additional debug info
+        echo "Files in gpu-miner-package:"
+        ls -la gpu-miner-package/
+
+        # Create tarball
+        tar -czvf lotus-binaries-${{ inputs.version }}.tar.gz gpu-miner-package/
+        
+        # Create zip
+        zip -r lotus-binaries-${{ inputs.version }}.zip gpu-miner-package/
+
+    # Create individual packages with improved error handling and debugging
+    - name: Create individual packages
+      run: |
+        cd ./artifacts
+        
+        # Clean up any existing directories first to avoid conflicts
+        rm -rf gpu-miner-dir lotus-node-dir lotus-qt-dir lotus-cli-dir
+        
+        # Package the GPU miner binary - check for both names with robust error handling
+        if [ -f "lotus-miner-cli" ] || [ -f "lotus-gpu-miner" ]; then
+          echo "Found GPU miner binary, packaging it..."
+          
+          # Create directory for GPU miner
+          mkdir -p gpu-miner-dir
+          
+          # Copy the binary and ensure both names are available
+          if [ -f "lotus-miner-cli" ]; then
+            cp -v lotus-miner-cli gpu-miner-dir/
+            if [ ! -f "lotus-gpu-miner" ]; then
+              cd gpu-miner-dir
+              ln -sf lotus-miner-cli lotus-gpu-miner
+              cd ..
+            fi
+          elif [ -f "lotus-gpu-miner" ]; then
+            cp -v lotus-gpu-miner gpu-miner-dir/
+            cd gpu-miner-dir
+            ln -sf lotus-gpu-miner lotus-miner-cli
+            cd ..
+          fi
+          
+          # Include required kernels if they exist
+          if [ -d "./kernels" ]; then
+            mkdir -p gpu-miner-dir/kernels
+            cp -rv kernels/* gpu-miner-dir/kernels/ || true
+          fi
+          
+          # Create tarball
+          echo "Creating GPU miner tarball..."
+          tar -czvf ../individual-packages/lotus-gpu-miner-${{ inputs.version }}.tar.gz gpu-miner-dir/
+          
+          # Create zip
+          echo "Creating GPU miner zip..."
+          cd gpu-miner-dir
+          zip -r ../../individual-packages/lotus-gpu-miner-${{ inputs.version }}.zip .
+          cd ..
+          
+          # Clean up
+          rm -rf gpu-miner-dir
+        else
+          echo "WARNING: GPU miner binary not found! Checking directory contents:"
+          ls -la
+        fi
+        
+        # Package the node binary
+        if [ -f "lotusd" ]; then
+          mkdir -p lotus-node-dir
+          cp -v lotusd lotus-node-dir/
+          
+          # Create tarball
+          tar -czvf ../individual-packages/lotus-node-${{ inputs.version }}.tar.gz lotus-node-dir/
+          
+          # Create zip
+          cd lotus-node-dir
+          zip -r ../../individual-packages/lotus-node-${{ inputs.version }}.zip .
+          cd ..
+          
+          # Clean up
+          rm -rf lotus-node-dir
+        fi
+        
+        # Package the QT wallet
+        if [ -f "lotus-qt" ]; then
+          mkdir -p lotus-qt-dir
+          cp -v lotus-qt lotus-qt-dir/
+          
+          # Create tarball
+          tar -czvf ../individual-packages/lotus-qt-${{ inputs.version }}.tar.gz lotus-qt-dir/
+          
+          # Create zip
+          cd lotus-qt-dir
+          zip -r ../../individual-packages/lotus-qt-${{ inputs.version }}.zip .
+          cd ..
+          
+          # Clean up
+          rm -rf lotus-qt-dir
+        fi
+        
+        # Package other CLI tools
+        if [ -f "lotus-cli" ]; then
+          mkdir -p lotus-cli-dir
+          cp -v lotus-cli lotus-cli-dir/
+          
+          # Create tarball
+          tar -czvf ../individual-packages/lotus-cli-${{ inputs.version }}.tar.gz lotus-cli-dir/
+          
+          # Create zip
+          cd lotus-cli-dir
+          zip -r ../../individual-packages/lotus-cli-${{ inputs.version }}.zip .
+          cd ..
+          
+          # Clean up
+          rm -rf lotus-cli-dir
+        fi
+        
+        # Clean up
+        rm -rf gpu-miner-package
+        
+        # Check the individual packages directory
+        echo "Contents of individual-packages directory:"
+        ls -la ../individual-packages/
+
+    # Upload combined artifacts
+    - name: Upload combined artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotus-combined-packages-${{ inputs.version }}
+        path: |
+          ./artifacts/lotus-binaries-*.tar.gz
+          ./artifacts/lotus-binaries-*.zip
+        retention-days: 14
+
+    # Upload individual artifacts
+    - name: Upload individual artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotus-individual-packages-${{ inputs.version }}
+        path: ./individual-packages/*
+        retention-days: 14
+        
+    # Upload debug info
+    - name: Upload debug info
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-debug-info-${{ inputs.version }}
+        path: ./debug-info/
+        retention-days: 1
+
+  # Create the Git tag
+  create-tag:
+    name: 🏷️ Create Git Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag_created: ${{ steps.create-tag.outputs.tag_created }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+        fetch-depth: 0
+
+    - name: Check if tag exists
+      id: check-tag
+      run: |
+        VERSION="${{ inputs.version }}"
+        if git ls-remote --tags origin | grep -q "refs/tags/v$VERSION"; then
+          echo "should_tag=false" >> $GITHUB_OUTPUT
+          echo "Tag v$VERSION already exists"
+        else
+          echo "should_tag=true" >> $GITHUB_OUTPUT
+          echo "Tag v$VERSION does not exist yet"
+        fi
+
+    - name: Create and push tag
+      id: create-tag
+      if: steps.check-tag.outputs.should_tag == 'true'
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+
+        VERSION="${{ inputs.version }}"
+        
+        # Fetch the latest changes first
+        git fetch origin master
+        
+        # Make sure we're on the latest master with rebase
+        git checkout master
+        git reset --hard origin/master
+        
+        # Create and push the tag
+        git tag -a "v$VERSION" -m "Release v$VERSION"
+        git push origin "v$VERSION"
+        
+        echo "tag_created=true" >> $GITHUB_OUTPUT
+        echo "Tag v$VERSION created and pushed successfully"
+
+  # Create the GitHub release
+  publish-release:
+    name: 🎁 Publish GitHub Release
+    needs: [ create-tag, package-artifacts ]
+    runs-on: ubuntu-latest
+    if: always() && needs.create-tag.result == 'success' && needs.package-artifacts.result == 'success'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+        fetch-depth: 0
+
+    # Streamline artifact download - download directly to release-packages
+    - name: Download combined packages
+      uses: actions/download-artifact@v4
+      with:
+        name: lotus-combined-packages-${{ inputs.version }}
+        path: ./release-packages
+
+    # Download individual packages
+    - name: Download individual packages
+      uses: actions/download-artifact@v4
+      with:
+        name: lotus-individual-packages-${{ inputs.version }}
+        path: ./release-packages
+        
+    # Print contents of release packages directory
+    - name: List release files
+      run: |
+        echo "Files to be included in release:"
+        ls -la ./release-packages/
+
+    # Generate release notes with key information
+    - name: Generate release notes
+      id: generate-notes
+      run: |
+        VERSION="${{ inputs.version }}"
+        REPO_OWNER_LC=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')
+
+        # Get commit history for changelog
+        PREV_TAG=$(git describe --tags --abbrev=0 --exclude="v${VERSION}" 2>/dev/null || echo "")
+        if [ -z "$PREV_TAG" ]; then
+          CHANGELOG=$(git log --pretty=format:"- %s by %an" -10)
+        else
+          CHANGELOG=$(git log --pretty=format:"- %s by %an" ${PREV_TAG}..HEAD)
+        fi
+
+        # Create release notes
+        cat > release_notes.md << EOF
+        # 🚀 Lotus Root v${VERSION} Release
+
+        ![Lotus Logo](https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/master/share/pixmaps/lotus64.png)
+
+        ## 📦 Binaries and Docker Images
+
+        ### Binary Packages
+
+        #### Combined Packages (All Components)
+        * [Combined Binary Package (tar.gz)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-binaries-${VERSION}.tar.gz)
+        * [Combined Binary Package (zip)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-binaries-${VERSION}.zip)
+
+        #### Individual Component Packages
+        * [GPU Miner (tar.gz)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-gpu-miner-${VERSION}.tar.gz)
+        * [GPU Miner (zip)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-gpu-miner-${VERSION}.zip)
+        * [Lotus Node (tar.gz)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-node-${VERSION}.tar.gz)
+        * [Lotus Node (zip)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-node-${VERSION}.zip)
+        * [Lotus QT Wallet (tar.gz)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-qt-${VERSION}.tar.gz)
+        * [Lotus QT Wallet (zip)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-qt-${VERSION}.zip)
+        * [Lotus CLI Tools (tar.gz)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-cli-${VERSION}.tar.gz)
+        * [Lotus CLI Tools (zip)](https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-cli-${VERSION}.zip)
+
+        ### Docker Images
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-node:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-node) - Main Lotus daemon
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-cli:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-cli) - Command-line interface
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-seeder:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-seeder) - Network seeder
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-tx:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-tx) - Transaction utility
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-wallet:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-wallet) - Wallet utility
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-qt:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-qt) - Desktop GUI wallet
+        * [\`ghcr.io/${REPO_OWNER_LC}/lotus-gpu-miner:${VERSION}\`](https://github.com/${GITHUB_REPOSITORY}/pkgs/container/lotus-gpu-miner) - GPU Miner
+
+        ## 🔍 What's Changed
+
+        [View all changes](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...v${VERSION})
+
+        ### Changelog
+        ${CHANGELOG}
+
+        ## 💡 Installation Instructions
+
+        ### Docker Installation
+        \`\`\`bash
+        # Pull the Lotus node image
+        docker pull ghcr.io/${REPO_OWNER_LC}/lotus-node:${VERSION}
+
+        # Run a Lotus node
+        docker run -d --name lotus-node -p 10605:10605 -p 10604:10604 -v lotus-data:/root/.lotus ghcr.io/${REPO_OWNER_LC}/lotus-node:${VERSION}
+        \`\`\`
+
+        ### GPU Miner Installation
+        \`\`\`bash
+        # Using tar.gz
+        wget https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-gpu-miner-${VERSION}.tar.gz
+        tar -xzf lotus-gpu-miner-${VERSION}.tar.gz
+        cd gpu-miner-dir
+        chmod +x lotus-miner-cli
+        ./lotus-miner-cli -g 0 -s 27 -o YOUR_LOTUS_ADDRESS -i 1 -a https://burnlotus.org -m
+        # You can also use the symlink:
+        # ./lotus-gpu-miner -g 0 -s 27 -o YOUR_LOTUS_ADDRESS -i 1 -a https://burnlotus.org -m
+        
+        # Using zip
+        wget https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/lotus-gpu-miner-${VERSION}.zip
+        unzip lotus-gpu-miner-${VERSION}.zip -d gpu-miner-dir
+        cd gpu-miner-dir
+        chmod +x lotus-miner-cli
+        ./lotus-miner-cli -g 0 -s 27 -o YOUR_LOTUS_ADDRESS -i 1 -a https://burnlotus.org -m
+        \`\`\`
+
+        ## 📋 System Requirements
+        - **OS**: Ubuntu 22.04 or newer, Windows 10+, macOS 11+
+        - **RAM**: 4GB minimum, 8GB recommended
+        - **Storage**: 16GB minimum, SSD recommended
+        - **GPU Mining**: NVIDIA GPU with CUDA support
+
+        ## 🔗 Additional Resources
+        - [Official Website](https://lotusia.org)
+        - [Documentation](https://docs.lotusia.org)
+        - [GitHub Repository](https://github.com/${GITHUB_REPOSITORY})
+        - [Issue Tracker](https://github.com/${GITHUB_REPOSITORY}/issues)
+
+        ---
+        *This release was automatically generated by the Lotus CI system on $(date -u "+%Y-%m-%d")*
+        EOF
+
+        echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+        echo "$(cat release_notes.md)" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    # Create GitHub Release with all packages
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ inputs.version }}
+        name: Lotus Root v${{ inputs.version }}
+        body: ${{ steps.generate-notes.outputs.release_notes }}
+        files: ./release-packages/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: write
+  packages: write

@@ -1,0 +1,219 @@
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version to build"
+        required: true
+        type: string
+
+jobs:
+  build-lotusd:
+    name: 🚀 Build lotusd
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ job.status }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v2
+      with:
+        install: true
+
+    - name: Docker registry login
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set repository owner
+      run: echo "REPO_OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+    - name: Build and extract binary
+      run: |
+        # Create artifacts directory
+        mkdir -p ./artifacts
+
+        # Build the Docker image with --load flag to ensure it's available locally
+        docker buildx build --load -t lotus-node:local -f dockerfiles/Dockerfile.lotusd .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-node:local)
+        docker cp $container_id:/opt/lotus/bin/lotusd ./artifacts/
+        docker rm $container_id
+
+        # Build the Docker image with --load flag to ensure it's available locally
+        docker buildx build --load -t lotus-node:local -f dockerfiles/Dockerfile.lotusd .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-node:local)
+        docker cp $container_id:/opt/lotus/bin/lotusd ./artifacts/
+        docker rm $container_id
+
+        # If not a PR, tag and push to registry
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          # Tag for registry
+          docker tag lotus-node:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:${{ inputs.version }}
+          docker tag lotus-node:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:sha-${{ github.sha }}
+          docker tag lotus-node:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:latest
+          
+          # Push to registry
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:${{ inputs.version }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:sha-${{ github.sha }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:latest
+        fi
+
+    - name: Upload artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotusd-${{ inputs.version }}
+        path: ./artifacts/lotusd
+        retention-days: 14
+
+  build-lotus-cli:
+    name: 🖥️ Build lotus-cli
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ job.status }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v2
+      with:
+        install: true
+
+    - name: Docker registry login
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set repository owner
+      run: echo "REPO_OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+    - name: Build and extract binary
+      run: |
+        # Create artifacts directory
+        mkdir -p ./artifacts
+
+        # Build the Docker image with proper output specification
+        docker buildx build --load -t lotus-cli:local -f dockerfiles/Dockerfile.lotus-cli .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-cli:local)
+        docker cp $container_id:/opt/lotus/bin/lotus-cli ./artifacts/
+        docker rm $container_id
+
+        # Build the Docker image with proper output specification
+        docker buildx build --load -t lotus-cli:local -f dockerfiles/Dockerfile.lotus-cli .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-cli:local)
+        docker cp $container_id:/opt/lotus/bin/lotus-cli ./artifacts/
+        docker rm $container_id
+
+        # If not a PR, tag and push to registry
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          # Tag for registry
+          docker tag lotus-cli:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:${{ inputs.version }}
+          docker tag lotus-cli:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:sha-${{ github.sha }}
+          docker tag lotus-cli:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:latest
+          
+          # Push to registry
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:${{ inputs.version }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:sha-${{ github.sha }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-cli:latest
+        fi
+
+    - name: Upload artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotus-cli-${{ inputs.version }}
+        path: ./artifacts/lotus-cli
+        retention-days: 14
+
+  build-lotus-tx:
+    name: 💰 Build lotus-tx
+    runs-on: ubuntu-latest
+    outputs:
+      build_status: ${{ job.status }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v2
+      with:
+        install: true
+
+    - name: Docker registry login
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set repository owner
+      run: echo "REPO_OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+
+    - name: Build and extract binary
+      run: |
+        # Create artifacts directory
+        mkdir -p ./artifacts
+
+        # Build the Docker image with proper output specification
+        docker buildx build --load -t lotus-tx:local -f dockerfiles/Dockerfile.lotus-tx .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-tx:local)
+        docker cp $container_id:/opt/lotus/bin/lotus-tx ./artifacts/
+        docker rm $container_id
+
+        # Build the Docker image with proper output specification
+        docker buildx build --load -t lotus-tx:local -f dockerfiles/Dockerfile.lotus-tx .
+
+        # Extract the binary from the local image
+        container_id=$(docker create lotus-tx:local)
+        docker cp $container_id:/opt/lotus/bin/lotus-tx ./artifacts/
+        docker rm $container_id
+
+        # If not a PR, tag and push to registry
+        if [ "${{ github.event_name }}" != "pull_request" ]; then
+          # Tag for registry
+          docker tag lotus-tx:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:${{ inputs.version }}
+          docker tag lotus-tx:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:sha-${{ github.sha }}
+          docker tag lotus-tx:local ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:latest
+          
+          # Push to registry
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:${{ inputs.version }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:sha-${{ github.sha }}
+          docker push ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-tx:latest
+        fi
+
+    - name: Upload artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotus-tx-${{ inputs.version }}
+        path: ./artifacts/lotus-tx
+        retention-days: 14

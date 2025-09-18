@@ -28,6 +28,7 @@ static const uint64_t MAX_TX_SIGCHECKS = 3000;
  */
 static const std::vector<uint8_t> COINBASE_PREFIX =
     {0x6c, 0x6f, 0x67, 0x6f, 0x73};
+    //6672627463 ?
 
 /**
  * The ratio between the maximum allowable block size and the maximum allowable

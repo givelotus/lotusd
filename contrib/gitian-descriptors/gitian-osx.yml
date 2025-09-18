@@ -31,11 +31,11 @@ packages:
 - "python3-setuptools"
 repositories:
 - "distribution": "buster-backports"
-  "source": "deb http://deb.debian.org/debian/ buster-backports main"
+  "source": "deb http://archive.debian.org/debian/ buster-backports main"
   packages:
   - "cmake"
 remotes:
-- "url": "https://github.com/LogosFoundation/lotusd.git"
+- "url": "https://github.com/LotusiaStewardship/lotusd.git"
   "dir": "bitcoin"
 files:
 - "Xcode-11.3.1-11C505-extracted-SDK-with-libcxx-headers.tar.gz"

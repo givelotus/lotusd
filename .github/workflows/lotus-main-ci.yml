@@ -1,0 +1,90 @@
+name: 🌸 Lotus Main CI
+
+# Allow multiple workflows to run in parallel
+# Each workflow will be identified by its unique run ID
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+# Global defaults for all jobs
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Check the current version first
+  version-management:
+    name: 📊 Version Management
+    uses: ./.github/workflows/lotus-version-management.yml
+    secrets: inherit
+
+  # Build components in parallel
+  build-core:
+    name: 🏗️ Core Components
+    needs: [ version-management ]
+    if: always() && (needs.version-management.outputs.should_bump == 'false' || needs.version-management.outputs.version_bumped == 'true')
+    uses: ./.github/workflows/lotus-core-build.yml
+    with:
+      version: ${{ needs.version-management.outputs.version }}
+    secrets: inherit
+
+  build-tools:
+    name: 🔧 Tool Components
+    needs: [ version-management ]
+    if: always() && (needs.version-management.outputs.should_bump == 'false' || needs.version-management.outputs.version_bumped == 'true')
+    uses: ./.github/workflows/lotus-tools-build.yml
+    with:
+      version: ${{ needs.version-management.outputs.version }}
+    secrets: inherit
+
+  build-gui:
+    name: 🖥️ GUI Components
+    needs: [ version-management ]
+    if: always() && (needs.version-management.outputs.should_bump == 'false' || needs.version-management.outputs.version_bumped == 'true')
+    uses: ./.github/workflows/lotus-gui-build.yml
+    with:
+      version: ${{ needs.version-management.outputs.version }}
+    secrets: inherit
+
+  build-miner:
+    name: ⛏️ Mining Components
+    needs: [ version-management ]
+    if: always() && (needs.version-management.outputs.should_bump == 'false' || needs.version-management.outputs.version_bumped == 'true')
+    uses: ./.github/workflows/lotus-miner-build.yml
+    with:
+      version: ${{ needs.version-management.outputs.version }}
+    secrets: inherit
+
+  # Revert version if any builds failed
+  revert-version:
+    name: ⏮️ Revert Version
+    needs: [ version-management, build-core, build-tools, build-gui, build-miner ]
+    if: always() && needs.version-management.outputs.version_bumped == 'true' && (needs.build-core.result == 'failure' || needs.build-tools.result == 'failure' || needs.build-gui.result == 'failure' || needs.build-miner.result == 'failure')
+    uses: ./.github/workflows/lotus-version-revert.yml
+    with:
+      current_version: ${{ needs.version-management.outputs.version }}
+      prev_version: ${{ needs.version-management.outputs.prev_version }}
+      build_failures: ${{ needs.build-core.result == 'failure' || needs.build-tools.result == 'failure' || needs.build-gui.result == 'failure' || needs.build-miner.result == 'failure' }}
+    secrets: inherit
+
+  # Release process
+  release:
+    name: 🚀 Release
+    needs: [ version-management, build-core, build-tools, build-gui, build-miner, revert-version ]
+    if: always() && github.ref == 'refs/heads/master' && github.event_name == 'push' && needs.build-core.result == 'success' && needs.build-tools.result == 'success' && needs.build-gui.result == 'success' && needs.build-miner.result == 'success' && (needs.revert-version.result == 'skipped' || needs.revert-version.result == 'success')
+    uses: ./.github/workflows/lotus-release.yml
+    with:
+      version: ${{ needs.version-management.outputs.version }}
+    secrets: inherit
+
+# Add permissions at the top level
+permissions:
+  contents: write
+  packages: write

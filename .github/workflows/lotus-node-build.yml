@@ -1,0 +1,134 @@
+name: 🌿 Lotus Node Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version to build"
+        required: true
+        type: string
+
+# Global defaults for all jobs
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Build the lotus node
+  build-lotus-node:
+    name: 🚀 Build lotus-node
+    runs-on: [ ubuntu-latest ]
+    outputs:
+      build_status: ${{ job.status }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: master
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Prepare buildx cache directories
+      run: |
+        # Create cache directories with appropriate permissions
+        sudo mkdir -p /tmp/.buildx-cache /tmp/.buildx-cache-new
+        sudo chmod -R 777 /tmp/.buildx-cache /tmp/.buildx-cache-new
+
+        # Create a properly formatted index.json file for buildx
+        cat > /tmp/.buildx-cache/index.json << 'EOF'
+        {
+          "manifests": [],
+          "mediaType": "application/vnd.oci.image.index.v1+json",
+          "schemaVersion": 2
+        }
+        EOF
+
+    - name: Cache Docker layers
+      uses: actions/cache@v3
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-lotus-node-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-lotus-node-
+
+    - name: Set lowercase repository owner
+      id: lowercase_repo_owner
+      run: |
+        echo "REPO_OWNER_LC=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+    - name: Login to GitHub Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Build the lotus-node image
+    - name: Build lotus-node Docker image
+      uses: docker/build-push-action@v4
+      if: github.event_name != 'pull_request'
+      with:
+        context: .
+        file: dockerfiles/Dockerfile.lotus-node
+        push: false # Don't push to registry yet
+        load: true # Load into local Docker daemon
+        tags: |
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:sha-${{ github.sha }}
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:${{ inputs.version }}
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:latest
+        cache-from: type=local,src=/tmp/.buildx-cache
+        cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+        outputs: type=docker
+
+    # Extract binary with improved method
+    - name: Extract binary from Docker image
+      if: github.event_name != 'pull_request'
+      run: |
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        mkdir -p ./artifacts
+
+        echo "Extracting from local Docker image..."
+        # Extract from the local Docker image
+        CONTAINER_ID=$(docker create ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:sha-${{ github.sha }})
+        docker cp $CONTAINER_ID:/opt/lotus/bin/lotus-node ./artifacts/
+        docker rm -v $CONTAINER_ID
+        echo "Successfully extracted binary from Docker image"
+
+        # Verify file exists and has content
+        FILE_SIZE=$(stat -c%s "./artifacts/lotus-node" 2>/dev/null || echo "0")
+        echo "Binary file size: ${FILE_SIZE} bytes"
+        if [ "$FILE_SIZE" -lt 1000 ]; then
+          echo "WARNING: Extracted binary is very small (${FILE_SIZE} bytes)!"
+        fi
+
+    # Now push to registry after successful extraction
+    - name: Push Docker images to registry
+      if: github.event_name != 'pull_request'
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: dockerfiles/Dockerfile.lotus-node
+        push: true # Now we push to registry
+        tags: |
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:sha-${{ github.sha }}
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:${{ inputs.version }}
+          ghcr.io/${{ env.REPO_OWNER_LC }}/lotus-node:latest
+        cache-from: type=local,src=/tmp/.buildx-cache
+
+    # Move the cache
+    - name: Move cache
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
+
+    # Upload binary as artifact
+    - name: Upload lotus-node as artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: lotus-node-${{ inputs.version }}
+        path: ./artifacts/lotus-node
+        retention-days: 14

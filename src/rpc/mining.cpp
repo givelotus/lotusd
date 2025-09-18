@@ -1034,7 +1034,14 @@ static RPCHelpMan getblocktemplate() {
             result.pushKV("noncerange", "00000000ffffffff");
             result.pushKV("sigoplimit",
                           GetMaxBlockSigChecksCount(DEFAULT_MAX_BLOCK_SIZE));
-            result.pushKV("sizelimit", DEFAULT_MAX_BLOCK_SIZE);
+            
+            // Use the user-specified blockmaxsize if provided, otherwise use the default
+            uint64_t blockSizeLimit = DEFAULT_MAX_BLOCK_SIZE;
+            if (gArgs.IsArgSet("-blockmaxsize")) {
+                blockSizeLimit = gArgs.GetArg("-blockmaxsize", DEFAULT_MAX_BLOCK_SIZE);
+            }
+            result.pushKV("sizelimit", blockSizeLimit);
+            
             result.pushKV("curtime", pblock->GetBlockTime());
             result.pushKV("bits", strprintf("%08x", pblock->nBits));
             result.pushKV("height", int64_t(pindexPrev->nHeight) + 1);

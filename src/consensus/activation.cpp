@@ -25,7 +25,8 @@ bool IsLeviticusEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           gArgs.GetArg("-leviticusactivationtime", params.leviticusActivationTime);
+           gArgs.GetArg("-leviticusactivationtime",
+                        params.leviticusActivationTime);
 }
 
 bool IsNumbersEnabled(const Consensus::Params &params,
@@ -50,11 +51,12 @@ bool IsDeuteronomyEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           gArgs.GetArg("-deuteronomyactivationtime", params.deuteronomyActivationTime);
+           gArgs.GetArg("-deuteronomyactivationtime",
+                        params.deuteronomyActivationTime);
 }
 
 bool IsJoshuaEnabled(const Consensus::Params &params,
-                          const CBlockIndex *pindexPrev) {
+                     const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
@@ -64,11 +66,31 @@ bool IsJoshuaEnabled(const Consensus::Params &params,
 }
 
 bool IsJudgesEnabled(const Consensus::Params &params,
-                          const CBlockIndex *pindexPrev) {
+
+const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
         return false;
     }
 
     return pindexPrev->GetMedianTimePast() >=
            gArgs.GetArg("-judgesactivationtime", params.judgesActivationTime);
+}
+
+bool IsRuthEnabled(const Consensus::Params &params,
+                   const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetArg("-ruthactivationtime", params.ruthActivationTime);
+}
+
+bool IsFirstSamuelEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetArg("-firstsamuelactivationtime",
+                        params.firstSamuelActivationTime);
 }

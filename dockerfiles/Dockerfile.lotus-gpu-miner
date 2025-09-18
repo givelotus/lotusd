@@ -1,0 +1,250 @@
+# Build stage using a minimal Rust build image
+FROM rust:slim-bookworm AS builder
+
+# Install minimal build dependencies for Rust and OpenCL
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ocl-icd-opencl-dev \
+    opencl-headers \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /lotus-source
+
+# Copy only the necessary files for building
+COPY gpuminer/ /lotus-source/gpuminer/
+WORKDIR /lotus-source/gpuminer
+
+# Build the application
+RUN cargo build --release
+
+# Intermediate stage to create the startup script
+FROM debian:bookworm-slim AS script-builder
+
+# Create the startup script
+RUN echo '#!/bin/bash\n\
+# Define an array of addresses\n\
+ADDRESSES=(\n\
+  "lotus_16PSJLP8LK3q14N9xMFDPUsMPxi8yqvdoy1p4woLz"\n\
+  "lotus_16PSJKo9nqwWTiNsqdNkU1haXyxaS2pi15WoNQPX4"\n\
+  "lotus_16PSJLkXR2zHXC4JCFmLcY6Tpxb9qLbP9rzcsGSgo"\n\
+  "lotus_16PSJNvBpeApatcZVJKAkjSuttJTE3rsYcCCmkoFd"\n\
+  "lotus_16PSJHErRNz6nBEsy4rNdm9XcVWRd4EnkUvNMpF28"\n\
+  "lotus_16PSJKLDyRfjecZdHipKW3nKiYZNyii5HKWmR25sw"\n\
+  "lotus_16PSJNuGwhhcPjHTJ9zukMTVLccaUkAJTEVKB4jFR"\n\
+  "lotus_16PSJKLDyRfjecZdHipKW3nKiYZNyii5HKWmR25sw"\n\
+  "lotus_16PSJNsKV3q6jpHZfyBeWN36pq161LrMqw2dMbnLZ"\n\
+  "lotus_16PSJPtwpyHe4AyvgqEGGaX5HYQQX67KaDKKM4FxF"\n\
+  "lotus_16PSJPeRBEy23rYkEJur222qNrFMm6yv1mertXhMu"\n\
+  "lotus_16PSJJbXGkMuHJGARrtaazXJ67fC2UEh1YqLZCujF"\n\
+  "lotus_16PSJQvP79yJRMqg4gv2raoVVL2uSbwsWBEHvAi8V"\n\
+  "lotus_16PSJPCoX9JqXrec5TwuAMtYkvh1fiZ9sTTpfQ31P"\n\
+  "lotus_16PSJKoAGBUgtQx8XMRKWMvJee3WMcNS6xt12sGrS"\n\
+  "lotus_16PSJMJXAGa66QFhkKhwatUyW962KBhhs3EqEmQbb"\n\
+  "lotus_16PSJK7bcJJ9TRhWCvRrM6u8ujQFLSPDUgPWdX1ii"\n\
+  "lotus_16PSJLNUo6rjn6SQ3iTM443cRNTWgNqBWaiKwdjjF"\n\
+  "lotus_16PSJPexSJkdiaYtF2UUCYCxQXmVtGB1hDnVwDawF"\n\
+  "lotus_16PSJMJNsKWckFqsTHUwnAdFr1XJ6HRhN4s7Mdk67"\n\
+  "lotus_16PSJLBXesQhGkNfosUXQzwYJZjBjiN6jui799rfu"\n\
+  "lotus_16PSJPx5PmS7BiXSGjiG91K2JBxATwLXE15b2FPVx"\n\
+  "lotus_16PSJMshen3qpKEVYu5WCTxkU5XAqTYBV2HzRikwa"\n\
+  "lotus_16PSJNkBJahGpkhYu4fLt3USVvWxSnD6qYiT7Ssgj"\n\
+  "lotus_16PSJNxzcVBciuHukm3pJ5frC19rAjhoPEVYNYJz7"\n\
+  "lotus_16PSJNaTGZ2aA7dyCPugNzmSodvE1W2dauNJPJjR9"\n\
+  "lotus_16PSJQm6taghN5LUd8kKT9StUcJKDkBGCU6BnCyM3"\n\
+)\n\
+\n\
+# Get the number of available GPUs (with error handling)\n\
+if command -v nvidia-smi &> /dev/null; then\n\
+  GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)\n\
+else\n\
+  echo "Warning: nvidia-smi not found. Setting GPU count to 1."\n\
+  GPU_COUNT=1\n\
+fi\n\
+echo "Detected $GPU_COUNT GPUs"\n\
+\n\
+# Set default values for parameters\n\
+GPU_INDEX=${GPU_INDEX:-0}\n\
+KERNEL_SIZE=${KERNEL_SIZE:-22}\n\
+RPC_URL=${RPC_URL:-"https://burnlotus.org"}\n\
+RPC_USER=${RPC_USER:-"miner"}\n\
+RPC_PASSWORD=${RPC_PASSWORD:-"password"}\n\
+RPC_POLL_INTERVAL=${RPC_POLL_INTERVAL:-1}\n\
+POOL_MINING=${POOL_MINING:-true}\n\
+INSTANCES_PER_GPU=${INSTANCES_PER_GPU:-4}\n\
+CONFIG_FILE=${CONFIG_FILE:-""}\n\
+\n\
+# Process command line arguments - properly handle both short and long options\n\
+PASSTHROUGH_ARGS=""\n\
+ADDR_FOUND=false\n\
+\n\
+# If there is only one argument and it starts with "lotus_", treat it as the miner address\n\
+if [[ $# -eq 1 && "$1" == lotus_* ]]; then\n\
+  MINER_ADDRESS="$1"\n\
+  ADDR_FOUND=true\n\
+else\n\
+  # Otherwise parse arguments properly\n\
+  while [[ $# -gt 0 ]]; do\n\
+    case "$1" in\n\
+      -o|--mine-to-address)\n\
+        MINER_ADDRESS="$2"\n\
+        ADDR_FOUND=true\n\
+        shift 2\n\
+        ;;\n\
+      -g|--gpu-index)\n\
+        GPU_INDEX="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -s|--kernel-size)\n\
+        KERNEL_SIZE="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -i|--rpc-poll-interval)\n\
+        RPC_POLL_INTERVAL="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -a|--rpc-url)\n\
+        RPC_URL="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -u|--rpc-user)\n\
+        RPC_USER="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -p|--rpc-password)\n\
+        RPC_PASSWORD="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -c|--config)\n\
+        CONFIG_FILE="$2"\n\
+        shift 2\n\
+        ;;\n\
+      -m|--poolmining)\n\
+        POOL_MINING=true\n\
+        shift\n\
+        ;;\n\
+      -d|--debug)\n\
+        DEBUG=true\n\
+        PASSTHROUGH_ARGS="$PASSTHROUGH_ARGS $1"\n\
+        shift\n\
+        ;;\n\
+      *)\n\
+        # For any other arguments, pass them through\n\
+        PASSTHROUGH_ARGS="$PASSTHROUGH_ARGS $1"\n\
+        shift\n\
+        ;;\n\
+    esac\n\
+  done\n\
+fi\n\
+\n\
+# Set pool mining flag if enabled\n\
+POOL_MINING_FLAG=""\n\
+if [[ "$POOL_MINING" == "true" ]]; then\n\
+  POOL_MINING_FLAG="--poolmining"\n\
+fi\n\
+\n\
+# Set config file parameter if provided\n\
+CONFIG_PARAM=""\n\
+if [[ -n "$CONFIG_FILE" ]]; then\n\
+  CONFIG_PARAM="--config $CONFIG_FILE"\n\
+fi\n\
+\n\
+if [[ -n "$MINER_ADDRESS" ]]; then\n\
+  echo "Using provided miner address: $MINER_ADDRESS"\n\
+  ADDR_FOUND=true\n\
+fi\n\
+\n\
+# Function to get a random address\n\
+get_random_address() {\n\
+  # If a miner address was provided, use it\n\
+  if [[ -n "$MINER_ADDRESS" ]]; then\n\
+    echo "$MINER_ADDRESS"\n\
+    return\n\
+  fi\n\
+  # Otherwise, get random index from integrated addresses\n\
+  local idx=$((RANDOM % ${#ADDRESSES[@]}))\n\
+  echo ${ADDRESSES[$idx]}\n\
+}\n\
+\n\
+# Display configuration settings\n\
+echo "Miner configuration:"\n\
+echo "  Kernel size: $KERNEL_SIZE"\n\
+echo "  RPC URL: $RPC_URL"\n\
+echo "  RPC user: $RPC_USER"\n\
+echo "  RPC poll interval: $RPC_POLL_INTERVAL"\n\
+echo "  Pool mining: ${POOL_MINING}"\n\
+echo "  Instances per GPU: $INSTANCES_PER_GPU"\n\
+if [[ -n "$CONFIG_FILE" ]]; then\n\
+  echo "  Config file: $CONFIG_FILE"\n\
+fi\n\
+\n\
+# Launch miner instances for each GPU\n\
+for ((i=0; i<$GPU_COUNT; i++))\n\
+do\n\
+  for ((j=0; j<$INSTANCES_PER_GPU; j++))\n\
+  do\n\
+    ADDRESS=$(get_random_address)\n\
+    echo "Starting miner instance $((j+1)) on GPU $i with address $ADDRESS"\n\
+    /opt/lotus/bin/lotus-miner-cli \\\n\
+      -g $i \\\n\
+      -s $KERNEL_SIZE \\\n\
+      -o $ADDRESS \\\n\
+      -i $RPC_POLL_INTERVAL \\\n\
+      -a $RPC_URL \\\n\
+      -u $RPC_USER \\\n\
+      -p $RPC_PASSWORD \\\n\
+      $POOL_MINING_FLAG \\\n\
+      $CONFIG_PARAM \\\n\
+      $PASSTHROUGH_ARGS &\n\
+  done\n\
+done\n\
+\n\
+# Keep the container running\n\
+wait\n\
+' > /start-miners.sh && chmod +x /start-miners.sh
+
+# Runtime stage - using latest NVIDIA base container to fix vulnerabilities
+FROM nvidia/cuda:12.3.1-base-ubuntu22.04 AS runtime
+
+# Install only essential runtime dependencies including nvidia-utils for nvidia-smi
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ocl-icd-libopencl1 \
+    nvidia-opencl-dev \
+    nvidia-utils-535 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symbolic link to the NVIDIA OpenCL library
+RUN mkdir -p /etc/OpenCL/vendors && \
+    echo "libnvidia-opencl.so.1" > /etc/OpenCL/vendors/nvidia.icd
+
+# Create minimal directory structure
+RUN mkdir -p /opt/lotus/bin
+
+# Copy only the built binary from builder stage and ensure consistent naming
+COPY --from=builder /lotus-source/gpuminer/target/release/lotus-miner-cli /opt/lotus/bin/lotus-miner-cli
+
+# Create a symbolic link for the alternate name to maintain compatibility with both naming conventions
+RUN ln -sf /opt/lotus/bin/lotus-miner-cli /opt/lotus/bin/lotus-gpu-miner
+
+# Copy startup script
+COPY --from=script-builder /start-miners.sh /opt/lotus/start-miners.sh
+
+# Set permissions
+RUN chmod +x /opt/lotus/bin/* /opt/lotus/start-miners.sh
+
+# Add to PATH
+ENV PATH="/opt/lotus/bin:${PATH}"
+
+# Set NVIDIA runtime requirements
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Set working directory
+WORKDIR /opt/lotus
+
+# Command to run when container starts
+ENTRYPOINT ["/opt/lotus/start-miners.sh"] 

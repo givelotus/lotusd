@@ -1,0 +1,94 @@
+# Build stage
+FROM ubuntu:24.04 AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libssl-dev \
+    libzmq3-dev \
+    libboost-all-dev \
+    libevent-dev \
+    libdb++-dev \
+    libminiupnpc-dev \
+    libnng-dev \
+    libjemalloc-dev \
+    pkg-config \
+    libsqlite3-dev \
+    flatbuffers-compiler \
+    libflatbuffers-dev \
+    qtbase5-dev \
+    qt5-qmake \
+    libqt5gui5 \
+    libqt5core5a \
+    libqt5dbus5 \
+    qttools5-dev \
+    qttools5-dev-tools \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libqrencode-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create CMake configuration file for Flatbuffers
+RUN mkdir -p /usr/lib/cmake/flatbuffers && \
+    echo 'set(FLATBUFFERS_INCLUDE_DIR "/usr/include")' > /usr/lib/cmake/flatbuffers/FlatbuffersConfig.cmake && \
+    echo 'set(FLATBUFFERS_LIBRARIES "/usr/lib/x86_64-linux-gnu/libflatbuffers.a")' >> /usr/lib/cmake/flatbuffers/FlatbuffersConfig.cmake && \
+    echo 'set(FLATBUFFERS_FOUND TRUE)' >> /usr/lib/cmake/flatbuffers/FlatbuffersConfig.cmake
+
+# Set working directory for the source code
+WORKDIR /lotus-source
+
+# Copy the source code
+COPY . .
+
+# Build the binary
+RUN mkdir build
+WORKDIR /lotus-source/build
+RUN cmake ..
+RUN make lotus-tx -j$(nproc)
+
+# Runtime stage
+FROM ubuntu:24.04
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libssl-dev \
+    libzmq3-dev \
+    libboost-all-dev \
+    libevent-dev \
+    libdb++-dev \
+    libminiupnpc-dev \
+    libnng-dev \
+    libjemalloc-dev \
+    pkg-config \
+    libsqlite3-dev \
+    flatbuffers-compiler \
+    libflatbuffers-dev \
+    qtbase5-dev \
+    qt5-qmake \
+    libqt5gui5 \
+    libqt5core5a \
+    libqt5dbus5 \
+    qttools5-dev \
+    qttools5-dev-tools \
+    libprotobuf-dev \
+    protobuf-compiler \
+    libqrencode-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create directory structure
+RUN mkdir -p /opt/lotus/bin
+
+# Copy built binary from builder stage
+COPY --from=builder /lotus-source/build/src/lotus-tx /opt/lotus/bin/
+
+# Set permissions
+RUN chmod +x /opt/lotus/bin/*
+
+# Add to PATH
+ENV PATH="/opt/lotus/bin:${PATH}"
+
+ENTRYPOINT ["/opt/lotus/bin/lotus-tx"]
+CMD ["--help"] 

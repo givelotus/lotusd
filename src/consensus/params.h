@@ -22,6 +22,8 @@ struct CoinbaseAddresses {
     std::vector<std::string> deuteronomy;
     std::vector<std::string> joshua;
     std::vector<std::string> judges;
+    std::vector<std::string> ruth;
+    std::vector<std::string> firstSamuel;
 };
 
 /**
@@ -51,6 +53,12 @@ struct Params {
     /** Unit time used for MTP activation of 2024-12-21T09:20:00.000Z protocol
      * upgrade */
     int ruthActivationTime;
+    /** Unit time used for MTP activation of 2025-06-21T02:42:00.000Z protocol
+     * upgrade */
+    int firstSamuelActivationTime;
+    /** Unit time used for MTP activation of 2025-12-21T15:03:00.000Z protocol
+     * upgrade */
+    int secondSamuelActivationTime;
 
     /**
      * Don't warn about unknown BIP 9 activations below this height.
