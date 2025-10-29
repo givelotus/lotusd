@@ -37,7 +37,8 @@ from test_framework.txtools import pad_tx
 
 
 NUMBERS_ACTIVATION_TIME = 2000000000
-REPLAY_ACTIVATION_TIME = 2010000000
+SECOND_SAMUEL_ACTIVATION_TIME = 2010000000
+REPLAY_ACTIVATION_TIME = 2020000000
 
 class TaprootKeySpendTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -45,6 +46,7 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
                             f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
+                            f'-secondsamuelactivationtime={SECOND_SAMUEL_ACTIVATION_TIME}',
                             f'-replayprotectionactivationtime={REPLAY_ACTIVATION_TIME}']]
 
     def run_test(self):
