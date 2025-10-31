@@ -27,6 +27,7 @@ enum NetworkType : uint8_t {
 
 enum AddressType : uint8_t {
     SCRIPT_PUB_KEY = 0,
+    TAPROOT = 2,
 };
 
 enum DecodeError : uint8_t {

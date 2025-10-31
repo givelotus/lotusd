@@ -127,6 +127,11 @@ TxoutType Solver(const CScript &scriptPubKey,
     // or
     // OP_SCRIPTTYPE OP_1 33 <33-byte commitment> 32 <32-byte state>
     if (IsPayToTaproot(scriptPubKey)) {
+        // Extract the 33-byte commitment
+        std::vector<uint8_t> commitment(
+            scriptPubKey.begin() + 3, // Skip OP_SCRIPTTYPE, OP_1, and size byte
+            scriptPubKey.begin() + 3 + CPubKey::COMPRESSED_SIZE);
+        vSolutionsRet.push_back(std::move(commitment));
         return TxoutType::TAPROOT;
     }
 
@@ -189,8 +194,12 @@ bool ExtractDestination(const CScript &scriptPubKey,
         return true;
     }
     if (whichType == TxoutType::TAPROOT) {
-        // Taproot doesn't has destinations for now
-        return false;
+        CPubKey commitment(vSolutions[0]);
+        if (!commitment.IsFullyValid()) {
+            return false;
+        }
+        addressRet = Taproot(commitment);
+        return true;
     }
     // Multisig txns have more than one address...
     return false;
@@ -248,6 +257,11 @@ public:
 
     CScript operator()(const ScriptHash &scriptID) const {
         return CScript() << OP_HASH160 << ToByteVector(scriptID) << OP_EQUAL;
+    }
+
+    CScript operator()(const Taproot &taprootDest) const {
+        return CScript() << OP_SCRIPTTYPE << OP_1
+                         << ToByteVector(taprootDest.GetCommitment());
     }
 };
 } // namespace
