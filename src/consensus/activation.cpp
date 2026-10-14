@@ -93,3 +93,13 @@ bool IsDeuteronomyEnabled(const Consensus::Params &params,
     return pindexPrev->GetMedianTimePast() >=
            gArgs.GetIntArg("-deuteronomyactivationtime", params.deuteronomyActivationTime);
 }
+
+bool IsJoshuaEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-joshuaactivationtime", params.joshuaActivationTime);
+}
