@@ -92,7 +92,7 @@ std::string CopyrightHolders(const std::string &strPrefix) {
 
 std::string LicenseInfo() {
     const std::string URL_SOURCE_CODE =
-        "<https://github.com/LogosFoundation/lotusd>";
+        "<https://github.com/givelotus/lotus>";
     const std::string URL_WEBSITE = "<https://www.givelotus.org>";
 
     return CopyrightHolders(strprintf(_("Copyright (C) %i-%i").translated, 2009,
