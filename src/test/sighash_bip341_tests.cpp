@@ -184,14 +184,17 @@ BOOST_AUTO_TEST_CASE(script_execution_data) {
 
 // Make sure BIP341 can't be used yet on the chain.
 BOOST_AUTO_TEST_CASE(bip341_not_enabled_yet) {
-    SigHashType sigHashType = SigHashType().withForkId().withBIP341();
+    SigHashType sigHashType = SigHashType().withBIP341();
     BOOST_CHECK(!sigHashType.isDefined());
-    BOOST_CHECK(!SigHashType(0x20).isDefined()); // SIGHASH_BUG
-    BOOST_CHECK(!sigHashType.withForkId(false).isDefined());
+    BOOST_CHECK(!SigHashType(SIGHASH_RESERVED).isDefined());
     BOOST_CHECK(!sigHashType.withAnyoneCanPay().isDefined());
-    BOOST_CHECK(!sigHashType.withForkId(false).withAnyoneCanPay().isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::NONE).isDefined());
     BOOST_CHECK(!sigHashType.withBaseType(BaseSigHashType::SINGLE).isDefined());
+    // withForkId resets the other bit in SIGHASH_TYPE_MASK
+    BOOST_CHECK(sigHashType.withAlgorithm(SIGHASH_LEGACY).isDefined());
+    BOOST_CHECK(sigHashType.withAlgorithm(SIGHASH_LEGACY)
+                    .withAnyoneCanPay()
+                    .isDefined());
 }
 
 BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
@@ -204,20 +207,21 @@ BOOST_AUTO_TEST_CASE(bip341_invalid_hash_type) {
 
     MMIXLinearCongruentialGenerator lcg;
     for (uint32_t sig_bits = 0; sig_bits <= 0xff; ++sig_bits) {
-        uint32_t hash_type = (lcg.next() << 8) | sig_bits;
-        bool is_valid = true;
-        if (((hash_type & SIGHASH_BIP341) && (hash_type & SIGHASH_FORKID)) &&
-            (!(hash_type & 0x03) || (hash_type & 0x1c))) {
-            // hash_type 0 is invalid, any undefined bits are invalid
+        SigHashType sig_hash_type{(lcg.next() << 8) | sig_bits};
+        bool is_valid = !sig_hash_type.isReserved();
+        // Invalid bits make SignatureHash using BIP341 fail
+        if (sig_hash_type.hasBIP341() &&
+            (!(sig_bits & 0x03) || (sig_hash_type.getUnusedBits()))) {
+            // hash_type 0 is invalid, any usused bits are invalid
             is_valid = false;
         }
         const bool success = SignatureHash(
-            sighash, execdata, CScript(), tx, 0, SigHashType(hash_type),
-            Amount::zero(), &txdata, SCRIPT_ENABLE_SIGHASH_FORKID);
+            sighash, execdata, CScript(), tx, 0, sig_hash_type, Amount::zero(),
+            &txdata, SCRIPT_ENABLE_SIGHASH_FORKID);
         BOOST_CHECK_EQUAL(is_valid, success);
         if (is_valid != success) {
-            BOOST_ERROR("Unexpected result for hash type: " << std::hex
-                                                            << hash_type);
+            BOOST_ERROR("Unexpected result for hash type: "
+                        << std::hex << sig_hash_type.getRawSigHashType());
         }
     }
 }
