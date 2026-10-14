@@ -157,10 +157,12 @@ public:
          * normal data. The characters are rarely used upper ASCII, not valid as
          * UTF-8, and produce a large 32-bit integer with any alignment.
          */
-        diskMagic[0] = 0xf9;
-        diskMagic[1] = 0xbe;
-        diskMagic[2] = 0xb4;
-        diskMagic[3] = 0xd9;
+        // "ldsk" with MSB set
+        diskMagic[0] = 0xec;
+        diskMagic[1] = 0xe4;
+        diskMagic[2] = 0xf3;
+        diskMagic[3] = 0xeb;
+        // "lgos" with MSB set
         netMagic[0] = 0xec;
         netMagic[1] = 0xe7;
         netMagic[2] = 0xef;
@@ -323,10 +325,12 @@ public:
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
 
-        diskMagic[0] = 0x0b;
-        diskMagic[1] = 0x11;
-        diskMagic[2] = 0x09;
-        diskMagic[3] = 0x07;
+        // "ltdk" with MSB set
+        diskMagic[0] = 0xec;
+        diskMagic[1] = 0xf4;
+        diskMagic[2] = 0xe4;
+        diskMagic[3] = 0xeb;
+        // "ltst" with MSB set
         netMagic[0] = 0xec;
         netMagic[1] = 0xf4;
         netMagic[2] = 0xf3;
@@ -476,10 +480,12 @@ public:
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
 
-        diskMagic[0] = 0xfa;
-        diskMagic[1] = 0xbf;
-        diskMagic[2] = 0xb5;
-        diskMagic[3] = 0xda;
+        // "lrdk" with MSB set
+        diskMagic[0] = 0xec;
+        diskMagic[1] = 0xf2;
+        diskMagic[2] = 0xe4;
+        diskMagic[3] = 0xeb;
+        // "lreg" with MSB set
         netMagic[0] = 0xec;
         netMagic[1] = 0xf2;
         netMagic[2] = 0xe5;
