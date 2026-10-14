@@ -24,4 +24,8 @@ bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight);
 bool IsCowperthwaiteEnabled(const Consensus::Params &params,
                             const CBlockIndex *pindexPrev);
 
+/** Check if December 21st, 2021 protocol upgrade has activated. */
+bool IsExodusEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
