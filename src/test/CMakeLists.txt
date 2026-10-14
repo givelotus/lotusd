@@ -37,6 +37,7 @@ gen_json_header(JSON_HEADERS
 	data/intcode_invalid.json
 	data/script_tests.json
 	data/sighash.json
+	data/sighash_bip341.json
 	data/tx_invalid.json
 	data/tx_valid.json
 )

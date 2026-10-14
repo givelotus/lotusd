@@ -15,6 +15,7 @@ enum {
     SIGHASH_ALL = 1,
     SIGHASH_NONE = 2,
     SIGHASH_SINGLE = 3,
+    SIGHASH_BIP341 = 0x20,
     SIGHASH_FORKID = 0x40,
     SIGHASH_ANYONECANPAY = 0x80,
 };
@@ -56,6 +57,11 @@ public:
                            (forkId ? SIGHASH_FORKID : 0));
     }
 
+    SigHashType withBIP341(bool bip341 = true) const {
+        return SigHashType((sigHash & ~SIGHASH_BIP341) |
+                           (bip341 ? SIGHASH_BIP341 : 0));
+    }
+
     SigHashType withAnyoneCanPay(bool anyoneCanPay = true) const {
         return SigHashType((sigHash & ~SIGHASH_ANYONECANPAY) |
                            (anyoneCanPay ? SIGHASH_ANYONECANPAY : 0));
@@ -75,6 +81,8 @@ public:
     }
 
     bool hasForkId() const { return (sigHash & SIGHASH_FORKID) != 0; }
+
+    bool hasBIP341() const { return (sigHash & SIGHASH_BIP341) != 0; }
 
     bool hasAnyoneCanPay() const {
         return (sigHash & SIGHASH_ANYONECANPAY) != 0;
