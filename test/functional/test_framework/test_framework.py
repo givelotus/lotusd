@@ -1119,6 +1119,25 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")
 
+    def skip_if_no_py3_pynng(self):
+        try:
+            import pynng  # noqa
+        except ImportError:
+            raise SkipTest("pynng module not available.")
+
+    def skip_if_no_py3_flatbuffers(self):
+        try:
+            import flatbuffers  # noqa
+        except ImportError:
+            raise SkipTest("flatbuffers module not available.")
+
+    def skip_if_no_bitcoind_nng_interface(self):
+        if not self.is_nng_interface_compiled():
+            raise SkipTest("bitcoind has not been built with NNG interface support enabled.")
+
+    def is_nng_interface_compiled(self):
+        return self.config["components"].getboolean("ENABLE_NNG")
+
     def is_usdt_compiled(self):
         """Checks whether the USDT tracepoints were compiled."""
         return self.config["components"].getboolean("ENABLE_USDT_TRACEPOINTS")

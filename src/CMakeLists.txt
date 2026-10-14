@@ -16,6 +16,7 @@ endforeach()
 
 option(BUILD_WALLET "Activate the wallet functionality" ON)
 option(BUILD_ZMQ "Activate the ZeroMQ functionalities" ON)
+option(BUILD_BITCOIN_NNG "Activate the NNG functionalities" ON)
 option(BUILD_CLI "Build lotus-cli" ON)
 option(BUILD_TX "Build lotus-tx" ON)
 option(BUILD_QT "Build lotus-qt" ON)
@@ -85,6 +86,7 @@ native_add_cmake_flags(
 	"-DBUILD_CHRONIK=OFF"
 	"-DBUILD_QT=OFF"
 	"-DBUILD_ZMQ=OFF"
+	"-DBUILD_BITCOIN_NNG=OFF"
 	"-DENABLE_QRCODE=OFF"
 	"-DENABLE_NATPMP=OFF"
 	"-DENABLE_UPNP=OFF"
@@ -797,6 +799,11 @@ if(BUILD_ZMQ)
 	# FIXME: This is needed because of an unwanted dependency:
 	# zmqpublishnotifier.cpp -> blockstorage.h -> txdb.h -> dbwrapper.h -> leveldb/db.h
 	target_link_libraries(zmq leveldb)
+endif()
+
+if(BUILD_BITCOIN_NNG)
+	add_subdirectory(nng_interface)
+	target_link_libraries(server nng_interface)
 endif()
 
 # RPC client support

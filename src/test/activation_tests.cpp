@@ -2,18 +2,33 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <blockindex.h>
+#include <chain.h>
+#include <chainparams.h>
+#include <common/args.h>
+#include <consensus/activation.h>
+#include <util/time.h>
+
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <array>
+
 BOOST_FIXTURE_TEST_SUITE(activation_tests, BasicTestingSetup)
 
-BOOST_AUTO_TEST_CASE(activationtest) {
-    /* Place future activation logic tests here. */
+static void SetMTP(std::array<CBlockIndex, 12> &blocks, int64_t mtp) {
+    size_t len = blocks.size();
+
+    for (size_t i = 0; i < len; ++i) {
+        blocks[i].nTime = mtp + (i - (len / 2));
+    }
+
+    BOOST_CHECK_EQUAL(blocks.back().GetMedianTimePast(), mtp);
 }
 
 BOOST_AUTO_TEST_CASE(isexodusenabled) {
-    const Consensus::Params &params = m_node.chainman->GetParams().GetConsensus();
+    const Consensus::Params &params = Params().GetConsensus();
     const auto activation =
         gArgs.GetIntArg("-exodusactivationtime", params.exodusActivationTime);
     SetMockTime(activation - 1000000);

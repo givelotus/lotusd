@@ -69,6 +69,7 @@ enum class OptionsCategory {
     GUI,
     COMMANDS,
     REGISTER_COMMANDS,
+    NNG_INTERFACE,
     AVALANCHE,
     CHRONIK,
 

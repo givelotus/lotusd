@@ -50,6 +50,7 @@
 #include <node/caches.h>
 #include <node/chainstate.h>
 #include <node/chainstatemanager_args.h>
+#include <nng_interface/nng_interface.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
 #include <node/mempool_persist_args.h>
@@ -268,6 +269,10 @@ void Shutdown(NodeContext &node) {
     if (node.connman) {
         node.connman->Stop();
     }
+
+    #if ENABLE_NNG
+    StopNngInterface();
+#endif
 
     StopTorControl();
 
@@ -2784,6 +2789,12 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         if (!chronik::Start(args, config, node, fReindexChronik)) {
             return false;
         }
+    }
+#endif
+
+#if ENABLE_NNG
+    if (!StartNngInterface(node, chainparams.GetConsensus())) {
+        return false;
     }
 #endif
 

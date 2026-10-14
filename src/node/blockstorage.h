@@ -158,7 +158,6 @@ private:
     FlatFileSeq BlockFileSeq() const;
     FlatFileSeq UndoFileSeq() const;
 
-    AutoFile OpenUndoFile(const FlatFilePos &pos, bool fReadOnly = false) const;
 
     /**
      * Calculate the block/rev files to delete based on height specified
@@ -422,6 +421,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /** Open a block file (blk?????.dat) */
+    AutoFile OpenUndoFile(const FlatFilePos &pos, bool fReadOnly = false) const;
     AutoFile OpenBlockFile(const FlatFilePos &pos,
                            bool fReadOnly = false) const;
 
