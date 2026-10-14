@@ -1271,6 +1271,98 @@ static RPCHelpMan getblocktemplate() {
     };
 }
 
+static RPCHelpMan getrawunsolvedblock() {
+    return RPCHelpMan{
+        "getrawunsolvedblock",
+        "Get a serialized block candidate with coinbase sending to the "
+        "specified address",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The address to send the newly generated coins to."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::STR_HEX, "blockhex",
+                 "Serialized block as hex."},
+                {RPCResult::Type::STR_HEX, "target", "The difficulty target."},
+            },
+        },
+        RPCExamples{"\nCreate an unsolved block to to myaddress\n" +
+                    HelpExampleCli("getrawunsolvedblock", "\"myaddress\"") +
+                    "If you are running the Lotus wallet, you can get a new "
+                    "address to send the newly generated coins to with:\n" +
+                    HelpExampleCli("getnewaddress", "")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            CTxDestination destination = DecodeDestination(
+                request.params[0].get_str(), config.GetChainParams());
+            if (!IsValidDestination(destination)) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                   "Error: Invalid address");
+            }
+
+            const CChainParams &chainparams = config.GetChainParams();
+
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            const CConnman &connman = EnsureConnman(node);
+            if (connman.GetNodeCount(ConnectionDirection::Both) == 0) {
+                throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
+                                   "Node is not connected!");
+            }
+
+            ChainstateManager &chainman = EnsureChainman(node);
+            if (chainman.IsInitialBlockDownload()) {
+                throw JSONRPCError(
+                    RPC_CLIENT_IN_INITIAL_DOWNLOAD, PACKAGE_NAME
+                    " is in initial sync and waiting for blocks...");
+            }
+
+            LOCK(cs_main);
+            const CTxMemPool &mempool = EnsureMemPool(node);
+            Chainstate &active_chainstate = chainman.ActiveChainstate();
+            CChain &active_chain = active_chainstate.m_chain;
+
+            // Store the pindexBest used before CreateNewBlock, to avoid races
+            CBlockIndex *pindexPrevNew = active_chain.Tip();
+
+            // Create new block with provided coinbase output script.
+            CScript coinbase_script = GetScriptForDestination(destination);
+            std::unique_ptr<CBlockTemplate> pblocktemplate =
+                BlockAssembler{config, active_chainstate, &mempool,
+                               node.avalanche.get()}
+                    .CreateNewBlock(coinbase_script);
+            if (!pblocktemplate) {
+                throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
+            }
+
+            // Need to update only after we know CreateNewBlock succeeded
+            CHECK_NONFATAL(pindexPrevNew);
+
+            // pointer for convenience
+            CBlock *pblock = &pblocktemplate->block;
+            // Update nTime (can update nBits on testnet)
+            int64_t adjustedTime =
+                TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
+            UpdateTime(pblock, chainparams, pindexPrevNew, adjustedTime);
+            pblock->nNonce = 0;
+            // Update merkle root so mining software need not touch it.
+            pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+
+            DataStream ssBlock{};
+            ssBlock << *pblock;
+            arith_uint256 hashTarget =
+                arith_uint256().SetCompact(pblock->nBits);
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("blockhex", HexStr(ssBlock));
+            result.pushKV("target", hashTarget.GetHex());
+            return result;
+        },
+    };
+}
+
 class submitblock_StateCatcher final : public CValidationInterface {
 public:
     uint256 hash;
@@ -1439,6 +1531,7 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         {"mining",      getmininginfo,         },
         {"mining",      prioritisetransaction, },
         {"mining",      getblocktemplate,      },
+        {"mining",      getrawunsolvedblock,   },
         {"mining",      submitblock,           },
         {"mining",      submitheader,          },
 
