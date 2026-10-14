@@ -56,7 +56,8 @@ public:
     IguanaInterpreter(CMutableTransaction txIn, uint32_t inputIndexIn,
                       CTxOut spentOutput, uint32_t flagsIn)
         : tx(txIn), inputIndex(inputIndexIn),
-          scriptPubKey(spentOutput.scriptPubKey), txdata(tx),
+          scriptPubKey(spentOutput.scriptPubKey),
+          txdata(tx, std::vector<CTxOut>(tx.vin.size(), spentOutput)),
           sigChecker(&tx, inputIndex, spentOutput.nValue, txdata),
           flags(flagsIn) {}
 

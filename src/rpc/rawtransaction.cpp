@@ -523,7 +523,7 @@ static RPCHelpMan combinerawtransaction() {
                 for (const CMutableTransaction &txv : txVariants) {
                     if (txv.vin.size() > i) {
                         sigdata.MergeSignatureData(
-                            DataFromTransaction(txv, i, txout));
+                            DataFromTransaction(txv, i, txdata));
                     }
                 }
                 ProduceSignature(DUMMY_SIGNING_PROVIDER,
