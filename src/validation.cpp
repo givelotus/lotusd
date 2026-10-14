@@ -235,7 +235,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(0xffffffff); // TODO: define upgrade schedule
+           activation_time.value_or(params.exodusActivationTime);
 }
 
 /**

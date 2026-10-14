@@ -120,6 +120,8 @@ public:
 
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -280,6 +282,8 @@ public:
 
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -415,6 +419,8 @@ public:
 
         // May 15, 2026 12:00:00 UTC protocol upgrade
         consensus.obolenskyActivationTime = 1778846400;
+        // 2021-12-21T15:59:00.000Z protocol upgrade
+        consensus.exodusActivationTime = 1640102340;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
