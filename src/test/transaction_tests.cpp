@@ -879,7 +879,7 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
                               g_bare_multi, g_dust, reason));
     BOOST_CHECK_EQUAL(reason, "scriptpubkey");
 
-    // Check large scriptSig (non-standard if size is >1650 bytes)
+    // Check that large scriptSig is allowed
     t.vout.resize(1);
     t.vout[0].nValue = MAX_MONEY;
     t.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
@@ -887,12 +887,12 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
     t.vin[0].scriptSig = CScript() << std::vector<uint8_t>(1647, 0); // 1650
     BOOST_CHECK(IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY, g_bare_multi,
                              g_dust, reason));
-
     t.vin[0].scriptSig = CScript() << std::vector<uint8_t>(1648, 0); // 1651
-    reason.clear();
-    BOOST_CHECK(!IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY,
-                              g_bare_multi, g_dust, reason));
-    BOOST_CHECK_EQUAL(reason, "scriptsig-size");
+    BOOST_CHECK(IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY, g_bare_multi,
+                             g_dust, reason));
+    t.vin[0].scriptSig = CScript() << std::vector<uint8_t>(9997, 0); // 1651
+    BOOST_CHECK(IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY, g_bare_multi,
+                             g_dust, reason));
 
     // Check scriptSig format (non-standard if there are any other ops than just
     // PUSHs)
