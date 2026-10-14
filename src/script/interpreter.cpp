@@ -333,10 +333,6 @@ bool ScriptInterpreter::RunNextOpInner() {
             }
 
             case OP_CHECKSEQUENCEVERIFY: {
-                if (!(flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
-                    break;
-                }
-
                 if (stack.size() < 1) {
                     return set_error(serror,
                                      ScriptError::INVALID_STACK_OPERATION);
