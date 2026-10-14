@@ -35,6 +35,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.noban_tx_relay = True
+        self.extra_args = [["-allownonstdtxnconsensus=1"]]
 
     def run_test(self):
         # Add p2p connection to node0

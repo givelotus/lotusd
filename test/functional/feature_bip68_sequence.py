@@ -35,9 +35,11 @@ class BIP68Test(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-noparkdeepreorg",
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=1",
             ],
             [
+                "-allownonstdtxnconsensus=1",
                 "-acceptnonstdtxn=0",
                 "-automaticunparking=1",
             ],

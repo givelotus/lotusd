@@ -116,6 +116,7 @@ static constexpr uint64_t HEADERS_TIME_VERSION{1};
 GlobalMutex g_best_block_mutex;
 std::condition_variable g_best_block_cv;
 const CBlockIndex *g_best_block;
+bool fRequireStandardConsensus = true;
 
 BlockValidationOptions::BlockValidationOptions(const Config &config)
     : excessiveBlockSize(config.GetMaxBlockSize()), checkPoW(true),
@@ -2193,7 +2194,15 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // Enforce BIP68 (sequence locks).
     int nLockTimeFlags = 0;
 
-    const uint32_t flags = GetNextBlockScriptFlags(pindex->pprev, m_chainman);
+    // Additional flags if standardness is enforced on consensus.
+    int extraFlags = 0;
+    if (fRequireStandardConsensus) {
+        extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    }
+
+    const uint32_t flags =
+        GetNextBlockScriptFlags(pindex->pprev, m_chainman) |
+        static_cast<uint32_t>(extraFlags);
 
     const auto time_2{SteadyClock::now()};
     time_forks += time_2 - time_1;
@@ -2265,6 +2274,19 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 break;
             }
             nFees += txfee;
+        }
+
+        // Enforce standardness on all txs.
+        if (fRequireStandardConsensus) {
+            std::string reason;
+            if (!IsStandardTx(tx, std::nullopt, DEFAULT_PERMIT_BAREMULTISIG,
+                               CFeeRate(Amount::zero()), reason)) {
+                LogPrintf("ERROR: %s: contains a non-standard transaction "
+                          "(and fRequireStandardConsensus is true)\n",
+                          __func__);
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
+                break;
+            }
         }
 
         if (!MoneyRange(nFees)) {

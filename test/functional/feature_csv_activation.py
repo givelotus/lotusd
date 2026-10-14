@@ -92,6 +92,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.noban_tx_relay = True
+        self.extra_args = [["-allownonstdtxnconsensus=1"]]
 
     def create_self_transfer_from_utxo(self, input_tx):
         utxo = self.miniwallet.get_utxo(txid=input_tx.txid_hex, mark_as_spent=False)

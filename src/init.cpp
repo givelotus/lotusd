@@ -1235,6 +1235,14 @@ void SetupServerArgs(NodeContext &node) {
             defaultChainParams->RequireStandardPolicy()),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
+    argsman.AddArg(
+        "-allownonstdtxnconsensus",
+        strprintf(
+            "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
+            "testnet/regtest only; ",
+            defaultChainParams->RequireStandardPolicy()),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
                    strprintf("Do not accept blocks larger than this limit, in "
                              "bytes (default: %d)",
@@ -2018,6 +2026,19 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         if (!ParseMoney(args.GetArg("-blockmintxfee", ""), n)) {
             return InitError(AmountErrMsg("blockmintxfee",
                                           args.GetArg("-blockmintxfee", "")));
+        }
+    }
+
+    {
+        const bool require_std_policy =
+            !args.GetBoolArg("-acceptnonstdtxn",
+                             !chainparams.RequireStandardPolicy());
+        fRequireStandardConsensus =
+            !args.GetBoolArg("-allownonstdtxnconsensus", !require_std_policy);
+        if (!require_std_policy && fRequireStandardConsensus) {
+            return InitError(Untranslated(
+                "-acceptnonstdtxn=1 -allownonstdtxnconsensus=0 is an invalid "
+                "combination"));
         }
     }
 

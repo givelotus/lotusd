@@ -74,7 +74,8 @@ class AcceptBlockTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2
-        self.extra_args = [["-noparkdeepreorg"], ["-minimumchainwork=0x10"]]
+        self.extra_args = [["-noparkdeepreorg", "-allownonstdtxnconsensus=1"],
+                           ["-minimumchainwork=0x10", "-allownonstdtxnconsensus=1"]]
 
     def setup_network(self):
         self.setup_nodes()

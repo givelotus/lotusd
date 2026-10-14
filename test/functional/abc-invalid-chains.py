@@ -18,7 +18,8 @@ class InvalidChainsTest(BitcoinTestFramework):
         self.tip = None
         self.blocks = {}
         self.block_heights = {}
-        self.extra_args = [["-automaticunparking=1"]]
+        self.extra_args = [["-automaticunparking=1",
+                            "-allownonstdtxnconsensus=1"]]
 
     def next_block(self, number):
         if self.tip is None:

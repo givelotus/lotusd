@@ -46,6 +46,8 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
+required_args = ["-allownonstdtxnconsensus=1"]
+
 
 class BaseNode(P2PInterface):
     def send_header_for_blocks(self, new_blocks):
@@ -60,9 +62,10 @@ class AssumeValidTest(BitcoinTestFramework):
         self.num_nodes = 3
         # Need a bit of extra time when running with the thread sanitizer
         self.rpc_timeout = 120
+        self.extra_args = [required_args]
 
     def setup_network(self):
-        self.add_nodes(3)
+        self.add_nodes(3, [required_args]*3)
         # Start node0. We don't start the other nodes yet since
         # we need to pre-mine a block with an invalid transaction
         # signature so we can pass in the block hash as assumevalid.
@@ -145,8 +148,8 @@ class AssumeValidTest(BitcoinTestFramework):
 
         # Start node1 and node2 with assumevalid so they accept a block with a
         # bad signature.
-        self.start_node(1, extra_args=[f"-assumevalid={hex(block102.hash_int)}"])
-        self.start_node(2, extra_args=[f"-assumevalid={hex(block102.hash_int)}"])
+        self.start_node(1, extra_args=[f"-assumevalid={hex(block102.hash_int)}"] + required_args)
+        self.start_node(2, extra_args=[f"-assumevalid={hex(block102.hash_int)}"] + required_args)
 
         def wait_for_header_sync(node, height):
             expected = {
