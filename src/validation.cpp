@@ -4611,16 +4611,120 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that coinbase OP_RETURN starts with serialized block height
-    if (nHeight >= 1) {
-        CScript expect = CScript() << OP_RETURN << COINBASE_PREFIX << nHeight;
-        if (block.vtx[0]->vout[0].scriptPubKey.size() < expect.size() ||
-            !std::equal(expect.begin(), expect.end(),
-                        block.vtx[0]->vout[0].scriptPubKey.begin())) {
-            LogPrintf("ERROR: block height missmatch in OP_RETURN: expected "
-                      "prefix %s, but output scriptPubKey is %s\n",
-                      HexStr(expect),
-                      HexStr(block.vtx[0]->vout[0].scriptPubKey));
+    // Enforce rule that the coinbase transaction's first output must contain an OP_RETURN
+    // followed by a prefix and the serialized block height.
+    // This rule applies to all blocks except the genesis block (height 0).
+    // Note: This rule was added after some blocks were already mined, so we need
+    // to be flexible with validation for older blocks.
+    if (nHeight > 0) {
+        // Get the coinbase transaction's first output scriptPubKey
+        const CScript &scriptPubKey = block.vtx[0]->vout[0].scriptPubKey;
+
+        // Early blocks may not follow the height encoding rule
+        // Define a height after which we strictly enforce the rule
+        const int HEIGHT_ENCODING_ENFORCED_AFTER = 20000;
+        bool strictChecking = (nHeight >= HEIGHT_ENCODING_ENFORCED_AFTER);
+        const int SHAME_PREFIX_ENFORCED_BEFORE = 1018000;
+        bool strictCheckingCoinbaseShame = (nHeight < SHAME_PREFIX_ENFORCED_BEFORE);
+
+        // Empty script
+        if (scriptPubKey.empty()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Check for OP_RETURN
+        if (scriptPubKey[0] != 0x6a) { // 0x6a is OP_RETURN
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Position after OP_RETURN
+        size_t pos = 1;
+        if (pos >= scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Parse prefix length and data
+        uint8_t prefixLen = scriptPubKey[pos++];
+        if (pos + prefixLen > scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        std::vector<uint8_t> prefixData(scriptPubKey.begin() + pos,
+                                        scriptPubKey.begin() + pos + prefixLen);
+
+        // NOTE: v8.3.4 (patch 207) accidentally returned `true` early from
+        // ContextualCheckBlock whenever `prefixData != COINBASE_PREFIX` at
+        // `nHeight >= 1018000` (`!strictCheckingCoinbaseShame`), skipping the
+        // subsequent `<nHeight>` check for non-"logos" coinbases. We preserve
+        // that early `return true` for `nHeight >= 1018000` to avoid a chain
+        // split against LotusiaStewardship/lotusd nodes, while properly calling
+        // `state.Invalid(...)` on failures when `nHeight < 1018000`.
+        if (prefixLen != COINBASE_PREFIX.size() || prefixData != COINBASE_PREFIX) {
+            if (!strictCheckingCoinbaseShame) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        // Move position past prefix data
+        pos += prefixLen;
+
+        // Parse height length and data
+        if (pos >= scriptPubKey.size()) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        uint8_t heightLen = scriptPubKey[pos++];
+        if (pos + heightLen > scriptPubKey.size() || heightLen > 3) {
+            if (!strictChecking) {
+                return true;
+            }
+            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                 "bad-cb-height",
+                                 "block height mismatch in coinbase");
+        }
+
+        std::vector<uint8_t> heightData(scriptPubKey.begin() + pos,
+                                        scriptPubKey.begin() + pos + heightLen);
+
+        // Convert the little-endian bytes to an integer
+        int nHeight_coinbase = 0;
+        for (size_t i = 0; i < heightData.size(); i++) {
+            nHeight_coinbase |= static_cast<int>(heightData[i]) << (8 * i);
+        }
+
+        // Verify the height matches
+        if (nHeight_coinbase != nHeight) {
+            if (!strictChecking) {
+                return true;
+            }
             return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                  "bad-cb-height",
                                  "block height mismatch in coinbase");
