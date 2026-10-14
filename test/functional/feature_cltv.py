@@ -86,7 +86,7 @@ class BIP65Test(BitcoinTestFramework):
         self.generate(self.nodes[0], CLTV_HEIGHT - 2 - 10)
 
         self.log.info(
-            "Test that an invalid-according-to-CLTV transaction can still appear in a"
+            "Test that an invalid-according-to-CLTV transaction cannot appear in a"
             " block"
         )
 
@@ -105,8 +105,15 @@ class BIP65Test(BitcoinTestFramework):
         block.solve()
 
         peer.send_and_ping(msg_block(block))
-        # This block is valid
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
+        # This block is invalid
+        assert self.nodes[0].getbestblockhash() != block.hash_hex
+
+        # Create a valid block without the CLTV-violating transaction
+        block = create_block(
+            int(tip, 16), create_coinbase(CLTV_HEIGHT - 1), block_time, version=3
+        )
+        block.solve()
+        peer.send_and_ping(msg_block(block))
 
         self.log.info("Test that blocks must now be at least version 4")
         tip = block.hash_int
@@ -146,7 +153,7 @@ class BIP65Test(BitcoinTestFramework):
         # We show that this tx is invalid due to CLTV by getting it
         # rejected from the mempool for exactly that reason.
         expected_cltv_reject_reason = (
-            "non-mandatory-script-verify-flag (Negative locktime)"
+            "mandatory-script-verify-flag-failed (Negative locktime)"
         )
         assert_equal(
             [

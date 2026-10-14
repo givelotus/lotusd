@@ -2047,11 +2047,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
-    // Start enforcing CHECKLOCKTIMEVERIFY (BIP65) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CLTV)) {
-        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-    }
-
     // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
     if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CSV)) {
         flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;

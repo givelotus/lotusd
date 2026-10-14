@@ -239,8 +239,6 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
             block.GetHash());
     }
 
-    // flags to test: SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY,
-    // SCRIPT_VERIFY_CHECKSEQUENCE_VERIFY,
     // SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS, uncompressed pubkey thing
 
     // Create 2 outputs that match the three scripts above, spending the first
@@ -359,9 +357,11 @@ BOOST_FIXTURE_TEST_CASE(checkinputs_test, TestChain100Setup) {
         vchSig.push_back(uint8_t(SIGHASH_ALL | SIGHASH_FORKID));
         invalid_with_cltv_tx.vin[0].scriptSig = CScript() << vchSig << 101;
 
+        // Tests should always fail regardless of flags
+        // (so fail flags = required flags)
         ValidateCheckInputsForAllFlags(
             CTransaction(invalid_with_cltv_tx),
-            SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY | SCRIPT_ENABLE_REPLAY_PROTECTION,
+            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION,
             SCRIPT_ENABLE_SIGHASH_FORKID, true,
             m_node.chainman->ActiveChainstate().CoinsTip(),
             m_node.chainman->m_validation_cache, 1);
