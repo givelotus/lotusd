@@ -602,7 +602,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
         return false;
     }
 
-    // Rather not work on nonstandard transactions (unless -testnet)
+    // Rather not work on nonstandard transactions
     std::string reason;
     if (m_pool.m_require_standard &&
         !IsStandardTx(tx, m_pool.m_max_datacarrier_bytes,

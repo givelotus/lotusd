@@ -1232,7 +1232,7 @@ void SetupServerArgs(NodeContext &node) {
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
             "testnet/regtest only; ",
-            defaultChainParams->RequireStandardPolicy()),
+            false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg(
@@ -1240,7 +1240,7 @@ void SetupServerArgs(NodeContext &node) {
         strprintf(
             "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
             "testnet/regtest only; ",
-            defaultChainParams->RequireStandardPolicy()),
+            false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",
@@ -2031,8 +2031,7 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
 
     {
         const bool require_std_policy =
-            !args.GetBoolArg("-acceptnonstdtxn",
-                             !chainparams.RequireStandardPolicy());
+            !args.GetBoolArg("-acceptnonstdtxn", false);
         fRequireStandardConsensus =
             !args.GetBoolArg("-allownonstdtxnconsensus", !require_std_policy);
         if (!require_std_policy && fRequireStandardConsensus) {
