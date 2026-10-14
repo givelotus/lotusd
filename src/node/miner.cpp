@@ -159,6 +159,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     const auto time_1{SteadyClock::now()};
+    // 50% of fees get burned.
+    const Amount amountFeeReward = blockFitter.nFees / 2;
 
     m_last_block_num_txs = blockFitter.nBlockTx;
     m_last_block_size = blockFitter.nBlockSize;
@@ -170,20 +172,16 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
-        blockFitter.nFees + GetBlockSubsidy(nHeight, consensusParams);
-    coinbaseTx.vin[0].scriptSig = CScript() << COINBASE_PREFIX
-                                            << nHeight
-                                            << OP_0;
+        amountFeeReward + GetBlockSubsidy(nHeight, consensusParams);
+    coinbaseTx.vin[0].scriptSig = CScript()
+                                  << COINBASE_PREFIX << nHeight << OP_0;
 
     const Amount blockReward = coinbaseTx.vout[0].nValue;
-
-    const auto whitelisted = GetMinerFundWhitelist(consensusParams);
-    if (!whitelisted.empty()) {
-        const Amount fund =
-            GetMinerFundAmount(consensusParams, blockReward, pindexPrev);
-        coinbaseTx.vout[0].nValue -= fund;
-        coinbaseTx.vout.emplace_back(
-            fund, GetScriptForDestination(*whitelisted.begin()));
+    const std::vector<CTxOut> requiredOutputs =
+        GetMinerFundRequiredOutputs(consensusParams, pindexPrev, blockReward);
+    for (const CTxOut &requiredOutput : requiredOutputs) {
+        coinbaseTx.vout[0].nValue -= requiredOutput.nValue;
+        coinbaseTx.vout.push_back(requiredOutput);
     }
 
     std::vector<CScript> stakingRewardsPayoutScripts;

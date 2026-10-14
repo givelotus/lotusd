@@ -1479,16 +1479,7 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
 }
 
 Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
-    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
-    // Force block reward to zero when right shift is undefined.
-    if (halvings >= 64) {
-        return Amount::zero();
-    }
-
-    Amount nSubsidy = 50 * COIN;
-    // Subsidy is cut in half every 210,000 blocks which will occur
-    // approximately every 4 years.
-    return ((nSubsidy / SATOSHI) >> halvings) * SATOSHI;
+    return SUBSIDY;
 }
 
 CoinsViews::CoinsViews(DBParams db_params, CoinsViewOptions options)
@@ -2357,14 +2348,40 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
              Ticks<SecondsDouble>(time_connect),
              Ticks<MillisecondsDouble>(time_connect) / num_blocks_total);
 
+    // 50% of fees get burned.
+    Amount amountFeeReward = nFees / 2;
     const Amount blockReward =
-        nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(pindex->nHeight, consensusParams);
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
         state.Invalid(
             BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
             strprintf("coinbase pays too much (actual=%d vs limit=%d)",
                       block.vtx[0]->GetValueOut(), blockReward));
     }
+
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, pindex->pprev, blockReward);
+
+    if (!requiredOutputs.empty() && state.IsValid()) {
+        auto nextRequiredOutput = requiredOutputs.begin();
+        // Miner fund outputs must appear in order.
+        // Can be separated by non-miner fund outputs.
+        for (const CTxOut &o : block.vtx[0]->vout) {
+            // Must match next required output exactly.
+            if (o == *nextRequiredOutput) {
+                nextRequiredOutput++;
+                // Found all outputs.
+                if (nextRequiredOutput == requiredOutputs.end()) {
+                    goto MinerFundSuccess;
+                }
+            }
+        }
+
+        // We did not find all required miner fund outputs.
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                      "bad-cb-minerfund");
+    }
+MinerFundSuccess:
 
     if (blockFees) {
         *blockFees = nFees;

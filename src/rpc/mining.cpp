@@ -1124,14 +1124,6 @@ static RPCHelpMan getblocktemplate() {
             UniValue aux(UniValue::VOBJ);
             UniValue coinbasetxn(UniValue::VOBJ);
 
-            // Compute the miner fund parameters
-            const auto minerFundWhitelist =
-                GetMinerFundWhitelist(consensusParams);
-            int64_t minerFundMinValue =
-                int64_t(GetMinerFundAmount(consensusParams, coinbasevalue,
-                                           pindexPrev) /
-                        SATOSHI);
-
             // Compute the staking reward parameters
             std::vector<CScript> stakingRewardsPayoutScripts;
             int64_t stakingRewardsAmount =
@@ -1145,14 +1137,20 @@ static RPCHelpMan getblocktemplate() {
                 }
             }
 
+            UniValue requiredOutputsList(UniValue::VARR);
+            for (auto requiredOutput : GetMinerFundRequiredOutputs(
+                     consensusParams, pindexPrev, coinbasevalue)) {
+                UniValue requiredOutputObj(UniValue::VOBJ);
+                requiredOutputObj.pushKV("scriptPubKey",
+                                         HexStr(requiredOutput.scriptPubKey));
+                requiredOutputObj.pushKV(
+                    "value", int64_t(requiredOutput.nValue / SATOSHI));
+                requiredOutputsList.push_back(requiredOutputObj);
+            }
+
             if (simplifyGbt) {
                 UniValue minerFund(UniValue::VOBJ);
-                if (!minerFundWhitelist.empty()) {
-                    minerFund.pushKV("script",
-                                     HexStr(GetScriptForDestination(
-                                         *minerFundWhitelist.begin())));
-                    minerFund.pushKV("amount", minerFundMinValue);
-                }
+                minerFund.pushKV("outputs", std::move(requiredOutputsList));
                 result.pushKV("minerfund", std::move(minerFund));
 
                 if (!stakingRewardsPayoutScripts.empty()) {
@@ -1164,15 +1162,7 @@ static RPCHelpMan getblocktemplate() {
                 }
             } else {
                 UniValue minerFund(UniValue::VOBJ);
-                UniValue minerFundList(UniValue::VARR);
-                for (const auto &fundDestination : minerFundWhitelist) {
-                    minerFundList.push_back(
-                        EncodeDestination(fundDestination, config));
-                }
-
-                minerFund.pushKV("addresses", std::move(minerFundList));
-                minerFund.pushKV("minimumvalue", minerFundMinValue);
-
+                minerFund.pushKV("outputs", std::move(requiredOutputsList));
                 coinbasetxn.pushKV("minerfund", std::move(minerFund));
 
                 if (!stakingRewardsPayoutScripts.empty()) {

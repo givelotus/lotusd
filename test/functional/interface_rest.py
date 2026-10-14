@@ -392,9 +392,9 @@ class RESTTest(BitcoinTestFramework):
 
         # Make 3 tx and mine them on node 1
         txs = []
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
-        txs.append(self.nodes[0].sendtoaddress(not_related_address, 11))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
+        txs.append(self.nodes[0].sendtoaddress(not_related_address, Decimal('0.11')))
         self.sync_all()
 
         # Check that there are exactly 3 transactions in the TX memory pool

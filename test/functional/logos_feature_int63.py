@@ -12,6 +12,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     make_conform_to_ctor,
+    SUBSIDY,
 )
 from test_framework.messages import (
     COutPoint,
@@ -66,7 +67,7 @@ class Int63Test(BitcoinTestFramework):
         node.generatetoaddress(num_mature_coins, address)
         node.generatetoaddress(100, address)
 
-        value = 50 * 100_000_000
+        value = int(SUBSIDY * 100_000_000)
         p2sh_script = CScript([OP_HASH160, bytes(20), OP_EQUAL])
 
         def make_tx(coin_height):

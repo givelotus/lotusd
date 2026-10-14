@@ -19,6 +19,7 @@ import hashlib
 import re
 
 from test_framework import cashaddr
+from test_framework.blocktools import SUBSIDY
 from test_framework.key import ECKey, bytes_to_wif
 from test_framework.messages import (
     COIN,
@@ -256,7 +257,7 @@ class Bip341Sighash(BitcoinTestFramework):
                         for test_case in TESTCASES
                         if isinstance(test_case, dict))
 
-        value = 50 * 100_000_000
+        value = int(SUBSIDY * 100_000_000)
         fee = 10_000
 
         max_utxo_value = (value - fee) // num_utxos

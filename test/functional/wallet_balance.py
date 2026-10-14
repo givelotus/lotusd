@@ -135,11 +135,11 @@ class WalletTest(BitcoinTestFramework):
 
         self.log.info("Test balances with unconfirmed inputs")
 
-        # Before `test_balance()`, we have had two nodes with a balance of 50
+        # Before `test_balance()`, we have had two nodes with a balance of 260 Lotus
         # each and then we:
         #
-        # 1) Sent 40 from node A to node B with fee 0.01
-        # 2) Sent 60 from node B to node A with fee 0.01
+        # 1) Sent 250 Lotus from node A to node B with fee 1 Lotus
+        # 2) Sent 270 Lotus from node B to node A with fee 1 Lotus
         #
         # Then we check the balances:
         #
@@ -147,7 +147,7 @@ class WalletTest(BitcoinTestFramework):
         # 2) With transaction 2 from above with 2x the fee
         #
         # Prior to #16766, in this situation, the node would immediately report
-        # a balance of 30 on node B as unconfirmed and trusted.
+        # a balance of 240 Lotus on node B as unconfirmed and trusted.
         #
         # After #16766, we show that balance as unconfirmed.
         #
