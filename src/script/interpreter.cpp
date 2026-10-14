@@ -83,7 +83,12 @@ static void CleanupScriptCode(CScript &scriptCode,
 static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
     switch (opcode) {
         case OP_RESERVED:
+        case OP_VER:
+        case OP_VERIF:
+        case OP_VERNOTIF:
         case OP_INVERT:
+        case OP_RESERVED1:
+        case OP_RESERVED2:
         case OP_2MUL:
         case OP_2DIV:
         case OP_MUL:
