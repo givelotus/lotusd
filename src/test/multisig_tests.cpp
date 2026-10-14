@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(multisig_verify) {
                 s, a_and_b, flags,
                 MutableTransactionSignatureChecker(&txTo[0], 0, amount), &err),
             strprintf("a&b 2: %d", i));
-        BOOST_CHECK_MESSAGE(err == ScriptError::EVAL_FALSE,
+        BOOST_CHECK_MESSAGE(err == ScriptError::SIG_NULLFAIL,
                             ScriptErrorString(err));
     }
 
@@ -129,7 +129,7 @@ BOOST_AUTO_TEST_CASE(multisig_verify) {
                     MutableTransactionSignatureChecker(&txTo[1], 0, amount),
                     &err),
                 strprintf("a|b: %d", i));
-            BOOST_CHECK_MESSAGE(err == ScriptError::EVAL_FALSE,
+            BOOST_CHECK_MESSAGE(err == ScriptError::SIG_NULLFAIL,
                                 ScriptErrorString(err));
         }
     }
@@ -161,7 +161,7 @@ BOOST_AUTO_TEST_CASE(multisig_verify) {
                         MutableTransactionSignatureChecker(&txTo[2], 0, amount),
                         &err),
                     strprintf("escrow 2: %d %d", i, j));
-                BOOST_CHECK_MESSAGE(err == ScriptError::EVAL_FALSE,
+                BOOST_CHECK_MESSAGE(err == ScriptError::SIG_NULLFAIL,
                                     ScriptErrorString(err));
             }
         }

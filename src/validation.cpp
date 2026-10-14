@@ -2074,7 +2074,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
     // null.
     if (IsDAAEnabled(consensusparams, pindex)) {
         flags |= SCRIPT_VERIFY_LOW_S;
-        flags |= SCRIPT_VERIFY_NULLFAIL;
     }
 
     // We make sure this node will have replay protection during the next hard
