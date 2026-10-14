@@ -1010,7 +1010,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             self.log.debug(f"Copy cache directory {cache_node_dir} to node {i}")
             to_dir = get_datadir_path(self.options.tmpdir, i)
             shutil.copytree(cache_node_dir, to_dir)
-            # Overwrite port/rpcport in bitcoin.conf
+            # Overwrite port/rpcport in lotus.conf
             initialize_datadir(
                 self.options.tmpdir,
                 i,
