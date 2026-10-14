@@ -123,3 +123,14 @@ bool IsRuthEnabled(const Consensus::Params &params,
     return pindexPrev->GetMedianTimePast() >=
            gArgs.GetIntArg("-ruthactivationtime", params.ruthActivationTime);
 }
+
+bool IsFirstSamuelEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-firstsamuelactivationtime",
+                           params.firstSamuelActivationTime);
+}

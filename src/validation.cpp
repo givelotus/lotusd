@@ -236,7 +236,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.firstSamuelActivationTime);
+           activation_time.value_or(params.secondSamuelActivationTime);
 }
 
 /**
