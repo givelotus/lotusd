@@ -156,8 +156,9 @@ FUZZ_TARGET_INIT(script_sign, initialize_script_sign) {
                 } else {
                     address = CKeyID{ConsumeUInt160(fuzzed_data_provider)};
                 }
+                const ScriptExecutionData execdata{CScript()};
                 (void)signature_creator.CreateSig(
-                    provider, vch_sig, address,
+                    provider, vch_sig, address, std::optional(execdata),
                     ConsumeScript(fuzzed_data_provider));
             }
             std::map<COutPoint, Coin> coins;

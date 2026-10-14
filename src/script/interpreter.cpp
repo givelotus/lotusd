@@ -121,8 +121,9 @@ static bool EvalChecksig(const valtype &vchSig, const valtype &vchPubKey,
                          CScript::const_iterator pbegincodehash,
                          CScript::const_iterator pend, uint32_t flags,
                          const BaseSignatureChecker &checker,
-                         ScriptExecutionMetrics &metrics, ScriptError *serror,
-                         bool &fSuccess) {
+                         ScriptExecutionMetrics &metrics,
+                         const std::optional<ScriptExecutionData> &execdata,
+                         ScriptError *serror, bool &fSuccess) {
     if (!CheckTransactionSignatureEncoding(vchSig, flags, serror) ||
         !CheckPubKeyEncoding(vchPubKey, flags, serror)) {
         // serror is set
@@ -137,7 +138,8 @@ static bool EvalChecksig(const valtype &vchSig, const valtype &vchPubKey,
         // Remove signature for pre-fork scripts
         CleanupScriptCode(scriptCode, vchSig, flags);
 
-        fSuccess = checker.CheckSig(vchSig, vchPubKey, scriptCode, flags);
+        fSuccess =
+            checker.CheckSig(vchSig, vchPubKey, execdata, scriptCode, flags);
         metrics.nSigChecks += 1;
 
         if (!fSuccess) {
@@ -153,7 +155,7 @@ ScriptInterpreter::ScriptInterpreter(std::vector<valtype> &stackIn,
                                      ScriptExecutionMetrics &metricsIn,
                                      ScriptExecutionData &execdataIn)
     : stack(stackIn), script(scriptIn), checker(checkerIn), metrics(metricsIn),
-      dummy_execdata{}, execdata(execdataIn) {
+      dummy_execdata{scriptIn}, execdata(execdataIn) {
     this->pc = scriptIn.begin();
     this->pend = scriptIn.end();
     this->pbegincodehash = scriptIn.begin();
@@ -938,7 +940,8 @@ bool ScriptInterpreter::RunNextOpInner() {
 
                 bool fSuccess = false;
                 if (!EvalChecksig(vchSig, vchPubKey, pbegincodehash, pend,
-                                  flags, checker, metrics, serror, fSuccess)) {
+                                  flags, checker, metrics,
+                                  std::optional(execdata), serror, fSuccess)) {
                     return false;
                 }
                 popstack(stack);
@@ -1116,8 +1119,9 @@ bool ScriptInterpreter::RunNextOpInner() {
                         }
 
                         // Check signature
-                        if (!checker.CheckSig(vchSig, vchPubKey, scriptCode,
-                                              flags)) {
+                        if (!checker.CheckSig(vchSig, vchPubKey,
+                                              std::optional(execdata),
+                                              scriptCode, flags)) {
                             // This can fail if the signature is empty,
                             // which also is a NULLFAIL error as the
                             // bitfield should have been null in this
@@ -1167,6 +1171,7 @@ bool ScriptInterpreter::RunNextOpInner() {
 
                         // Check signature
                         bool fOk = checker.CheckSig(vchSig, vchPubKey,
+                                                    std::optional(execdata),
                                                     scriptCode, flags);
 
                         if (fOk) {
@@ -1807,10 +1812,12 @@ bool SignatureHashBIP143(uint256 &sighashOut, const CScript &scriptCode,
 }
 
 template <class T>
-bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
-                   const T &txTo, unsigned int nIn, SigHashType sigHashType,
-                   const Amount amount, const PrecomputedTransactionData *cache,
-                   uint32_t flags, SigHashCache *sighash_cache) {
+bool SignatureHash(uint256 &sighashOut,
+                   const std::optional<ScriptExecutionData> &execdata,
+                   const CScript &scriptCode, const T &txTo, unsigned int nIn,
+                   SigHashType sigHashType, const Amount amount,
+                   const PrecomputedTransactionData *cache, uint32_t flags,
+                   SigHashCache *sighash_cache) {
     assert(nIn < txTo.vin.size());
 
     if (flags & SCRIPT_ENABLE_REPLAY_PROTECTION) {
@@ -1831,12 +1838,16 @@ bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
 }
 
 // need to instantiate explicitly
-template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
-                            const CTransaction &txTo, unsigned int nIn,
-                            SigHashType sigHashType, const Amount amount,
+template bool SignatureHash(uint256 &sighashOut,
+                            const std::optional<ScriptExecutionData> &execdata,
+                            const CScript &scriptCode, const CTransaction &txTo,
+                            unsigned int nIn, SigHashType sigHashType,
+                            const Amount amount,
                             const PrecomputedTransactionData *cache,
                             uint32_t flags, SigHashCache *sighash_cache);
-template bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+template bool SignatureHash(uint256 &sighashOut,
+                            const std::optional<ScriptExecutionData> &execdata,
+                            const CScript &scriptCode,
                             const CMutableTransaction &txTo, unsigned int nIn,
                             SigHashType sigHashType, const Amount amount,
                             const PrecomputedTransactionData *cache,
@@ -1855,6 +1866,7 @@ bool BaseSignatureChecker::VerifySignature(const std::vector<uint8_t> &vchSig,
 template <class T>
 bool GenericTransactionSignatureChecker<T>::CheckSig(
     const std::vector<uint8_t> &vchSigIn, const std::vector<uint8_t> &vchPubKey,
+    const std::optional<ScriptExecutionData> &execdata,
     const CScript &scriptCode, uint32_t flags) const {
     CPubKey pubkey(vchPubKey);
     if (!pubkey.IsValid()) {
@@ -1870,8 +1882,8 @@ bool GenericTransactionSignatureChecker<T>::CheckSig(
     vchSig.pop_back();
 
     uint256 sighash;
-    if (!SignatureHash(sighash, scriptCode, *txTo, nIn, sigHashType, amount,
-                       this->txdata, flags, &m_sighash_cache)) {
+    if (!SignatureHash(sighash, execdata, scriptCode, *txTo, nIn, sigHashType,
+                       amount, this->txdata, flags, &m_sighash_cache)) {
         return false;
     }
 
@@ -1986,21 +1998,26 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     ScriptExecutionMetrics metrics = {};
-    ScriptExecutionData execdata = {};
 
     // scriptSig and scriptPubKey must be evaluated sequentially on the same
     // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
-                    serror)) {
-        // serror is set
-        return false;
+    {
+        ScriptExecutionData execdata{CScript()};  // unused in scriptSig
+        if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
+                        serror)) {
+            // serror is set
+            return false;
+        }
     }
     stackCopy = stack;
-    if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, execdata,
-                    serror)) {
-        // serror is set
-        return false;
+    {
+        ScriptExecutionData execdata{scriptPubKey};
+        if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, execdata,
+                        serror)) {
+            // serror is set
+            return false;
+        }
     }
     if (stack.empty()) {
         return set_error(serror, ScriptError::EVAL_FALSE);
@@ -2028,10 +2045,13 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
         popstack(stack);
 
-        if (!EvalScript(stack, pubKey2, flags, checker, metrics, execdata,
-                        serror)) {
-            // serror is set
-            return false;
+        {
+            ScriptExecutionData execdata{pubKey2};
+            if (!EvalScript(stack, pubKey2, flags, checker, metrics, execdata,
+                            serror)) {
+                // serror is set
+                return false;
+            }
         }
         if (stack.empty()) {
             return set_error(serror, ScriptError::EVAL_FALSE);

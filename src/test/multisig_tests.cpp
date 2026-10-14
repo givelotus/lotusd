@@ -23,8 +23,10 @@ static CScript sign_multisig(const CScript &scriptPubKey,
                              const std::vector<CKey> &keys,
                              const CMutableTransaction &tx, int whichIn) {
     uint256 hash;
-    BOOST_CHECK(SignatureHash(hash, scriptPubKey, CTransaction(tx), whichIn,
-                              SigHashType(), Amount::zero()));
+    BOOST_CHECK(SignatureHash(
+        hash, std::optional(ScriptExecutionData(scriptPubKey)),
+        scriptPubKey, CTransaction(tx), whichIn, SigHashType(),
+        Amount::zero()));
 
     CScript result;
     // CHECKMULTISIG bug workaround

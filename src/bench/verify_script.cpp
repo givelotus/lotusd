@@ -31,7 +31,7 @@ static void VerifyNestedIfScript(benchmark::Bench &bench) {
     bench.run([&] {
         auto stack_copy = stack;
         ScriptExecutionMetrics metrics = {};
-        ScriptExecutionData execdata = {};
+        ScriptExecutionData execdata{CScript()};
         ScriptError error;
         bool ret = EvalScript(stack_copy, script, 0, BaseSignatureChecker(),
                               metrics, execdata, &error);
