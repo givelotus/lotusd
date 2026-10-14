@@ -44,7 +44,7 @@ IguanaResult IguanaInterpreter::Run() const {
 
     IguanaTrace *lastTrace = &result.traceScriptPubKey;
 
-    if ((flags & SCRIPT_VERIFY_P2SH) && scriptPubKey.IsPayToScriptHash()) {
+    if (scriptPubKey.IsPayToScriptHash()) {
         result.traceRedeemScript.emplace();
         if (!txin.scriptSig.IsPushOnly()) {
             result.traceRedeemScript->scriptError = ScriptError::SIG_PUSHONLY;

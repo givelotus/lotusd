@@ -53,9 +53,6 @@ FUZZ_TARGET_INIT(script_flags, initialize_script_flags) {
             } else {
                 verify_flags |= fuzzed_flags;
             }
-            if (!IsValidFlagCombination(verify_flags)) {
-                return;
-            }
 
             ScriptError serror_fuzzed;
             const bool ret_fuzzed =
@@ -68,9 +65,4 @@ FUZZ_TARGET_INIT(script_flags, initialize_script_flags) {
     } catch (const std::ios_base::failure &) {
         return;
     }
-}
-
-static bool IsValidFlagCombination(uint32_t flags) {
-    // If the CLEANSTACK flag is set, then P2SH should also be set
-    return (~flags & SCRIPT_VERIFY_CLEANSTACK) || (flags & SCRIPT_VERIFY_P2SH);
 }

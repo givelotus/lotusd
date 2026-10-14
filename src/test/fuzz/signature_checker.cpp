@@ -61,10 +61,6 @@ FUZZ_TARGET_INIT(signature_checker, initialize_signature_checker) {
     (void)EvalScript(stack, {script_bytes_1.begin(), script_bytes_1.end()},
                      flags, FuzzedSignatureChecker(fuzzed_data_provider),
                      metrics, &serror);
-    if ((flags & SCRIPT_VERIFY_CLEANSTACK) != 0 &&
-        (flags & SCRIPT_VERIFY_P2SH) == 0) {
-        return;
-    }
     (void)VerifyScript({script_bytes_1.begin(), script_bytes_1.end()},
                        {script_bytes_2.begin(), script_bytes_2.end()}, flags,
                        FuzzedSignatureChecker(fuzzed_data_provider), metrics,

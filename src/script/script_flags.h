@@ -11,10 +11,6 @@
 enum {
     SCRIPT_VERIFY_NONE = 0,
 
-    // Evaluate P2SH subscripts (softfork safe, BIP16).
-    // Note: The Segwit Recovery feature is an exception to P2SH
-    SCRIPT_VERIFY_P2SH = (1U << 0),
-
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
@@ -31,7 +27,6 @@ enum {
     // one stack element must remain, and when interpreted as a boolean, it must
     // be true".
     // (BIP62 rule 6)
-    // Note: CLEANSTACK should never be used without P2SH.
     // Note: The Segwit Recovery feature is an exception to CLEANSTACK
     SCRIPT_VERIFY_CLEANSTACK = (1U << 8),
 

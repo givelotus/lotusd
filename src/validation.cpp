@@ -2041,11 +2041,8 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
 
     uint32_t flags = SCRIPT_VERIFY_NONE;
 
-    // Enforce P2SH (BIP16)
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_P2SH)) {
-        flags |= SCRIPT_VERIFY_P2SH;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
-    }
+    // Always enforce CLEANSTACK
+    flags |= SCRIPT_VERIFY_CLEANSTACK;
 
     // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
     if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CSV)) {
