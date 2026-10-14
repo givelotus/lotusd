@@ -171,7 +171,7 @@ void UpdatePSBTOutput(const SigningProvider &provider,
     SignatureData sigdata;
     psbt_out.FillSignatureData(sigdata);
 
-    // Collect spent outputs for BIP341 sighash
+    // Collect spent outputs for Lotus sighash
     std::vector<CTxOut> spent_outputs;
     spent_outputs.reserve(psbt.inputs.size());
     for (const PSBTInput &input : psbt.inputs) {
@@ -221,7 +221,7 @@ bool SignPSBTInput(const SigningProvider &provider,
         sig_complete = ProduceSignature(provider, DUMMY_SIGNATURE_CREATOR,
                                         utxo.scriptPubKey, sigdata);
     } else {
-        // Collect spent outputs for BIP341 sighash
+        // Collect spent outputs for Lotus sighash
         std::vector<CTxOut> spent_outputs;
         spent_outputs.reserve(psbt.inputs.size());
         for (const PSBTInput &input : psbt.inputs) {

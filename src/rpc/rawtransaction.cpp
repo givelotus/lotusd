@@ -499,7 +499,7 @@ static RPCHelpMan combinerawtransaction() {
             // Use CTransaction for the constant parts of the
             // transaction to avoid rehashing.
             const CTransaction txConst(mergedTx);
-            // Collect spent outputs for BIP341 sighash
+            // Collect spent outputs for Lotus sighash
             std::vector<CTxOut> spent_outputs;
             spent_outputs.reserve(txConst.vin.size());
             for (const CTxIn &txin : txConst.vin) {
@@ -597,12 +597,12 @@ static RPCHelpMan signrawtransactionwithkey() {
              "       \"ALL|FORKID|ANYONECANPAY\"\n"
              "       \"NONE|FORKID|ANYONECANPAY\"\n"
              "       \"SINGLE|FORKID|ANYONECANPAY\"\n"
-             "       \"ALL|BIP341\"\n"
-             "       \"NONE|BIP341\"\n"
-             "       \"SINGLE|BIP341\"\n"
-             "       \"ALL|BIP341|ANYONECANPAY\"\n"
-             "       \"NONE|BIP341|ANYONECANPAY\"\n"
-             "       \"SINGLE|BIP341|ANYONECANPAY\""},
+             "       \"ALL|LOTUS\"\n"
+             "       \"NONE|LOTUS\"\n"
+             "       \"SINGLE|LOTUS\"\n"
+             "       \"ALL|LOTUS|ANYONECANPAY\"\n"
+             "       \"NONE|LOTUS|ANYONECANPAY\"\n"
+             "       \"SINGLE|LOTUS|ANYONECANPAY\""},
         },
         RPCResult{
             RPCResult::Type::OBJ,

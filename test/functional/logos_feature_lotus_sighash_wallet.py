@@ -2,7 +2,7 @@
 # Copyright (c) 2021 Logos Foundation
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test whether the wallet can sign transactions using the BIP341 sighash."""
+"""Test whether the wallet can sign transactions using the Lotus sighash."""
 
 from decimal import Decimal
 import hashlib
@@ -15,6 +15,7 @@ from test_framework.messages import (
     CTransaction,
     CTxIn,
     CTxOut,
+    hash256,
 )
 from test_framework.script import (
     CScript,
@@ -22,29 +23,29 @@ from test_framework.script import (
     OP_EQUAL,
     SIGHASH_ALL,
     SIGHASH_ANYONECANPAY,
-    SIGHASH_BIP341,
+    SIGHASH_LOTUS,
     SIGHASH_NONE,
     SIGHASH_SINGLE,
     SIGHASH_FORKID,
-    SignatureHashBIP341,
+    SignatureHashLotus,
 )
 from test_framework.test_framework import BitcoinTestFramework
 
 
 TESTCASES = [
-    dict(outputs=1, sig_hash_types=['ALL|BIP341']),
-    dict(outputs=10, sig_hash_types=['ALL|BIP341']),
-    dict(outputs=2, sig_hash_types=['ALL|BIP341|ANYONECANPAY', 'ALL|BIP341']),
-    dict(outputs=3, sig_hash_types=['NONE|BIP341']),
-    dict(outputs=4, sig_hash_types=['NONE|BIP341|ANYONECANPAY', 'ALL|BIP341']),
-    dict(outputs=5, sig_hash_types=['SINGLE|BIP341']),
-    dict(outputs=6, sig_hash_types=['SINGLE|BIP341|ANYONECANPAY', 'ALL|BIP341']),
-    dict(outputs=10, sig_hash_types=['ALL|BIP341',
-                                     'ALL|BIP341|ANYONECANPAY',
-                                     'NONE|BIP341',
-                                     'NONE|BIP341|ANYONECANPAY',
-                                     'SINGLE|BIP341',
-                                     'SINGLE|BIP341|ANYONECANPAY']),
+    dict(outputs=1, sig_hash_types=['ALL|LOTUS']),
+    dict(outputs=10, sig_hash_types=['ALL|LOTUS']),
+    dict(outputs=2, sig_hash_types=['ALL|LOTUS|ANYONECANPAY', 'ALL|LOTUS']),
+    dict(outputs=3, sig_hash_types=['NONE|LOTUS']),
+    dict(outputs=4, sig_hash_types=['NONE|LOTUS|ANYONECANPAY', 'ALL|LOTUS']),
+    dict(outputs=5, sig_hash_types=['SINGLE|LOTUS']),
+    dict(outputs=6, sig_hash_types=['SINGLE|LOTUS|ANYONECANPAY', 'ALL|LOTUS']),
+    dict(outputs=10, sig_hash_types=['ALL|LOTUS',
+                                     'ALL|LOTUS|ANYONECANPAY',
+                                     'NONE|LOTUS',
+                                     'NONE|LOTUS|ANYONECANPAY',
+                                     'SINGLE|LOTUS',
+                                     'SINGLE|LOTUS|ANYONECANPAY']),
 ]
 
 
@@ -64,7 +65,7 @@ class Bip341SighashWallet(BitcoinTestFramework):
 
     ALGORITHM = {
         'FORKID': SIGHASH_FORKID,
-        'BIP341': SIGHASH_BIP341,
+        'LOTUS': SIGHASH_LOTUS,
     }
 
     def parse_sig_hash_type(self, sig_hash_type: int):
@@ -78,7 +79,7 @@ class Bip341SighashWallet(BitcoinTestFramework):
         node = self.nodes[0]
         node.generate(30)
         node.generate(100)
-        fee = 10_000
+        fee = Decimal('10000') / COIN
         wallet_unspent = node.listunspent()
         for test_case in TESTCASES:
             num_inputs = len(test_case['sig_hash_types'])
@@ -114,12 +115,12 @@ class Bip341SighashWallet(BitcoinTestFramework):
                 pubkey.set(stack_items[1])
                 sig_hash_type_int = self.parse_sig_hash_type(sig_hash_type)
                 # Build expected sighash
-                sighash = SignatureHashBIP341(
+                sighash = SignatureHashLotus(
                     tx_to=tx,
                     spent_utxos=spent_outputs_deser,
                     sig_hash_type=sig_hash_type_int,
                     input_index=i,
-                    executed_script_hash=hashlib.sha256(spent_outputs_deser[i].scriptPubKey).digest(),
+                    executed_script_hash=hash256(spent_outputs_deser[i].scriptPubKey),
                 )
                 # Verify sig signs the above sighash and has the expected sighash type
                 assert pubkey.verify_ecdsa(sig[:-1], sighash)

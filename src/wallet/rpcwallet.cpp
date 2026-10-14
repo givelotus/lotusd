@@ -3664,10 +3664,10 @@ RPCHelpMan signrawtransactionwithwallet() {
             ParsePrevouts(request.params[1], nullptr, coins);
 
             SigHashType nHashType = ParseSighashString(request.params[2]);
-            if (!nHashType.hasForkId() && !nHashType.hasBIP341()) {
+            if (!nHashType.hasForkId() && !nHashType.hasLotus()) {
                 throw JSONRPCError(
                     RPC_INVALID_PARAMETER,
-                    "Signature must use SIGHASH_FORKID or SIGHASH_BIP341");
+                    "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS");
             }
 
             // Script verification errors
@@ -4604,10 +4604,10 @@ static RPCHelpMan walletprocesspsbt() {
 
             // Get the sighash type
             SigHashType nHashType = ParseSighashString(request.params[2]);
-            if (!nHashType.hasForkId() && !nHashType.hasBIP341()) {
+            if (!nHashType.hasForkId() && !nHashType.hasLotus()) {
                 throw JSONRPCError(
                     RPC_INVALID_PARAMETER,
-                    "Signature must use SIGHASH_FORKID or SIGHASH_BIP341");
+                    "Signature must use SIGHASH_FORKID or SIGHASH_LOTUS");
             }
 
             // Fill transaction with our data and also sign

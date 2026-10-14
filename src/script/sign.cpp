@@ -385,7 +385,7 @@ bool SignSignature(const SigningProvider &provider, const CTransaction &txFrom,
     const CTxIn &txin = txTo.vin[nIn];
     assert(txin.prevout.GetN() < txFrom.vout.size());
 
-    // Collect spent outputs for BIP341 sighash
+    // Collect spent outputs for Lotus sighash
     std::vector<CTxOut> spent_outputs;
     for (const CTxIn &spending_txin : txTo.vin) {
         // Make sure the input is spending an output from txFrom
