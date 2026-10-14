@@ -132,6 +132,8 @@ public:
         consensus.joshuaActivationTime = 1703215620;
         // 2024-06-20T20:51:00.000Z protocol upgrade
         consensus.judgesActivationTime = 1718916600;
+        // 2024-12-21T09:20:00.000Z protocol upgrade
+        consensus.ruthActivationTime = 1734772800;
 
         /**
          * The message start string is designed to be unlikely to occur in
@@ -314,6 +316,9 @@ public:
         // 2024-06-20T20:51:00.000Z protocol upgrade
         consensus.judgesActivationTime =
             mainnetConsensus.judgesActivationTime - testnetActivationOffset;
+        // 2024-12-21T09:20:00.000Z protocol upgrade
+        consensus.ruthActivationTime =
+            mainnetConsensus.ruthActivationTime - testnetActivationOffset;
 
         // "ltdk" with MSB set
         diskMagic[0] = 0xec;
@@ -466,6 +471,8 @@ public:
         consensus.joshuaActivationTime = mainnetConsensus.joshuaActivationTime;
         // 2024-06-20T20:51:00.000Z protocol upgrade
         consensus.judgesActivationTime = mainnetConsensus.judgesActivationTime;
+        // 2024-12-21T09:20:00.000Z protocol upgrade
+        consensus.ruthActivationTime = mainnetConsensus.ruthActivationTime;
 
         // "lrdk" with MSB set
         diskMagic[0] = 0xec;
