@@ -7,12 +7,19 @@
 #define BITCOIN_CONSENSUS_PARAMS_H
 
 #include <primitives/blockhash.h>
+#include <script/script.h>
 #include <uint256.h>
 
 #include <chrono>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace Consensus {
+
+struct CoinbaseAddresses {
+    std::vector<std::string> genesis;
+};
 
 enum BuriedDeployment : int16_t {
     // buried deployments get negative values to avoid overlap with
@@ -56,6 +63,7 @@ struct Params {
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
+    CoinbaseAddresses coinbasePayoutAddresses;
 
     bool enableDifficultyBasedSubsidy;
 
