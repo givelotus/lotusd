@@ -4,7 +4,6 @@
 
 #include <qt/paymentserver.h>
 
-#include <cashaddrenc.h>
 #include <chainparams.h>
 #include <common/args.h>
 #include <config.h>
@@ -652,7 +651,7 @@ bool PaymentServer::processPaymentRequest(const PaymentRequestPlus &request,
         if (ExtractDestination(sendingTo.first, dest)) {
             // Append destination address
             addresses.append(
-                QString::fromStdString(EncodeCashAddr(dest, Params())));
+                QString::fromStdString(EncodeDestination(dest, Params())));
         } else if (!recipient.authenticatedMerchant.isEmpty()) {
             // Unauthenticated payment requests to custom bitcoin addresses are
             // not supported (there is no good way to tell the user where they

@@ -15,6 +15,8 @@
 namespace XAddress {
 
 const std::string TOKEN_NAME = "lotus";
+// Static C string for QString compatibility
+const char ADDRESS_SCHEME[] = "payto";
 
 enum NetworkType : uint8_t {
     MAINNET = '_',
