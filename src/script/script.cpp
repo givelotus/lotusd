@@ -178,8 +178,8 @@ std::string GetOpName(opcodetype opcode) {
             return "OP_DIV";
         case OP_MOD:
             return "OP_MOD";
-        case OP_LSHIFT:
-            return "OP_LSHIFT";
+        case OP_RAWLEFTBITSHIFT:
+            return "OP_RAWLEFTBITSHIFT";
         case OP_RSHIFT:
             return "OP_RSHIFT";
         case OP_BOOLAND:
