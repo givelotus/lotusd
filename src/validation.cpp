@@ -35,9 +35,6 @@
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
 #include <policy/block/minerfund.h>
-#include <policy/block/preconsensus.h>
-#include <policy/block/rtt.h>
-#include <policy/block/stakingrewards.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -636,12 +633,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     // Check for conflicts with in-memory transactions
     for (const CTxIn &txin : tx.vin) {
         if (const auto ptxConflicting = m_pool.GetConflictTx(txin.prevout)) {
-            if (m_pool.isAvalancheFinalizedPreConsensus(
-                    ptxConflicting->GetId())) {
-                return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                     "finalized-tx-conflict");
-            }
-
             return state.Invalid(
                 TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
                 "txn-mempool-conflict");
@@ -3062,39 +3053,6 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
             parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(
                 consensusParams, *pindexNew, blockConnecting, blockReward));
 
-            if (avalanche) {
-                // Only enable the RTT policy if the node already finalized a
-                // block. This is because it's very possible that new blocks
-                // will be parked after a node restart (but after IBD) if the
-                // node is behind by a few blocks. We want to make sure that the
-                // node will be able to switch back to the right tip in this
-                // case.
-                if (avalanche->hasFinalizedTip()) {
-                    // Special case for testnet, don't reject blocks mined with
-                    // the min difficulty
-                    if (!consensusParams.fPowAllowMinDifficultyBlocks ||
-                        (blockConnecting.GetBlockTime() <=
-                         pindexNew->pprev->GetBlockTime() +
-                             2 * consensusParams.nPowTargetSpacing)) {
-                        parkingPolicies.emplace_back(
-                            std::make_unique<RTTPolicy>(consensusParams,
-                                                        *pindexNew));
-                    }
-                }
-
-                parkingPolicies.emplace_back(
-                    std::make_unique<StakingRewardsPolicy>(
-                        *avalanche, consensusParams, *pindexNew,
-                        blockConnecting, blockReward));
-
-                if (m_mempool) {
-                    parkingPolicies.emplace_back(
-                        std::make_unique<PreConsensusPolicy>(
-                            *avalanche, *pindexNew, blockConnecting,
-                            m_mempool));
-                }
-            }
-
             // If any block policy is violated, bail on the first one found
             if (std::find_if_not(parkingPolicies.begin(), parkingPolicies.end(),
                                  [&](const auto &policy) {
@@ -3208,20 +3166,6 @@ CBlockIndex *Chainstate::FindMostWorkChain(
                 return nullptr;
             }
             pindexNew = *it;
-        }
-
-        // If this block will cause an avalanche finalized block to be reorged,
-        // then we park it.
-        {
-            LOCK(cs_avalancheFinalizedBlockIndex);
-            if (m_avalancheFinalizedBlockIndex &&
-                !AreOnTheSameFork(pindexNew, m_avalancheFinalizedBlockIndex)) {
-                LogPrintf("Park block %s because it forks prior to the "
-                          "avalanche finalized chaintip.\n",
-                          pindexNew->GetBlockHash().ToString());
-                pindexNew->nStatus = pindexNew->nStatus.withParked();
-                m_blockman.m_dirty_blockindex.insert(pindexNew);
-            }
         }
 
         const CBlockIndex *pindexFork = m_chain.FindFork(pindexNew);
