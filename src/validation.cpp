@@ -4362,22 +4362,6 @@ static bool ContextualCheckBlockHeader(
                              "block timestamp too far in the future");
     }
 
-    // Reject blocks with outdated version
-    if ((block.nVersion < 2 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_HEIGHTINCB)) ||
-        (block.nVersion < 3 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_DERSIG)) ||
-        (block.nVersion < 4 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_CLTV))) {
-        return state.Invalid(
-            BlockValidationResult::BLOCK_INVALID_HEADER,
-            strprintf("bad-version(0x%08x)", block.nVersion),
-            strprintf("rejected nVersion=0x%08x block", block.nVersion));
-    }
-
     return true;
 }
 
