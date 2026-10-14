@@ -75,15 +75,11 @@ PeerMessagingState CSeederNode::ProcessMessage(std::string strCommand,
         // for each node we check
         if (vAddr) {
             MessageWriter::WriteMessage(vSend, NetMsgType::GETADDR);
-            doneAfterDelta = GetTimeout();
-            needAddrReply = true;
-        }
-
-        // request headers starting after last checkpoint (only if we have
-        // checkpoints for this network)
-        if (HasCheckpoint()) {
-            std::vector<BlockHash> locatorHash(
-                1, Params().Checkpoints().mapCheckpoints.rbegin()->second);
+            std::vector<BlockHash> locatorHash(0);
+            if (Params().Checkpoints().mapCheckpoints.size() > 0) {
+                locatorHash = std::vector<BlockHash>(
+                    1, Params().Checkpoints().mapCheckpoints.rbegin()->second);
+            }
             MessageWriter::WriteMessage(vSend, NetMsgType::GETHEADERS,
                                         CBlockLocator(std::move(locatorHash)),
                                         uint256());
