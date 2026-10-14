@@ -222,6 +222,7 @@ TESTCASES = [
 ]
 
 ACTIVATION_TIME = 2000000000
+NUMBERS_ACTIVATION_TIME = 2010000000
 
 class Bip341Sighash(BitcoinTestFramework):
     def set_test_params(self):
@@ -230,6 +231,7 @@ class Bip341Sighash(BitcoinTestFramework):
         self.extra_args = [['-whitelist=noban@127.0.0.1',
                             '-acceptnonstdtxn=1',
                             '-allownonstdtxnconsensus=1',
+                            f'-numbersactivationtime={NUMBERS_ACTIVATION_TIME}',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     BASE_TYPES = {

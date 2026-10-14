@@ -10,6 +10,8 @@
 
 typedef std::vector<uint8_t> valtype;
 
+class CTransaction;
+
 static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
 static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
 static constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
@@ -56,5 +58,7 @@ bool VerifyTaprootCommitment(uint256 &tapleaf_hash,
  * - `OP_SCRIPTTYPE OP_1 <33-byte commitment> <32-byte state>
  */
 bool IsPayToTaproot(const CScript &script);
+
+bool TxHasPayToTaproot(const CTransaction &tx);
 
 #endif // BITCOIN_SCRIPT_TAPROOT_H

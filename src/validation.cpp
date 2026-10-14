@@ -46,6 +46,7 @@
 #include <script/script.h>
 #include <script/scriptcache.h>
 #include <script/sigcache.h>
+#include <script/taproot.h>
 #include <shutdown.h>
 #include <tinyformat.h>
 #include <txdb.h>
@@ -611,6 +612,11 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
                       m_pool.m_permit_bare_multisig,
                       m_pool.m_dust_relay_feerate, reason)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
+
+    if (m_pool.m_require_standard && TxHasPayToTaproot(tx)) {
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
+                             "bad-taproot-phased-out");
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next
@@ -2119,6 +2125,10 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
 
+    if (IsNumbersEnabled(consensusparams, pindex)) {
+        flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+    }
+
     return flags;
 }
 
@@ -2254,6 +2264,11 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     int extraFlags = 0;
     if (fRequireStandardConsensus) {
         extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+
+        // Before the Numbers upgrade, we don't deny Taproot or SIGHASH_LOTUS
+        if (!IsNumbersEnabled(consensusParams, pindex->pprev)) {
+            extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+        }
     }
 
     const uint32_t flags =
@@ -2342,6 +2357,14 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                           __func__);
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
                 break;
+            }
+            // Taproot is phased out after the Numbers update
+            if (IsNumbersEnabled(consensusParams, pindex->pprev)) {
+                if (TxHasPayToTaproot(tx)) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                  "bad-taproot-phased-out");
+                    break;
+                }
             }
         }
 
