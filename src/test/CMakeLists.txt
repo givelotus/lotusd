@@ -243,6 +243,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		sock_tests.cpp
 		streams_tests.cpp
 		sync_tests.cpp
+		taproot_tests.cpp
 		timedata_tests.cpp
 		torcontrol_tests.cpp
 		transaction_tests.cpp
