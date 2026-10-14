@@ -2304,10 +2304,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
     // Enforce BIP68 (sequence locks).
     int nLockTimeFlags = 0;
-    if (DeploymentActiveAt(*pindex, consensusParams,
-                           Consensus::DEPLOYMENT_CSV)) {
-        nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
-    }
 
     const uint32_t flags = GetNextBlockScriptFlags(pindex->pprev, m_chainman);
 
