@@ -65,12 +65,12 @@ public:
 };
 
 template <class T>
-uint256 SignatureHash(const CScript &scriptCode, const T &txTo,
-                      unsigned int nIn, SigHashType sigHashType,
-                      const Amount amount,
-                      const PrecomputedTransactionData *cache = nullptr,
-                      uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID,
-                      SigHashCache *sighash_cache = nullptr);
+bool SignatureHash(uint256 &sighashOut, const CScript &scriptCode,
+                   const T &txTo, unsigned int nIn, SigHashType sigHashType,
+                   const Amount amount,
+                   const PrecomputedTransactionData *cache = nullptr,
+                   uint32_t flags = SCRIPT_ENABLE_SIGHASH_FORKID,
+                   SigHashCache *sighash_cache = nullptr);
 
 class BaseSignatureChecker {
 public:

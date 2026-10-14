@@ -144,13 +144,15 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
 
         uint256 shref =
             SignatureHashOld(scriptCode, CTransaction(txTo), nIn, nHashType);
-        uint256 shold = SignatureHash(scriptCode, CTransaction(txTo), nIn,
-                                      sigHashType, Amount::zero(), nullptr, 0);
+        uint256 shold;
+        BOOST_CHECK(SignatureHash(shold, scriptCode, CTransaction(txTo), nIn,
+                                  sigHashType, Amount::zero(), nullptr, 0));
         BOOST_CHECK(shold == shref);
 
         // Check the impact of the forkid flag.
-        uint256 shreg = SignatureHash(scriptCode, CTransaction(txTo), nIn,
-                                      sigHashType, Amount::zero());
+        uint256 shreg;
+        BOOST_CHECK(SignatureHash(shreg, scriptCode, CTransaction(txTo), nIn,
+                                  sigHashType, Amount::zero()));
         if (sigHashType.hasForkId()) {
             BOOST_CHECK(nHashType & SIGHASH_FORKID);
             BOOST_CHECK(shreg != shref);
@@ -160,33 +162,39 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
         }
 
         // Make sure replay protection works as expected.
-        uint256 shrep = SignatureHash(scriptCode, CTransaction(txTo), nIn,
-                                      sigHashType, Amount::zero(), nullptr,
-                                      SCRIPT_ENABLE_SIGHASH_FORKID |
-                                          SCRIPT_ENABLE_REPLAY_PROTECTION);
+        uint256 shrep;
+        BOOST_CHECK(SignatureHash(shrep, scriptCode, CTransaction(txTo), nIn,
+                                  sigHashType, Amount::zero(), nullptr,
+                                  SCRIPT_ENABLE_SIGHASH_FORKID |
+                                      SCRIPT_ENABLE_REPLAY_PROTECTION));
         uint32_t newForkValue = 0xff0000 | ((nHashType >> 8) ^ 0xdead);
-        uint256 manualshrep = SignatureHash(
-            scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(newForkValue), Amount::zero());
+        uint256 manualshrep;
+        BOOST_CHECK(SignatureHash(manualshrep, scriptCode, CTransaction(txTo),
+                                  nIn, sigHashType.withForkValue(newForkValue),
+                                  Amount::zero()));
         BOOST_CHECK(shrep == manualshrep);
 
         // Replay protection works even if the hash is of the form 0xffxxxx
-        uint256 shrepff = SignatureHash(
-            scriptCode, CTransaction(txTo), nIn,
+        uint256 shrepff;
+        BOOST_CHECK(SignatureHash(
+            shrepff, scriptCode, CTransaction(txTo), nIn,
             sigHashType.withForkValue(newForkValue), Amount::zero(), nullptr,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
-        uint256 manualshrepff = SignatureHash(
-            scriptCode, CTransaction(txTo), nIn,
-            sigHashType.withForkValue(newForkValue ^ 0xdead), Amount::zero());
+            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
+        uint256 manualshrepff;
+        BOOST_CHECK(SignatureHash(
+            manualshrepff, scriptCode, CTransaction(txTo), nIn,
+            sigHashType.withForkValue(newForkValue ^ 0xdead), Amount::zero()));
         BOOST_CHECK(shrepff == manualshrepff);
 
-        uint256 shrepabcdef = SignatureHash(
-            scriptCode, CTransaction(txTo), nIn,
+        uint256 shrepabcdef;
+        BOOST_CHECK(SignatureHash(
+            shrepabcdef, scriptCode, CTransaction(txTo), nIn,
             sigHashType.withForkValue(0xabcdef), Amount::zero(), nullptr,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
-        uint256 manualshrepabcdef =
-            SignatureHash(scriptCode, CTransaction(txTo), nIn,
-                          sigHashType.withForkValue(0xff1342), Amount::zero());
+            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
+        uint256 manualshrepabcdef;
+        BOOST_CHECK(
+            SignatureHash(manualshrepabcdef, scriptCode, CTransaction(txTo), nIn,
+                          sigHashType.withForkValue(0xff1342), Amount::zero()));
         BOOST_CHECK(shrepabcdef == manualshrepabcdef);
 
 #if defined(PRINT_SIGHASH_JSON)
@@ -259,17 +267,20 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
             continue;
         }
 
-        uint256 shreg =
-            SignatureHash(scriptCode, *tx, nIn, sigHashType, Amount::zero());
+        uint256 shreg;
+        BOOST_CHECK(SignatureHash(shreg, scriptCode, *tx, nIn, sigHashType,
+                                  Amount::zero()));
         BOOST_CHECK_MESSAGE(shreg.GetHex() == sigHashRegHex, strTest);
 
-        uint256 shold = SignatureHash(scriptCode, *tx, nIn, sigHashType,
-                                      Amount::zero(), nullptr, 0);
+        uint256 shold;
+        BOOST_CHECK(SignatureHash(shold, scriptCode, *tx, nIn, sigHashType,
+                                  Amount::zero(), nullptr, 0));
         BOOST_CHECK_MESSAGE(shold.GetHex() == sigHashOldHex, strTest);
 
-        uint256 shrep = SignatureHash(
-            scriptCode, *tx, nIn, sigHashType, Amount::zero(), nullptr,
-            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
+        uint256 shrep;
+        BOOST_CHECK(SignatureHash(
+            shrep, scriptCode, *tx, nIn, sigHashType, Amount::zero(), nullptr,
+            SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION));
         BOOST_CHECK_MESSAGE(shrep.GetHex() == sigHashRepHex, strTest);
     }
 }
@@ -330,20 +341,23 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
 
             // The result of computing the sighash should be the same with or
             // without cache.
-            const auto sighash_with_cache{
-                SignatureHash(scriptcode, tx, in_index, sig_hash_type, amount,
-                              nullptr, flags, &cache)};
-            const auto sighash_no_cache{SignatureHash(scriptcode, tx, in_index,
-                                                      sig_hash_type, amount,
-                                                      nullptr, flags, nullptr)};
+            uint256 sighash_with_cache;
+            BOOST_CHECK(SignatureHash(sighash_with_cache, scriptcode, tx,
+                                      in_index, sig_hash_type, amount, nullptr,
+                                      flags, &cache));
+            uint256 sighash_no_cache;
+            BOOST_CHECK(SignatureHash(sighash_no_cache, scriptcode, tx,
+                                      in_index, sig_hash_type, amount, nullptr,
+                                      flags, nullptr));
             BOOST_CHECK_EQUAL(sighash_with_cache, sighash_no_cache);
 
             // Calling the cached version again should return the same value
             // again.
-            BOOST_CHECK_EQUAL(sighash_with_cache,
-                              SignatureHash(scriptcode, tx, in_index,
-                                            sig_hash_type, amount, nullptr,
-                                            flags, &cache));
+            uint256 sighash_cached_again;
+            BOOST_CHECK(SignatureHash(sighash_cached_again, scriptcode, tx,
+                                      in_index, sig_hash_type, amount, nullptr,
+                                      flags, &cache));
+            BOOST_CHECK_EQUAL(sighash_with_cache, sighash_cached_again);
 
             // While here we might as well also check that the result for
             // legacy is the same as for the old SignatureHash() function.
@@ -357,12 +371,14 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             // CODESEP is encountered) will not return the cache value but
             // overwrite it. The sighash will always be different except in case
             // of legacy SIGHASH_SINGLE bug.
-            const auto sighash_with_cache2{
-                SignatureHash(diff_scriptcode, tx, in_index, sig_hash_type,
-                              amount, nullptr, flags, &cache)};
-            const auto sighash_no_cache2{
-                SignatureHash(diff_scriptcode, tx, in_index, sig_hash_type,
-                              amount, nullptr, flags, nullptr)};
+            uint256 sighash_with_cache2;
+            BOOST_CHECK(SignatureHash(sighash_with_cache2, diff_scriptcode, tx,
+                                      in_index, sig_hash_type, amount, nullptr,
+                                      flags, &cache));
+            uint256 sighash_no_cache2;
+            BOOST_CHECK(SignatureHash(sighash_no_cache2, diff_scriptcode, tx,
+                                      in_index, sig_hash_type, amount, nullptr,
+                                      flags, nullptr));
             BOOST_CHECK_EQUAL(sighash_with_cache2, sighash_no_cache2);
             if (!expect_one) {
                 BOOST_CHECK_NE(sighash_with_cache, sighash_with_cache2);
@@ -373,10 +389,11 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
 
             // Calling the cached version again should return the same value
             // again.
-            BOOST_CHECK_EQUAL(sighash_with_cache2,
-                              SignatureHash(diff_scriptcode, tx, in_index,
-                                            sig_hash_type, amount, nullptr,
-                                            flags, &cache));
+            uint256 sighash_cached_again2;
+            BOOST_CHECK(SignatureHash(sighash_cached_again2, diff_scriptcode,
+                                      tx, in_index, sig_hash_type, amount,
+                                      nullptr, flags, &cache));
+            BOOST_CHECK_EQUAL(sighash_with_cache2, sighash_cached_again2);
 
             // And if we store a different value for this scriptcode and hash
             // type it will return that instead.
@@ -394,10 +411,11 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             // return the new value (except in the legacy SIGHASH_SINGLE bug
             // case in which it'll return 1).
             if (!expect_one) {
-                BOOST_CHECK_NE(SignatureHash(scriptcode, tx, in_index,
-                                             sig_hash_type, amount, nullptr,
-                                             flags, &cache),
-                               sighash_with_cache);
+                uint256 sighash_mutated;
+                BOOST_CHECK(SignatureHash(sighash_mutated, scriptcode, tx,
+                                          in_index, sig_hash_type, amount,
+                                          nullptr, flags, &cache));
+                BOOST_CHECK_NE(sighash_mutated, sighash_with_cache);
                 HashWriter h{};
                 BOOST_CHECK(cache.Load(sig_hash_type, scriptcode, h));
                 SigHashType sig_hash_type2{sig_hash_type};
@@ -413,23 +431,26 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
                 }
                 h << sig_hash_type2;
                 const auto new_hash{h.GetHash()};
-                BOOST_CHECK_EQUAL(SignatureHash(scriptcode, tx, in_index,
-                                                sig_hash_type, amount, nullptr,
-                                                flags, &cache),
-                                  new_hash);
+                uint256 sighash_mutated2;
+                BOOST_CHECK(SignatureHash(sighash_mutated2, scriptcode, tx,
+                                          in_index, sig_hash_type, amount,
+                                          nullptr, flags, &cache));
+                BOOST_CHECK_EQUAL(sighash_mutated2, new_hash);
             } else {
-                BOOST_CHECK_EQUAL(SignatureHash(scriptcode, tx, in_index,
-                                                sig_hash_type, amount, nullptr,
-                                                flags, &cache),
-                                  uint256::ONE);
+                uint256 sighash_mutated;
+                BOOST_CHECK(SignatureHash(sighash_mutated, scriptcode, tx,
+                                          in_index, sig_hash_type, amount,
+                                          nullptr, flags, &cache));
+                BOOST_CHECK_EQUAL(sighash_mutated, uint256::ONE);
             }
 
             // Wipe the cache and restore the correct cached value for this
             // scriptcode and hash_type before starting the next iteration.
             HashWriter dummy{};
             cache.Store(sig_hash_type, diff_scriptcode, dummy);
-            (void)SignatureHash(scriptcode, tx, in_index, sig_hash_type, amount,
-                                nullptr, flags, &cache);
+            uint256 sighash_restored;
+            (void)SignatureHash(sighash_restored, scriptcode, tx, in_index,
+                                sig_hash_type, amount, nullptr, flags, &cache);
             BOOST_CHECK(cache.Load(sig_hash_type, scriptcode, dummy) ||
                         expect_one);
         }
