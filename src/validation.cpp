@@ -2090,10 +2090,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_VERIFY_MINIMALDATA;
     }
 
-    if (IsPhononEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENFORCE_SIGCHECKS;
-    }
-
     // We make sure this node will have replay protection during the next hard
     // fork.
     if (IsReplayProtectionEnabled(
@@ -2446,14 +2442,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // Don't cache results if we're actually connecting blocks (still
         // consult the cache, though).
         bool fCacheResults = fJustCheck;
-
-        const bool fEnforceSigCheck = flags & SCRIPT_ENFORCE_SIGCHECKS;
-        if (!fEnforceSigCheck) {
-            // Historically, there has been transactions with a very high
-            // sigcheck count, so we need to disable this check for such
-            // transactions.
-            nSigChecksTxLimiters[txIndex] = TxSigCheckLimiter::getDisabled();
-        }
 
         std::vector<CScriptCheck> vChecks;
         TxValidationState tx_state;
