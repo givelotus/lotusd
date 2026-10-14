@@ -952,13 +952,18 @@ static RPCHelpMan getblocktemplate() {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
             }
 
+            const bool isTestnet = chainparams.IsTestChain();
+
             const CConnman &connman = EnsureConnman(node);
-            if (connman.GetNodeCount(ConnectionDirection::Both) == 0) {
+            // Allow mining on testnet even without connections (for private testnets)
+            if (!isTestnet &&
+                connman.GetNodeCount(ConnectionDirection::Both) == 0) {
                 throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
                                    "Bitcoin is not connected!");
             }
 
-            if (chainman.IsInitialBlockDownload()) {
+            // Allow mining on testnet even during initial block download
+            if (!isTestnet && chainman.IsInitialBlockDownload()) {
                 throw JSONRPCError(
                     RPC_CLIENT_IN_INITIAL_DOWNLOAD, PACKAGE_NAME
                     " is in initial sync and waiting for blocks...");
@@ -1310,16 +1315,20 @@ static RPCHelpMan getrawunsolvedblock() {
             }
 
             const CChainParams &chainparams = config.GetChainParams();
+            const bool isTestnet = chainparams.IsTestChain();
 
             NodeContext &node = EnsureAnyNodeContext(request.context);
             const CConnman &connman = EnsureConnman(node);
-            if (connman.GetNodeCount(ConnectionDirection::Both) == 0) {
+            // Allow mining on testnet even without connections (for private testnets)
+            if (!isTestnet &&
+                connman.GetNodeCount(ConnectionDirection::Both) == 0) {
                 throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
                                    "Node is not connected!");
             }
 
             ChainstateManager &chainman = EnsureChainman(node);
-            if (chainman.IsInitialBlockDownload()) {
+            // Allow mining on testnet even during initial block download
+            if (!isTestnet && chainman.IsInitialBlockDownload()) {
                 throw JSONRPCError(
                     RPC_CLIENT_IN_INITIAL_DOWNLOAD, PACKAGE_NAME
                     " is in initial sync and waiting for blocks...");
