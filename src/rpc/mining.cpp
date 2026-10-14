@@ -1127,13 +1127,10 @@ static RPCHelpMan getblocktemplate() {
             // Compute the miner fund parameters
             const auto minerFundWhitelist =
                 GetMinerFundWhitelist(consensusParams);
-            int64_t minerFundMinValue = 0;
-            if (IsAxionEnabled(consensusParams, pindexPrev)) {
-                minerFundMinValue =
-                    int64_t(GetMinerFundAmount(consensusParams, coinbasevalue,
-                                               pindexPrev) /
-                            SATOSHI);
-            }
+            int64_t minerFundMinValue =
+                int64_t(GetMinerFundAmount(consensusParams, coinbasevalue,
+                                           pindexPrev) /
+                        SATOSHI);
 
             // Compute the staking reward parameters
             std::vector<CScript> stakingRewardsPayoutScripts;
