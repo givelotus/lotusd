@@ -145,6 +145,11 @@ public:
     }
 };
 
+/** Compute the 256-bit hash of an object's serialization. */
+template <typename T> uint256 SerializeHash(const T &obj) {
+    return (HashWriter{} << obj).GetHash();
+}
+
 /**
  * Reads data from an underlying stream, while hashing the read data.
  */

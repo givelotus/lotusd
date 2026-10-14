@@ -29,7 +29,7 @@ Start three nodes:
       isn't buried by at least two weeks' work.
 """
 
-from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase
+from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase, prepare_block
 from test_framework.key import ECKey
 from test_framework.messages import (
     CBlockHeader,
@@ -101,9 +101,10 @@ class AssumeValidTest(BitcoinTestFramework):
         block = create_block(
             self.tip, create_coinbase(height, coinbase_pubkey), self.block_time
         )
+        block.nHeight = height
         self.blocks.append(block)
         self.block_time += 1
-        block.solve()
+        prepare_block(block)
         # Save the coinbase for later
         self.block1 = block
         self.tip = block.hash_int
@@ -112,7 +113,8 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the block 100 deep so the coinbase output is spendable
         for _ in range(COINBASE_MATURITY):
             block = create_block(self.tip, create_coinbase(height), self.block_time)
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             self.blocks.append(block)
             self.tip = block.hash_int
             self.block_time += 1
@@ -126,10 +128,12 @@ class AssumeValidTest(BitcoinTestFramework):
         pad_tx(tx)
 
         block102 = create_block(
-            self.tip, create_coinbase(height), self.block_time, txlist=[tx]
+            self.tip, create_coinbase(height), self.block_time
         )
+        block102.nHeight = height
         self.block_time += 1
-        block102.solve()
+        block102.vtx.extend([tx])
+        prepare_block(block102)
         self.blocks.append(block102)
         self.tip = block102.hash_int
         self.block_time += 1
@@ -138,9 +142,10 @@ class AssumeValidTest(BitcoinTestFramework):
         # Bury the assumed valid block 3400 deep
         for _ in range(3700):
             block = create_block(
-                self.tip, create_coinbase(height), self.block_time, version=4
+                self.tip, create_coinbase(height), self.block_time
             )
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             self.blocks.append(block)
             self.tip = block.hash_int
             self.block_time += 1

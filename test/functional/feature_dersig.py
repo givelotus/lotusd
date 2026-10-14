@@ -6,7 +6,7 @@
 Test that the DERSIG soft-fork activates at (regtest) height 1251.
 """
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import msg_block
 from test_framework.p2p import P2PInterface
 from test_framework.script import CScript
@@ -63,8 +63,9 @@ class BIP66Test(BitcoinTestFramework):
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
         block = create_block(
-            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time, version=3
+            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time
         )
+        block.nHeight = DERSIG_HEIGHT
 
         coin_txid = self.coinbase_txids[1]
         spendtx = self.create_tx(coin_txid)
@@ -95,8 +96,7 @@ class BIP66Test(BitcoinTestFramework):
 
         # Now we verify that a block with this transaction is also invalid.
         block.vtx.append(spendtx)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
 
         with self.nodes[0].assert_debug_log(
             expected_msgs=[

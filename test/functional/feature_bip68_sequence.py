@@ -5,7 +5,7 @@
 
 import time
 
-from test_framework.blocktools import create_block
+from test_framework.blocktools import create_block, prepare_block
 from test_framework.messages import XEC, COutPoint, CTransaction, CTxIn, CTxOut, ToHex
 from test_framework.script import CScript
 from test_framework.test_framework import BitcoinTestFramework
@@ -414,7 +414,7 @@ class BIP68Test(BitcoinTestFramework):
         # tx3 to be removed.
         for i in range(2):
             block = create_block(tmpl=tmpl, ntime=cur_time)
-            block.solve()
+            prepare_block(block)
             tip = block.hash_int
             assert_equal(
                 None if i == 1 else "inconclusive",

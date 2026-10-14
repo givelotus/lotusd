@@ -21,7 +21,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
-    make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import COIN
 from test_framework.p2p import P2PDataStore
@@ -51,7 +51,8 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         height = 1
         block = create_block(tip, create_coinbase(height), block_time)
-        block.solve()
+        block.nHeight = height
+        prepare_block(block)
         # Save the coinbase for later
         block1 = block
         tip = block.hash_int
@@ -83,8 +84,9 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block2 = create_block(
             tip, create_coinbase(height), block_time, txlist=[tx1, tx2]
         )
+        block2.nHeight = height
         block_time += 1
-        block2.solve()
+        prepare_block(block2)
         orig_hash = block2.hash_int
         block2_orig = copy.deepcopy(block2)
 
@@ -93,6 +95,10 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         assert_equal(block2.hashMerkleRoot, block2.calc_merkle_root())
         assert_equal(orig_hash, block2.hash_int)
         assert block2_orig.vtx != block2.vtx
+        # Note: Lotus doesn't suffer from CVE-2012-2459, which is made clear
+        # through the fact that we have to do another solve
+        block2.nSize = len(block2.serialize())
+        block2.solve()
 
         peer.send_blocks_and_test(
             [block2], node, success=False, reject_reason="bad-txns-duplicate"
@@ -103,9 +109,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         block2_dup = copy.deepcopy(block2_orig)
         block2_dup.vtx[2].vin.append(block2_dup.vtx[2].vin[0])
-        make_conform_to_ctor(block2_dup)
-        block2_dup.hashMerkleRoot = block2_dup.calc_merkle_root()
-        block2_dup.solve()
+        prepare_block(block2_dup)
         peer.send_blocks_and_test(
             [block2_dup], node, success=False, reject_reason="bad-txns-inputs-duplicate"
         )
@@ -115,8 +119,9 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         block3 = create_block(
             tip, create_coinbase(height, nValue=100_000_000), block_time
         )
+        block3.nHeight = height
         block_time += 1
-        block3.solve()
+        prepare_block(block3)
 
         peer.send_blocks_and_test(
             [block3], node, success=False, reject_reason="bad-cb-amount"
@@ -144,7 +149,8 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
         # Duplicates input
         tx3.vin.append(tx3.vin[0])
         block4 = create_block(tip, create_coinbase(height), block_time, txlist=[tx3])
-        block4.solve()
+        block4.nHeight = height
+        prepare_block(block4)
         self.log.info("Test inflation by duplicating input")
         peer.send_blocks_and_test(
             [block4], node, success=False, reject_reason="bad-txns-inputs-duplicate"

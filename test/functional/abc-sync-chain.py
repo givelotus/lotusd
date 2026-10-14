@@ -10,7 +10,7 @@ and continues to sync without seizing.
 
 import random
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import CBlockHeader, msg_block, msg_headers
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
@@ -46,7 +46,8 @@ class SyncChainTest(BitcoinTestFramework):
         blocks = []
         for _ in range(NUM_IBD_BLOCKS * 2):
             block = create_block(tip, create_coinbase(height), time)
-            block.solve()
+            block.nHeight = height
+            prepare_block(block)
             blocks.append(block)
             tip = block.hash_int
             height += 1

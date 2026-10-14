@@ -13,6 +13,7 @@ from test_framework.blocktools import (
     COINBASE_MATURITY,
     create_block,
     make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import (
     MSG_BLOCK,
@@ -144,7 +145,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
     def build_block_on_tip(self, node):
         block = create_block(tmpl=node.getblocktemplate())
-        block.solve()
+        prepare_block(block)
         return block
 
     # Create 10 more anyone-can-spend utxo's for testing.
@@ -164,8 +165,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         block2 = self.build_block_on_tip(self.nodes[0])
         block2.vtx.append(tx)
-        block2.hashMerkleRoot = block2.calc_merkle_root()
-        block2.solve()
+        prepare_block(block2)
         self.test_node.send_and_ping(msg_block(block2))
         assert_equal(self.nodes[0].getbestblockhash(), uint256_hex(block2.hash_int))
         self.utxos.extend([[tx.txid_int, i, out_value] for i in range(10)])
@@ -446,8 +446,7 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         ordered_txs = block.vtx
         make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         return block, ordered_txs
 
     # Test that we only receive getblocktxn requests for transactions that the
@@ -727,9 +726,11 @@ class CompactBlocksTest(BitcoinTestFramework):
 
         # Generate an old compactblock, and verify that it's not accepted.
         cur_height = node.getblockcount()
-        hashPrevBlock = int(node.getblockhash(cur_height - 5), 16)
+        old_height = cur_height - 5
+        hashPrevBlock = int(node.getblockhash(old_height), 16)
         block = self.build_block_on_tip(node)
         block.hashPrevBlock = hashPrevBlock
+        block.nHeight = old_height + 1
         block.solve()
 
         comp_block = HeaderAndShortIDs()

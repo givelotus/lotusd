@@ -16,6 +16,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
+    prepare_block,
 )
 from test_framework.messages import (
     CBlock,
@@ -68,11 +69,11 @@ class MinimaldataTest(BitcoinTestFramework):
         block_time = (parent.nTime + 1) if nTime is None else nTime
 
         block = create_block(
-            parent.hash_int,
-            create_coinbase(block_height),
-            block_time,
-            txlist=transactions,
+            parent.hash_int, create_coinbase(block_height), block_time
         )
+        block.nHeight = block_height
+        block.vtx.extend(transactions)
+        prepare_block(block)
         block.solve()
         self.block_heights[block.hash_int] = block_height
         return block

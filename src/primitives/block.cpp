@@ -9,16 +9,34 @@
 #include <tinyformat.h>
 
 BlockHash CBlockHeader::GetHash() const {
-    return BlockHash{(HashWriter{} << *this).GetHash()};
+    HashWriter layer3{};
+    layer3 << nHeaderVersion;
+    layer3 << vSize;
+    layer3 << nHeight;
+    layer3 << hashEpochBlock;
+    layer3 << hashMerkleRoot;
+    layer3 << hashExtendedMetadata;
+    HashWriter layer2{};
+    layer2 << nBits;
+    layer2 << vTime;
+    layer2 << nReserved;
+    layer2 << nNonce;
+    layer2 << layer3.GetSHA256();
+    HashWriter layer1{};
+    layer1 << hashPrevBlock;
+    layer1 << layer2.GetSHA256();
+    return BlockHash(layer1.GetSHA256());
 }
 
 std::string CBlock::ToString() const {
     std::stringstream s;
-    s << strprintf("CBlock(hash=%s, ver=0x%08x, hashPrevBlock=%s, "
-                   "hashMerkleRoot=%s, nTime=%u, nBits=%08x, nNonce=%u, "
-                   "vtx=%u)\n",
-                   GetHash().ToString(), nVersion, hashPrevBlock.ToString(),
-                   hashMerkleRoot.ToString(), nTime, nBits, nNonce, vtx.size());
+    s << strprintf(
+        "CBlock(hash=%s, hashPrevBlock=%s, bits=0x%08x, time=%u, "
+        "nonce=%u, headerversion=%u, size=%u, height=%d, hashEpochBlock=%s, "
+        "hashMerkleRoot=%s, hashExtendedMetadata=%s, vtx=%u)\n",
+        GetHash().ToString(), hashPrevBlock.ToString(), nBits, GetBlockTime(),
+        nNonce, nHeaderVersion, GetSize(), nHeight, hashEpochBlock.ToString(),
+        hashMerkleRoot.ToString(), hashExtendedMetadata.ToString(), vtx.size());
     for (const auto &tx : vtx) {
         s << "  " << tx->ToString() << "\n";
     }

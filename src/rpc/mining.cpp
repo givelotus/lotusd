@@ -140,10 +140,11 @@ static bool GenerateBlock(ChainstateManager &chainman,
     block_hash.SetNull();
     block.hashMerkleRoot = BlockMerkleRoot(block);
 
+    block.SetSize(GetSerializeSize(block));
     const Consensus::Params &params = chainman.GetConsensus();
 
     while (max_tries > 0 &&
-           block.nNonce < std::numeric_limits<uint32_t>::max() &&
+           block.nNonce < std::numeric_limits<uint64_t>::max() &&
            !CheckProofOfWork(block.GetHash(), block.nBits, params) &&
            !ShutdownRequested()) {
         ++block.nNonce;
@@ -152,7 +153,7 @@ static bool GenerateBlock(ChainstateManager &chainman,
     if (max_tries == 0 || ShutdownRequested()) {
         return false;
     }
-    if (block.nNonce == std::numeric_limits<uint32_t>::max()) {
+    if (block.nNonce == std::numeric_limits<uint64_t>::max()) {
         return true;
     }
 
@@ -457,6 +458,7 @@ static RPCHelpMan generateblock() {
 
             // Add transactions
             block.vtx.insert(block.vtx.end(), txs.begin(), txs.end());
+            block.SetSize(GetSerializeSize(block));
 
             {
                 LOCK(cs_main);
@@ -1192,9 +1194,12 @@ static RPCHelpMan getblocktemplate() {
 
             result.pushKV("capabilities", std::move(aCaps));
 
-            result.pushKV("version", pblock->nVersion);
+            result.pushKV("version", uint64_t(pblock->nHeaderVersion));
 
             result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
+            result.pushKV("epochblockhash", pblock->hashEpochBlock.GetHex());
+            result.pushKV("extendedmetadatahash",
+                          pblock->hashExtendedMetadata.GetHex());
             result.pushKV("transactions", std::move(transactions));
             result.pushKV("coinbaseaux", std::move(aux));
             result.pushKV("coinbasetxn", std::move(coinbasetxn));

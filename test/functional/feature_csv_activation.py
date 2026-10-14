@@ -46,7 +46,7 @@ from test_framework.address import ADDRESS_ECREG_UNSPENDABLE
 from test_framework.blocktools import (
     create_block,
     create_coinbase,
-    make_conform_to_ctor,
+    prepare_block,
 )
 from test_framework.messages import XEC, CTransaction, FromHex
 from test_framework.p2p import P2PDataStore
@@ -172,27 +172,25 @@ class BIP68_112_113Test(BitcoinTestFramework):
             self.tipheight += 1
         return test_blocks
 
-    def create_test_block(self, txs, version=536870912):
+    def create_test_block(self, txs):
         block = create_block(
             self.tip,
             create_coinbase(self.tipheight + 1),
             self.last_block_time + 600,
-            version=version,
             txlist=txs,
         )
-        block.solve()
+        block.nHeight = self.tipheight + 1
+        prepare_block(block)
         return block
 
     # Create a block with given txs, and spend these txs in the same block.
     # Spending utxos in the same block is OK as long as nSequence is not enforced.
     # Otherwise a number of intermediate blocks should be generated, and this
     # method should not be used.
-    def create_test_block_spend_utxos(self, txs, version=536870912):
-        block = self.create_test_block(txs, version)
+    def create_test_block_spend_utxos(self, txs):
+        block = self.create_test_block(txs)
         block.vtx.extend([self.spend_tx(tx) for tx in txs])
-        make_conform_to_ctor(block)
-        block.hashMerkleRoot = block.calc_merkle_root()
-        block.solve()
+        prepare_block(block)
         return block
 
     def send_blocks(self, blocks, success=True):

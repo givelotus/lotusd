@@ -155,9 +155,10 @@ UniValue blockheaderToJSON(const CBlockIndex &tip,
     const CBlockIndex *pnext;
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
+    result.pushKV("size", blockindex.nSize);
     result.pushKV("height", blockindex.nHeight);
-    result.pushKV("version", blockindex.nVersion);
-    result.pushKV("versionHex", strprintf("%08x", blockindex.nVersion));
+    result.pushKV("version", uint64_t(blockindex.nHeaderVersion));
+    result.pushKV("versionHex", strprintf("%02x", blockindex.nHeaderVersion));
     result.pushKV("merkleroot", blockindex.hashMerkleRoot.GetHex());
     result.pushKV("time", blockindex.nTime);
     result.pushKV("mediantime", blockindex.GetMedianTimePast());
@@ -166,6 +167,9 @@ UniValue blockheaderToJSON(const CBlockIndex &tip,
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex.nChainWork.GetHex());
     result.pushKV("nTx", blockindex.nTx);
+    result.pushKV("epochblockhash", blockindex.hashEpochBlock.GetHex());
+    result.pushKV("extendedmetadatahash",
+                  blockindex.hashExtendedMetadata.GetHex());
 
     if (blockindex.pprev) {
         result.pushKV("previousblockhash",
@@ -212,6 +216,7 @@ UniValue blockToJSON(BlockManager &blockman, const CBlock &block,
     }
 
     result.pushKV("tx", std::move(txs));
+    result.pushKV("extendedmetadata", UniValue(UniValue::VARR));
 
     return result;
 }

@@ -56,6 +56,7 @@ from test_framework.blocktools import (
     create_block,
     create_coinbase,
     create_tx_with_script,
+    prepare_block,
 )
 from test_framework.messages import (
     MSG_BLOCK,
@@ -101,7 +102,8 @@ class AcceptBlockTest(BitcoinTestFramework):
         block_time = int(time.time()) + 1
         for i in range(2):
             blocks_h2.append(create_block(tips[i], create_coinbase(2), block_time))
-            blocks_h2[i].solve()
+            blocks_h2[i].nHeight = 2
+            prepare_block(blocks_h2[i])
             block_time += 1
         test_node.send_and_ping(msg_block(blocks_h2[0]))
 
@@ -127,8 +129,9 @@ class AcceptBlockTest(BitcoinTestFramework):
         block_h1f = create_block(
             int(self.nodes[0].getblockhash(0), 16), create_coinbase(1), block_time
         )
+        block_h1f.nHeight = 1
+        prepare_block(block_h1f)
         block_time += 1
-        block_h1f.solve()
         test_node.send_and_ping(msg_block(block_h1f))
 
         tip_entry_found = False
@@ -143,8 +146,9 @@ class AcceptBlockTest(BitcoinTestFramework):
 
         # 4. Send another two block that build on the fork.
         block_h2f = create_block(block_h1f.hash_int, create_coinbase(2), block_time)
+        block_h2f.nHeight = 2
+        prepare_block(block_h2f)
         block_time += 1
-        block_h2f.solve()
         test_node.send_and_ping(msg_block(block_h2f))
 
         # Since the earlier block was not processed by node, the new block
@@ -164,7 +168,8 @@ class AcceptBlockTest(BitcoinTestFramework):
         block_h3 = create_block(
             block_h2f.hash_int, create_coinbase(3), block_h2f.nTime + 1
         )
-        block_h3.solve()
+        block_h3.nHeight = 3
+        prepare_block(block_h3)
         test_node.send_and_ping(msg_block(block_h3))
 
         # Since the earlier block was not processed by node, the new block
@@ -281,11 +286,15 @@ class AcceptBlockTest(BitcoinTestFramework):
         block_289f = create_block(
             all_blocks[284].hash_int, create_coinbase(289), all_blocks[284].nTime + 1
         )
-        block_289f.solve()
+        block_289f.nHeight = 289
+        prepare_block(block_289f)
+
         block_290f = create_block(
             block_289f.hash_int, create_coinbase(290), block_289f.nTime + 1
         )
-        block_290f.solve()
+        block_290f.nHeight = 290
+        prepare_block(block_290f)
+
         # block_291 spends a coinbase below maturity!
         tx_to_add = create_tx_with_script(
             block_290f.vtx[0], 0, script_sig=b"42", amount=1
@@ -296,11 +305,14 @@ class AcceptBlockTest(BitcoinTestFramework):
             block_290f.nTime + 1,
             txlist=[tx_to_add],
         )
-        block_291.solve()
+        block_291.nHeight = 291
+        prepare_block(block_291)
+
         block_292 = create_block(
             block_291.hash_int, create_coinbase(292), block_291.nTime + 1
         )
-        block_292.solve()
+        block_292.nHeight = 292
+        prepare_block(block_292)
 
         # Now send all the headers on the chain and enough blocks to trigger
         # reorg
@@ -352,7 +364,8 @@ class AcceptBlockTest(BitcoinTestFramework):
         block_293 = create_block(
             block_292.hash_int, create_coinbase(293), block_292.nTime + 1
         )
-        block_293.solve()
+        block_293.nHeight = 293
+        prepare_block(block_293)
         headers_message = msg_headers()
         headers_message.headers.append(CBlockHeader(block_293))
         test_node.send_message(headers_message)

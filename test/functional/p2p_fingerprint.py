@@ -9,7 +9,7 @@ the node should pretend that it does not have it to avoid fingerprinting.
 
 import time
 
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase, prepare_block
 from test_framework.messages import (
     MSG_BLOCK,
     CInv,
@@ -36,7 +36,8 @@ class P2PFingerprintTest(BitcoinTestFramework):
             coinbase = create_coinbase(prev_height + 1)
             block_time = prev_median_time + 1
             block = create_block(int(prev_hash, 16), coinbase, block_time)
-            block.solve()
+            block.nHeight = prev_height + 1
+            prepare_block(block)
 
             blocks.append(block)
             prev_hash = block.hash_hex
