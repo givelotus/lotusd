@@ -18,7 +18,7 @@ from test_framework.address import (
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.hash import hash160
 from test_framework.key import ECKey
-from test_framework.messages import XEC, COutPoint, CTransaction, CTxIn, CTxOut
+from test_framework.messages import LOTUS, COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.script import (
     OP_CHECKSIG,
     OP_DUP,
@@ -34,7 +34,7 @@ from test_framework.util import (
     satoshi_round,
 )
 
-DEFAULT_FEE = Decimal("100.00")
+DEFAULT_FEE = Decimal("0.01")
 
 
 class MiniWalletMode(Enum):
@@ -312,12 +312,12 @@ class MiniWallet:
         assert_equal(len(utxos_to_spend), len(sequence))
 
         # calculate output amount
-        inputs_value_total = sum([int(XEC * utxo["value"]) for utxo in utxos_to_spend])
+        inputs_value_total = sum([int(LOTUS * utxo["value"]) for utxo in utxos_to_spend])
         outputs_value_total = inputs_value_total - fee_per_output * num_outputs
         amount_per_output = amount_per_output or (outputs_value_total // num_outputs)
         assert amount_per_output > 0
         outputs_value_total = amount_per_output * num_outputs
-        fee = Decimal(inputs_value_total - outputs_value_total) / XEC
+        fee = Decimal(inputs_value_total - outputs_value_total) / LOTUS
 
         # create tx
         tx = CTransaction()
@@ -337,7 +337,7 @@ class MiniWallet:
         self.sign_tx(
             tx,
             sum(
-                [int(utxo_to_spend["value"] * XEC) for utxo_to_spend in utxos_to_spend]
+                [int(utxo_to_spend["value"] * LOTUS) for utxo_to_spend in utxos_to_spend]
             ),
         )
 
@@ -349,7 +349,7 @@ class MiniWallet:
                 self._create_utxo(
                     txid=txid,
                     vout=i,
-                    value=Decimal(tx.vout[i].nValue) / XEC,
+                    value=Decimal(tx.vout[i].nValue) / LOTUS,
                     height=0,
                     coinbase=False,
                     confirmations=0,
@@ -365,7 +365,7 @@ class MiniWallet:
     def create_self_transfer(
         self,
         *,
-        fee_rate=Decimal("3000.00"),
+        fee_rate=Decimal("0.300000"),
         fee=Decimal("0"),
         utxo_to_spend=None,
         locktime=0,
@@ -398,7 +398,7 @@ class MiniWallet:
             utxos_to_spend=[utxo_to_spend],
             locktime=locktime,
             sequence=sequence,
-            amount_per_output=int(XEC * send_value),
+            amount_per_output=int(LOTUS * send_value),
             target_size=target_size,
         )
         if not target_size:

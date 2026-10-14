@@ -30,7 +30,7 @@ logger = logging.getLogger("TestFramework.utils")
 ##################
 
 
-def assert_approx(v, vexp, vspan=10):
+def assert_approx(v, vexp, vspan=0.00001):
     """Assert that `v` is within `vspan` of `vexp`"""
     if v < vexp - vspan:
         raise AssertionError(f"{v} < [{vexp - vspan}..{vexp + vspan}]")
@@ -49,9 +49,9 @@ def assert_fee_amount(fee, tx_size, fee_per_kB, wiggleroom=2):
     """
     target_fee = satoshi_round(tx_size * fee_per_kB / 1000)
     if fee < (tx_size - wiggleroom) * fee_per_kB / 1000:
-        raise AssertionError(f"Fee of {fee} XEC too low! (Should be {target_fee} XEC)")
+        raise AssertionError(f"Fee of {fee} XPI too low! (Should be {target_fee} XPI)")
     if fee > (tx_size + wiggleroom) * fee_per_kB / 1000:
-        raise AssertionError(f"Fee of {fee} XEC too high! (Should be {target_fee} XEC)")
+        raise AssertionError(f"Fee of {fee} XPI too high! (Should be {target_fee} XPI)")
 
 
 def assert_equal(thing1, thing2, *args):
@@ -238,10 +238,10 @@ def assert_recv_all_any_order(ws, expected_msgs):
 
 
 def check_json_precision():
-    """Make sure json library being used does not lose precision converting XEC
+    """Make sure json library being used does not lose precision converting XPI
     values"""
-    n = Decimal("20000000.00000003")
-    satoshis = int(json.loads(json.dumps(float(n))) * 1.0e8)
+    n = Decimal("2000000000.000003")
+    satoshis = int(json.loads(json.dumps(float(n))) * 1.0e6)
     if satoshis != 2000000000000003:
         raise RuntimeError("JSON encode/decode loses precision")
 
@@ -265,7 +265,7 @@ def hex_to_be_bytes(hex_string: str) -> bytes:
 
 
 def satoshi_round(amount):
-    return Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return Decimal(amount).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
 
 
 def iter_chunks(lst: list, n: int):
@@ -527,7 +527,7 @@ def write_config(config_path, *, n, chain, extra_config="", disable_autoconnect=
         f.write("chroniktxnumcachebucketsize=100\n")
         # FIXME fix the doc issues and turn this flag on to prevent new doc bugs
         f.write("rpcdoccheck=0\n")
-        f.write("fallbackfee=200\n")
+        f.write("fallbackfee=0.0002\n")
         f.write("server=1\n")
         f.write("keypool=1\n")
         f.write("discover=0\n")
@@ -638,7 +638,7 @@ def fill_mempool(test_framework, node, miniwallet):
     txouts = gen_return_txouts()
     relayfee = node.getnetworkinfo()["relayfee"]
 
-    assert_equal(relayfee, Decimal("10"))
+    assert_equal(relayfee, Decimal("0.001"))
 
     tx_batch_size = 1
     num_of_batches = 75
@@ -678,8 +678,8 @@ def fill_mempool(test_framework, node, miniwallet):
     assert tx_to_be_evicted_id not in node.getrawmempool()
 
     test_framework.log.debug("Check that mempoolminfee is larger than minrelaytxfee")
-    assert_equal(node.getmempoolinfo()["minrelaytxfee"], Decimal("10.00"))
-    assert_greater_than(node.getmempoolinfo()["mempoolminfee"], Decimal("10.00"))
+    assert_equal(node.getmempoolinfo()["minrelaytxfee"], Decimal("0.001"))
+    assert_greater_than(node.getmempoolinfo()["mempoolminfee"], Decimal("0.001"))
 
 
 # Transaction/Block functions
@@ -727,9 +727,9 @@ def gen_return_txouts():
 def create_lots_of_big_transactions(
     mini_wallet, node, fee, tx_batch_size, txouts, utxos=None
 ):
-    from .messages import XEC
+    from .messages import COIN
 
-    fee_sats = int(fee * XEC)
+    fee_sats = int(fee * COIN)
     txids = []
     use_internal_utxos = utxos is None
     for _ in range(tx_batch_size):

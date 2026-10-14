@@ -14,9 +14,10 @@
 
 static const Currency BCHA{COIN, SATOSHI, 8, "BCHA"};
 static const Currency XEC{100 * SATOSHI, SATOSHI, 2, "XEC"};
+static const Currency CURRENCY_LOTUS{1000000 * SATOSHI, SATOSHI, 6, "XPI"};
 
 const Currency &Currency::get() {
-    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? XEC : BCHA;
+    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? XEC : CURRENCY_LOTUS;
 }
 
 std::string Amount::ToString() const {

@@ -1561,27 +1561,24 @@ BOOST_AUTO_TEST_CASE(util_ReadWriteSettings) {
 
 BOOST_AUTO_TEST_CASE(util_FormatMoney) {
     BOOST_CHECK_EQUAL(FormatMoney(Amount::zero()), "0.00");
-    BOOST_CHECK_EQUAL(FormatMoney(123456789 * (COIN / 10000)),
-                      "12345678900.00");
-    BOOST_CHECK_EQUAL(FormatMoney(-1 * COIN), "-1000000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(123456789 * (COIN / 10000)), "12345.6789");
+    BOOST_CHECK_EQUAL(FormatMoney(-1 * COIN), "-1.00");
 
-    BOOST_CHECK_EQUAL(FormatMoney(100000000 * COIN), "100000000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(10000000 * COIN), "10000000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(1000000 * COIN), "1000000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(100000 * COIN), "100000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(10000 * COIN), "10000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(1000 * COIN), "1000000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(100 * COIN), "100000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(10 * COIN), "10000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN), "1000000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 10), "100000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 100), "10000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 1000), "1000.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 10000), "100.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 100000), "10.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 1000000), "1.00");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 10000000), "0.10");
-    BOOST_CHECK_EQUAL(FormatMoney(COIN / 100000000), "0.01");
+    BOOST_CHECK_EQUAL(FormatMoney(100000000 * COIN), "100000000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(10000000 * COIN), "10000000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(1000000 * COIN), "1000000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(100000 * COIN), "100000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(10000 * COIN), "10000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(1000 * COIN), "1000.00");
+    BOOST_CHECK_EQUAL(FormatMoney(100 * COIN), "100.00");
+    BOOST_CHECK_EQUAL(FormatMoney(10 * COIN), "10.00");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN), "1.00");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 10), "0.10");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 100), "0.01");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 1000), "0.001");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 10000), "0.0001");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 100000), "0.00001");
+    BOOST_CHECK_EQUAL(FormatMoney(COIN / 1000000), "0.000001");
 }
 
 BOOST_AUTO_TEST_CASE(util_ParseMoney) {
@@ -1589,55 +1586,58 @@ BOOST_AUTO_TEST_CASE(util_ParseMoney) {
     BOOST_CHECK(ParseMoney("0.0", ret));
     BOOST_CHECK_EQUAL(ret, Amount::zero());
 
-    BOOST_CHECK(ParseMoney("1234567.89", ret));
-    BOOST_CHECK_EQUAL(ret, 123456789 * SATOSHI);
+    BOOST_CHECK(ParseMoney("12345.6789", ret));
+    BOOST_CHECK_EQUAL(ret, 123456789 * (COIN / 10000));
 
-    BOOST_CHECK(ParseMoney("21000000000000.00", ret));
+    BOOST_CHECK(ParseMoney("2100000000.00", ret));
     BOOST_CHECK_EQUAL(ret, MAX_MONEY);
 
-    const auto XEC = Currency::get().baseunit;
     BOOST_CHECK(ParseMoney("100000000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 100000000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 100000000 * COIN);
     BOOST_CHECK(ParseMoney("10000000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 10000000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 10000000 * COIN);
     BOOST_CHECK(ParseMoney("1000000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 1000000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 1000000 * COIN);
     BOOST_CHECK(ParseMoney("100000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 100000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 100000 * COIN);
     BOOST_CHECK(ParseMoney("10000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 10000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 10000 * COIN);
     BOOST_CHECK(ParseMoney("1000.00", ret));
-    BOOST_CHECK_EQUAL(ret, 1000 * XEC);
+    BOOST_CHECK_EQUAL(ret, 1000 * COIN);
     BOOST_CHECK(ParseMoney("100.00", ret));
-    BOOST_CHECK_EQUAL(ret, 100 * XEC);
+    BOOST_CHECK_EQUAL(ret, 100 * COIN);
     BOOST_CHECK(ParseMoney("10.00", ret));
-    BOOST_CHECK_EQUAL(ret, 10 * XEC);
+    BOOST_CHECK_EQUAL(ret, 10 * COIN);
     BOOST_CHECK(ParseMoney("1.00", ret));
-    BOOST_CHECK_EQUAL(ret, XEC);
+    BOOST_CHECK_EQUAL(ret, COIN);
     BOOST_CHECK(ParseMoney("1", ret));
-    BOOST_CHECK_EQUAL(ret, XEC);
+    BOOST_CHECK_EQUAL(ret, COIN);
     BOOST_CHECK(ParseMoney("   1", ret));
-    BOOST_CHECK_EQUAL(ret, XEC);
+    BOOST_CHECK_EQUAL(ret, COIN);
     BOOST_CHECK(ParseMoney("1   ", ret));
-    BOOST_CHECK_EQUAL(ret, XEC);
+    BOOST_CHECK_EQUAL(ret, COIN);
     BOOST_CHECK(ParseMoney("  1 ", ret));
-    BOOST_CHECK_EQUAL(ret, XEC);
+    BOOST_CHECK_EQUAL(ret, COIN);
     BOOST_CHECK(ParseMoney("0.1", ret));
-    BOOST_CHECK_EQUAL(ret, XEC / 10);
+    BOOST_CHECK_EQUAL(ret, COIN / 10);
     BOOST_CHECK(ParseMoney("0.01", ret));
-    BOOST_CHECK_EQUAL(ret, XEC / 100);
+    BOOST_CHECK_EQUAL(ret, COIN / 100);
     BOOST_CHECK(ParseMoney(" 0.01 ", ret));
-    BOOST_CHECK_EQUAL(ret, XEC / 100);
+    BOOST_CHECK_EQUAL(ret, COIN / 100);
     BOOST_CHECK(ParseMoney("0.01 ", ret));
-    BOOST_CHECK_EQUAL(ret, XEC / 100);
+    BOOST_CHECK_EQUAL(ret, COIN / 100);
     BOOST_CHECK(ParseMoney(" 0.01", ret));
-    BOOST_CHECK_EQUAL(ret, XEC / 100);
+    BOOST_CHECK_EQUAL(ret, COIN / 100);
+    BOOST_CHECK(ParseMoney("0.001", ret));
+    BOOST_CHECK_EQUAL(ret, COIN / 1000);
+    BOOST_CHECK(ParseMoney("0.0001", ret));
+    BOOST_CHECK_EQUAL(ret, COIN / 10000);
+    BOOST_CHECK(ParseMoney("0.00001", ret));
+    BOOST_CHECK_EQUAL(ret, COIN / 100000);
+    BOOST_CHECK(ParseMoney("0.000001", ret));
+    BOOST_CHECK_EQUAL(ret, COIN / 1000000);
 
     // Parsing amount that can not be represented in ret should fail
-    BOOST_CHECK(!ParseMoney("0.001", ret));
-    BOOST_CHECK(!ParseMoney("0.0001", ret));
-    BOOST_CHECK(!ParseMoney("0.00001", ret));
-    BOOST_CHECK(!ParseMoney("0.000001", ret));
     BOOST_CHECK(!ParseMoney("0.0000001", ret));
     BOOST_CHECK(!ParseMoney("0.00000001", ret));
     BOOST_CHECK(!ParseMoney("0.000000001", ret));
@@ -1654,11 +1654,11 @@ BOOST_AUTO_TEST_CASE(util_ParseMoney) {
     BOOST_CHECK(!ParseMoney(" 1 2.3 ", ret));
 
     // Max possible value with the max number of digits
-    BOOST_CHECK(ParseMoney("9999999999999999.99", ret));
+    BOOST_CHECK(ParseMoney("999999999999.999999", ret));
     BOOST_CHECK_EQUAL(ret, int64_t(999999999999999999) * SATOSHI);
     // Attempted 63 bit overflow should fail
-    BOOST_CHECK(!ParseMoney("10000000000000000.00", ret));
-    BOOST_CHECK(!ParseMoney("92233720368547758.08", ret));
+    BOOST_CHECK(!ParseMoney("1000000000000.000000", ret));
+    BOOST_CHECK(!ParseMoney("9223372036854.775808", ret));
 
     // Parsing negative amounts must fail
     BOOST_CHECK(!ParseMoney("-1", ret));
@@ -2937,8 +2937,9 @@ BOOST_AUTO_TEST_CASE(message_sign) {
     const std::string message = "Trust no one";
 
     const std::string expected_signature =
-        "H3CcyS18y471Ya5WTYAke25spvA5eyBMvAuNhxDkuAjsdNGX+"
-        "NoouNlY1KoselGvF65Werf7OdtKAoOZ9WB17Rc=";
+        "IED/"
+        "JtZs3huKX9JEQIBPZPSZwOiMyDQ+"
+        "yNWQvL7YcFzCOGTcfleWOWSvfggenKCinqvOX8t1Iw+HYZqQjxzXQm0=";
 
     CKey privkey;
     std::string generated_signature;
@@ -2994,15 +2995,15 @@ BOOST_AUTO_TEST_CASE(message_verify) {
 
     BOOST_CHECK_EQUAL(
         MessageVerify(*params, "15CRxFdyRpGZLW9w8HnHvVduizdL5jKNbs",
-                      "H3CcyS18y471Ya5WTYAke25spvA5eyBMvAuNhxDkuAjsdNGX+"
-                      "NoouNlY1KoselGvF65Werf7OdtKAoOZ9WB17Rc=",
+                      "IPojfrX2dfPnH26UegfbGQQLrdK844DlHq5157/P6h57WyuS/Qsl+h/"
+                      "WSVGDF4MUi4rWSswW38oimDYfNNUBUOk=",
                       "Trust no one"),
         MessageVerificationResult::OK);
 
     BOOST_CHECK_EQUAL(
-        MessageVerify(*params, "1NoJrossxPBKfCHuJXT4HadJrXRE9Fxiqs",
-                      "HxO6qEsMrNvPA7QTMUbdzF/uXbW78yPG6gFITses9XVvMdBULIFwrfhN"
-                      "f196N+rxnK5eSl8eF3aKe4INunzFJXg=",
+        MessageVerify(*params, "11canuhp9X2NocwCq7xNrQYTmUgZAnLK3",
+                      "IIcaIENoYW5jZWxsb3Igb24gYnJpbmsgb2Ygc2Vjb25kIGJhaWxvdXQg"
+                      "Zm9yIGJhbmtzIAaHRtbCeDZINyavx14=",
                       "Trust me"),
         MessageVerificationResult::OK);
 }

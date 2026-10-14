@@ -99,7 +99,7 @@ void Proof::computeScore() {
 }
 
 uint32_t Proof::amountToScore(Amount amount) {
-    return (100 * amount) / COIN;
+    return amount / COIN;
 }
 
 Amount Proof::getStakedAmount() const {

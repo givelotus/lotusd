@@ -55,7 +55,7 @@ BOOST_AUTO_TEST_CASE(proofbuilder) {
     for (int i = 0; i < 3; i++) {
         key.MakeNewKey(true);
         BOOST_CHECK(pb.addUTXO(COutPoint(TxId(GetRandHash()), m_rng.rand32()),
-                               int64_t(m_rng.rand32()) * COIN / 100,
+                               int64_t(m_rng.rand32()) * COIN,
                                m_rng.rand32(), m_rng.randbool(), key));
     }
 

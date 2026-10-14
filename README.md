@@ -6,19 +6,19 @@ increase human flourishing, freedom, and prosperity. The project aims to
 achieve this goal by implementing a series of optimizations and protocol
 upgrades that will enable peer-to-peer digital cash to succeed at mankind scale.
 
-What is eCash?
+What is Lotus?
 ---------------------
 
-[eCash](https://e.cash/) is a digital currency that enables instant payments to
+[Lotus](https://givelotus.org/) is a digital currency that enables instant payments to
 anyone, anywhere in the world. It uses peer-to-peer technology to operate with
 no central authority: managing transactions and issuing money are carried out
-collectively by the network. eCash is a descendant of Bitcoin.
+collectively by the network. Lotus is a descendant of Bitcoin.
 
 What is Bitcoin ABC?
 --------------------
 
 Bitcoin ABC is the name of open-source software which enables the use of
-eCash. It is a fork of the [Bitcoin Core](https://bitcoincore.org)
+Lotus. It is a fork of the [Bitcoin Core](https://bitcoincore.org)
 software project.
 
 License

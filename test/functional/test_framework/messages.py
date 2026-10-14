@@ -38,11 +38,12 @@ MAX_BLOCK_BASE_SIZE = 1000000
 MAX_BLOOM_FILTER_SIZE = 36000
 MAX_BLOOM_HASH_FUNCS = 50
 
-# 1,000,000 XEC in satoshis (legacy BCHA)
-COIN = 100000000
+# 1 Lotus in satoshis
+COIN = 1000000
+LOTUS = COIN
 # 1 XEC in satoshis
 XEC = 100
-MAX_MONEY = 21000000 * COIN
+MAX_MONEY = 2100000000 * COIN
 
 # Maximum length of incoming protocol messages
 MAX_PROTOCOL_MESSAGE_LENGTH = 2 * 1024 * 1024
@@ -419,7 +420,7 @@ class CTxOut:
 
     def __repr__(self):
         return (
-            f"CTxOut(nValue={self.nValue // XEC}.{self.nValue % XEC:02d} "
+            f"CTxOut(nValue={self.nValue // COIN}.{self.nValue % COIN:06d} "
             f"scriptPubKey={self.scriptPubKey.hex()})"
         )
 

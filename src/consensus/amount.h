@@ -147,8 +147,8 @@ public:
 
 static constexpr Amount SATOSHI = Amount::satoshi();
 static constexpr Amount CASH = 100 * SATOSHI;
-static constexpr Amount COIN = 100'000'000 * SATOSHI;
 static constexpr Amount LOTUS = 1'000'000 * SATOSHI;
+static constexpr Amount COIN = LOTUS;
 
 static constexpr Amount SUBSIDY = 260 * LOTUS;
 
@@ -167,7 +167,7 @@ struct Currency {
  * Logos doesn't have a capped supply, however, we impose the same MAX_MONEY
  * limit as Bitcoin as sanity check to prevent overflows.
  */
-static constexpr Amount MAX_MONEY = 21'000'000 * COIN;
+static constexpr Amount MAX_MONEY = 2'100'000'000 * COIN;
 inline bool MoneyRange(const Amount nValue) {
     return nValue >= Amount::zero() && nValue <= MAX_MONEY;
 }

@@ -354,7 +354,7 @@ BOOST_AUTO_TEST_CASE(get_lowest_score_proof) {
             if (i == numOutpoints - 1) {
                 // Last UTXO is the remainder
                 amount =
-                    (int64_t(score) * COIN) / 100 - (numOutpoints - 1) * COIN;
+                    (int64_t(score) * COIN) - (numOutpoints - 1) * COIN;
             }
             const COutPoint outpoint{TxId(GetRandHash()), 0};
             BOOST_CHECK(pb.addUTXO(outpoint, amount, 123456, false, key));

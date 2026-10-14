@@ -77,8 +77,8 @@ class Bip341SighashWallet(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.generate(30)
-        node.generate(100)
+        self.generate(node, 30)
+        self.generate(node, 100)
         fee = Decimal('10000') / COIN
         wallet_unspent = node.listunspent()
         for test_case in TESTCASES:
@@ -91,7 +91,7 @@ class Bip341SighashWallet(BitcoinTestFramework):
             tx = CTransaction()
             for i in range(test_case['outputs']):
                 # Make sure each UTXO is unique
-                output_amount = max_output_amount - i * Decimal('0.00000047')
+                output_amount = max_output_amount - i * Decimal('0.000047')
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(int(output_amount * COIN), output_script))
             # Build deserialized outputs so we can compute the sighash below

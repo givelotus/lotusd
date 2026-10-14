@@ -2332,7 +2332,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // Enforce standardness on all txs.
         if (fRequireStandardConsensus) {
             std::string reason;
-            if (!IsStandardTx(tx, std::nullopt, DEFAULT_PERMIT_BAREMULTISIG,
+            if (!IsStandardTx(tx, MAX_OP_RETURN_RELAY, DEFAULT_PERMIT_BAREMULTISIG,
                                CFeeRate(Amount::zero()), reason)) {
                 LogPrintf("ERROR: %s: contains a non-standard transaction "
                           "(and fRequireStandardConsensus is true)\n",

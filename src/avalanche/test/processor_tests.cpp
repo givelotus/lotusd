@@ -1618,7 +1618,7 @@ BOOST_AUTO_TEST_CASE(quorum_detection) {
         WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip())
             ->GetBlockTime();
     const COutPoint utxo{TxId(GetRandHash()), 0};
-    const Amount amount = (int64_t(minScore / 4) * COIN) / 100;
+    const Amount amount = (int64_t(minScore / 4) * COIN);
     const int height = 100;
     const bool isCoinbase = false;
     {
