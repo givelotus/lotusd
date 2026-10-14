@@ -22,13 +22,13 @@ class GenerateBlockTest(BitcoinTestFramework):
         blockhash = self.generateblock(node, output=address, transactions=[])["hash"]
         block = node.getblock(blockhash=blockhash, verbose=2)
         assert_equal(len(block["tx"]), 1)
-        assert_equal(block["tx"][0]["vout"][0]["scriptPubKey"]["addresses"][0], address)
+        assert_equal(block["tx"][0]["vout"][1]["scriptPubKey"]["addresses"][0], address)
 
         self.log.info("Generate an empty block to a descriptor")
         blockhash = self.generateblock(node, f"addr({address})", [])["hash"]
         block = node.getblock(blockhash=blockhash, verbosity=2)
         assert_equal(len(block["tx"]), 1)
-        assert_equal(block["tx"][0]["vout"][0]["scriptPubKey"]["addresses"][0], address)
+        assert_equal(block["tx"][0]["vout"][1]["scriptPubKey"]["addresses"][0], address)
 
         self.log.info(
             "Generate an empty block to a combo descriptor with compressed pubkey"
@@ -39,7 +39,7 @@ class GenerateBlockTest(BitcoinTestFramework):
         block = node.getblock(blockhash, 2)
         assert_equal(len(block["tx"]), 1)
         assert_equal(
-            block["tx"][0]["vout"][0]["scriptPubKey"]["addresses"][0], combo_address
+            block["tx"][0]["vout"][1]["scriptPubKey"]["addresses"][0], combo_address
         )
 
         self.log.info(
@@ -51,7 +51,7 @@ class GenerateBlockTest(BitcoinTestFramework):
         block = node.getblock(blockhash, 2)
         assert_equal(len(block["tx"]), 1)
         assert_equal(
-            block["tx"][0]["vout"][0]["scriptPubKey"]["addresses"][0], combo_address
+            block["tx"][0]["vout"][1]["scriptPubKey"]["addresses"][0], combo_address
         )
 
         # Generate 110 blocks to spend
@@ -60,10 +60,10 @@ class GenerateBlockTest(BitcoinTestFramework):
         # Generate some extra mempool transactions to verify they don't get
         # mined
         for _ in range(10):
-            node.sendtoaddress(address, 1000)
+            node.sendtoaddress(address, 0.1)
 
         self.log.info("Generate block with txid")
-        txid = node.sendtoaddress(address, 1000000)
+        txid = node.sendtoaddress(address, 100)
         blockhash = self.generateblock(node, address, [txid])["hash"]
         block = node.getblock(blockhash, 1)
         assert_equal(len(block["tx"]), 2)
@@ -72,7 +72,7 @@ class GenerateBlockTest(BitcoinTestFramework):
         self.log.info("Generate block with raw tx")
         utxos = node.listunspent(addresses=[address])
         raw = node.createrawtransaction(
-            [{"txid": utxos[0]["txid"], "vout": utxos[0]["vout"]}], [{address: 1000000}]
+            [{"txid": utxos[0]["txid"], "vout": utxos[0]["vout"]}], [{address: 100}]
         )
         signed_raw = node.signrawtransactionwithwallet(raw)["hex"]
         blockhash = self.generateblock(node, address, [signed_raw])["hash"]
@@ -83,12 +83,12 @@ class GenerateBlockTest(BitcoinTestFramework):
 
         self.log.info("Fail to generate block with out of order txs")
         raw1 = node.createrawtransaction(
-            [{"txid": txid, "vout": 0}], [{address: 999900}]
+            [{"txid": txid, "vout": 0}], [{address: 99.99}]
         )
         signed_raw1 = node.signrawtransactionwithwallet(raw1)["hex"]
         txid1 = node.sendrawtransaction(signed_raw1)
         raw2 = node.createrawtransaction(
-            [{"txid": txid1, "vout": 0}], [{address: 999000}]
+            [{"txid": txid1, "vout": 0}], [{address: 99.9}]
         )
         signed_raw2 = node.signrawtransactionwithwallet(raw2)["hex"]
         txid2 = node.sendrawtransaction(signed_raw2)
