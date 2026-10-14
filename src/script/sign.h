@@ -42,6 +42,7 @@ class MutableTransactionSignatureCreator : public BaseSignatureCreator {
     Amount amount;
     SigHashType sigHashType;
     const MutableTransactionSignatureChecker checker;
+    const PrecomputedTransactionData &m_txdata;
 
 public:
     MutableTransactionSignatureCreator(
