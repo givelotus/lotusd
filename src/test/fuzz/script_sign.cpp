@@ -101,7 +101,7 @@ FUZZ_TARGET_INIT(script_sign, initialize_script_sign) {
         if (mutable_transaction && tx_out &&
             mutable_transaction->vin.size() > n_in) {
             SignatureData signature_data_1 =
-                DataFromTransaction(*mutable_transaction, n_in, *tx_out);
+                DataFromTransaction(*mutable_transaction, n_in, {*tx_out});
             CTxIn input;
             UpdateInput(input, signature_data_1);
             const CScript script = ConsumeScript(fuzzed_data_provider);
@@ -127,15 +127,23 @@ FUZZ_TARGET_INIT(script_sign, initialize_script_sign) {
                         fuzzed_data_provider.ConsumeIntegral<uint32_t>()));
             }
             if (n_in < script_tx_to.vin.size()) {
+                std::vector<CTxOut> spent_outputs(
+                    script_tx_to.vin.size(),
+                    CTxOut{ConsumeMoney(fuzzed_data_provider),
+                           ConsumeScript(fuzzed_data_provider)});
+                PrecomputedTransactionData txdata(script_tx_to,
+                                                  std::move(spent_outputs));
                 (void)SignSignature(
-                    provider, ConsumeScript(fuzzed_data_provider), script_tx_to,
-                    n_in, ConsumeMoney(fuzzed_data_provider),
+                    provider, txdata, script_tx_to, n_in,
                     SigHashType(
                         fuzzed_data_provider.ConsumeIntegral<uint32_t>()));
                 MutableTransactionSignatureCreator signature_creator{
-                    &tx_to, n_in, ConsumeMoney(fuzzed_data_provider),
+                    &tx_to,
+                    n_in,
+                    ConsumeMoney(fuzzed_data_provider),
                     SigHashType(
-                        fuzzed_data_provider.ConsumeIntegral<uint32_t>())};
+                        fuzzed_data_provider.ConsumeIntegral<uint32_t>()),
+                    {}};
                 std::vector<uint8_t> vch_sig;
                 CKeyID address;
                 if (fuzzed_data_provider.ConsumeBool()) {
