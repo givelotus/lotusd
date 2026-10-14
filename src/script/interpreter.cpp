@@ -150,14 +150,25 @@ static bool EvalChecksig(const valtype &vchSig, const valtype &vchPubKey,
 ScriptInterpreter::ScriptInterpreter(std::vector<valtype> &stackIn,
                                      const CScript &scriptIn, uint32_t flags,
                                      const BaseSignatureChecker &checkerIn,
-                                     ScriptExecutionMetrics &metricsIn)
-    : stack(stackIn), script(scriptIn), checker(checkerIn), metrics(metricsIn) {
+                                     ScriptExecutionMetrics &metricsIn,
+                                     ScriptExecutionData &execdataIn)
+    : stack(stackIn), script(scriptIn), checker(checkerIn), metrics(metricsIn),
+      dummy_execdata{}, execdata(execdataIn) {
     this->pc = scriptIn.begin();
     this->pend = scriptIn.end();
     this->pbegincodehash = scriptIn.begin();
+    this->opcode_pos = 0;
+    this->execdata.m_codeseparator_pos = 0xffff'ffff;
     this->flags = flags;
     this->script_error = ScriptError::UNKNOWN;
 }
+
+ScriptInterpreter::ScriptInterpreter(std::vector<valtype> &stackIn,
+                                     const CScript &scriptIn, uint32_t flags,
+                                     const BaseSignatureChecker &checkerIn,
+                                     ScriptExecutionMetrics &metricsIn)
+    : ScriptInterpreter(stackIn, scriptIn, flags, checkerIn, metricsIn,
+                        dummy_execdata) {}
 
 bool ScriptInterpreter::IsAtEnd() {
     return pc >= pend;
@@ -912,6 +923,7 @@ bool ScriptInterpreter::RunNextOpInner() {
             case OP_CODESEPARATOR: {
                 // Hash starts after the code separator
                 pbegincodehash = pc;
+                execdata.m_codeseparator_pos = opcode_pos;
             } break;
 
             case OP_CHECKSIG:
@@ -1446,13 +1458,16 @@ bool ScriptInterpreter::RunNextOpInner() {
         return set_error(serror, ScriptError::STACK_SIZE);
     }
 
+    ++opcode_pos;
     return true;
 }
 
 bool EvalScript(std::vector<valtype> &stack, const CScript &script,
                 uint32_t flags, const BaseSignatureChecker &checker,
-                ScriptExecutionMetrics &metrics, ScriptError *serror) {
-    ScriptInterpreter interpreter(stack, script, flags, checker, metrics);
+                ScriptExecutionMetrics &metrics, ScriptExecutionData &execdata,
+                ScriptError *serror) {
+    ScriptInterpreter interpreter(stack, script, flags, checker, metrics,
+                                  execdata);
     bool result = interpreter.RunUntilEnd();
     set_error(serror, interpreter.GetScriptError());
     return result;
@@ -1965,16 +1980,19 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
     }
 
     ScriptExecutionMetrics metrics = {};
+    ScriptExecutionData execdata = {};
 
     // scriptSig and scriptPubKey must be evaluated sequentially on the same
     // stack rather than being simply concatenated (see CVE-2010-5141)
     std::vector<valtype> stack, stackCopy;
-    if (!EvalScript(stack, scriptSig, flags, checker, metrics, serror)) {
+    if (!EvalScript(stack, scriptSig, flags, checker, metrics, execdata,
+                    serror)) {
         // serror is set
         return false;
     }
     stackCopy = stack;
-    if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, serror)) {
+    if (!EvalScript(stack, scriptPubKey, flags, checker, metrics, execdata,
+                    serror)) {
         // serror is set
         return false;
     }
@@ -2004,7 +2022,8 @@ bool VerifyScript(const CScript &scriptSig, const CScript &scriptPubKey,
         CScript pubKey2(pubKeySerialized.begin(), pubKeySerialized.end());
         popstack(stack);
 
-        if (!EvalScript(stack, pubKey2, flags, checker, metrics, serror)) {
+        if (!EvalScript(stack, pubKey2, flags, checker, metrics, execdata,
+                        serror)) {
             // serror is set
             return false;
         }
