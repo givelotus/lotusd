@@ -93,6 +93,9 @@ public:
         // The miner fund is enabled by default on mainnet.
         consensus.enableMinerFund = true;
 
+        // Mainnet rewards based on difficulty.
+        consensus.enableDifficultyBasedSubsidy = true;
+
         // The staking rewards are enabled by default on mainnet.
         consensus.enableStakingRewards = true;
 
@@ -247,6 +250,9 @@ public:
         // The miner fund is enabled by default on testnet.
         consensus.enableMinerFund = true;
 
+        // Testnet rewards based on difficulty.
+        consensus.enableDifficultyBasedSubsidy = true;
+
         // The staking rewards are disabled by default on testnet.
         consensus.enableStakingRewards = false;
 
@@ -383,6 +389,9 @@ public:
 
         // The miner fund is disabled by default on regtest.
         consensus.enableMinerFund = false;
+
+        // Regtest rewards a constant amount independent of difficulty.
+        consensus.enableDifficultyBasedSubsidy = false;
 
         // The staking rewards are disabled by default on regtest.
         consensus.enableStakingRewards = false;

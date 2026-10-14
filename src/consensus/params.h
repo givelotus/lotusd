@@ -57,6 +57,8 @@ struct Params {
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
 
+    bool enableDifficultyBasedSubsidy;
+
     /** Enable or disable the staking rewards by default */
     bool enableStakingRewards;
 
