@@ -122,6 +122,34 @@ impl Script {
         script.freeze()
     }
 
+    /// Pay-to-Taproot:
+    /// `OP_SCRIPTTYPE OP_1 <33-byte commitment> [<32-byte state>]`
+    /// ```
+    /// # use bitcoinsuite_core::script::{PubKey, Script};
+    /// # use hex_literal::hex;
+    /// let pubkey = PubKey(hex!(
+    ///     "0200112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    /// ));
+    /// let script = Script::p2tr(&pubkey, None);
+    /// assert_eq!(
+    ///     script.hex(),
+    ///     "6251210200112233445566778899aabbccddeeff00112233445566778899aabbcc\
+    ///      ddeeff",
+    /// );
+    /// ```
+    pub fn p2tr(commitment: &PubKey, state: Option<[u8; 32]>) -> Script {
+        let cap = 2 + 1 + PubKey::SIZE + state.map_or(0, |s| 1 + s.len());
+        let mut script = ScriptMut::with_capacity(cap);
+        script.put_opcodes([OP_SCRIPTTYPE, OP_1]);
+        script.put_bytecode(&[PubKey::SIZE as u8]);
+        script.put_bytecode(commitment.as_slice());
+        if let Some(state) = state {
+            script.put_bytecode(&[state.len() as u8]);
+            script.put_bytecode(&state);
+        }
+        script.freeze()
+    }
+
     /// Return the bytecode of the script.
     /// ```
     /// # use bitcoinsuite_core::script::Script;
@@ -218,7 +246,7 @@ impl Script {
         ScriptOpIter::new(self.0.clone())
     }
 
-    /// Return the variant of the script (P2PKH, P2SH, P2PK, or Other)
+    /// Return the variant of the script (P2PKH, P2SH, P2PK, P2TR, or Other)
     ///
     /// ```
     /// # use bitcoinsuite_core::{
@@ -237,6 +265,14 @@ impl Script {
     /// assert_eq!(
     ///     Script::p2pk(&pk).variant(),
     ///     ScriptVariant::P2PK(PubKeyVariant::Compressed(pk)),
+    /// );
+    /// assert_eq!(
+    ///     Script::p2tr(&pk, None).variant(),
+    ///     ScriptVariant::P2TR(pk, None),
+    /// );
+    /// assert_eq!(
+    ///     Script::p2tr(&pk, Some([7; 32])).variant(),
+    ///     ScriptVariant::P2TR(pk, Some([7; 32])),
     /// );
     ///
     /// let uncomp_pk = UncompressedPubKey([4; 65]);
@@ -259,6 +295,8 @@ impl Script {
         const OP_HASH160: u8 = OP_HASH160::N;
         const OP_EQUALVERIFY: u8 = OP_EQUALVERIFY::N;
         const OP_CHECKSIG: u8 = OP_CHECKSIG::N;
+        const OP_SCRIPTTYPE: u8 = OP_SCRIPTTYPE::N;
+        const OP_1: u8 = OP_1::N;
 
         match self.bytecode().as_ref() {
             [OP_DUP, OP_HASH160, H_SIZE, hash @ .., OP_EQUALVERIFY, OP_CHECKSIG]
@@ -286,6 +324,21 @@ impl Script {
                 ScriptVariant::P2PK(PubKeyVariant::Uncompressed(
                     UncompressedPubKey(pubkey.try_into().unwrap()),
                 ))
+            }
+            [OP_SCRIPTTYPE, OP_1, COMP_PK_SIZE, rest @ ..]
+                if rest.len() >= PubKey::SIZE
+                    && (rest[0] == 0x02 || rest[0] == 0x03) =>
+            {
+                let commitment =
+                    PubKey(rest[..PubKey::SIZE].try_into().unwrap());
+                let state = match &rest[PubKey::SIZE..] {
+                    [] => None,
+                    [0x20, state @ ..] if state.len() == 32 => {
+                        Some(state.try_into().unwrap())
+                    }
+                    _ => return ScriptVariant::Other(self.clone()),
+                };
+                ScriptVariant::P2TR(commitment, state)
             }
             _ => ScriptVariant::Other(self.clone()),
         }

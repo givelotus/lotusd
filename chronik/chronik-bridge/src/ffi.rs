@@ -6,7 +6,7 @@
 
 pub use self::ffi_inner::*;
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, unused_attributes)]
 #[cxx::bridge(namespace = "chronik_bridge")]
 mod ffi_inner {
     /// Info about a block
@@ -130,7 +130,7 @@ mod ffi_inner {
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RawBlockHeader {
         /// Raw block header
-        pub data: [u8; 80],
+        pub data: [u8; 160],
     }
 
     /// Wrapper struct for a block hash.
@@ -352,7 +352,7 @@ mod ffi_inner {
         fn get_block_info(block_index: &CBlockIndex) -> BlockInfo;
 
         /// Get the serialized block header for this CBlockIndex.
-        fn get_block_header(block_index: &CBlockIndex) -> [u8; 80];
+        fn get_block_header(block_index: &CBlockIndex) -> [u8; 160];
 
         /// CBlockIndex::GetAncestor
         fn get_block_ancestor(

@@ -137,27 +137,35 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
             .sequence = 0xffff'ffff,
             .coin = {}, // null coin
         }},
-        .outputs = {{
-            .sats = 5000000000,
-            .script =
-                ToRustVec<uint8_t>(genesisBlock.vtx[0]->vout[0].scriptPubKey),
-        }},
+        .outputs =
+            {
+                {
+                    .sats = 130000000,
+                    .script = ToRustVec<uint8_t>(
+                        genesisBlock.vtx[0]->vout[0].scriptPubKey),
+                },
+                {
+                    .sats = 130000000,
+                    .script = ToRustVec<uint8_t>(
+                        genesisBlock.vtx[0]->vout[1].scriptPubKey),
+                },
+            },
         .locktime = 0,
     };
     chronik_bridge::Block expectedBridgedGenesisBlock = {
         .hash = HashToArray(genesisBlock.GetHash()),
         .prev_hash = {},
         .n_bits = 0x207fffff,
-        .timestamp = 1296688602,
+        .timestamp = 1600000000,
         .height = 0,
         .file_num = 0,
         .data_pos = 8, // 8 magic bytes in block file
         .undo_pos = 0, // genesis has no undo data
-        .size = 285,
+        .size = 379,
         .txs = {{
             .tx = expectedGenesisTx,
-            .data_pos = 89, // +80 header +1 compact size
-            .undo_pos = 0   // coinbase has no undo data
+            .data_pos = 170, // +160 header +1 vMetadata +1 compact size
+            .undo_pos = 0    // coinbase has no undo data
         }}};
 
     CheckBlocksEqual(bridgedGenesisBlock, expectedBridgedGenesisBlock);
@@ -194,13 +202,13 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
     CScript scriptPad = CScript() << OP_RETURN << std::vector<uint8_t>(100);
     CMutableTransaction tx1;
     tx1.nVersion = 1;
-    tx1.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 0)};
+    tx1.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 1)};
     tx1.vout = {
         CTxOut(50 * COIN - 10000 * SATOSHI, CScript() << OP_3),
         CTxOut(1000 * SATOSHI, CScript() << OP_4),
         CTxOut(Amount::zero(), scriptPad),
     };
-    tx1.nLockTime = 123;
+    tx1.nLockTime = 124;
 
     CMutableTransaction tx2;
     tx2.nVersion = 1;
@@ -234,10 +242,18 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
             .sequence = 0xffff'ffff,
             .coin = {}, // null coin
         }},
-        .outputs = {{
-            .sats = 2500000000,
-            .script = {0x52},
-        }},
+        .outputs =
+            {
+                {
+                    .sats = 0,
+                    .script = ToRustVec<uint8_t>(
+                        testBlock.vtx[0]->vout[0].scriptPubKey),
+                },
+                {
+                    .sats = 260000000,
+                    .script = {0x52},
+                },
+            },
         .locktime = 0,
     };
     chronik_bridge::Tx expectedTestTx1 = {
@@ -246,20 +262,20 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         .inputs = {{
             .prev_out = chronik_bridge::OutPoint({
                 .txid = HashToArray(coinsBlock.vtx[0]->GetId()),
-                .out_idx = 0,
+                .out_idx = 1,
             }),
             .script = {},
             .sequence = 0xffff'ffff,
             .coin = chronik_bridge::Coin({
-                .output = {5000000000, {0x51}},
+                .output = {260000000, {0x51}},
                 .height = 101,
                 .is_coinbase = true,
             }),
         }},
-        .outputs = {{4999990000, {0x53}},
+        .outputs = {{49990000, {0x53}},
                     {1000, {0x54}},
                     {0, ToRustVec<uint8_t>(scriptPad)}},
-        .locktime = 123,
+        .locktime = 124,
     };
     chronik_bridge::Tx
         expectedTestTx2 =
@@ -276,7 +292,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
                                    .sequence = 0xffff'ffff,
                                    .coin =
                                        {
-                                           .output = {4999990000, {0x53}},
+                                           .output = {49990000, {0x53}},
                                            .height = 202,
                                            .is_coinbase = false,
                                        },
@@ -298,7 +314,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
                                        },
                                })},
                 .outputs = {{
-                                .sats = 4999970000,
+                                .sats = 49970000,
                                 .script = {0x55},
                             },
                             {
@@ -311,16 +327,16 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         .hash = HashToArray(testBlock.GetHash()),
         .prev_hash = HashToArray(testBlock.hashPrevBlock),
         .n_bits = 0x207fffff,
-        .timestamp = 1598888152,
+        .timestamp = 1600000200,
         .height = 202,
         .file_num = 0,
-        .data_pos = 39548,
+        .data_pos = 59123,
         .undo_pos = 8249,
-        .size = 578,
+        .size = 659,
         .txs = {
-            {.tx = expectedTestTx0, .data_pos = 39629, .undo_pos = 0},
-            {.tx = expectedTestTx1, .data_pos = 39729, .undo_pos = 8250},
-            {.tx = expectedTestTx2, .data_pos = 39912, .undo_pos = 8257},
+            {.tx = expectedTestTx0, .data_pos = 59285, .undo_pos = 0},
+            {.tx = expectedTestTx1, .data_pos = 59385, .undo_pos = 8250},
+            {.tx = expectedTestTx2, .data_pos = 59568, .undo_pos = 8258},
         }};
 
     CheckBlocksEqual(bridgedTestBlock, expectedBridgedTestBlock);
@@ -368,7 +384,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
     // Create block with some undo data
     CMutableTransaction tx;
     tx.nVersion = 1;
-    tx.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 0)};
+    tx.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 1)};
     tx.vout = {CTxOut(50 * COIN - 10000 * SATOSHI,
                       CScript() << OP_RETURN << std::vector<uint8_t>(100))};
     CreateAndProcessBlock({tx}, CScript() << OP_1,
@@ -420,13 +436,13 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_big, TestChain100Setup) {
         std::vector<CMutableTransaction> txs;
         txs.reserve(numTxs);
         const CTransactionRef &coinbase = coinblocks[idx].vtx[0];
-        Amount available = coinbase->vout[0].nValue;
+        Amount available = coinbase->vout[1].nValue;
         TxId coinTxId = coinbase->GetId();
         for (size_t txIdx = 0; txIdx < numTxs; ++txIdx) {
             CMutableTransaction tx;
             tx.nVersion = 1;
-            tx.vin = {CTxIn(coinTxId, 0)};
-            available -= 10000 * SATOSHI;
+            tx.vin = {CTxIn(coinTxId, txIdx == 0 ? 1 : 0)};
+            available -= 1000 * SATOSHI;
             tx.vout = {
                 CTxOut(available, CScript() << OP_2),
                 CTxOut(Amount::zero(), scriptPad),
@@ -471,7 +487,7 @@ BOOST_FIXTURE_TEST_CASE(test_load_tx_bad, TestChain100Setup) {
             BOOST_CHECK_EQUAL(ex.what(), "Reading tx data from disk failed");
             return true;
         });
-    uint32_t genesisCbDataPos = 89;
+    uint32_t genesisCbDataPos = 170;
     BOOST_CHECK_EXCEPTION(bridge.load_tx(0, genesisCbDataPos, 0x7fffffff),
                           std::runtime_error, [](const std::runtime_error &ex) {
                               BOOST_CHECK_EQUAL(

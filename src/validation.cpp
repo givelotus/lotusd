@@ -35,7 +35,7 @@
 #include <minerfund.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
-#include <policy/block/minerfund.h>
+#include <policy/block/parkingpolicy.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -2971,8 +2971,6 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         AssertLockHeld(m_mempool->cs);
     }
 
-    const Consensus::Params &consensusParams = m_chainman.GetConsensus();
-
     assert(pindexNew->pprev == m_chain.Tip());
     // Read block from disk.
     const auto time_1{SteadyClock::now()};
@@ -3018,46 +3016,25 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         }
 
         /**
-         * The block is valid by consensus rules so now we check if the block
-         * passes all block policy checks. If not, then park the block and bail.
-         *
-         * We check block parking policies before flushing changes to the UTXO
-         * set. This allows us to avoid rewinding everything immediately after.
-         *
-         * Only check block parking policies the first time the block is
-         * connected. Avalanche voting can override the parking decision made by
-         * these policies.
+         * NOTE (Lotus V1 / Lotus V2):
+         * Block parking policies (`MinerFundPolicy`, `StakingRewardsPolicy`,
+         * `PreConsensusPolicy`, and `RTTPolicy`) are intentionally decoupled in
+         * `ConnectTip` for Lotus V1:
+         * 1. Lotus V1 enforces `CheckMinerFund` as a hard consensus rule inside
+         *    `ConnectBlock` using Lotus's `blockReward = GetBlockSubsidy(...) +
+         *    (blockFees - nBurnedCoins) / 2` formula. In contrast, eCash's
+         *    `MinerFundPolicy` in `ConnectTip` is a soft/Avalanche parking
+         *    policy that passes `blockFees + GetBlockSubsidy(...)` without
+         *    Lotus's `/ 2` fee/burn adjustment (which would falsely park blocks
+         *    with non-zero fees or OP_RETURN burns after IBD).
+         * 2. The `ParkingPolicy` infrastructure (`src/policy/block/minerfund.cpp`,
+         *    `stakingrewards.cpp`, `preconsensus.cpp`, `rtt.cpp`, and
+         *    `src/avalanche/stakecontendercache.cpp`) is deliberately preserved
+         *    intact in the codebase so that in Lotus V2 (or a future upgrade)
+         *    `MinerFundPolicy` and `StakingRewardsPolicy` can be re-enabled to
+         *    enforce Avalanche-voted payout addresses via block parking rather
+         *    than hardcoded consensus addresses.
          */
-        const BlockHash blockhash = pindexNew->GetBlockHash();
-        if (!m_chainman.IsInitialBlockDownload() &&
-            !m_filterParkingPoliciesApplied.contains(blockhash)) {
-            m_filterParkingPoliciesApplied.insert(blockhash);
-
-            const Amount blockReward =
-                blockFees +
-                GetBlockSubsidy(pindexNew->nBits, consensusParams);
-
-            std::vector<std::unique_ptr<ParkingPolicy>> parkingPolicies;
-            parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(
-                consensusParams, *pindexNew, blockConnecting, blockReward));
-
-            // If any block policy is violated, bail on the first one found
-            if (std::find_if_not(parkingPolicies.begin(), parkingPolicies.end(),
-                                 [&](const auto &policy) {
-                                     bool ret = (*policy)(blockPolicyState);
-                                     if (!ret) {
-                                         LogPrintf(
-                                             "Park block because it "
-                                             "violated a block policy: %s\n",
-                                             blockPolicyState.ToString());
-                                     }
-                                     return ret;
-                                 }) != parkingPolicies.end()) {
-                pindexNew->nStatus = pindexNew->nStatus.withParked();
-                m_blockman.m_dirty_blockindex.insert(pindexNew);
-                return false;
-            }
-        }
 
         time_3 = SteadyClock::now();
         time_connect_total += time_3 - time_2;

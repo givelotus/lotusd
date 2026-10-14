@@ -107,6 +107,7 @@ chronik_bridge::BlockTx BridgeBlockTx(bool isCoinbase, const CTransaction &tx,
 inline size_t GetFirstBlockTxOffset(const CBlock &block,
                                     const size_t block_data_pos) {
     return block_data_pos + ::GetSerializeSize(CBlockHeader()) +
+           ::GetSerializeSize(block.vMetadata) +
            GetSizeOfCompactSize(block.vtx.size());
 }
 
@@ -492,11 +493,11 @@ BlockInfo get_block_info(const CBlockIndex &bindex) {
     };
 }
 
-std::array<uint8_t, 80> get_block_header(const CBlockIndex &index) {
+std::array<uint8_t, 160> get_block_header(const CBlockIndex &index) {
     DataStream ser_header{};
     ser_header << index.GetBlockHeader();
-    std::array<uint8_t, 80> array;
-    std::copy_n(MakeUCharSpan(ser_header).begin(), 80, array.begin());
+    std::array<uint8_t, 160> array;
+    std::copy_n(MakeUCharSpan(ser_header).begin(), 160, array.begin());
     return array;
 }
 

@@ -5,7 +5,7 @@
 """Test -acceptnonstdtxn also works for Scripts."""
 
 from test_framework.txtools import pad_tx
-from test_framework.script import hash160
+from test_framework.hash import hash160
 from test_framework.blocktools import SUBSIDY
 from test_framework.messages import (
     COutPoint,

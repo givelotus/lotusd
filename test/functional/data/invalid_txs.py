@@ -252,7 +252,7 @@ def getDisabledOpcodeTemplate(opcode):
             self.spend_tx, 1, amount=self.spend_tx.vout[1].nValue - 10000,
             script_pub_key=CScript([
                 OP_HASH160,
-                sc.hash160(CScript([opcode])),
+                hash160(CScript([opcode])),
                 OP_EQUAL,
             ]))
 

@@ -37,6 +37,17 @@ pub fn compress_script_variant(script_variant: &ScriptVariant) -> Bytes {
                 bytes.freeze()
             }
         },
+        ScriptVariant::P2TR(_, _) => {
+            let script = script_variant.to_script();
+            let mut bytes =
+                BytesMut::with_capacity(script.bytecode().len() + 1);
+            write_var_int(
+                &mut bytes,
+                (script.bytecode().len() + COMPRESS_NUM_SPECIAL_SCRIPTS) as u64,
+            );
+            bytes.put_slice(script.bytecode());
+            bytes.freeze()
+        }
         ScriptVariant::Other(script) => {
             let mut bytes =
                 BytesMut::with_capacity(script.bytecode().len() + 1);
