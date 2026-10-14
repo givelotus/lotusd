@@ -451,7 +451,7 @@ void MinerTestingSetup::TestBasicMining(
 
     // non-final txs in mempool
     SetMockTime(m_node.chainman->ActiveTip()->GetMedianTimePast() + 1);
-    const uint32_t flags{LOCKTIME_MEDIAN_TIME_PAST};
+    const uint32_t flags{0};
     // height map
     std::vector<int> prevheights;
 

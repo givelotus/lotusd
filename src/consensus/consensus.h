@@ -33,7 +33,6 @@ static const int COINBASE_MATURITY = 100;
 /** Coinbase scripts have their own script size limit. */
 static const int MAX_COINBASE_SCRIPTSIG_SIZE = 100;
 
-/** Flags for nSequence and nLockTime locks */
 /**
  * Compute the maximum number of sigchecks that can be contained in a block
  * given the MAXIMUM block size as parameter. The maximum sigchecks scale

@@ -4506,20 +4506,11 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
-    // Enforce BIP113 (Median Time Past).
-    bool enforce_locktime_median_time_past{false};
-    if (DeploymentActiveAfter(pindexPrev, chainman,
-                              Consensus::DEPLOYMENT_CSV)) {
-        assert(pindexPrev != nullptr);
-        enforce_locktime_median_time_past = true;
-    }
-
+    // Always enforce BIP113 (Median Time Past) from genesis.
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
 
-    const int64_t nLockTimeCutoff{enforce_locktime_median_time_past
-                                      ? nMedianTimePast
-                                      : block.GetBlockTime()};
+    const int64_t nLockTimeCutoff = nMedianTimePast;
 
     const Consensus::Params params = chainman.GetConsensus();
     // Check transactions:
