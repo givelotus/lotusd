@@ -311,12 +311,12 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         fname_lotusd = os.path.join(
             config["environment"]["BUILDDIR"],
             "src",
-            f"bitcoind{config['environment']['EXEEXT']}",
+            f"lotusd{config['environment']['EXEEXT']}",
         )
         fname_bitcoincli = os.path.join(
             config["environment"]["BUILDDIR"],
             "src",
-            f"bitcoin-cli{config['environment']['EXEEXT']}",
+            f"lotus-cli{config['environment']['EXEEXT']}",
         )
         self.options.lotusd = os.getenv("BITCOIND", default=fname_lotusd)
         self.options.bitcoincli = os.getenv("BITCOINCLI", default=fname_bitcoincli)
