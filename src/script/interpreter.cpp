@@ -93,6 +93,9 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
         case OP_MUL:
         case OP_LSHIFT:
         case OP_RSHIFT:
+        case OP_NUMEQUAL:
+        case OP_NUMEQUALVERIFY:
+        case OP_NUMNOTEQUAL:
         case OP_SHA1:
             // Disabled opcodes.
             return true;
@@ -785,9 +788,6 @@ bool ScriptInterpreter::RunNextOpInner() {
             case OP_MOD:
             case OP_BOOLAND:
             case OP_BOOLOR:
-            case OP_NUMEQUAL:
-            case OP_NUMEQUALVERIFY:
-            case OP_NUMNOTEQUAL:
             case OP_LESSTHAN:
             case OP_GREATERTHAN:
             case OP_LESSTHANOREQUAL:
@@ -833,15 +833,6 @@ bool ScriptInterpreter::RunNextOpInner() {
                     case OP_BOOLOR:
                         bn = (bn1 != bnZero || bn2 != bnZero);
                         break;
-                    case OP_NUMEQUAL:
-                        bn = (bn1 == bn2);
-                        break;
-                    case OP_NUMEQUALVERIFY:
-                        bn = (bn1 == bn2);
-                        break;
-                    case OP_NUMNOTEQUAL:
-                        bn = (bn1 != bn2);
-                        break;
                     case OP_LESSTHAN:
                         bn = (bn1 < bn2);
                         break;
@@ -867,14 +858,6 @@ bool ScriptInterpreter::RunNextOpInner() {
                 popstack(stack);
                 popstack(stack);
                 stack.push_back(bn.getvch());
-
-                if (opcode == OP_NUMEQUALVERIFY) {
-                    if (CastToBool(stacktop(-1))) {
-                        popstack(stack);
-                    } else {
-                        return set_error(serror, ScriptError::NUMEQUALVERIFY);
-                    }
-                }
             } break;
 
             case OP_WITHIN: {
