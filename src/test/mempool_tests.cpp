@@ -783,7 +783,7 @@ BOOST_AUTO_TEST_CASE(long_chain_accepted) {
     // each spending the single output of the previous one and verify all land
     // in the mempool.
     TestMemPoolEntryHelper entry;
-    entry.SigOpCount(0);
+    entry.SigChecks(0);
     LOCK2(cs_main, m_node.mempool->cs);
 
     CMutableTransaction first;

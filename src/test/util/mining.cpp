@@ -7,6 +7,7 @@
 #include <blockindex.h>
 #include <chainparams.h>
 #include <config.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <key_io.h>
 #include <net.h>
@@ -90,7 +91,8 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
 
     CMutableTransaction tx_coinbase{*pblock->vtx.at(0)};
     tx_coinbase.vin.at(0).scriptSig =
-        CScript{} << pindexPrev->nHeight + 1
+        CScript{} << COINBASE_PREFIX
+                  << pindexPrev->nHeight + 1
                   << getExcessiveBlockSizeSig(nExcessiveBlockSize);
 
     // Make sure the coinbase is big enough.

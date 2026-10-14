@@ -93,11 +93,10 @@ def make_conform_to_ctor(block: CBlock):
 
 def script_BIP34_coinbase_height(height: int) -> CScript:
     if height <= 16:
-        res = CScriptOp.encode_op_n(height)
-        # Append dummy to increase scriptSig size above 2
-        # (see bad-cb-length consensus rule)
-        return CScript([res, OP_1])
-    return CScript([CScriptNum(height)])
+        num = CScriptOp.encode_op_n(height)
+    else:
+        num = CScriptNum(height)
+    return CScript([b'logos', num])
 
 
 def create_coinbase(
@@ -394,4 +393,4 @@ class TestFrameworkBlockTools(unittest.TestCase):
     def test_create_coinbase(self):
         height = 20
         coinbase_tx = create_coinbase(height=height)
-        assert_equal(CScriptNum.decode(coinbase_tx.vin[0].scriptSig), height)
+        assert_equal(CScriptNum.decode(coinbase_tx.vin[0].scriptSig[6:]), height)

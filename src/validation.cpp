@@ -23,6 +23,7 @@
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/amount.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/tx_check.h>
 #include <consensus/tx_verify.h>
@@ -2044,11 +2045,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
 
     // Always enforce CLEANSTACK
     flags |= SCRIPT_VERIFY_CLEANSTACK;
-
-    // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CSV)) {
-        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
-    }
 
     // Always enforce SIGHASH_FORKID
     flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
@@ -4442,7 +4438,7 @@ static bool ContextualCheckBlock(const CBlock &block,
 
     // Enforce rule that the coinbase starts with serialized block height
     if (nHeight >= 1) {
-        CScript expect = CScript() << nHeight;
+        CScript expect = CScript() << COINBASE_PREFIX << nHeight;
         if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
             !std::equal(expect.begin(), expect.end(),
                         block.vtx[0]->vin[0].scriptSig.begin())) {
