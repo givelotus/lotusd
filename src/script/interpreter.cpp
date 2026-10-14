@@ -92,6 +92,9 @@ static bool IsOpcodeDisabled(opcodetype opcode, uint32_t flags) {
             return true;
 
         default:
+            // All undefined opcodes are also disabled.
+            if (opcode >= FIRST_UNDEFINED_OP_VALUE)
+                return true;
             break;
     }
 
