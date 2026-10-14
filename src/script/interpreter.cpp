@@ -73,9 +73,9 @@ int FindAndDelete(CScript &script, const CScript &b) {
 static void CleanupScriptCode(CScript &scriptCode,
                               const std::vector<uint8_t> &vchSig,
                               uint32_t flags) {
-    // Drop the signature in scripts when SIGHASH_FORKID is not used.
     SigHashType sigHashType = GetHashType(vchSig);
-    if (!(flags & SCRIPT_ENABLE_SIGHASH_FORKID) || !sigHashType.hasForkId()) {
+    if (!(flags & SCRIPT_ENABLE_SIGHASH_FORKID) ||
+        (!sigHashType.hasForkId() && !sigHashType.hasBIP341())) {
         FindAndDelete(scriptCode, CScript() << vchSig);
     }
 }
