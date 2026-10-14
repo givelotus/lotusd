@@ -775,4 +775,34 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(long_chain_accepted) {
+    // Verify that chains longer than the old 50-tx ancestor/descendant limit
+    // are accepted into the mempool.  The O(n log n) mining algorithm (patch 29)
+    // reads no pre-computed CPFP fields, so there is no O(n²) DoS justification
+    // for a chain-length cap.  Build a strictly linear chain of 100 transactions
+    // each spending the single output of the previous one and verify all land
+    // in the mempool.
+    TestMemPoolEntryHelper entry;
+    entry.SigOpCount(0);
+    LOCK2(cs_main, m_node.mempool->cs);
+
+    CMutableTransaction first;
+    first.vin.resize(1);
+    first.vin[0].scriptSig = CScript();
+    first.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(first));
+
+    TxId prevId = first.GetId();
+    for (int i = 1; i < 100; i++) {
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].prevout = COutPoint(prevId, 0);
+        tx.vout.emplace_back(9000 * SATOSHI, CScript() << OP_TRUE);
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        prevId = tx.GetId();
+    }
+
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 100UL);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
