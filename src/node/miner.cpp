@@ -18,6 +18,7 @@
 #include <consensus/merkle.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
+#include <feerate.h>
 #include <minerfund.h>
 #include <policy/block/stakingrewards.h>
 #include <policy/policy.h>
@@ -31,7 +32,9 @@
 
 #include <algorithm>
 #include <queue>
+#include <stack>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace node {
@@ -264,11 +267,173 @@ bool BlockAssembler::CheckTx(const CTransaction &tx) const {
 }
 
 /**
- * addTxs includes transactions paying a fee by ensuring that
- * the partial ordering of transactions is maintained.  That is to say
- * children come after parents, despite having a potentially larger fee.
+ * addTxs selects transactions from the mempool for inclusion in a block.
+ *
+ * Algorithm overview (O(n log n) total):
+ *  1. Snapshot all mempool transactions in topological order (entry_id order —
+ *     parents always precede children).  O(n)
+ *  2. Forward-walk the snapshot to accumulate package fee/size/sigchecks for
+ *     each transaction from its in-mempool ancestors.  O(n + m)
+ *  3. Assign each transaction a scheduling "order":
+ *       order=0  → mine-first tier (package fee rate beats all ancestors)
+ *       order>0  → deeper ancestor chain must go in first
+ *     Sort ascending by order, then descending by fee rate.  O(n log n)
+ *  4. Visit transactions in sorted order; for each, DFS to add all
+ *     unconfirmed ancestors before the transaction itself.  O(n + m)
+ *
+ * This eliminates the O(n²) ancestor-score update loop of the legacy
+ * implementation and removes the need for any pre-computed mempool
+ * ancestor/descendant bookkeeping fields.
  */
 void BlockAssembler::addTxs(const CTxMemPool &mempool) {
+    // ── 1. Snapshot mempool in topological (entry_id) order ──────────────────
+    std::vector<CBlockTemplateEntry> txPool;
+    txPool.reserve(mempool.mapTx.size());
+    std::unordered_map<TxId, size_t, SaltedTxIdHasher> txLocations;
+    size_t idx = 0;
+    for (const auto &entry : mempool.mapTx.get<entry_id>()) {
+        txPool.emplace_back(entry->GetSharedTx(),
+                            entry->GetFee(),
+                            entry->GetModifiedFee(),
+                            entry->GetTxSize(),
+                            entry->GetSigChecks());
+        txLocations[txPool.back().tx->GetId()] = idx++;
+    }
+
+    // ── 2. Accumulate package stats from parents ──────────────────────────────
+    // Single forward pass suffices because parents always appear before
+    // children in entry_id order. Diamond patterns are double-counted
+    // (acceptable: avoiding it isn't worth the extra complexity).
+    std::unordered_set<TxId, SaltedTxIdHasher> seen;
+    for (auto &entry : txPool) {
+        seen.clear();
+        for (const auto &txIn : entry.tx->vin) {
+            const TxId &parentId = txIn.prevout.GetTxId();
+            if (!seen.insert(parentId).second) {
+                continue; // skip duplicate direct parents
+            }
+            auto it = txLocations.find(parentId);
+            if (it == txLocations.end()) {
+                continue; // confirmed (not in mempool)
+            }
+            entry.AccountForParent(txPool[it->second]);
+        }
+    }
+
+    // ── 3. Sort: ascending order depth, descending fee rate within each tier ──
+    std::sort(txPool.begin(), txPool.end(),
+              [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b) {
+                  return a.GetOrder() == b.GetOrder()
+                             ? a.FeeRate() > b.FeeRate()
+                             : a.GetOrder() < b.GetOrder();
+              });
+
+    // Rebuild location index after sort.
+    idx = 0;
+    for (const auto &e : txPool) {
+        txLocations[e.tx->GetId()] = idx++;
+    }
+
+    // ── 4. Include transactions in sorted order via ancestor DFS ──────────────
+    // txIdsInBlock tracks added TxIds for O(1) membership tests inside DFS.
+    std::unordered_set<TxId, SaltedTxIdHasher> txIdsInBlock;
+    std::unordered_set<TxId, SaltedTxIdHasher> txnsInvalid;
+
+    for (const auto &entry : txPool) {
+        const TxId txId = entry.tx->GetId();
+
+        if (txIdsInBlock.count(txId) || txnsInvalid.count(txId)) {
+            continue;
+        }
+
+        // Skip packages below the min fee rate.
+        if (blockFitter.isBelowBlockMinFeeRate(
+                CFeeRate(entry.packageFees, entry.packageSize))) {
+            txnsInvalid.insert(txId);
+            continue;
+        }
+
+        // Quick package-level size/sigchecks check before the DFS.
+        if (!blockFitter.testTxFits(entry.packageSize, entry.packageSigChecks)) {
+            continue;
+        }
+
+        // DFS: push ancestors onto addStack in reverse-topological order so
+        // that popping the stack yields topological (parents-first) order.
+        std::stack<std::reference_wrapper<const CBlockTemplateEntry>>
+            ancestorStack;
+        std::stack<std::reference_wrapper<const CBlockTemplateEntry>> addStack;
+        bool packageInvalid = false;
+
+        ancestorStack.push(std::cref(entry));
+        while (!ancestorStack.empty() && !packageInvalid) {
+            const CBlockTemplateEntry &ancestor = ancestorStack.top();
+            const TxId &ancestorId = ancestor.tx->GetId();
+            ancestorStack.pop();
+            addStack.push(std::cref(ancestor));
+
+            // Contextual check (locktime / finality).
+            if (!CheckTx(*ancestor.tx)) {
+                txnsInvalid.insert(ancestorId);
+                packageInvalid = true;
+                break;
+            }
+
+            for (const auto &txIn : ancestor.tx->vin) {
+                const TxId &parentId = txIn.prevout.GetTxId();
+                if (txIdsInBlock.count(parentId)) {
+                    continue; // already in block
+                }
+                if (txnsInvalid.count(parentId)) {
+                    txnsInvalid.insert(ancestorId);
+                    packageInvalid = true;
+                    break;
+                }
+                auto it = txLocations.find(parentId);
+                if (it == txLocations.end()) {
+                    continue; // confirmed parent
+                }
+                ancestorStack.push(std::cref(txPool[it->second]));
+            }
+        }
+
+        if (packageInvalid) {
+            // Propagate invalidity through addStack items.
+            while (!addStack.empty()) {
+                const CBlockTemplateEntry &child = addStack.top();
+                addStack.pop();
+                for (const auto &txIn : child.tx->vin) {
+                    if (txnsInvalid.count(txIn.prevout.GetTxId())) {
+                        txnsInvalid.insert(child.tx->GetId());
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // All ancestors passed — commit to block in topological order.
+        while (!addStack.empty()) {
+            const CBlockTemplateEntry &toAdd = addStack.top();
+            const TxId &addId = toAdd.tx->GetId();
+            addStack.pop();
+            if (txIdsInBlock.count(addId)) {
+                continue; // addStack can contain duplicates from DFS
+            }
+            auto optIter = mempool.GetIter(addId);
+            if (optIter) {
+                AddToBlock(**optIter);
+                txIdsInBlock.insert(addId);
+            }
+        }
+    }
+}
+
+/**
+ * accuratelyAddTxs: legacy O(n²) implementation.
+ * Kept for reference and benchmarking. Not called in production.
+ */
+void BlockAssembler::accuratelyAddTxs(const CTxMemPool &mempool) {
     // mapped_value is the number of mempool parents that are still needed for
     // the entry. We decrement this count each time we add a parent of the entry
     // to the block.

@@ -41,8 +41,70 @@ struct CBlockTemplateEntry {
     Amount fees;
     int64_t sigChecks;
 
+    // Internal fields used during block assembly — not meaningful in final
+    // pblocktemplate->entries after CreateNewBlock returns.
+    Amount modifiedFee;
+    size_t txSize;
+    // Accumulated package totals (this tx + all unconfirmed ancestors).
+    size_t packageSize;
+    Amount packageFees;
+    int64_t packageSigChecks;
+    // Maximum fee rate seen across any ancestor package (used for ordering).
+    double maxPackageFeeRate;
+    // Scheduling depth: 0 means "mine me first", higher = deeper ancestor chain.
+    int order;
+
+    // Constructor for final block entries (backward compatible).
     CBlockTemplateEntry(CTransactionRef _tx, Amount _fees, int64_t _sigChecks)
-        : tx(_tx), fees(_fees), sigChecks(_sigChecks){};
+        : tx(_tx), fees(_fees), sigChecks(_sigChecks),
+          modifiedFee(_fees), txSize(0),
+          packageSize(0), packageFees(Amount::zero()), packageSigChecks(0),
+          maxPackageFeeRate(0.0), order(0) {}
+
+    // Constructor used internally by addTxs.
+    CBlockTemplateEntry(CTransactionRef _tx, Amount _fees, Amount _modFee,
+                        size_t _size, int64_t _sigChecks)
+        : tx(std::move(_tx)), fees(_fees), sigChecks(_sigChecks),
+          modifiedFee(_modFee), txSize(_size),
+          packageSize(_size), packageFees(_modFee), packageSigChecks(_sigChecks),
+          maxPackageFeeRate(_size > 0
+                                ? double(_modFee / SATOSHI) / double(_size)
+                                : 0.0),
+          order(0) {}
+
+    double FeeRate() const {
+        return packageSize > 0
+                   ? double(packageFees / SATOSHI) / double(packageSize)
+                   : 0.0;
+    }
+
+    int GetOrder() const { return order; }
+
+    /**
+     * Fold a parent's package totals into this entry's accumulators.
+     * If our effective package fee rate exceeds the best seen so far among
+     * ancestors, reset order to 0 so we sort to the front of our tier.
+     */
+    void AccountForParent(const CBlockTemplateEntry &parent) {
+        packageSize += parent.packageSize;
+        packageFees += parent.packageFees;
+        packageSigChecks += parent.packageSigChecks;
+
+        int parentOrder = parent.order + 1;
+        if (parentOrder > order) {
+            order = parentOrder;
+        }
+
+        double parentFeeRate = parent.FeeRate();
+        if (parentFeeRate > maxPackageFeeRate) {
+            maxPackageFeeRate = parentFeeRate;
+        }
+        // If our package is now the best, pull it to the front (order=0).
+        if (FeeRate() > maxPackageFeeRate) {
+            order = 0;
+            maxPackageFeeRate = FeeRate();
+        }
+    }
 };
 
 struct CBlockTemplate {
@@ -125,6 +187,10 @@ private:
 
     /// Check the transaction for finality, etc before adding to block
     bool CheckTx(const CTransaction &tx) const;
+
+    // Legacy O(n²) implementation kept for comparison; not called in production.
+    void accuratelyAddTxs(const CTxMemPool &mempool)
+        EXCLUSIVE_LOCKS_REQUIRED(mempool.cs);
 };
 
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
