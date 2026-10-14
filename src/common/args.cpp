@@ -227,7 +227,7 @@ bool ArgsManager::ParseParameters(int argc, const char *const argv[],
 #endif
 
         if (key == "-") {
-            // bitcoin-tx using stdin
+            // lotus-tx using stdin
             break;
         }
         std::optional<std::string> val;

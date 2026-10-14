@@ -134,7 +134,7 @@ static int AppInitRawTx(int argc, char *argv[]) {
 
     if (argc < 2 || HelpRequested(gArgs) || gArgs.IsArgSet("-version")) {
         // First part of help message is specific to this utility
-        std::string strUsage = PACKAGE_NAME " bitcoin-tx utility version " +
+        std::string strUsage = PACKAGE_NAME " lotus-tx utility version " +
                                FormatFullVersion() + "\n";
 
         if (gArgs.IsArgSet("-version")) {
@@ -142,9 +142,9 @@ static int AppInitRawTx(int argc, char *argv[]) {
         } else {
             strUsage +=
                 "\n"
-                "Usage:  bitcoin-tx [options] <hex-tx> [commands]  Update "
+                "Usage:  lotus-tx [options] <hex-tx> [commands]  Update "
                 "hex-encoded bitcoin transaction\n"
-                "or:     bitcoin-tx [options] -create [commands]   Create "
+                "or:     lotus-tx [options] -create [commands]   Create "
                 "hex-encoded bitcoin transaction\n"
                 "\n";
             strUsage += gArgs.GetHelpMessage();
@@ -706,8 +706,7 @@ static void MutateTxSign(CMutableTransaction &tx, const std::string &flagStr) {
         const CScript &prevPubKey = coin.GetTxOut().scriptPubKey;
         const Amount amount = coin.GetTxOut().nValue;
 
-        SignatureData sigdata =
-            DataFromTransaction(mergedTx, i, txdata);
+        SignatureData sigdata = DataFromTransaction(mergedTx, i, txdata);
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if ((sigHashType.getBaseType() != BaseSigHashType::SINGLE) ||
             (i < mergedTx.vout.size())) {

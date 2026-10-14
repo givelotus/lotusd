@@ -1,0 +1,19 @@
+[Unit]
+Description=Lotus Daemon (reindex)
+Conflicts=lotus.service
+After=network.target
+
+[Service]
+User=lotus
+Group=lotus
+ExecStart=/usr/bin/lotusd -daemon=0                       \
+                            -conf=/etc/lotus/lotus.conf \
+                            -datadir=/srv/lotus           \
+                            -reindex                        \
+                            -pid=/run/lotus/lotusd.pid
+ExecReload=/usr/bin/kill -HUP $MAINPID
+ExecStop=/usr/bin/lotusd stop
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

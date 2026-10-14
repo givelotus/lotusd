@@ -700,7 +700,7 @@ if os.path.exists(appname + ".zip"):
 
 # ------------------------------------------------
 
-target = os.path.join("dist", "BitcoinABC-Qt.app")
+target = os.path.join("dist", "Lotus-QT.app")
 
 print("+ Copying source bundle +")
 if verbose:

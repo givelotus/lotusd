@@ -152,7 +152,7 @@ static const std::string HEADERS_TIME_FILE_NAME{"headerstime.dat"};
 /**
  * The PID file facilities.
  */
-static const char *BITCOIN_PID_FILENAME = "bitcoind.pid";
+static const char *BITCOIN_PID_FILENAME = "lotusd.pid";
 
 static fs::path GetPidFile(const ArgsManager &args) {
     return AbsPathForConfigVal(args,
@@ -1231,16 +1231,14 @@ void SetupServerArgs(NodeContext &node) {
         "-acceptnonstdtxn",
         strprintf(
             "Relay and mine \"non-standard\" transactions (%sdefault: %u)",
-            "testnet/regtest only; ",
-            false),
+            "testnet/regtest only; ", false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg(
         "-allownonstdtxnconsensus",
         strprintf(
             "Allow \"non-standard\" transactions in blocks (%sdefault: %u)",
-            "testnet/regtest only; ",
-            false),
+            "testnet/regtest only; ", false),
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::NODE_RELAY);
     argsman.AddArg("-excessiveblocksize=<n>",

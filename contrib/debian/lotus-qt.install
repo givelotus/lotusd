@@ -1,0 +1,6 @@
+bin/lotus-qt usr/bin
+share/pixmaps/lotus32.xpm usr/share/pixmaps
+share/pixmaps/lotus16.xpm usr/share/pixmaps
+share/pixmaps/lotus128.png usr/share/pixmaps
+debian/lotus-qt.desktop usr/share/applications
+debian/lotus-qt.protocol usr/share/kde4/services/

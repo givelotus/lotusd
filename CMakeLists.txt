@@ -8,7 +8,7 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 
 project(bitcoin-abc
 	VERSION 0.32.8
-	DESCRIPTION "Bitcoin ABC is a full node implementation of the eCash protocol."
+	DESCRIPTION "Lotus is a full node implementation of the eCash protocol."
 	HOMEPAGE_URL "https://www.bitcoinabc.org"
 )
 
@@ -23,7 +23,7 @@ add_custom_target(print-project-name
 )
 
 # Package information
-set(PACKAGE_NAME "Bitcoin ABC")
+set(PACKAGE_NAME "Lotus")
 set(PACKAGE_BUGREPORT "https://github.com/LogosFoundation/lotusd/issues")
 
 # Copyright

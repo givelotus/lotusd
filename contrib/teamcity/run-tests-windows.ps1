@@ -9,20 +9,20 @@ pushd artifacts/bin
 
 function check_help_version {
   try {
-    .\bitcoind.exe -version
-    .\bitcoind.exe -help
-    .\bitcoin-qt.exe -version
-    .\bitcoin-qt.exe -help
-    .\bitcoin-cli.exe -version
-    .\bitcoin-cli.exe -help
-    .\bitcoin-tx.exe -help
-    .\bitcoin-wallet -help
+    .\lotusd.exe -version
+    .\lotusd.exe -help
+    .\lotus-qt.exe -version
+    .\lotus-qt.exe -help
+    .\lotus-cli.exe -version
+    .\lotus-cli.exe -help
+    .\lotus-tx.exe -help
+    .\lotus-wallet -help
   }
   catch {
     Write-Error $_
   }
   finally {
-    Stop-Process -name bitcoin-qt -Force -ErrorAction SilentlyContinue
+    Stop-Process -name lotus-qt -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -33,51 +33,51 @@ function New-TemporaryDirectory {
   return $tempDir.FullName
 }
 
-function check_bitcoind {
+function check_lotusd {
   trap {
-    Stop-Process -name bitcoind -Force 
+    Stop-Process -name lotusd -Force 
   }
 
   $datadir = New-TemporaryDirectory
   $datadirArg = "-datadir=$datadir"
 
-  Write-Host "Launching bitcoind in the background"
-  Start-Process -NoNewWindow .\bitcoind.exe "-noprinttoconsole $datadirArg"
+  Write-Host "Launching lotusd in the background"
+  Start-Process -NoNewWindow .\lotusd.exe "-noprinttoconsole $datadirArg"
 
   for($i=60; $i -gt 0; $i--) {
     Start-Sleep -Seconds 1
-    if(.\bitcoin-cli.exe $datadirArg help) {
+    if(.\lotus-cli.exe $datadirArg help) {
       break
     }
   }
   if($i -eq 0) {
-    throw "Failed to start bitcoind"
+    throw "Failed to start lotusd"
   }
 
-  Write-Host "Stopping bitcoind"
-  .\bitcoin-cli.exe $datadirArg stop
+  Write-Host "Stopping lotusd"
+  .\lotus-cli.exe $datadirArg stop
 
   for($i=60; $i -gt 0; $i--) {
     Start-Sleep -Seconds 1
-    if(-Not (Get-Process -Name bitcoind -ErrorAction SilentlyContinue)) {
+    if(-Not (Get-Process -Name lotusd -ErrorAction SilentlyContinue)) {
       break
     }
   }
   if($i -eq 0) {
-    throw "Failed to stop bitcoind"
+    throw "Failed to stop lotusd"
   }
 }
 
 Write-Host "--- Checking helps and versions ---"
 check_help_version
 
-Write-Host "--- Checking bitcoind can run and communicate via bitcoin-cli ---"
-check_bitcoind
+Write-Host "--- Checking lotusd can run and communicate via lotus-cli ---"
+check_lotusd
 
 Write-Host "--- Running bitcoin unit tests ---"
-.\test_bitcoin.exe
-Write-Host "--- Running bitcoin-qt unit tests ---"
-.\test_bitcoin-qt.exe -platform windows
+.\test_lotus.exe
+Write-Host "--- Running lotus-qt unit tests ---"
+.\test_lotus-qt.exe -platform windows
 Write-Host "--- Running pow unit tests ---"
 .\test-pow.exe
 Write-Host "--- Running avalanche unit tests ---"

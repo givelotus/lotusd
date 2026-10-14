@@ -446,7 +446,7 @@ RestoreWallet(WalletContext &context, const fs::path &backup_file,
 
 const CChainParams &CWallet::GetChainParams() const {
     // Get CChainParams from interfaces::Chain, unless wallet doesn't have a
-    // chain (i.e. bitcoin-wallet), in which case return global Params()
+    // chain (i.e. lotus-wallet), in which case return global Params()
     return m_chain ? m_chain->params() : Params();
 }
 

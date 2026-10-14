@@ -3,15 +3,15 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test asmap config argument for ASN-based IP bucketing.
 
-Verify node behaviour and debug log when launching bitcoind in these cases:
+Verify node behaviour and debug log when launching lotusd in these cases:
 
-1. `bitcoind` with no -asmap arg, using /16 prefix for IP bucketing
+1. `lotusd` with no -asmap arg, using /16 prefix for IP bucketing
 
-2. `bitcoind -asmap=<absolute path>`, using the unit test skeleton asmap
+2. `lotusd -asmap=<absolute path>`, using the unit test skeleton asmap
 
-3. `bitcoind -asmap=<relative path>`, using the unit test skeleton asmap
+3. `lotusd -asmap=<relative path>`, using the unit test skeleton asmap
 
-4. `bitcoind -asmap/-asmap=` with no file specified, using the default asmap
+4. `lotusd -asmap/-asmap=` with no file specified, using the default asmap
 
 5. `bitcoind -asmap` restart with an addrman containing new and tried entries
 
@@ -58,13 +58,13 @@ class AsmapTest(BitcoinTestFramework):
             )
 
     def test_without_asmap_arg(self):
-        self.log.info("Test bitcoind with no -asmap arg passed")
+        self.log.info("Test lotusd with no -asmap arg passed")
         self.stop_node(0)
         with self.node.assert_debug_log(["Using /16 prefix for IP bucketing"]):
             self.start_node(0)
 
     def test_asmap_with_absolute_path(self):
-        self.log.info("Test bitcoind -asmap=<absolute path>")
+        self.log.info("Test lotusd -asmap=<absolute path>")
         self.stop_node(0)
         filename = os.path.join(self.datadir, "my-map-file.map")
         shutil.copyfile(self.asmap_raw, filename)
@@ -73,7 +73,7 @@ class AsmapTest(BitcoinTestFramework):
         os.remove(filename)
 
     def test_asmap_with_relative_path(self):
-        self.log.info("Test bitcoind -asmap=<relative path>")
+        self.log.info("Test lotusd -asmap=<relative path>")
         self.stop_node(0)
         name = "ASN_map"
         filename = os.path.join(self.datadir, name)
@@ -111,7 +111,7 @@ class AsmapTest(BitcoinTestFramework):
         os.remove(self.default_asmap)
 
     def test_default_asmap_with_missing_file(self):
-        self.log.info("Test bitcoind -asmap with missing default map file")
+        self.log.info("Test lotusd -asmap with missing default map file")
         self.stop_node(0)
         msg = f'Error: Could not find asmap file "{self.default_asmap}"'
         self.node.assert_start_raises_init_error(
@@ -119,7 +119,7 @@ class AsmapTest(BitcoinTestFramework):
         )
 
     def test_empty_asmap(self):
-        self.log.info("Test bitcoind -asmap with empty map file")
+        self.log.info("Test lotusd -asmap with empty map file")
         self.stop_node(0)
         with open(self.default_asmap, "w", encoding="utf-8") as f:
             f.write("")

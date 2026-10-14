@@ -1,7 +1,7 @@
 # Copyright (c) 2017-2019 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Class for bitcoind node under test"""
+"""Class for lotusd node under test"""
 
 import collections
 import contextlib
@@ -57,7 +57,7 @@ class ErrorMatch(Enum):
 
 
 class TestNode:
-    """A class for representing a bitcoind node under test.
+    """A class for representing a lotusd node under test.
 
     This class contains:
 
@@ -82,7 +82,7 @@ class TestNode:
         chronik_electrum_port,
         timewait,
         timeout_factor,
-        bitcoind,
+        lotusd,
         bitcoin_cli,
         coverage_dir,
         cwd,
@@ -114,11 +114,11 @@ class TestNode:
         self.chronik_electrum_port = chronik_electrum_port
         self.name = f"testnode-{i}"
         self.rpc_timeout = timewait
-        self.binary = bitcoind
+        self.binary = lotusd
         if not os.path.isfile(self.binary):
             raise FileNotFoundError(
                 f"Binary '{self.binary}' could not be found.\nTry setting it"
-                f" manually:\n\tBITCOIND=<path/to/bitcoind> {sys.argv[0]}"
+                f" manually:\n\tBITCOIND=<path/to/lotusd> {sys.argv[0]}"
             )
         self.coverage_dir = coverage_dir
         self.cwd = cwd
@@ -136,7 +136,7 @@ class TestNode:
         # initialize_datadir)
         self.extra_args = extra_args
         # Configuration for logging is set as command-line args rather than in the lotus.conf file.
-        # This means that starting a bitcoind using the temp dir to debug a failed test won't
+        # This means that starting a lotusd using the temp dir to debug a failed test won't
         # spam debug.log.
         self.default_args = [
             "-datadir=" + self.datadir,
@@ -164,14 +164,14 @@ class TestNode:
                 "VALGRIND_SUPPRESSIONS_FILE", default_suppressions_file
             )
             self.binary = "valgrind"
-            self.bitcoind_args = [bitcoind] + self.default_args
+            self.lotusd_args = [lotusd] + self.default_args
             self.default_args = [
                 f"--suppressions={suppressions_file}",
                 "--gen-suppressions=all",
                 "--exit-on-first-error=yes",
                 "--error-exitcode=1",
                 "--quiet",
-            ] + self.bitcoind_args
+            ] + self.lotusd_args
 
         if emulator is not None:
             if not os.path.isfile(emulator):
@@ -181,7 +181,7 @@ class TestNode:
         if use_cli and not os.path.isfile(bitcoin_cli):
             raise FileNotFoundError(
                 f"Binary '{bitcoin_cli}' could not be found.\nTry setting it"
-                f" manually:\n\tBITCOINCLI=<path/to/bitcoin-cli> {sys.argv[0]}"
+                f" manually:\n\tBITCOINCLI=<path/to/lotus-cli> {sys.argv[0]}"
             )
         self.cli = TestNodeCLI(bitcoin_cli, self.datadir, self.emulator)
         self.use_cli = use_cli
@@ -272,7 +272,7 @@ class TestNode:
         raise AssertionError(self._node_msg(msg))
 
     def __del__(self):
-        # Ensure that we don't leave any bitcoind processes lying around after
+        # Ensure that we don't leave any lotusd processes lying around after
         # the test ends
         if self.process:
             # Should only happen on test failure
@@ -331,7 +331,7 @@ class TestNode:
             extra_args.append(f"-bind=0.0.0.0:{p2p_port(self.index)}")
             extra_args.append(f"-bind=127.0.0.1:{tor_port(self.index)}=onion")
 
-        # Add a new stdout and stderr file each time bitcoind is started
+        # Add a new stdout and stderr file each time lotusd is started
         if stderr is None:
             stderr = tempfile.NamedTemporaryFile(dir=self.stderr_dir, delete=False)
         if stdout is None:
@@ -343,7 +343,7 @@ class TestNode:
             cwd = self.cwd
 
         # Delete any existing cookie file -- if such a file exists (eg due to
-        # unclean shutdown), it will get overwritten anyway by bitcoind, and
+        # unclean shutdown), it will get overwritten anyway by lotusd, and
         # potentially interfere with our attempt to authenticate
         delete_cookie_file(self.datadir, self.chain)
 
@@ -361,13 +361,13 @@ class TestNode:
         )
 
         self.running = True
-        self.log.debug("bitcoind started, waiting for RPC to come up")
+        self.log.debug("lotusd started, waiting for RPC to come up")
 
         if self.start_perf:
             self._start_perf()
 
     def wait_for_rpc_connection(self):
-        """Sets up an RPC connection to the bitcoind process. Returns False if unable to connect."""
+        """Sets up an RPC connection to the lotusd process. Returns False if unable to connect."""
         # Poll at a rate of four times per second
         poll_per_s = 4
         # Double the range to allow for one retry in case of ETIMEDOUT
@@ -375,7 +375,7 @@ class TestNode:
             if self.process.poll() is not None:
                 raise FailedToStartError(
                     self._node_msg(
-                        f"bitcoind exited with status {self.process.returncode} during "
+                        f"lotusd exited with status {self.process.returncode} during "
                         "initialization"
                     )
                 )
@@ -439,12 +439,12 @@ class TestNode:
                     raise
             except ValueError as e:
                 # cookie file not found and no rpcuser or rpcpassword;
-                # bitcoind is still starting
+                # lotusd is still starting
                 if "No RPC credentials" not in str(e):
                     raise
             time.sleep(1.0 / poll_per_s)
         self._raise_assertion_error(
-            f"Unable to connect to bitcoind after {self.rpc_timeout}s"
+            f"Unable to connect to lotusd after {self.rpc_timeout}s"
         )
 
     def wait_for_cookie_credentials(self):
@@ -460,7 +460,7 @@ class TestNode:
                 return
             except ValueError:
                 # cookie file not found and no rpcuser or rpcpassword;
-                # bitcoind is still starting so we continue polling until
+                # lotusd is still starting so we continue polling until
                 # RPC credentials are retrieved
                 pass
             time.sleep(1.0 / poll_per_s)
@@ -778,7 +778,7 @@ class TestNode:
         if not test_success(f"readelf -S {shlex.quote(self.binary)} | grep .debug_str"):
             self.log.warning(
                 "perf output won't be very useful without debug symbols compiled into"
-                " bitcoind"
+                " lotusd"
             )
 
         output_path = tempfile.NamedTemporaryFile(
@@ -835,11 +835,11 @@ class TestNode:
     ):
         """Attempt to start the node and expect it to raise an error.
 
-        extra_args: extra arguments to pass through to bitcoind
-        expected_msg: regex that stderr should match when bitcoind fails
+        extra_args: extra arguments to pass through to lotusd
+        expected_msg: regex that stderr should match when lotusd fails
 
-        Will throw if bitcoind starts without an error.
-        Will throw if an expected_msg is provided and it does not match bitcoind's stdout.
+        Will throw if lotusd starts without an error.
+        Will throw if an expected_msg is provided and it does not match lotusd's stdout.
         """
         assert not self.running
         with (
@@ -857,7 +857,7 @@ class TestNode:
                 ret = self.process.wait(timeout=timeout or self.rpc_timeout)
                 self.log.debug(
                     self._node_msg(
-                        f"bitcoind exited with status {ret} during initialization"
+                        f"lotusd exited with status {ret} during initialization"
                     )
                 )
                 self.running = False
@@ -888,7 +888,7 @@ class TestNode:
                 self.process.kill()
                 self.running = False
                 self.process = None
-                assert_msg = f"bitcoind should have exited within {self.rpc_timeout}s "
+                assert_msg = f"lotusd should have exited within {self.rpc_timeout}s "
                 if expected_msg is None:
                     assert_msg += "with an error"
                 else:
@@ -1091,7 +1091,7 @@ def arg_to_cli(arg):
 
 
 class TestNodeCLI:
-    """Interface to bitcoin-cli for an individual node"""
+    """Interface to lotus-cli for an individual node"""
 
     def __init__(self, binary, datadir, emulator=None):
         self.options = []
@@ -1102,7 +1102,7 @@ class TestNodeCLI:
         self.emulator = emulator
 
     def __call__(self, *options, cli_input=None):
-        # TestNodeCLI is callable with bitcoin-cli command-line options
+        # TestNodeCLI is callable with lotus-cli command-line options
         cli = TestNodeCLI(self.binary, self.datadir, self.emulator)
         cli.options = [str(o) for o in options]
         cli.input = cli_input
@@ -1121,7 +1121,7 @@ class TestNodeCLI:
         return results
 
     def send_cli(self, command=None, *args, **kwargs):
-        """Run bitcoin-cli command. Deserializes returned string as python object."""
+        """Run lotus-cli command. Deserializes returned string as python object."""
         pos_args = [arg_to_cli(arg) for arg in args]
         named_args = [
             str(key) + "=" + arg_to_cli(value) for (key, value) in kwargs.items()
@@ -1132,7 +1132,7 @@ class TestNodeCLI:
         if command is not None:
             p_args += [command]
         p_args += pos_args + named_args
-        self.log.debug(f"Running bitcoin-cli {p_args[2:]}")
+        self.log.debug(f"Running lotus-cli {p_args[2:]}")
         if self.emulator is not None:
             p_args = [self.emulator] + p_args
         process = subprocess.Popen(

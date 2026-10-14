@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Name=Lotus
+Comment=Connect to the Lotus P2P Network
+Comment[de]=Verbinde mit dem Lotus peer-to-peer Netzwerk
+Comment[fr]=Lotus, monnaie virtuelle cryptographique pair à pair
+Comment[tr]=Lotus, eşten eşe kriptografik sanal para birimi
+Exec=lotus-qt %u
+Terminal=false
+Type=Application
+Icon=bitcoin-abc128
+MimeType=x-scheme-handler/payto;
+Categories=Office;Finance;
+StartupWMClass=Lotus-QT

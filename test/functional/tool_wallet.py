@@ -1,7 +1,7 @@
 # Copyright (c) 2018-2019 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test bitcoin-wallet."""
+"""Test lotus-wallet."""
 
 import hashlib
 import os
@@ -84,7 +84,7 @@ class ToolWalletTest(BitcoinTestFramework):
             "Testing that various invalid commands raise with specific error messages"
         )
         self.assert_raises_tool_error("Invalid command: foo", "foo")
-        # `bitcoin-wallet help` raises an error. Use `bitcoin-wallet -help`.
+        # `lotus-wallet help` raises an error. Use `lotus-wallet -help`.
         self.assert_raises_tool_error("Invalid command: help", "help")
         self.assert_raises_tool_error(
             "Error: two methods provided (info and create). Only one method should"

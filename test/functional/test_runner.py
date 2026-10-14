@@ -377,9 +377,9 @@ def main():
     if args.junitoutput and not os.path.isabs(args.junitoutput):
         args.junitoutput = os.path.join(tmpdir, args.junitoutput)
 
-    enable_bitcoind = config["components"].getboolean("ENABLE_BITCOIND")
+    enable_lotusd = config["components"].getboolean("ENABLE_BITCOIND")
 
-    if not enable_bitcoind:
+    if not enable_lotusd:
         print("No functional tests to run.")
         print("Rerun ./configure with --with-daemon and then make")
         sys.exit(0)
@@ -932,7 +932,7 @@ class RPCCoverage:
     Coverage calculation works by having each test script subprocess write
     coverage files into a particular directory. These files contain the RPC
     commands invoked during testing, as well as a complete listing of RPC
-    commands per `bitcoin-cli help` (`rpc_interface.txt`).
+    commands per `lotus-cli help` (`rpc_interface.txt`).
 
     After all tests complete, the commands run are combined and diff'd against
     the complete list to calculate uncovered RPC commands.

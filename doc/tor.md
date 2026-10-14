@@ -53,7 +53,7 @@ outgoing connections, but more is possible.
 
 In a typical situation, this suffices to run behind a Tor proxy:
 
-	./bitcoind -proxy=127.0.0.1:9050
+	./lotusd -proxy=127.0.0.1:9050
 
 ## 2. Automatically create a Bitcoin ABC onion service
 
@@ -190,12 +190,12 @@ In a typical situation, where you're only reachable via Tor, this should suffice
 listen on all devices and another node could establish a clearnet connection, when knowing
 your address. To mitigate this, additionally bind the address of your Tor proxy:
 
-	./bitcoind ... -bind=127.0.0.1
+	./lotusd ... -bind=127.0.0.1
 
 If you don't care too much about hiding your node, and want to be reachable on IPv4
 as well, use `discover` instead:
 
-	./bitcoind ... -discover
+	./lotusd ... -discover
 
 and open port 10605 on your firewall (or use port mapping, i.e., `-upnp` or `-natpmp`).
 

@@ -60,7 +60,7 @@ HelpMessageDialog::HelpMessageDialog(QWidget *parent, bool about)
     } else {
         setWindowTitle(tr("Command-line options"));
         QString header =
-            "Usage:  bitcoin-qt [command-line options]                     \n";
+            "Usage:  lotus-qt [command-line options]                     \n";
         QTextCursor cursor(ui->helpMessage->document());
         cursor.insertText(version);
         cursor.insertBlock();

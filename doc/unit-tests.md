@@ -4,55 +4,55 @@ Unit tests are not part of the default build but can be built on demand.
 
 All the unit tests can be built and run with a single command: `ninja check`.
 
-#### bitcoind unit tests
+#### lotusd unit tests
 
-The `bitcoind` unit tests can be built with `ninja test_bitcoin`.
+The `lotusd` unit tests can be built with `ninja test_lotus`.
 They can also be built and run in a single command with `ninja check-bitcoin`.
 
-To run the `bitcoind` tests manually, launch `src/test/test_bitcoin`.
+To run the `lotusd` tests manually, launch `src/test/test_lotus`.
 
-To add more `bitcoind` tests, add `BOOST_AUTO_TEST_CASE` functions to the
+To add more `lotusd` tests, add `BOOST_AUTO_TEST_CASE` functions to the
 existing .cpp files in the `src/test/` directory or add new .cpp files that
 implement new `BOOST_AUTO_TEST_SUITE` sections.
 
-#### bitcoin-qt unit tests
+#### lotus-qt unit tests
 
-The `bitcoin-qt` tests can be built with `ninja test_bitcoin-qt` or
-built and run in a single command with `ninja check-bitcoin-qt`.
+The `lotus-qt` tests can be built with `ninja test_lotus-qt` or
+built and run in a single command with `ninja check-lotus-qt`.
 
-To run the `bitcoin-qt` tests manually, launch `src/qt/test/test_bitcoin-qt`.
+To run the `lotus-qt` tests manually, launch `src/qt/test/test_lotus-qt`.
 
-To add more `bitcoin-qt` tests, add them to the `src/qt/test/` directory and
+To add more `lotus-qt` tests, add them to the `src/qt/test/` directory and
 the `src/qt/test/test_main.cpp` file.
 
-#### bitcoin-seeder unit tests
+#### lotus-seeder unit tests
 
-The `bitcoin-seeder` unit tests can be built with `ninja test-seeder` or
+The `lotus-seeder` unit tests can be built with `ninja test-seeder` or
 built and run in a single command with `ninja check-seeder`.
 
-To run the `bitcoin-seeder` tests manually, launch
+To run the `lotus-seeder` tests manually, launch
 `src/seeder/test/test-seeder`.
 
-To add more `bitcoin-seeder` tests, add `BOOST_AUTO_TEST_CASE` functions to the
+To add more `lotus-seeder` tests, add `BOOST_AUTO_TEST_CASE` functions to the
 existing .cpp files in the `src/seeder/test/` directory or add new .cpp files
 that implement new `BOOST_AUTO_TEST_SUITE` sections.
 
 ### Running individual tests
 
-`test_bitcoin` has some built-in command-line arguments; for
+`test_lotus` has some built-in command-line arguments; for
 example, to run just the `getarg_tests` verbosely:
 
-    test_bitcoin --log_level=all --run_test=getarg_tests
+    test_lotus --log_level=all --run_test=getarg_tests
 
 ... or to run just the doubledash test:
 
-    test_bitcoin --run_test=getarg_tests/doubledash
+    test_lotus --run_test=getarg_tests/doubledash
 
-Run `test_bitcoin --help` for the full list.
+Run `test_lotus --help` for the full list.
 
 ### Adding test cases
 
-The build system is setup to compile an executable called `test_bitcoin`
+The build system is setup to compile an executable called `test_lotus`
 that runs all of the unit tests. The main source file for the test library
 is found in `util/setup_common.cpp`. To add a new unit test file to our
 test suite you need to add the file to `src/test/CMakeLists.txt`.
@@ -72,13 +72,13 @@ explaining how the boost unit test framework works:
 To write to logs from unit tests you need to use specific message methods
 provided by Boost. The simplest is `BOOST_TEST_MESSAGE`.
 
-For debugging you can launch the test_bitcoin executable with `gdb`or `lldb` and
-start debugging, just like you would with bitcoind.
+For debugging you can launch the test_lotus executable with `gdb`or `lldb` and
+start debugging, just like you would with lotusd.
 
 This is a simple example of debugging unit tests with GDB on Linux:
 ```
 cd /build/src/test
-gdb test_bitcoin
+gdb test_lotus
 break interpreter.cpp:295  # No path is necessary, just the file name and line number
 run
 # GDB hits the breakpoint
@@ -89,7 +89,7 @@ c           # continue
 This is a simple example of debugging unit tests with LLDB (OSX or Linux):
 ```
 cd /build/src/test
-lldb -- test_bitcoin
+lldb -- test_lotus
 break set --file interpreter.cpp --line 295
 run
 ```

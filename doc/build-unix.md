@@ -17,7 +17,7 @@ ninja
 ninja install # optional
 ```
 
-This will build bitcoin-qt as well.
+This will build lotus-qt as well.
 
 Dependencies
 ---------------------
@@ -127,7 +127,7 @@ User-Space, Statically Defined Tracing (USDT) dependencies (provides the tracepo
 Dependencies for the GUI: Ubuntu & Debian
 -----------------------------------------
 
-If you want to build bitcoin-qt, make sure that the required packages for Qt development
+If you want to build lotus-qt, make sure that the required packages for Qt development
 are installed. Qt 5 is necessary to build the GUI.
 To build without GUI pass `-DBUILD_QT=OFF` on the cmake command line.
 
@@ -178,7 +178,7 @@ SQLite can be installed with:
 
 Notes
 -----
-The release is built with GCC and then "strip bitcoind" to strip the debug
+The release is built with GCC and then "strip lotusd" to strip the debug
 symbols, which reduces the executable size by about 90%.
 
 

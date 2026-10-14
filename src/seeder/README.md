@@ -1,9 +1,9 @@
-bitcoin-seeder
+lotus-seeder
 ==============
 
 Bitcoin-seeder is a crawler for the eCash network, which exposes a list
 of reliable nodes via a built-in DNS server. It is derived from Pieter Wuille's
-bitcoin-seeder, modified for use on the eCash network.
+lotus-seeder, modified for use on the eCash network.
 
 Features:
 * regularly revisits known nodes to check their availability
@@ -33,7 +33,7 @@ to for example vps.example.com:
 
 On the system vps.example.com, you can now run bitcoin-seeder:
 
-    ./bitcoin-seeder -host=dnsseed.example.com -ns=vps.example.com
+    ./lotus-seeder -host=dnsseed.example.com -ns=vps.example.com
 
 If you want the DNS server to report SOA records, please provide an
 e-mail address (with the `@` part replaced by `.`) using `-mbox`.
