@@ -249,6 +249,146 @@ void MinerTestingSetup::TestPackageSelection(
         BOOST_CHECK(txn->GetId() != freeTxId);
         BOOST_CHECK(txn->GetId() != highFeeDecendantTxId);
     }
+
+    if (m_preconsensus) {
+        return;
+    }
+
+    // Once a parent is included, charge only the child's remaining resources.
+    // Both paid transactions must fit with exactly one byte of spare capacity.
+    // The large outputs also make the derived sigcheck budget exceed the
+    // coinbase reservation; this test isolates block-size accounting.
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    tx.vout.emplace_back(Amount::zero(),
+                         CScript() << OP_RETURN << std::vector<uint8_t>(8000));
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
+    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - 20000 * SATOSHI;
+    const auto fittingParent = MakeTransactionRef(tx);
+    AddUnchecked(entry.Fee(20000 * SATOSHI).FromTx(tx));
+    tx.vin[0].prevout = COutPoint(fittingParent->GetId(), 0);
+    tx.vout[0].nValue -= 10000 * SATOSHI;
+    const auto fittingChild = MakeTransactionRef(tx);
+    AddUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx));
+
+    BlockFitter::Options fitter_options;
+    fitter_options.blockMinFeeRate = blockMinFeeRate;
+    fitter_options.nMaxGeneratedBlockSize =
+        BlockFitter::COINBASE_RESERVED_SIZE +
+        ::GetSerializeSize(*fittingParent) + ::GetSerializeSize(*fittingChild) + 1;
+    BlockAssembler::Options assembler_options;
+    assembler_options.add_finalized_txs = false;
+    auto constrained_assembler = BlockAssembler{
+        BlockFitter(fitter_options), m_node.chainman->ActiveChainstate(),
+        m_node.mempool.get(), assembler_options, m_node.avalanche.get()};
+    pblocktemplate = constrained_assembler.CreateNewBlock(scriptPubKey);
+    BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 3U);
+    const auto &selected = pblocktemplate->block.vtx;
+    BOOST_CHECK(std::any_of(selected.begin(), selected.end(), [&](const auto &txref) {
+        return txref->GetId() == fittingChild->GetId();
+    }));
+
+    // The same live-resource rule applies at the sigcheck boundary. Leave one
+    // sigcheck spare; the parent must not be charged again for its child.
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    AddUnchecked(entry.Fee(20000 * SATOSHI).SigChecks(1).FromTx(fittingParent));
+    const auto childSigChecks =
+        GetMaxBlockSigChecksCount(fitter_options.nMaxGeneratedBlockSize) -
+        BlockFitter::COINBASE_RESERVED_SIGCHECKS - 2;
+    AddUnchecked(entry.Fee(10000 * SATOSHI)
+                     .SigChecks(childSigChecks)
+                     .FromTx(fittingChild));
+    auto sigcheck_assembler = BlockAssembler{
+        BlockFitter(fitter_options), m_node.chainman->ActiveChainstate(),
+        m_node.mempool.get(), assembler_options, m_node.avalanche.get()};
+    BOOST_CHECK_EQUAL(sigcheck_assembler.CreateNewBlock(scriptPubKey)
+                          ->block.vtx.size(),
+                      3U);
+
+    // A layered diamond has exponentially many ancestry paths but only a
+    // linear number of direct edges. Multiple inputs spending one parent
+    // must also release the child exactly once, not leave it blocked.
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    auto addSplit = [&](const std::vector<COutPoint> &inputs, Amount value,
+                        Amount fee = 10000 * SATOSHI, size_t padding = 100) NO_THREAD_SAFETY_ANALYSIS {
+        CMutableTransaction split;
+        for (const auto &prevout : inputs) {
+            CTxIn input;
+            input.prevout = prevout;
+            input.scriptSig = CScript() << OP_1;
+            split.vin.push_back(input);
+        }
+        const int64_t available = (value - fee) / SATOSHI;
+        split.vout.emplace_back((available / 2) * SATOSHI, CScript() << OP_TRUE);
+        split.vout.emplace_back((available - available / 2) * SATOSHI,
+                                CScript() << OP_TRUE);
+        split.vout.emplace_back(Amount::zero(),
+                                CScript() << OP_RETURN << std::vector<uint8_t>(padding));
+        const auto result = MakeTransactionRef(split);
+        AddUnchecked(entry.Fee(fee).SigChecks(0).FromTx(result));
+        return result;
+    };
+    const auto root = addSplit({COutPoint(txFirst[0]->GetId(), 0)},
+                               txFirst[0]->vout[0].nValue);
+    auto left = addSplit({COutPoint(root->GetId(), 0)}, root->vout[0].nValue);
+    auto right = addSplit({COutPoint(root->GetId(), 1)}, root->vout[1].nValue);
+    for (int layer = 0; layer < 10; ++layer) {
+        const auto nextLeft = addSplit(
+            {COutPoint(left->GetId(), 0), COutPoint(right->GetId(), 0)},
+            left->vout[0].nValue + right->vout[0].nValue);
+        const auto nextRight = addSplit(
+            {COutPoint(left->GetId(), 1), COutPoint(right->GetId(), 1)},
+            left->vout[1].nValue + right->vout[1].nValue);
+        left = nextLeft;
+        right = nextRight;
+    }
+    const auto repeatedParent = addSplit(
+        {COutPoint(left->GetId(), 0), COutPoint(left->GetId(), 1)},
+        left->vout[0].nValue + left->vout[1].nValue);
+    const auto diamond = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
+    BOOST_CHECK_EQUAL(diamond->block.vtx.size(), 25U);
+    BOOST_CHECK(std::any_of(diamond->block.vtx.begin(), diamond->block.vtx.end(),
+                           [&](const auto &txref) {
+                               return txref->GetId() == repeatedParent->GetId();
+                           }));
+
+    // Newly ready siblings compete by their own modified fee rate, not by
+    // the parent's child-container iteration order. Only one child fits.
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    const auto siblingParent = addSplit({COutPoint(txFirst[0]->GetId(), 0)},
+                                        txFirst[0]->vout[0].nValue, 20000 * SATOSHI, 8000);
+    const auto lowerFee = addSplit({COutPoint(siblingParent->GetId(), 0)},
+                                   siblingParent->vout[0].nValue, 30000 * SATOSHI, 8000);
+    const auto higherFee = addSplit({COutPoint(siblingParent->GetId(), 1)},
+                                    siblingParent->vout[1].nValue, 50000 * SATOSHI, 8000);
+    fitter_options.nMaxGeneratedBlockSize =
+        BlockFitter::COINBASE_RESERVED_SIZE +
+        ::GetSerializeSize(*siblingParent) + ::GetSerializeSize(*higherFee) + 1;
+    auto sibling_assembler = BlockAssembler{
+        BlockFitter(fitter_options), m_node.chainman->ActiveChainstate(),
+        m_node.mempool.get(), assembler_options, m_node.avalanche.get()};
+    const auto siblings = sibling_assembler.CreateNewBlock(scriptPubKey);
+    BOOST_CHECK_EQUAL(siblings->block.vtx.size(), 3U);
+    BOOST_CHECK(std::any_of(siblings->block.vtx.begin(), siblings->block.vtx.end(),
+                           [&](const auto &txref) {
+                               return txref->GetId() == higherFee->GetId();
+                           }));
+    BOOST_CHECK(std::none_of(siblings->block.vtx.begin(), siblings->block.vtx.end(),
+                            [&](const auto &txref) {
+                                return txref->GetId() == lowerFee->GetId();
+                            }));
+
+    // A high-fee child must not bypass a nonfinal parent.
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    CMutableTransaction lockedParent(*siblingParent);
+    lockedParent.nLockTime = m_node.chainman->ActiveTip()->nHeight + 1;
+    lockedParent.vin[0].nSequence = 0;
+    const auto locked = MakeTransactionRef(lockedParent);
+    AddUnchecked(entry.Fee(20000 * SATOSHI).SigChecks(0).FromTx(locked));
+    addSplit({COutPoint(locked->GetId(), 0)}, locked->vout[0].nValue,
+             50000 * SATOSHI, 8000);
+    BOOST_CHECK_EQUAL(AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey)
+                          ->block.vtx.size(),
+                      1U);
 }
 
 static void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,

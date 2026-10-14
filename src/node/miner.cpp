@@ -264,128 +264,82 @@ bool BlockAssembler::CheckTx(const CTransaction &tx) const {
 }
 
 /**
- * addTxs includes transactions paying a fee by ensuring that
- * the partial ordering of transactions is maintained.  That is to say
- * children come after parents, despite having a potentially larger fee.
+ * Build a dependency snapshot and select the highest-feerate ready transaction.
+ * Each transaction is queued at most once and each direct-parent edge is
+ * updated once: expected O(n + m + n log n) time and O(n + m) space for n
+ * entries and m dependency edges. Hash lookups use the salted transaction ID
+ * hasher. This is not an assertion of a speedup over upstream's assembler.
  */
 void BlockAssembler::addTxs(const CTxMemPool &mempool) {
-    // mapped_value is the number of mempool parents that are still needed for
-    // the entry. We decrement this count each time we add a parent of the entry
-    // to the block.
-    std::unordered_map<CTxMemPoolEntryRef, size_t> missingParentCount;
-    missingParentCount.reserve(mempool.size() / 2);
-
-    // set of children we skipped because we have not yet added their parents
-    std::unordered_set<CTxMemPoolEntryRef> skippedChildren;
-
-    auto hasMissingParents =
-        [&missingParentCount](const CTxMemPoolEntryRef &entry)
-            EXCLUSIVE_LOCKS_REQUIRED(mempool.cs) {
-                // If we've added any of this tx's parents already, then
-                // missingParentCount will have the current count
-                if (auto pcIt = missingParentCount.find(entry);
-                    pcIt != missingParentCount.end()) {
-                    // when pcIt->second reaches 0, we have added all of this
-                    // tx's parents
-                    return pcIt->second != 0;
-                }
-                return !entry->GetMemPoolParentsConst().empty();
-            };
-
-    // Limit the number of attempts to add transactions to the block when it is
-    // close to full; this is just a simple heuristic to finish quickly if the
-    // mempool has a lot of entries.
-    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
-    int64_t nConsecutiveFailed = 0;
-
-    // Transactions where a parent has been added and need to be checked for
-    // inclusion.
-    std::queue<CTxMemPoolEntryRef> backlog;
-    auto mi = mempool.mapTx.get<modified_feerate>().begin();
-
-    auto nextEntry = [&backlog, &mi](bool &isFromBacklog) {
-        if (backlog.empty()) {
-            return *mi++;
-        }
-
-        auto &entry = backlog.front();
-        backlog.pop();
-
-        isFromBacklog = true;
-
-        return entry;
+    struct SnapshotEntry {
+        CTxMemPoolEntryRef entry;
+        size_t missingParents;
+        std::vector<size_t> children;
     };
+    std::vector<SnapshotEntry> snapshot;
+    snapshot.reserve(mempool.mapTx.size());
+    std::unordered_map<TxId, size_t, SaltedTxIdHasher> locations;
+    locations.reserve(mempool.mapTx.size());
+    for (const auto &entry : mempool.mapTx.get<entry_id>()) {
+        locations.emplace(entry->GetTx().GetId(), snapshot.size());
+        snapshot.push_back({entry, entry->GetMemPoolParentsConst().size(), {}});
+    }
+    // Parent sets deduplicate multiple inputs spending one parent, and a
+    // shared ancestor is represented only by its direct dependency edges.
+    for (size_t child = 0; child < snapshot.size(); ++child) {
+        for (const auto &parent : snapshot[child].entry->GetMemPoolParentsConst()) {
+            const auto position = locations.find(parent.get()->GetTx().GetId());
+            assert(position != locations.end());
+            snapshot[position->second].children.push_back(child);
+        }
+    }
+    auto lowerPriority = [&snapshot](size_t a, size_t b) {
+        return CompareTxMemPoolEntryByModifiedFeeRate{}(snapshot[b].entry,
+                                                       snapshot[a].entry);
+    };
+    std::priority_queue<size_t, std::vector<size_t>, decltype(lowerPriority)>
+        ready(lowerPriority);
+    for (size_t i = 0; i < snapshot.size(); ++i) {
+        if (snapshot[i].missingParents == 0) {
+            ready.push(i);
+        }
+    }
 
-    while (!backlog.empty() ||
-           mi != mempool.mapTx.get<modified_feerate>().end()) {
-        // Get a new or old transaction in mapTx to evaluate.
-        bool isFromBacklog = false;
-        const CTxMemPoolEntryRef &entry = nextEntry(isFromBacklog);
-
+    const int64_t MAX_CONSECUTIVE_FAILURES = 1000;
+    int64_t consecutiveFailures = 0;
+    while (!ready.empty()) {
+        const size_t index = ready.top();
+        ready.pop();
+        const auto &entry = snapshot[index].entry;
+        // Individual modified fees preserve the existing no-CPFP policy:
+        // already selected ancestors cannot subsidize a free descendant.
         if (blockFitter.isBelowBlockMinFeeRate(entry->GetModifiedFeeRate())) {
-            // Since the txs are sorted by fee, bail early if there is none that
-            // can be included in the block anymore.
+            // All remaining ready entries have no higher fee rate, and their
+            // descendants cannot become ready without including them.
             break;
         }
-
-        // Check whether all of this tx's parents are already in the block. If
-        // not, pass on it until later.
-        //
-        // If it's from the backlog, then we know all parents are already in
-        // the block.
-        if (!isFromBacklog && hasMissingParents(entry)) {
-            skippedChildren.insert(entry);
-            continue;
-        }
-
-        // Check whether the tx will exceed the block limits.
-        if (!blockFitter.testTxFits(entry->GetTxSize(),
-                                    entry->GetSigChecks())) {
-            ++nConsecutiveFailed;
-            if (nConsecutiveFailed > MAX_CONSECUTIVE_FAILURES &&
+        // Recheck this transaction's actual resources against the live block;
+        // ancestors are already included and must not be charged twice.
+        if (!blockFitter.testTxFits(entry->GetTxSize(), entry->GetSigChecks())) {
+            ++consecutiveFailures;
+            if (consecutiveFailures > MAX_CONSECUTIVE_FAILURES &&
                 blockFitter.nBlockSize >
                     blockFitter.getMaxGeneratedBlockSize() - 1000) {
-                // Give up if we're close to full and haven't succeeded in a
-                // while.
                 break;
             }
             continue;
         }
-
-        // Test transaction finality (locktime)
         if (!CheckTx(entry->GetTx())) {
             continue;
         }
-
-        // This transaction will make it in; reset the failed counter.
-        nConsecutiveFailed = 0;
-
-        // Tx can be added.
+        consecutiveFailures = 0;
         AddToBlock(entry);
-
-        // This tx's children may now be candidates for addition if they have
-        // higher scores than the tx at the cursor. We can only process a
-        // child once all of that tx's parents have been added, though. To
-        // avoid O(n^2) checking of dependencies, we store and decrement the
-        // number of mempool parents for each child. Although this code
-        // ends up taking O(n) time to process a single tx with n children,
-        // that's okay because the amount of time taken is proportional to the
-        // tx's byte size and fee paid.
-        for (const auto &child : entry->GetMemPoolChildrenConst()) {
-            // Remember this tx has missing parents.
-            // Create the map entry if it doesn't exist already, and init with
-            // the number of parents.
-            const auto &[parentCount, _] = missingParentCount.try_emplace(
-                child, child.get()->GetMemPoolParentsConst().size());
-            // We just added one parent, so decrement the counter and check if
-            // we have any missing parent remaining.
-            const bool allParentsAdded = --parentCount->second == 0;
-
-            // If all parents have been added to the block, and if this child
-            // has been previously skipped due to missing parents, enqueue it
-            // (if it hasn't been skipped it will come up in a later iteration)
-            if (allParentsAdded && skippedChildren.count(child) > 0) {
-                backlog.push(child);
+        // Only successful inclusion releases children. A nonfinal, low-fee,
+        // or non-fitting ancestor therefore also excludes its descendants.
+        for (const size_t child : snapshot[index].children) {
+            assert(snapshot[child].missingParents > 0);
+            if (--snapshot[child].missingParents == 0) {
+                ready.push(child);
             }
         }
     }
