@@ -287,7 +287,7 @@ class NetTest(BitcoinTestFramework):
 
         # Add an IPv6 address to the address manager.
         ipv6_addr = "1233:3432:2434:2343:3234:2345:6546:4534"
-        self.nodes[0].addpeeraddress(address=ipv6_addr, port=8333)
+        self.nodes[0].addpeeraddress(address=ipv6_addr, port=10605)
 
         # Add 10,000 IPv4 addresses to the address manager. Due to the way bucket
         # and bucket positions are calculated, some of these addresses will
@@ -298,7 +298,7 @@ class NetTest(BitcoinTestFramework):
             second_octet = i % 256
             a = f"{first_octet}.{second_octet}.1.1"
             imported_addrs.append(a)
-            self.nodes[0].addpeeraddress(a, 8333)
+            self.nodes[0].addpeeraddress(a, 10605)
 
         # Fetch the addresses via the RPC and test the results.
         # default count is 1
@@ -315,7 +315,7 @@ class NetTest(BitcoinTestFramework):
             assert_greater_than(a["time"], 1527811200)  # 1st June 2018
             assert_equal(a["services"], NODE_NETWORK)
             assert a["address"] in imported_addrs
-            assert_equal(a["port"], 8333)
+            assert_equal(a["port"], 10605)
             assert_equal(a["network"], "ipv4")
 
         # Test the IPv6 address.
@@ -323,7 +323,7 @@ class NetTest(BitcoinTestFramework):
         assert_equal(len(res), 1)
         assert_equal(res[0]["address"], ipv6_addr)
         assert_equal(res[0]["network"], "ipv6")
-        assert_equal(res[0]["port"], 8333)
+        assert_equal(res[0]["port"], 10605)
         assert_equal(res[0]["services"], NODE_NETWORK)
 
         # Test for the absence of onion and I2P addresses.

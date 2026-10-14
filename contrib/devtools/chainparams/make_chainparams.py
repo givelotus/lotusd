@@ -80,11 +80,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--address",
         "-a",
-        default="127.0.0.1:8332",
+        default="127.0.0.1:10604",
         help=(
             "Node address for making RPC calls.\n"
             "The chain (MainNet or TestNet) will be automatically detected.\n"
-            "Default: '127.0.0.1:8332'"
+            "Default: '127.0.0.1:10604'"
         ),
     )
     parser.add_argument(

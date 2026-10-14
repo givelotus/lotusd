@@ -21,7 +21,7 @@ RUN chown -h bitcoin:bitcoin /home/bitcoin/.bitcoin
 # are set, otherwise the changes won't be persistent
 VOLUME "${BITCOIN_DATA}"
 
-EXPOSE 8332 8333 18332 18333
+EXPOSE 10604 10605 11604 11605
 
 USER bitcoin
 CMD ["bitcoind"]

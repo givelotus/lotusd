@@ -349,8 +349,8 @@ static RPCHelpMan addnode() {
         },
         RPCResult{RPCResult::Type::NONE, "", ""},
         RPCExamples{
-            HelpExampleCli("addnode", "\"192.168.0.6:8333\" \"onetry\"") +
-            HelpExampleRpc("addnode", "\"192.168.0.6:8333\", \"onetry\"")},
+            HelpExampleCli("addnode", "\"192.168.0.6:10605\" \"onetry\"") +
+            HelpExampleRpc("addnode", "\"192.168.0.6:10605\", \"onetry\"")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
             const auto command{self.Arg<std::string>("command")};
@@ -483,9 +483,9 @@ static RPCHelpMan disconnectnode() {
              "The node ID (see getpeerinfo for node IDs)"},
         },
         RPCResult{RPCResult::Type::NONE, "", ""},
-        RPCExamples{HelpExampleCli("disconnectnode", "\"192.168.0.6:8333\"") +
+        RPCExamples{HelpExampleCli("disconnectnode", "\"192.168.0.6:10605\"") +
                     HelpExampleCli("disconnectnode", "\"\" 1") +
-                    HelpExampleRpc("disconnectnode", "\"192.168.0.6:8333\"") +
+                    HelpExampleRpc("disconnectnode", "\"192.168.0.6:10605\"") +
                     HelpExampleRpc("disconnectnode", "\"\", 1")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {

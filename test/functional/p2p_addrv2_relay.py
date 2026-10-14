@@ -17,7 +17,7 @@ for i in range(10):
     addr.time = int(time.time()) + i
     addr.nServices = NODE_NETWORK
     addr.ip = f"123.123.123.{i % 256}"
-    addr.port = 8333 + i
+    addr.port = 10605 + i
     ADDRS.append(addr)
 
 

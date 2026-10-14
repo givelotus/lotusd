@@ -50,9 +50,9 @@ class AddrReceiver(P2PInterface):
                 # relay_tests checks the content of the addr messages match
                 # expectations based on the message creation in setup_addr_msg
                 assert_equal(addr.nServices, NODE_NETWORK)
-                if not 8333 <= addr.port < 8343:
+                if not 10605 <= addr.port < 10615:
                     raise AssertionError(
-                        f"Invalid addr.port of {addr.port} (8333-8342 expected)"
+                        f"Invalid addr.port of {addr.port} (10605-10614 expected)"
                     )
                 assert addr.ip.startswith("123.123.123.")
 
@@ -113,7 +113,7 @@ class AddrTest(BitcoinTestFramework):
             addr.time = self.mocktime + i
             addr.nServices = NODE_NETWORK
             addr.ip = f"123.123.123.{self.counter % 256}"
-            addr.port = 8333 + i
+            addr.port = 10605 + i
             addrs.append(addr)
             self.counter += 1
 
@@ -131,7 +131,7 @@ class AddrTest(BitcoinTestFramework):
                 f"{random.randrange(128, 169)}.{random.randrange(1, 255)}"
                 f".{random.randrange(1, 255)}.{random.randrange(1, 255)}"
             )
-            addr.port = 8333
+            addr.port = 10605
             addrs.append(addr)
         msg = msg_addr()
         msg.addrs = addrs

@@ -173,7 +173,7 @@ std::string HelpExampleRpc(const std::string &methodname,
            "\"id\": \"curltest\", "
            "\"method\": \"" +
            methodname + "\", \"params\": [" + args +
-           "]}' -H 'content-type: text/plain;' http://127.0.0.1:8332/\n";
+           "]}' -H 'content-type: text/plain;' http://127.0.0.1:10604/\n";
 }
 
 std::string HelpExampleRpcNamed(const std::string &methodname,
