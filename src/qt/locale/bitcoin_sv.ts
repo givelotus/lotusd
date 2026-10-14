@@ -2181,7 +2181,7 @@ Var vänlig och försök igen.</translation>
     <name>WalletView</name>
     </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Inställningar:</translation>
@@ -2239,8 +2239,8 @@ Var vänlig och försök igen.</translation>
         <translation>Kunde inte starta HTTP-server. Se avlusningsloggen för detaljer.</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
-        <translation>Bitcoin ABC</translation>
+        <source>Lotus</source>
+        <translation>Lotus</translation>
     </message>
     <message>
         <source>The %s developers</source>

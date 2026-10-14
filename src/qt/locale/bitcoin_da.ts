@@ -3000,7 +3000,7 @@
     </message>
 </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Indstillinger:</translation>
@@ -3070,8 +3070,8 @@
         <translation>Kunne ikke starte HTTP-server. Se fejlretningslog for detaljer.</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
-        <translation>Bitcoin ABC</translation>
+        <source>Lotus</source>
+        <translation>Lotus</translation>
     </message>
     <message>
         <source>The %s developers</source>

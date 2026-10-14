@@ -3000,7 +3000,7 @@
     </message>
 </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Opciones:
@@ -3073,8 +3073,8 @@
         <translation>No se ha podido comenzar el servidor HTTP. Ver debug log para detalles.</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
-        <translation>Bitcoin ABC</translation>
+        <source>Lotus</source>
+        <translation>Lotus</translation>
     </message>
     <message>
         <source>The %s developers</source>

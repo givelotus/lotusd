@@ -2812,7 +2812,7 @@
     </message>
 </context>
 <context>
-    <name>bitcoin-abc</name>
+    <name>lotus</name>
     <message>
         <source>Options:</source>
         <translation>Opties:</translation>
@@ -2870,8 +2870,8 @@
         <translation>Niet mogelijk ok HTTP-server te starten. Zie debuglogboek voor details.</translation>
     </message>
     <message>
-        <source>Bitcoin ABC</source>
-        <translation>Bitcoin ABC</translation>
+        <source>Lotus</source>
+        <translation>Lotus</translation>
     </message>
     <message>
         <source>The %s developers</source>
