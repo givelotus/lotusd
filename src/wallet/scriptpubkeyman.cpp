@@ -94,6 +94,7 @@ IsMineResult IsMineInner(const LegacyScriptPubKeyMan &keystore,
     switch (whichType) {
         case TxoutType::NONSTANDARD:
         case TxoutType::NULL_DATA:
+        case TxoutType::TAPROOT:
             break;
         case TxoutType::PUBKEY:
             keyID = CPubKey(vSolutions[0]).GetID();

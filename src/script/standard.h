@@ -42,6 +42,7 @@ enum class TxoutType {
     PUBKEYHASH,
     SCRIPTHASH,
     MULTISIG,
+    TAPROOT,
     // unspendable OP_RETURN script that carries data
     NULL_DATA,
 };

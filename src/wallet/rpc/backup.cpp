@@ -1243,6 +1243,7 @@ static std::string RecurseImportData(const CScript &script,
             return "";
         }
         case TxoutType::NULL_DATA:
+        case TxoutType::TAPROOT:
             return "unspendable script";
         case TxoutType::NONSTANDARD:
         default:

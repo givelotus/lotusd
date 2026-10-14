@@ -139,8 +139,6 @@ class TaprootKeySpendTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.extra_args = [['-whitelist=noban@127.0.0.1',
-                            '-allownonstdtxnconsensus=1',
-                            '-acceptnonstdtxn=1',
                             f'-replayprotectionactivationtime={ACTIVATION_TIME}']]
 
     def run_test(self):
