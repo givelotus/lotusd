@@ -367,8 +367,12 @@ public:
     void SetCashAddrEncoding(bool) override {}
     bool UseCashAddrEncoding() const override { return false; }
 
+    void SetEnableMinerFund(bool c) override { enableMinerFund = c; }
+    bool EnableMinerFund() const override { return enableMinerFund; }
+
 private:
     std::unique_ptr<const CChainParams> chainParams;
+    bool enableMinerFund;
 };
 
 #endif // BITCOIN_TEST_UTIL_SETUP_COMMON_H

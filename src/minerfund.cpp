@@ -36,9 +36,10 @@ static const CTxOut BurnOutput(const Amount amount) {
 }
 
 std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
+                                                const bool enableMinerFund,
                                                 const CBlockIndex *pindexPrev,
                                                 const Amount &blockReward) {
-    if (!gArgs.GetBoolArg("-enableminerfund", params.enableMinerFund)) {
+    if (!enableMinerFund) {
         return {};
     }
 
@@ -57,10 +58,11 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
 }
 
 bool CheckMinerFund(const Consensus::Params &params,
+                    const bool enableMinerFund,
                     const std::vector<CTxOut> &coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev) {
     const std::vector<CTxOut> requiredOutputs =
-        GetMinerFundRequiredOutputs(params, pprev, blockReward);
+        GetMinerFundRequiredOutputs(params, enableMinerFund, pprev, blockReward);
     if (requiredOutputs.empty()) {
         return true;
     }

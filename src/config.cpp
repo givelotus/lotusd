@@ -7,7 +7,8 @@
 #include <consensus/consensus.h> // DEFAULT_MAX_BLOCK_SIZE
 
 GlobalConfig::GlobalConfig()
-    : useCashAddr(false), nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
+    : useCashAddr(false), enableMinerFund(MinerFundStatus::Unset),
+      nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
 
 bool GlobalConfig::SetMaxBlockSize(uint64_t maxBlockSize) {
     // Do not allow maxBlockSize to be set below historic 1MB limit
@@ -46,4 +47,13 @@ void GlobalConfig::SetCashAddrEncoding(bool c) {
 }
 bool GlobalConfig::UseCashAddrEncoding() const {
     return useCashAddr;
+}
+
+void GlobalConfig::SetEnableMinerFund(bool c) {
+    enableMinerFund = c ? MinerFundStatus::Enabled : MinerFundStatus::Disabled;
+}
+bool GlobalConfig::EnableMinerFund() const {
+    return enableMinerFund == MinerFundStatus::Unset
+               ? GetChainParams().GetConsensus().enableMinerFund
+               : enableMinerFund == MinerFundStatus::Enabled;
 }

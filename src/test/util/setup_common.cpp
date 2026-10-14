@@ -122,6 +122,8 @@ BasicTestingSetup::BasicTestingSetup(
     SeedRandomForTest(SeedRand::SEED);
 
     SelectParams(chainType);
+    config.SetEnableMinerFund(
+        config.GetChainParams().GetConsensus().enableMinerFund);
     InitLogging(*m_node.args);
     AppInitParameterInteraction(config, *m_node.args);
     LogInstance().StartLogging();
@@ -648,11 +650,13 @@ CBlock getBlock13b8a() {
 }
 
 DummyConfig::DummyConfig()
-    : chainParams(CreateChainParams(ArgsManager{}, ChainType::REGTEST)) {}
+    : chainParams(CreateChainParams(ArgsManager{}, ChainType::REGTEST)),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 DummyConfig::DummyConfig(std::string net)
     : chainParams(
-          CreateChainParams(ArgsManager{}, ChainTypeFromString(net).value())) {}
+          CreateChainParams(ArgsManager{}, ChainTypeFromString(net).value())),
+      enableMinerFund(chainParams->GetConsensus().enableMinerFund) {}
 
 std::ostream &operator<<(std::ostream &os, const arith_uint256 &num) {
     return os << ArithToUint256(num).ToString();

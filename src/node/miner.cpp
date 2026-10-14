@@ -68,9 +68,10 @@ void ApplyArgsManOptions(const ArgsManager &args,
         "-avalanchepreconsensusmining", DEFAULT_AVALANCHE_MINING_PRECONSENSUS);
 }
 
-static BlockAssembler::Options ConfiguredOptions() {
+static BlockAssembler::Options ConfiguredOptions(const Config &config) {
     BlockAssembler::Options options;
     ApplyArgsManOptions(gArgs, options);
+    options.enableMinerFund = config.EnableMinerFund();
     return options;
 }
 
@@ -83,19 +84,22 @@ BlockAssembler::BlockAssembler(const BlockFitter &fitter,
       m_mempool(mempool), m_chainstate(chainstate), m_avalanche(avalanche),
       fPrintPriority{options.fPrintPriority},
       test_block_validity{options.test_block_validity},
-      add_finalized_txs{avalanche && options.add_finalized_txs} {}
+      add_finalized_txs{avalanche && options.add_finalized_txs},
+      enableMinerFund{options.enableMinerFund} {}
 
 BlockAssembler::BlockAssembler(const BlockFitter &fitter,
                                Chainstate &chainstate,
                                const CTxMemPool *mempool,
                                const avalanche::Processor *avalanche)
-    : BlockAssembler(fitter, chainstate, mempool, ConfiguredOptions(),
+    : BlockAssembler(fitter, chainstate, mempool,
+                     ConfiguredOptions(chainstate.m_chainman.GetConfig()),
                      avalanche) {}
 
 BlockAssembler::BlockAssembler(const Config &config, Chainstate &chainstate,
                                const CTxMemPool *mempool,
                                const avalanche::Processor *avalanche)
-    : BlockAssembler(BlockFitter(config), chainstate, mempool, avalanche) {}
+    : BlockAssembler(BlockFitter(config), chainstate, mempool,
+                     ConfiguredOptions(config), avalanche) {}
 
 std::optional<int64_t> BlockAssembler::m_last_block_num_txs{std::nullopt};
 std::optional<int64_t> BlockAssembler::m_last_block_size{std::nullopt};
@@ -197,8 +201,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
 
     const Amount blockReward = coinbaseTx.vout[1].nValue;
-    const std::vector<CTxOut> requiredOutputs =
-        GetMinerFundRequiredOutputs(consensusParams, pindexPrev, blockReward);
+    const std::vector<CTxOut> requiredOutputs = GetMinerFundRequiredOutputs(
+        consensusParams, enableMinerFund, pindexPrev, blockReward);
     for (const CTxOut &requiredOutput : requiredOutputs) {
         coinbaseTx.vout[1].nValue -= requiredOutput.nValue;
         coinbaseTx.vout.push_back(requiredOutput);
@@ -242,6 +246,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
             state, chainParams, m_chainstate, *pblock, pindexPrev,
             GetAdjustedTime,
             BlockValidationOptions(blockFitter.getMaxGeneratedBlockSize())
+                .withMinerFund(enableMinerFund)
                 .withCheckPoW(false)
                 .withCheckMerkleRoot(false))) {
         throw std::runtime_error(strprintf("%s: TestBlockValidity failed: %s",

@@ -139,12 +139,14 @@ private:
     const bool test_block_validity;
 
     const bool add_finalized_txs;
+    const bool enableMinerFund;
 
 public:
     struct Options {
         bool fPrintPriority{DEFAULT_PRINTPRIORITY};
         bool test_block_validity{true};
         bool add_finalized_txs{false};
+        bool enableMinerFund{false};
     };
 
     BlockAssembler(const Config &config, Chainstate &chainstate,

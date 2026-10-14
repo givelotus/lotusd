@@ -2727,6 +2727,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     config.SetCashAddrEncoding(
         args.GetBoolArg("-usecashaddr", DEFAULT_USEASHADDR));
 
+    // Hidden Flag: Enable validation and addition of miner funding addresses
+    // for testing purposes
+    config.SetEnableMinerFund(args.GetBoolArg(
+        "-enableminerfund", chainparams.GetConsensus().enableMinerFund));
+
     // Step 8: load indexers
 
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
