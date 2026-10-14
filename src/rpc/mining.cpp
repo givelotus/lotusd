@@ -1057,8 +1057,9 @@ static RPCHelpMan getblocktemplate() {
                 CBlockIndex *pindexPrevNew = active_chain.Tip();
                 time_start = GetTime();
 
-                // Create new block
-                CScript scriptDummy = CScript() << OP_TRUE;
+                // Create new block. scriptDummy is just for testing block
+                // validity and is not part of the returned template.
+                CScript scriptDummy = CScript() << OP_RETURN;
                 pblocktemplate = BlockAssembler{config, active_chainstate,
                                                 &mempool, node.avalanche.get()}
                                      .CreateNewBlock(scriptDummy);
