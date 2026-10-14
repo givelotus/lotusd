@@ -3876,6 +3876,12 @@ public:
         }
         return obj;
     }
+
+    UniValue operator()(const Taproot &dest) const {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("commitment", HexStr(dest.GetCommitment()));
+        return obj;
+    }
 };
 
 static UniValue DescribeWalletAddress(const CWallet *const pwallet,

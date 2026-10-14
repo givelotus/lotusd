@@ -299,6 +299,13 @@ public:
         obj.pushKV("isscript", true);
         return obj;
     }
+
+    UniValue operator()(const Taproot &dest) const {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("isscript", false);
+        obj.pushKV("istaproot", true);
+        return obj;
+    }
 };
 
 UniValue DescribeAddress(const CTxDestination &dest) {

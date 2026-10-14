@@ -38,6 +38,11 @@ public:
         return EncodeBase58Check(data);
     }
 
+    std::string operator()(const Taproot &) const {
+        // Legacy Base58 encoding does not support Taproot addresses
+        return {};
+    }
+
     std::string operator()(const CNoDestination &no) const { return {}; }
 };
 

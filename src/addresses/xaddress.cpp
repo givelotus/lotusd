@@ -137,11 +137,23 @@ bool Parse(const CChainParams &params, const std::string &address,
     if (TOKEN_NAME != content.m_token) {
         return false;
     }
-    if (SCRIPT_PUB_KEY != content.m_type) {
-        return false;
+    if (content.m_type == SCRIPT_PUB_KEY) {
+        CScript scriptPubKey(content.m_payload.begin(), content.m_payload.end());
+        return ExtractDestination(scriptPubKey, retDestination);
     }
-    CScript scriptPubKey(content.m_payload.begin(), content.m_payload.end());
-    return ExtractDestination(scriptPubKey, retDestination);
+    if (content.m_type == TAPROOT) {
+        // Taproot address contains a 33-byte commitment
+        if (content.m_payload.size() != CPubKey::COMPRESSED_SIZE) {
+            return false;
+        }
+        CPubKey commitment(content.m_payload);
+        if (!commitment.IsFullyValid()) {
+            return false;
+        }
+        retDestination = Taproot(commitment);
+        return true;
+    }
+    return false;
 }
 
 class Encoder {
@@ -159,6 +171,14 @@ public:
         CScript scriptPubKey = CScript() << OP_HASH160 << id << OP_EQUAL;
         return Encode(Content(TOKEN_NAME, GetAddressNetworkByte(params),
                               SCRIPT_PUB_KEY, ToByteVector(scriptPubKey)));
+    }
+
+    std::string operator()(const Taproot &dest) const {
+        // For Taproot, we encode just the 33-byte commitment
+        std::vector<uint8_t> payload(dest.GetCommitment().begin(),
+                                     dest.GetCommitment().end());
+        return Encode(Content(TOKEN_NAME, GetAddressNetworkByte(params),
+                              TAPROOT, payload));
     }
 
     std::string operator()(const CNoDestination &) const { return ""; }
