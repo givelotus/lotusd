@@ -425,6 +425,7 @@ add_library(util
 	util/fs.cpp
 	util/fs_helpers.cpp
 	util/getuniquepath.cpp
+	util/intmath.cpp
 	util/message.cpp
 	util/moneystr.cpp
 	util/readwritefile.cpp
