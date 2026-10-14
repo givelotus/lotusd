@@ -198,6 +198,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		net_peer_eviction_tests.cpp
 		net_tests.cpp
 		netbase_tests.cpp
+		op_mulpow2_tests.cpp
 		op_reversebytes_tests.cpp
 		op_rawleftbitshift_tests.cpp
 		orphanage_tests.cpp
