@@ -9,6 +9,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | Boost | [1.81.0](https://www.boost.org/users/download/) | 1.64.0 | No |  |  |
 | Clang |  | [10](https://releases.llvm.org/download.html) (C++20 support) |  |  |  |
 | CMake |  | [3.16](https://cmake.org/download/) |  |  |  |
+| FlatBuffers |  | [2.0.0](https://github.com/google/flatbuffers/releases) |  |  |  |
 | fontconfig | [2.12.6](https://www.freedesktop.org/software/fontconfig/release/) |  | No | Yes |  |
 | FreeType | [2.11.0](http://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
 | GCC |  | [12](https://gcc.gnu.org/) |  |  |  |
@@ -21,6 +22,7 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | librsvg | |  |  |  |  |
 | MiniUPnPc | [2.2.7](https://miniupnp.tuxfamily.org/files) | 1.9 | No |  |  |
 | Ninja |  | [1.5.1](https://github.com/ninja-build/ninja/releases) |  |  |  |
+| nng |  | [1.5.2](https://github.com/nanomsg/nng/releases) |  |  |  |
 | OpenSSL | [1.0.1k](https://www.openssl.org/source) |  | Yes |  |  |
 | PCRE |  |  |  |  | Yes |
 | protobuf | [21.12](https://github.com/protocolbuffers/protobuf/releases/tag/v21.12) |  | No |  |  |
@@ -49,3 +51,4 @@ factors that affect the dependency list.
 * qrencode is not needed with `-DENABLE_QRCODE=OFF`.
 * systemtap is not needed with `-DENABLE_TRACING=OFF`.
 * ZeroMQ is not needed with the `-DBUILD_ZMQ=OFF`.
+* nng and FlatBuffers are not needed with the `-DBUILD_BITCOIN_NNG=OFF`.
