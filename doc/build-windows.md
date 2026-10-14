@@ -110,7 +110,7 @@ This means you cannot use a directory that is located directly on the host Windo
 
 Acquire the source in the usual way:
 
-    git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
+    git clone https://github.com/LogosFoundation/lotusd.git
 
 Once the source code is ready the build steps are below:
 
