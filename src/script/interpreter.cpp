@@ -222,7 +222,7 @@ bool ScriptInterpreter::RunNextOpInner() {
     valtype vchPushValue;
 
     ScriptError *serror = &script_error;
-    bool fRequireMinimal = (flags & SCRIPT_VERIFY_MINIMALDATA) != 0;
+    constexpr bool fRequireMinimal = true;
     bool fExec = vfExec.all_true();
 
     // Maximum integer byte size

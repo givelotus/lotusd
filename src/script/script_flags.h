@@ -34,14 +34,6 @@ enum {
     // (BIP62 rule 2).
     SCRIPT_VERIFY_SIGPUSHONLY = (1U << 5),
 
-    // Require minimal encodings for all push operations (OP_0... OP_16,
-    // OP_1NEGATE where possible, direct pushes up to 75 bytes, OP_PUSHDATA up
-    // to 255 bytes, OP_PUSHDATA2 for anything larger). Evaluating any other
-    // push causes the script to fail (BIP62 rule 3). In addition, whenever a
-    // stack element is interpreted as a number, it must be of minimal length
-    // (BIP62 rule 4).
-    SCRIPT_VERIFY_MINIMALDATA = (1U << 6),
-
     // Discourage use of NOPs reserved for upgrades (NOP1-10)
     //
     // Provided so that nodes can avoid accepting or mining transactions
