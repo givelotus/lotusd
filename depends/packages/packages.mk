@@ -26,3 +26,8 @@ ifeq ($(host_os),linux)
 cpython_native_packages = native_cpython
 cpython_packages = cpython
 endif
+
+jemalloc_packages = jemalloc
+
+Flatbuffers_packages=Flatbuffers
+Flatbuffers_native_packages=native_Flatbuffers
