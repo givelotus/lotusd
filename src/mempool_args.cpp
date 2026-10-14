@@ -79,7 +79,7 @@ ApplyArgsManOptions(const ArgsManager &argsman, const CChainParams &chainparams,
             : std::nullopt;
 
     mempool_opts.require_standard =
-        !argsman.GetBoolArg("-acceptnonstdtxn", !chainparams.RequireStandard());
+        !argsman.GetBoolArg("-acceptnonstdtxn", !chainparams.RequireStandardPolicy());
     if (!chainparams.IsTestChain() && !mempool_opts.require_standard) {
         return strprintf(
             Untranslated(
