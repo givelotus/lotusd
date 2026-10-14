@@ -23,6 +23,8 @@ from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 
 
+ACTIVATION_TIME = 2000000000
+
 class MinerFundTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
