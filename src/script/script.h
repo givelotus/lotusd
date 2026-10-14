@@ -231,10 +231,12 @@ class CScriptNum {
      * [-2^63 +1...2^63 -1], throwing an exception otherwise.
      */
 public:
+    static const size_t MAXIMUM_ELEMENT_SIZE = MAX_SCRIPTNUM_BYTE_SIZE;
+
     explicit CScriptNum(const int64_t &n) { m_value = n; }
 
     explicit CScriptNum(const std::vector<uint8_t> &vch, bool fRequireMinimal,
-                        const size_t nMaxNumSize) {
+                        const size_t nMaxNumSize = MAXIMUM_ELEMENT_SIZE) {
         if (vch.size() > nMaxNumSize) {
             throw scriptnum_overflow_error("script number overflow");
         }
