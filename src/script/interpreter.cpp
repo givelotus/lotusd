@@ -7,7 +7,6 @@
 #include <script/interpreter.h>
 
 #include <crypto/ripemd160.h>
-#include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <pubkey.h>
 #include <script/bitfield.h>
@@ -898,7 +897,6 @@ bool ScriptInterpreter::RunNextOpInner() {
             // Crypto
             //
             case OP_RIPEMD160:
-            case OP_SHA1:
             case OP_SHA256:
             case OP_HASH160:
             case OP_HASH256: {
@@ -908,16 +906,12 @@ bool ScriptInterpreter::RunNextOpInner() {
                                      ScriptError::INVALID_STACK_OPERATION);
                 }
                 valtype &vch = stacktop(-1);
-                valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 ||
+                valtype vchHash((opcode == OP_RIPEMD160 ||
                                  opcode == OP_HASH160)
                                     ? 20
                                     : 32);
                 if (opcode == OP_RIPEMD160) {
                     CRIPEMD160()
-                        .Write(vch.data(), vch.size())
-                        .Finalize(vchHash.data());
-                } else if (opcode == OP_SHA1) {
-                    CSHA1()
                         .Write(vch.data(), vch.size())
                         .Finalize(vchHash.data());
                 } else if (opcode == OP_SHA256) {
