@@ -38,4 +38,8 @@ bool IsNumbersEnabled(const Consensus::Params &params,
 bool IsNumbersEnabled(const Consensus::Params &params,
                       const CBlockIndex *pindexPrev);
 
+/** Check if 2023-06-21T14:58:00.000Z protocol upgrade has activated. */
+bool IsDeuteronomyEnabled(const Consensus::Params &params,
+                          const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
