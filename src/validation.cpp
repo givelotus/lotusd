@@ -1482,7 +1482,8 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
 Amount GetBlockSubsidy(uint32_t nBits,
                        const Consensus::Params &consensusParams) {
     static constexpr int64_t SUBSIDY_INT = SUBSIDY / SATOSHI;
-    if (!consensusParams.enableDifficultyBasedSubsidy) {
+    // Always cap on regtest, and sometimes we need to cap on testnet.
+    if (!consensusParams.enableDifficultyBasedSubsidy || nBits > 0x1c100000) {
         return SUBSIDY;
     }
     // We define:
@@ -1509,8 +1510,6 @@ Amount GetBlockSubsidy(uint32_t nBits,
     static constexpr int64_t LOG_MAX_TARGET = 220;
     const int64_t exp = nBits >> 24;
     const uint32_t mantissa = (nBits & 0x007fffff);
-    // CheckProofOfWork ensures this
-    assert(nBits <= 0x1c100000);
     // First check in ContextualCheckBlockHeader ensures this (since nBits have
     // to match exactly, enforcing canonical encoding)
     assert(mantissa >= 0x8000);
