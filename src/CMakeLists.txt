@@ -528,6 +528,7 @@ add_library(common
 	common/system.cpp
 	cashaddr.cpp
 	cashaddrenc.cpp
+	addresses/xaddress.cpp
 	chainparams.cpp
 	config.cpp
 	consensus/merkle.cpp
