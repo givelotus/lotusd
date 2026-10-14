@@ -1478,7 +1478,8 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
     return result;
 }
 
-Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams) {
+Amount GetBlockSubsidy(uint32_t nBits,
+                       const Consensus::Params &consensusParams) {
     return SUBSIDY;
 }
 
@@ -2351,7 +2352,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // 50% of fees get burned.
     Amount amountFeeReward = nFees / 2;
     const Amount blockReward =
-        amountFeeReward + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(block.nBits, consensusParams);
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
         state.Invalid(
             BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
@@ -2926,7 +2927,7 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
 
             const Amount blockReward =
                 blockFees +
-                GetBlockSubsidy(pindexNew->nHeight, consensusParams);
+                GetBlockSubsidy(pindexNew->nBits, consensusParams);
 
             std::vector<std::unique_ptr<ParkingPolicy>> parkingPolicies;
             parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(

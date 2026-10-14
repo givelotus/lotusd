@@ -2258,7 +2258,7 @@ static RPCHelpMan getblockstats() {
             ret_all.pushKV("mintxsize",
                            mintxsize == blockMaxSize ? 0 : mintxsize);
             ret_all.pushKV("outs", outputs);
-            ret_all.pushKV("subsidy", GetBlockSubsidy(pindex.nHeight,
+            ret_all.pushKV("subsidy", GetBlockSubsidy(pindex.nBits,
                                                       chainman.GetConsensus()));
             ret_all.pushKV("time", pindex.GetBlockTime());
             ret_all.pushKV("total_out", total_out);

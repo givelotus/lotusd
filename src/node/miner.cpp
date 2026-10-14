@@ -127,7 +127,13 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         pblock->nVersion = gArgs.GetIntArg("-blockversion", pblock->nVersion);
     }
 
+    // Fill in header.
+    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
     pblock->nTime = TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
+    UpdateTime(pblock, chainParams, pindexPrev,
+               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
+    pblock->nNonce = 0;
     m_lock_time_cutoff = pindexPrev->GetMedianTimePast();
 
     bool shouldAddFinalizedTxs =
@@ -172,7 +178,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue =
-        amountFeeReward + GetBlockSubsidy(nHeight, consensusParams);
+        amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
     coinbaseTx.vin[0].scriptSig = CScript()
                                   << COINBASE_PREFIX << nHeight << OP_0;
 
@@ -212,12 +218,6 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         nSerializeSize, blockFitter.nBlockTx, blockFitter.nFees,
         blockFitter.nBlockSigChecks);
 
-    // Fill in header.
-    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainParams, pindexPrev,
-               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
-    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
-    pblock->nNonce = 0;
     pblocktemplate->entries[0].sigChecks = 0;
 
     BlockValidationState state;

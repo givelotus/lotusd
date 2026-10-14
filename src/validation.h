@@ -169,7 +169,8 @@ void StartScriptCheckWorkerThreads(int threads_num);
  */
 void StopScriptCheckWorkerThreads();
 
-Amount GetBlockSubsidy(int nHeight, const Consensus::Params &consensusParams);
+Amount GetBlockSubsidy(uint32_t nBits,
+                       const Consensus::Params &consensusParams);
 
 bool FatalError(kernel::Notifications &notifications,
                 BlockValidationState &state, const std::string &strMessage,
