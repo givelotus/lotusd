@@ -28,7 +28,6 @@
 #include <timedata.h>
 #include <util/moneystr.h>
 #include <validation.h>
-#include <versionbits.h>
 
 #include <algorithm>
 #include <queue>
@@ -120,7 +119,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     const Consensus::Params &consensusParams = chainParams.GetConsensus();
 
-    pblock->nVersion = ComputeBlockVersion(pindexPrev, consensusParams);
+    // Always mine version 1
+    pblock->nVersion = 1;
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
     if (chainParams.MineBlocksOnDemand()) {
