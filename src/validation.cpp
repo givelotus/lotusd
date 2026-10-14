@@ -2044,6 +2044,7 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
     // Enforce P2SH (BIP16)
     if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_P2SH)) {
         flags |= SCRIPT_VERIFY_P2SH;
+        flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
     // Enforce the DERSIG (BIP66) rule.
@@ -2082,7 +2083,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
     // clean stack.
     if (IsMagneticAnomalyEnabled(consensusparams, pindex)) {
         flags |= SCRIPT_VERIFY_SIGPUSHONLY;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
     // We make sure this node will have replay protection during the next hard
