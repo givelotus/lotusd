@@ -60,9 +60,10 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
+    // Revert to fan-out minerfund for First Kings (only one address)
     if (IsFirstKingsEnabled(params, pindexPrev)) {
-        return BuildOutputsCycling(params.coinbasePayoutAddresses.firstKings,
-                                   pindexPrev, blockReward);
+        return BuildOutputsFanOut(params.coinbasePayoutAddresses.firstKings,
+                                  pindexPrev, blockReward);
     }
 
     if (IsSecondSamuelEnabled(params, pindexPrev)) {
