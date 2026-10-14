@@ -1077,7 +1077,7 @@ static RPCHelpMan getblocktemplate() {
             // pointer for convenience
             CBlock *pblock = &pblocktemplate->block;
 
-            // Update nTime
+            // Update nTime (can update nBits on testnet)
             int64_t adjustedTime =
                 TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
             UpdateTime(pblock, chainparams, pindexPrev, adjustedTime);
@@ -1086,7 +1086,12 @@ static RPCHelpMan getblocktemplate() {
             UniValue aCaps(UniValue::VARR);
             aCaps.push_back("proposal");
 
-            Amount coinbasevalue = Amount::zero();
+            // CreateNewBlock stores the total fees times -1 in entries[0].fees
+            Amount amountFeeReward =
+                node::GetBlockRewardFromFees(-1 * pblocktemplate->entries[0].fees);
+            // UpdateTime can update nBits, so we recompute the subsidy
+            Amount coinbasevalue =
+                amountFeeReward + GetBlockSubsidy(pblock->nBits, consensusParams);
 
             UniValue transactions(UniValue::VARR);
             transactions.reserve(pblock->vtx.size());
@@ -1097,11 +1102,6 @@ static RPCHelpMan getblocktemplate() {
 
                 if (tx.IsCoinBase()) {
                     index_in_template++;
-
-                    for (const auto &o : pblock->vtx[0]->vout) {
-                        coinbasevalue += o.nValue;
-                    }
-
                     continue;
                 }
 

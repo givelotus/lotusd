@@ -36,6 +36,12 @@ class Processor;
 namespace node {
 static const bool DEFAULT_PRINTPRIORITY = false;
 
+/**
+ * Calculate the additional block reward in the coinbase from fees.
+ * Currenty, 50% of fees are burned.
+ */
+Amount GetBlockRewardFromFees(Amount nFees);
+
 struct CBlockTemplateEntry {
     CTransactionRef tx;
     Amount fees;

@@ -55,6 +55,11 @@ int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
     return nNewTime - nOldTime;
 }
 
+Amount GetBlockRewardFromFees(Amount nFees) {
+    // 50% of fees get burned.
+    return nFees / 2;
+}
+
 void ApplyArgsManOptions(const ArgsManager &args,
                          BlockAssembler::Options &options) {
     options.fPrintPriority =
@@ -173,8 +178,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     const auto time_1{SteadyClock::now()};
-    // 50% of fees get burned.
-    const Amount amountFeeReward = blockFitter.nFees / 2;
+    const Amount amountFeeReward = GetBlockRewardFromFees(blockFitter.nFees);
 
     m_last_block_num_txs = blockFitter.nBlockTx;
     m_last_block_size = blockFitter.nBlockSize;
