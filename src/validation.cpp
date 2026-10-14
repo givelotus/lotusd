@@ -2050,10 +2050,8 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
     }
 
-    // If the UAHF is enabled, we start accepting replay protected txns
-    if (IsUAHFenabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-    }
+    // Always enforce SIGHASH_FORKID
+    flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
 
     // We make sure this node will have replay protection during the next hard
     // fork.
