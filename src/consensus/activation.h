@@ -28,4 +28,8 @@ bool IsCowperthwaiteEnabled(const Consensus::Params &params,
 bool IsExodusEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev);
 
+/** Check if 2022-06-21T09:14:00.000Z protocol upgrade has activated. */
+bool IsLeviticusEnabled(const Consensus::Params &params,
+                        const CBlockIndex *pindexPrev);
+
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
