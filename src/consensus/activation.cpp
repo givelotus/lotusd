@@ -134,3 +134,25 @@ bool IsFirstSamuelEnabled(const Consensus::Params &params,
            gArgs.GetIntArg("-firstsamuelactivationtime",
                            params.firstSamuelActivationTime);
 }
+
+bool IsSecondSamuelEnabled(const Consensus::Params &params,
+                           const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-secondsamuelactivationtime",
+                           params.secondSamuelActivationTime);
+}
+
+bool IsFirstKingsEnabled(const Consensus::Params &params,
+                         const CBlockIndex *pindexPrev) {
+    if (pindexPrev == nullptr) {
+        return false;
+    }
+
+    return pindexPrev->GetMedianTimePast() >=
+           gArgs.GetIntArg("-firstkingsactivationtime",
+                           params.firstKingsActivationTime);
+}

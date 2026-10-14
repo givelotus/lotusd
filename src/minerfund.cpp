@@ -60,6 +60,16 @@ std::vector<CTxOut> GetMinerFundRequiredOutputs(const Consensus::Params &params,
         return {};
     }
 
+    if (IsFirstKingsEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.firstKings,
+                                   pindexPrev, blockReward);
+    }
+
+    if (IsSecondSamuelEnabled(params, pindexPrev)) {
+        return BuildOutputsCycling(params.coinbasePayoutAddresses.secondSamuel,
+                                   pindexPrev, blockReward);
+    }
+
     if (IsFirstSamuelEnabled(params, pindexPrev)) {
         return BuildOutputsCycling(params.coinbasePayoutAddresses.firstSamuel,
                                    pindexPrev, blockReward);

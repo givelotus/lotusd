@@ -236,7 +236,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.secondSamuelActivationTime);
+           activation_time.value_or(params.firstKingsActivationTime);
 }
 
 /**
@@ -614,9 +614,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
     }
 
-    if (m_pool.m_require_standard && TxHasPayToTaproot(tx)) {
-        return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
-                             "bad-taproot-phased-out");
+    // Taproot is phased out until Second Samuel activation
+    if (m_pool.m_require_standard &&
+        !IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
+                               m_active_chainstate.m_chain.Tip())) {
+        if (TxHasPayToTaproot(tx)) {
+            return state.Invalid(TxValidationResult::TX_NOT_STANDARD,
+                                 "bad-taproot-phased-out");
+        }
     }
 
     // Only accept nLockTime-using transactions that can be mined in the next
@@ -733,9 +738,16 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     unsigned int nSize = tx.GetTotalSize();
 
-    const uint32_t extraFlags = m_pool.m_require_standard
-                                    ? STANDARD_SCRIPT_VERIFY_FLAGS
-                                    : MANDATORY_SCRIPT_VERIFY_FLAGS;
+    uint32_t extraFlags = m_pool.m_require_standard
+                              ? STANDARD_SCRIPT_VERIFY_FLAGS
+                              : MANDATORY_SCRIPT_VERIFY_FLAGS;
+
+    // After Second Samuel, we enable Taproot and SIGHASH_LOTUS
+    if (m_pool.m_require_standard &&
+        IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
+                              m_active_chainstate.m_chain.Tip())) {
+        extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
+    }
 
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
@@ -2125,7 +2137,8 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_ENABLE_REPLAY_PROTECTION;
     }
 
-    if (IsNumbersEnabled(consensusparams, pindex)) {
+    if (IsNumbersEnabled(consensusparams, pindex) &&
+        !IsSecondSamuelEnabled(consensusparams, pindex)) {
         flags |= SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
     }
 
@@ -2265,8 +2278,9 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     if (fRequireStandardConsensus) {
         extraFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
 
-        // Before the Numbers upgrade, we don't deny Taproot or SIGHASH_LOTUS
-        if (!IsNumbersEnabled(consensusParams, pindex->pprev)) {
+        // Before Numbers or after Second Samuel, we enable Taproot and SIGHASH_LOTUS
+        if (!IsNumbersEnabled(consensusParams, pindex->pprev) ||
+            IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
             extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
         }
     }
@@ -2358,8 +2372,9 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, reason);
                 break;
             }
-            // Taproot is phased out after the Numbers update
-            if (IsNumbersEnabled(consensusParams, pindex->pprev)) {
+            // Taproot is phased out between Numbers and Second Samuel
+            if (IsNumbersEnabled(consensusParams, pindex->pprev) &&
+                !IsSecondSamuelEnabled(consensusParams, pindex->pprev)) {
                 if (TxHasPayToTaproot(tx)) {
                     state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                   "bad-taproot-phased-out");

@@ -149,5 +149,12 @@ Consensus::CoinbaseAddresses AddressSets = {
         {
             "lotus_16PSJKi4ucDByLHn3mTQaBijiNZmczAdALVDGS53V",
         },
+    .secondSamuel =
+        {
+            // hash turtle
+            "lotus_16PSJMYJL6FxpRh9nP8iFZPiGhLM8p5S9L5dVXUcJ",
+            // faithful turtle
+            "lotus_16PSJHGmfZkU8zFrzU8Gw198o4j2XUryNnrMccuvZ",
+        },
 };
 } // namespace RewardAddresses

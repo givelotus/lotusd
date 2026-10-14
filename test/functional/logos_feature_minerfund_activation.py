@@ -34,8 +34,9 @@ JUDGES_ACTIVATION_TIME = 2050000000
 RUTH_ACTIVATION_TIME = 2060000000
 FIRST_SAMUEL_ACTIVATION_TIME = 2070000000
 SECOND_SAMUEL_ACTIVATION_TIME = 2080000000
+FIRST_KINGS_ACTIVATION_TIME = 2090000000
 
-REPLAYPROTECTION_ACTIVATION_TIME = SECOND_SAMUEL_ACTIVATION_TIME
+REPLAYPROTECTION_ACTIVATION_TIME = FIRST_KINGS_ACTIVATION_TIME
 
 # see consensus/addresses.h, use getaddressinfo to get the scriptPubKey
 GENESIS_SCRIPTS = [
@@ -134,6 +135,12 @@ RUTH_SCRIPTS = [
 FIRST_SAMUEL_SCRIPTS = [
     "76a91454cc452f58721cbefd412eb82cb6f4f0d8049b0288ac",
 ]
+SECOND_SAMUEL_SCRIPTS = [
+    # hash turtle
+    "76a914909cc083a65426d53479751738f44cc50ec64b8c88ac",
+    # faithful turtle
+    "76a914053d4d0c28d299dc5c2be1ce5d29bf00cdb61b4088ac",
+]
 
 class MinerFundActivationTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -149,6 +156,8 @@ class MinerFundActivationTest(BitcoinTestFramework):
             f'-judgesactivationtime={JUDGES_ACTIVATION_TIME}',
             f'-ruthactivationtime={RUTH_ACTIVATION_TIME}',
             f'-firstsamuelactivationtime={FIRST_SAMUEL_ACTIVATION_TIME}',
+            f'-secondsamuelactivationtime={SECOND_SAMUEL_ACTIVATION_TIME}',
+            f'-firstkingsactivationtime={FIRST_KINGS_ACTIVATION_TIME}',
             f'-replayprotectionactivationtime={REPLAYPROTECTION_ACTIVATION_TIME}',
         ]]
 
@@ -458,6 +467,39 @@ class MinerFundActivationTest(BitcoinTestFramework):
         # Using the first samuel scripts now works
         for i in range(0, 12):
             block = make_block_cb_post_numbers(FIRST_SAMUEL_SCRIPTS)
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+
+        # Using the second samuel addresses before upgrade fails
+        block = make_block_cb_post_numbers(SECOND_SAMUEL_SCRIPTS)
+        prepare_block(block)
+        assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+        node.setmocktime(SECOND_SAMUEL_ACTIVATION_TIME)
+        for i in range(-6, 6):
+            block = make_block_cb_post_numbers(FIRST_SAMUEL_SCRIPTS)
+            block.nTime = SECOND_SAMUEL_ACTIVATION_TIME + i
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), None)
+        assert_equal(node.getblockchaininfo()['mediantime'],
+                     SECOND_SAMUEL_ACTIVATION_TIME)
+
+        for block in [
+            make_block_with_cb_scripts(GENESIS_SCRIPTS),
+            make_block_with_cb_scripts(EXODUS_SCRIPTS),
+            make_block_with_cb_scripts(LEVITICUS_SCRIPTS),
+            make_block_cb_post_numbers(NUMBERS_SCRIPTS),
+            make_block_cb_post_numbers(DEUTERONOMY_SCRIPTS),
+            make_block_cb_post_numbers(JOSHUA_SCRIPTS),
+            make_block_cb_post_numbers(JUDGES_SCRIPTS),
+            make_block_cb_post_numbers(RUTH_SCRIPTS),
+            make_block_cb_post_numbers(FIRST_SAMUEL_SCRIPTS),
+        ]:
+            prepare_block(block)
+            assert_equal(node.submitblock(ToHex(block)), 'bad-cb-minerfund')
+
+        # Using the second samuel scripts now works
+        for i in range(0, 12):
+            block = make_block_cb_post_numbers(SECOND_SAMUEL_SCRIPTS)
             prepare_block(block)
             assert_equal(node.submitblock(ToHex(block)), None)
 
