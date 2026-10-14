@@ -189,8 +189,9 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
         cashaddrPrefix = opts.ecash ? "ecash" : "bitcoincash";
 
-        vFixedSeeds = std::vector<SeedSpec6>(std::begin(pnSeed6_main),
-                                             std::end(pnSeed6_main));
+        vFixedSeeds = std::vector<SeedSpec6>(
+            pnSeed6_main,
+            pnSeed6_main + sizeof(pnSeed6_main) / sizeof(SeedSpec6));
 
         fDefaultConsistencyChecks = false;
         m_is_test_chain = false;
@@ -331,8 +332,9 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
         cashaddrPrefix = opts.ecash ? "ectest" : "bchtest";
 
-        vFixedSeeds = std::vector<SeedSpec6>(std::begin(pnSeed6_test),
-                                             std::end(pnSeed6_test));
+        vFixedSeeds = std::vector<SeedSpec6>(
+            pnSeed6_test,
+            pnSeed6_test + sizeof(pnSeed6_test) / sizeof(SeedSpec6));
 
         fDefaultConsistencyChecks = false;
         m_is_test_chain = true;
