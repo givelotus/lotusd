@@ -92,5 +92,21 @@ Consensus::CoinbaseAddresses AddressSets = {
             // Lotus Citizen 4
             "lotus_16PSJNEqzEoLhBigDN8Hf93FzERrPQKJXaYdzRCNT",
         },
+    .numbers =
+        {
+            "lotus_16PSJKzohkeX3G5BKpbeESKZZCHWrQymNRwjsu42Y",
+            "lotus_16PSJHtDqN7ibmc4NSziqbrmAXoSLE46F9LceMUDx",
+            "lotus_16PSJHhULzYgupzGnvDysUFLxYxBVwx92JjXSyjNL",
+            "lotus_16PSJLTMsACkicNJVmAPBQgmEeagvkXKuF8gR2qE8",
+            "lotus_16PSJPfz8J1KkScQUMZK8GabJgTGxr8c5WWidEQYS",
+            "lotus_16PSJN2GzCj6PVwg4oTbiXftP7Jf3Ux2zB3X4A6Dw",
+            "lotus_16PSJMtQgty32UmgzkomZYPavZaJb8kn3HUeD4jno",
+            "lotus_16PSJLMtCuFnyMb3rz4zbbhAtJgppp8GiY5NpGGev",
+            "lotus_16PSJP1z4qX4XeJprHPgw2GbY86GxMwT2DKmVmHqS",
+            "lotus_16PSJNob8nN2U5e1WfpvpHbn28iJ8mr5ZbjsTNmzk",
+            "lotus_16PSJM1j9nPx6xLbyJ4UMsT1XNMdZAsT6vayCiEhh",
+            "lotus_16PSJL7B1pQm4pT3M4k6BeXNR8PXkvuv8BeosgUdA",
+            "lotus_16PSJNfvYdAquq6X28omdnpMyixZX9JfF9MgmDX3H",
+        },
 };
 } // namespace RewardAddresses
