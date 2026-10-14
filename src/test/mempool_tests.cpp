@@ -595,7 +595,10 @@ BOOST_AUTO_TEST_CASE(remove_for_finalized_block) {
     Package txs;
     txs.reserve(100);
     for (size_t i = 0; i < 100; i++) {
-        CTransactionRef tx = make_tx({int64_t(i + 1) * COIN});
+        CMutableTransaction padded_tx{*make_tx({int64_t(i + 1) * COIN})};
+        padded_tx.vin.resize(1);
+        padded_tx.vin[0].scriptSig << std::vector<uint8_t>(MIN_TX_SIZE);
+        CTransactionRef tx = MakeTransactionRef(padded_tx);
         const TxId &txid = tx->GetId();
         auto mempoolEntry = entry.Fee(1000 * SATOSHI).FromTx(tx);
 
@@ -679,7 +682,7 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
 
     // Fake chain tip
     CBlockIndex active_chain_tip;
-    active_chain_tip.nHeight = params.wellingtonHeight;
+    active_chain_tip.nHeight = 1000;
 
     std::array<CBlockIndex, 12> blocks;
     for (size_t i = 0; i < blocks.size(); ++i) {
@@ -770,11 +773,21 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
         checkTx(bad_tx, good_tx, "bad-txns-undersize");
     }
 
-    // Transaction version is 3
+    // Lotus does not adopt eCash's Wellington transaction version restriction.
     {
-        CMutableTransaction bad_tx{good_tx};
-        bad_tx.nVersion = 3;
-        checkTx(bad_tx, good_tx, "bad-txns-version");
+        CMutableTransaction tx{good_tx};
+        tx.nVersion = 3;
+        auto tx_entry = entry.Fee(1000 * SATOSHI).FromTx(tx);
+        TxValidationState state;
+        BOOST_CHECK(ContextualCheckTransactionForCurrentBlock(
+            active_chain_tip, params, tx_entry->GetTx(), state));
+        mempool.addUnchecked(tx_entry);
+        std::vector<TxId> finalizedTxIds;
+        BOOST_CHECK(mempool.setAvalancheFinalized(
+            tx_entry, params, active_chain_tip,
+            m_node.chainman->ActiveChainstate(), finalizedTxIds));
+        BOOST_CHECK_EQUAL(finalizedTxIds.size(), 1);
+        mempool.clear(/*include_finalized_txs=*/true);
     }
 }
 

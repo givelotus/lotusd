@@ -11,8 +11,52 @@ use crate::{
     error::DataError,
     hash::{Hashed, Sha256d},
     ser::{BitcoinSer, BitcoinSerializer},
-    tx::TxMut,
+    tx::{TxInput, TxMut, TxOutput},
 };
+
+fn lotus_merkle_root_and_height(mut leaves: Vec<Sha256d>) -> (Sha256d, u8) {
+    if leaves.is_empty() {
+        return (Sha256d::default(), 0);
+    }
+    let mut height = 1;
+    while leaves.len() > 1 {
+        height += 1;
+        if leaves.len() % 2 == 1 {
+            // Pad odd layers with 0000...0000 on Lotus
+            leaves.push(Sha256d::default());
+        }
+        let mut next_layer = Vec::with_capacity(leaves.len() / 2);
+        for pair in leaves.chunks_exact(2) {
+            let mut bytes = [0u8; 64];
+            bytes[..32].copy_from_slice(pair[0].as_le_bytes());
+            bytes[32..].copy_from_slice(pair[1].as_le_bytes());
+            next_layer.push(Sha256d::digest(bytes));
+        }
+        leaves = next_layer;
+    }
+    (leaves[0], height)
+}
+
+fn lotus_tx_inputs_merkle_root(inputs: &[TxInput]) -> (Sha256d, u8) {
+    let leaves = inputs
+        .iter()
+        .map(|input| {
+            let mut data = bytes::BytesMut::with_capacity(36 + 4);
+            input.prev_out.ser_to(&mut data);
+            input.sequence.ser_to(&mut data);
+            Sha256d::digest(data.freeze())
+        })
+        .collect::<Vec<_>>();
+    lotus_merkle_root_and_height(leaves)
+}
+
+fn lotus_tx_outputs_merkle_root(outputs: &[TxOutput]) -> (Sha256d, u8) {
+    let leaves = outputs
+        .iter()
+        .map(|output| Sha256d::digest(output.ser()))
+        .collect::<Vec<_>>();
+    lotus_merkle_root_and_height(leaves)
+}
 
 /// Wraps a tx ID's [`Sha256d`], to avoid mixing different kinds of hashes.
 /// Txids are always represented with a big-endian hex string, but stored
@@ -54,21 +98,38 @@ impl TxId {
         TxId(Sha256d(txid))
     }
 
-    /// Return the [`TxId`] for the given [`TxMut`] (or `Tx`).
-    ///
-    /// This is done by hashing the serialized tx using [`Sha256d`].
+    /// Return the Lotus Merkleized [`TxId`] for the given [`TxMut`] (or `Tx`).
     ///
     /// ```
     /// # use bitcoinsuite_core::tx::{Tx, TxId, TxMut};
     /// let zero_tx_hash =
-    ///     "f702453dd03b0f055e5437d76128141803984fb10acb85fc3b2184fae2f3fa78"
+    ///     "0aa86a445457f6eab159b7961df079bfd2107240b590d7c037bef3f26eafd291"
     ///         .parse::<TxId>()
     ///         .unwrap();
     /// assert_eq!(TxId::from_tx(&TxMut::default()), zero_tx_hash);
     /// assert_eq!(TxId::from_tx(&Tx::default()), zero_tx_hash);
+    /// let v2_tx_hash =
+    ///     "9ced0819179f3362e7306ad7e5eaa7d2fddeb8eb74cd75a4f3997f43a6d33f90"
+    ///         .parse::<TxId>()
+    ///         .unwrap();
+    /// assert_eq!(
+    ///     TxId::from_tx(&TxMut { version: 2, ..Default::default() }),
+    ///     v2_tx_hash,
+    /// );
     /// ```
     pub fn from_tx(tx: &TxMut) -> Self {
-        TxId(Sha256d::digest(tx.ser()))
+        let mut data = bytes::BytesMut::with_capacity(4 + 32 + 1 + 32 + 1 + 4);
+        tx.version.ser_to(&mut data);
+        let (inputs_hash, inputs_height) =
+            lotus_tx_inputs_merkle_root(&tx.inputs);
+        inputs_hash.as_le_bytes().ser_to(&mut data);
+        inputs_height.ser_to(&mut data);
+        let (outputs_hash, outputs_height) =
+            lotus_tx_outputs_merkle_root(&tx.outputs);
+        outputs_hash.as_le_bytes().ser_to(&mut data);
+        outputs_height.ser_to(&mut data);
+        tx.locktime.ser_to(&mut data);
+        TxId(Sha256d::digest(data.freeze()))
     }
 
     /// Returns the txid bytes in little-endian byte order.

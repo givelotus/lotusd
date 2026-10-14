@@ -7,7 +7,6 @@
 #include <blockindex.h>
 #include <chain.h>
 #include <coins.h>
-#include <consensus/activation.h>
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <consensus/params.h>
@@ -53,15 +52,6 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
     if (::GetSerializeSize(tx) < MIN_TX_SIZE) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-undersize");
-    }
-
-    if (IsWellingtonEnabled(params, nHeight)) {
-        // Restrict version to 1 and 2
-        if (tx.nVersion > CTransaction::MAX_VERSION ||
-            tx.nVersion < CTransaction::MIN_VERSION) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-version");
-        }
     }
 
     return true;

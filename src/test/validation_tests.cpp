@@ -274,17 +274,18 @@ BOOST_AUTO_TEST_CASE(test_assumeutxo) {
         BOOST_CHECK(!out);
     }
 
+    BOOST_REQUIRE(params->AssumeutxoForHeight(110));
     const auto out110 = *params->AssumeutxoForHeight(110);
     BOOST_CHECK_EQUAL(
         out110.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "c4e3f7ea7405229d1ee4cfb9e432b8f5683a2723e261d96ea05538668c68d1be");
     BOOST_CHECK_EQUAL(out110.m_chain_tx_count, 111U);
 
     const auto out110_2 = *params->AssumeutxoForBlockhash(BlockHash{uint256S(
-        "0x47cfb2b77860d250060e78d3248bb050928765453cbcbdbc121e3c48b99a376c")});
+        "0x1949a902dc57e04562bf5eaffe0f876935d75b156cec9e4374474dbffdc12851")});
     BOOST_CHECK_EQUAL(
         out110_2.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "c4e3f7ea7405229d1ee4cfb9e432b8f5683a2723e261d96ea05538668c68d1be");
     BOOST_CHECK_EQUAL(out110_2.m_chain_tx_count, 111U);
 }
 
@@ -329,35 +330,30 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with a single coinbase tx is mutated if the merkle root is not
-        // equal to the coinbase tx's hash.
+        // equal to Hash(TxHash || TxId).
         block.vtx.push_back(create_coinbase_tx());
         BOOST_CHECK(block.vtx[0]->GetHash() != block.hashMerkleRoot);
         BOOST_CHECK(is_mutated(block));
-        block.hashMerkleRoot = block.vtx[0]->GetHash();
+        block.hashMerkleRoot = BlockMerkleRoot(block);
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with two transactions is mutated if the merkle root does not
-        // match the double sha256 of the concatenation of the two transaction
-        // hashes.
+        // match the Merkle root of the Lotus transaction commitments.
         {
             block.vtx.push_back(MakeTransactionRef(CMutableTransaction{}));
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             BOOST_CHECK(is_not_mutated(block));
         }
 
-        // Block with two transactions is mutated if any node is duplicate.
+        // Duplicate transactions change the root, but Lotus does not use
+        // Bitcoin's duplicate-leaf mutation detection (its tree pads with
+        // zero).
         {
             block.vtx[1] = block.vtx[0];
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
-            BOOST_CHECK(is_mutated(block));
+            block.hashMerkleRoot = BlockMerkleRoot(block);
+            BOOST_CHECK(is_not_mutated(block));
         }
 
         // Blocks with 64-byte coinbase transactions are not considered mutated
@@ -368,7 +364,7 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
             mtx.vout.resize(1);
             mtx.vout[0].scriptPubKey.resize(4);
             block.vtx.push_back(MakeTransactionRef(mtx));
-            block.hashMerkleRoot = block.vtx.back()->GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             assert(block.vtx.back()->IsCoinBase());
             assert(GetSerializeSize(block.vtx.back()) == 64);
         }
@@ -404,10 +400,11 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
             "cdaf22d00002c6a7f848f8ae4d30054e61dcf3303d6fe01d282163341f06feecc1"
             "0032b3160fcab87bdfe3ecfb769206ef2d991b92f8a268e423a6ef4d485f06"));
         {
-            // Verify that double_sha256(txid1||txid2) == txid3
+            // This Bitcoin collision fixture uses raw transaction hashes.
+            // Lotus commits to both TxHash and TxId in each leaf.
             HashWriter hasher;
-            hasher << tx1.GetId();
-            hasher << tx2.GetId();
+            hasher << tx1.GetHash();
+            hasher << tx2.GetHash();
             assert(hasher.GetHash() == tx3.GetHash());
             // Verify that tx3 is 64 bytes in size.
             assert(GetSerializeSize(tx3) == 64);
@@ -425,7 +422,8 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         block.vtx.clear();
         block.vtx.push_back(MakeTransactionRef(tx3));
         BOOST_CHECK(!block.vtx.back()->IsCoinBase());
-        BOOST_CHECK(BlockMerkleRoot(block) == merkle_root);
+        BOOST_CHECK(BlockMerkleRoot(block) != merkle_root);
+        // Lotus detects the changed root before the 64-byte heuristic.
         BOOST_CHECK(is_mutated(block));
     }
 }

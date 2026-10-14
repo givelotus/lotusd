@@ -560,7 +560,7 @@ public:
         NNG_TRY_ERROR(nng_listen(m_sock, pub_url.c_str(), NULL, 0),
                       listen_failure_msg.c_str());
         LogPrintf("NNG interface: pubsub server listening at %s\n", pub_url);
-        RegisterValidationInterface(this);
+        m_node.validation_signals->RegisterValidationInterface(this);
         return true;
     }
 

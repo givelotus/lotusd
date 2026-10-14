@@ -7,7 +7,7 @@
 import re
 
 from test_framework.txtools import pad_tx
-from test_framework.script import hash160
+from test_framework.hash import hash160
 from test_framework.blocktools import (
     create_block,
     create_coinbase,

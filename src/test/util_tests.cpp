@@ -1,11 +1,13 @@
-// Copyright (c) 2011-2019 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
 #include <clientversion.h>
-#include <hash.h> // For Hash()
-#include <key.h>  // For CKey
+#include <common/signmessage.h> // For MessageSign(), MessageVerify(), MESSAGE_MAGIC
+#include <hash.h>               // For Hash()
+#include <key.h>                // For CKey
+#include <script/parsing.h>
 #include <sync.h>
 #include <test/util/logging.h>
 #include <test/util/str.h>
@@ -16,11 +18,8 @@
 #include <util/check.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
-#include <util/getuniquepath.h>
-#include <util/message.h> // For MessageSign(), MessageVerify(), MESSAGE_MAGIC
 #include <util/moneystr.h>
 #include <util/overflow.h>
-#include <util/spanparsing.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/time.h>
@@ -48,6 +47,16 @@
 #include <vector>
 
 using namespace std::literals;
+using util::Join;
+using util::RemovePrefix;
+using util::RemovePrefixView;
+using util::ReplaceAll;
+using util::Split;
+using util::SplitString;
+using util::ToString;
+using util::TrimString;
+using util::TrimStringView;
+
 static const std::string STRING_WITH_EMBEDDED_NULL_CHAR{"1"s
                                                         "\0"
                                                         "1"s};
@@ -320,33 +329,111 @@ BOOST_AUTO_TEST_CASE(util_TrimString) {
 
 BOOST_AUTO_TEST_CASE(util_ReplaceAll) {
     const std::string original("A test \"%s\" string '%s'.");
-    auto test_replaceall = [&original](const std::string &search,
-                                       const std::string &substitute,
-                                       const std::string &expected) {
-        auto test = original;
+    auto test_replaceall{[](std::string test, std::string_view search,
+                            std::string_view substitute,
+                            std::string_view expected) {
         ReplaceAll(test, search, substitute);
         BOOST_CHECK_EQUAL(test, expected);
-    };
+    }};
 
-    test_replaceall("", "foo", original);
-    test_replaceall(original, "foo", "foo");
-    test_replaceall("%s", "foo", "A test \"foo\" string 'foo'.");
-    test_replaceall("\"", "foo", "A test foo%sfoo string '%s'.");
-    test_replaceall("'", "foo", "A test \"%s\" string foo%sfoo.");
+    test_replaceall(original, "", "foo", original);
+    test_replaceall(original, "missing", "foo", original);
+    test_replaceall(original, original, "foo", "foo");
+    test_replaceall(original, "%s", "foo", "A test \"foo\" string 'foo'.");
+    test_replaceall(original, "\"", "foo", "A test foo%sfoo string '%s'.");
+    test_replaceall(original, "'", "foo", "A test \"%s\" string foo%sfoo.");
+    test_replaceall("a.b", ".", "x", "axb");
+    test_replaceall("%w and %w", "%w", "$&$`$'$1$$",
+                    "$&$`$'$1$$ and $&$`$'$1$$");
+    test_replaceall("x", "x", "xx", "xx");
 }
 
-BOOST_AUTO_TEST_CASE(util_FormatParseISO8601DateTime) {
+BOOST_AUTO_TEST_CASE(util_ParseISO8601DateTime) {
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("1969-12-31T23:59:59Z").value(), -1);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("1970-01-01T00:00:00Z").value(), 0);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("1970-01-01T00:00:01Z").value(), 1);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2000-01-01T00:00:01Z").value(),
+                      946684801);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2011-09-30T23:36:17Z").value(),
+                      1317425777);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2100-12-31T23:59:59Z").value(),
+                      4133980799);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("9999-12-31T23:59:59Z").value(),
+                      253402300799);
+
+    // Accept edge-cases, where the time overflows. They are not produced by
+    // FormatISO8601DateTime, so this can be changed in the future, if needed.
+    // For now, keep compatibility with the previous implementation.
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2000-01-01T99:00:00Z").value(),
+                      947041200);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2000-01-01T00:99:00Z").value(),
+                      946690740);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2000-01-01T00:00:99Z").value(),
+                      946684899);
+    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2000-01-01T99:99:99Z").value(),
+                      947047239);
+
+    // Reject date overflows.
+    BOOST_CHECK(!ParseISO8601DateTime("2000-99-01T00:00:00Z"));
+    BOOST_CHECK(!ParseISO8601DateTime("2000-01-99T00:00:00Z"));
+
+    // Reject out-of-range years
+    BOOST_CHECK(!ParseISO8601DateTime("32768-12-31T23:59:59Z"));
+    BOOST_CHECK(!ParseISO8601DateTime("32767-12-31T23:59:59Z"));
+    BOOST_CHECK(!ParseISO8601DateTime("32767-12-31T00:00:00Z"));
+    BOOST_CHECK(!ParseISO8601DateTime("999-12-31T00:00:00Z"));
+
+    // Reject invalid format
+    const std::string valid{"2000-01-01T00:00:01Z"};
+    BOOST_CHECK(ParseISO8601DateTime(valid).has_value());
+    for (auto mut{0U}; mut < valid.size(); ++mut) {
+        std::string invalid{valid};
+        invalid[mut] = 'a';
+        BOOST_CHECK(!ParseISO8601DateTime(invalid));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(util_FormatISO8601DateTime) {
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(-1096193779201), "");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(-1096193779200),
+                      "-32767-01-01T00:00:00Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(971890876800),
+                      "32767-12-31T00:00:00Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(971890963199),
+                      "32767-12-31T23:59:59Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(971890963200), "");
+
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(-1), "1969-12-31T23:59:59Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(0), "1970-01-01T00:00:00Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(1), "1970-01-01T00:00:01Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(946684801), "2000-01-01T00:00:01Z");
     BOOST_CHECK_EQUAL(FormatISO8601DateTime(1317425777),
                       "2011-09-30T23:36:17Z");
-    BOOST_CHECK_EQUAL(FormatISO8601DateTime(0), "1970-01-01T00:00:00Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(4133980799),
+                      "2100-12-31T23:59:59Z");
+    BOOST_CHECK_EQUAL(FormatISO8601DateTime(253402300799),
+                      "9999-12-31T23:59:59Z");
 
-    BOOST_CHECK_EQUAL(ParseISO8601DateTime("1970-01-01T00:00:00Z"), 0);
-    BOOST_CHECK_EQUAL(ParseISO8601DateTime("1960-01-01T00:00:00Z"), 0);
-    BOOST_CHECK_EQUAL(ParseISO8601DateTime("2011-09-30T23:36:17Z"), 1317425777);
+    BOOST_CHECK_EQUAL(
+        FormatISO8601DateTime(std::numeric_limits<int64_t>::min()), "");
+    BOOST_CHECK_EQUAL(
+        FormatISO8601DateTime(std::numeric_limits<int64_t>::max()), "");
 }
 
 BOOST_AUTO_TEST_CASE(util_FormatISO8601Date) {
+    BOOST_CHECK_EQUAL(FormatISO8601Date(-1096193779201), "");
+    BOOST_CHECK_EQUAL(FormatISO8601Date(-1096193779200), "-32767-01-01");
+    BOOST_CHECK_EQUAL(FormatISO8601Date(971890876800), "32767-12-31");
+    BOOST_CHECK_EQUAL(FormatISO8601Date(971890963199), "32767-12-31");
+    BOOST_CHECK_EQUAL(FormatISO8601Date(971890963200), "");
+
+    BOOST_CHECK_EQUAL(FormatISO8601Date(0), "1970-01-01");
     BOOST_CHECK_EQUAL(FormatISO8601Date(1317425777), "2011-09-30");
+
+    BOOST_CHECK_EQUAL(FormatISO8601Date(std::numeric_limits<int64_t>::min()),
+                      "");
+    BOOST_CHECK_EQUAL(FormatISO8601Date(std::numeric_limits<int64_t>::max()),
+                      "");
 }
 
 struct TestArgsManager : public ArgsManager {
@@ -1683,29 +1770,6 @@ BOOST_AUTO_TEST_CASE(util_IsHex) {
     BOOST_CHECK(!IsHex("0x0000"));
 }
 
-BOOST_AUTO_TEST_CASE(util_IsHexNumber) {
-    BOOST_CHECK(IsHexNumber("0x0"));
-    BOOST_CHECK(IsHexNumber("0"));
-    BOOST_CHECK(IsHexNumber("0x10"));
-    BOOST_CHECK(IsHexNumber("10"));
-    BOOST_CHECK(IsHexNumber("0xff"));
-    BOOST_CHECK(IsHexNumber("ff"));
-    BOOST_CHECK(IsHexNumber("0xFfa"));
-    BOOST_CHECK(IsHexNumber("Ffa"));
-    BOOST_CHECK(IsHexNumber("0x00112233445566778899aabbccddeeffAABBCCDDEEFF"));
-    BOOST_CHECK(IsHexNumber("00112233445566778899aabbccddeeffAABBCCDDEEFF"));
-
-    BOOST_CHECK(!IsHexNumber(""));      // empty string not allowed
-    BOOST_CHECK(!IsHexNumber("0x"));    // empty string after prefix not allowed
-    BOOST_CHECK(!IsHexNumber("0x0 "));  // no spaces at end,
-    BOOST_CHECK(!IsHexNumber(" 0x0"));  // or beginning,
-    BOOST_CHECK(!IsHexNumber("0x 0"));  // or middle,
-    BOOST_CHECK(!IsHexNumber(" "));     // etc.
-    BOOST_CHECK(!IsHexNumber("0x0ga")); // invalid character
-    BOOST_CHECK(!IsHexNumber("x0"));    // broken prefix
-    BOOST_CHECK(!IsHexNumber("0x0x00")); // two prefixes not allowed
-}
-
 BOOST_AUTO_TEST_CASE(util_seed_insecure_rand) {
     SeedRandomForTest(SeedRand::ZEROS);
     for (int mod = 2; mod < 11; mod++) {
@@ -1828,9 +1892,17 @@ template <typename T> static void TestAddMatrixOverflow() {
     constexpr T MAXI{std::numeric_limits<T>::max()};
     BOOST_CHECK(!CheckedAdd(T{1}, MAXI));
     BOOST_CHECK(!CheckedAdd(MAXI, MAXI));
+    BOOST_CHECK_EQUAL(MAXI, SaturatingAdd(T{1}, MAXI));
+    BOOST_CHECK_EQUAL(MAXI, SaturatingAdd(MAXI, MAXI));
+
     BOOST_CHECK_EQUAL(0, CheckedAdd(T{0}, T{0}).value());
     BOOST_CHECK_EQUAL(MAXI, CheckedAdd(T{0}, MAXI).value());
     BOOST_CHECK_EQUAL(MAXI, CheckedAdd(T{1}, MAXI - 1).value());
+    BOOST_CHECK_EQUAL(MAXI - 1, CheckedAdd(T{1}, MAXI - 2).value());
+    BOOST_CHECK_EQUAL(0, SaturatingAdd(T{0}, T{0}));
+    BOOST_CHECK_EQUAL(MAXI, SaturatingAdd(T{0}, MAXI));
+    BOOST_CHECK_EQUAL(MAXI, SaturatingAdd(T{1}, MAXI - 1));
+    BOOST_CHECK_EQUAL(MAXI - 1, SaturatingAdd(T{1}, MAXI - 2));
 }
 
 /* Check for overflow or underflow */
@@ -1840,9 +1912,17 @@ template <typename T> static void TestAddMatrix() {
     constexpr T MAXI{std::numeric_limits<T>::max()};
     BOOST_CHECK(!CheckedAdd(T{-1}, MINI));
     BOOST_CHECK(!CheckedAdd(MINI, MINI));
+    BOOST_CHECK_EQUAL(MINI, SaturatingAdd(T{-1}, MINI));
+    BOOST_CHECK_EQUAL(MINI, SaturatingAdd(MINI, MINI));
+
     BOOST_CHECK_EQUAL(MINI, CheckedAdd(T{0}, MINI).value());
     BOOST_CHECK_EQUAL(MINI, CheckedAdd(T{-1}, MINI + 1).value());
     BOOST_CHECK_EQUAL(-1, CheckedAdd(MINI, MAXI).value());
+    BOOST_CHECK_EQUAL(MINI + 1, CheckedAdd(T{-1}, MINI + 2).value());
+    BOOST_CHECK_EQUAL(MINI, SaturatingAdd(T{0}, MINI));
+    BOOST_CHECK_EQUAL(MINI, SaturatingAdd(T{-1}, MINI + 1));
+    BOOST_CHECK_EQUAL(MINI + 1, SaturatingAdd(T{-1}, MINI + 2));
+    BOOST_CHECK_EQUAL(-1, SaturatingAdd(MINI, MAXI));
 }
 
 BOOST_AUTO_TEST_CASE(util_overflow) {
@@ -2389,15 +2469,17 @@ BOOST_AUTO_TEST_CASE(test_ParseFixedPoint) {
     BOOST_CHECK(!ParseFixedPoint("1.", 8, &amount));
 }
 
-static void TestOtherThread(fs::path dirname, std::string lockname,
-                            bool *result) {
-    *result = LockDirectory(dirname, lockname);
-}
-
 #ifndef WIN32 // Cannot do this test on WIN32 due to lack of fork()
 static constexpr char LockCommand = 'L';
 static constexpr char UnlockCommand = 'U';
 static constexpr char ExitCommand = 'X';
+enum : char {
+    // Start with 2 to avoid accidental collision with common values 0 and 1
+    ResSuccess = 2,
+    ResErrorWrite,
+    ResErrorLock,
+    ResUnlockSuccess,
+};
 
 static void TestOtherProcess(fs::path dirname, std::string lockname, int fd) {
     char ch;
@@ -2407,13 +2489,24 @@ static void TestOtherProcess(fs::path dirname, std::string lockname, int fd) {
         assert(rv == 1);
         switch (ch) {
             case LockCommand:
-                ch = LockDirectory(dirname, lockname);
+                ch = [&] {
+                    switch (util::LockDirectory(dirname, lockname)) {
+                        case util::LockResult::Success:
+                            return ResSuccess;
+                        case util::LockResult::ErrorWrite:
+                            return ResErrorWrite;
+                        case util::LockResult::ErrorLock:
+                            return ResErrorLock;
+                    } // no default case, so the compiler can warn about missing
+                      // cases
+                    assert(false);
+                }();
                 rv = write(fd, &ch, 1);
                 assert(rv == 1);
                 break;
             case UnlockCommand:
                 ReleaseDirectoryLocks();
-                ch = true; // Always succeeds
+                ch = ResUnlockSuccess; // Always succeeds
                 rv = write(fd, &ch, 1);
                 assert(rv == 1);
                 break;
@@ -2426,7 +2519,7 @@ static void TestOtherProcess(fs::path dirname, std::string lockname, int fd) {
                 // not available on all non glibc platforms.
                 // Using exec also stops valgrind from thinking it needs to
                 // analyze the memory leaks in this forked process.
-                execlp("true", "true", (char *)NULL);
+                execlp("true", "true", static_cast<char *>(nullptr));
             default:
                 assert(0);
         }
@@ -2454,56 +2547,69 @@ BOOST_AUTO_TEST_CASE(test_LockDirectory) {
         TestOtherProcess(dirname, lockname, fd[0]);
     }
     BOOST_CHECK_EQUAL(close(fd[0]), 0); // Parent: close child end
+
+    char ch;
+    // Lock on non-existent directory should fail
+    BOOST_CHECK_EQUAL(write(fd[1], &LockCommand, 1), 1);
+    BOOST_CHECK_EQUAL(read(fd[1], &ch, 1), 1);
+    BOOST_CHECK_EQUAL(ch, ResErrorWrite);
 #endif
     // Lock on non-existent directory should fail
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname), false);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname),
+                      util::LockResult::ErrorWrite);
 
     fs::create_directories(dirname);
 
     // Probing lock on new directory should succeed
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname, true), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname, true),
+                      util::LockResult::Success);
 
     // Persistent lock on new directory should succeed
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname),
+                      util::LockResult::Success);
 
     // Another lock on the directory from the same thread should succeed
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname),
+                      util::LockResult::Success);
 
     // Another lock on the directory from a different thread within the same
     // process should succeed
-    bool threadresult;
-    std::thread thr(TestOtherThread, dirname, lockname, &threadresult);
+    util::LockResult threadresult;
+    std::thread thr(
+        [&] { threadresult = util::LockDirectory(dirname, lockname); });
     thr.join();
-    BOOST_CHECK_EQUAL(threadresult, true);
+    BOOST_CHECK_EQUAL(threadresult, util::LockResult::Success);
 #ifndef WIN32
     // Try to acquire lock in child process while we're holding it, this should
     // fail.
-    char ch;
     BOOST_CHECK_EQUAL(write(fd[1], &LockCommand, 1), 1);
     BOOST_CHECK_EQUAL(read(fd[1], &ch, 1), 1);
-    BOOST_CHECK_EQUAL((bool)ch, false);
+    BOOST_CHECK_EQUAL(ch, ResErrorLock);
 
     // Give up our lock
     ReleaseDirectoryLocks();
     // Probing lock from our side now should succeed, but not hold on to the
     // lock.
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname, true), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname, true),
+                      util::LockResult::Success);
 
     // Try to acquire the lock in the child process, this should be successful.
     BOOST_CHECK_EQUAL(write(fd[1], &LockCommand, 1), 1);
     BOOST_CHECK_EQUAL(read(fd[1], &ch, 1), 1);
-    BOOST_CHECK_EQUAL((bool)ch, true);
+    BOOST_CHECK_EQUAL(ch, ResSuccess);
 
     // When we try to probe the lock now, it should fail.
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname, true), false);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname, true),
+                      util::LockResult::ErrorLock);
 
     // Unlock the lock in the child process
     BOOST_CHECK_EQUAL(write(fd[1], &UnlockCommand, 1), 1);
     BOOST_CHECK_EQUAL(read(fd[1], &ch, 1), 1);
-    BOOST_CHECK_EQUAL((bool)ch, true);
+    BOOST_CHECK_EQUAL(ch, ResUnlockSuccess);
 
     // When we try to probe the lock now, it should succeed.
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname, true), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname, true),
+                      util::LockResult::Success);
 
     // Re-lock the lock in the child process, then wait for it to exit, check
     // successful return. After that, we check that exiting the process
@@ -2513,7 +2619,8 @@ BOOST_AUTO_TEST_CASE(test_LockDirectory) {
     BOOST_CHECK_EQUAL(write(fd[1], &ExitCommand, 1), 1);
     BOOST_CHECK_EQUAL(waitpid(pid, &processstatus, 0), pid);
     BOOST_CHECK_EQUAL(processstatus, 0);
-    BOOST_CHECK_EQUAL(LockDirectory(dirname, lockname, true), true);
+    BOOST_CHECK_EQUAL(util::LockDirectory(dirname, lockname, true),
+                      util::LockResult::Success);
 
     // Restore SIGCHLD
     signal(SIGCHLD, old_handler);
@@ -2522,21 +2629,6 @@ BOOST_AUTO_TEST_CASE(test_LockDirectory) {
     // Clean up
     ReleaseDirectoryLocks();
     fs::remove_all(dirname);
-}
-
-BOOST_AUTO_TEST_CASE(test_DirIsWritable) {
-    // Should be able to write to the data dir.
-    fs::path tmpdirname = m_args.GetDataDirBase();
-    BOOST_CHECK_EQUAL(DirIsWritable(tmpdirname), true);
-
-    // Should not be able to write to a non-existent dir.
-    tmpdirname = GetUniquePath(tmpdirname);
-    BOOST_CHECK_EQUAL(DirIsWritable(tmpdirname), false);
-
-    fs::create_directory(tmpdirname);
-    // Should be able to write to it now.
-    BOOST_CHECK_EQUAL(DirIsWritable(tmpdirname), true);
-    fs::remove(tmpdirname);
 }
 
 template <int F, int T>
@@ -2640,8 +2732,8 @@ static std::string SpanToStr(const Span<const char> &span) {
     return std::string(span.begin(), span.end());
 }
 
-BOOST_AUTO_TEST_CASE(test_spanparsing) {
-    using namespace spanparsing;
+BOOST_AUTO_TEST_CASE(test_script_parsing) {
+    using namespace script;
     std::string input;
     Span<const char> sp;
     bool success;
@@ -2804,6 +2896,20 @@ BOOST_AUTO_TEST_CASE(test_SplitString) {
         BOOST_CHECK_EQUAL(result.size(), 1);
         BOOST_CHECK_EQUAL(result[0], "AAA");
     }
+
+    // multiple split characters
+    {
+        using V = std::vector<std::string>;
+        BOOST_TEST(SplitString("a,b.c:d;e", ",;") == V({"a", "b.c:d", "e"}));
+        BOOST_TEST(SplitString("a,b.c:d;e", ",;:.") ==
+                   V({"a", "b", "c", "d", "e"}));
+        BOOST_TEST(SplitString("a,b.c:d;e", "") == V({"a,b.c:d;e"}));
+        BOOST_TEST(SplitString("aaa", "bcdefg") == V({"aaa"}));
+        BOOST_TEST(SplitString("x\0a,b"s, "\0"s) == V({"x", "a,b"}));
+        BOOST_TEST(SplitString("x\0a,b"s, '\0') == V({"x", "a,b"}));
+        BOOST_TEST(SplitString("x\0a,b"s, "\0,"s) == V({"x", "a", "b"}));
+        BOOST_TEST(SplitString("abcdefg", "bcd") == V({"a", "", "", "efg"}));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(test_LogEscapeMessage) {
@@ -2937,9 +3043,8 @@ BOOST_AUTO_TEST_CASE(message_sign) {
     const std::string message = "Trust no one";
 
     const std::string expected_signature =
-        "IED/"
-        "JtZs3huKX9JEQIBPZPSZwOiMyDQ+"
-        "yNWQvL7YcFzCOGTcfleWOWSvfggenKCinqvOX8t1Iw+HYZqQjxzXQm0=";
+        "H3CcyS18y471Ya5WTYAke25spvA5eyBMvAuNhxDkuAjsdNGX+"
+        "NoouNlY1KoselGvF65Werf7OdtKAoOZ9WB17Rc=";
 
     CKey privkey;
     std::string generated_signature;
@@ -2995,15 +3100,15 @@ BOOST_AUTO_TEST_CASE(message_verify) {
 
     BOOST_CHECK_EQUAL(
         MessageVerify(*params, "15CRxFdyRpGZLW9w8HnHvVduizdL5jKNbs",
-                      "IPojfrX2dfPnH26UegfbGQQLrdK844DlHq5157/P6h57WyuS/Qsl+h/"
-                      "WSVGDF4MUi4rWSswW38oimDYfNNUBUOk=",
+                      "H3CcyS18y471Ya5WTYAke25spvA5eyBMvAuNhxDkuAjsdNGX+"
+                      "NoouNlY1KoselGvF65Werf7OdtKAoOZ9WB17Rc=",
                       "Trust no one"),
         MessageVerificationResult::OK);
 
     BOOST_CHECK_EQUAL(
-        MessageVerify(*params, "11canuhp9X2NocwCq7xNrQYTmUgZAnLK3",
-                      "IIcaIENoYW5jZWxsb3Igb24gYnJpbmsgb2Ygc2Vjb25kIGJhaWxvdXQg"
-                      "Zm9yIGJhbmtzIAaHRtbCeDZINyavx14=",
+        MessageVerify(*params, "1NoJrossxPBKfCHuJXT4HadJrXRE9Fxiqs",
+                      "HxO6qEsMrNvPA7QTMUbdzF/uXbW78yPG6gFITses9XVvMdBULIFwrfhN"
+                      "f196N+rxnK5eSl8eF3aKe4INunzFJXg=",
                       "Trust me"),
         MessageVerificationResult::OK);
 }

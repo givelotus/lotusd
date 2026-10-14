@@ -94,17 +94,6 @@ struct Params {
     int BIP66Height;
     /** Block height at which CSV (BIP68, BIP112 and BIP113) becomes active */
     int CSVHeight;
-    /** Block height at which the wellington activation becomes active */
-    int wellingtonHeight;
-    /** Block height at which the Cowperthwaite activation becomes active */
-    int cowperthwaiteHeight;
-    /**
-     * Unix time used for MTP activation of 15 November 2026 12:00:00 UTC
-     * upgrade
-     */
-    int mengerActivationTime;
-    /** Unix time used for MTP activation of 15 May 2027 12:00:00 UTC upgrade */
-    int sandersActivationTime;
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;

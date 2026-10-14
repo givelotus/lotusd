@@ -6,14 +6,11 @@
 
 #include <blockindex.h>
 #include <config.h>
-#include <consensus/activation.h>
 #include <consensus/params.h>
 #include <minerfund.h>
 
 bool MinerFundPolicy::operator()(BlockPolicyValidationState &state) {
-    if (!m_blockIndex.pprev ||
-        !IsWellingtonEnabled(m_consensusParams, m_blockIndex.pprev)) {
-        // Do not apply the miner fund policy before Wellington activates.
+    if (!m_blockIndex.pprev) {
         return true;
     }
 

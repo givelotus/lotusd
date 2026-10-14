@@ -134,7 +134,9 @@ define_opcodes! {
 
     /// No operation.
     OP_NOP = 0x61,
-    /// Transaction is invalid unless occurring in an unexecuted OP_IF branch.
+    /// Identifies a script type in scriptPubKey (e.g. Taproot).
+    OP_SCRIPTTYPE = 0x62,
+    /// Legacy alias for OP_SCRIPTTYPE.
     OP_VER = 0x62,
     /// Execute the following instructions if the top stack value is true
     /// (non-zero).

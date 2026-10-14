@@ -7,7 +7,7 @@
 pub use self::ffi_inner::*;
 use crate::bridge::{setup_chronik, Chronik};
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, unused_attributes)]
 #[cxx::bridge(namespace = "chronik_bridge")]
 mod ffi_inner {
     /// Params for setting up Chronik

@@ -250,17 +250,10 @@ void MinerTestingSetup::TestPackageSelection(
         highFeeDecendantTxId));
     pblocktemplate = AssemblerForTest(config).CreateNewBlock(scriptPubKey);
 
-    // Under preconsensus (addFinalizedTxs), the free tx and its high fee
-    // descendant tx don't get finalized/selected. Under addTxs (001 nlogn
-    // package accumulation), their package fee rate exceeds blockMinFeeRate so
-    // they are selected.
-    if (m_preconsensus) {
-        for (const auto &txn : pblocktemplate->block.vtx) {
-            BOOST_CHECK(txn->GetId() != freeTxId);
-            BOOST_CHECK(txn->GetId() != highFeeDecendantTxId);
-        }
-    } else {
-        BOOST_CHECK_EQUAL(pblocktemplate->block.vtx.size(), 6U);
+    // Fees of already selected ancestors must not subsidize free descendants.
+    for (const auto &txn : pblocktemplate->block.vtx) {
+        BOOST_CHECK(txn->GetId() != freeTxId);
+        BOOST_CHECK(txn->GetId() != highFeeDecendantTxId);
     }
 
     if (m_preconsensus) {
@@ -272,10 +265,11 @@ void MinerTestingSetup::TestPackageSelection(
     // The large outputs also make the derived sigcheck budget exceed the
     // coinbase reservation; this test isolates block-size accounting.
     m_node.mempool->clear(/*include_finalized_txs=*/true);
+    tx.vout.resize(1);
     tx.vout.emplace_back(Amount::zero(),
                          CScript() << OP_RETURN << std::vector<uint8_t>(8000));
-    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 0);
-    tx.vout[0].nValue = txFirst[0]->vout[0].nValue - 20000 * SATOSHI;
+    tx.vin[0].prevout = COutPoint(txFirst[0]->GetId(), 1);
+    tx.vout[0].nValue = txFirst[0]->vout[1].nValue - 20000 * SATOSHI;
     const auto fittingParent = MakeTransactionRef(tx);
     AddUnchecked(entry.Fee(20000 * SATOSHI).FromTx(tx));
     tx.vin[0].prevout = COutPoint(fittingParent->GetId(), 0);
@@ -290,6 +284,7 @@ void MinerTestingSetup::TestPackageSelection(
         ::GetSerializeSize(*fittingParent) + ::GetSerializeSize(*fittingChild) + 1;
     BlockAssembler::Options assembler_options;
     assembler_options.add_finalized_txs = false;
+    assembler_options.enableMinerFund = config.EnableMinerFund();
     auto constrained_assembler = BlockAssembler{
         BlockFitter(fitter_options), m_node.chainman->ActiveChainstate(),
         m_node.mempool.get(), assembler_options, m_node.avalanche.get()};
@@ -327,21 +322,21 @@ void MinerTestingSetup::TestPackageSelection(
         for (const auto &prevout : inputs) {
             CTxIn input;
             input.prevout = prevout;
-            input.scriptSig = CScript() << OP_1;
+            input.scriptSig = CScript() << std::vector<uint8_t>{OP_1};
             split.vin.push_back(input);
         }
         const int64_t available = (value - fee) / SATOSHI;
-        split.vout.emplace_back((available / 2) * SATOSHI, CScript() << OP_TRUE);
+        split.vout.emplace_back((available / 2) * SATOSHI, CScript());
         split.vout.emplace_back((available - available / 2) * SATOSHI,
-                                CScript() << OP_TRUE);
+                                CScript());
         split.vout.emplace_back(Amount::zero(),
                                 CScript() << OP_RETURN << std::vector<uint8_t>(padding));
         const auto result = MakeTransactionRef(split);
         AddUnchecked(entry.Fee(fee).SigChecks(0).FromTx(result));
         return result;
     };
-    const auto root = addSplit({COutPoint(txFirst[0]->GetId(), 0)},
-                               txFirst[0]->vout[0].nValue);
+    const auto root = addSplit({COutPoint(txFirst[0]->GetId(), 1)},
+                               txFirst[0]->vout[1].nValue);
     auto left = addSplit({COutPoint(root->GetId(), 0)}, root->vout[0].nValue);
     auto right = addSplit({COutPoint(root->GetId(), 1)}, root->vout[1].nValue);
     for (int layer = 0; layer < 10; ++layer) {
@@ -357,7 +352,7 @@ void MinerTestingSetup::TestPackageSelection(
     const auto repeatedParent = addSplit(
         {COutPoint(left->GetId(), 0), COutPoint(left->GetId(), 1)},
         left->vout[0].nValue + left->vout[1].nValue);
-    const auto diamond = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
+    const auto diamond = AssemblerForTest(config).CreateNewBlock(scriptPubKey);
     BOOST_CHECK_EQUAL(diamond->block.vtx.size(), 25U);
     BOOST_CHECK(std::any_of(diamond->block.vtx.begin(), diamond->block.vtx.end(),
                            [&](const auto &txref) {
@@ -367,8 +362,8 @@ void MinerTestingSetup::TestPackageSelection(
     // Newly ready siblings compete by their own modified fee rate, not by
     // the parent's child-container iteration order. Only one child fits.
     m_node.mempool->clear(/*include_finalized_txs=*/true);
-    const auto siblingParent = addSplit({COutPoint(txFirst[0]->GetId(), 0)},
-                                        txFirst[0]->vout[0].nValue, 20000 * SATOSHI, 8000);
+    const auto siblingParent = addSplit({COutPoint(txFirst[0]->GetId(), 1)},
+                                        txFirst[0]->vout[1].nValue, 20000 * SATOSHI, 8000);
     const auto lowerFee = addSplit({COutPoint(siblingParent->GetId(), 0)},
                                    siblingParent->vout[0].nValue, 30000 * SATOSHI, 8000);
     const auto higherFee = addSplit({COutPoint(siblingParent->GetId(), 1)},
@@ -399,7 +394,7 @@ void MinerTestingSetup::TestPackageSelection(
     AddUnchecked(entry.Fee(20000 * SATOSHI).SigChecks(0).FromTx(locked));
     addSplit({COutPoint(locked->GetId(), 0)}, locked->vout[0].nValue,
              50000 * SATOSHI, 8000);
-    BOOST_CHECK_EQUAL(AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey)
+    BOOST_CHECK_EQUAL(AssemblerForTest(config).CreateNewBlock(scriptPubKey)
                           ->block.vtx.size(),
                       1U);
 }
@@ -887,10 +882,10 @@ void MinerTestingSetup::TestPrioritisedMining(
 
     // This tx has a low fee: 1000 satoshis
     tx.vin[0].prevout = COutPoint{txFirst[1]->GetId(), 1};
-    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - 1000 * SATOSHI;
+    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - 10000 * SATOSHI;
     // save this txid for later use
     const TxId hashParentTx =
-        finalizePrioritizedTx(tx, 1000 * SATOSHI, Amount::zero());
+        finalizePrioritizedTx(tx, 10000 * SATOSHI, Amount::zero());
 
     // This tx has a medium fee: 10000 satoshis
     tx.vin[0].prevout = COutPoint{txFirst[2]->GetId(), 1};
@@ -903,9 +898,9 @@ void MinerTestingSetup::TestPrioritisedMining(
     // This tx also has a low fee, but is prioritised
     tx.vin[0].prevout = COutPoint{hashParentTx, 0};
     // 1000 satoshi fee
-    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - 1000 * SATOSHI - 1000 * SATOSHI;
+    tx.vout[0].nValue = txFirst[1]->vout[1].nValue - 10000 * SATOSHI - 10000 * SATOSHI;
     const TxId hashPrioritisedChild =
-        finalizePrioritizedTx(tx, 1000 * SATOSHI, 2 * COIN);
+        finalizePrioritizedTx(tx, 10000 * SATOSHI, 2 * COIN);
 
     // Test that transaction selection properly updates ancestor fee
     // calculations as prioritised parents get included in a block. Create a
@@ -940,21 +935,15 @@ void MinerTestingSetup::TestPrioritisedMining(
     std::vector<TxId> txids = {hashFreeParent, hashFreePrioritisedTx,
                                hashFreeChild, hashParentTx,
                                hashPrioritisedChild};
-    if (!m_preconsensus) {
-        txids.push_back(hashFreeGrandchild);
-    }
     BOOST_REQUIRE_EQUAL(pblocktemplate->block.vtx.size(), txids.size() + 1);
     std::sort(txids.begin(), txids.end());
     for (size_t i = 0; i < txids.size(); ++i) {
         BOOST_CHECK(pblocktemplate->block.vtx[i + 1]->GetId() == txids[i]);
     }
     for (size_t i = 0; i < pblocktemplate->block.vtx.size(); ++i) {
-        if (m_preconsensus) {
-            // The FreeParent and FreeChild's prioritisations should not impact
-            // the child under preconsensus finalization.
-            BOOST_CHECK(pblocktemplate->block.vtx[i]->GetId() !=
-                        hashFreeGrandchild);
-        }
+        // Prioritisation of already included ancestors must not subsidize
+        // the unprioritised, zero-fee grandchild.
+        BOOST_CHECK(pblocktemplate->block.vtx[i]->GetId() != hashFreeGrandchild);
         // De-prioritised transaction should not be included.
         BOOST_CHECK(pblocktemplate->block.vtx[i]->GetId() != hashMediumFeeTx);
     }

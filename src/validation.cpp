@@ -34,7 +34,7 @@
 #include <minerfund.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
-#include <policy/block/minerfund.h>
+#include <policy/block/parkingpolicy.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -608,7 +608,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     }
 
     // Taproot is phased out until Second Samuel activation
-    if (m_pool.m_require_standard &&
+    if (m_pool.m_opts.require_standard &&
         !IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
                                m_active_chainstate.m_chain.Tip())) {
         if (TxHasPayToTaproot(tx)) {
@@ -731,12 +731,12 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
 
     unsigned int nSize = tx.GetTotalSize();
 
-    uint32_t extraFlags = m_pool.m_require_standard
+    uint32_t extraFlags = m_pool.m_opts.require_standard
                               ? STANDARD_SCRIPT_VERIFY_FLAGS
                               : MANDATORY_SCRIPT_VERIFY_FLAGS;
 
     // After Second Samuel, we enable Taproot and SIGHASH_LOTUS
-    if (m_pool.m_require_standard &&
+    if (m_pool.m_opts.require_standard &&
         IsSecondSamuelEnabled(args.m_config.GetChainParams().GetConsensus(),
                               m_active_chainstate.m_chain.Tip())) {
         extraFlags &= ~SCRIPT_DISABLE_TAPROOT_SIGHASH_LOTUS;
@@ -2940,8 +2940,6 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         AssertLockHeld(m_mempool->cs);
     }
 
-    const Consensus::Params &consensusParams = m_chainman.GetConsensus();
-
     assert(pindexNew->pprev == m_chain.Tip());
     // Read block from disk.
     const auto time_1{SteadyClock::now()};
@@ -2987,46 +2985,23 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         }
 
         /**
-         * The block is valid by consensus rules so now we check if the block
-         * passes all block policy checks. If not, then park the block and bail.
-         *
-         * We check block parking policies before flushing changes to the UTXO
-         * set. This allows us to avoid rewinding everything immediately after.
-         *
-         * Only check block parking policies the first time the block is
-         * connected. Avalanche voting can override the parking decision made by
-         * these policies.
+         * NOTE (Lotus mainnet):
+         * Block parking policies (`MinerFundPolicy`, `StakingRewardsPolicy`,
+         * `PreConsensusPolicy`, and `RTTPolicy`) are intentionally decoupled in
+         * `ConnectTip` for Lotus V1:
+         * 1. Lotus V1 enforces `CheckMinerFund` as a hard consensus rule inside
+         *    `ConnectBlock` using Lotus's `blockReward = GetBlockSubsidy(...) +
+         *    (blockFees - nBurnedCoins) / 2` formula. In contrast, eCash's
+         *    `MinerFundPolicy` in `ConnectTip` is a soft/Avalanche parking
+         *    policy that passes `blockFees + GetBlockSubsidy(...)` without
+         *    Lotus's `/ 2` fee/burn adjustment (which would falsely park blocks
+         *    with non-zero fees or OP_RETURN burns after IBD).
+         * 2. The `ParkingPolicy` infrastructure (`src/policy/block/minerfund.cpp`,
+         *    `stakingrewards.cpp`, `preconsensus.cpp`, `rtt.cpp`, and
+         *    `src/avalanche/stakecontendercache.cpp`) is deliberately preserved
+         *    intact for upstream compatibility. Miner fund and staking reward
+         *    parking policies are not active on Lotus mainnet.
          */
-        const BlockHash blockhash = pindexNew->GetBlockHash();
-        if (!m_chainman.IsInitialBlockDownload() &&
-            !m_filterParkingPoliciesApplied.contains(blockhash)) {
-            m_filterParkingPoliciesApplied.insert(blockhash);
-
-            const Amount blockReward =
-                blockFees +
-                GetBlockSubsidy(pindexNew->nBits, consensusParams);
-
-            std::vector<std::unique_ptr<ParkingPolicy>> parkingPolicies;
-            parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(
-                consensusParams, *pindexNew, blockConnecting, blockReward));
-
-            // If any block policy is violated, bail on the first one found
-            if (std::find_if_not(parkingPolicies.begin(), parkingPolicies.end(),
-                                 [&](const auto &policy) {
-                                     bool ret = (*policy)(blockPolicyState);
-                                     if (!ret) {
-                                         LogPrintf(
-                                             "Park block because it "
-                                             "violated a block policy: %s\n",
-                                             blockPolicyState.ToString());
-                                     }
-                                     return ret;
-                                 }) != parkingPolicies.end()) {
-                pindexNew->nStatus = pindexNew->nStatus.withParked();
-                m_blockman.m_dirty_blockindex.insert(pindexNew);
-                return false;
-            }
-        }
 
         time_3 = SteadyClock::now();
         m_chainman.time_connect_total += time_3 - time_2;

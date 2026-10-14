@@ -13,17 +13,6 @@ namespace Consensus {
 struct Params;
 }
 
-/** Check if May 15th, 2023 protocol upgrade has activated. */
-bool IsWellingtonEnabled(const Consensus::Params &params, int32_t nHeight);
-/** Check if May 15th, 2023 protocol upgrade has activated. */
-bool IsWellingtonEnabled(const Consensus::Params &params,
-                         const CBlockIndex *pindexPrev);
-
-/** Check if Nov 15th, 2023 protocol upgrade has activated. */
-bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight);
-bool IsCowperthwaiteEnabled(const Consensus::Params &params,
-                            const CBlockIndex *pindexPrev);
-
 /** Check if December 21st, 2021 protocol upgrade has activated. */
 bool IsExodusEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev);

@@ -25,18 +25,10 @@ struct StakingRewardsActivationTestingSetup : public TestingSetup {
         SelectParams(chain_type);
         const Consensus::Params &params = Params().GetConsensus();
 
-        // Before Cowperthwaite activation
-        const auto activationHeight = params.cowperthwaiteHeight;
+        BOOST_CHECK(!IsStakingRewardsActivated(params, nullptr));
 
         CBlockIndex block;
-        block.nHeight = activationHeight - 1;
-        BOOST_CHECK(!IsStakingRewardsActivated(params, &block));
-
-        block.nHeight = activationHeight;
-        BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block),
-                          expectActivation);
-
-        block.nHeight = activationHeight + 1;
+        block.nHeight = 0;
         BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block),
                           expectActivation);
     }

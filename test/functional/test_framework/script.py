@@ -8,8 +8,6 @@ Functionality to build Bitcoin Scripts.
 import unittest
 from typing import Dict, List
 
-from .hash import hash160
-
 MAX_SCRIPT_ELEMENT_SIZE = 520
 OPCODE_NAMES: Dict["CScriptOp", str] = {}
 

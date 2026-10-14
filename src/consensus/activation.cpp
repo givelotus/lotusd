@@ -8,46 +8,6 @@
 #include <common/args.h>
 #include <consensus/params.h>
 
-bool IsWellingtonEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.wellingtonHeight;
-}
-
-bool IsWellingtonEnabled(const Consensus::Params &params,
-                         const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsWellingtonEnabled(params, pindexPrev->nHeight);
-}
-
-bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.cowperthwaiteHeight;
-}
-
-bool IsCowperthwaiteEnabled(const Consensus::Params &params,
-                            const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsCowperthwaiteEnabled(params, pindexPrev->nHeight);
-}
-
-bool IsMengerEnabled(const Consensus::Params &params, int64_t nMedianTimePast) {
-    return nMedianTimePast >= gArgs.GetIntArg("-mengeractivationtime",
-                                              params.mengerActivationTime);
-}
-
-bool IsMengerEnabled(const Consensus::Params &params,
-                     const CBlockIndex *pindexPrev) {
-    if (pindexPrev == nullptr) {
-        return false;
-    }
-
-    return IsMengerEnabled(params, pindexPrev->GetMedianTimePast());
-}
-
 bool IsExodusEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {

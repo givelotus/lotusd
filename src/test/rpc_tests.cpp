@@ -72,7 +72,7 @@ UniValue RPCTestingSetup::TransformParams(
 }
 
 UniValue RPCTestingSetup::CallRPC(const std::string &args) {
-    std::vector<std::string> vArgs{SplitString(args, ' ')};
+    std::vector<std::string> vArgs{util::SplitString(args, ' ')};
     std::string strMethod = vArgs[0];
     vArgs.erase(vArgs.begin());
     GlobalConfig config;
@@ -700,7 +700,7 @@ BOOST_AUTO_TEST_CASE(help_example) {
     // test different argument types
     const RPCArgList &args = {{"foo", "bar"}, {"b", true}, {"n", 1}};
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", args),
-                      "> bitcoin-cli -named test foo=bar b=true n=1\n");
+                      "> lotus-cli -named test foo=bar b=true n=1\n");
     BOOST_CHECK_EQUAL(HelpExampleRpcNamed("test", args),
                       "> curl --user myusername --data-binary '{\"jsonrpc\": "
                       "\"1.0\", \"id\": \"curltest\", \"method\": \"test\", "
@@ -709,11 +709,11 @@ BOOST_AUTO_TEST_CASE(help_example) {
 
     // test shell escape
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", {{"foo", "b'ar"}}),
-                      "> bitcoin-cli -named test foo='b'''ar'\n");
+                      "> lotus-cli -named test foo='b'''ar'\n");
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", {{"foo", "b\"ar"}}),
-                      "> bitcoin-cli -named test foo='b\"ar'\n");
+                      "> lotus-cli -named test foo='b\"ar'\n");
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", {{"foo", "b ar"}}),
-                      "> bitcoin-cli -named test foo='b ar'\n");
+                      "> lotus-cli -named test foo='b ar'\n");
 
     // test object params
     UniValue obj_value(UniValue::VOBJ);
@@ -721,7 +721,7 @@ BOOST_AUTO_TEST_CASE(help_example) {
     obj_value.pushKV("b", false);
     obj_value.pushKV("n", 1);
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", {{"name", obj_value}}),
-                      "> bitcoin-cli -named test "
+                      "> lotus-cli -named test "
                       "name='{\"foo\":\"bar\",\"b\":false,\"n\":1}'\n");
     BOOST_CHECK_EQUAL(
         HelpExampleRpcNamed("test", {{"name", obj_value}}),
@@ -736,7 +736,7 @@ BOOST_AUTO_TEST_CASE(help_example) {
     arr_value.push_back(false);
     arr_value.push_back(1);
     BOOST_CHECK_EQUAL(HelpExampleCliNamed("test", {{"name", arr_value}}),
-                      "> bitcoin-cli -named test name='[\"bar\",false,1]'\n");
+                      "> lotus-cli -named test name='[\"bar\",false,1]'\n");
     BOOST_CHECK_EQUAL(HelpExampleRpcNamed("test", {{"name", arr_value}}),
                       "> curl --user myusername --data-binary '{\"jsonrpc\": "
                       "\"1.0\", \"id\": \"curltest\", \"method\": \"test\", "

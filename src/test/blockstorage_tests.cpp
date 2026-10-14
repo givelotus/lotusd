@@ -38,6 +38,11 @@ static void CheckReadTxUndo(const BlockManager &blockman, FlatFilePos pos,
     }
 }
 
+static size_t FirstTxOffset(const CBlock &block) {
+    return GetSerializeSize(block.GetBlockHeader()) +
+           GetSerializeSize(block.vMetadata) + GetSizeOfCompactSize(block.vtx.size());
+}
+
 BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     ChainstateManager &chainman = *Assert(m_node.chainman);
 
@@ -48,11 +53,11 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
         CBlockIndex *pindex = active_tip->GetAncestor(height);
         CBlock block;
         BOOST_CHECK(chainman.m_blockman.ReadBlock(block, *pindex));
-        // + 81 = CBlockHeader + CompactSize
+        // Lotus header + serialized metadata + transaction count
         CheckReadTx(
             chainman.m_blockman,
             WITH_LOCK(cs_main,
-                      return FlatFilePos(pindex->nFile, pindex->nDataPos + 81)),
+                      return FlatFilePos(pindex->nFile, pindex->nDataPos + FirstTxOffset(block))),
             *block.vtx[0]);
     }
 
@@ -62,8 +67,8 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     mineBlocks(100);
     CMutableTransaction tx;
     tx.nVersion = 1;
-    tx.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 0)};
-    tx.vout = {CTxOut(50 * COIN - 10000 * SATOSHI,
+    tx.vin = {CTxIn(coinsBlock.vtx[0]->GetId(), 1)};
+    tx.vout = {CTxOut(coinsBlock.vtx[0]->vout[1].nValue - 10000 * SATOSHI,
                       CScript() << OP_RETURN << std::vector<uint8_t>(100))};
     CBlock testBlock = CreateAndProcessBlock({tx}, CScript() << OP_1,
                                              &chainman.ActiveChainstate());
@@ -75,14 +80,14 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     // Check coinbase tx
     CheckReadTx(chainman.m_blockman,
                 WITH_LOCK(cs_main, return FlatFilePos(ptest->nFile,
-                                                      ptest->nDataPos + 81)),
+                                                      ptest->nDataPos + FirstTxOffset(testBlock))),
                 *testBlock.vtx[0]);
     // Check 2nd tx
     CheckReadTx(
         chainman.m_blockman,
         WITH_LOCK(cs_main,
                   return FlatFilePos(ptest->nFile,
-                                     ptest->nDataPos + 81 +
+                                     ptest->nDataPos + FirstTxOffset(testBlock) +
                                          ::GetSerializeSize(testBlock.vtx[0]))),
         *testBlock.vtx[1]);
     // Check undo data of 2nd tx
@@ -90,7 +95,7 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     CheckReadTxUndo(chainman.m_blockman,
                     WITH_LOCK(cs_main, return FlatFilePos(ptest->nFile,
                                                           ptest->nUndoPos + 1)),
-                    {Coin(CTxOut(50 * COIN, CScript() << OP_1), 101, true)});
+                    {Coin(coinsBlock.vtx[0]->vout[1], 101, true)});
 }
 
 BOOST_AUTO_TEST_CASE(read_tx_data_from_disk_bad) {

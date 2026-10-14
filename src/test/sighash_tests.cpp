@@ -145,7 +145,8 @@ BOOST_AUTO_TEST_CASE(sighash_test) {
         SigHashType sigHashType(nHashType);
 
         CMutableTransaction txTo;
-        RandomTransaction(txTo, (nHashType & SIGHASH_BASE_TYPE_MASK) == SIGHASH_SINGLE);
+        RandomTransaction(txTo, (nHashType & SIGHASH_BASE_TYPE_MASK) ==
+                                    SIGHASH_SINGLE);
         CScript scriptCode;
         RandomScript(scriptCode);
         const std::optional<ScriptExecutionData> execdata{
@@ -364,27 +365,16 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
         const std::optional<ScriptExecutionData> diff_execdata{
             ScriptExecutionData(diff_scriptcode)};
         for (const auto raw_hash_type : hash_types) {
-            const uint32_t hash_type = raw_hash_type & ~uint32_t(SIGHASH_RESERVED);
+            const uint32_t hash_type =
+                raw_hash_type & ~uint32_t(SIGHASH_RESERVED);
             const SigHashType sig_hash_type{hash_type};
-            const bool is_forkid{
-                sig_hash_type.hasForkId() &&
-                (flags & SCRIPT_ENABLE_SIGHASH_FORKID)};
+            const bool is_forkid{sig_hash_type.hasForkId() &&
+                                 (flags & SCRIPT_ENABLE_SIGHASH_FORKID)};
             const bool single_out_of_range{
                 (sig_hash_type.getBaseType() == BaseSigHashType::SINGLE) &&
                 in_index >= tx.vout.size()};
-            if (is_forkid && single_out_of_range) {
-                uint256 sighash_with_cache;
-                BOOST_CHECK(!SignatureHash(sighash_with_cache, execdata,
-                                           scriptcode, tx, in_index,
-                                           sig_hash_type, amount, nullptr,
-                                           flags, &cache));
-                uint256 sighash_no_cache;
-                BOOST_CHECK(!SignatureHash(sighash_no_cache, execdata,
-                                           scriptcode, tx, in_index,
-                                           sig_hash_type, amount, nullptr,
-                                           flags, nullptr));
-                continue;
-            }
+            // Lotus BIP143 keeps a zero hashOutputs for an out-of-range
+            // SINGLE output and still computes a signature hash.
             const bool expect_one{!is_forkid && single_out_of_range};
 
             // The result of computing the sighash should be the same with or
@@ -420,15 +410,13 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             // overwrite it. The sighash will always be different except in case
             // of legacy SIGHASH_SINGLE bug.
             uint256 sighash_with_cache2;
-            BOOST_CHECK(SignatureHash(sighash_with_cache2, diff_execdata,
-                                      diff_scriptcode, tx, in_index,
-                                      sig_hash_type, amount, nullptr, flags,
-                                      &cache));
+            BOOST_CHECK(SignatureHash(
+                sighash_with_cache2, diff_execdata, diff_scriptcode, tx,
+                in_index, sig_hash_type, amount, nullptr, flags, &cache));
             uint256 sighash_no_cache2;
-            BOOST_CHECK(SignatureHash(sighash_no_cache2, diff_execdata,
-                                      diff_scriptcode, tx, in_index,
-                                      sig_hash_type, amount, nullptr, flags,
-                                      nullptr));
+            BOOST_CHECK(SignatureHash(
+                sighash_no_cache2, diff_execdata, diff_scriptcode, tx, in_index,
+                sig_hash_type, amount, nullptr, flags, nullptr));
             BOOST_CHECK_EQUAL(sighash_with_cache2, sighash_no_cache2);
             if (!expect_one) {
                 BOOST_CHECK_NE(sighash_with_cache, sighash_with_cache2);
@@ -440,10 +428,9 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
             // Calling the cached version again should return the same value
             // again.
             uint256 sighash_cached_again2;
-            BOOST_CHECK(SignatureHash(sighash_cached_again2, diff_execdata,
-                                      diff_scriptcode, tx, in_index,
-                                      sig_hash_type, amount, nullptr, flags,
-                                      &cache));
+            BOOST_CHECK(SignatureHash(
+                sighash_cached_again2, diff_execdata, diff_scriptcode, tx,
+                in_index, sig_hash_type, amount, nullptr, flags, &cache));
             BOOST_CHECK_EQUAL(sighash_with_cache2, sighash_cached_again2);
 
             // And if we store a different value for this scriptcode and hash
@@ -483,10 +470,9 @@ BOOST_AUTO_TEST_CASE(sighash_caching) {
                 h << sig_hash_type2;
                 const auto new_hash{h.GetHash()};
                 uint256 sighash_mutated2;
-                BOOST_CHECK(SignatureHash(sighash_mutated2, execdata,
-                                          scriptcode, tx, in_index,
-                                          sig_hash_type, amount, nullptr, flags,
-                                          &cache));
+                BOOST_CHECK(SignatureHash(
+                    sighash_mutated2, execdata, scriptcode, tx, in_index,
+                    sig_hash_type, amount, nullptr, flags, &cache));
                 BOOST_CHECK_EQUAL(sighash_mutated2, new_hash);
             } else {
                 uint256 sighash_mutated;

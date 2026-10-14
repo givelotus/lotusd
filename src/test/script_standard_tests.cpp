@@ -101,13 +101,15 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success) {
     s.clear();
     s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0]);
     BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::TAPROOT);
-    BOOST_CHECK_EQUAL(solutions.size(), 0U);
+    BOOST_REQUIRE_EQUAL(solutions.size(), 1U);
+    BOOST_CHECK(solutions[0] == ToByteVector(pubkeys[0]));
 
     s.clear();
     s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0])
       << std::vector<uint8_t>(32);
     BOOST_CHECK_EQUAL(Solver(s, solutions), TxoutType::TAPROOT);
-    BOOST_CHECK_EQUAL(solutions.size(), 0U);
+    BOOST_REQUIRE_EQUAL(solutions.size(), 1U);
+    BOOST_CHECK(solutions[0] == ToByteVector(pubkeys[0]));
 
     // TxoutType::NULL_DATA
     s.clear();
@@ -336,7 +338,8 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestination) {
     // TxoutType::TAPROOT
     s.clear();
     s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkey);
-    BOOST_CHECK(!ExtractDestination(s, address));
+    BOOST_CHECK(ExtractDestination(s, address));
+    BOOST_CHECK(std::get<Taproot>(address) == Taproot(pubkey));
 
     // TxoutType::NULL_DATA
     s.clear();
@@ -411,7 +414,11 @@ BOOST_AUTO_TEST_CASE(script_standard_ExtractDestinations) {
     // TxoutType::TAPROOT
     s.clear();
     s << OP_SCRIPTTYPE << OP_1 << ToByteVector(pubkeys[0]);
-    BOOST_CHECK(!ExtractDestinations(s, whichType, addresses, nRequired));
+    BOOST_CHECK(ExtractDestinations(s, whichType, addresses, nRequired));
+    BOOST_CHECK_EQUAL(whichType, TxoutType::TAPROOT);
+    BOOST_REQUIRE_EQUAL(addresses.size(), 1U);
+    BOOST_CHECK(std::get<Taproot>(addresses[0]) == Taproot(pubkeys[0]));
+    BOOST_CHECK_EQUAL(nRequired, 1);
 
     // TxoutType::NULL_DATA
     s.clear();

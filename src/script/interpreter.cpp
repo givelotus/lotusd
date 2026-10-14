@@ -1666,8 +1666,7 @@ PrecomputedTransactionData::FromCoinsView(const T &tx,
     std::vector<CTxOut> spent_outputs;
     spent_outputs.reserve(tx.vin.size());
     for (const CTxIn &input : tx.vin) {
-        Coin coin;
-        coins_view.GetCoin(input.prevout, coin);
+        const Coin coin = coins_view.GetCoin(input.prevout).value_or(Coin{});
         spent_outputs.push_back(coin.GetTxOut());
     }
     return PrecomputedTransactionData(tx, std::move(spent_outputs));
