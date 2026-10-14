@@ -114,7 +114,7 @@ BOOST_AUTO_TEST_CASE(sign) {
     SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
     for (int i = 0; i < 8; i++) {
         CTransaction tx(txTo[i]);
-        PrecomputedTransactionData txdata(tx);
+        PrecomputedTransactionData txdata(tx, {txFrom.vout[i]});
         for (int j = 0; j < 8; j++) {
             CScript sigSave = txTo[i].vin[0].scriptSig;
             txTo[i].vin[0].scriptSig = txTo[j].vin[0].scriptSig;

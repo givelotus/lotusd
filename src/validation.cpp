@@ -729,7 +729,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws) {
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
         ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
-    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
+    ws.m_precomputed_txdata =
+        PrecomputedTransactionData::FromCoinsView(tx, m_view);
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false,
                            ws.m_precomputed_txdata, GetValidationCache(),
                            ws.m_sig_checks_standard)) {
@@ -2318,11 +2319,12 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         std::vector<CScriptCheck> vChecks;
         TxValidationState tx_state;
         if (fScriptChecks &&
-            !CheckInputScripts(tx, tx_state, view, flags, fCacheResults,
-                               fCacheResults, PrecomputedTransactionData(tx),
-                               m_chainman.m_validation_cache, nSigChecksRet,
-                               nSigChecksTxLimiters[txIndex],
-                               &nSigChecksBlockLimiter, &vChecks)) {
+            !CheckInputScripts(
+                tx, tx_state, view, flags, fCacheResults, fCacheResults,
+                PrecomputedTransactionData::FromCoinsView(tx, view),
+                m_chainman.m_validation_cache, nSigChecksRet,
+                nSigChecksTxLimiters[txIndex], &nSigChecksBlockLimiter,
+                &vChecks)) {
             // Any transaction validation failure in ConnectBlock is a block
             // consensus failure
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
