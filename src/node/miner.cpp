@@ -144,10 +144,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     // Canonical ordering is naturally enforced when using the radix tree
-    if (!shouldAddFinalizedTxs &&
-        IsMagneticAnomalyEnabled(consensusParams, pindexPrev)) {
-        // If magnetic anomaly is enabled, we make sure transaction are
-        // canonically ordered.
+    if (!shouldAddFinalizedTxs) {
+        // We make sure transaction are canonically ordered.
         std::sort(std::begin(pblocktemplate->entries) + 1,
                   std::end(pblocktemplate->entries),
                   [](const CBlockTemplateEntry &a, const CBlockTemplateEntry &b)
