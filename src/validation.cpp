@@ -2085,10 +2085,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
-    if (IsGravitonEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENABLE_SCHNORR_MULTISIG;
-    }
-
     // We make sure this node will have replay protection during the next hard
     // fork.
     if (IsReplayProtectionEnabled(
