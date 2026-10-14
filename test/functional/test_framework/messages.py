@@ -41,8 +41,7 @@ MAX_BLOOM_HASH_FUNCS = 50
 # 1 Lotus in satoshis
 COIN = 1000000
 LOTUS = COIN
-# 1 XEC in satoshis
-XEC = 100
+XEC = COIN
 MAX_MONEY = 2100000000 * COIN
 
 # Maximum length of incoming protocol messages
@@ -564,6 +563,9 @@ class CTransaction:
     @txhash_hex.setter
     def txhash_hex(self, val):
         self._txhash_hex = val
+
+    def is_coinbase(self):
+        return self.vin[0].prevout.hash == 0
 
     def is_valid(self):
         for tout in self.vout:

@@ -85,7 +85,7 @@ class BIP66Test(BitcoinTestFramework):
                     ),
                     "reject-details": (
                         "mandatory-script-verify-flag-failed (Non-canonical DER signature), "
-                        f"input 0 of {spendtx_txid}, spending {coin_txid}:0"
+                        f"input 0 of {spendtx_txid}, spending {coin_txid}:1"
                     ),
                 }
             ],

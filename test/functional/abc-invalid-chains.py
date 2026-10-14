@@ -31,8 +31,7 @@ class InvalidChainsTest(BitcoinTestFramework):
 
         height = self.block_heights[base_block_hash] + 1
         coinbase = create_coinbase(height)
-        block = create_block(base_block_hash, coinbase, block_time)
-        block.nHeight = height
+        block = create_block(base_block_hash, coinbase, height, block_time)
         prepare_block(block)
         self.tip = block
         self.block_heights[block.hash_int] = height

@@ -40,12 +40,10 @@ from test_framework.txtools import pad_tx
 basic_p2sh = sc.CScript([sc.OP_HASH160, hash160(sc.CScript([sc.OP_0])), sc.OP_EQUAL])
 
 NONPUSH_SCRIPTSIG_REJECT_REASON = "(Only push operators allowed in signatures)"
-MEMPOOL_NONPUSH_REJECT_REASON = (
-    "non-mandatory-script-verify-flag " + NONPUSH_SCRIPTSIG_REJECT_REASON
-)
 BLOCK_NONPUSH_REJECT_REASON = (
     "mandatory-script-verify-flag-failed " + NONPUSH_SCRIPTSIG_REJECT_REASON
 )
+MEMPOOL_NONPUSH_REJECT_REASON = BLOCK_NONPUSH_REJECT_REASON
 
 
 class BadTxTemplate:
@@ -233,7 +231,7 @@ class InvalidOPIFConstruction(BadTxTemplate):
 class NonPushScriptSig(BadTxTemplate):
     reject_reason = MEMPOOL_NONPUSH_REJECT_REASON
     block_reject_reason = BLOCK_NONPUSH_REJECT_REASON
-    expect_disconnect = False
+    expect_disconnect = True
 
     def get_tx(self):
         return create_tx_with_script(
@@ -274,7 +272,7 @@ def getDisabledOpcodeTemplate(opcode):
 class NonStandardAndInvalid(BadTxTemplate):
     """A non-standard transaction which is also consensus-invalid should return the consensus error."""
 
-    reject_reason = "mandatory-script-verify-flag-failed (OP_RETURN was encountered)"
+    reject_reason = BLOCK_NONPUSH_REJECT_REASON
     block_reject_reason = BLOCK_NONPUSH_REJECT_REASON
     expect_disconnect = True
 
