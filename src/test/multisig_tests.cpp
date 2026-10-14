@@ -38,7 +38,7 @@ static CScript sign_multisig(const CScript &scriptPubKey,
 }
 
 BOOST_AUTO_TEST_CASE(multisig_verify) {
-    uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC;
+    uint32_t flags = SCRIPT_VERIFY_P2SH;
 
     ScriptError err;
     CKey key[4];

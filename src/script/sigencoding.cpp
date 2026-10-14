@@ -165,15 +165,13 @@ static bool CheckRawECDSASignatureEncoding(const slicedvaltype &sig,
         return set_error(serror, ScriptError::SIG_BADLENGTH);
     }
     // https://bitcoin.stackexchange.com/a/12556:
-    if ((flags & (SCRIPT_VERIFY_DERSIG | SCRIPT_VERIFY_LOW_S |
-                  SCRIPT_VERIFY_STRICTENC)) &&
-        !IsValidDERSignatureEncoding(sig)) {
+    if (!IsValidDERSignatureEncoding(sig)) {
         return set_error(serror, ScriptError::SIG_DER);
     }
     // If the S value is above the order of the curve divided by two, its
     // complement modulo the order could have been used instead, which is
     // one byte shorter when encoded correctly.
-    if ((flags & SCRIPT_VERIFY_LOW_S) && !CPubKey::CheckLowS(sig)) {
+    if (!CPubKey::CheckLowS(sig)) {
         return set_error(serror, ScriptError::SIG_HIGH_S);
     }
 
@@ -213,20 +211,18 @@ bool CheckDataSignatureEncoding(const valtype &vchSig, uint32_t flags,
 
 static bool CheckSighashEncoding(const valtype &vchSig, uint32_t flags,
                                  ScriptError *serror) {
-    if (flags & SCRIPT_VERIFY_STRICTENC) {
-        if (!GetHashType(vchSig).isDefined()) {
-            return set_error(serror, ScriptError::SIG_HASHTYPE);
-        }
+    if (!GetHashType(vchSig).isDefined()) {
+        return set_error(serror, ScriptError::SIG_HASHTYPE);
+    }
 
-        bool usesForkId = GetHashType(vchSig).hasForkId();
-        bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
-        if (!forkIdEnabled && usesForkId) {
-            return set_error(serror, ScriptError::ILLEGAL_FORKID);
-        }
+    bool usesForkId = GetHashType(vchSig).hasForkId();
+    bool forkIdEnabled = flags & SCRIPT_ENABLE_SIGHASH_FORKID;
+    if (!forkIdEnabled && usesForkId) {
+        return set_error(serror, ScriptError::ILLEGAL_FORKID);
+    }
 
-        if (forkIdEnabled && !usesForkId) {
-            return set_error(serror, ScriptError::MUST_USE_FORKID);
-        }
+    if (forkIdEnabled && !usesForkId) {
+        return set_error(serror, ScriptError::MUST_USE_FORKID);
     }
 
     return true;
@@ -304,8 +300,7 @@ static bool IsCompressedOrUncompressedPubKey(const valtype &vchPubKey) {
 
 bool CheckPubKeyEncoding(const valtype &vchPubKey, uint32_t flags,
                          ScriptError *serror) {
-    if ((flags & SCRIPT_VERIFY_STRICTENC) &&
-        !IsCompressedOrUncompressedPubKey(vchPubKey)) {
+    if (!IsCompressedOrUncompressedPubKey(vchPubKey)) {
         return set_error(serror, ScriptError::PUBKEYTYPE);
     }
     return true;

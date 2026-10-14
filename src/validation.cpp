@@ -2047,11 +2047,6 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
         flags |= SCRIPT_VERIFY_CLEANSTACK;
     }
 
-    // Enforce the DERSIG (BIP66) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_DERSIG)) {
-        flags |= SCRIPT_VERIFY_DERSIG;
-    }
-
     // Start enforcing CHECKLOCKTIMEVERIFY (BIP65) rule.
     if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CLTV)) {
         flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
@@ -2064,16 +2059,7 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
 
     // If the UAHF is enabled, we start accepting replay protected txns
     if (IsUAHFenabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_STRICTENC;
         flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-    }
-
-    // If the DAA HF is enabled, we start rejecting transaction that use a high
-    // s in their signature. We also make sure that signature that are supposed
-    // to fail (for instance in multisig or other forms of smart contracts) are
-    // null.
-    if (IsDAAEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_LOW_S;
     }
 
     // We make sure this node will have replay protection during the next hard
