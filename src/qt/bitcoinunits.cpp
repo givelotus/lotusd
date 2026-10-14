@@ -37,10 +37,18 @@ static const unitNameMap bchUnits = {
         {"Satoshi (sat)",
         "Satoshi (sat) (1 / 100" THIN_SP_UTF8 "000" THIN_SP_UTF8 "000)"}},
 };
+static const unitNameMap lotusUnits = {
+    {BitcoinUnits::Unit::base,
+        {"XPI",
+        "Lotus"}},
+    {BitcoinUnits::Unit::sub,
+        {"Satoshi (sat)",
+        "Satoshi (sat) (1 / 100" THIN_SP_UTF8 "000)"}},
+};
 // clang-format on
 
 static const unitNameMap &getUnitsAtRuntime() {
-    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? xecUnits : bchUnits;
+    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? xecUnits : lotusUnits;
 }
 
 BitcoinUnits::BitcoinUnits(QObject *parent)
