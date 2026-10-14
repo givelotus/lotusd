@@ -1217,7 +1217,12 @@ static RPCHelpMan getblocktemplate() {
             const uint64_t sigCheckLimit =
                 GetMaxBlockSigChecksCount(DEFAULT_MAX_BLOCK_SIZE);
             result.pushKV("sigchecklimit", sigCheckLimit);
-            result.pushKV("sizelimit", DEFAULT_MAX_BLOCK_SIZE);
+            uint64_t blockSizeLimit = DEFAULT_MAX_BLOCK_SIZE;
+            if (gArgs.IsArgSet("-blockmaxsize")) {
+                blockSizeLimit =
+                    gArgs.GetIntArg("-blockmaxsize", DEFAULT_MAX_BLOCK_SIZE);
+            }
+            result.pushKV("sizelimit", blockSizeLimit);
             result.pushKV("curtime", pblock->GetBlockTime());
             result.pushKV("bits", strprintf("%08x", pblock->nBits));
             result.pushKV("height", int64_t(pindexPrev->nHeight) + 1);

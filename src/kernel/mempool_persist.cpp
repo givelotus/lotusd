@@ -83,7 +83,7 @@ bool LoadMempool(CTxMemPool &pool, const fs::path &load_path,
                 LOCK(cs_main);
                 const auto &accepted =
                     AcceptToMemoryPool(active_chainstate, tx, nTime,
-                                       /*bypass_limits=*/false,
+                                       /*bypass_limits=*/true,
                                        /*test_accept=*/false);
                 if (accepted.m_result_type ==
                     MempoolAcceptResult::ResultType::VALID) {
