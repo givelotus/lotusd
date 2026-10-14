@@ -260,8 +260,8 @@ public:
         // two days
         consensus.nDAAHalfLife = 2 * 24 * 60 * 60;
 
-        // The miner fund is disabled by default on testnet.
-        consensus.enableMinerFund = false;
+        // The miner fund is enabled by default on testnet.
+        consensus.enableMinerFund = true;
 
         // The staking rewards are disabled by default on testnet.
         consensus.enableStakingRewards = false;
