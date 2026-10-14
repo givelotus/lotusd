@@ -10,7 +10,6 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <common/system.h>
-#include <consensus/activation.h>
 #include <consensus/params.h>
 #include <pow/aserti32d.h>
 #include <primitives/blockhash.h>
@@ -60,28 +59,14 @@ bool PermittedDifficultyTransition(const Consensus::Params &params,
         return true;
     }
 
-    // Prior to the UAHF, the difficulty could change only every 2016 blocks,
-    // so we can bail out early if we observe a difficulty change at an
-    // unexpected block height.
-    if (!IsUAHFenabled(params, height - 1) &&
-        height % params.DifficultyAdjustmentInterval() != 0) {
-        return false;
-    }
-
     arith_uint256 observed_new_target;
-    // Check [0, powLimit] range for all DAA algorithms.
+    // Check [0, powLimit] range.
     if (!NBitsToTarget(params, new_nbits, observed_new_target)) {
         return false;
     }
 
-    // The newer difficulty adjustement algorithms (CW-144 and Aserti32d) do
-    // not have other hard rules for permitted difficulty transitions.
-    if (IsDAAEnabled(params, height - 1)) {
-        return true;
-    }
-
-    return PermittedEDADifficultyTransition(params, old_nbits,
-                                            observed_new_target);
+    // ASERT allows any difficulty transition.
+    return true;
 }
 
 bool CheckProofOfWork(const BlockHash &hash, uint32_t nBits,
