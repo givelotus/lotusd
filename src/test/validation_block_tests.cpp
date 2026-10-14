@@ -93,7 +93,7 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
 
     auto ptemplate = BlockAssembler{config, m_node.chainman->ActiveChainstate(),
                                     m_node.mempool.get()}
-                         .CreateNewBlock(CScript{} << i++ << OP_TRUE);
+                         .CreateNewBlock(CScript{});
     auto pblock = std::make_shared<CBlock>(ptemplate->block);
     pblock->hashPrevBlock = prev_hash;
     pblock->SetBlockTime(++time);
@@ -106,13 +106,13 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     // spend
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
     if (nHeight > -1) {
-        txCoinbase.vin[0].scriptSig = CScript() << COINBASE_PREFIX << nHeight
-                                                << std::vector<uint8_t>(80);
+        txCoinbase.vin[0].scriptSig = CScript() << std::vector<uint8_t>(80);
     }
     txCoinbase.vout.resize(2);
     txCoinbase.vout[1].scriptPubKey = P2SH_OP_TRUE;
-    txCoinbase.vout[1].nValue = txCoinbase.vout[0].nValue;
-    txCoinbase.vout[0].nValue = Amount::zero();
+    // We add i++ in order to make coinbase unique even for same-height blocks
+    txCoinbase.vout[0].scriptPubKey = CScript() << OP_RETURN << COINBASE_PREFIX
+                                                << nHeight << i++;
     pblock->vtx[0] = MakeTransactionRef(std::move(txCoinbase));
 
     return pblock;

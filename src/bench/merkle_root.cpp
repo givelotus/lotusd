@@ -22,24 +22,21 @@ static void MerkleRoot(benchmark::Bench &bench) {
 
     const uint256 expected_root{uint256S(
         "d8d4dfd014a533bc3941b8663fa6e7f3a8707af124f713164d75b0c3179ecb08")};
-    for (bool mutate : {false, true}) {
-        bench.name(mutate ? "MerkleRootWithMutation" : "MerkleRoot")
-            .batch(hashes.size())
-            .unit("leaf")
-            .run([&] {
-                std::vector<uint256> leaves;
-                leaves.reserve((hashes.size() + 1) &
-                               ~1ULL); // capacity rounded up to even
-                for (size_t s = 0; s < hashes.size(); s++) {
-                    leaves.push_back(hashes[s]);
-                }
+    bench.name("MerkleRoot")
+        .batch(hashes.size())
+        .unit("leaf")
+        .run([&] {
+            std::vector<uint256> leaves;
+            leaves.reserve((hashes.size() + 1) &
+                           ~1ULL); // capacity rounded up to even
+            for (size_t s = 0; s < hashes.size(); s++) {
+                leaves.push_back(hashes[s]);
+            }
 
-                bool mutated{false};
-                const uint256 root{ComputeMerkleRoot(
-                    std::move(leaves), mutate ? &mutated : nullptr)};
-                assert(root == expected_root);
-            });
-    }
+            size_t num_layers{0};
+            const uint256 root{ComputeMerkleRoot(std::move(leaves), num_layers)};
+            leaves[num_layers] = root;
+        });
 }
 
 BENCHMARK(MerkleRoot);

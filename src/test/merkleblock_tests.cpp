@@ -21,11 +21,11 @@ BOOST_AUTO_TEST_CASE(merkleblock_construct_from_txids_found) {
 
     // Last txn in block.
     TxId txid1(uint256S(
-        "0x74d681e0e03bafa802c8aa084379aa98d9fcd632ddc2ed9782b586ec87451f20"));
+        "fb0d787c3a9e400ec2b1e178f8a40b9f3b8914bd0361a21bc59f1fc67d06fc60"));
 
     // Second txn in block.
     TxId txid2(uint256S(
-        "0xf9fc751cb7dc372406a9f8d738d5e6f8f63bab71986a39cf36ee70ee17036d07"));
+        "05d292a1f0f4f08afe876d2de2ede420423768ea323383316f183991e4fb7999"));
 
     txids.insert(txid1);
     txids.insert(txid2);

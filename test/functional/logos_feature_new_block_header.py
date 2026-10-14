@@ -41,7 +41,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
 
     def block_from_template(self, block_template):
         coinbase = create_coinbase(block_template['height'])
-        coinbase.vout[0].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
+        coinbase.vout[1].scriptPubKey = CScript([OP_HASH160, bytes(20), OP_EQUAL])
         block = CBlock()
         block.hashPrevBlock = int(block_template['previousblockhash'], 16)
         block.nBits = 0x207fffff
@@ -63,7 +63,7 @@ class NewBlockHeaderTest(BitcoinTestFramework):
         prevblockhash = node.getbestblockhash()
 
         coinbase = create_coinbase(201)
-        coinbase.vout[0].scriptPubKey = p2sh_script
+        coinbase.vout[1].scriptPubKey = p2sh_script
         coinbase.rehash()
         sample_block = CBlock()
         sample_block.vtx = [coinbase]

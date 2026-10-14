@@ -4270,23 +4270,12 @@ static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
         return true;
     }
 
-    bool mutated;
-    uint256 merkle_root = BlockMerkleRoot(block, &mutated);
+    uint256 merkle_root = BlockMerkleRoot(block);
     if (block.hashMerkleRoot != merkle_root) {
         return state.Invalid(
             /*result=*/BlockValidationResult::BLOCK_MUTATED,
             /*reject_reason=*/"bad-txnmrklroot",
             /*debug_message=*/"hashMerkleRoot mismatch");
-    }
-
-    // Check for merkle tree malleability (CVE-2012-2459): repeating sequences
-    // of transactions in a block without affecting the merkle root of a block,
-    // while still invalidating it.
-    if (mutated) {
-        return state.Invalid(
-            /*result=*/BlockValidationResult::BLOCK_MUTATED,
-            /*reject_reason=*/"bad-txns-duplicate",
-            /*debug_message=*/"duplicate transaction");
     }
 
     block.m_checked_merkle_root = true;
@@ -4595,12 +4584,16 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that the coinbase starts with serialized block height
+    // Enforce rule that coinbase OP_RETURN starts with serialized block height
     if (nHeight >= 1) {
-        CScript expect = CScript() << COINBASE_PREFIX << nHeight;
-        if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
+        CScript expect = CScript() << OP_RETURN << COINBASE_PREFIX << nHeight;
+        if (block.vtx[0]->vout[0].scriptPubKey.size() < expect.size() ||
             !std::equal(expect.begin(), expect.end(),
-                        block.vtx[0]->vin[0].scriptSig.begin())) {
+                        block.vtx[0]->vout[0].scriptPubKey.begin())) {
+            LogPrintf("ERROR: block height missmatch in OP_RETURN: expected "
+                      "prefix %s, but output scriptPubKey is %s\n",
+                      HexStr(expect),
+                      HexStr(block.vtx[0]->vout[0].scriptPubKey));
             return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                  "bad-cb-height",
                                  "block height mismatch in coinbase");

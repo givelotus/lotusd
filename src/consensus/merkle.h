@@ -10,12 +10,15 @@
 #include <primitives/block.h>
 #include <uint256.h>
 
-uint256 ComputeMerkleRoot(std::vector<uint256> hashes, bool *mutated = nullptr);
+uint256 ComputeMerkleRoot(std::vector<uint256> hashes, size_t &num_layers);
 
 /**
  * Compute the Merkle root of the transactions in a block.
- * *mutated is set to true if a duplicated subtree was found.
  */
-uint256 BlockMerkleRoot(const CBlock &block, bool *mutated = nullptr);
+uint256 BlockMerkleRoot(const CBlock &block);
+
+uint256 TxInputsMerkleRoot(const std::vector<CTxIn> &vin, size_t &num_layers);
+uint256 TxOutputsMerkleRoot(const std::vector<CTxOut> &vout,
+                            size_t &num_layers);
 
 #endif // BITCOIN_CONSENSUS_MERKLE_H

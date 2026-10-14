@@ -434,8 +434,8 @@ TestChain100Setup::PopulateMempool(FastRandomContext &det_rand,
     std::deque<std::pair<COutPoint, Amount>> unspent_prevouts;
     std::transform(m_coinbase_txns.begin(), m_coinbase_txns.end(),
                    std::back_inserter(unspent_prevouts), [](const auto &tx) {
-                       return std::make_pair(COutPoint(tx->GetId(), 0),
-                                             tx->vout[0].nValue);
+                       return std::make_pair(COutPoint(tx->GetId(), 1),
+                                             tx->vout[1].nValue);
                    });
     while (num_transactions > 0 && !unspent_prevouts.empty()) {
         // The number of inputs and outputs are random, between 1 and 24.
@@ -547,7 +547,7 @@ CBlock getBlock13b8a() {
         "3f0c0000000000"   // nSize
         "a2860100"         // nHeight
         "0000000000000000000000000000000000000000000000000000000000000000"
-        "5275289558f51c9966699404ae2294730c3c9f9bda53523ce50e9b95e558da2f"
+        "8be315ab53286df23d5a48ab1b5b0bbcd7ad414cd7c35993a8e55958b4a52b75"
         "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
         "00"
         "09010000000100000000000000000000000000"
@@ -642,6 +642,7 @@ CBlock getBlock13b8a() {
         "4aab5e18570cf1f844f54788ac404b4c00000000001976a9142b6ba7c9d796b75e"
         "ef7942fc9288edd37c32f5c388ac00000000")};
     stream >> block;
+    assert(BlockMerkleRoot(block) == block.hashMerkleRoot);
     return block;
 }
 

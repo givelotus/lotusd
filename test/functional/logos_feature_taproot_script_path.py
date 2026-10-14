@@ -445,7 +445,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
         block_hash = node.getblockhash(1)
         coin = int(node.getblock(block_hash)['tx'][0], 16)
         tx_fan_out = CTransaction()
-        tx_fan_out.vin.append(CTxIn(COutPoint(coin, 0), CScript([b'\x51'])))
+        tx_fan_out.vin.append(CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
         tx_fan_out.vout = spendable_outputs
         tx_fan_out.rehash()
 
@@ -471,7 +471,7 @@ class TaprootScriptSpendTest(BitcoinTestFramework):
                 output_script = CScript([OP_HASH160, i.to_bytes(20, 'big'), OP_EQUAL])
                 tx.vout.append(CTxOut(output_amount, output_script))
             for _ in range(num_inputs):
-                tx.vin.append(CTxIn(COutPoint(int(tx_fan_out.hash, 16), utxo_idx), CScript()))
+                tx.vin.append(CTxIn(COutPoint(tx_fan_out.txid, utxo_idx), CScript()))
                 utxo_idx += 1
             for input_idx, input_case in enumerate(tx_case['inputs']):
                 tree, leaf_idx, sig_hash_types = input_case

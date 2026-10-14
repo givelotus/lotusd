@@ -69,7 +69,7 @@ class BadTxTemplate:
     def __init__(self, *, spend_tx=None, spend_block=None):
         self.spend_tx = spend_block.vtx[0] if spend_block else spend_tx
         self.spend_avail = sum(o.nValue for o in self.spend_tx.vout)
-        self.valid_txin = CTxIn(COutPoint(self.spend_tx.txid_int, 0), b"", 0xFFFFFFFF)
+        self.valid_txin = CTxIn(COutPoint(self.spend_tx.txid_int, 1), b"", 0xFFFFFFFF)
 
     @abc.abstractmethod
     def get_tx(self, *args, **kwargs):
@@ -87,6 +87,7 @@ class OutputMissing(BadTxTemplate):
     def get_tx(self):
         tx = CTransaction()
         tx.vin.append(self.valid_txin)
+        tx.rehash()
         return tx
 
 
@@ -97,6 +98,7 @@ class InputMissing(BadTxTemplate):
     def get_tx(self):
         tx = CTransaction()
         tx.vout.append(CTxOut(0, sc.CScript([sc.OP_TRUE] * 100)))
+        tx.rehash()
         return tx
 
 
@@ -109,6 +111,7 @@ class SizeTooSmall(BadTxTemplate):
         tx = CTransaction()
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(0, sc.CScript([sc.OP_TRUE])))
+        tx.rehash()
         return tx
 
 
@@ -130,6 +133,7 @@ class BadInputOutpointIndex(BadTxTemplate):
             CTxIn(COutPoint(self.spend_tx.txid_int, bad_idx), b"", 0xFFFFFFFF)
         )
         tx.vout.append(CTxOut(0, basic_p2sh))
+        tx.rehash()
         return tx
 
 
@@ -142,6 +146,7 @@ class DuplicateInput(BadTxTemplate):
         tx.vin.append(self.valid_txin)
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(1, basic_p2sh))
+        tx.rehash()
         return tx
 
 
@@ -154,6 +159,7 @@ class PrevoutNullInput(BadTxTemplate):
         tx.vin.append(self.valid_txin)
         tx.vin.append(CTxIn(COutPoint(txid=0, n=0xFFFFFFFF)))
         tx.vout.append(CTxOut(1, basic_p2sh))
+        tx.rehash()
         return tx
 
 
@@ -169,6 +175,7 @@ class NonexistentInput(BadTxTemplate):
         tx.vin.append(CTxIn(COutPoint(self.spend_tx.txid_int + 1, 0), b"", 0xFFFFFFFF))
         tx.vin.append(self.valid_txin)
         tx.vout.append(CTxOut(1, basic_p2sh))
+        tx.rehash()
         return tx
 
 
@@ -178,7 +185,7 @@ class SpendTooMuch(BadTxTemplate):
 
     def get_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_pub_key=basic_p2sh, amount=(self.spend_avail + 1)
+            self.spend_tx, 1, script_pub_key=basic_p2sh, amount=(self.spend_avail + 1)
         )
 
 
@@ -187,7 +194,7 @@ class CreateNegative(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        return create_tx_with_script(self.spend_tx, 0, amount=-1)
+        return create_tx_with_script(self.spend_tx, 1, amount=-1)
 
 
 class CreateTooLarge(BadTxTemplate):
@@ -195,7 +202,7 @@ class CreateTooLarge(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        return create_tx_with_script(self.spend_tx, 0, amount=MAX_MONEY + 1)
+        return create_tx_with_script(self.spend_tx, 1, amount=MAX_MONEY + 1)
 
 
 class CreateSumTooLarge(BadTxTemplate):
@@ -203,8 +210,9 @@ class CreateSumTooLarge(BadTxTemplate):
     expect_disconnect = True
 
     def get_tx(self):
-        tx = create_tx_with_script(self.spend_tx, 0, amount=MAX_MONEY)
+        tx = create_tx_with_script(self.spend_tx, 1, amount=MAX_MONEY)
         tx.vout = [tx.vout[0]] * 2
+        tx.rehash()
         return tx
 
 
@@ -218,7 +226,7 @@ class InvalidOPIFConstruction(BadTxTemplate):
 
     def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_pub_key=b"\x64" * 35, amount=(self.spend_avail // 2)
+            self.spend_tx, 1, script_pub_key=b"\x64" * 35, amount=(self.spend_avail // 2)
         )
 
 
@@ -229,7 +237,7 @@ class NonPushScriptSig(BadTxTemplate):
 
     def get_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, script_sig=b"\x61", amount=(self.spend_avail // 2)
+            self.spend_tx, 1, script_sig=b"\x61", amount=(self.spend_avail // 2)
         )
 
 
@@ -243,7 +251,7 @@ def getDisabledOpcodeTemplate(opcode):
 
     def get_setup_tx(self):
         return create_tx_with_script(
-            self.spend_tx, 0, amount=self.spend_tx.vout[0].nValue - 10000,
+            self.spend_tx, 1, amount=self.spend_tx.vout[1].nValue - 10000,
             script_pub_key=CScript([
                 OP_HASH160,
                 sc.hash160(CScript([opcode])),
@@ -273,7 +281,7 @@ class NonStandardAndInvalid(BadTxTemplate):
     def get_tx(self):
         return create_tx_with_script(
             self.spend_tx,
-            0,
+            1,
             script_sig=b"\x00" * 3 + b"\xab\x6a",
             amount=(self.spend_avail // 2),
         )

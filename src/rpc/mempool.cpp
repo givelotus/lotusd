@@ -91,7 +91,7 @@ static RPCHelpMan sendrawtransaction() {
             // Block to make sure wallet/indexers sync before returning
             SyncWithValidationInterfaceQueue();
 
-            return tx->GetHash().GetHex();
+            return tx->GetId().GetHex();
         },
     };
 }

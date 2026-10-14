@@ -56,7 +56,7 @@ std::vector<bool> BytesToBits(const std::vector<uint8_t> &bytes);
 class CPartialMerkleTree {
 protected:
     /** the total number of transactions in the block */
-    uint32_t nTransactions;
+    uint32_t nLeaves;
 
     /** node-is-parent-of-matched-txid bits */
     std::vector<bool> vBits;
@@ -72,22 +72,22 @@ protected:
      * height in the merkle tree.
      */
     size_t CalcTreeWidth(int height) const {
-        return (nTransactions + (1 << height) - 1) >> height;
+        return (nLeaves + (1 << height) - 1) >> height;
     }
 
     /**
-     * Calculate the hash of a node in the merkle tree (at leaf level: the
-     * txid's themselves)
+     * Calculate the hash of a node in the merkle tree (at leaf level:
+     * H(txhash || txid))
      */
-    uint256 CalcHash(int height, size_t pos, const std::vector<uint256> &vTxid);
+    uint256 CalcHash(int height, size_t pos, const std::vector<uint256> &vHashes);
 
     /**
      * Recursive function that traverses tree nodes, storing the data as bits
      * and hashes.
      */
     void TraverseAndBuild(int height, size_t pos,
-                          const std::vector<uint256> &vTxid,
-                          const std::vector<bool> &vMatch);
+                          const std::vector<uint256> &vHashes,
+                          const std::vector<bool> &vfMatch);
 
     /**
      * Recursive function that traverses tree nodes, consuming the bits and
@@ -100,7 +100,7 @@ protected:
 
 public:
     SERIALIZE_METHODS(CPartialMerkleTree, obj) {
-        READWRITE(obj.nTransactions, obj.vHash);
+        READWRITE(obj.nLeaves, obj.vHash);
         std::vector<uint8_t> bytes;
         SER_WRITE(obj, bytes = BitsToBytes(obj.vBits));
         READWRITE(bytes);
@@ -112,8 +112,8 @@ public:
      * Construct a partial merkle tree from a list of transaction ids, and a
      * mask that selects a subset of them.
      */
-    CPartialMerkleTree(const std::vector<uint256> &vTxid,
-                       const std::vector<bool> &vMatch);
+    CPartialMerkleTree(const std::vector<uint256> &vHashes,
+                       const std::vector<bool> &vfMatch);
 
     CPartialMerkleTree();
 
@@ -129,7 +129,7 @@ public:
      * Get number of transactions the merkle proof is indicating for
      * cross-reference with local blockchain knowledge.
      */
-    uint32_t GetNumTransactions() const { return nTransactions; };
+    uint32_t GetNumTransactions() const { return nLeaves / 2; };
 };
 
 /**

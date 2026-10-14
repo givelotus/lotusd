@@ -66,15 +66,15 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
             # make non-standard transaction
             tx = CTransaction()
             tx.vin.append(
-                CTxIn(COutPoint(coin, 0), CScript([b'\x51'])))
+                CTxIn(COutPoint(coin, 1), CScript([b'\x51'])))
             return tx
 
         def make_block():
             parent_block_header = node.getblockheader(node.getbestblockhash())
             height = parent_block_header['height'] + 1
             coinbase = create_coinbase(height)
-            coinbase.vout[0].scriptPubKey = p2sh_script
-            coinbase.calc_sha256()
+            coinbase.vout[1].scriptPubKey = p2sh_script
+            coinbase.rehash()
             block = create_block(
                 int(parent_block_header['hash'], 16), coinbase, parent_block_header['time'] + 1)
             block.nHeight = height
@@ -120,7 +120,7 @@ class EnforceStandardConsensusTest(BitcoinTestFramework):
 
         nop10_spend_tx = CTransaction()
         nop10_spend_tx.vin.append(
-            CTxIn(COutPoint(nop10_fund_tx.sha256, 0), CScript([nop10_script])))
+            CTxIn(COutPoint(nop10_fund_tx.txid, 0), CScript([nop10_script])))
         pad_tx(nop10_spend_tx)
         nonstd_txs.append(([nop10_fund_tx, nop10_spend_tx], 'non-mandatory-script-verify-flag (NOPx reserved for soft-fork upgrades)'))
         

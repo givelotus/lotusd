@@ -299,6 +299,7 @@ public:
     }
     void setConfirmed() { m_confirm.status = CWalletTx::CONFIRMED; }
     TxId GetId() const { return tx->GetId(); }
+    TxHash GetHash() const { return tx->GetHash(); }
     bool IsCoinBase() const { return tx->IsCoinBase(); }
 
     // Disable copying of CWalletTx objects to prevent bugs where instances get

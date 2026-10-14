@@ -3199,6 +3199,7 @@ static RPCHelpMan listunspent() {
 
                 UniValue entry(UniValue::VOBJ);
                 entry.pushKV("txid", out.tx->GetId().GetHex());
+                entry.pushKV("hash", out.tx->GetHash().GetHex());
                 entry.pushKV("vout", out.i);
 
                 if (fValidAddress) {
