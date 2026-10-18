@@ -162,7 +162,10 @@ void CTxMemPool::AddTransactionsUpdated(unsigned int n) {
     nTransactionsUpdated += n;
 }
 
-void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
+CTxMemPool::txiter CTxMemPool::addUnchecked(
+    CTxMemPoolEntryRef entry,
+    bool search_mempool_parents,
+    std::span<const txiter> batch_parent_iters) {
     // get a guaranteed unique id (in case tests re-use the same object)
     entry->SetEntryId(nextEntryId++);
 
@@ -192,19 +195,27 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
     cachedInnerUsage += entry->DynamicMemoryUsage();
 
     const CTransactionRef tx = entry->GetSharedTx();
-    std::set<TxId> setParentTransactions;
+    const TxId *last_parent_txid = nullptr;
     for (const CTxIn &in : tx->vin) {
         mapNextTx.insert(std::make_pair(&in.prevout, tx));
         m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(), in.prevout.GetN());
-        setParentTransactions.insert(in.prevout.GetTxId());
+        if (search_mempool_parents &&
+            (!last_parent_txid || *last_parent_txid != in.prevout.GetTxId())) {
+            last_parent_txid = &in.prevout.GetTxId();
+            auto pit = mapTx.find(*last_parent_txid);
+            if (pit != mapTx.end() && pit != newit) {
+                UpdateParent(newit, pit, true);
+                UpdateChild(pit, newit, true);
+            }
+        }
     }
-    // Don't bother worrying about child transactions of this one. It is
-    // guaranteed that a new transaction arriving will not have any children,
-    // because such children would be orphans.
-
-    // Update ancestors with information about this tx
-    for (const auto &pit : GetIterSet(setParentTransactions)) {
-        UpdateParent(newit, pit, true);
+    if (!search_mempool_parents) {
+        for (const txiter &pit : batch_parent_iters) {
+            if (pit != mapTx.end() && pit != newit) {
+                UpdateParent(newit, pit, true);
+                UpdateChild(pit, newit, true);
+            }
+        }
     }
 
     for (uint32_t i = 0; i < tx->vout.size(); ++i) {
@@ -212,7 +223,6 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
             m_utxo_fast_filter.AddUnspent(tx->GetId().begin(), i);
         }
     }
-    UpdateParentsOf(true, newit);
     m_pending_overlay_adds.emplace_back(tx, entry->GetFee() / SATOSHI,
                                        entry->GetSigChecks());
     m_overlay_warm.store(false, std::memory_order_relaxed);
@@ -222,6 +232,7 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
     m_total_fee += entry->GetFee();
     MarkSnapshotEntryChanged(tx->GetId());
     node::PublishMempoolSnapshot(*this);
+    return newit;
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
