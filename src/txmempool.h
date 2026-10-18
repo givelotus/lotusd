@@ -612,10 +612,13 @@ public:
         return func(*m_conflicting);
     }
 
+    void FlushPendingOverlayAdds() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
     /** Shared speculative transaction overlay; not proof of script validity. */
     lotus::v2::MerklixOverlayManager &GetMerklixOverlay() const
         EXCLUSIVE_LOCKS_REQUIRED(cs) {
         AssertLockHeld(cs);
+        FlushPendingOverlayAdds();
         return m_merklix_overlay;
     }
 
@@ -695,6 +698,8 @@ private:
     mutable unsigned int m_snapshot_defer_depth GUARDED_BY(cs){0};
     mutable bool m_snapshot_dirty GUARDED_BY(cs){false};
     mutable lotus::v2::MerklixOverlayManager m_merklix_overlay GUARDED_BY(cs);
+    mutable std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
+        m_pending_overlay_adds GUARDED_BY(cs);
     /** Set ancestor state for an entry */
     void UpdateEntryForAncestors(txiter it, const setEntries *setAncestors)
         EXCLUSIVE_LOCKS_REQUIRED(cs);
