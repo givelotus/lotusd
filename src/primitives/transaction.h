@@ -12,6 +12,7 @@
 #include <primitives/txid.h>
 #include <script/script.h>
 #include <serialize.h>
+#include <support/allocators/chunked_slab.h>
 
 /**
  * An outpoint - a combination of a transaction hash and an index n into its
@@ -329,13 +330,28 @@ static_assert(sizeof(CMutableTransaction) == 56,
 #endif
 
 using CTransactionRef = std::shared_ptr<const CTransaction>;
+/**
+ * Transactions are created on network/RPC threads and often released on
+ * validation threads, so they are carved from a thread-safe process-wide slab
+ * (shared_ptr control block and CTransaction in one slot).
+ */
+using TransactionRefAllocator = GlobalConcurrentSlabAllocator<CTransaction>;
 static inline CTransactionRef MakeTransactionRef() {
-    return std::make_shared<const CTransaction>();
+    return std::allocate_shared<const CTransaction>(TransactionRefAllocator{});
 }
 template <typename Tx>
 static inline CTransactionRef MakeTransactionRef(Tx &&txIn) {
-    return std::make_shared<const CTransaction>(std::forward<Tx>(txIn));
+    return std::allocate_shared<const CTransaction>(TransactionRefAllocator{},
+                                                    std::forward<Tx>(txIn));
 }
+
+/**
+ * Deserialize transaction references (P2P tx messages, block vtx, disk) into
+ * the slab too.
+ */
+template <> struct SharedPtrDeserializeAllocator<CTransaction> {
+    using type = TransactionRefAllocator;
+};
 
 /** Precompute sighash midstate to avoid quadratic hashing */
 struct PrecomputedTransactionData {
