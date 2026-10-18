@@ -19,6 +19,7 @@
 #include <kernel/cs_main.h>
 #include <logging.h>
 #include <net_permissions.h>
+#include <net_websocket.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <node/connection_types.h>
@@ -252,6 +253,8 @@ struct CNodeStats {
     uint32_t m_mapped_as;
     ConnectionType m_conn_type;
     std::optional<double> m_availabilityScore;
+    //! Set for peers connected over WebSocket (/p2p/ws)
+    std::shared_ptr<const WebSocketTransportInfo> m_websocket_info;
 };
 
 /**
@@ -389,6 +392,8 @@ struct CNodeOptions {
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     bool prefer_evict = false;
     size_t recv_flood_size{DEFAULT_MAXRECEIVEBUFFER * 1000};
+    //! Set for peers connected over WebSocket (/p2p/ws)
+    std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr;
 };
 
 /** Information about a peer */
@@ -467,6 +472,12 @@ public:
     std::atomic_bool fPauseSend{false};
 
     const ConnectionType m_conn_type;
+
+    /**
+     * Transport details if this peer is connected over WebSocket; m_sock is
+     * then one end of a local socketpair bridged to the WebSocket.
+     */
+    const std::shared_ptr<WebSocketTransportInfo> m_websocket_info;
 
     /** Move all messages from the received queue to the processing queue. */
     void MarkReceivedMsgsForProcessing()
@@ -1037,6 +1048,20 @@ public:
      *                          - Max total outbound connection capacity filled
      *                          - Max connection capacity for type is filled
      */
+    /**
+     * Accept an inbound peer that connected over WebSocket (/p2p/ws).
+     * Subject to the same limits, bans and eviction as TCP inbound peers.
+     *
+     * @param[in] sock   CConnman's end of the socketpair bridged to the
+     *                   WebSocket.
+     * @param[in] addr   The peer's address (as seen by the HTTP server).
+     * @param[in] addr_bind Our address on the HTTP connection.
+     * @param[in] info   Transport details shared with the bridge.
+     */
+    void AcceptWebSocketPeer(std::unique_ptr<Sock> &&sock,
+                             const CAddress &addr, const CAddress &addr_bind,
+                             std::shared_ptr<WebSocketTransportInfo> info);
+
     bool AddConnection(const std::string &address, ConnectionType conn_type)
         EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
 
@@ -1143,10 +1168,10 @@ private:
      * @param[in] addr_bind The address and port at our side of the connection.
      * @param[in] addr The address and port at the peer's side of the connection
      */
-    void CreateNodeFromAcceptedSocket(std::unique_ptr<Sock> &&sock,
-                                      NetPermissionFlags permission_flags,
-                                      const CAddress &addr_bind,
-                                      const CAddress &addr);
+    void CreateNodeFromAcceptedSocket(
+        std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
+        const CAddress &addr_bind, const CAddress &addr,
+        std::shared_ptr<WebSocketTransportInfo> websocket_info = nullptr);
 
     void DisconnectNodes();
     void NotifyNumConnectionsChanged();

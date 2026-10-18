@@ -195,16 +195,16 @@ uint64_t lotus::v2::GetBlockPayloadLimit(const Config &config) {
                ? std::numeric_limits<uint64_t>::max() : capacity + margin;
 }
 
-bool CMessageHeader::IsOversized(const Config &config) const {
-    // Scale the maximum accepted size with the block size for messages with
-    // block content
-    if (NetMsgType::IsBlockLike(GetMessageType())) {
-        // Keep some headroom (256 KiB) so we can detect bugs where a node is
-        // producing a slightly oversized block.
-        return nMessageSize > lotus::v2::GetBlockPayloadLimit(config);
+uint64_t CMessageHeader::GetMaxPayloadSize(const Config &config,
+                                           const std::string &msg_type) {
+    if (NetMsgType::IsBlockLike(msg_type)) {
+        return lotus::v2::GetBlockPayloadLimit(config);
     }
+    return MAX_PROTOCOL_MESSAGE_LENGTH;
+}
 
-    return nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH;
+bool CMessageHeader::IsOversized(const Config &config) const {
+    return nMessageSize > GetMaxPayloadSize(config, GetMessageType());
 }
 
 ServiceFlags GetDesirableServiceFlags(ServiceFlags services) {

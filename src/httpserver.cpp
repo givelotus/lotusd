@@ -10,7 +10,10 @@
 #include <compat/compat.h>
 #include <config.h>
 #include <logging.h>
+#include <net_websocket.h>
+#include <net_websocket_bridge.h>
 #include <netbase.h>
+#include <protocol.h>
 #include <node/ui_interface.h>
 #include <random.h>
 #include <rpc/protocol.h> // For HTTP status codes
@@ -18,6 +21,7 @@
 #include <sync.h>
 #include <util/check.h>
 #include <util/fs.h>
+#include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/threadnames.h>
@@ -323,6 +327,15 @@ static std::vector<std::string> g_public_prefixes;
 
 //! Whether /chronik is served (-chronik and -chronikpubliconrpcport)
 static bool g_chronik_enabled{false};
+
+//! Whether /p2p/ws is served
+static bool g_p2p_websocket_enabled{false};
+//! Use X-Forwarded-For of /p2p/ws upgrades coming from loopback
+static bool g_p2p_websocket_trust_forwarded_for{false};
+static Mutex g_p2p_websocket_mutex;
+//! Receiver of /p2p/ws peers (CConnman), set once the node is ready
+static P2PWebSocketAcceptor
+    g_p2p_websocket_acceptor GUARDED_BY(g_p2p_websocket_mutex);
 static const std::string CHRONIK_PREFIX{"/chronik"};
 //! Maximum size of a Chronik response
 static const uint64_t MAX_CHRONIK_RESPONSE_SIZE = 256 * 1024 * 1024;
@@ -999,6 +1012,106 @@ static asio::awaitable<bool> InProcessChronikWebSocket(
 }
 
 /**
+ * Address the P2P layer should see for a /p2p/ws peer: the TCP peer, or the
+ * last X-Forwarded-For hop if trusted and the TCP peer is a local proxy.
+ */
+static CService P2PWebSocketPeerAddress(const BeastRequest &req,
+                                        const HTTPConnectionInfo &conn) {
+    if (!g_p2p_websocket_trust_forwarded_for || !conn.peer.IsLocal()) {
+        return conn.peer;
+    }
+    auto xff = req.find("X-Forwarded-For");
+    if (xff == req.end()) {
+        return conn.peer;
+    }
+    std::string_view hops{xff->value()};
+    std::string_view last{hops.substr(hops.rfind(',') + 1)};
+    const CService forwarded{
+        LookupNumeric(std::string{util::TrimStringView(last)}, 0)};
+    return forwarded.IsValid() ? forwarded : conn.peer;
+}
+
+/** Accept a /p2p/ws upgrade and bridge it into CConnman */
+template <typename Stream>
+static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
+                                                const BeastRequest &req,
+                                                const HTTPConnectionInfo &conn) {
+#ifndef HAVE_P2P_WEBSOCKET_BRIDGE
+    BeastResponse res{MakeSimpleResponse(HTTP_NOT_FOUND, req.version())};
+    res.keep_alive(false);
+    co_await WriteResponse(stream, res);
+#else
+    P2PWebSocketAcceptor acceptor{
+        WITH_LOCK(g_p2p_websocket_mutex, return g_p2p_websocket_acceptor)};
+    if (!acceptor) {
+        BeastResponse res{MakeSimpleResponse(HTTP_SERVICE_UNAVAILABLE,
+                                             req.version(),
+                                             "P2P is not ready")};
+        res.keep_alive(false);
+        co_await WriteResponse(stream, res);
+        co_return;
+    }
+
+    const auto offered_protocols{req[http::field::sec_websocket_protocol]};
+    const bool deflate_offered{
+        req[http::field::sec_websocket_extensions].find("permessage-deflate") !=
+        std::string_view::npos};
+    auto [selected, compression] =
+        p2pws::NegotiateP2PCompression(offered_protocols, deflate_offered);
+
+    beast::get_lowest_layer(stream).expires_never();
+    websocket::stream<Stream &> ws{stream};
+    // Only fall back to permessage-deflate when no zstd protocol matched, so
+    // payloads are never compressed twice.
+    p2pws::ConfigureP2PWebSocket(
+        ws, beast::role_type::server,
+        compression == P2PWebSocketCompression::PERMESSAGE_DEFLATE);
+    ws.set_option(websocket::stream_base::decorator(
+        [selected = selected](websocket::response_type &res) {
+            if (!selected.empty()) {
+                res.set(http::field::sec_websocket_protocol, selected);
+            }
+        }));
+    auto [aec] =
+        co_await ws.async_accept(req, asio::as_tuple(asio::use_awaitable));
+    if (aec) {
+        LogDebug(BCLog::NET, "P2P WebSocket handshake with %s failed: %s\n",
+                 conn.peer.ToStringAddrPort(), aec.message());
+        co_return;
+    }
+
+    const auto pair{p2pws::CreateBridgeSocketPair()};
+    if (!pair) {
+        LogPrintf("P2P WebSocket: socketpair failed: %s\n",
+                  NetworkErrorString(WSAGetLastError()));
+        co_return;
+    }
+    auto info{std::make_shared<WebSocketTransportInfo>()};
+    info->tls = conn.is_tls;
+    info->compression = compression;
+    info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
+    p2pws::LocalSocket local{co_await asio::this_coro::executor};
+    boost::system::error_code ec;
+    local.assign(asio::local::stream_protocol{}, pair->second, ec);
+    if (ec) {
+        // Closes CConnman's end.
+        Sock unused{static_cast<SOCKET>(pair->first)};
+        ::close(pair->second);
+        co_return;
+    }
+    const CService peer{P2PWebSocketPeerAddress(req, conn)};
+    LogDebug(BCLog::NET, "P2P WebSocket peer %s connected (%s, %s)\n",
+             peer.ToStringAddrPort(), conn.is_tls ? "wss" : "ws",
+             P2PWebSocketCompressionName(compression));
+    acceptor(std::make_unique<Sock>(static_cast<SOCKET>(pair->first)),
+             CAddress{peer, NODE_NONE},
+             CAddress{conn.local, NODE_NONE}, info);
+    co_await p2pws::RunP2PWebSocketBridge(ws, std::move(local), info,
+                                          /*is_client=*/false);
+#endif
+}
+
+/**
  * Handle a WebSocket upgrade request if a WebSocket endpoint matches its
  * target. Returns true if the connection was taken over.
  */
@@ -1007,6 +1120,10 @@ static asio::awaitable<bool>
 TryHandleWebSocketUpgrade(Stream &stream, const BeastRequest &req,
                           const HTTPConnectionInfo &conn) {
     const std::string_view target{req.target()};
+    if (g_p2p_websocket_enabled && URIHasPathPrefix(target, P2P_WEBSOCKET_PATH)) {
+        co_await AcceptP2PWebSocket(stream, req, conn);
+        co_return true;
+    }
     if (g_chronik_enabled &&
         URIHasPathPrefix(target, CHRONIK_PREFIX + "/ws")) {
         // Not a valid upgrade, or Chronik not running: answered by the HTTP
@@ -1527,6 +1644,14 @@ bool InitHTTPServer(Config &config) {
         LogPrintf("Serving Chronik on the RPC port at %s\n", CHRONIK_PREFIX);
     }
 
+    g_p2p_websocket_enabled =
+        gArgs.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET);
+    g_p2p_websocket_trust_forwarded_for =
+        gArgs.GetBoolArg("-p2pwebsockettrustforwardedfor", false);
+    if (g_p2p_websocket_enabled) {
+        RegisterPublicHTTPPrefix(P2P_WEBSOCKET_PATH);
+    }
+
     g_config = &config;
     g_server_timeout = std::chrono::seconds{std::max<int64_t>(
         gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT), 1)};
@@ -1596,6 +1721,7 @@ void InterruptHTTPServer() {
 
 void StopHTTPServer() {
     LogDebug(BCLog::HTTP, "Stopping HTTP server\n");
+    SetP2PWebSocketAcceptor(nullptr);
     if (g_work_queue) {
         LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
         g_work_queue->WaitExit();
@@ -1970,6 +2096,11 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
     LogDebug(BCLog::HTTP, "Registering HTTP handler for %s (exactmatch %d)\n",
              prefix, exactMatch);
     pathHandlers.push_back(HTTPPathHandler(prefix, exactMatch, handler));
+}
+
+void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor) {
+    LOCK(g_p2p_websocket_mutex);
+    g_p2p_websocket_acceptor = std::move(acceptor);
 }
 
 void RegisterPublicHTTPPrefix(const std::string &prefix) {

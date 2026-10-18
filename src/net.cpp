@@ -257,7 +257,7 @@ std::optional<CService> GetLocalAddrForPeer(CNode &node) {
     if (IsPeerAddrLocalGood(&node) &&
         (!addrLocal.IsRoutable() ||
          rng.randbits((GetnScore(addrLocal) > LOCAL_MANUAL) ? 3 : 1) == 0)) {
-        if (node.IsInboundConn()) {
+        if (node.IsInboundConn() && !node.m_websocket_info) {
             // For inbound connections, assume both the address and the port
             // as seen from the peer.
             addrLocal = CService{node.GetAddrLocal()};
@@ -690,6 +690,7 @@ void CNode::copyStats(CNodeStats &stats) {
         addrLocalUnlocked.IsValid() ? addrLocalUnlocked.ToStringAddrPort() : "";
 
     stats.m_conn_type = m_conn_type;
+    stats.m_websocket_info = m_websocket_info;
 
     stats.m_availabilityScore = m_avalanche_enabled
                                     ? std::make_optional(getAvailabilityScore())
@@ -1064,10 +1065,47 @@ void CConnman::AcceptConnection(const ListenSocket &hListenSocket) {
                                  addr);
 }
 
-void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock> &&sock,
-                                            NetPermissionFlags permission_flags,
-                                            const CAddress &addr_bind,
-                                            const CAddress &addr) {
+uint64_t GetP2PWebSocketMessageSizeLimit() {
+    const uint64_t payload = std::max<uint64_t>(
+        CMessageHeader::GetMaxPayloadSize(GetConfig(), NetMsgType::BLOCK),
+        MAX_PROTOCOL_MESSAGE_LENGTH);
+    // The legacy envelope is larger than p2p-v2's id/name envelope. The
+    // native length prefix is uint32_t; never accept an unrepresentable body.
+    return std::min<uint64_t>(
+        payload, uint64_t{std::numeric_limits<uint32_t>::max()} -
+                     CMessageHeader::HEADER_SIZE) + CMessageHeader::HEADER_SIZE;
+}
+
+std::string P2PWebSocketCompressionName(P2PWebSocketCompression c) {
+    switch (c) {
+        case P2PWebSocketCompression::NONE:
+            return "none";
+        case P2PWebSocketCompression::PERMESSAGE_DEFLATE:
+            return "permessage-deflate";
+        case P2PWebSocketCompression::ZSTD:
+            return P2P_WS_PROTOCOL_ZSTD;
+        case P2PWebSocketCompression::ZSTD_DICT:
+            return P2P_WS_PROTOCOL_ZSTD_DICT;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+WebSocketTransportTotals &GetWebSocketTransportTotals() {
+    static WebSocketTransportTotals totals;
+    return totals;
+}
+
+void CConnman::AcceptWebSocketPeer(
+    std::unique_ptr<Sock> &&sock, const CAddress &addr,
+    const CAddress &addr_bind, std::shared_ptr<WebSocketTransportInfo> info) {
+    CreateNodeFromAcceptedSocket(std::move(sock), NetPermissionFlags::None,
+                                 addr_bind, addr, std::move(info));
+}
+
+void CConnman::CreateNodeFromAcceptedSocket(
+    std::unique_ptr<Sock> &&sock, NetPermissionFlags permission_flags,
+    const CAddress &addr_bind, const CAddress &addr,
+    std::shared_ptr<WebSocketTransportInfo> websocket_info) {
     int nInbound = 0;
     int nMaxInbound = nMaxConnections - m_max_outbound;
 
@@ -1098,9 +1136,11 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock> &&sock,
 
     // According to the internet TCP_NODELAY is not carried into accepted
     // sockets on all platforms.  Set it again here just to be sure.
+    // (WebSocket peers use a local socketpair, which has no such option.)
     const int on{1};
-    if (sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) ==
-        SOCKET_ERROR) {
+    if (!websocket_info &&
+        sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) ==
+            SOCKET_ERROR) {
         LogDebug(BCLog::NET,
                  "connection from %s: unable to set TCP_NODELAY, continuing "
                  "anyway\n",
@@ -1154,14 +1194,16 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock> &&sock,
             .permission_flags = permission_flags,
             .prefer_evict = discouraged,
             .recv_flood_size = nReceiveFloodSize,
+            .websocket_info = std::move(websocket_info),
         });
     pnode->AddRef();
     for (auto interface : m_msgproc) {
         interface->InitializeNode(*config, *pnode, GetLocalServices());
     }
 
-    LogDebug(BCLog::NET, "connection from %s accepted\n",
-             addr.ToStringAddrPort());
+    LogDebug(BCLog::NET, "connection from %s accepted%s\n",
+             addr.ToStringAddrPort(),
+             pnode->m_websocket_info ? " (WebSocket)" : "");
 
     {
         LOCK(m_nodes_mutex);
@@ -3101,7 +3143,8 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
       addrBind{addrBindIn},
       m_addr_name{addrNameIn.empty() ? addr.ToStringAddrPort() : addrNameIn},
       m_inbound_onion{inbound_onion}, m_prefer_evict{node_opts.prefer_evict},
-      nKeyedNetGroup{nKeyedNetGroupIn}, m_conn_type{conn_type_in}, id{idIn},
+      nKeyedNetGroup{nKeyedNetGroupIn}, m_conn_type{conn_type_in},
+      m_websocket_info{std::move(node_opts.websocket_info)}, id{idIn},
       nLocalHostNonce{nLocalHostNonceIn},
       nLocalExtraEntropy{nLocalExtraEntropyIn},
       m_recv_flood_size{node_opts.recv_flood_size},
