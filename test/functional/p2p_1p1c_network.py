@@ -89,7 +89,7 @@ class PackageRelayTest(BitcoinTestFramework):
         # Now create the child
         high_fee_child_2outs = wallet.create_self_transfer_multi(
             utxos_to_spend=low_fee_parent_2outs["new_utxos"][::-1],
-            fee_per_output=fee_2outs * 100,
+            fee_per_output=fee_2outs * 999,
         )
         package_vsize = (
             low_fee_parent_2outs["tx"].billable_size()

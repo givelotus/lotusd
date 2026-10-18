@@ -65,7 +65,7 @@ class AvalancheRTTTest(BitcoinTestFramework):
 
             quorum = []
             for _ in range(QUORUM_NODE_COUNT):
-                now += 600
+                now += 120
                 set_mocktimes(now)
                 quorum.append(get_ava_p2p_interface(self, node))
 
@@ -90,7 +90,7 @@ class AvalancheRTTTest(BitcoinTestFramework):
         avakey.set(bytes.fromhex(node.getavalanchekey()))
 
         def check_and_accept_new_block(tip, expect_initially_accepted):
-            cb = create_coinbase(node.getblockcount())
+            cb = create_coinbase(node.getblockcount() + 1)
             block = create_block(int(tip, 16), cb, now)
             block.solve()
             assert_equal(node.submitblock(ToHex(block)), None)
@@ -132,12 +132,10 @@ class AvalancheRTTTest(BitcoinTestFramework):
         assert_equal(node.getblockcount(), height + 2)
 
         self.log.info("Check the node accept blocks that match RTT")
-        # Elapse enough time for the the difficulty to settle back to regtest
-        # target.
-        # For the starting difftime, the limiting factor is the 5 blocks window
-        # here which enforces >= 1836s with RTT_K=6 to not get RTT in the way.
+        # Elapse enough time for the difficulty to settle back to regtest
+        # target (120s spacing -> 1/5 of 600s intervals).
         ref_time = now
-        for t in (636, 1800, 3600, 3600 * 12):
+        for t in (128, 360, 720, 720 * 12):
             now = ref_time + t
             set_mocktimes(now)
             assert_equal(int(node.getblocktemplate()["bits"], 16), 0x207FFFFF)

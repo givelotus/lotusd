@@ -35,6 +35,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         self.wallet = MiniWallet(self.nodes[0])
         self._test_coin_stats_index()
         self._test_use_index_option()
+        self._test_paid_output_reorg()
         self._test_reorg_index()
         self._test_index_rejects_hash_serialized()
         self._test_init_index_after_reorg()
@@ -61,7 +62,17 @@ class CoinStatsIndexTest(BitcoinTestFramework):
 
         # Generate a normal transaction and mine it
         self.generate(self.wallet, COINBASE_MATURITY + 1)
-        self.wallet.send_self_transfer(from_node=node)
+        funding = self.wallet.get_utxo()
+        normal_tx = self.wallet.send_self_transfer(
+            from_node=node, utxo_to_spend=funding
+        )
+        # Native witness/output framing changes the billable size. Derive the
+        # fee from the funding coin and actual outputs, independently of the
+        # coinstats index, and cross-check MiniWallet's fee calculation.
+        normal_outputs = sum(out.nValue for out in normal_tx["tx"].vout) / Decimal(XEC)
+        normal_fee = funding["value"] - normal_outputs
+        assert_equal(normal_fee, normal_tx["fee"])
+        assert normal_fee > 0
         self.generate(node, 1)
 
         self.log.info(
@@ -82,6 +93,13 @@ class CoinStatsIndexTest(BitcoinTestFramework):
 
             # Everything left should be the same
             assert_equal(res1, res0)
+
+        # Fee-backed native outputs must hash identically in the index and
+        # authoritative chainstate, not only report equal amounts and counts.
+        assert_equal(
+            node.gettxoutsetinfo("muhash")["muhash"],
+            index_node.gettxoutsetinfo("muhash")["muhash"],
+        )
 
         self.log.info(
             "Test that gettxoutsetinfo() can get fetch data on specific "
@@ -143,9 +161,9 @@ class CoinStatsIndexTest(BitcoinTestFramework):
                 res5["block_info"],
                 {
                     "unspendable": 0,
-                    "prevout_spent": 50_000_000,
-                    "new_outputs_ex_coinbase": Decimal("49999700.00"),
-                    "coinbase": Decimal("50000300.00"),
+                    "prevout_spent": funding["value"],
+                    "new_outputs_ex_coinbase": normal_outputs,
+                    "coinbase": 50_000_000 + normal_fee,
                     "unspendables": {
                         "genesis_block": 0,
                         "bip30": 0,
@@ -161,6 +179,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
             from_node=node,
             scriptPubKey=self.wallet.get_scriptPubKey(),
             amount=21_000_000 * XEC,
+            fee=1000,  # Fixed 10 XEC, independent of native wire size.
         )
 
         # Find the right position of the 21 MegXEC output
@@ -172,7 +191,12 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         tx2.vout = [
             CTxOut(int(20_990_000 * XEC), CScript([OP_RETURN] + [OP_FALSE] * 50))
         ]
+        # Replacing outputs must rebuild native branch commitments/witnesses;
+        # otherwise empty output branches select the legacy compatibility wire.
+        self.wallet.sign_tx(tx2)
+        assert_equal(tx2.vout[0].nFlags, 2)
         tx2_hex = tx2.serialize().hex()
+        assert_equal(tx2_hex[:8], "07000000")
         self.nodes[0].sendrawtransaction(tx2_hex)
 
         # Include both txs in a block
@@ -209,7 +233,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         block_time = self.nodes[0].getblock(tip)["time"] + 1
         block = create_block(int(tip, 16), cb, block_time)
         block.solve()
-        self.nodes[0].submitblock(ToHex(block))
+        assert_equal(self.nodes[0].submitblock(ToHex(block)), None)
         self.sync_all()
 
         for hash_option in index_hash_options:
@@ -268,6 +292,30 @@ class CoinStatsIndexTest(BitcoinTestFramework):
         )
         del res["disk_size"], option_res["disk_size"]
         assert_equal(res, option_res)
+
+    def _test_paid_output_reorg(self):
+        self.log.info("Test paid output metadata through disconnect/reconnect")
+        node = self.nodes[1]
+        tip = node.getbestblockhash()
+        paid_block = node.getblockhash(102)
+        before = node.gettxoutsetinfo("muhash")
+        # Disconnect both the paid transfer and the later same-block
+        # parent/burn-child pair, then restore the exact accepted chain.
+        node.invalidateblock(paid_block)
+        rolled_back = node.gettxoutsetinfo("muhash")
+        assert_equal(rolled_back["height"], 101)
+        assert_equal(
+            rolled_back["muhash"],
+            node.gettxoutsetinfo("muhash", None, False)["muhash"],
+        )
+        node.reconsiderblock(paid_block)
+        self.wait_until(lambda: node.getbestblockhash() == tip)
+        restored = node.gettxoutsetinfo("muhash")
+        assert_equal(restored, before)
+        assert_equal(
+            restored["muhash"],
+            node.gettxoutsetinfo("muhash", None, False)["muhash"],
+        )
 
     def _test_reorg_index(self):
         self.log.info("Test that index can handle reorgs")

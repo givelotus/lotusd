@@ -12,7 +12,6 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import (
     assert_equal,
-    assert_greater_than,
     assert_raises_rpc_error,
     satoshi_round,
 )
@@ -55,11 +54,9 @@ class BIP68Test(BitcoinTestFramework):
         self.log.info("Running test sequence-lock-unconfirmed-inputs")
         self.test_sequence_lock_unconfirmed_inputs()
 
-        self.log.info("Running test BIP68 not consensus before versionbits activation")
-        self.test_bip68_not_consensus()
-
-        self.log.info("Activating BIP68 (and 112/113)")
-        self.activateCSV()
+        self.log.info("Running test BIP68 consensus active from genesis")
+        self.test_bip68_consensus()
+        self.sync_blocks()
 
         print("Verifying nVersion=2 transactions are standard.")
         print(
@@ -430,16 +427,7 @@ class BIP68Test(BitcoinTestFramework):
         self.nodes[0].invalidateblock(self.nodes[0].getblockhash(cur_height + 1))
         self.generate(self.wallet, 10, sync_fun=self.no_op)
 
-    def get_csv_status(self):
-        height = self.nodes[0].getblockchaininfo()["blocks"]
-        return height >= 576
-
-    # Make sure that BIP68 isn't being used to validate blocks, prior to
-    # versionbits activation.  If more blocks are mined prior to this test
-    # being run, then it's possible the test has activated the soft fork, and
-    # this test should be moved to run earlier, or deleted.
-    def test_bip68_not_consensus(self):
-        assert_equal(self.get_csv_status(), False)
+    def test_bip68_consensus(self):
         tx1 = self.wallet.send_self_transfer(from_node=self.nodes[0])["tx"]
 
         # Make an anyone-can-spend transaction
@@ -477,32 +465,16 @@ class BIP68Test(BitcoinTestFramework):
             tx_hex=tx3.serialize().hex(),
         )
 
-        # make a block that violates bip68; ensure that the tip updates
+        # make a block that violates bip68; in Lotus V2 BIP68 is active from genesis
+        tip_before = self.nodes[0].getbestblockhash()
         block = create_block(
             tmpl=self.nodes[0].getblocktemplate(), txlist=[tx1, tx2, tx3]
         )
         block.solve()
 
-        assert_equal(None, self.nodes[0].submitblock(ToHex(block)))
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
-
-    def activateCSV(self):
-        # activation should happen at block height 576
-        csv_activation_height = 576
-        height = self.nodes[0].getblockcount()
-        assert_greater_than(csv_activation_height - height, 1)
-        self.generate(
-            self.wallet, csv_activation_height - height - 1, sync_fun=self.no_op
-        )
-        assert_equal(self.get_csv_status(), False)
-        self.disconnect_nodes(0, 1)
-        self.generate(self.wallet, 1, sync_fun=self.no_op)
-        assert_equal(self.get_csv_status(), True)
-        # We have a block that has CSV activated, but we want to be at
-        # the activation point, so we invalidate the tip.
-        self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-        self.connect_nodes(0, 1)
-        self.sync_blocks()
+        assert_equal("bad-txns-nonfinal", self.nodes[0].submitblock(ToHex(block)))
+        assert_equal(self.nodes[0].getbestblockhash(), tip_before)
+        self.generate(self.wallet, 30, sync_fun=self.no_op)
 
     # Use self.nodes[1] to test that version 2 transactions are standard.
     def test_version2_relay(self):

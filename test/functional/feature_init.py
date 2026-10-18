@@ -218,7 +218,11 @@ class InitStressTest(BitcoinTestFramework):
                         # affect a higher block in blk*.dat. For MDBX this window
                         # damages the metadata header and must fail open.
                         tf.seek(150)
-                        tf.write(b"1" * 200)
+                        # Native headers require a wider block-file window;
+                        # MDBX metadata corruption keeps the shared200 bytes.
+                        tf.write(
+                            b"1" * (260 if file_patt == "blocks/blk*.dat" else 200)
+                        )
 
             start_expecting_error(err_fragment, startup_args)
 
