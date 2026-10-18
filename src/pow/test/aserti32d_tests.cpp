@@ -37,6 +37,9 @@ static double TargetFromBits(const uint32_t nBits) {
     return (nBits & 0xff'ff'ff) * pow(256, (nBits >> 24) - 3);
 }
 
+static const int64_t t_block = 120;
+static const int64_t dh_day = 24 * 3600 / t_block;
+
 static double GetASERTApproximationError(const CBlockIndex *pindexPrev,
                                          const uint32_t finalBits,
                                          const CBlockIndex *pindexAnchorBlock) {
@@ -51,7 +54,7 @@ static double GetASERTApproximationError(const CBlockIndex *pindexPrev,
     double dFinalPow = TargetFromBits(finalBits);
 
     double dExponent =
-        double(nTimeDiff - (nHeightDiff + 1) * 600) / double(2 * 24 * 3600);
+        double(nTimeDiff - (nHeightDiff + 1) * t_block) / double(2 * 24 * 3600);
     double dTarget = dInitialPow * pow(2, dExponent);
 
     return (dFinalPow - dTarget) / dTarget;
@@ -81,10 +84,10 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     // Block counter.
     size_t i = 1;
 
-    // ASERT anchor block. We give this one a solvetime of 150 seconds to ensure
+    // ASERT anchor block. We give this one a solvetime of 15 seconds to ensure
     // that the solvetime between the pre-anchor and the anchor blocks is
     // actually used.
-    blocks[1] = GetBlockIndex(&blocks[0], 150, initialBits);
+    blocks[1] = GetBlockIndex(&blocks[0], 15, initialBits);
     // The nBits for the next block should not be equal to the anchor block's
     // nBits
     CBlockHeader blkHeaderDummy;
@@ -94,9 +97,9 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
                                                 &blocks[1])) < dMaxErr);
     BOOST_CHECK(nBits != initialBits);
 
-    // If we add another block at 1050 seconds, we should return to the anchor
+    // If we add another block at 225 seconds, we should return to the anchor
     // block's nBits
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 1050, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], 225, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     BOOST_CHECK(nBits == initialBits);
@@ -107,7 +110,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     // Before we do anything else, check that timestamps *before* the anchor
     // block work fine. Jumping 2 days into the past will give a timestamp
     // before the achnor, and should halve the target
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 - 172800, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block - 172800, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     currentPow = arith_uint256().SetCompact(nBits);
@@ -119,7 +122,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
                                                 &blocks[1])) < dMaxErr);
 
     // Jumping forward 2 days should return the target to the initial value
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 + 172800, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block + 172800, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     currentPow = arith_uint256().SetCompact(nBits);
@@ -127,9 +130,9 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits,
                                                 &blocks[1])) < dMaxErr);
 
-    // Pile up some blocks every 10 mins to establish some history.
+    // Pile up some blocks every 2 mins to establish some history.
     for (; i < 150; i++) {
-        blocks[i] = GetBlockIndex(&blocks[i - 1], 600, nBits);
+        blocks[i] = GetBlockIndex(&blocks[i - 1], t_block, nBits);
         BOOST_CHECK_EQUAL(blocks[i].nBits, nBits);
     }
 
@@ -138,18 +141,18 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
 
     BOOST_CHECK_EQUAL(nBits, initialBits);
 
-    // Difficulty stays the same as long as we produce a block every 10 mins.
+    // Difficulty stays the same as long as we produce a block every 2 mins.
     for (size_t j = 0; j < 10; i++, j++) {
-        blocks[i] = GetBlockIndex(&blocks[i - 1], 600, nBits);
+        blocks[i] = GetBlockIndex(&blocks[i - 1], t_block, nBits);
         BOOST_CHECK_EQUAL(GetNextASERTWorkRequired(&blocks[i], &blkHeaderDummy,
                                                    params, &blocks[1]),
                           nBits);
     }
 
-    // If we add a two blocks whose solvetimes together add up to 1200s,
+    // If we add a two blocks whose solvetimes together add up to 240s,
     // then the next block's target should be the same as the one before these
     // blocks (at this point, equal to initialBits).
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 300, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], 60, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits,
@@ -157,7 +160,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     // relative
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits,
                                                 &blocks[i - 2])) < dMaxErr);
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 900, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], 180, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -170,7 +173,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK(nBits != blocks[i - 1].nBits);
 
     // Same in reverse - this time slower block first, followed by faster block.
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 900, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], 180, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -179,7 +182,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     // relative
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits,
                                                 &blocks[i - 2])) < dMaxErr);
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 300, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], 60, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -192,7 +195,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK(nBits != blocks[i - 1].nBits);
 
     // Jumping forward 2 days should double the target (halve the difficulty)
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 + 2 * 24 * 3600, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block + 2 * 24 * 3600, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -205,7 +208,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK_EQUAL(currentPow.GetCompact(), initialBits);
 
     // Jumping backward 2 days should bring target back to where we started
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 - 2 * 24 * 3600, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block - 2 * 24 * 3600, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     BOOST_CHECK(fabs(GetASERTApproximationError(
@@ -216,7 +219,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK_EQUAL(nBits, initialBits);
 
     // Jumping backward 2 days should halve the target (double the difficulty)
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 - 2 * 24 * 3600, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block - 2 * 24 * 3600, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -232,7 +235,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK(currentPow >= arith_uint256().SetCompact(initialBits - 1) / 2);
 
     // And forward again
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 + 2 * 24 * 3600, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block + 2 * 24 * 3600, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -242,7 +245,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
     BOOST_CHECK(fabs(GetASERTApproximationError(&blocks[i - 1], nBits,
                                                 &blocks[i - 2])) < dMaxErr);
     BOOST_CHECK_EQUAL(nBits, initialBits);
-    blocks[i] = GetBlockIndex(&blocks[i - 1], 600 + 2 * 24 * 3600, nBits);
+    blocks[i] = GetBlockIndex(&blocks[i - 1], t_block + 2 * 24 * 3600, nBits);
     nBits = GetNextASERTWorkRequired(&blocks[i++], &blkHeaderDummy, params,
                                      &blocks[1]);
     // absolute
@@ -338,7 +341,7 @@ BOOST_AUTO_TEST_CASE(asert_difficulty_test) {
         arith_uint256 currentTarget;
         currentTarget.SetCompact(nBits);
 
-        blocks[i] = GetBlockIndex(&blocks[i - 1], 500, nBits);
+        blocks[i] = GetBlockIndex(&blocks[i - 1], 100, nBits);
         nextBits = GetNextASERTWorkRequired(&blocks[i], &blkHeaderDummy, params,
                                             &blocks[1]);
         arith_uint256 nextTarget;
@@ -384,17 +387,17 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     // to the *parent* of the reference block.
     // We assume the parent is ideally spaced in time before the reference
     // block.
-    static const int64_t parent_time_diff = 600;
+    static const int64_t parent_time_diff = t_block;
 
     // Steady
     arith_uint256 nextTarget = CalculateASERT(
         initialTarget, params.nPowTargetSpacing,
-        parent_time_diff + 600 /* nTimeDiff */, ++height, powLimit, nHalfLife);
+        parent_time_diff + t_block /* nTimeDiff */, ++height, powLimit, nHalfLife);
     BOOST_CHECK(nextTarget == initialTarget);
 
     // A block that arrives in half the expected time
     nextTarget = CalculateASERT(initialTarget, params.nPowTargetSpacing,
-                                parent_time_diff + 600 + 300, ++height,
+                                parent_time_diff + t_block + 60, ++height,
                                 powLimit, nHalfLife);
     BOOST_CHECK(nextTarget < initialTarget);
 
@@ -402,7 +405,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     // target to initial
     arith_uint256 prevTarget = nextTarget;
     nextTarget = CalculateASERT(initialTarget, params.nPowTargetSpacing,
-                                parent_time_diff + 600 + 300 + 900, ++height,
+                                parent_time_diff + t_block + 60 + 180, ++height,
                                 powLimit, nHalfLife);
     BOOST_CHECK(nextTarget > prevTarget);
     BOOST_CHECK(nextTarget == initialTarget);
@@ -412,14 +415,14 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     prevTarget = nextTarget;
     nextTarget =
         CalculateASERT(prevTarget, params.nPowTargetSpacing,
-                       parent_time_diff + 288 * 1200, 288, powLimit, nHalfLife);
+                       parent_time_diff + 2 * dh_day * 240, 2 * dh_day, powLimit, nHalfLife);
     BOOST_CHECK(nextTarget == prevTarget * 2);
 
     // Two days behind schedule should halve the target (double the difficulty)
     prevTarget = nextTarget;
     nextTarget =
         CalculateASERT(prevTarget, params.nPowTargetSpacing,
-                       parent_time_diff + 288 * 0, 288, powLimit, nHalfLife);
+                       parent_time_diff + 2 * dh_day * 0, 2 * dh_day, powLimit, nHalfLife);
     BOOST_CHECK(nextTarget == prevTarget / 2);
     BOOST_CHECK(nextTarget == initialTarget);
 
@@ -429,7 +432,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     for (size_t k = 0; k < 3; k++) {
         prevTarget = nextTarget;
         nextTarget = CalculateASERT(prevTarget, params.nPowTargetSpacing,
-                                    parent_time_diff + 288 * 1200, 288,
+                                    parent_time_diff + 2 * dh_day * 240, 2 * dh_day,
                                     powLimit, nHalfLife);
         BOOST_CHECK(nextTarget == prevTarget * 2);
         BOOST_CHECK(nextTarget < powLimit);
@@ -440,7 +443,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     prevTarget = nextTarget;
     nextTarget =
         CalculateASERT(prevTarget, params.nPowTargetSpacing,
-                       parent_time_diff + 288 * 1200, 288, powLimit, nHalfLife);
+                       parent_time_diff + 2 * dh_day * 240, 2 * dh_day, powLimit, nHalfLife);
     next_nBits = nextTarget.GetCompact();
     BOOST_CHECK(nextTarget == prevTarget * 2);
     BOOST_CHECK(next_nBits == powLimit_nBits);
@@ -450,7 +453,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     // would overflow nextTarget unless CalculateASERT correctly detects this
     // error
     nextTarget = CalculateASERT(prevTarget, params.nPowTargetSpacing,
-                                parent_time_diff + 512 * 144 * 600, 0, powLimit,
+                                parent_time_diff + 512 * dh_day * t_block, 0, powLimit,
                                 nHalfLife);
     next_nBits = nextTarget.GetCompact();
     BOOST_CHECK(next_nBits == powLimit_nBits);
@@ -459,7 +462,7 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
     // an extra ~446 days worth of blocks. This should bring down a powLimit
     // target to the a minimum target of 1.
     nextTarget = CalculateASERT(powLimit, params.nPowTargetSpacing, 0,
-                                2 * (256 - 33) * 144, powLimit, nHalfLife);
+                                2 * (256 - 33) * dh_day, powLimit, nHalfLife);
     next_nBits = nextTarget.GetCompact();
     BOOST_CHECK_EQUAL(next_nBits, arith_uint256(1).GetCompact());
 
@@ -489,31 +492,33 @@ BOOST_AUTO_TEST_CASE(calculate_asert_test) {
         /* refTarget, targetSpacing, timeDiff, heightDiff, expectedTarget,
            expectednBits */
 
-        {powLimit, 600, 0, 2 * 144, powLimit >> 1, 0x1c7fffff},
-        {powLimit, 600, 0, 4 * 144, powLimit >> 2, 0x1c3fffff},
-        {powLimit >> 1, 600, 0, 2 * 144, powLimit >> 2, 0x1c3fffff},
-        {powLimit >> 2, 600, 0, 2 * 144, powLimit >> 3, 0x1c1fffff},
-        {powLimit >> 3, 600, 0, 2 * 144, powLimit >> 4, 0x1c0fffff},
-        {powLimit, 600, 0, 2 * (256 - 34) * 144, 3, 0x01030000},
-        {powLimit, 600, 0, 2 * (256 - 34) * 144 + 119, 3, 0x01030000},
-        {powLimit, 600, 0, 2 * (256 - 34) * 144 + 120, 2, 0x01020000},
-        {powLimit, 600, 0, 2 * (256 - 33) * 144 - 1, 2, 0x01020000},
+        {powLimit, t_block, 0, 2 * dh_day, powLimit >> 1, 0x1c7fffff},
+        {powLimit, t_block, 0, 4 * dh_day, powLimit >> 2, 0x1c3fffff},
+        {powLimit >> 1, t_block, 0, 2 * dh_day, powLimit >> 2, 0x1c3fffff},
+        {powLimit >> 2, t_block, 0, 2 * dh_day, powLimit >> 3, 0x1c1fffff},
+        {powLimit >> 3, t_block, 0, 2 * dh_day, powLimit >> 4, 0x1c0fffff},
+        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day, 3, 0x01030000},
+        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day + 600 * 119 / t_block, 3,
+         0x01030000},
+        {powLimit, t_block, 0, 2 * (256 - 34) * dh_day + 600 * 120 / t_block, 2,
+         0x01020000},
+        {powLimit, t_block, 0, 2 * (256 - 33) * dh_day - 1, 2, 0x01020000},
         // 1 bit less since we do not need to shift to 0
-        {powLimit, 600, 0, 2 * (256 - 33) * 144, 1, 0x01010000},
+        {powLimit, t_block, 0, 2 * (256 - 33) * dh_day, 1, 0x01010000},
         // more will not decrease below 1
-        {powLimit, 600, 0, 2 * (256 - 32) * 144, 1, 0x01010000},
-        {1, 600, 0, 2 * (256 - 32) * 144, 1, 0x01010000},
-        {powLimit, 600, 2 * (512 - 32) * 144, 0, powLimit, powLimit_nBits},
-        {1, 600, (512 - 64) * 144 * 600, 0, powLimit, powLimit_nBits},
+        {powLimit, t_block, 0, 2 * (256 - 32) * dh_day, 1, 0x01010000},
+        {1, t_block, 0, 2 * (256 - 32) * dh_day, 1, 0x01010000},
+        {powLimit, t_block, 2 * (512 - 32) * dh_day, 0, powLimit, powLimit_nBits},
+        {1, t_block, (512 - 64) * dh_day * t_block, 0, powLimit, powLimit_nBits},
         // clamps to powLimit
-        {powLimit, 600, 300, 1, SINGLE_300_TARGET, 0x1d00ffb1},
+        {powLimit, t_block, 300, dh_day / 144, SINGLE_300_TARGET, 0x1d00ffb1},
         // confuses any attempt to detect overflow by inspecting result
-        {FUNNY_REF_TARGET, 600, 600 * 2 * 33 * 144, 0, powLimit,
+        {FUNNY_REF_TARGET, t_block, t_block * 2 * 33 * dh_day, 0, powLimit,
          powLimit_nBits},
         // overflow to exactly 2^256
-        {1, 600, 600 * 2 * 256 * 144, 0, powLimit, powLimit_nBits},
+        {1, t_block, t_block * 2 * 256 * dh_day, 0, powLimit, powLimit_nBits},
         // just under powlimit (not clamped) yet over powlimit_nbits
-        {1, 600, 600 * 2 * 224 * 144 - 1, 0, arith_uint256(0xffff8) << 204,
+        {1, t_block, t_block * 2 * 224 * dh_day - 1, 0, arith_uint256(0xffff8) << 204,
          powLimit_nBits},
     };
 
