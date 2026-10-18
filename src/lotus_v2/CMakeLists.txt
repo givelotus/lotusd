@@ -23,7 +23,6 @@ target_sources(lotus_v2_header PRIVATE
     tx_merklix.cpp minhash.cpp)
 target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
 
-target_sources(lotus_v2_header PRIVATE blocksnap.cpp)
 
 target_sources(lotus_v2_header PRIVATE fast_sync.cpp)
 

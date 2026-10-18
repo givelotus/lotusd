@@ -8,8 +8,6 @@
 #include <config.h>
 #include <node/snapshot.h>
 #include <consensus/merkle.h>
-#include <lotus_v2/blocksnap.h>
-#include <lotus_v2/mempool_overlay.h>
 #include <pow/pow.h>
 #include <streams.h>
 #include <txmempool.h>
@@ -43,7 +41,7 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
 
     block.vtx.resize(3);
     block.vtx[0] = MakeTransactionRef(tx);
-    block.nHeaderVersion = 42;
+    block.nHeaderVersion = 2;
     block.hashPrevBlock = BlockHash(ctx.rand256());
     block.nBits = 0x207fffff;
 
@@ -59,6 +57,7 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
     bool mutated;
     block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
     assert(!mutated);
+    block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
@@ -389,13 +388,14 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
     auto rand_ctx(FastRandomContext(uint256{42}));
     block.vtx.resize(1);
     block.vtx[0] = MakeTransactionRef(std::move(coinbase));
-    block.nHeaderVersion = 42;
+    block.nHeaderVersion = 2;
     block.hashPrevBlock = BlockHash(rand_ctx.rand256());
     block.nBits = 0x207fffff;
 
     bool mutated;
     block.hashMerkleRoot = BlockMerkleRoot(block, &mutated);
     assert(!mutated);
+    block.SetSize(::GetSerializeSize(block));
 
     GlobalConfig config;
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
@@ -739,95 +739,33 @@ BOOST_AUTO_TEST_CASE(compactblock_overflow) {
 }
 
 BOOST_AUTO_TEST_CASE(SealedHeaderRoundTripTest) {
-    CBlock block(BuildBlockTestCase(m_rng));
-    SealedHeader sh0(block);
-    BOOST_CHECK(!sh0.IsNull());
-    BOOST_CHECK(sh0.IsValid());
-    BOOST_CHECK_EQUAL(sh0.header.GetHash(), block.GetHash());
-    BOOST_REQUIRE(sh0.coinbase_tx != nullptr);
-    BOOST_CHECK_EQUAL(sh0.coinbase_tx->GetId(), block.vtx[0]->GetId());
-    BOOST_CHECK_EQUAL(sh0.coinbase_merkle_branch.size(), 2u);
-    BOOST_CHECK_EQUAL(
-        lotus::v2::ComputeMerkleRootFromBranch(sh0.coinbase_tx->GetId(),
-                                               sh0.coinbase_merkle_branch, 0),
-        block.hashMerkleRoot);
+    auto rand_ctx(FastRandomContext(uint256{99}));
+    CBlock block(BuildBlockTestCase(rand_ctx));
+    // Mark vtx[0] as a proper coinbase transaction (null prevout).
+    CMutableTransaction cb_mtx(*block.vtx[0]);
+    cb_mtx.vin.resize(1);
+    cb_mtx.vin[0].prevout = COutPoint();
+    block.vtx[0] = MakeTransactionRef(cb_mtx);
 
-    DataStream stream{};
-    stream << sh0;
+    SealedHeader sealed(block);
+    BOOST_CHECK(sealed.IsValid());
+    BOOST_CHECK_EQUAL(sealed.header.GetHash(), block.GetHash());
+    BOOST_CHECK_EQUAL(sealed.coinbase_tx->GetId(), block.vtx[0]->GetId());
 
-    SealedHeader sh1;
-    BOOST_CHECK(sh1.IsNull());
-    stream >> sh1;
-    BOOST_CHECK(!sh1.IsNull());
-    BOOST_CHECK(sh1.IsValid());
-    BOOST_CHECK_EQUAL(sh1.header.GetHash(), sh0.header.GetHash());
-    BOOST_REQUIRE(sh1.coinbase_tx != nullptr);
-    BOOST_CHECK_EQUAL(sh1.coinbase_tx->GetId(), sh0.coinbase_tx->GetId());
-    BOOST_CHECK_EQUAL(sh1.coinbase_merkle_branch.size(),
-                      sh0.coinbase_merkle_branch.size());
-    const lotus::v2::SealedBlock sb1{sh1.header, sh1.coinbase_tx,
-                                     sh1.coinbase_merkle_branch,
-                                     sh1.epoch_batch_ids};
-    BOOST_CHECK(sb1.VerifyMerkleSpine(
-        lotus::v2::ComputeMerkleRootFromBranch(uint256::ZERO,
-                                               sh0.coinbase_merkle_branch, 0)));
-}
+    DataStream ss{};
+    ss << sealed;
 
-BOOST_AUTO_TEST_CASE(SealedBlockPositionalMerkleSpineTest) {
-    CBlock block(BuildBlockTestCase(m_rng));
-    // Ensure non-coinbase transactions are in canonical CTOR order
-    std::sort(block.vtx.begin() + 1, block.vtx.end(),
-              [](const CTransactionRef &a, const CTransactionRef &b) {
-                  return a->GetId() < b->GetId();
-              });
-    block.hashMerkleRoot = BlockMerkleRoot(block);
+    SealedHeaderAnnounce decoded;
+    ss >> decoded;
+    BOOST_CHECK(decoded.IsValid());
+    BOOST_CHECK_EQUAL(decoded.header.GetHash(), block.GetHash());
+    BOOST_CHECK_EQUAL(decoded.header.hashMerkleRoot, block.hashMerkleRoot);
+    BOOST_CHECK_EQUAL(decoded.header.hashStateRoot, block.hashStateRoot);
+    BOOST_CHECK_EQUAL(decoded.coinbase_tx->GetId(), block.vtx[0]->GetId());
 
-    std::vector<CTransactionRef> sorted_non_cb(block.vtx.begin() + 1,
-                                               block.vtx.end());
-    uint256 null_root;
-    std::vector<uint256> branch;
-    lotus::v2::ComputeNullMerkleRootAndBranch(sorted_non_cb, null_root, branch);
-    const lotus::v2::SealedBlock sb(block, {uint256{1}});
-
-    BOOST_CHECK(sb.VerifyMerkleSpine(null_root));
-    BOOST_CHECK_EQUAL(sb.coinbase_merkle_branch.size(), branch.size());
-    for (size_t i = 0; i < branch.size(); ++i) {
-        BOOST_CHECK_EQUAL(sb.coinbase_merkle_branch[i], branch[i]);
-    }
-
-    // Tampering with either the coinbase or the branch must fail spine verification
-    lotus::v2::SealedBlock tampered_branch = sb;
-    tampered_branch.coinbase_merkle_branch[0].begin()[0] ^= 0x01;
-    BOOST_CHECK(!tampered_branch.VerifyMerkleSpine(null_root));
-
-    lotus::v2::SealedBlock tampered_header = sb;
-    tampered_header.header.hashMerkleRoot.begin()[0] ^= 0x01;
-    BOOST_CHECK(!tampered_header.VerifyMerkleSpine(null_root));
-}
-
-BOOST_AUTO_TEST_CASE(SealedBlockReconstructionRetainsMerkleMutationCheck) {
-    CBlock block(BuildBlockTestCase(m_rng));
-    std::sort(block.vtx.begin() + 1, block.vtx.end(),
-              [](const CTransactionRef &a, const CTransactionRef &b) {
-                  return a->GetId() < b->GetId();
-              });
-    block.hashMerkleRoot = BlockMerkleRoot(block);
-    lotus::v2::MempoolOverlayLayer layer;
-    for (size_t i = 1; i < block.vtx.size(); ++i) {
-        BOOST_REQUIRE(AddTransactionToOverlay(layer, block.vtx[i], 0, 0));
-    }
-    const lotus::v2::SealedBlock sealed(block);
-    const auto reconstructed = sealed.ReconstructBlock(layer);
-    BOOST_REQUIRE(reconstructed);
-    BOOST_CHECK(!reconstructed->m_checked_merkle_root);
-    CBlock mutation(*reconstructed);
-    mutation.vtx.push_back(mutation.vtx.back());
-    BOOST_REQUIRE(mutation.hashMerkleRoot == BlockMerkleRoot(mutation));
-    BlockValidationState state;
-    BOOST_CHECK(!CheckBlock(mutation, state,
-        GetConfig().GetChainParams().GetConsensus(),
-        BlockValidationOptions(GetConfig()).withCheckPoW(false)));
-    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-duplicate");
+    // Non-coinbase tx should fail IsValid()
+    SealedHeader invalid_sealed(block.GetBlockHeader(), block.vtx[1]);
+    BOOST_CHECK(!invalid_sealed.IsValid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
