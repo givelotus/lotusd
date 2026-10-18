@@ -7,13 +7,21 @@
 #include <kernel/mempool_persist.h>
 
 #include <chainparams.h>
+#include <common/args.h>
 #include <core_io.h>
+#include <lotus_v2/mempool_overlay.h>
+#include <net.h>
+#include <net/v2_protocol_handler.h>
+#include <net_processing.h>
+#include <netmessagemaker.h>
 #include <node/context.h>
 #include <node/mempool_persist_args.h>
 #include <node/snapshot.h>
 #include <node/types.h>
+#include <policy/policy.h>
 #include <policy/settings.h>
 #include <primitives/transaction.h>
+#include <protocol.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
@@ -21,8 +29,12 @@
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/moneystr.h>
+#include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
+
+#include <atomic>
+#include <thread>
 
 using kernel::DumpMempool;
 
@@ -1163,12 +1175,505 @@ static RPCHelpMan submitpackage() {
     };
 }
 
+static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
+                                     std::vector<CTransactionRef> &txns,
+                                     UniValue *txids_arr) {
+    const auto &raw_vals = raw_transactions.getValues();
+    const size_t n = raw_vals.size();
+    for (const auto &rawtx : raw_vals) {
+        (void)rawtx.get_str();
+    }
+    txns.resize(n);
+    if (n < 32) {
+        for (size_t i = 0; i < n; ++i) {
+            CMutableTransaction mtx;
+            if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                   "TX decode failed: " +
+                                       raw_vals[i].get_str());
+            }
+            txns[i] = MakeTransactionRef(std::move(mtx));
+            if (txids_arr != nullptr) {
+                txids_arr->push_back(txns[i]->GetId().GetHex());
+            }
+        }
+        return;
+    }
+
+    const size_t hw = std::max<size_t>(
+        1, std::min<size_t>(8, std::thread::hardware_concurrency()));
+    const size_t num_threads = std::min(hw, (n + 15) / 16);
+    std::atomic<size_t> next_idx{0};
+    std::atomic<size_t> first_fail{n};
+
+    std::vector<std::string> hex_ids(txids_arr != nullptr ? n : 0);
+
+    auto worker = [&]() {
+        while (true) {
+            const size_t base =
+                next_idx.fetch_add(8, std::memory_order_relaxed);
+            if (base >= n ||
+                base >= first_fail.load(std::memory_order_relaxed)) {
+                break;
+            }
+            const size_t end = std::min(n, base + 8);
+            for (size_t i = base; i < end; ++i) {
+                if (i >= first_fail.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                CMutableTransaction mtx;
+                if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
+                    size_t cur = first_fail.load(std::memory_order_relaxed);
+                    while (i < cur &&
+                           !first_fail.compare_exchange_weak(
+                               cur, i, std::memory_order_relaxed)) {
+                    }
+                    break;
+                }
+                txns[i] = MakeTransactionRef(std::move(mtx));
+                if (txids_arr != nullptr) {
+                    hex_ids[i] = txns[i]->GetId().GetHex();
+                }
+            }
+        }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads > 0 ? num_threads - 1 : 0);
+    for (size_t t = 1; t < num_threads; ++t) {
+        threads.emplace_back(worker);
+    }
+    worker();
+    for (auto &th : threads) {
+        th.join();
+    }
+
+    const size_t bad = first_fail.load(std::memory_order_relaxed);
+    if (bad < n) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                           "TX decode failed: " + raw_vals[bad].get_str());
+    }
+    if (txids_arr != nullptr) {
+        txids_arr->reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            txids_arr->push_back(std::move(hex_ids[i]));
+        }
+    }
+}
+
+static RPCHelpMan testrawtxbatch() {
+    const auto ticker = Currency::getTicker();
+    return RPCHelpMan{
+        "testrawtxbatch",
+        "Returns result of mempool acceptance tests indicating if a batch of "
+        "raw transactions (serialized, hex-encoded) would be accepted by "
+        "mempool in dependency order.\n"
+        "Unlike testmempoolaccept, this supports up to " +
+            ToString(MAX_RAWTX_BATCH_COUNT) +
+            " transactions per call, evaluates parent-child dependencies "
+            "across the batch, and never mutates the mempool.\n",
+        {
+            {
+                "rawtxs",
+                RPCArg::Type::ARR,
+                RPCArg::Optional::NO,
+                "An array of hex strings of raw transactions.",
+                {
+                    {"rawtx", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
+                     ""},
+                },
+            },
+            {"maxfeerate", RPCArg::Type::AMOUNT,
+             RPCArg::Default{
+                 FormatMoney(DEFAULT_MAX_RAW_TX_FEE_RATE.GetFeePerK())},
+             "Reject transactions whose fee rate is higher than the specified "
+             "value, expressed in " +
+                 ticker + "/kB\n"},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::BOOL, "allowed",
+                 "True if and only if every transaction in the batch is valid "
+                 "and within maxfeerate"},
+                {RPCResult::Type::STR, "package-error", /*optional=*/true,
+                 "Package validation error, if any"},
+                {RPCResult::Type::ARR,
+                 "results",
+                 "Per-transaction validation results in input order",
+                 {
+                     {RPCResult::Type::OBJ,
+                      "",
+                      "",
+                      {
+                          {RPCResult::Type::STR_HEX, "txid",
+                           "The transaction id in hex"},
+                          {RPCResult::Type::BOOL, "allowed", /*optional=*/true,
+                           "Whether this transaction passed validation"},
+                          {RPCResult::Type::NUM, "size", /*optional=*/true,
+                           "Virtual transaction size"},
+                          {RPCResult::Type::OBJ,
+                           "fees",
+                           /*optional=*/true,
+                           "Transaction fees",
+                           {
+                               {RPCResult::Type::STR_AMOUNT, "base",
+                                "transaction fee in " + ticker},
+                               {RPCResult::Type::STR_AMOUNT,
+                                "effective-feerate",
+                                "effective feerate in " + ticker + " per KvB"},
+                               {RPCResult::Type::ARR,
+                                "effective-includes",
+                                "txids included in effective-feerate",
+                                {
+                                    RPCResult{RPCResult::Type::STR_HEX, "",
+                                              "transaction txid in hex"},
+                                }},
+                           }},
+                          {RPCResult::Type::STR, "reject-reason",
+                           /*optional=*/true, "Rejection reason string"},
+                          {RPCResult::Type::STR, "reject-details",
+                           /*optional=*/true, "Rejection details string"},
+                      }},
+                 }},
+            },
+        },
+        RPCExamples{HelpExampleCli("testrawtxbatch", R"('["signedhex"]')") +
+                    HelpExampleRpc("testrawtxbatch", "[\"signedhex\"]")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            const UniValue &raw_transactions = request.params[0].get_array();
+            if (raw_transactions.size() < 1 ||
+                raw_transactions.size() > MAX_RAWTX_BATCH_COUNT) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                   "Array must contain between 1 and " +
+                                       ToString(MAX_RAWTX_BATCH_COUNT) +
+                                       " transactions.");
+            }
+
+            const CFeeRate max_raw_tx_fee_rate =
+                request.params[1].isNull()
+                    ? DEFAULT_MAX_RAW_TX_FEE_RATE
+                    : CFeeRate(AmountFromValue(request.params[1]));
+
+            std::vector<CTransactionRef> txns;
+            DecodeRawTxBatchParallel(raw_transactions, txns, nullptr);
+
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            CTxMemPool &mempool = EnsureMemPool(node);
+            ChainstateManager &chainman = EnsureChainman(node);
+            Chainstate &chainstate = chainman.ActiveChainstate();
+
+            const PackageMempoolAcceptResult package_result = [&] {
+                LOCK(::cs_main);
+                return ProcessRawTxBatch(chainstate, mempool, txns,
+                                         /*test_accept=*/true,
+                                         max_raw_tx_fee_rate);
+            }();
+
+            UniValue results_arr(UniValue::VARR);
+            bool all_allowed =
+                package_result.m_state.GetResult() !=
+                PackageValidationResult::PCKG_POLICY;
+            bool exit_early{false};
+
+            for (const auto &tx : txns) {
+                UniValue result_inner(UniValue::VOBJ);
+                result_inner.pushKV("txid", tx->GetId().GetHex());
+                auto it = package_result.m_tx_results.find(tx->GetId());
+                if (exit_early || it == package_result.m_tx_results.end()) {
+                    all_allowed = false;
+                    results_arr.push_back(std::move(result_inner));
+                    continue;
+                }
+                const auto &tx_result = it->second;
+
+                if (tx_result.m_result_type ==
+                        MempoolAcceptResult::ResultType::VALID) {
+                    const Amount fee = tx_result.m_base_fees.value();
+                    const int64_t virtual_size = tx_result.m_vsize.value();
+                    result_inner.pushKV("allowed", true);
+                    result_inner.pushKV("size", virtual_size);
+                    UniValue fees(UniValue::VOBJ);
+                    fees.pushKV("base", fee);
+                    fees.pushKV(
+                        "effective-feerate",
+                        tx_result.m_effective_feerate.value().GetFeePerK());
+                    UniValue effective_includes_res(UniValue::VARR);
+                    for (const auto &txid :
+                         tx_result.m_txids_fee_calculations.value()) {
+                        effective_includes_res.push_back(txid.ToString());
+                    }
+                    fees.pushKV("effective-includes",
+                                std::move(effective_includes_res));
+                    result_inner.pushKV("fees", std::move(fees));
+                } else {
+                    all_allowed = false;
+                    result_inner.pushKV("allowed", false);
+                    const TxValidationState state = tx_result.m_state;
+                    if (state.GetResult() ==
+                        TxValidationResult::TX_MISSING_INPUTS) {
+                        result_inner.pushKV("reject-reason", "missing-inputs");
+                    } else if (state.GetRejectReason() == "max-fee-exceeded") {
+                        result_inner.pushKV("reject-reason",
+                                            "max-fee-exceeded");
+                        exit_early = true;
+                    } else {
+                        result_inner.pushKV("reject-reason",
+                                            state.GetRejectReason());
+                        result_inner.pushKV("reject-details", state.ToString());
+                    }
+                }
+                results_arr.push_back(std::move(result_inner));
+            }
+
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("allowed", all_allowed);
+            if (package_result.m_state.GetResult() ==
+                PackageValidationResult::PCKG_POLICY) {
+                ret.pushKV("package-error",
+                           package_result.m_state.GetRejectReason());
+            }
+            ret.pushKV("results", std::move(results_arr));
+            return ret;
+        },
+    };
+}
+
+static RPCHelpMan submitrawtxbatch() {
+    const auto ticker = Currency::getTicker();
+    return RPCHelpMan{
+        "submitrawtxbatch",
+        "Submit a batch of raw transactions (serialized, hex-encoded) in "
+        "dependency order with two-phase all-or-nothing semantics.\n"
+        "Phase 1 validates the entire batch under cs_main without mutating the "
+        "mempool. If any transaction fails validation or exceeds maxfeerate, "
+        "no transactions in the batch are accepted.\n"
+        "Phase 2 commits all validated transactions to the mempool under the "
+        "same cs_main lock acquisition, refreshes the RCU snapshot, and "
+        "broadcasts them.\n",
+        {
+            {
+                "rawtxs",
+                RPCArg::Type::ARR,
+                RPCArg::Optional::NO,
+                "An array of hex strings of raw transactions.",
+                {
+                    {"rawtx", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
+                     ""},
+                },
+            },
+            {"maxfeerate", RPCArg::Type::AMOUNT,
+             RPCArg::Default{
+                 FormatMoney(DEFAULT_MAX_RAW_TX_FEE_RATE.GetFeePerK())},
+             "Reject transactions whose fee rate is higher than the specified "
+             "value, expressed in " +
+                 ticker +
+                 "/kB\nSet to 0 to accept any fee rate.\n"},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::BOOL, "accepted",
+                 "True if all transactions in the batch were accepted into the "
+                 "mempool"},
+                {RPCResult::Type::STR, "package-error", /*optional=*/true,
+                 "Package validation error, if any"},
+                {RPCResult::Type::ARR,
+                 "txids",
+                 "Transaction IDs in input order",
+                 {
+                     RPCResult{RPCResult::Type::STR_HEX, "",
+                               "The transaction id in hex"},
+                 }},
+                {RPCResult::Type::ARR,
+                 "results",
+                 "Per-transaction validation results in input order",
+                 {
+                     {RPCResult::Type::OBJ,
+                      "",
+                      "",
+                      {
+                          {RPCResult::Type::STR_HEX, "txid",
+                           "The transaction id in hex"},
+                          {RPCResult::Type::BOOL, "allowed", /*optional=*/true,
+                           "Whether this transaction passed validation"},
+                          {RPCResult::Type::NUM, "size", /*optional=*/true,
+                           "Virtual transaction size"},
+                          {RPCResult::Type::OBJ,
+                           "fees",
+                           /*optional=*/true,
+                           "Transaction fees",
+                           {
+                               {RPCResult::Type::STR_AMOUNT, "base",
+                                "transaction fee in " + ticker},
+                               {RPCResult::Type::STR_AMOUNT,
+                                "effective-feerate",
+                                "effective feerate in " + ticker + " per KvB"},
+                               {RPCResult::Type::ARR,
+                                "effective-includes",
+                                "txids included in effective-feerate",
+                                {
+                                    RPCResult{RPCResult::Type::STR_HEX, "",
+                                              "transaction txid in hex"},
+                                }},
+                           }},
+                          {RPCResult::Type::STR, "reject-reason",
+                           /*optional=*/true, "Rejection reason string"},
+                          {RPCResult::Type::STR, "reject-details",
+                           /*optional=*/true, "Rejection details string"},
+                      }},
+                 }},
+            },
+        },
+        RPCExamples{HelpExampleCli("submitrawtxbatch", R"('["signedhex"]')") +
+                    HelpExampleRpc("submitrawtxbatch", "[\"signedhex\"]")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            const UniValue &raw_transactions = request.params[0].get_array();
+            if (raw_transactions.size() < 1 ||
+                raw_transactions.size() > MAX_RAWTX_BATCH_COUNT) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                   "Array must contain between 1 and " +
+                                       ToString(MAX_RAWTX_BATCH_COUNT) +
+                                       " transactions.");
+            }
+
+            const CFeeRate max_raw_tx_fee_rate =
+                request.params[1].isNull()
+                    ? DEFAULT_MAX_RAW_TX_FEE_RATE
+                    : CFeeRate(AmountFromValue(request.params[1]));
+
+            std::vector<CTransactionRef> txns;
+            UniValue txids_arr(UniValue::VARR);
+            DecodeRawTxBatchParallel(raw_transactions, txns, &txids_arr);
+
+            AssertLockNotHeld(cs_main);
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            CTxMemPool &mempool = EnsureMemPool(node);
+            ChainstateManager &chainman = EnsureChainman(node);
+            Chainstate &chainstate = chainman.ActiveChainstate();
+
+            UniValue results_arr(UniValue::VARR);
+            bool all_allowed = false;
+            std::string package_error_str;
+
+            const PackageMempoolAcceptResult package_result = [&] {
+                LOCK2(::cs_main, mempool.cs);
+                CTxMemPool::ScopedSnapshotDefer snap_defer(mempool);
+                PackageMempoolAcceptResult res =
+                    ProcessRawTxBatch(chainstate, mempool, txns,
+                                      /*test_accept=*/false,
+                                      max_raw_tx_fee_rate);
+
+                if (res.m_state.IsValid() &&
+                    res.m_tx_results.size() == txns.size()) {
+                    for (const auto &tx : txns) {
+                        mempool.AddUnbroadcastTx(tx->GetId());
+                    }
+                    const auto cur_snap =
+                        node::GetGlobalSnapshotPublisher().Load();
+                    if (!cur_snap || !cur_snap->chain_valid ||
+                        cur_snap->chainman_ptr != &chainman) {
+                        node::PublishChainTipSnapshot(chainman, &mempool);
+                    }
+                }
+                return res;
+            }();
+
+            if (package_result.m_state.GetResult() ==
+                PackageValidationResult::PCKG_POLICY) {
+                package_error_str = package_result.m_state.GetRejectReason();
+            }
+
+            all_allowed = package_result.m_state.IsValid();
+            bool exit_early{false};
+
+            for (const auto &tx : txns) {
+                UniValue result_inner(UniValue::VOBJ);
+                result_inner.pushKV("txid", tx->GetId().GetHex());
+                auto it = package_result.m_tx_results.find(tx->GetId());
+                if (exit_early || it == package_result.m_tx_results.end()) {
+                    all_allowed = false;
+                    results_arr.push_back(std::move(result_inner));
+                    continue;
+                }
+                const auto &tx_result = it->second;
+
+                if (tx_result.m_result_type ==
+                    MempoolAcceptResult::ResultType::VALID) {
+                    const Amount fee = tx_result.m_base_fees.value();
+                    const int64_t virtual_size = tx_result.m_vsize.value();
+                    result_inner.pushKV("allowed", true);
+                    result_inner.pushKV("size", virtual_size);
+                    UniValue fees(UniValue::VOBJ);
+                    fees.pushKV("base", fee);
+                    fees.pushKV(
+                        "effective-feerate",
+                        tx_result.m_effective_feerate.value().GetFeePerK());
+                    UniValue effective_includes_res(UniValue::VARR);
+                    for (const auto &txid :
+                         tx_result.m_txids_fee_calculations.value()) {
+                        effective_includes_res.push_back(txid.ToString());
+                    }
+                    fees.pushKV("effective-includes",
+                                std::move(effective_includes_res));
+                    result_inner.pushKV("fees", std::move(fees));
+                } else {
+                    all_allowed = false;
+                    result_inner.pushKV("allowed", false);
+                    const TxValidationState state = tx_result.m_state;
+                    if (state.GetResult() ==
+                        TxValidationResult::TX_MISSING_INPUTS) {
+                        result_inner.pushKV("reject-reason", "missing-inputs");
+                    } else if (state.GetRejectReason() == "max-fee-exceeded") {
+                        result_inner.pushKV("reject-reason",
+                                            "max-fee-exceeded");
+                        exit_early = true;
+                    } else {
+                        result_inner.pushKV("reject-reason",
+                                            state.GetRejectReason());
+                        result_inner.pushKV("reject-details", state.ToString());
+                    }
+                }
+                results_arr.push_back(std::move(result_inner));
+            }
+
+            if (all_allowed) {
+                if (node.validation_signals) {
+                    node.validation_signals->SyncWithValidationInterfaceQueue();
+                }
+                if (node.peerman) {
+                    for (const auto &tx : txns) {
+                        node.peerman->RelayTransaction(tx->GetId());
+                    }
+                }
+            }
+
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("accepted", all_allowed);
+            if (!package_error_str.empty()) {
+                ret.pushKV("package-error", package_error_str);
+            }
+            ret.pushKV("txids", std::move(txids_arr));
+            ret.pushKV("results", std::move(results_arr));
+            return ret;
+        },
+    };
+}
+
 void RegisterMempoolRPCCommands(CRPCTable &t) {
     static const CRPCCommand commands[]{
         // category     actor (function)
         // --------     ----------------
         {"rawtransactions", sendrawtransaction},
         {"rawtransactions", testmempoolaccept},
+        {"rawtransactions", testrawtxbatch},
+        {"rawtransactions", submitrawtxbatch},
         {"blockchain", getmempoolancestors},
         {"blockchain", getmempooldescendants},
         {"blockchain", getmempoolentry},

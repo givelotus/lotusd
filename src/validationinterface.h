@@ -240,6 +240,13 @@ public:
     void TransactionAddedToMempool(const CTransactionRef &,
                                    std::shared_ptr<const std::vector<Coin>>,
                                    uint64_t mempool_sequence);
+    struct MempoolAddedBatchItem {
+        CTransactionRef tx;
+        std::shared_ptr<const std::vector<Coin>> spent_coins;
+        uint64_t mempool_sequence{0};
+    };
+    void TransactionsAddedToMempoolBatch(
+        std::vector<MempoolAddedBatchItem> &&items);
     void TransactionRemovedFromMempool(const CTransactionRef &,
                                        MemPoolRemovalReason,
                                        uint64_t mempool_sequence);
