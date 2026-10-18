@@ -21,7 +21,7 @@ use chronik_util::log_chronik;
 use futures::future::select_all;
 use prost::Message;
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::{
     error::report_status_error,
@@ -112,7 +112,8 @@ struct SubRecv {
     token_ids: SubRecvTokenId,
     lokad_ids: SubRecvLokadId,
     plugin_groups: SubRecvPluginGroups,
-    ws_ping_interval: Duration,
+    /// None if the transport sends the pings itself
+    ws_ping_interval: Option<Duration>,
     /// Guards for active subscriptions attributed to this connection's IP.
     sub_guards: Vec<SubscriptionGuard>,
     client_key: SubscriptionClientKey,
@@ -225,9 +226,14 @@ impl SubRecv {
         }
     }
 
-    async fn schedule_ping(ws_ping_interval: Duration) -> Result<WsAction> {
+    async fn schedule_ping(
+        ws_ping_interval: Option<Duration>,
+    ) -> Result<WsAction> {
+        let Some(ws_ping_interval) = ws_ping_interval else {
+            return futures::future::pending().await;
+        };
         tokio::time::sleep(ws_ping_interval).await;
-        let ping_payload = b"Bitcoin ABC Chronik Indexer".to_vec();
+        let ping_payload = WS_PING_PAYLOAD.to_vec();
         Ok(WsAction::Message(ws::Message::Ping(ping_payload)))
     }
 
@@ -568,15 +574,85 @@ fn sub_tx_msg_action(
     Ok(WsAction::Message(msg))
 }
 
+/// Payload of the WebSocket pings initiated by Chronik.
+pub const WS_PING_PAYLOAD: &[u8] = b"Bitcoin ABC Chronik Indexer";
+
+/// Sending side of a WebSocket session accepted by the node's HTTP server
+/// (see [`WsTransport::InProcess`]). Both calls must not block.
+pub trait InProcessWsSink: Send + Sync + 'static {
+    /// Queue a binary message.
+    fn send_binary(&self, msg: Vec<u8>);
+    /// Close the session with a normal closure.
+    fn close(&self);
+}
+
+/// WebSocket session accepted by the node's HTTP server, which does the
+/// framing, answers the client's control frames and sends Chronik's pings.
+pub struct InProcessWs {
+    /// Client messages, in order; closed when the client disconnects.
+    pub incoming: mpsc::Receiver<ws::Message>,
+    /// Where Chronik's messages go.
+    pub sink: Box<dyn InProcessWsSink>,
+}
+
+impl std::fmt::Debug for InProcessWs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InProcessWs").finish_non_exhaustive()
+    }
+}
+
+impl Drop for InProcessWs {
+    fn drop(&mut self) {
+        // Session ended on Chronik's side (or Chronik is shutting down).
+        self.sink.close();
+    }
+}
+
+/// Transport of a WebSocket subscription session.
+#[derive(Debug)]
+pub enum WsTransport {
+    /// Upgraded by Chronik's own listener (`-chronikbind`).
+    Axum(Box<WebSocket>),
+    /// Upgraded by the node's HTTP server (`/chronik/ws`).
+    InProcess(InProcessWs),
+}
+
+impl WsTransport {
+    async fn recv(&mut self) -> Option<Result<ws::Message, axum::Error>> {
+        match self {
+            WsTransport::Axum(socket) => socket.recv().await,
+            WsTransport::InProcess(ws) => ws.incoming.recv().await.map(Ok),
+        }
+    }
+
+    async fn send(&mut self, msg: ws::Message) -> std::result::Result<(), ()> {
+        match self {
+            WsTransport::Axum(socket) => socket.send(msg).await.map_err(|_| ()),
+            WsTransport::InProcess(ws) => {
+                // Control frames are the HTTP server's.
+                if let ws::Message::Binary(msg) = msg {
+                    ws.sink.send_binary(msg);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Future for a WS connection, which will run indefinitely until the WS will be
-/// closed.
+/// closed. `peer_ip` is the client's address as seen by the server that
+/// accepted the connection; subscription limits are kept per address.
 pub async fn handle_subscribe_socket(
-    mut socket: WebSocket,
+    mut socket: WsTransport,
     indexer: ChronikIndexerRef,
     settings: ChronikSettings,
     subscription_limiter: SubscriptionLimiterRef,
     peer_ip: IpAddr,
 ) {
+    let ws_ping_interval = match socket {
+        WsTransport::Axum(_) => Some(settings.ws_ping_interval),
+        WsTransport::InProcess(_) => None,
+    };
     let mut recv = SubRecv {
         blocks: Default::default(),
         txs: Default::default(),
@@ -585,7 +661,7 @@ pub async fn handle_subscribe_socket(
         token_ids: Default::default(),
         lokad_ids: Default::default(),
         plugin_groups: Default::default(),
-        ws_ping_interval: settings.ws_ping_interval,
+        ws_ping_interval,
         sub_guards: Vec::new(),
         client_key: SubscriptionClientKey::Ip(peer_ip),
         subscription_limiter,

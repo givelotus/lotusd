@@ -792,6 +792,13 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION |
             ArgsManager::NETWORK_ONLY,
         OptionsCategory::CHRONIK);
+    argsman.AddArg(
+        "-chronikpubliconrpcport",
+        strprintf("Also serve Chronik on the RPC port under /chronik (HTTP "
+                  "and /chronik/ws WebSocket, with TLS when enabled). These "
+                  "paths are exempt from -rpcallowip (default: %d)",
+                  DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
     argsman.AddArg("-chroniktokenindex",
                    "Enable token indexing in Chronik (default: 1)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);

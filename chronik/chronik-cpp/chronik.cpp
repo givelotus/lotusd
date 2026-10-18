@@ -16,6 +16,7 @@
 #include <util/translation.h>
 
 #include <chronik-cpp/chronik.h>
+#include <chronik-cpp/chronik_inprocess.h>
 #include <chronik-cpp/chronik_validationinterface.h>
 #include <chronik_lib/src/ffi.rs.h>
 
@@ -229,6 +230,9 @@ bool Start(const ArgsManager &args, const Config &config,
 }
 
 void Interrupt() {
+    // Stop taking /chronik requests and close their WebSocket sessions first,
+    // so none reaches Chronik's runtime while it shuts down.
+    UnregisterChronikInProcess();
     InterruptChronikRequestHandlers();
 }
 
