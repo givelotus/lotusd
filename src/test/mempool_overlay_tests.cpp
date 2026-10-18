@@ -1,0 +1,244 @@
+// Copyright (c) 2026 The Lotus developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include <consensus/merkle.h>
+#include <lotus_v2/commitment.h>
+#include <stdexcept>
+#include <lotus_v2/mempool_overlay.h>
+#include <node/miner.h>
+#include <primitives/block.h>
+#include <primitives/transaction.h>
+#include <script/script.h>
+#include <test/util/mining.h>
+#include <test/util/setup_common.h>
+#include <txmempool.h>
+#include <validation.h>
+
+#include <boost/test/unit_test.hpp>
+
+#include <cstring>
+#include <vector>
+
+namespace {
+
+CTransactionRef MakeTestCoinbaseTx(int height, Amount value) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.vin.resize(1);
+    mtx.vin[0].prevout = COutPoint();
+    mtx.vin[0].scriptSig =
+        CScript() << height << OP_0 << std::vector<uint8_t>(64, 0x42);
+    mtx.vout.resize(1);
+    mtx.vout[0].nValue = value;
+    mtx.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    return MakeTransactionRef(std::move(mtx));
+}
+
+CTransactionRef MakeTestSpendTx(const COutPoint &prevout, uint32_t locktime,
+                                Amount value_out, size_t num_outputs = 1) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.nLockTime = locktime;
+    mtx.vin.resize(1);
+    mtx.vin[0].prevout = prevout;
+    mtx.vin[0].scriptSig =
+        CScript() << std::vector<uint8_t>(64, uint8_t(locktime & 0xff));
+    mtx.vout.resize(num_outputs);
+    for (size_t i = 0; i < num_outputs; ++i) {
+        mtx.vout[i].nValue = value_out / int64_t(num_outputs);
+        mtx.vout[i].scriptPubKey =
+            CScript() << OP_DUP << OP_HASH160
+                      << std::vector<uint8_t>(20, uint8_t((locktime + i) & 0xff))
+                      << OP_EQUALVERIFY << OP_CHECKSIG;
+    }
+    return MakeTransactionRef(std::move(mtx));
+}
+
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(mempool_overlay_tests, TestingSetup)
+
+BOOST_AUTO_TEST_CASE(transaction_subtree_rejects_duplicate_ids) {
+    lotus::v2::TxIdentityPair a{}, b{};
+    a.tx_id.fill(0x42);
+    a.tx_hash.fill(0x17);
+    b = a;
+    b.tx_hash.fill(0x18);
+    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, a}),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, b}),
+                      std::invalid_argument);
+    // The final key bit is legal: depth 255 may split two distinct keys.
+    b.tx_id[31] ^= 0x80;
+    const auto expected = lotus::v2::BuildTxSubtreeA(std::vector{a, b});
+    BOOST_CHECK(expected == lotus::v2::BuildTxSubtreeA(std::vector{b, a}));
+    BOOST_CHECK(expected != lotus::v2::BuildTxSubtreeA(std::vector{a}));
+}
+
+BOOST_AUTO_TEST_CASE(stacked_cow_overlays_and_chained_lookup) {
+    lotus::v2::MerklixOverlayManager mgr;
+    lotus::v2::Hash parent_id{};
+    parent_id.fill(0x11);
+    mgr.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
+                   100, 1700000000);
+
+    // Layer 1 (Epoch 1): tx1 spends external UTXO, creates 2 outputs
+    COutPoint ext1(TxId(uint256S("0101010101010101010101010101010101010101010101010101010101010101")), 0);
+    const CTransactionRef tx1 = MakeTestSpendTx(ext1, 1, 10000 * SATOSHI, 2);
+    BOOST_CHECK(AddTransactionToOverlay(mgr, tx1, 500, 1));
+    const auto &l1 = mgr.FreezeEpochBatch();
+    BOOST_CHECK_EQUAL(l1.GetTxCount(), 1U);
+    BOOST_CHECK_EQUAL(l1.GetTotalFeesSats(), 500);
+    BOOST_CHECK_EQUAL(l1.GetTotalSigChecks(), 1);
+    BOOST_CHECK(!l1.HasDoubleSpends());
+
+    // Layer 2 (Epoch 2): tx2 spends tx1:0 (intra-overlay spend)
+    const CTransactionRef tx2 =
+        MakeTestSpendTx(COutPoint(tx1->GetId(), 0), 2, 9000 * SATOSHI, 1);
+    BOOST_CHECK(AddTransactionToOverlay(mgr, tx2, 600, 2));
+    const auto &l2 = mgr.FreezeEpochBatch();
+    BOOST_CHECK_EQUAL(l2.GetTxCount(), 2U);
+    BOOST_CHECK_EQUAL(l2.GetTotalFeesSats(), 1100);
+    BOOST_CHECK_EQUAL(l2.GetTotalSigChecks(), 3);
+
+    // Layer 3 (Speculative): tx3 spends tx2:0
+    const CTransactionRef tx3 =
+        MakeTestSpendTx(COutPoint(tx2->GetId(), 0), 3, 8000 * SATOSHI, 1);
+    BOOST_CHECK(AddTransactionToOverlay(mgr, tx3, 700, 1));
+    const auto &l3 = mgr.GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(l3.GetTxCount(), 3U);
+    BOOST_CHECK_EQUAL(l3.GetTotalFeesSats(), 1800);
+    BOOST_CHECK_EQUAL(l3.GetTotalSigChecks(), 4);
+    BOOST_CHECK_EQUAL(mgr.GetFrozenEpochs().size(), 2U);
+
+    // Verify O(1) chained LookupCoinInStack (L3 -> L2 -> L1):
+    // - tx1:0 is spent by tx2 in L2/L3
+    // - tx1:1 is unspent across the stack
+    // - tx2:0 is spent by tx3 in L3
+    // - tx3:0 is unspent in L3
+    lotus::v2::Outpoint op_tx1_0{}, op_tx1_1{}, op_tx2_0{}, op_tx3_0{};
+    std::memcpy(op_tx1_0.tx_id.data(), tx1->GetId().begin(), 32);
+    op_tx1_0.index = 0;
+    op_tx1_1 = op_tx1_0;
+    op_tx1_1.index = 1;
+    std::memcpy(op_tx2_0.tx_id.data(), tx2->GetId().begin(), 32);
+    op_tx2_0.index = 0;
+    std::memcpy(op_tx3_0.tx_id.data(), tx3->GetId().begin(), 32);
+    op_tx3_0.index = 0;
+
+    bool spent = false;
+    lotus::v2::Coin coin_out{};
+    BOOST_CHECK(!mgr.LookupCoinInStack(op_tx1_0, &coin_out, spent));
+    BOOST_CHECK(spent);
+
+    BOOST_CHECK(mgr.LookupCoinInStack(op_tx1_1, &coin_out, spent));
+    BOOST_CHECK(!spent);
+    BOOST_CHECK_EQUAL(coin_out.output.value, 5000U);
+
+    BOOST_CHECK(!mgr.LookupCoinInStack(op_tx2_0, &coin_out, spent));
+    BOOST_CHECK(spent);
+
+    BOOST_CHECK(mgr.LookupCoinInStack(op_tx3_0, &coin_out, spent));
+    BOOST_CHECK(!spent);
+    BOOST_CHECK_EQUAL(coin_out.output.value, 8000U);
+
+    // Net erased outpoints should elide ephemeral intra-overlay coins (tx1:0, tx2:0)
+    // and only report the base-chain outpoint ext1
+    const auto net_erased = l3.GetNetErasedOutpoints();
+    BOOST_CHECK_EQUAL(net_erased.size(), 1U);
+    const auto net_inserted = l3.GetNetInsertedCoins();
+    BOOST_CHECK_EQUAL(net_inserted.size(), 2U); // tx1:1 and tx3:0
+}
+
+BOOST_AUTO_TEST_CASE(positional_merkle_root_and_syndromes) {
+    lotus::v2::MerklixOverlayManager mgr_a;
+    lotus::v2::MerklixOverlayManager mgr_b;
+    lotus::v2::Hash parent_id{};
+    parent_id.fill(0x22);
+    mgr_a.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
+                     200, 1700000100);
+    mgr_b.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
+                     200, 1700000100);
+
+    constexpr size_t kNumTxs = 64;
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_a;
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_b;
+    for (size_t i = 0; i < kNumTxs; ++i) {
+        COutPoint prev(TxId(m_rng.rand256()), uint32_t(i));
+        auto ptx = MakeTestSpendTx(prev, uint32_t(10 + i),
+                                   int64_t(2000 + i) * SATOSHI);
+        batch_a.emplace_back(ptx, 100 + int64_t(i), 1);
+        if (i < kNumTxs - 2) {
+            batch_b.emplace_back(ptx, 100 + int64_t(i), 1);
+        }
+    }
+
+    BOOST_CHECK_EQUAL(AddTransactionsToOverlayBatch(mgr_a, batch_a), kNumTxs);
+    BOOST_CHECK_EQUAL(AddTransactionsToOverlayBatch(mgr_b, batch_b),
+                      kNumTxs - 2);
+
+    const auto &spec_a = mgr_a.GetSpeculativeOverlay();
+    const auto &spec_b = mgr_b.GetSpeculativeOverlay();
+
+    // 1. Verify GF(2^64) algebraic syndrome (s1, s3, s5) recovers the exact 2 missing txs
+    const auto delta_syn =
+        spec_a.GetSyndrome().SymmetricDifference(spec_b.GetSyndrome());
+    const auto decoded = lotus::v2::DecodeBucketSyndrome(delta_syn);
+    BOOST_CHECK(decoded.status == lotus::v2::ReconcileStatus::Decoded);
+    BOOST_REQUIRE_EQUAL(decoded.roots.size(), 2U);
+
+    const auto [k0, k1] = spec_a.GetSipHashKey();
+    lotus::v2::Hash id_missing_1{}, id_missing_2{};
+    std::memcpy(id_missing_1.data(),
+                std::get<0>(batch_a[kNumTxs - 2])->GetId().begin(), 32);
+    std::memcpy(id_missing_2.data(),
+                std::get<0>(batch_a[kNumTxs - 1])->GetId().begin(), 32);
+    uint64_t s_missing_1 = lotus::v2::ComputeShortTxId(k0, k1, id_missing_1);
+    uint64_t s_missing_2 = lotus::v2::ComputeShortTxId(k0, k1, id_missing_2);
+    if (s_missing_1 > s_missing_2) {
+        std::swap(s_missing_1, s_missing_2);
+    }
+    BOOST_CHECK_EQUAL(decoded.roots[0], s_missing_1);
+    BOOST_CHECK_EQUAL(decoded.roots[1], s_missing_2);
+
+    // 2. Verify O(log N) positional Merkle root matches standard BlockMerkleRoot
+    const CTransactionRef cb = MakeTestCoinbaseTx(200, 50 * COIN);
+    CBlock block;
+    block.vtx.push_back(cb);
+    for (const auto &[_, oentry] : spec_a.GetOrderedTxs()) {
+        block.vtx.push_back(
+            std::static_pointer_cast<const CTransaction>(oentry.tx_ref));
+    }
+    const uint256 expected_merkle = BlockMerkleRoot(block);
+
+    lotus::v2::Hash cb_txid{};
+    std::memcpy(cb_txid.data(), cb->GetId().begin(), 32);
+    const lotus::v2::Hash fast_merkle =
+        spec_a.ComputePositionalMerkleRoot(cb_txid);
+    uint256 fast_merkle_u256;
+    std::memcpy(fast_merkle_u256.begin(), fast_merkle.data(), 32);
+    BOOST_CHECK_EQUAL(fast_merkle_u256, expected_merkle);
+
+    // Verify left-spine branch authenticates both null_merkle_root and hashMerkleRoot
+    const auto &branch = spec_a.GetCoinbaseMerkleBranch();
+    BOOST_CHECK_LE(branch.size(), 16U);
+    BOOST_CHECK(lotus::v2::ComputeMerkleRootFromLeftSpine(lotus::v2::Hash{},
+                                                          branch) ==
+                spec_a.GetNullMerkleRoot());
+    BOOST_CHECK(lotus::v2::ComputeMerkleRootFromLeftSpine(cb_txid, branch) ==
+                fast_merkle);
+
+    // 3. Verify lazy UtxoRoot digest matches eager CommitStateRootInHeader mode
+    lotus::v2::MempoolOverlayLayer eager_layer(
+        parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(), 200,
+        1700000100);
+    eager_layer.SetCommitStateRootInHeader(true);
+    for (const auto &[ptx, fee, sigops] : batch_a) {
+        BOOST_CHECK(AddTransactionToOverlay(eager_layer, ptx, fee, sigops));
+    }
+    BOOST_CHECK(spec_a.GetSubtreeARoot() == eager_layer.GetSubtreeARoot());
+    BOOST_CHECK(spec_a.GetUtxoRootDigest() == eager_layer.GetUtxoRootDigest());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
