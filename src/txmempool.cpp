@@ -237,8 +237,13 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     const CTransaction &tx = (*it)->GetTx();
     const TxId &txid = tx.GetId();
     MarkSnapshotEntryChanged(txid);
-    FlushPendingOverlayAdds();
-    RemoveTransactionFromOverlay(m_merklix_overlay, (*it)->GetTx());
+
+    if (m_snapshot_defer_depth > 0) {
+        m_pending_overlay_removes.push_back(txid);
+    } else {
+        FlushPendingOverlayAdds();
+        RemoveTransactionFromOverlay(m_merklix_overlay, tx);
+    }
 
     if (reason != MemPoolRemovalReason::BLOCK) {
         if (m_opts.signals) {
@@ -420,6 +425,7 @@ void CTxMemPool::_clear() {
     m_snapshot_changed_entries.clear();
     m_snapshot_needs_reset = true;
     m_pending_overlay_adds.clear();
+    m_pending_overlay_removes.clear();
     m_merklix_overlay.Clear();
     mapTx.clear();
     mapNextTx.clear();
@@ -435,10 +441,55 @@ void CTxMemPool::_clear() {
 
 void CTxMemPool::FlushPendingOverlayAdds() const {
     AssertLockHeld(cs);
-    if (m_pending_overlay_adds.empty()) return;
+    if (m_pending_overlay_adds.empty() && m_pending_overlay_removes.empty()) {
+        return;
+    }
+    if (m_pending_overlay_removes.empty()) {
+        auto pending = std::move(m_pending_overlay_adds);
+        m_pending_overlay_adds.clear();
+        AddTransactionsToOverlayBatch(m_merklix_overlay, pending);
+        return;
+    }
+    if (mapTx.empty() || m_pending_overlay_removes.size() >= mapTx.size()) {
+        m_pending_overlay_adds.clear();
+        m_pending_overlay_removes.clear();
+        // Rebuilding the live pool must not discard frozen consensus epochs.
+        auto &spec = m_merklix_overlay.GetSpeculativeOverlay();
+        spec.Reset(spec.GetParentBlockId(), spec.GetBaseUtxoRoot(),
+                   spec.GetBaseMonetaryState(), spec.GetHeight(),
+                   spec.GetParentMtp(), spec.GetLayerId());
+        std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> remaining;
+        remaining.reserve(mapTx.size());
+        for (const auto &entry : mapTx.get<entry_id>()) {
+            remaining.emplace_back(entry->GetSharedTx(),
+                                   entry->GetFee() / SATOSHI,
+                                   entry->GetSigChecks());
+        }
+        AddTransactionsToOverlayBatch(m_merklix_overlay, remaining);
+        return;
+    }
+    // Remove the old identity first. Only the final mapTx incarnation of a
+    // transaction is added below, so remove->re-add and add->remove commute
+    // correctly across a deferred scope.
+    for (const TxId &txid : m_pending_overlay_removes) {
+        lotus::v2::Hash id{};
+        std::memcpy(id.data(), txid.begin(), 32);
+        m_merklix_overlay.RemoveTransaction(id);
+    }
+    m_pending_overlay_removes.clear();
     auto pending = std::move(m_pending_overlay_adds);
     m_pending_overlay_adds.clear();
-    AddTransactionsToOverlayBatch(m_merklix_overlay, pending);
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> current;
+    current.reserve(pending.size());
+    for (const auto &[tx, fee, sigchecks] : pending) {
+        const auto found = mapTx.find(tx->GetId());
+        if (found != mapTx.end()) {
+            current.emplace_back((*found)->GetSharedTx(),
+                                 (*found)->GetFee() / SATOSHI,
+                                 (*found)->GetSigChecks());
+        }
+    }
+    AddTransactionsToOverlayBatch(m_merklix_overlay, current);
 }
 
 const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
