@@ -184,7 +184,9 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
     const MonetaryInteger &coinbase_native_outputs,
     const MonetaryInteger &coinbase_native_burn, uint64_t coinbase_bytes,
     uint64_t tx_frame_prefix_bytes, const MonetaryInteger &account_block_cost,
-    const MonetaryInteger &enforce_block_cost) {
+    const MonetaryInteger &enforce_block_cost,
+    size_t expired_swept_count,
+    const MonetaryInteger &expired_burned_atoms) {
     ValidateProfile(profile);
     ValidateState(parent);
     Range(work, U256, "work width");
@@ -192,6 +194,9 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
     Range(account_block_cost, U128, "account block cost width");
     Range(enforce_block_cost, U128, "enforce block cost width");
     Require(enforce_block_cost >= account_block_cost, "enforcement below accounting");
+    Require(expired_swept_count <= MAX_EXPIRY_SWEEPS_PER_BLOCK,
+            "expiry sweep count exceeds block cap");
+    Range(expired_burned_atoms, U128, "expired burned atoms width");
     Require(parent.tail_subsidy >= profile.tail_min &&
             parent.tail_subsidy <= profile.tail_max, "parent tail bounds");
     const uint64_t paid_tail = AbsoluteTail(profile, WorkInteger(parent.prev_work));
@@ -220,12 +225,20 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
     Int fee = Sum(fees, U128, "total fee width");
     Int token_burn = Sum(token_burns, U128, "total token burn width");
     Int remaining = fee - token_burn;
-    Int burned_fees = remaining - remaining / 2;
+    Int raw_burned_fees = remaining - remaining / 2;
+    const size_t capped_swept_count =
+        std::min<size_t>(expired_swept_count, MAX_EXPIRY_SWEEPS_PER_BLOCK);
+    Int uncapped_bounty =
+        Int(capped_swept_count) * CLEANING_CREW_BASE_REWARD_ATOMS;
+    Int half_fee = fee / 2;
+    Int cleaning_crew_bounty =
+        std::min({uncapped_bounty, half_fee, raw_burned_fees});
+    Int burned_fees = raw_burned_fees - cleaning_crew_bounty;
     uint64_t bootstrap = parent.bootstrap_reserve == 0 ? 0 :
         std::max<uint64_t>(1, ShiftU64(parent.bootstrap_reserve, profile.boot_shift));
     uint64_t reserve = parent.bootstrap_reserve - bootstrap;
     uint64_t subsidy = AsU64(Int(bootstrap) + paid_tail, "subsidy width");
-    Int entitlement = Int(subsidy) + remaining / 2;
+    Int entitlement = Int(subsidy) + remaining / 2 + cleaning_crew_bounty;
     Range(entitlement, U128, "coinbase entitlement width");
     uint64_t overhead = AsU64(Int(134) + 4 + tx_frame_prefix_bytes, "overhead width");
     uint64_t charged_bytes = AsU64(Int(coinbase_bytes) + overhead, "coinbase charge bytes");
@@ -246,9 +259,23 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
         (account_block_cost >> profile.ema_shift), "next EMA width");
     explicit_burns.insert(explicit_burns.begin(), coinbase_native_burn);
     Int explicit_burn = Sum(explicit_burns, U128, "total explicit burn width");
-    Int delta = Int(subsidy) - token_burn - burned_fees - underclaim - explicit_burn;
-    return {{reserve, tail, WorkBytes(work), ema}, bootstrap, subsidy, fee, token_burn,
-            burned_fees, required, underclaim, delta};
+    Int burned_total =
+        token_burn + burned_fees + explicit_burn + expired_burned_atoms;
+    Int delta = Int(subsidy) - token_burn - burned_fees - underclaim -
+                explicit_burn - expired_burned_atoms;
+    return {{reserve, tail, WorkBytes(work), ema},
+            bootstrap,
+            subsidy,
+            fee,
+            token_burn,
+            burned_fees,
+            required,
+            underclaim,
+            delta,
+            expired_swept_count,
+            expired_burned_atoms,
+            cleaning_crew_bounty,
+            burned_total};
 }
 
 } // namespace lotus::v2

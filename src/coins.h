@@ -8,6 +8,7 @@
 
 #include <attributes.h>
 #include <compressor.h>
+#include <lotus_v2/sparse_state.h>
 #include <memusage.h>
 #include <primitives/blockhash.h>
 #include <serialize.h>
@@ -37,17 +38,55 @@ class Coin {
     uint32_t nHeightAndIsCoinBase;
 
 public:
+    //! C17a fee per spendable output paid by the creating transaction (atoms/sats).
+    uint64_t nFeePerOutput{0};
+    //! Explicit expiration height override (0 = derived from height/coinbase/fee).
+    uint64_t nExpirationHeight{0};
+
     //! Empty constructor
     Coin() : nHeightAndIsCoinBase(0) {}
 
-    //! Constructor from a CTxOut and height/coinbase information.
-    Coin(CTxOut outIn, uint32_t nHeightIn, bool IsCoinbase)
+    //! Constructor from a CTxOut and height/coinbase/fee information.
+    Coin(CTxOut outIn, uint32_t nHeightIn, bool IsCoinbase,
+         uint64_t nFeePerOutputIn = 0, uint64_t nExpirationHeightIn = 0)
         : out(std::move(outIn)),
-          nHeightAndIsCoinBase((nHeightIn << 1) | IsCoinbase) {}
+          nHeightAndIsCoinBase((nHeightIn << 1) | IsCoinbase),
+          nFeePerOutput(nFeePerOutputIn),
+          nExpirationHeight(nExpirationHeightIn) {}
 
     uint32_t GetHeight() const { return nHeightAndIsCoinBase >> 1; }
     bool IsCoinBase() const { return nHeightAndIsCoinBase & 0x01; }
     bool IsSpent() const { return out.IsNull(); }
+
+    uint64_t GetFeePerOutput() const { return nFeePerOutput; }
+    void SetFeePerOutput(uint64_t fee_per_output) {
+        nFeePerOutput = fee_per_output;
+    }
+
+    uint64_t GetLifespanBlocks() const {
+        return lotus::v2::ComputeUtxoLifespanBlocks(IsCoinBase(),
+                                                    nFeePerOutput);
+    }
+
+    uint64_t GetExpirationHeight() const {
+        if (nExpirationHeight != 0) {
+            return nExpirationHeight;
+        }
+        return lotus::v2::ComputeUtxoExpirationHeight(GetHeight(), IsCoinBase(),
+                                                      nFeePerOutput);
+    }
+
+    void SetExpirationHeight(uint64_t exp_height) {
+        nExpirationHeight = exp_height;
+    }
+
+    bool IsExpired(uint64_t nSpendHeight) const {
+        if (nSpendHeight < lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS &&
+            nExpirationHeight == 0) {
+            return false;
+        }
+        return nSpendHeight >= GetExpirationHeight();
+    }
 
     CTxOut &GetTxOut() { return out; }
     const CTxOut &GetTxOut() const { return out; }
@@ -55,17 +94,29 @@ public:
     void Clear() {
         out.SetNull();
         nHeightAndIsCoinBase = 0;
+        nFeePerOutput = 0;
+        nExpirationHeight = 0;
     }
 
     template <typename Stream> void Serialize(Stream &s) const {
         assert(!IsSpent());
+        ::Serialize(s, uint32_t{0x32495058}); // Native paid-lifetime coin format.
         ::Serialize(s, VARINT(nHeightAndIsCoinBase));
         ::Serialize(s, Using<TxOutCompression>(out));
+        ::Serialize(s, nFeePerOutput);
+        ::Serialize(s, GetExpirationHeight());
     }
 
     template <typename Stream> void Unserialize(Stream &s) {
+        uint32_t format;
+        ::Unserialize(s, format);
+        if (format != 0x32495058) {
+            throw std::ios_base::failure("unsupported native coin format; full -reindex required");
+        }
         ::Unserialize(s, VARINT(nHeightAndIsCoinBase));
         ::Unserialize(s, Using<TxOutCompression>(out));
+        ::Unserialize(s, nFeePerOutput);
+        ::Unserialize(s, nExpirationHeight);
     }
 
     size_t DynamicMemoryUsage() const {
@@ -391,6 +442,9 @@ protected:
      * absent) when set: the chainstate's cache, with -metrics.
      */
     metrics::Counter *m_lookup_metric{nullptr};
+    /* Lower bound on the minimum expiration height of any unspent Coin in cacheCoins. */
+    mutable uint64_t m_min_expiration_height{
+        lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS};
 
     /**
      * Discard all modifications made to this cache without flushing to the
@@ -473,6 +527,22 @@ public:
      * effect.
      */
     bool SpendCoin(const COutPoint &outpoint, Coin *moveto = nullptr);
+
+    /**
+     * Update the C17a fee-backed lifespan metadata on an existing unspent coin
+     * in this cache.
+     */
+    void UpdateCoinFeeLifespan(const COutPoint &outpoint,
+                               uint64_t fee_per_output,
+                               uint64_t exp_height);
+
+    /**
+     * Deterministically sweep up to max_sweeps expired coins at block height
+     * nHeight in canonical (expiration_height, OutpointKey) order.
+     */
+    std::vector<std::pair<COutPoint, Coin>> SweepExpiredCoins(
+        uint64_t nHeight,
+        size_t max_sweeps = lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
 
     /**
      * Push the modifications applied to this cache to its base and wipe local
@@ -563,7 +633,7 @@ private:
 // TODO: pass in a boolean to limit these possible overwrites to known
 // (pre-BIP34) cases.
 void AddCoins(CCoinsViewCache &cache, const CTransaction &tx, int nHeight,
-              bool check = false);
+              bool check = false, uint64_t nTxFeeAtoms = 0);
 
 //! Utility function to find any unspent output with a given txid.
 //! This function can be quite expensive because in the event of a transaction
