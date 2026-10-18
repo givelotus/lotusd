@@ -4341,7 +4341,7 @@ static RPCHelpMan send() {
               "the base64-encoded (partially) signed transaction"}}},
         RPCExamples{
             ""
-            "\nSend with a fee rate of 10 XEC/kB\n" +
+            "\nSend with a fee rate of 10 " + Currency::getTicker() + "/kB\n" +
             HelpExampleCli("send", "'{\"" + EXAMPLE_ADDRESS +
                                        "\": 100000}' '{\"fee_rate\": 10}'\n") +
             "\nCreate a transaction with a specific input, and return "

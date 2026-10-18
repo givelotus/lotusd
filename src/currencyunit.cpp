@@ -7,9 +7,9 @@
 #include <common/args.h>
 
 void SetupCurrencyUnitOptions(ArgsManager &argsman) {
-    // whether to use eCash default unit and address prefix
-    argsman.AddArg("-ecash",
-                   strprintf("Use the eCash prefixes and units (default: %s)",
-                             DEFAULT_ECASH ? "true" : "false"),
-                   ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    // Recognize the inherited option solely to provide a clear startup error.
+    // V2 has one denomination; XEC/BCHA modes belong to the shared eCash tier.
+    argsman.AddArg("-ecash", "Unsupported on Lotus V2; amounts use XPI",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::OPTIONS);
 }

@@ -16,7 +16,7 @@ from test_framework.util import (
     assert_raises_rpc_error,
     fill_mempool,
 )
-from test_framework.wallet import DEFAULT_FEE, MiniWallet
+from test_framework.wallet import DEFAULT_FEE, DEFAULT_FEE_ATOMS, MiniWallet
 
 
 class MempoolLimitTest(BitcoinTestFramework):
@@ -186,7 +186,7 @@ class MempoolLimitTest(BitcoinTestFramework):
         # bumped by the child.
         tx_poor = miniwallet.create_self_transfer(fee_rate=relayfee)
         tx_rich = miniwallet.create_self_transfer(fee=0, fee_rate=0)
-        node.prioritisetransaction(tx_rich["txid"], 0, int(DEFAULT_FEE * XEC))
+        node.prioritisetransaction(tx_rich["txid"], 0, DEFAULT_FEE_ATOMS)
         package_txns = [tx_rich, tx_poor]
         coins = [tx["new_utxo"] for tx in package_txns]
         # DEFAULT_FEE
@@ -200,7 +200,7 @@ class MempoolLimitTest(BitcoinTestFramework):
         package_vsize = tx_poor["tx"].billable_size() + tx_child["tx"].billable_size()
         mempoolmin_feerate = node.getmempoolinfo()["mempoolminfee"]
         child_fee_sats = max(
-            int(DEFAULT_FEE * XEC),
+            DEFAULT_FEE_ATOMS,
             ceil(2 * mempoolmin_feerate * package_vsize * XEC / 1000),
         )
         tx_child = miniwallet.create_self_transfer_multi(
