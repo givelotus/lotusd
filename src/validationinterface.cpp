@@ -112,6 +112,9 @@ ValidationSignals::~ValidationSignals() = default;
 
 void ValidationSignals::FlushBackgroundCallbacks() {
     m_internals->m_task_runner->flush();
+    m_internals->Iterate([](CValidationInterface &callbacks) {
+        callbacks.SyncTransactionQueue();
+    });
 }
 
 size_t ValidationSignals::CallbacksPending() {
@@ -158,6 +161,9 @@ void ValidationSignals::SyncWithValidationInterfaceQueue() {
     std::promise<void> promise;
     CallFunctionInValidationInterfaceQueue([&promise] { promise.set_value(); });
     promise.get_future().wait();
+    m_internals->Iterate([](CValidationInterface &callbacks) {
+        callbacks.SyncTransactionQueue();
+    });
 }
 
 // Use a macro instead of a function for conditional logging to prevent

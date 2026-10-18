@@ -51,6 +51,8 @@ protected:
      * public and virtual.
      */
     ~CValidationInterface() = default;
+    /** Wait for prior callbacks offloaded to a subscriber's secondary queue. */
+    virtual void SyncTransactionQueue() {}
     /**
      * Notifies listeners when the block chain tip advances.
      *

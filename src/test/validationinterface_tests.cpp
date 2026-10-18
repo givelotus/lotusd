@@ -9,10 +9,17 @@
 #include <util/check.h>
 #include <validation.h>
 #include <validationinterface.h>
+#include <util/bounded_task_queue.h>
+#include <util/validation_queue_memory.h>
 
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <condition_variable>
+#include <deque>
+#include <future>
+#include <util/task_runner.h>
 
 BOOST_FIXTURE_TEST_SUITE(validationinterface_tests, ChainTestingSetup)
 
@@ -671,6 +678,199 @@ BOOST_FIXTURE_TEST_CASE(transaction_invalidated, TestChain100Setup) {
         BOOST_CHECK_EQUAL(calledTxId, tx->GetId());
         BOOST_CHECK(!calledSpentCoins);
     }
+}
+
+
+// A subscriber with an independently scheduled FIFO, like Chronik. Latches
+// establish ordering: no timing delay is used to infer that the fence blocked.
+class SecondaryQueueSubscriber final : public CValidationInterface {
+    std::mutex mutex;
+    std::condition_variable ready;
+    std::deque<std::function<void()>> queue;
+    bool stopping{false};
+    std::thread worker;
+
+    void Enqueue(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            queue.push_back(std::move(task));
+        }
+        ready.notify_one();
+    }
+
+public:
+    std::promise<void> release_indexing;
+    std::future<void> release{release_indexing.get_future()};
+    std::atomic<bool> indexed{false};
+    std::mutex observation_mutex;
+    std::condition_variable observation;
+    bool fence_entered{false};
+    bool sync_returned{false};
+
+    SecondaryQueueSubscriber() : worker([this] {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                ready.wait(lock, [&] { return stopping || !queue.empty(); });
+                if (queue.empty()) return;
+                task = std::move(queue.front());
+                queue.pop_front();
+            }
+            task();
+        }
+    }) {}
+
+    ~SecondaryQueueSubscriber() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stopping = true;
+        }
+        ready.notify_one();
+        worker.join();
+    }
+
+    void TransactionFinalized(const CTransactionRef &) override {
+        Enqueue([this] {
+            release.wait();
+            indexed = true;
+        });
+    }
+
+    void SyncTransactionQueue() override {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto completed = promise->get_future();
+        Enqueue([promise] { promise->set_value(); });
+        {
+            std::lock_guard<std::mutex> lock(observation_mutex);
+            fence_entered = true;
+        }
+        observation.notify_one();
+        completed.wait();
+    }
+};
+
+static void CheckSecondaryQueueFence(bool flush) {
+    ValidationSignals signals(std::make_unique<util::ImmediateTaskRunner>());
+    auto subscriber = std::make_shared<SecondaryQueueSubscriber>();
+    signals.RegisterSharedValidationInterface(subscriber);
+    signals.TransactionFinalized(MakeTransactionRef());
+    auto sync = std::async(std::launch::async, [&] {
+        if (flush) signals.FlushBackgroundCallbacks();
+        else signals.SyncWithValidationInterfaceQueue();
+        {
+            std::lock_guard<std::mutex> lock(subscriber->observation_mutex);
+            subscriber->sync_returned = true;
+        }
+        subscriber->observation.notify_one();
+    });
+    {
+        std::unique_lock<std::mutex> lock(subscriber->observation_mutex);
+        // Without the hook, sync_returned wakes us and both assertions fail;
+        // the regression never hangs waiting for an absent hook.
+        subscriber->observation.wait(lock, [&] {
+            return subscriber->fence_entered || subscriber->sync_returned;
+        });
+        BOOST_CHECK(subscriber->fence_entered);
+        BOOST_CHECK(!subscriber->sync_returned);
+        BOOST_CHECK(!subscriber->indexed);
+    }
+    subscriber->release_indexing.set_value();
+    sync.get();
+    BOOST_CHECK(subscriber->indexed);
+    signals.UnregisterAllValidationInterfaces();
+}
+
+BOOST_AUTO_TEST_CASE(flush_waits_for_secondary_queue) {
+    CheckSecondaryQueueFence(true);
+}
+
+BOOST_AUTO_TEST_CASE(sync_waits_for_secondary_queue) {
+    CheckSecondaryQueueFence(false);
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_overflow_keeps_scheduler_responsive) {
+    using namespace std::chrono_literals;
+    std::atomic<unsigned> fatal{0};
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    std::vector<unsigned> order;
+    BoundedTaskQueue queue(300, 3, [&] { ++fatal; });
+    BOOST_REQUIRE(queue.Enqueue(100, [&] {
+        started.set_value();
+        released.wait();
+        order.push_back(1);
+    }));
+    started.get_future().wait();
+    BOOST_REQUIRE(queue.Enqueue(100, [&] { order.push_back(2); }));
+    BOOST_REQUIRE(queue.Enqueue(100, [&] { order.push_back(3); }));
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 300);
+    auto scheduler = std::async(std::launch::async, [&] {
+        return queue.Enqueue(1, [] {});
+    });
+    const bool responsive = scheduler.wait_for(100ms) == std::future_status::ready;
+    // Release even on failure, so a failing old implementation cannot hang the suite.
+    if (!responsive) release.set_value();
+    BOOST_CHECK(responsive);
+    BOOST_CHECK(!scheduler.get());
+    BOOST_CHECK_EQUAL(fatal.load(), 1);
+    BOOST_CHECK(!queue.Enqueue(1, [] {}));
+    auto fence = std::async(std::launch::async, [&] { queue.Sync(); });
+    if (responsive) {
+        BOOST_CHECK(fence.wait_for(50ms) == std::future_status::timeout);
+        release.set_value();
+    }
+    BOOST_REQUIRE(fence.wait_for(1s) == std::future_status::ready);
+    const std::vector<unsigned> expected{1, 2, 3};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 0);
+    queue.Stop();
+    BoundedTaskQueue oversized(8, 3, [&] { ++fatal; });
+    BOOST_CHECK(!oversized.Enqueue(9, [] {}));
+    BOOST_CHECK_EQUAL(oversized.BytesRetained(), 0);
+    oversized.Stop();
+    BOOST_CHECK_EQUAL(fatal.load(), 2);
+    BoundedTaskQueue reentrant(8, 3, [&] { ++fatal; });
+    BOOST_REQUIRE(reentrant.Enqueue(1, [&] { reentrant.Sync(); }));
+    reentrant.Sync();
+    reentrant.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_exception_is_fatal_and_drains_accepted_work) {
+    std::atomic<unsigned> fatal{0}, completed{0};
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    BoundedTaskQueue queue(10, 10, [&] { ++fatal; });
+    BOOST_REQUIRE(queue.Enqueue(1, [&] {
+        started.set_value();
+        released.wait();
+        throw std::runtime_error("injected indexer failure");
+    }));
+    started.get_future().wait();
+    BOOST_REQUIRE(queue.Enqueue(1, [&] { ++completed; }));
+    release.set_value();
+    queue.Sync();
+    BOOST_CHECK_EQUAL(fatal.load(), 1);
+    BOOST_CHECK_EQUAL(completed.load(), 1);
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 0);
+    BOOST_CHECK(!queue.Enqueue(1, [] {}));
+    queue.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(queued_payload_charges_retained_shared_ownership) {
+    auto tx = MakeTransactionRef();
+    const size_t control = sizeof(memusage::stl_shared_counter);
+    BOOST_CHECK_GE(validation_queue::TxBytes(tx),
+                   sizeof(CTransaction) + RecursiveDynamicUsage(*tx) + control);
+    auto block = std::make_shared<CBlock>();
+    block->vtx = {tx, MakeTransactionRef()};
+    size_t minimum = sizeof(CBlock) + control + block->vtx.capacity() * sizeof(CTransactionRef);
+    for (const auto &item : block->vtx)
+        minimum += sizeof(CTransaction) + RecursiveDynamicUsage(*item) + control;
+    BOOST_CHECK_GE(validation_queue::BlockBytes(block), minimum);
+    auto coins = std::make_shared<std::vector<Coin>>(1);
+    BOOST_CHECK_GE(validation_queue::CoinBytes(coins),
+                   sizeof(*coins) + control + coins->capacity() * sizeof(Coin));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
