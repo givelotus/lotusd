@@ -19,6 +19,9 @@ namespace lotus::v2 {
 
 namespace {
 
+constexpr MonetaryProfile kDefaultMonetaryProfile{
+    2, 16, 2, 4, 32, 60, 2, 2000, 3, 1000, 200, Hash{2}};
+
 /**
  * Reserve room for `extra` more elements while keeping amortized growth.
  * reserve(size() + extra) on every batch defeats the container's geometric
@@ -41,8 +44,6 @@ void ReserveBucketsAmortized(Map &m, size_t extra) {
     }
 }
 
-constexpr MonetaryProfile kDefaultMonetaryProfile{
-    2, 16, 2, 4, 32, 60, 2, 2000, 3, 1000, 200, Hash{2}};
 
 class OverlayWorkerPool {
 public:
