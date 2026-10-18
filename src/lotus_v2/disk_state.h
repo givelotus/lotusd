@@ -58,14 +58,13 @@ struct DiskRecoveryUndoInfo {
 struct DiskStateOptions {
     Hash identity{};
     Hash profile_digest{};
-    // Explicit indexed development format. Generic mode remains schema v1;
-    // indexed mode requires a fresh home and rejects generic existing stores.
+    // Expiry-authenticated development formats V5 (generic), V6 (indexed),
+    // V7 (recovery), V8 (candidates). All require fresh homes; pre-expiry
+    // formats V1-V4 are rejected without implicit migration/reset.
     std::optional<HeaderChainProfile> header_index;
-    // Explicit V3 home: requires header_index and a fresh directory. V1/V2
-    // homes remain usable in their own modes; no implicit migration/reset.
+    // Recovery requires header_index and a fresh V7 directory.
     std::optional<DiskRecoveryOptions> recovery;
-    // Explicit V4 inventory/receipt home; requires recovery and a new directory.
-    // Existing modes remain usable; no implicit scan/migration/reset.
+    // V8 inventory/receipt home requires recovery and a new directory.
     std::optional<CandidateStoreOptions> candidates;
     // Explicit fresh-home Avalanche policy. Auto-unparking is disabled.
     bool avalanche{};
@@ -233,7 +232,8 @@ public:
                                const Header &parent_header,
                                const std::vector<Outpoint> &net_created_to_erase,
                                const std::vector<Coin> &prior_spent_to_insert,
-                               DiskStateError &error);
+                               DiskStateError &error,
+                               const std::vector<Coin> &expired_swept_to_insert = {});
     // MonadDB-style asynchronous NVMe/MDBX page pre-faulting: sorts target
     // coin and SMT prefix keys in B+Tree order and issues non-blocking
     // madvise(POSIX_MADV_WILLNEED) + cursor warm-up on the memory-mapped store.

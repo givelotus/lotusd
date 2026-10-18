@@ -120,7 +120,7 @@ private:
 /** Access to the block database (blocks/index/) */
 class CBlockTreeDB : public CDBWrapper {
 public:
-    using CDBWrapper::CDBWrapper;
+    explicit CBlockTreeDB(const DBParams &params);
     void WriteBatchSync(
         const std::vector<std::pair<int, const CBlockFileInfo *>> &fileInfo,
         int nLastFile, const std::vector<const CBlockIndex *> &blockinfo);

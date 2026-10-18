@@ -9,9 +9,12 @@
 #include <key.h>
 #include <lotus_v2/commitment.h>
 #include <lotus_v2/disk_state.h>
+#include <lotus_v2/fast_sync.h>
 #include <lotus_v2/header.h>
 #include <lotus_v2/incremental_utxo.h>
 #include <lotus_v2/mempool_overlay.h>
+#include <lotus_v2/monetary.h>
+#include <lotus_v2/ordinary_validation.h>
 #include <lotus_v2/set_reconciliation.h>
 #include <lotus_v2/signing.h>
 #include <lotus_v2/sparse_state.h>
@@ -28,6 +31,7 @@
 #include <script/signingprovider.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
+#include <undo.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 #include <validation.h>
@@ -1495,6 +1499,440 @@ BOOST_AUTO_TEST_CASE(legacy_to_v7_adapter_roundtrip) {
     BOOST_CHECK_EQUAL(deserialized.GetHash(), adapted.GetHash());
     BOOST_CHECK_EQUAL(deserialized.GetTotalSize(), expected_size);
     BOOST_CHECK_EQUAL(GetSerializeSize(deserialized), expected_size);
+}
+
+BOOST_AUTO_TEST_CASE(c17a_fee_backed_utxo_expiry_and_cleaning_crew) {
+    // 1. Consensus constants & fee-backed lifespan math
+    BOOST_CHECK_EQUAL(lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS, 131400ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::UTXO_MAX_LIFESPAN_BLOCKS, 21024000ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::UTXO_RENT_ATOMS_PER_BLOCK, 1ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK, 1024ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::CLEANING_CREW_BASE_REWARD_ATOMS, 2000ULL);
+
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeTxFeePerSpendableOutput(1000000ULL, 4),
+                      250000ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeTxFeePerSpendableOutput(1000000ULL, 0),
+                      0ULL);
+
+    // Zero fee uses 6-month baseline (131,400 blocks); positive fee adds 1 block per atom
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoLifespanBlocks(false, 0),
+                      131400ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoLifespanBlocks(false, 50000),
+                      181400ULL);
+    // Proportional fee extension: 131,400 + 1,000,000 = 1,131,400 blocks
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoLifespanBlocks(false, 1000000),
+                      1131400ULL);
+    // Large fee clamps to 80 years (21,024,000 blocks)
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoLifespanBlocks(false, 50000000),
+                      21024000ULL);
+    // Coinbase outputs always receive 80-year maximum lifespan
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoLifespanBlocks(true, 0),
+                      21024000ULL);
+
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoExpirationHeight(100, false, 0),
+                      131500ULL);
+    BOOST_CHECK_EQUAL(
+        lotus::v2::ComputeUtxoExpirationHeight(100, false, 500000), 631500ULL);
+    BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoExpirationHeight(100, true, 0),
+                      21024100ULL);
+
+    // 2. HAS_TOKEN output receives fee-backed lifespan and does not inflate burned XPI atoms
+    {
+        lotus::v2::UtxoSet token_utxo;
+        lotus::v2::Coin tok_coin{};
+        tok_coin.outpoint.tx_id[0] = 0xAA;
+        tok_coin.outpoint.index = 0;
+        tok_coin.output.flags = 0x01; // HAS_TOKEN
+        tok_coin.output.token_id[0] = 0x77;
+        tok_coin.output.value = 999999999ULL; // token units, not native XPI
+        tok_coin.output.branches = {lotus::v2::Hash32{1}};
+        tok_coin.output.paths = {{0}};
+        tok_coin.creation_height = 10;
+        tok_coin.creation_parent_mtp = 1000;
+        tok_coin.coinbase = false;
+        tok_coin.fee_per_output = 200000;
+        tok_coin.expiration_height = lotus::v2::ComputeUtxoExpirationHeight(
+            tok_coin.creation_height, false, tok_coin.fee_per_output);
+        BOOST_CHECK_EQUAL(tok_coin.expiration_height, 331410ULL);
+        BOOST_REQUIRE(token_utxo.Insert(tok_coin));
+
+        // Not expired at h_exp - 1
+        const auto sweep_early = token_utxo.SweepExpired(331409ULL);
+        BOOST_CHECK_EQUAL(sweep_early.swept_coins.size(), 0U);
+        BOOST_CHECK(token_utxo.Find(tok_coin.outpoint) != nullptr);
+
+        // Swept at h_exp = 331410, burned_value_atoms == 0 for token output
+        const auto sweep_at_exp = token_utxo.SweepExpired(331410ULL);
+        BOOST_CHECK_EQUAL(sweep_at_exp.swept_coins.size(), 1U);
+        BOOST_CHECK_EQUAL(sweep_at_exp.burned_value_atoms, 0ULL);
+        BOOST_CHECK(token_utxo.Find(tok_coin.outpoint) == nullptr);
+    }
+
+    // 3. Boundary spend validation at h_exp - 1 (valid) vs h_exp (rejected)
+    //    in both CheckOrdinaryCandidate and Consensus::CheckTxInputs
+    {
+        const lotus::v2::VmBytes true_script = {0x4e}; // Lotus V2 OP_1
+        const lotus::v2::Hash branch_leaf = lotus::v2::BranchLeaf(true_script);
+
+        lotus::v2::Coin min_coin{};
+        min_coin.outpoint.tx_id[0] = 0x11;
+        min_coin.outpoint.index = 0;
+        min_coin.output.flags = 0;
+        min_coin.output.value = 50000;
+        min_coin.output.branches = {branch_leaf};
+        min_coin.output.paths = {{0}};
+        min_coin.creation_height = 10;
+        min_coin.creation_parent_mtp = 1000;
+        min_coin.coinbase = false;
+        min_coin.fee_per_output = 0;
+        min_coin.expiration_height = 131410ULL;
+
+        lotus::v2::Coin fee_extended_coin = min_coin;
+        fee_extended_coin.outpoint.tx_id[0] = 0x22;
+        fee_extended_coin.fee_per_output = 500000;
+        fee_extended_coin.expiration_height = 500010ULL;
+
+        lotus::v2::DevelopmentUtxoView dev_view;
+        dev_view.emplace(min_coin.outpoint, min_coin);
+        dev_view.emplace(fee_extended_coin.outpoint, fee_extended_coin);
+
+        auto make_v2_spend_tx = [&](const lotus::v2::Outpoint &prev) {
+            lotus::v2::Transaction tx{};
+            lotus::v2::Input in{};
+            in.flags = 1;
+            in.prev_txid = prev.tx_id;
+            in.prev_index = prev.index;
+            in.sequence = UINT32_MAX;
+            in.path_index = 0;
+            in.witnesses = {lotus::v2::BranchWitness{true_script, {}, {}}};
+            tx.inputs = {in};
+            lotus::v2::Output out{};
+            out.flags = 0;
+            out.value = 49000;
+            out.branches = {branch_leaf};
+            out.paths = {{0}};
+            tx.outputs = {out};
+            return tx;
+        };
+
+        const auto tx_min = make_v2_spend_tx(min_coin.outpoint);
+        const auto tx_ext = make_v2_spend_tx(fee_extended_coin.outpoint);
+
+        lotus::v2::OrdinaryCandidateProfile ord_profile{
+            lotus::v2::DefaultTxProfile,
+            lotus::v2::VmProfile{512, 8, 8192, 32, 32, 65536, 16, 100000},
+            lotus::v2::VmCostProfile{},
+            131409ULL,
+            2000ULL,
+            2ULL,
+            100ULL,
+            10000000ULL};
+        ord_profile.vm_cost.max_invocation_cost = 1000000;
+        ord_profile.vm_cost.structural_byte_cost = 1;
+        for (auto &opcode : ord_profile.vm_cost.opcode) {
+            opcode = {1, 1, 1};
+        }
+        const lotus::v2::ChainId chain_id = GetActiveV2ChainId();
+
+        // 3a. Spend min_coin at h = 131409 (h_exp - 1) -> Accepted
+        ord_profile.candidate_height = 131409ULL;
+        lotus::v2::OrdinaryCandidateEffects effects{};
+        std::string ord_err;
+        BOOST_CHECK(lotus::v2::CheckOrdinaryCandidate(
+            tx_min, ord_profile, chain_id, dev_view, effects, ord_err));
+        BOOST_REQUIRE_EQUAL(effects.created.size(), 1U);
+        BOOST_CHECK_EQUAL(effects.created[0].fee_per_output, 1000ULL);
+        BOOST_CHECK_EQUAL(effects.created[0].expiration_height,
+                          131409ULL + lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS + 1000ULL);
+
+        // 3b. Spend min_coin at h = 131410 (h_exp) -> Rejected with bad-txns-input-expired
+        ord_profile.candidate_height = 131410ULL;
+        BOOST_CHECK(!lotus::v2::CheckOrdinaryCandidate(
+            tx_min, ord_profile, chain_id, dev_view, effects, ord_err));
+        BOOST_CHECK_EQUAL(ord_err, "bad-txns-input-expired");
+
+        // 3c. Spend fee_extended_coin at h = 131410 -> Accepted (extended to 500010)
+        BOOST_CHECK(lotus::v2::CheckOrdinaryCandidate(
+            tx_ext, ord_profile, chain_id, dev_view, effects, ord_err));
+
+        // 3d. Spend fee_extended_coin at h = 500010 -> Rejected with bad-txns-input-expired
+        ord_profile.candidate_height = 500010ULL;
+        BOOST_CHECK(!lotus::v2::CheckOrdinaryCandidate(
+            tx_ext, ord_profile, chain_id, dev_view, effects, ord_err));
+        BOOST_CHECK_EQUAL(ord_err, "bad-txns-input-expired");
+
+        // 3e. Consensus::CheckTxInputs boundary check at h_exp - 1 vs h_exp
+        CCoinsView coins_dummy;
+        CCoinsViewCache cache(&coins_dummy);
+        const TxId legacy_txid = TxId(uint256::ONE);
+        const COutPoint legacy_op(legacy_txid, 0);
+        cache.AddCoin(legacy_op,
+                      ::Coin(CTxOut(50000 * SATOSHI, CScript() << OP_TRUE), 10,
+                             false, 0, 131410ULL),
+                      false);
+
+        CMutableTransaction spend_mtx;
+        spend_mtx.nVersion = 2;
+        spend_mtx.vin.emplace_back(legacy_op);
+        spend_mtx.vout.emplace_back(49000 * SATOSHI, CScript() << OP_TRUE);
+        const CTransaction spend_tx(spend_mtx);
+
+        TxValidationState tx_state_ok;
+        Amount txfee = Amount::zero();
+        BOOST_CHECK(Consensus::CheckTxInputs(spend_tx, tx_state_ok, cache,
+                                             131409, txfee));
+
+        TxValidationState tx_state_exp;
+        BOOST_CHECK(!Consensus::CheckTxInputs(spend_tx, tx_state_exp, cache,
+                                              131410, txfee));
+        BOOST_CHECK_EQUAL(tx_state_exp.GetRejectReason(),
+                          "bad-txns-input-expired");
+    }
+
+    // 4. Deterministic sweep ordering by (expiration_height, OutpointKey) and
+    //    MAX_EXPIRY_SWEEPS_PER_BLOCK (1,024) cap across UtxoSet, SmtNode, and CCoinsViewCache
+    {
+        constexpr size_t kExpiredCount = 1100;
+        constexpr size_t kAliveCount = 50;
+        constexpr uint64_t kSweepHeight = 200000ULL;
+
+        lotus::v2::UtxoSet utxo_set;
+        std::shared_ptr<const lotus::v2::SmtNode> smt_root;
+        CCoinsView coins_dummy;
+        CCoinsViewCache coins_cache(&coins_dummy);
+
+        for (size_t i = 0; i < kExpiredCount + kAliveCount; ++i) {
+            lotus::v2::Coin c{};
+            c.outpoint.tx_id[0] = static_cast<uint8_t>((i >> 8) & 0xff);
+            c.outpoint.tx_id[1] = static_cast<uint8_t>(i & 0xff);
+            c.outpoint.tx_id[2] = 0x5A;
+            c.outpoint.index = static_cast<uint32_t>(i % 3);
+            c.output.flags = 0;
+            c.output.value = 1000 + i;
+            c.output.branches = {lotus::v2::Hash32{1}};
+            c.output.paths = {{0}};
+            c.coinbase = false;
+            if (i < kExpiredCount) {
+                c.creation_height = 10 + (i % 20);
+                c.fee_per_output = (i % 7) * 100;
+                c.expiration_height = lotus::v2::ComputeUtxoExpirationHeight(
+                    c.creation_height, false, c.fee_per_output);
+                BOOST_REQUIRE(c.expiration_height <= kSweepHeight);
+            } else {
+                c.creation_height = 100000;
+                c.fee_per_output = 200000;
+                c.expiration_height = lotus::v2::ComputeUtxoExpirationHeight(
+                    c.creation_height, false, c.fee_per_output);
+                BOOST_REQUIRE(c.expiration_height > kSweepHeight);
+            }
+            c.creation_parent_mtp = 1000;
+
+            BOOST_REQUIRE(utxo_set.Insert(c));
+            lotus::v2::SmtInsert(smt_root, c);
+
+            const COutPoint cop(
+                TxId(uint256(Span<const uint8_t>(c.outpoint.tx_id.data(), 32))),
+                c.outpoint.index);
+            coins_cache.AddCoin(
+                cop,
+                ::Coin(CTxOut::FromV2Output(c.output),
+                       static_cast<uint32_t>(c.creation_height), c.coinbase,
+                       c.fee_per_output, c.expiration_height),
+                false);
+        }
+
+        BOOST_CHECK(utxo_set.Root() == lotus::v2::SmtRoot(smt_root));
+
+        // Sweep 1 at kSweepHeight: must cap at 1,024 in identical canonical order
+        const auto sweep1_utxo = utxo_set.SweepExpired(kSweepHeight);
+        const auto sweep1_smt = lotus::v2::SmtSweepExpired(smt_root, kSweepHeight);
+        const auto sweep1_cache = coins_cache.SweepExpiredCoins(kSweepHeight);
+
+        BOOST_REQUIRE_EQUAL(sweep1_utxo.swept_coins.size(),
+                            lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_REQUIRE_EQUAL(sweep1_smt.swept_coins.size(),
+                            lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_REQUIRE_EQUAL(sweep1_cache.size(),
+                            lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_CHECK_EQUAL(sweep1_utxo.burned_value_atoms,
+                          sweep1_smt.burned_value_atoms);
+        BOOST_CHECK(utxo_set.Root() == lotus::v2::SmtRoot(smt_root));
+
+        for (size_t i = 0; i < sweep1_utxo.swept_coins.size(); ++i) {
+            BOOST_CHECK(sweep1_utxo.swept_coins[i].outpoint ==
+                        sweep1_smt.swept_coins[i].outpoint);
+            const COutPoint expected_cop(
+                TxId(uint256(Span<const uint8_t>(
+                    sweep1_utxo.swept_coins[i].outpoint.tx_id.data(), 32))),
+                sweep1_utxo.swept_coins[i].outpoint.index);
+            BOOST_CHECK(sweep1_cache[i].first == expected_cop);
+            if (i > 0) {
+                const uint64_t prev_exp =
+                    sweep1_utxo.swept_coins[i - 1].expiration_height;
+                const uint64_t cur_exp =
+                    sweep1_utxo.swept_coins[i].expiration_height;
+                BOOST_CHECK(prev_exp <= cur_exp);
+                if (prev_exp == cur_exp) {
+                    BOOST_CHECK(
+                        lotus::v2::OutpointKey(
+                            sweep1_utxo.swept_coins[i - 1].outpoint) <
+                        lotus::v2::OutpointKey(
+                            sweep1_utxo.swept_coins[i].outpoint));
+                }
+            }
+        }
+
+        // Sweep 2 at kSweepHeight + 1: sweeps the remaining 76 expired coins
+        const auto sweep2_utxo = utxo_set.SweepExpired(kSweepHeight + 1);
+        const auto sweep2_smt =
+            lotus::v2::SmtSweepExpired(smt_root, kSweepHeight + 1);
+        const auto sweep2_cache =
+            coins_cache.SweepExpiredCoins(kSweepHeight + 1);
+
+        BOOST_CHECK_EQUAL(sweep2_utxo.swept_coins.size(),
+                          kExpiredCount - lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_CHECK_EQUAL(sweep2_smt.swept_coins.size(),
+                          kExpiredCount - lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_CHECK_EQUAL(sweep2_cache.size(),
+                          kExpiredCount - lotus::v2::MAX_EXPIRY_SWEEPS_PER_BLOCK);
+        BOOST_CHECK_EQUAL(utxo_set.Coins().size(), kAliveCount);
+        BOOST_CHECK(utxo_set.Root() == lotus::v2::SmtRoot(smt_root));
+    }
+
+    // 5. Fee-capped Cleaning Crew bounty & monetary accounting
+    {
+        // Zero fees -> 0 bounty even when many UTXOs are swept (zero net inflation)
+        BOOST_CHECK_EQUAL(lotus::v2::ComputeCleaningCrewBounty(100, 0), 0ULL);
+        // Capped at F_block / 2 when raw bounty > F_block / 2
+        BOOST_CHECK_EQUAL(lotus::v2::ComputeCleaningCrewBounty(10, 10000),
+                          5000ULL);
+        // Full 2,000 atoms per swept coin when raw bounty <= F_block / 2
+        BOOST_CHECK_EQUAL(lotus::v2::ComputeCleaningCrewBounty(10, 100000),
+                          20000ULL);
+        // Capped at MAX_EXPIRY_SWEEPS_PER_BLOCK (1,024 * 2,000 = 2,048,000)
+        BOOST_CHECK_EQUAL(lotus::v2::ComputeCleaningCrewBounty(5000, 100000000),
+                          2048000ULL);
+
+        const lotus::v2::MonetaryProfile profile{
+            2, 3, 2, 4, 3, 5, 2, 2000, 3, 1000, 200, lotus::v2::Hash{9}};
+        const lotus::v2::MonetaryState parent =
+            lotus::v2::InitializeMonetaryGenesis(
+                profile, lotus::v2::MonetaryState{9, 200, lotus::v2::Hash{9}, 4},
+                0);
+        const lotus::v2::MonetaryOrdinaryTx ord_tx{
+            /*native_inputs=*/lotus::v2::MonetaryInteger(50000),
+            /*native_outputs=*/lotus::v2::MonetaryInteger(40000),
+            /*serialized_bytes=*/100,
+            /*token_outputs=*/0,
+            /*explicit_native_burn=*/lotus::v2::MonetaryInteger(500)};
+        // Total fee = 10,000 -> half_fee = 5,000.
+        // With 10 swept expired coins (raw bounty = 20,000), bounty is capped at 5,000.
+        // Subsidy = 2 + 200 = 202, payable_fees = 5,000, bounty = 5,000 -> entitlement = 10,202.
+        // Required coinbase deduction k = (1 + 134 + 4 + 1) * 2 = 280 -> max outputs = 9,922.
+        const lotus::v2::MonetaryTransition trans = lotus::v2::AdvanceMonetary(
+            profile, parent, /*work=*/lotus::v2::MonetaryInteger(9), {ord_tx},
+            /*coinbase_native_outputs=*/lotus::v2::MonetaryInteger(9922),
+            /*coinbase_native_burn=*/lotus::v2::MonetaryInteger(0),
+            /*coinbase_bytes=*/1, /*tx_frame_prefix_bytes=*/1,
+            /*account_block_cost=*/lotus::v2::MonetaryInteger(4),
+            /*enforce_block_cost=*/lotus::v2::MonetaryInteger(4),
+            /*expired_swept_count=*/10,
+            /*expired_burned_atoms=*/lotus::v2::MonetaryInteger(77777));
+        BOOST_CHECK_EQUAL(trans.expired_swept_count, 10U);
+        BOOST_CHECK(trans.expired_burned_atoms ==
+                    lotus::v2::MonetaryInteger(77777));
+        BOOST_CHECK(trans.cleaning_crew_bounty ==
+                    lotus::v2::MonetaryInteger(5000));
+        BOOST_CHECK(trans.burned_fees == lotus::v2::MonetaryInteger(0));
+        BOOST_CHECK(trans.burned_total ==
+                    trans.burned_fees + lotus::v2::MonetaryInteger(500) +
+                        trans.expired_burned_atoms);
+        BOOST_CHECK(trans.spendable_supply_delta ==
+                    lotus::v2::MonetaryInteger(9922) -
+                        lotus::v2::MonetaryInteger(10000) -
+                        lotus::v2::MonetaryInteger(500) -
+                        lotus::v2::MonetaryInteger(77777));
+    }
+
+    // 6. CBlockUndo + ApplyBlockUndo and BlockUndoMessage + PeelBlockStateReverse restoration
+    {
+        CCoinsView coins_dummy;
+        CCoinsViewCache view(&coins_dummy);
+
+        CBlock block;
+        CMutableTransaction cb_mtx;
+        cb_mtx.vin.resize(1);
+        cb_mtx.vout.emplace_back(5000 * SATOSHI, CScript() << OP_TRUE);
+        block.vtx.push_back(MakeTransactionRef(cb_mtx));
+        AddCoins(view, *block.vtx[0], 300000);
+
+        const COutPoint exp_op(TxId(m_rng.rand256()), 1);
+        const ::Coin orig_exp_coin(CTxOut(12345 * SATOSHI, CScript() << OP_TRUE),
+                                   50, false, 150000, 281450);
+        view.AddCoin(exp_op, orig_exp_coin, false);
+
+        auto swept = view.SweepExpiredCoins(300000);
+        BOOST_REQUIRE_EQUAL(swept.size(), 1U);
+        BOOST_CHECK(!view.HaveCoin(exp_op));
+
+        CBlockUndo block_undo;
+        block_undo.vexpired.push_back(
+            ExpiredCoinUndo{swept[0].first, swept[0].second});
+
+        DataStream undo_stream{};
+        undo_stream << block_undo;
+        CBlockUndo decoded_undo;
+        undo_stream >> decoded_undo;
+        BOOST_REQUIRE_EQUAL(decoded_undo.vexpired.size(), 1U);
+        BOOST_CHECK(decoded_undo.vexpired[0].outpoint == exp_op);
+        BOOST_CHECK_EQUAL(decoded_undo.vexpired[0].coin.GetFeePerOutput(),
+                          150000ULL);
+        BOOST_CHECK_EQUAL(decoded_undo.vexpired[0].coin.GetExpirationHeight(),
+                          281450ULL);
+
+        CBlockIndex pindex;
+        pindex.nHeight = 300000;
+        BOOST_CHECK(ApplyBlockUndo(std::move(decoded_undo), block, &pindex,
+                                   view) == DisconnectResult::OK);
+        BOOST_CHECK(view.HaveCoin(exp_op));
+        const ::Coin &restored = view.AccessCoin(exp_op);
+        BOOST_CHECK_EQUAL(restored.GetHeight(), 50U);
+        BOOST_CHECK_EQUAL(restored.GetFeePerOutput(), 150000ULL);
+        BOOST_CHECK_EQUAL(restored.GetExpirationHeight(), 281450ULL);
+        BOOST_CHECK_EQUAL(restored.GetTxOut().nValue, 12345 * SATOSHI);
+
+        // BlockUndoMessage wire roundtrip with non-empty expired_swept_coins
+        lotus::v2::BlockUndoMessage umsg{};
+        umsg.block_id[0] = 0x33;
+        lotus::v2::Coin v2_exp_coin{};
+        v2_exp_coin.outpoint.tx_id[0] = 0x44;
+        v2_exp_coin.outpoint.index = 2;
+        v2_exp_coin.output.flags = 0;
+        v2_exp_coin.output.value = 12345;
+        v2_exp_coin.output.branches = {lotus::v2::Hash32{1}};
+        v2_exp_coin.output.paths = {{0}};
+        v2_exp_coin.creation_height = 50;
+        v2_exp_coin.creation_parent_mtp = 1000;
+        v2_exp_coin.coinbase = false;
+        v2_exp_coin.fee_per_output = 150000;
+        v2_exp_coin.expiration_height = 281450;
+        umsg.expired_swept_coins.push_back(v2_exp_coin);
+
+        std::vector<uint8_t> ubytes;
+        std::string uerr;
+        BOOST_REQUIRE_MESSAGE(
+            lotus::v2::EncodeBlockUndoMessage(umsg, ubytes, uerr), uerr);
+        lotus::v2::BlockUndoMessage udecoded{};
+        BOOST_REQUIRE_MESSAGE(
+            lotus::v2::DecodeBlockUndoMessage(ubytes, udecoded, uerr), uerr);
+        BOOST_REQUIRE_EQUAL(udecoded.expired_swept_coins.size(), 1U);
+        BOOST_CHECK(udecoded.expired_swept_coins[0].outpoint ==
+                    v2_exp_coin.outpoint);
+        BOOST_CHECK_EQUAL(udecoded.expired_swept_coins[0].fee_per_output,
+                          150000ULL);
+        BOOST_CHECK_EQUAL(udecoded.expired_swept_coins[0].expiration_height,
+                          281450ULL);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

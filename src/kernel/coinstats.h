@@ -70,6 +70,10 @@ struct CCoinsStats {
     //! Total cumulative amount of coins lost due to unclaimed miner rewards up
     //! to and including this block
     Amount total_unspendables_unclaimed_rewards{Amount::zero()};
+    //! Native existing outputs burned by the deterministic expiry sweep.
+    Amount total_unspendables_expired{Amount::zero()};
+    //! Native daemon cleaning bounties, additional to the block subsidy.
+    Amount total_cleaning_bounty{Amount::zero()};
 
     CCoinsStats() = default;
     CCoinsStats(int block_height, const BlockHash &block_hash);

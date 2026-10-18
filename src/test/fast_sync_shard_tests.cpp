@@ -815,9 +815,9 @@ BOOST_AUTO_TEST_CASE(bijective_reverse_block_peeling_and_hole_12_intra_block_spe
     }
 
     // Peel B3 -> B2
-    BOOST_REQUIRE(PeelBlockReverse(b3_mined.wire, undo_3, hdr_2, history_b3,
+    BOOST_REQUIRE_MESSAGE(PeelBlockReverse(b3_mined.wire, undo_3, hdr_2, history_b3,
                                    p.header, p.ordinary, p.monetary, p.cost,
-                                   peel_utxo, peel_mon, error));
+                                   peel_utxo, peel_mon, error), error);
     BOOST_CHECK(peel_utxo.Root() == utxo_2.Root());
     BOOST_CHECK(EncodeMonetaryState(peel_mon) == EncodeMonetaryState(mon_2));
 
@@ -1032,9 +1032,9 @@ BOOST_AUTO_TEST_CASE(fast_sync_wire_and_validation_edge_cases) {
         bad_smsg[32] = 10; // expects 2 siblings (64 bytes), only 1 byte left
         BOOST_CHECK(!DecodeUtxoShardMessage(bad_smsg, sdecoded, error));
 
-        // Corrupt coin_base flag (last byte of first coin record in sbytes)
+        // Corrupt the coinbase flag in the versioned canonical coin tail.
         auto bad_cb_sbytes = sbytes;
-        bad_cb_sbytes.back() = 2;
+        bad_cb_sbytes[bad_cb_sbytes.size() - COIN_METADATA_BYTES + 16] = 2;
         BOOST_CHECK(!DecodeUtxoShardMessage(bad_cb_sbytes, sdecoded, error));
 
         // Truncated coin record
@@ -1072,7 +1072,7 @@ BOOST_AUTO_TEST_CASE(fast_sync_wire_and_validation_edge_cases) {
         BlockUndoMessage udecoded{};
         BOOST_CHECK(!DecodeBlockUndoMessage(trailing_ubytes, udecoded, error));
         auto bad_cb_ubytes = ubytes;
-        bad_cb_ubytes.back() = 2;
+        bad_cb_ubytes[bad_cb_ubytes.size() - COIN_METADATA_BYTES + 16] = 2;
         BOOST_CHECK(!DecodeBlockUndoMessage(bad_cb_ubytes, udecoded, error));
         auto trunc_ubytes = ubytes;
         trunc_ubytes.pop_back();

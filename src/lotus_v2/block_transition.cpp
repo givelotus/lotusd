@@ -297,7 +297,9 @@ namespace {
                           output,
                           claimed.height,
                           op.parent_mtp,
-                          true};
+                          true,
+                          0,
+                          ComputeUtxoExpirationHeight(claimed.height, true, 0)};
                 Coin occupied;
                 const auto read = StorageCall([&] {
                     return state.Read(coin.outpoint, occupied, error);
@@ -553,7 +555,9 @@ namespace {
                         batch_created.emplace(
                             created_op,
                             Coin{created_op, tx.outputs[j], claimed.height,
-                                 op.parent_mtp, false});
+                                 op.parent_mtp, false, 0,
+                                 ComputeUtxoExpirationHeight(claimed.height,
+                                                             false, 0)});
                     }
                     batch.push_back(std::move(item));
                 }
@@ -641,6 +645,19 @@ namespace {
                         error = item.error;
                         return item.result;
                     }
+                    size_t spendable_outputs = 0;
+                    for (const Output &out : tx.outputs) {
+                        if (!out.IsBurn()) ++spendable_outputs;
+                    }
+                    const uint64_t fee_u64 =
+                        item.effects.native_fee > __uint128_t(UINT64_MAX)
+                            ? UINT64_MAX
+                            : static_cast<uint64_t>(item.effects.native_fee);
+                    const uint64_t fee_per_output =
+                        ComputeTxFeePerSpendableOutput(fee_u64,
+                                                       spendable_outputs);
+                    const uint64_t exp_height = ComputeUtxoExpirationHeight(
+                        claimed.height, false, fee_per_output);
                     for (size_t j = 0; j < tx.outputs.size(); ++j) {
                         if (tx.outputs[j].IsBurn()) continue;
                         const Outpoint outpoint{item.identities.txid,
@@ -662,7 +679,8 @@ namespace {
                         }
                         item.effects.created.push_back(
                             Coin{outpoint, tx.outputs[j], claimed.height,
-                                 op.parent_mtp, false});
+                                 op.parent_mtp, false, fee_per_output,
+                                 exp_height});
                     }
                     if (item.effects.invocation_cost >
                             ~VmCostUnits{0} - invocation ||

@@ -185,6 +185,9 @@ struct BlockUndoMessage {
     // block input order. Intra-block spends (I_h^intra) are omitted and
     // reconstructed locally from B_h.
     std::vector<Coin> prior_spent_coins;
+    // C17a expired UTXOs deterministically swept at block height h (in canonical
+    // (expiration_height, OutpointKey) order).
+    std::vector<Coin> expired_swept_coins;
 };
 
 std::vector<uint8_t> EncodeGetBlockUndoRequest(const GetBlockUndoRequest &req);
