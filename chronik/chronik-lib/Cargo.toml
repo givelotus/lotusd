@@ -32,6 +32,12 @@ chronik-indexer = { path = "../chronik-indexer" }
 chronik-plugin = { path = "../chronik-plugin" }
 chronik-util = { path = "../chronik-util" }
 
+# Per-open explorer service epoch from OS entropy
+getrandom = "0.2"
+
+# Explicit V2 HTTP server
+axum = "0.7.9"
+
 # Bridge to C++
 cxx = "1.0.138"
 
@@ -39,7 +45,7 @@ cxx = "1.0.138"
 thiserror = "2.0.3"
 
 # Async runtime
-tokio = { version = "1.32", features = ["sync", "rt", "rt-multi-thread"] }
+tokio = { version = "1.32", features = ["sync", "rt", "rt-multi-thread", "time", "net", "macros"] }
 
 [build-dependencies]
 # Build scripts for the cxx crate
