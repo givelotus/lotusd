@@ -776,4 +776,508 @@ BOOST_FIXTURE_TEST_CASE(
     gArgs.ClearForcedArg("-avalanchepreconsensus");
 }
 
+BOOST_FIXTURE_TEST_CASE(batch_default_requires_normal_finalization_score,
+                        AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+
+    auto proof = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+    const ProofId &proofid = proof->getId();
+    BOOST_CHECK(
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof);
+        }));
+
+    std::array<CNode *, 8> nodes;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        CAddress addr;
+        auto node =
+            new CNode(static_cast<NodeId>(i + 100), /*sock=*/nullptr, addr, 0,
+                      0, 0, CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = 1;
+        node->fSuccessfullyConnected = true;
+        m_connman->AddTestNode(*node);
+        nodes[i] = node;
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(node->GetId(), proofid,
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+    }
+    BOOST_CHECK(m_node.avalanche->isQuorumEstablished());
+
+    CMutableTransaction mtx1;
+    mtx1.nVersion = 2;
+    mtx1.vin.resize(1);
+    mtx1.vin[0].prevout = COutPoint(TxId(GetRandHash()), 0);
+    mtx1.vin[0].scriptSig = CScript() << OP_1;
+    mtx1.vout.emplace_back(10 * COIN, CScript() << OP_TRUE);
+    CTransactionRef tx1 = MakeTransactionRef(std::move(mtx1));
+
+    CMutableTransaction mtx2;
+    mtx2.nVersion = 2;
+    mtx2.vin.resize(1);
+    mtx2.vin[0].prevout = COutPoint(TxId(GetRandHash()), 1);
+    mtx2.vin[0].scriptSig = CScript() << OP_2;
+    mtx2.vout.emplace_back(20 * COIN, CScript() << OP_TRUE);
+    CTransactionRef tx2 = MakeTransactionRef(std::move(mtx2));
+
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(
+            chaintip->GetBlockHash(), uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx2));
+    }
+
+    bool callbackInvoked = false;
+    MempoolBatchAnnouncement callbackBatch;
+    m_node.avalanche->registerBatchFinalizedCallback(
+        [&](const MempoolBatchAnnouncement &b) {
+            callbackInvoked = true;
+            callbackBatch = b;
+        });
+
+    MempoolBatchAnnouncement batch;
+    batch.prev_block_hash = chaintip->GetBlockHash();
+    batch.epoch_seq = 1;
+    batch.parent_batch_id = uint256::ZERO;
+    batch.subtree_a_root = ComputeV2SubtreeARoot({tx1, tx2});
+    batch.utxo_root = GetRandHash();
+    batch.tx_count = 2;
+    batch.short_ids_hash = GetRandHash();
+    const uint256 batchId = batch.ComputeBatchId();
+
+    BOOST_CHECK(
+        m_node.avalanche->registerMempoolBatch(batch, /*locallyAccepted=*/true));
+    BOOST_CHECK(!m_node.avalanche->hasMempoolBatchConflict(batchId));
+
+    // One successful sample is not finality. Polling distinct peers must
+    // accumulate the ordinary Avalanche finalization score before freezing.
+    BOOST_CHECK_EQUAL(m_node.avalanche->getFastPathConfidenceThreshold(),
+                      AVALANCHE_FINALIZATION_SCORE);
+    int votesCast = 0;
+    for (size_t i = 0;
+         i < nodes.size() && !m_node.avalanche->isMempoolBatchFinalized(batchId);
+         ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            votes.emplace_back(0, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp,
+                                                    updates, disconnect,
+                                                    error));
+        ++votesCast;
+    }
+
+    BOOST_CHECK_GE(votesCast, 7);
+    BOOST_CHECK(!m_node.avalanche->isMempoolBatchFinalized(batchId));
+    BOOST_CHECK(!callbackInvoked);
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getAdaptiveEpochController()
+            .getFastPathFinalizedCount(), 0U);
+    for (int i = votesCast; i < 1024 &&
+         !m_node.avalanche->isMempoolBatchFinalized(batchId); ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        const auto invs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        std::vector<Vote> votes;
+        for (const auto &inv : invs) votes.emplace_back(0, inv.hash);
+        Response response(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_REQUIRE(m_node.avalanche->registerVotes(
+            AvalancheTest::getPolledNode(*m_node.avalanche, round), response,
+            updates, disconnect, error));
+        ++votesCast;
+    }
+    BOOST_CHECK_GE(votesCast, AVALANCHE_FINALIZATION_SCORE);
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batchId));
+    BOOST_CHECK(callbackInvoked);
+    BOOST_CHECK(callbackBatch == batch);
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().GetFrozenEpochs().size(), 1U);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(mysticeti_contention_fallback_to_metastable_snowball,
+                        AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+
+    auto proof = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+    const ProofId &proofid = proof->getId();
+    BOOST_CHECK(
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof);
+        }));
+
+    std::array<CNode *, 8> nodes;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        CAddress addr;
+        auto node =
+            new CNode(static_cast<NodeId>(i + 200), /*sock=*/nullptr, addr, 0,
+                      0, 0, CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = 1;
+        node->fSuccessfullyConnected = true;
+        m_connman->AddTestNode(*node);
+        nodes[i] = node;
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(node->GetId(), proofid,
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+    }
+    BOOST_CHECK(m_node.avalanche->isQuorumEstablished());
+
+    // Case A: Two competing batches announced for the same (prev_block_hash,
+    // epoch_seq = 1) must disable the 1-RTT fast path and require the full
+    // metastable Snowball to finalize.
+    MempoolBatchAnnouncement batchA;
+    batchA.prev_block_hash = chaintip->GetBlockHash();
+    batchA.epoch_seq = 1;
+    batchA.parent_batch_id = uint256::ZERO;
+    batchA.subtree_a_root = GetRandHash();
+    batchA.utxo_root = GetRandHash();
+    batchA.tx_count = 4;
+    batchA.short_ids_hash = GetRandHash();
+    const uint256 batchAId = batchA.ComputeBatchId();
+
+    MempoolBatchAnnouncement batchB = batchA;
+    batchB.subtree_a_root = GetRandHash();
+    const uint256 batchBId = batchB.ComputeBatchId();
+    BOOST_REQUIRE(batchAId != batchBId);
+
+    BOOST_CHECK(m_node.avalanche->registerMempoolBatch(
+        batchA, /*locallyAccepted=*/true));
+    BOOST_CHECK(!m_node.avalanche->hasMempoolBatchConflict(batchAId));
+
+    // Announcing competing batchB at the same (prev_block_hash, epoch_seq = 1)
+    // immediately marks the epoch as conflicted.
+    BOOST_CHECK(m_node.avalanche->registerMempoolBatch(
+        batchB, /*locallyAccepted=*/false));
+    BOOST_CHECK(m_node.avalanche->hasEpochConflict(chaintip->GetBlockHash(), 1));
+    BOOST_CHECK(m_node.avalanche->hasMempoolBatchConflict(batchAId));
+    BOOST_CHECK(m_node.avalanche->hasMempoolBatchConflict(batchBId));
+
+    // After 7 unanimous 0 votes on batchA (confidence == 1), the 1-RTT fast
+    // path must NOT finalize batchA because the epoch has contention.
+    size_t nextNodeIdx = 0;
+    int totalVotesA = 0;
+    for (int i = 0; i < 7; ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            const uint32_t err = (polledInv.hash == batchAId) ? 0 : 1;
+            votes.emplace_back(err, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+        ++totalVotesA;
+    }
+
+    BOOST_CHECK(!m_node.avalanche->isMempoolBatchFinalized(batchAId));
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getConfidence(MempoolBatchVoteItem(batchA)), 1);
+
+    // Continue voting through the full metastable Snowball until finalized.
+    for (int roundIdx = 0;
+         roundIdx < 200 && !m_node.avalanche->isMempoolBatchFinalized(batchAId);
+         ++roundIdx) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            const uint32_t err = (polledInv.hash == batchAId) ? 0 : 1;
+            votes.emplace_back(err, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+        ++totalVotesA;
+    }
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batchAId));
+    BOOST_CHECK_GE(totalVotesA, int(AVALANCHE_FINALIZATION_SCORE));
+
+    // Case B: Single batch announced at epoch_seq = 2, but a peer responds with
+    // a non-zero error code in round 1 -> disables 1-RTT fast path for epoch 2.
+    MempoolBatchAnnouncement batchC;
+    batchC.prev_block_hash = chaintip->GetBlockHash();
+    batchC.epoch_seq = 2;
+    batchC.parent_batch_id = batchAId;
+    batchC.subtree_a_root = GetRandHash();
+    batchC.utxo_root = GetRandHash();
+    batchC.tx_count = 8;
+    batchC.short_ids_hash = GetRandHash();
+    const uint256 batchCId = batchC.ComputeBatchId();
+
+    BOOST_CHECK(m_node.avalanche->registerMempoolBatch(
+        batchC, /*locallyAccepted=*/true));
+    BOOST_CHECK(!m_node.avalanche->hasMempoolBatchConflict(batchCId));
+
+    // First vote is non-zero (missing txs / inconclusive error = 1)
+    {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            votes.emplace_back(1, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+    }
+    BOOST_CHECK(m_node.avalanche->hasMempoolBatchConflict(batchCId));
+    BOOST_CHECK(m_node.avalanche->hasEpochConflict(chaintip->GetBlockHash(), 2));
+
+    // Next 7 votes are unanimous 0 -> confidence reaches 1, but fast-path must
+    // remain disabled.
+    for (int i = 0; i < 7; ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            votes.emplace_back(0, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+    }
+    BOOST_CHECK(!m_node.avalanche->isMempoolBatchFinalized(batchCId));
+    BOOST_CHECK_EQUAL(
+        m_node.avalanche->getConfidence(MempoolBatchVoteItem(batchC)), 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(
+    adaptive_epoch_controller_aimd_and_back_to_back_pipelining,
+    AvalancheTestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+
+    // 1. Verify AIMD settling window dynamics coupled to live peer RTT telemetry
+    auto &ctrl = m_node.avalanche->getAdaptiveEpochController();
+    ctrl.recordPollRtt(std::chrono::milliseconds(20));
+    BOOST_CHECK_CLOSE(ctrl.getRttEwmaMs(), 20.0, 1e-3);
+    BOOST_CHECK_CLOSE(ctrl.getSettlingWindowMs(), 20.0, 1e-3);
+
+    // Simulated miss/conflict events multiplicatively back off tau_settle (2x)
+    ctrl.recordMissOrConflict();
+    BOOST_CHECK_CLOSE(ctrl.getSettlingWindowMs(), 40.0, 1e-3);
+    BOOST_CHECK_GT(ctrl.getMissRateEwma(), 0.0);
+
+    ctrl.recordMissOrConflict();
+    BOOST_CHECK_CLOSE(ctrl.getSettlingWindowMs(), 80.0, 1e-3);
+
+    // Clean 1-RTT fast-path finalizations additively shrink tau_settle back
+    // toward the observed peer RTT EWMA (20ms).
+    double prevWindow = ctrl.getSettlingWindowMs();
+    for (int i = 0; i < 20; ++i) {
+        ctrl.recordCleanFastPath();
+        const double curWindow = ctrl.getSettlingWindowMs();
+        BOOST_CHECK_LE(curWindow, prevWindow);
+        BOOST_CHECK_GE(curWindow, ctrl.getRttEwmaMs());
+        prevWindow = curWindow;
+    }
+    BOOST_CHECK_CLOSE(ctrl.getSettlingWindowMs(), ctrl.getRttEwmaMs(), 1.0);
+
+    // 2. Verify event-driven back-to-back epoch batch pipelining upon finality
+    auto proof = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+    const ProofId &proofid = proof->getId();
+    BOOST_CHECK(
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            return pm.registerProof(proof);
+        }));
+
+    std::array<CNode *, 8> nodes;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        CAddress addr;
+        auto node =
+            new CNode(static_cast<NodeId>(i + 300), /*sock=*/nullptr, addr, 0,
+                      0, 0, CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                      false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = 1;
+        node->fSuccessfullyConnected = true;
+        m_connman->AddTestNode(*node);
+        nodes[i] = node;
+        m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(node->GetId(), proofid,
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+    }
+    BOOST_CHECK(m_node.avalanche->isQuorumEstablished());
+
+    auto makeDummyTx = [](int idx, Amount val) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(TxId(GetRandHash()), idx);
+        mtx.vin[0].scriptSig = CScript() << int64_t(idx);
+        mtx.vout.emplace_back(val, CScript() << OP_TRUE);
+        return MakeTransactionRef(std::move(mtx));
+    };
+
+    CTransactionRef tx1 = makeDummyTx(1, 10 * COIN);
+    CTransactionRef tx2 = makeDummyTx(2, 20 * COIN);
+    CTransactionRef tx3 = makeDummyTx(3, 30 * COIN);
+    CTransactionRef tx4 = makeDummyTx(4, 40 * COIN);
+
+    ctrl.setMinBatchTxCount(2);
+    ctrl.setAutoPipelineEnabled(true);
+
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->clear();
+        m_node.mempool->ConnectBlockReset(
+            chaintip->GetBlockHash(), uint64_t(chaintip->nHeight + 1),
+            uint64_t(chaintip->GetMedianTimePast()));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx2));
+    }
+
+    // Freeze and register Epoch 1 batch ({tx1, tx2})
+    MempoolBatchAnnouncement batch1;
+    BOOST_REQUIRE(m_node.avalanche->tryFreezeAndRegisterNextEpochBatch(
+        chaintip->GetBlockHash(), &batch1));
+    const uint256 batch1Id = batch1.ComputeBatchId();
+    BOOST_CHECK_EQUAL(batch1.epoch_seq, 1U);
+    BOOST_CHECK_EQUAL(batch1.parent_batch_id, uint256::ZERO);
+    BOOST_CHECK_EQUAL(batch1.tx_count, 2U);
+    BOOST_CHECK_EQUAL(batch1.subtree_a_root, ComputeV2SubtreeARoot({tx1, tx2}));
+
+    // While Epoch 1 is in flight, add {tx3, tx4} to the speculative mempool tail
+    {
+        TestMemPoolEntryHelper entry;
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx3));
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx4));
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().GetFrozenEpochs().size(), 1U);
+    }
+
+    // Finalize Epoch 1 at the normal score -> must automatically freeze
+    // {tx1, tx2, tx3, tx4} into FrozenEpoch 2 and register Delta_2 for polling!
+    size_t nextNodeIdx = 0;
+    for (int i = 0;
+         i < 2000 && !m_node.avalanche->isMempoolBatchFinalized(batch1Id); ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            votes.emplace_back(0, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+    }
+
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batch1Id));
+    {
+        LOCK(m_node.mempool->cs);
+        BOOST_CHECK_EQUAL(
+            m_node.mempool->GetOverlayManager().GetFrozenEpochs().size(), 2U);
+    }
+
+    // Verify Delta_2 is immediately present in the next poll invs with
+    // epoch_seq = 2 and parent_batch_id = batch1Id!
+    auto nextPollInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+    uint256 batch2Id = uint256::ZERO;
+    for (const auto &inv : nextPollInvs) {
+        if (inv.IsMsgMempoolBatch() && inv.hash != batch1Id) {
+            batch2Id = inv.hash;
+            break;
+        }
+    }
+    BOOST_REQUIRE(!batch2Id.IsNull());
+
+    MempoolBatchAnnouncement batch2;
+    BOOST_REQUIRE(m_node.avalanche->getMempoolBatch(batch2Id, batch2));
+    BOOST_CHECK_EQUAL(batch2.epoch_seq, 2U);
+    BOOST_CHECK_EQUAL(batch2.parent_batch_id, batch1Id);
+    BOOST_CHECK_EQUAL(batch2.tx_count, 4U);
+    BOOST_CHECK_EQUAL(batch2.subtree_a_root,
+                      ComputeV2SubtreeARoot({tx1, tx2, tx3, tx4}));
+
+    // Finalize Delta_2 at the normal score as well
+    for (int i = 0;
+         i < 2000 && !m_node.avalanche->isMempoolBatchFinalized(batch2Id); ++i) {
+        const uint64_t round = AvalancheTest::getRound(*m_node.avalanche);
+        auto polledInvs = AvalancheTest::getInvsForNextPoll(*m_node.avalanche);
+        AvalancheTest::runEventLoop(*m_node.avalanche);
+        const NodeId nodeid = nodes[nextNodeIdx++ % nodes.size()]->GetId();
+        std::vector<Vote> votes;
+        for (const auto &polledInv : polledInvs) {
+            votes.emplace_back(0, polledInv.hash);
+        }
+        Response resp(round, 0, votes);
+        std::vector<VoteItemUpdate> updates;
+        bool disconnect = false;
+        std::string error;
+        BOOST_CHECK(m_node.avalanche->registerVotes(AvalancheTest::getPolledNode(*m_node.avalanche, resp.getRound()), resp, updates,
+                                                    disconnect, error));
+    }
+    BOOST_CHECK(m_node.avalanche->isMempoolBatchFinalized(batch2Id));
+
+    const auto finalizedChain =
+        m_node.avalanche->getFinalizedMempoolBatches(chaintip->GetBlockHash());
+    BOOST_REQUIRE_EQUAL(finalizedChain.size(), 2U);
+    BOOST_CHECK(finalizedChain[0] == batch1);
+    BOOST_CHECK(finalizedChain[1] == batch2);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

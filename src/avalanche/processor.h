@@ -296,13 +296,83 @@ class Processor final : public NetEventsInterface {
 
 public:
     static constexpr size_t MAX_MEMPOOL_BATCH_RECORDS = 1024;
+    static constexpr uint16_t DEFAULT_FAST_PATH_CONFIDENCE_THRESHOLD = AVALANCHE_FINALIZATION_SCORE;
 
     using MempoolBatchFinalizedCallback =
         std::function<void(const MempoolBatchAnnouncement &)>;
 
+    /**
+     * Self-clocking adaptive controller for pre-consensus mempool epoch
+     * batches.
+     *
+     * Replaces fixed periodic batch timers with:
+     *  1. Event-driven back-to-back pipelining when an epoch batch finalizes
+     *     and the speculative mempool tail has accumulated >= minBatchTxCount
+     *     transactions (or the adaptive settling window has elapsed).
+     *  2. An AIMD settling window (tau_settle) coupled directly to live network
+     *     telemetry: the EWMA of observed peer poll round-trip times (RTT_poll)
+     *     and the observed batch reconciliation / conflict miss rate (r_miss).
+     *     - Clean 1-RTT fast-path finalization -> Additive Decrease toward
+     *       RTT_poll.
+     *     - Unknown/missing txs or batch conflict -> Multiplicative Increase
+     *       (2 * tau_settle).
+     */
+    class AdaptiveEpochController {
+    private:
+        mutable Mutex m_cs;
+        double m_rttEwmaMs GUARDED_BY(m_cs){0.0};
+        double m_missRateEwma GUARDED_BY(m_cs){0.0};
+        double m_settlingWindowMs GUARDED_BY(m_cs){0.0};
+        double m_ewmaAlpha GUARDED_BY(m_cs){0.125};
+        size_t m_minBatchTxCount GUARDED_BY(m_cs){1};
+        uint64_t m_rttSampleCount GUARDED_BY(m_cs){0};
+        uint64_t m_fastPathFinalizedCount GUARDED_BY(m_cs){0};
+        uint64_t m_conflictOrMissCount GUARDED_BY(m_cs){0};
+        SteadyMilliseconds m_lastFreezeTime GUARDED_BY(m_cs){};
+        bool m_autoPipelineEnabled GUARDED_BY(m_cs){true};
+
+    public:
+        AdaptiveEpochController() = default;
+
+        void recordPollRtt(std::chrono::milliseconds rtt)
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        void recordPollRttMs(double rttMs) EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        void recordCleanFastPath() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        void recordMissOrConflict() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        void recordBatchFrozen(SteadyMilliseconds now)
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        bool shouldPipelineNextBatch(size_t unfrozenTailTxCount,
+                                     SteadyMilliseconds now) const
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        double getRttEwmaMs() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        double getMissRateEwma() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        double getSettlingWindowMs() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        std::chrono::milliseconds getSettlingWindow() const
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        void setMinBatchTxCount(size_t minTxs) EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        size_t getMinBatchTxCount() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        void setAutoPipelineEnabled(bool enabled)
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        bool isAutoPipelineEnabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+
+        uint64_t getRttSampleCount() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        uint64_t getFastPathFinalizedCount() const
+            EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+        uint64_t getConflictOrMissCount() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+    };
+
 private:
     MempoolBatchFinalizedCallback
         m_onMempoolBatchFinalized GUARDED_BY(cs_mempoolBatches);
+    AdaptiveEpochController m_adaptiveEpochController;
+    std::atomic<uint16_t> m_fastPathConfidenceThreshold{
+        DEFAULT_FAST_PATH_CONFIDENCE_THRESHOLD};
+
     Processor(Config avaconfig, interfaces::Chain &chain, CConnman *connmanIn,
               ChainstateManager &chainman, CTxMemPool *mempoolIn,
               CScheduler &scheduler, std::unique_ptr<PeerData> peerDataIn,
@@ -494,6 +564,27 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches) {
         setMempoolBatchFinalizedCallback(std::move(cb));
     }
+
+    void setFastPathConfidenceThreshold(uint16_t threshold) {
+        m_fastPathConfidenceThreshold.store(
+            std::max<uint16_t>(threshold, AVALANCHE_FINALIZATION_SCORE),
+                                            std::memory_order_relaxed);
+    }
+    uint16_t getFastPathConfidenceThreshold() const {
+        return m_fastPathConfidenceThreshold.load(std::memory_order_relaxed);
+    }
+
+    AdaptiveEpochController &getAdaptiveEpochController() {
+        return m_adaptiveEpochController;
+    }
+    const AdaptiveEpochController &getAdaptiveEpochController() const {
+        return m_adaptiveEpochController;
+    }
+
+    bool tryFreezeAndRegisterNextEpochBatch(
+        const BlockHash &prevBlockHash,
+        MempoolBatchAnnouncement *outBatch = nullptr, bool force = false)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
 
     void setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);

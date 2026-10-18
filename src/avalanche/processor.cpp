@@ -580,6 +580,7 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
               peerManager->updateNextRequestTimeForResponse(nodeid, response));
 
     std::vector<CInv> invs;
+    SteadyMilliseconds queryTimeout{};
 
     {
         // Check that the query exists. There is a possibility that it has been
@@ -593,8 +594,15 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
             return false;
         }
 
+        queryTimeout = it->timeout;
         invs = std::move(it->invs);
         w->erase(it);
+    }
+
+    const auto now = Now<SteadyMilliseconds>();
+    const auto sentTime = queryTimeout - avaconfig.queryTimeoutDuration;
+    if (now >= sentTime) {
+        m_adaptiveEpochController.recordPollRtt(now - sentTime);
     }
 
     // Verify that the request and the vote are consistent.
@@ -656,10 +664,16 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
                 const auto &batchItem =
                     std::get<const MempoolBatchVoteItem>(item);
                 markMempoolBatchConflict(batchItem.GetId());
+                m_adaptiveEpochController.recordMissOrConflict();
             }
 
             auto &vr = it->second;
             const bool voteRegistered = vr.registerVote(nodeid, v.GetError());
+
+            // A confidence increment is not a stake-weighted supermajority
+            // certificate. Batches use the same finalization score as every
+            // other Avalanche item; the adaptive scheduler changes cadence,
+            // never the safety threshold.
 
             if (!voteRegistered) {
                 if (vr.isStale(staleVoteThreshold, staleVoteFactor)) {
@@ -680,6 +694,14 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
                                                           ? VoteStatus::Accepted
                                                           : VoteStatus::Rejected);
                 continue;
+            }
+
+            if (isBatchItem && vr.isAccepted() &&
+                !hasMempoolBatchConflict(
+                    std::get<const MempoolBatchVoteItem>(item).GetId())) {
+                // Clean normal finalizations recover the cadence after a
+                // backoff too. This legacy counter name is not fast finality.
+                m_adaptiveEpochController.recordCleanFastPath();
             }
 
             // We just finalized a vote. If it is valid, then let the caller
@@ -1207,6 +1229,135 @@ bool Processor::setContenderStatusForLocalWinners(
         pindex, winners, AVALANCHE_CONTENDER_MAX_POLLABLE, pollableContenders);
 }
 
+void Processor::AdaptiveEpochController::recordPollRtt(
+    std::chrono::milliseconds rtt) {
+    recordPollRttMs(static_cast<double>(rtt.count()));
+}
+
+void Processor::AdaptiveEpochController::recordPollRttMs(double rttMs) {
+    LOCK(m_cs);
+    const double clampedRtt = std::max(0.1, rttMs);
+    if (m_rttSampleCount == 0) {
+        m_rttEwmaMs = clampedRtt;
+        if (m_settlingWindowMs <= 0.0) {
+            m_settlingWindowMs = clampedRtt;
+        }
+    } else {
+        m_rttEwmaMs =
+            (1.0 - m_ewmaAlpha) * m_rttEwmaMs + m_ewmaAlpha * clampedRtt;
+        if (m_settlingWindowMs < m_rttEwmaMs) {
+            m_settlingWindowMs = m_rttEwmaMs;
+        }
+    }
+    ++m_rttSampleCount;
+}
+
+void Processor::AdaptiveEpochController::recordCleanFastPath() {
+    LOCK(m_cs);
+    ++m_fastPathFinalizedCount;
+    m_missRateEwma = (1.0 - m_ewmaAlpha) * m_missRateEwma;
+
+    const double floorMs = std::max(0.1, m_rttEwmaMs);
+    if (m_settlingWindowMs > floorMs) {
+        const double delta = std::max(floorMs * m_ewmaAlpha,
+                                      (m_settlingWindowMs - floorMs) * 0.25);
+        m_settlingWindowMs = std::max(floorMs, m_settlingWindowMs - delta);
+    } else {
+        m_settlingWindowMs = floorMs;
+    }
+}
+
+void Processor::AdaptiveEpochController::recordMissOrConflict() {
+    LOCK(m_cs);
+    ++m_conflictOrMissCount;
+    m_missRateEwma = (1.0 - m_ewmaAlpha) * m_missRateEwma + m_ewmaAlpha * 1.0;
+
+    const double baseMs = std::max({0.1, m_settlingWindowMs, m_rttEwmaMs});
+    const double maxWindowMs =
+        static_cast<double>(AVALANCHE_DEFAULT_QUERY_TIMEOUT.count());
+    m_settlingWindowMs = std::min(maxWindowMs, 2.0 * baseMs);
+}
+
+void Processor::AdaptiveEpochController::recordBatchFrozen(
+    SteadyMilliseconds now) {
+    LOCK(m_cs);
+    m_lastFreezeTime = now;
+}
+
+bool Processor::AdaptiveEpochController::shouldPipelineNextBatch(
+    size_t unfrozenTailTxCount, SteadyMilliseconds now) const {
+    LOCK(m_cs);
+    if (!m_autoPipelineEnabled || unfrozenTailTxCount == 0) {
+        return false;
+    }
+    if (unfrozenTailTxCount >= m_minBatchTxCount) {
+        return true;
+    }
+    if (m_lastFreezeTime.time_since_epoch().count() == 0) {
+        return true;
+    }
+    const double elapsedMs =
+        static_cast<double>((now - m_lastFreezeTime).count());
+    return elapsedMs >= m_settlingWindowMs;
+}
+
+double Processor::AdaptiveEpochController::getRttEwmaMs() const {
+    LOCK(m_cs);
+    return m_rttEwmaMs;
+}
+
+double Processor::AdaptiveEpochController::getMissRateEwma() const {
+    LOCK(m_cs);
+    return m_missRateEwma;
+}
+
+double Processor::AdaptiveEpochController::getSettlingWindowMs() const {
+    LOCK(m_cs);
+    return m_settlingWindowMs;
+}
+
+std::chrono::milliseconds
+Processor::AdaptiveEpochController::getSettlingWindow() const {
+    LOCK(m_cs);
+    return std::chrono::milliseconds(
+        static_cast<int64_t>(std::llround(m_settlingWindowMs)));
+}
+
+void Processor::AdaptiveEpochController::setMinBatchTxCount(size_t minTxs) {
+    LOCK(m_cs);
+    m_minBatchTxCount = std::max<size_t>(1, minTxs);
+}
+
+size_t Processor::AdaptiveEpochController::getMinBatchTxCount() const {
+    LOCK(m_cs);
+    return m_minBatchTxCount;
+}
+
+void Processor::AdaptiveEpochController::setAutoPipelineEnabled(bool enabled) {
+    LOCK(m_cs);
+    m_autoPipelineEnabled = enabled;
+}
+
+bool Processor::AdaptiveEpochController::isAutoPipelineEnabled() const {
+    LOCK(m_cs);
+    return m_autoPipelineEnabled;
+}
+
+uint64_t Processor::AdaptiveEpochController::getRttSampleCount() const {
+    LOCK(m_cs);
+    return m_rttSampleCount;
+}
+
+uint64_t Processor::AdaptiveEpochController::getFastPathFinalizedCount() const {
+    LOCK(m_cs);
+    return m_fastPathFinalizedCount;
+}
+
+uint64_t Processor::AdaptiveEpochController::getConflictOrMissCount() const {
+    LOCK(m_cs);
+    return m_conflictOrMissCount;
+}
+
 bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
                                      bool accepted, bool reconcile) {
     if (!batch.IsValid()) {
@@ -1214,6 +1365,7 @@ bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
     }
 
     const uint256 batchId = batch.ComputeBatchId();
+    bool slotConflictDetected = false;
     {
         LOCK(cs_mempoolBatches);
         const bool isNew =
@@ -1259,6 +1411,7 @@ bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
                 batch.epoch_seq);
             m_conflictedBatchIds.insert(slotIt->second);
             m_conflictedBatchIds.insert(batchId);
+            slotConflictDetected = true;
         }
         if (m_conflictedBatchEpochs[batch.prev_block_hash].count(
                 batch.epoch_seq) > 0) {
@@ -1274,6 +1427,10 @@ bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
         if (accepted) {
             m_acceptedMempoolBatches.insert(batchId);
         }
+    }
+
+    if (slotConflictDetected) {
+        m_adaptiveEpochController.recordMissOrConflict();
     }
 
     if (reconcile) {
@@ -1386,6 +1543,29 @@ void Processor::markMempoolBatchConflict(const uint256 &batchId) {
     }
 }
 
+namespace {
+MempoolBatchAnnouncement BuildBatchAnnouncementFromLayer(
+    const BlockHash &prevBlockHash, uint32_t epochSeq,
+    const uint256 &parentBatchId, const lotus::v2::MempoolOverlayLayer &layer) {
+    MempoolBatchAnnouncement batch;
+    batch.prev_block_hash = prevBlockHash;
+    batch.epoch_seq = epochSeq;
+    batch.parent_batch_id = parentBatchId;
+    const auto subA = layer.GetSubtreeARoot();
+    const auto utxoRoot = layer.GetUtxoRootDigest();
+    std::memcpy(batch.subtree_a_root.begin(), subA.data(), 32);
+    std::memcpy(batch.utxo_root.begin(), utxoRoot.data(), 32);
+    batch.tx_count = static_cast<uint32_t>(layer.GetTxCount());
+
+    HashWriter hasher{};
+    for (const auto &[txId, _] : layer.GetOrderedTxs()) {
+        hasher.write(std::as_bytes(std::span{txId}));
+    }
+    batch.short_ids_hash = hasher.GetHash();
+    return batch;
+}
+} // namespace
+
 void Processor::finalizeMempoolBatch(const uint256 &batchId) {
     MempoolBatchFinalizedCallback cb;
     MempoolBatchAnnouncement batch;
@@ -1422,6 +1602,7 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
     }
 
     if (newlyFinalized) {
+        std::optional<MempoolBatchAnnouncement> pipelinedNextBatch;
         if (mempool) {
             LOCK(mempool->cs);
             lotus::v2::Hash target_root{};
@@ -1443,6 +1624,31 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
                 overlay_mgr.FreezeEpochBatch();
             }
 
+            // Event-driven back-to-back pipelining: if the speculative overlay
+            // has accumulated additional transactions beyond this finalized
+            // batch and the adaptive controller allows pipelining, freeze and
+            // announce Delta_{e+1} immediately.
+            const auto &specOverlay = overlay_mgr.GetSpeculativeOverlay();
+            if (specOverlay.GetParentBlockId() == expectedParentBlock &&
+                specOverlay.GetTxCount() > batch.tx_count &&
+                specOverlay.GetSubtreeARoot() != target_root) {
+                const size_t tailTxCount =
+                    specOverlay.GetTxCount() - batch.tx_count;
+                const auto now = Now<SteadyMilliseconds>();
+                if (m_adaptiveEpochController.shouldPipelineNextBatch(
+                        tailTxCount, now)) {
+                    const auto &nextLayer = overlay_mgr.FreezeEpochBatch();
+                    pipelinedNextBatch = BuildBatchAnnouncementFromLayer(
+                        batch.prev_block_hash, batch.epoch_seq + 1, batchId,
+                        nextLayer);
+                    m_adaptiveEpochController.recordBatchFrozen(now);
+                }
+            }
+
+        }
+        if (pipelinedNextBatch.has_value()) {
+            registerMempoolBatch(*pipelinedNextBatch, /*accepted=*/true,
+                                 /*reconcile=*/true);
         }
         const bool currentParent = WITH_LOCK(cs_mempoolBatches,
             return !m_mempoolBatchParent ||
@@ -1451,6 +1657,61 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
             cb(batch);
         }
     }
+}
+
+bool Processor::tryFreezeAndRegisterNextEpochBatch(
+    const BlockHash &prevBlockHash, MempoolBatchAnnouncement *outBatch,
+    bool force) {
+    if (!mempool) {
+        return false;
+    }
+
+    uint32_t nextEpochSeq = 1;
+    uint256 parentBatchId = uint256::ZERO;
+    size_t baselineTxCount = 0;
+    {
+        LOCK(cs_mempoolBatches);
+        auto finIt = m_finalizedMempoolBatches.find(prevBlockHash);
+        if (finIt != m_finalizedMempoolBatches.end() &&
+            !finIt->second.empty()) {
+            const auto &lastFin = finIt->second.back();
+            nextEpochSeq = lastFin.epoch_seq + 1;
+            parentBatchId = lastFin.ComputeBatchId();
+            baselineTxCount = lastFin.tx_count;
+        }
+    }
+
+    std::optional<MempoolBatchAnnouncement> createdBatch;
+    {
+        LOCK(mempool->cs);
+        auto &overlay_mgr = mempool->GetOverlayManager();
+        const auto &specOverlay = overlay_mgr.GetSpeculativeOverlay();
+        lotus::v2::Hash expectedParentBlock{};
+        std::memcpy(expectedParentBlock.data(), prevBlockHash.begin(), 32);
+        if (specOverlay.GetParentBlockId() != expectedParentBlock ||
+            specOverlay.GetTxCount() <= baselineTxCount) {
+            return false;
+        }
+        const size_t tailTxCount = specOverlay.GetTxCount() - baselineTxCount;
+        const auto now = Now<SteadyMilliseconds>();
+        if (!force && !m_adaptiveEpochController.shouldPipelineNextBatch(
+                          tailTxCount, now)) {
+            return false;
+        }
+        const auto &frozenLayer = overlay_mgr.FreezeEpochBatch();
+        createdBatch = BuildBatchAnnouncementFromLayer(
+            prevBlockHash, nextEpochSeq, parentBatchId, frozenLayer);
+        m_adaptiveEpochController.recordBatchFrozen(now);
+    }
+
+    if (!registerMempoolBatch(*createdBatch, /*accepted=*/true,
+                              /*reconcile=*/true)) {
+        return false;
+    }
+    if (outBatch != nullptr) {
+        *outBatch = *createdBatch;
+    }
+    return true;
 }
 
 void Processor::rejectMempoolBatch(const uint256 &batchId) {
