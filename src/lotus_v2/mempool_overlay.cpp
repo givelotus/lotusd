@@ -1983,14 +1983,34 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
     std::vector<std::pair<Hash, Hash>> tx_leaves;
     tx_leaves.reserve(entries.size());
 
+    const bool update_utxo_eagerly =
+        commit_state_root_in_header_ && !utxo_arena_dirty_;
+
     std::vector<Outpoint> newly_spent_ops;
-    newly_spent_ops.reserve(entries.size() * 2);
-
-    std::unordered_map<Outpoint, bool, OutpointHasher> batch_created_ops;
-    batch_created_ops.reserve(entries.size() * 2);
-
     std::vector<Coin> batch_created_list;
-    batch_created_list.reserve(entries.size() * 2);
+    struct OutpointSlot {
+        Outpoint outpoint{};
+        bool occupied{false};
+    };
+    std::vector<OutpointSlot> batch_created_table;
+    size_t batch_created_mask = 0;
+
+    if (update_utxo_eagerly) {
+        size_t total_created = 0;
+        size_t total_spent = 0;
+        for (const auto &entry : entries) {
+            total_created += entry.created_coins.size();
+            total_spent += entry.spent_outpoints.size();
+        }
+        newly_spent_ops.reserve(total_spent);
+        batch_created_list.reserve(total_created);
+        size_t cap = 16;
+        while (cap < (total_created + 1) * 2) {
+            cap <<= 1;
+        }
+        batch_created_table.resize(cap);
+        batch_created_mask = cap - 1;
+    }
 
     size_t added_count = 0;
     for (auto &entry : entries) {
@@ -2008,7 +2028,9 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
         for (const auto &op : entry.spent_outpoints) {
             const uint32_t new_ref = ++spent_outpoints_[op];
             if (new_ref == 1) {
-                newly_spent_ops.push_back(op);
+                if (update_utxo_eagerly) {
+                    newly_spent_ops.push_back(op);
+                }
             } else if (new_ref == 2) {
                 ++conflict_count_;
             }
@@ -2016,8 +2038,16 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
 
         for (const auto &coin : entry.created_coins) {
             created_coins_[coin.outpoint] = coin;
-            if (commit_state_root_in_header_ && !utxo_arena_dirty_) {
-                batch_created_ops[coin.outpoint] = true;
+            if (update_utxo_eagerly) {
+                size_t slot = OutpointHasher{}(coin.outpoint) & batch_created_mask;
+                while (batch_created_table[slot].occupied) {
+                    if (batch_created_table[slot].outpoint == coin.outpoint) {
+                        break;
+                    }
+                    slot = (slot + 1) & batch_created_mask;
+                }
+                batch_created_table[slot].outpoint = coin.outpoint;
+                batch_created_table[slot].occupied = true;
                 batch_created_list.push_back(coin);
             }
         }
@@ -2041,7 +2071,7 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
         }
     }
 
-    if (!commit_state_root_in_header_ || utxo_arena_dirty_) {
+    if (!update_utxo_eagerly) {
         utxo_arena_dirty_ = true;
         return added_count;
     }
@@ -2049,7 +2079,16 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
     std::vector<Outpoint> erased_for_arena;
     erased_for_arena.reserve(newly_spent_ops.size());
     for (const auto &op : newly_spent_ops) {
-        if (batch_created_ops.find(op) == batch_created_ops.end()) {
+        size_t slot = OutpointHasher{}(op) & batch_created_mask;
+        bool in_batch_created = false;
+        while (batch_created_table[slot].occupied) {
+            if (batch_created_table[slot].outpoint == op) {
+                in_batch_created = true;
+                break;
+            }
+            slot = (slot + 1) & batch_created_mask;
+        }
+        if (!in_batch_created) {
             erased_for_arena.push_back(op);
         }
     }
