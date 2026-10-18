@@ -264,10 +264,10 @@ check_cxx_source_compiles("
 # the chain part of the network label ("<chain>-mainnet" etc.). Each tier
 # sets its own here; -DFULLNODE_CLIENT=... overrides.
 if(NOT DEFINED FULLNODE_CLIENT)
-	set(FULLNODE_CLIENT "ecashd")
+	set(FULLNODE_CLIENT "lotusd")
 endif()
 if(NOT DEFINED FULLNODE_CHAIN)
-	set(FULLNODE_CHAIN "ecash")
+	set(FULLNODE_CHAIN "lotus")
 endif()
 
 # Generate the config
