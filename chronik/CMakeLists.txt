@@ -137,7 +137,7 @@ target_include_directories(chronik-bridge
 )
 target_link_libraries(chronik-bridge
     util
-    leveldb
+    lotus_v2_mdbx
 )
 
 # Chronik library
@@ -151,6 +151,7 @@ add_library(chronik
 target_link_libraries(chronik
     chronik-bridge
     chronik_lib
+    lotus_v2_mdbx
 )
 
 # Plugins require us to link against libpython

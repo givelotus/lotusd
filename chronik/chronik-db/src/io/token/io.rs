@@ -10,7 +10,7 @@ use bitcoinsuite_slp::{
     structs::{GenesisInfo, TokenMeta},
     verify::SpentToken,
 };
-use rocksdb::WriteBatch;
+use crate::db::WriteBatch;
 use thiserror::Error;
 
 use crate::{
@@ -118,7 +118,7 @@ impl<'a> TokenCol<'a> {
     fn has_any_tokens(&self) -> Result<bool> {
         Ok(self
             .db
-            .iterator(self.cf_token_meta, b"", rocksdb::Direction::Forward)
+            .iterator(self.cf_token_meta, b"", crate::db::Direction::Forward)
             .next()
             .transpose()?
             .is_some())
@@ -329,18 +329,18 @@ impl<'a> TokenWriter<'a> {
     }
 
     /// Add the column families used for SLPv2.
-    pub(crate) fn add_cfs(columns: &mut Vec<rocksdb::ColumnFamilyDescriptor>) {
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(
+    pub(crate) fn add_cfs(columns: &mut Vec<crate::db::ColumnFamilyDescriptor>) {
+        columns.push(crate::db::ColumnFamilyDescriptor::new(
             CF_TOKEN_GENESIS_INFO,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(
+        columns.push(crate::db::ColumnFamilyDescriptor::new(
             CF_TOKEN_META,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(
+        columns.push(crate::db::ColumnFamilyDescriptor::new(
             CF_TOKEN_TX,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
     }
 }

@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 use abc_rust_error::Result;
-use rocksdb::ColumnFamilyDescriptor;
+use crate::db::ColumnFamilyDescriptor;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -72,7 +72,7 @@ impl<'a> BlockStatsWriter<'a> {
     /// add them to the `WriteBatch`.
     pub fn insert(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         block_height: BlockHeight,
         block_size: u64,
         txs: &[IndexTx<'_>],
@@ -125,7 +125,7 @@ impl<'a> BlockStatsWriter<'a> {
     /// Delete the block stats for the block with the given height.
     pub fn delete(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         block_height: BlockHeight,
     ) {
         batch.delete_cf(self.col.cf, bh_to_bytes(block_height));
@@ -134,7 +134,7 @@ impl<'a> BlockStatsWriter<'a> {
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         columns.push(ColumnFamilyDescriptor::new(
             CF_BLK_STATS,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
     }
 }
@@ -176,7 +176,7 @@ mod tests {
         tx::{Tx, TxId, TxMut, TxOutput},
     };
     use pretty_assertions::assert_eq;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,

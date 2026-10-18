@@ -27,7 +27,7 @@ use std::{ops::Range, time::Instant};
 
 use abc_rust_error::Result;
 use bitcoinsuite_core::tx::TxId;
-use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
+use crate::db::{ColumnFamilyDescriptor, Options, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -520,7 +520,7 @@ impl<'a> TxReader<'a> {
         let mut iter = self.col.db.iterator(
             self.col.cf_blk_by_first_tx,
             &tx_num_to_bytes(tx_num),
-            rocksdb::Direction::Reverse,
+            crate::db::Direction::Reverse,
         );
         match iter.next() {
             Some(result) => {
@@ -566,7 +566,7 @@ mod tests {
     use abc_rust_error::Result;
     use bitcoinsuite_core::tx::TxId;
     use pretty_assertions::assert_eq;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,

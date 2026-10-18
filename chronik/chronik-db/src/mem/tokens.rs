@@ -877,7 +877,7 @@ mod tests {
         );
 
         // Force-delete TokenMeta for TOKEN_ID4 (MintVault), simulate corruption
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = crate::db::WriteBatch::default();
         batch.delete_cf(db.cf(CF_TOKEN_META)?, tx_num_to_bytes(4));
         db.write_batch(batch)?;
 

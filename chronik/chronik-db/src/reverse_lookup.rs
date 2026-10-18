@@ -50,7 +50,7 @@ use std::{
 };
 
 use abc_rust_error::Result;
-use rocksdb::{ColumnFamilyDescriptor, WriteBatch};
+use crate::db::{ColumnFamilyDescriptor, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -143,7 +143,7 @@ impl IndexError {
 fn partial_merge_ordered_list(
     _key: &[u8],
     _existing_value: Option<&[u8]>,
-    _operands: &rocksdb::MergeOperands,
+    _operands: &crate::db::MergeOperands,
 ) -> Option<Vec<u8>> {
     // We don't use partial merge
     None
@@ -152,7 +152,7 @@ fn partial_merge_ordered_list(
 fn init_ordered_list<SN: for<'a> Deserialize<'a>>(
     _key: &[u8],
     existing_value: Option<&[u8]>,
-    operands: &rocksdb::MergeOperands,
+    operands: &crate::db::MergeOperands,
 ) -> Result<Vec<SN>> {
     let mut nums = match existing_value {
         Some(num) => db_deserialize::<Vec<SN>>(num)?,
@@ -191,7 +191,7 @@ fn ser_ordered_list<SN: Serialize>(
 impl<L: LookupColumn> ReverseLookup<L> {
     /// Add the cfs required by the reverse lookup index.
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
-        let mut options = rocksdb::Options::default();
+        let mut options = crate::db::Options::default();
         let merge_op_name = format!("{}::merge_ordered_list", L::CF_INDEX);
         options.set_merge_operator(
             merge_op_name.as_str(),
@@ -357,7 +357,7 @@ mod tests {
 
     use abc_rust_error::Result;
     use pretty_assertions::assert_eq;
-    use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch};
+    use crate::db::{ColumnFamilyDescriptor, Options, WriteBatch};
     use serde::{Deserialize, Serialize};
 
     use crate::{

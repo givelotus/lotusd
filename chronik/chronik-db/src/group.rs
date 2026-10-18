@@ -133,8 +133,21 @@ pub trait Group {
 pub trait UtxoData:
     Default + for<'a> Deserialize<'a> + Serialize + 'static
 {
+    /// Total duplicate value byte size (`12 + data_size`) when the serialized
+    /// duplicate value has a fixed length (enabling `MDBX_DUPFIXED`), or `None`
+    /// when variable-length.
+    const FIXED_DUP_SIZE: Option<usize> = None;
+
     /// Function that extracts the [`UtxoData`] from an output.
     fn from_output(output: &TxOutput) -> Self;
+
+    /// Append the compact duplicate-value payload after the 12-byte big-endian
+    /// `(tx_num, out_idx)` outpoint prefix.
+    fn ser_dup_data(&self, buf: &mut Vec<u8>);
+
+    /// Decode the compact duplicate-value payload following the 12-byte
+    /// big-endian `(tx_num, out_idx)` outpoint prefix.
+    fn deser_dup_data(bytes: &[u8]) -> Option<Self>;
 }
 
 /// [`UtxoData`] that only stores the output sats but not the script.
@@ -143,8 +156,19 @@ pub trait UtxoData:
 pub type UtxoDataValue = i64;
 
 impl UtxoData for UtxoDataValue {
+    const FIXED_DUP_SIZE: Option<usize> = Some(20);
+
     fn from_output(output: &TxOutput) -> Self {
         output.sats
+    }
+
+    fn ser_dup_data(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_le_bytes());
+    }
+
+    fn deser_dup_data(bytes: &[u8]) -> Option<Self> {
+        let arr: [u8; 8] = bytes.try_into().ok()?;
+        Some(i64::from_le_bytes(arr))
     }
 }
 
@@ -153,8 +177,24 @@ impl UtxoData for UtxoDataValue {
 pub type UtxoDataOutput = (i64, Bytes);
 
 impl UtxoData for UtxoDataOutput {
+    const FIXED_DUP_SIZE: Option<usize> = None;
+
     fn from_output(output: &TxOutput) -> Self {
         (output.sats, output.script.bytecode().clone())
+    }
+
+    fn ser_dup_data(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.0.to_le_bytes());
+        buf.extend_from_slice(&self.1);
+    }
+
+    fn deser_dup_data(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 8 {
+            return None;
+        }
+        let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+        let sats = i64::from_le_bytes(arr);
+        Some((sats, Bytes::copy_from_slice(&bytes[8..])))
     }
 }
 

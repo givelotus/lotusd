@@ -8,7 +8,7 @@ use bitcoinsuite_core::{
     tx::{Coin, OutPoint, Tx, TxId, TxInput, TxMut, TxOutput},
 };
 use bitcoinsuite_slp::{structs::Atoms, token_id::TokenId};
-use rocksdb::WriteBatch;
+use crate::db::WriteBatch;
 
 use crate::{
     db::Db,
