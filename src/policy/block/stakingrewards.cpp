@@ -21,8 +21,7 @@
 static constexpr int STAKING_REWARD_RATIO = 10;
 
 bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
-    if (!m_blockIndex.pprev ||
-        !IsCowperthwaiteEnabled(m_consensusParams, m_blockIndex.pprev)) {
+    if (!m_blockIndex.pprev) {
         return true;
     }
 
@@ -76,7 +75,7 @@ Amount GetStakingRewardsAmount(const Amount &coinbaseValue) {
 
 bool IsStakingRewardsActivated(const Consensus::Params &params,
                                const CBlockIndex *pprev) {
-    return IsCowperthwaiteEnabled(params, pprev) &&
+    return pprev != nullptr &&
            gArgs.GetBoolArg("-avalanchestakingrewards",
                             params.enableStakingRewards);
 }

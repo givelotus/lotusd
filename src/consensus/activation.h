@@ -7,6 +7,10 @@
 
 #include <cstdint>
 
+// Native V2 activates the retained legacy checks from genesis. Compatibility
+// entry points remain until the native validation call sites replace them;
+// a null predecessor means genesis and is active, rather than pre-activation.
+
 class CBlockIndex;
 
 namespace Consensus {
@@ -51,5 +55,9 @@ bool IsWellingtonEnabled(const Consensus::Params &params,
 bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight);
 bool IsCowperthwaiteEnabled(const Consensus::Params &params,
                             const CBlockIndex *pindexPrev);
+
+bool IsMengerEnabled(const Consensus::Params &params, int64_t median_time_past);
+bool IsMengerEnabled(const Consensus::Params &params,
+                     const CBlockIndex *pindexPrev);
 
 #endif // BITCOIN_CONSENSUS_ACTIVATION_H
