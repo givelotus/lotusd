@@ -221,25 +221,33 @@ struct Path {
         // Bit-reversing each byte maps tree bit (depth % 8 == 0) to MSB 0x80
         // so that deep SMT ancestors share a lexicographic prefix in 4 KB
         // libmdbx B+Tree pages without changing Bit() or UtxoNode hashes.
-        Bytes key;
-        key.reserve(35);
-        key.push_back('N');
-        for (uint8_t b : prefix) key.push_back(static_cast<char>(ReverseByte(b)));
-        Put(key, depth, 2);
-        return key;
+        char buf[35];
+        buf[0] = 'N';
+        for (size_t i = 0; i < 32; ++i) {
+            buf[1 + i] = static_cast<char>(ReverseByte(prefix[i]));
+        }
+        buf[33] = static_cast<char>(depth & 0xffu);
+        buf[34] = static_cast<char>((depth >> 8) & 0xffu);
+        return Bytes(buf, 35);
     }
     bool Contains(const Hash &key) const {
         for (unsigned d = 0; d < depth; ++d) if (Bit(key, d) != Bit(prefix, d)) return false;
         return true;
     }
+    bool operator==(const Path &o) const noexcept {
+        return depth == o.depth && prefix == o.prefix;
+    }
 };
 Bytes CoinKey(const Outpoint &outpoint) {
-    Bytes key;
-    key.reserve(37);
-    key.push_back('C');
-    for (uint8_t b : outpoint.tx_id) key.push_back(static_cast<char>(ReverseByte(b)));
-    Put(key, outpoint.index, 4);
-    return key;
+    char buf[37];
+    buf[0] = 'C';
+    for (size_t i = 0; i < 32; ++i) {
+        buf[1 + i] = static_cast<char>(ReverseByte(outpoint.tx_id[i]));
+    }
+    for (unsigned i = 0; i < 4; ++i) {
+        buf[33 + i] = static_cast<char>((outpoint.index >> (8 * i)) & 0xffu);
+    }
+    return Bytes(buf, 37);
 }
 Bytes UndoKey(const Hash &tip) { Bytes key(1, 'U'); PutHash(key, tip); return key; }
 Bytes CoinBytes(const Coin &coin) {
@@ -296,10 +304,15 @@ Summary GetSummary(Reader &r) {
 struct Node {
     Summary summary;
     std::optional<Coin> coin;
+    Bytes coin_bytes;
+    Hash coin_outpoint_key{};
     std::array<Summary, 2> children;
 };
-Node Leaf(const Coin &coin) {
+Node Leaf(const Coin &coin, Bytes encoded = {}) {
     Node node; node.summary.kind = 1; node.coin = coin;
+    if (encoded.empty()) encoded = CoinBytes(coin);
+    node.coin_bytes = std::move(encoded);
+    node.coin_outpoint_key = OutpointKey(coin.outpoint);
     if (!UtxoLeaf(coin, node.summary.digest)) Fail(DiskStateErrorCode::InvalidCoin, "invalid leaf");
     return node;
 }
@@ -315,8 +328,12 @@ Node Branch(unsigned depth, const Summary &left, const Summary &right) {
 Bytes EncodeNode(const Node &node) {
     Bytes bytes;
     PutSummary(bytes, node.summary);
-    if (node.summary.kind == 1) PutBlob(bytes, CoinBytes(*node.coin));
-    else { PutSummary(bytes, node.children[0]); PutSummary(bytes, node.children[1]); }
+    if (node.summary.kind == 1) {
+        PutBlob(bytes, node.coin_bytes.empty() ? CoinBytes(*node.coin) : node.coin_bytes);
+    } else {
+        PutSummary(bytes, node.children[0]);
+        PutSummary(bytes, node.children[1]);
+    }
     return bytes;
 }
 Node ParseNode(BytesView bytes, const Path &path, const Summary &expected) {
@@ -326,8 +343,9 @@ Node ParseNode(BytesView bytes, const Path &path, const Summary &expected) {
     Require(stored == expected && stored.kind != 0, "node/head disagreement");
     Node node;
     if (stored.kind == 1) {
-        node = Leaf(ParseCoin(r.BlobView(MAX_COIN_BYTES)));
-        Require(path.Contains(OutpointKey(node.coin->outpoint)), "leaf path mismatch");
+        const BytesView cb = r.BlobView(MAX_COIN_BYTES);
+        node = Leaf(ParseCoin(cb), Bytes(cb));
+        Require(path.Contains(node.coin_outpoint_key), "leaf path mismatch");
     } else {
         auto left = GetSummary(r); auto right = GetSummary(r);
         node = Branch(path.depth, left, right);
@@ -1456,15 +1474,45 @@ struct DiskStateStore::Impl {
 };
 
 struct DiskStateTransaction::Impl {
+    struct PathHash {
+        size_t operator()(const Path &p) const noexcept {
+            uint64_t h0 = 0, h1 = 0, h2 = 0, h3 = 0;
+            std::memcpy(&h0, p.prefix.data(), 8);
+            std::memcpy(&h1, p.prefix.data() + 8, 8);
+            std::memcpy(&h2, p.prefix.data() + 16, 8);
+            std::memcpy(&h3, p.prefix.data() + 24, 8);
+            uint64_t z = h0 ^ (h1 * 0x9e3779b97f4a7c15ULL) ^
+                         (h2 * 0xbf58476d1ce4e5b9ULL) ^
+                         (h3 * 0x94d049bb133111ebULL) ^
+                         (static_cast<uint64_t>(p.depth) * 0xd6e8feb86659fd93ULL);
+            z ^= z >> 30;
+            z *= 0xbf58476d1ce4e5b9ULL;
+            z ^= z >> 27;
+            z *= 0x94d049bb133111ebULL;
+            z ^= z >> 31;
+            return static_cast<size_t>(z);
+        }
+    };
+    struct CachedNode {
+        std::optional<Node> node;
+        bool dirty{false};
+        bool digest_dirty{false};
+        bool in_db{false};
+        Value db_before;
+    };
     std::shared_ptr<DiskStateStore::Impl> store;
-    Head head;
-    Changes changes;
+    mutable Head head;
+    mutable Changes changes;
+    mutable std::unordered_map<Path, CachedNode, PathHash> node_cache;
+    mutable bool has_dirty_nodes{false};
     mutable DiskStateStats stats;
     bool failed{};
     bool finished{};
     std::optional<DiskRecoveryUpdate> recovery_update;
     explicit Impl(std::shared_ptr<DiskStateStore::Impl> owner)
-        : store(std::move(owner)), head(store->head) {}
+        : store(std::move(owner)), head(store->head) {
+        node_cache.reserve(16384);
+    }
     ~Impl() { if (!finished) store->active = false; }
     void Usable() const {
         store->Usable();
@@ -1486,7 +1534,26 @@ struct DiskStateTransaction::Impl {
         ++stats.database_reads;
         return store->Read(key);
     }
-    void Set(const Bytes &key, Value value) {
+    void SetWithBefore(const Bytes &key, Value before, Value value) const {
+        Usable();
+        auto it = changes.find(key);
+        if (it == changes.end()) {
+            if (before == value) return;
+            stats.pending_bytes += key.size() + (before ? 2 * before->size() : 0);
+            it = changes.emplace(key, Change{before, before}).first;
+        }
+        if (it->second.after) stats.pending_bytes -= it->second.after->size();
+        it->second.after = std::move(value);
+        if (it->second.after) stats.pending_bytes += it->second.after->size();
+        if (it->second.before == it->second.after) {
+            stats.pending_bytes -= key.size() + (it->second.before ? it->second.before->size() : 0) +
+                                   (it->second.after ? it->second.after->size() : 0);
+            changes.erase(it);
+        }
+        if (stats.pending_bytes > store->options.max_pending_bytes)
+            Fail(DiskStateErrorCode::Resource, "transaction exceeds operational memory limit");
+    }
+    void Set(const Bytes &key, Value value) const {
         Usable();
         auto it = changes.find(key);
         if (it == changes.end()) {
@@ -1506,17 +1573,140 @@ struct DiskStateTransaction::Impl {
         if (stats.pending_bytes > store->options.max_pending_bytes)
             Fail(DiskStateErrorCode::Resource, "transaction exceeds operational memory limit");
     }
-    Node GetNode(const Path &path, const Summary &summary) const {
-        Require(summary.kind != 0, "read empty node");
-        const ValueView bytes = ReadView(path.Key()); Require(bytes.has_value(), "missing tree node");
-        return ParseNode(*bytes, path, summary);
+    void EnsureBranchDigestsAt(const Path &path, Summary &summary) const {
+        if (summary.kind != 2) return;
+        auto it = node_cache.find(path);
+        if (it == node_cache.end() || !it->second.node.has_value() || !it->second.digest_dirty) {
+            return;
+        }
+        Node &node = *it->second.node;
+        if (node.children[0].kind == 2) {
+            EnsureBranchDigestsAt(path.Child(0), node.children[0]);
+        }
+        if (node.children[1].kind == 2) {
+            EnsureBranchDigestsAt(path.Child(1), node.children[1]);
+        }
+        Require(UtxoNode(path.depth, node.children[0].digest, node.children[1].digest, node.summary.digest), "node hash");
+        summary.digest = node.summary.digest;
+        it->second.digest_dirty = false;
     }
-    Summary SetNode(const Path &path, const Node &node) {
-        Set(path.Key(), EncodeNode(node)); return node.summary;
+    void EnsureBranchDigests() const {
+        if (!has_dirty_nodes) return;
+        EnsureBranchDigestsAt(Path{}, head.root);
+    }
+    void FlushNodes() const {
+        if (!has_dirty_nodes) return;
+        EnsureBranchDigests();
+        for (auto &[path, entry] : node_cache) {
+            if (!entry.dirty) continue;
+            entry.dirty = false;
+            Value after = entry.node ? Value(EncodeNode(*entry.node)) : std::nullopt;
+            SetWithBefore(path.Key(), entry.in_db ? entry.db_before : std::nullopt, std::move(after));
+        }
+        has_dirty_nodes = false;
+    }
+    const Node &GetNode(const Path &path, const Summary &summary) const {
+        Require(summary.kind != 0, "read empty node");
+        const auto cit = node_cache.find(path);
+        if (cit != node_cache.end()) {
+            Require(cit->second.node.has_value(), "missing tree node");
+            Require(cit->second.node->summary.kind == summary.kind &&
+                    (cit->second.digest_dirty || cit->second.node->summary.digest == summary.digest),
+                    "corrupt node summary");
+            return *cit->second.node;
+        }
+        const Bytes key = path.Key();
+        const ValueView bytes = ReadView(key);
+        Require(bytes.has_value(), "missing tree node");
+        Node parsed = ParseNode(*bytes, path, summary);
+        auto [it, _] = node_cache.emplace(path, CachedNode{std::move(parsed), false, false, true, Bytes(*bytes)});
+        return *it->second.node;
+    }
+    Summary SetNode(const Path &path, Node node) {
+        const Summary s = node.summary;
+        auto it = node_cache.find(path);
+        if (it != node_cache.end()) {
+            it->second.node = std::move(node);
+            it->second.dirty = true;
+            it->second.digest_dirty = false;
+        } else {
+            node_cache.emplace(path, CachedNode{std::move(node), true, false, false, std::nullopt});
+        }
+        has_dirty_nodes = true;
+        return s;
+    }
+    Summary SetBranchLazy(const Path &path, const Summary &left, const Summary &right) {
+        Require(path.depth < 256, "branch depth");
+        Require((left.kind != 0 || right.kind != 0) &&
+                !(left.kind == 0 && right.kind == 1) && !(left.kind == 1 && right.kind == 0),
+                "uncollapsed branch");
+        Node node;
+        node.summary.kind = 2;
+        node.summary.digest = Hash{};
+        node.children = {left, right};
+        const Summary s = node.summary;
+        auto it = node_cache.find(path);
+        if (it != node_cache.end()) {
+            it->second.node = std::move(node);
+            it->second.dirty = true;
+            it->second.digest_dirty = true;
+        } else {
+            node_cache.emplace(path, CachedNode{std::move(node), true, true, false, std::nullopt});
+        }
+        has_dirty_nodes = true;
+        return s;
+    }
+    void ClearNode(const Path &path) {
+        auto it = node_cache.find(path);
+        if (it != node_cache.end()) {
+            if (!it->second.in_db) {
+                node_cache.erase(it);
+                return;
+            }
+            it->second.node.reset();
+            it->second.dirty = true;
+            it->second.digest_dirty = false;
+            has_dirty_nodes = true;
+            return;
+        }
+        node_cache.emplace(path, CachedNode{std::nullopt, true, false, false, std::nullopt});
+        has_dirty_nodes = true;
+    }
+    void AuthCheckCoin(const Outpoint &outpoint, const Hash &key, bool &out_present) const {
+        Usable();
+        Path path;
+        Summary summary = head.root;
+        out_present = false;
+        uint8_t last_sibling_kind = 0;
+        bool has_parent = false;
+        while (summary.kind) {
+            const Node &node = GetNode(path, summary);
+            if (summary.kind == 1) {
+                const auto coin = ReadView(CoinKey(node.coin->outpoint));
+                Require(coin && BytesView(*coin) == node.coin_bytes, "coin/tree proof disagreement");
+                if (node.coin->outpoint == outpoint) {
+                    out_present = true;
+                } else {
+                    Require(node.coin_outpoint_key != key, "generated proof mismatch");
+                    out_present = false;
+                }
+                return;
+            }
+            const bool bit = Bit(key, path.depth);
+            last_sibling_kind = node.children[1 - bit].kind;
+            has_parent = true;
+            summary = node.children[bit];
+            path = path.Child(bit);
+        }
+        if (has_parent) {
+            Require(last_sibling_kind != 0, "generated proof mismatch");
+        }
+        const auto raw = ReadView(CoinKey(outpoint));
+        Require(!raw.has_value(), "coin membership disagreement");
     }
     Summary Join(const Path &path, const Node &old, const Node &added) {
-        const Hash old_key = OutpointKey(old.coin->outpoint);
-        const Hash key = OutpointKey(added.coin->outpoint);
+        const Hash &old_key = old.coin_outpoint_key;
+        const Hash &key = added.coin_outpoint_key;
         Require(key != old_key, "leaf key collision");
         const bool old_bit = Bit(old_key, path.depth), bit = Bit(key, path.depth);
         std::array<Summary, 2> children;
@@ -1525,46 +1715,51 @@ struct DiskStateTransaction::Impl {
             children[old_bit] = SetNode(path.Child(old_bit), old);
             children[bit] = SetNode(path.Child(bit), added);
         }
-        return SetNode(path, Branch(path.depth, children[0], children[1]));
+        return SetBranchLazy(path, children[0], children[1]);
     }
     Summary InsertAt(const Path &path, const Summary &summary, const Node &added) {
         if (!summary.kind) return SetNode(path, added);
-        Node old = GetNode(path, summary);
-        if (old.summary.kind == 1) {
-            if (OutpointKey(old.coin->outpoint) == OutpointKey(added.coin->outpoint))
+        const Node &old_ref = GetNode(path, summary);
+        if (old_ref.summary.kind == 1) {
+            if (old_ref.coin_outpoint_key == added.coin_outpoint_key)
                 Fail(DiskStateErrorCode::Duplicate, "occupied outpoint key");
-            return Join(path, old, added);
+            Node old_copy = old_ref;
+            return Join(path, old_copy, added);
         }
-        const bool bit = Bit(OutpointKey(added.coin->outpoint), path.depth);
-        old.children[bit] = InsertAt(path.Child(bit), old.children[bit], added);
-        return SetNode(path, Branch(path.depth, old.children[0], old.children[1]));
+        std::array<Summary, 2> children = old_ref.children;
+        const bool bit = Bit(added.coin_outpoint_key, path.depth);
+        children[bit] = InsertAt(path.Child(bit), children[bit], added);
+        return SetBranchLazy(path, children[0], children[1]);
     }
-    Summary EraseAt(const Path &path, const Summary &summary, const Outpoint &outpoint) {
+    Summary EraseAt(const Path &path, const Summary &summary, const Outpoint &outpoint, const Hash &outpoint_key) {
         if (!summary.kind) Fail(DiskStateErrorCode::Missing, "missing leaf");
-        Node old = GetNode(path, summary);
-        if (old.summary.kind == 1) {
-            Require(old.coin->outpoint == outpoint, "coin/tree disagreement");
-            Set(path.Key(), std::nullopt); return {};
+        const Node &old_ref = GetNode(path, summary);
+        if (old_ref.summary.kind == 1) {
+            Require(old_ref.coin->outpoint == outpoint, "coin/tree disagreement");
+            ClearNode(path);
+            return {};
         }
-        const bool bit = Bit(OutpointKey(outpoint), path.depth);
+        std::array<Summary, 2> children = old_ref.children;
+        const bool bit = Bit(outpoint_key, path.depth);
         // Child digests are authenticated by UtxoNode, but cardinality kinds
         // are not. Authenticate the unchanged sibling's actual record before
         // trusting its kind to retain a branch or collapse a singleton. The
         // changed child's returned summary is derived from validated records.
-        if (old.children[!bit].kind)
-            (void)GetNode(path.Child(!bit), old.children[!bit]);
-        old.children[bit] = EraseAt(path.Child(bit), old.children[bit], outpoint);
-        const auto left = old.children[0].kind, right = old.children[1].kind;
+        if (children[!bit].kind)
+            (void)GetNode(path.Child(!bit), children[!bit]);
+        children[bit] = EraseAt(path.Child(bit), children[bit], outpoint, outpoint_key);
+        const auto left = children[0].kind, right = children[1].kind;
         if ((left == 0 && right == 1) || (left == 1 && right == 0)) {
             const bool survivor = right == 1;
-            Node leaf = GetNode(path.Child(survivor), old.children[survivor]);
-            Set(path.Child(survivor).Key(), std::nullopt);
-            return SetNode(path, leaf);
+            Node leaf = GetNode(path.Child(survivor), children[survivor]);
+            ClearNode(path.Child(survivor));
+            return SetNode(path, std::move(leaf));
         }
-        return SetNode(path, Branch(path.depth, old.children[0], old.children[1]));
+        return SetBranchLazy(path, children[0], children[1]);
     }
     void End() { finished = true; store->active = false; }
     DiskStateStats Stats() const {
+        FlushNodes();
         auto result = stats;
         for (const auto &[key, change] : changes) {
             (void)change;
@@ -1595,7 +1790,7 @@ template <typename Read> void Prove(Read read, const Head &head, const Outpoint 
             proof.coin = node.coin;
             proof.presence = proof.coin->outpoint == query ? ProofPresence::Present : ProofPresence::OtherLeaf;
             const auto coin = read(CoinKey(proof.coin->outpoint));
-            Require(coin && BytesView(*coin) == CoinBytes(*proof.coin), "coin/tree proof disagreement");
+            Require(coin && BytesView(*coin) == node.coin_bytes, "coin/tree proof disagreement");
             break;
         }
         const bool bit = Bit(key, path.depth);
@@ -2406,6 +2601,7 @@ bool DiskStateStore::ImportFastSyncPivot(const DiskStateMetadata &pivot_metadata
         } catch (const std::exception &e) {
             Fail(DiskStateErrorCode::Corruption, e.what());
         }
+        tx.FlushNodes();
         Require(StateRoot(impl_->options.identity, pivot_header.height, tx.head.root.digest, mon) ==
                 pivot_header.state_root,
                 "pivot state_root mismatch");
@@ -2471,19 +2667,21 @@ bool DiskStateStore::PeelBlockStateReverse(
                 "reverse peel parent header/metadata binding");
         DiskStateTransaction::Impl tx(impl_);
         for (const Outpoint &op : net_created_to_erase) {
-            std::optional<Coin> existing;
-            AuthReadCoin([&](const Bytes &key) { return tx.ReadView(key); }, tx.head, op, existing);
+            const Hash key = OutpointKey(op);
+            bool existing = false;
+            tx.AuthCheckCoin(op, key, existing);
             if (!existing) Fail(DiskStateErrorCode::Missing, "reverse peel missing created coin");
-            tx.head.root = tx.EraseAt(Path{}, tx.head.root, op);
+            tx.head.root = tx.EraseAt(Path{}, tx.head.root, op, key);
             tx.Set(CoinKey(op), std::nullopt);
         }
         for (const Coin &coin : prior_spent_to_insert) {
-            const Bytes bytes = CoinBytes(coin);
-            std::optional<Coin> existing;
-            AuthReadCoin([&](const Bytes &key) { return tx.ReadView(key); }, tx.head, coin.outpoint, existing);
+            Node leaf = Leaf(coin);
+            bool existing = false;
+            tx.AuthCheckCoin(coin.outpoint, leaf.coin_outpoint_key, existing);
             if (existing) Fail(DiskStateErrorCode::Duplicate, "reverse peel prior spent coin already present");
-            tx.head.root = tx.InsertAt(Path{}, tx.head.root, Leaf(coin));
-            tx.Set(CoinKey(coin.outpoint), bytes);
+            Bytes bytes = leaf.coin_bytes;
+            tx.head.root = tx.InsertAt(Path{}, tx.head.root, leaf);
+            tx.Set(CoinKey(coin.outpoint), std::move(bytes));
         }
         MonetaryState parent_mon{};
         try {
@@ -2491,6 +2689,7 @@ bool DiskStateStore::PeelBlockStateReverse(
         } catch (const std::exception &e) {
             Fail(DiskStateErrorCode::Corruption, e.what());
         }
+        tx.FlushNodes();
         if (StateRoot(impl_->options.identity, parent_header.height, tx.head.root.digest, parent_mon) !=
             parent_header.state_root) {
             Fail(DiskStateErrorCode::UndoMismatch, "reverse peel parent state_root mismatch");
@@ -2810,8 +3009,8 @@ bool DiskStateStore::PrefetchOutpointsAsync(
         MDBX_txn *rtxn = impl_->EnsureReadTxn();
         constexpr uintptr_t kPageMask = ~uintptr_t(4095);
 
-        auto madvise_val = [kPageMask](const MDBX_val &val,
-                                       uintptr_t &last_page) noexcept {
+        auto madvise_val = [](const MDBX_val &val,
+                              uintptr_t &last_page) noexcept {
             if (!val.iov_base || val.iov_len == 0) {
                 return;
             }
@@ -2928,29 +3127,38 @@ bool DiskStateStore::CommitFinalizedOverlay(
     }
     return txn.Commit(next, fully_connected, error);
 }
-Hash DiskStateTransaction::Root() const { return impl_ ? impl_->head.root.digest : EmptyUtxoRoot(); }
+Hash DiskStateTransaction::Root() const {
+    if (!impl_) return EmptyUtxoRoot();
+    impl_->EnsureBranchDigests();
+    return impl_->head.root.digest;
+}
 DiskStateStats DiskStateTransaction::Stats() const { return impl_ ? impl_->Stats() : DiskStateStats{}; }
 bool DiskStateTransaction::ReadCoin(const Outpoint &outpoint, std::optional<Coin> &out, DiskStateError &error) const {
     return Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed transaction");
+        impl_->FlushNodes();
         ::lotus::v2::AuthReadCoin([&](const Bytes &key) { return impl_->ReadView(key); }, impl_->head, outpoint, out);
     });
 }
 bool DiskStateTransaction::Prove(const Outpoint &query, CoinProof &out, DiskStateError &error) const {
     return Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed transaction");
-        impl_->Usable(); ::lotus::v2::Prove([&](const Bytes &key) { return impl_->ReadView(key); }, impl_->head, query, out);
+        impl_->Usable();
+        impl_->FlushNodes();
+        ::lotus::v2::Prove([&](const Bytes &key) { return impl_->ReadView(key); }, impl_->head, query, out);
     });
 }
 bool DiskStateTransaction::Insert(const Coin &coin, DiskStateError &error) {
     const bool ok = Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed transaction");
-        impl_->Usable(); const Bytes bytes = CoinBytes(coin);
-        std::optional<Coin> existing;
-        AuthReadCoin([&](const Bytes &key) { return impl_->ReadView(key); }, impl_->head, coin.outpoint, existing);
+        impl_->Usable();
+        Node leaf = Leaf(coin);
+        bool existing = false;
+        impl_->AuthCheckCoin(coin.outpoint, leaf.coin_outpoint_key, existing);
         if (existing) Fail(DiskStateErrorCode::Duplicate, "duplicate coin");
-        impl_->head.root = impl_->InsertAt(Path{}, impl_->head.root, Leaf(coin));
-        impl_->Set(CoinKey(coin.outpoint), bytes);
+        Bytes bytes = leaf.coin_bytes;
+        impl_->head.root = impl_->InsertAt(Path{}, impl_->head.root, leaf);
+        impl_->Set(CoinKey(coin.outpoint), std::move(bytes));
     });
     if (!ok && impl_ && error.code != DiskStateErrorCode::Duplicate && error.code != DiskStateErrorCode::InvalidCoin)
         impl_->failed = true;
@@ -2959,10 +3167,12 @@ bool DiskStateTransaction::Insert(const Coin &coin, DiskStateError &error) {
 bool DiskStateTransaction::Erase(const Outpoint &outpoint, DiskStateError &error) {
     const bool ok = Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed transaction");
-        impl_->Usable(); std::optional<Coin> existing;
-        AuthReadCoin([&](const Bytes &key) { return impl_->ReadView(key); }, impl_->head, outpoint, existing);
+        impl_->Usable();
+        const Hash key = OutpointKey(outpoint);
+        bool existing = false;
+        impl_->AuthCheckCoin(outpoint, key, existing);
         if (!existing) Fail(DiskStateErrorCode::Missing, "missing coin");
-        impl_->head.root = impl_->EraseAt(Path{}, impl_->head.root, outpoint);
+        impl_->head.root = impl_->EraseAt(Path{}, impl_->head.root, outpoint, key);
         impl_->Set(CoinKey(outpoint), std::nullopt);
     });
     if (!ok && impl_ && error.code != DiskStateErrorCode::Missing) impl_->failed = true;
@@ -2980,7 +3190,9 @@ bool DiskStateTransaction::CommitImpl(const DiskStateMetadata &next, const Heade
                                       DiskStateError &error) {
     return Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed transaction");
-        impl_->Usable(); auto &store = *impl_->store;
+        impl_->Usable();
+        impl_->FlushNodes();
+        auto &store = *impl_->store;
         const uint64_t commit_reads_before = store.stats.database_reads;
         if (impl_->recovery_update) {
             store.RecoveryFence(*impl_->recovery_update, true);
