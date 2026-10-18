@@ -213,14 +213,8 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
         }
     }
     UpdateParentsOf(true, newit);
-    if (m_snapshot_defer_depth > 0) {
-        m_pending_overlay_adds.emplace_back(tx, entry->GetFee() / SATOSHI,
-                                           entry->GetSigChecks());
-    } else {
-        FlushPendingOverlayAdds();
-        AddTransactionToOverlay(m_merklix_overlay, tx,
-                                entry->GetFee() / SATOSHI, entry->GetSigChecks());
-    }
+    m_pending_overlay_adds.emplace_back(tx, entry->GetFee() / SATOSHI,
+                                       entry->GetSigChecks());
 
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
@@ -1060,7 +1054,6 @@ CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
     AssertLockHeld(m_pool.cs);
     assert(m_pool.m_snapshot_defer_depth > 0);
     if (--m_pool.m_snapshot_defer_depth == 0) {
-        m_pool.FlushPendingOverlayAdds();
         if (m_pool.m_snapshot_dirty) {
             m_pool.m_snapshot_dirty = false;
             node::PublishMempoolSnapshot(m_pool);
