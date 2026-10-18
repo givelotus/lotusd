@@ -5,7 +5,6 @@
 #include "mempool_overlay.h"
 
 #include "tagged_hash.h"
-#include <crypto/sha256.h>
 
 #include <algorithm>
 #include <atomic>
@@ -42,10 +41,8 @@ void ReserveBucketsAmortized(Map &m, size_t extra) {
     }
 }
 
-constexpr uint64_t OverlayEffectiveCost(uint64_t linear_cost) noexcept {
-    const auto sq = static_cast<unsigned __int128>(linear_cost) * linear_cost;
-    return linear_cost + static_cast<uint64_t>(sq >> 16);
-}
+constexpr MonetaryProfile kDefaultMonetaryProfile{
+    2, 16, 2, 4, 32, 60, 2, 2000, 3, 1000, 200, Hash{2}};
 
 class OverlayWorkerPool {
 public:
@@ -637,9 +634,7 @@ Hash EmptyTxRoot() {
 }
 
 const MonetaryProfile &GetDefaultV2MonetaryProfile() noexcept {
-    static constexpr MonetaryProfile profile{
-        2, 16, 2, 4, 32, 60, 2, 2000, 3, 1000, 200, Hash{2}};
-    return profile;
+    return kDefaultMonetaryProfile;
 }
 
 MonetaryState GetInitialV2MonetaryState() {
@@ -648,7 +643,7 @@ MonetaryState GetInitialV2MonetaryState() {
     state.tail_subsidy = 200;
     state.prev_work[0] = 2;
     state.ema_block_cost = 4;
-    return state;
+    return InitializeMonetaryGenesis(kDefaultMonetaryProfile, state, 0);
 }
 
 // ============================================================================
@@ -2117,11 +2112,7 @@ Hash UtxoOverlayArena::RootDigestWithExtraCoins(
 // ============================================================================
 
 MempoolOverlayLayer::MempoolOverlayLayer()
-    : base_mon_state_(GetInitialV2MonetaryState()) {
-    const auto [k0, k1] = DeriveEpochSipHashKey(parent_block_id_, layer_id_);
-    siphash_k0_ = k0;
-    siphash_k1_ = k1;
-}
+    : base_mon_state_(GetInitialV2MonetaryState()) {}
 
 MempoolOverlayLayer::MempoolOverlayLayer(
     const Hash &parent_block_id,
@@ -2151,18 +2142,6 @@ void MempoolOverlayLayer::Reset(const Hash &parent_block_id,
     utxo_arena_.Reset(std::move(base_utxo_root));
     utxo_arena_dirty_ = false;
     sum_non_cb_effective_cost_ = 0;
-    total_fees_sats_ = 0;
-    total_sigchecks_ = 0;
-    total_bytes_ = 0;
-    conflict_count_ = 0;
-    const auto [k0, k1] = DeriveEpochSipHashKey(parent_block_id_, layer_id_);
-    siphash_k0_ = k0;
-    siphash_k1_ = k1;
-    syndrome_ = BucketSyndrome{};
-
-    positional_merkle_dirty_ = true;
-    null_merkle_root_ = Hash{};
-    coinbase_merkle_branch_.clear();
 
     active_txs_.clear();
     created_coins_.clear();
@@ -2202,56 +2181,6 @@ void MempoolOverlayLayer::EnsureUtxoArenaUpdated() const {
     utxo_arena_dirty_ = false;
 }
 
-Hash ComputeMerkleRootFromLeftSpine(const Hash &leaf0,
-                                    std::span<const Hash> branch) {
-    Hash cur = leaf0;
-    uint8_t pair_buf[64];
-    for (const Hash &sibling : branch) {
-        std::memcpy(pair_buf, cur.data(), 32);
-        std::memcpy(pair_buf + 32, sibling.data(), 32);
-        SHA256D64(cur.data(), pair_buf, 1);
-    }
-    return cur;
-}
-
-void MempoolOverlayLayer::EnsurePositionalMerkleUpdated() const {
-    if (!positional_merkle_dirty_) {
-        return;
-    }
-    coinbase_merkle_branch_.clear();
-    if (active_txs_.empty()) {
-        null_merkle_root_ = Hash{};
-        positional_merkle_dirty_ = false;
-        return;
-    }
-
-    std::vector<Hash> level;
-    level.reserve(active_txs_.size() + 1);
-    level.push_back(Hash{}); // Slot 0: null coinbase placeholder
-    for (const auto &[tx_id, _] : active_txs_) {
-        level.push_back(tx_id);
-    }
-
-    while (level.size() > 1) {
-        coinbase_merkle_branch_.push_back(level[1]);
-        if (level.size() & 1U) {
-            level.push_back(level.back());
-        }
-        const size_t pairs = level.size() / 2;
-        SHA256D64(level[0].data(), level[0].data(), pairs);
-        level.resize(pairs);
-    }
-    null_merkle_root_ = level[0];
-    positional_merkle_dirty_ = false;
-}
-
-Hash MempoolOverlayLayer::ComputePositionalMerkleRoot(
-    const Hash &coinbase_txid) const {
-    EnsurePositionalMerkleUpdated();
-    return ComputeMerkleRootFromLeftSpine(coinbase_txid,
-                                          coinbase_merkle_branch_);
-}
-
 bool MempoolOverlayLayer::Contains(const Hash &tx_id) const {
     return active_txs_.find(tx_id) != active_txs_.end();
 }
@@ -2270,40 +2199,20 @@ bool MempoolOverlayLayer::AddTransaction(
         return false;
     }
 
-    const uint64_t eff_cost = OverlayEffectiveCost(linear_cost);
+    const uint64_t eff_cost =
+        TransactionEffectiveCost(linear_cost, kDefaultMonetaryProfile);
 
     tx_tree_.Insert(tx_id, tx_hash, tx_ref, payload_bytes);
     sum_non_cb_effective_cost_ += eff_cost;
-    total_fees_sats_ += fee_sats;
-    total_sigchecks_ += sigchecks;
-    total_bytes_ += linear_cost;
-    syndrome_.Add(ComputeShortTxId(siphash_k0_, siphash_k1_, tx_id));
-    positional_merkle_dirty_ = true;
 
     for (const auto &op : spent_outpoints) {
-        const uint32_t new_ref = ++spent_outpoints_[op];
-        if (new_ref == 2) {
-            ++conflict_count_;
-        }
-        if (commit_state_root_in_header_ && !utxo_arena_dirty_) {
-            if (new_ref == 1) {
-                utxo_arena_.EraseOutpoint(op);
-            }
-        } else {
-            utxo_arena_dirty_ = true;
-        }
+        ++spent_outpoints_[op];
     }
 
     for (const auto &coin : created_coins) {
         created_coins_[coin.outpoint] = coin;
-        if (commit_state_root_in_header_ && !utxo_arena_dirty_) {
-            if (spent_outpoints_.find(coin.outpoint) == spent_outpoints_.end()) {
-                utxo_arena_.InsertCoin(coin);
-            }
-        } else {
-            utxo_arena_dirty_ = true;
-        }
     }
+    utxo_arena_dirty_ = true;
 
     OverlayTxEntry entry{};
     entry.tx_id = tx_id;
@@ -2344,34 +2253,6 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
     ReserveBucketsAmortized(created_coins_, entries.size() * 2);
     ReserveBucketsAmortized(spent_outpoints_, entries.size() * 2);
 
-    const bool update_utxo_eagerly =
-        commit_state_root_in_header_ && !utxo_arena_dirty_;
-
-    std::vector<Outpoint> newly_spent_ops;
-    std::vector<Coin> batch_created_list;
-    struct OutpointSlot {
-        Outpoint outpoint{};
-        bool occupied{false};
-    };
-    std::vector<OutpointSlot> batch_created_table;
-    size_t batch_created_mask = 0;
-
-    if (update_utxo_eagerly) {
-        size_t total_created = 0;
-        size_t total_spent = 0;
-        for (const auto &entry : entries) {
-            total_created += entry.created_coins.size();
-            total_spent += entry.spent_outpoints.size();
-        }
-        newly_spent_ops.reserve(total_spent);
-        batch_created_list.reserve(total_created);
-        size_t cap = 16;
-        while (cap < (total_created + 1) * 2) {
-            cap <<= 1;
-        }
-        batch_created_table.resize(cap);
-        batch_created_mask = cap - 1;
-    }
 
     size_t added_count = 0;
     for (auto &entry : entries) {
@@ -2384,38 +2265,16 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
             tx_tree_.Insert(entry.tx_id, entry.tx_hash, entry.tx_ref,
                             entry.payload_bytes);
         }
-        entry.effective_cost = OverlayEffectiveCost(entry.linear_cost);
+        entry.effective_cost =
+            TransactionEffectiveCost(entry.linear_cost, kDefaultMonetaryProfile);
         sum_non_cb_effective_cost_ += entry.effective_cost;
-        total_fees_sats_ += entry.fee_sats;
-        total_sigchecks_ += entry.sigchecks;
-        total_bytes_ += entry.linear_cost;
-        syndrome_.Add(ComputeShortTxId(siphash_k0_, siphash_k1_, entry.tx_id));
 
         for (const auto &op : entry.spent_outpoints) {
-            const uint32_t new_ref = ++spent_outpoints_[op];
-            if (new_ref == 1) {
-                if (update_utxo_eagerly) {
-                    newly_spent_ops.push_back(op);
-                }
-            } else if (new_ref == 2) {
-                ++conflict_count_;
-            }
+            ++spent_outpoints_[op];
         }
 
         for (const auto &coin : entry.created_coins) {
             created_coins_[coin.outpoint] = coin;
-            if (update_utxo_eagerly) {
-                size_t slot = OutpointHasher{}(coin.outpoint) & batch_created_mask;
-                while (batch_created_table[slot].occupied) {
-                    if (batch_created_table[slot].outpoint == coin.outpoint) {
-                        break;
-                    }
-                    slot = (slot + 1) & batch_created_mask;
-                }
-                batch_created_table[slot].outpoint = coin.outpoint;
-                batch_created_table[slot].occupied = true;
-                batch_created_list.push_back(coin);
-            }
         }
 
         const Hash tx_id = entry.tx_id;
@@ -2427,8 +2286,6 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
         return 0;
     }
 
-    positional_merkle_dirty_ = true;
-
     if (tree_already_contains && tx_tree_.Count() != active_txs_.size()) {
         // The adopted tree did not describe exactly these entries; rebuild it
         // from the authoritative entry map rather than publish a wrong root.
@@ -2439,47 +2296,7 @@ size_t MempoolOverlayLayer::AddTransactionBatch(
         }
     }
 
-    if (!update_utxo_eagerly) {
-        utxo_arena_dirty_ = true;
-        return added_count;
-    }
-
-    std::vector<Outpoint> erased_for_arena;
-    erased_for_arena.reserve(newly_spent_ops.size());
-    for (const auto &op : newly_spent_ops) {
-        size_t slot = OutpointHasher{}(op) & batch_created_mask;
-        bool in_batch_created = false;
-        while (batch_created_table[slot].occupied) {
-            if (batch_created_table[slot].outpoint == op) {
-                in_batch_created = true;
-                break;
-            }
-            slot = (slot + 1) & batch_created_mask;
-        }
-        if (!in_batch_created) {
-            erased_for_arena.push_back(op);
-        }
-    }
-
-    std::vector<Coin> inserted_for_arena;
-    inserted_for_arena.reserve(batch_created_list.size());
-    for (const auto &coin : batch_created_list) {
-        if (spent_outpoints_.find(coin.outpoint) == spent_outpoints_.end()) {
-            inserted_for_arena.push_back(coin);
-        }
-    }
-
-    if (erased_for_arena.size() + inserted_for_arena.size() >= 16) {
-        utxo_arena_.BatchUpdateParallel(erased_for_arena, inserted_for_arena);
-    } else {
-        for (const auto &op : erased_for_arena) {
-            utxo_arena_.EraseOutpoint(op);
-        }
-        for (const auto &coin : inserted_for_arena) {
-            utxo_arena_.InsertCoin(coin);
-        }
-    }
-
+    utxo_arena_dirty_ = true;
     return added_count;
 }
 
@@ -2493,49 +2310,21 @@ bool MempoolOverlayLayer::RemoveTransaction(const Hash &tx_id) {
     tx_tree_.Erase(tx_id);
     assert(sum_non_cb_effective_cost_ >= entry.effective_cost);
     sum_non_cb_effective_cost_ -= entry.effective_cost;
-    total_fees_sats_ -= entry.fee_sats;
-    total_sigchecks_ -= entry.sigchecks;
-    total_bytes_ = (total_bytes_ >= entry.linear_cost)
-                       ? (total_bytes_ - entry.linear_cost)
-                       : 0;
-    syndrome_.Remove(ComputeShortTxId(siphash_k0_, siphash_k1_, tx_id));
-    positional_merkle_dirty_ = true;
 
     for (const auto &coin : entry.created_coins) {
         created_coins_.erase(coin.outpoint);
-        if (commit_state_root_in_header_ && !utxo_arena_dirty_) {
-            if (spent_outpoints_.find(coin.outpoint) == spent_outpoints_.end()) {
-                utxo_arena_.EraseOutpoint(coin.outpoint);
-            }
-        } else {
-            utxo_arena_dirty_ = true;
-        }
     }
 
     for (const auto &op : entry.spent_outpoints) {
         auto sp_it = spent_outpoints_.find(op);
         if (sp_it != spent_outpoints_.end()) {
-            if (sp_it->second == 2) {
-                assert(conflict_count_ > 0);
-                --conflict_count_;
-            }
             if (--sp_it->second == 0) {
                 spent_outpoints_.erase(sp_it);
-                if (commit_state_root_in_header_ && !utxo_arena_dirty_) {
-                    auto cr_it = created_coins_.find(op);
-                    if (cr_it != created_coins_.end()) {
-                        utxo_arena_.InsertCoin(cr_it->second);
-                    } else if (auto base_coin =
-                                   SmtFind(utxo_arena_.GetBaseSmtRoot(), op)) {
-                        utxo_arena_.InsertCoin(*base_coin);
-                    }
-                } else {
-                    utxo_arena_dirty_ = true;
-                }
             }
         }
     }
 
+    utxo_arena_dirty_ = true;
     active_txs_.erase(it);
     return true;
 }
@@ -2628,8 +2417,6 @@ void MerklixOverlayManager::ReanchorExistingTxs(
             MempoolOverlayLayer reanchored(tip_block_id, base_utxo_root,
                                            base_mon_state, next_height,
                                            parent_mtp, old_layer.GetLayerId());
-            reanchored.SetCommitStateRootInHeader(
-                old_layer.GetCommitStateRootInHeader());
             // Membership (TxId, TxHash) is unchanged by re-anchoring; share
             // the frozen tree and its completed digests instead of rebuilding.
             reanchored.AdoptTxTree(old_layer.GetTxTree());
@@ -2689,33 +2476,9 @@ bool MerklixOverlayManager::RemoveTransaction(const Hash &tx_id) {
     return speculative_layer_.RemoveTransaction(tx_id);
 }
 
-bool MerklixOverlayManager::LookupCoinInStack(
-    const Outpoint &op, Coin *out, bool &spent_in_stack) const {
-    if (speculative_layer_.IsSpent(op)) {
-        spent_in_stack = true;
-        return false;
-    }
-    if (speculative_layer_.FindCreatedCoin(op, out)) {
-        spent_in_stack = false;
-        return true;
-    }
-    for (auto it = frozen_epochs_.rbegin(); it != frozen_epochs_.rend(); ++it) {
-        if (it->IsSpent(op)) {
-            spent_in_stack = true;
-            return false;
-        }
-        if (it->FindCreatedCoin(op, out)) {
-            spent_in_stack = false;
-            return true;
-        }
-    }
-    spent_in_stack = false;
-    return false;
-}
-
 const MempoolOverlayLayer &MerklixOverlayManager::FreezeEpochBatch() {
     (void)speculative_layer_.GetSubtreeARoot();
-    (void)speculative_layer_.GetNullMerkleRoot();
+    (void)speculative_layer_.GetUtxoRootDigest();
     frozen_epochs_.push_back(speculative_layer_);
     ++next_epoch_id_;
     return frozen_epochs_.back();

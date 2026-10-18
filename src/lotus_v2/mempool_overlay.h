@@ -9,7 +9,6 @@
 #include "header.h"
 #include "monetary.h"
 #include "output.h"
-#include "set_reconciliation.h"
 #include "sparse_state.h"
 #include "tagged_hash.h"
 #include "tx_merklix.h"
@@ -344,58 +343,11 @@ public:
     uint64_t GetSumNonCbEffectiveCost() const noexcept {
         return sum_non_cb_effective_cost_;
     }
-    int64_t GetTotalFeesSats() const noexcept { return total_fees_sats_; }
-    int64_t GetTotalSigChecks() const noexcept { return total_sigchecks_; }
-    uint64_t GetTotalBytes() const noexcept { return total_bytes_; }
-    bool HasDoubleSpends() const noexcept { return conflict_count_ > 0; }
     size_t GetTxCount() const noexcept { return active_txs_.size(); }
     const Hash &GetParentBlockId() const noexcept { return parent_block_id_; }
     uint64_t GetHeight() const noexcept { return height_; }
     uint64_t GetParentMtp() const noexcept { return parent_mtp_; }
     uint64_t GetLayerId() const noexcept { return layer_id_; }
-
-    void SetCommitStateRootInHeader(bool commit) noexcept {
-        commit_state_root_in_header_ = commit;
-    }
-    bool GetCommitStateRootInHeader() const noexcept {
-        return commit_state_root_in_header_;
-    }
-
-    bool IsSpent(const Outpoint &op) const noexcept {
-        auto it = spent_outpoints_.find(op);
-        return it != spent_outpoints_.end() && it->second > 0;
-    }
-
-    bool FindCreatedCoin(const Outpoint &op, Coin *out = nullptr) const {
-        if (IsSpent(op)) {
-            return false;
-        }
-        auto it = created_coins_.find(op);
-        if (it == created_coins_.end()) {
-            return false;
-        }
-        if (out != nullptr) {
-            *out = it->second;
-        }
-        return true;
-    }
-
-    const Hash &GetNullMerkleRoot() const {
-        EnsurePositionalMerkleUpdated();
-        return null_merkle_root_;
-    }
-
-    const std::vector<Hash> &GetCoinbaseMerkleBranch() const {
-        EnsurePositionalMerkleUpdated();
-        return coinbase_merkle_branch_;
-    }
-
-    Hash ComputePositionalMerkleRoot(const Hash &coinbase_txid) const;
-
-    const BucketSyndrome &GetSyndrome() const noexcept { return syndrome_; }
-    std::pair<uint64_t, uint64_t> GetSipHashKey() const noexcept {
-        return {siphash_k0_, siphash_k1_};
-    }
 
     const std::map<Hash, OverlayTxEntry, CtorTxIdCompare> &
     GetOrderedTxs() const noexcept {
@@ -417,30 +369,17 @@ public:
 
 private:
     void EnsureUtxoArenaUpdated() const;
-    void EnsurePositionalMerkleUpdated() const;
 
     uint64_t layer_id_{0};
     Hash parent_block_id_{};
     uint64_t height_{1};
     uint64_t parent_mtp_{0};
     MonetaryState base_mon_state_{};
-    bool commit_state_root_in_header_{false};
 
     txmerklix::Tree tx_tree_;
     mutable UtxoOverlayArena utxo_arena_;
     mutable bool utxo_arena_dirty_{false};
     uint64_t sum_non_cb_effective_cost_{0};
-    int64_t total_fees_sats_{0};
-    int64_t total_sigchecks_{0};
-    uint64_t total_bytes_{0};
-    size_t conflict_count_{0};
-    uint64_t siphash_k0_{0};
-    uint64_t siphash_k1_{0};
-    BucketSyndrome syndrome_{};
-
-    mutable bool positional_merkle_dirty_{true};
-    mutable Hash null_merkle_root_{};
-    mutable std::vector<Hash> coinbase_merkle_branch_;
 
     std::map<Hash, OverlayTxEntry, CtorTxIdCompare> active_txs_;
     std::unordered_map<Outpoint, Coin, OutpointHasher> created_coins_;
@@ -489,9 +428,6 @@ public:
     size_t AddTransactionBatch(std::span<OverlayTxEntry> entries);
 
     bool RemoveTransaction(const Hash &tx_id);
-
-    bool LookupCoinInStack(const Outpoint &op, Coin *out,
-                           bool &spent_in_stack) const;
 
     /**
      * Freezes the current speculative state as an immutable epoch overlay

@@ -557,8 +557,10 @@ void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
     AssertLockHeld(cs);
     lotus::v2::Hash tip_id{};
     std::memcpy(tip_id.data(), tip_hash.begin(), 32);
-    if (m_merklix_overlay.IsAnchoredAt(tip_id, next_height, next_mtp)) {
-        FlushPendingOverlayAdds();
+    if (m_merklix_overlay.IsAnchoredAt(tip_id, next_height, next_mtp) &&
+        (m_merklix_overlay.GetSpeculativeOverlay().GetBaseUtxoRoot() !=
+             nullptr ||
+         next_height <= 1)) {
         return;
     }
     if (m_merklix_overlay.GetSpeculativeOverlay().GetTxCount() > 0 ||
@@ -567,9 +569,14 @@ void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
     }
     std::shared_ptr<const lotus::v2::SmtNode> utxo_root;
     lotus::v2::MonetaryState mon_state = lotus::v2::GetInitialV2MonetaryState();
-    m_merklix_overlay.ReanchorExistingTxs(tip_id, std::move(utxo_root),
-                                          mon_state, next_height, next_mtp);
-    FlushPendingOverlayAdds();
+    GetV2BlockStateSnapshot(tip_hash, utxo_root, mon_state);
+    if (m_merklix_overlay.GetSpeculativeOverlay().GetTxCount() == 0) {
+        m_merklix_overlay.ResetToTip(tip_id, std::move(utxo_root), mon_state,
+                                     next_height, next_mtp);
+    } else {
+        m_merklix_overlay.ReanchorExistingTxs(tip_id, std::move(utxo_root),
+                                              mon_state, next_height, next_mtp);
+    }
 }
 
 void CTxMemPool::ConnectBlockReset(const BlockHash &new_tip_hash,
@@ -581,6 +588,7 @@ void CTxMemPool::ConnectBlockReset(const BlockHash &new_tip_hash,
     std::memcpy(tip_id.data(), new_tip_hash.begin(), 32);
     std::shared_ptr<const lotus::v2::SmtNode> utxo_root;
     lotus::v2::MonetaryState mon_state = lotus::v2::GetInitialV2MonetaryState();
+    GetV2BlockStateSnapshot(new_tip_hash, utxo_root, mon_state);
     if (mapTx.empty()) {
         m_pending_overlay_adds.clear();
         m_pending_overlay_removes.clear();
