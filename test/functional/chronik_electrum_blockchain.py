@@ -45,7 +45,7 @@ from test_framework.util import (
 from test_framework.wallet import SCRIPTSIG_OP_TRUE, MiniWallet
 
 COINBASE_TX_HEX = (
-    "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4d"
+    "070000c0010000000000000000000000000000000000000000000000000000000000000000ffffffff4d"
     + GENESIS_CB_SCRIPT_SIG.hex()
     + "ffffffff0100f2052a0100000043"
     + GENESIS_CB_SCRIPT_PUBKEY.hex()
@@ -206,7 +206,7 @@ class ChronikElectrumBlockchain(BitcoinTestFramework):
                     "txid": GENESIS_CB_TXID,
                     "hash": GENESIS_CB_TXID,
                     "size": len(COINBASE_TX_HEX) // 2,
-                    "version": 1,
+                    "version": 7,
                     "locktime": 0,
                     "vin": [
                         {
@@ -1001,7 +1001,7 @@ class ChronikElectrumBlockchain(BitcoinTestFramework):
 
         self.generate(self.node, 2016)
 
-        hex_header_len = 160
+        hex_header_len = 268
         for num in [1, 10, 100, 500, 501, 2015]:
             headers_reply = self.client.blockchain.block.headers(1, num)
             assert headers_reply.error is None, f"got an error for {num} headers"
