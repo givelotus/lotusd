@@ -21,7 +21,10 @@
 
 #include <boost/signals2/signal.hpp>
 
+#include <array>
 #include <functional>
+#include <map>
+#include <optional>
 #include <unordered_map>
 
 enum class OutputType;
@@ -179,6 +182,17 @@ public:
     }
     virtual isminetype IsMine(const CScript &script) const { return ISMINE_NO; }
 
+    /**
+     * A script this ScriptPubKeyMan recognizes whose V2 branch leaf
+     * (lotus::v2::BranchLeaf) is `branch`, if any. On the V2 wire a
+     * single-branch output commits to BranchLeaf(script) instead of carrying
+     * the script, so a deserialized output must be mapped back to it.
+     */
+    virtual std::optional<CScript>
+    GetScriptForV2Branch(const uint256 &branch) const {
+        return std::nullopt;
+    }
+
     //! Check that the given decryption key is valid for this ScriptPubKeyMan,
     //! i.e. it decrypts all of the keys handled by it.
     virtual bool CheckDecryptionKey(const CKeyingMaterial &master_key,
@@ -333,6 +347,15 @@ private:
 
     int64_t nTimeFirstKey GUARDED_BY(cs_KeyStore) = 0;
 
+    //! Scripts by V2 branch leaf (see GetScriptForV2Branch), rebuilt when
+    //! the key, script or watch-only sets change.
+    mutable std::map<uint256, CScript>
+        m_v2_branch_scripts GUARDED_BY(cs_KeyStore);
+    mutable std::array<size_t, 6>
+        m_v2_branch_index_state GUARDED_BY(cs_KeyStore){};
+    //! Counts watch-only removals so the index sees a remove plus an add.
+    size_t m_watch_only_removals GUARDED_BY(cs_KeyStore) = 0;
+
     bool AddKeyPubKeyInner(const CKey &key, const CPubKey &pubkey);
     bool AddCryptedKeyInner(const CPubKey &vchPubKey,
                             const std::vector<uint8_t> &vchCryptedSecret);
@@ -433,6 +456,8 @@ public:
     util::Result<CTxDestination>
     GetNewDestination(const OutputType type) override;
     isminetype IsMine(const CScript &script) const override;
+    std::optional<CScript>
+    GetScriptForV2Branch(const uint256 &branch) const override;
 
     bool CheckDecryptionKey(const CKeyingMaterial &master_key,
                             bool accept_no_keys = false) override;
@@ -664,6 +689,10 @@ private:
     using KeyMap = std::map<CKeyID, CKey>;
 
     ScriptPubKeyMap m_map_script_pub_keys GUARDED_BY(cs_desc_man);
+    //! m_map_script_pub_keys by V2 branch leaf, rebuilt when it grows.
+    mutable std::map<uint256, CScript>
+        m_v2_branch_scripts GUARDED_BY(cs_desc_man);
+    mutable size_t m_v2_branch_index_size GUARDED_BY(cs_desc_man) = 0;
     PubKeyMap m_map_pubkeys GUARDED_BY(cs_desc_man);
     int32_t m_max_cached_index = -1;
 
@@ -708,6 +737,8 @@ public:
     util::Result<CTxDestination>
     GetNewDestination(const OutputType type) override;
     isminetype IsMine(const CScript &script) const override;
+    std::optional<CScript>
+    GetScriptForV2Branch(const uint256 &branch) const override;
 
     bool CheckDecryptionKey(const CKeyingMaterial &master_key,
                             bool accept_no_keys = false) override;
