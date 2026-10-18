@@ -190,6 +190,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		key_tests.cpp
 		lcg_tests.cpp
 		logging_tests.cpp
+		lotus_tagged_hash_tests.cpp
 		mempool_tests.cpp
 		merkle_tests.cpp
 		merkleblock_tests.cpp
@@ -327,3 +328,5 @@ else()
 endif()
 
 add_subdirectory(fuzz)
+
+
