@@ -198,7 +198,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     supports_cli: bool = True
     bind_to_localhost_only: bool = True
     default_wallet_name: str = ""
-    wallet_data_filename: str = "wallet.dat"
+    wallet_data_filename: str = "wallet.sqlite"
     # Optional list of wallet names to create and import keys to. If unset,
     # default is len(nodes) * [default_wallet_name]. If wallet names are None,
     # wallet creation is skipped. If list is truncated, wallet creation is
@@ -1362,11 +1362,18 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             ]
             assert_equal(len(gen_addresses), 4)
             for i in range(8):
-                self.generatetoaddress(
-                    cache_node,
-                    nblocks=25 if i != 7 else 24,
-                    address=gen_addresses[i % len(gen_addresses)],
-                )
+                if i % len(gen_addresses) == 3:
+                    self.generatetodescriptor(
+                        cache_node,
+                        25 if i != 7 else 24,
+                        "raw(4e)",
+                    )
+                else:
+                    self.generatetoaddress(
+                        cache_node,
+                        nblocks=25,
+                        address=gen_addresses[i % len(gen_addresses)],
+                    )
 
             assert_equal(cache_node.getblockchaininfo()["blocks"], 199)
 
@@ -1380,8 +1387,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             # Remove empty wallets dir
             os.rmdir(cache_path("wallets"))
             for entry in os.listdir(cache_path()):
-                # Only keep indexes, chainstate and blocks folders
-                if entry not in ["chainstate", "blocks", "indexes"]:
+                # Only keep indexes, chainstate, blocks and v2_state folders
+                if entry not in ["chainstate", "blocks", "indexes", "v2_state"]:
                     os.remove(cache_path(entry))
 
         for i in range(self.num_nodes):
@@ -1478,6 +1485,12 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if not self.is_chronik_compiled():
             raise SkipTest("Chronik indexer has not been compiled.")
 
+    def skip_if_no_chronik_token_index(self):
+        """Skip the running test of the Chronik SLP/ALP token index: Lotus V2
+        nodes do not index SLP/ALP tokens (-chroniktokenindex is off and
+        cannot be enabled)."""
+        raise SkipTest("Lotus V2 nodes do not index SLP/ALP tokens.")
+
     def skip_if_no_chronik_plugins(self):
         """Skip the running test if Chronik indexer plugins have not been compiled."""
         if not self.is_chronik_plugins_compiled():
@@ -1541,6 +1554,7 @@ REQUIREMENTS = {
     "zmq": BitcoinTestFramework.skip_if_no_bitcoind_zmq,
     "py3_zmq": BitcoinTestFramework.skip_if_no_py3_zmq,
     "chronik": BitcoinTestFramework.skip_if_no_chronik,
+    "chronik_token_index": BitcoinTestFramework.skip_if_no_chronik_token_index,
     "chronik_electrum": BitcoinTestFramework.skip_if_no_chronik_electrum,
     "http2": BitcoinTestFramework.skip_if_no_http2,
     "chronik_plugins": BitcoinTestFramework.skip_if_no_chronik_plugins,

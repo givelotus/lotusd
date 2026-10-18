@@ -56,6 +56,8 @@ class GetblockstatsTest(BitcoinTestFramework):
         ]
 
     def generate_test_data(self, filename):
+        self.nodes[0].createwallet(wallet_name="default", descriptors=False)
+        self.nodes[0].importprivkey(self.nodes[0].get_deterministic_priv_key().key)
         mocktime = 1525107225
         self.nodes[0].setmocktime(mocktime)
         self.generate(self.nodes[0], COINBASE_MATURITY + 1)

@@ -380,7 +380,16 @@ class COutPoint:
 
 
 class CTxIn:
-    __slots__ = ("nSequence", "prevout", "scriptSig")
+    __slots__ = (
+        "nSequence",
+        "prevout",
+        "scriptSig",
+        "nFlags",
+        "nPathIndex",
+        "vWitnesses",
+        "fHasCoinbaseData",
+        "vCoinbaseData",
+    )
 
     def __init__(self, outpoint=None, scriptSig=b"", nSequence=0):
         if outpoint is None:
@@ -411,7 +420,7 @@ class CTxIn:
 
 
 class CTxOut:
-    __slots__ = ("nValue", "scriptPubKey")
+    __slots__ = ("nValue", "scriptPubKey", "nFlags", "tokenId", "vBranches", "vPaths")
 
     def __init__(self, nValue=0, scriptPubKey=b""):
         self.nValue = nValue
@@ -434,7 +443,15 @@ class CTxOut:
 
 
 class CTransaction:
-    __slots__ = ("nLockTime", "nVersion", "vin", "vout")
+    __slots__ = (
+        "nLockTime",
+        "nVersion",
+        "vin",
+        "vout",
+        "fHasV2Lock",
+        "nV2Lock",
+        "_height",
+    )
 
     def __init__(self, tx=None):
         if tx is None:
@@ -442,17 +459,100 @@ class CTransaction:
             self.vin = []
             self.vout = []
             self.nLockTime = 0
+            self.fHasV2Lock = False
+            self.nV2Lock = 0
+            self._height = None
         else:
             self.nVersion = tx.nVersion
             self.vin = copy.deepcopy(tx.vin)
             self.vout = copy.deepcopy(tx.vout)
             self.nLockTime = tx.nLockTime
+            self.fHasV2Lock = getattr(tx, "fHasV2Lock", False)
+            self.nV2Lock = getattr(tx, "nV2Lock", 0)
+            self._height = getattr(tx, "_height", None)
 
     def deserialize(self, f):
-        self.nVersion = int.from_bytes(f.read(4), "little")
+        raw_version = int.from_bytes(f.read(4), "little")
+        self.fHasV2Lock = False
+        self.nV2Lock = 0
+        if raw_version == 7:
+            self.nVersion = 7
+            self.fHasV2Lock = True
+            self.nV2Lock = int.from_bytes(f.read(8), "little")
+            self.nLockTime = (self.nV2Lock >> 8) & 0xFFFFFFFF
+            in_count = int.from_bytes(f.read(2), "little")
+            out_count = int.from_bytes(f.read(2), "little")
+            self.vin = []
+            for _ in range(in_count):
+                txin = CTxIn()
+                txin.prevout = COutPoint(
+                    deser_uint256(f), int.from_bytes(f.read(4), "little")
+                )
+                txin.nSequence = int.from_bytes(f.read(4), "little")
+                flags = int.from_bytes(f.read(1), "little")
+                txin.nFlags = flags
+                if flags == 1:
+                    txin.nPathIndex = deser_compact_size(f)
+                    wcount = deser_compact_size(f)
+                    wits = []
+                    for _ in range(wcount):
+                        wscript = deser_string(f)
+                        scount = deser_compact_size(f)
+                        sibs = [f.read(32) for _ in range(scount)]
+                        acount = deser_compact_size(f)
+                        args = [deser_string(f) for _ in range(acount)]
+                        wits.append((wscript, sibs, args))
+                    txin.vWitnesses = wits
+                    txin.scriptSig = wits[0][0] if wits else b""
+                elif flags == 2:
+                    has_cb = deser_compact_size(f)
+                    cb_data = deser_string(f) if has_cb else b""
+                    txin.fHasCoinbaseData = bool(has_cb)
+                    txin.vCoinbaseData = cb_data
+                    txin.scriptSig = cb_data
+                    if txin.prevout.txid == 0 and txin.prevout.n == 0:
+                        txin.prevout.n = 0xFFFFFFFF
+                elif flags == 3:
+                    wscript = deser_string(f)
+                    scount = deser_compact_size(f)
+                    sibs = [f.read(32) for _ in range(scount)]
+                    acount = deser_compact_size(f)
+                    args = [deser_string(f) for _ in range(acount)]
+                    txin.vWitnesses = [(wscript, sibs, args)]
+                    txin.scriptSig = wscript
+                self.vin.append(txin)
+            self.vout = []
+            for _ in range(out_count):
+                txout = CTxOut()
+                oflags = int.from_bytes(f.read(1), "little")
+                txout.nFlags = oflags
+                txout.nValue = int.from_bytes(f.read(8), "little", signed=True)
+                txout.tokenId = f.read(32) if (oflags & 1) else (b"\x00" * 32)
+                bcount = deser_compact_size(f)
+                txout.vBranches = [f.read(32) for _ in range(bcount)]
+                pcount = deser_compact_size(f)
+                paths = []
+                for _ in range(pcount):
+                    plen = deser_compact_size(f)
+                    paths.append([deser_compact_size(f) for _ in range(plen)])
+                txout.vPaths = paths
+                txout.scriptPubKey = _lotus_v2_encode_output(
+                    (oflags, txout.nValue, txout.tokenId, txout.vBranches, txout.vPaths)
+                )
+                self.vout.append(txout)
+            return
+        is_v2_wrapped = ((raw_version & 0xC0000000) != 0) and (
+            (raw_version & 0x3FFFFFFF) == 7
+        )
+        is_v2_cb = is_v2_wrapped and ((raw_version & 0x40000000) != 0)
+        self.nVersion = 7 if is_v2_wrapped else raw_version
         self.vin = deser_vector(f, CTxIn)
         self.vout = deser_vector(f, CTxOut)
         self.nLockTime = int.from_bytes(f.read(4), "little")
+        if is_v2_cb and self.vin:
+            self.vin[0].nFlags = 2
+            self.vin[0].fHasCoinbaseData = len(self.vin[0].scriptSig) > 0
+            self.vin[0].vCoinbaseData = bytes(self.vin[0].scriptSig)
 
     def billable_size(self):
         """
@@ -461,22 +561,119 @@ class CTransaction:
         return len(self.serialize())
 
     def serialize(self) -> bytes:
+        nver = self.nVersion & 0xFFFFFFFF
+        is_pure_v2 = (
+            nver == 7
+            and len(self.vin) > 0
+            and len(self.vout) > 0
+            and all(getattr(txin, "nFlags", 0) != 0 for txin in self.vin)
+            and all(bool(getattr(txout, "vBranches", None)) for txout in self.vout)
+        )
+        if is_pure_v2:
+            is_cb = len(self.vin) == 1 and (
+                (self.vin[0].prevout.txid == 0 and self.vin[0].prevout.n == 0xFFFFFFFF)
+                or getattr(self.vin[0], "nFlags", 0) == 2
+            )
+            if getattr(self, "fHasV2Lock", False):
+                lock = self.nV2Lock
+            elif is_cb or self.nLockTime == 0:
+                lock = 0
+            else:
+                lock = (int(self.nLockTime) << 8) | (
+                    1 if self.nLockTime < 500000000 else 2
+                )
+            res = bytearray()
+            res += (7).to_bytes(4, "little")
+            res += lock.to_bytes(8, "little")
+            res += len(self.vin).to_bytes(2, "little")
+            res += len(self.vout).to_bytes(2, "little")
+            for txin in self.vin:
+                flags = getattr(txin, "nFlags", 1)
+                prev_n = (
+                    0
+                    if (
+                        flags == 2
+                        and txin.prevout.txid == 0
+                        and txin.prevout.n == 0xFFFFFFFF
+                    )
+                    else (txin.prevout.n & 0xFFFFFFFF)
+                )
+                seq = 0xFFFFFFFF if flags == 2 else (txin.nSequence & 0xFFFFFFFF)
+                res += ser_uint256(txin.prevout.txid)
+                res += prev_n.to_bytes(4, "little")
+                res += seq.to_bytes(4, "little")
+                res.append(flags)
+                if flags == 1:
+                    res += ser_compact_size(getattr(txin, "nPathIndex", 0))
+                    wits = getattr(
+                        txin, "vWitnesses", [(bytes(txin.scriptSig) or b"\x4e", [], [])]
+                    )
+                    res += ser_compact_size(len(wits))
+                    for script, sibs, args in wits:
+                        res += ser_string(script)
+                        res += ser_compact_size(len(sibs)) + b"".join(sibs)
+                        res += ser_compact_size(len(args)) + b"".join(
+                            ser_string(a) for a in args
+                        )
+                elif flags == 2:
+                    cb_data = getattr(txin, "vCoinbaseData", bytes(txin.scriptSig))
+                    has_cb = getattr(txin, "fHasCoinbaseData", len(cb_data) > 0)
+                    res += ser_compact_size(1 if has_cb else 0)
+                    if has_cb:
+                        res += ser_string(cb_data)
+                elif flags == 3:
+                    wits = getattr(
+                        txin, "vWitnesses", [(bytes(txin.scriptSig), [], [])]
+                    )
+                    script, sibs, args = wits[0]
+                    res += ser_string(script)
+                    res += ser_compact_size(len(sibs)) + b"".join(sibs)
+                    res += ser_compact_size(len(args)) + b"".join(
+                        ser_string(a) for a in args
+                    )
+            for txout in self.vout:
+                res += _lotus_v2_encode_output(_lotus_v2_to_output(txout))
+            return bytes(res)
+
+        is_v2_cb = (
+            nver == 7 and len(self.vin) > 0 and getattr(self.vin[0], "nFlags", 0) == 2
+        )
+        raw_version = (
+            (7 | 0x80000000 | (0x40000000 if is_v2_cb else 0)) if nver == 7 else nver
+        )
         return (
-            self.nVersion.to_bytes(4, "little")
+            raw_version.to_bytes(4, "little")
             + ser_vector(self.vin)
             + ser_vector(self.vout)
-            + self.nLockTime.to_bytes(4, "little")
+            + (self.nLockTime & 0xFFFFFFFF).to_bytes(4, "little")
         )
 
     @property
     def txid_hex(self) -> str:
-        """Return txid  as hex string."""
-        return hash256(self.serialize())[::-1].hex()
+        """Return txid as hex string."""
+        txid_b, _ = lotus_v2_compute_tx_identities(self)
+        return txid_b[::-1].hex()
 
     @property
     def txid_int(self) -> int:
         """Return txid as integer."""
-        return uint256_from_str(hash256(self.serialize()))
+        txid_b, _ = lotus_v2_compute_tx_identities(self)
+        return uint256_from_str(txid_b)
+
+    @property
+    def txhash_hex(self) -> str:
+        """Return txhash as hex string."""
+        _, txhash_b = lotus_v2_compute_tx_identities(self)
+        return txhash_b[::-1].hex()
+
+    @property
+    def txhash_int(self) -> int:
+        """Return txhash as integer."""
+        _, txhash_b = lotus_v2_compute_tx_identities(self)
+        return uint256_from_str(txhash_b)
+
+    def calc_sha256(self) -> int:
+        return self.txid_int
 
     def is_valid(self):
         for tout in self.vout:
@@ -491,77 +688,669 @@ class CTransaction:
         )
 
 
+_BLAKE3_IV = (
+    0x6A09E667,
+    0xBB67AE85,
+    0x3C6EF372,
+    0xA54FF53A,
+    0x510E527F,
+    0x9B05688C,
+    0x1F83D9AB,
+    0x5BE0CD19,
+)
+_BLAKE3_MSG_PERM = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
+
+
+def _rotr32(x: int, n: int) -> int:
+    return ((x >> n) | ((x << (32 - n)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+
+
+def _blake3_g(state: list, a: int, b: int, c: int, d: int, mx: int, my: int):
+    state[a] = (state[a] + state[b] + mx) & 0xFFFFFFFF
+    state[d] = _rotr32(state[d] ^ state[a], 16)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = _rotr32(state[b] ^ state[c], 12)
+    state[a] = (state[a] + state[b] + my) & 0xFFFFFFFF
+    state[d] = _rotr32(state[d] ^ state[a], 8)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = _rotr32(state[b] ^ state[c], 7)
+
+
+def _blake3_compress(
+    cv: list, block_words: list, counter: int, block_len: int, flags: int
+) -> list:
+    state = [
+        cv[0],
+        cv[1],
+        cv[2],
+        cv[3],
+        cv[4],
+        cv[5],
+        cv[6],
+        cv[7],
+        _BLAKE3_IV[0],
+        _BLAKE3_IV[1],
+        _BLAKE3_IV[2],
+        _BLAKE3_IV[3],
+        counter & 0xFFFFFFFF,
+        (counter >> 32) & 0xFFFFFFFF,
+        block_len,
+        flags,
+    ]
+    m = list(block_words)
+    for r in range(7):
+        _blake3_g(state, 0, 4, 8, 12, m[0], m[1])
+        _blake3_g(state, 1, 5, 9, 13, m[2], m[3])
+        _blake3_g(state, 2, 6, 10, 14, m[4], m[5])
+        _blake3_g(state, 3, 7, 11, 15, m[6], m[7])
+        _blake3_g(state, 0, 5, 10, 15, m[8], m[9])
+        _blake3_g(state, 1, 6, 11, 12, m[10], m[11])
+        _blake3_g(state, 2, 7, 8, 13, m[12], m[13])
+        _blake3_g(state, 3, 4, 9, 14, m[14], m[15])
+        if r < 6:
+            m = [m[i] for i in _BLAKE3_MSG_PERM]
+    for i in range(8):
+        state[i] ^= state[i + 8]
+        state[i + 8] ^= cv[i]
+    return state[:8]
+
+
+def blake3_single_chunk(data: bytes) -> bytes:
+    num_chunks = max(1, (len(data) + 1023) // 1024)
+    cvs = []
+    for c in range(num_chunks):
+        chunk = data[c * 1024 : (c + 1) * 1024]
+        cv = list(_BLAKE3_IV)
+        num_blocks = max(1, (len(chunk) + 63) // 64)
+        for b in range(num_blocks):
+            blk = chunk[b * 64 : (b + 1) * 64]
+            blk_len = len(blk)
+            padded = blk + b"\x00" * (64 - blk_len)
+            words = [
+                int.from_bytes(padded[i * 4 : (i + 1) * 4], "little") for i in range(16)
+            ]
+            flags = (1 if b == 0 else 0) | (2 if b == num_blocks - 1 else 0)
+            if num_chunks == 1 and b == num_blocks - 1:
+                flags |= 8
+            cv = _blake3_compress(cv, words, c, blk_len, flags)
+        cvs.append(cv)
+        total = c + 1
+        while (
+            (total & 1) == 0 and len(cvs) >= 2 and (total < num_chunks or len(cvs) > 2)
+        ):
+            right = cvs.pop()
+            left = cvs.pop()
+            cvs.append(_blake3_compress(list(_BLAKE3_IV), left + right, 0, 64, 4))
+            total >>= 1
+    while len(cvs) > 1:
+        right = cvs.pop()
+        left = cvs.pop()
+        flags = 4 | (8 if len(cvs) == 0 else 0)
+        cvs.append(_blake3_compress(list(_BLAKE3_IV), left + right, 0, 64, flags))
+    return b"".join(w.to_bytes(4, "little") for w in cvs[0])
+
+
+def lotus_v2_tagged_hash(tag: str, payload: bytes) -> bytes:
+    return blake3_single_chunk(tag.encode("ascii") + b"\x00" + payload)
+
+
+_BRANCH_LEAF_CACHE = {}
+
+
+def lotus_v2_branch_leaf(script: bytes) -> bytes:
+    cached = _BRANCH_LEAF_CACHE.get(script)
+    if cached is not None:
+        return cached
+    res = lotus_v2_tagged_hash(
+        "Lotus/v2/branch", b"\x00" + ser_compact_size(len(script)) + script
+    )
+    if len(_BRANCH_LEAF_CACHE) > 512:
+        _BRANCH_LEAF_CACHE.clear()
+    _BRANCH_LEAF_CACHE[script] = res
+    return res
+
+
+def lotus_v2_indexed_tree_root(leaves: list) -> bytes:
+    if not leaves:
+        return lotus_v2_tagged_hash("Lotus/v2/merkleidx", b"\x02")
+    if len(leaves) == 1:
+        return leaves[0]
+    cur = list(leaves)
+    layer = 0
+    while len(cur) > 1:
+        if len(cur) & 1:
+            cur.append(b"\x00" * 32)
+        nxt = []
+        for i in range(0, len(cur), 2):
+            nxt.append(
+                lotus_v2_tagged_hash(
+                    "Lotus/v2/merkleidx",
+                    b"\x01" + layer.to_bytes(2, "little") + cur[i] + cur[i + 1],
+                )
+            )
+        cur = nxt
+        layer += 1
+    return cur[0]
+
+
+def _lotus_v2_tx_leaf(pair: tuple) -> bytes:
+    txid, txhash = pair
+    return lotus_v2_tagged_hash("Lotus/v2/txroot", b"\x00" + txid + txhash)
+
+
+def _lotus_v2_tx_subtree_a(pairs: list, depth: int = 0) -> bytes:
+    if not pairs:
+        return lotus_v2_tagged_hash("Lotus/v2/txroot", b"\x02")
+    if len(pairs) == 1:
+        return _lotus_v2_tx_leaf(pairs[0])
+    left = [p for p in pairs if ((p[0][depth // 8] >> (depth % 8)) & 1) == 0]
+    right = [p for p in pairs if ((p[0][depth // 8] >> (depth % 8)) & 1) == 1]
+    return lotus_v2_tagged_hash(
+        "Lotus/v2/txroot",
+        b"\x01"
+        + depth.to_bytes(2, "little")
+        + _lotus_v2_tx_subtree_a(left, depth + 1)
+        + _lotus_v2_tx_subtree_a(right, depth + 1),
+    )
+
+
+def lotus_v2_transaction_root(pairs: list) -> bytes:
+    if not pairs:
+        return lotus_v2_tagged_hash("Lotus/v2/txroot", b"\x02")
+    txids = [p[0] for p in pairs]
+    if len(set(txids)) != len(txids):
+        return b"\x00" * 32
+    coinbase_leaf = _lotus_v2_tx_leaf(pairs[0])
+    sub_a = _lotus_v2_tx_subtree_a(pairs[1:], 0)
+    return lotus_v2_tagged_hash("Lotus/v2/txroot", b"\x03" + coinbase_leaf + sub_a)
+
+
+def _lotus_v2_decode_output_bytes(raw: bytes):
+    try:
+        if len(raw) > 2186 or len(raw) < 11:
+            return None
+        flags = raw[0]
+        if flags & 0xFC:
+            return None
+        pos = 9
+        if flags & 1:
+            if pos + 32 > len(raw):
+                return None
+            token_id = raw[pos : pos + 32]
+            if token_id == b"\x00" * 32:
+                return None
+            pos += 32
+        else:
+            token_id = b"\x00" * 32
+        bio = BytesIO(raw[pos:])
+        bcount = deser_compact_size(bio)
+        if bcount == 0 or bcount > 16:
+            return None
+        branches = []
+        for _ in range(bcount):
+            b = bio.read(32)
+            if len(b) != 32 or b in branches:
+                return None
+            branches.append(b)
+        pcount = deser_compact_size(bio)
+        if (flags & 2) != 0:
+            if pcount != 0:
+                return None
+        elif pcount == 0 or pcount > 16:
+            return None
+        paths = []
+        for _ in range(pcount):
+            plen = deser_compact_size(bio)
+            if plen == 0 or plen > bcount:
+                return None
+            path = []
+            for _ in range(plen):
+                idx = deser_compact_size(bio)
+                if idx >= bcount or (path and path[-1] >= idx):
+                    return None
+                path.append(idx)
+            if paths and not (paths[-1] < path):
+                return None
+            paths.append(path)
+        if bio.read(1) != b"":
+            return None
+        return (flags, token_id, branches, paths)
+    except Exception:
+        return None
+
+
+def _lotus_v2_to_output(txout) -> tuple:
+    val = max(0, int(txout.nValue))
+    branches = getattr(txout, "vBranches", None)
+    if branches:
+        flags = getattr(txout, "nFlags", 0)
+        token_id = getattr(txout, "tokenId", b"\x00" * 32)
+        paths = getattr(txout, "vPaths", [])
+        return (flags, val, token_id, branches, paths)
+    spk = bytes(txout.scriptPubKey)
+    if len(spk) >= 43:
+        dec = _lotus_v2_decode_output_bytes(spk)
+        if dec is not None:
+            return (dec[0], val, dec[1], dec[2], dec[3])
+        if spk[0] == 0x6A and len(spk) >= 44:
+            dec = _lotus_v2_decode_output_bytes(spk[1:])
+            if dec is not None:
+                return (dec[0], val, dec[1], dec[2], dec[3])
+    bleaf = lotus_v2_branch_leaf(spk)
+    if len(spk) > 0 and spk[0] == 0x6A:
+        return (2, val, b"\x00" * 32, [bleaf], [])
+    return (0, val, b"\x00" * 32, [bleaf], [[0]])
+
+
+def _lotus_v2_encode_output(out_tuple: tuple) -> bytes:
+    flags, val, token_id, branches, paths = out_tuple
+    r = bytearray()
+    r.append(flags)
+    r += val.to_bytes(8, "little")
+    if flags & 1:
+        r += token_id
+    r += ser_compact_size(len(branches))
+    for b in branches:
+        r += b
+    r += ser_compact_size(len(paths))
+    for p in paths:
+        r += ser_compact_size(len(p))
+        for idx in p:
+            r += ser_compact_size(idx)
+    return bytes(r)
+
+
+def lotus_v2_compute_tx_identities(tx) -> tuple:
+    if not tx.vin and not tx.vout:
+        return (b"\x00" * 32, b"\x00" * 32)
+    is_cb = len(tx.vin) == 1 and (
+        (tx.vin[0].prevout.txid == 0 and tx.vin[0].prevout.n == 0xFFFFFFFF)
+        or getattr(tx.vin[0], "nFlags", 0) == 2
+    )
+    if getattr(tx, "fHasV2Lock", False):
+        lock = tx.nV2Lock
+    elif is_cb or tx.nLockTime == 0:
+        lock = 0
+    else:
+        lock = (int(tx.nLockTime) << 8) | (1 if tx.nLockTime < 500000000 else 2)
+
+    v2_inputs = []
+    for txin in tx.vin:
+        prev_txid = ser_uint256(txin.prevout.txid)
+        prev_index = txin.prevout.n & 0xFFFFFFFF
+        seq = txin.nSequence & 0xFFFFFFFF
+        nflags = getattr(txin, "nFlags", 0)
+        if nflags != 0:
+            flags = nflags
+            path_index = getattr(txin, "nPathIndex", 0)
+            witnesses = list(getattr(txin, "vWitnesses", []))
+            has_cb = getattr(txin, "fHasCoinbaseData", False)
+            cb_data = bytes(getattr(txin, "vCoinbaseData", b""))
+            if flags == 2:
+                seq = 0xFFFFFFFF
+                if not has_cb and len(txin.scriptSig) > 0:
+                    has_cb = True
+                    cb_data = bytes(txin.scriptSig)
+            elif flags == 1 and not witnesses:
+                s = bytes(txin.scriptSig)
+                witnesses = [(s if s else b"\x4e", [], [])]
+        elif prev_txid == b"\x00" * 32 and prev_index == 0xFFFFFFFF:
+            flags = 2
+            prev_index = 0
+            seq = 0xFFFFFFFF
+            path_index = 0
+            witnesses = []
+            s = bytes(txin.scriptSig)
+            has_cb = len(s) > 0
+            cb_data = s
+        else:
+            flags = 1
+            path_index = 0
+            if seq != 0xFFFFFFFF and (seq & ~0x40FFFF):
+                seq = 0xFFFFFFFF
+            s = bytes(txin.scriptSig)
+            witnesses = [(s if s else b"\x4e", [], [])]
+            has_cb = False
+            cb_data = b""
+        v2_inputs.append(
+            (prev_txid, prev_index, seq, flags, path_index, witnesses, has_cb, cb_data)
+        )
+
+    v2_outputs = [_lotus_v2_to_output(txout) for txout in tx.vout]
+
+    valid_v2 = True
+    if not v2_inputs or len(v2_inputs) > 65535 or len(v2_outputs) > 65535:
+        valid_v2 = False
+    if (lock & 0xFF) > 2 or ((lock & 0xFF) == 0 and lock != 0):
+        valid_v2 = False
+    seen_outpoints = set()
+    has_spend = False
+    has_coinbase = False
+    mint_count = 0
+    for (
+        prev_txid,
+        prev_index,
+        seq,
+        flags,
+        path_index,
+        witnesses,
+        has_cb,
+        cb_data,
+    ) in v2_inputs:
+        if (prev_txid, prev_index) in seen_outpoints:
+            valid_v2 = False
+            break
+        seen_outpoints.add((prev_txid, prev_index))
+        if flags == 1:
+            has_spend = True
+            if has_cb or cb_data or path_index >= 16 or not (1 <= len(witnesses) <= 16):
+                valid_v2 = False
+            if seq != 0xFFFFFFFF and (seq & ~0x40FFFF):
+                valid_v2 = False
+            for script, siblings, args in witnesses:
+                if len(script) > 10000 or len(siblings) > 64 or len(args) > 65535:
+                    valid_v2 = False
+                for a in args:
+                    if len(a) > 8192:
+                        valid_v2 = False
+        elif flags == 2:
+            has_coinbase = True
+            if seq != 0xFFFFFFFF or path_index != 0 or witnesses:
+                valid_v2 = False
+            if has_cb and not (1 <= len(cb_data) <= 8192):
+                valid_v2 = False
+            if not has_cb and cb_data:
+                valid_v2 = False
+        elif flags == 3:
+            mint_count += 1
+            if (
+                has_cb
+                or cb_data
+                or prev_txid == b"\x00" * 32
+                or prev_index != 0
+                or seq != 0xFFFFFFFF
+                or path_index != 0
+                or len(witnesses) != 1
+            ):
+                valid_v2 = False
+        else:
+            valid_v2 = False
+    if has_coinbase:
+        if (
+            len(v2_inputs) != 1
+            or v2_inputs[0][3] != 2
+            or lock != 0
+            or not v2_outputs
+            or any(o[0] & 1 for o in v2_outputs)
+        ):
+            valid_v2 = False
+    elif not has_spend or mint_count > 65535:
+        valid_v2 = False
+
+    for o in v2_outputs:
+        ow = _lotus_v2_encode_output(o)
+        if len(ow) > 2186 or _lotus_v2_decode_output_bytes(ow) is None:
+            valid_v2 = False
+
+    nver = tx.nVersion & 0xFFFFFFFF
+    if valid_v2:
+        core_leaves = []
+        full_leaves = []
+        for (
+            prev_txid,
+            prev_index,
+            seq,
+            flags,
+            path_index,
+            witnesses,
+            has_cb,
+            cb_data,
+        ) in v2_inputs:
+            prefix = (
+                prev_txid
+                + prev_index.to_bytes(4, "little")
+                + seq.to_bytes(4, "little")
+                + bytes([flags])
+            )
+            if flags == 1:
+                c_buf = bytearray(
+                    prefix
+                    + ser_compact_size(path_index)
+                    + ser_compact_size(len(witnesses))
+                )
+                f_buf = bytearray(
+                    prefix
+                    + ser_compact_size(path_index)
+                    + ser_compact_size(len(witnesses))
+                )
+                for script, siblings, args in witnesses:
+                    w_base = (
+                        ser_string(script)
+                        + ser_compact_size(len(siblings))
+                        + b"".join(siblings)
+                    )
+                    c_buf += w_base
+                    f_buf += (
+                        w_base
+                        + ser_compact_size(len(args))
+                        + b"".join(ser_string(a) for a in args)
+                    )
+                core_wire = bytes(c_buf)
+                full_wire = bytes(f_buf)
+            elif flags == 2:
+                cb_part = ser_compact_size(1 if has_cb else 0) + (
+                    ser_string(cb_data) if has_cb else b""
+                )
+                core_wire = prefix + cb_part
+                full_wire = core_wire
+            else:
+                script, siblings, args = witnesses[0]
+                w_base = (
+                    ser_string(script)
+                    + ser_compact_size(len(siblings))
+                    + b"".join(siblings)
+                )
+                core_wire = prefix + w_base
+                full_wire = (
+                    prefix
+                    + w_base
+                    + ser_compact_size(len(args))
+                    + b"".join(ser_string(a) for a in args)
+                )
+            core_leaves.append(lotus_v2_tagged_hash("Lotus/v2/inputcore", core_wire))
+            full_leaves.append(lotus_v2_tagged_hash("Lotus/v2/inputfull", full_wire))
+        out_leaves = []
+        for o in v2_outputs:
+            ow = _lotus_v2_encode_output(o)
+            out_leaves.append(
+                lotus_v2_tagged_hash("Lotus/v2/output", ser_compact_size(len(ow)) + ow)
+            )
+        in_root = lotus_v2_indexed_tree_root(core_leaves)
+        full_in_root = lotus_v2_indexed_tree_root(full_leaves)
+        out_root = lotus_v2_indexed_tree_root(out_leaves)
+        hdr_core = (
+            (7).to_bytes(4, "little")
+            + lock.to_bytes(8, "little")
+            + len(v2_inputs).to_bytes(2, "little")
+            + len(v2_outputs).to_bytes(2, "little")
+        )
+        txid_b = bytearray(
+            lotus_v2_tagged_hash(
+                "Lotus/v2/txid", b"\x00" * 32 + hdr_core + in_root + out_root
+            )
+        )
+        txhash_b = bytearray(
+            lotus_v2_tagged_hash(
+                "Lotus/v2/txhash", b"\x00" * 32 + hdr_core + full_in_root + out_root
+            )
+        )
+        if nver != 7:
+            txid_b[0] ^= nver & 0xFF
+            txhash_b[0] ^= nver & 0xFF
+        return (bytes(txid_b), bytes(txhash_b))
+
+    core_bytes = bytearray(nver.to_bytes(4, "little") + lock.to_bytes(8, "little"))
+    full_bytes = bytearray(core_bytes)
+    for (
+        prev_txid,
+        prev_index,
+        seq,
+        flags,
+        path_index,
+        witnesses,
+        has_cb,
+        cb_data,
+    ) in v2_inputs:
+        core_bytes += prev_txid
+        full_bytes += prev_txid
+        for i in range(4):
+            ib = (prev_index >> (8 * i)) & 0xFF
+            sb = (seq >> (8 * i)) & 0xFF
+            core_bytes.append(ib)
+            full_bytes.append(ib)
+            core_bytes.append(sb)
+            full_bytes.append(sb)
+        core_bytes.append(flags)
+        full_bytes.append(flags)
+        if witnesses:
+            full_bytes += witnesses[0][0]
+        if has_cb:
+            core_bytes += cb_data
+            full_bytes += cb_data
+    for o in v2_outputs:
+        ow = _lotus_v2_encode_output(o)
+        if len(ow) <= 2186 and _lotus_v2_decode_output_bytes(ow) is not None:
+            core_bytes += ow
+            full_bytes += ow
+    txid_b = lotus_v2_tagged_hash("Lotus/v2/txid", bytes(core_bytes))
+    txhash_b = lotus_v2_tagged_hash("Lotus/v2/txhash", bytes(full_bytes))
+    return (txid_b, txhash_b)
+
+
 class CBlockHeader:
     __slots__ = (
-        "hashMerkleRoot",
         "hashPrevBlock",
         "nBits",
-        "nNonce",
         "nTime",
-        "nVersion",
+        "nNonce",
+        "nHeaderVersion",
+        "nSize",
+        "nHeight",
+        "hashMerkleRoot",
+        "hashStateRoot",
+        "_auto_size",
     )
 
     def __init__(self, header=None):
         if header is None:
             self.set_null()
         else:
-            self.nVersion = header.nVersion
             self.hashPrevBlock = header.hashPrevBlock
-            self.hashMerkleRoot = header.hashMerkleRoot
-            self.nTime = header.nTime
             self.nBits = header.nBits
+            self.nTime = header.nTime
             self.nNonce = header.nNonce
+            self.nHeaderVersion = header.nHeaderVersion
+            self.nSize = header.nSize
+            self.nHeight = header.nHeight
+            self.hashMerkleRoot = header.hashMerkleRoot
+            self.hashStateRoot = header.hashStateRoot
+            self._auto_size = getattr(header, "_auto_size", self.nSize)
+
+    @property
+    def nVersion(self) -> int:
+        return self.nHeaderVersion
+
+    @nVersion.setter
+    def nVersion(self, val: int):
+        self.nHeaderVersion = val
+
+    def GetBlockTime(self) -> int:
+        return self.nTime
+
+    def SetBlockTime(self, val: int):
+        self.nTime = int(val)
 
     def set_null(self):
-        self.nVersion = 1
         self.hashPrevBlock = 0
-        self.hashMerkleRoot = 0
-        self.nTime = 0
         self.nBits = 0
+        self.nTime = 0
         self.nNonce = 0
+        self.nHeaderVersion = 2
+        self.nSize = 0
+        self.nHeight = 0
+        self.hashMerkleRoot = 0
+        self.hashStateRoot = 0
+        self._auto_size = 0
 
     def deserialize(self, f):
-        self.nVersion = int.from_bytes(f.read(4), "little", signed=True)
         self.hashPrevBlock = deser_uint256(f)
-        self.hashMerkleRoot = deser_uint256(f)
-        self.nTime = int.from_bytes(f.read(4), "little")
         self.nBits = int.from_bytes(f.read(4), "little")
-        self.nNonce = int.from_bytes(f.read(4), "little")
+        self.nTime = int.from_bytes(f.read(6), "little")
+        self.nNonce = int.from_bytes(f.read(8), "little")
+        self.nHeaderVersion = int.from_bytes(f.read(4), "little")
+        self.nSize = int.from_bytes(f.read(8), "little")
+        self.nHeight = int.from_bytes(f.read(8), "little")
+        self.hashMerkleRoot = deser_uint256(f)
+        self.hashStateRoot = deser_uint256(f)
+        self._auto_size = self.nSize
 
     def serialize(self) -> bytes:
         return self._serialize_header()
 
     def _serialize_header(self) -> bytes:
         return (
-            self.nVersion.to_bytes(4, "little", signed=True)
-            + ser_uint256(self.hashPrevBlock)
+            ser_uint256(self.hashPrevBlock)
+            + (self.nBits & 0xFFFFFFFF).to_bytes(4, "little")
+            + (self.nTime & 0xFFFFFFFFFFFF).to_bytes(6, "little")
+            + (self.nNonce & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little")
+            + (self.nHeaderVersion & 0xFFFFFFFF).to_bytes(4, "little")
+            + (self.nSize & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little")
+            + (self.nHeight & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little")
             + ser_uint256(self.hashMerkleRoot)
-            + self.nTime.to_bytes(4, "little")
-            + self.nBits.to_bytes(4, "little")
-            + self.nNonce.to_bytes(4, "little")
+            + ser_uint256(self.hashStateRoot)
         )
+
+    def _hash_bytes(self) -> bytes:
+        hdr = self._serialize_header()
+        chain_id = b"\x00" * 32
+        body_hash = lotus_v2_tagged_hash("Lotus/v2/header/body", chain_id + hdr[50:134])
+        work_hash = lotus_v2_tagged_hash("Lotus/v2/header/work", hdr[32:50] + body_hash)
+        return lotus_v2_tagged_hash("Lotus/v2/blockid", hdr[0:32] + work_hash)
 
     @property
     def hash_hex(self) -> str:
         """Return block header hash as hex string."""
-        return hash256(self._serialize_header())[::-1].hex()
+        return self._hash_bytes()[::-1].hex()
 
     @property
     def hash_int(self) -> int:
         """Return block header hash as integer."""
-        return uint256_from_str(hash256(self._serialize_header()))
+        return uint256_from_str(self._hash_bytes())
+
+    @property
+    def sha256(self) -> int:
+        return self.hash_int
+
+    @property
+    def hash(self) -> str:
+        return self.hash_hex
+
+    def calc_sha256(self) -> int:
+        return self.hash_int
 
     def __repr__(self):
         return (
-            f"CBlockHeader(nVersion={self.nVersion} "
+            f"CBlockHeader(nHeaderVersion={self.nHeaderVersion} "
             f"hashPrevBlock={uint256_hex(self.hashPrevBlock)} "
-            f"hashMerkleRoot={uint256_hex(self.hashMerkleRoot)} nTime={self.nTime} "
-            f"nBits={self.nBits:08x} nNonce={self.nNonce:08x})"
+            f"hashMerkleRoot={uint256_hex(self.hashMerkleRoot)} "
+            f"hashStateRoot={uint256_hex(self.hashStateRoot)} "
+            f"nTime={self.nTime} nBits={self.nBits:08x} "
+            f"nNonce={self.nNonce:016x} nSize={self.nSize} nHeight={self.nHeight})"
         )
 
 
 BLOCK_HEADER_SIZE = len(CBlockHeader().serialize())
-assert_equal(BLOCK_HEADER_SIZE, 80)
+assert_equal(BLOCK_HEADER_SIZE, 134)
 
 
 class CBlock(CBlockHeader):
@@ -574,9 +1363,14 @@ class CBlock(CBlockHeader):
     def deserialize(self, f):
         super().deserialize(f)
         self.vtx = deser_vector(f, CTransaction)
+        self._auto_size = self.nSize
 
     def serialize(self) -> bytes:
         return super().serialize() + ser_vector(self.vtx)
+
+    def update_size(self):
+        self.nSize = len(self.serialize())
+        self._auto_size = self.nSize
 
     # Calculate the merkle root given a vector of transaction hashes
     def get_merkle_root(self, hashes):
@@ -589,10 +1383,10 @@ class CBlock(CBlockHeader):
         return uint256_from_str(hashes[0])
 
     def calc_merkle_root(self):
-        hashes = []
-        for tx in self.vtx:
-            hashes.append(ser_uint256(tx.txid_int))
-        return self.get_merkle_root(hashes)
+        if not self.vtx:
+            return 0
+        pairs = [lotus_v2_compute_tx_identities(tx) for tx in self.vtx]
+        return uint256_from_str(lotus_v2_transaction_root(pairs))
 
     def is_valid(self):
         target = uint256_from_compact(self.nBits)
@@ -606,17 +1400,26 @@ class CBlock(CBlockHeader):
         return True
 
     def solve(self):
+        if (
+            self.nHeight == 0
+            and self.vtx
+            and getattr(self.vtx[0], "_height", None) is not None
+        ):
+            self.nHeight = self.vtx[0]._height
+        if self.nSize == getattr(self, "_auto_size", 0):
+            self.update_size()
         target = uint256_from_compact(self.nBits)
         while self.hash_int > target:
             self.nNonce += 1
 
     def __repr__(self):
         return (
-            f"CBlock(nVersion={self.nVersion} "
+            f"CBlock(nHeaderVersion={self.nHeaderVersion} "
             f"hashPrevBlock={uint256_hex(self.hashPrevBlock)} "
             f"hashMerkleRoot={uint256_hex(self.hashMerkleRoot)} "
+            f"hashStateRoot={uint256_hex(self.hashStateRoot)} "
             f"nTime={self.nTime} nBits={self.nBits:08x} "
-            f"nNonce={self.nNonce:08x} vtx={self.vtx!r})"
+            f"nNonce={self.nNonce:016x} nSize={self.nSize} nHeight={self.nHeight} vtx={self.vtx!r})"
         )
 
 
@@ -754,7 +1557,7 @@ class HeaderAndShortIDs:
         [k0, k1] = self.get_siphash_keys()
         for i in range(len(block.vtx)):
             if i not in prefill_list:
-                tx_hash = block.vtx[i].txid_int
+                tx_hash = block.vtx[i].txhash_int
                 self.shortids.append(calculate_shortid(k0, k1, tx_hash))
 
     def __repr__(self):
@@ -1660,14 +2463,10 @@ class msg_headers:
         self.headers = headers if headers is not None else []
 
     def deserialize(self, f):
-        # comment in bitcoind indicates these should be deserialized as blocks
-        blocks = deser_vector(f, CBlock)
-        for x in blocks:
-            self.headers.append(CBlockHeader(x))
+        self.headers = deser_vector(f, CBlockHeader)
 
     def serialize(self) -> bytes:
-        blocks = [CBlock(x) for x in self.headers]
-        return ser_vector(blocks)
+        return ser_vector([CBlockHeader(header) for header in self.headers])
 
     def __repr__(self):
         return f"msg_headers(headers={self.headers!r})"
@@ -2373,6 +3172,16 @@ class msg_avaproofsreq:
 
 
 class TestFrameworkMessages(unittest.TestCase):
+    def test_native_output_path_indices(self):
+        branches = [b"\x11" * 32, b"\x22" * 32]
+        wire = _lotus_v2_encode_output((0, 1234, b"\x00" * 32, branches, [[0], [0, 1]]))
+        self.assertEqual(
+            _lotus_v2_decode_output_bytes(wire),
+            (0, b"\x00" * 32, branches, [[0], [0, 1]]),
+        )
+        malformed = _lotus_v2_encode_output((0, 1234, b"\x00" * 32, branches, [[1, 0]]))
+        self.assertIsNone(_lotus_v2_decode_output_bytes(malformed))
+
     def test_ecash_batch_sha256_identifier_and_wire_round_trip(self):
         batch = msg_avabatch(
             prev_block_hash=int(
