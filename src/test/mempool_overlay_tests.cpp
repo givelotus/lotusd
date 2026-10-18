@@ -315,10 +315,14 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip) {
     TestMemPoolEntryHelper entry;
     pool.addUnchecked(entry.Fee(500 * SATOSHI).FromTx(parent_tx));
     pool.addUnchecked(entry.Fee(600 * SATOSHI).FromTx(child_tx));
+    // Refresh through the public read API; the retained manager reference
+    // does not materialize writes deferred by the mempool.
+    pool.GetMerklixOverlay();
     BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 2U);
     BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTotalFeesSats(), 1100);
     const auto frozen_root = pool.FreezeEpochBatch().GetSubtreeARoot();
     pool.removeRecursive(*child_tx, MemPoolRemovalReason::CONFLICT);
+    pool.GetMerklixOverlay();
     BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 1U);
     BOOST_REQUIRE_EQUAL(manager.GetFrozenEpochs().size(), 1U);
     BOOST_CHECK(manager.GetFrozenEpochs().back().GetSubtreeARoot() == frozen_root);
