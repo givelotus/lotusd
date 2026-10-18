@@ -16,6 +16,8 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <limits>
+#include <common/args.h>
 
 using namespace avalanche;
 
@@ -25,20 +27,22 @@ struct StakingRewardsActivationTestingSetup : public TestingSetup {
         SelectParams(chain_type);
         const Consensus::Params &params = Params().GetConsensus();
 
-        // Before Cowperthwaite activation
-        const auto activationHeight = params.cowperthwaiteHeight;
+        BOOST_CHECK(!IsStakingRewardsActivated(params, nullptr));
 
+        // Staking rewards are controlled by the network default and explicit
+        // runtime override; there is no longer a height activation boundary.
         CBlockIndex block;
-        block.nHeight = activationHeight - 1;
-        BOOST_CHECK(!IsStakingRewardsActivated(params, &block));
-
-        block.nHeight = activationHeight;
-        BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block),
-                          expectActivation);
-
-        block.nHeight = activationHeight + 1;
-        BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block),
-                          expectActivation);
+        for (const int height : {0, 1, std::numeric_limits<int>::max()}) {
+            block.nHeight = height;
+            BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block),
+                              expectActivation);
+        }
+        for (const bool enabled : {false, true}) {
+            gArgs.ForceSetArg("-avalanchestakingrewards", enabled ? "1" : "0");
+            BOOST_CHECK(!IsStakingRewardsActivated(params, nullptr));
+            BOOST_CHECK_EQUAL(IsStakingRewardsActivated(params, &block), enabled);
+        }
+        gArgs.ClearForcedArg("-avalanchestakingrewards");
     }
 };
 

@@ -7,6 +7,7 @@
 #include <net_processing.h>
 
 #include <config.h>
+#include <common/args.h>
 #include <lotus_v2/commitment.h>
 #include <net.h>
 #include <net/txrelay_index.h>
@@ -1066,8 +1067,123 @@ BOOST_AUTO_TEST_CASE(reconciliation_round_robin) {
     chainman.ResetIbd();
 }
 
+BOOST_AUTO_TEST_CASE(stock_peer_does_not_support_private_relay) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{8'000'000ms};
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    gArgs.ForceSetArg("-highbandwidthtx", "1");
+    PeerManager::Options opts;
+    opts.txrelay_push_hb = true;
+    RelayHarness h{m_node, opts};
+    CNode &stock{h.AddPeer()};
+    // Ordinary Bitcoin compact-block negotiation does not negotiate Lotus
+    // sealed headers or unsolicited shorttx messages.
+    stock.m_bip152_highbandwidth_to = true;
+    stock.m_bip152_highbandwidth_from = true;
+    BOOST_CHECK(!h.peerman->GetV2ProtocolHandler()
+                     ->IsHighBandwidthShortTxPeer(stock.GetId()));
+    h.SendAll();
+    FastRandomContext rng{true};
+    std::vector<CTransactionRef> txs;
+    for (int i = 0; i < 20; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back());
+    }
+    h.peerman->RelayTransactionBatch(txs);
+    clock.Set(8'000'010ms);
+    const Sent sent{h.SendAll()[stock.GetId()]};
+    BOOST_CHECK(sent.shorttx_txids.empty());
+    BOOST_CHECK_EQUAL(sent.inv_txids.size(), 20U);
+}
+
+BOOST_AUTO_TEST_CASE(private_relay_requires_explicit_remote_offer) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    gArgs.ForceSetArg("-highbandwidthtx", "1");
+    MockTick clock{9'000'000ms};
+    PeerManager::Options opts;
+    opts.txrelay_push_hb = true;
+    RelayHarness h{m_node, opts};
+    CNode &stock{h.AddPeer()};
+    CNode &short_only{h.AddPeer()};
+    CNode &capable{h.AddPeer()};
+    CNode &block_only{h.AddPeer(ConnectionType::BLOCK_RELAY)};
+    auto offer = [&](CNode &node, uint64_t flags) {
+        DataStream message{};
+        message << txrelay::SENDINVSHORT_VERSION << flags;
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, node, NetMsgType::SENDINVSHORT,
+                                  message, 0us, interrupt);
+    };
+    offer(short_only, txrelay::TXRELAY_INVSHORT | (1ULL << 40));
+    offer(capable, txrelay::TXRELAY_HIGH_BANDWIDTH | (1ULL << 40));
+    offer(block_only, txrelay::TXRELAY_HIGH_BANDWIDTH);
+    auto *handler{h.peerman->GetV2ProtocolHandler()};
+    BOOST_CHECK(!handler->IsHighBandwidthShortTxPeer(stock.GetId()));
+    BOOST_CHECK(!handler->IsHighBandwidthShortTxPeer(short_only.GetId()));
+    BOOST_CHECK(handler->IsHighBandwidthShortTxPeer(capable.GetId()));
+    BOOST_CHECK(!handler->IsHighBandwidthShortTxPeer(block_only.GetId()));
+    h.SendAll();
+    FastRandomContext rng{true};
+    std::vector<CTransactionRef> txs;
+    for (int i = 0; i < 20; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back());
+    }
+    h.peerman->RelayTransactionBatch(txs);
+    clock.Set(9'000'010ms);
+    auto sent{h.SendAll()};
+    BOOST_CHECK_EQUAL(sent[stock.GetId()].inv_txids.size(), 20U);
+    BOOST_CHECK(sent[stock.GetId()].shorttx_txids.empty());
+    BOOST_CHECK_EQUAL(sent[short_only.GetId()].short_ids.size(), 20U);
+    BOOST_CHECK(sent[short_only.GetId()].shorttx_txids.empty());
+    BOOST_CHECK_EQUAL(sent[capable.GetId()].shorttx_txids.size(), 20U);
+    BOOST_CHECK_EQUAL(sent[block_only.GetId()].Total(), 0U);
+    // Unknown flags neither enable the private path nor preserve an earlier
+    // offer when its explicit high-bandwidth bit is removed.
+    offer(capable, uint64_t{1} << 40);
+    BOOST_CHECK(!handler->IsHighBandwidthShortTxPeer(capable.GetId()));
+    offer(capable, txrelay::TXRELAY_HIGH_BANDWIDTH);
+    BOOST_CHECK(handler->IsHighBandwidthShortTxPeer(capable.GetId()));
+    // FinalizeNode cleanup is checked by the sealed-header integration test;
+    // another connection to the same implementation still needs its own offer.
+    CNode &reconnected{h.AddPeer()};
+    BOOST_CHECK(!handler->IsHighBandwidthShortTxPeer(reconnected.GetId()));
+}
+
+BOOST_AUTO_TEST_CASE(private_relay_local_willingness_and_disabled_shortids) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    for (const bool willing : {false, true}) {
+        gArgs.ForceSetArg("-highbandwidthtx", willing ? "1" : "0");
+        PeerManager::Options opts;
+        opts.txrelay_shortids = false;
+        RelayHarness h{m_node, opts};
+        CNode &peer{h.AddPeer()};
+        DataStream offer{};
+        offer << txrelay::SENDINVSHORT_VERSION
+              << uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH};
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, peer, NetMsgType::SENDINVSHORT,
+                                  offer, 0us, interrupt);
+        BOOST_CHECK_EQUAL(h.peerman->GetV2ProtocolHandler()
+                              ->IsHighBandwidthShortTxPeer(peer.GetId()),
+                          willing);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(no_body_push_by_default) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    gArgs.ForceSetArg("-highbandwidthtx", "1");
     FastRandomContext rng{true};
     for (const bool push : {false, true}) {
         MockTick clock{7'000'000ms};
@@ -1075,8 +1191,12 @@ BOOST_AUTO_TEST_CASE(no_body_push_by_default) {
         opts.txrelay_push_hb = push;
         RelayHarness h{m_node, opts};
         CNode &peer{h.AddPeer()};
-        h.peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            peer.GetId(), true);
+        DataStream offer{};
+        offer << txrelay::SENDINVSHORT_VERSION
+              << uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH};
+        std::atomic<bool> interrupt{false};
+        h.peerman->ProcessMessage(h.config, peer, NetMsgType::SENDINVSHORT,
+                                  offer, 0us, interrupt);
         h.SendAll();
         std::vector<CTransactionRef> txs;
         for (int i = 0; i < 20; ++i) {

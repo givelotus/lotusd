@@ -45,29 +45,6 @@ struct Params {
     int BIP66Height;
     /** Block height at which CSV (BIP68, BIP112 and BIP113) becomes active */
     int CSVHeight;
-    /** Block height at which UAHF kicks in */
-    int uahfHeight;
-    /** Block height at which the new DAA becomes active */
-    int daaHeight;
-    /** Block height at which the magnetic anomaly activation becomes active */
-    int magneticAnomalyHeight;
-    /** Block height at which the graviton activation becomes active */
-    int gravitonHeight;
-    /** Block height at which the phonon activation becomes active */
-    int phononHeight;
-    /** Block height at which the axion activation becomes active */
-    int axionHeight;
-    /** Block height at which the wellington activation becomes active */
-    int wellingtonHeight;
-    /** Block height at which the Cowperthwaite activation becomes active */
-    int cowperthwaiteHeight;
-    /**
-     * Unix time used for MTP activation of 15 November 2026 12:00:00 UTC
-     * upgrade
-     */
-    int mengerActivationTime;
-    /** Unix time used for MTP activation of 15 May 2027 12:00:00 UTC upgrade */
-    int sandersActivationTime;
 
     /** Enable or disable the miner fund by default */
     bool enableMinerFund;
