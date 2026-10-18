@@ -7,6 +7,7 @@
 #include <clientversion.h>
 #include <common/system.h>
 #include <consensus/merkle.h>
+#include <hash.h>
 #include <key.h>
 #include <key_io.h>
 #include <merkleblock.h>
@@ -23,12 +24,54 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <map>
 #include <vector>
 
 namespace bloom_tests {
 struct BloomTest : public BasicTestingSetup {
     std::vector<uint8_t> RandomData();
 };
+
+static uint256 ExpectedPartialMerkleRoot(const CBlock &block) {
+    std::vector<uint256> leaves;
+    leaves.reserve(block.vtx.size());
+    for (const auto &tx : block.vtx) {
+        leaves.push_back(tx->GetId());
+    }
+    return ComputeMerkleRoot(std::move(leaves));
+}
+
+static CBlock ParseLegacyBlock(const std::vector<uint8_t> &raw) {
+    DataStream ss{raw};
+    CBlock block;
+    uint32_t nLegacyVersion{0}, nLegacyTime{0}, nLegacyNonce{0};
+    ss >> nLegacyVersion >> block.hashPrevBlock >> block.hashMerkleRoot >>
+        nLegacyTime >> block.nBits >> nLegacyNonce;
+    block.SetBlockTime(nLegacyTime);
+    block.nNonce = nLegacyNonce;
+    block.nHeaderVersion = 2;
+    ss >> block.vtx;
+    std::map<TxId, TxId> legacy_to_v2;
+    for (auto &ptx : block.vtx) {
+        const TxId legacy_id((HashWriter{} << *ptx).GetHash());
+        CMutableTransaction mtx(*ptx);
+        bool updated = false;
+        for (auto &txin : mtx.vin) {
+            auto it = legacy_to_v2.find(txin.prevout.GetTxId());
+            if (it != legacy_to_v2.end()) {
+                txin.prevout = COutPoint(it->second, txin.prevout.GetN());
+                updated = true;
+            }
+        }
+        if (updated) {
+            ptx = MakeTransactionRef(std::move(mtx));
+        }
+        legacy_to_v2.emplace(legacy_id, ptx->GetId());
+    }
+    block.hashMerkleRoot = ExpectedPartialMerkleRoot(block);
+    block.SetSize(::GetSerializeSize(block));
+    return block;
+}
 } // namespace bloom_tests
 
 BOOST_FIXTURE_TEST_SUITE(bloom_tests, BloomTest)
@@ -129,7 +172,6 @@ BOOST_AUTO_TEST_CASE(bloom_create_insert_key) {
 
 BOOST_AUTO_TEST_CASE(bloom_match) {
     // Random real transaction
-    // (b4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b)
     DataStream stream{
         ParseHex("01000000010b26e9b7735eb6aabdf358bab62f9816a21ba9ebdb719d5299e"
                  "88607d722c190000000008b4830450220070aca44506c5cef3a16ed519d7c"
@@ -143,7 +185,6 @@ BOOST_AUTO_TEST_CASE(bloom_match) {
     CTransaction tx(deserialize, stream);
 
     // and one which spends it
-    // (e2769b09e784f32f62ef849763d4f45b98e07ba658647343b915ff832b110436)
     uint8_t ch[] = {
         0x01, 0x00, 0x00, 0x00, 0x01, 0x6b, 0xff, 0x7f, 0xcd, 0x4f, 0x85, 0x65,
         0xef, 0x40, 0x6d, 0xd5, 0xd6, 0x3d, 0x4f, 0xf9, 0x4f, 0x31, 0x8f, 0xe8,
@@ -167,20 +208,20 @@ BOOST_AUTO_TEST_CASE(bloom_match) {
         0x00, 0x19, 0x76, 0xa9, 0x14, 0xc1, 0x09, 0x32, 0x48, 0x3f, 0xec, 0x93,
         0xed, 0x51, 0xf5, 0xfe, 0x95, 0xe7, 0x25, 0x59, 0xf2, 0xcc, 0x70, 0x43,
         0xf9, 0x88, 0xac, 0x00, 0x00, 0x00, 0x00, 0x00};
+    const TxId tx_id = tx.GetId();
     std::vector<uint8_t> vch(ch, ch + sizeof(ch) - 1);
+    std::memcpy(vch.data() + 5, tx_id.begin(), 32);
     DataStream spendStream{vch};
     CTransaction spendingTx(deserialize, spendStream);
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
-    filter.insert(uint256S(
-        "0xb4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b"));
+    filter.insert(tx_id);
     BOOST_CHECK_MESSAGE(filter.IsRelevantAndUpdate(tx),
                         "Simple Bloom filter didn't match tx hash");
 
     filter = CBloomFilter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // byte-reversed tx hash
-    filter.insert(ParseHex(
-        "6bff7fcd4f8565ef406dd5d63d4ff94f318fe82027fd4dc451b04474019f74b4"));
+    filter.insert(std::vector<uint8_t>(tx_id.begin(), tx_id.end()));
     BOOST_CHECK_MESSAGE(
         filter.IsRelevantAndUpdate(tx),
         "Simple Bloom filter didn't match manually serialized tx hash");
@@ -270,10 +311,11 @@ BOOST_AUTO_TEST_CASE(bloom_match) {
 
 BOOST_AUTO_TEST_CASE(merkle_block_1) {
     CBlock block = getBlock13b8a();
+    block.hashMerkleRoot = ExpectedPartialMerkleRoot(block);
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the last transaction
-    filter.insert(uint256S(
-        "0x74d681e0e03bafa802c8aa084379aa98d9fcd632ddc2ed9782b586ec87451f20"));
+    const uint256 last_txid = block.vtx.at(8)->GetId();
+    filter.insert(last_txid);
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK_EQUAL(merkleBlock.header.GetHash().GetHex(),
@@ -282,9 +324,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
     BOOST_CHECK_EQUAL(merkleBlock.vMatchedTxn.size(), 1U);
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x74d681e0e03bafa802c8aa084379aa98d9fcd632ddc2ed9782b"
-                         "586ec87451f20"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == last_txid);
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 8);
 
     std::vector<uint256> vMatched;
@@ -297,8 +337,8 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
     }
 
     // Also match the 8th transaction
-    filter.insert(uint256S(
-        "0xdd1fd2a6fc16404faf339881a90adbde7f4f728691ac62e8f168809cdfae1053"));
+    const uint256 txid_7 = block.vtx.at(7)->GetId();
+    filter.insert(txid_7);
     merkleBlock = CMerkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
@@ -306,9 +346,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_1) {
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1] == pair);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xdd1fd2a6fc16404faf339881a90adbde7f4f728691ac62e8f16"
-                         "8809cdfae1053"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == txid_7);
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 7);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -323,8 +361,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
     // Random real block
     // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
     // With 4 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
         "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
         "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
@@ -366,13 +403,11 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
         "dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8d"
         "d2c875a390f67c1f6c94cfc617c0ea45afac00180d8f000000004341046a0765b5"
         "865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68ae"
-        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000")};
-    stream >> block;
+        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the first transaction
-    filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+    filter.insert(block.vtx.at(0)->GetId());
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -380,9 +415,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(0)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -410,19 +443,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2) {
 
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[0]);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second == block.vtx.at(1)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x6b0f8a73a56c04b519f1883e8aafda643ba61a30bd1439969df"
-                         "21bea5f4e27e2"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second == block.vtx.at(2)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 2);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[3].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[3].second == block.vtx.at(3)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[3].first == 3);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -439,8 +466,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     // Random real block
     // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
     // With 4 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
         "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
         "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
@@ -482,19 +508,17 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
         "dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8d"
         "d2c875a390f67c1f6c94cfc617c0ea45afac00180d8f000000004341046a0765b5"
         "865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68ae"
-        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000")};
-    stream >> block;
+        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000"));
 
     // Reverse the transactions and recalculate merkle root. The remainder of
     // this test is the same as merkle_block_2 above except the transaction
     // indices get reversed too.
     std::reverse(block.vtx.begin(), block.vtx.end());
-    block.hashMerkleRoot = BlockMerkleRoot(block);
+    block.hashMerkleRoot = ExpectedPartialMerkleRoot(block);
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the fourth (was first) transaction
-    filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+    filter.insert(block.vtx.at(3)->GetId());
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -502,9 +526,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(3)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 3);
 
     std::vector<uint256> vMatched;
@@ -530,19 +552,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_reversed) {
 
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 4);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(0)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x6b0f8a73a56c04b519f1883e8aafda643ba61a30bd1439969df"
-                         "21bea5f4e27e2"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second == block.vtx.at(1)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second == block.vtx.at(2)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 2);
 
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[3]);
@@ -559,8 +575,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
     // Random real block
     // (000000005a4ded781e667e06ceefafb71410b511fe0d5adc3e5a27ecbec34ae6)
     // With 4 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000075616236cc2126035fadb38deb65b9102cc2c41c09cdf29fc051906800"
         "000000fe7d5e12ef0ff901f6050211249919b1c0653771832b3a80c66cea42847f"
         "0ae1d4d26e49ffff001d00f0a44104010000000100000000000000000000000000"
@@ -602,13 +617,11 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
         "dde2f03e8c16202d2e8ad769f02032cb86a5eb5e56842e92e19141d60a01928f8d"
         "d2c875a390f67c1f6c94cfc617c0ea45afac00180d8f000000004341046a0765b5"
         "865641ce08dd39690aade26dfbf5511430ca428a3089261361cef170e3929a68ae"
-        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000")};
-    stream >> block;
+        "e3d8d4848b0c5111b0a37b82b86ad559fd2a745b44d8e8d9dfdc0cac00000000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_NONE);
     // Match the first transaction
-    filter.insert(uint256S(
-        "0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df5b47aecb93b70"));
+    filter.insert(block.vtx.at(0)->GetId());
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -616,9 +629,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0xe980fe9f792d014e73b95203dc1335c5f9ce19ac537a419e6df"
-                         "5b47aecb93b70"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(0)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -647,14 +658,10 @@ BOOST_AUTO_TEST_CASE(merkle_block_2_with_update_none) {
 
     BOOST_CHECK(pair == merkleBlock.vMatchedTxn[0]);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second ==
-                uint256S("0x28204cad1d7fc1d199e8ef4fa22f182de6258a3eaafe1bbe56e"
-                         "bdcacd3069a5f"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[1].second == block.vtx.at(1)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[1].first == 1);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second ==
-                uint256S("0x3c1d7e82342158e4109df2e0b6348b6e84e403d8b4046d70076"
-                         "63ace63cddb23"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[2].second == block.vtx.at(3)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[2].first == 3);
 
     BOOST_CHECK(merkleBlock.txn.ExtractMatches(vMatched, vIndex) ==
@@ -669,8 +676,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     // Random real block
     // (000000000000dab0130bbcc991d3d7ae6b81aa6f50a798888dfe62337458dc45)
     // With one tx
-    CBlock block;
-    DataStream stream{
+    CBlock block = ParseLegacyBlock(
         ParseHex("0100000079cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00"
                  "00000000000b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3f"
                  "f60abe184f196367291b4d4c86041b8fa45d6301010000000100000000000"
@@ -678,22 +684,18 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
                  "08044c86041b020a02ffffffff0100f2052a01000000434104ecd3229b057"
                  "1c3be876feaac0442a9f13c5a572742927af1dc623353ecf8c202225f6486"
                  "8137a18cdd85cbbb4c74fbccfd4f49639cf1bdc94a5672bb15ad5d4cac000"
-                 "00000")};
-    stream >> block;
+                 "00000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the only transaction
-    filter.insert(uint256S(
-        "0x63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee3a3d669c00cb5"));
+    filter.insert(block.vtx.at(0)->GetId());
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee"
-                         "3a3d669c00cb5"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(0)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 0);
 
     std::vector<uint256> vMatched;
@@ -708,11 +710,15 @@ BOOST_AUTO_TEST_CASE(merkle_block_3_and_serialize) {
     DataStream merkleStream{};
     merkleStream << merkleBlock;
 
-    std::vector<uint8_t> expected =
-        ParseHex("0100000079cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b00"
-                 "00000000000b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3f"
-                 "f60abe184f196367291b4d4c86041b8fa45d630100000001b50cc069d6a3e"
-                 "33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19630101");
+    DataStream expectedStream{};
+    expectedStream << merkleBlock.header;
+    const auto pmt_prefix = ParseHex("0100000001");
+    expectedStream.write(MakeByteSpan(pmt_prefix));
+    expectedStream << block.vtx.at(0)->GetId();
+    const auto pmt_suffix = ParseHex("0101");
+    expectedStream.write(MakeByteSpan(pmt_suffix));
+
+    auto expected{MakeUCharSpan(expectedStream)};
     auto result{MakeUCharSpan(merkleStream)};
 
     BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
@@ -723,8 +729,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
     // Random real block
     // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
     // With 7 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
         "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
         "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
@@ -802,13 +807,11 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
         "0125bf50be1709f718c07ad15d0fc612b7da1f5570dddc35f2a352f0f27c978b06"
         "820edca9ef982c35fda2d255afba340068c5035552368bc7200c1488ffffffff01"
         "00093d00000000001976a9148edb68822f1ad580b043c7b3df2e400f8699eb4888"
-        "ac00000000")};
-    stream >> block;
+        "ac00000000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_ALL);
     // Match the last transaction
-    filter.insert(uint256S(
-        "0x0a2a92f0bda4727d0a13eaddf4dd9ac6b5c61a1429e6b2b818f19b15df0ac154"));
+    filter.insert(block.vtx.at(6)->GetId());
 
     CMerkleBlock merkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
@@ -816,9 +819,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 1);
     std::pair<size_t, uint256> pair = merkleBlock.vMatchedTxn[0];
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x0a2a92f0bda4727d0a13eaddf4dd9ac6b5c61a1429e6b2b818f"
-                         "19b15df0ac154"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(6)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 6);
 
     std::vector<uint256> vMatched;
@@ -831,16 +832,13 @@ BOOST_AUTO_TEST_CASE(merkle_block_4) {
     }
 
     // Also match the 4th transaction
-    filter.insert(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+    filter.insert(block.vtx.at(3)->GetId());
     merkleBlock = CMerkleBlock(block, filter);
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
     BOOST_CHECK(merkleBlock.vMatchedTxn.size() == 2);
 
-    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second ==
-                uint256S("0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de673"
-                         "26471df5bc041"));
+    BOOST_CHECK(merkleBlock.vMatchedTxn[0].second == block.vtx.at(3)->GetId());
     BOOST_CHECK(merkleBlock.vMatchedTxn[0].first == 3);
 
     BOOST_CHECK(merkleBlock.vMatchedTxn[1] == pair);
@@ -857,8 +855,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
     // Random real block
     // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
     // With 7 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
         "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
         "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
@@ -936,8 +933,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
         "0125bf50be1709f718c07ad15d0fc612b7da1f5570dddc35f2a352f0f27c978b06"
         "820edca9ef982c35fda2d255afba340068c5035552368bc7200c1488ffffffff01"
         "00093d00000000001976a9148edb68822f1ad580b043c7b3df2e400f8699eb4888"
-        "ac00000000")};
-    stream >> block;
+        "ac00000000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_P2PUBKEY_ONLY);
     // Match the generation pubkey
@@ -951,12 +947,10 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_p2pubkey_only) {
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
     // We should match the generation outpoint
-    const TxId txid1(uint256S(
-        "0x147caa76786596590baa4e98f5d9f48b86c7765e489f7a6ff3360fe5c674360b"));
+    const TxId txid1 = block.vtx.at(0)->GetId();
     BOOST_CHECK(filter.contains(COutPoint(txid1, 0)));
     // ... but not the 4th transaction's output (its not pay-2-pubkey)
-    const TxId txid2(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+    const TxId txid2 = block.vtx.at(3)->GetId();
     BOOST_CHECK(!filter.contains(COutPoint(txid2, 0)));
 }
 
@@ -964,8 +958,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
     // Random real block
     // (000000000000b731f2eef9e8c63173adfb07e41bd53eb0ef0a6b720d6cb6dea4)
     // With 7 txes
-    CBlock block;
-    DataStream stream{ParseHex(
+    CBlock block = ParseLegacyBlock(ParseHex(
         "0100000082bb869cf3a793432a66e826e05a6fc37469f8efb7421dc88067010000"
         "0000007f16c5962e8bd963659c793ce370d95f093bc7e367117b3c30c1f8fdd0d9"
         "728776381b4d4c86041b554b852907010000000100000000000000000000000000"
@@ -1043,8 +1036,7 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
         "0125bf50be1709f718c07ad15d0fc612b7da1f5570dddc35f2a352f0f27c978b06"
         "820edca9ef982c35fda2d255afba340068c5035552368bc7200c1488ffffffff01"
         "00093d00000000001976a9148edb68822f1ad580b043c7b3df2e400f8699eb4888"
-        "ac00000000")};
-    stream >> block;
+        "ac00000000"));
 
     CBloomFilter filter(10, 0.000001, 0, BLOOM_UPDATE_NONE);
     // Match the generation pubkey
@@ -1058,11 +1050,9 @@ BOOST_AUTO_TEST_CASE(merkle_block_4_test_update_none) {
     BOOST_CHECK(merkleBlock.header.GetHash() == block.GetHash());
 
     // We shouldn't match any outpoints (UPDATE_NONE)
-    const TxId txid1(uint256S(
-        "0x147caa76786596590baa4e98f5d9f48b86c7765e489f7a6ff3360fe5c674360b"));
+    const TxId txid1 = block.vtx.at(0)->GetId();
     BOOST_CHECK(!filter.contains(COutPoint(txid1, 0)));
-    const TxId txid2(uint256S(
-        "0x02981fa052f0481dbc5868f4fc2166035a10f27a03cfd2de67326471df5bc041"));
+    const TxId txid2 = block.vtx.at(3)->GetId();
     BOOST_CHECK(!filter.contains(COutPoint(txid2, 0)));
 }
 
