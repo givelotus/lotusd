@@ -1422,6 +1422,300 @@ BOOST_AUTO_TEST_CASE(ecash_rejects_v2_commitment_in_legacy_header) {
     BOOST_CHECK(handler->MatchCandidateOverlay(*block, block->vtx[0]) == nullptr);
 }
 
+BOOST_AUTO_TEST_CASE(outbound_inv_queue_suppression_window) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman = std::make_unique<ConnmanTestMsg>(config, 0x3559, 0x3559,
+                                                    *m_node.addrman);
+    PeerManager::Options peer_opts;
+    peer_opts.deterministic_rng = true;
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                     *m_node.chainman, *m_node.mempool,
+                                     /*avalanche=*/nullptr, peer_opts);
+
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    options.nSendBufferMaxSize = 1024 * 1024;
+    connman->Init(options);
+
+    const int64_t base_time = 1'700'000'000;
+    SetMockTime(base_time);
+
+    CAddress addr(MakeTestIp(0xa0b0c030), NODE_NONE);
+    CNode peer_node(/*id=*/303, /*sock=*/nullptr, addr,
+                    /*nKeyedNetGroupIn=*/0, /*nLocalHostNonceIn=*/0,
+                    /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                    ConnectionType::OUTBOUND_FULL_RELAY,
+                    /*inbound_onion=*/false);
+    connman->Handshake(
+        /*node=*/peer_node,
+        /*successfully_connected=*/true,
+        /*remote_services=*/ServiceFlags(NODE_NETWORK),
+        /*local_services=*/ServiceFlags(NODE_NETWORK),
+        /*version=*/PROTOCOL_VERSION,
+        /*relay_txs=*/true);
+
+    // Prime the outbound inv send timer via an initial SendMessages call.
+    BOOST_CHECK(peerman->SendMessages(config, &peer_node));
+    {
+        LOCK(peer_node.cs_vSend);
+        peer_node.vSendMsg.clear();
+    }
+
+    // Add two transactions to the mempool and queue both for relay to peer_node.
+    FastRandomContext rng(uint256{55});
+    CTransactionRef tx_suppressed = MakeNonCoinbaseTx(rng, 0x31);
+    CTransactionRef tx_unsuppressed = MakeNonCoinbaseTx(rng, 0x32);
+    BOOST_REQUIRE(tx_suppressed && tx_unsuppressed);
+
+    TestMemPoolEntryHelper entry;
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->addUnchecked(entry.FromTx(tx_suppressed));
+        m_node.mempool->addUnchecked(entry.FromTx(tx_unsuppressed));
+    }
+
+    peerman->RelayTransaction(tx_suppressed->GetId());
+    peerman->RelayTransaction(tx_unsuppressed->GetId());
+
+    // Simulate receiving a remote INV for tx_suppressed during the outbound
+    // suppression window (before mocktime advances).
+    {
+        std::vector<CInv> remote_invs{CInv(MSG_TX, tx_suppressed->GetId())};
+        DataStream inv_stream{};
+        inv_stream << remote_invs;
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, peer_node, NetMsgType::INV, inv_stream,
+                                std::chrono::seconds{base_time}, interrupt);
+    }
+
+    // Advance mocktime past the outbound broadcast interval so the queue
+    // flushes.
+    SetMockTime(base_time + 5);
+    BOOST_CHECK(peerman->SendMessages(config, &peer_node));
+
+    // Inspect sent INV messages: tx_unsuppressed must be announced, while
+    // tx_suppressed must have been suppressed by the incoming INV.
+    bool saw_suppressed = false;
+    bool saw_unsuppressed = false;
+    V1TransportDeserializer deserializer(config, peer_node.GetId());
+    {
+        LOCK(peer_node.cs_vSend);
+        for (const auto &chunk : peer_node.vSendMsg) {
+            Span<const uint8_t> sp{chunk};
+            while (!sp.empty()) {
+                const int ret = deserializer.Read(config, sp);
+                BOOST_REQUIRE_GE(ret, 0);
+                if (deserializer.Complete()) {
+                    bool reject_message = false;
+                    CNetMessage msg = deserializer.GetMessage(0us, reject_message);
+                    BOOST_CHECK(!reject_message);
+                    if (msg.m_type == NetMsgType::INV) {
+                        std::vector<CInv> sent_invs;
+                        msg.m_recv >> sent_invs;
+                        for (const CInv &inv : sent_invs) {
+                            if (inv.IsMsgTx()) {
+                                if (inv.hash == tx_suppressed->GetId()) {
+                                    saw_suppressed = true;
+                                }
+                                if (inv.hash == tx_unsuppressed->GetId()) {
+                                    saw_unsuppressed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    BOOST_CHECK(!saw_suppressed);
+    BOOST_CHECK(saw_unsuppressed);
+
+    SetMockTime(0);
+    peerman->FinalizeNode(config, peer_node);
+}
+
+// Focused control for READY0035: same frozen clocks, actual SendMessages,
+// permissions and serialized INV/SHORTTX output; transaction admission is
+// deliberately outside this relay-scheduling component test.
+BOOST_AUTO_TEST_CASE(noban_normal_trickle_with_frozen_clock) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+        const bool high_bandwidth = scenario & 1;
+        const bool local = scenario & 2;
+        const bool noban = scenario & 4;
+        auto connman = std::make_unique<ConnmanTestMsg>(
+            config, 123, 456, *m_node.addrman);
+        PeerManager::Options peer_opts;
+        peer_opts.deterministic_rng = true;
+        auto peerman = PeerManager::make(
+            *connman, *m_node.addrman, nullptr, *m_node.chainman,
+            *m_node.mempool, nullptr, peer_opts);
+        CConnman::Options opts;
+        opts.m_msgproc = {peerman.get()};
+        opts.nSendBufferMaxSize = 1024 * 1024;
+        connman->Init(opts);
+        SetMockTime(1'700'000'000);
+        CAddress addr(MakeTestIp(0xa0b0c080 + scenario), NODE_NONE);
+        CNodeOptions node_opts;
+        if (noban) node_opts.permission_flags = NetPermissionFlags::NoBan;
+        CNode node(800 + scenario, nullptr, addr, 0, 0, 0, CAddress(), "",
+                   ConnectionType::OUTBOUND_FULL_RELAY, false,
+                   std::move(node_opts));
+        connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
+                           PROTOCOL_VERSION, true);
+        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
+            node.GetId(), high_bandwidth);
+        // Prime both clocks before any transaction exists. A single relay
+        // cannot trigger the 16-item fast-burst threshold.
+        BOOST_REQUIRE(peerman->SendMessages(config, &node));
+        WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
+        FastRandomContext rng(uint256{static_cast<uint8_t>(150 + scenario)});
+        auto tx = MakeNonCoinbaseTx(rng, 0x90 + scenario);
+        BOOST_REQUIRE(tx);
+        {
+            LOCK2(cs_main, m_node.mempool->cs);
+            TestMemPoolEntryHelper entry;
+            m_node.mempool->addUnchecked(entry.FromTx(tx));
+            if (local) m_node.mempool->AddUnbroadcastTx(tx->GetId());
+        }
+        peerman->RelayTransaction(tx->GetId());
+        auto count_announced = [&]() {
+            size_t count = 0;
+            V1TransportDeserializer deser(config, node.GetId());
+            LOCK(node.cs_vSend);
+            for (const auto &chunk : node.vSendMsg) {
+                Span<const uint8_t> bytes{chunk};
+                while (!bytes.empty()) {
+                    BOOST_REQUIRE_GE(deser.Read(config, bytes), 0);
+                    if (!deser.Complete()) continue;
+                    bool rejected = false;
+                    auto msg = deser.GetMessage(0us, rejected);
+                    BOOST_REQUIRE(!rejected);
+                    if (msg.m_type == NetMsgType::INV) {
+                        std::vector<CInv> invs;
+                        msg.m_recv >> invs;
+                        for (const auto &inv : invs)
+                            count += inv.IsMsgTx() && inv.hash == tx->GetId();
+                    } else if (msg.m_type == NetMsgType::SHORTTX) {
+                        ShortTxResponse response;
+                        msg.m_recv >> response;
+                        for (const auto &sent : response.txs)
+                            count += sent->GetId() == tx->GetId();
+                    }
+                }
+            }
+            node.vSendMsg.clear();
+            return count;
+        };
+        BOOST_REQUIRE(peerman->SendMessages(config, &node));
+        BOOST_CHECK_EQUAL(count_announced(), noban ? 1 : 0);
+        // Advancing the normal clock still serves ordinary peers; previously
+        // sent NoBan inventory must not be duplicated.
+        SetMockTime(1'700'000'060);
+        BOOST_REQUIRE(peerman->SendMessages(config, &node));
+        BOOST_CHECK_EQUAL(count_announced(), noban ? 0 : 1);
+        peerman->FinalizeNode(config, node);
+        WITH_LOCK(m_node.mempool->cs, m_node.mempool->clear());
+    }
+    SetMockTime(0);
+}
+
+BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    for (unsigned scenario = 0; scenario < 4; ++scenario) {
+        const bool high_bandwidth = scenario & 1;
+        const bool local = scenario & 2;
+        auto connman =
+            std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
+        PeerManager::Options peer_opts;
+        peer_opts.deterministic_rng = true;
+        auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                         *m_node.chainman, *m_node.mempool,
+                                         nullptr, peer_opts);
+        CConnman::Options opts;
+        opts.m_msgproc = {peerman.get()};
+        opts.nSendBufferMaxSize = 1024 * 1024;
+        connman->Init(opts);
+        SetMockTime(1'700'000'000);
+        CAddress addr(MakeTestIp(0xa0b0c040 + scenario), NODE_NONE);
+        CNode node(400 + scenario, nullptr, addr, 0, 0, 0, CAddress(), "",
+                   ConnectionType::OUTBOUND_FULL_RELAY, false);
+        connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
+                           PROTOCOL_VERSION, true);
+        BOOST_CHECK(peerman->SendMessages(config, &node));
+        WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
+        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
+            node.GetId(), high_bandwidth);
+        FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
+        std::vector<CTransactionRef> txs;
+        TestMemPoolEntryHelper entry;
+        for (unsigned i = 0; i < 17; ++i) {
+            auto tx = MakeNonCoinbaseTx(rng, 0x60 + i);
+            BOOST_REQUIRE(tx);
+            {
+                LOCK2(cs_main, m_node.mempool->cs);
+                m_node.mempool->addUnchecked(entry.FromTx(tx));
+                if (local) m_node.mempool->AddUnbroadcastTx(tx->GetId());
+            }
+            txs.push_back(tx);
+        }
+        for (const auto &tx : txs)
+            peerman->RelayTransaction(tx->GetId());
+        // The fast path must retain known-inventory suppression as well.
+        peerman->MarkPeerKnownTx(node.GetId(), txs.back()->GetId());
+        BOOST_CHECK(peerman->SendMessages(config, &node));
+        size_t announced = 0;
+        V1TransportDeserializer deserializer(config, node.GetId());
+        {
+            LOCK(node.cs_vSend);
+            for (const auto &chunk : node.vSendMsg) {
+                Span<const uint8_t> bytes{chunk};
+                while (!bytes.empty()) {
+                    BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                    if (!deserializer.Complete()) continue;
+                    bool rejected = false;
+                    auto msg = deserializer.GetMessage(0us, rejected);
+                    BOOST_CHECK(!rejected);
+                    if (msg.m_type == NetMsgType::INV) {
+                        std::vector<CInv> invs;
+                        msg.m_recv >> invs;
+                        for (const auto &inv : invs)
+                            announced += inv.IsMsgTx();
+                    } else if (msg.m_type == NetMsgType::SHORTTX) {
+                        ShortTxResponse response;
+                        msg.m_recv >> response;
+                        announced += response.txs.size();
+                        for (const auto &tx : response.txs)
+                            BOOST_CHECK(tx->GetId() != txs.back()->GetId());
+                    }
+                }
+            }
+        }
+        BOOST_CHECK_EQUAL(announced, high_bandwidth && !local ? 16 : 0);
+        peerman->FinalizeNode(config, node);
+    }
+    SetMockTime(0);
+}
+
+BOOST_AUTO_TEST_CASE(inventory_broadcast_constants) {
+    // Verify Stage H1 inventory broadcast constants
+    static_assert(INBOUND_INVENTORY_BROADCAST_INTERVAL ==
+                  std::chrono::milliseconds{5000});
+    static_assert(OUTBOUND_INVENTORY_BROADCAST_INTERVAL ==
+                  std::chrono::milliseconds{2000});
+    static_assert(INVENTORY_BROADCAST_PER_SECOND == 2500);
+    static_assert(INVENTORY_MAX_RECENT_RELAY == 350000);
+    BOOST_CHECK_EQUAL(INBOUND_INVENTORY_BROADCAST_INTERVAL.count(), 5000);
+    BOOST_CHECK_EQUAL(OUTBOUND_INVENTORY_BROADCAST_INTERVAL.count(), 2000);
+    BOOST_CHECK_EQUAL(INVENTORY_BROADCAST_PER_SECOND, 2500U);
+    BOOST_CHECK_EQUAL(INVENTORY_MAX_RECENT_RELAY, 350000U);
+}
+
+
 BOOST_AUTO_TEST_CASE(root_count_one_xor_requires_bucket_proof) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const auto &config{m_node.chainman->GetConfig()};

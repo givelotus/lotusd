@@ -44,6 +44,40 @@ static const unsigned int MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 3;
 static constexpr size_t MAX_ADDR_TO_SEND{1000};
 
 /**
+ * Average delay between trickled inventory transmissions for inbound peers.
+ * Locally originated transactions use this ordinary timer for every peer.
+ */
+static constexpr std::chrono::milliseconds INBOUND_INVENTORY_BROADCAST_INTERVAL{
+    5000};
+/**
+ * Average delay between trickled inventory transmissions for outbound peers.
+ * Ordinary outbound peers retain the upstream two-second mean. Fast peers
+ * have a separate 25 ms suppression window for relayed transactions only.
+ */
+static constexpr std::chrono::milliseconds
+    OUTBOUND_INVENTORY_BROADCAST_INTERVAL{2000};
+static constexpr std::chrono::milliseconds
+    FAST_INBOUND_INVENTORY_BROADCAST_INTERVAL{50};
+static constexpr std::chrono::milliseconds
+    FAST_OUTBOUND_INVENTORY_BROADCAST_INTERVAL{25};
+/**
+ * Maximum rate of inventory items to send per second.
+ * Allows higher-throughput transaction relay while retaining bounded bursts.
+ */
+static constexpr unsigned int INVENTORY_BROADCAST_PER_SECOND = 2500;
+/**
+ * Maximum number of inventory items to send per transmission per MB of max
+ * block size.
+ */
+static constexpr unsigned int INVENTORY_BROADCAST_MAX_PER_MB =
+    INVENTORY_BROADCAST_PER_SECOND * 5;
+static constexpr unsigned int INVENTORY_BROADCAST_MAX =
+    5000 * INVENTORY_BROADCAST_PER_SECOND;
+/** The number of most recently announced transactions a peer can request. */
+static constexpr unsigned int INVENTORY_MAX_RECENT_RELAY = 350000;
+
+
+/**
  * Number of headers sent in one getheaders result. We rely on the assumption
  * that if a peer sends less than this number, we reached its tip. Changing
  * this value is a protocol upgrade.

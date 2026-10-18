@@ -122,6 +122,11 @@ class AvalancheMiningPreconsensusTest(BitcoinTestFramework):
         txs = []
         for _ in range(5):
             txs.append(wallet.send_self_transfer(from_node=node_non_preconsensus))
+        # Local RPC transactions retain normal privacy trickle, even for
+        # NoBan peers. Advance this test's frozen clock past the relay window.
+        now += 60
+        node_non_preconsensus.setmocktime(now)
+        node_preconsensus.setmocktime(now)
         self.sync_mempools()
 
         def finalize_txs(txids, other_response=AvalancheTxVoteError.ACCEPTED, **kwargs):
@@ -144,6 +149,11 @@ class AvalancheMiningPreconsensusTest(BitcoinTestFramework):
 
         for _ in range(5):
             txs.append(wallet.send_self_transfer(from_node=node_non_preconsensus))
+        # Local RPC transactions retain normal privacy trickle, even for
+        # NoBan peers. Advance this test's frozen clock past the relay window.
+        now += 60
+        node_non_preconsensus.setmocktime(now)
+        node_preconsensus.setmocktime(now)
         self.sync_mempools()
 
         for tx in txs[:5]:
@@ -199,6 +209,10 @@ class AvalancheMiningPreconsensusTest(BitcoinTestFramework):
             chain = wallet.send_self_transfer_chain(
                 from_node=node_preconsensus, chain_length=chain_length
             )
+            # This new local chain also needs a privacy relay clock window.
+            now += 60
+            node_non_preconsensus.setmocktime(now)
+            node_preconsensus.setmocktime(now)
             # Wait for all the txs to be in the mempool of the non-preconsensus
             # node
             self.wait_until(
