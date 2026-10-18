@@ -726,7 +726,7 @@ private:
     void GetScopedTransactionsAndRoot(ReconScope scope,
                                       const uint256 &context_id,
                                       std::vector<CTransactionRef> &out_txs,
-                                      uint256 &out_root) const
+                                      uint256 *out_root) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     bool SendRawPayloadToPeerLocked(NodeId peer_id, const char *msg_type,
                                     Span<const uint8_t> payload)

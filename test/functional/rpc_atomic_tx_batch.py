@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Atomic raw batches preserve ABC validation and relay dependency chains."""
 import copy
+import time
 from decimal import Decimal
 
 from test_framework.key import ECKey
@@ -20,7 +21,8 @@ class AtomicTxBatchTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.setup_clean_chain = True
         self.supports_cli = False
-        self.extra_args = [["-avalanche=0"], ["-avalanche=0"]]
+        self.extra_args = [["-avalanche=0", "-highbandwidthtx=1"],
+                           ["-avalanche=0", "-highbandwidthtx=1"]]
 
     def run_test(self):
         node, peer = self.nodes
@@ -48,7 +50,15 @@ class AtomicTxBatchTest(BitcoinTestFramework):
         assert_raises_rpc_error(-22, "TX decode failed: badhex-at-seven",
                                 node.submitrawtxbatch, malformed, 0)
         assert_equal(node.getrawmempool(), [])
-        submitted = node.submitrawtxbatch(raw, 0)
+        now = int(time.time())
+        for relay_node in self.nodes:
+            relay_node.setmocktime(now)
+        with node.assert_debug_log(["sending shorttx"]):
+            submitted = node.submitrawtxbatch(raw, 0)
+            # Give local-origin transactions a real relay opportunity without
+            # bypassing the normal privacy-preserving inventory timer.
+            for relay_node in self.nodes:
+                relay_node.bumpmocktime(60)
         assert submitted["accepted"]
         assert_equal(submitted["txids"], ids)
         self.sync_mempools()
@@ -93,6 +103,8 @@ class AtomicTxBatchTest(BitcoinTestFramework):
         assert node.testrawtxbatch(signed, 0)["allowed"]
         assert_equal(node.getrawmempool(), [])
         assert node.submitrawtxbatch(signed, 0)["accepted"]
+        for relay_node in self.nodes:
+            relay_node.bumpmocktime(60)
         self.sync_mempools()
         assert_equal(sorted(node.getrawmempool()), sorted(signed_ids))
         assert_equal(sorted(peer.getrawmempool()), sorted(signed_ids))
