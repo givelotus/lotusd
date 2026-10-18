@@ -19,7 +19,8 @@ MINER_FUND_ADDR = "ecregtest:prfhcnyqnl5cgrnmlfmms675w93ld7mvvq9jcw0zsn"
 MINER_FUND_LEGACY_ADDR = "2NCXTUCFd1Q3EteVpVVDTrBBoKqvMPAoeEn"
 
 MINER_FUND_RATIO = 32
-STAKING_REWARD_RATIO = 10
+# V2 pays 25% of the coinbase to staking rewards (v2/042).
+STAKING_REWARD_RATIO = 25
 
 
 class AbcMiningRPCTest(BitcoinTestFramework):
