@@ -325,33 +325,44 @@ class ChronikClient:
         kwargs = {}
         if self.timeout is not None:
             kwargs["timeout"] = self.timeout
-        client = (
-            http.client.HTTPSConnection(self.host, self.port, **kwargs)
-            if self.https
-            else http.client.HTTPConnection(self.host, self.port, **kwargs)
-        )
-        headers = {}
+        headers = {"Connection": "close"}
         if body is not None:
             headers["Content-Type"] = self.CONTENT_TYPE
-        path = self.path_prefix + path
-        client.request(method, path, body, headers)
-        response = client.getresponse()
-        content_type = response.getheader("Content-Type")
-        body = response.read()
+        full_path = self.path_prefix + path
+        last_err = None
+        for attempt in range(3):
+            client = (
+                http.client.HTTPSConnection(self.host, self.port, **kwargs)
+                if self.https
+                else http.client.HTTPConnection(self.host, self.port, **kwargs)
+            )
+            try:
+                client.request(method, full_path, body, headers)
+                response = client.getresponse()
+                content_type = response.getheader("Content-Type")
+                resp_body = response.read()
+                break
+            except (http.client.RemoteDisconnected, ConnectionResetError) as err:
+                last_err = err
+                time.sleep(0.05 * (attempt + 1))
+            finally:
+                client.close()
+        else:
+            raise last_err
 
         if content_type != self.CONTENT_TYPE:
             raise UnexpectedContentType(
                 f'Unexpected Content-Type "{content_type}" (expected '
-                f'"{self.CONTENT_TYPE}"), body: {repr(body)}'
+                f'"{self.CONTENT_TYPE}"), body: {repr(resp_body)}'
             )
 
         if response.status != 200:
             proto_error = pb.Error()
-            proto_error.ParseFromString(body)
+            proto_error.ParseFromString(resp_body)
             return ChronikResponse(response, error_proto=proto_error)
 
         ok_proto = pb_type()
-        ok_proto.ParseFromString(body)
+        ok_proto.ParseFromString(resp_body)
         return ChronikResponse(response, ok_proto=ok_proto)
 
     def blockchain_info(self) -> ChronikResponse:

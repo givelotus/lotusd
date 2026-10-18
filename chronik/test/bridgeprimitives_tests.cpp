@@ -11,6 +11,9 @@
 #include <chronik-cpp/util/collection.h>
 #include <chronik-cpp/util/hash.h>
 #include <config.h>
+#include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/output.h>
+#include <util/time.h>
 #include <node/blockstorage.h>
 #include <streams.h>
 #include <undo.h>
@@ -25,6 +28,24 @@ using namespace chronik::util;
 using node::BlockManager;
 
 BOOST_AUTO_TEST_SUITE(bridgeprimitives_tests)
+
+// Native undo storage retains structured output fields, not the optional
+// scriptPubKey cache. Compare the canonical authenticated output representation.
+std::vector<uint8_t> CanonicalNativeOutputBytes(const CTxOut &output) {
+    std::vector<uint8_t> bytes;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(lotus::v2::EncodeOutput(output.ToV2Output(), bytes, error), error);
+    return bytes;
+}
+
+std::vector<uint8_t> ExpectedBridgeScriptBytes(const CTxOut &output) {
+    // The bridge preserves explicitly legacy in-memory fixtures as raw scripts.
+    // Native persisted coins instead retain structured authenticated branches,
+    // even when their optional scriptPubKey cache was not reconstructed.
+    if (output.vBranches.empty())
+        return {output.scriptPubKey.begin(), output.scriptPubKey.end()};
+    return CanonicalNativeOutputBytes(output);
+}
 
 void CheckTxsEqual(const chronik_bridge::Tx &left,
                    const chronik_bridge::Tx &right) {
@@ -101,7 +122,7 @@ static void CheckMatchesDisk(const BlockManager &blockman, const CBlock &block,
                 blockTx.tx.inputs[inputIdx].coin;
             BOOST_CHECK_EQUAL(coin.GetTxOut().nValue / SATOSHI,
                               bridgeCoin.output.sats);
-            BOOST_CHECK_EQUAL(HexStr(coin.GetTxOut().scriptPubKey),
+            BOOST_CHECK_EQUAL(HexStr(ExpectedBridgeScriptBytes(coin.GetTxOut())),
                               HexStr(bridgeCoin.output.script));
             BOOST_CHECK_EQUAL(coin.GetHeight(), bridgeCoin.height);
             BOOST_CHECK_EQUAL(coin.IsCoinBase(), bridgeCoin.is_coinbase);
@@ -110,12 +131,11 @@ static void CheckMatchesDisk(const BlockManager &blockman, const CBlock &block,
 }
 
 BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
-    LOCK(cs_main);
-
     ChainstateManager &chainman = *Assert(m_node.chainman);
     const chronik_bridge::ChronikBridge bridge(m_node);
 
-    CBlockIndex *pgenesis = chainman.ActiveTip()->GetAncestor(0);
+    CBlockIndex *pgenesis = WITH_LOCK(
+        chainman.GetMutex(), return chainman.ActiveTip()->GetAncestor(0));
     const CBlock &genesisBlock = chainman.GetParams().GenesisBlock();
 
     // Loading genesis unblock data returns an empty undo
@@ -127,7 +147,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
         genesisBlock, *genesisBlockUndo, *pgenesis);
     chronik_bridge::Tx expectedGenesisTx = {
         .txid = HashToArray(genesisBlock.vtx[0]->GetId()),
-        .version = 1,
+        .version = genesisBlock.vtx[0]->nVersion,
         .inputs = {{
             .prev_out = chronik_bridge::OutPoint({
                 .txid = {},
@@ -144,6 +164,8 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
         }},
         .locktime = 0,
     };
+    const uint32_t genesisTxDataPos =
+        uint32_t(8 + ::GetSerializeSize(CBlockHeader()) + 1);
     chronik_bridge::Block expectedBridgedGenesisBlock = {
         .hash = HashToArray(genesisBlock.GetHash()),
         .prev_hash = {},
@@ -153,11 +175,11 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
         .file_num = 0,
         .data_pos = 8, // 8 magic bytes in block file
         .undo_pos = 0, // genesis has no undo data
-        .size = 285,
+        .size = ::GetSerializeSize(genesisBlock),
         .txs = {{
             .tx = expectedGenesisTx,
-            .data_pos = 89, // +80 header +1 compact size
-            .undo_pos = 0   // coinbase has no undo data
+            .data_pos = genesisTxDataPos, // +header +1 compact size
+            .undo_pos = 0                 // coinbase has no undo data
         }}};
 
     CheckBlocksEqual(bridgedGenesisBlock, expectedBridgedGenesisBlock);
@@ -182,8 +204,6 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
 }
 
 BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
-    LOCK(cs_main);
-
     const chronik_bridge::ChronikBridge bridge(m_node);
     ChainstateManager &chainman = *Assert(m_node.chainman);
 
@@ -210,25 +230,28 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         CTxOut(Amount::zero(), scriptPad),
     };
 
+    while (!(tx1.GetId() < tx2.GetId())) {
+        ++tx2.nLockTime;
+    }
     BOOST_CHECK(tx1.GetId() < tx2.GetId());
 
     CBlock testBlock = CreateAndProcessBlock({tx1, tx2}, CScript() << OP_2,
                                              &chainman.ActiveChainstate());
     std::unique_ptr<CBlockUndo> testBlockUndo =
-        bridge.load_block_undo(*chainman.ActiveTip());
+        bridge.load_block_undo(bridge.get_chain_tip());
 
-    BOOST_CHECK_EQUAL(chainman.ActiveTip()->GetBlockHash(),
+    BOOST_CHECK_EQUAL(bridge.get_chain_tip().GetBlockHash(),
                       testBlock.GetHash());
     chronik_bridge::Block bridgedTestBlock = chronik_bridge::bridge_block(
-        testBlock, *testBlockUndo, *chainman.ActiveTip());
+        testBlock, *testBlockUndo, bridge.get_chain_tip());
 
     chronik_bridge::Tx expectedTestTx0 = {
         .txid = HashToArray(testBlock.vtx[0]->GetId()),
-        .version = 2,
+        .version = testBlock.vtx[0]->nVersion,
         .inputs = {{
             .prev_out = chronik_bridge::OutPoint({
-                .txid = {},
-                .out_idx = 0xffff'ffff,
+                .txid = HashToArray(testBlock.vtx[0]->vin[0].prevout.GetTxId()),
+                .out_idx = testBlock.vtx[0]->vin[0].prevout.GetN(),
             }),
             .script = ToRustVec<uint8_t>(testBlock.vtx[0]->vin[0].scriptSig),
             .sequence = 0xffff'ffff,
@@ -236,7 +259,8 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         }},
         .outputs = {{
             .sats = 2500000000,
-            .script = {0x52},
+            .script = ToRustVec<uint8_t>(
+                CanonicalNativeOutputBytes(testBlock.vtx[0]->vout[0])),
         }},
         .locktime = 0,
     };
@@ -251,7 +275,8 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
             .script = {},
             .sequence = 0xffff'ffff,
             .coin = chronik_bridge::Coin({
-                .output = {5000000000, {0x51}},
+                .output = {5000000000, ToRustVec<uint8_t>(
+                    CanonicalNativeOutputBytes(coinsBlock.vtx[0]->vout[0]))},
                 .height = 101,
                 .is_coinbase = true,
             }),
@@ -305,8 +330,21 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
                                 .sats = 0,
                                 .script = ToRustVec<uint8_t>(scriptPad),
                             }},
-                .locktime = 0,
-            };
+                .locktime = tx2.nLockTime,
+    };
+    const uint32_t expectedDataPos =
+        WITH_LOCK(::cs_main, return bridge.get_chain_tip().nDataPos);
+    const uint32_t expectedUndoPos =
+        WITH_LOCK(::cs_main, return bridge.get_chain_tip().nUndoPos);
+    const uint32_t tx0DataPos =
+        uint32_t(expectedDataPos + ::GetSerializeSize(CBlockHeader()) + 1);
+    const uint32_t tx1DataPos =
+        uint32_t(tx0DataPos + ::GetSerializeSize(*testBlock.vtx[0]));
+    const uint32_t tx2DataPos =
+        uint32_t(tx1DataPos + ::GetSerializeSize(*testBlock.vtx[1]));
+    const uint32_t tx1UndoPos = expectedUndoPos + 1;
+    const uint32_t tx2UndoPos =
+        uint32_t(tx1UndoPos + ::GetSerializeSize(testBlockUndo->vtxundo[0]));
     chronik_bridge::Block expectedBridgedTestBlock = {
         .hash = HashToArray(testBlock.GetHash()),
         .prev_hash = HashToArray(testBlock.hashPrevBlock),
@@ -314,13 +352,17 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         .timestamp = 1598888152,
         .height = 202,
         .file_num = 0,
-        .data_pos = 39548,
-        .undo_pos = 8249,
-        .size = 578,
+        .data_pos = expectedDataPos,
+        .undo_pos = expectedUndoPos,
+        .size = ::GetSerializeSize(testBlock),
         .txs = {
-            {.tx = expectedTestTx0, .data_pos = 39629, .undo_pos = 0},
-            {.tx = expectedTestTx1, .data_pos = 39729, .undo_pos = 8250},
-            {.tx = expectedTestTx2, .data_pos = 39912, .undo_pos = 8257},
+            {.tx = expectedTestTx0, .data_pos = tx0DataPos, .undo_pos = 0},
+            {.tx = expectedTestTx1,
+             .data_pos = tx1DataPos,
+             .undo_pos = tx1UndoPos},
+            {.tx = expectedTestTx2,
+             .data_pos = tx2DataPos,
+             .undo_pos = tx2UndoPos},
         }};
 
     CheckBlocksEqual(bridgedTestBlock, expectedBridgedTestBlock);
@@ -343,8 +385,6 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
 }
 
 BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
-    LOCK(cs_main);
-
     ChainstateManager &chainman = *Assert(m_node.chainman);
     const chronik_bridge::ChronikBridge bridge(m_node);
 
@@ -354,7 +394,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
                                    chainman.ActiveChainstate());
     CBlockUndo badBlockUndo1;
     BOOST_CHECK_EXCEPTION(chronik_bridge::bridge_block(badBlock1, badBlockUndo1,
-                                                       *chainman.ActiveTip()),
+                                                       bridge.get_chain_tip()),
                           std::runtime_error, [](const std::runtime_error &ex) {
                               BOOST_CHECK_EQUAL(ex.what(),
                                                 "Missing undo data for tx");
@@ -374,7 +414,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
     CreateAndProcessBlock({tx}, CScript() << OP_1,
                           &chainman.ActiveChainstate());
     std::unique_ptr<CBlockUndo> blockUndo =
-        bridge.load_block_undo(*chainman.ActiveTip());
+        bridge.load_block_undo(bridge.get_chain_tip());
 
     // This time, bad CBlock has two inputs whereas the disk has only one.
     CMutableTransaction badTx;
@@ -382,7 +422,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
     CBlock badBlock2 =
         CreateBlock({badTx}, CScript() << OP_1, chainman.ActiveChainstate());
     BOOST_CHECK_EXCEPTION(chronik_bridge::bridge_block(badBlock2, *blockUndo,
-                                                       *chainman.ActiveTip()),
+                                                       bridge.get_chain_tip()),
                           std::runtime_error, [](const std::runtime_error &ex) {
                               BOOST_CHECK_EQUAL(ex.what(),
                                                 "Missing coin for input");
@@ -394,8 +434,6 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_bad, TestChain100Setup) {
 // GetSizeOfCompactSize, therefore we test blocks with "dangerous" number of
 // txs, which cover the cases where GetSizeOfCompactSize goes from 1 -> 3 -> 5.
 BOOST_FIXTURE_TEST_CASE(test_bridge_big, TestChain100Setup) {
-    LOCK(cs_main);
-
     ChainstateManager &chainman = *Assert(m_node.chainman);
     const chronik_bridge::ChronikBridge bridge(m_node);
 
@@ -408,7 +446,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_big, TestChain100Setup) {
         CBlock coinblock = CreateAndProcessBlock({}, CScript() << OP_1,
                                                  &chainman.ActiveChainstate());
         coinblocks.push_back(coinblock);
-        BOOST_CHECK_EQUAL(chainman.ActiveTip()->GetBlockHash(),
+        BOOST_CHECK_EQUAL(bridge.get_chain_tip().GetBlockHash(),
                           coinblock.GetHash());
     }
     mineBlocks(100);
@@ -436,15 +474,15 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_big, TestChain100Setup) {
         }
         CBlock testBlock = CreateAndProcessBlock(txs, CScript() << OP_1,
                                                  &chainman.ActiveChainstate());
-        BOOST_CHECK_EQUAL(chainman.ActiveTip()->GetBlockHash(),
+        BOOST_CHECK_EQUAL(bridge.get_chain_tip().GetBlockHash(),
                           testBlock.GetHash());
 
         std::unique_ptr<CBlockUndo> testBlockUndo =
-            bridge.load_block_undo(*chainman.ActiveTip());
+            bridge.load_block_undo(bridge.get_chain_tip());
 
         // test matches disk
         chronik_bridge::Block bridgedBlock = chronik_bridge::bridge_block(
-            testBlock, *testBlockUndo, *chainman.ActiveTip());
+            testBlock, *testBlockUndo, bridge.get_chain_tip());
         CheckMatchesDisk(chainman.m_blockman, testBlock, bridgedBlock);
 
         for (const chronik_bridge::BlockTx &bridgedTx : bridgedBlock.txs) {
@@ -471,7 +509,8 @@ BOOST_FIXTURE_TEST_CASE(test_load_tx_bad, TestChain100Setup) {
             BOOST_CHECK_EQUAL(ex.what(), "Reading tx data from disk failed");
             return true;
         });
-    uint32_t genesisCbDataPos = 89;
+    uint32_t genesisCbDataPos =
+        uint32_t(8 + ::GetSerializeSize(CBlockHeader()) + 1);
     BOOST_CHECK_EXCEPTION(bridge.load_tx(0, genesisCbDataPos, 0x7fffffff),
                           std::runtime_error, [](const std::runtime_error &ex) {
                               BOOST_CHECK_EQUAL(
@@ -481,6 +520,69 @@ BOOST_FIXTURE_TEST_CASE(test_load_tx_bad, TestChain100Setup) {
                           });
     // sanity check
     bridge.load_tx(0, genesisCbDataPos, 0);
+}
+
+BOOST_AUTO_TEST_CASE(test_encode_v2_three_branch_output_script) {
+    chronik_bridge::V2ThreeBranchOutputDesc desc{};
+    desc.sats = 5000;
+    desc.key_branch.fill(0x11);
+    std::array<uint8_t, 32> script_branch{};
+    script_branch.fill(0x22);
+    desc.script_branch = script_branch;
+    std::array<uint8_t, 32> data_branch{};
+    data_branch.fill(0x33);
+    desc.data_branch = data_branch;
+    std::array<uint8_t, 32> token_id{};
+    token_id.fill(0xaa);
+    desc.token_id = token_id;
+    desc.is_burn = false;
+
+    const rust::Vec<uint8_t> encoded =
+        chronik_bridge::encode_v2_three_branch_output_script(desc);
+    // 1 (flags) + 8 (value) + 32 (token_id) + 1 (n_branches=3) + 96 (3*32) +
+    // 1 (n_paths=3) + 6 (3*(len=1, idx)) = 145 bytes
+    BOOST_CHECK_EQUAL(encoded.size(), 145U);
+    BOOST_CHECK_EQUAL(encoded[0], 0x01); // has_token = 1, is_burn = 0
+}
+
+BOOST_AUTO_TEST_CASE(native_fee_snapshot_matches_controller) {
+    const auto bridge = chronik_bridge::get_v2_fee_rate_info();
+    const auto native = lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now()));
+    BOOST_CHECK_EQUAL(bridge.consensus_floor_per_kcu, native.consensus_floor_per_kcu);
+    BOOST_CHECK_EQUAL(bridge.p2p_relay_feerate_per_kcu, native.p2p_relay_feerate_per_kcu);
+    BOOST_CHECK_EQUAL(bridge.rpc_admission_feerate_per_kcu, native.rpc_admission_feerate_per_kcu);
+    BOOST_CHECK_EQUAL(bridge.recommended_sdk_feerate_per_kcu, native.recommended_sdk_feerate_per_kcu);
+    BOOST_CHECK_EQUAL(bridge.marginal_burn_feerate_per_kcu, native.marginal_burn_feerate_per_kcu);
+    BOOST_CHECK_EQUAL(bridge.hysteresis_window_ms, native.hysteresis_window_ms);
+    BOOST_CHECK_EQUAL(bridge.hysteresis_discount_permille, native.hysteresis_discount_permille);
+    BOOST_CHECK_EQUAL(bridge.ema_block_size_bytes, native.ema_block_size_bytes);
+    BOOST_CHECK_EQUAL(bridge.adaptive_target_block_size, native.adaptive_target_block_size);
+    BOOST_CHECK_EQUAL(bridge.adaptive_max_block_size, native.adaptive_max_block_size);
+    BOOST_CHECK_EQUAL(bridge.adaptive_max_generated_block_size, native.adaptive_max_generated_block_size);
+    BOOST_CHECK_EQUAL(bridge.mempool_backlog_bytes, native.mempool_backlog_bytes);
+}
+
+BOOST_AUTO_TEST_CASE(native_output_bridge_matches_pinned_wire_vector) {
+    lotus::v2::Output output;
+    output.value = 100;
+    lotus::v2::Hash branch;
+    branch.fill(0x42);
+    output.branches = {branch};
+    output.paths = {{0}};
+    const auto expected = ParseHex(
+        "006400000000000000014242424242424242424242424242424242424242424242424242424242424242010100");
+    const auto native = CTxOut::FromV2Output(output);
+    BOOST_CHECK(CanonicalNativeOutputBytes(native) == expected);
+    CMutableTransaction tx;
+    tx.nVersion = 7;
+    tx.vin.resize(1);
+    tx.vin[0].nFlags = 2;
+    tx.vout = {native};
+    const auto bridged = chronik_bridge::bridge_tx(CTransaction(tx), {});
+    BOOST_REQUIRE_EQUAL(bridged.outputs.size(), 1U);
+    BOOST_CHECK_EQUAL(HexStr(bridged.outputs[0].script), HexStr(expected));
+    BOOST_CHECK_EQUAL(bridged.outputs[0].sats, 100);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
