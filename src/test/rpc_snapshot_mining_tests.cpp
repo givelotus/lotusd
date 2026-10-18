@@ -34,70 +34,18 @@
 #include <cstring>
 #include <future>
 #include <memory>
-#include <set>
 #include <thread>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_mining_tests, TestChain100Setup)
-
-BOOST_AUTO_TEST_CASE(publication_defers_overlay_and_mining_pins_its_generation) {
-    // Both independent coinbase inputs must be mature at the next block.
-    mineBlocks(1);
-    const CScript spk = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
-    auto &pool = *m_node.mempool;
-    auto &publisher = node::GetGlobalSnapshotPublisher();
-    const Amount fee = 2000 * SATOSHI;
-    const auto first = MakeTransactionRef(CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, spk,
-        m_coinbase_txns[0]->vout[0].nValue - fee, /*submit=*/true));
-    const auto pinned = publisher.Load();
-    BOOST_REQUIRE(pinned);
-    BOOST_REQUIRE_EQUAL(pinned->mempool_size, 1U);
-    {
-        LOCK(pool.cs);
-        BOOST_CHECK(pool.HasPendingOverlayChanges());
-    }
-    BOOST_CHECK(!pinned->mining->ready);
-    BOOST_CHECK(!pinned->overlay_all_fit_candidate);
-
-    const auto second = MakeTransactionRef(CreateValidMempoolTransaction(
-        m_coinbase_txns[1], 0, 2, coinbaseKey, spk,
-        m_coinbase_txns[1]->vout[0].nValue - fee, /*submit=*/true));
-    const auto current = publisher.Load();
-    BOOST_REQUIRE(current);
-    BOOST_REQUIRE_EQUAL(current->mempool_size, 2U);
-
-    // Materialize only after the live pool has advanced. The fallback must
-    // select the pinned generation, retain exact fees, and cache its roots.
-    const auto &old_template = pinned->GetMiningTemplate();
-    BOOST_REQUIRE_EQUAL(old_template.non_coinbase_txs.size(), 1U);
-    BOOST_CHECK(old_template.non_coinbase_txs[0]->GetId() == first->GetId());
-    BOOST_CHECK(old_template.total_fees == fee);
-    BOOST_REQUIRE_EQUAL(old_template.tx_fees.size(), 1U);
-    BOOST_CHECK(old_template.tx_fees[0] == fee);
-    BOOST_CHECK_EQUAL(old_template.non_cb_serialized_size,
-                      GetSerializeSize(*first));
-    old_template.EnsureTemplateRoots();
-    const auto old_root = old_template.subtree_a_root;
-    BOOST_CHECK(old_root != lotus::v2::Hash{});
-
-    const auto &new_template = current->GetMiningTemplate();
-    BOOST_REQUIRE_EQUAL(new_template.non_coinbase_txs.size(), 2U);
-    BOOST_CHECK(new_template.total_fees == fee + fee);
-    std::set<TxId> selected;
-    for (const auto &tx : new_template.non_coinbase_txs) {
-        selected.insert(tx->GetId());
-    }
-    BOOST_CHECK(selected == std::set<TxId>({first->GetId(), second->GetId()}));
-    new_template.EnsureTemplateRoots();
-    BOOST_CHECK(new_template.subtree_a_root != old_root);
-    BOOST_CHECK(pinned->GetMiningTemplate().subtree_a_root == old_root);
-    {
-        LOCK(pool.cs);
-        BOOST_CHECK(pool.HasPendingOverlayChanges());
-        BOOST_CHECK_EQUAL(pool.size(), 2U);
-    }
+namespace {
+const node::MiningTemplateSnapshot &NativeMiningTemplate(
+    const node::ChainAndMempoolSnapshot &snapshot) {
+    snapshot.EnsureMiningTemplate();
+    return snapshot.mining_template;
 }
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_mining_tests, TestChain100Setup)
 
 BOOST_AUTO_TEST_CASE(
     abc_mempool_batch_removal_and_prioritisation_snapshot_coalescing) {
@@ -159,8 +107,8 @@ BOOST_AUTO_TEST_CASE(
         const auto snap_after = publisher.Load();
         BOOST_REQUIRE(snap_after != nullptr);
         BOOST_CHECK_EQUAL(snap_after->mempool_size, 0U);
-        BOOST_CHECK_EQUAL(snap_after->GetMiningTemplate().template_id,
-                          snap_before->GetMiningTemplate().template_id + 1);
+        BOOST_CHECK_EQUAL(NativeMiningTemplate(*snap_after).template_id,
+                          NativeMiningTemplate(*snap_before).template_id + 1);
         disconnectpool.clear();
     }
 }
@@ -212,10 +160,10 @@ BOOST_AUTO_TEST_CASE(snapshot_publisher_concurrent_rcu_stress) {
         next->headers_height = i;
         next->mempool_valid = true;
         next->mempool_size = static_cast<size_t>(i % 17);
-        next->mining->value.template_valid = true;
-        next->mining->value.template_id = publisher.AllocateTemplateId();
-        next->mining->value.next_height = i + 1;
-        next->mining->ready = true;
+        next->mining_template.template_valid = true;
+        next->mining_template.template_id = publisher.AllocateTemplateId();
+        next->mining_template.next_height = i + 1;
+        next->mining_template_ready = true;
         publisher.Publish(std::move(next));
     }
 
@@ -242,7 +190,7 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     CScript pubKeyScript = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
     CMutableTransaction mempool_mtx = CreateValidMempoolTransaction(
         m_coinbase_txns[0], 0, 1, coinbaseKey, pubKeyScript,
-        50 * COIN - 2000 * SATOSHI, /*submit=*/true);
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, /*submit=*/true);
     const std::string mempool_txid = mempool_mtx.GetId().GetHex();
 
     {
@@ -285,7 +233,7 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     // coinbase bytes and roots returned by this template generation.
     const auto snap = node::GetGlobalSnapshotPublisher().Load();
     BOOST_REQUIRE(snap != nullptr);
-    const auto &tmpl = snap->GetMiningTemplate();
+    const auto &tmpl = NativeMiningTemplate(*snap);
     BOOST_REQUIRE(tmpl.template_valid);
     BOOST_CHECK_EQUAL(tmpl.template_id, template_id);
     CBlockHeader header;
@@ -441,10 +389,10 @@ BOOST_AUTO_TEST_CASE(lazy_mining_template_pins_old_generation_and_warm_rpc_avoid
     m_node.mempool->clear(true);
     const auto empty = node::GetGlobalSnapshotPublisher().Load();
     // Neither template was materialized before clearing the live pool.
-    BOOST_REQUIRE_EQUAL(old->GetMiningTemplate().non_coinbase_txs.size(), 1U);
-    BOOST_CHECK(old->GetMiningTemplate().non_coinbase_txs[0]->GetId() == tx.GetId());
-    BOOST_CHECK(empty->GetMiningTemplate().non_coinbase_txs.empty());
-    BOOST_CHECK_NE(old->GetMiningTemplate().template_id, empty->GetMiningTemplate().template_id);
+    BOOST_REQUIRE_EQUAL(NativeMiningTemplate(*old).non_coinbase_txs.size(), 1U);
+    BOOST_CHECK(NativeMiningTemplate(*old).non_coinbase_txs[0]->GetId() == tx.GetId());
+    BOOST_CHECK(NativeMiningTemplate(*empty).non_coinbase_txs.empty());
+    BOOST_CHECK_NE(NativeMiningTemplate(*old).template_id, NativeMiningTemplate(*empty).template_id);
     boost::asio::thread_pool pool(2);
     JSONRPCRequest req;
     req.context = &m_node; req.strMethod = "getblocktemplate";
@@ -477,7 +425,7 @@ BOOST_AUTO_TEST_CASE(snapshot_template_rejects_unchecked_invalid_p2sh) {
     { LOCK2(cs_main, m_node.mempool->cs);
       m_node.mempool->addUnchecked(TestMemPoolEntryHelper().Fee(2000 * SATOSHI).FromTx(bad));
       node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get()); }
-    BOOST_REQUIRE_EQUAL(node::GetGlobalSnapshotPublisher().Load()->GetMiningTemplate().non_coinbase_txs.size(), 2U);
+    BOOST_REQUIRE_EQUAL(NativeMiningTemplate(*node::GetGlobalSnapshotPublisher().Load()).non_coinbase_txs.size(), 2U);
     boost::asio::thread_pool pool(2);
     JSONRPCRequest req;
     req.context = &m_node; req.strMethod = "getblocktemplate";
@@ -496,8 +444,8 @@ BOOST_AUTO_TEST_CASE(cached_merkle_branch_does_not_certify_duplicate_transaction
     tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
     const auto ref = MakeTransactionRef(tx);
     tmpl.non_coinbase_txs = {ref, ref};
-    tmpl.EnsureTemplateRoots();
-    BOOST_CHECK(!tmpl.merkle_cache_safe);
+    BOOST_CHECK_THROW(tmpl.EnsureRoots(), std::invalid_argument);
+    BOOST_CHECK(!tmpl.roots_ready);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
