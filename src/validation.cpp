@@ -631,7 +631,8 @@ private:
 public:
     PackageMempoolAcceptResult AcceptRawTxBatch(
         const std::vector<CTransactionRef> &txns, ATMPArgs &args,
-        const CFeeRate &max_raw_tx_fee_rate) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+        const CFeeRate &max_raw_tx_fee_rate,
+        const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 private:
     using PendingMempoolNotification = ValidationSignals::MempoolAddedBatchItem;
     // All the intermediate state that gets passed between the various levels
@@ -682,6 +683,10 @@ private:
          * Reused across PreChecks and ConsensusScriptChecks.
          */
         PrecomputedTransactionData m_precomputed_txdata;
+        bool m_precomputed_txdata_ready{false};
+        bool m_regular_tx_checked{false};
+        bool m_regular_tx_valid{false};
+        TxValidationState m_regular_tx_state;
 
         // ABC specific flags that are used in both PreChecks and
         // ConsensusScriptChecks
@@ -814,7 +819,12 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     // Alias what we need out of ws
     TxValidationState &state = ws.m_state;
     // Coinbase is only valid in a block, not as a loose transaction.
-    if (!CheckRegularTransaction(tx, state)) {
+    if (ws.m_regular_tx_checked) {
+        if (!ws.m_regular_tx_valid) {
+            state = ws.m_regular_tx_state;
+            return false;
+        }
+    } else if (!CheckRegularTransaction(tx, state)) {
         // state filled in by CheckRegularTransaction.
         return false;
     }
@@ -1631,9 +1641,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(
 }
 
 PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
-    const std::vector<CTransactionRef> &txns,
-    ATMPArgs &args,
-    const CFeeRate &max_raw_tx_fee_rate) {
+    const std::vector<CTransactionRef> &txns, ATMPArgs &args,
+    const CFeeRate &max_raw_tx_fee_rate,
+    const std::vector<PrecomputedBatchTxData> *precomputed_batch) {
     AssertLockHeld(cs_main);
 
     PackageValidationState package_state;
@@ -1736,8 +1746,20 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         m_active_chainstate.m_chain.Tip(), m_active_chainstate.m_chainman);
     std::vector<Workspace> workspaces;
     workspaces.reserve(txns.size());
-    for (const auto &tx : txns) {
-        workspaces.emplace_back(tx, script_flags);
+    for (size_t i = 0; i < txns.size(); ++i) {
+        Workspace &ws = workspaces.emplace_back(txns[i], script_flags);
+        if (precomputed_batch != nullptr && i < precomputed_batch->size()) {
+            const PrecomputedBatchTxData &pre = (*precomputed_batch)[i];
+            if (pre.regular_tx_checked) {
+                ws.m_regular_tx_checked = true;
+                ws.m_regular_tx_valid = pre.regular_tx_valid;
+                ws.m_regular_tx_state = pre.regular_tx_state;
+            }
+            if (pre.precomputed_txdata_ready) {
+                ws.m_precomputed_txdata = pre.txdata;
+                ws.m_precomputed_txdata_ready = true;
+            }
+        }
     }
 
     std::map<TxId, MempoolAcceptResult> results;
@@ -1793,7 +1815,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                                                       std::move(results));
                 }
                 ws.m_sig_checks_standard = elem.nSigChecks;
-                ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
+                if (!ws.m_precomputed_txdata_ready) {
+                    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
+                    ws.m_precomputed_txdata_ready = true;
+                }
             } else {
                 uncached_ws_indices.push_back(idx);
             }
@@ -1830,7 +1855,11 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                     const uint32_t scriptVerifyFlags =
                         ws.m_next_block_script_verify_flags |
                         STANDARD_SCRIPT_VERIFY_FLAGS;
-                    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
+                    if (!ws.m_precomputed_txdata_ready) {
+                        ws.m_precomputed_txdata =
+                            PrecomputedTransactionData{tx};
+                        ws.m_precomputed_txdata_ready = true;
+                    }
                     TxSigCheckLimiter txLimiter;
                     auto err = VerifyTxScriptsFromResolvedCoins(
                         tx, ws.m_resolved_inputs, scriptVerifyFlags,
@@ -2361,10 +2390,25 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate &active_chainstate,
     return result;
 }
 
+void PrecomputeSingleTxData(const CTransaction &tx,
+                            PrecomputedBatchTxData &out) {
+    out.regular_tx_checked = true;
+    out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
+    if (out.regular_tx_valid) {
+        out.txdata = PrecomputedTransactionData{tx};
+        out.precomputed_txdata_ready = true;
+    } else {
+        out.precomputed_txdata_ready = false;
+    }
+}
+
+
 PackageMempoolAcceptResult
-ProcessRawTxBatch(Chainstate &active_chainstate, CTxMemPool &pool,
-                  const Package &package, bool test_accept,
-                  const CFeeRate &max_raw_tx_fee_rate) {
+ProcessRawTxBatch(
+    Chainstate &active_chainstate, CTxMemPool &pool,
+    const Package &package, bool test_accept,
+    const CFeeRate &max_raw_tx_fee_rate,
+    const std::vector<PrecomputedBatchTxData> *precomputed_batch) {
     AssertLockHeld(cs_main);
     assert(!package.empty());
     assert(std::all_of(package.cbegin(), package.cend(),
@@ -2376,7 +2420,8 @@ ProcessRawTxBatch(Chainstate &active_chainstate, CTxMemPool &pool,
         config, GetTime(), coins_to_uncache, test_accept);
     PackageMempoolAcceptResult result =
         MemPoolAccept(pool, active_chainstate)
-            .AcceptRawTxBatch(package, args, max_raw_tx_fee_rate);
+            .AcceptRawTxBatch(package, args, max_raw_tx_fee_rate,
+                              precomputed_batch);
 
     if (test_accept || result.m_state.IsInvalid()) {
         for (const COutPoint &hashTx : coins_to_uncache) {

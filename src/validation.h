@@ -383,14 +383,33 @@ static constexpr uint32_t MAX_RAWTX_BATCH_COUNT{1000};
 static constexpr uint32_t MAX_RAWTX_BATCH_SIZE_KB{10000};
 
 /**
- * Validate and optionally commit an all-or-nothing
+ * Pre-cs_main parallel precomputation state for a transaction in a rawtxbatch:
+ * - runs context-free CheckRegularTransaction(*tx, regular_tx_state)
+ * - precomputes PrecomputedTransactionData (BIP143 sighash midstates)
+ */
+struct PrecomputedBatchTxData {
+    PrecomputedTransactionData txdata;
+    TxValidationState regular_tx_state;
+    bool regular_tx_checked{false};
+    bool regular_tx_valid{false};
+    bool precomputed_txdata_ready{false};
+};
+
+void PrecomputeSingleTxData(const CTransaction &tx,
+                            PrecomputedBatchTxData &out);
+
+
+/**
+ * [Patch 036 optimization] Validate and optionally commit an all-or-nothing
  * batch of raw transactions in a single pass under cs_main, coalescing RCU
  * snapshot publication via CTxMemPool::ScopedSnapshotDefer.
  */
 PackageMempoolAcceptResult
-ProcessRawTxBatch(Chainstate &active_chainstate, CTxMemPool &pool,
-                  const Package &txns, bool test_accept,
-                  const CFeeRate &max_raw_tx_fee_rate = CFeeRate(Amount::zero()))
+ProcessRawTxBatch(
+    Chainstate &active_chainstate, CTxMemPool &pool,
+    const Package &txns, bool test_accept,
+    const CFeeRate &max_raw_tx_fee_rate = CFeeRate(Amount::zero()),
+    const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 
