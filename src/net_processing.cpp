@@ -1114,7 +1114,8 @@ private:
     void ProcessValidTx(NodeId nodeid, const CTransactionRef &tx)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
 
-    void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx)
+    void ProcessSingleTx(CNode &pfrom, Peer &peer, const CTransactionRef &ptx,
+                         const PrecomputedAdmissionChecks *precomputed = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex,
                                  !m_recent_confirmed_transactions_mutex,
                                  g_msgproc_mutex);
@@ -5251,7 +5252,8 @@ void PeerManagerImpl::ProcessValidTx(NodeId nodeid, const CTransactionRef &tx) {
 }
 
 void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
-                                      const CTransactionRef &ptx) {
+                                      const CTransactionRef &ptx,
+                                      const PrecomputedAdmissionChecks *precomputed) {
     AssertLockHeld(g_msgproc_mutex);
     if (!ptx) {
         return;
@@ -5263,7 +5265,8 @@ void PeerManagerImpl::ProcessSingleTx(CNode &pfrom, Peer &peer,
     if (!PrepareTxAdmission(pfrom, ptx)) {
         return;
     }
-    const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+    const MempoolAcceptResult result = m_chainman.ProcessTransaction(
+        ptx, /*test_accept=*/false, {}, precomputed);
     FinishTxAdmission(pfrom, peer, ptx, result);
 }
 
@@ -5438,6 +5441,39 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
     }
 }
 
+std::vector<PrecomputedAdmissionChecks>
+PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs) {
+    AssertLockNotHeld(cs_main);
+    std::vector<PrecomputedAdmissionChecks> checks(txs.size());
+    std::atomic<size_t> next{0};
+    auto worker = [&] {
+        for (size_t i = next.fetch_add(1, std::memory_order_relaxed);
+             i < txs.size();
+             i = next.fetch_add(1, std::memory_order_relaxed)) {
+            if (!txs[i]) continue;
+            PrecomputedBatchTxData regular;
+            PrecomputeSingleTxData(*txs[i], regular);
+            checks[i].txid = txs[i]->GetId();
+            checks[i].regular_tx_checked = regular.regular_tx_checked;
+            checks[i].regular_tx_valid = regular.regular_tx_valid;
+            checks[i].regular_tx_state = std::move(regular.regular_tx_state);
+        }
+    };
+    // Bound both threads and work per dispatch. The caller is one worker;
+    // small bursts do not create threads. Scripts remain admission's work.
+    const size_t workers = std::min<size_t>(
+        std::max(1U, std::min(8U, std::thread::hardware_concurrency())),
+        std::max<size_t>(1, (txs.size() + 7) / 8));
+    std::vector<std::future<void>> tasks;
+    tasks.reserve(workers - 1);
+    for (size_t i = 1; i < workers; ++i) {
+        tasks.push_back(std::async(std::launch::async, worker));
+    }
+    worker();
+    for (auto &task : tasks) task.get();
+    return checks;
+}
+
 void PeerManagerImpl::ProcessTxBatch(
     CNode &pfrom, Peer &peer, const std::vector<CTransactionRef> &ptxs) {
     AssertLockHeld(g_msgproc_mutex);
@@ -5448,6 +5484,14 @@ void PeerManagerImpl::ProcessTxBatch(
         ProcessSingleTx(pfrom, peer, ptxs[0]);
         return;
     }
+
+    // Restore the context-free work lost from the original P2P batch patch.
+    // The staged admission thread already does its own unlocked precompute;
+    // this path is used only when serial peer admission coalesces a burst.
+    // Keep slots in receive order, including duplicates and invalid entries.
+    const auto precomputed = ptxs.size() >= 8
+                                 ? PrecomputeTxRelayBatch(ptxs)
+                                 : std::vector<PrecomputedAdmissionChecks>{};
 
     // An untrusted burst is not an atomic RPC package. Never validate the
     // entire burst and then repeat it after one member fails: a bad final
@@ -5467,9 +5511,10 @@ void PeerManagerImpl::ProcessTxBatch(
             defer.reset();
         }
     } publication_scope(m_mempool);
-    for (const auto &ptx : ptxs) {
+    for (size_t i = 0; i < ptxs.size(); ++i) {
         if (pfrom.fDisconnect) break;
-        ProcessSingleTx(pfrom, peer, ptx);
+        ProcessSingleTx(pfrom, peer, ptxs[i],
+                        precomputed.empty() ? nullptr : &precomputed[i]);
     }
 }
 
