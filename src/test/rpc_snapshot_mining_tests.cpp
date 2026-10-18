@@ -281,58 +281,27 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     BOOST_CHECK_EQUAL(gbt_res.find_value("subtreearoot").get_str().size(), 64U);
     BOOST_CHECK_EQUAL(gbt_res.find_value("merkleroot").get_str().size(), 64U);
 
-    // 2. Construct coinbase transaction and 80-byte solved header for
-    // submitsealedheader without re-uploading non-coinbase transactions.
+    // Native submission includes all 134-byte header fields, the exact
+    // coinbase bytes and roots returned by this template generation.
     const auto snap = node::GetGlobalSnapshotPublisher().Load();
     BOOST_REQUIRE(snap != nullptr);
     const auto &tmpl = snap->GetMiningTemplate();
     BOOST_REQUIRE(tmpl.template_valid);
     BOOST_CHECK_EQUAL(tmpl.template_id, template_id);
-
-    const Consensus::Params &consensusParams =
-        config.GetChainParams().GetConsensus();
-    CMutableTransaction coinbaseTx;
-    coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout = COutPoint();
-    coinbaseTx.vout.resize(1);
-    coinbaseTx.vout[0].scriptPubKey = CScript() << OP_TRUE;
-    coinbaseTx.vout[0].nValue =
-        gbt_res.find_value("coinbasevalue").getInt<int64_t>() * SATOSHI;
-    coinbaseTx.vin[0].scriptSig = CScript() << tmpl.next_height << OP_0;
-
-    const auto whitelisted = GetMinerFundWhitelist(consensusParams);
-    if (!whitelisted.empty()) {
-        const Amount fund = GetMinerFundAmount(
-            consensusParams, coinbaseTx.vout[0].nValue, nullptr);
-        coinbaseTx.vout[0].nValue -= fund;
-        coinbaseTx.vout.emplace_back(
-            fund, GetScriptForDestination(*whitelisted.begin()));
-    }
-    uint64_t cb_size = ::GetSerializeSize(coinbaseTx);
-    if (cb_size < MIN_TX_SIZE) {
-        coinbaseTx.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - cb_size - 1);
-    }
-
     CBlockHeader header;
-    header.nVersion = gbt_res.find_value("version").getInt<int32_t>();
-    header.hashPrevBlock = tmpl.prev_block_hash;
-    header.hashMerkleRoot =
-        uint256S(gbt_res.find_value("merkleroot").get_str());
-    header.nTime =
-        static_cast<uint32_t>(gbt_res.find_value("curtime").getInt<int64_t>());
-    header.nBits = tmpl.nBits;
-    header.nNonce = 0;
-
+    BOOST_REQUIRE(DecodeHexBlockHeader(header, gbt_res.find_value("headerhex").get_str()));
+    BOOST_CHECK_EQUAL(header.nHeaderVersion, lotus::v2::kHeaderVersion);
+    BOOST_CHECK_EQUAL(header.nHeight, 101U);
+    const auto &consensusParams = config.GetChainParams().GetConsensus();
     while (!CheckProofOfWork(header.GetHash(), header.nBits, consensusParams)) {
         ++header.nNonce;
     }
-
     DataStream ss_hdr{};
     ss_hdr << header;
     const std::string header_hex = HexStr(ss_hdr);
-    BOOST_CHECK_EQUAL(header_hex.size(), 160U); // 80-byte CBlockHeader
-    const std::string coinbase_hex = EncodeHexTx(CTransaction(coinbaseTx));
+    BOOST_CHECK_EQUAL(header_hex.size(), 268U);
+    const std::string coinbase_hex = gbt_res.find_value("coinbasetxhex").get_str();
+    BOOST_REQUIRE(!coinbase_hex.empty());
 
     JSONRPCRequest submit_req;
     submit_req.context = &m_node;
@@ -393,10 +362,10 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_mineraddress_and_submitsealedblock) {
     UniValue gbt_res = gbt_future.get();
     pool.join();
 
-    // Verify 80-byte CBlockHeader (160 hex chars), coinbasetxhex, and blocksize
+    // Verify native 134-byte CBlockHeader, coinbasetxhex, and blocksize
     const std::string header_hex = gbt_res.find_value("headerhex").get_str();
     const std::string cb_hex = gbt_res.find_value("coinbasetxhex").get_str();
-    BOOST_CHECK_EQUAL(header_hex.size(), 160U);
+    BOOST_CHECK_EQUAL(header_hex.size(), 268U);
     BOOST_CHECK(!cb_hex.empty());
     BOOST_CHECK_GT(gbt_res.find_value("blocksize").getInt<int64_t>(), 80);
 

@@ -55,19 +55,17 @@ BOOST_AUTO_TEST_CASE(sanity) {
  *  * B should be rejected for forking prior to an accepted checkpoint
  *  * AB should be rejected for forking at an accepted checkpoint
  */
-BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
+BOOST_FIXTURE_TEST_CASE(ban_fork_prior_to_and_at_checkpoints, RegTestingSetup) {
     const CCheckpointData test_checkpoints = {
         .mapCheckpoints = {{2, *BlockHash::FromHex(
-                                   "000000006a625f06636b8bb6ac7b960a8d03705"
-                                   "d1ace08b1a19da3fdcc99ddbd")}},
+                                   "77d41bf0338150d1a01cfe7e6148a6d413d76c6"
+                                   "cbcaf128a773a6693815739b8")}},
     };
     const CBlockIndex *pindex = nullptr;
 
-    // Start with mainnet genesis block
     CBlockHeader headerG = Assert(m_node.chainman)->GetParams().GenesisBlock();
     BOOST_CHECK(headerG.GetHash() ==
-                uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f"
-                         "1b60a8ce26f"));
+                uint256S("720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561c99b7e50723e4"));
 
     {
         BlockValidationState state;
@@ -77,53 +75,41 @@ BOOST_AUTO_TEST_CASE(ban_fork_prior_to_and_at_checkpoints) {
     }
 
     CBlockHeader headerA, headerB, headerAA, headerAB;
-    DataStream stream = DataStream{ParseHex(
-        "010000006fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000"
-        "000000982051fd1e4ba744bbbe680e1fee14677ba1a3c3540bf7b1cdb606e85723"
-        "3e0e61bc6649ffff001d01e3629901010000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0704ffff001d0104ffff"
-        "ffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390"
-        "813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166"
-        "bf621e73a82cbf2342c858eeac00000000")};
-    stream >> headerA;
+    headerA.nHeaderVersion = 2;
+    headerA.hashPrevBlock = headerG.GetHash();
+    headerA.nBits = headerG.nBits;
+    headerA.SetBlockTime(headerG.GetBlockTime() + 120);
+    headerA.nHeight = 1;
+    headerA.nNonce = 10000;
     BOOST_CHECK(headerA.GetHash() ==
-                uint256S("00000000839a8e6886ab5951d76f411475428afc90947ee320161"
-                         "bbf18eb6048"));
-    BOOST_CHECK(headerA.hashPrevBlock == headerG.GetHash());
+                uint256S("3d1c1248e8bb735664cf223d0cf1ebd398e0854ef215cbdcb89b745a2a7d4fb0"));
 
-    stream = DataStream{ParseHex(
-        "010000004860eb18bf1b1620e37e9490fc8a427514416fd75159ab86688e9a8300"
-        "000000d5fdcc541e25de1c7a5addedf24858b8bb665c9f36ef744ee42c316022c9"
-        "0f9bb0bc6649ffff001d08d2bd6101010000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0704ffff001d010bffff"
-        "ffff0100f2052a010000004341047211a824f55b505228e4c3d5194c1fcfaa15a4"
-        "56abdf37f9b9d97a4040afc073dee6c89064984f03385237d92167c13e236446b4"
-        "17ab79a0fcae412ae3316b77ac00000000")};
-    stream >> headerAA;
+    headerAA.nHeaderVersion = 2;
+    headerAA.hashPrevBlock = headerA.GetHash();
+    headerAA.nBits = headerA.nBits;
+    headerAA.SetBlockTime(headerA.GetBlockTime() + 120);
+    headerAA.nHeight = 2;
+    headerAA.nNonce = 10000;
     BOOST_CHECK(headerAA.GetHash() ==
-                uint256S("000000006a625f06636b8bb6ac7b960a8d03705d1ace08b1a19da"
-                         "3fdcc99ddbd"));
-    BOOST_CHECK(headerAA.hashPrevBlock == headerA.GetHash());
+                uint256S("77d41bf0338150d1a01cfe7e6148a6d413d76c6cbcaf128a773a6693815739b8"));
 
-    stream = DataStream{ParseHex(
-        "000000206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000"
-        "000000bff4e0fd76ec3e9c8853811dec34dda8d5debb24d4113d94235fd4b24bb2"
-        "92981b70995cffff001d4e6e050001020000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0d51026302082f454233"
-        "322e302fffffffff0100f2052a01000000232103c91f2fa16c94c92d08629eeb8f"
-        "d681658d49f2b3016b13336d67d79f858dbc71ac00000000")};
-    stream >> headerB;
-    BOOST_CHECK(headerB.hashPrevBlock == headerG.GetHash());
+    headerB.nHeaderVersion = 2;
+    headerB.hashPrevBlock = headerG.GetHash();
+    headerB.nBits = headerG.nBits;
+    headerB.SetBlockTime(headerG.GetBlockTime() + 1);
+    headerB.nHeight = 1;
+    headerB.nNonce = 20001;
+    BOOST_CHECK(headerB.GetHash() ==
+                uint256S("7db2a4ce92ad8d70ddfbd8422430be84fc558543c1c95695089b9868ef7bc981"));
 
-    stream = DataStream{ParseHex(
-        "000000204860eb18bf1b1620e37e9490fc8a427514416fd75159ab86688e9a8300"
-        "0000003800b1dd09f3f1a1c9e62ce8dca6d1e6caacc9a02d178ef6ad95527b49ff"
-        "863f8282995cffff001d2cc70f0001020000000100000000000000000000000000"
-        "00000000000000000000000000000000000000ffffffff0d52024902082f454233"
-        "322e302fffffffff0100f2052a010000002321020a56690eb0e2454c1f362d3599"
-        "89198a0b23505578be4164a65521ee7751eb1dac00000000")};
-    stream >> headerAB;
-    BOOST_CHECK(headerAB.hashPrevBlock == headerA.GetHash());
+    headerAB.nHeaderVersion = 2;
+    headerAB.hashPrevBlock = headerA.GetHash();
+    headerAB.nBits = headerA.nBits;
+    headerAB.SetBlockTime(headerG.GetBlockTime() + 2);
+    headerAB.nHeight = 2;
+    headerAB.nNonce = 20002;
+    BOOST_CHECK(headerAB.GetHash() ==
+                uint256S("688395c3bffed1925d633004bca2944518b59a8e1d5a3d82ba034f4eb3f104c1"));
 
     // Headers A and AA should be accepted
     {
