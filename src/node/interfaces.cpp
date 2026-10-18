@@ -10,6 +10,7 @@
 #include <config.h>
 #include <init.h>
 #include <interfaces/chain.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <interfaces/handler.h>
 #include <interfaces/node.h>
 #include <interfaces/wallet.h>
@@ -703,7 +704,16 @@ namespace {
             if (!m_node.mempool) {
                 return {};
             }
-            return m_node.mempool->estimateFee();
+            const auto now = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const auto info = lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(now);
+            const auto estimate = m_node.mempool->estimateFee();
+            if (info.rpc_admission_feerate_per_kcu <= info.consensus_floor_per_kcu) return estimate;
+            return std::max(estimate, CFeeRate(static_cast<int64_t>(info.recommended_sdk_feerate_per_kcu) * SATOSHI));
+        }
+        CFeeRate rpcAdmissionFee() const override {
+            const auto now = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const auto rate = lotus::v2::GetGlobalFeeHysteresisController().GetRpcAdmissionRatePerKCu(now);
+            return CFeeRate(static_cast<int64_t>(rate) * SATOSHI);
         }
         CFeeRate relayMinFee() override {
             if (!m_node.mempool) {
