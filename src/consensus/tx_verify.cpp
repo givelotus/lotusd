@@ -245,4 +245,56 @@ bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
     txfee = txfee_aux;
     return true;
 }
+
+bool CheckTxInputsFromSpentCoins(const CTransaction &tx,
+                                 const std::vector<Coin> &spent_coins,
+                                 TxValidationState &state, int nSpendHeight,
+                                 Amount &txfee) {
+    assert(spent_coins.size() == tx.vin.size());
+
+    Amount nValueIn = Amount::zero();
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const Coin &coin = spent_coins[i];
+        if (coin.IsSpent()) {
+            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
+                                 "bad-txns-inputs-missingorspent",
+                                 strprintf("%s: inputs missing/spent", __func__));
+        }
+
+        // If prev is coinbase, check that it's matured
+        if (coin.IsCoinBase() &&
+            nSpendHeight - coin.GetHeight() < COINBASE_MATURITY) {
+            return state.Invalid(
+                TxValidationResult::TX_PREMATURE_SPEND,
+                "bad-txns-premature-spend-of-coinbase",
+                strprintf("tried to spend coinbase at depth %d",
+                          nSpendHeight - coin.GetHeight()));
+        }
+
+        // Check for negative or overflow input values
+        nValueIn += coin.GetTxOut().nValue;
+        if (!MoneyRange(coin.GetTxOut().nValue) || !MoneyRange(nValueIn)) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                 "bad-txns-inputvalues-outofrange");
+        }
+    }
+
+    const Amount value_out = tx.GetValueOut();
+    if (nValueIn < value_out) {
+        return state.Invalid(
+            TxValidationResult::TX_CONSENSUS, "bad-txns-in-belowout",
+            strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn),
+                      FormatMoney(value_out)));
+    }
+
+    // Tally transaction fees
+    const Amount txfee_aux = nValueIn - value_out;
+    if (!MoneyRange(txfee_aux)) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-fee-outofrange");
+    }
+
+    txfee = txfee_aux;
+    return true;
+}
 } // namespace Consensus
