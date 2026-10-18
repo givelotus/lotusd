@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 use abc_rust_error::Result;
-use rocksdb::ColumnFamilyDescriptor;
+use crate::db::ColumnFamilyDescriptor;
 
 use crate::{
     db::{Db, CF, CF_META},
@@ -46,7 +46,7 @@ impl<'a> MetadataWriter<'a> {
     /// Update the schema version of the database
     pub fn update_schema_version(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         schema_version: SchemaVersion,
     ) -> Result<()> {
         batch.put_cf(
@@ -60,7 +60,7 @@ impl<'a> MetadataWriter<'a> {
     /// Update the flag storing whether the token index is enabled in the DB
     pub fn update_is_token_index_enabled(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         is_token_index_enabled: bool,
     ) -> Result<()> {
         batch.put_cf(
@@ -74,7 +74,7 @@ impl<'a> MetadataWriter<'a> {
     /// Update the flag storing whether the LOKAD ID index is enabled in the DB
     pub fn update_is_lokad_id_index_enabled(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         is_lokad_id_index_enabled: bool,
     ) -> Result<()> {
         batch.put_cf(
@@ -89,7 +89,7 @@ impl<'a> MetadataWriter<'a> {
     /// DB
     pub fn update_is_scripthash_index_enabled(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         is_scripthash_index_enabled: bool,
     ) -> Result<()> {
         batch.put_cf(
@@ -103,7 +103,7 @@ impl<'a> MetadataWriter<'a> {
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         columns.push(ColumnFamilyDescriptor::new(
             CF_META,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
     }
 }

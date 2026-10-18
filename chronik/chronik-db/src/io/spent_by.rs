@@ -8,7 +8,7 @@ use std::{
 };
 
 use abc_rust_error::Result;
-use rocksdb::{ColumnFamilyDescriptor, Options};
+use crate::db::{ColumnFamilyDescriptor, Options};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -146,7 +146,7 @@ fn deser_tx_num(bytes: &[u8]) -> Result<TxNum> {
 fn init_merge_spent_by(
     _key: &[u8],
     existing_value: Option<&[u8]>,
-    _operands: &rocksdb::MergeOperands,
+    _operands: &crate::db::MergeOperands,
 ) -> Result<Vec<SpentByEntry>> {
     match existing_value {
         Some(bytes) => db_deserialize_vec::<SpentByEntry>(bytes),
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(spent_by_reader.by_tx_num(1)?, None);
 
         drop(db);
-        rocksdb::DB::destroy(&rocksdb::Options::default(), tempdir.path())?;
+        crate::db::DB::destroy(&crate::db::Options::default(), tempdir.path())?;
         let _ = check_for_errors();
 
         Ok(())

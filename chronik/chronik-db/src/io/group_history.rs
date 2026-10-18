@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, marker::PhantomData, time::Instant};
 use abc_rust_error::Result;
 use bitcoinsuite_core::hash::{Hashed, Sha256};
 use chronik_util::{log, log_no_ratelimit};
-use rocksdb::WriteBatch;
+use crate::db::WriteBatch;
 use thiserror::Error;
 
 use crate::{
@@ -151,7 +151,7 @@ pub(crate) fn bytes_to_num_txs(bytes: &[u8]) -> Result<NumTxs> {
 fn partial_merge_concat_trim(
     _key: &[u8],
     _existing_value: Option<&[u8]>,
-    _operands: &rocksdb::MergeOperands,
+    _operands: &crate::db::MergeOperands,
 ) -> Option<Vec<u8>> {
     // We don't use partial merge
     None
@@ -160,7 +160,7 @@ fn partial_merge_concat_trim(
 fn init_concat_trim(
     _key: &[u8],
     existing_value: Option<&[u8]>,
-    operands: &rocksdb::MergeOperands,
+    operands: &crate::db::MergeOperands,
 ) -> Result<Vec<u8>> {
     let mut bytes = existing_value.unwrap_or(&[]).to_vec();
     if operands.iter().all(|operand| operand[0] == CONCAT) {
@@ -457,9 +457,9 @@ impl<'a, G: Group> GroupHistoryWriter<'a, G> {
         group_tx_nums
     }
 
-    pub(crate) fn add_cfs(columns: &mut Vec<rocksdb::ColumnFamilyDescriptor>) {
+    pub(crate) fn add_cfs(columns: &mut Vec<crate::db::ColumnFamilyDescriptor>) {
         let conf = G::tx_history_conf();
-        let mut page_options = rocksdb::Options::default();
+        let mut page_options = crate::db::Options::default();
         let merge_op_name = format!("{}::merge_op_concat", conf.cf_page_name);
         page_options.set_merge_operator(
             merge_op_name.as_str(),
@@ -470,18 +470,18 @@ impl<'a, G: Group> GroupHistoryWriter<'a, G> {
             ),
             partial_merge_concat_trim,
         );
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(
+        columns.push(crate::db::ColumnFamilyDescriptor::new(
             conf.cf_page_name,
             page_options,
         ));
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(
+        columns.push(crate::db::ColumnFamilyDescriptor::new(
             conf.cf_num_txs_name,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
         if let Some(cf_member_hash_name) = conf.cf_member_hash_name {
-            columns.push(rocksdb::ColumnFamilyDescriptor::new(
+            columns.push(crate::db::ColumnFamilyDescriptor::new(
                 cf_member_hash_name,
-                rocksdb::Options::default(),
+                crate::db::Options::default(),
             ));
         }
     }
@@ -617,7 +617,7 @@ mod tests {
 
     use abc_rust_error::Result;
     use bitcoinsuite_core::tx::Tx;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(read_page(10, 0)?, None);
 
         drop(db);
-        rocksdb::DB::destroy(&rocksdb::Options::default(), tempdir.path())?;
+        crate::db::DB::destroy(&crate::db::Options::default(), tempdir.path())?;
         let _ = check_for_errors();
 
         Ok(())

@@ -11,7 +11,7 @@ use chronik_plugin::{
     context::PluginContext,
     data::{PluginIdx, PluginNameMap, PluginOutput},
 };
-use rocksdb::{ColumnFamilyDescriptor, Direction, WriteBatch};
+use crate::db::{ColumnFamilyDescriptor, Direction, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use topo_sort::TopoSort;
@@ -122,7 +122,7 @@ impl<'a> PluginsCol<'a> {
     fn has_any_outputs(&self) -> Result<bool> {
         Ok(self
             .db
-            .iterator(self.cf_plugin_outputs, b"", rocksdb::Direction::Forward)
+            .iterator(self.cf_plugin_outputs, b"", crate::db::Direction::Forward)
             .next()
             .transpose()?
             .is_some())
@@ -349,11 +349,11 @@ impl<'a> PluginsWriter<'a> {
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         columns.push(ColumnFamilyDescriptor::new(
             CF_PLUGIN_META,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
         columns.push(ColumnFamilyDescriptor::new(
             CF_PLUGIN_OUTPUTS,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
         PluginsUtxoWriter::add_cfs(columns);
         PluginsHistoryWriter::add_cfs(columns);
@@ -492,7 +492,7 @@ mod tests {
         params::PluginParams,
     };
     use pretty_assertions::assert_eq;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         data::DbOutpoint,

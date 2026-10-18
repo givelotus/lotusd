@@ -227,7 +227,7 @@ mod tests {
     use abc_rust_error::Result;
     use bitcoinsuite_core::tx::{OutPoint, Tx, TxId, TxInput, TxMut};
     use pretty_assertions::assert_eq;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         db::Db,
