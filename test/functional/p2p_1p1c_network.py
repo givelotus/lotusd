@@ -36,6 +36,20 @@ class PackageRelayTest(BitcoinTestFramework):
         self.log.debug("Wait for the network to sync mempools")
         self.sync_mempools()
 
+        # Coalesced relay can announce only the surviving filler transactions.
+        # Matching mempools then does not prove receivers have experienced an
+        # eviction. Add bounded high-fee filler until that prerequisite holds.
+        for _ in range(self.num_nodes):
+            infos = [node.getmempoolinfo() for node in self.nodes]
+            if all(info["mempoolminfee"] > FEERATE_1SAT_VB for info in infos):
+                break
+            filler_wallet.send_self_transfer(
+                from_node=self.nodes[0],
+                target_size=100_000,
+                fee_rate=2 * max(info["mempoolminfee"] for info in infos),
+            )
+            self.sync_mempools()
+
         self.log.debug(
             "Check that all nodes' mempool minimum feerates are above min relay feerate"
         )
