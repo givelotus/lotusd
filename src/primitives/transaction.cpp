@@ -52,28 +52,33 @@ lotus::v2::Output CTxOut::ToV2Output() const {
         lotus::v2::MAX_OUTPUT_BRANCHES * 31 - 2;
     if (scriptPubKey.size() <= kMaxPackedScriptBytes) {
         const uint16_t script_len = static_cast<uint16_t>(scriptPubKey.size());
-        std::vector<uint8_t> packed(2 + script_len);
-        packed[0] = static_cast<uint8_t>(script_len & 0xffU);
-        packed[1] = static_cast<uint8_t>((script_len >> 8U) & 0xffU);
-        if (script_len > 0) {
-            std::copy(scriptPubKey.begin(), scriptPubKey.end(),
-                      packed.begin() + 2);
-        }
+        const size_t total_packed = 2 + static_cast<size_t>(script_len);
         const size_t num_branches =
-            std::max<size_t>(1, (packed.size() + 30) / 31);
+            std::max<size_t>(1, (total_packed + 30) / 31);
         out.branches.resize(num_branches);
+        const uint8_t *raw_script = scriptPubKey.data();
         for (size_t k = 0; k < num_branches; ++k) {
             out.branches[k].fill(0);
-            const size_t offset = k * 31;
-            const size_t chunk =
-                offset < packed.size()
-                    ? std::min<size_t>(31, packed.size() - offset)
-                    : 0;
-            if (chunk > 0) {
-                std::copy_n(packed.data() + offset, chunk,
-                            out.branches[k].data());
+            uint8_t *dst = out.branches[k].data();
+            if (k == 0) {
+                dst[0] = static_cast<uint8_t>(script_len & 0xffU);
+                dst[1] = static_cast<uint8_t>((script_len >> 8U) & 0xffU);
+                const size_t first_chunk =
+                    std::min<size_t>(29, script_len);
+                if (first_chunk > 0) {
+                    std::copy_n(raw_script, first_chunk, dst + 2);
+                }
+            } else {
+                const size_t script_offset = 29 + (k - 1) * 31;
+                const size_t chunk =
+                    script_offset < script_len
+                        ? std::min<size_t>(31, script_len - script_offset)
+                        : 0;
+                if (chunk > 0) {
+                    std::copy_n(raw_script + script_offset, chunk, dst);
+                }
             }
-            out.branches[k][31] = static_cast<uint8_t>(0x81U + k);
+            dst[31] = static_cast<uint8_t>(0x81U + k);
         }
     } else {
         std::vector<uint8_t> script_bytes(scriptPubKey.begin(),
@@ -106,14 +111,26 @@ CTxOut CTxOut::FromV2Output(const lotus::v2::Output &out) {
             const size_t expected_branches =
                 std::max<size_t>(1, (total_packed + 30) / 31);
             if (expected_branches == out.branches.size()) {
-                std::vector<uint8_t> packed(out.branches.size() * 31);
-                for (size_t k = 0; k < out.branches.size(); ++k) {
-                    std::copy_n(out.branches[k].data(), 31,
-                                packed.data() + k * 31);
+                CScript script;
+                script.resize(script_len);
+                uint8_t *dst = script.data();
+                const size_t first_chunk =
+                    std::min<size_t>(29, script_len);
+                if (first_chunk > 0) {
+                    std::copy_n(out.branches[0].data() + 2, first_chunk, dst);
                 }
-                return CTxOut(
-                    val, CScript(packed.begin() + 2,
-                                 packed.begin() + 2 + script_len));
+                for (size_t k = 1; k < out.branches.size(); ++k) {
+                    const size_t script_offset = 29 + (k - 1) * 31;
+                    const size_t chunk =
+                        script_offset < script_len
+                            ? std::min<size_t>(31, script_len - script_offset)
+                            : 0;
+                    if (chunk > 0) {
+                        std::copy_n(out.branches[k].data(), chunk,
+                                    dst + script_offset);
+                    }
+                }
+                return CTxOut(val, std::move(script));
             }
         }
     }
