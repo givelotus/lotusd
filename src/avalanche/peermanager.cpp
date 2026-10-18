@@ -30,6 +30,22 @@
 namespace avalanche {
 static constexpr uint64_t PEERS_DUMP_VERSION{1};
 
+void PeerManager::updateAtomicQuorumMetrics() {
+    m_atomicQuorumGeneration.fetch_add(1);
+    m_atomicNodeCount.store(nodes.size());
+    m_atomicTotalPeersScore.store(totalPeersScore);
+    m_atomicConnectedPeersScore.store(connectedPeersScore);
+    bool localNoNode = false;
+    if (localProof) {
+        forPeer(localProof->getId(), [&](const Peer &peer) {
+            localNoNode = peer.node_count == 0;
+            return true;
+        });
+    }
+    m_atomicLocalProofHasNoNode.store(localNoNode);
+    m_atomicQuorumGeneration.fetch_add(1);
+}
+
 bool PeerManager::addNode(NodeId nodeid, const ProofId &proofid,
                           size_t max_elements) {
     auto &pview = peers.get<by_proofid>();
@@ -85,6 +101,7 @@ bool PeerManager::addOrUpdateNode(const PeerSet::iterator &it, NodeId nodeid,
     // there is more than 1, in this case it's a no-op.
     shareableProofs.insert(it->proof);
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -129,6 +146,7 @@ bool PeerManager::removeNode(NodeId nodeid) {
     bool success = removeNodeFromPeer(peers.find(peerid));
     assert(success);
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -458,6 +476,7 @@ bool PeerManager::registerProof(const ProofRef &proof,
         addStakeContender(proof);
     }
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -821,6 +840,7 @@ bool PeerManager::removePeer(const PeerId peerid) {
     assert(totalPeersScore >= it->getScore());
     totalPeersScore -= it->getScore();
     peers.erase(it);
+    updateAtomicQuorumMetrics();
     return true;
 }
 
