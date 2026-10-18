@@ -714,9 +714,6 @@ add_library(server
 	policy/packages.cpp
 	policy/settings.cpp
 	pow/aserti32d.cpp
-	pow/daa.cpp
-	pow/eda.cpp
-	pow/grasberg.cpp
 	pow/pow.cpp
 	proxy_protocol.cpp
 	rest.cpp
@@ -984,8 +981,6 @@ if(BUILD_CHAINSTATE)
 		policy/policy.cpp
 		policy/settings.cpp
 		pow/aserti32d.cpp
-		pow/daa.cpp
-		pow/eda.cpp
 		pow/pow.cpp
 		primitives/block.cpp
 		primitives/transaction.cpp
