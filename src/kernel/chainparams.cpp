@@ -9,6 +9,7 @@
 #include <chainparamsseeds.h>
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
+#include <lotus_v2/commitment.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -39,8 +40,16 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
     txNew.vin[0].fHasCoinbaseData = true;
     txNew.vin[0].vCoinbaseData.assign(txNew.vin[0].scriptSig.begin(),
                                       txNew.vin[0].scriptSig.end());
-    txNew.vout[0].nValue = genesisReward;
-    txNew.vout[0].scriptPubKey = genesisOutputScript;
+    // Genesis intentionally commits this fixed opaque root; it is not a
+    // spendable legacy-script-to-native payment conversion. Preserve its
+    // exact existing output wire bytes and chain identity explicitly.
+    lotus::v2::Output genesis_output;
+    genesis_output.value = static_cast<uint64_t>(genesisReward / SATOSHI);
+    genesis_output.branches = {lotus::v2::BranchLeaf(
+        std::span<const uint8_t>(genesisOutputScript.data(),
+                                 genesisOutputScript.size()))};
+    genesis_output.paths = {{0}};
+    txNew.vout[0] = CTxOut::FromV2Output(genesis_output);
 
     CBlock genesis;
     genesis.SetBlockTime(nTime);
