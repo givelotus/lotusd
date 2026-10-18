@@ -166,13 +166,13 @@ struct DataRequestParameters {
     const size_t max_peer_announcements;
 
     /** How long to delay requesting data from non-preferred peers */
-    const std::chrono::seconds nonpref_peer_delay;
+    const std::chrono::milliseconds nonpref_peer_delay;
 
     /**
      * How long to delay requesting data from overloaded peers (see
      * max_peer_request_in_flight).
      */
-    const std::chrono::seconds overloaded_peer_delay;
+    const std::chrono::milliseconds overloaded_peer_delay;
 
     /**
      * How long to wait (in microseconds) before a data request from an
@@ -188,20 +188,20 @@ struct DataRequestParameters {
 };
 
 static constexpr DataRequestParameters TX_REQUEST_PARAMS{
-    100,                       // max_peer_request_in_flight
-    5000,                      // max_peer_announcements
-    std::chrono::seconds(2),   // nonpref_peer_delay
-    std::chrono::seconds(2),   // overloaded_peer_delay
-    std::chrono::seconds(60),  // getdata_interval
-    NetPermissionFlags::Relay, // bypass_request_limits_permissions
+    100,                             // max_peer_request_in_flight
+    5000,                            // max_peer_announcements
+    std::chrono::milliseconds{200},  // nonpref_peer_delay
+    std::chrono::milliseconds{2000}, // overloaded_peer_delay
+    std::chrono::seconds(60),        // getdata_interval
+    NetPermissionFlags::Relay,       // bypass_request_limits_permissions
 };
 
 static constexpr DataRequestParameters PROOF_REQUEST_PARAMS{
-    100,                      // max_peer_request_in_flight
-    5000,                     // max_peer_announcements
-    std::chrono::seconds(2),  // nonpref_peer_delay
-    std::chrono::seconds(2),  // overloaded_peer_delay
-    std::chrono::seconds(60), // getdata_interval
+    100,                             // max_peer_request_in_flight
+    5000,                            // max_peer_announcements
+    std::chrono::milliseconds{200},  // nonpref_peer_delay
+    std::chrono::milliseconds{2000}, // overloaded_peer_delay
+    std::chrono::seconds(60),        // getdata_interval
     NetPermissionFlags::
         BypassProofRequestLimits, // bypass_request_limits_permissions
 };
@@ -872,6 +872,7 @@ public:
                                  !m_headers_presync_mutex, g_msgproc_mutex);
     void UpdateLastBlockAnnounceTime(NodeId node,
                                      int64_t time_in_seconds) override;
+
 
 private:
     /**
@@ -1795,6 +1796,7 @@ static void AddKnownProof(Peer &peer, const avalanche::ProofId &proofid) {
     if (peer.m_proof_relay != nullptr) {
         LOCK(peer.m_proof_relay->m_proof_inventory_mutex);
         peer.m_proof_relay->m_proof_inventory_known_filter.insert(proofid);
+        peer.m_proof_relay->m_proof_inventory_to_send.erase(proofid);
     }
 }
 
@@ -3048,17 +3050,11 @@ void PeerManagerImpl::NewPoWValidBlock(
         })};
 
     {
-        auto most_recent_block_txs =
-            std::make_unique<std::map<TxId, CTransactionRef>>();
-        for (const auto &tx : pblock->vtx) {
-            most_recent_block_txs->emplace(tx->GetId(), tx);
-        }
-
         LOCK(m_most_recent_block_mutex);
         m_most_recent_block_hash = hashBlock;
         m_most_recent_block = pblock;
         m_most_recent_compact_block = pcmpctblock;
-        m_most_recent_block_txs = std::move(most_recent_block_txs);
+        m_most_recent_block_txs.reset();
     }
 
     m_connman.ForEachNode(
@@ -3592,6 +3588,15 @@ PeerManagerImpl::FindTxForGetData(const Peer &peer, const TxId &txid,
         // Or it might be from the most recent block
         {
             LOCK(m_most_recent_block_mutex);
+            if (m_most_recent_block_txs == nullptr &&
+                m_most_recent_block != nullptr) {
+                auto most_recent_block_txs =
+                    std::make_unique<std::map<TxId, CTransactionRef>>();
+                for (const auto &tx : m_most_recent_block->vtx) {
+                    most_recent_block_txs->emplace(tx->GetId(), tx);
+                }
+                m_most_recent_block_txs = std::move(most_recent_block_txs);
+            }
             if (m_most_recent_block_txs != nullptr) {
                 auto it = m_most_recent_block_txs->find(txid);
                 if (it != m_most_recent_block_txs->end()) {
@@ -5284,6 +5289,20 @@ void PeerManagerImpl::ProcessMessage(
         return;
     }
 
+    if (m_v2_protocol_handler.TryHandleMessage(pfrom, msg_type, vRecv,
+                                               time_received)) {
+        if (msg_type == NetMsgType::MINEDHEADER ||
+            msg_type == NetMsgType::SEALEDHEADER ||
+            msg_type == NetMsgType::SEALEDBLOCK) {
+            if (auto known_hash =
+                    m_v2_protocol_handler.GetLastPeerKnownBlock(pfrom.GetId())) {
+                LOCK(cs_main);
+                UpdateBlockAvailability(pfrom.GetId(), *known_hash);
+            }
+        }
+        return;
+    }
+
     if (msg_type == NetMsgType::ADDR || msg_type == NetMsgType::ADDRV2) {
         const auto ser_params{
             msg_type == NetMsgType::ADDRV2
@@ -5413,10 +5432,6 @@ void PeerManagerImpl::ProcessMessage(
         return;
     }
 
-    if (m_v2_protocol_handler.TryHandleMessage(pfrom, msg_type, vRecv,
-                                               time_received)) {
-        return;
-    }
 
     if (msg_type == NetMsgType::SENDHEADERS) {
         peer->m_prefers_headers = true;
@@ -9035,7 +9050,50 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 }
             }
             if (!fRevertToInv && !vHeaders.empty()) {
-                if (vHeaders.size() == 1 && state.m_requested_hb_cmpctblocks) {
+                const bool use_sealed_header =
+                    vHeaders.size() == 1 && pBestIndex != nullptr &&
+                    m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
+                        pto->GetId());
+                if (use_sealed_header) {
+                    std::optional<CSerializedNetMsg> cached_sealed_msg;
+                    {
+                        LOCK(m_most_recent_block_mutex);
+                        if (m_most_recent_block_hash ==
+                                pBestIndex->GetBlockHash() &&
+                            m_most_recent_block &&
+                            !m_most_recent_block->vtx.empty()) {
+                            cached_sealed_msg = NetMsg::Make(
+                                NetMsgType::SEALEDHEADER,
+                                SealedHeader(*m_most_recent_block));
+                        }
+                    }
+                    if (!cached_sealed_msg.has_value()) {
+                        CBlock block;
+                        if (m_chainman.m_blockman.ReadBlock(block,
+                                                            *pBestIndex) &&
+                            !block.vtx.empty()) {
+                            cached_sealed_msg =
+                                NetMsg::Make(NetMsgType::SEALEDHEADER,
+                                             SealedHeader(block));
+                        }
+                    }
+                    if (cached_sealed_msg.has_value()) {
+                        LogDebug(BCLog::NET,
+                                 "%s sending sealedheader %s to peer=%d\n",
+                                 __func__,
+                                 vHeaders.front().GetHash().ToString(),
+                                 pto->GetId());
+                        PushMessage(*pto,
+                                    std::move(cached_sealed_msg.value()));
+                        state.pindexBestHeaderSent = pBestIndex;
+                    } else if (peer->m_prefers_headers) {
+                        MakeAndPushMessage(*pto, NetMsgType::HEADERS, vHeaders);
+                        state.pindexBestHeaderSent = pBestIndex;
+                    } else {
+                        fRevertToInv = true;
+                    }
+                } else if (vHeaders.size() == 1 &&
+                           state.m_requested_hb_cmpctblocks) {
                     // We only send up to 1 block as header-and-ids, as
                     // otherwise probably means we're doing an initial-ish-sync
                     // or they're slow.

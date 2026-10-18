@@ -8,6 +8,9 @@
 
 #include <avalanche/avalanche.h>
 #include <net.h>
+#include <primitives/transaction.h>
+
+#include <span>
 #include <sync.h>
 #include <validationinterface.h>
 
@@ -165,6 +168,20 @@ public:
 
     /** Relay transaction to all peers. */
     virtual void RelayTransaction(const TxId &txid) = 0;
+
+    /** Batch interface; implementations may coalesce peer locking. */
+    virtual void RelayTransactionBatch(std::span<const CTransactionRef> txs) {
+        for (const auto &tx : txs) {
+            if (tx) RelayTransaction(tx->GetId());
+        }
+    }
+    virtual void MarkPeerKnownTxBatch(NodeId peer_id,
+                                      std::span<const CTransactionRef> txs) {
+        for (const auto &tx : txs) {
+            if (tx) MarkPeerKnownTx(peer_id, tx->GetId());
+        }
+    }
+
 
     /** Relay proof to all peers */
     virtual void RelayProof(const avalanche::ProofId &proofid) = 0;
