@@ -2413,6 +2413,10 @@ void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
     m_v2_protocol_handler.RegisterPeerNode(node);
+    if (gArgs.GetBoolArg("-highbandwidthtx", false) &&
+        !node.IsBlockOnlyConn()) {
+        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(nodeid, true);
+    }
     if (!node.IsInboundConn()) {
         PushNodeVersion(config, node, *peer);
     }
@@ -3058,6 +3062,11 @@ void PeerManagerImpl::NewPoWValidBlock(
         std::async(std::launch::deferred, [&] {
             return NetMsg::Make(NetMsgType::CMPCTBLOCK, *pcmpctblock);
         })};
+    const bool is_v2_sealed_candidate = !pblock->vtx.empty();
+    const std::shared_future<CSerializedNetMsg> lazy_sealed_ser{
+        std::async(std::launch::deferred, [&] {
+            return NetMsg::Make(NetMsgType::SEALEDHEADER, SealedHeader(*pblock));
+        })};
 
     {
         LOCK(m_most_recent_block_mutex);
@@ -3068,7 +3077,8 @@ void PeerManagerImpl::NewPoWValidBlock(
     }
 
     m_connman.ForEachNode(
-        [this, pindex, &lazy_ser, &hashBlock](CNode *pnode)
+        [this, pindex, &lazy_ser, &lazy_sealed_ser, is_v2_sealed_candidate,
+         &hashBlock](CNode *pnode)
             EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
                 AssertLockHeld(::cs_main);
 
@@ -3076,8 +3086,33 @@ void PeerManagerImpl::NewPoWValidBlock(
                     pnode->fDisconnect) {
                     return;
                 }
+                if (auto known_hash =
+                        m_v2_protocol_handler.GetLastPeerKnownBlock(
+                            pnode->GetId())) {
+                    UpdateBlockAvailability(pnode->GetId(), *known_hash);
+                }
+                if (m_v2_protocol_handler.PeerKnowsBlock(pnode->GetId(),
+                                                         hashBlock)) {
+                    UpdateBlockAvailability(pnode->GetId(), hashBlock);
+                }
                 ProcessBlockAvailability(pnode->GetId());
                 CNodeState &state = *State(pnode->GetId());
+                if (is_v2_sealed_candidate &&
+                    m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
+                        pnode->GetId()) &&
+                    !PeerHasHeader(&state, pindex) &&
+                    (PeerHasHeader(&state, pindex->pprev) ||
+                     (pindex->pprev && pindex->pprev->pprev == nullptr))) {
+                    LogDebug(BCLog::NET,
+                             "%s sending sealedheader %s to peer=%d\n",
+                             "PeerManager::NewPoWValidBlock",
+                             hashBlock.ToString(), pnode->GetId());
+
+                    const CSerializedNetMsg &ser_sealed{lazy_sealed_ser.get()};
+                    PushMessage(*pnode, ser_sealed.Copy());
+                    state.pindexBestHeaderSent = pindex;
+                    return;
+                }
                 // If the peer has, or we announced to them the previous block
                 // already, but we don't think they have this one, go ahead and
                 // announce it.
@@ -3130,6 +3165,9 @@ void PeerManagerImpl::UpdatedBlockTip(const CBlockIndex *pindexNew,
             Peer &peer = *it.second;
             LOCK(peer.m_block_inv_mutex);
             for (const BlockHash &hash : reverse_iterate(vHashes)) {
+                if (m_v2_protocol_handler.PeerKnowsBlock(peer.m_id, hash)) {
+                    continue;
+                }
                 peer.m_blocks_for_headers_relay.push_back(hash);
             }
         }
@@ -5483,6 +5521,14 @@ void PeerManagerImpl::ProcessMessage(
                              return tx_relay->m_tx_inventory_to_send.empty() &&
                                     tx_relay->m_next_inv_send_time == 0s));
         }
+
+        const bool disable_shorttx_for_test =
+            Params().GetChainType() == ChainType::REGTEST &&
+            gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
+        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
+            pfrom.GetId(), !disable_shorttx_for_test &&
+                               gArgs.GetBoolArg("-highbandwidthtx", false) &&
+                               !pfrom.IsBlockOnlyConn());
 
         pfrom.fSuccessfullyConnected = true;
         return;
