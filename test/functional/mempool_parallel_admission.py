@@ -25,6 +25,7 @@ Covered:
   mempool (regtest checks it on every admission).
 """
 
+from test_framework.currency import RpcCurrency
 from test_framework.messages import msg_tx
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
@@ -75,6 +76,7 @@ class ParallelAdmissionTest(BitcoinTestFramework):
 
     def run_test(self):
         node0, node1 = self.nodes
+        currency = RpcCurrency.from_node(node0)
         self.wallet = MiniWallet(node0, mode=MiniWalletMode.RAW_P2PK)
         self.fund(450)
         self.sync_blocks()
@@ -87,7 +89,7 @@ class ParallelAdmissionTest(BitcoinTestFramework):
         orphan_child = self.spend(utxo_to_spend=orphan_parent["new_utxo"])
         utxo = self.wallet.get_utxo()
         first = self.spend(utxo_to_spend=utxo)
-        second = self.spend(utxo_to_spend=utxo, fee_rate=6000)
+        second = self.spend(utxo_to_spend=utxo, fee_rate=currency.from_atoms(600_000))
         low_fee = self.spend(fee_rate=0)
         sequence = (
             independent[:20]
@@ -128,7 +130,7 @@ class ParallelAdmissionTest(BitcoinTestFramework):
         duplicate = self.spend()
         utxo = self.wallet.get_utxo()
         side_a = self.spend(utxo_to_spend=utxo)
-        side_b = self.spend(utxo_to_spend=utxo, fee_rate=6000)
+        side_b = self.spend(utxo_to_spend=utxo, fee_rate=currency.from_atoms(600_000))
         before = set(node0.getrawmempool())
         for i, tx in enumerate(batch):
             peers[i % 4].send_without_ping(msg_tx(tx["tx"]))

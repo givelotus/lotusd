@@ -1,6 +1,6 @@
 # Copyright (c) 2017 The Bitcoin developers
 
-project(bitcoind)
+project(lotusd)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,7 +16,7 @@ endforeach()
 
 option(BUILD_WALLET "Activate the wallet functionality" ON)
 option(BUILD_ZMQ "Activate the ZeroMQ functionalities" ON)
-option(BUILD_CLI "Build bitcoin-cli" ON)
+option(BUILD_CLI "Build lotus-cli" ON)
 option(BUILD_TX "Build bitcoin-tx" ON)
 option(BUILD_QT "Build bitcoin-qt" ON)
 option(BUILD_SEEDER "Build bitcoin-seeder" ON)
@@ -888,20 +888,20 @@ if(BUILD_SEEDER)
 	add_subdirectory(seeder)
 endif()
 
-# bitcoin-cli
+# lotus-cli
 if(BUILD_CLI)
-	add_executable(bitcoin-cli bitcoin-cli.cpp)
-	generate_windows_version_info(bitcoin-cli
+	add_executable(lotus-cli bitcoin-cli.cpp)
+	generate_windows_version_info(lotus-cli
 		DESCRIPTION "JSON-RPC client for ${PACKAGE_NAME}"
 	)
 
-	target_link_libraries(bitcoin-cli common rpcclient)
+	target_link_libraries(lotus-cli common rpcclient)
 
-	add_to_symbols_check(bitcoin-cli)
-	add_to_security_check(bitcoin-cli)
+	add_to_symbols_check(lotus-cli)
+	add_to_security_check(lotus-cli)
 
-	install_target(bitcoin-cli)
-	install_manpages(bitcoin-cli)
+	install_target(lotus-cli)
+	install_manpages(lotus-cli)
 endif()
 
 # bitcoin-tx
@@ -1099,17 +1099,17 @@ if(BUILD_CHAINSTATE)
 	add_to_security_check(bitcoin-chainstate)
 endif()
 
-# bitcoind
-add_executable(bitcoind bitcoind.cpp)
-target_link_libraries(bitcoind server)
-generate_windows_version_info(bitcoind
-	DESCRIPTION "Bitcoin node with a JSON-RPC server"
+# lotusd
+add_executable(lotusd bitcoind.cpp)
+target_link_libraries(lotusd server)
+generate_windows_version_info(lotusd
+	DESCRIPTION "Lotus node with a JSON-RPC server"
 )
-add_to_symbols_check(bitcoind)
-add_to_security_check(bitcoind)
+add_to_symbols_check(lotusd)
+add_to_security_check(lotusd)
 
-install_target(bitcoind)
-install_manpages(bitcoind)
+install_target(lotusd)
+install_manpages(lotusd)
 
 # Bitcoin-qt
 if(BUILD_QT)
