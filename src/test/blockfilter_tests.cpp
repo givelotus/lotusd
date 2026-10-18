@@ -139,6 +139,52 @@ BOOST_AUTO_TEST_CASE(blockfilter_basic_test) {
                 default_ctor_block_filter_2.GetEncodedFilter());
 }
 
+BOOST_AUTO_TEST_CASE(native_output_filter_is_stable_across_wire_roundtrip) {
+    CMutableTransaction transaction;
+    transaction.nVersion = 7;
+    transaction.fHasV2Lock = true;
+    transaction.nV2Lock = 0;
+    CTxIn input(COutPoint(TxId(uint256{1}), 7));
+    input.nFlags = 2;
+    input.fHasCoinbaseData = true;
+    input.vCoinbaseData = {1, 2};
+    transaction.vin.push_back(std::move(input));
+    transaction.vout.emplace_back(100 * SATOSHI, CScript() << OP_TRUE);
+    AdaptLegacyTxToV7(transaction);
+    CBlock block;
+    block.nHeaderVersion = 2;
+    block.nHeight = 7;
+    block.nBits = 0x207fffff;
+    block.hashPrevBlock = BlockHash{uint256{1}};
+    block.vtx.push_back(MakeTransactionRef(std::move(transaction)));
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+    block.SetSize(::GetSerializeSize(block));
+    const BlockFilter before(BlockFilterType::BASIC, block, {});
+    DataStream wire;
+    wire << block;
+    const std::string serialized = wire.str();
+    CBlock decoded;
+    wire >> decoded;
+    BOOST_REQUIRE(wire.empty());
+    BOOST_REQUIRE(block.GetHash() == decoded.GetHash());
+    BOOST_REQUIRE(block.vtx[0]->GetId() == decoded.vtx[0]->GetId());
+    // Immutable V7 construction now stores the canonical output script, just
+    // as wire decoding does. The representation must already match here.
+    const CScript &canonical_script = block.vtx[0]->vout[0].scriptPubKey;
+    BOOST_REQUIRE(!canonical_script.empty());
+    BOOST_CHECK(canonical_script == decoded.vtx[0]->vout[0].scriptPubKey);
+    DataStream reserialized;
+    reserialized << decoded;
+    BOOST_CHECK(reserialized.str() == serialized);
+    const BlockFilter after(BlockFilterType::BASIC, decoded, {});
+    const GCSFilter::Element element(canonical_script.begin(),
+                                     canonical_script.end());
+    BOOST_CHECK_EQUAL(before.GetFilter().GetN(), 1U);
+    BOOST_CHECK(before.GetFilter().Match(element));
+    BOOST_CHECK(after.GetFilter().Match(element));
+    BOOST_CHECK(before.GetEncodedFilter() == after.GetEncodedFilter());
+    BOOST_CHECK(before.GetHash() == after.GetHash());
+}
 
 BOOST_AUTO_TEST_CASE(blockfilters_json_test) {
     UniValue json;

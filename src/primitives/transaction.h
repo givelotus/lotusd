@@ -173,27 +173,49 @@ public:
     CTxOut() { SetNull(); }
 
     CTxOut(Amount nValueIn, CScript scriptPubKeyIn)
-        : nValue(nValueIn), scriptPubKey(std::move(scriptPubKeyIn)) {}
+        : nValue(nValueIn), scriptPubKey(scriptPubKeyIn) {}
 
     SERIALIZE_METHODS(CTxOut, obj) { READWRITE(obj.nValue, obj.scriptPubKey); }
 
     void SetNull() {
         nValue = -SATOSHI;
         scriptPubKey.clear();
+        nFlags = 0;
+        tokenId.SetNull();
+        vBranches.clear();
+        vPaths.clear();
     }
 
     bool IsNull() const { return nValue == -SATOSHI; }
 
+    lotus::v2::Output ToV2Output() const;
+    static CTxOut FromV2Output(const lotus::v2::Output &out);
+    static CTxOut FromV2Output(lotus::v2::Output &&out);
+
     friend bool operator==(const CTxOut &a, const CTxOut &b) {
-        return (a.nValue == b.nValue && a.scriptPubKey == b.scriptPubKey);
+        if (a.nValue != b.nValue) {
+            return false;
+        }
+        if (a.scriptPubKey == b.scriptPubKey) {
+            if (a.vBranches.empty() != b.vBranches.empty()) {
+                return true;
+            }
+            return (a.nFlags == b.nFlags && a.tokenId == b.tokenId &&
+                    a.vBranches == b.vBranches && a.vPaths == b.vPaths);
+        }
+        if (!a.vBranches.empty() || !b.vBranches.empty()) {
+            const lotus::v2::Output va = a.ToV2Output();
+            const lotus::v2::Output vb = b.ToV2Output();
+            return va.flags == vb.flags && va.value == vb.value &&
+                   va.token_id == vb.token_id && va.branches == vb.branches &&
+                   va.paths == vb.paths;
+        }
+        return false;
     }
 
     friend bool operator!=(const CTxOut &a, const CTxOut &b) {
         return !(a == b);
     }
-
-    lotus::v2::Output ToV2Output() const;
-    static CTxOut FromV2Output(const lotus::v2::Output &out);
 
     std::string ToString() const;
 };
@@ -201,28 +223,372 @@ public:
 class CMutableTransaction;
 
 /**
- * Basic transaction serialization format:
- * - uint32_t nVersion
- * - std::vector<CTxIn> vin
- * - std::vector<CTxOut> vout
- * - uint32_t nLockTime
+ * Lotus V2 v7 transaction serialization (and fallback for legacy versions).
  */
 template <typename Stream, typename TxType>
 inline void UnserializeTransaction(TxType &tx, Stream &s) {
-    s >> tx.nVersion;
+    uint32_t raw_version = 0;
+    s >> raw_version;
     tx.vin.clear();
     tx.vout.clear();
-    /* Try to read the vin. In case the dummy is there, this will be read as an
-     * empty vector. */
+    tx.fHasV2Lock = false;
+    tx.nV2Lock = 0;
+    if (raw_version == 7) {
+        tx.nVersion = 7;
+        uint64_t lock = 0;
+        uint16_t in_count = 0;
+        uint16_t out_count = 0;
+        s >> lock >> in_count >> out_count;
+        if ((lock & 0xffU) > 2 || ((lock & 0xffU) == 0 && lock != 0)) {
+            throw std::ios_base::failure("invalid V2 transaction lock");
+        }
+        if (in_count == 0) {
+            throw std::ios_base::failure("invalid V2 transaction: empty inputs");
+        }
+        tx.fHasV2Lock = true;
+        tx.nV2Lock = lock;
+        tx.nLockTime = static_cast<uint32_t>(lock >> 8);
+        tx.vin.reserve(in_count);
+        bool has_spend = false;
+        bool has_coinbase = false;
+        for (uint16_t i = 0; i < in_count; ++i) {
+            lotus::v2::Input in;
+            s.read(AsWritableBytes(Span{in.prev_txid.data(), 32}));
+            s >> in.prev_index >> in.sequence >> in.flags;
+            if (in.flags == 1) {
+                has_spend = true;
+                if (in.sequence != UINT32_MAX && (in.sequence & ~0x40ffffU)) {
+                    throw std::ios_base::failure("invalid V2 spend sequence");
+                }
+                const uint64_t path_idx = ReadCompactSize(s);
+                if (path_idx >= lotus::v2::MAX_OUTPUT_PATHS) {
+                    throw std::ios_base::failure("invalid V2 spend path_index");
+                }
+                in.path_index = static_cast<uint8_t>(path_idx);
+                const uint64_t wit_count = ReadCompactSize(s);
+                if (wit_count == 0 ||
+                    wit_count > lotus::v2::MAX_OUTPUT_BRANCHES) {
+                    throw std::ios_base::failure("invalid V2 witness count");
+                }
+                in.witnesses.resize(wit_count);
+                for (auto &w : in.witnesses) {
+                    s >> w.script;
+                    if (w.script.size() >
+                        lotus::v2::DefaultTxProfile.max_script_bytes) {
+                        throw std::ios_base::failure("invalid V2 script size");
+                    }
+                    const uint64_t sib_count = ReadCompactSize(s);
+                    if (sib_count >
+                        lotus::v2::DefaultTxProfile.max_branch_proof_depth) {
+                        throw std::ios_base::failure("invalid V2 sibling count");
+                    }
+                    w.siblings.resize(sib_count);
+                    for (auto &sib : w.siblings) {
+                        s.read(AsWritableBytes(Span{sib.data(), 32}));
+                    }
+                    const uint64_t arg_count = ReadCompactSize(s);
+                    if (arg_count > lotus::v2::DefaultTxProfile.max_arguments) {
+                        throw std::ios_base::failure("invalid V2 argument count");
+                    }
+                    w.arguments.resize(arg_count);
+                    for (auto &arg : w.arguments) {
+                        s >> arg;
+                        if (arg.size() >
+                            lotus::v2::DefaultTxProfile.max_argument_bytes) {
+                            throw std::ios_base::failure(
+                                "invalid V2 argument size");
+                        }
+                    }
+                }
+            } else if (in.flags == 2) {
+                has_coinbase = true;
+                if (in.sequence != UINT32_MAX) {
+                    throw std::ios_base::failure(
+                        "invalid V2 coinbase sequence");
+                }
+                const uint64_t has_cb = ReadCompactSize(s);
+                if (has_cb > 1) {
+                    throw std::ios_base::failure("invalid V2 coinbase flag");
+                }
+                in.has_coinbase_data = (has_cb == 1);
+                if (in.has_coinbase_data) {
+                    s >> in.coinbase_data;
+                    if (in.coinbase_data.empty() ||
+                        in.coinbase_data.size() > 8192) {
+                        throw std::ios_base::failure(
+                            "invalid V2 coinbase data size");
+                    }
+                }
+            } else if (in.flags == 3) {
+                if (in.prev_txid == lotus::v2::Hash32{} ||
+                    in.prev_index != 0 || in.sequence != UINT32_MAX) {
+                    throw std::ios_base::failure(
+                        "invalid V2 mint pseudo-outpoint");
+                }
+                in.witnesses.resize(1);
+                auto &w = in.witnesses[0];
+                s >> w.script;
+                if (w.script.size() >
+                    lotus::v2::DefaultTxProfile.max_script_bytes) {
+                    throw std::ios_base::failure("invalid V2 script size");
+                }
+                const uint64_t sib_count = ReadCompactSize(s);
+                if (sib_count >
+                    lotus::v2::DefaultTxProfile.max_branch_proof_depth) {
+                    throw std::ios_base::failure("invalid V2 sibling count");
+                }
+                w.siblings.resize(sib_count);
+                for (auto &sib : w.siblings) {
+                    s.read(AsWritableBytes(Span{sib.data(), 32}));
+                }
+                const uint64_t arg_count = ReadCompactSize(s);
+                if (arg_count > lotus::v2::DefaultTxProfile.max_arguments) {
+                    throw std::ios_base::failure("invalid V2 argument count");
+                }
+                w.arguments.resize(arg_count);
+                for (auto &arg : w.arguments) {
+                    s >> arg;
+                    if (arg.size() >
+                        lotus::v2::DefaultTxProfile.max_argument_bytes) {
+                        throw std::ios_base::failure(
+                            "invalid V2 argument size");
+                    }
+                }
+            } else {
+                throw std::ios_base::failure("invalid V2 input flags");
+            }
+            tx.vin.push_back(CTxIn::FromV2Input(std::move(in)));
+            if (in_count <= 16) {
+                for (uint16_t j = 0; j < i; ++j) {
+                    if (tx.vin[j].prevout == tx.vin[i].prevout) {
+                        throw std::ios_base::failure(
+                            "invalid V2 transaction framing: repeated outpoint");
+                    }
+                }
+            }
+        }
+        if (in_count > 16) {
+            std::set<COutPoint> seen_outpoints;
+            for (const auto &txin : tx.vin) {
+                if (!seen_outpoints.insert(txin.prevout).second) {
+                    throw std::ios_base::failure(
+                        "invalid V2 transaction framing: repeated outpoint");
+                }
+            }
+        }
+        if (has_coinbase) {
+            if (in_count != 1 || lock != 0 || out_count == 0) {
+                throw std::ios_base::failure(
+                    "invalid V2 transaction framing: coinbase shape");
+            }
+        } else if (!has_spend) {
+            throw std::ios_base::failure(
+                "invalid V2 transaction framing: ordinary input mix");
+        }
+        tx.vout.reserve(out_count);
+        for (uint16_t i = 0; i < out_count; ++i) {
+            lotus::v2::Output out;
+            s >> out.flags >> out.value;
+            if (out.flags & 0xfc) {
+                throw std::ios_base::failure("invalid V2 output flags");
+            }
+            if (out.HasToken()) {
+                if (has_coinbase) {
+                    throw std::ios_base::failure(
+                        "invalid V2 transaction framing: coinbase shape");
+                }
+                s.read(AsWritableBytes(Span{out.token_id.data(), 32}));
+            }
+            const uint64_t branch_count = ReadCompactSize(s);
+            if (branch_count == 0 ||
+                branch_count > lotus::v2::MAX_OUTPUT_BRANCHES) {
+                throw std::ios_base::failure("invalid V2 branch count");
+            }
+            out.branches.resize(branch_count);
+            for (auto &b : out.branches) {
+                s.read(AsWritableBytes(Span{b.data(), 32}));
+            }
+            const uint64_t path_count = ReadCompactSize(s);
+            if (path_count > lotus::v2::MAX_OUTPUT_PATHS) {
+                throw std::ios_base::failure("invalid V2 path count");
+            }
+            out.paths.resize(path_count);
+            for (auto &p : out.paths) {
+                const uint64_t plen = ReadCompactSize(s);
+                if (plen == 0 || plen > lotus::v2::MAX_OUTPUT_BRANCHES) {
+                    throw std::ios_base::failure("invalid V2 path length");
+                }
+                p.resize(plen);
+                for (uint64_t k = 0; k < plen; ++k) {
+                    const uint64_t idx = ReadCompactSize(s);
+                    if (idx >= lotus::v2::MAX_OUTPUT_BRANCHES) {
+                        throw std::ios_base::failure("invalid V2 path index");
+                    }
+                    p[k] = static_cast<uint8_t>(idx);
+                }
+            }
+            tx.vout.push_back(CTxOut::FromV2Output(std::move(out)));
+            if (tx.vout.back().scriptPubKey.empty()) {
+                throw std::ios_base::failure(
+                    "invalid V2 transaction framing: output validation failed");
+            }
+        }
+        return;
+    }
+    const bool is_v2_wrapped =
+        ((raw_version & 0xc0000000U) != 0) && ((raw_version & 0x3fffffffU) == 7);
+    const bool is_v2_cb = is_v2_wrapped && ((raw_version & 0x40000000U) != 0);
+    tx.nVersion = is_v2_wrapped ? 7U : raw_version;
     s >> tx.vin;
-    /* We read a non-empty vin. Assume a normal vout follows. */
     s >> tx.vout;
     s >> tx.nLockTime;
+    if (is_v2_cb && !tx.vin.empty()) {
+        tx.vin[0].nFlags = 2;
+        tx.vin[0].fHasCoinbaseData = !tx.vin[0].scriptSig.empty();
+        tx.vin[0].vCoinbaseData.assign(tx.vin[0].scriptSig.begin(),
+                                       tx.vin[0].scriptSig.end());
+    }
 }
 
 template <typename Stream, typename TxType>
 inline void SerializeTransaction(const TxType &tx, Stream &s) {
-    s << tx.nVersion;
+    const bool is_pure_v2 =
+        (tx.nVersion == 7) && !tx.vin.empty() && !tx.vout.empty() &&
+        std::all_of(tx.vin.begin(), tx.vin.end(),
+                    [](const auto &in) { return in.nFlags != 0; }) &&
+        std::all_of(tx.vout.begin(), tx.vout.end(),
+                    [](const auto &out) { return !out.vBranches.empty(); });
+    if (is_pure_v2) {
+        const uint32_t version = 7;
+        const bool is_cb =
+            (tx.vin.size() == 1 &&
+             (tx.vin[0].prevout.IsNull() || tx.vin[0].nFlags == 2));
+        const uint64_t lock =
+            tx.fHasV2Lock
+                ? tx.nV2Lock
+                : ((is_cb || tx.nLockTime == 0)
+                       ? 0ULL
+                       : ((uint64_t(tx.nLockTime) << 8) |
+                          (tx.nLockTime < 500000000U ? 1ULL : 2ULL)));
+        const uint16_t in_count = static_cast<uint16_t>(tx.vin.size());
+        const uint16_t out_count = static_cast<uint16_t>(tx.vout.size());
+        s << version << lock << in_count << out_count;
+        for (const auto &txin : tx.vin) {
+            if ((txin.nFlags == 1 && !txin.vWitnesses.empty()) ||
+                (txin.nFlags == 2 &&
+                 (txin.fHasCoinbaseData || txin.scriptSig.empty())) ||
+                txin.nFlags == 3) {
+                s.write(AsBytes(Span{txin.prevout.GetTxId().begin(), 32}));
+                const uint32_t prev_index = txin.prevout.GetN();
+                uint32_t seq = txin.nSequence;
+                if (txin.nFlags == 2) {
+                    seq = CTxIn::SEQUENCE_FINAL;
+                } else if (txin.nFlags == 1 && seq != CTxIn::SEQUENCE_FINAL &&
+                           (seq & ~0x40ffffU)) {
+                    seq = CTxIn::SEQUENCE_FINAL;
+                }
+                s << prev_index << seq << txin.nFlags;
+                if (txin.nFlags == 1) {
+                    WriteCompactSize(s, txin.nPathIndex);
+                    WriteCompactSize(s, txin.vWitnesses.size());
+                    for (const auto &w : txin.vWitnesses) {
+                        s << w.script;
+                        WriteCompactSize(s, w.siblings.size());
+                        for (const auto &sib : w.siblings) {
+                            s.write(AsBytes(Span{sib.data(), 32}));
+                        }
+                        WriteCompactSize(s, w.arguments.size());
+                        for (const auto &arg : w.arguments) {
+                            s << arg;
+                        }
+                    }
+                } else if (txin.nFlags == 2) {
+                    WriteCompactSize(s, txin.fHasCoinbaseData ? 1 : 0);
+                    if (txin.fHasCoinbaseData) {
+                        s << txin.vCoinbaseData;
+                    }
+                } else if (txin.nFlags == 3) {
+                    const lotus::v2::BranchWitness empty_w{};
+                    const auto &w = txin.vWitnesses.empty()
+                                        ? empty_w
+                                        : txin.vWitnesses[0];
+                    s << w.script;
+                    WriteCompactSize(s, w.siblings.size());
+                    for (const auto &sib : w.siblings) {
+                        s.write(AsBytes(Span{sib.data(), 32}));
+                    }
+                    WriteCompactSize(s, w.arguments.size());
+                    for (const auto &arg : w.arguments) {
+                        s << arg;
+                    }
+                }
+                continue;
+            }
+            const lotus::v2::Input in = txin.ToV2Input();
+            s.write(AsBytes(Span{in.prev_txid.data(), 32}));
+            s << in.prev_index << in.sequence << in.flags;
+            if (in.flags == 1) {
+                WriteCompactSize(s, in.path_index);
+                WriteCompactSize(s, in.witnesses.size());
+                for (const auto &w : in.witnesses) {
+                    s << w.script;
+                    WriteCompactSize(s, w.siblings.size());
+                    for (const auto &sib : w.siblings) {
+                        s.write(AsBytes(Span{sib.data(), 32}));
+                    }
+                    WriteCompactSize(s, w.arguments.size());
+                    for (const auto &arg : w.arguments) {
+                        s << arg;
+                    }
+                }
+            } else if (in.flags == 2) {
+                WriteCompactSize(s, in.has_coinbase_data ? 1 : 0);
+                if (in.has_coinbase_data) {
+                    s << in.coinbase_data;
+                }
+            } else if (in.flags == 3) {
+                const lotus::v2::BranchWitness empty_w{};
+                const auto &w =
+                    in.witnesses.empty() ? empty_w : in.witnesses[0];
+                s << w.script;
+                WriteCompactSize(s, w.siblings.size());
+                for (const auto &sib : w.siblings) {
+                    s.write(AsBytes(Span{sib.data(), 32}));
+                }
+                WriteCompactSize(s, w.arguments.size());
+                for (const auto &arg : w.arguments) {
+                    s << arg;
+                }
+            }
+        }
+        for (const auto &txout : tx.vout) {
+            const uint64_t val = static_cast<uint64_t>(
+                std::max<int64_t>(0, txout.nValue / SATOSHI));
+            s << txout.nFlags << val;
+            if ((txout.nFlags & 1) != 0) {
+                s.write(AsBytes(Span{txout.tokenId.begin(), 32}));
+            }
+            WriteCompactSize(s, txout.vBranches.size());
+            for (const auto &b : txout.vBranches) {
+                s.write(AsBytes(Span{b.data(), 32}));
+            }
+            WriteCompactSize(s, txout.vPaths.size());
+            for (const auto &p : txout.vPaths) {
+                WriteCompactSize(s, p.size());
+                for (uint8_t idx : p) {
+                    WriteCompactSize(s, idx);
+                }
+            }
+        }
+        return;
+    }
+    const bool is_v2_cb =
+        (tx.nVersion == 7 && !tx.vin.empty() && tx.vin[0].nFlags == 2);
+    const uint32_t raw_version =
+        (tx.nVersion == 7)
+            ? (7U | 0x80000000U | (is_v2_cb ? 0x40000000U : 0U))
+            : tx.nVersion;
+    s << raw_version;
     WriteCompactSize(s, tx.vin.size());
     for (const auto &in : tx.vin) s << in;
     WriteCompactSize(s, tx.vout.size());
