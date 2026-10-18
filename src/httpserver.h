@@ -38,6 +38,9 @@ static const bool DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT = true;
  */
 struct event_base;
 struct HTTPRequestImpl;
+struct WebSocketTransportInfo;
+class CAddress;
+class Sock;
 
 class Config;
 class CService;
@@ -97,6 +100,21 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
  * ACL. Call before StartHTTPServer.
  */
 void RegisterPublicHTTPPrefix(const std::string &prefix);
+
+/**
+ * Receives P2P peers connecting over WebSocket (/p2p/ws): CConnman's end of
+ * the socketpair bridged to the WebSocket, the peer's address, our address,
+ * and the transport details shared with the bridge.
+ */
+using P2PWebSocketAcceptor = std::function<void(
+    std::unique_ptr<Sock> &&sock, const CAddress &addr,
+    const CAddress &addr_bind, std::shared_ptr<WebSocketTransportInfo> info)>;
+
+/**
+ * Set (or clear, with nullptr) the receiver of /p2p/ws peers. While unset,
+ * /p2p/ws upgrades are answered with 503. Thread-safe.
+ */
+void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor);
 
 /** Unregister handler for prefix */
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
