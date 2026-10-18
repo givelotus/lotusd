@@ -32,3 +32,5 @@ target_link_libraries(lotus_v2_header PUBLIC secp256k1)
 target_sources(lotus_v2_header PRIVATE utxo_fast_filter.cpp)
 # The per-process fingerprint salt uses the core cryptographic RNG.
 target_link_libraries(lotus_v2_header PUBLIC util)
+
+target_sources(lotus_v2_header PRIVATE fee_hysteresis.cpp)
