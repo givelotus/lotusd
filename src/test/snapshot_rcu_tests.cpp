@@ -1004,13 +1004,16 @@ BOOST_AUTO_TEST_CASE(
         gbt_param.pushKV("mode", "compact_template");
         gbt_req.params = UniValue(UniValue::VARR);
         gbt_req.params.push_back(std::move(gbt_param));
+        // Native root materialization uses the pinned generation even with
+        // writers blocked. Cold GBT additionally earns execution provenance;
+        // that validation must run after releasing the writer locks.
+        snap24->mining_template.EnsureRoots();
+        BOOST_CHECK(snap24->mining_template.roots_ready);
+        release_locks.set_value();
+        holder.join();
         UniValue gbt_res = tableRPC.execute(config, gbt_req);
         BOOST_CHECK(gbt_res.exists("merkleroot"));
         BOOST_CHECK(gbt_res.exists("stateroot"));
-        BOOST_CHECK(snap24->mining_template.roots_ready);
-
-        release_locks.set_value();
-        holder.join();
     }
 }
 

@@ -129,6 +129,8 @@ class BlockchainTest(BitcoinTestFramework):
             "chain",
             "chainwork",
             "difficulty",
+            "earliest_verified_height",
+            "fast_sync_active",
             "finalized_blockhash",
             "headers",
             "initialblockdownload",
@@ -139,6 +141,7 @@ class BlockchainTest(BitcoinTestFramework):
             "verificationprogress",
             "warnings",
         ]
+
         res = self.nodes[0].getblockchaininfo()
 
         assert_equal(res["time"], TIME_RANGE_END - TIME_RANGE_STEP)
