@@ -102,10 +102,12 @@ public:
 
     explicit CTxIn(COutPoint prevoutIn, CScript scriptSigIn = CScript(),
                    uint32_t nSequenceIn = SEQUENCE_FINAL)
-        : prevout(prevoutIn), scriptSig(scriptSigIn), nSequence(nSequenceIn) {}
+        : prevout(prevoutIn), scriptSig(std::move(scriptSigIn)),
+          nSequence(nSequenceIn) {}
     CTxIn(TxId prevTxId, uint32_t nOut, CScript scriptSigIn = CScript(),
           uint32_t nSequenceIn = SEQUENCE_FINAL)
-        : CTxIn(COutPoint(prevTxId, nOut), scriptSigIn, nSequenceIn) {}
+        : CTxIn(COutPoint(prevTxId, nOut), std::move(scriptSigIn),
+                nSequenceIn) {}
 
     SERIALIZE_METHODS(CTxIn, obj) {
         READWRITE(obj.prevout, obj.scriptSig, obj.nSequence);
@@ -137,7 +139,7 @@ public:
     CTxOut() { SetNull(); }
 
     CTxOut(Amount nValueIn, CScript scriptPubKeyIn)
-        : nValue(nValueIn), scriptPubKey(scriptPubKeyIn) {}
+        : nValue(nValueIn), scriptPubKey(std::move(scriptPubKeyIn)) {}
 
     SERIALIZE_METHODS(CTxOut, obj) { READWRITE(obj.nValue, obj.scriptPubKey); }
 
