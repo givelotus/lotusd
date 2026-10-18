@@ -5,6 +5,7 @@
 #include <blockfilter.h>
 
 #include <core_io.h>
+#include <consensus/merkle.h>
 #include <serialize.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -79,11 +80,13 @@ BOOST_AUTO_TEST_CASE(blockfilter_basic_test) {
     excluded_scripts[2] << OP_RETURN << OP_4 << OP_ADD << OP_8 << OP_EQUAL;
 
     CMutableTransaction tx_1;
+    tx_1.nVersion = 2; // Legacy script-vector fixture.
     tx_1.vout.emplace_back(100 * SATOSHI, included_scripts[0]);
     tx_1.vout.emplace_back(200 * SATOSHI, included_scripts[1]);
     tx_1.vout.emplace_back(0 * SATOSHI, excluded_scripts[0]);
 
     CMutableTransaction tx_2;
+    tx_2.nVersion = 2;
     tx_2.vout.emplace_back(300 * SATOSHI, included_scripts[2]);
     tx_2.vout.emplace_back(0 * SATOSHI, excluded_scripts[2]);
     // Script is empty
@@ -135,6 +138,7 @@ BOOST_AUTO_TEST_CASE(blockfilter_basic_test) {
     BOOST_CHECK(default_ctor_block_filter_1.GetEncodedFilter() ==
                 default_ctor_block_filter_2.GetEncodedFilter());
 }
+
 
 BOOST_AUTO_TEST_CASE(blockfilters_json_test) {
     UniValue json;

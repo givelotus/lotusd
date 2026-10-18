@@ -94,9 +94,81 @@ struct AmountCompression {
  * wrapper for CTxOut that provides a more compact serialization
  */
 struct TxOutCompression {
-    FORMATTER_METHODS(CTxOut, obj) {
-        READWRITE(Using<AmountCompression>(obj.nValue),
-                  Using<ScriptCompression>(obj.scriptPubKey));
+    template <typename Stream>
+    void Ser(Stream &s, const CTxOut &obj) const {
+        AmountCompression{}.Ser(s, obj.nValue);
+        if (!obj.vBranches.empty() && obj.scriptPubKey.size() <= 1) {
+            const unsigned int v2_tag =
+                ScriptCompression::nSpecialScripts + MAX_SCRIPT_SIZE + 1U +
+                static_cast<unsigned int>(obj.nFlags & 0x03U);
+            s << VARINT(v2_tag);
+            if (obj.nFlags & 0x01U) {
+                s << obj.tokenId;
+            }
+            WriteCompactSize(s, obj.vBranches.size());
+            for (const auto &b : obj.vBranches) {
+                s.write(AsBytes(Span{b.data(), 32}));
+            }
+            WriteCompactSize(s, obj.vPaths.size());
+            for (const auto &p : obj.vPaths) {
+                s << p;
+            }
+            return;
+        }
+        ScriptCompression{}.Ser(s, obj.scriptPubKey);
+    }
+
+    template <typename Stream>
+    void Unser(Stream &s, CTxOut &obj) {
+        obj.SetNull();
+        AmountCompression{}.Unser(s, obj.nValue);
+        unsigned int nSize = 0;
+        s >> VARINT(nSize);
+        constexpr unsigned int kV2TagBase =
+            ScriptCompression::nSpecialScripts + MAX_SCRIPT_SIZE + 1U;
+        if (nSize >= kV2TagBase && nSize < kV2TagBase + 4U) {
+            obj.nFlags = static_cast<uint8_t>(nSize - kV2TagBase);
+            if (obj.nFlags & 0x01U) {
+                s >> obj.tokenId;
+            }
+            const uint64_t branch_count = ReadCompactSize(s);
+            if (branch_count == 0 ||
+                branch_count > lotus::v2::MAX_OUTPUT_BRANCHES) {
+                throw std::ios_base::failure(
+                    "invalid V2 compressed branch count");
+            }
+            obj.vBranches.resize(branch_count);
+            for (auto &b : obj.vBranches) {
+                s.read(AsWritableBytes(Span{b.data(), 32}));
+            }
+            const uint64_t path_count = ReadCompactSize(s);
+            if (path_count > lotus::v2::MAX_OUTPUT_PATHS) {
+                throw std::ios_base::failure(
+                    "invalid V2 compressed path count");
+            }
+            obj.vPaths.resize(path_count);
+            for (auto &p : obj.vPaths) {
+                s >> p;
+            }
+            if (obj.nFlags & 0x02U) {
+                obj.scriptPubKey = CScript() << OP_RETURN;
+            }
+            return;
+        }
+        if (nSize < ScriptCompression::nSpecialScripts) {
+            std::vector<uint8_t> vch(GetSpecialScriptSize(nSize), 0x00);
+            s >> Span{vch};
+            DecompressScript(obj.scriptPubKey, nSize, vch);
+            return;
+        }
+        nSize -= ScriptCompression::nSpecialScripts;
+        if (nSize > MAX_SCRIPT_SIZE) {
+            obj.scriptPubKey << OP_RETURN;
+            s.ignore(nSize);
+        } else {
+            obj.scriptPubKey.resize(nSize);
+            s >> Span{obj.scriptPubKey};
+        }
     }
 };
 
