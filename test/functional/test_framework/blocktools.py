@@ -37,9 +37,9 @@ from .util import assert_equal, satoshi_round
 
 # Genesis block data (regtest)
 TIME_GENESIS_BLOCK = 1296688602
-GENESIS_BLOCK_HASH = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
-GENESIS_BLOCK_HEADER = "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"
-GENESIS_CB_TXID = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+GENESIS_BLOCK_HASH = "720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561c99b7e50723e4"
+GENESIS_BLOCK_HEADER = "0000000000000000000000000000000000000000000000000000000000000000ffff7f20dae5494d000004000000000000000200000053010000000000000000000000000000ca0a22613683f87b8abce5112e903185ba04294ef4df8e44cfdee6453a9a7aab6605b00f317b575be0eaea52ed43fac3eb9fa163dd927244b2ff3c687a1c1796"
+GENESIS_CB_TXID = "d46fb7fb2029d32cd8a6d5555a68afbbb263a525a32c02ee53c3a3d795b94909"
 GENESIS_CB_PK = (
     "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38"
     "c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"
@@ -59,6 +59,13 @@ COINBASE_MATURITY = 100
 MIN_BLOCKS_TO_KEEP = 288
 
 
+def prepare_block(block: CBlock) -> CBlock:
+    block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
+    block.solve()
+    return block
+
+
 def create_block(
     hashprev: Optional[int] = None,
     coinbase: Optional[CTransaction] = None,
@@ -67,12 +74,14 @@ def create_block(
     version: Optional[int] = None,
     tmpl: Optional[dict] = None,
     txlist: Optional[list] = None,
+    height: Optional[int] = None,
 ) -> CBlock:
     """Create a block (with regtest difficulty)."""
     block = CBlock()
     if tmpl is None:
         tmpl = {}
-    block.nVersion = version or tmpl.get("version", 1)
+    raw_v = version if version is not None else tmpl.get("version", 2)
+    block.nHeaderVersion = 2 if raw_v in (4, 5, 0x20000000) else raw_v
     block.nTime = ntime or tmpl.get("curtime", int(time.time() + 600))
     block.hashPrevBlock = hashprev or int(tmpl["previousblockhash"], 0x10)
     if tmpl.get("bits") is not None:
@@ -80,11 +89,19 @@ def create_block(
     else:
         # difficulty retargeting is disabled in REGTEST chainparams
         block.nBits = 0x207FFFFF
-    block.vtx.append(coinbase or create_coinbase(height=tmpl["height"]))
+    cb = coinbase or create_coinbase(height=tmpl["height"])
+    block.vtx.append(cb)
+    if height is not None:
+        block.nHeight = height
+    elif getattr(cb, "_height", None) is not None:
+        block.nHeight = cb._height
+    elif "height" in tmpl:
+        block.nHeight = int(tmpl["height"])
     if txlist:
         block.vtx.extend(txlist)
         make_conform_to_ctor(block)
     block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
     return block
 
 
@@ -113,6 +130,7 @@ def create_coinbase(
     If pubkey is passed in, the coinbase output will be a P2PK output;
     otherwise an anyone-can-spend output."""
     coinbase = CTransaction()
+    coinbase._height = height
     coinbase.vin.append(
         CTxIn(
             COutPoint(0, 0xFFFFFFFF), script_BIP34_coinbase_height(height), 0xFFFFFFFF
@@ -303,12 +321,12 @@ class BlockTestMixin:
         if reorder:
             make_conform_to_ctor(block)
         block.hashMerkleRoot = block.calc_merkle_root()
+        block.update_size()
         block.solve()
         # Update the internal state just like in next_block
         self.tip = block
         if block.hash_int != old_sha256:
             self.block_heights[block.hash_int] = self.block_heights[old_sha256]
-            del self.block_heights[old_sha256]
         self.blocks[block_number] = block
         return block
 
@@ -354,7 +372,7 @@ class BlockTestMixin:
         additional_coinbase_value=0,
         script: Optional[CScript] = None,
         spend: Optional[CTransaction] = None,
-        version=4,
+        version=2,
         coinbase_time: Optional[int] = None,
     ) -> CBlock:
         """Create a new block building on the current tip, and advance the tip to it.
