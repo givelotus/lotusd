@@ -41,7 +41,53 @@ CTransaction V7WithLock(uint64_t lock, uint32_t sequence) {
     return CTransaction(CMutableTransaction::FromV2Transaction(tx));
 }
 
+constexpr uint64_t HeightLock(uint64_t height) { return (height << 8) | 1; }
+constexpr uint64_t TimeLock(uint64_t mtp) { return (mtp << 8) | 2; }
+
+bool IsNonFinal(const CTransaction &tx, int height, int64_t mtp) {
+    TxValidationState state;
+    ContextualCheckTransaction(Params().GetConsensus(), tx, state, height,
+                               mtp);
+    return state.GetRejectReason() == "bad-txns-nonfinal";
+}
 } // namespace
+
+// The V2 lock is 56 bits wide: a height beyond 2^32 must not wrap to a small
+// height through the 32-bit legacy nLockTime.
+BOOST_AUTO_TEST_CASE(v7_lock_value_is_not_truncated) {
+    const CTransaction tx =
+        V7WithLock(HeightLock((uint64_t{1} << 32) + 5), CTxIn::SEQUENCE_FINAL);
+    BOOST_CHECK(IsNonFinal(tx, 10, 2'000'000'000));
+    BOOST_CHECK(IsNonFinal(tx, 1'000'000, 2'000'000'000));
+}
+
+// The kind byte, not the legacy 500M threshold, says whether the value is a
+// height or a time.
+BOOST_AUTO_TEST_CASE(v7_lock_kind_selects_height_or_time) {
+    const CTransaction height_lock =
+        V7WithLock(HeightLock(600'000'000), CTxIn::SEQUENCE_FINAL);
+    BOOST_CHECK(IsNonFinal(height_lock, 10, 2'000'000'000));
+    BOOST_CHECK(!IsNonFinal(height_lock, 600'000'000, 0));
+
+    const CTransaction time_lock = V7WithLock(TimeLock(1000), 0);
+    BOOST_CHECK(IsNonFinal(time_lock, 5000, 999));
+    BOOST_CHECK(!IsNonFinal(time_lock, 0, 1000));
+}
+
+// A V2 lock is satisfied once the height (or parent median time past) has
+// reached its value, and final input sequences do not disable it.
+BOOST_AUTO_TEST_CASE(v7_lock_reached_value_and_sequences) {
+    const CTransaction seq0 = V7WithLock(HeightLock(100), 0);
+    BOOST_CHECK(IsNonFinal(seq0, 99, 0));
+    BOOST_CHECK(!IsNonFinal(seq0, 100, 0));
+
+    const CTransaction seq_final =
+        V7WithLock(HeightLock(200), CTxIn::SEQUENCE_FINAL);
+    BOOST_CHECK(IsNonFinal(seq_final, 100, 0));
+    BOOST_CHECK(!IsNonFinal(seq_final, 200, 0));
+
+    BOOST_CHECK(!IsNonFinal(V7WithLock(0, 0), 0, 0));
+}
 
 // A v7 input sequence is a BIP68 relative lock, which ConnectBlock enforces.
 // The mempool must compute the same lock points instead of assuming final
