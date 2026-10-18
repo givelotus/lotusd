@@ -11,6 +11,7 @@
 #include <crypto/siphash.h>
 #include <logging.h>
 #include <lotus_v2/blocksnap.h>
+#include <lotus_v2/set_reconciliation.h>
 #include <lotus_v2/tagged_hash.h>
 #include <net_processing.h>
 #include <netmessagemaker.h>
@@ -23,49 +24,13 @@
 #include <mutex>
 #include <unordered_set>
 
-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRYPTO)
-#include <arm_neon.h>
-#elif defined(__x86_64__) && defined(__PCLMUL__)
-#include <wmmintrin.h>
-#endif
+
 
 namespace lotus::v2::net {
 
 namespace {
 
-constexpr uint64_t GF64_REDUCTION_POLY = 0x1bULL; // z^64 + z^4 + z^3 + z + 1
 constexpr size_t MAX_OVERLAYS_PER_PREV = 16;
-
-struct GF64QuadraticBasis {
-    std::array<uint64_t, 64> pivot_vec{};
-    std::array<uint64_t, 64> pivot_preimage{};
-
-    GF64QuadraticBasis() {
-        for (int i = 1; i < 64; ++i) {
-            const uint64_t e_i = 1ULL << i;
-            uint64_t vec = GF64Square(e_i) ^ e_i;
-            uint64_t pre = e_i;
-            for (int b = 63; b >= 0; --b) {
-                if (!((vec >> b) & 1ULL)) {
-                    continue;
-                }
-                if (pivot_vec[b] != 0) {
-                    vec ^= pivot_vec[b];
-                    pre ^= pivot_preimage[b];
-                } else {
-                    pivot_vec[b] = vec;
-                    pivot_preimage[b] = pre;
-                    break;
-                }
-            }
-        }
-    }
-};
-
-const GF64QuadraticBasis &GetGF64QuadraticBasis() {
-    static const GF64QuadraticBasis basis{};
-    return basis;
-}
 
 std::vector<CTransactionRef>
 NormalizeCtorTxList(const std::vector<CTransactionRef> &txs) {
@@ -177,98 +142,27 @@ uint256 ComputeV2TxRootFromSubtreeA(const CTransaction &coinbase_tx,
 }
 
 uint64_t GF64Mul(uint64_t a, uint64_t b) noexcept {
-#if defined(__aarch64__) && defined(__ARM_FEATURE_CRYPTO)
-    const poly128_t prod =
-        vmull_p64(static_cast<poly64_t>(a), static_cast<poly64_t>(b));
-    const uint64x2_t prod_u64 = vreinterpretq_u64_p128(prod);
-    const uint64_t lo = vgetq_lane_u64(prod_u64, 0);
-    const uint64_t hi = vgetq_lane_u64(prod_u64, 1);
-    const poly128_t red1 = vmull_p64(static_cast<poly64_t>(hi),
-                                     static_cast<poly64_t>(GF64_REDUCTION_POLY));
-    const uint64x2_t red1_u64 = vreinterpretq_u64_p128(red1);
-    const uint64_t r1_lo = vgetq_lane_u64(red1_u64, 0);
-    const uint64_t r1_hi = vgetq_lane_u64(red1_u64, 1);
-    const uint64_t r2 = static_cast<uint64_t>(vgetq_lane_u64(
-        vreinterpretq_u64_p128(vmull_p64(
-            static_cast<poly64_t>(r1_hi),
-            static_cast<poly64_t>(GF64_REDUCTION_POLY))),
-        0));
-    return lo ^ r1_lo ^ r2;
-#elif defined(__x86_64__) && defined(__PCLMUL__)
-    const __m128i va = _mm_cvtsi64_si128(static_cast<int64_t>(a));
-    const __m128i vb = _mm_cvtsi64_si128(static_cast<int64_t>(b));
-    const __m128i vpoly =
-        _mm_cvtsi64_si128(static_cast<int64_t>(GF64_REDUCTION_POLY));
-    const __m128i prod = _mm_clmulepi64_si128(va, vb, 0x00);
-    const uint64_t lo = static_cast<uint64_t>(_mm_cvtsi128_si64(prod));
-    const __m128i red1 = _mm_clmulepi64_si128(prod, vpoly, 0x01);
-    const uint64_t r1_lo = static_cast<uint64_t>(_mm_cvtsi128_si64(red1));
-    const __m128i red2 = _mm_clmulepi64_si128(red1, vpoly, 0x01);
-    const uint64_t r2 = static_cast<uint64_t>(_mm_cvtsi128_si64(red2));
-    return lo ^ r1_lo ^ r2;
-#else
-    uint64_t result = 0;
-    for (int i = 0; i < 64; ++i) {
-        if ((b >> i) & 1ULL) {
-            result ^= a;
-        }
-        const bool hi = (a >> 63) & 1ULL;
-        a <<= 1;
-        if (hi) {
-            a ^= GF64_REDUCTION_POLY;
-        }
-    }
-    return result;
-#endif
+    return lotus::v2::GF64Mul(a, b);
 }
 
 uint64_t GF64Square(uint64_t a) noexcept {
-    return GF64Mul(a, a);
+    return lotus::v2::GF64Sqr(a);
 }
 
 uint64_t GF64Cube(uint64_t a) noexcept {
-    return GF64Mul(GF64Square(a), a);
+    return lotus::v2::GF64Cube(a);
 }
 
 uint64_t GF64Pow5(uint64_t a) noexcept {
-    const uint64_t a2 = GF64Square(a);
-    const uint64_t a4 = GF64Square(a2);
-    return GF64Mul(a, a4);
+    return lotus::v2::GF64Pow5(a);
 }
 
 uint64_t GF64Inv(uint64_t a) noexcept {
-    if (a == 0) {
-        return 0;
-    }
-    // In GF(2^64), a^(2^64 - 2) = a^(-1).
-    uint64_t result = 1;
-    uint64_t cur = a;
-    for (int i = 1; i < 64; ++i) {
-        cur = GF64Square(cur);
-        result = GF64Mul(result, cur);
-    }
-    return result;
+    return lotus::v2::GF64Inv(a);
 }
 
 bool GF64SolveQuadratic(uint64_t c, uint64_t &y_out) noexcept {
-    if (c == 0) {
-        y_out = 0;
-        return true;
-    }
-    const auto &basis = GetGF64QuadraticBasis();
-    uint64_t rem = c;
-    uint64_t y = 0;
-    for (int b = 63; b >= 0; --b) {
-        if ((rem >> b) & 1ULL) {
-            if (basis.pivot_vec[b] == 0) {
-                return false;
-            }
-            rem ^= basis.pivot_vec[b];
-            y ^= basis.pivot_preimage[b];
-        }
-    }
-    y_out = y;
-    return true;
+    return lotus::v2::GF64SolveQuadratic(c, y_out);
 }
 
 std::optional<std::vector<uint64_t>>
