@@ -1,5 +1,3 @@
-#include <common/args.h>
-#include <lotus_v2/legacy_coin.h>
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Copyright (c) 2017-2020 The Bitcoin developers
@@ -40,6 +38,7 @@
 #include <node/snapshot.h>
 #include <node/utxo_snapshot.h>
 #include <policy/block/minerfund.h>
+#include <policy/block/parkingpolicy.h>
 #include <policy/block/preconsensus.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
@@ -640,6 +639,184 @@ bool CheckInputScriptsReusing(
 
 
 
+struct BatchTxIdIndexSlot {
+    TxId txid;
+    size_t index{0};
+    bool occupied{false};
+};
+
+std::optional<LockPoints> CalculateLockPointsFromResolvedCoins(
+    CBlockIndex *tip, const CTransaction &tx,
+    const std::vector<Coin> &resolved_inputs) {
+    assert(tip);
+    std::vector<int> prev_heights(tx.vin.size());
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        if (tx.vin[i].nFlags == 3) {
+            prev_heights[i] = 0;
+            continue;
+        }
+        if (resolved_inputs[i].IsSpent()) {
+            return std::nullopt;
+        }
+        prev_heights[i] = resolved_inputs[i].GetHeight() == MEMPOOL_HEIGHT
+                              ? tip->nHeight + 1
+                              : resolved_inputs[i].GetHeight();
+    }
+    CBlockIndex next_tip;
+    next_tip.pprev = tip;
+    next_tip.nHeight = tip->nHeight + 1;
+    const auto [min_height, min_time] = CalculateSequenceLocks(
+        tx, STANDARD_LOCKTIME_VERIFY_FLAGS, prev_heights, next_tip);
+    return LockPoints{min_height, min_time};
+}
+
+static inline bool ExtractTokenIdAndValueFast(const CTxOut &txout,
+                                              uint256 &tok_id,
+                                              uint64_t &val) {
+    if (!txout.vBranches.empty()) {
+        if ((txout.nFlags & 0x01U) == 0) {
+            return false;
+        }
+        tok_id = txout.tokenId;
+        val = static_cast<uint64_t>(
+            std::max<int64_t>(0, txout.nValue / SATOSHI));
+        return true;
+    }
+    if (txout.scriptPubKey.size() >= 43) {
+        const uint8_t flags0 = txout.scriptPubKey[0];
+        const bool maybe_token =
+            ((flags0 & 0x01U) != 0 && (flags0 & 0xfcU) == 0) ||
+            (flags0 == 0x6a && txout.scriptPubKey.size() >= 44 &&
+             (txout.scriptPubKey[1] & 0x01U) != 0 &&
+             (txout.scriptPubKey[1] & 0xfcU) == 0);
+        if (!maybe_token) {
+            return false;
+        }
+        const lotus::v2::Output v2out = txout.ToV2Output();
+        if (v2out.HasToken()) {
+            std::memcpy(tok_id.begin(), v2out.token_id.data(), 32);
+            val = v2out.value;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CheckTxInputsFromResolvedCoins(const CTransaction &tx,
+                                    TxValidationState &state,
+                                    const std::vector<Coin> &resolved_inputs,
+                                    int nSpendHeight, Amount &txfee) {
+    Amount nValueIn = Amount::zero();
+    std::map<uint256, std::pair<__uint128_t, __uint128_t>> tokenTotals;
+    bool has_authority_input = false;
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const auto &in = tx.vin[i];
+        if (in.nFlags == 3) {
+            has_authority_input = true;
+            continue;
+        }
+        const Coin &coin = resolved_inputs[i];
+        if (coin.IsSpent()) {
+            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
+                                 "bad-txns-inputs-missingorspent",
+                                 strprintf("%s: inputs missing/spent", __func__));
+        }
+        if (coin.IsCoinBase() &&
+            nSpendHeight - coin.GetHeight() < COINBASE_MATURITY) {
+            return state.Invalid(
+                TxValidationResult::TX_PREMATURE_SPEND,
+                "bad-txns-premature-spend-of-coinbase",
+                strprintf("tried to spend coinbase at depth %d",
+                          nSpendHeight - coin.GetHeight()));
+        }
+        const CTxOut &prev_txout = coin.GetTxOut();
+        uint256 tok_id;
+        uint64_t tok_val = 0;
+        if (ExtractTokenIdAndValueFast(prev_txout, tok_id, tok_val)) {
+            if (prev_txout.nValue < Amount::zero()) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-inputvalues-outofrange");
+            }
+            tokenTotals[tok_id].first += tok_val;
+            continue;
+        }
+        nValueIn += prev_txout.nValue;
+        if (!MoneyRange(prev_txout.nValue) || !MoneyRange(nValueIn)) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                 "bad-txns-inputvalues-outofrange");
+        }
+    }
+
+    for (const auto &out : tx.vout) {
+        uint256 tok_id;
+        uint64_t tok_val = 0;
+        if (ExtractTokenIdAndValueFast(out, tok_id, tok_val)) {
+            if (out.nValue < Amount::zero()) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-vout-negative");
+            }
+            tokenTotals[tok_id].second += tok_val;
+        }
+    }
+
+    if (!tokenTotals.empty() || has_authority_input) {
+        std::set<uint256> positiveTokenDeltas;
+        for (const auto &[tokenId, totals] : tokenTotals) {
+            if (totals.second > totals.first) {
+                positiveTokenDeltas.insert(tokenId);
+            }
+        }
+        for (const auto &in : tx.vin) {
+            if (in.nFlags != 3) {
+                continue;
+            }
+            if (positiveTokenDeltas.erase(uint256(in.prevout.GetTxId())) != 1) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-mint-without-positive-delta");
+            }
+        }
+        if (!positiveTokenDeltas.empty()) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                 "bad-txns-token-inflation");
+        }
+    }
+
+    const Amount value_out = tx.GetValueOut();
+    if (nValueIn < value_out) {
+        return state.Invalid(
+            TxValidationResult::TX_CONSENSUS, "bad-txns-in-belowout",
+            strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn),
+                      FormatMoney(value_out)));
+    }
+
+    const Amount txfee_aux = nValueIn - value_out;
+    if (!MoneyRange(txfee_aux)) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-fee-outofrange");
+    }
+
+    txfee = txfee_aux;
+    return true;
+}
+
+bool AreInputsStandardFromResolvedCoins(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs) {
+    if (tx.IsCoinBase()) {
+        return true;
+    }
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        if (tx.vin[i].nFlags == 3) {
+            continue;
+        }
+        const CTxOut &prev = resolved_inputs[i].GetTxOut();
+        std::vector<std::vector<uint8_t>> vSolutions;
+        if (Solver(prev.scriptPubKey, vSolutions) == TxoutType::NONSTANDARD) {
+            return false;
+        }
+    }
+    return true;
+}
+
 class MemPoolAccept {
 public:
     MemPoolAccept(CTxMemPool &mempool, Chainstate &active_chainstate)
@@ -731,6 +908,7 @@ public:
             };
         }
 
+        /** Parameters for all-or-nothing batch validation/submission (testrawtxbatch / submitrawtxbatch). */
         static ATMPArgs
         RawTxBatch(const Config &config, int64_t accept_time,
                    std::vector<COutPoint> &coins_to_uncache, bool test_accept) {
@@ -796,6 +974,17 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
+     * All-or-nothing batch validation and single-pass commit for
+     * testrawtxbatch and submitrawtxbatch.
+     */
+    PackageMempoolAcceptResult
+    AcceptRawTxBatch(
+        const std::vector<CTransactionRef> &txns, ATMPArgs &args,
+        const CFeeRate &max_raw_tx_fee_rate,
+        const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+    /**
      * Submission of a subpackage.
      * If subpackage size == 1, calls AcceptSingleTransaction() with adjusted
      * ATMPArgs to avoid package policy restrictions like no CPFP carve out
@@ -822,13 +1011,6 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 private:
-public:
-    PackageMempoolAcceptResult AcceptRawTxBatch(
-        const std::vector<CTransactionRef> &txns, ATMPArgs &args,
-        const CFeeRate &max_raw_tx_fee_rate,
-        const std::vector<PrecomputedBatchTxData> *precomputed_batch = nullptr) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
-private:
-    using PendingMempoolNotification = ValidationSignals::MempoolAddedBatchItem;
     // All the intermediate state that gets passed between the various levels
     // of checking a given transaction.
     struct Workspace {
@@ -888,28 +1070,12 @@ private:
         // Pre-resolved input coins and lock points captured during Pass 1 of
         // batch validation so Pass 2 can validate scripts/signatures in parallel.
         std::vector<Coin> m_resolved_inputs;
+        std::vector<int32_t> m_batch_parent_indices;
+        bool m_has_mempool_parents{true};
         std::optional<LockPoints> m_lock_points;
-        std::vector<uint32_t> m_batch_parent_indices;
-        std::vector<CTxMemPool::txiter> m_mempool_parent_iters;
-        bool m_has_mempool_parents{false};
-        bool m_inputs_pre_resolved{false};
 
-        // Checks done outside the locks, reused where they match.
+        // Advisory legacy checks; native admission remains authoritative.
         const PrecomputedAdmissionChecks *m_precomputed{nullptr};
-    };
-
-    struct TxIdIndexSlot {
-        TxId txid;
-        size_t index{0};
-        bool occupied{false};
-    };
-
-    struct BatchLookupContext {
-        const std::vector<CTransactionRef> &txns;
-        const std::vector<TxIdIndexSlot> &txid_table;
-        size_t txid_mask{0};
-        size_t current_tx_idx{0};
-        mutable bool prefetched_cold_utxos{false};
     };
 
     // Run the policy checks on a given transaction, excluding any script
@@ -918,8 +1084,13 @@ private:
     // by a peer, only tests that are fast should be done here (to avoid CPU
     // DoS).
     bool PreChecks(ATMPArgs &args, Workspace &ws,
-                   bool defer_script_checks = false,
-                   const BatchLookupContext *batch_ctx = nullptr)
+                   bool defer_script_checks = false)
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+
+    bool PreChecksBatch(ATMPArgs &args, Workspace &ws, size_t ws_idx,
+                        const std::vector<CTransactionRef> &txns,
+                        const std::vector<BatchTxIdIndexSlot> &txid_table,
+                        size_t txid_mask, bool mempool_nonempty)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     bool FinalizeDeferredPreChecks(ATMPArgs &args, Workspace &ws)
@@ -936,9 +1107,10 @@ private:
     // Returns true if the transaction is in the mempool after any size
     // limiting is performed, false otherwise.
     bool Finalize(const ATMPArgs &args, Workspace &ws,
-        std::vector<PendingMempoolNotification> *deferred_notifications = nullptr,
-        std::span<const CTxMemPool::txiter> batch_parent_iters = {},
-        CTxMemPool::txiter *out_iter = nullptr)
+                  std::vector<ValidationSignals::MempoolAddedBatchItem>
+                      *batch_signals = nullptr,
+                  const std::vector<CTxMemPool::txiter> *batch_iters = nullptr,
+                  CTxMemPool::txiter *out_iter = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Submit all transactions to the mempool and call ConsensusScriptChecks to
@@ -1008,8 +1180,7 @@ private:
 };
 
 bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
-                              bool defer_script_checks,
-                              const BatchLookupContext *batch_ctx) {
+                              bool defer_script_checks) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const CTransaction &tx = *ws.m_ptx;
@@ -1051,11 +1222,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     // Only accept nLockTime-using transactions that can be mined in the next
     // block; we don't want our mempool filled up with transactions that can't
     // be mined yet.
-    CBlockIndex *const tip = Assert(m_active_chainstate.m_chain.Tip());
     TxValidationState ctxState;
     if (!ContextualCheckTransactionForCurrentBlock(
-            *tip, args.m_config.GetChainParams().GetConsensus(), tx,
-            ctxState)) {
+            *Assert(m_active_chainstate.m_chain.Tip()),
+            args.m_config.GetChainParams().GetConsensus(), tx, ctxState)) {
         // We copy the state from a dummy to ensure we don't increase the
         // ban score of peer for transaction that could be valid in the future.
         return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND,
@@ -1064,256 +1234,32 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     }
 
     // Is it already in the memory pool?
-    if (!m_pool.mapTx.empty() && m_pool.mapTx.count(txid) != 0) {
+    if (m_pool.exists(txid)) {
         return state.Invalid(TxValidationResult::TX_DUPLICATE,
                              "txn-already-in-mempool");
     }
 
     // Check for conflicts with in-memory transactions
-    if (!m_pool.mapNextTx.empty()) {
-        for (const CTxIn &txin : tx.vin) {
-            if (const auto ptxConflicting = m_pool.GetConflictTx(txin.prevout)) {
-                if (m_pool.isAvalancheFinalizedPreConsensus(
-                        ptxConflicting->GetId())) {
-                    return state.Invalid(TxValidationResult::TX_CONFLICT,
-                                         "finalized-tx-conflict");
-                }
-
-                return state.Invalid(
-                    TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
-                    "txn-mempool-conflict");
-            }
+    for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            continue;
         }
-    }
-
-    const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
-
-    if (defer_script_checks) {
-        const bool pool_has_txs = !m_pool.mapTx.empty();
-
-        ws.m_resolved_inputs.resize(tx.vin.size());
-        ws.m_batch_parent_indices.clear();
-        ws.m_mempool_parent_iters.clear();
-        ws.m_has_mempool_parents = false;
-
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            const COutPoint &prevout = tx.vin[i].prevout;
-            const TxId &prev_txid = prevout.GetTxId();
-            const uint32_t prev_n = prevout.GetN();
-            bool found_input = false;
-            bool in_batch_or_mempool_tx = false;
-
-            // 1. O(1) lookup in flat intra-batch parent table (zero map churn)
-            if (batch_ctx != nullptr && !batch_ctx->txid_table.empty()) {
-                size_t tslot = prev_txid.GetUint64(0) & batch_ctx->txid_mask;
-                while (batch_ctx->txid_table[tslot].occupied) {
-                    if (batch_ctx->txid_table[tslot].txid == prev_txid) {
-                        const size_t parent_idx =
-                            batch_ctx->txid_table[tslot].index;
-                        if (parent_idx < batch_ctx->current_tx_idx) {
-                            in_batch_or_mempool_tx = true;
-                            const CTransaction &parent_tx =
-                                *batch_ctx->txns[parent_idx];
-                            if (prev_n < parent_tx.vout.size() &&
-                                !parent_tx.vout[prev_n].IsNull()) {
-                                ws.m_resolved_inputs[i] = Coin(
-                                    parent_tx.vout[prev_n], MEMPOOL_HEIGHT,
-                                    false);
-                                ws.m_has_mempool_parents = true;
-                                const uint32_t pidx =
-                                    static_cast<uint32_t>(parent_idx);
-                                if (std::find(
-                                        ws.m_batch_parent_indices.begin(),
-                                        ws.m_batch_parent_indices.end(),
-                                        pidx) ==
-                                    ws.m_batch_parent_indices.end()) {
-                                    ws.m_batch_parent_indices.push_back(pidx);
-                                }
-                                found_input = true;
-                            }
-                        }
-                        break;
-                    }
-                    tslot = (tslot + 1) & batch_ctx->txid_mask;
-                }
+        if (const auto ptxConflicting = m_pool.GetConflictTx(txin.prevout)) {
+            if (m_pool.isAvalancheFinalizedPreConsensus(
+                    ptxConflicting->GetId())) {
+                return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                     "finalized-tx-conflict");
             }
 
-            // 2. Single-probe lookup in confirmed CoinsTip() RAM cache
-            // (checked before mapTx.find so confirmed inputs skip mempool index
-            // lookups even when the mempool is non-empty).
-            if (!found_input && !in_batch_or_mempool_tx) {
-                if (const Coin *cached_coin = coins_cache.PeekCoin(prevout)) {
-                    ws.m_resolved_inputs[i] = *cached_coin;
-                    found_input = true;
-                }
-            }
-
-            // 3. Check existing mempool transactions if not in batch or CoinsTip() cache
-            if (!found_input && !in_batch_or_mempool_tx && pool_has_txs) {
-                auto pit = m_pool.mapTx.find(prev_txid);
-                if (pit != m_pool.mapTx.end()) {
-                    in_batch_or_mempool_tx = true;
-                    const CTransaction &parent_tx = (*pit)->GetTx();
-                    if (prev_n < parent_tx.vout.size() &&
-                        !parent_tx.vout[prev_n].IsNull()) {
-                        ws.m_resolved_inputs[i] = Coin(
-                            parent_tx.vout[prev_n], MEMPOOL_HEIGHT, false);
-                        ws.m_has_mempool_parents = true;
-                        if (std::find(ws.m_mempool_parent_iters.begin(),
-                                      ws.m_mempool_parent_iters.end(),
-                                      pit) ==
-                            ws.m_mempool_parent_iters.end()) {
-                            ws.m_mempool_parent_iters.push_back(pit);
-                        }
-                        found_input = true;
-                    }
-                }
-            }
-
-            // 4. Cold disk UTXO fallback (lazily triggers one-time batch readahead)
-            if (!found_input && !in_batch_or_mempool_tx) {
-                if (batch_ctx != nullptr && !batch_ctx->prefetched_cold_utxos &&
-                    batch_ctx->txns.size() >= 8) {
-                    batch_ctx->prefetched_cold_utxos = true;
-                    std::vector<COutPoint> cold_outpoints;
-                    for (size_t k = batch_ctx->current_tx_idx;
-                         k < batch_ctx->txns.size(); ++k) {
-                        for (const auto &in : batch_ctx->txns[k]->vin) {
-                            const TxId &ptxid = in.prevout.GetTxId();
-                            bool in_b = false;
-                            if (!batch_ctx->txid_table.empty()) {
-                                size_t ts =
-                                    ptxid.GetUint64(0) & batch_ctx->txid_mask;
-                                while (batch_ctx->txid_table[ts].occupied) {
-                                    if (batch_ctx->txid_table[ts].txid ==
-                                        ptxid) {
-                                        in_b = true;
-                                        break;
-                                    }
-                                    ts = (ts + 1) & batch_ctx->txid_mask;
-                                }
-                            }
-                            if (!in_b &&
-                                !coins_cache.HaveCoinInCache(in.prevout) &&
-                                (!pool_has_txs ||
-                                 m_pool.mapTx.count(ptxid) == 0)) {
-                                cold_outpoints.push_back(in.prevout);
-                            }
-                        }
-                    }
-                    if (cold_outpoints.size() >= 8) {
-                        m_active_chainstate.CoinsDB().PrefetchOutpointsAsync(
-                            cold_outpoints);
-                    }
-                }
-                coins_to_uncache.push_back(prevout);
-                const Coin &coin = coins_cache.AccessCoin(prevout);
-                if (!coin.IsSpent()) {
-                    ws.m_resolved_inputs[i] = coin;
-                    found_input = true;
-                }
-            }
-
-            if (!found_input) {
-                for (size_t out = 0; out < tx.vout.size(); out++) {
-                    if (coins_cache.HaveCoinInCache(COutPoint(txid, out))) {
-                        return state.Invalid(TxValidationResult::TX_DUPLICATE,
-                                             "txn-already-known");
-                    }
-                }
-                return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
-                                     "bad-txns-inputs-missingorspent");
-            }
-        }
-
-        // Evaluate BIP68 sequence locks directly from pre-resolved inputs
-        LockPoints lock_points{-1, -1};
-        if (tx.nVersion >= 2) {
-            std::vector<int> prev_heights(tx.vin.size());
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                const uint32_t h = ws.m_resolved_inputs[i].GetHeight();
-                prev_heights[i] = (h == MEMPOOL_HEIGHT)
-                                      ? (tip->nHeight + 1)
-                                      : static_cast<int>(h);
-            }
-            CBlockIndex next_tip;
-            next_tip.pprev = tip;
-            next_tip.nHeight = tip->nHeight + 1;
-            const auto [min_height, min_time] = CalculateSequenceLocks(
-                tx, STANDARD_LOCKTIME_VERIFY_FLAGS, prev_heights, next_tip);
-            lock_points = LockPoints{min_height, min_time};
-            if (!EvaluateSequenceLocks(
-                    next_tip, {lock_points.height, lock_points.time})) {
-                return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND,
-                                     "non-BIP68-final");
-            }
-        }
-
-        // Evaluate CheckTxInputs directly over pre-resolved inputs
-        const int nSpendHeight = tip->nHeight + 1;
-        Amount nValueIn = Amount::zero();
-        for (size_t i = 0; i < tx.vin.size(); ++i) {
-            const Coin &coin = ws.m_resolved_inputs[i];
-            assert(!coin.IsSpent());
-            if (coin.IsCoinBase() &&
-                nSpendHeight - static_cast<int>(coin.GetHeight()) <
-                    COINBASE_MATURITY) {
-                return state.Invalid(
-                    TxValidationResult::TX_PREMATURE_SPEND,
-                    "bad-txns-premature-spend-of-coinbase",
-                    strprintf("tried to spend coinbase at depth %d",
-                              nSpendHeight -
-                                  static_cast<int>(coin.GetHeight())));
-            }
-            const CTxOut &prev_out = coin.GetTxOut();
-            nValueIn += prev_out.nValue;
-            if (!MoneyRange(prev_out.nValue) || !MoneyRange(nValueIn)) {
-                return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                     "bad-txns-inputvalues-outofrange");
-            }
-        }
-
-        const Amount value_out = tx.GetValueOut();
-        if (nValueIn < value_out) {
             return state.Invalid(
-                TxValidationResult::TX_CONSENSUS, "bad-txns-in-belowout",
-                strprintf("value in (%s) < value out (%s)",
-                          FormatMoney(nValueIn), FormatMoney(value_out)));
+                TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                "txn-mempool-conflict");
         }
-
-        const Amount txfee_aux = nValueIn - value_out;
-        if (!MoneyRange(txfee_aux)) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-fee-outofrange");
-        }
-        ws.m_base_fees = txfee_aux;
-
-        // Evaluate AreInputsStandard directly over pre-resolved inputs
-        if (m_pool.m_opts.require_standard) {
-            std::vector<std::vector<uint8_t>> vSolutions;
-            for (size_t i = 0; i < tx.vin.size(); ++i) {
-                vSolutions.clear();
-                const CTxOut &prev = ws.m_resolved_inputs[i].GetTxOut();
-                if (Solver(prev.scriptPubKey, vSolutions) ==
-                    TxoutType::NONSTANDARD) {
-                    return state.Invalid(
-                        TxValidationResult::TX_INPUTS_NOT_STANDARD,
-                        "bad-txns-nonstandard-inputs");
-                }
-            }
-        }
-
-        ws.m_modified_fees = ws.m_base_fees;
-        if (!m_pool.mapDeltas.empty()) {
-            m_pool.ApplyDelta(txid, ws.m_modified_fees);
-        }
-        ws.m_lock_points = lock_points;
-        ws.m_inputs_pre_resolved = true;
-        return true;
     }
 
     m_view.SetBackend(m_viewmempool);
 
+    const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
     // Do all inputs exist?
     for (const CTxIn &txin : tx.vin) {
         if (txin.nFlags == 3) {
@@ -1392,6 +1338,19 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     m_pool.ApplyDelta(txid, ws.m_modified_fees);
     ws.m_lock_points = lock_points;
 
+    if (defer_script_checks) {
+        ws.m_resolved_inputs.resize(tx.vin.size());
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            if (tx.vin[i].nFlags == 3) {
+                ws.m_resolved_inputs[i] =
+                    Coin(CTxOut(Amount::zero(), CScript()), 1, false);
+            } else {
+                ws.m_resolved_inputs[i] = m_view.AccessCoin(tx.vin[i].prevout);
+            }
+        }
+        return true;
+    }
+
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
         ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
@@ -1405,6 +1364,172 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     }
 
     return FinalizeDeferredPreChecks(args, ws);
+}
+
+bool MemPoolAccept::PreChecksBatch(
+    ATMPArgs &args, Workspace &ws, size_t ws_idx,
+    const std::vector<CTransactionRef> &txns,
+    const std::vector<BatchTxIdIndexSlot> &txid_table, size_t txid_mask,
+    bool mempool_nonempty) {
+    AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
+    const CTransaction &tx = *ws.m_ptx;
+    const TxId &txid = ws.m_ptx->GetId();
+    std::vector<COutPoint> &coins_to_uncache = args.m_coins_to_uncache;
+    TxValidationState &state = ws.m_state;
+
+    if (ws.m_regular_tx_checked) {
+        if (!ws.m_regular_tx_valid) {
+            state = ws.m_regular_tx_state;
+            return false;
+        }
+    } else if (!CheckRegularTransaction(tx, state)) {
+        return false;
+    }
+
+    const bool is_v2_native_tx =
+        std::any_of(tx.vin.begin(), tx.vin.end(), [](const CTxIn &in) {
+            return in.nFlags != 0 && !in.vWitnesses.empty();
+        });
+
+    std::string reason;
+    if (m_pool.m_opts.require_standard && !is_v2_native_tx &&
+        !IsStandardTx(tx, m_pool.m_opts.max_datacarrier_bytes,
+                      m_pool.m_opts.permit_bare_multisig,
+                      m_pool.m_opts.dust_relay_feerate, reason)) {
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
+
+    CBlockIndex *const tip = Assert(m_active_chainstate.m_chain.Tip());
+    TxValidationState ctxState;
+    if (!ContextualCheckTransactionForCurrentBlock(
+            *tip, args.m_config.GetChainParams().GetConsensus(), tx,
+            ctxState)) {
+        return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND,
+                             ctxState.GetRejectReason(),
+                             ctxState.GetDebugMessage());
+    }
+
+    if (mempool_nonempty) {
+        if (m_pool.mapTx.find(txid) != m_pool.mapTx.end()) {
+            return state.Invalid(TxValidationResult::TX_DUPLICATE,
+                                 "txn-already-in-mempool");
+        }
+        for (const CTxIn &txin : tx.vin) {
+            if (txin.nFlags == 3) {
+                continue;
+            }
+            if (const auto ptxConflicting =
+                    m_pool.GetConflictTx(txin.prevout)) {
+                if (m_pool.isAvalancheFinalizedPreConsensus(
+                        ptxConflicting->GetId())) {
+                    return state.Invalid(TxValidationResult::TX_CONFLICT,
+                                         "finalized-tx-conflict");
+                }
+                return state.Invalid(
+                    TxValidationResult::TX_AVALANCHE_RECONSIDERABLE,
+                    "txn-mempool-conflict");
+            }
+        }
+    }
+
+    ws.m_resolved_inputs.resize(tx.vin.size());
+    ws.m_batch_parent_indices.assign(tx.vin.size(), -1);
+    ws.m_has_mempool_parents = false;
+    const CCoinsViewCache &coins_cache = m_active_chainstate.CoinsTip();
+
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const CTxIn &txin = tx.vin[i];
+        if (txin.nFlags == 3) {
+            ws.m_resolved_inputs[i] =
+                Coin(CTxOut(Amount::zero(), CScript()), 1, false);
+            continue;
+        }
+        bool resolved = false;
+        if (!txid_table.empty()) {
+            const TxId &prev_txid = txin.prevout.GetTxId();
+            size_t tslot = prev_txid.GetUint64(0) & txid_mask;
+            while (txid_table[tslot].occupied) {
+                if (txid_table[tslot].txid == prev_txid) {
+                    const size_t parent_idx = txid_table[tslot].index;
+                    if (parent_idx < ws_idx) {
+                        const CTransaction &parent_tx = *txns[parent_idx];
+                        const uint32_t n = txin.prevout.GetN();
+                        if (n < parent_tx.vout.size() &&
+                            !parent_tx.vout[n].IsNull()) {
+                            ws.m_resolved_inputs[i] =
+                                Coin(parent_tx.vout[n], MEMPOOL_HEIGHT, false);
+                            ws.m_batch_parent_indices[i] =
+                                static_cast<int32_t>(parent_idx);
+                            ws.m_has_mempool_parents = true;
+                            resolved = true;
+                        }
+                    }
+                    break;
+                }
+                tslot = (tslot + 1) & txid_mask;
+            }
+        }
+        if (!resolved && mempool_nonempty) {
+            auto mit = m_pool.mapTx.find(txin.prevout.GetTxId());
+            if (mit != m_pool.mapTx.end()) {
+                const CTransaction &ptx = (*mit)->GetTx();
+                const uint32_t n = txin.prevout.GetN();
+                if (n < ptx.vout.size() && !ptx.vout[n].IsNull()) {
+                    ws.m_resolved_inputs[i] =
+                        Coin(ptx.vout[n], MEMPOOL_HEIGHT, false);
+                    ws.m_has_mempool_parents = true;
+                    resolved = true;
+                }
+            }
+        }
+        if (!resolved) {
+            if (!coins_cache.HaveCoinInCache(txin.prevout)) {
+                coins_to_uncache.push_back(txin.prevout);
+            }
+            const Coin &coin = coins_cache.AccessCoin(txin.prevout);
+            if (!coin.IsSpent()) {
+                ws.m_resolved_inputs[i] = coin;
+                resolved = true;
+            }
+        }
+        if (!resolved) {
+            for (size_t out = 0; out < tx.vout.size(); out++) {
+                if (coins_cache.HaveCoinInCache(COutPoint(txid, out))) {
+                    return state.Invalid(TxValidationResult::TX_DUPLICATE,
+                                         "txn-already-known");
+                }
+            }
+            return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
+                                 "bad-txns-inputs-missingorspent");
+        }
+    }
+
+    const std::optional<LockPoints> lock_points{
+        CalculateLockPointsFromResolvedCoins(tip, tx, ws.m_resolved_inputs)};
+    if (!lock_points.has_value() ||
+        !CheckSequenceLocksAtTip(tip, *lock_points)) {
+        return state.Invalid(TxValidationResult::TX_PREMATURE_SPEND,
+                             "non-BIP68-final");
+    }
+
+    if (!CheckTxInputsFromResolvedCoins(tx, state, ws.m_resolved_inputs,
+                                        tip->nHeight + 1, ws.m_base_fees)) {
+        return false;
+    }
+
+    if (m_pool.m_opts.require_standard && !is_v2_native_tx &&
+        !AreInputsStandardFromResolvedCoins(tx, ws.m_resolved_inputs)) {
+        return state.Invalid(TxValidationResult::TX_INPUTS_NOT_STANDARD,
+                             "bad-txns-nonstandard-inputs");
+    }
+
+    ws.m_modified_fees = ws.m_base_fees;
+    if (!m_pool.mapDeltas.empty()) {
+        m_pool.ApplyDelta(txid, ws.m_modified_fees);
+    }
+    ws.m_lock_points = lock_points;
+    return true;
 }
 
 bool MemPoolAccept::FinalizeDeferredPreChecks(ATMPArgs &args, Workspace &ws) {
@@ -1500,9 +1625,10 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
     return true;
 }
 
-bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
-    std::vector<PendingMempoolNotification> *deferred_notifications,
-    std::span<const CTxMemPool::txiter> batch_parent_iters,
+bool MemPoolAccept::Finalize(
+    const ATMPArgs &args, Workspace &ws,
+    std::vector<ValidationSignals::MempoolAddedBatchItem> *batch_signals,
+    const std::vector<CTxMemPool::txiter> *batch_iters,
     CTxMemPool::txiter *out_iter) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
@@ -1513,23 +1639,34 @@ bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
     // Store transaction in memory
     CTxMemPoolEntry *pentry = ws.m_entry.release();
     auto entry = CTxMemPoolEntryRef::acquire(pentry);
-    const auto newit = m_pool.addUnchecked(entry, !ws.m_inputs_pre_resolved,
-                                         batch_parent_iters);
-    if (out_iter) *out_iter = newit;
-
-    auto spentCoins = ws.m_resolved_inputs.empty()
-        ? GetSpentCoins(ws.m_ptx, m_view)
-        : std::optional<std::vector<Coin>>(std::move(ws.m_resolved_inputs));
-    Assume(spentCoins.has_value());
-
+    CTxMemPool::txiter it = m_pool.addUnchecked(
+        entry, ws.m_has_mempool_parents,
+        ws.m_batch_parent_indices.empty() ? nullptr
+                                          : &ws.m_batch_parent_indices,
+        batch_iters);
+    if (out_iter != nullptr) {
+        *out_iter = it;
+    }
     if (m_pool.m_opts.signals) {
-        auto coins = spentCoins.has_value()
-            ? std::make_shared<const std::vector<Coin>>(std::move(*spentCoins)) : nullptr;
-        const auto seq = m_pool.GetAndIncrementSequence();
-        if (deferred_notifications) {
-            deferred_notifications->push_back({ws.m_ptx, std::move(coins), seq});
+        std::shared_ptr<const std::vector<Coin>> spent_coins_ptr;
+        if (!ws.m_resolved_inputs.empty()) {
+            spent_coins_ptr = std::make_shared<const std::vector<Coin>>(
+                std::move(ws.m_resolved_inputs));
         } else {
-            m_pool.m_opts.signals->TransactionAddedToMempool(ws.m_ptx, std::move(coins), seq);
+            auto spentCoins = GetSpentCoins(ws.m_ptx, m_view);
+            Assume(spentCoins.has_value());
+            if (spentCoins.has_value()) {
+                spent_coins_ptr = std::make_shared<const std::vector<Coin>>(
+                    std::move(*spentCoins));
+            }
+        }
+        const uint64_t seq = m_pool.GetAndIncrementSequence();
+        if (batch_signals != nullptr) {
+            batch_signals->push_back(ValidationSignals::MempoolAddedBatchItem{
+                ws.m_ptx, std::move(spent_coins_ptr), seq});
+        } else {
+            m_pool.m_opts.signals->TransactionAddedToMempool(
+                ws.m_ptx, std::move(spent_coins_ptr), seq);
         }
     }
 
@@ -1577,13 +1714,15 @@ bool MemPoolAccept::SubmitPackage(
     auto *batch_signals_ptr =
         (m_pool.m_opts.signals && workspaces.size() > 1) ? &batch_signals
                                                          : nullptr;
+    std::vector<CTxMemPool::txiter> batch_iters(workspaces.size());
     // ConsensusScriptChecks adds to the script cache and is therefore
     // consensus-critical; CheckInputsFromMempoolAndCache asserts that
     // transactions only spend coins available from the mempool or UTXO set.
     // Submit each transaction to the mempool immediately after calling
     // ConsensusScriptChecks to make the outputs available for subsequent
     // transactions.
-    for (Workspace &ws : workspaces) {
+    for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+        Workspace &ws = workspaces[idx];
         if (!scripts_already_verified && !ConsensusScriptChecks(args, ws)) {
             results.emplace(ws.m_ptx->GetId(),
                             MempoolAcceptResult::Failure(ws.m_state));
@@ -1603,7 +1742,8 @@ bool MemPoolAccept::SubmitPackage(
         // Instead, allow the mempool to temporarily bypass limits, the maximum
         // package size) while submitting transactions individually and then
         // trim at the very end.
-        if (!Finalize(args, ws, batch_signals_ptr)) {
+        if (!Finalize(args, ws, batch_signals_ptr, &batch_iters,
+                      &batch_iters[idx])) {
             results.emplace(ws.m_ptx->GetId(),
                             MempoolAcceptResult::Failure(ws.m_state));
             // Since LimitMempoolSize() won't be called, this should never fail.
@@ -1624,10 +1764,12 @@ bool MemPoolAccept::SubmitPackage(
     m_pool.LimitSize(m_active_chainstate.CoinsTip());
 
     std::vector<TxId> all_package_txids;
-    all_package_txids.reserve(workspaces.size());
-    std::transform(workspaces.cbegin(), workspaces.cend(),
-                   std::back_inserter(all_package_txids),
-                   [](const auto &ws) { return ws.m_ptx->GetId(); });
+    if (args.m_package_feerates) {
+        all_package_txids.reserve(workspaces.size());
+        std::transform(workspaces.cbegin(), workspaces.cend(),
+                       std::back_inserter(all_package_txids),
+                       [](const auto &ws) { return ws.m_ptx->GetId(); });
+    }
 
     // Add successful results. The returned results may change later if
     // LimitMempoolSize() evicts them.
@@ -1904,7 +2046,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         return PackageMempoolAcceptResult(package_state, {});
     }
 
-    std::vector<TxIdIndexSlot> txid_table;
+    std::vector<BatchTxIdIndexSlot> txid_table;
     size_t txid_mask = 0;
 
     if (batch_count > 1) {
@@ -2012,265 +2154,270 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     }
 
     std::map<TxId, MempoolAcceptResult> results;
-    std::vector<PendingMempoolNotification> deferred_notifications;
-    if (!args.m_test_accept && m_pool.m_opts.signals) {
-        deferred_notifications.reserve(workspaces.size());
+    LOCK(m_pool.cs);
+    CTxMemPool::ScopedSnapshotDefer snap_defer(m_pool);
+
+    auto cleanup_views = []() {};
+
+    // Prefetch only uncached disk UTXO pages in sorted key order before Pass 1.
+    if (txns.size() >= 8) {
+        CCoinsViewCache &coins_tip = m_active_chainstate.CoinsTip();
+        std::vector<COutPoint> batch_outpoints;
+        batch_outpoints.reserve(txns.size() * 2);
+        for (const auto &tx : txns) {
+            for (const auto &in : tx->vin) {
+                if (in.nFlags != 3 && !coins_tip.HaveCoinInCache(in.prevout)) {
+                    batch_outpoints.push_back(in.prevout);
+                }
+            }
+        }
+        if (!batch_outpoints.empty()) {
+            coins_tip.PrefetchOutpointsAsync(batch_outpoints);
+        }
     }
 
-    {
-        LOCK(m_pool.cs);
-        CTxMemPool::ScopedSnapshotDefer snap_defer(m_pool);
+    const bool mempool_nonempty = !m_pool.mapTx.empty();
 
-        // Pass 1: Sequential UTXO dependency resolution & fast policy/input checks.
-        BatchLookupContext batch_ctx{txns, txid_table, txid_mask, 0, false};
-        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
-            batch_ctx.current_tx_idx = idx;
-            Workspace &ws = workspaces[idx];
-            if (!PreChecks(args, ws, /*defer_script_checks=*/true,
-                           &batch_ctx)) {
+    // Pass 1: Single-wave UTXO dependency resolution & fast policy/input checks.
+    for (size_t ws_idx = 0; ws_idx < workspaces.size(); ++ws_idx) {
+        Workspace &ws = workspaces[ws_idx];
+        if (!PreChecksBatch(args, ws, ws_idx, txns, txid_table, txid_mask,
+                            mempool_nonempty)) {
+            package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                  "transaction failed");
+            results.emplace(ws.m_ptx->GetId(),
+                            MempoolAcceptResult::Failure(ws.m_state));
+            return PackageMempoolAcceptResult(package_state,
+                                              std::move(results));
+        }
+    }
+
+    // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script & Batch
+    // Signature Validation using the pre-resolved coins captured in Pass 1.
+    ValidationCache &val_cache = GetValidationCache();
+    std::vector<size_t> uncached_ws_indices;
+    uncached_ws_indices.reserve(workspaces.size());
+    for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+        Workspace &ws = workspaces[idx];
+        const CTransaction &tx = *ws.m_ptx;
+        const uint32_t scriptVerifyFlags =
+            ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
+        ScriptCacheKey hashCacheEntry(
+            tx, scriptVerifyFlags, val_cache.ScriptExecutionCacheHasher());
+        ScriptCacheElement elem(hashCacheEntry, 0);
+        if (val_cache.m_script_execution_cache.get(elem, /*erase=*/true)) {
+            TxSigCheckLimiter txLimiter;
+            if (!txLimiter.consume_and_check(elem.nSigChecks)) {
+                ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                   "too-many-sigchecks");
                 package_state.Invalid(PackageValidationResult::PCKG_TX,
                                       "transaction failed");
                 results.emplace(ws.m_ptx->GetId(),
                                 MempoolAcceptResult::Failure(ws.m_state));
+                cleanup_views();
+                return PackageMempoolAcceptResult(package_state,
+                                                  std::move(results));
+            }
+            ws.m_sig_checks_standard = elem.nSigChecks;
+
+        } else {
+            uncached_ws_indices.push_back(idx);
+        }
+    }
+
+    if (!uncached_ws_indices.empty()) {
+        const size_t n_uncached = uncached_ws_indices.size();
+        const unsigned int hw_threads =
+            std::max(1u, std::thread::hardware_concurrency());
+        const size_t num_workers =
+            (n_uncached >= 2)
+                ? std::min<size_t>(n_uncached, static_cast<size_t>(hw_threads))
+                : 1;
+        std::vector<std::optional<ParallelTxScriptError>> ws_errors(n_uncached);
+        std::vector<lotus::v2::BatchSigCollector> worker_collectors(
+            num_workers);
+        std::atomic<size_t> next_k{0};
+        std::atomic<size_t> min_failed_k{n_uncached};
+
+        auto worker_fn = [&](size_t tid) {
+            lotus::v2::BatchSigCollector &local_sigs = worker_collectors[tid];
+            while (true) {
+                const size_t k = next_k.fetch_add(1, std::memory_order_relaxed);
+                if (k >= n_uncached ||
+                    k > min_failed_k.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                Workspace &ws = workspaces[uncached_ws_indices[k]];
+                const CTransaction &tx = *ws.m_ptx;
+                const uint32_t scriptVerifyFlags =
+                    ws.m_next_block_script_verify_flags |
+                    STANDARD_SCRIPT_VERIFY_FLAGS;
+
+                TxSigCheckLimiter txLimiter;
+                auto err = VerifyTxScriptsFromResolvedCoins(
+                    tx, ws.m_resolved_inputs, scriptVerifyFlags,
+                    /*sigCacheStore=*/true, tx.GetPrecomputedData(),
+                    val_cache.m_signature_cache, ws.m_sig_checks_standard,
+                    txLimiter, nullptr, &local_sigs);
+                if (err.has_value()) {
+                    ws_errors[k] = std::move(err);
+                    size_t prev = min_failed_k.load(std::memory_order_relaxed);
+                    while (k < prev &&
+                           !min_failed_k.compare_exchange_weak(
+                               prev, k, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+        };
+
+        util::GetParallelRangeExecutor().Run(
+            num_workers, 1, [&](size_t begin, size_t end) {
+                for (size_t tid = begin; tid < end; ++tid) worker_fn(tid);
+            });
+
+        for (size_t k = 0; k < n_uncached; ++k) {
+            if (ws_errors[k].has_value()) {
+                Workspace &ws = workspaces[uncached_ws_indices[k]];
+                ws.m_state.Invalid(ws_errors[k]->result,
+                                   ws_errors[k]->reject_reason,
+                                   ws_errors[k]->debug_message);
+                package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                      "transaction failed");
+                results.emplace(ws.m_ptx->GetId(),
+                                MempoolAcceptResult::Failure(ws.m_state));
+                cleanup_views();
                 return PackageMempoolAcceptResult(package_state,
                                                   std::move(results));
             }
         }
 
-        // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script & Batch
-        // Signature Validation using the pre-resolved coins captured in Pass 1.
-        ValidationCache &val_cache = GetValidationCache();
-        std::vector<size_t> uncached_ws_indices;
-        uncached_ws_indices.reserve(workspaces.size());
-        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
-            Workspace &ws = workspaces[idx];
-            const CTransaction &tx = *ws.m_ptx;
-            const uint32_t scriptVerifyFlags =
-                ws.m_next_block_script_verify_flags |
-                STANDARD_SCRIPT_VERIFY_FLAGS;
-            ScriptCacheKey hashCacheEntry(
-                tx, scriptVerifyFlags, val_cache.ScriptExecutionCacheHasher());
-            ScriptCacheElement elem(hashCacheEntry, 0);
-            if (val_cache.m_script_execution_cache.get(elem, /*erase=*/true)) {
-                TxSigCheckLimiter txLimiter;
-                if (!txLimiter.consume_and_check(elem.nSigChecks)) {
-                    ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                       "too-many-sigchecks");
-                    package_state.Invalid(PackageValidationResult::PCKG_TX,
-                                          "transaction failed");
-                    results.emplace(ws.m_ptx->GetId(),
-                                    MempoolAcceptResult::Failure(ws.m_state));
-                    return PackageMempoolAcceptResult(package_state,
-                                                      std::move(results));
-                }
-                ws.m_sig_checks_standard = elem.nSigChecks;
-            } else {
-                uncached_ws_indices.push_back(idx);
-            }
+        lotus::v2::BatchSigCollector combined_sigs;
+        for (auto &wc : worker_collectors) {
+            combined_sigs.Merge(std::move(wc));
         }
-
-        if (!uncached_ws_indices.empty()) {
-            const size_t n_uncached = uncached_ws_indices.size();
-            const unsigned int hw_threads =
-                std::max(1u, std::thread::hardware_concurrency());
-            const size_t num_workers =
-                (n_uncached >= 2)
-                    ? std::min<size_t>(n_uncached,
-                                       static_cast<size_t>(hw_threads))
-                    : 1;
-            std::vector<std::optional<ParallelTxScriptError>> ws_errors(
-                n_uncached);
-            std::vector<lotus::v2::BatchSigCollector> worker_collectors(
-                num_workers);
-            std::atomic<size_t> next_k{0};
-            std::atomic<size_t> min_failed_k{n_uncached};
-
-            auto worker_fn = [&](size_t tid) {
-                lotus::v2::BatchSigCollector &local_sigs =
-                    worker_collectors[tid];
-                while (true) {
-                    const size_t k =
-                        next_k.fetch_add(1, std::memory_order_relaxed);
-                    if (k >= n_uncached ||
-                        k > min_failed_k.load(std::memory_order_relaxed)) {
-                        break;
-                    }
+        if (!combined_sigs.Empty()) {
+            if (!combined_sigs.VerifyAll()) {
+                for (size_t k = 0; k < n_uncached; ++k) {
                     Workspace &ws = workspaces[uncached_ws_indices[k]];
                     const CTransaction &tx = *ws.m_ptx;
                     const uint32_t scriptVerifyFlags =
                         ws.m_next_block_script_verify_flags |
                         STANDARD_SCRIPT_VERIFY_FLAGS;
                     TxSigCheckLimiter txLimiter;
+                    int dummy_sigchecks = 0;
                     auto err = VerifyTxScriptsFromResolvedCoins(
                         tx, ws.m_resolved_inputs, scriptVerifyFlags,
-                        /*sigCacheStore=*/true, ws.m_ptx->GetPrecomputedData(),
-                        val_cache.m_signature_cache, ws.m_sig_checks_standard,
-                        txLimiter, nullptr, &local_sigs);
+                        /*sigCacheStore=*/false, tx.GetPrecomputedData(),
+                        val_cache.m_signature_cache, dummy_sigchecks, txLimiter,
+                        nullptr, nullptr);
                     if (err.has_value()) {
-                        ws_errors[k] = std::move(err);
-                        size_t prev =
-                            min_failed_k.load(std::memory_order_relaxed);
-                        while (k < prev &&
-                               !min_failed_k.compare_exchange_weak(
-                                   prev, k, std::memory_order_relaxed)) {
-                        }
+                        ws.m_state.Invalid(err->result, err->reject_reason,
+                                           err->debug_message);
+                        package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                              "transaction failed");
+                        results.emplace(
+                            ws.m_ptx->GetId(),
+                            MempoolAcceptResult::Failure(ws.m_state));
+                        cleanup_views();
+                        return PackageMempoolAcceptResult(package_state,
+                                                          std::move(results));
                     }
                 }
-            };
-
-            util::GetParallelRangeExecutor().Run(
-                num_workers, 1, [&](size_t begin, size_t end) {
-                    for (size_t tid = begin; tid < end; ++tid) worker_fn(tid);
-                });
-
-            for (size_t k = 0; k < n_uncached; ++k) {
-                if (ws_errors[k].has_value()) {
-                    Workspace &ws = workspaces[uncached_ws_indices[k]];
-                    ws.m_state.Invalid(ws_errors[k]->result,
-                                       ws_errors[k]->reject_reason,
-                                       ws_errors[k]->debug_message);
-                    package_state.Invalid(PackageValidationResult::PCKG_TX,
-                                          "transaction failed");
-                    results.emplace(ws.m_ptx->GetId(),
-                                    MempoolAcceptResult::Failure(ws.m_state));
-                    return PackageMempoolAcceptResult(package_state,
-                                                      std::move(results));
-                }
-            }
-
-            lotus::v2::BatchSigCollector combined_sigs;
-            for (auto &wc : worker_collectors) {
-                combined_sigs.Merge(std::move(wc));
-            }
-            if (!combined_sigs.Empty()) {
-                if (!combined_sigs.VerifyAll()) {
-                    for (size_t k = 0; k < n_uncached; ++k) {
-                        Workspace &ws = workspaces[uncached_ws_indices[k]];
-                        const CTransaction &tx = *ws.m_ptx;
-                        const uint32_t scriptVerifyFlags =
-                            ws.m_next_block_script_verify_flags |
-                            STANDARD_SCRIPT_VERIFY_FLAGS;
-                        TxSigCheckLimiter txLimiter;
-                        int dummy_sigchecks = 0;
-                        auto err = VerifyTxScriptsFromResolvedCoins(
-                            tx, ws.m_resolved_inputs, scriptVerifyFlags,
-                            /*sigCacheStore=*/false, ws.m_ptx->GetPrecomputedData(),
-                            val_cache.m_signature_cache, dummy_sigchecks,
-                            txLimiter, nullptr, nullptr);
-                        if (err.has_value()) {
-                            ws.m_state.Invalid(err->result, err->reject_reason,
-                                               err->debug_message);
-                            package_state.Invalid(
-                                PackageValidationResult::PCKG_TX,
-                                "transaction failed");
-                            results.emplace(
-                                ws.m_ptx->GetId(),
-                                MempoolAcceptResult::Failure(ws.m_state));
-                            return PackageMempoolAcceptResult(
-                                package_state, std::move(results));
-                        }
-                    }
-                } else {
-                    val_cache.m_signature_cache.SetBatch(combined_sigs);
-                }
+            } else {
+                val_cache.m_signature_cache.SetBatch(combined_sigs);
             }
         }
+    }
 
-        for (Workspace &ws : workspaces) {
-            if (!FinalizeDeferredPreChecks(args, ws)) {
-                package_state.Invalid(PackageValidationResult::PCKG_TX,
-                                      "transaction failed");
-                results.emplace(ws.m_ptx->GetId(),
-                                MempoolAcceptResult::Failure(ws.m_state));
-                return PackageMempoolAcceptResult(package_state,
-                                                  std::move(results));
-            }
-
-            const Amount max_raw_tx_fee =
-                max_raw_tx_fee_rate.GetFee(ws.m_vsize);
-            if (max_raw_tx_fee != Amount::zero() &&
-                ws.m_base_fees > max_raw_tx_fee) {
-                package_state.Invalid(PackageValidationResult::PCKG_TX,
-                                      "max-fee-exceeded");
-                ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
-                                   "max-fee-exceeded");
-                results.emplace(ws.m_ptx->GetId(),
-                                MempoolAcceptResult::Failure(ws.m_state));
-                return PackageMempoolAcceptResult(package_state,
-                                                  std::move(results));
-            }
-
-            // A successful standard-flags batch is not itself proof of
-            // identical consensus sigcheck accounting. Verify the actual
-            // next-block flags before committing or caching those results.
-            int consensus_sigchecks = 0;
-            CCoinsViewCache resolved_view(&m_dummy);
-            for (size_t input_idx = 0; input_idx < ws.m_ptx->vin.size(); ++input_idx) {
-                resolved_view.AddCoin(ws.m_ptx->vin[input_idx].prevout,
-                    Coin(ws.m_resolved_inputs[input_idx]), false);
-            }
-            if (!CheckInputScripts(*ws.m_ptx, ws.m_state, resolved_view,
-                    ws.m_next_block_script_verify_flags, true, true,
-                    ws.m_ptx->GetPrecomputedData(), GetValidationCache(), consensus_sigchecks) ||
-                consensus_sigchecks != ws.m_sig_checks_standard) {
-                if (ws.m_state.IsValid()) {
-                    ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS, "inconsistent-sigchecks");
-                }
-                package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
-                results.emplace(ws.m_ptx->GetId(), MempoolAcceptResult::Failure(ws.m_state));
-                return PackageMempoolAcceptResult(package_state, std::move(results));
-            }
-        }
-
-        std::vector<const CTxMemPoolEntry *> staged_entries;
-        for (const auto &ws : workspaces) staged_entries.push_back(ws.m_entry.get());
-        if (!m_pool.CanFitRawTxBatch(staged_entries)) {
-            package_state.Invalid(PackageValidationResult::PCKG_POLICY, "mempool full");
-            return PackageMempoolAcceptResult(package_state, {});
-        }
-
-        if (args.m_test_accept) {
-            for (Workspace &ws : workspaces) {
-                const TxId &ws_txid = ws.m_ptx->GetId();
-                const CFeeRate effective_feerate{
-                    ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
-                results.emplace(ws_txid,
-                                MempoolAcceptResult::Success(
-                                    ws.m_vsize, ws.m_base_fees,
-                                    effective_feerate,
-                                    std::vector<TxId>{ws_txid}));
-            }
+    for (Workspace &ws : workspaces) {
+        if (!FinalizeDeferredPreChecks(args, ws)) {
+            package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                  "transaction failed");
+            results.emplace(ws.m_ptx->GetId(),
+                            MempoolAcceptResult::Failure(ws.m_state));
+            cleanup_views();
             return PackageMempoolAcceptResult(package_state,
                                               std::move(results));
         }
 
-        // No size trimming or script execution can partially accept a batch:
-        // both were completed under the same chain/pool locks above.
-        std::vector<CTxMemPool::txiter> batch_iters(workspaces.size());
-        std::vector<CTxMemPool::txiter> parent_iters;
-        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
-            Workspace &ws = workspaces[idx];
-            parent_iters.assign(ws.m_mempool_parent_iters.begin(),
-                                ws.m_mempool_parent_iters.end());
-            for (uint32_t parent_idx : ws.m_batch_parent_indices) {
-                assert(parent_idx < idx);
-                parent_iters.push_back(batch_iters[parent_idx]);
-            }
-            const bool inserted = Finalize(args, ws, &deferred_notifications,
-                                           parent_iters, &batch_iters[idx]);
-            assert(inserted);
-            const TxId &id = ws.m_ptx->GetId();
-            results.emplace(id, MempoolAcceptResult::Success(ws.m_vsize, ws.m_base_fees,
-                CFeeRate(ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)), {id}));
+        const Amount max_raw_tx_fee =
+            max_raw_tx_fee_rate.GetFee(ws.m_vsize);
+        if (max_raw_tx_fee != Amount::zero() &&
+            ws.m_base_fees > max_raw_tx_fee) {
+            package_state.Invalid(PackageValidationResult::PCKG_TX,
+                                  "max-fee-exceeded");
+            ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
+                               "max-fee-exceeded");
+            results.emplace(ws.m_ptx->GetId(),
+                            MempoolAcceptResult::Failure(ws.m_state));
+            cleanup_views();
+            return PackageMempoolAcceptResult(package_state,
+                                              std::move(results));
         }
-        assert(m_pool.DynamicMemoryUsage() <= m_pool.m_opts.max_size_bytes);
-    } // release m_pool.cs before dispatching ValidationInterface notifications
 
-    if (m_pool.m_opts.signals && !deferred_notifications.empty()) {
-        m_pool.m_opts.signals->TransactionsAddedToMempoolBatch(
-            std::move(deferred_notifications));
+        // Pure V7 inputs execute the same fixed VM profile under policy and
+        // consensus flags. Legacy/mixed compatibility inputs must earn the
+        // exact consensus-flags cache entry independently.
+        const auto &tx = *ws.m_ptx;
+        const bool native_only = tx.nVersion == 7 &&
+            std::all_of(tx.vin.begin(), tx.vin.end(), [](const auto &in) {
+                return in.nFlags == 1 || in.nFlags == 3;
+            });
+        if (!native_only) {
+            TxSigCheckLimiter limiter;
+            int consensus_sigchecks = 0;
+            const auto error = VerifyTxScriptsFromResolvedCoins(tx, ws.m_resolved_inputs,
+                ws.m_next_block_script_verify_flags, true, tx.GetPrecomputedData(),
+                val_cache.m_signature_cache, consensus_sigchecks, limiter, nullptr, nullptr);
+            if (error || consensus_sigchecks != ws.m_sig_checks_standard) {
+                ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS,
+                    error ? error->reject_reason : "inconsistent-consensus-sigchecks");
+                package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+                results.emplace(tx.GetId(), MempoolAcceptResult::Failure(ws.m_state));
+                cleanup_views();
+                return PackageMempoolAcceptResult(package_state, std::move(results));
+            }
+        }
+        if (!args.m_test_accept) {
+            ScriptCacheKey consensusKey(
+                *ws.m_ptx, ws.m_next_block_script_verify_flags,
+                val_cache.ScriptExecutionCacheHasher());
+            val_cache.m_script_execution_cache.insert(
+                ScriptCacheElement{consensusKey, ws.m_sig_checks_standard});
+        }
     }
 
+    // Reserve the whole batch before SubmitPackage can insert entries and
+    // subsequently trim individual members to satisfy the pool limit.
+    std::vector<const CTxMemPoolEntry *> staged_entries;
+    staged_entries.reserve(workspaces.size());
+    for (const Workspace &ws : workspaces) {
+        staged_entries.push_back(ws.m_entry.get());
+    }
+    if (!m_pool.CanFitRawTxBatch(staged_entries)) {
+        package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                              "mempool full");
+        cleanup_views();
+        return PackageMempoolAcceptResult(package_state, {});
+    }
+
+    if (args.m_test_accept) {
+        for (Workspace &ws : workspaces) {
+            const TxId &ws_txid = ws.m_ptx->GetId();
+            const CFeeRate effective_feerate{
+                ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
+            results.emplace(ws_txid,
+                            MempoolAcceptResult::Success(
+                                ws.m_vsize, ws.m_base_fees, effective_feerate,
+                                std::vector<TxId>{ws_txid}));
+        }
+        cleanup_views();
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
+
+    SubmitPackage(args, workspaces, package_state, results,
+                  /*scripts_already_verified=*/true);
+    cleanup_views();
     return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 
@@ -2735,12 +2882,9 @@ void PrecomputeSingleTxData(const CTransaction &tx,
     out.regular_tx_checked = true;
     out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
     if (out.regular_tx_valid) {
-        // Populate the transaction-owned cache before cs_main. Every later
-        // batch/block script check binds this same storage by reference.
         (void)tx.GetPrecomputedData();
     }
 }
-
 
 PackageMempoolAcceptResult
 ProcessRawTxBatch(
@@ -2792,7 +2936,7 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
     while (table_size < n * 2) {
         table_size *= 2;
     }
-    std::vector<TxIdIndexSlot> table(table_size);
+    std::vector<BatchTxIdIndexSlot> table(table_size);
     for (size_t i = 0; i < n; ++i) {
         const auto &id = txs[i]->GetId();
         size_t slot = id.GetUint64(0) & (table_size - 1);
@@ -2803,10 +2947,10 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
             table[slot] = {id, i, true};
         }
     }
-    BatchLookupContext context{txs, table, table_size - 1};
     std::unordered_set<COutPoint, SaltedOutpointHasher> claimed;
     for (size_t i = 0; i < n; ++i) {
         const auto &tx = txs[i];
+        // Native deferred/structural inputs use authoritative Phase C only.
         if (tx->nVersion == 7) {
             continue;
         }
@@ -2815,12 +2959,12 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
             })) {
             continue;
         }
-        context.current_tx_idx = i;
         auto args =
             ATMPArgs::SingleAccept(m_active_chainstate.m_chainman.GetConfig(),
                                    GetTime(), false, fetched[i], false, 0);
         Workspace ws(tx, script_flags);
-        if (!PreChecks(args, ws, /*defer_script_checks=*/true, &context)) {
+        if (!PreChecksBatch(args, ws, i, txs, table, table_size - 1,
+                            /*mempool_nonempty=*/m_pool.size() != 0)) {
             continue;
         }
         // Serialized-size relay minimum is independent of script
@@ -4371,7 +4515,7 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
 bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                               CBlockIndex *pindex, CCoinsViewCache &view,
                               BlockValidationOptions options, Amount *blockFees,
-                              bool fJustCheck, bool force_script_checks) {
+                              bool fJustCheck) {
     AssertLockHeld(cs_main);
     assert(pindex);
 
@@ -4395,8 +4539,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // m_adjusted_time_callback() to go backward).
-    if (!fJustCheck &&
-        !CheckBlock(block, state, consensusParams,
+    if (!CheckBlock(block, state, consensusParams,
                     options.withCheckPoW(!fJustCheck)
                         .withCheckMerkleRoot(!fJustCheck))) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
@@ -4433,7 +4576,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     }
 
     bool fScriptChecks = true;
-    if (!force_script_checks && !m_chainman.AssumedValidBlock().IsNull()) {
+    if (!m_chainman.AssumedValidBlock().IsNull()) {
         // We've been configured with the hash of a block which has been
         // externally verified to have a valid history. A suitable default value
         // is included with the software and updated from time to time. Because
@@ -4574,22 +4717,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         (!pindexBIP34height ||
          !(pindexBIP34height->GetBlockHash() == consensusParams.BIP34Hash));
 
-    // Lotus V2 coinbases (nVersion == 7, nFlags == 2) commit to
-    // COutPoint(TxId(hashPrevBlock), pindex->nHeight) in vin[0].prevout from
-    // height 1, guaranteeing unique coinbase TxIDs without LevelDB cache-miss
-    // lookups on every output. AddCoins below still enforces !possible_overwrite.
-    const bool fV2UniqueCoinbase =
-        !block.vtx.empty() && block.vtx[0]->nVersion == 7 &&
-        !block.vtx[0]->vin.empty() && block.vtx[0]->vin[0].nFlags == 2 &&
-        block.vtx[0]->vin[0].prevout ==
-            COutPoint(TxId(hashPrevBlock),
-                      static_cast<uint32_t>(pindex->nHeight));
-
     // TODO: Remove BIP30 checking from block height 1,983,702 on, once we have
     // a consensus change that ensures coinbases at those heights can not
     // duplicate earlier coinbases.
-    if (!fV2UniqueCoinbase &&
-        (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT)) {
+    if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
         for (const auto &tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
                 if (view.HaveCoin(COutPoint(tx->GetId(), o))) {
@@ -5572,6 +5703,7 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
     }
 
     if (m_mempool) {
+        CTxMemPool::ScopedSnapshotDefer snap_defer(*m_mempool);
         // If this block is deactivating a fork, we move all mempool
         // transactions in front of disconnectpool for reprocessing in a future
         // updateMempoolForReorg call
@@ -5589,13 +5721,11 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
         if (disconnectpool) {
             disconnectpool->addForBlock(block.vtx, *m_mempool);
         }
-        {
-            LOCK(m_mempool->cs);
-            m_mempool->ConnectBlockReset(
-                pindexDelete->pprev->GetBlockHash(),
-                static_cast<uint64_t>(pindexDelete->pprev->nHeight + 1),
-                static_cast<uint64_t>(pindexDelete->pprev->GetMedianTimePast()));
-        }
+        m_mempool->ConnectBlockReset(
+            pindexDelete->pprev->GetBlockHash(),
+            static_cast<uint64_t>(pindexDelete->pprev->nHeight + 1),
+            static_cast<uint64_t>(pindexDelete->pprev->GetMedianTimePast()));
+        snap_defer.CancelFlush();
     }
 
     m_chain.SetTip(*pindexDelete->pprev);
@@ -5800,6 +5930,7 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                  m_chainman.num_blocks_total);
     // Remove conflicting transactions from the mempool.
     if (m_mempool) {
+        CTxMemPool::ScopedSnapshotDefer snap_defer(*m_mempool);
         disconnectpool.removeForBlock(blockConnecting.vtx, *m_mempool);
 
         // If this block is activating a fork, we move all mempool transactions
@@ -5813,13 +5944,11 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                 "Disconnecting mempool due to acceptance of upgrade block");
             disconnectpool.importMempool(*m_mempool);
         }
-        {
-            LOCK(m_mempool->cs);
-            m_mempool->ConnectBlockReset(
-                pindexNew->GetBlockHash(),
-                static_cast<uint64_t>(pindexNew->nHeight + 1),
-                static_cast<uint64_t>(pindexNew->GetMedianTimePast()));
-        }
+        m_mempool->ConnectBlockReset(
+            pindexNew->GetBlockHash(),
+            static_cast<uint64_t>(pindexNew->nHeight + 1),
+            static_cast<uint64_t>(pindexNew->GetMedianTimePast()));
+        snap_defer.CancelFlush();
     }
 
     // Update m_chain & related variables.
@@ -6098,8 +6227,6 @@ bool Chainstate::ActivateBestChainStep(
         AssertLockHeld(m_mempool->cs);
     }
 
-    node::ScopedChainSnapshotDefer snapshot_defer(m_chainman, m_mempool);
-
     const CBlockIndex *pindexOldTip = m_chain.Tip();
     const CBlockIndex *pindexFork = m_chain.FindFork(pindexMostWork);
 
@@ -6272,7 +6399,6 @@ bool ChainstateManager::NotifyHeaderTip() {
             fNotify = true;
             fInitialBlockDownload = IsInitialBlockDownload();
             m_last_notified_header = pindexHeader;
-            node::PublishBestHeaderSnapshot(*this);
         }
     }
 
@@ -6625,8 +6751,6 @@ bool Chainstate::UnwindBlock(BlockValidationState &state, CBlockIndex *pindex,
         // UpdateMempoolForReorg is called after DisconnectTip without unlocking
         // in between
         LOCK(MempoolMutex());
-
-        node::ScopedChainSnapshotDefer snapshot_defer(m_chainman, m_mempool);
 
         constexpr int maxDisconnectPoolBlocks = 10;
         bool ret = false;
@@ -6994,7 +7118,6 @@ bool Chainstate::AvalancheFinalizeBlock(CBlockIndex *pindex,
         LOCK(cs_avalancheFinalizedBlockIndex);
         m_avalancheFinalizedBlockIndex = pindex;
     }
-
     node::PublishChainTipSnapshot(m_chainman, m_mempool);
 
     if (m_chainman.m_options.signals) {
@@ -7005,8 +7128,12 @@ bool Chainstate::AvalancheFinalizeBlock(CBlockIndex *pindex,
 }
 
 void Chainstate::ClearAvalancheFinalizedBlock() {
-    LOCK(cs_avalancheFinalizedBlockIndex);
-    m_avalancheFinalizedBlockIndex = nullptr;
+    {
+        LOCK(cs_avalancheFinalizedBlockIndex);
+        m_avalancheFinalizedBlockIndex = nullptr;
+    }
+    LOCK(::cs_main);
+    node::PublishChainTipSnapshot(m_chainman, m_mempool);
 }
 
 bool Chainstate::IsBlockAvalancheFinalized(const CBlockIndex *pindex) const {
@@ -7646,7 +7773,11 @@ bool ChainstateManager::AcceptBlockHeader(
         return state.Invalid(BlockValidationResult::BLOCK_HEADER_LOW_WORK,
                              "too-little-chainwork");
     }
+    const CBlockIndex *prev_best_header = m_best_header;
     CBlockIndex *pindex{m_blockman.AddToBlockIndex(block, m_best_header)};
+    if (m_best_header != prev_best_header && m_active_chainstate) {
+        node::PublishChainTipSnapshot(*this, m_active_chainstate->GetMempool());
+    }
 
     if (ppindex) {
         *ppindex = pindex;
@@ -8276,13 +8407,6 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             break;
         }
 
-        if (!chainstate.m_from_snapshot_blockhash && chainstate.SnapshotBase() &&
-            pindex->nHeight <= chainstate.SnapshotBase()->nHeight) {
-            // A provisional quorum-anchored snapshot is not a claim that its
-            // history has been checked. Reverse verification owns this range.
-            skipped_no_block_data = true;
-            break;
-        }
         if ((chainstate.m_blockman.IsPruneMode() || is_snapshot_cs) &&
             (!pindex->nStatus.hasData() ||
              (chainstate.FastSyncPivotBase() != nullptr &&
@@ -8771,6 +8895,9 @@ bool ChainstateManager::LoadBlockIndex() {
                 m_best_header = pindex;
             }
         }
+    }
+    if (m_active_chainstate) {
+        node::PublishChainTipSnapshot(*this, m_active_chainstate->GetMempool());
     }
     return true;
 }
@@ -10634,6 +10761,7 @@ std::optional<int> ChainstateManager::GetSnapshotBaseHeight() const {
 
 void ChainstateManager::RecalculateBestHeader() {
     AssertLockHeld(cs_main);
+    const CBlockIndex *prev_best_header = m_best_header;
     m_best_header = ActiveChain().Tip();
     for (auto &entry : m_blockman.m_block_index) {
         if (!(entry.second.nStatus.isInvalid()) &&
@@ -10641,7 +10769,9 @@ void ChainstateManager::RecalculateBestHeader() {
             m_best_header = &entry.second;
         }
     }
-    node::PublishBestHeaderSnapshot(*this);
+    if (m_best_header != prev_best_header && m_active_chainstate) {
+        node::PublishChainTipSnapshot(*this, m_active_chainstate->GetMempool());
+    }
 }
 
 bool ChainstateManager::ValidatedSnapshotCleanup() {
