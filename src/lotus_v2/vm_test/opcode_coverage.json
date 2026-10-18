@@ -1,0 +1,1296 @@
+{
+  "schema": "lotus/v2/native-vm-opcode-coverage/v1",
+  "spec_sha256": "fb790b230e76befc90a1f183ea727cb3232d1f03e9b5838b10d025d96b9832da",
+  "entries": [
+    {
+      "byte": "00",
+      "name": "ZERO",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "01",
+      "name": "PUSH_1",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "02",
+      "name": "PUSH_2",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "03",
+      "name": "PUSH_3",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "04",
+      "name": "PUSH_4",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "05",
+      "name": "PUSH_5",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "06",
+      "name": "PUSH_6",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "07",
+      "name": "PUSH_7",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "08",
+      "name": "PUSH_8",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "09",
+      "name": "PUSH_9",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0a",
+      "name": "PUSH_10",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0b",
+      "name": "PUSH_11",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0c",
+      "name": "PUSH_12",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0d",
+      "name": "PUSH_13",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0e",
+      "name": "PUSH_14",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "0f",
+      "name": "PUSH_15",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "10",
+      "name": "PUSH_16",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "11",
+      "name": "PUSH_17",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "12",
+      "name": "PUSH_18",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "13",
+      "name": "PUSH_19",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "14",
+      "name": "PUSH_20",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "15",
+      "name": "PUSH_21",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "16",
+      "name": "PUSH_22",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "17",
+      "name": "PUSH_23",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "18",
+      "name": "PUSH_24",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "19",
+      "name": "PUSH_25",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1a",
+      "name": "PUSH_26",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1b",
+      "name": "PUSH_27",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1c",
+      "name": "PUSH_28",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1d",
+      "name": "PUSH_29",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1e",
+      "name": "PUSH_30",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "1f",
+      "name": "PUSH_31",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "20",
+      "name": "PUSH_32",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "21",
+      "name": "PUSH_33",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "22",
+      "name": "PUSH_34",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "23",
+      "name": "PUSH_35",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "24",
+      "name": "PUSH_36",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "25",
+      "name": "PUSH_37",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "26",
+      "name": "PUSH_38",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "27",
+      "name": "PUSH_39",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "28",
+      "name": "PUSH_40",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "29",
+      "name": "PUSH_41",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2a",
+      "name": "PUSH_42",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2b",
+      "name": "PUSH_43",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2c",
+      "name": "PUSH_44",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2d",
+      "name": "PUSH_45",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2e",
+      "name": "PUSH_46",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "2f",
+      "name": "PUSH_47",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "30",
+      "name": "PUSH_48",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "31",
+      "name": "PUSH_49",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "32",
+      "name": "PUSH_50",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "33",
+      "name": "PUSH_51",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "34",
+      "name": "PUSH_52",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "35",
+      "name": "PUSH_53",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "36",
+      "name": "PUSH_54",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "37",
+      "name": "PUSH_55",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "38",
+      "name": "PUSH_56",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "39",
+      "name": "PUSH_57",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3a",
+      "name": "PUSH_58",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3b",
+      "name": "PUSH_59",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3c",
+      "name": "PUSH_60",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3d",
+      "name": "PUSH_61",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3e",
+      "name": "PUSH_62",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "3f",
+      "name": "PUSH_63",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "40",
+      "name": "PUSH_64",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "41",
+      "name": "PUSH_65",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "42",
+      "name": "PUSH_66",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "43",
+      "name": "PUSH_67",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "44",
+      "name": "PUSH_68",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "45",
+      "name": "PUSH_69",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "46",
+      "name": "PUSH_70",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "47",
+      "name": "PUSH_71",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "48",
+      "name": "PUSH_72",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "49",
+      "name": "PUSH_73",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4a",
+      "name": "PUSH_74",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4b",
+      "name": "PUSH_75",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4c",
+      "name": "PUSHDATA",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4d",
+      "name": "NEGATIVE_ONE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4e",
+      "name": "ONE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "4f",
+      "name": "TWO",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "50",
+      "name": "THREE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "51",
+      "name": "FOUR",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "52",
+      "name": "FIVE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "53",
+      "name": "SIX",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "54",
+      "name": "SEVEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "55",
+      "name": "EIGHT",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "56",
+      "name": "NINE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "57",
+      "name": "TEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "58",
+      "name": "ELEVEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "59",
+      "name": "TWELVE",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "5a",
+      "name": "THIRTEEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "5b",
+      "name": "FOURTEEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "5c",
+      "name": "FIFTEEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "5d",
+      "name": "SIXTEEN",
+      "group": "literals",
+      "status": "push"
+    },
+    {
+      "byte": "60",
+      "name": "NOP",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "61",
+      "name": "IF",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "62",
+      "name": "NOTIF",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "63",
+      "name": "ELSE",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "64",
+      "name": "ENDIF",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "65",
+      "name": "VERIFY",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "66",
+      "name": "RETURN",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "67",
+      "name": "ENUMERATE_INPUTS",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "68",
+      "name": "ENUMERATE_OUTPUTS",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "69",
+      "name": "ENUMERATE",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "6a",
+      "name": "ENDENUMERATE",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "6b",
+      "name": "BREAK",
+      "group": "control",
+      "status": "control"
+    },
+    {
+      "byte": "70",
+      "name": "TOALTSTACK",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "71",
+      "name": "FROMALTSTACK",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "72",
+      "name": "2DROP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "73",
+      "name": "2DUP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "74",
+      "name": "3DUP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "75",
+      "name": "2OVER",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "76",
+      "name": "2ROT",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "77",
+      "name": "2SWAP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "78",
+      "name": "DEPTH",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "79",
+      "name": "DROP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7a",
+      "name": "DUP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7b",
+      "name": "NIP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7c",
+      "name": "OVER",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7d",
+      "name": "PICK",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7e",
+      "name": "ROLL",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "7f",
+      "name": "ROT",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "80",
+      "name": "SWAP",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "81",
+      "name": "TUCK",
+      "group": "stack",
+      "status": "implemented"
+    },
+    {
+      "byte": "88",
+      "name": "CAT",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "89",
+      "name": "SPLIT",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8a",
+      "name": "NUM2BIN",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8b",
+      "name": "BIN2NUM",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8c",
+      "name": "SIZE",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8d",
+      "name": "INVERT",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8e",
+      "name": "AND",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "8f",
+      "name": "OR",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "90",
+      "name": "XOR",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "91",
+      "name": "EQUAL",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "92",
+      "name": "EQUALVERIFY",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "93",
+      "name": "LESSSWAP",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "94",
+      "name": "RAWLEFTBITSHIFT",
+      "group": "bytes",
+      "status": "implemented"
+    },
+    {
+      "byte": "98",
+      "name": "1ADD",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "99",
+      "name": "1SUB",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9a",
+      "name": "NEGATE",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9b",
+      "name": "ABS",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9c",
+      "name": "NOT",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9d",
+      "name": "0NOTEQUAL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9e",
+      "name": "ADD",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "9f",
+      "name": "SUB",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a0",
+      "name": "MUL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a1",
+      "name": "DIV",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a2",
+      "name": "MOD",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a3",
+      "name": "MULPOW2",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a4",
+      "name": "BOOLAND",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a5",
+      "name": "BOOLOR",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a6",
+      "name": "NUMEQUAL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a7",
+      "name": "NUMEQUALVERIFY",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a8",
+      "name": "NUMNOTEQUAL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "a9",
+      "name": "LESSTHAN",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "aa",
+      "name": "GREATERTHAN",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "ab",
+      "name": "LESSTHANOREQUAL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "ac",
+      "name": "GREATERTHANOREQUAL",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "ad",
+      "name": "MIN",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "ae",
+      "name": "MAX",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "af",
+      "name": "WITHIN",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b0",
+      "name": "ADDCARRY",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b1",
+      "name": "SUBCARRY",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b2",
+      "name": "MUL128_WIDE",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b3",
+      "name": "LOG",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b4",
+      "name": "SQRT",
+      "group": "arithmetic",
+      "status": "implemented"
+    },
+    {
+      "byte": "b8",
+      "name": "SHA256",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "b9",
+      "name": "HASH256",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "ba",
+      "name": "BLAKE3",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "bb",
+      "name": "CHECKSIG",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "bc",
+      "name": "CHECKSIGVERIFY",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "bd",
+      "name": "CHECKDATASIG",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "be",
+      "name": "LEAFHASH",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "bf",
+      "name": "NODEHASH",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "c0",
+      "name": "MERKLEROOT_SORTED",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "c1",
+      "name": "MERKLEROOT_INDEXED",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "c2",
+      "name": "SIGHASH",
+      "group": "cryptography",
+      "status": "implemented"
+    },
+    {
+      "byte": "c8",
+      "name": "TXVERSION",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "c9",
+      "name": "TXINPUTCOUNT",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "ca",
+      "name": "TXOUTPUTCOUNT",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "cb",
+      "name": "TXMINTCOUNT",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "cc",
+      "name": "TXLOCKTIME",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "cd",
+      "name": "TXLOCKKIND",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "ce",
+      "name": "TXID",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "cf",
+      "name": "CHAINID",
+      "group": "transaction",
+      "status": "implemented"
+    },
+    {
+      "byte": "d0",
+      "name": "INPUTINDEX",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d1",
+      "name": "INPUTFLAGS",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d2",
+      "name": "OUTPOINTTXID",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d3",
+      "name": "OUTPOINTINDEX",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d4",
+      "name": "INPUTSEQUENCENUMBER",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d5",
+      "name": "INPUTPATHINDEX",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d6",
+      "name": "UTXOVALUE",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d7",
+      "name": "UTXOTOKENID",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d8",
+      "name": "UTXOBRANCHCOUNT",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "d9",
+      "name": "UTXOBRANCH",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "da",
+      "name": "UTXOPATHCOUNT",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "db",
+      "name": "UTXOPATH",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "dc",
+      "name": "UTXOOUTPUT",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "dd",
+      "name": "UTXOREQUIRESBRANCH",
+      "group": "input",
+      "status": "implemented"
+    },
+    {
+      "byte": "e0",
+      "name": "OUTPUTFLAGS",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e1",
+      "name": "OUTPUTVALUE",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e2",
+      "name": "OUTPUTTOKENID",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e3",
+      "name": "OUTPUTBRANCHCOUNT",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e4",
+      "name": "OUTPUTBRANCH",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e5",
+      "name": "OUTPUTPATHCOUNT",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e6",
+      "name": "OUTPUTPATH",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e7",
+      "name": "OUTPUTRECORD",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e8",
+      "name": "OUTPUTREQUIRESBRANCH",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "e9",
+      "name": "OUTPUTEXCLUSIVEBRANCH",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "ea",
+      "name": "OUTPUTCONTINUESBRANCH",
+      "group": "output",
+      "status": "implemented"
+    },
+    {
+      "byte": "f0",
+      "name": "ACTIVEBYTECODE",
+      "group": "invocation_and_locks",
+      "status": "implemented"
+    },
+    {
+      "byte": "f1",
+      "name": "INVOCATIONKIND",
+      "group": "invocation_and_locks",
+      "status": "implemented"
+    },
+    {
+      "byte": "f2",
+      "name": "BRANCHROOT",
+      "group": "invocation_and_locks",
+      "status": "implemented"
+    },
+    {
+      "byte": "f3",
+      "name": "CHECKLOCKTIMEVERIFY",
+      "group": "invocation_and_locks",
+      "status": "implemented"
+    },
+    {
+      "byte": "f4",
+      "name": "CHECKSEQUENCEVERIFY",
+      "group": "invocation_and_locks",
+      "status": "implemented"
+    }
+  ]
+}
