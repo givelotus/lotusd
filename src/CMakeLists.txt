@@ -733,6 +733,15 @@ if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 	link_event(server pthreads)
 endif()
 
+# The Boost.Beast HTTP/WebSocket server detects TLS on the RPC port and
+# supports zstd content encoding.
+include(BrewHelper)
+find_brew_prefix(OPENSSL_ROOT_DIR openssl)
+find_package(OpenSSL 1.1.1 REQUIRED)
+find_package(Zstd 1.4.0 REQUIRED)
+target_link_libraries(server OpenSSL::SSL OpenSSL::Crypto Zstd::zstd)
+target_compile_definitions(server PRIVATE HAVE_ZSTD=1)
+
 # Test suites.
 add_subdirectory(test)
 add_subdirectory(avalanche/test)
