@@ -224,6 +224,10 @@ bool CheckOrdinaryLocks(const Transaction &tx, const std::vector<Coin> &spent,
             error = "coinbase maturity or future coin";
             return false;
         }
+        if (IsUtxoExpired(coin, profile.candidate_height)) {
+            error = "bad-txns-input-expired";
+            return false;
+        }
         if (input.sequence == UINT32_MAX) continue;
         const uint64_t delay = input.sequence & 0xffff;
         if (input.sequence & 0x400000) {
@@ -537,6 +541,19 @@ CandidateCheckResult CheckOrdinaryWithLookup(const Transaction &tx,
         if (cpu_result != CandidateCheckResult::Accepted)
             return cpu_result;
 
+        size_t spendable_outputs = 0;
+        for (const Output &out : tx.outputs) {
+            if (!out.IsBurn()) ++spendable_outputs;
+        }
+        const uint64_t fee_u64 =
+            staged.native_fee > Wide(UINT64_MAX)
+                ? UINT64_MAX
+                : static_cast<uint64_t>(staged.native_fee);
+        const uint64_t fee_per_output =
+            ComputeTxFeePerSpendableOutput(fee_u64, spendable_outputs);
+        const uint64_t exp_height = ComputeUtxoExpirationHeight(
+            profile.candidate_height, false, fee_per_output);
+
         for (size_t j = 0; j < tx.outputs.size(); ++j) {
             if (tx.outputs[j].IsBurn()) continue;
             const Outpoint outpoint{identities.txid, uint32_t(j)};
@@ -552,9 +569,9 @@ CandidateCheckResult CheckOrdinaryWithLookup(const Transaction &tx,
                 error = "created outpoint already occupied";
                 return CandidateCheckResult::Invalid;
             }
-            staged.created.push_back(Coin{outpoint, tx.outputs[j],
-                                          profile.candidate_height,
-                                          profile.parent_mtp, false});
+            staged.created.push_back(
+                Coin{outpoint, tx.outputs[j], profile.candidate_height,
+                     profile.parent_mtp, false, fee_per_output, exp_height});
         }
         effects = std::move(staged);
         error.clear();

@@ -574,9 +574,11 @@ BOOST_FIXTURE_TEST_CASE(updatecoins_simulation_test, UpdateTest) {
 }
 
 BOOST_AUTO_TEST_CASE(coin_serialization) {
+    // Native codec identity + unchanged output-compression vectors + LE64
+    // fee share and effective expiration. Legacy records are not accepted.
     // Good example
     DataStream ss1{
-        ParseHex("97f23c835800816115944e077fe7c803cfa57f29b36bf87c1d35")};
+        ParseHex("5850493297f23c835800816115944e077fe7c803cfa57f29b36bf87c1d350000000000000000261e050000000000")};
     Coin c1;
     ss1 >> c1;
     BOOST_CHECK_EQUAL(c1.IsCoinBase(), false);
@@ -588,7 +590,7 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
 
     // Good example
     DataStream ss2{
-        ParseHex("8ddf77bbd123008c988f1a4a4de2161e0f50aac7f17e7f9555caa4")};
+        ParseHex("585049328ddf77bbd123008c988f1a4a4de2161e0f50aac7f17e7f9555caa400000000000000003ba5420100000000")};
     Coin c2;
     ss2 >> c2;
     BOOST_CHECK_EQUAL(c2.IsCoinBase(), true);
@@ -599,7 +601,7 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
                           "8c988f1a4a4de2161e0f50aac7f17e7f9555caa4"))))));
 
     // Smallest possible example
-    DataStream ss3{ParseHex("000006")};
+    DataStream ss3{ParseHex("5850493200000600000000000000004801020000000000")};
     Coin c3;
     ss3 >> c3;
     BOOST_CHECK_EQUAL(c3.IsCoinBase(), false);
@@ -608,7 +610,7 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
     BOOST_CHECK_EQUAL(c3.GetTxOut().scriptPubKey.size(), 0U);
 
     // scriptPubKey that ends beyond the end of the stream
-    DataStream ss4{ParseHex("000007")};
+    DataStream ss4{ParseHex("58504932000007")};
     try {
         Coin c4;
         ss4 >> c4;
@@ -621,7 +623,7 @@ BOOST_AUTO_TEST_CASE(coin_serialization) {
     uint64_t x = 3000000000ULL;
     tmp << VARINT(x);
     BOOST_CHECK_EQUAL(HexStr(tmp), "8a95c0bb00");
-    DataStream ss5{ParseHex("00008a95c0bb00")};
+    DataStream ss5{ParseHex("5850493200008a95c0bb00")};
     try {
         Coin c5;
         ss5 >> c5;

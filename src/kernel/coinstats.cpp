@@ -25,11 +25,24 @@ uint64_t GetBogoSize(const CScript &script_pub_key) {
            script_pub_key.size() /* scriptPubKey */;
 }
 
+namespace {
+template <typename Stream>
+void WriteNativeCoinStats(Stream &ss, const COutPoint &outpoint, const Coin &coin) {
+    // Live V7 and disk-decoded transactions can expose different script views
+    // of the same native output. Commit its canonical semantic representation.
+    std::vector<uint8_t> output;
+    std::string error;
+    if (!lotus::v2::EncodeOutput(coin.GetTxOut().ToV2Output(), output, error)) {
+        throw std::runtime_error("invalid native output in UTXO statistics: " + error);
+    }
+    ss << outpoint << static_cast<uint32_t>(coin.GetHeight() * 2 + coin.IsCoinBase());
+    ss << output << coin.GetFeePerOutput() << coin.GetExpirationHeight();
+}
+} // namespace
+
 DataStream TxOutSer(const COutPoint &outpoint, const Coin &coin) {
     DataStream ss{};
-    ss << outpoint;
-    ss << static_cast<uint32_t>(coin.GetHeight() * 2 + coin.IsCoinBase());
-    ss << coin.GetTxOut();
+    WriteNativeCoinStats(ss, outpoint, coin);
     return ss;
 }
 
@@ -47,20 +60,8 @@ DataStream TxOutSer(const COutPoint &outpoint, const Coin &coin) {
 //! UTXO snapshot to be considered valid.
 static void ApplyHash(HashWriter &ss, const TxId &txid,
                       const std::map<uint32_t, Coin> &outputs) {
-    for (auto it = outputs.begin(); it != outputs.end(); ++it) {
-        if (it == outputs.begin()) {
-            ss << txid;
-            ss << VARINT(it->second.GetHeight() * 2 + it->second.IsCoinBase());
-        }
-
-        ss << VARINT(it->first + 1);
-        ss << it->second.GetTxOut().scriptPubKey;
-        ss << VARINT_MODE(it->second.GetTxOut().nValue / SATOSHI,
-                          VarIntMode::NONNEGATIVE_SIGNED);
-
-        if (it == std::prev(outputs.end())) {
-            ss << VARINT(0u);
-        }
+    for (const auto &[index, coin] : outputs) {
+        WriteNativeCoinStats(ss, COutPoint(txid, index), coin);
     }
 }
 

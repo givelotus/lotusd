@@ -9,6 +9,7 @@
 #include <coins.h>
 #include <common/args.h>
 #include <consensus/amount.h>
+#include <consensus/tx_verify.h>
 #include <crypto/muhash.h>
 #include <logging.h>
 #include <node/blockstorage.h>
@@ -19,6 +20,8 @@
 #include <util/check.h>
 #include <validation.h>
 
+#include <set>
+
 using kernel::CCoinsStats;
 using kernel::GetBogoSize;
 using kernel::TxOutSer;
@@ -26,8 +29,60 @@ using kernel::TxOutSer;
 static constexpr uint8_t DB_BLOCK_HASH{'s'};
 static constexpr uint8_t DB_BLOCK_HEIGHT{'t'};
 static constexpr uint8_t DB_MUHASH{'M'};
+static constexpr uint8_t DB_NATIVE_VERSION{'V'};
+static constexpr uint32_t NATIVE_INDEX_VERSION{2};
 
 namespace {
+
+// Reconstruct paid lifetime from the accepted block's durable undo, never from
+// the mutable current UTXO view (the index may be syncing an old block).
+static bool OutputFeeShare(const CTransaction &tx, const CTxUndo *undo,
+                           int height, uint64_t &fee_share, Amount &fee) {
+    fee_share = 0;
+    fee = Amount::zero();
+    if (tx.IsCoinBase()) {
+        return true;
+    }
+    TxValidationState state;
+    if (!undo || undo->vprevout.size() != tx.vin.size() ||
+        !Consensus::CheckTxInputsFromSpentCoins(tx, undo->vprevout, state, height,
+                                               fee)) {
+        LogError("%s: inconsistent accepted transaction undo at height %d, tx=%s\n",
+                 __func__, height, tx.GetId().ToString());
+        return false;
+    }
+    size_t spendable_outputs = 0;
+    for (const auto &out : tx.vout) {
+        if (!out.scriptPubKey.IsUnspendable() && (out.nFlags & 0x02) == 0) {
+            ++spendable_outputs;
+        }
+    }
+    fee_share = lotus::v2::ComputeTxFeePerSpendableOutput(
+        static_cast<uint64_t>(fee / SATOSHI), spendable_outputs);
+    return true;
+}
+
+// CTOR can spend an output before its creator is visited. Such a Coin never
+// enters the final UTXO set; positional undo can predate the creator's paid
+// lifetime update, so it must not be used to cancel that output's MuHash.
+static std::set<COutPoint> IntraBlockSpent(const CBlock &block) {
+    std::set<TxId> created;
+    for (const auto &tx : block.vtx) {
+        created.insert(tx->GetId());
+    }
+    std::set<COutPoint> spent;
+    for (const auto &tx : block.vtx) {
+        if (tx->IsCoinBase()) {
+            continue;
+        }
+        for (const auto &in : tx->vin) {
+            if (in.nFlags != 3 && created.count(in.prevout.GetTxId())) {
+                spent.insert(in.prevout);
+            }
+        }
+    }
+    return spent;
+}
 
 struct DBVal {
     uint256 muhash;
@@ -43,6 +98,8 @@ struct DBVal {
     Amount total_unspendables_bip30;
     Amount total_unspendables_scripts;
     Amount total_unspendables_unclaimed_rewards;
+    Amount total_unspendables_expired;
+    Amount total_cleaning_bounty;
 
     SERIALIZE_METHODS(DBVal, obj) {
         READWRITE(obj.muhash);
@@ -58,6 +115,7 @@ struct DBVal {
         READWRITE(obj.total_unspendables_bip30);
         READWRITE(obj.total_unspendables_scripts);
         READWRITE(obj.total_unspendables_unclaimed_rewards);
+        READWRITE(obj.total_unspendables_expired, obj.total_cleaning_bounty);
     }
 };
 
@@ -115,6 +173,8 @@ CoinStatsIndex::CoinStatsIndex(std::unique_ptr<interfaces::Chain> chain,
 bool CoinStatsIndex::WriteBlock(const CBlock &block,
                                 const CBlockIndex *pindex) {
     CBlockUndo block_undo;
+    const auto intra_block_spent = IntraBlockSpent(block);
+    Amount block_fees = Amount::zero();
     const Amount block_subsidy{
         GetBlockSubsidy(pindex->nHeight, Params().GetConsensus())};
     m_total_subsidy += block_subsidy;
@@ -171,10 +231,19 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
                 continue;
             }
 
+            uint64_t fee_share;
+            Amount fee;
+            if (!OutputFeeShare(
+                    *tx,
+                    tx->IsCoinBase() ? nullptr : &block_undo.vtxundo.at(i - 1),
+                    pindex->nHeight, fee_share, fee)) {
+                return false;
+            }
+            block_fees += fee;
             for (uint32_t j = 0; j < tx->vout.size(); ++j) {
                 const CTxOut &out{tx->vout[j]};
                 Coin coin{out, static_cast<uint32_t>(pindex->nHeight),
-                          tx->IsCoinBase()};
+                          tx->IsCoinBase(), fee_share};
                 COutPoint outpoint{tx->GetId(), j};
 
                 // Skip unspendable coins
@@ -184,7 +253,9 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
                     continue;
                 }
 
-                m_muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                if (!intra_block_spent.count(outpoint)) {
+                    m_muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                }
 
                 if (tx->IsCoinBase()) {
                     m_total_coinbase_amount += coin.GetTxOut().nValue;
@@ -203,11 +274,16 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
                 const auto &tx_undo{block_undo.vtxundo.at(i - 1)};
 
                 for (size_t j = 0; j < tx_undo.vprevout.size(); ++j) {
+                    if (tx->vin[j].nFlags == 3) {
+                        continue;
+                    }
                     Coin coin{tx_undo.vprevout[j]};
                     COutPoint outpoint{tx->vin[j].prevout.GetTxId(),
                                        tx->vin[j].prevout.GetN()};
 
-                    m_muhash.Remove(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                    if (!intra_block_spent.count(outpoint)) {
+                        m_muhash.Remove(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                    }
 
                     m_total_prevout_spent_amount += coin.GetTxOut().nValue;
 
@@ -223,17 +299,40 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
         m_total_unspendables_genesis_block += block_subsidy;
     }
 
+    // Expiry burns an existing UTXO without spending a transaction input.
+    // Preserve its authenticated undo metadata and account for it separately.
+    for (const auto &expired : block_undo.vexpired) {
+        const Coin &coin = expired.coin;
+        m_muhash.Remove(MakeUCharSpan(TxOutSer(expired.outpoint, coin)));
+        --m_transaction_output_count;
+        m_total_amount -= coin.GetTxOut().nValue;
+        m_bogo_size -= GetBogoSize(coin.GetTxOut().scriptPubKey);
+        m_total_unspendable_amount += coin.GetTxOut().nValue;
+        m_total_unspendables_expired += coin.GetTxOut().nValue;
+    }
+    m_total_cleaning_bounty +=
+        static_cast<int64_t>(lotus::v2::ComputeCleaningCrewBounty(
+            block_undo.vexpired.size(),
+            static_cast<uint64_t>(block_fees / SATOSHI))) *
+        SATOSHI;
+
     // If spent prevouts + block subsidy are still a higher amount than
     // new outputs + coinbase + current unspendable amount this means
     // the miner did not claim the full block reward. Unclaimed block
     // rewards are also unspendable.
     const Amount unclaimed_rewards{
-        (m_total_prevout_spent_amount + m_total_subsidy) -
+        (m_total_prevout_spent_amount + m_total_subsidy +
+         m_total_cleaning_bounty + m_total_unspendables_expired) -
         (m_total_new_outputs_ex_coinbase_amount + m_total_coinbase_amount +
          m_total_unspendable_amount)};
     m_total_unspendable_amount += unclaimed_rewards;
     m_total_unspendables_unclaimed_rewards += unclaimed_rewards;
 
+    StoreStats(pindex);
+    return true;
+}
+
+void CoinStatsIndex::StoreStats(const CBlockIndex *pindex) {
     std::pair<BlockHash, DBVal> value;
     value.first = pindex->GetBlockHash();
     value.second.transaction_output_count = m_transaction_output_count;
@@ -251,6 +350,8 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
     value.second.total_unspendables_scripts = m_total_unspendables_scripts;
     value.second.total_unspendables_unclaimed_rewards =
         m_total_unspendables_unclaimed_rewards;
+    value.second.total_unspendables_expired = m_total_unspendables_expired;
+    value.second.total_cleaning_bounty = m_total_cleaning_bounty;
 
     uint256 out;
     m_muhash.Finalize(out);
@@ -260,7 +361,6 @@ bool CoinStatsIndex::WriteBlock(const CBlock &block,
     // DB_BEST_BLOCK, and the index is not corrupted if there is an unclean
     // shutdown.
     m_db->Write(DBHeightKey(pindex->nHeight), value);
-    return true;
 }
 
 static bool CopyHeightIndexToHashIndex(CDBIterator &db_it, CDBBatch &batch,
@@ -393,12 +493,30 @@ CoinStatsIndex::LookUpStats(const CBlockIndex *block_index) const {
     stats.total_unspendables_scripts = entry.total_unspendables_scripts;
     stats.total_unspendables_unclaimed_rewards =
         entry.total_unspendables_unclaimed_rewards;
+    stats.total_unspendables_expired = entry.total_unspendables_expired;
+    stats.total_cleaning_bounty = entry.total_cleaning_bounty;
 
     return stats;
 }
 
 bool CoinStatsIndex::CustomInit(
     const std::optional<interfaces::BlockKey> &block) {
+    uint32_t version;
+    if (!m_db->Read(DB_NATIVE_VERSION, version)) {
+        if (!m_db->IsEmpty()) {
+            LogError("%s: Native coinstats index predates paid-lifetime/expiry "
+                     "accounting; "
+                     "restart with -reindex to rebuild it\n",
+                     __func__);
+            return false;
+        }
+        m_db->Write(DB_NATIVE_VERSION, NATIVE_INDEX_VERSION);
+    } else if (version != NATIVE_INDEX_VERSION) {
+        LogError("%s: Unsupported native coinstats index version %u; "
+                 "restart with -reindex to rebuild it\n",
+                 __func__, version);
+        return false;
+    }
     if (!m_db->Read(DB_MUHASH, m_muhash)) {
         // Check that the cause of the read failure is that the key does not
         // exist. Any other errors indicate database corruption or a disk
@@ -450,6 +568,8 @@ bool CoinStatsIndex::CustomInit(
         m_total_unspendables_scripts = entry.total_unspendables_scripts;
         m_total_unspendables_unclaimed_rewards =
             entry.total_unspendables_unclaimed_rewards;
+        m_total_unspendables_expired = entry.total_unspendables_expired;
+        m_total_cleaning_bounty = entry.total_cleaning_bounty;
     }
 
     return true;
@@ -466,6 +586,8 @@ bool CoinStatsIndex::CustomCommit(CDBBatch &batch) {
 bool CoinStatsIndex::ReverseBlock(const CBlock &block,
                                   const CBlockIndex *pindex) {
     CBlockUndo block_undo;
+    const auto intra_block_spent = IntraBlockSpent(block);
+    Amount block_fees = Amount::zero();
     std::pair<BlockHash, DBVal> read_out;
 
     const Amount block_subsidy{
@@ -506,11 +628,19 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
     for (size_t i = 0; i < block.vtx.size(); ++i) {
         const auto &tx{block.vtx.at(i)};
 
+        uint64_t fee_share;
+        Amount fee;
+        if (!OutputFeeShare(
+                *tx, tx->IsCoinBase() ? nullptr : &block_undo.vtxundo.at(i - 1),
+                pindex->nHeight, fee_share, fee)) {
+            return false;
+        }
+        block_fees += fee;
         for (uint32_t j = 0; j < tx->vout.size(); ++j) {
             const CTxOut &out{tx->vout[j]};
             COutPoint outpoint{tx->GetId(), j};
             Coin coin{out, static_cast<uint32_t>(pindex->nHeight),
-                      tx->IsCoinBase()};
+                      tx->IsCoinBase(), fee_share};
 
             // Skip unspendable coins
             if (coin.GetTxOut().scriptPubKey.IsUnspendable()) {
@@ -519,7 +649,9 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
                 continue;
             }
 
-            m_muhash.Remove(MakeUCharSpan(TxOutSer(outpoint, coin)));
+            if (!intra_block_spent.count(outpoint)) {
+                m_muhash.Remove(MakeUCharSpan(TxOutSer(outpoint, coin)));
+            }
 
             if (tx->IsCoinBase()) {
                 m_total_coinbase_amount -= coin.GetTxOut().nValue;
@@ -538,11 +670,16 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
             const auto &tx_undo{block_undo.vtxundo.at(i - 1)};
 
             for (size_t j = 0; j < tx_undo.vprevout.size(); ++j) {
+                if (tx->vin[j].nFlags == 3) {
+                    continue;
+                }
                 Coin coin{tx_undo.vprevout[j]};
                 COutPoint outpoint{tx->vin[j].prevout.GetTxId(),
                                    tx->vin[j].prevout.GetN()};
 
-                m_muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                if (!intra_block_spent.count(outpoint)) {
+                    m_muhash.Insert(MakeUCharSpan(TxOutSer(outpoint, coin)));
+                }
 
                 m_total_prevout_spent_amount -= coin.GetTxOut().nValue;
 
@@ -553,10 +690,26 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
         }
     }
 
+    for (const auto &expired : block_undo.vexpired) {
+        const Coin &coin = expired.coin;
+        m_muhash.Insert(MakeUCharSpan(TxOutSer(expired.outpoint, coin)));
+        ++m_transaction_output_count;
+        m_total_amount += coin.GetTxOut().nValue;
+        m_bogo_size += GetBogoSize(coin.GetTxOut().scriptPubKey);
+        m_total_unspendable_amount -= coin.GetTxOut().nValue;
+        m_total_unspendables_expired -= coin.GetTxOut().nValue;
+    }
+    m_total_cleaning_bounty -=
+        static_cast<int64_t>(lotus::v2::ComputeCleaningCrewBounty(
+            block_undo.vexpired.size(),
+            static_cast<uint64_t>(block_fees / SATOSHI))) *
+        SATOSHI;
+
     const Amount unclaimed_rewards{
         (m_total_new_outputs_ex_coinbase_amount + m_total_coinbase_amount +
          m_total_unspendable_amount) -
-        (m_total_prevout_spent_amount + m_total_subsidy)};
+        (m_total_prevout_spent_amount + m_total_subsidy +
+         m_total_cleaning_bounty + m_total_unspendables_expired)};
     m_total_unspendable_amount -= unclaimed_rewards;
     m_total_unspendables_unclaimed_rewards -= unclaimed_rewards;
 
@@ -586,6 +739,9 @@ bool CoinStatsIndex::ReverseBlock(const CBlock &block,
            read_out.second.total_unspendables_scripts);
     Assert(m_total_unspendables_unclaimed_rewards ==
            read_out.second.total_unspendables_unclaimed_rewards);
+    Assert(m_total_unspendables_expired ==
+           read_out.second.total_unspendables_expired);
+    Assert(m_total_cleaning_bounty == read_out.second.total_cleaning_bounty);
 
     return true;
 }

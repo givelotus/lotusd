@@ -84,9 +84,37 @@ struct CoinEntry {
 };
 } // namespace
 
+namespace {
+void RequireNativePaidCoinFormat(CDBWrapper &db) {
+    constexpr uint8_t key{'Z'};
+    constexpr uint32_t version{2};
+    uint32_t stored = 0;
+    if (db.Read(key, stored)) {
+        if (stored == version) return;
+        throw std::runtime_error("unsupported native coin/index format; full -reindex required");
+    }
+    // A fresh wrapper may already contain only its private obfuscation key.
+    auto cursor = std::unique_ptr<CDBIterator>(db.NewIterator());
+    for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+        std::string name;
+        if (!cursor->GetKey(name) || name != std::string("\0obfuscate_key", 14)) {
+            throw std::runtime_error("unversioned native coin/index data; full -reindex required");
+        }
+    }
+    cursor.reset();
+    db.Write(key, version, true);
+}
+} // namespace
+
+CBlockTreeDB::CBlockTreeDB(const DBParams &params) : CDBWrapper(params) {
+    RequireNativePaidCoinFormat(*this);
+}
+
 CCoinsViewDB::CCoinsViewDB(DBParams db_params, CoinsViewOptions options)
     : m_db_params{std::move(db_params)}, m_options{std::move(options)},
-      m_db{std::make_unique<CDBWrapper>(m_db_params)} {}
+      m_db{std::make_unique<CDBWrapper>(m_db_params)} {
+    RequireNativePaidCoinFormat(*m_db);
+}
 
 void CCoinsViewDB::ResizeCache(size_t new_cache_size) {
     // We can't do this operation with an in-memory DB since we'll lose all the

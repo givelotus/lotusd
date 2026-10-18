@@ -232,6 +232,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		mempool_overlay_tests.cpp
 		mempool_tests.cpp
 		native_batch_admission_tests.cpp
+		native_coin_provenance_tests.cpp
 		merkle_tests.cpp
 		metrics_tests.cpp
 		merkleblock_tests.cpp
@@ -392,4 +393,5 @@ else()
 endif()
 
 add_subdirectory(fuzz)
+
 

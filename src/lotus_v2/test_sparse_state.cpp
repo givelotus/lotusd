@@ -56,7 +56,7 @@ int main() {
     Check(EncodeCoin(c0, encoded) && Hex(encoded.data(), encoded.size()) ==
               "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00000000"
               "2d00e803000000000000011111111111111111111111111111111111111111111111111111111111111111010100"
-              "0700000000000000d20400000000000001",
+              "0700000000000000d2040000000000000102000000000000000007cd400100000000",
           "canonical Coin bytes including output length and metadata");
     Coin largest = MakeCoin(4);
     largest.output.flags = 1;
@@ -80,11 +80,11 @@ int main() {
     for (uint8_t i = 0; i < 16; ++i) full_path.push_back(i);
     largest.output.paths.push_back(std::move(full_path));
     std::sort(largest.output.paths.begin(), largest.output.paths.end());
-    Check(EncodeCoin(largest, encoded) && encoded.size() == MAX_COIN_BYTES,
-          "maximum valid Coin is exactly 868 bytes");
+    Check(EncodeCoin(largest, encoded) && encoded.size() == 885,
+          "maximum stateless V2 Coin is exactly 885 bytes");
     Hash leaf;
     Check(UtxoLeaf(c0, leaf) && Hex(leaf) ==
-              "6e383e9a5db630c665ea659ceef76bf8552f39dfaebe9dbd8db880034b8004e9",
+              "927c546dbc432596769cd2ff7261757a5536c17560c60f5ba4dd9ac5bb5d1ab6",
           "keyed leaf and Bytes(Coin) vector");
     Check(Hex(EmptyUtxoRoot()) ==
               "8006a077938a575c157a0d537fea697a65538c100ce5c6a8ad750e7226418e7c",
@@ -118,14 +118,14 @@ int main() {
           "absence mode 2 at single leaf");
 
     Check(set.Insert(c47) && Hex(set.Root()) ==
-              "681ed54cf6510563067d586fb61f07afe019c8af1dc9166a6565982c73721ea5",
+              "453cf262fd2a3413cdcfea213da93b7a0e27b8e6006f01e0e15a83d0f8a604e2",
           "shared-prefix two-coin root");
     const CoinProof empty_branch = set.Prove(c1.outpoint);
     Check(empty_branch.presence == ProofPresence::Empty &&
               VerifyCoinProof(c1.outpoint, empty_branch, set.Root()),
           "absence mode 0 with nonempty interior sibling");
     Check(set.Insert(c1) && Hex(set.Root()) ==
-              "6cd25778207bc22c9c419abb5cb17b8712c652de980e56ec9bd47cc3e91dad09",
+              "9bc534d62c1d1ee4b5ac61c56f835ad5d0abff4d09b33e8afdef3b4e9000f114",
           "three-coin root with branch directions");
     const Hash original = set.Root();
     UtxoSet reverse;
@@ -184,10 +184,10 @@ int main() {
     metadata.creation_height++;
     UtxoSet changed;
     Check(changed.Insert(metadata) && changed.Insert(c47) && changed.Insert(c1) &&
-              Hex(changed.Root()) == "62df603d75eb8d12def854b554fc4b2a1849d3e1088f99891eb876c6ed7c38c6",
+              Hex(changed.Root()) == "34a40d071ab9f7177a2cb441058a950234d7ce93428568755f917f853cf63c9d",
           "coin metadata changes authenticated root");
     Check(set.Erase(c1.outpoint) && Hex(set.Root()) ==
-              "681ed54cf6510563067d586fb61f07afe019c8af1dc9166a6565982c73721ea5",
+              "453cf262fd2a3413cdcfea213da93b7a0e27b8e6006f01e0e15a83d0f8a604e2",
           "delete restores shared-prefix two-coin root");
     Check(set.Erase(c47.outpoint) && set.Root() == leaf, "delete collapses to single leaf");
     Check(set.Erase(c0.outpoint) && set.Root() == empty, "delete restores initial empty root");
@@ -206,7 +206,7 @@ int main() {
     ChainId chain;
     for (unsigned i = 0; i < 32; ++i) chain[i] = i + 32;
     const Hash state = StateRoot(chain, 9, original, money);
-    Check(Hex(state) == "169fdbef4a97a263f0e5ec10af999183e6237c317184c4e04efd31e6db55f318",
+    Check(Hex(state) == "2033de4619ebbf5eb53a3b9fa0762a00f13e47a01a5d3f01bf04355f50045b50",
           "130-byte state envelope vector");
     money.ema_block_cost++;
     Check(StateRoot(chain, 9, original, money) != state, "monetary mutation changes state root");
