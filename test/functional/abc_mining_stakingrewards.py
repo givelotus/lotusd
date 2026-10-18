@@ -23,7 +23,8 @@ from test_framework.util import (
 )
 
 QUORUM_NODE_COUNT = 16
-STAKING_REWARDS_COINBASE_RATIO_PERCENT = 10
+# V2 pays 25% of the coinbase to staking rewards (v2/042).
+STAKING_REWARDS_COINBASE_RATIO_PERCENT = 25
 
 
 class LongpollThread(threading.Thread):
