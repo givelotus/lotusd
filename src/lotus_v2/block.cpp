@@ -125,13 +125,16 @@ namespace {
                 output, error))
             return false;
         offset += static_cast<size_t>(output_len);
-        if (encoded.size() - offset != 17) return false;
+        if (encoded.size() - offset != COIN_METADATA_BYTES) return false;
         coin.output = std::move(output);
         coin.creation_height = ReadLE(raw + offset, 8);
         coin.creation_parent_mtp = ReadLE(raw + offset + 8, 8);
         const uint8_t flag = raw[offset + 16];
         if (flag > 1) return false;
         coin.coinbase = flag == 1;
+        if (raw[offset + 17] != COIN_ENCODING_VERSION) return false;
+        coin.fee_per_output = ReadLE(raw + offset + 18, 8);
+        coin.expiration_height = ReadLE(raw + offset + 26, 8);
         return true;
     }
 

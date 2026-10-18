@@ -2863,6 +2863,19 @@ void V2PeerProtocolHandler::HandleGetBlockUndo(
             undo_msg.prior_spent_coins.push_back(it->second);
         }
     }
+    // Expiry removals are not transaction inputs. Reuse the canonical sweep
+    // selector on the immutable parent snapshot after removing spent inputs.
+    // Only this local CoW root changes; the published parent remains intact.
+    bool found_parent = false;
+    auto post_spends = GetV2BlockUtxoRoot(parent_hash, &found_parent);
+    if (!found_parent && parent_height != 0) {
+        return;
+    }
+    for (const auto &coin : undo_msg.prior_spent_coins) {
+        lotus::v2::SmtErase(post_spends, coin.outpoint);
+    }
+    undo_msg.expired_swept_coins = lotus::v2::SmtCollectExpired(
+        post_spends, block.nHeight);
     std::vector<uint8_t> payload;
     if (!lotus::v2::EncodeBlockUndoMessage(undo_msg, payload, err)) {
         return;
