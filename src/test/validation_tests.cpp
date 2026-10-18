@@ -150,8 +150,9 @@ BOOST_AUTO_TEST_CASE(test_assumeutxo) {
         "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
     BOOST_CHECK_EQUAL(out110.m_chain_tx_count, 111U);
 
-    const auto out110_2 = *params->AssumeutxoForBlockhash(BlockHash{uint256S(
-        "0x47cfb2b77860d250060e78d3248bb050928765453cbcbdbc121e3c48b99a376c")});
+    const auto by_hash = params->AssumeutxoForBlockhash(out110.blockhash);
+    BOOST_REQUIRE(by_hash);
+    const auto out110_2 = *by_hash;
     BOOST_CHECK_EQUAL(
         out110_2.hash_serialized.ToString(),
         "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
@@ -299,5 +300,11 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         BOOST_CHECK(is_mutated(block));
     }
 }
+
+BOOST_AUTO_TEST_CASE(native_assumeutxo_requires_native_snapshot_evidence) {
+    BOOST_CHECK(CChainParams::Main({})->GetAvailableSnapshotHeights().empty());
+    BOOST_CHECK(CChainParams::TestNet({})->GetAvailableSnapshotHeights().empty());
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()

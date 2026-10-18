@@ -23,7 +23,13 @@ namespace {
 CBlock LoadBlock() {
     DataStream stream{benchmark::data::block413567};
     CBlock block;
-    stream >> block;
+    // This immutable corpus has an 80-byte Bitcoin header. Only its legacy
+    // transaction frames are benchmarked here; do not decode it as a V2 block
+    // or present these counters as native V7 transaction throughput.
+    stream.ignore(80);
+    stream >> block.vtx;
+    assert(stream.empty());
+    assert(block.vtx.size() == 1557);
     return block;
 }
 
