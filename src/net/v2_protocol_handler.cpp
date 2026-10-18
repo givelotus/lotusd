@@ -4,6 +4,7 @@
 
 #include <net/v2_protocol_handler.h>
 
+#include <avalanche/processor.h>
 #include <common/args.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
@@ -331,6 +332,24 @@ uint64_t ComputeMerklixShortId(uint64_t salt_k0, uint64_t salt_k1,
     return sid != 0 ? sid : 1ULL;
 }
 
+const char *FastSyncSwarmStateToString(FastSyncSwarmState state) noexcept {
+    switch (state) {
+        case FastSyncSwarmState::IDLE:
+            return "idle";
+        case FastSyncSwarmState::FETCHING_ROOTS:
+            return "fetching_roots";
+        case FastSyncSwarmState::FETCHING_SHARDS:
+            return "fetching_shards";
+        case FastSyncSwarmState::PIVOT_ACTIVE_PEELING:
+            return "pivot_active_peeling";
+        case FastSyncSwarmState::COMPLETED:
+            return "completed";
+        case FastSyncSwarmState::FAILED:
+            return "failed";
+    }
+    return "unknown";
+}
+
 V2PeerProtocolHandler::V2PeerProtocolHandler(ChainstateManager &chainman,
                                              CTxMemPool &mempool,
                                              CConnman &connman,
@@ -338,9 +357,91 @@ V2PeerProtocolHandler::V2PeerProtocolHandler(ChainstateManager &chainman,
     : m_chainman(chainman), m_mempool(mempool), m_connman(connman),
       m_peerman(peerman) {}
 
+void V2PeerProtocolHandler::SetAvalancheProcessor(
+    avalanche::Processor *avalanche) {
+    LOCK(m_mutex);
+    m_avalanche = avalanche;
+}
+
+void V2PeerProtocolHandler::SetSnapSyncEnabled(std::optional<bool> enabled) {
+    {
+        LOCK(cs_main);
+        if (!m_chainman.GetAll().empty()) {
+            m_chainman.ActiveChainstate().SetSnapSyncEnabled(enabled);
+        }
+    }
+    LOCK(m_mutex);
+    m_snapsync_enabled_override = enabled;
+}
+
+void V2PeerProtocolHandler::SetReverseSyncEnabled(std::optional<bool> enabled) {
+    {
+        LOCK(cs_main);
+        if (!m_chainman.GetAll().empty()) {
+            m_chainman.ActiveChainstate().SetReverseSyncEnabled(enabled);
+        }
+    }
+    LOCK(m_mutex);
+    m_reversesync_enabled_override = enabled;
+}
+
+void V2PeerProtocolHandler::SetServeUtxoShards(std::optional<bool> enabled) {
+    LOCK(m_mutex);
+    m_serve_utxo_shards_override = enabled;
+}
+
+bool V2PeerProtocolHandler::IsSnapSyncEnabled() const {
+    LOCK(m_mutex);
+    const bool snap =
+        m_snapsync_enabled_override.value_or(gArgs.GetBoolArg("-snapsync", true));
+    const bool rev = m_reversesync_enabled_override.value_or(
+        gArgs.GetBoolArg("-reversesync", true));
+    return snap && rev;
+}
+
+bool V2PeerProtocolHandler::IsReverseSyncEnabled() const {
+    return IsSnapSyncEnabled();
+}
+
+bool V2PeerProtocolHandler::IsServeUtxoShardsEnabled() const {
+    LOCK(m_mutex);
+    return m_serve_utxo_shards_override.value_or(
+        gArgs.GetBoolArg("-serveutxoshards", true));
+}
+
+void V2PeerProtocolHandler::SetPeerServices(NodeId peer_id,
+                                            ServiceFlags services) {
+    LOCK(m_mutex);
+    m_peer_services[peer_id] = services;
+}
+
+ServiceFlags V2PeerProtocolHandler::GetPeerServices(NodeId peer_id) const {
+    LOCK(m_mutex);
+    auto it = m_peer_services.find(peer_id);
+    return it != m_peer_services.end() ? it->second : NODE_NONE;
+}
+
+bool V2PeerProtocolHandler::PeerSupportsUtxoShardsLocked(NodeId peer_id) const {
+    AssertLockHeld(m_mutex);
+    auto it = m_peer_services.find(peer_id);
+    if (it != m_peer_services.end()) {
+        return (it->second & NODE_UTXO_SHARD) != 0;
+    }
+    return false;
+}
+
+void V2PeerProtocolHandler::RegisterPeerNode(CNode &pnode) {
+    LOCK(m_mutex);
+    m_peer_nodes[pnode.GetId()] = &pnode;
+}
+
 bool V2PeerProtocolHandler::TryHandleMessage(
     CNode &pfrom, const std::string &msg_type, DataStream &vRecv,
     std::chrono::microseconds time_received) {
+    {
+        LOCK(m_mutex);
+        m_peer_nodes[pfrom.GetId()] = &pfrom;
+    }
     if (msg_type == NetMsgType::MINEDHEADER ||
         msg_type == NetMsgType::SEALEDHEADER ||
         msg_type == NetMsgType::SEALEDBLOCK) {
@@ -365,6 +466,30 @@ bool V2PeerProtocolHandler::TryHandleMessage(
     }
     if (msg_type == NetMsgType::SHORTTX) {
         HandleShortTx(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::GETUTXOROOTS) {
+        HandleGetUtxoRoots(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::UTXOROOTS) {
+        HandleUtxoRoots(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::GETUTXOSHARD) {
+        HandleGetUtxoShard(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::UTXOSHARD) {
+        HandleUtxoShard(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::GETBLOCKUNDO) {
+        HandleGetBlockUndo(pfrom, vRecv, time_received);
+        return true;
+    }
+    if (msg_type == NetMsgType::BLOCKUNDO) {
+        HandleBlockUndo(pfrom, vRecv, time_received);
         return true;
     }
     return false;
@@ -1164,6 +1289,13 @@ void V2PeerProtocolHandler::RemovePeer(NodeId peer_id) {
     m_peer_window_start.erase(peer_id);
     m_peer_msg_counts.erase(peer_id);
     m_peer_known_blocks.erase(peer_id);
+    m_peer_nodes.erase(peer_id);
+    m_peer_services.erase(peer_id);
+    if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS ||
+        m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS ||
+        m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING) {
+        HandleSwarmPeerFailureLocked(peer_id, std::nullopt);
+    }
 }
 
 void V2PeerProtocolHandler::RemovePeer(CNode &pnode) {
@@ -1661,5 +1793,1178 @@ std::optional<CInv> V2PeerProtocolHandler::GetLastFallbackInv() const {
     LOCK(m_mutex);
     return m_last_fallback_inv;
 }
+
+bool V2PeerProtocolHandler::SendRawPayloadToPeerLocked(
+    NodeId peer_id, const char *msg_type, Span<const uint8_t> payload) {
+    AssertLockHeld(m_mutex);
+    bool sent = m_connman.ForNode(peer_id, [&](CNode *pnode) {
+        m_connman.PushMessage(pnode, NetMsg::Make(msg_type, payload));
+        return true;
+    });
+    if (!sent) {
+        auto it = m_peer_nodes.find(peer_id);
+        if (it != m_peer_nodes.end() && it->second != nullptr) {
+            m_connman.PushMessage(it->second, NetMsg::Make(msg_type, payload));
+            sent = true;
+        }
+    }
+    return sent;
+}
+
+bool V2PeerProtocolHandler::IsFastSyncBlockRequested(const BlockHash &hash) const {
+    LOCK(m_mutex);
+    return m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING &&
+           hash == m_swarm.undo_in_flight_hash;
+}
+
+void V2PeerProtocolHandler::BlockDataReceived(const BlockHash &hash) {
+    NodeId undo_peer = -1;
+    std::vector<uint8_t> payload;
+    {
+        LOCK(m_mutex);
+        if (m_swarm.state != FastSyncSwarmState::PIVOT_ACTIVE_PEELING ||
+            hash != m_swarm.undo_in_flight_hash ||
+            !m_swarm.pending_undo_for_block) {
+            return;
+        }
+        std::string err;
+        if (!lotus::v2::EncodeBlockUndoMessage(*m_swarm.pending_undo_for_block,
+                                               payload, err)) {
+            return;
+        }
+        undo_peer = m_swarm.pending_undo_peer;
+    }
+    // Retain attribution to the undo supplier even if a different peer sent
+    // the body. Reuse the same authenticated reverse-validation path.
+    auto resume = [&](CNode *node) {
+        DataStream stream{payload};
+        HandleBlockUndo(*node, stream, GetTime<std::chrono::microseconds>());
+        return true;
+    };
+    if (!m_connman.ForNode(undo_peer, resume)) {
+        CNode *node = nullptr;
+        {
+            LOCK(m_mutex);
+            auto it = m_peer_nodes.find(undo_peer);
+            if (it != m_peer_nodes.end()) node = it->second;
+        }
+        if (node) resume(node);
+    }
+}
+
+void V2PeerProtocolHandler::CheckFastSyncTimeouts(
+    NodeId peer_id, std::chrono::microseconds now) {
+    LOCK(m_mutex);
+    bool pending =
+        (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS &&
+         m_swarm.roots_in_flight_peer == peer_id) ||
+        (m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING &&
+         m_swarm.undo_in_flight_peer == peer_id);
+    if (m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS) {
+        for (const auto &[key, supplier] : m_swarm.in_flight_shards) {
+            if (supplier == peer_id) pending = true;
+        }
+    }
+    auto deadline = m_swarm.request_deadlines.find(peer_id);
+    if (!pending) {
+        m_swarm.request_deadlines.erase(peer_id);
+    } else if (deadline != m_swarm.request_deadlines.end() &&
+               now >= deadline->second) {
+        m_swarm.request_deadlines.erase(deadline);
+        HandleSwarmPeerFailureLocked(peer_id, std::nullopt);
+    }
+}
+
+bool V2PeerProtocolHandler::RequestSwarmRootsLocked() {
+    AssertLockHeld(m_mutex);
+    const lotus::v2::GetUtxoRootsRequest req{m_swarm.pivot_v2_id};
+    const std::vector<uint8_t> payload =
+        lotus::v2::EncodeGetUtxoRootsRequest(req);
+    while (!m_swarm.healthy_peers.empty()) {
+        const size_t idx = m_swarm.rr_cursor % m_swarm.healthy_peers.size();
+        const NodeId peer_id = m_swarm.healthy_peers[idx];
+        ++m_swarm.rr_cursor;
+        if (SendRawPayloadToPeerLocked(peer_id, NetMsgType::GETUTXOROOTS,
+                                       Span{payload})) {
+            m_swarm.request_deadlines[peer_id] =
+                GetTime<std::chrono::microseconds>() + 30s;
+            m_swarm.roots_in_flight_peer = peer_id;
+            return true;
+        }
+        m_swarm.healthy_peers.erase(m_swarm.healthy_peers.begin() +
+                                    static_cast<std::ptrdiff_t>(idx));
+    }
+    m_swarm.roots_in_flight_peer = -1;
+    return false;
+}
+
+void V2PeerProtocolHandler::DispatchPendingSwarmShardsLocked() {
+    AssertLockHeld(m_mutex);
+    while (!m_swarm.pending_shards.empty() && !m_swarm.healthy_peers.empty()) {
+        const ShardKey key = m_swarm.pending_shards.front();
+        m_swarm.pending_shards.pop_front();
+
+        lotus::v2::GetUtxoShardRequest req{};
+        req.pivot_block_id = m_swarm.pivot_v2_id;
+        req.prefix_depth = key.prefix_depth;
+        req.prefix_bits = key.prefix_bits;
+        std::vector<uint8_t> payload;
+        std::string err;
+        if (!lotus::v2::EncodeGetUtxoShardRequest(req, payload, err)) {
+            m_swarm.state = FastSyncSwarmState::FAILED;
+            return;
+        }
+
+        bool dispatched = false;
+        while (!m_swarm.healthy_peers.empty()) {
+            const size_t idx = m_swarm.rr_cursor % m_swarm.healthy_peers.size();
+            const NodeId peer_id = m_swarm.healthy_peers[idx];
+            ++m_swarm.rr_cursor;
+            if (SendRawPayloadToPeerLocked(peer_id, NetMsgType::GETUTXOSHARD,
+                                           Span{payload})) {
+                m_swarm.request_deadlines[peer_id] =
+                    GetTime<std::chrono::microseconds>() + 30s;
+                m_swarm.in_flight_shards[key] = peer_id;
+                dispatched = true;
+                break;
+            }
+            m_swarm.healthy_peers.erase(m_swarm.healthy_peers.begin() +
+                                        static_cast<std::ptrdiff_t>(idx));
+        }
+        if (!dispatched) {
+            m_swarm.pending_shards.push_front(key);
+            break;
+        }
+    }
+    if (m_swarm.healthy_peers.empty() &&
+        (!m_swarm.pending_shards.empty() ||
+         !m_swarm.in_flight_shards.empty())) {
+        m_swarm.state = FastSyncSwarmState::FAILED;
+    }
+}
+
+bool V2PeerProtocolHandler::RequestNextReversePeelBlockLocked(
+    int target_height, const BlockHash &target_hash, bool need_block_data) {
+    AssertLockHeld(m_mutex);
+    if (target_height <= 0 || target_hash.IsNull()) {
+        m_swarm.undo_in_flight_hash = BlockHash{};
+        m_swarm.undo_in_flight_peer = -1;
+        m_swarm.pending_undo_for_block.reset();
+        m_swarm.state = FastSyncSwarmState::COMPLETED;
+        return true;
+    }
+
+    lotus::v2::GetBlockUndoRequest req{};
+    std::memcpy(req.block_id.data(), target_hash.begin(), 32);
+    const std::vector<uint8_t> payload =
+        lotus::v2::EncodeGetBlockUndoRequest(req);
+    while (!m_swarm.healthy_peers.empty()) {
+        const size_t idx = m_swarm.rr_cursor % m_swarm.healthy_peers.size();
+        const NodeId peer_id = m_swarm.healthy_peers[idx];
+        ++m_swarm.rr_cursor;
+        if (SendRawPayloadToPeerLocked(peer_id, NetMsgType::GETBLOCKUNDO,
+                                       Span{payload})) {
+            if (need_block_data) {
+                const std::vector<CInv> invs{CInv(MSG_BLOCK, target_hash)};
+                bool sent_getdata =
+                    m_connman.ForNode(peer_id, [&](CNode *pnode) {
+                        m_connman.PushMessage(
+                            pnode, NetMsg::Make(NetMsgType::GETDATA, invs));
+                        return true;
+                    });
+                if (!sent_getdata) {
+                    auto it = m_peer_nodes.find(peer_id);
+                    if (it != m_peer_nodes.end() && it->second != nullptr) {
+                        m_connman.PushMessage(
+                            it->second,
+                            NetMsg::Make(NetMsgType::GETDATA, invs));
+                    }
+                }
+            }
+            m_swarm.pending_undo_for_block.reset();
+            m_swarm.request_deadlines[peer_id] =
+                GetTime<std::chrono::microseconds>() + 30s;
+            m_swarm.undo_in_flight_hash = target_hash;
+            m_swarm.undo_in_flight_peer = peer_id;
+            return true;
+        }
+        m_swarm.healthy_peers.erase(m_swarm.healthy_peers.begin() +
+                                    static_cast<std::ptrdiff_t>(idx));
+    }
+    m_swarm.undo_in_flight_hash = BlockHash{};
+    m_swarm.undo_in_flight_peer = -1;
+    m_swarm.state = FastSyncSwarmState::FAILED;
+    return false;
+}
+
+void V2PeerProtocolHandler::HandleSwarmPeerFailureLocked(
+    NodeId peer_id, std::optional<ShardKey> failed_shard) {
+    AssertLockHeld(m_mutex);
+    m_swarm.banned_peers.insert(peer_id);
+    auto it_hp = std::find(m_swarm.healthy_peers.begin(),
+                           m_swarm.healthy_peers.end(), peer_id);
+    if (it_hp != m_swarm.healthy_peers.end()) {
+        const size_t old_size = m_swarm.healthy_peers.size();
+        const size_t erased_idx = static_cast<size_t>(
+            std::distance(m_swarm.healthy_peers.begin(), it_hp));
+        const size_t next_idx = m_swarm.rr_cursor % old_size;
+        m_swarm.healthy_peers.erase(it_hp);
+        if (!m_swarm.healthy_peers.empty()) {
+            m_swarm.rr_cursor =
+                (erased_idx < next_idx)
+                    ? (next_idx - 1)
+                    : (next_idx % m_swarm.healthy_peers.size());
+        } else {
+            m_swarm.rr_cursor = 0;
+        }
+    }
+
+    auto enqueue_unique_front = [&](const ShardKey &k)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+            if (m_swarm.verified_shards.find(k) !=
+                m_swarm.verified_shards.end()) {
+                return;
+            }
+            if (std::find(m_swarm.pending_shards.begin(),
+                          m_swarm.pending_shards.end(),
+                          k) == m_swarm.pending_shards.end()) {
+                m_swarm.pending_shards.push_front(k);
+            }
+        };
+    auto enqueue_unique_back = [&](const ShardKey &k)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+            if (m_swarm.verified_shards.find(k) !=
+                m_swarm.verified_shards.end()) {
+                return;
+            }
+            if (std::find(m_swarm.pending_shards.begin(),
+                          m_swarm.pending_shards.end(),
+                          k) == m_swarm.pending_shards.end()) {
+                m_swarm.pending_shards.push_back(k);
+            }
+        };
+
+    if (failed_shard.has_value()) {
+        m_swarm.in_flight_shards.erase(*failed_shard);
+        enqueue_unique_front(*failed_shard);
+    }
+
+    for (auto it = m_swarm.in_flight_shards.begin();
+         it != m_swarm.in_flight_shards.end();) {
+        if (it->second == peer_id) {
+            const ShardKey k = it->first;
+            it = m_swarm.in_flight_shards.erase(it);
+            enqueue_unique_back(k);
+        } else {
+            ++it;
+        }
+    }
+
+    if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS) {
+        if (m_swarm.roots_in_flight_peer == peer_id ||
+            m_swarm.roots_in_flight_peer == -1) {
+            if (!RequestSwarmRootsLocked()) {
+                m_swarm.state = FastSyncSwarmState::FAILED;
+            }
+        }
+    } else if (m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS) {
+        DispatchPendingSwarmShardsLocked();
+    } else if (m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING) {
+        if (m_swarm.undo_in_flight_peer == peer_id &&
+            !m_swarm.undo_in_flight_hash.IsNull()) {
+            const BlockHash retry_hash = m_swarm.undo_in_flight_hash;
+            RequestNextReversePeelBlockLocked(/*target_height=*/1, retry_hash,
+                                              /*need_block_data=*/true);
+        }
+    }
+}
+
+bool V2PeerProtocolHandler::StartFastSyncSwarm(
+    const BlockHash &pivot_hash, const std::vector<NodeId> &peer_ids,
+    bool auto_peel, std::string &err) {
+    if (!IsSnapSyncEnabled()) {
+        err = "snapsync / reverse sync is disabled (-snapsync=0 or -reversesync=0); using traditional sync";
+        return false;
+    }
+
+    int pivot_height = 0;
+    std::optional<lotus::v2::Hash> expected_anchor;
+    {
+        LOCK(cs_main);
+        Chainstate &cs = m_chainman.ActiveChainstate();
+        if (!cs.IsSnapSyncEnabled()) {
+            err = "snapsync / reverse sync is disabled (-snapsync=0 or -reversesync=0); using traditional sync";
+            return false;
+        }
+        const CBlockIndex *pindex =
+            m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
+        if (!pindex) {
+            err = "pivot block header not found in block index";
+            return false;
+        }
+        if (pindex->nHeight <= 0) {
+            err = "pivot height must be > 0";
+            return false;
+        }
+        pivot_height = pindex->nHeight;
+        expected_anchor = cs.GetFastSyncStateAnchor(pivot_hash);
+    }
+
+    avalanche::Processor *ava = nullptr;
+    {
+        LOCK(m_mutex);
+        ava = m_avalanche;
+    }
+    if (!expected_anchor.has_value() && ava) {
+        if (auto fin_root = ava->getFinalizedStateRoot(pivot_hash)) {
+            lotus::v2::Hash h{};
+            std::memcpy(h.data(), fin_root->begin(), 32);
+            expected_anchor = h;
+            LOCK(cs_main);
+            m_chainman.ActiveChainstate().SetFastSyncStateAnchor(pivot_hash, h);
+        }
+    }
+
+    LOCK(m_mutex);
+    std::vector<NodeId> peers;
+    std::unordered_set<NodeId> seen;
+    if (!peer_ids.empty()) {
+        for (const NodeId pid : peer_ids) {
+            if (PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
+                peers.push_back(pid);
+            }
+        }
+    } else {
+        m_connman.ForEachNode([&](CNode *pnode) NO_THREAD_SAFETY_ANALYSIS {
+            if (pnode && !pnode->fDisconnect &&
+                PeerSupportsUtxoShardsLocked(pnode->GetId()) &&
+                seen.insert(pnode->GetId()).second) {
+                peers.push_back(pnode->GetId());
+            }
+        });
+        for (const auto &[pid, pnode] : m_peer_nodes) {
+            if (pnode && !pnode->fDisconnect &&
+                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
+                peers.push_back(pid);
+            }
+        }
+        std::sort(peers.begin(), peers.end());
+    }
+    if (peers.empty()) {
+        err = "no NODE_UTXO_SHARD capable peers available for fast-sync swarm";
+        return false;
+    }
+
+    m_swarm = FastSyncSwarmCoordinatorState{};
+    m_swarm.state = FastSyncSwarmState::FETCHING_ROOTS;
+    m_swarm.pivot_hash = pivot_hash;
+    std::memcpy(m_swarm.pivot_v2_id.data(), pivot_hash.begin(), 32);
+    m_swarm.pivot_height = pivot_height;
+    m_swarm.expected_anchor = expected_anchor;
+    m_swarm.auto_peel = auto_peel;
+    m_swarm.healthy_peers = std::move(peers);
+
+    if (!RequestSwarmRootsLocked()) {
+        m_swarm.state = FastSyncSwarmState::FAILED;
+        err = "failed to send GETUTXOROOTS to any swarm peer";
+        return false;
+    }
+    err.clear();
+    return true;
+}
+
+bool V2PeerProtocolHandler::StartReversePeelSwarm(
+    const std::vector<NodeId> &peer_ids, std::string &err) {
+    if (!IsReverseSyncEnabled()) {
+        err = "reverse sync is disabled (-reversesync=0 or -snapsync=0); using traditional sync";
+        return false;
+    }
+
+    BlockHash target_hash{};
+    int target_height = 0;
+    bool need_block_data = false;
+    {
+        LOCK(cs_main);
+        Chainstate &cs = m_chainman.ActiveChainstate();
+        if (!cs.IsReverseSyncEnabled()) {
+            err = "reverse sync is disabled (-reversesync=0 or -snapsync=0); using traditional sync";
+            return false;
+        }
+        if (!cs.IsFastSyncActive()) {
+            err = "fast-sync mode is not active";
+            return false;
+        }
+        const int earliest_h = cs.GetEarliestVerifiedHeight();
+        const CBlockIndex *pindex = cs.GetEarliestVerifiedBlock();
+        if (!pindex) {
+            pindex = cs.m_chain[earliest_h];
+        }
+        if (!pindex || pindex->nHeight <= 0) {
+            err = "earliest verified block index invalid or already at genesis";
+            return false;
+        }
+        target_hash = pindex->GetBlockHash();
+        target_height = pindex->nHeight;
+        need_block_data = !pindex->nStatus.hasData();
+    }
+
+    LOCK(m_mutex);
+    if (!peer_ids.empty()) {
+        std::vector<NodeId> peers;
+        std::unordered_set<NodeId> seen;
+        for (const NodeId pid : peer_ids) {
+            if (m_swarm.banned_peers.count(pid) == 0 &&
+                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
+                peers.push_back(pid);
+            }
+        }
+        m_swarm.healthy_peers = std::move(peers);
+    } else if (m_swarm.healthy_peers.empty()) {
+        std::vector<NodeId> conn_peers;
+        m_connman.ForEachNode([&](CNode *pnode) {
+            if (pnode && !pnode->fDisconnect) {
+                conn_peers.push_back(pnode->GetId());
+            }
+        });
+        std::unordered_set<NodeId> seen;
+        for (const NodeId pid : conn_peers) {
+            if (m_swarm.banned_peers.count(pid) == 0 &&
+                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
+                m_swarm.healthy_peers.push_back(pid);
+            }
+        }
+        for (const auto &[pid, pnode] : m_peer_nodes) {
+            if (pnode && !pnode->fDisconnect &&
+                m_swarm.banned_peers.count(pid) == 0 &&
+                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
+                m_swarm.healthy_peers.push_back(pid);
+            }
+        }
+        std::sort(m_swarm.healthy_peers.begin(), m_swarm.healthy_peers.end());
+    }
+    if (m_swarm.healthy_peers.empty()) {
+        err = "no healthy NODE_UTXO_SHARD peers available for reverse peel swarm";
+        return false;
+    }
+
+    m_swarm.auto_peel = true;
+    m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
+    if (!RequestNextReversePeelBlockLocked(target_height, target_hash,
+                                           need_block_data)) {
+        err = "failed to send GETBLOCKUNDO to any swarm peer";
+        return false;
+    }
+    err.clear();
+    return true;
+}
+
+bool V2PeerProtocolHandler::SplitSwarmShardToSubShards(uint8_t prefix_depth,
+                                                       uint16_t prefix_bits,
+                                                       std::string &err) {
+    if (prefix_depth < lotus::v2::kMinUtxoShardPrefixDepth ||
+        prefix_depth >= lotus::v2::kMaxUtxoShardPrefixDepth) {
+        err = "prefix_depth for sub-shard split must be in [8..15]";
+        return false;
+    }
+    LOCK(m_mutex);
+    if (m_swarm.state != FastSyncSwarmState::FETCHING_SHARDS) {
+        err = "swarm is not currently fetching shards";
+        return false;
+    }
+    const ShardKey target{prefix_depth, prefix_bits};
+    if (m_swarm.verified_shards.count(target) > 0) {
+        err = "shard is already verified";
+        return false;
+    }
+    bool removed = false;
+    if (m_swarm.in_flight_shards.erase(target) > 0) {
+        removed = true;
+    }
+    auto it_pend = std::find(m_swarm.pending_shards.begin(),
+                             m_swarm.pending_shards.end(), target);
+    if (it_pend != m_swarm.pending_shards.end()) {
+        m_swarm.pending_shards.erase(it_pend);
+        removed = true;
+    }
+    if (!removed) {
+        err = "target shard is neither pending nor in-flight";
+        return false;
+    }
+
+    const uint8_t next_depth = static_cast<uint8_t>(prefix_depth + 1);
+    const ShardKey sub0{next_depth, prefix_bits};
+    const ShardKey sub1{
+        next_depth,
+        static_cast<uint16_t>(prefix_bits | (uint16_t{1} << prefix_depth))};
+    ++m_swarm.total_non_empty_shards;
+    m_swarm.pending_shards.push_front(sub1);
+    m_swarm.pending_shards.push_front(sub0);
+    DispatchPendingSwarmShardsLocked();
+    err.clear();
+    return true;
+}
+
+FastSyncSwarmStatus V2PeerProtocolHandler::GetFastSyncSwarmStatus() const {
+    LOCK(m_mutex);
+    FastSyncSwarmStatus status;
+    status.state = m_swarm.state;
+    status.pivot_block_hash = m_swarm.pivot_hash;
+    status.pivot_height = m_swarm.pivot_height;
+    if (m_swarm.expected_anchor.has_value()) {
+        uint256 anchor_u256;
+        std::memcpy(anchor_u256.begin(), m_swarm.expected_anchor->data(), 32);
+        status.avalanche_state_anchor = anchor_u256;
+    }
+    status.total_non_empty_shards = m_swarm.total_non_empty_shards;
+    status.verified_shards = m_swarm.verified_shards.size();
+    status.pending_shards = m_swarm.pending_shards.size();
+    status.in_flight_shards = m_swarm.in_flight_shards.size();
+    status.active_peers = m_swarm.healthy_peers.size();
+    status.banned_swarm_peers = m_swarm.banned_peers.size();
+    status.coins_imported = m_swarm.coins_imported;
+    status.corrupted_roots_rejected = m_stats.swarm_corrupted_roots_rejected;
+    status.corrupted_shards_rejected = m_stats.swarm_corrupted_shards_rejected;
+    status.corrupted_undo_rejected = m_stats.swarm_corrupted_undo_rejected;
+    status.blocks_peeled = m_stats.swarm_blocks_peeled;
+    return status;
+}
+
+void V2PeerProtocolHandler::HandleGetUtxoRoots(
+    CNode &pfrom, DataStream &vRecv,
+    std::chrono::microseconds /*time_received*/) {
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+    {
+        LOCK(m_mutex);
+        ++m_stats.getutxoroots_received;
+    }
+    if (!IsServeUtxoShardsEnabled()) {
+        return;
+    }
+
+    lotus::v2::GetUtxoRootsRequest req{};
+    std::string err;
+    if (!lotus::v2::DecodeGetUtxoRootsRequest(bytes, req, err)) {
+        {
+            LOCK(m_mutex);
+            ++m_stats.malformed_messages;
+        }
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    uint256 raw_hash;
+    std::memcpy(raw_hash.begin(), req.pivot_block_id.data(), 32);
+    const BlockHash block_hash{raw_hash};
+
+    Chainstate::FastSyncBlockState block_state;
+    {
+        LOCK(cs_main);
+        const CBlockIndex *pindex =
+            m_chainman.m_blockman.LookupBlockIndex(block_hash);
+        if (!pindex || !m_chainman.ActiveChain().Contains(pindex)) {
+            return;
+        }
+        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
+                pindex, block_state, err, /*populate_utxo_set=*/false)) {
+            return;
+        }
+    }
+
+    avalanche::Processor *ava = nullptr;
+    {
+        LOCK(m_mutex);
+        ava = m_avalanche;
+    }
+    if (ava) {
+        uint256 root_u256;
+        std::memcpy(root_u256.begin(), block_state.utxo_root.data(), 32);
+        ava->registerStateAnchor(block_hash, root_u256,
+                                 /*localAccepted=*/true, /*poll=*/true);
+    }
+
+    lotus::v2::UtxoRootsMessage roots_msg{};
+    if (!lotus::v2::ExportUtxoRootsFromSmt(block_state.smt_root,
+                                           req.pivot_block_id,
+                                           block_state.height,
+                                           block_state.monetary, roots_msg,
+                                           err)) {
+        return;
+    }
+    const std::vector<uint8_t> payload =
+        lotus::v2::EncodeUtxoRootsMessage(roots_msg);
+    m_connman.PushMessage(&pfrom,
+                          NetMsg::Make(NetMsgType::UTXOROOTS, Span{payload}));
+}
+
+void V2PeerProtocolHandler::HandleUtxoRoots(
+    CNode &pfrom, DataStream &vRecv,
+    std::chrono::microseconds /*time_received*/) {
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+
+    lotus::v2::UtxoRootsMessage roots_msg{};
+    std::string err;
+    const bool decoded =
+        lotus::v2::DecodeUtxoRootsMessage(bytes, roots_msg, err);
+
+    BlockHash pivot_hash_for_anchor{};
+    avalanche::Processor *ava = nullptr;
+    {
+        LOCK(m_mutex);
+        pivot_hash_for_anchor = m_swarm.pivot_hash;
+        ava = m_avalanche;
+    }
+
+    std::optional<lotus::v2::Hash> latest_anchor;
+    if (!pivot_hash_for_anchor.IsNull()) {
+        {
+            LOCK(cs_main);
+            if (!m_chainman.GetAll().empty()) {
+                latest_anchor =
+                    m_chainman.ActiveChainstate().GetFastSyncStateAnchor(
+                        pivot_hash_for_anchor);
+            }
+        }
+        if (!latest_anchor.has_value() && ava) {
+            if (auto fin_root =
+                    ava->getFinalizedStateRoot(pivot_hash_for_anchor)) {
+                lotus::v2::Hash h{};
+                std::memcpy(h.data(), fin_root->begin(), 32);
+                latest_anchor = h;
+                LOCK(cs_main);
+                if (!m_chainman.GetAll().empty()) {
+                    m_chainman.ActiveChainstate().SetFastSyncStateAnchor(
+                        pivot_hash_for_anchor, h);
+                }
+            }
+        }
+    }
+
+    bool need_discourage = false;
+    bool activate_empty_pivot = false;
+    BlockHash pivot_hash{};
+    std::optional<lotus::v2::Hash> candidate_anchor_to_poll;
+    {
+        LOCK(m_mutex);
+        ++m_stats.utxoroots_received;
+        if (latest_anchor.has_value() && !m_swarm.expected_anchor.has_value()) {
+            m_swarm.expected_anchor = latest_anchor;
+        }
+        if (!decoded) {
+            ++m_stats.malformed_messages;
+            ++m_stats.swarm_corrupted_roots_rejected;
+            if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS) {
+                HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
+            }
+            need_discourage = true;
+        } else if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS &&
+                   roots_msg.pivot_block_id == m_swarm.pivot_v2_id) {
+            if (!m_swarm.expected_anchor.has_value() && ava != nullptr &&
+                roots_msg.height ==
+                    static_cast<uint64_t>(m_swarm.pivot_height)) {
+                if (auto cand_folded =
+                        lotus::v2::FoldDepth8ShardRoots(roots_msg.shards)) {
+                    candidate_anchor_to_poll = *cand_folded;
+                    pivot_hash = m_swarm.pivot_hash;
+                }
+            }
+            lotus::v2::Hash folded_root{};
+            if (!lotus::v2::VerifyUtxoRootsAgainstAnchor(
+                    m_swarm.pivot_v2_id,
+                    static_cast<uint64_t>(m_swarm.pivot_height),
+                    m_swarm.expected_anchor, roots_msg, folded_root, err)) {
+                ++m_stats.swarm_corrupted_roots_rejected;
+                HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
+                need_discourage = !candidate_anchor_to_poll.has_value();
+            } else {
+                m_swarm.has_verified_roots = true;
+                m_swarm.verified_roots = roots_msg;
+                m_swarm.roots_in_flight_peer = -1;
+                m_swarm.pending_shards.clear();
+                m_swarm.in_flight_shards.clear();
+                m_swarm.verified_shards.clear();
+                for (size_t i = 0; i < lotus::v2::kFastSyncShardCount; ++i) {
+                    if (roots_msg.shards[i].cardinality_tag != 0) {
+                        m_swarm.pending_shards.push_back(
+                            ShardKey{8, static_cast<uint16_t>(i)});
+                    }
+                }
+                m_swarm.total_non_empty_shards = m_swarm.pending_shards.size();
+                pivot_hash = m_swarm.pivot_hash;
+                if (m_swarm.pending_shards.empty()) {
+                    activate_empty_pivot = true;
+                } else {
+                    m_swarm.state = FastSyncSwarmState::FETCHING_SHARDS;
+                    DispatchPendingSwarmShardsLocked();
+                }
+            }
+        }
+    }
+
+    if (candidate_anchor_to_poll.has_value() && !pivot_hash.IsNull() && ava) {
+        uint256 root_u256;
+        std::memcpy(root_u256.begin(), candidate_anchor_to_poll->data(), 32);
+        ava->registerStateAnchor(pivot_hash, root_u256,
+                                 /*localAccepted=*/false, /*poll=*/true);
+    }
+
+    if (need_discourage) {
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    if (activate_empty_pivot) {
+        std::string act_err;
+        bool activated = false;
+        bool need_block_data = false;
+        {
+            LOCK(cs_main);
+            CBlockIndex *pindex_pivot =
+                m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
+            if (pindex_pivot &&
+                m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
+                    pindex_pivot, roots_msg, {}, act_err)) {
+                activated = true;
+                need_block_data = !pindex_pivot->nStatus.hasData();
+            }
+        }
+        LOCK(m_mutex);
+        if (!activated) {
+            m_swarm.state = FastSyncSwarmState::FAILED;
+            return;
+        }
+        m_swarm.coins_imported = 0;
+        if (m_swarm.auto_peel && m_swarm.pivot_height > 0) {
+            m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
+            RequestNextReversePeelBlockLocked(
+                m_swarm.pivot_height, m_swarm.pivot_hash, need_block_data);
+        } else {
+            m_swarm.state = FastSyncSwarmState::COMPLETED;
+        }
+    }
+}
+
+void V2PeerProtocolHandler::HandleGetUtxoShard(
+    CNode &pfrom, DataStream &vRecv, std::chrono::microseconds time_received) {
+    if (!CheckPeerShardRateLimit(pfrom.GetId(), time_received)) {
+        vRecv.ignore(vRecv.size());
+        return;
+    }
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+    {
+        LOCK(m_mutex);
+        ++m_stats.getutxoshard_received;
+    }
+    if (!IsServeUtxoShardsEnabled()) {
+        return;
+    }
+
+    lotus::v2::GetUtxoShardRequest req{};
+    std::string err;
+    if (!lotus::v2::DecodeGetUtxoShardRequest(bytes, req, err)) {
+        {
+            LOCK(m_mutex);
+            ++m_stats.malformed_messages;
+        }
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    uint256 raw_hash;
+    std::memcpy(raw_hash.begin(), req.pivot_block_id.data(), 32);
+    const BlockHash block_hash{raw_hash};
+
+    Chainstate::FastSyncBlockState block_state;
+    {
+        LOCK(cs_main);
+        const CBlockIndex *pindex =
+            m_chainman.m_blockman.LookupBlockIndex(block_hash);
+        if (!pindex || !m_chainman.ActiveChain().Contains(pindex)) {
+            return;
+        }
+        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
+                pindex, block_state, err, /*populate_utxo_set=*/false)) {
+            return;
+        }
+    }
+
+    lotus::v2::UtxoShardMessage shard_msg{};
+    if (!lotus::v2::ExportUtxoShardFromSmt(block_state.smt_root,
+                                           req.pivot_block_id,
+                                           req.prefix_depth, req.prefix_bits,
+                                           shard_msg, err)) {
+        return;
+    }
+    std::vector<uint8_t> payload;
+    if (!lotus::v2::EncodeUtxoShardMessage(shard_msg, payload, err)) {
+        return;
+    }
+    m_connman.PushMessage(&pfrom,
+                          NetMsg::Make(NetMsgType::UTXOSHARD, Span{payload}));
+}
+
+void V2PeerProtocolHandler::HandleUtxoShard(
+    CNode &pfrom, DataStream &vRecv,
+    std::chrono::microseconds /*time_received*/) {
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+
+    lotus::v2::UtxoShardMessage shard_msg{};
+    std::string err;
+    const bool decoded =
+        lotus::v2::DecodeUtxoShardMessage(bytes, shard_msg, err);
+
+    bool need_discourage = false;
+    bool all_shards_ready = false;
+    BlockHash pivot_hash{};
+    lotus::v2::UtxoRootsMessage verified_roots{};
+    std::vector<lotus::v2::UtxoShardMessage> verified_shards_vec;
+    uint64_t total_coins_in_shards = 0;
+    {
+        LOCK(m_mutex);
+        ++m_stats.utxoshard_received;
+        if (!decoded) {
+            ++m_stats.malformed_messages;
+            ++m_stats.swarm_corrupted_shards_rejected;
+            if (m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS) {
+                HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
+            }
+            need_discourage = true;
+        } else if (m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS &&
+                   m_swarm.has_verified_roots &&
+                   shard_msg.pivot_block_id == m_swarm.pivot_v2_id) {
+            const ShardKey key{shard_msg.prefix_depth, shard_msg.prefix_bits};
+            if (m_swarm.verified_shards.count(key) == 0) {
+                const bool was_in_flight =
+                    m_swarm.in_flight_shards.count(key) > 0;
+                const auto it_pend = std::find(m_swarm.pending_shards.begin(),
+                                               m_swarm.pending_shards.end(),
+                                               key);
+                const bool was_pending =
+                    it_pend != m_swarm.pending_shards.end();
+                if (was_in_flight || was_pending) {
+                    const auto &expected_d8 =
+                        m_swarm.verified_roots
+                            .shards[shard_msg.prefix_bits & 0xFF];
+                    if (!lotus::v2::VerifyAndBuildUtxoShard(
+                            expected_d8,
+                            static_cast<uint64_t>(m_swarm.pivot_height),
+                            shard_msg, nullptr, err)) {
+                        ++m_stats.swarm_corrupted_shards_rejected;
+                        HandleSwarmPeerFailureLocked(pfrom.GetId(), key);
+                        need_discourage = true;
+                    } else {
+                        ++m_stats.swarm_shards_verified;
+                        m_swarm.in_flight_shards.erase(key);
+                        if (was_pending) {
+                            m_swarm.pending_shards.erase(it_pend);
+                        }
+                        m_swarm.verified_shards[key] = std::move(shard_msg);
+                        if (m_swarm.pending_shards.empty() &&
+                            m_swarm.in_flight_shards.empty() &&
+                            m_swarm.verified_shards.size() ==
+                                m_swarm.total_non_empty_shards) {
+                            all_shards_ready = true;
+                            pivot_hash = m_swarm.pivot_hash;
+                            verified_roots = m_swarm.verified_roots;
+                            verified_shards_vec.reserve(
+                                m_swarm.verified_shards.size());
+                            for (const auto &[_, s] : m_swarm.verified_shards) {
+                                total_coins_in_shards += s.coins.size();
+                                verified_shards_vec.push_back(s);
+                            }
+                        } else {
+                            DispatchPendingSwarmShardsLocked();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (need_discourage) {
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    if (all_shards_ready) {
+        std::string act_err;
+        bool activated = false;
+        bool need_block_data = false;
+        {
+            LOCK(cs_main);
+            CBlockIndex *pindex_pivot =
+                m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
+            if (pindex_pivot &&
+                m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
+                    pindex_pivot, verified_roots, verified_shards_vec,
+                    act_err)) {
+                activated = true;
+                need_block_data = !pindex_pivot->nStatus.hasData();
+            }
+        }
+        LOCK(m_mutex);
+        if (!activated) {
+            m_swarm.state = FastSyncSwarmState::FAILED;
+            return;
+        }
+        m_swarm.coins_imported = total_coins_in_shards;
+        if (m_swarm.auto_peel && m_swarm.pivot_height > 0) {
+            m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
+            RequestNextReversePeelBlockLocked(
+                m_swarm.pivot_height, m_swarm.pivot_hash, need_block_data);
+        } else {
+            m_swarm.state = FastSyncSwarmState::COMPLETED;
+        }
+    }
+}
+
+void V2PeerProtocolHandler::HandleGetBlockUndo(
+    CNode &pfrom, DataStream &vRecv,
+    std::chrono::microseconds /*time_received*/) {
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+    {
+        LOCK(m_mutex);
+        ++m_stats.getblockundo_received;
+    }
+    if (!IsServeUtxoShardsEnabled()) {
+        return;
+    }
+
+    lotus::v2::GetBlockUndoRequest req{};
+    std::string err;
+    if (!lotus::v2::DecodeGetBlockUndoRequest(bytes, req, err)) {
+        {
+            LOCK(m_mutex);
+            ++m_stats.malformed_messages;
+        }
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    uint256 raw_hash;
+    std::memcpy(raw_hash.begin(), req.block_id.data(), 32);
+    const BlockHash block_hash{raw_hash};
+
+    CBlock block;
+    BlockHash parent_hash;
+    Chainstate::FastSyncBlockState parent_state;
+    {
+        LOCK(cs_main);
+        const CBlockIndex *pindex =
+            m_chainman.m_blockman.LookupBlockIndex(block_hash);
+        if (!pindex || pindex->nHeight <= 0 || !pindex->pprev ||
+            !m_chainman.ActiveChain().Contains(pindex)) {
+            return;
+        }
+        if (!m_chainman.m_blockman.ReadBlock(block, *pindex)) {
+            return;
+        }
+        parent_hash = pindex->pprev->GetBlockHash();
+        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
+                pindex->pprev, parent_state, err,
+                /*populate_utxo_set=*/false)) {
+            return;
+        }
+    }
+
+    avalanche::Processor *ava = nullptr;
+    {
+        LOCK(m_mutex);
+        ava = m_avalanche;
+    }
+    if (ava) {
+        uint256 parent_root_u256;
+        std::memcpy(parent_root_u256.begin(), parent_state.utxo_root.data(),
+                    32);
+        ava->registerStateAnchor(parent_hash, parent_root_u256,
+                                 /*localAccepted=*/true, /*poll=*/true);
+    }
+
+    std::set<COutPoint> created_outpoints;
+    for (const auto &ptx : block.vtx) {
+        const CTransaction &tx = *ptx;
+        const TxId txid = tx.GetId();
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            if (!tx.vout[j].scriptPubKey.IsUnspendable()) {
+                created_outpoints.emplace(txid, static_cast<uint32_t>(j));
+            }
+        }
+    }
+
+    lotus::v2::BlockUndoMessage undo_msg{};
+    undo_msg.block_id = req.block_id;
+    undo_msg.parent_monetary_state =
+        lotus::v2::EncodeMonetaryState(parent_state.monetary);
+    for (const auto &ptx : block.vtx) {
+        const CTransaction &tx = *ptx;
+        if (tx.IsCoinBase()) {
+            continue;
+        }
+        for (const auto &txin : tx.vin) {
+            if (created_outpoints.count(txin.prevout) > 0) {
+                // Intra-block spend (I_h^intra): excluded from BlockUndo
+                continue;
+            }
+            lotus::v2::Outpoint op{};
+            std::memcpy(op.tx_id.data(), txin.prevout.GetTxId().begin(), 32);
+            op.index = txin.prevout.GetN();
+            std::shared_ptr<const lotus::v2::Coin> smt_coin =
+                lotus::v2::SmtFind(parent_state.smt_root, op);
+            if (smt_coin) {
+                undo_msg.prior_spent_coins.push_back(*smt_coin);
+            } else {
+                const lotus::v2::Coin *found = parent_state.utxo.Find(op);
+                if (!found) {
+                    return;
+                }
+                undo_msg.prior_spent_coins.push_back(*found);
+            }
+        }
+    }
+    std::vector<uint8_t> payload;
+    if (!lotus::v2::EncodeBlockUndoMessage(undo_msg, payload, err)) {
+        return;
+    }
+    m_connman.PushMessage(&pfrom,
+                          NetMsg::Make(NetMsgType::BLOCKUNDO, Span{payload}));
+}
+
+void V2PeerProtocolHandler::HandleBlockUndo(
+    CNode &pfrom, DataStream &vRecv,
+    std::chrono::microseconds /*time_received*/) {
+    const auto span = MakeUCharSpan(vRecv);
+    const std::vector<uint8_t> bytes(span.begin(), span.end());
+    vRecv.ignore(vRecv.size());
+
+    lotus::v2::BlockUndoMessage undo_msg{};
+    std::string err;
+    const bool decoded =
+        lotus::v2::DecodeBlockUndoMessage(bytes, undo_msg, err);
+
+    BlockHash block_hash{};
+    bool should_peel = false;
+    bool need_discourage = false;
+    avalanche::Processor *ava = nullptr;
+    {
+        LOCK(m_mutex);
+        ava = m_avalanche;
+        ++m_stats.blockundo_received;
+        if (!decoded) {
+            ++m_stats.malformed_messages;
+            ++m_stats.swarm_corrupted_undo_rejected;
+            if (m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING) {
+                HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
+            }
+            need_discourage = true;
+        } else {
+            uint256 raw_hash;
+            std::memcpy(raw_hash.begin(), undo_msg.block_id.data(), 32);
+            block_hash = BlockHash{raw_hash};
+            if (m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING &&
+                block_hash == m_swarm.undo_in_flight_hash) {
+                should_peel = true;
+            }
+        }
+    }
+
+    if (need_discourage) {
+        pfrom.fDisconnect = true;
+        return;
+    }
+
+    if (!should_peel) {
+        return;
+    }
+
+    bool peeled = false;
+    bool waiting_for_block_data = false;
+    bool fast_sync_still_active = false;
+    bool next_need_block_data = false;
+    int next_verified_height = 0;
+    BlockHash parent_block_hash{};
+    std::string peel_err;
+    {
+        LOCK(cs_main);
+        Chainstate &cs = m_chainman.ActiveChainstate();
+        CBlockIndex *pindex =
+            m_chainman.m_blockman.LookupBlockIndex(block_hash);
+        if (pindex && pindex->pprev) {
+            parent_block_hash = pindex->pprev->GetBlockHash();
+            if (ava &&
+                !cs.GetFastSyncStateAnchor(parent_block_hash).has_value()) {
+                if (auto fin_root =
+                        ava->getFinalizedStateRoot(parent_block_hash)) {
+                    lotus::v2::Hash h{};
+                    std::memcpy(h.data(), fin_root->begin(), 32);
+                    cs.SetFastSyncStateAnchor(parent_block_hash, h);
+                }
+            }
+            if (!pindex->nStatus.hasData()) {
+                waiting_for_block_data = true;
+            } else {
+                CBlock block;
+                if (m_chainman.m_blockman.ReadBlock(block, *pindex)) {
+                    peeled = cs.PeelFastSyncBlock(
+                        block, pindex, undo_msg.prior_spent_coins, peel_err);
+                    if (peeled) {
+                        fast_sync_still_active = cs.IsFastSyncActive();
+                        next_verified_height = cs.GetEarliestVerifiedHeight();
+                        next_need_block_data =
+                            !pindex->pprev->nStatus.hasData();
+                    }
+                }
+            }
+        }
+    }
+
+    if (waiting_for_block_data) {
+        {
+            LOCK(m_mutex);
+            m_swarm.pending_undo_for_block = std::move(undo_msg);
+            m_swarm.pending_undo_peer = pfrom.GetId();
+        }
+        m_connman.PushMessage(
+            &pfrom, NetMsg::Make(NetMsgType::GETDATA,
+                                 std::vector<CInv>{CInv(MSG_BLOCK, block_hash)}));
+        return;
+    }
+
+    bool peel_failed_discourage = false;
+    {
+        LOCK(m_mutex);
+        if (!peeled) {
+            ++m_stats.swarm_corrupted_undo_rejected;
+            HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
+            peel_failed_discourage = true;
+        } else {
+            ++m_stats.swarm_blocks_peeled;
+            ++m_swarm.blocks_peeled;
+            m_swarm.undo_in_flight_hash = BlockHash{};
+            m_swarm.undo_in_flight_peer = -1;
+            m_swarm.pending_undo_for_block.reset();
+            if (!fast_sync_still_active || next_verified_height <= 0) {
+                m_swarm.state = FastSyncSwarmState::COMPLETED;
+            } else if (m_swarm.auto_peel) {
+                RequestNextReversePeelBlockLocked(next_verified_height,
+                                                  parent_block_hash,
+                                                  next_need_block_data);
+            }
+        }
+    }
+
+    if (peel_failed_discourage) {
+        pfrom.fDisconnect = true;
+    }
+}
+
 
 } // namespace lotus::v2::net
