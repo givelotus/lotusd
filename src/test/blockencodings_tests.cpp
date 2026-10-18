@@ -72,7 +72,8 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
 // (block + mempool + shared overlay + immutable snapshot entry + the
 // temporary copy from GetSharedTx). The snapshot deliberately owns its tx so
 // an old generation remains valid after removal from the live mempool.
-constexpr long SHARED_TX_OFFSET{5};
+// Native snapshots also retain the eager small-pool RPC vector.
+constexpr long SHARED_TX_OFFSET{6};
 
 static void expectUseCount(const CTxMemPool &pool, const CTransaction *tx,
                            long expectedCount)
