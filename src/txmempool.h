@@ -13,6 +13,7 @@
 #include <kernel/cs_main.h>
 #include <kernel/mempool_entry.h>
 #include <kernel/mempool_options.h>
+#include <lotus_v2/mempool_overlay.h>
 #include <node/blockfitter.h>
 #include <policy/packages.h>
 #include <primitives/transaction.h>
@@ -607,7 +608,29 @@ public:
         return func(*m_conflicting);
     }
 
+    /** Shared speculative transaction overlay; not proof of script validity. */
+    lotus::v2::MerklixOverlayManager &GetMerklixOverlay() const
+        EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        AssertLockHeld(cs);
+        return m_merklix_overlay;
+    }
+
+    lotus::v2::MerklixOverlayManager &GetOverlayManager() const
+        EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        return GetMerklixOverlay();
+    }
+
+    const lotus::v2::MempoolOverlayLayer &FreezeEpochBatch()
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void SyncMerklixOverlayToTip(const BlockHash &tip_hash,
+                                uint64_t next_height, uint64_t parent_mtp) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void ConnectBlockReset(const BlockHash &tip_hash,
+                           uint64_t next_height, uint64_t parent_mtp)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
 private:
+    mutable lotus::v2::MerklixOverlayManager m_merklix_overlay GUARDED_BY(cs);
     /** Set ancestor state for an entry */
     void UpdateEntryForAncestors(txiter it, const setEntries *setAncestors)
         EXCLUSIVE_LOCKS_REQUIRED(cs);

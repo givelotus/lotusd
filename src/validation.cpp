@@ -2963,6 +2963,13 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
         if (disconnectpool) {
             disconnectpool->addForBlock(block.vtx, *m_mempool);
         }
+        {
+            LOCK(m_mempool->cs);
+            m_mempool->ConnectBlockReset(
+                pindexDelete->pprev->GetBlockHash(),
+                static_cast<uint64_t>(pindexDelete->pprev->nHeight + 1),
+                static_cast<uint64_t>(pindexDelete->pprev->GetMedianTimePast()));
+        }
     }
 
     m_chain.SetTip(*pindexDelete->pprev);
@@ -3159,6 +3166,13 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                 BCLog::MEMPOOL,
                 "Disconnecting mempool due to acceptance of upgrade block\n");
             disconnectpool.importMempool(*m_mempool);
+        }
+        {
+            LOCK(m_mempool->cs);
+            m_mempool->ConnectBlockReset(
+                pindexNew->GetBlockHash(),
+                static_cast<uint64_t>(pindexNew->nHeight + 1),
+                static_cast<uint64_t>(pindexNew->GetMedianTimePast()));
         }
     }
 
