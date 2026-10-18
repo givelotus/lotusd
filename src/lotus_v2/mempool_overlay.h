@@ -6,6 +6,8 @@
 #define LOTUS_V2_MEMPOOL_OVERLAY_H
 
 #include "commitment.h"
+#include "header.h"
+#include "monetary.h"
 #include "output.h"
 #include "set_reconciliation.h"
 #include "sparse_state.h"
@@ -139,11 +141,11 @@ struct UtxoOverlayNode {
     uint32_t count{0};
     std::array<uint32_t, 2> child{{0, 0}};
     std::array<std::shared_ptr<const SmtNode>, 2> base_child{{nullptr, nullptr}};
-    // Reuse an imported immutable subtree until a logical mutation replaces it.
     std::shared_ptr<const SmtNode> base_self{nullptr};
     Hash key{};
-    Coin coin{};
+    std::shared_ptr<const Coin> coin;
     bool is_leaf{false};
+    bool digest_dirty{false};
 };
 
 /**
@@ -151,10 +153,10 @@ struct UtxoOverlayNode {
  * a parent block's SmtNode root and path-copying InsertCoin / EraseOutpoint.
  *
  * [Optimization — Rolls into Patch 020]:
- * Eliminates duplicate per-coin SmtInsert/SmtErase tree walks and SHA-256 hashes
+ * Eliminates duplicate per-coin SmtInsert/SmtErase tree walks and BLAKE3 hashes
  * during InsertCoin/EraseOutpoint. Instead, all mutations operate solely on the
  * contiguous `nodes_` arena and `GetSmtRoot()` lazily exports `current_smt_root_`
- * from `nodes_[root_idx_]` on demand with zero SHA-256 re-hashing.
+ * from `nodes_[root_idx_]` on demand with zero BLAKE3 re-hashing.
  */
 class UtxoOverlayArena {
 public:
@@ -179,15 +181,17 @@ public:
         std::span<const Coin> inserted);
 
     Hash RootDigest() const;
+    Hash RootDigestWithExtraCoins(std::span<const Coin> extra_coins) const;
     uint32_t RootIdx() const noexcept { return root_idx_; }
     const std::shared_ptr<const SmtNode> &GetSmtRoot() const;
+    bool IsSmtRootReady() const noexcept { return !smt_root_dirty_; }
     const std::shared_ptr<const SmtNode> &GetBaseSmtRoot() const noexcept {
         return base_smt_root_;
     }
     size_t ArenaNodeCount() const noexcept { return nodes_.size(); }
 
 private:
-    std::vector<UtxoOverlayNode> nodes_;
+    mutable std::vector<UtxoOverlayNode> nodes_;
     uint32_t root_idx_{kNullIdx};
     std::shared_ptr<const SmtNode> base_smt_root_;
     mutable std::shared_ptr<const SmtNode> current_smt_root_;
@@ -206,7 +210,8 @@ private:
                      const Hash &key, unsigned depth);
     Hash ChildHash(const UtxoOverlayNode &node, unsigned bit) const;
     uint32_t ChildCount(const UtxoOverlayNode &node, unsigned bit) const;
-    void RefreshNode(uint32_t idx, unsigned depth);
+    void RefreshNode(uint32_t idx, unsigned depth) const;
+    void EnsureDigest(uint32_t idx, unsigned depth) const;
 };
 
 Hash EmptyTxRoot();
@@ -327,6 +332,9 @@ public:
         EnsureUtxoArenaUpdated();
         return utxo_arena_.GetSmtRoot();
     }
+    bool IsOverlayWarm() const noexcept {
+        return !utxo_arena_dirty_ && utxo_arena_.IsSmtRootReady();
+    }
     const std::shared_ptr<const SmtNode> &GetBaseUtxoRoot() const noexcept {
         return utxo_arena_.GetBaseSmtRoot();
     }
@@ -439,9 +447,6 @@ private:
     std::unordered_map<Outpoint, uint32_t, OutpointHasher> spent_outpoints_;
 };
 
-Hash ComputeMerkleRootFromLeftSpine(const Hash &leaf0,
-                                    std::span<const Hash> branch);
-
 /**
  * Manages the progressive stack of frozen pre-consensus epoch overlay layers
  * and the mutable speculative mempool tip overlay.
@@ -485,11 +490,6 @@ public:
 
     bool RemoveTransaction(const Hash &tx_id);
 
-    /**
-     * O(1) chained UTXO lookup across the overlay stack (Speculative Tip ->
-     * Frozen Epoch Layers L_k..L_1). Sets spent_in_stack = true if spent in
-     * any overlay layer; returns true and populates *out if created and unspent.
-     */
     bool LookupCoinInStack(const Outpoint &op, Coin *out,
                            bool &spent_in_stack) const;
 
@@ -515,8 +515,7 @@ private:
     std::vector<MempoolOverlayLayer> frozen_epochs_;
 };
 
-using MempoolOverlayStack = MerklixOverlayManager;
-
+const MonetaryProfile &GetDefaultV2MonetaryProfile() noexcept;
 MonetaryState GetInitialV2MonetaryState();
 
 } // namespace lotus::v2
