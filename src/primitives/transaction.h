@@ -217,8 +217,10 @@ public:
 
 private:
     /** Memory only. */
+    const uint32_t m_serialize_size;
     const uint256 hash;
 
+    uint32_t ComputeSerializedSize() const;
     uint256 ComputeHash() const;
 
 public:
@@ -230,6 +232,11 @@ public:
     explicit CTransaction(CMutableTransaction &&tx);
 
     template <typename Stream> inline void Serialize(Stream &s) const {
+        if constexpr (std::is_same_v<std::remove_cvref_t<Stream>,
+                                     SizeComputer>) {
+            s.seek(m_serialize_size);
+            return;
+        }
         SerializeTransaction(*this, s);
     }
 
@@ -254,7 +261,7 @@ public:
      * Get the total transaction size in bytes.
      * @return Total transaction size in bytes
      */
-    unsigned int GetTotalSize() const;
+    unsigned int GetTotalSize() const { return m_serialize_size; }
 
     bool IsCoinBase() const {
         return (vin.size() == 1 && vin[0].prevout.IsNull());
@@ -271,8 +278,8 @@ public:
     std::string ToString() const;
 };
 #if defined(__x86_64__)
-static_assert(sizeof(CTransaction) == 88,
-              "sizeof CTransaction is expected to be 88 bytes");
+static_assert(sizeof(CTransaction) == 96,
+              "sizeof CTransaction is expected to be 96 bytes");
 #endif
 
 /**
