@@ -22,6 +22,10 @@
 class CPubKey;
 class CTransaction;
 
+namespace lotus::v2 {
+class BatchSigCollector;
+} // namespace lotus::v2
+
 // DoS prevention: limit cache size to 32MiB (over 1000000 entries on 64-bit
 // systems). Due to how we count cache size, actual memory usage is slightly
 // more (~32.25 MiB)
@@ -65,24 +69,27 @@ public:
 
     void Set(const uint256 &entry);
 
+    void SetBatch(const lotus::v2::BatchSigCollector &collector);
 };
 
 class CachingTransactionSignatureChecker : public TransactionSignatureChecker {
 private:
     bool store;
     SignatureCache &m_signature_cache;
+    lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
 
     bool IsCached(const std::vector<uint8_t> &vchSig, const CPubKey &vchPubKey,
                   const uint256 &sighash) const;
 
 public:
-    CachingTransactionSignatureChecker(const CTransaction *txToIn,
-                                       unsigned int nInIn,
-                                       const Amount amountIn, bool storeIn,
-                                       SignatureCache &signature_cache,
-                                       PrecomputedTransactionData &txdataIn)
+    CachingTransactionSignatureChecker(
+        const CTransaction *txToIn, unsigned int nInIn, const Amount amountIn,
+        bool storeIn, SignatureCache &signature_cache,
+        PrecomputedTransactionData &txdataIn,
+        lotus::v2::BatchSigCollector *sig_collector = nullptr)
         : TransactionSignatureChecker(txToIn, nInIn, amountIn, txdataIn),
-          store(storeIn), m_signature_cache(signature_cache) {}
+          store(storeIn), m_signature_cache(signature_cache),
+          m_sig_collector(sig_collector) {}
 
     bool VerifySignature(const std::vector<uint8_t> &vchSig,
                          const CPubKey &vchPubKey,

@@ -8,6 +8,7 @@
 #include <crypto/common.h>
 #include <crypto/sha256.h>
 #include <logging.h>
+#include <lotus_v2/signing.h>
 #include <pubkey.h>
 #include <random.h>
 #include <script/interpreter.h>
@@ -131,6 +132,44 @@ void SignatureCache::Set(const uint256 &entry) {
     shard.has_entries.store(true, std::memory_order_release);
 }
 
+void SignatureCache::SetBatch(const lotus::v2::BatchSigCollector &collector) {
+    const auto &items = collector.LegacyItems();
+    uint32_t touched_mask = 0;
+    for (const auto &item : items) {
+        if (item.store_in_cache) {
+            const size_t s = static_cast<size_t>(ReadLE64(item.cache_entry.data())) &
+                             (kNumShards - 1);
+            touched_mask |= (uint32_t{1} << s);
+        }
+    }
+    if (touched_mask == 0) {
+        return;
+    }
+    uint256 entry;
+    for (size_t s = 0; s < kNumShards; ++s) {
+        if ((touched_mask & (uint32_t{1} << s)) == 0) {
+            continue;
+        }
+        Shard &shard = m_shards[s];
+        std::unique_lock<std::shared_mutex> lock(shard.mutex);
+        for (const auto &item : items) {
+            if (!item.store_in_cache) {
+                continue;
+            }
+            const size_t item_s =
+                static_cast<size_t>(ReadLE64(item.cache_entry.data())) &
+                (kNumShards - 1);
+            if (item_s != s) {
+                continue;
+            }
+            std::memcpy(entry.begin(), item.cache_entry.data(), 32);
+            g_tls_sigcache.Insert(this, entry);
+            shard.setValid.insert(entry);
+        }
+        shard.has_entries.store(true, std::memory_order_release);
+    }
+}
+
 template <typename F>
 bool RunMemoizedCheck(SignatureCache &signatureCache,
                       const std::vector<uint8_t> &vchSig, const CPubKey &pubkey,
@@ -159,6 +198,20 @@ bool CachingTransactionSignatureChecker::IsCached(
 bool CachingTransactionSignatureChecker::VerifySignature(
     const std::vector<uint8_t> &vchSig, const CPubKey &pubkey,
     const uint256 &sighash) const {
+    if (m_sig_collector != nullptr && vchSig.size() == 64) {
+        if (!pubkey.IsValid()) {
+            return false;
+        }
+        uint256 entry;
+        m_signature_cache.ComputeEntry(entry, sighash, vchSig, pubkey);
+        if (m_signature_cache.Get(entry, !store)) {
+            return true;
+        }
+        return m_sig_collector->AddLegacySchnorr(
+            std::span<const uint8_t>(pubkey.data(), pubkey.size()),
+            std::span<const uint8_t>(vchSig.data(), vchSig.size()),
+            sighash.begin(), entry.begin(), store);
+    }
     return RunMemoizedCheck(
         m_signature_cache, vchSig, pubkey, sighash, store, [&] {
             return TransactionSignatureChecker::VerifySignature(vchSig, pubkey,
