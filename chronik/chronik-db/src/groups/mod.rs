@@ -8,8 +8,10 @@ mod lokad_id;
 mod script;
 mod token_id;
 mod txid;
+mod v2;
 
 pub use self::lokad_id::*;
 pub use self::script::*;
 pub use self::token_id::*;
 pub use self::txid::*;
+pub use self::v2::*;
