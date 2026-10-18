@@ -7,9 +7,12 @@
 #include <avalanche/proof.h>
 #include <avalanche/validation.h>
 #include <hash.h>
+#include <lotus_v2/signing.h>
 #include <streams.h>
 #include <util/strencodings.h>
 #include <util/translation.h>
+
+#include <span>
 
 namespace avalanche {
 
@@ -77,6 +80,43 @@ bool Delegation::verify(DelegationState &state, CPubKey &auth) const {
     if (levels.size() > MAX_DELEGATION_LEVELS) {
         return state.Invalid(DelegationResult::TOO_MANY_LEVELS,
                              "too-many-levels");
+    }
+
+    if (levels.size() >= 2) {
+        lotus::v2::BatchSigCollector collector;
+        collector.Reserve(levels.size());
+        for (size_t i = 0; i < levels.size(); ++i) {
+            const Level &l = levels[i];
+            HashWriter ss{};
+            ss << hash;
+            ss << l.pubkey;
+            hash = ss.GetHash();
+
+            if (!collector.AddLegacySchnorr(
+                    std::span<const uint8_t>{pauth->data(), pauth->size()},
+                    std::span<const uint8_t>{l.sig.data(), l.sig.size()},
+                    hash.begin())) {
+                if (!collector.Empty() && !collector.VerifyAll()) {
+                    const size_t idx = collector.FirstFailingIndex().value_or(0);
+                    auth = (idx == 0) ? proofMaster : levels[idx - 1].pubkey;
+                } else {
+                    auth = *pauth;
+                }
+                return state.Invalid(DelegationResult::INVALID_SIGNATURE,
+                                     "invalid-signature");
+            }
+            pauth = &l.pubkey;
+        }
+
+        if (collector.VerifyAll()) {
+            auth = *pauth;
+            return true;
+        }
+
+        const size_t idx = collector.FirstFailingIndex().value_or(0);
+        auth = (idx == 0) ? proofMaster : levels[idx - 1].pubkey;
+        return state.Invalid(DelegationResult::INVALID_SIGNATURE,
+                             "invalid-signature");
     }
 
     bool ret = reduceLevels(hash, levels, [&](const Level &l) {
