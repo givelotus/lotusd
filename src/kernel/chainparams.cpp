@@ -410,12 +410,10 @@ public:
         m_assumeutxo_data = {
             {.height = 110,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0x55bfa44a715a7c563ce126e22f5f73fcd9b"
-                                         "51d693659a6e13f8e71629f90c522")},
+                 AssumeutxoHash{uint256S("0x08c03b5c8dd81e473faa95c75238a0cc44f0a8986d5897cb3af69f2c0b9fb324")},
              .m_chain_tx_count = 111,
              .blockhash =
-                 BlockHash{uint256S("0x5dd051b6e04941b271ac64a7efba8ace94e77ce0"
-                                    "9665b42ea809e6bcb920a198")}},
+                 BlockHash{uint256S("0x7b1cd65c5daa128265c32cf6eb1d459f962b0e72967f96b588ad555ba8da586b")}},
             {// For use by test/functional/feature_assumeutxo.py
              .height = 299,
              .hash_serialized =
