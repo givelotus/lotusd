@@ -1243,6 +1243,66 @@ async fn get_scripthash_history(
         unconfirmed_tx_history.push(tx.clone());
     }
 
+    if tx_history.is_empty() && unconfirmed_tx_history.is_empty() {
+        let branch_root =
+            bitcoinsuite_core::lotus_v2::Hash32(script_hash.to_be_bytes());
+        let v2_branch_history = indexer.v2_branch_history(&node);
+        let mut page = 0;
+        let mut num_pages = 1;
+        while page < num_pages {
+            let history = v2_branch_history
+                .confirmed_txs_no_spent_by(
+                    GroupMember::Member(branch_root),
+                    page as usize,
+                    MAX_HISTORY_PAGE_SIZE,
+                )
+                .map_err(|_| RPCError::InternalError)?;
+            if history.num_txs > max_history {
+                return Err(RPCError::CustomError(
+                    1,
+                    format!(
+                        "transaction history for scripthash {script_hash_hex} \
+                         exceeds limit ({0})",
+                        max_history
+                    ),
+                ));
+            }
+            for tx in history.txs.iter() {
+                tx_history.push(tx.clone());
+            }
+            num_pages = history.num_pages;
+            page += 1;
+        }
+        let mut history = v2_branch_history
+            .unconfirmed_txs(GroupMember::Member(branch_root))
+            .map_err(|_| RPCError::InternalError)?;
+        if history.num_txs + (tx_history.len() as u32) > max_history {
+            return Err(RPCError::CustomError(
+                1,
+                format!(
+                    "transaction history for scripthash {script_hash_hex} \
+                     exceeds limit ({0})",
+                    max_history
+                ),
+            ));
+        }
+        for tx in history.txs.iter_mut() {
+            let block_height =
+                if has_unconfirmed_parents(tx, &indexer, &node).await? {
+                    -1
+                } else {
+                    0
+                };
+            tx.block = Some(BlockMetadata {
+                height: block_height,
+                hash: vec![0; 64],
+                timestamp: 0,
+                is_final: false,
+            });
+            unconfirmed_tx_history.push(tx.clone());
+        }
+    }
+
     // Return the mempool txs in the reverse block height then txid order
     unconfirmed_tx_history.sort_by(|a, b| {
         let a_height = a.block.as_ref().unwrap().height;
@@ -1266,6 +1326,19 @@ async fn get_scripthash_history(
     Ok(tx_history)
 }
 
+fn script_matches_scripthash_or_v2_branch(
+    script_bytes: &[u8],
+    scripthash: Sha256,
+) -> bool {
+    if Sha256::digest(script_bytes) == scripthash {
+        return true;
+    }
+    let branch_root =
+        bitcoinsuite_core::lotus_v2::Hash32(scripthash.to_be_bytes());
+    bitcoinsuite_core::lotus_v2::Output::decode(script_bytes)
+        .is_ok_and(|out| !out.is_burn() && out.branches.contains(&branch_root))
+}
+
 fn get_scripthash_balance(history: &Vec<Tx>, scripthash: Sha256) -> (i64, i64) {
     let mut confirmed: i64 = 0;
     let mut unconfirmed: i64 = 0;
@@ -1276,7 +1349,10 @@ fn get_scripthash_balance(history: &Vec<Tx>, scripthash: Sha256) -> (i64, i64) {
             None => true,
         };
         for outp in tx.outputs.iter() {
-            if Sha256::digest(&outp.output_script) != scripthash {
+            if !script_matches_scripthash_or_v2_branch(
+                &outp.output_script,
+                scripthash,
+            ) {
                 continue;
             }
             if is_mempool {
@@ -1286,7 +1362,10 @@ fn get_scripthash_balance(history: &Vec<Tx>, scripthash: Sha256) -> (i64, i64) {
             }
         }
         for inp in tx.inputs.iter() {
-            if Sha256::digest(&inp.output_script) != scripthash {
+            if !script_matches_scripthash_or_v2_branch(
+                &inp.output_script,
+                scripthash,
+            ) {
                 continue;
             }
             if is_mempool {
@@ -2578,14 +2657,21 @@ impl ChronikElectrumRPCBlockchainEndpoint {
         let script_utxos = indexer
             .script_utxos(&self.node)
             .map_err(|_| RPCError::InternalError)?;
-        let script = match script_utxos.script(
+        let utxos = match script_utxos.script(
             GroupMember::MemberHash(script_hash),
             indexer.decompress_script_fn,
         ) {
-            Ok(script) => script,
-            Err(_) => return Ok(json!([])),
+            Ok(script) => script_utxos.utxos(&script).ok().unwrap_or_default(),
+            Err(_) => {
+                let v2_branch_utxos = indexer.v2_branch_utxos(&self.node);
+                v2_branch_utxos
+                    .utxos(bitcoinsuite_core::lotus_v2::Hash32(
+                        script_hash.to_be_bytes(),
+                    ))
+                    .ok()
+                    .unwrap_or_default()
+            }
         };
-        let utxos = script_utxos.utxos(&script).ok().unwrap_or_default();
 
         let mut json_utxos: Vec<Value> = vec![];
         for utxo in utxos.iter() {
