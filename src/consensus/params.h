@@ -55,6 +55,12 @@ struct Params {
     /** Proof of work parameters */
     uint256 powLimit;
     bool fPowAllowMinDifficultyBlocks;
+    /**
+     * Accept a block whose V2 hashStateRoot is null without checking it.
+     * Regtest only: blocks built by the functional test framework cannot
+     * compute the state root. -strictstateroot turns it off.
+     */
+    bool allowNullStateRoot{false};
     bool fPowNoRetargeting;
     int64_t nDAAHalfLife;
     int64_t nPowTargetSpacing;
