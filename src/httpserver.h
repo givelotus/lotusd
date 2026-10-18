@@ -6,6 +6,9 @@
 #ifndef BITCOIN_HTTPSERVER_H
 #define BITCOIN_HTTPSERVER_H
 
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
+
 #include <functional>
 #include <optional>
 #include <string>
@@ -48,6 +51,11 @@ typedef std::function<bool(Config &config, HTTPRequest *req,
                            const std::string &)>
     HTTPRequestHandler;
 
+/** Coroutine handler for requests to a certain HTTP path */
+using HTTPAsyncRequestHandler = std::function<boost::asio::awaitable<bool>(
+    Config &config, HTTPRequest *req, const std::string &,
+    boost::asio::any_io_executor)>;
+
 /**
  * Register handler for prefix.
  * If multiple handlers match a prefix, the first-registered one will
@@ -56,8 +64,32 @@ typedef std::function<bool(Config &config, HTTPRequest *req,
 void RegisterHTTPHandler(const std::string &prefix, bool exactMatch,
                          const HTTPRequestHandler &handler);
 
+/**
+ * Register coroutine handler for prefix.
+ * If multiple handlers match a prefix, the first-registered one will
+ * be invoked.
+ */
+void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
+                              const HTTPAsyncRequestHandler &handler);
+
 /** Unregister handler for prefix */
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
+
+/** Release/reacquire an HTTP workqueue slot while a coroutine is suspended. */
+void HTTPReleaseWorkQueueSlot() noexcept;
+void HTTPAcquireWorkQueueSlot() noexcept;
+
+class HTTPScopedWaitSuspension {
+public:
+    HTTPScopedWaitSuspension() noexcept { HTTPReleaseWorkQueueSlot(); }
+    ~HTTPScopedWaitSuspension() noexcept { HTTPAcquireWorkQueueSlot(); }
+    HTTPScopedWaitSuspension(const HTTPScopedWaitSuspension &) = delete;
+    HTTPScopedWaitSuspension &
+    operator=(const HTTPScopedWaitSuspension &) = delete;
+};
+
+/** Return the HTTP coroutine thread pool executor if running. */
+boost::asio::any_io_executor GetHTTPThreadPoolExecutor();
 
 /**
  * Return evhttp event base. This can be used by submodules to

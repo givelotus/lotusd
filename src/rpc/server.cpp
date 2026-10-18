@@ -9,6 +9,7 @@
 #include <common/args.h>
 #include <config.h>
 #include <logging.h>
+#include <rpc/async_waiter.h>
 #include <rpc/util.h>
 #include <shutdown.h>
 #include <sync.h>
@@ -31,6 +32,15 @@ using SteadyClock = std::chrono::steady_clock;
 
 static GlobalMutex g_rpc_warmup_mutex;
 static std::atomic<bool> g_rpc_running{false};
+// Duplicate interrupt/stop calls are idempotent within one RPC lifetime.
+// Keep the guards per lifetime so independent in-process users can restart RPC.
+struct RPCShutdownState {
+    std::once_flag interrupt;
+    std::once_flag stop;
+};
+static GlobalMutex g_rpc_shutdown_mutex;
+static std::shared_ptr<RPCShutdownState> g_rpc_shutdown_state
+    GUARDED_BY(g_rpc_shutdown_mutex) = std::make_shared<RPCShutdownState>();
 static bool fRPCInWarmup GUARDED_BY(g_rpc_warmup_mutex) = true;
 static std::string
     rpcWarmupStatus GUARDED_BY(g_rpc_warmup_mutex) = "RPC server started";
@@ -43,6 +53,10 @@ static std::map<std::string, std::unique_ptr<RPCTimerBase>>
 static bool ExecuteCommand(const Config &config, const CRPCCommand &command,
                            const JSONRPCRequest &request, UniValue &result,
                            bool last_handler);
+static boost::asio::awaitable<bool>
+ExecuteCommandAsync(const Config &config, const CRPCCommand &command,
+                    const JSONRPCRequest &request, UniValue &result,
+                    bool last_handler, boost::asio::any_io_executor executor);
 
 struct RPCCommandExecutionInfo {
     std::string method;
@@ -97,6 +111,30 @@ UniValue RPCServer::ExecuteCommand(const Config &config,
 
     // Check if context-free RPC method is valid and execute it
     return tableRPC.execute(config, request);
+}
+
+boost::asio::awaitable<UniValue>
+RPCServer::ExecuteCommandAsync(const Config &config,
+                               const JSONRPCRequest &request,
+                               boost::asio::any_io_executor executor) const {
+    {
+        LOCK(g_rpc_warmup_mutex);
+        if (fRPCInWarmup) {
+            throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
+        }
+    }
+
+    std::string commandName = request.strMethod;
+    {
+        auto commandsReadView = commands.getReadView();
+        auto iter = commandsReadView->find(commandName);
+        if (iter != commandsReadView.end()) {
+            co_return iter->second.get()->Execute(request);
+        }
+    }
+
+    co_return co_await tableRPC.executeAsync(config, request,
+                                             std::move(executor));
 }
 
 void RPCServer::RegisterCommand(std::unique_ptr<RPCCommand> command) {
@@ -350,27 +388,32 @@ bool CRPCTable::removeCommand(const std::string &name,
 
 void StartRPC() {
     LogDebug(BCLog::RPC, "Starting RPC\n");
+    WITH_LOCK(g_rpc_shutdown_mutex,
+              g_rpc_shutdown_state = std::make_shared<RPCShutdownState>());
     g_rpc_running = true;
     g_rpcSignals.Started();
 }
 
 void InterruptRPC() {
-    static std::once_flag g_rpc_interrupt_flag;
+    const auto shutdown =
+        WITH_LOCK(g_rpc_shutdown_mutex, return g_rpc_shutdown_state);
     // This function could be called twice if the GUI has been started with
     // -server=1.
-    std::call_once(g_rpc_interrupt_flag, []() {
+    std::call_once(shutdown->interrupt, []() {
         LogDebug(BCLog::RPC, "Interrupting RPC\n");
         // Interrupt e.g. running longpolls
         g_rpc_running = false;
+        GetRPCBlockChangeWaiter().NotifyAll();
     });
 }
 
 void StopRPC() {
-    static std::once_flag g_rpc_stop_flag;
+    const auto shutdown =
+        WITH_LOCK(g_rpc_shutdown_mutex, return g_rpc_shutdown_state);
     // This function could be called twice if the GUI has been started with
     // -server=1.
     assert(!g_rpc_running);
-    std::call_once(g_rpc_stop_flag, []() {
+    std::call_once(shutdown->stop, []() {
         LogDebug(BCLog::RPC, "Stopping RPC\n");
         WITH_LOCK(g_deadline_timers_mutex, deadlineTimers.clear());
         DeleteAuthCookie();
@@ -435,6 +478,28 @@ static UniValue JSONRPCExecOne(const Config &config, RPCServer &rpcServer,
     return rpc_result;
 }
 
+static boost::asio::awaitable<UniValue>
+JSONRPCExecOneAsync(const Config &config, RPCServer &rpcServer,
+                    JSONRPCRequest jreq, const UniValue &req,
+                    boost::asio::any_io_executor executor) {
+    UniValue rpc_result(UniValue::VOBJ);
+
+    try {
+        jreq.parse(req);
+
+        UniValue result = co_await rpcServer.ExecuteCommandAsync(
+            config, jreq, std::move(executor));
+        rpc_result = JSONRPCReplyObj(result, NullUniValue, jreq.id);
+    } catch (const UniValue &objError) {
+        rpc_result = JSONRPCReplyObj(NullUniValue, objError, jreq.id);
+    } catch (const std::exception &e) {
+        rpc_result = JSONRPCReplyObj(
+            NullUniValue, JSONRPCError(RPC_PARSE_ERROR, e.what()), jreq.id);
+    }
+
+    co_return rpc_result;
+}
+
 std::string JSONRPCExecBatch(const Config &config, RPCServer &rpcServer,
                              const JSONRPCRequest &jreq, const UniValue &vReq) {
     UniValue ret(UniValue::VARR);
@@ -443,6 +508,19 @@ std::string JSONRPCExecBatch(const Config &config, RPCServer &rpcServer,
     }
 
     return ret.write() + "\n";
+}
+
+boost::asio::awaitable<std::string>
+JSONRPCExecBatchAsync(const Config &config, RPCServer &rpcServer,
+                      const JSONRPCRequest &jreq, const UniValue &vReq,
+                      boost::asio::any_io_executor executor) {
+    UniValue ret(UniValue::VARR);
+    for (size_t i = 0; i < vReq.size(); i++) {
+        ret.push_back(co_await JSONRPCExecOneAsync(config, rpcServer, jreq,
+                                                   vReq[i], executor));
+    }
+
+    co_return ret.write() + "\n";
 }
 
 /**
@@ -582,6 +660,21 @@ static bool ExecuteCommands(const Config &config,
     return false;
 }
 
+static boost::asio::awaitable<bool>
+ExecuteCommandsAsync(const Config &config,
+                     const std::vector<const CRPCCommand *> &commands,
+                     const JSONRPCRequest &request, UniValue &result,
+                     boost::asio::any_io_executor executor) {
+    for (const auto &command : commands) {
+        if (co_await ExecuteCommandAsync(config, *command, request, result,
+                                         &command == &commands.back(),
+                                         executor)) {
+            co_return true;
+        }
+    }
+    co_return false;
+}
+
 UniValue CRPCTable::execute(const Config &config,
                             const JSONRPCRequest &request) const {
     // Return immediately if in warmup
@@ -603,6 +696,27 @@ UniValue CRPCTable::execute(const Config &config,
     throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Method not found");
 }
 
+boost::asio::awaitable<UniValue>
+CRPCTable::executeAsync(const Config &config, const JSONRPCRequest &request,
+                        boost::asio::any_io_executor executor) const {
+    {
+        LOCK(g_rpc_warmup_mutex);
+        if (fRPCInWarmup) {
+            throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
+        }
+    }
+
+    auto it = mapCommands.find(request.strMethod);
+    if (it != mapCommands.end()) {
+        UniValue result;
+        if (co_await ExecuteCommandsAsync(config, it->second, request, result,
+                                          std::move(executor))) {
+            co_return result;
+        }
+    }
+    throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Method not found");
+}
+
 static bool ExecuteCommand(const Config &config, const CRPCCommand &command,
                            const JSONRPCRequest &request, UniValue &result,
                            bool last_handler) {
@@ -615,6 +729,27 @@ static bool ExecuteCommand(const Config &config, const CRPCCommand &command,
                 result, last_handler);
         } else {
             return command.actor(config, request, result, last_handler);
+        }
+    } catch (const UniValue::type_error &e) {
+        throw JSONRPCError(RPC_TYPE_ERROR, e.what());
+    } catch (const std::exception &e) {
+        throw JSONRPCError(RPC_MISC_ERROR, e.what());
+    }
+}
+
+static boost::asio::awaitable<bool>
+ExecuteCommandAsync(const Config &config, const CRPCCommand &command,
+                    const JSONRPCRequest &request, UniValue &result,
+                    bool last_handler, boost::asio::any_io_executor executor) {
+    try {
+        RPCCommandExecution execution(request.strMethod);
+        if (request.params.isObject()) {
+            co_return co_await command.async_actor(
+                config, transformNamedArguments(request, command.argNames),
+                result, last_handler, std::move(executor));
+        } else {
+            co_return co_await command.async_actor(
+                config, request, result, last_handler, std::move(executor));
         }
     } catch (const UniValue::type_error &e) {
         throw JSONRPCError(RPC_TYPE_ERROR, e.what());

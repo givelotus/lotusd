@@ -54,6 +54,10 @@ public:
     UniValue ExecuteCommand(const Config &config,
                             const JSONRPCRequest &request) const;
 
+    boost::asio::awaitable<UniValue>
+    ExecuteCommandAsync(const Config &config, const JSONRPCRequest &request,
+                        boost::asio::any_io_executor executor) const;
+
     /**
      * Register an RPC command.
      */
@@ -152,14 +156,33 @@ public:
     using Actor =
         std::function<bool(const Config &config, const JSONRPCRequest &request,
                            UniValue &result, bool last_handler)>;
+    using AsyncActor = std::function<boost::asio::awaitable<bool>(
+        const Config &config, const JSONRPCRequest &request, UniValue &result,
+        bool last_handler, boost::asio::any_io_executor executor)>;
 
     //! Constructor taking Actor callback supporting multiple handlers.
     CRPCCommand(std::string _category, std::string _name, Actor _actor,
                 std::vector<std::pair<std::string, bool>> _args,
                 intptr_t _unique_id)
         : category(std::move(_category)), name(std::move(_name)),
-          actor(std::move(_actor)), argNames(std::move(_args)),
-          unique_id(_unique_id) {}
+          actor(std::move(_actor)),
+          async_actor([actor_fn = this->actor](
+                          const Config &config, const JSONRPCRequest &request,
+                          UniValue &result, bool last_handler,
+                          boost::asio::any_io_executor)
+                          -> boost::asio::awaitable<bool> {
+              co_return actor_fn(config, request, result, last_handler);
+          }),
+          argNames(std::move(_args)), unique_id(_unique_id) {}
+
+    //! Constructor taking both synchronous and coroutine Actor callbacks.
+    CRPCCommand(std::string _category, std::string _name, Actor _actor,
+                AsyncActor _async_actor,
+                std::vector<std::pair<std::string, bool>> _args,
+                intptr_t _unique_id)
+        : category(std::move(_category)), name(std::move(_name)),
+          actor(std::move(_actor)), async_actor(std::move(_async_actor)),
+          argNames(std::move(_args)), unique_id(_unique_id) {}
 
     //! Simplified constructor taking plain RpcMethodFnType function pointer.
     CRPCCommand(std::string _category, RpcMethodFnType _fn)
@@ -170,11 +193,21 @@ public:
                   result = _fn().HandleRequest(config, request);
                   return true;
               },
+              [_fn](const Config &config, const JSONRPCRequest &request,
+                    UniValue &result, bool,
+                    boost::asio::any_io_executor executor)
+                  -> boost::asio::awaitable<bool> {
+                  RPCHelpMan help = _fn();
+                  result = co_await help.HandleRequestAsync(
+                      config, request, std::move(executor));
+                  co_return true;
+              },
               _fn().GetArgNames(), intptr_t(_fn)) {}
 
     std::string category;
     std::string name;
     Actor actor;
+    AsyncActor async_actor;
     //! List of method arguments and whether they are named-only. Incoming RPC
     //! requests contain a "params" field that can either be an array containing
     //! unnamed arguments or an object containing named arguments. The
@@ -207,6 +240,13 @@ public:
      * @throws an exception (UniValue) when an error happens.
      */
     UniValue execute(const Config &config, const JSONRPCRequest &request) const;
+
+    /**
+     * Execute a method asynchronously as a C++20 coroutine.
+     */
+    boost::asio::awaitable<UniValue>
+    executeAsync(const Config &config, const JSONRPCRequest &request,
+                 boost::asio::any_io_executor executor) const;
 
     /**
      * Returns a list of registered commands
@@ -246,5 +286,9 @@ void InterruptRPC();
 void StopRPC();
 std::string JSONRPCExecBatch(const Config &config, RPCServer &rpcServer,
                              const JSONRPCRequest &req, const UniValue &vReq);
+boost::asio::awaitable<std::string>
+JSONRPCExecBatchAsync(const Config &config, RPCServer &rpcServer,
+                      const JSONRPCRequest &req, const UniValue &vReq,
+                      boost::asio::any_io_executor executor);
 
 #endif // BITCOIN_RPC_SERVER_H
