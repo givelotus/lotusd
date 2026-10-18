@@ -98,10 +98,36 @@ static RPCHelpMan sendrawtransaction() {
             std::string err_string;
             AssertLockNotHeld(cs_main);
             NodeContext &node = EnsureAnyNodeContext(request.context);
+            const int64_t now_ms =
+                TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const auto &fee_ctrl =
+                lotus::v2::GetGlobalFeeHysteresisController();
+            const lotus::v2::FeeRateInfo fee_info =
+                fee_ctrl.GetFeeRateInfo(now_ms);
             const TransactionError err = BroadcastTransaction(
                 node, tx, err_string, max_raw_tx_fee, /*relay*/ true,
-                /*wait_callback*/ true);
+                /*wait_callback*/ true, /*rpc_fee_hysteresis=*/true);
             if (err != TransactionError::OK) {
+                if (err == TransactionError::MEMPOOL_REJECTED &&
+                    (err_string.find("min relay fee not met") !=
+                         std::string::npos ||
+                     err_string.find("mempool min fee not met") !=
+                         std::string::npos)) {
+                    const uint64_t tx_cu =
+                        static_cast<uint64_t>(std::max<int64_t>(0, virtual_size));
+                    const lotus::v2::FeeCheckResult fee_eval =
+                        fee_ctrl.EvaluateTransactionFee(
+                            lotus::v2::FeeTier::RpcAdmission, tx_cu, 0, now_ms);
+                    err_string += strprintf(
+                        " (required_fee_sats=%llu, required_rate_per_kcu=%llu, "
+                        "recommended_sdk_feerate_per_kcu=%llu)",
+                        static_cast<unsigned long long>(
+                            fee_eval.required_fee_sats),
+                        static_cast<unsigned long long>(
+                            fee_eval.required_rate_per_kcu),
+                        static_cast<unsigned long long>(
+                            fee_info.recommended_sdk_feerate_per_kcu));
+                }
                 throw JSONRPCTransactionError(err, err_string);
             }
 
@@ -759,8 +785,15 @@ UniValue MempoolInfoToJSON(const CTxMemPool &pool) {
                 pow(2.0, (time - snap.last_rolling_fee_update) / halflife);
         }
     }
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const lotus::v2::FeeRateInfo fee_info =
+        lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(now_ms);
+    const CFeeRate hysteresis_admission_fee(Amount(
+        static_cast<int64_t>(fee_info.rpc_admission_feerate_per_kcu) * SATOSHI));
     const CFeeRate decayed_min_fee = std::max(
-        CFeeRate(int64_t(ceill(rolling_fee)) * SATOSHI), snap.min_relay_tx_fee);
+        {CFeeRate(int64_t(ceill(rolling_fee)) * SATOSHI), snap.min_relay_tx_fee,
+         hysteresis_admission_fee});
     UniValue ret(UniValue::VOBJ);
     ret.pushKV("loaded", snap.mempool_loaded);
     ret.pushKV("size", (int64_t)snap.mempool_size);
@@ -774,6 +807,12 @@ UniValue MempoolInfoToJSON(const CTxMemPool &pool) {
     ret.pushKV("maxmempool", snap.max_mempool);
     ret.pushKV("mempoolminfee", decayed_min_fee.GetFeePerK());
     ret.pushKV("minrelaytxfee", snap.min_relay_tx_fee.GetFeePerK());
+    ret.pushKV("rpc_admission_feerate_sats_per_kb",
+               fee_info.rpc_admission_feerate_per_kcu);
+    ret.pushKV("recommended_feerate_sats_per_kb",
+               fee_info.recommended_sdk_feerate_per_kcu);
+    ret.pushKV("p2p_relay_feerate_sats_per_kb",
+               fee_info.p2p_relay_feerate_per_kcu);
     ret.pushKV("unbroadcastcount", uint64_t{snap.unbroadcast_count});
     return ret;
 }
@@ -810,9 +849,17 @@ static RPCHelpMan getmempoolinfo() {
                 {RPCResult::Type::STR_AMOUNT, "mempoolminfee",
                  "Minimum fee rate in " + ticker +
                      "/kB for tx to be accepted. Is the maximum of "
-                     "minrelaytxfee and minimum mempool fee"},
+                     "minrelaytxfee, minimum mempool fee, and RPC admission "
+                     "fee hysteresis rate"},
                 {RPCResult::Type::STR_AMOUNT, "minrelaytxfee",
                  "Current minimum relay fee for transactions"},
+                {RPCResult::Type::NUM, "rpc_admission_feerate_sats_per_kb",
+                 "Tier 1 local RPC admission fee rate in satoshis per kB"},
+                {RPCResult::Type::NUM, "recommended_feerate_sats_per_kb",
+                 "Recommended wallet/SDK fee rate in satoshis per kB (+5% "
+                 "anti-bounce cushion)"},
+                {RPCResult::Type::NUM, "p2p_relay_feerate_sats_per_kb",
+                 "Tier 2 P2P relay hysteresis fee rate in satoshis per kB"},
                 {RPCResult::Type::NUM, "unbroadcastcount",
                  "Current number of transactions that haven't passed initial "
                  "broadcast yet"},
@@ -1791,6 +1838,85 @@ static RPCHelpMan submitrawtxbatch() {
     };
 }
 
+static RPCHelpMan getfeerateinfo() {
+    return RPCHelpMan{
+        "getfeerateinfo",
+        "Returns the active Lotus V2 three-tier fee hysteresis schedule "
+        "(consensus floor, P2P relay hysteresis rate, RPC admission rate, and "
+        "recommended SDK fee rate with anti-bounce cushion).\n",
+        {},
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::NUM, "consensus_floor_per_kcu",
+                 "Tier 3 consensus floor fee rate in satoshis per 1,000 CU"},
+                {RPCResult::Type::NUM, "p2p_relay_feerate_per_kcu",
+                 "Tier 2 P2P relay and orphan admission fee rate in satoshis "
+                 "per 1,000 CU"},
+                {RPCResult::Type::NUM, "rpc_admission_feerate_per_kcu",
+                 "Tier 1 local RPC admission fee rate in satoshis per 1,000 "
+                 "CU"},
+                {RPCResult::Type::NUM, "recommended_sdk_feerate_per_kcu",
+                 "Recommended wallet/SDK fee rate in satoshis per 1,000 CU "
+                 "(+5% anti-bounce cushion above Tier 1)"},
+                {RPCResult::Type::NUM, "marginal_burn_feerate_per_kcu",
+                 "Marginal P05 burn fee rate in satoshis per 1,000 CU"},
+                {RPCResult::Type::NUM, "hysteresis_window_ms",
+                 "Rolling P2P relay hysteresis window in milliseconds"},
+                {RPCResult::Type::NUM, "hysteresis_discount_permille",
+                 "Hysteresis discount below rolling minimum RPC rate in "
+                 "permille"},
+                {RPCResult::Type::BOOL, "adaptive_history_available",
+                 "Whether complete ancestor block sizes are available for deterministic adaptive capacity"},
+                {RPCResult::Type::NUM, "ema_block_size_bytes",
+                 "Exponential moving average of connected block size in bytes"},
+                {RPCResult::Type::NUM, "adaptive_target_block_size",
+                 "Target block size before fee pressure rises"},
+                {RPCResult::Type::NUM, "adaptive_max_block_size",
+                 "Adaptive maximum excessive block size in bytes"},
+                {RPCResult::Type::NUM, "adaptive_max_generated_block_size",
+                 "Adaptive maximum miner generated block size in bytes"},
+                {RPCResult::Type::NUM, "mempool_backlog_bytes",
+                 "Current mempool backlog in bytes"},
+            }},
+        RPCExamples{HelpExampleCli("getfeerateinfo", "") +
+                    HelpExampleRpc("getfeerateinfo", "")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            const int64_t now_ms =
+                TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const lotus::v2::FeeRateInfo info =
+                lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(
+                    now_ms);
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("consensus_floor_per_kcu",
+                       info.consensus_floor_per_kcu);
+            ret.pushKV("p2p_relay_feerate_per_kcu",
+                       info.p2p_relay_feerate_per_kcu);
+            ret.pushKV("rpc_admission_feerate_per_kcu",
+                       info.rpc_admission_feerate_per_kcu);
+            ret.pushKV("recommended_sdk_feerate_per_kcu",
+                       info.recommended_sdk_feerate_per_kcu);
+            ret.pushKV("marginal_burn_feerate_per_kcu",
+                       info.marginal_burn_feerate_per_kcu);
+            ret.pushKV("hysteresis_window_ms", info.hysteresis_window_ms);
+            ret.pushKV("hysteresis_discount_permille",
+                       info.hysteresis_discount_permille);
+            ret.pushKV("adaptive_history_available", info.adaptive_history_available);
+            ret.pushKV("ema_block_size_bytes", info.ema_block_size_bytes);
+            ret.pushKV("adaptive_target_block_size",
+                       info.adaptive_target_block_size);
+            ret.pushKV("adaptive_max_block_size", info.adaptive_max_block_size);
+            ret.pushKV("adaptive_max_generated_block_size",
+                       info.adaptive_max_generated_block_size);
+            ret.pushKV("mempool_backlog_bytes", info.mempool_backlog_bytes);
+            return ret;
+        },
+    };
+}
+
 void RegisterMempoolRPCCommands(CRPCTable &t) {
     static const CRPCCommand commands[]{
         // category     actor (function)
@@ -1799,6 +1925,7 @@ void RegisterMempoolRPCCommands(CRPCTable &t) {
         {"rawtransactions", testmempoolaccept},
         {"rawtransactions", testrawtxbatch},
         {"rawtransactions", submitrawtxbatch},
+        {"blockchain", getfeerateinfo},
         {"blockchain", getmempoolancestors},
         {"blockchain", getmempooldescendants},
         {"blockchain", getmempoolentry},
