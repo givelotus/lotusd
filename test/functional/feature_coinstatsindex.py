@@ -43,7 +43,10 @@ class CoinStatsIndexTest(BitcoinTestFramework):
     def block_sanity_check(self, block_info):
         block_subsidy = 50_000_000
         assert_equal(
-            block_info["prevout_spent"] + block_subsidy,
+            block_info["prevout_spent"]
+            + block_subsidy
+            + block_info["unspendables"]["expired"]
+            + block_info["cleaning_bounty"],
             block_info["new_outputs_ex_coinbase"]
             + block_info["coinbase"]
             + block_info["unspendable"],
@@ -140,6 +143,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
             assert_equal(
                 res4["block_info"],
                 {
+                    "cleaning_bounty": 0,
                     "unspendable": 50_000_000,
                     "prevout_spent": 0,
                     "new_outputs_ex_coinbase": 0,
@@ -148,6 +152,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
                         "genesis_block": 50_000_000,
                         "bip30": 0,
                         "scripts": 0,
+                        "expired": 0,
                         "unclaimed_rewards": 0,
                     },
                 },
@@ -160,6 +165,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
             assert_equal(
                 res5["block_info"],
                 {
+                    "cleaning_bounty": 0,
                     "unspendable": 0,
                     "prevout_spent": funding["value"],
                     "new_outputs_ex_coinbase": normal_outputs,
@@ -168,6 +174,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
                         "genesis_block": 0,
                         "bip30": 0,
                         "scripts": 0,
+                        "expired": 0,
                         "unclaimed_rewards": 0,
                     },
                 },
@@ -209,6 +216,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
             assert_equal(
                 res6["block_info"],
                 {
+                    "cleaning_bounty": 0,
                     "unspendable": Decimal("20990000.00"),
                     "prevout_spent": 71_000_000,
                     "new_outputs_ex_coinbase": Decimal("49999990.00"),
@@ -217,6 +225,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
                         "genesis_block": 0,
                         "bip30": 0,
                         "scripts": Decimal("20990000.00"),
+                        "expired": 0,
                         "unclaimed_rewards": 0,
                     },
                 },
@@ -242,6 +251,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
             assert_equal(
                 res7["block_info"],
                 {
+                    "cleaning_bounty": 0,
                     "unspendable": 10_000_000,
                     "prevout_spent": 0,
                     "new_outputs_ex_coinbase": 0,
@@ -250,6 +260,7 @@ class CoinStatsIndexTest(BitcoinTestFramework):
                         "genesis_block": 0,
                         "bip30": 0,
                         "scripts": 0,
+                        "expired": 0,
                         "unclaimed_rewards": 10_000_000,
                     },
                 },

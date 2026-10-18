@@ -47,6 +47,10 @@ struct MonetaryTransition {
     MonetaryInteger required_underclaim{};
     MonetaryInteger actual_underclaim{};
     MonetaryInteger spendable_supply_delta{}; // signed mathematical amount
+    size_t expired_swept_count{};
+    MonetaryInteger expired_burned_atoms{};
+    MonetaryInteger cleaning_crew_bounty{};
+    MonetaryInteger burned_total{};
 };
 
 inline constexpr uint64_t ABSOLUTE_TAIL_FORMULA_VERSION = 1;
@@ -84,7 +88,26 @@ MonetaryTransition AdvanceMonetary(const MonetaryProfile &profile,
     const MonetaryInteger &coinbase_native_outputs,
     const MonetaryInteger &coinbase_native_burn, uint64_t coinbase_bytes,
     uint64_t tx_frame_prefix_bytes, const MonetaryInteger &account_block_cost,
-    const MonetaryInteger &enforce_block_cost);
+    const MonetaryInteger &enforce_block_cost,
+    size_t expired_swept_count = 0,
+    const MonetaryInteger &expired_burned_atoms = 0);
+
+inline MonetaryTransition AdvanceMonetaryState(
+    const MonetaryProfile &profile, const MonetaryState &parent,
+    const MonetaryInteger &work,
+    const std::vector<MonetaryOrdinaryTx> &transactions,
+    const MonetaryInteger &coinbase_native_outputs,
+    const MonetaryInteger &coinbase_native_burn, uint64_t coinbase_bytes,
+    uint64_t tx_frame_prefix_bytes, const MonetaryInteger &account_block_cost,
+    const MonetaryInteger &enforce_block_cost,
+    size_t expired_swept_count = 0,
+    const MonetaryInteger &expired_burned_atoms = 0) {
+    return AdvanceMonetary(profile, parent, work, transactions,
+                           coinbase_native_outputs, coinbase_native_burn,
+                           coinbase_bytes, tx_frame_prefix_bytes,
+                           account_block_cost, enforce_block_cost,
+                           expired_swept_count, expired_burned_atoms);
+}
 
 } // namespace lotus::v2
 #endif
