@@ -782,6 +782,9 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     const CTransaction &tx = *ws.m_ptx;
     const TxId &txid = ws.m_ptx->GetId();
 
+    LogDebug(BCLog::TXPACKAGES, "tx-admission-precheck txid=%s\n",
+             txid.ToString());
+
     // Copy/alias what we need out of args
     std::vector<COutPoint> &coins_to_uncache = args.m_coins_to_uncache;
 

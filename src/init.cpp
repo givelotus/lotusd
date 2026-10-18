@@ -576,6 +576,11 @@ void SetupServerArgs(NodeContext &node) {
         "ingestion without waiting for reconciliation rounds (default: 1)",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
+        "-testdisablehighbandwidthshorttx",
+        "Disable unsolicited shorttx frames in regtest tests (default: 0)",
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::DEBUG_TEST);
+    argsman.AddArg(
         "-adaptiveblocksize",
         "Scale max generated and excessive block size elastically with "
         "EMA block size and mempool backlog up to 1 GB (default: 1)",
