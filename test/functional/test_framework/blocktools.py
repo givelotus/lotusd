@@ -8,6 +8,7 @@ import time
 import unittest
 from typing import Optional, Union
 
+from .currency import RpcCurrency
 from .key import ECKey
 from .messages import (
     XEC,
@@ -235,6 +236,7 @@ def send_big_transactions(node, utxos, num, fee_multiplier):
     txids = []
     padding = "1" * 512
     addrHash = decode(node.getnewaddress())[2]
+    currency = RpcCurrency.from_node(node)
 
     for _ in range(num):
         ctx = CTransaction()
@@ -243,7 +245,7 @@ def send_big_transactions(node, utxos, num, fee_multiplier):
         ctx.vin.append(CTxIn(COutPoint(txid, int(utxo["vout"])), b""))
         ctx.vout.append(
             CTxOut(
-                int(satoshi_round(utxo["amount"] * XEC)),
+                currency.to_atoms(utxo["amount"]),
                 CScript([OP_DUP, OP_HASH160, addrHash, OP_EQUALVERIFY, OP_CHECKSIG]),
             )
         )
