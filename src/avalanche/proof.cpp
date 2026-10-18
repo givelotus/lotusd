@@ -148,6 +148,7 @@ bool Proof::verify(const Amount &stakeUtxoDustThreshold,
 
     StakeId prevId = uint256::ZERO;
     std::unordered_set<COutPoint, SaltedOutpointHasher> utxos;
+    const StakeCommitment stakeCommitment = getStakeCommitment();
     for (const SignedStake &ss : stakes) {
         const Stake &s = ss.getStake();
         if (s.getAmount() < stakeUtxoDustThreshold) {
@@ -168,7 +169,7 @@ bool Proof::verify(const Amount &stakeUtxoDustThreshold,
                                  "duplicated-stake");
         }
 
-        if (!ss.verify(getStakeCommitment())) {
+        if (!ss.verify(stakeCommitment)) {
             return state.Invalid(
                 ProofValidationResult::INVALID_STAKE_SIGNATURE,
                 "invalid-stake-signature",
