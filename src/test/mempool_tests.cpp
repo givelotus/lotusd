@@ -346,6 +346,18 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
     LOCK2(cs_main, pool.cs);
     TestMemPoolEntryHelper entry;
     Amount feeIncrement = MEMPOOL_FULL_FEE_INCREMENT.GetFeePerK();
+    // Fee-eviction ratios apply to removable per-transaction memory. Slab
+    // chunks/bucket arrays are real retained storage, not a per-node expense;
+    // a fraction of the whole arena can be below the cost of even one node.
+    auto fraction_limit = [&pool](size_t numerator, size_t denominator)
+        EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
+        const size_t retained =
+            pool.mapTx.get_allocator().resource()->TotalAllocatedBytes() +
+            pool.mapNextTx.get_allocator().resource()->TotalAllocatedBytes();
+        const size_t usage = pool.DynamicMemoryUsage();
+        BOOST_REQUIRE_GE(usage, retained);
+        return retained + (usage - retained) * numerator / denominator;
+    };
 
     CMutableTransaction tx1 = CMutableTransaction();
     tx1.vin.resize(1);
@@ -369,7 +381,7 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
     BOOST_CHECK(pool.exists(tx2.GetId()));
 
     // should remove the lower-feerate transaction
-    pool.TrimToSize(pool.DynamicMemoryUsage() * 3 / 4);
+    pool.TrimToSize(fraction_limit(3, 4));
     BOOST_CHECK(pool.exists(tx1.GetId()));
     BOOST_CHECK(!pool.exists(tx2.GetId()));
 
@@ -385,7 +397,7 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
 
     // tx2 should be removed, tx3 is a child of tx2, so it should be removed
     // even though it has highest fee.
-    pool.TrimToSize(pool.DynamicMemoryUsage() * 3 / 4);
+    pool.TrimToSize(fraction_limit(3, 4));
     BOOST_CHECK(pool.exists(tx1.GetId()));
     BOOST_CHECK(!pool.exists(tx2.GetId()));
     BOOST_CHECK(!pool.exists(tx3.GetId()));
@@ -474,7 +486,7 @@ BOOST_AUTO_TEST_CASE(MempoolSizeLimitTest) {
     pool.addUnchecked(entry.Fee(9000 * SATOSHI).FromTx(tx7));
 
     // should maximize mempool size by only removing 5/7
-    pool.TrimToSize(pool.DynamicMemoryUsage() / 2);
+    pool.TrimToSize(fraction_limit(1, 2));
     BOOST_CHECK(pool.exists(tx4.GetId()));
     BOOST_CHECK(!pool.exists(tx5.GetId()));
     BOOST_CHECK(pool.exists(tx6.GetId()));
@@ -1198,6 +1210,190 @@ BOOST_AUTO_TEST_CASE(contended_overlay_warm_reports_skip_and_reader_flushes) {
     if (!was_enabled) LogInstance().DisableCategory(BCLog::MEMPOOL);
     BOOST_CHECK(logged);
     BOOST_CHECK_EQUAL(pool.GetMerklixOverlay().GetSpeculativeOverlay().GetTxCount(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
+    // 1. Direct ChunkedSlabAllocator unit tests: single-slot bump allocation,
+    // multi-chunk growth, LIFO intrusive freelist reuse, rebind sharing, and
+    // n > 1 array allocation fallback.
+    {
+        ChunkedSlabAllocator<uint64_t, 4> alloc;
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 0U);
+
+        uint64_t *p0 = alloc.allocate(1);
+        uint64_t *p1 = alloc.allocate(1);
+        uint64_t *p2 = alloc.allocate(1);
+        uint64_t *p3 = alloc.allocate(1);
+        *p0 = 10;
+        *p1 = 20;
+        *p2 = 30;
+        *p3 = 40;
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 1U);
+        BOOST_CHECK_EQUAL(alloc.arena()->FreeListCount(), 0U);
+        // Contiguous bump slots within the same chunk:
+        BOOST_CHECK_EQUAL(reinterpret_cast<std::byte *>(p1) -
+                              reinterpret_cast<std::byte *>(p0),
+                          static_cast<std::ptrdiff_t>(sizeof(uint64_t)));
+
+        // 5th allocation triggers a 2nd chunk when SlotsPerChunk == 4:
+        uint64_t *p4 = alloc.allocate(1);
+        *p4 = 50;
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 2U);
+
+        // Return p1 and p3 to the intrusive freelist and verify LIFO reuse:
+        alloc.deallocate(p1, 1);
+        alloc.deallocate(p3, 1);
+        BOOST_CHECK_EQUAL(alloc.arena()->FreeListCount(), 2U);
+
+        uint64_t *r1 = alloc.allocate(1);
+        uint64_t *r2 = alloc.allocate(1);
+        BOOST_CHECK_EQUAL(r1, p3);
+        BOOST_CHECK_EQUAL(r2, p1);
+        BOOST_CHECK_EQUAL(alloc.arena()->FreeListCount(), 0U);
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 2U);
+
+        // Rebind to a larger node type and verify shared resource:
+        struct DummyNode {
+            uint64_t a;
+            uint64_t b;
+            uint64_t c;
+        };
+        ChunkedSlabAllocator<uint64_t, 4>::rebind<DummyNode>::other rebound(
+            alloc);
+        BOOST_CHECK(rebound == alloc);
+        DummyNode *dn = rebound.allocate(1);
+        dn->a = 1;
+        dn->b = 2;
+        dn->c = 3;
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 3U);
+        rebound.deallocate(dn, 1);
+        BOOST_CHECK_EQUAL(rebound.arena()->FreeListCount(), 1U);
+
+        // Multi-element (n > 1) bucket-array fallback does not allocate slab
+        // chunks:
+        uint64_t *arr = alloc.allocate(32);
+        for (size_t i = 0; i < 32; ++i) {
+            arr[i] = i;
+        }
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 3U);
+        alloc.deallocate(arr, 32);
+
+        alloc.deallocate(p0, 1);
+        alloc.deallocate(r2, 1);
+        alloc.deallocate(p2, 1);
+        alloc.deallocate(r1, 1);
+        alloc.deallocate(p4, 1);
+        BOOST_CHECK_EQUAL(alloc.arena()->FreeListCount(), 5U);
+    }
+
+    // A live sentinel must pin only its own chunk, rather than the whole
+    // high-water allocation. Regrowth must not reuse freed chunk pointers.
+    {
+        ChunkedSlabAllocator<uint64_t, 4> alloc;
+        std::vector<uint64_t *> nodes;
+        for (uint64_t i = 0; i < 13; ++i) {
+            auto *node = alloc.allocate(1);
+            *node = i;
+            nodes.push_back(node);
+        }
+        for (size_t i = 1; i < nodes.size(); ++i) alloc.deallocate(nodes[i], 1);
+        alloc.resource()->ReleaseUnusedChunks();
+        BOOST_CHECK_EQUAL(alloc.resource()->NumAllocatedChunks(), 1U);
+        BOOST_CHECK_EQUAL(*nodes[0], 0U);
+        nodes.resize(1);
+        for (uint64_t i = 1; i < 13; ++i) {
+            auto *node = alloc.allocate(1);
+            *node = i;
+            nodes.push_back(node);
+        }
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            BOOST_CHECK_EQUAL(*nodes[i], i);
+            alloc.deallocate(nodes[i], 1);
+        }
+        alloc.resource()->ReleaseUnusedChunks();
+        BOOST_CHECK_EQUAL(alloc.resource()->TotalAllocatedChunkBytes(), 0U);
+    }
+
+    // 2. CTxMemPool mapTx and mapNextTx insertion/removal churn test:
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    LOCK2(cs_main, pool.cs);
+    pool.clear(/*include_finalized_txs=*/true);
+
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+
+    constexpr size_t BATCH_SIZE = 64;
+    std::vector<CTransactionRef> active_txs;
+    active_txs.reserve(BATCH_SIZE);
+
+    auto makeChurnTx = [](int64_t round, int64_t idx) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(2);
+        mtx.vin[0].prevout = COutPoint(TxId{FastRandomContext().rand256()}, 0);
+        mtx.vin[1].prevout = COutPoint(TxId{FastRandomContext().rand256()}, 1);
+        mtx.vout.emplace_back((10000 + round * 100 + idx) * SATOSHI,
+                              CScript() << OP_TRUE);
+        mtx.vout.emplace_back((20000 + round * 100 + idx) * SATOSHI,
+                              CScript() << OP_TRUE);
+        return MakeTransactionRef(mtx);
+    };
+
+    for (size_t i = 0; i < BATCH_SIZE; ++i) {
+        CTransactionRef tx = makeChurnTx(0, static_cast<int64_t>(i));
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        active_txs.push_back(std::move(tx));
+    }
+
+    BOOST_CHECK_EQUAL(pool.size(), BATCH_SIZE);
+    BOOST_CHECK_EQUAL(pool.mapNextTx.size(), BATCH_SIZE * 2);
+
+    const size_t tx_chunks_initial =
+        pool.mapTx.get_allocator().resource()->NumAllocatedChunks();
+    const size_t next_chunks_initial =
+        pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks();
+    BOOST_CHECK_GE(tx_chunks_initial, 1U);
+    BOOST_CHECK_GE(next_chunks_initial, 1U);
+
+    const size_t slab_bytes =
+        pool.mapTx.get_allocator().resource()->TotalAllocatedChunkBytes() +
+        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes();
+    BOOST_CHECK_GE(pool.DynamicMemoryUsage(), slab_bytes);
+    const size_t peak_usage = pool.DynamicMemoryUsage();
+
+    // Churn through 3 rounds of evicting half the mempool and refilling back to
+    // BATCH_SIZE, verifying slab freelist slot reuse without new chunk growth.
+    for (int64_t round = 1; round <= 3; ++round) {
+        for (size_t i = 0; i < BATCH_SIZE / 2; ++i) {
+            pool.removeRecursive(*active_txs[i], REMOVAL_REASON_DUMMY);
+        }
+        active_txs.erase(active_txs.begin(),
+                         active_txs.begin() + (BATCH_SIZE / 2));
+        BOOST_CHECK_EQUAL(pool.size(), BATCH_SIZE / 2);
+        BOOST_CHECK_EQUAL(pool.mapNextTx.size(), BATCH_SIZE);
+
+        for (size_t i = 0; i < BATCH_SIZE / 2; ++i) {
+            CTransactionRef tx = makeChurnTx(round, static_cast<int64_t>(i));
+            pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+            active_txs.push_back(std::move(tx));
+        }
+        BOOST_CHECK_EQUAL(pool.size(), BATCH_SIZE);
+        BOOST_CHECK_EQUAL(pool.mapNextTx.size(), BATCH_SIZE * 2);
+        BOOST_CHECK_EQUAL(
+            pool.mapTx.get_allocator().resource()->NumAllocatedChunks(),
+            tx_chunks_initial);
+        BOOST_CHECK_EQUAL(
+            pool.mapNextTx.get_allocator().resource()->NumAllocatedChunks(),
+            next_chunks_initial);
+    }
+
+    pool.clear(/*include_finalized_txs=*/true);
+    BOOST_CHECK_EQUAL(pool.size(), 0UL);
+    BOOST_CHECK(pool.mapNextTx.empty());
+    BOOST_CHECK_LT(pool.DynamicMemoryUsage(), peak_usage);
+    BOOST_CHECK_EQUAL(
+        pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes(), 0U);
+
 }
 
 BOOST_AUTO_TEST_SUITE_END()
