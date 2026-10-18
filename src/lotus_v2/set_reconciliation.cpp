@@ -91,7 +91,59 @@ uint64_t ComputeShortTxId(uint64_t k0, uint64_t k1,
     return out != 0 ? out : 1ULL;
 }
 
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRYPTO)
+#include <arm_neon.h>
+#define LOTUS_GF64_USE_ARM_PMULL 1
+#elif defined(__x86_64__) && defined(__PCLMUL__)
+#include <wmmintrin.h>
+#define LOTUS_GF64_USE_X86_PCLMUL 1
+#endif
+
 uint64_t GF64Mul(uint64_t a, uint64_t b) noexcept {
+#if defined(LOTUS_GF64_USE_ARM_PMULL)
+    const poly128_t p = vmull_p64(static_cast<poly64_t>(a),
+                                  static_cast<poly64_t>(b));
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    uint8_t bytes[16];
+    std::memcpy(bytes, &p, 16);
+    std::memcpy(&lo, bytes, 8);
+    std::memcpy(&hi, bytes + 8, 8);
+    // Reduce hi * x^64 modulo x^64 + x^4 + x^3 + x + 1 (0x1B).
+    // Since hi < 2^64 and degree(0x1B) == 4, r1 = hi * 0x1B is at most 68 bits:
+    // its low 64 bits (r1_lo) are degrees 0..63, and its high 4 bits (r1_hi)
+    // are degrees 64..67 which are reduced a second time by multiplying by 0x1B.
+    const poly128_t r1 = vmull_p64(static_cast<poly64_t>(hi),
+                                   static_cast<poly64_t>(kGF64Modulus));
+    uint64_t r1_lo = 0;
+    uint64_t r1_hi = 0;
+    uint8_t r1_bytes[16];
+    std::memcpy(r1_bytes, &r1, 16);
+    std::memcpy(&r1_lo, r1_bytes, 8);
+    std::memcpy(&r1_hi, r1_bytes + 8, 8);
+    const poly128_t r2 = vmull_p64(static_cast<poly64_t>(r1_hi),
+                                   static_cast<poly64_t>(kGF64Modulus));
+    uint64_t r2_lo = 0;
+    std::memcpy(&r2_lo, &r2, 8);
+    return lo ^ r1_lo ^ r2_lo;
+#elif defined(LOTUS_GF64_USE_X86_PCLMUL)
+    const __m128i va = _mm_cvtsi64_si128(static_cast<long long>(a));
+    const __m128i vb = _mm_cvtsi64_si128(static_cast<long long>(b));
+    const __m128i prod = _mm_clmulepi64_si128(va, vb, 0x00);
+    const uint64_t lo = static_cast<uint64_t>(_mm_cvtsi128_si64(prod));
+    const uint64_t hi =
+        static_cast<uint64_t>(_mm_cvtsi128_si64(_mm_srli_si128(prod, 8)));
+    const __m128i vmod = _mm_cvtsi64_si128(static_cast<long long>(kGF64Modulus));
+    const __m128i r1 = _mm_clmulepi64_si128(
+        _mm_cvtsi64_si128(static_cast<long long>(hi)), vmod, 0x00);
+    const uint64_t r1_lo = static_cast<uint64_t>(_mm_cvtsi128_si64(r1));
+    const uint64_t r1_hi =
+        static_cast<uint64_t>(_mm_cvtsi128_si64(_mm_srli_si128(r1, 8)));
+    const __m128i r2 = _mm_clmulepi64_si128(
+        _mm_cvtsi64_si128(static_cast<long long>(r1_hi)), vmod, 0x00);
+    return lo ^ r1_lo ^
+           static_cast<uint64_t>(_mm_cvtsi128_si64(r2));
+#else
     uint64_t res = 0;
     for (int i = 0; i < 64 && b != 0; ++i) {
         if (b & 1ULL) {
@@ -105,6 +157,7 @@ uint64_t GF64Mul(uint64_t a, uint64_t b) noexcept {
         b >>= 1;
     }
     return res;
+#endif
 }
 
 uint64_t GF64Sqr(uint64_t a) noexcept {
