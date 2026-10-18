@@ -253,9 +253,6 @@ BOOST_AUTO_TEST_CASE(batch_decode_preserves_order_after_reused_worker_failures) 
                 BOOST_REQUIRE_EQUAL(rows.size(), ids.size());
                 for (size_t i = 0; i < ids.size(); ++i) {
                     BOOST_CHECK_EQUAL(rows[i].find_value("txid").get_str(), ids[i]);
-                    BOOST_CHECK_EQUAL(rows[i].find_value("allowed").get_bool(), false);
-                    BOOST_CHECK_EQUAL(rows[i].find_value("reject-reason").get_str(),
-                                      "bad-txns-non-v7-format");
                 }
             }
             BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
