@@ -25,6 +25,7 @@
 #include <logging/values.h>
 #include <minerfund.h>
 #include <policy/block/stakingrewards.h>
+#include <policy/block/treasury.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -253,14 +254,38 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
             fund, GetScriptForDestination(*whitelisted.begin()));
     }
 
-    std::vector<CScript> stakingRewardsPayoutScripts;
-    if (m_avalanche && IsStakingRewardsActivated(consensusParams, pindexPrev) &&
-        m_avalanche->getStakingRewardWinners(pindexPrev->GetBlockHash(),
-                                             stakingRewardsPayoutScripts)) {
-        const Amount stakingRewards = GetStakingRewardsAmount(blockReward);
-        coinbaseTx.vout[0].nValue -= stakingRewards;
-        coinbaseTx.vout.emplace_back(stakingRewards,
-                                     stakingRewardsPayoutScripts[0]);
+    if (m_avalanche && m_avalanche->isQuorumEstablished()) {
+        std::vector<CScript> stakingRewardsPayoutScripts;
+        if (IsStakingRewardsActivated(consensusParams, pindexPrev) &&
+            m_avalanche->getStakingRewardWinners(pindexPrev->GetBlockHash(),
+                                                 stakingRewardsPayoutScripts)) {
+            const Amount stakingRewards = GetStakingRewardsAmount(blockSubsidy);
+            coinbaseTx.vout[0].nValue -= stakingRewards;
+            coinbaseTx.vout.emplace_back(stakingRewards,
+                                         stakingRewardsPayoutScripts[0]);
+        }
+
+        std::vector<CTxOut> treasuryOutputs;
+        if (IsTreasuryActivated(consensusParams, pindexPrev) &&
+            m_avalanche->getTreasuryRewardWinner(pindexPrev->GetBlockHash(),
+                                                 treasuryOutputs) &&
+            !treasuryOutputs.empty()) {
+            const Amount treasuryRewards =
+                GetTreasuryRewardsAmount(blockSubsidy);
+            Amount totalTreasuryOut = Amount::zero();
+            for (const auto &out : treasuryOutputs) {
+                totalTreasuryOut += out.nValue;
+            }
+            if (totalTreasuryOut < treasuryRewards) {
+                treasuryOutputs[0].nValue +=
+                    (treasuryRewards - totalTreasuryOut);
+                totalTreasuryOut = treasuryRewards;
+            }
+            coinbaseTx.vout[0].nValue -= totalTreasuryOut;
+            for (const auto &out : treasuryOutputs) {
+                coinbaseTx.vout.push_back(out);
+            }
+        }
     }
 
     // Make sure the coinbase is big enough.

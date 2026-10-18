@@ -6728,7 +6728,6 @@ void PeerManagerImpl::ProcessMessage(
         peer->m_their_services = nServices;
         m_v2_protocol_handler.SetPeerServices(pfrom.GetId(), nServices);
         if (m_avalanche) m_avalanche->setNodeMempoolBatchServices(pfrom.GetId(), nServices);
-        if (m_avalanche) m_avalanche->setNodeSupportsStateAnchor(pfrom.GetId(), (nServices & NODE_UTXO_SHARD) != 0);
         pfrom.SetAddrLocal(addrMe);
         {
             LOCK(pfrom.m_subver_mutex);
@@ -8422,8 +8421,9 @@ void PeerManagerImpl::ProcessMessage(
                             avalanche::StakeContenderId(inv.hash));
                     }
                 } break;
-                case MSG_AVA_STATE_ANCHOR: {
-                    vote = m_avalanche->getStateAnchorStatus(avalanche::StateAnchorId(inv.hash));
+                case MSG_AVA_TREASURY_CONTENDER: {
+                    vote = m_avalanche->getTreasuryContenderStatus(
+                        avalanche::TreasuryContenderId(inv.hash));
                 } break;
                 case MSG_AVA_MEMPOOL_BATCH: {
                     if (m_avalanche->isMempoolBatchKnown(inv.hash)) {
@@ -8748,6 +8748,7 @@ void PeerManagerImpl::ProcessMessage(
                             pindex->GetBlockHash());
 
                         m_avalanche->cleanupStakingRewards(pindex->nHeight);
+                        m_avalanche->cleanupTreasuryContenders(pindex->nHeight);
 
                         std::unique_ptr<node::CBlockTemplate> blockTemplate;
                         {
@@ -8882,23 +8883,29 @@ void PeerManagerImpl::ProcessMessage(
                 }
             }
 
-            if (auto pitem = std::get_if<const avalanche::StateAnchorId>(&item)) {
-                logVoteUpdate(u, "state_anchor", *pitem);
+            if (auto pitem =
+                    std::get_if<const avalanche::TreasuryContenderId>(&item)) {
+                const avalanche::TreasuryContenderId contenderId = *pitem;
+                logVoteUpdate(u, "treasury_contender", contenderId);
+
                 switch (u.getStatus()) {
-                    case avalanche::VoteStatus::Finalized:
-                        m_avalanche->finalizeStateAnchor(*pitem);
-                        m_avalanche->setRecentlyFinalized(*pitem);
-                        break;
-                    case avalanche::VoteStatus::Accepted:
-                        m_avalanche->acceptStateAnchor(*pitem);
-                        break;
                     case avalanche::VoteStatus::Rejected:
-                    case avalanche::VoteStatus::Invalid:
-                        m_avalanche->rejectStateAnchor(*pitem);
+                    case avalanche::VoteStatus::Invalid: {
+                        m_avalanche->rejectTreasuryContender(contenderId);
                         break;
-                    default: break;
+                    }
+                    case avalanche::VoteStatus::Finalized: {
+                        m_avalanche->setRecentlyFinalized(contenderId);
+                        m_avalanche->finalizeTreasuryContender(contenderId);
+                        break;
+                    }
+                    case avalanche::VoteStatus::Accepted: {
+                        m_avalanche->acceptTreasuryContender(contenderId);
+                        break;
+                    }
+                    case avalanche::VoteStatus::Stale:
+                        break;
                 }
-                continue;
             }
             if (auto pitem =
                     std::get_if<const avalanche::MempoolBatchVoteItem>(&item)) {
@@ -9230,6 +9237,33 @@ void PeerManagerImpl::ProcessMessage(
         }
         m_avalanche->registerMempoolBatch(announcement,
                                           /*locallyAccepted=*/locally_accepted);
+        return;
+    }
+
+    if (msg_type == NetMsgType::AVATREASURY) {
+        if (!m_avalanche) {
+            return;
+        }
+        if (!m_v2_protocol_handler.CheckPeerRateLimit(pfrom.GetId(),
+                                                      time_received)) {
+            return;
+        }
+        BlockHash prevblockhash;
+        std::vector<CTxOut> outputs;
+        Amount totalReward;
+        try {
+            vRecv >> prevblockhash >> outputs >> totalReward;
+        } catch (const std::exception &) {
+            return;
+        }
+        const bool known_prev = WITH_LOCK(
+            cs_main, return m_chainman.m_blockman.LookupBlockIndex(
+                                prevblockhash) != nullptr);
+        if (!known_prev ||
+            !avalanche::IsValidTreasuryOutputs(outputs, totalReward)) {
+            return;
+        }
+        m_avalanche->addTreasuryContender(prevblockhash, outputs, totalReward);
         return;
     }
 
