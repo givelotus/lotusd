@@ -15,7 +15,7 @@ use std::{
     ffi::{c_char, c_int, c_uint, c_void, CStr, CString},
     path::Path,
     ptr, slice,
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use abc_rust_error::Result;
@@ -25,7 +25,8 @@ use thiserror::Error;
 use crate::{
     groups::{
         LokadIdHistoryWriter, ScriptHistoryWriter, ScriptUtxoWriter,
-        TokenIdHistoryWriter, TokenIdUtxoWriter,
+        TokenIdHistoryWriter, TokenIdUtxoWriter, V2AssetHistoryWriter,
+        V2AssetUtxoWriter, V2BranchHistoryWriter, V2BranchUtxoWriter,
     },
     io::{
         token::TokenWriter, BlockStatsWriter, BlockWriter, MetadataWriter,
@@ -89,8 +90,25 @@ pub const CF_TOKEN_META: &str = "token_meta";
 pub const CF_TOKEN_TX: &str = "token_tx";
 /// Column family for the tx data.
 pub const CF_TX: &str = "tx";
+/// Column family to store tx history by V2 branch root hash.
+pub const CF_V2_BRANCH_HISTORY: &str = "v2_branch_history";
+/// Column family to store number of txs by V2 branch root hash.
+pub const CF_V2_BRANCH_HISTORY_NUM_TXS: &str = "v2_branch_history_num_txs";
+/// Column family for utxos by V2 branch root hash.
+pub const CF_V2_BRANCH_UTXO: &str = "v2_branch_utxo";
+/// Column family to store tx history by V2 asset ID.
+pub const CF_V2_ASSET_HISTORY: &str = "v2_asset_history";
+/// Column family to store number of txs by V2 asset ID.
+pub const CF_V2_ASSET_HISTORY_NUM_TXS: &str = "v2_asset_history_num_txs";
+/// Column family for utxos by V2 asset ID.
+pub const CF_V2_ASSET_UTXO: &str = "v2_asset_utxo";
 
-#[allow(non_camel_case_types, dead_code, unreachable_pub)]
+#[allow(
+    non_camel_case_types,
+    dead_code,
+    unreachable_pub,
+    clashing_extern_declarations
+)]
 mod ffi {
     use super::*;
 
@@ -121,7 +139,13 @@ mod ffi {
     pub const MDBX_SUCCESS: c_int = 0;
     pub const MDBX_RESULT_TRUE: c_int = -1;
     pub const MDBX_NOTFOUND: c_int = -30798;
-    pub const MDBX_ENODATA: c_int = 96; // macOS ENODATA
+    #[cfg(target_os = "macos")]
+    pub const MDBX_ENODATA: c_int = 96;
+    #[cfg(not(target_os = "macos"))]
+    pub const MDBX_ENODATA: c_int = 61;
+
+    pub const MDBX_LOG_DONTCHANGE: c_int = -1;
+    pub const MDBX_DBG_LEGACY_MULTIOPEN: c_int = 0x40;
 
     // Environment flags
     pub const MDBX_SAFE_NOSYNC: c_uint = 0x10000;
@@ -151,6 +175,7 @@ mod ffi {
     // Cursor operations
     pub const MDBX_FIRST: c_uint = 0;
     pub const MDBX_FIRST_DUP: c_uint = 1;
+    pub const MDBX_GET_BOTH: c_uint = 2;
     pub const MDBX_GET_BOTH_RANGE: c_uint = 3;
     pub const MDBX_GET_CURRENT: c_uint = 4;
     pub const MDBX_GET_MULTIPLE: c_uint = 5;
@@ -165,27 +190,12 @@ mod ffi {
     pub const MDBX_TO_KEY_LESSER_OR_EQUAL: c_uint = 22;
     pub const MDBX_SEEK_AND_GET_MULTIPLE: c_uint = 36;
 
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct MDBX_batch_kv_op {
-        pub key_ptr: *const c_void,
-        pub key_len: usize,
-        pub val_ptr: *const c_void,
-        pub val_len: usize,
-        pub is_delete: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct MDBX_batch_dup_op {
-        pub key_ptr: *const c_void,
-        pub key_len: usize,
-        pub val_ptr: *const c_void,
-        pub val_len: usize,
-        pub op_kind: u32,
-    }
-
     extern "C" {
+        pub fn mdbx_setup_debug(
+            log_level: c_int,
+            debug_flags: c_int,
+            logger: *const c_void,
+        ) -> c_int;
         pub fn mdbx_strerror(errnum: c_int) -> *const c_char;
         pub fn mdbx_env_create(penv: *mut *mut MDBX_env) -> c_int;
         pub fn mdbx_env_set_maxreaders(
@@ -288,17 +298,14 @@ mod ffi {
             del: bool,
         ) -> c_int;
 
-        pub fn mdbx_cursor_create(context: *mut c_void) -> *mut MDBX_cursor;
-        pub fn mdbx_cursor_bind(
-            txn: *mut MDBX_txn,
-            cursor: *mut MDBX_cursor,
-            dbi: MDBX_dbi,
-        ) -> c_int;
-        pub fn mdbx_cursor_unbind(cursor: *mut MDBX_cursor) -> c_int;
         pub fn mdbx_cursor_open(
             txn: *const MDBX_txn,
             dbi: MDBX_dbi,
             cursor: *mut *mut MDBX_cursor,
+        ) -> c_int;
+        pub fn mdbx_cursor_renew(
+            txn: *const MDBX_txn,
+            cursor: *mut MDBX_cursor,
         ) -> c_int;
         pub fn mdbx_cursor_close(cursor: *mut MDBX_cursor);
         pub fn mdbx_cursor_get(
@@ -316,46 +323,6 @@ mod ffi {
         pub fn mdbx_cursor_del(
             cursor: *mut MDBX_cursor,
             flags: c_uint,
-        ) -> c_int;
-        pub fn mdbx_cursor_count(
-            cursor: *const MDBX_cursor,
-            count: *mut usize,
-        ) -> c_int;
-
-        pub fn mdbx_batch_kv_apply(
-            txn: *mut MDBX_txn,
-            dbi: MDBX_dbi,
-            ops: *const MDBX_batch_kv_op,
-            n_ops: usize,
-        ) -> c_int;
-        pub fn mdbx_batch_dup_apply(
-            txn: *mut MDBX_txn,
-            dbi: MDBX_dbi,
-            ops: *const MDBX_batch_dup_op,
-            n_ops: usize,
-        ) -> c_int;
-        pub fn mdbx_batch_multi_get(
-            txn: *mut MDBX_txn,
-            dbi: MDBX_dbi,
-            keys: *const MDBX_val,
-            vals_out: *mut MDBX_val,
-            rcs_out: *mut c_int,
-            n_keys: usize,
-        ) -> c_int;
-        pub fn mdbx_dupfixed_get_pages(
-            cursor: *mut MDBX_cursor,
-            key: *const MDBX_val,
-            elem_size: usize,
-            pages_out: *mut MDBX_val,
-            max_pages: usize,
-            n_pages_out: *mut usize,
-        ) -> c_int;
-        pub fn mdbx_dupfixed_get_current_pages(
-            cursor: *mut MDBX_cursor,
-            elem_size: usize,
-            pages_out: *mut MDBX_val,
-            max_pages: usize,
-            n_pages_out: *mut usize,
         ) -> c_int;
     }
 }
@@ -450,7 +417,7 @@ impl<'a> IntoIterator for &'a MergeOperands {
     }
 }
 
-type FullMergeFn = Arc<
+type FullMergeFn = Box<
     dyn Fn(&[u8], Option<&[u8]>, &MergeOperands) -> Option<Vec<u8>>
         + Send
         + Sync,
@@ -464,7 +431,7 @@ pub struct Options {
     full_merge: Option<FullMergeFn>,
     compaction_filter: Option<CompactionFilterFn>,
     dupsort: bool,
-    dupfixed: bool,
+    fixed_dup_size: Option<usize>,
 }
 
 impl std::fmt::Debug for Options {
@@ -473,17 +440,17 @@ impl std::fmt::Debug for Options {
             .field("has_merge", &self.full_merge.is_some())
             .field("has_compaction_filter", &self.compaction_filter.is_some())
             .field("dupsort", &self.dupsort)
-            .field("dupfixed", &self.dupfixed)
+            .field("fixed_dup_size", &self.fixed_dup_size)
             .finish()
     }
 }
 
 impl Options {
-    /// Configure this column family to use native `MDBX_DUPSORT` (and optionally
-    /// `MDBX_DUPFIXED` when duplicate values have a constant byte size).
-    pub fn set_dupsort(&mut self, dupfixed: bool) {
+    /// Enable `MDBX_DUPSORT` on this column family, and `MDBX_DUPFIXED` when
+    /// `fixed_dup_size` is `Some(elem_size)`.
+    pub fn set_dupsort(&mut self, fixed_dup_size: Option<usize>) {
         self.dupsort = true;
-        self.dupfixed = dupfixed;
+        self.fixed_dup_size = fixed_dup_size;
     }
 
     /// Register a merge operator for this column family.
@@ -502,7 +469,7 @@ impl Options {
             + Sync
             + 'static,
     {
-        self.full_merge = Some(Arc::new(full_merge_fn));
+        self.full_merge = Some(Box::new(full_merge_fn));
     }
 
     /// Register a compaction filter for this column family.
@@ -582,16 +549,15 @@ enum KeyOp {
 
 #[derive(Clone, Debug)]
 enum DupOp {
-    Put12([u8; 12]),
     Put(Vec<u8>),
-    Delete { fixed_dup_size: Option<usize> },
+    DeletePrefix(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Default)]
 struct CfBatch {
     delete_ranges: Vec<(Vec<u8>, Vec<u8>)>,
     key_ops: BTreeMap<Vec<u8>, KeyOp>,
-    dup_ops: BTreeMap<Vec<u8>, BTreeMap<[u8; 12], DupOp>>,
+    dup_ops: BTreeMap<Vec<u8>, Vec<DupOp>>,
 }
 
 /// Atomic batch of writes (`put`, `delete`, `merge`, `delete_range`) across
@@ -623,69 +589,42 @@ impl WriteBatch {
         cf_batch.key_ops.insert(norm_key, KeyOp::Delete);
     }
 
-    /// Insert a 12-byte fixed-size duplicate value (`(tx_num, out_idx)`) under
-    /// `key` in a `MDBX_DUPSORT | MDBX_DUPFIXED` column family without heap
-    /// allocation.
-    pub fn put_dup12_cf(
-        &mut self,
-        cf: &CF,
-        key: impl AsRef<[u8]>,
-        dup_val_12: [u8; 12],
-    ) {
-        let norm_key = normalize_key(key.as_ref()).into_owned();
-        let cf_batch = self.cf_batches.entry(cf.dbi).or_default();
-        cf_batch
-            .dup_ops
-            .entry(norm_key)
-            .or_default()
-            .insert(dup_val_12, DupOp::Put12(dup_val_12));
-    }
-
-    /// Insert a sorted duplicate value (`dup_val`, whose first 12 bytes are the
-    /// big-endian `(tx_num, out_idx)` outpoint prefix) under `key` in a
-    /// `MDBX_DUPSORT` column family.
+    /// Insert a duplicate item `value` under `key` in an `MDBX_DUPSORT` column
+    /// family.
     pub fn put_dup_cf(
         &mut self,
         cf: &CF,
         key: impl AsRef<[u8]>,
-        dup_val: Vec<u8>,
+        value: impl AsRef<[u8]>,
     ) {
         let norm_key = normalize_key(key.as_ref()).into_owned();
-        let prefix: [u8; 12] = dup_val[..12]
-            .try_into()
-            .expect("dup_val must be >= 12 bytes");
         let cf_batch = self.cf_batches.entry(cf.dbi).or_default();
         cf_batch
             .dup_ops
             .entry(norm_key)
             .or_default()
-            .insert(prefix, DupOp::Put(dup_val));
+            .push(DupOp::Put(value.as_ref().to_vec()));
     }
 
-    /// Delete the duplicate value starting with `prefix_12` under `key` in a
-    /// `MDBX_DUPSORT` column family.
+    /// Delete a duplicate item under `key` in an `MDBX_DUPSORT` column family.
+    ///
+    /// When `val_prefix` has the exact length of `fixed_dup_size` (`Some(N)`),
+    /// `Db::write_batch` calls `mdbx_del(txn, dbi, &k, &v)` directly without
+    /// opening or seeking a cursor. Otherwise, it seeks via
+    /// `MDBX_GET_BOTH_RANGE` and deletes the matching prefix entry.
     pub fn delete_dup_prefix_cf(
         &mut self,
         cf: &CF,
         key: impl AsRef<[u8]>,
-        prefix_12: [u8; 12],
-        fixed_dup_size: Option<usize>,
+        val_prefix: impl AsRef<[u8]>,
     ) {
         let norm_key = normalize_key(key.as_ref()).into_owned();
         let cf_batch = self.cf_batches.entry(cf.dbi).or_default();
-        let key_map = cf_batch.dup_ops.entry(norm_key).or_default();
-        match key_map.entry(prefix_12) {
-            Entry::Occupied(e) => {
-                if matches!(e.get(), DupOp::Put12(_) | DupOp::Put(_)) {
-                    // Created and spent within the same WriteBatch: cancel the
-                    // pending Put without touching the B+Tree.
-                    e.remove();
-                }
-            }
-            Entry::Vacant(e) => {
-                e.insert(DupOp::Delete { fixed_dup_size });
-            }
-        }
+        cf_batch
+            .dup_ops
+            .entry(norm_key)
+            .or_default()
+            .push(DupOp::DeletePrefix(val_prefix.as_ref().to_vec()));
     }
 
     /// Queue a merge operand on `key` in `cf`.
@@ -769,7 +708,7 @@ pub struct Error {
 #[derive(Default)]
 struct ReadPool {
     txns: Vec<*mut ffi::MDBX_txn>,
-    cursors: Vec<*mut ffi::MDBX_cursor>,
+    cursors: HashMap<ffi::MDBX_dbi, Vec<*mut ffi::MDBX_cursor>>,
 }
 
 /// Indexer database backed by `libmdbx`.
@@ -814,11 +753,14 @@ type DbIterItem = Result<(Box<[u8]>, Box<[u8]>)>;
 
 struct DbIter<'a> {
     db: &'a Db,
+    dbi: ffi::MDBX_dbi,
     txn: *mut ffi::MDBX_txn,
     cursor: *mut ffi::MDBX_cursor,
     next_op: c_uint,
-    first_item: Option<DbIterItem>,
-    done: bool,
+    current_key: Vec<u8>,
+    current_val: Vec<u8>,
+    valid: bool,
+    pending_err: Option<DbError>,
 }
 
 impl<'a> DbIter<'a> {
@@ -829,11 +771,14 @@ impl<'a> DbIter<'a> {
                 Err(err) => {
                     return DbIter {
                         db,
+                        dbi,
                         txn: ptr::null_mut(),
                         cursor: ptr::null_mut(),
                         next_op: ffi::MDBX_NEXT,
-                        first_item: Some(Err(err.into())),
-                        done: true,
+                        current_key: Vec::new(),
+                        current_val: Vec::new(),
+                        valid: false,
+                        pending_err: Some(err),
                     };
                 }
             };
@@ -844,11 +789,14 @@ impl<'a> DbIter<'a> {
                     db.release_read_txn(txn);
                     return DbIter {
                         db,
+                        dbi,
                         txn: ptr::null_mut(),
                         cursor: ptr::null_mut(),
                         next_op: ffi::MDBX_NEXT,
-                        first_item: Some(Err(err.into())),
-                        done: true,
+                        current_key: Vec::new(),
+                        current_val: Vec::new(),
+                        valid: false,
+                        pending_err: Some(err),
                     };
                 }
             };
@@ -923,58 +871,56 @@ impl<'a> DbIter<'a> {
                 }
             };
 
-            if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
-                let item = Self::extract_kv(k, v);
-                DbIter {
-                    db,
-                    txn,
-                    cursor,
-                    next_op,
-                    first_item: Some(Ok(item)),
-                    done: false,
-                }
+            let mut iter = DbIter {
+                db,
+                dbi,
+                txn,
+                cursor,
+                next_op,
+                current_key: Vec::new(),
+                current_val: Vec::new(),
+                valid: false,
+                pending_err: None,
+            };
+            iter.handle_cursor_rc(rc, k, v);
+            iter
+        }
+    }
+
+    unsafe fn handle_cursor_rc(
+        &mut self,
+        rc: c_int,
+        k: ffi::MDBX_val,
+        v: ffi::MDBX_val,
+    ) {
+        if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+            let k_slice = if k.iov_len == 0 {
+                &[]
             } else {
-                db.release_read_cursor(cursor);
-                db.release_read_txn(txn);
-                let first_item =
-                    if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                        Some(Err(mdbx_err(rc, "mdbx_cursor_get").into()))
-                    } else {
-                        None
-                    };
-                DbIter {
-                    db,
-                    txn: ptr::null_mut(),
-                    cursor: ptr::null_mut(),
-                    next_op,
-                    first_item,
-                    done: true,
-                }
+                slice::from_raw_parts(k.iov_base as *const u8, k.iov_len)
+            };
+            let v_slice = if v.iov_len == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
+            };
+            self.current_key.clear();
+            self.current_key.extend_from_slice(k_slice);
+            self.current_val.clear();
+            self.current_val.extend_from_slice(v_slice);
+            self.valid = true;
+        } else {
+            self.valid = false;
+            self.close_handles();
+            if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
+                self.pending_err = Some(mdbx_err(rc, "mdbx_cursor_get"));
             }
         }
     }
 
-    #[inline]
-    unsafe fn extract_kv(
-        k: ffi::MDBX_val,
-        v: ffi::MDBX_val,
-    ) -> (Box<[u8]>, Box<[u8]>) {
-        let k_slice = if k.iov_len == 0 {
-            &[]
-        } else {
-            slice::from_raw_parts(k.iov_base as *const u8, k.iov_len)
-        };
-        let v_slice = if v.iov_len == 0 {
-            &[]
-        } else {
-            slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
-        };
-        (Box::from(k_slice), Box::from(v_slice))
-    }
-
     unsafe fn close_handles(&mut self) {
         if !self.cursor.is_null() {
-            self.db.release_read_cursor(self.cursor);
+            self.db.release_read_cursor(self.dbi, self.cursor);
             self.cursor = ptr::null_mut();
         }
         if !self.txn.is_null() {
@@ -988,12 +934,16 @@ impl Iterator for DbIter<'_> {
     type Item = DbIterItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(first) = self.first_item.take() {
-            return Some(first);
+        if let Some(err) = self.pending_err.take() {
+            return Some(Err(err.into()));
         }
-        if self.done {
+        if !self.valid {
             return None;
         }
+        let item = (
+            self.current_key.clone().into_boxed_slice(),
+            self.current_val.clone().into_boxed_slice(),
+        );
         unsafe {
             let mut k = ffi::MDBX_val {
                 iov_base: ptr::null_mut(),
@@ -1005,18 +955,9 @@ impl Iterator for DbIter<'_> {
             };
             let rc =
                 ffi::mdbx_cursor_get(self.cursor, &mut k, &mut v, self.next_op);
-            if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
-                Some(Ok(Self::extract_kv(k, v)))
-            } else {
-                self.done = true;
-                self.close_handles();
-                if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                    Some(Err(mdbx_err(rc, "mdbx_cursor_get").into()))
-                } else {
-                    None
-                }
-            }
+            self.handle_cursor_rc(rc, k, v);
         }
+        Some(Ok(item))
     }
 }
 
@@ -1028,43 +969,45 @@ impl Drop for DbIter<'_> {
     }
 }
 
-struct DupPrefixIter<'a, T, F> {
+type DupPrefixIterItem = Result<(Box<[u8]>, Vec<Vec<u8>>)>;
+
+struct DupPrefixIter<'a> {
     db: &'a Db,
+    dbi: ffi::MDBX_dbi,
+    fixed_dup_size: Option<usize>,
     txn: *mut ffi::MDBX_txn,
     cursor: *mut ffi::MDBX_cursor,
     prefix: &'a [u8],
-    fixed_dup_size: Option<usize>,
-    decode_fn: F,
-    first_step: bool,
-    init_err: Option<DbError>,
-    done: bool,
-    _marker: std::marker::PhantomData<T>,
+    current_key: Vec<u8>,
+    current_val: Vec<u8>,
+    valid: bool,
+    pending_err: Option<DbError>,
 }
 
-impl<'a, T, F> DupPrefixIter<'a, T, F> {
+impl<'a> DupPrefixIter<'a> {
     fn new(
         db: &'a Db,
-        dbi: ffi::MDBX_dbi,
+        cf: &CF,
         prefix: &'a [u8],
         start: &[u8],
-        fixed_dup_size: Option<usize>,
-        decode_fn: F,
     ) -> Self {
+        let dbi = cf.dbi;
+        let fixed_dup_size = cf.options.fixed_dup_size;
         unsafe {
             let txn = match db.acquire_read_txn() {
                 Ok(t) => t,
                 Err(err) => {
                     return DupPrefixIter {
                         db,
+                        dbi,
+                        fixed_dup_size,
                         txn: ptr::null_mut(),
                         cursor: ptr::null_mut(),
                         prefix,
-                        fixed_dup_size,
-                        decode_fn,
-                        first_step: false,
-                        init_err: Some(err),
-                        done: true,
-                        _marker: std::marker::PhantomData,
+                        current_key: Vec::new(),
+                        current_val: Vec::new(),
+                        valid: false,
+                        pending_err: Some(err),
                     };
                 }
             };
@@ -1075,15 +1018,15 @@ impl<'a, T, F> DupPrefixIter<'a, T, F> {
                     db.release_read_txn(txn);
                     return DupPrefixIter {
                         db,
+                        dbi,
+                        fixed_dup_size,
                         txn: ptr::null_mut(),
                         cursor: ptr::null_mut(),
                         prefix,
-                        fixed_dup_size,
-                        decode_fn,
-                        first_step: false,
-                        init_err: Some(err),
-                        done: true,
-                        _marker: std::marker::PhantomData,
+                        current_key: Vec::new(),
+                        current_val: Vec::new(),
+                        valid: false,
+                        pending_err: Some(err),
                     };
                 }
             };
@@ -1111,47 +1054,62 @@ impl<'a, T, F> DupPrefixIter<'a, T, F> {
                 )
             };
 
-            if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
-                DupPrefixIter {
-                    db,
-                    txn,
-                    cursor,
-                    prefix,
-                    fixed_dup_size,
-                    decode_fn,
-                    first_step: true,
-                    init_err: None,
-                    done: false,
-                    _marker: std::marker::PhantomData,
-                }
+            let mut iter = DupPrefixIter {
+                db,
+                dbi,
+                fixed_dup_size,
+                txn,
+                cursor,
+                prefix,
+                current_key: Vec::new(),
+                current_val: Vec::new(),
+                valid: false,
+                pending_err: None,
+            };
+            iter.handle_key_rc(rc, k, v);
+            iter
+        }
+    }
+
+    unsafe fn handle_key_rc(
+        &mut self,
+        rc: c_int,
+        k: ffi::MDBX_val,
+        v: ffi::MDBX_val,
+    ) {
+        if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+            let k_slice = if k.iov_len == 0 {
+                &[]
             } else {
-                db.release_read_cursor(cursor);
-                db.release_read_txn(txn);
-                let init_err =
-                    if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                        Some(mdbx_err(rc, "mdbx_cursor_get(dup_prefix_init)"))
-                    } else {
-                        None
-                    };
-                DupPrefixIter {
-                    db,
-                    txn: ptr::null_mut(),
-                    cursor: ptr::null_mut(),
-                    prefix,
-                    fixed_dup_size,
-                    decode_fn,
-                    first_step: false,
-                    init_err,
-                    done: true,
-                    _marker: std::marker::PhantomData,
-                }
+                slice::from_raw_parts(k.iov_base as *const u8, k.iov_len)
+            };
+            if !k_slice.starts_with(self.prefix) {
+                self.valid = false;
+                self.close_handles();
+                return;
+            }
+            let v_slice = if v.iov_len == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
+            };
+            self.current_key.clear();
+            self.current_key.extend_from_slice(k_slice);
+            self.current_val.clear();
+            self.current_val.extend_from_slice(v_slice);
+            self.valid = true;
+        } else {
+            self.valid = false;
+            self.close_handles();
+            if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
+                self.pending_err = Some(mdbx_err(rc, "mdbx_cursor_get(dup)"));
             }
         }
     }
 
     unsafe fn close_handles(&mut self) {
         if !self.cursor.is_null() {
-            self.db.release_read_cursor(self.cursor);
+            self.db.release_read_cursor(self.dbi, self.cursor);
             self.cursor = ptr::null_mut();
         }
         if !self.txn.is_null() {
@@ -1161,19 +1119,18 @@ impl<'a, T, F> DupPrefixIter<'a, T, F> {
     }
 }
 
-impl<T, F> Iterator for DupPrefixIter<'_, T, F>
-where
-    F: FnMut(&[u8]) -> Result<T>,
-{
-    type Item = Result<(Box<[u8]>, Vec<T>)>;
+impl Iterator for DupPrefixIter<'_> {
+    type Item = DupPrefixIterItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(err) = self.init_err.take() {
+        if let Some(err) = self.pending_err.take() {
             return Some(Err(err.into()));
         }
-        if self.done {
+        if !self.valid {
             return None;
         }
+        let key_box = self.current_key.clone().into_boxed_slice();
+        let mut dups = Vec::new();
         unsafe {
             let mut k = ffi::MDBX_val {
                 iov_base: ptr::null_mut(),
@@ -1183,155 +1140,84 @@ where
                 iov_base: ptr::null_mut(),
                 iov_len: 0,
             };
-            let op = if self.first_step {
-                self.first_step = false;
-                ffi::MDBX_GET_CURRENT
-            } else {
-                ffi::MDBX_NEXT_NODUP
-            };
-            let mut rc = ffi::mdbx_cursor_get(self.cursor, &mut k, &mut v, op);
-            if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                self.done = true;
-                self.close_handles();
-                if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                    return Some(Err(
-                        mdbx_err(rc, "mdbx_cursor_get(NEXT_NODUP)").into(),
-                    ));
-                }
-                return None;
-            }
-
-            let k_slice = if k.iov_len == 0 {
-                &[]
-            } else {
-                slice::from_raw_parts(k.iov_base as *const u8, k.iov_len)
-            };
-            if !k_slice.starts_with(self.prefix) {
-                self.done = true;
-                self.close_handles();
-                return None;
-            }
-            let key_box = Box::from(k_slice);
-
             if let Some(elem_size) = self.fixed_dup_size {
-                let mut pages = [ffi::MDBX_val {
-                    iov_base: ptr::null_mut(),
-                    iov_len: 0,
-                }; 32];
-                let mut n_pages: usize = 0;
-                rc = ffi::mdbx_dupfixed_get_current_pages(
+                let mut rc = ffi::mdbx_cursor_get(
                     self.cursor,
-                    elem_size,
-                    pages.as_mut_ptr(),
-                    pages.len(),
-                    &mut n_pages,
+                    ptr::null_mut(),
+                    &mut v,
+                    ffi::MDBX_GET_MULTIPLE,
                 );
-                if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                    self.done = true;
-                    self.close_handles();
-                    return Some(Err(mdbx_err(
-                        rc,
-                        "mdbx_dupfixed_get_current_pages",
-                    )
-                    .into()));
-                }
-                let total_elems: usize = pages[..n_pages]
-                    .iter()
-                    .map(|p| p.iov_len / elem_size)
-                    .sum();
-                let mut items = Vec::with_capacity(total_elems);
-                for page in &pages[..n_pages] {
-                    let page_slice = slice::from_raw_parts(
-                        page.iov_base as *const u8,
-                        page.iov_len,
-                    );
-                    for chunk in page_slice.chunks_exact(elem_size) {
-                        match (self.decode_fn)(chunk) {
-                            Ok(item) => items.push(item),
-                            Err(err) => {
-                                self.done = true;
-                                self.close_handles();
-                                return Some(Err(err));
-                            }
+                while rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+                    if v.iov_len > 0 && elem_size > 0 {
+                        let page_slice = slice::from_raw_parts(
+                            v.iov_base as *const u8,
+                            v.iov_len,
+                        );
+                        dups.reserve(page_slice.len() / elem_size);
+                        for chunk in page_slice.chunks_exact(elem_size) {
+                            dups.push(chunk.to_vec());
                         }
                     }
-                }
-                while rc == ffi::MDBX_RESULT_TRUE {
                     rc = ffi::mdbx_cursor_get(
                         self.cursor,
-                        &mut k,
+                        ptr::null_mut(),
                         &mut v,
                         ffi::MDBX_NEXT_MULTIPLE,
                     );
-                    if rc == ffi::MDBX_NOTFOUND || rc == ffi::MDBX_ENODATA {
-                        break;
-                    }
-                    if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                        self.done = true;
-                        self.close_handles();
-                        return Some(Err(mdbx_err(
-                            rc,
-                            "mdbx_cursor_get(NEXT_MULTIPLE)",
-                        )
-                        .into()));
-                    }
-                    let page_slice = slice::from_raw_parts(
-                        v.iov_base as *const u8,
-                        v.iov_len,
+                }
+                if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
+                    self.valid = false;
+                    self.close_handles();
+                    return Some(Err(
+                        mdbx_err(rc, "mdbx_cursor_get(NEXT_MULTIPLE)").into(),
+                    ));
+                }
+            } else {
+                dups.push(std::mem::take(&mut self.current_val));
+                loop {
+                    let rc = ffi::mdbx_cursor_get(
+                        self.cursor,
+                        &mut k,
+                        &mut v,
+                        ffi::MDBX_NEXT_DUP,
                     );
-                    for chunk in page_slice.chunks_exact(elem_size) {
-                        match (self.decode_fn)(chunk) {
-                            Ok(item) => items.push(item),
-                            Err(err) => {
-                                self.done = true;
-                                self.close_handles();
-                                return Some(Err(err));
-                            }
-                        }
-                    }
-                    rc = ffi::MDBX_RESULT_TRUE;
-                }
-                return Some(Ok((key_box, items)));
-            }
-
-            let mut count: usize = 0;
-            let _ = ffi::mdbx_cursor_count(self.cursor, &mut count);
-            let mut items = Vec::with_capacity(count.max(1));
-
-            while rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
-                let v_slice = if v.iov_len == 0 {
-                    &[]
-                } else {
-                    slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
-                };
-                match (self.decode_fn)(v_slice) {
-                    Ok(item) => items.push(item),
-                    Err(err) => {
-                        self.done = true;
+                    if rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+                        let v_slice = if v.iov_len == 0 {
+                            &[]
+                        } else {
+                            slice::from_raw_parts(
+                                v.iov_base as *const u8,
+                                v.iov_len,
+                            )
+                        };
+                        dups.push(v_slice.to_vec());
+                    } else if rc == ffi::MDBX_NOTFOUND
+                        || rc == ffi::MDBX_ENODATA
+                    {
+                        break;
+                    } else {
+                        self.valid = false;
                         self.close_handles();
-                        return Some(Err(err));
+                        return Some(Err(
+                            mdbx_err(rc, "mdbx_cursor_get(NEXT_DUP)").into()
+                        ));
                     }
                 }
-                rc = ffi::mdbx_cursor_get(
-                    self.cursor,
-                    &mut k,
-                    &mut v,
-                    ffi::MDBX_NEXT_DUP,
-                );
             }
-            if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                self.done = true;
-                self.close_handles();
-                return Some(Err(
-                    mdbx_err(rc, "mdbx_cursor_get(NEXT_DUP)").into(),
-                ));
-            }
-            Some(Ok((key_box, items)))
+
+            let rc = ffi::mdbx_cursor_get(
+                self.cursor,
+                &mut k,
+                &mut v,
+                ffi::MDBX_NEXT_NODUP,
+            );
+            self.handle_key_rc(rc, k, v);
         }
+        Some(Ok((key_box, dups)))
     }
 }
 
-impl<T, F> Drop for DupPrefixIter<'_, T, F> {
+impl Drop for DupPrefixIter<'_> {
     fn drop(&mut self) {
         unsafe {
             self.close_handles();
@@ -1343,7 +1229,7 @@ impl Db {
     unsafe fn acquire_read_txn(
         &self,
     ) -> std::result::Result<*mut ffi::MDBX_txn, DbError> {
-        if let Ok(mut pool) = self.read_pool.lock() {
+        if let Ok(mut pool) = self.read_pool.try_lock() {
             if let Some(txn) = pool.txns.pop() {
                 drop(pool);
                 let rc = ffi::mdbx_txn_renew(txn);
@@ -1351,7 +1237,6 @@ impl Db {
                     return Ok(txn);
                 }
                 ffi::mdbx_txn_abort(txn);
-                return Err(mdbx_err(rc, "mdbx_txn_renew"));
             }
         }
         let mut txn: *mut ffi::MDBX_txn = ptr::null_mut();
@@ -1372,12 +1257,9 @@ impl Db {
         if txn.is_null() {
             return;
         }
-        if ffi::mdbx_txn_reset(txn) != ffi::MDBX_SUCCESS {
-            ffi::mdbx_txn_abort(txn);
-            return;
-        }
-        if let Ok(mut pool) = self.read_pool.lock() {
-            if pool.txns.len() < 64 {
+        ffi::mdbx_txn_reset(txn);
+        if let Ok(mut pool) = self.read_pool.try_lock() {
+            if pool.txns.len() < 32 {
                 pool.txns.push(txn);
                 return;
             }
@@ -1390,37 +1272,38 @@ impl Db {
         txn: *mut ffi::MDBX_txn,
         dbi: ffi::MDBX_dbi,
     ) -> std::result::Result<*mut ffi::MDBX_cursor, DbError> {
-        let mut cursor = ptr::null_mut();
-        if let Ok(mut pool) = self.read_pool.lock() {
-            if let Some(c) = pool.cursors.pop() {
-                cursor = c;
+        if let Ok(mut pool) = self.read_pool.try_lock() {
+            if let Some(vec) = pool.cursors.get_mut(&dbi) {
+                if let Some(cursor) = vec.pop() {
+                    drop(pool);
+                    let rc = ffi::mdbx_cursor_renew(txn, cursor);
+                    if rc == ffi::MDBX_SUCCESS {
+                        return Ok(cursor);
+                    }
+                    ffi::mdbx_cursor_close(cursor);
+                }
             }
         }
-        if cursor.is_null() {
-            cursor = ffi::mdbx_cursor_create(ptr::null_mut());
-            if cursor.is_null() {
-                return Err(mdbx_err(-12, "mdbx_cursor_create"));
-            }
-        }
-        let rc = ffi::mdbx_cursor_bind(txn, cursor, dbi);
+        let mut cursor: *mut ffi::MDBX_cursor = ptr::null_mut();
+        let rc = ffi::mdbx_cursor_open(txn, dbi, &mut cursor);
         if rc != ffi::MDBX_SUCCESS {
-            ffi::mdbx_cursor_close(cursor);
-            return Err(mdbx_err(rc, "mdbx_cursor_bind"));
+            return Err(mdbx_err(rc, "mdbx_cursor_open(read)"));
         }
         Ok(cursor)
     }
 
-    unsafe fn release_read_cursor(&self, cursor: *mut ffi::MDBX_cursor) {
+    unsafe fn release_read_cursor(
+        &self,
+        dbi: ffi::MDBX_dbi,
+        cursor: *mut ffi::MDBX_cursor,
+    ) {
         if cursor.is_null() {
             return;
         }
-        if ffi::mdbx_cursor_unbind(cursor) != ffi::MDBX_SUCCESS {
-            ffi::mdbx_cursor_close(cursor);
-            return;
-        }
-        if let Ok(mut pool) = self.read_pool.lock() {
-            if pool.cursors.len() < 64 {
-                pool.cursors.push(cursor);
+        if let Ok(mut pool) = self.read_pool.try_lock() {
+            let vec = pool.cursors.entry(dbi).or_default();
+            if vec.len() < 32 {
+                vec.push(cursor);
                 return;
             }
         }
@@ -1443,6 +1326,10 @@ impl Db {
         TokenIdUtxoWriter::add_cfs(&mut cfs);
         LokadIdHistoryWriter::add_cfs(&mut cfs);
         PluginsWriter::add_cfs(&mut cfs);
+        V2BranchHistoryWriter::add_cfs(&mut cfs);
+        V2BranchUtxoWriter::add_cfs(&mut cfs);
+        V2AssetHistoryWriter::add_cfs(&mut cfs);
+        V2AssetUtxoWriter::add_cfs(&mut cfs);
         Self::open_with_cfs(path, cfs)
     }
 
@@ -1489,6 +1376,11 @@ impl Db {
             })?;
 
         unsafe {
+            let _ = ffi::mdbx_setup_debug(
+                ffi::MDBX_LOG_DONTCHANGE,
+                ffi::MDBX_DBG_LEGACY_MULTIOPEN,
+                (-1isize) as *const c_void,
+            );
             let mut env: *mut ffi::MDBX_env = ptr::null_mut();
             let mut rc = ffi::mdbx_env_create(&mut env);
             if rc != ffi::MDBX_SUCCESS {
@@ -1513,7 +1405,7 @@ impl Db {
             let size_upper: isize = 256 << 30; // 256 GiB
             let growth_step: isize = 64 << 20; // 64 MiB
             let shrink_threshold: isize = 128 << 20; // 128 MiB
-            let pagesize: isize = 16384; // 16 KiB pages (supports keys up to ~8,150B)
+            let pagesize: isize = 16384; // 16 KiB pages (supports CF_SCRIPT_* keys up to ~8,150B)
 
             rc = ffi::mdbx_env_set_geometry(
                 env,
@@ -1578,7 +1470,7 @@ impl Db {
                 let mut dbi_flags = ffi::MDBX_CREATE;
                 if desc.options.dupsort {
                     dbi_flags |= ffi::MDBX_DUPSORT;
-                    if desc.options.dupfixed {
+                    if desc.options.fixed_dup_size.is_some() {
                         dbi_flags |= ffi::MDBX_DUPFIXED;
                     }
                 }
@@ -1630,27 +1522,8 @@ impl Db {
         if !path_ref.exists() {
             return Ok(());
         }
-        let _ = std::fs::remove_dir_all(path_ref.join("rocksdb.bak"));
-        for name in [
-            "mdbx.dat", "mdbx.lck", "LOCK", "CURRENT", "IDENTITY", "LOG",
-            "LOG.old",
-        ] {
+        for name in ["mdbx.dat", "mdbx.lck", "LOCK", "CURRENT", "LOG"] {
             let _ = std::fs::remove_file(path_ref.join(name));
-        }
-        if let Ok(entries) = std::fs::read_dir(path_ref) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                    if fname.starts_with("MANIFEST-")
-                        || fname.starts_with("OPTIONS-")
-                        || fname.starts_with("LOG.old.")
-                        || fname.ends_with(".sst")
-                        || fname.ends_with(".log")
-                    {
-                        let _ = std::fs::remove_file(p);
-                    }
-                }
-            }
         }
         let _ = std::fs::remove_dir(path_ref);
         Ok(())
@@ -1700,248 +1573,32 @@ impl Db {
         }
     }
 
-    pub(crate) fn get_dups_visit<T, F>(
-        &self,
-        cf: &CF,
-        key: impl AsRef<[u8]>,
-        fixed_dup_size: Option<usize>,
-        mut decode_fn: F,
-    ) -> Result<Option<Vec<T>>>
-    where
-        F: FnMut(&[u8]) -> Result<T>,
-    {
-        let norm_key = normalize_key(key.as_ref());
-        unsafe {
-            let txn = self.acquire_read_txn()?;
-            let cursor = match self.acquire_read_cursor(txn, cf.dbi) {
-                Ok(c) => c,
-                Err(err) => {
-                    self.release_read_txn(txn);
-                    return Err(err.into());
-                }
-            };
-            let mut k = ffi::MDBX_val {
-                iov_base: norm_key.as_ptr() as *mut c_void,
-                iov_len: norm_key.len(),
-            };
-            let mut v = ffi::MDBX_val {
-                iov_base: ptr::null_mut(),
-                iov_len: 0,
-            };
-
-            if let Some(elem_size) = fixed_dup_size {
-                let mut pages = [ffi::MDBX_val {
-                    iov_base: ptr::null_mut(),
-                    iov_len: 0,
-                }; 32];
-                let mut n_pages: usize = 0;
-                let mut rc = ffi::mdbx_dupfixed_get_pages(
-                    cursor,
-                    &k,
-                    elem_size,
-                    pages.as_mut_ptr(),
-                    pages.len(),
-                    &mut n_pages,
-                );
-                if rc == ffi::MDBX_NOTFOUND || rc == ffi::MDBX_ENODATA {
-                    self.release_read_cursor(cursor);
-                    self.release_read_txn(txn);
-                    return Ok(None);
-                }
-                if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                    self.release_read_cursor(cursor);
-                    self.release_read_txn(txn);
-                    return Err(
-                        mdbx_err(rc, "mdbx_dupfixed_get_pages").into(),
-                    );
-                }
-                let total_elems: usize = pages[..n_pages]
-                    .iter()
-                    .map(|p| p.iov_len / elem_size)
-                    .sum();
-                let mut items = Vec::with_capacity(total_elems);
-                for page in &pages[..n_pages] {
-                    let page_slice = slice::from_raw_parts(
-                        page.iov_base as *const u8,
-                        page.iov_len,
-                    );
-                    for chunk in page_slice.chunks_exact(elem_size) {
-                        match decode_fn(chunk) {
-                            Ok(item) => items.push(item),
-                            Err(err) => {
-                                self.release_read_cursor(cursor);
-                                self.release_read_txn(txn);
-                                return Err(err);
-                            }
-                        }
-                    }
-                }
-                while rc == ffi::MDBX_RESULT_TRUE {
-                    rc = ffi::mdbx_cursor_get(
-                        cursor,
-                        &mut k,
-                        &mut v,
-                        ffi::MDBX_NEXT_MULTIPLE,
-                    );
-                    if rc == ffi::MDBX_NOTFOUND || rc == ffi::MDBX_ENODATA {
-                        break;
-                    }
-                    if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                        self.release_read_cursor(cursor);
-                        self.release_read_txn(txn);
-                        return Err(mdbx_err(
-                            rc,
-                            "mdbx_cursor_get(NEXT_MULTIPLE)",
-                        )
-                        .into());
-                    }
-                    let page_slice = slice::from_raw_parts(
-                        v.iov_base as *const u8,
-                        v.iov_len,
-                    );
-                    for chunk in page_slice.chunks_exact(elem_size) {
-                        match decode_fn(chunk) {
-                            Ok(item) => items.push(item),
-                            Err(err) => {
-                                self.release_read_cursor(cursor);
-                                self.release_read_txn(txn);
-                                return Err(err);
-                            }
-                        }
-                    }
-                    rc = ffi::MDBX_RESULT_TRUE;
-                }
-                self.release_read_cursor(cursor);
-                self.release_read_txn(txn);
-                return if items.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(items))
-                };
-            }
-
-            let mut rc = ffi::mdbx_cursor_get(
-                cursor,
-                &mut k,
-                &mut v,
-                ffi::MDBX_SET_KEY,
-            );
-            if rc == ffi::MDBX_NOTFOUND || rc == ffi::MDBX_ENODATA {
-                self.release_read_cursor(cursor);
-                self.release_read_txn(txn);
-                return Ok(None);
-            }
-            if rc != ffi::MDBX_SUCCESS && rc != ffi::MDBX_RESULT_TRUE {
-                self.release_read_cursor(cursor);
-                self.release_read_txn(txn);
-                return Err(mdbx_err(rc, "mdbx_cursor_get(SET_KEY)").into());
-            }
-            let mut count: usize = 0;
-            let _ = ffi::mdbx_cursor_count(cursor, &mut count);
-            let mut items = Vec::with_capacity(count.max(1));
-            while rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
-                let v_slice = if v.iov_len == 0 {
-                    &[]
-                } else {
-                    slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
-                };
-                match decode_fn(v_slice) {
-                    Ok(item) => items.push(item),
-                    Err(err) => {
-                        self.release_read_cursor(cursor);
-                        self.release_read_txn(txn);
-                        return Err(err);
-                    }
-                }
-                rc = ffi::mdbx_cursor_get(
-                    cursor,
-                    &mut k,
-                    &mut v,
-                    ffi::MDBX_NEXT_DUP,
-                );
-            }
-            self.release_read_cursor(cursor);
-            self.release_read_txn(txn);
-            if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
-                return Err(mdbx_err(rc, "mdbx_cursor_get(NEXT_DUP)").into());
-            }
-            if items.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(items))
-            }
-        }
-    }
-
-    pub(crate) fn dup_prefix_iterator<'a, T: 'a, F>(
-        &'a self,
-        cf: &CF,
-        prefix: &'a [u8],
-        start: &[u8],
-        fixed_dup_size: Option<usize>,
-        decode_fn: F,
-    ) -> impl Iterator<Item = Result<(Box<[u8]>, Vec<T>)>> + 'a
-    where
-        F: FnMut(&[u8]) -> Result<T> + 'a,
-    {
-        DupPrefixIter::new(
-            self,
-            cf.dbi,
-            prefix,
-            start,
-            fixed_dup_size,
-            decode_fn,
-        )
-    }
-
     pub(crate) fn multi_get(
         &self,
         cf: &CF,
         keys: impl IntoIterator<Item = impl AsRef<[u8]>>,
         _sorted_inputs: bool,
     ) -> Result<Vec<Option<Vec<u8>>>> {
-        let norm_keys: Vec<Cow<'_, [u8]>> = keys
-            .into_iter()
-            .map(|k| normalize_key(k.as_ref()).into_owned().into())
-            .collect();
-        let n = norm_keys.len();
-        if n == 0 {
+        let keys_vec: Vec<_> = keys.into_iter().collect();
+        if keys_vec.is_empty() {
             return Ok(Vec::new());
         }
 
-        let raw_keys: Vec<ffi::MDBX_val> = norm_keys
-            .iter()
-            .map(|k| ffi::MDBX_val {
-                iov_base: k.as_ptr() as *mut c_void,
-                iov_len: k.len(),
-            })
-            .collect();
-        let mut raw_vals = vec![
-            ffi::MDBX_val {
-                iov_base: ptr::null_mut(),
-                iov_len: 0,
-            };
-            n
-        ];
-        let mut rcs = vec![0 as c_int; n];
-
         unsafe {
             let txn = self.acquire_read_txn()?;
-            let rc = ffi::mdbx_batch_multi_get(
-                txn,
-                cf.dbi,
-                raw_keys.as_ptr(),
-                raw_vals.as_mut_ptr(),
-                rcs.as_mut_ptr(),
-                n,
-            );
-            if rc != ffi::MDBX_SUCCESS {
-                self.release_read_txn(txn);
-                return Err(mdbx_err(rc, "mdbx_batch_multi_get").into());
-            }
-            let mut results = Vec::with_capacity(n);
-            for (item_rc, v) in rcs.into_iter().zip(raw_vals.into_iter()) {
-                if item_rc == ffi::MDBX_SUCCESS {
+            let mut results = Vec::with_capacity(keys_vec.len());
+            for key in &keys_vec {
+                let norm_key = normalize_key(key.as_ref());
+                let k = ffi::MDBX_val {
+                    iov_base: norm_key.as_ptr() as *mut c_void,
+                    iov_len: norm_key.len(),
+                };
+                let mut v = ffi::MDBX_val {
+                    iov_base: ptr::null_mut(),
+                    iov_len: 0,
+                };
+                let rc = ffi::mdbx_get(txn, cf.dbi, &k, &mut v);
+                if rc == ffi::MDBX_SUCCESS {
                     let slice = if v.iov_len == 0 {
                         &[]
                     } else {
@@ -1951,13 +1608,124 @@ impl Db {
                         )
                     };
                     results.push(Some(slice.to_vec()));
-                } else {
+                } else if rc == ffi::MDBX_NOTFOUND {
                     results.push(None);
+                } else {
+                    self.release_read_txn(txn);
+                    return Err(mdbx_err(rc, "mdbx_get(multi_get)").into());
                 }
             }
             self.release_read_txn(txn);
             Ok(results)
         }
+    }
+
+    /// Visit all duplicate values for `key` in an `MDBX_DUPSORT` column family.
+    ///
+    /// When `cf.options.fixed_dup_size` is `Some(elem_size)` (`MDBX_DUPFIXED`),
+    /// reads entire pages of packed fixed-size values using
+    /// `MDBX_SEEK_AND_GET_MULTIPLE` and `MDBX_NEXT_MULTIPLE`.
+    pub(crate) fn get_dups_visit(
+        &self,
+        cf: &CF,
+        key: impl AsRef<[u8]>,
+        mut visit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let norm_key = normalize_key(key.as_ref());
+        let mut k = ffi::MDBX_val {
+            iov_base: norm_key.as_ptr() as *mut c_void,
+            iov_len: norm_key.len(),
+        };
+        let mut v = ffi::MDBX_val {
+            iov_base: ptr::null_mut(),
+            iov_len: 0,
+        };
+
+        unsafe {
+            let txn = self.acquire_read_txn()?;
+            let cursor = match self.acquire_read_cursor(txn, cf.dbi) {
+                Ok(c) => c,
+                Err(err) => {
+                    self.release_read_txn(txn);
+                    return Err(err.into());
+                }
+            };
+
+            if let Some(elem_size) = cf.options.fixed_dup_size {
+                let mut rc = ffi::mdbx_cursor_get(
+                    cursor,
+                    &mut k,
+                    &mut v,
+                    ffi::MDBX_SEEK_AND_GET_MULTIPLE,
+                );
+                while rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+                    if v.iov_len > 0 && elem_size > 0 {
+                        let page_slice = slice::from_raw_parts(
+                            v.iov_base as *const u8,
+                            v.iov_len,
+                        );
+                        for chunk in page_slice.chunks_exact(elem_size) {
+                            if let Err(err) = visit(chunk) {
+                                self.release_read_cursor(cf.dbi, cursor);
+                                self.release_read_txn(txn);
+                                return Err(err);
+                            }
+                        }
+                    }
+                    rc = ffi::mdbx_cursor_get(
+                        cursor,
+                        ptr::null_mut(),
+                        &mut v,
+                        ffi::MDBX_NEXT_MULTIPLE,
+                    );
+                }
+                self.release_read_cursor(cf.dbi, cursor);
+                self.release_read_txn(txn);
+                if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
+                    return Err(
+                        mdbx_err(rc, "mdbx_cursor_get(get_dups_multiple)")
+                            .into(),
+                    );
+                }
+                return Ok(());
+            }
+
+            let mut rc =
+                ffi::mdbx_cursor_get(cursor, &mut k, &mut v, ffi::MDBX_SET_KEY);
+            while rc == ffi::MDBX_SUCCESS || rc == ffi::MDBX_RESULT_TRUE {
+                let v_slice = if v.iov_len == 0 {
+                    &[]
+                } else {
+                    slice::from_raw_parts(v.iov_base as *const u8, v.iov_len)
+                };
+                if let Err(err) = visit(v_slice) {
+                    self.release_read_cursor(cf.dbi, cursor);
+                    self.release_read_txn(txn);
+                    return Err(err);
+                }
+                rc = ffi::mdbx_cursor_get(
+                    cursor,
+                    &mut k,
+                    &mut v,
+                    ffi::MDBX_NEXT_DUP,
+                );
+            }
+            self.release_read_cursor(cf.dbi, cursor);
+            self.release_read_txn(txn);
+            if rc != ffi::MDBX_NOTFOUND && rc != ffi::MDBX_ENODATA {
+                return Err(mdbx_err(rc, "mdbx_cursor_get(get_dups)").into());
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn dup_prefix_iterator<'a>(
+        &'a self,
+        cf: &CF,
+        prefix: &'a [u8],
+        start: &[u8],
+    ) -> impl Iterator<Item = DupPrefixIterItem> + 'a {
+        DupPrefixIter::new(self, cf, prefix, start)
     }
 
     pub(crate) fn iterator_end(
@@ -2025,39 +1793,51 @@ impl Db {
                 );
             }
 
-            let mut kv_batch_ops: Vec<ffi::MDBX_batch_kv_op> = Vec::new();
-            let mut dup_batch_ops: Vec<ffi::MDBX_batch_dup_op> = Vec::new();
-
             for (dbi, cf_batch) in write_batch.cf_batches {
                 let cf_opt = self
                     .cf_by_dbi
                     .get(&dbi)
                     .and_then(|name| self.cfs.get(name));
 
+                // Pre-opened reusable cursor for this DBI across delete_ranges,
+                // key_ops, and dup_ops.
+                let mut dbi_cursor: *mut ffi::MDBX_cursor = ptr::null_mut();
+                macro_rules! ensure_dbi_cursor {
+                    ($context:expr) => {{
+                        if dbi_cursor.is_null() {
+                            let open_rc =
+                                ffi::mdbx_cursor_open(txn, dbi, &mut dbi_cursor);
+                            if open_rc != ffi::MDBX_SUCCESS {
+                                ffi::mdbx_txn_abort(txn);
+                                return Err(
+                                    mdbx_err(open_rc, $context).into()
+                                );
+                            }
+                        }
+                        dbi_cursor
+                    }};
+                }
+                macro_rules! abort_with_err {
+                    ($rc:expr, $context:expr) => {{
+                        if !dbi_cursor.is_null() {
+                            ffi::mdbx_cursor_close(dbi_cursor);
+                        }
+                        ffi::mdbx_txn_abort(txn);
+                        return Err(mdbx_err($rc, $context).into());
+                    }};
+                }
+
                 // 1. Apply any delete_range_cf operations first
                 for (from, to) in cf_batch.delete_ranges {
                     if from.is_empty() && to.iter().all(|&b| b == 0xff) {
                         rc = ffi::mdbx_drop(txn, dbi, false);
                         if rc != ffi::MDBX_SUCCESS {
-                            ffi::mdbx_txn_abort(txn);
-                            return Err(mdbx_err(
-                                rc,
-                                "mdbx_drop(delete_range)",
-                            )
-                            .into());
+                            abort_with_err!(rc, "mdbx_drop(delete_range)");
                         }
                         continue;
                     }
-                    let mut cursor: *mut ffi::MDBX_cursor = ptr::null_mut();
-                    rc = ffi::mdbx_cursor_open(txn, dbi, &mut cursor);
-                    if rc != ffi::MDBX_SUCCESS {
-                        ffi::mdbx_txn_abort(txn);
-                        return Err(mdbx_err(
-                            rc,
-                            "mdbx_cursor_open(delete_range)",
-                        )
-                        .into());
-                    }
+                    let cursor =
+                        ensure_dbi_cursor!("mdbx_cursor_open(delete_range)");
                     let mut k = ffi::MDBX_val {
                         iov_base: from.as_ptr() as *mut c_void,
                         iov_len: from.len(),
@@ -2096,13 +1876,10 @@ impl Db {
                         }
                         rc = ffi::mdbx_cursor_del(cursor, 0);
                         if rc != ffi::MDBX_SUCCESS {
-                            ffi::mdbx_cursor_close(cursor);
-                            ffi::mdbx_txn_abort(txn);
-                            return Err(mdbx_err(
+                            abort_with_err!(
                                 rc,
-                                "mdbx_cursor_del(delete_range)",
-                            )
-                            .into());
+                                "mdbx_cursor_del(delete_range)"
+                            );
                         }
                         rc = ffi::mdbx_cursor_get(
                             cursor,
@@ -2119,70 +1896,52 @@ impl Db {
                             );
                         }
                     }
-                    ffi::mdbx_cursor_close(cursor);
                     if rc != ffi::MDBX_SUCCESS
                         && rc != ffi::MDBX_RESULT_TRUE
                         && rc != ffi::MDBX_NOTFOUND
                         && rc != ffi::MDBX_ENODATA
                     {
-                        ffi::mdbx_txn_abort(txn);
-                        return Err(mdbx_err(
-                            rc,
-                            "mdbx_cursor_get(delete_range)",
-                        )
-                        .into());
+                        abort_with_err!(rc, "mdbx_cursor_get(delete_range)");
                     }
                 }
 
-                // 2. Apply key operations in sorted key order via batched C FFI
-                if !cf_batch.key_ops.is_empty() {
-                    kv_batch_ops.clear();
-                    kv_batch_ops.reserve(cf_batch.key_ops.len());
-                    for (key, op) in &cf_batch.key_ops {
-                        match op {
-                            KeyOp::Put(val) => {
-                                kv_batch_ops.push(ffi::MDBX_batch_kv_op {
-                                    key_ptr: key.as_ptr() as *const c_void,
-                                    key_len: key.len(),
-                                    val_ptr: val.as_ptr() as *const c_void,
-                                    val_len: val.len(),
-                                    is_delete: 0,
-                                });
-                            }
-                            KeyOp::Delete => {
-                                kv_batch_ops.push(ffi::MDBX_batch_kv_op {
-                                    key_ptr: key.as_ptr() as *const c_void,
-                                    key_len: key.len(),
-                                    val_ptr: ptr::null(),
-                                    val_len: 0,
-                                    is_delete: 1,
-                                });
-                            }
-                            KeyOp::Merge { .. } => {}
-                        }
-                    }
-                    if !kv_batch_ops.is_empty() {
-                        rc = ffi::mdbx_batch_kv_apply(
-                            txn,
-                            dbi,
-                            kv_batch_ops.as_ptr(),
-                            kv_batch_ops.len(),
-                        );
-                        if rc != ffi::MDBX_SUCCESS {
-                            ffi::mdbx_txn_abort(txn);
-                            return Err(
-                                mdbx_err(rc, "mdbx_batch_kv_apply").into()
-                            );
-                        }
-                    }
-
-                    for (key, op) in cf_batch.key_ops {
-                        if let KeyOp::Merge { base, operands } = op {
-                            let k = ffi::MDBX_val {
-                                iov_base: key.as_ptr() as *mut c_void,
-                                iov_len: key.len(),
+                // 2. Apply key operations in sorted key order
+                for (key, op) in cf_batch.key_ops {
+                    let k = ffi::MDBX_val {
+                        iov_base: key.as_ptr() as *mut c_void,
+                        iov_len: key.len(),
+                    };
+                    match op {
+                        KeyOp::Put(val) => {
+                            let cursor =
+                                ensure_dbi_cursor!("mdbx_cursor_open(put)");
+                            let mut v = ffi::MDBX_val {
+                                iov_base: val.as_ptr() as *mut c_void,
+                                iov_len: val.len(),
                             };
+                            rc = ffi::mdbx_cursor_put(
+                                cursor,
+                                &k,
+                                &mut v,
+                                ffi::MDBX_UPSERT,
+                            );
+                            if rc != ffi::MDBX_SUCCESS {
+                                abort_with_err!(rc, "mdbx_cursor_put");
+                            }
+                        }
+                        KeyOp::Delete => {
+                            rc = ffi::mdbx_del(txn, dbi, &k, ptr::null());
+                            if rc != ffi::MDBX_SUCCESS
+                                && rc != ffi::MDBX_NOTFOUND
+                            {
+                                abort_with_err!(rc, "mdbx_del");
+                            }
+                        }
+                        KeyOp::Merge { base, operands } => {
                             let Some(cf) = cf_opt else {
+                                if !dbi_cursor.is_null() {
+                                    ffi::mdbx_cursor_close(dbi_cursor);
+                                }
                                 ffi::mdbx_txn_abort(txn);
                                 return Err(RocksDb(Error {
                                     message: format!(
@@ -2194,6 +1953,9 @@ impl Db {
                             let Some(ref full_merge_fn) =
                                 cf.options.full_merge
                             else {
+                                if !dbi_cursor.is_null() {
+                                    ffi::mdbx_cursor_close(dbi_cursor);
+                                }
                                 ffi::mdbx_txn_abort(txn);
                                 return Err(RocksDb(Error {
                                     message: format!(
@@ -2224,12 +1986,7 @@ impl Db {
                                     } else if rc == ffi::MDBX_NOTFOUND {
                                         None
                                     } else {
-                                        ffi::mdbx_txn_abort(txn);
-                                        return Err(mdbx_err(
-                                            rc,
-                                            "mdbx_get(merge)",
-                                        )
-                                        .into());
+                                        abort_with_err!(rc, "mdbx_get(merge)");
                                     }
                                 }
                                 Some(None) => None,
@@ -2267,33 +2024,31 @@ impl Db {
                                         if rc != ffi::MDBX_SUCCESS
                                             && rc != ffi::MDBX_NOTFOUND
                                         {
-                                            ffi::mdbx_txn_abort(txn);
-                                            return Err(mdbx_err(
+                                            abort_with_err!(
                                                 rc,
-                                                "mdbx_del(merge_remove)",
-                                            )
-                                            .into());
+                                                "mdbx_del(merge_remove)"
+                                            );
                                         }
                                     } else {
+                                        let cursor = ensure_dbi_cursor!(
+                                            "mdbx_cursor_open(merge)"
+                                        );
                                         let mut v = ffi::MDBX_val {
                                             iov_base: merged_val.as_ptr()
                                                 as *mut c_void,
                                             iov_len: merged_val.len(),
                                         };
-                                        rc = ffi::mdbx_put(
-                                            txn,
-                                            dbi,
+                                        rc = ffi::mdbx_cursor_put(
+                                            cursor,
                                             &k,
                                             &mut v,
                                             ffi::MDBX_UPSERT,
                                         );
                                         if rc != ffi::MDBX_SUCCESS {
-                                            ffi::mdbx_txn_abort(txn);
-                                            return Err(mdbx_err(
+                                            abort_with_err!(
                                                 rc,
-                                                "mdbx_put(merge)",
-                                            )
-                                            .into());
+                                                "mdbx_cursor_put(merge)"
+                                            );
                                         }
                                     }
                                 }
@@ -2307,12 +2062,10 @@ impl Db {
                                     if rc != ffi::MDBX_SUCCESS
                                         && rc != ffi::MDBX_NOTFOUND
                                     {
-                                        ffi::mdbx_txn_abort(txn);
-                                        return Err(mdbx_err(
+                                        abort_with_err!(
                                             rc,
-                                            "mdbx_del(merge_none)",
-                                        )
-                                        .into());
+                                            "mdbx_del(merge_none)"
+                                        );
                                     }
                                 }
                             }
@@ -2320,63 +2073,123 @@ impl Db {
                     }
                 }
 
-                // 3. Apply native MDBX_DUPSORT / MDBX_DUPFIXED operations in a single C batch call
+                // 3. Apply MDBX_DUPSORT operations in sorted key order
                 if !cf_batch.dup_ops.is_empty() {
-                    dup_batch_ops.clear();
-                    for (key, prefix_map) in &cf_batch.dup_ops {
-                        let key_ptr = key.as_ptr() as *const c_void;
-                        let key_len = key.len();
-                        for (prefix_12, dup_op) in prefix_map {
-                            match dup_op {
-                                DupOp::Put12(arr) => {
-                                    dup_batch_ops.push(ffi::MDBX_batch_dup_op {
-                                        key_ptr,
-                                        key_len,
-                                        val_ptr: arr.as_ptr() as *const c_void,
-                                        val_len: 12,
-                                        op_kind: 0,
-                                    });
-                                }
+                    let fixed_size =
+                        cf_opt.and_then(|cf| cf.options.fixed_dup_size);
+
+                    for (key, ops) in cf_batch.dup_ops {
+                        let k = ffi::MDBX_val {
+                            iov_base: key.as_ptr() as *mut c_void,
+                            iov_len: key.len(),
+                        };
+                        for op in ops {
+                            match op {
                                 DupOp::Put(val) => {
-                                    dup_batch_ops.push(ffi::MDBX_batch_dup_op {
-                                        key_ptr,
-                                        key_len,
-                                        val_ptr: val.as_ptr() as *const c_void,
-                                        val_len: val.len(),
-                                        op_kind: 0,
-                                    });
+                                    let cursor = ensure_dbi_cursor!(
+                                        "mdbx_cursor_open(dup_put)"
+                                    );
+                                    let mut v = ffi::MDBX_val {
+                                        iov_base: val.as_ptr() as *mut c_void,
+                                        iov_len: val.len(),
+                                    };
+                                    rc = ffi::mdbx_cursor_put(
+                                        cursor,
+                                        &k,
+                                        &mut v,
+                                        ffi::MDBX_UPSERT,
+                                    );
+                                    if rc != ffi::MDBX_SUCCESS {
+                                        abort_with_err!(
+                                            rc,
+                                            "mdbx_cursor_put(dup)"
+                                        );
+                                    }
                                 }
-                                DupOp::Delete { fixed_dup_size } => {
-                                    let (val_len, op_kind) =
-                                        if *fixed_dup_size == Some(12) {
-                                            (12, 1)
-                                        } else {
-                                            (fixed_dup_size.unwrap_or(12), 2)
+                                DupOp::DeletePrefix(val_prefix) => {
+                                    // Fast-path exact mdbx_del when fixed_dup_size matches
+                                    // the exact duplicate item length (e.g. 20B for UtxoDataValue).
+                                    if Some(val_prefix.len()) == fixed_size {
+                                        let v = ffi::MDBX_val {
+                                            iov_base: val_prefix.as_ptr()
+                                                as *mut c_void,
+                                            iov_len: val_prefix.len(),
                                         };
-                                    dup_batch_ops.push(ffi::MDBX_batch_dup_op {
-                                        key_ptr,
-                                        key_len,
-                                        val_ptr: prefix_12.as_ptr()
-                                            as *const c_void,
-                                        val_len,
-                                        op_kind,
-                                    });
+                                        rc = ffi::mdbx_del(txn, dbi, &k, &v);
+                                        if rc == ffi::MDBX_SUCCESS {
+                                            continue;
+                                        }
+                                        if rc != ffi::MDBX_NOTFOUND {
+                                            abort_with_err!(
+                                                rc,
+                                                "mdbx_del(dup_exact)"
+                                            );
+                                        }
+                                        // If exact match was not found (e.g. synthetic test with
+                                        // dummy coin value), fall back to 12B outpoint prefix seek.
+                                    }
+                                    let prefix_slice = if Some(val_prefix.len())
+                                        == fixed_size
+                                        && val_prefix.len() > 12
+                                    {
+                                        &val_prefix[..12]
+                                    } else {
+                                        val_prefix.as_slice()
+                                    };
+                                    let cursor = ensure_dbi_cursor!(
+                                        "mdbx_cursor_open(dup_del)"
+                                    );
+                                    let mut k_cur = k;
+                                    let mut v_cur = ffi::MDBX_val {
+                                        iov_base: prefix_slice.as_ptr()
+                                            as *mut c_void,
+                                        iov_len: prefix_slice.len(),
+                                    };
+                                    rc = ffi::mdbx_cursor_get(
+                                        cursor,
+                                        &mut k_cur,
+                                        &mut v_cur,
+                                        ffi::MDBX_GET_BOTH_RANGE,
+                                    );
+                                    if rc == ffi::MDBX_SUCCESS
+                                        || rc == ffi::MDBX_RESULT_TRUE
+                                    {
+                                        let v_slice = if v_cur.iov_len == 0 {
+                                            &[]
+                                        } else {
+                                            slice::from_raw_parts(
+                                                v_cur.iov_base as *const u8,
+                                                v_cur.iov_len,
+                                            )
+                                        };
+                                        if v_slice.starts_with(prefix_slice) {
+                                            rc = ffi::mdbx_cursor_del(
+                                                cursor,
+                                                ffi::MDBX_CURRENT,
+                                            );
+                                            if rc != ffi::MDBX_SUCCESS {
+                                                abort_with_err!(
+                                                    rc,
+                                                    "mdbx_cursor_del(dup)"
+                                                );
+                                            }
+                                        }
+                                    } else if rc != ffi::MDBX_NOTFOUND
+                                        && rc != ffi::MDBX_ENODATA
+                                    {
+                                        abort_with_err!(
+                                            rc,
+                                            "mdbx_cursor_get(GET_BOTH_RANGE)"
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
-                    rc = ffi::mdbx_batch_dup_apply(
-                        txn,
-                        dbi,
-                        dup_batch_ops.as_ptr(),
-                        dup_batch_ops.len(),
-                    );
-                    if rc != ffi::MDBX_SUCCESS {
-                        ffi::mdbx_txn_abort(txn);
-                        return Err(
-                            mdbx_err(rc, "mdbx_batch_dup_apply").into()
-                        );
-                    }
+                }
+
+                if !dbi_cursor.is_null() {
+                    ffi::mdbx_cursor_close(dbi_cursor);
                 }
             }
 
@@ -2429,9 +2242,11 @@ impl Drop for Db {
     fn drop(&mut self) {
         unsafe {
             if let Ok(mut pool) = self.read_pool.lock() {
-                for cursor in pool.cursors.drain(..) {
-                    if !cursor.is_null() {
-                        ffi::mdbx_cursor_close(cursor);
+                for (_, cursors) in pool.cursors.drain() {
+                    for cursor in cursors {
+                        if !cursor.is_null() {
+                            ffi::mdbx_cursor_close(cursor);
+                        }
                     }
                 }
                 for txn in pool.txns.drain(..) {
