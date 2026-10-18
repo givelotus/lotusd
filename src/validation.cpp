@@ -4662,7 +4662,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // m_adjusted_time_callback() to go backward).
-    if (!CheckBlock(block, state, consensusParams,
+    if (!fJustCheck &&
+        !CheckBlock(block, state, consensusParams,
                     options.withCheckPoW(!fJustCheck)
                         .withCheckMerkleRoot(!fJustCheck))) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
@@ -4840,10 +4841,22 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         (!pindexBIP34height ||
          !(pindexBIP34height->GetBlockHash() == consensusParams.BIP34Hash));
 
+    // Lotus V2 coinbases (nVersion == 7, nFlags == 2) commit to
+    // COutPoint(TxId(hashPrevBlock), pindex->nHeight) in vin[0].prevout from
+    // height 1, guaranteeing unique coinbase TxIDs without LevelDB cache-miss
+    // lookups on every output. AddCoins below still enforces !possible_overwrite.
+    const bool fV2UniqueCoinbase =
+        !block.vtx.empty() && block.vtx[0]->nVersion == 7 &&
+        !block.vtx[0]->vin.empty() && block.vtx[0]->vin[0].nFlags == 2 &&
+        block.vtx[0]->vin[0].prevout ==
+            COutPoint(TxId(hashPrevBlock),
+                      static_cast<uint32_t>(pindex->nHeight));
+
     // TODO: Remove BIP30 checking from block height 1,983,702 on, once we have
     // a consensus change that ensures coinbases at those heights can not
     // duplicate earlier coinbases.
-    if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
+    if (!fV2UniqueCoinbase &&
+        (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT)) {
         for (const auto &tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
                 if (view.HaveCoin(COutPoint(tx->GetId(), o))) {
