@@ -82,60 +82,13 @@ namespace {
                 "walletcontext header encoding");
         return header;
     }
-    class CoinReader {
-    public:
-        explicit CoinReader(const std::vector<uint8_t> &bytes) : bytes_(bytes) {}
-        uint64_t Integer(size_t width) {
-            Require(width <= 8 && width <= bytes_.size() - at_,
-                    "walletcontext truncated coin integer");
-            uint64_t value = 0;
-            for (size_t i = 0; i < width; ++i)
-                value |= uint64_t(bytes_[at_++]) << (8 * i);
-            return value;
-        }
-        uint64_t Compact(size_t maximum) {
-            const auto lead = Integer(1);
-            if (lead < 253) {
-                Require(lead <= maximum, "walletcontext coin output size");
-                return lead;
-            }
-            const auto width = lead == 253 ? 2 : lead == 254 ? 4 : 8;
-            const auto value = Integer(width);
-            Require(value >= (width == 2 ? 253 : width == 4 ? 65536ULL : 4294967296ULL) &&
-                        value <= maximum,
-                    "walletcontext noncanonical coin output size");
-            return value;
-        }
-        std::vector<uint8_t> Bytes(size_t count) {
-            Require(count <= bytes_.size() - at_, "walletcontext truncated coin");
-            std::vector<uint8_t> result(bytes_.begin() + at_,
-                                        bytes_.begin() + at_ + count);
-            at_ += count;
-            return result;
-        }
-        bool Finished() const { return at_ == bytes_.size(); }
-    private:
-        const std::vector<uint8_t> &bytes_;
-        size_t at_{};
-    };
     Coin CoinOf(const UniValue &value) {
         const auto bytes = Unhex(value, MAX_COIN_BYTES);
-        CoinReader reader(bytes);
         Coin coin;
-        auto txid = reader.Bytes(32);
-        std::copy(txid.begin(), txid.end(), coin.outpoint.tx_id.begin());
-        coin.outpoint.index = uint32_t(reader.Integer(4));
-        auto output = reader.Bytes(reader.Compact(MAX_OUTPUT_BYTES));
-        std::string error;
-        Require(DecodeOutput(output, coin.output, error), "walletcontext invalid coin output");
-        coin.creation_height = reader.Integer(8);
-        coin.creation_parent_mtp = reader.Integer(8);
-        const auto coinbase = reader.Integer(1);
-        Require(coinbase <= 1 && reader.Finished(), "walletcontext invalid coin trailer");
-        coin.coinbase = coinbase != 0;
-        std::vector<uint8_t> canonical;
-        Require(EncodeCoin(coin, canonical) && canonical == bytes,
-                "walletcontext noncanonical CoinEntry");
+        // Use the same versioned, canonical CoinEntry decoder as authenticated
+        // state storage, including paid fee share and effective expiration.
+        Require(DecodeCoinBytes(bytes, coin) && !coin.output.legacy_script,
+                "walletcontext invalid native CoinEntry");
         return coin;
     }
     CoinProof ProofOf(const UniValue &value) {

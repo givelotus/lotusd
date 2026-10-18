@@ -3235,7 +3235,7 @@ bool Chainstate::ActivateVerifiedFastSyncPivot(
         std::copy(coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end(), txid.begin());
         installed.emplace_back(COutPoint{TxId{txid}, coin.outpoint.index},
             ::Coin{CTxOut::FromV2Output(coin.output), uint32_t(coin.creation_height),
-                   coin.coinbase});
+                   coin.coinbase, coin.fee_per_output, coin.expiration_height});
     }
     const auto root = lotus::v2::StateRoot(GetActiveV2ChainId(),
         pindex_pivot->nHeight, verified.Root(), monetary_state);
@@ -3461,6 +3461,47 @@ bool Chainstate::PeelFastSyncBlock(
         }
     }
 
+    // Reconstruct paid lifetime metadata from actual input values, including
+    // intra-block parents that appear later in CTOR order.
+    std::map<lotus::v2::Outpoint, const lotus::v2::Coin *, V2OutpointLess> prior_coins;
+    for (const auto &coin : undo_msg.prior_spent_coins) prior_coins.emplace(coin.outpoint, &coin);
+    for (const auto &transaction : block.vtx) {
+        uint64_t input_value = 0, output_value = 0;
+        size_t spendable_outputs = 0;
+        if (!transaction->IsCoinBase()) {
+            for (const auto &input : transaction->vin) {
+                if (input.nFlags == 3) continue;
+                lotus::v2::Outpoint op{};
+                std::copy_n(input.prevout.GetTxId().begin(), 32, op.tx_id.begin());
+                op.index = input.prevout.GetN();
+                const auto created = created_coins.find(op);
+                const auto prior = prior_coins.find(op);
+                const auto *coin = created != created_coins.end() ? &created->second :
+                                   prior != prior_coins.end() ? prior->second : nullptr;
+                if (!coin) { err_out = "Missing input for peeled fee metadata"; return false; }
+                if (!coin->output.HasToken()) input_value += coin->output.value;
+            }
+        }
+        for (const auto &output : transaction->vout) {
+            if (output.scriptPubKey.IsUnspendable()) continue;
+            const auto native = output.ToV2Output();
+            if (!native.HasToken()) output_value += native.value;
+            if (!native.IsBurn()) ++spendable_outputs;
+        }
+        const auto fee_share = transaction->IsCoinBase() ? 0 :
+            lotus::v2::ComputeTxFeePerSpendableOutput(
+                input_value >= output_value ? input_value - output_value : 0, spendable_outputs);
+        lotus::v2::Hash id{};
+        std::copy_n(transaction->GetId().begin(), 32, id.begin());
+        for (size_t index = 0; index < transaction->vout.size(); ++index) {
+            const auto created = created_coins.find({id, uint32_t(index)});
+            if (created == created_coins.end()) continue;
+            created->second.fee_per_output = fee_share;
+            created->second.expiration_height = lotus::v2::ComputeUtxoExpirationHeight(
+                height, created->second.coinbase, fee_share);
+        }
+    }
+
     std::map<lotus::v2::Outpoint, lotus::v2::Coin, V2OutpointLess> current_view;
     for (const auto &c : current_utxo.Coins()) {
         current_view.emplace(c.outpoint, c);
@@ -3498,6 +3539,17 @@ bool Chainstate::PeelFastSyncBlock(
             return false;
         }
     }
+    for (const auto &coin : undo_msg.expired_swept_coins) {
+        std::vector<uint8_t> encoded_coin;
+        if (current_view.count(coin.outpoint) > 0 ||
+            !lotus::v2::EncodeCoin(coin, encoded_coin) ||
+            coin.output.IsBurn() ||
+            !lotus::v2::IsUtxoExpired(coin, height) ||
+            !parent_utxo.Insert(coin)) {
+            err_out = "Failed to restore expired swept coin";
+            return false;
+        }
+    }
 
     CBlockIndex *parent_index = pindex->pprev;
     const lotus::v2::Header parent_hdr =
@@ -3532,7 +3584,19 @@ bool Chainstate::PeelFastSyncBlock(
             parent_view.AddCoin(
                 outp,
                 Coin(CTxOut::FromV2Output(sc.output),
-                     static_cast<uint32_t>(sc.creation_height), sc.coinbase),
+                     static_cast<uint32_t>(sc.creation_height), sc.coinbase,
+                     sc.fee_per_output, sc.expiration_height),
+                /*possible_overwrite=*/false);
+        }
+        for (const auto &ec : undo_msg.expired_swept_coins) {
+            const COutPoint outp(TxId(uint256(Span<const uint8_t>(
+                                     ec.outpoint.tx_id.data(), 32))),
+                                 ec.outpoint.index);
+            parent_view.AddCoin(
+                outp,
+                Coin(CTxOut::FromV2Output(ec.output),
+                     static_cast<uint32_t>(ec.creation_height), ec.coinbase,
+                     ec.fee_per_output, ec.expiration_height),
                 /*possible_overwrite=*/false);
         }
         try {
@@ -3620,8 +3684,20 @@ bool Chainstate::PeelFastSyncBlock(
             ++tx_undo_idx;
         }
 
+        auto swept_peeled = parent_view.SweepExpiredCoins(height);
+        blockundo.vexpired.reserve(swept_peeled.size());
+        for (auto &[op, coin] : swept_peeled) {
+            blockundo.vexpired.push_back(ExpiredCoinUndo{op, std::move(coin)});
+        }
+        const uint64_t bounty_atoms = lotus::v2::ComputeCleaningCrewBounty(
+            swept_peeled.size(),
+            static_cast<uint64_t>(std::max<int64_t>(0, nFees / SATOSHI)));
+        const Amount cleaningBounty =
+            static_cast<int64_t>(bounty_atoms) * SATOSHI;
+
         const Amount blockReward =
-            nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+            nFees + GetBlockSubsidy(pindex->nHeight, consensusParams) +
+            cleaningBounty;
         if (!block.vtx.empty() && block.vtx[0]->GetValueOut() > blockReward) {
             err_out = "Coinbase pays too much in peeled block";
             return false;
@@ -4449,6 +4525,16 @@ DisconnectResult ApplyBlockUndo(CBlockUndo &&blockUndo, const CBlock &block,
         // At this point, all of txundo.vprevout should have been moved out.
     }
 
+    for (size_t i = 0; i < blockUndo.vexpired.size(); ++i) {
+        ExpiredCoinUndo &exp_undo = blockUndo.vexpired[i];
+        DisconnectResult res = UndoCoinSpend(
+            std::move(exp_undo.coin), view, exp_undo.outpoint);
+        if (res == DisconnectResult::FAILED) {
+            return DisconnectResult::FAILED;
+        }
+        fClean = fClean && res != DisconnectResult::UNCLEAN;
+    }
+
     // Second, revert created outputs.
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
@@ -4979,6 +5065,28 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                                   tx.GetId().ToString());
                 break;
             }
+            if (!isCoinBase && txfee > Amount::zero()) {
+                size_t spendable_outputs = 0;
+                for (const auto &out : tx.vout) {
+                    if (!out.scriptPubKey.IsUnspendable() &&
+                        (out.nFlags & 0x02) == 0) {
+                        ++spendable_outputs;
+                    }
+                }
+                const uint64_t fee_per_output =
+                    lotus::v2::ComputeTxFeePerSpendableOutput(
+                        static_cast<uint64_t>(txfee / SATOSHI),
+                        spendable_outputs);
+                const uint64_t exp_height =
+                    lotus::v2::ComputeUtxoExpirationHeight(
+                        static_cast<uint64_t>(std::max(0, pindex->nHeight)),
+                        false, fee_per_output);
+                const TxId txid = tx.GetId();
+                for (size_t o = 0; o < tx.vout.size(); ++o) {
+                    view.UpdateCoinFeeLifespan(COutPoint(txid, o),
+                                               fee_per_output, exp_height);
+                }
+            }
             nFees += txfee;
         }
 
@@ -5061,8 +5169,23 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
              Ticks<MillisecondsDouble>(m_chainman.time_connect) /
                  m_chainman.num_blocks_total);
 
+    Amount cleaningBounty = Amount::zero();
+    if (state.IsValid()) {
+        auto swept = view.SweepExpiredCoins(
+            static_cast<uint64_t>(std::max(0, pindex->nHeight)));
+        blockundo.vexpired.reserve(swept.size());
+        for (auto &[op, coin] : swept) {
+            blockundo.vexpired.push_back(ExpiredCoinUndo{op, std::move(coin)});
+        }
+        const uint64_t bounty_atoms = lotus::v2::ComputeCleaningCrewBounty(
+            swept.size(),
+            static_cast<uint64_t>(std::max<int64_t>(0, nFees / SATOSHI)));
+        cleaningBounty = static_cast<int64_t>(bounty_atoms) * SATOSHI;
+    }
+
     const Amount blockReward =
-        nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        nFees + GetBlockSubsidy(pindex->nHeight, consensusParams) +
+        cleaningBounty;
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
         state.Invalid(
             BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-amount",
@@ -8588,19 +8711,70 @@ bool Chainstate::RollforwardBlock(const CBlockIndex *pindex,
         return false;
     }
 
-    for (const CTransactionRef &tx : block.vtx) {
-        // Pass check = true as every addition may be an overwrite.
-        AddCoins(view, *tx, pindex->nHeight, true);
+    // A partially flushed coins view cannot supply authoritative input values:
+    // some inputs may already be spent, including inputs created in this block.
+    // The durable undo record preserves the accepted block's original inputs.
+    CBlockUndo undo;
+    if (!m_blockman.ReadBlockUndo(undo, *pindex) || block.vtx.empty() ||
+        undo.vtxundo.size() != block.vtx.size() - 1) {
+        LogError("ReplayBlock(): missing or inconsistent undo at %d, hash=%s\n",
+                 pindex->nHeight, pindex->GetBlockHash().ToString());
+        return false;
+    }
+    std::vector<uint64_t> fee_shares(block.vtx.size(), 0);
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        const CTransaction &tx = *block.vtx[i];
+        const auto &spent = undo.vtxundo[i - 1].vprevout;
+        Amount fee = Amount::zero();
+        TxValidationState state;
+        if (spent.size() != tx.vin.size() ||
+            !Consensus::CheckTxInputsFromSpentCoins(
+                tx, spent, state, pindex->nHeight, fee)) {
+            LogError("ReplayBlock(): inconsistent transaction undo at %d, "
+                     "hash=%s, tx=%s\n", pindex->nHeight,
+                     pindex->GetBlockHash().ToString(), tx.GetId().ToString());
+            return false;
+        }
+        size_t spendable_outputs = 0;
+        for (const auto &out : tx.vout) {
+            if (!out.scriptPubKey.IsUnspendable() && (out.nFlags & 0x02) == 0) {
+                ++spendable_outputs;
+            }
+        }
+        fee_shares[i] = lotus::v2::ComputeTxFeePerSpendableOutput(
+            static_cast<uint64_t>(fee / SATOSHI), spendable_outputs);
+    }
+
+    for (size_t i = 0; i < block.vtx.size(); ++i) {
+        const CTransaction &tx = *block.vtx[i];
+        // Reapply full Coin metadata as well as output values. Both operations
+        // are idempotent, regardless of which entries reached disk before crash.
+        AddCoins(view, tx, pindex->nHeight, /*check=*/true);
+        if (fee_shares[i] != 0) {
+            const uint64_t expiration = lotus::v2::ComputeUtxoExpirationHeight(
+                static_cast<uint64_t>(pindex->nHeight), false, fee_shares[i]);
+            const TxId txid = tx.GetId();
+            for (size_t output = 0; output < tx.vout.size(); ++output) {
+                view.UpdateCoinFeeLifespan(COutPoint(txid, output),
+                                          fee_shares[i], expiration);
+            }
+        }
     }
 
     for (const CTransactionRef &tx : block.vtx) {
         if (tx->IsCoinBase()) {
             continue;
         }
-
         for (const CTxIn &txin : tx->vin) {
-            view.SpendCoin(txin.prevout);
+            if (txin.nFlags != 3) {
+                view.SpendCoin(txin.prevout);
+            }
         }
+    }
+    // Expiration removals belong to the same committed block transition, even
+    // when the block has no ordinary spends. Replaying them is idempotent too.
+    for (const auto &expired : undo.vexpired) {
+        view.SpendCoin(expired.outpoint);
     }
 
     return true;
@@ -10282,7 +10456,7 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
         lotus::v2::Coin native_coin{
             native_outpoint, coin.GetTxOut().ToV2Output(), coin.GetHeight(),
             creation->pprev ? uint64_t(creation->pprev->GetMedianTimePast()) : 0,
-            coin.IsCoinBase()};
+            coin.IsCoinBase(), coin.GetFeePerOutput(), coin.GetExpirationHeight()};
         if (!verified_native.Insert(native_coin)) {
             LogPrintf("[snapshot] invalid native anchor coin\n");
             return false;
