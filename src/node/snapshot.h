@@ -8,6 +8,7 @@
 #include <consensus/amount.h>
 #include <consensus/params.h>
 #include <feerate.h>
+#include <lotus_v2/tagged_hash.h>
 #include <flatfile.h>
 #include <primitives/block.h>
 #include <primitives/blockhash.h>
@@ -45,6 +46,9 @@ struct MempoolEntrySnapshot {
     Amount modified_fee{Amount::zero()};
     size_t tx_size{0};
     int64_t time{0};
+    int64_t sigchecks{0};
+    uint64_t entry_id{0};
+    CFeeRate modified_feerate{};
     int height{0};
     std::vector<std::string> depends;
     std::vector<std::string> spentby;
@@ -109,6 +113,54 @@ struct SnapshotEntryAdapter {
 };
 using MempoolSnapshotTree = RadixTree<ImmutableMempoolEntry, SnapshotEntryAdapter>;
 
+struct MiningTemplateSnapshot {
+    MiningTemplateSnapshot() = default;
+    MiningTemplateSnapshot(const MiningTemplateSnapshot &other);
+    MiningTemplateSnapshot &operator=(const MiningTemplateSnapshot &other);
+    uint64_t template_id{0};
+    BlockHash prev_block_hash{};
+    int next_height{0};
+    uint32_t nHeaderVersion{2};
+    uint32_t nBits{0};
+    int64_t min_time{0};
+    int64_t parent_mtp{0};
+    Amount total_fees{Amount::zero()};
+    Amount block_reward{Amount::zero()};
+    uint64_t non_cb_serialized_size{0};
+    std::vector<CTransactionRef> non_coinbase_txs;
+    std::vector<Amount> tx_fees;
+    std::vector<int64_t> tx_sigchecks;
+    mutable std::vector<std::string> tx_hex;
+    std::shared_ptr<std::mutex> tx_hex_mutex{std::make_shared<std::mutex>()};
+    mutable lotus::v2::Hash subtree_a_root{};
+    mutable std::vector<lotus::v2::Hash> coinbase_merkle_branch;
+    mutable bool roots_ready{false};
+    mutable bool merkle_cache_safe{false};
+    bool template_valid{false};
+
+    /**
+     * Lazily populate tx_hex on demand (only needed when a caller invokes
+     * legacy full-hex getblocktemplate rather than mode="compact_template").
+     */
+    const std::vector<std::string> &EnsureTxHex() const;
+
+    /**
+     * Lazily compute subtree_a_root and coinbase_merkle_branch on demand so
+     * snapshot publication does not hash transactions while holding mempool.cs.
+     */
+    void EnsureTemplateRoots() const;
+};
+
+/** One lazy result shared only by generations with identical mining inputs.
+ * Initialization is serialized; callers receive a const completed template. */
+struct MiningTemplateCache {
+    std::mutex mutex;
+    std::mutex validation_mutex;
+    bool validated{false};
+    MiningTemplateSnapshot value;
+    bool ready{false};
+};
+
 /** Published chain and mempool state. Lazy vectors derive exclusively from
  * the pinned immutable entry tree, never from the live mempool. */
 struct ChainAndMempoolSnapshot {
@@ -139,6 +191,11 @@ struct ChainAndMempoolSnapshot {
     uint32_t nBits{0};
     uint32_t next_nBits{0};
     Amount next_subsidy{Amount::zero()};
+    int miner_fund_ratio{0};
+    bool miner_fund_active{false};
+    bool ctor_active{false};
+    int32_t next_block_version{0};
+    bool staking_rewards_active{false};
     std::optional<Consensus::Params> consensus_params;
     std::array<int64_t, 18> prev_header_received_time{};
     std::shared_ptr<const ActiveChainSnapshot> active_chain;
@@ -170,6 +227,12 @@ struct ChainAndMempoolSnapshot {
     std::shared_ptr<std::mutex> mempool_vectors_mutex{
         std::make_shared<std::mutex>()};
 
+    std::shared_ptr<MiningTemplateCache> mining{std::make_shared<MiningTemplateCache>()};
+    bool overlay_all_fit_candidate{false};
+    uint64_t overlay_bytes{0};
+    int64_t overlay_sigchecks{0};
+    const MiningTemplateSnapshot &GetMiningTemplate() const;
+    void EnsureMiningTemplate() const { (void)GetMiningTemplate(); }
     void EnsureMempoolVectors() const;
 
     const MempoolEntrySnapshot *FindMempoolEntry(const TxId &txid) const {
@@ -201,8 +264,19 @@ using ChainTipSnapshot = ChainAndMempoolSnapshot;
 class SnapshotPublisher {
     std::shared_ptr<const ChainAndMempoolSnapshot> m_current;
     std::atomic<uint64_t> m_publications{0};
+    static constexpr size_t kTemplateHistorySize = 32;
+    mutable std::mutex m_publish_mutex;
+    std::atomic<uint64_t> m_next_template_id{1};
+    std::array<MiningTemplateSnapshot, kTemplateHistorySize> m_template_history;
+    size_t m_template_history_pos{0};
 public:
     SnapshotPublisher();
+    uint64_t AllocateTemplateId() noexcept {
+        return m_next_template_id.fetch_add(1, std::memory_order_relaxed);
+    }
+    void RecordMiningTemplate(const MiningTemplateSnapshot &tmpl);
+    std::optional<MiningTemplateSnapshot> FindMiningTemplate(
+        uint64_t template_id = 0, const BlockHash &prev_block_hash = BlockHash()) const;
     std::shared_ptr<const ChainAndMempoolSnapshot> Load() const noexcept {
         return std::atomic_load_explicit(&m_current, std::memory_order_acquire);
     }
