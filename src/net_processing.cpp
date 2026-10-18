@@ -5885,6 +5885,17 @@ void PeerManagerImpl::ProcessTxBatch(
         return;
     }
 
+    if (ptxs.size() >= 16) {
+        std::vector<COutPoint> prefetch_outpoints;
+        prefetch_outpoints.reserve(ptxs.size() * 2);
+        for (const auto &ptx : ptxs) {
+            if (!ptx) continue;
+            for (const auto &in : ptx->vin) {
+                if (in.nFlags != 3) prefetch_outpoints.push_back(in.prevout);
+            }
+        }
+        m_chainman.PrefetchActiveOutpointsLockFree(prefetch_outpoints);
+    }
     // Restore the context-free work lost from the original P2P batch patch.
     // The staged admission thread already does its own unlocked precompute;
     // this path is used only when serial peer admission coalesces a burst.

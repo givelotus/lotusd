@@ -1164,9 +1164,9 @@ UtxoOverlayArena::ImportSmtNode(const std::shared_ptr<const SmtNode> &smt_node) 
         return kNullIdx;
     }
     UtxoOverlayNode node{};
-    node.base_self = smt_node;
     node.digest = smt_node->digest;
     node.count = static_cast<uint32_t>(smt_node->count);
+    node.base_self = smt_node;
     node.key = smt_node->key;
     node.is_leaf = smt_node->IsLeaf();
     if (node.is_leaf && smt_node->coin) {
@@ -1251,7 +1251,7 @@ void UtxoOverlayArena::EnsureDigest(uint32_t idx, unsigned depth) const {
     if (idx == kNullIdx || nodes_[idx].is_leaf || !nodes_[idx].digest_dirty) {
         return;
     }
-    if (depth == 0 && nodes_[idx].count >= 256) {
+    if (depth == 0 && (nodes_[idx].count >= 64 || nodes_.size() >= 64)) {
         std::array<uint32_t, 16> shard_roots{};
         shard_roots.fill(kNullIdx);
         std::array<bool, 16> active{};
@@ -1270,7 +1270,7 @@ void UtxoOverlayArena::EnsureDigest(uint32_t idx, unsigned depth) const {
             self(self, nodes_[n_idx].child[1], d + 1, prefix | (1u << d));
         };
         collect(collect, idx, 0, 0);
-        if (active_count >= 8) {
+        if (active_count >= 2) {
             ParallelFor16Shards(active, [&](unsigned s) {
                 EnsureDigest(shard_roots[s], 4);
             });
@@ -1514,10 +1514,10 @@ void UtxoOverlayArena::BatchUpdateParallel(
                 return kNullIdx;
             }
             UtxoOverlayNode node{};
-            node.base_self = smt_node;
             node.digest = smt_node->digest;
             node.count = static_cast<uint32_t>(smt_node->count);
             node.key = smt_node->key;
+            node.base_self = smt_node;
             node.is_leaf = smt_node->IsLeaf();
             if (node.is_leaf && smt_node->coin) {
                 node.coin = smt_node->coin;
@@ -1839,7 +1839,7 @@ const std::shared_ptr<const SmtNode> &UtxoOverlayArena::GetSmtRoot() const {
         }
         EnsureDigest(root_idx_, 0);
         if (root_idx_ != kNullIdx && !nodes_[root_idx_].is_leaf &&
-            nodes_[root_idx_].count >= 256) {
+            (nodes_[root_idx_].count >= 64 || nodes_.size() >= 64)) {
             std::array<uint32_t, 16> shard_idx{};
             shard_idx.fill(kNullIdx);
             std::array<std::shared_ptr<const SmtNode>, 16> shard_base{};
