@@ -11,6 +11,8 @@
 #include <util/chaintype.h>
 #include <validation.h>
 
+#include <arith_uint256.h>
+
 #include <boost/test/unit_test.hpp>
 #include <test/util/logging.h>
 #include <test/util/setup_common.h>
@@ -219,6 +221,47 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
     // Block 2 was not overwritten:
     blockman.ReadBlock(read_block, pos2);
     BOOST_CHECK_EQUAL(read_block.nVersion, 2);
+}
+
+BOOST_AUTO_TEST_CASE(blockmap_slab_pointer_stability) {
+    // BlockMap nodes are carved from 16384-slot slab chunks. Inserting enough
+    // entries to force several rehashes must not move any CBlockIndex, since
+    // validation holds raw CBlockIndex pointers into the map.
+    constexpr size_t NUM_ENTRIES{3 * 16384 + 100};
+    node::BlockMap map;
+    std::vector<std::pair<BlockHash, const CBlockIndex *>> first_entries;
+    for (size_t i = 0; i < NUM_ENTRIES; ++i) {
+        const BlockHash hash{ArithToUint256(arith_uint256{i + 1})};
+        auto [it, inserted] = map.try_emplace(hash);
+        BOOST_REQUIRE(inserted);
+        it->second.nHeight = int(i);
+        if (i < 100) {
+            first_entries.emplace_back(hash, &it->second);
+        }
+    }
+    BOOST_CHECK_EQUAL(map.size(), NUM_ENTRIES);
+    for (size_t i = 0; i < first_entries.size(); ++i) {
+        const auto &[hash, pindex] = first_entries[i];
+        const auto it = map.find(hash);
+        BOOST_REQUIRE(it != map.end());
+        BOOST_CHECK_EQUAL(&it->second, pindex);
+        BOOST_CHECK_EQUAL(pindex->nHeight, int(i));
+    }
+    // Four node chunks hold all entries; bucket arrays use operator new.
+    const size_t chunks = map.get_allocator().resource()->NumAllocatedChunks();
+    BOOST_CHECK_GE(chunks, 4U);
+    BOOST_CHECK_LE(chunks, 5U);
+
+    // Erased slots are recycled before a new chunk is carved.
+    for (size_t i = 0; i < 16384; ++i) {
+        map.erase(BlockHash{ArithToUint256(arith_uint256{i + 1})});
+    }
+    for (size_t i = 0; i < 16384; ++i) {
+        map.try_emplace(
+            BlockHash{ArithToUint256(arith_uint256{NUM_ENTRIES + i + 1})});
+    }
+    BOOST_CHECK_EQUAL(map.get_allocator().resource()->NumAllocatedChunks(),
+                      chunks);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
