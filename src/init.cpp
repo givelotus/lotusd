@@ -2631,9 +2631,11 @@ bool AppInitBasicSetup(const ArgsManager &args, std::atomic<int> &exit_status) {
 }
 
 bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
-    // -ecash cannot change at runtime: resolve it once instead of on every
-    // amount written as JSON.
-    Currency::SetECash(args.GetBoolArg("-ecash", DEFAULT_ECASH));
+    if (args.IsArgSet("-ecash")) {
+        return InitError(_("The -ecash option is not supported on Lotus V2. "
+                           "Amounts use XPI (1 XPI = 1000000 atoms); "
+                           "this option does not select an eCash chain."));
+    }
 
     if (const auto labels{
             node::ParseMetricsLabels(args.GetArgs("-metricslabel"))};

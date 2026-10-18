@@ -16,6 +16,7 @@ from test_framework.address import (
     key_to_p2pkh,
 )
 from test_framework.blocktools import COINBASE_MATURITY
+from test_framework.currency import XPI_RPC_CURRENCY, RpcCurrency
 from test_framework.hash import hash160
 from test_framework.key import ECKey
 from test_framework.messages import XEC, COutPoint, CTransaction, CTxIn, CTxOut
@@ -34,7 +35,8 @@ from test_framework.util import (
     satoshi_round,
 )
 
-DEFAULT_FEE = Decimal("100.00")
+DEFAULT_FEE_ATOMS = 10000
+DEFAULT_FEE = XPI_RPC_CURRENCY.from_atoms(DEFAULT_FEE_ATOMS)
 
 
 class MiniWalletMode(Enum):
@@ -62,6 +64,7 @@ class MiniWalletMode(Enum):
 class MiniWallet:
     def __init__(self, test_node, *, mode=MiniWalletMode.ADDRESS_OP_TRUE):
         self._test_node = test_node
+        self._currency = RpcCurrency.from_node(test_node)
         self._utxos = []
         self._mode = mode
 
@@ -316,12 +319,14 @@ class MiniWallet:
         assert_equal(len(utxos_to_spend), len(sequence))
 
         # calculate output amount
-        inputs_value_total = sum([int(XEC * utxo["value"]) for utxo in utxos_to_spend])
+        inputs_value_total = sum(
+            [self._currency.to_atoms(utxo["value"]) for utxo in utxos_to_spend]
+        )
         outputs_value_total = inputs_value_total - fee_per_output * num_outputs
         amount_per_output = amount_per_output or (outputs_value_total // num_outputs)
         assert amount_per_output > 0
         outputs_value_total = amount_per_output * num_outputs
-        fee = Decimal(inputs_value_total - outputs_value_total) / XEC
+        fee = self._currency.from_atoms(inputs_value_total - outputs_value_total)
 
         # create tx
         tx = CTransaction()
@@ -341,7 +346,10 @@ class MiniWallet:
         self.sign_tx(
             tx,
             sum(
-                [int(utxo_to_spend["value"] * XEC) for utxo_to_spend in utxos_to_spend]
+                [
+                    self._currency.to_atoms(utxo_to_spend["value"])
+                    for utxo_to_spend in utxos_to_spend
+                ]
             ),
         )
 
@@ -353,7 +361,7 @@ class MiniWallet:
                 self._create_utxo(
                     txid=txid,
                     vout=i,
-                    value=Decimal(tx.vout[i].nValue) / XEC,
+                    value=self._currency.from_atoms(tx.vout[i].nValue),
                     height=0,
                     coinbase=False,
                     confirmations=0,
@@ -369,7 +377,7 @@ class MiniWallet:
     def create_self_transfer(
         self,
         *,
-        fee_rate=Decimal("3000.00"),
+        fee_rate=None,
         fee=Decimal("0"),
         utxo_to_spend=None,
         locktime=0,
@@ -379,6 +387,8 @@ class MiniWallet:
     ):
         """Create and return a tx with the specified fee. If fee is 0, use fee_rate, where the resulting fee may be exact or at most one satoshi higher than needed."""
         utxo_to_spend = utxo_to_spend or self.get_utxo(confirmed_only=confirmed_only)
+        if fee_rate is None:
+            fee_rate = self._currency.from_atoms(300000)
         assert fee_rate >= 0
         assert fee >= 0
 
@@ -393,7 +403,7 @@ class MiniWallet:
 
         size = target_size or size
 
-        send_value = satoshi_round(
+        send_value = self._currency.round_down(
             utxo_to_spend["value"] - (fee or (fee_rate * (Decimal(size) / 1000)))
         )
 
@@ -402,7 +412,7 @@ class MiniWallet:
             utxos_to_spend=[utxo_to_spend],
             locktime=locktime,
             sequence=sequence,
-            amount_per_output=int(XEC * send_value),
+            amount_per_output=self._currency.to_atoms(send_value),
             target_size=target_size,
         )
         if not target_size:

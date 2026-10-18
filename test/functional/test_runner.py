@@ -86,6 +86,7 @@ TEST_FRAMEWORK_MODULES = [
     "log_match",
     "address",
     "blocktools",
+    "currency",
     "discovery",
     "merkle",
     "reporting",
