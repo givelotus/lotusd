@@ -701,6 +701,7 @@ add_library(server
 	node/metrics_collectors.cpp
 	node/metrics.cpp
 	node/miner.cpp
+	node/mining_pool.cpp
 	node/peerman_args.cpp
 	node/txadmission.cpp
 	node/psbt.cpp
@@ -1104,8 +1105,8 @@ if(BUILD_CHAINSTATE)
 endif()
 
 # lotusd
-add_executable(lotusd bitcoind.cpp)
-target_link_libraries(lotusd server)
+add_executable(lotusd bitcoind.cpp lotus_v2/development_command.cpp)
+target_link_libraries(lotusd server lotus_v2_validation)
 generate_windows_version_info(lotusd
 	DESCRIPTION "Lotus node with a JSON-RPC server"
 )
