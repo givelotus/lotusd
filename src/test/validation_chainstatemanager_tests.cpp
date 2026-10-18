@@ -27,6 +27,9 @@
 #include <tinyformat.h>
 
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include <boost/test/unit_test.hpp>
 
@@ -38,24 +41,86 @@ using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(validation_chainstatemanager_tests, TestingSetup)
 
-// A chainstate switch must replace the last immutable RPC generation even
-// though the ChainstateManager object's address remains unchanged.
-BOOST_FIXTURE_TEST_CASE(snapshot_activation_publishes_new_rpc_tip, TestChain100Setup) {
-    mineBlocks(10);
+// Native V2 has no legacy assumeutxo-110 activation fixture. Exercise the
+// supported lifecycle writers directly: stale views must be retired for this
+// manager, while another manager's published view must remain untouched.
+BOOST_FIXTURE_TEST_CASE(snapshot_lifecycle_retires_matching_rpc_tip, ChainTestingSetup) {
     auto &manager = *m_node.chainman;
-    BOOST_REQUIRE(CreateAndActivateUTXOSnapshot(
-        this, NoMalleation, false, true, [&] {
-            LOCK(::cs_main);
-            BOOST_REQUIRE_EQUAL(manager.ActiveHeight(), 109);
-            node::PublishChainTipSnapshot(manager, m_node.mempool.get());
-            BOOST_REQUIRE_EQUAL(node::GetChainTipSnapshot()->height, 109);
-        }));
-    const auto published = node::GetChainTipSnapshot();
-    BOOST_REQUIRE(published);
-    BOOST_CHECK_EQUAL(published->chainman_ptr, &manager);
-    BOOST_CHECK_EQUAL(published->height, 110);
-    BOOST_CHECK_EQUAL(published->best_block_hash,
-                     WITH_LOCK(::cs_main, return manager.ActiveTip()->GetBlockHash()));
+    auto &publisher = node::GetGlobalSnapshotPublisher();
+    auto cached = std::make_shared<node::ChainAndMempoolSnapshot>();
+    cached->chainman_ptr = &manager;
+    cached->chain_valid = true;
+    cached->height = 110;
+    publisher.Publish(cached);
+    {
+        LOCK(cs_main);
+        manager.ResetChainstates();
+        BOOST_CHECK(!publisher.Load()->chain_valid);
+        BOOST_CHECK(publisher.Load()->chainman_ptr != &manager);
+        // Initialization must also retire a generation left for the same
+        // manager address before a usable chain tip has been loaded.
+        publisher.Publish(cached);
+        manager.InitializeChainstate(m_node.mempool.get());
+        BOOST_CHECK(!publisher.Load()->chain_valid);
+        BOOST_CHECK(publisher.Load()->chainman_ptr != &manager);
+        // A cache for an unrelated manager must not be cleared globally.
+        auto unrelated = std::make_shared<node::ChainAndMempoolSnapshot>();
+        unrelated->chain_valid = true;
+        unrelated->height = 220;
+        publisher.Publish(unrelated);
+        manager.ResetChainstates();
+        BOOST_CHECK(publisher.Load() == unrelated);
+        manager.InitializeChainstate(m_node.mempool.get());
+        BOOST_CHECK(publisher.Load() == unrelated);
+    }
+    publisher.Publish(std::make_shared<const node::ChainAndMempoolSnapshot>());
+}
+
+// Page hints must not dereference a chainstate while activation/reset owns
+// cs_main. This also protects the coins-view object, not just the raw pointer.
+BOOST_AUTO_TEST_CASE(prefetch_serializes_with_chainstate_lifetime) {
+    std::atomic<bool> started{false};
+    std::atomic<bool> completed{false};
+    std::thread worker;
+    bool completed_while_locked;
+    {
+        LOCK(cs_main);
+        worker = std::thread([&] {
+            started.store(true);
+            m_node.chainman->PrefetchActiveOutpointsLockFree({});
+            completed.store(true);
+        });
+        while (!started.load()) std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        completed_while_locked = completed.load();
+    }
+    worker.join();
+    BOOST_CHECK(!completed_while_locked);
+    BOOST_CHECK(completed.load());
+}
+
+// Exercise the actual manager lifecycle writers while P2P-style page hints run.
+// No database is required: the lifetime race precedes the coins-view check.
+BOOST_FIXTURE_TEST_CASE(prefetch_with_repeated_chainstate_reset, ChainTestingSetup) {
+    auto &manager = *m_node.chainman;
+    WITH_LOCK(cs_main, manager.InitializeChainstate(m_node.mempool.get()));
+    std::atomic<bool> stop{false};
+    std::atomic<unsigned> reads{0};
+    std::thread reader([&] {
+        while (!stop.load()) {
+            manager.PrefetchActiveOutpointsLockFree({});
+            ++reads;
+        }
+    });
+    while (!reads.load()) std::this_thread::yield();
+    for (unsigned n = 0; n < 1000; ++n) {
+        LOCK(cs_main);
+        manager.ResetChainstates();
+        manager.InitializeChainstate(m_node.mempool.get());
+    }
+    stop.store(true);
+    reader.join();
+    BOOST_CHECK_GT(reads.load(), 0U);
 }
 
 //! Basic tests for ChainstateManager.

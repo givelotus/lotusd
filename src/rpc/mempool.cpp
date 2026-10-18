@@ -28,7 +28,6 @@
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/moneystr.h>
-#include <util/parallel_range.h>
 #include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -36,6 +35,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <thread>
 #include <vector>
 
 using kernel::DumpMempool;
@@ -1252,41 +1252,57 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                                          *precomputed_out = nullptr) {
     const auto &raw_vals = raw_transactions.getValues();
     const size_t n = raw_vals.size();
-    // Validate types before parallel work so RPC type errors retain array order.
     for (const auto &rawtx : raw_vals) {
         (void)rawtx.get_str();
     }
     txns.resize(n);
     txid_hexes.resize(n);
-    if (precomputed_out != nullptr) precomputed_out->resize(n);
-
-    std::atomic<size_t> first_fail{n};
-    auto decode = [&](size_t begin, size_t end) {
-        for (size_t i = begin; i < end; ++i) {
-            if (i >= first_fail.load(std::memory_order_relaxed)) break;
+    if (precomputed_out != nullptr) {
+        precomputed_out->resize(n);
+    }
+    if (n < 32) {
+        for (size_t i = 0; i < n; ++i) {
             CMutableTransaction mtx;
             if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
-                size_t cur = first_fail.load(std::memory_order_relaxed);
-                while (i < cur && !first_fail.compare_exchange_weak(
-                                      cur, i, std::memory_order_relaxed)) {}
-                break;
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                   "TX decode failed: " +
+                                       raw_vals[i].get_str());
             }
             txns[i] = MakeTransactionRef(std::move(mtx));
             if (precomputed_out != nullptr) {
                 PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
             }
             txid_hexes[i] = txns[i]->GetId().GetHex();
+            if (txids_arr != nullptr) {
+                txids_arr->push_back(txid_hexes[i]);
+            }
         }
-    };
-    if (n <= 8) {
-        decode(0, n);
-    } else {
-        // Separate from RPC dispatch and admission workers: waiting for this
-        // job never depends on an RPC/admission thread becoming available.
-        // Contended submissions run inline rather than queueing more work.
-        static util::ParallelRangeExecutor decoder_workers;
-        decoder_workers.Run(n, /*grain=*/8, decode);
+        return;
     }
+
+    std::atomic<size_t> first_fail{n};
+    lotus::v2::RunParallelSigningWork(
+        n, /*min_grain=*/8, [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                if (i >= first_fail.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                CMutableTransaction mtx;
+                if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
+                    size_t cur = first_fail.load(std::memory_order_relaxed);
+                    while (i < cur &&
+                           !first_fail.compare_exchange_weak(
+                               cur, i, std::memory_order_relaxed)) {
+                    }
+                    break;
+                }
+                txns[i] = MakeTransactionRef(std::move(mtx));
+                if (precomputed_out != nullptr) {
+                    PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
+                }
+                txid_hexes[i] = txns[i]->GetId().GetHex();
+            }
+        });
 
     const size_t bad = first_fail.load(std::memory_order_relaxed);
     if (bad < n) {
@@ -1294,8 +1310,9 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                            "TX decode failed: " + raw_vals[bad].get_str());
     }
     if (txids_arr != nullptr) {
-        txids_arr->reserve(n);
-        for (const auto &txid_hex : txid_hexes) txids_arr->push_back(txid_hex);
+        for (size_t i = 0; i < n; ++i) {
+            txids_arr->push_back(txid_hexes[i]);
+        }
     }
 }
 
@@ -1431,6 +1448,9 @@ static RPCHelpMan testrawtxbatch() {
             const int64_t now_ms =
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
             const auto &fee_ctrl = lotus::v2::GetGlobalFeeHysteresisController();
+            const lotus::v2::FeeRateInfo fee_info =
+                fee_ctrl.GetFeeRateInfo(now_ms);
+            results_arr.reserve(txns.size());
 
             for (size_t idx = 0; idx < txns.size(); ++idx) {
                 const auto &tx = txns[idx];
@@ -1465,10 +1485,23 @@ static RPCHelpMan testrawtxbatch() {
                         ? static_cast<uint64_t>(std::max<int64_t>(
                               0, tx_result.m_base_fees.value() / SATOSHI))
                         : 0ULL;
-                const lotus::v2::FeeCheckResult fee_eval =
-                    fee_ctrl.EvaluateTransactionFee(
-                        lotus::v2::FeeTier::RpcAdmission, tx_cu, paid_fee_sats,
-                        now_ms);
+                const uint64_t required_fee_sats =
+                    lotus::v2::FeeHysteresisController::ComputeFeeForCu(
+                        tx_cu, fee_info.rpc_admission_feerate_per_kcu);
+                const uint64_t recommended_sdk_fee_sats = std::max(
+                    required_fee_sats,
+                    lotus::v2::FeeHysteresisController::ComputeFeeForCu(
+                        tx_cu, fee_info.recommended_sdk_feerate_per_kcu));
+                const lotus::v2::FeeCheckResult fee_eval{
+                    .accepted = paid_fee_sats >= required_fee_sats,
+                    .tier = lotus::v2::FeeTier::RpcAdmission,
+                    .tx_cu = tx_cu,
+                    .paid_fee_sats = paid_fee_sats,
+                    .required_fee_sats = required_fee_sats,
+                    .required_rate_per_kcu =
+                        fee_info.rpc_admission_feerate_per_kcu,
+                    .recommended_sdk_fee_sats = recommended_sdk_fee_sats,
+                };
                 result_inner.pushKV("required_cu", fee_eval.tx_cu);
                 result_inner.pushKV("required_fee_sats",
                                     fee_eval.required_fee_sats);
@@ -1672,9 +1705,9 @@ static RPCHelpMan submitrawtxbatch() {
                     : CFeeRate(AmountFromValue(request.params[1]));
 
             std::vector<CTransactionRef> txns;
-            std::vector<PrecomputedBatchTxData> precomputed_batch;
-            UniValue txids_arr(UniValue::VARR);
             std::vector<std::string> txid_hexes;
+            UniValue txids_arr(UniValue::VARR);
+            std::vector<PrecomputedBatchTxData> precomputed_batch;
             DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes,
                                      &txids_arr, &precomputed_batch);
 
@@ -1682,7 +1715,6 @@ static RPCHelpMan submitrawtxbatch() {
             NodeContext &node = EnsureAnyNodeContext(request.context);
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
-            Chainstate &chainstate = chainman.ActiveChainstate();
 
             const bool has_disallowed_non_v7 = std::any_of(
                 txns.begin(), txns.end(), [&](const CTransactionRef &tx) {
@@ -1694,12 +1726,21 @@ static RPCHelpMan submitrawtxbatch() {
             std::string package_error_str;
             const int64_t now_ms =
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
-            const auto &fee_ctrl =
-                lotus::v2::GetGlobalFeeHysteresisController();
+            const auto &fee_ctrl = lotus::v2::GetGlobalFeeHysteresisController();
+            const lotus::v2::FeeRateInfo fee_info =
+                fee_ctrl.GetFeeRateInfo(now_ms);
+            results_arr.reserve(txns.size());
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK2(::cs_main, mempool.cs);
+                Chainstate &chainstate = chainman.ActiveChainstate();
                 CTxMemPool::ScopedSnapshotDefer snap_defer(mempool);
+                // [Patch 036 optimization] Single-pass two-phase batch
+                // validation and commit under cs_main + ScopedSnapshotDefer:
+                // Phase 1 runs PreChecks + maxfeerate across all workspaces
+                // without mutating the mempool; Phase 2 commits the prechecked
+                // workspaces directly via SubmitPackage and publishes a single
+                // RCU snapshot when snap_defer exits.
                 PackageMempoolAcceptResult res =
                     ProcessRawTxBatch(chainstate, mempool, txns,
                                       /*test_accept=*/has_disallowed_non_v7,
@@ -1764,10 +1805,23 @@ static RPCHelpMan submitrawtxbatch() {
                         ? static_cast<uint64_t>(std::max<int64_t>(
                               0, tx_result.m_base_fees.value() / SATOSHI))
                         : 0ULL;
-                const lotus::v2::FeeCheckResult fee_eval =
-                    fee_ctrl.EvaluateTransactionFee(
-                        lotus::v2::FeeTier::RpcAdmission, tx_cu, paid_fee_sats,
-                        now_ms);
+                const uint64_t required_fee_sats =
+                    lotus::v2::FeeHysteresisController::ComputeFeeForCu(
+                        tx_cu, fee_info.rpc_admission_feerate_per_kcu);
+                const uint64_t recommended_sdk_fee_sats = std::max(
+                    required_fee_sats,
+                    lotus::v2::FeeHysteresisController::ComputeFeeForCu(
+                        tx_cu, fee_info.recommended_sdk_feerate_per_kcu));
+                const lotus::v2::FeeCheckResult fee_eval{
+                    .accepted = paid_fee_sats >= required_fee_sats,
+                    .tier = lotus::v2::FeeTier::RpcAdmission,
+                    .tx_cu = tx_cu,
+                    .paid_fee_sats = paid_fee_sats,
+                    .required_fee_sats = required_fee_sats,
+                    .required_rate_per_kcu =
+                        fee_info.rpc_admission_feerate_per_kcu,
+                    .recommended_sdk_fee_sats = recommended_sdk_fee_sats,
+                };
                 result_inner.pushKV("required_cu", fee_eval.tx_cu);
                 result_inner.pushKV("required_fee_sats",
                                     fee_eval.required_fee_sats);
