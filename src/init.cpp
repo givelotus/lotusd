@@ -1046,6 +1046,20 @@ void SetupServerArgs(NodeContext &node) {
         "Accept connections from outside (default: 1 if no -proxy or -connect)",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebsocket",
+        strprintf("Accept P2P connections over WebSocket at %s on the RPC "
+                  "port (ws:// or wss://, auto-detected), in addition to the "
+                  "normal P2P port. Requires -listen and -server. The path is "
+                  "exempt from -rpcallowip (default: %d)",
+                  P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebsockettrustforwardedfor",
+        "For P2P WebSocket peers connecting from localhost (a reverse "
+        "proxy), take their address from the last X-Forwarded-For hop "
+        "(default: 0)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-listenonion",
         strprintf("Automatically create Tor onion service (default: %d)",
                   DEFAULT_LISTEN_ONION),
@@ -3420,6 +3434,18 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
 
     if (!node.connman->Start(scheduler, connOptions)) {
         return false;
+    }
+
+    if (fListen && args.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET)) {
+        // Inbound P2P peers arriving over WebSocket on the HTTP server.
+        SetP2PWebSocketAcceptor(
+            [connman = node.connman.get()](
+                std::unique_ptr<Sock> &&sock, const CAddress &addr,
+                const CAddress &addr_bind,
+                std::shared_ptr<WebSocketTransportInfo> info) {
+                connman->AcceptWebSocketPeer(std::move(sock), addr, addr_bind,
+                                             std::move(info));
+            });
     }
 
     // Step 13: finished
