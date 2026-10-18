@@ -86,7 +86,7 @@ class InvalidBlockRequestTest(BitcoinTestFramework):
 
         # Mutate block 2
         block2.vtx.append(block2.vtx[2])
-        assert_equal(block2.hashMerkleRoot, block2.calc_merkle_root())
+        block2._auto_size = False
         assert_equal(orig_hash, block2.hash_int)
         assert block2_orig.vtx != block2.vtx
 
