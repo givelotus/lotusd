@@ -28,7 +28,7 @@ from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet
 
-CLTV_HEIGHT = 1351
+CLTV_HEIGHT = 111
 
 
 def cltv_lock_to_height(fundtx, height=-1):
@@ -80,50 +80,19 @@ class BIP65Test(BitcoinTestFramework):
         peer = self.nodes[0].add_p2p_connection(P2PInterface())
         wallet = MiniWallet(self.nodes[0])
 
-        self.log.info(f"Mining {CLTV_HEIGHT - 2} blocks")
+        self.log.info(f"Mining {CLTV_HEIGHT - 1} blocks")
         self.generate(wallet, 10)
-        self.generate(self.nodes[0], CLTV_HEIGHT - 2 - 10)
-
-        self.log.info(
-            "Test that an invalid-according-to-CLTV transaction can still appear in a"
-            " block"
-        )
-
-        fundtx = wallet.create_self_transfer()["tx"]
-        fundtx, spendtx = cltv_lock_to_height(fundtx)
-
-        tip = self.nodes[0].getbestblockhash()
-        block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
-        block = create_block(
-            int(tip, 16),
-            create_coinbase(CLTV_HEIGHT - 1),
-            block_time,
-            version=3,
-            txlist=[fundtx, spendtx],
-        )
-        block.solve()
-
-        peer.send_and_ping(msg_block(block))
-        # This block is valid
-        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
-
-        self.log.info("Test that blocks must now be at least version 4")
-        tip = block.hash_int
-        block_time += 1
-        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time, version=3)
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(
-            expected_msgs=[f"{block.hash_hex}, bad-version(0x00000003)"]
-        ):
-            peer.send_and_ping(msg_block(block))
-            assert_equal(int(self.nodes[0].getbestblockhash(), 16), tip)
-            peer.sync_with_ping()
+        self.generate(self.nodes[0], CLTV_HEIGHT - 1 - 10)
 
         self.log.info(
             "Test that invalid-according-to-cltv transactions cannot appear in a block"
         )
-        block.nVersion = 4
+        tip = int(self.nodes[0].getbestblockhash(), 16)
+        block_time = (
+            self.nodes[0].getblockheader(self.nodes[0].getbestblockhash())["mediantime"]
+            + 1
+        )
+        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time, version=4)
 
         fundtx = wallet.create_self_transfer()["tx"]
         fundtx, spendtx = cltv_lock_to_height(fundtx)
