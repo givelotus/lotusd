@@ -19,6 +19,9 @@
 #include <consensus/validation.h>
 #include <core_io.h>
 #include <key_io.h>
+#include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/mempool_overlay.h>
+#include <node/snapshot.h>
 #include <minerfund.h>
 #include <net.h>
 #include <node/context.h>
@@ -1440,6 +1443,103 @@ static RPCHelpMan estimatefee() {
     };
 }
 
+static RPCHelpMan estimatesmartfee() {
+    return RPCHelpMan{
+        "estimatesmartfee",
+        "Estimates the approximate fee per kilobyte needed for a transaction "
+        "to be admitted and mined, incorporating live mempool congestion, "
+        "adaptive block size targets, and three-tier fee hysteresis.\n",
+        {
+            {"conf_target", RPCArg::Type::NUM, RPCArg::Default{1},
+             "Confirmation target in blocks (1 - 1008)"},
+            {"estimate_mode", RPCArg::Type::STR,
+             RPCArg::Default{"CONSERVATIVE"},
+             "The fee estimate mode.\n"
+             "                   Whether to return the exact RPC admission "
+             "floor (\"ECONOMICAL\") or include the +5% SDK anti-bounce "
+             "cushion (\"CONSERVATIVE\" / \"UNSET\")."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::STR_AMOUNT, "feerate",
+                 "estimate fee rate in " + Currency::getTicker() + "/kB"},
+                {RPCResult::Type::NUM, "feerate_sats_per_kb",
+                 "estimate fee rate in satoshis per kB"},
+                {RPCResult::Type::NUM, "rpc_admission_feerate_per_kcu",
+                 "Tier 1 local RPC admission fee rate in satoshis per 1,000 CU"},
+                {RPCResult::Type::NUM, "recommended_sdk_feerate_per_kcu",
+                 "Recommended wallet/SDK fee rate in satoshis per 1,000 CU "
+                 "(+5% anti-bounce cushion)"},
+                {RPCResult::Type::NUM, "p2p_relay_feerate_per_kcu",
+                 "Tier 2 P2P relay hysteresis fee rate in satoshis per 1,000 CU"},
+                {RPCResult::Type::NUM, "blocks",
+                 "block number where estimate was found"},
+            }},
+        RPCExamples{HelpExampleCli("estimatesmartfee", "1") +
+                    HelpExampleCli("estimatesmartfee", "1 \"ECONOMICAL\"") +
+                    HelpExampleRpc("estimatesmartfee", "1, \"CONSERVATIVE\"")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            int64_t conf_target = 1;
+            if (!request.params[0].isNull()) {
+                conf_target = request.params[0].getInt<int64_t>();
+                if (conf_target < 1) {
+                    throw JSONRPCError(
+                        RPC_INVALID_PARAMETER,
+                        "Invalid conf_target, must be at least 1");
+                }
+            }
+
+            bool economical = false;
+            if (!request.params[1].isNull()) {
+                const std::string mode = ToUpper(request.params[1].get_str());
+                if (mode == "ECONOMICAL") {
+                    economical = true;
+                } else if (mode == "CONSERVATIVE" || mode == "UNSET") {
+                    economical = false;
+                } else {
+                    throw JSONRPCError(
+                        RPC_INVALID_PARAMETER,
+                        "Invalid estimate_mode parameter, must be one of: "
+                        "\"UNSET\", \"ECONOMICAL\", \"CONSERVATIVE\"");
+                }
+            }
+
+            const CTxMemPool &mempool = EnsureAnyMemPool(request.context);
+            const int64_t now_ms =
+                TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const lotus::v2::FeeRateInfo info =
+                lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(
+                    now_ms);
+
+            const uint64_t target_hysteresis_sats_per_kb =
+                economical ? info.rpc_admission_feerate_per_kcu
+                           : info.recommended_sdk_feerate_per_kcu;
+            const CFeeRate hysteresis_feerate(Amount(
+                static_cast<int64_t>(target_hysteresis_sats_per_kb) * SATOSHI));
+            const CFeeRate final_feerate =
+                std::max(mempool.estimateFee(), hysteresis_feerate);
+            const uint64_t feerate_sats_per_kb = static_cast<uint64_t>(
+                std::max<int64_t>(0, final_feerate.GetFeePerK() / SATOSHI));
+
+            UniValue ret(UniValue::VOBJ);
+            ret.pushKV("feerate", final_feerate.GetFeePerK());
+            ret.pushKV("feerate_sats_per_kb", feerate_sats_per_kb);
+            ret.pushKV("rpc_admission_feerate_per_kcu",
+                       info.rpc_admission_feerate_per_kcu);
+            ret.pushKV("recommended_sdk_feerate_per_kcu",
+                       info.recommended_sdk_feerate_per_kcu);
+            ret.pushKV("p2p_relay_feerate_per_kcu",
+                       info.p2p_relay_feerate_per_kcu);
+            ret.pushKV("blocks", conf_target);
+            return ret;
+        },
+    };
+}
+
 void RegisterMiningRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
@@ -1457,6 +1557,7 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         {"generating",  generateblock,         },
 
         {"util",        estimatefee,           },
+        {"util",        estimatesmartfee,      },
 
         {"hidden",      generate,              },
     };
