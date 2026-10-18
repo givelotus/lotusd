@@ -8,7 +8,7 @@ use std::{collections::HashMap, net::IpAddr, time::Duration};
 
 use abc_rust_error::Result;
 use axum::extract::ws::{self, WebSocket};
-use bitcoinsuite_core::{script::ScriptVariant, tx::TxId};
+use bitcoinsuite_core::{lotus_v2::Hash32, script::ScriptVariant, tx::TxId};
 use bitcoinsuite_slp::{lokad_id::LokadId, token_id::TokenId};
 use chronik_db::plugins::PluginMember;
 use chronik_indexer::{
@@ -91,6 +91,8 @@ enum WsSubType {
     Txs,
     TxId(TxId),
     Script(ScriptVariant),
+    V2Branch(Hash32),
+    V2Asset(Hash32),
     TokenId(TokenId),
     LokadId(LokadId),
     PluginGroup(String, Vec<u8>),
@@ -100,6 +102,8 @@ type SubRecvBlocks = Option<broadcast::Receiver<BlockMsg>>;
 type SubRecvTxs = Option<broadcast::Receiver<TxMsg>>;
 type SubRecvTxIds = HashMap<TxId, broadcast::Receiver<TxMsg>>;
 type SubRecvScripts = HashMap<ScriptVariant, broadcast::Receiver<TxMsg>>;
+type SubRecvV2Branches = HashMap<Hash32, broadcast::Receiver<TxMsg>>;
+type SubRecvV2Assets = HashMap<Hash32, broadcast::Receiver<TxMsg>>;
 type SubRecvTokenId = HashMap<TokenId, broadcast::Receiver<TxMsg>>;
 type SubRecvLokadId = HashMap<LokadId, broadcast::Receiver<TxMsg>>;
 type SubRecvPluginGroups = HashMap<PluginGroup, broadcast::Receiver<TxMsg>>;
@@ -109,6 +113,8 @@ struct SubRecv {
     txs: SubRecvTxs,
     txids: SubRecvTxIds,
     scripts: SubRecvScripts,
+    v2_branches: SubRecvV2Branches,
+    v2_assets: SubRecvV2Assets,
     token_ids: SubRecvTokenId,
     lokad_ids: SubRecvLokadId,
     plugin_groups: SubRecvPluginGroups,
@@ -130,6 +136,8 @@ impl SubRecv {
             action = Self::recv_txs(&mut self.txs) => action,
             action = Self::recv_txids(&mut self.txids) => action,
             action = Self::recv_scripts(&mut self.scripts) => action,
+            action = Self::recv_v2_hashes(&mut self.v2_branches) => action,
+            action = Self::recv_v2_hashes(&mut self.v2_assets) => action,
             action = Self::recv_token_ids(&mut self.token_ids) => action,
             action = Self::recv_lokad_ids(&mut self.lokad_ids) => action,
             action = Self::recv_plugin(&mut self.plugin_groups) => action,
@@ -174,6 +182,22 @@ impl SubRecv {
                     .map(|receiver| Box::pin(receiver.recv())),
             );
             let (tx_msg, _, _) = script_receivers.await;
+            sub_tx_msg_action(tx_msg)
+        }
+    }
+
+    async fn recv_v2_hashes(
+        hashes: &mut HashMap<Hash32, broadcast::Receiver<TxMsg>>,
+    ) -> Result<WsAction> {
+        if hashes.is_empty() {
+            futures::future::pending().await
+        } else {
+            let receivers = select_all(
+                hashes
+                    .values_mut()
+                    .map(|receiver| Box::pin(receiver.recv())),
+            );
+            let (tx_msg, _, _) = receivers.await;
             sub_tx_msg_action(tx_msg)
         }
     }
@@ -313,6 +337,50 @@ impl SubRecv {
                     self.scripts.insert(script_variant, recv);
                 }
             }
+            WsSubType::V2Branch(branch_root) => {
+                if sub.is_unsub {
+                    log_chronik!(
+                        "WS unsubscribe from V2 branch {}\n",
+                        hex::encode(branch_root.0)
+                    );
+                    if self.v2_branches.remove(&branch_root).is_some() {
+                        self.release_one_sub();
+                    }
+                    subs.subs_v2_branch_mut()
+                        .unsubscribe_from_member(&branch_root)
+                } else if !self.v2_branches.contains_key(&branch_root) {
+                    log_chronik!(
+                        "WS subscribe to V2 branch {}\n",
+                        hex::encode(branch_root.0)
+                    );
+                    self.acquire_sub()?;
+                    let recv = subs
+                        .subs_v2_branch_mut()
+                        .subscribe_to_member(&branch_root);
+                    self.v2_branches.insert(branch_root, recv);
+                }
+            }
+            WsSubType::V2Asset(asset_id) => {
+                if sub.is_unsub {
+                    log_chronik!(
+                        "WS unsubscribe from V2 asset {}\n",
+                        hex::encode(asset_id.0)
+                    );
+                    if self.v2_assets.remove(&asset_id).is_some() {
+                        self.release_one_sub();
+                    }
+                    subs.subs_v2_asset_mut().unsubscribe_from_member(&asset_id)
+                } else if !self.v2_assets.contains_key(&asset_id) {
+                    log_chronik!(
+                        "WS subscribe to V2 asset {}\n",
+                        hex::encode(asset_id.0)
+                    );
+                    self.acquire_sub()?;
+                    let recv =
+                        subs.subs_v2_asset_mut().subscribe_to_member(&asset_id);
+                    self.v2_assets.insert(asset_id, recv);
+                }
+            }
             WsSubType::TokenId(token_id) => {
                 if sub.is_unsub {
                     log_chronik!("WS unsubscribe from token ID {token_id}\n");
@@ -414,6 +482,8 @@ impl SubRecv {
         self.sub_guards.clear();
         let has_member_subs = !self.txids.is_empty()
             || !self.scripts.is_empty()
+            || !self.v2_branches.is_empty()
+            || !self.v2_assets.is_empty()
             || !self.token_ids.is_empty()
             || !self.lokad_ids.is_empty()
             || !self.plugin_groups.is_empty();
@@ -430,6 +500,15 @@ impl SubRecv {
             std::mem::drop(receiver);
             subs.subs_script_mut()
                 .unsubscribe_from_member(&&script_variant.to_script());
+        }
+        for (branch_root, receiver) in self.v2_branches {
+            std::mem::drop(receiver);
+            subs.subs_v2_branch_mut()
+                .unsubscribe_from_member(&branch_root);
+        }
+        for (asset_id, receiver) in self.v2_assets {
+            std::mem::drop(receiver);
+            subs.subs_v2_asset_mut().unsubscribe_from_member(&asset_id);
         }
         for (token_id, receiver) in self.token_ids {
             std::mem::drop(receiver);
@@ -471,10 +550,32 @@ fn sub_client_msg_action(
                         WsSubType::TxId(txid.txid.parse::<TxId>()?)
                     }
                     Some(SubType::Script(script)) => {
-                        WsSubType::Script(parse_script_variant(
-                            &script.script_type,
-                            &script.payload,
-                        )?)
+                        match script.script_type.as_str() {
+                            "v2-branch" | "taproot"
+                                if script.payload.len() == 32 =>
+                            {
+                                WsSubType::V2Branch(Hash32(
+                                    script
+                                        .payload
+                                        .as_slice()
+                                        .try_into()
+                                        .unwrap(),
+                                ))
+                            }
+                            "v2-asset" if script.payload.len() == 32 => {
+                                WsSubType::V2Asset(Hash32(
+                                    script
+                                        .payload
+                                        .as_slice()
+                                        .try_into()
+                                        .unwrap(),
+                                ))
+                            }
+                            _ => WsSubType::Script(parse_script_variant(
+                                &script.script_type,
+                                &script.payload,
+                            )?),
+                        }
                     }
                     Some(SubType::TokenId(token_id)) => WsSubType::TokenId(
                         token_id.token_id.parse::<TokenId>()?,
@@ -674,6 +775,8 @@ pub async fn handle_subscribe_socket(
         txs: Default::default(),
         txids: Default::default(),
         scripts: Default::default(),
+        v2_branches: Default::default(),
+        v2_assets: Default::default(),
         token_ids: Default::default(),
         lokad_ids: Default::default(),
         plugin_groups: Default::default(),
