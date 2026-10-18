@@ -33,6 +33,7 @@
 #include <hash.h>
 #include <httprpc.h>
 #include <httpserver.h>
+#include <net_websocket_dialer.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
 #include <index/txindex.h>
@@ -306,6 +307,7 @@ void Shutdown(NodeContext &node) {
     if (node.connman) {
         node.connman->Stop();
     }
+    StopP2PWebSocketDialer();
 
     StopTorControl();
 
@@ -1053,6 +1055,21 @@ void SetupServerArgs(NodeContext &node) {
                   "exempt from -rpcallowip (default: %d)",
                   P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-externaldomain=<domain>[:port]",
+        "Advertise that this node accepts P2P over WebSocket+TLS at "
+        "wss://<domain>:<port>/p2p/ws (default port: 443), e.g. behind a "
+        "TLS-terminating proxy. Only announced to peers supporting ADDRv2 "
+        "(BIP155); others never see it. Can be specified multiple times.",
+        ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
+        OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebsocketoffer=<list>",
+        strprintf("Compression offered on outbound P2P WebSockets, in order "
+                  "of preference, or \"none\" (default: %s)",
+                  DEFAULT_P2P_WEBSOCKET_OFFER),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwebsockettrustforwardedfor",
         "For P2P WebSocket peers connecting from localhost (a reverse "
@@ -3432,8 +3449,39 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     connOptions.m_i2p_accept_incoming =
         args.GetBoolArg("-i2pacceptincoming", true);
 
+    {
+        // Outbound ws:// and wss:// peers. Present our TLS certificate, if
+        // any, to peers requesting client certificates.
+        std::optional<fs::path> cert, key;
+        if (args.IsArgSet("-tlscert") && args.IsArgSet("-tlskey")) {
+            cert = args.GetPathArg("-tlscert");
+            key = args.GetPathArg("-tlskey");
+        } else if (fs::exists(args.GetDataDirNet() / HTTP_TLS_CERT_FILENAME) &&
+                   fs::exists(args.GetDataDirNet() / HTTP_TLS_KEY_FILENAME)) {
+            cert = args.GetDataDirNet() / HTTP_TLS_CERT_FILENAME;
+            key = args.GetDataDirNet() / HTTP_TLS_KEY_FILENAME;
+        }
+        if (!StartP2PWebSocketDialer(
+                cert, key,
+                args.GetArg("-p2pwebsocketoffer",
+                            DEFAULT_P2P_WEBSOCKET_OFFER))) {
+            LogPrintf("P2P over WebSocket is not supported on this platform\n");
+        }
+    }
+
     if (!node.connman->Start(scheduler, connOptions)) {
         return false;
+    }
+
+    for (const std::string &strDomain : args.GetArgs("-externaldomain")) {
+        uint16_t port{443};
+        std::string host;
+        CNetAddr domain;
+        if (!SplitHostPort(strDomain, port, host) || !domain.SetWSSDomain(host)) {
+            return InitError(strprintf(_("Invalid -externaldomain: '%s'"),
+                                       strDomain));
+        }
+        AddLocal(CService{domain, port}, LOCAL_MANUAL);
     }
 
     if (fListen && args.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET)) {

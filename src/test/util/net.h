@@ -73,7 +73,7 @@ constexpr ConnectionType ALL_CONNECTION_TYPES[]{
     ConnectionType::BLOCK_RELAY, ConnectionType::ADDR_FETCH,
 };
 
-constexpr std::array<Network, 7> ALL_NETWORKS = {{
+constexpr std::array<Network, 8> ALL_NETWORKS = {{
     Network::NET_UNROUTABLE,
     Network::NET_IPV4,
     Network::NET_IPV6,
@@ -81,6 +81,7 @@ constexpr std::array<Network, 7> ALL_NETWORKS = {{
     Network::NET_I2P,
     Network::NET_CJDNS,
     Network::NET_INTERNAL,
+    Network::NET_WSS,
 }};
 
 /**
