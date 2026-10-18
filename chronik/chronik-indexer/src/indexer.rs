@@ -18,7 +18,9 @@ use chronik_db::{
     groups::{
         LokadIdGroup, LokadIdHistoryReader, LokadIdHistoryWriter, ScriptGroup,
         ScriptHistoryWriter, ScriptUtxoWriter, TokenIdGroup, TokenIdGroupAux,
-        TokenIdHistoryWriter, TokenIdUtxoWriter,
+        TokenIdHistoryWriter, TokenIdUtxoWriter, V2AssetGroup,
+        V2AssetHistoryWriter, V2AssetUtxoWriter, V2BranchGroup,
+        V2BranchHistoryWriter, V2BranchUtxoWriter,
     },
     index_tx::{
         prepare_indexed_txs_cached, PrepareUpdateMode, TxNumCacheSettings,
@@ -639,6 +641,14 @@ impl ChronikIndexer {
             ScriptHistoryWriter::new(&self.db, self.script_group.clone())?;
         let script_utxo_writer =
             ScriptUtxoWriter::new(&self.db, self.script_group.clone())?;
+        let v2_branch_history_writer =
+            V2BranchHistoryWriter::new(&self.db, V2BranchGroup)?;
+        let v2_branch_utxo_writer =
+            V2BranchUtxoWriter::new(&self.db, V2BranchGroup)?;
+        let v2_asset_history_writer =
+            V2AssetHistoryWriter::new(&self.db, V2AssetGroup)?;
+        let v2_asset_utxo_writer =
+            V2AssetUtxoWriter::new(&self.db, V2AssetGroup)?;
         let spent_by_writer = SpentByWriter::new(&self.db)?;
         let token_writer = TokenWriter::new(&self.db)?;
         let token_id_history_writer =
@@ -674,6 +684,30 @@ impl ChronikIndexer {
             &index_txs,
             &(),
             &mut self.mem_data.script_utxos,
+        )?;
+        v2_branch_history_writer.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        v2_branch_utxo_writer.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        v2_asset_history_writer.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        v2_asset_utxo_writer.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
         )?;
         spent_by_writer.insert(
             &mut batch,
@@ -758,6 +792,14 @@ impl ChronikIndexer {
             ScriptHistoryWriter::new(&self.db, self.script_group.clone())?;
         let script_utxo_writer =
             ScriptUtxoWriter::new(&self.db, self.script_group.clone())?;
+        let v2_branch_history_writer =
+            V2BranchHistoryWriter::new(&self.db, V2BranchGroup)?;
+        let v2_branch_utxo_writer =
+            V2BranchUtxoWriter::new(&self.db, V2BranchGroup)?;
+        let v2_asset_history_writer =
+            V2AssetHistoryWriter::new(&self.db, V2AssetGroup)?;
+        let v2_asset_utxo_writer =
+            V2AssetUtxoWriter::new(&self.db, V2AssetGroup)?;
         let spent_by_writer = SpentByWriter::new(&self.db)?;
         let token_writer = TokenWriter::new(&self.db)?;
         let token_id_history_writer =
@@ -792,6 +834,30 @@ impl ChronikIndexer {
             &index_txs,
             &(),
             &mut self.mem_data.script_utxos,
+        )?;
+        v2_branch_history_writer.delete(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        v2_branch_utxo_writer.delete(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        v2_asset_history_writer.delete(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        v2_asset_utxo_writer.delete(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
         )?;
         spent_by_writer.delete(
             &mut batch,
@@ -1134,6 +1200,80 @@ impl ChronikIndexer {
             is_scripthash_index_enabled: self.is_scripthash_index_enabled,
             plugin_name_map: &self.plugin_name_map,
         })
+    }
+
+    /// Return [`QueryGroupHistory`] for V2 branch root hashes.
+    pub fn v2_branch_history<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> QueryGroupHistory<'a, V2BranchGroup> {
+        QueryGroupHistory {
+            db: &self.db,
+            avalanche: &self.avalanche,
+            mempool: &self.mempool,
+            mempool_history: self.mempool.v2_branch_history(),
+            group: V2BranchGroup,
+            node,
+            is_token_index_enabled: self.is_token_index_enabled,
+            is_scripthash_index_enabled: self.is_scripthash_index_enabled,
+            plugin_name_map: &self.plugin_name_map,
+        }
+    }
+
+    /// Return [`QueryGroupUtxos`] for V2 branch root hashes.
+    pub fn v2_branch_utxos<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> QueryGroupUtxos<'a, V2BranchGroup, UtxoProtobufValue> {
+        QueryGroupUtxos {
+            db: &self.db,
+            avalanche: &self.avalanche,
+            mempool: &self.mempool,
+            node,
+            mempool_utxos: self.mempool.v2_branch_utxos(),
+            group: V2BranchGroup,
+            utxo_mapper: UtxoProtobufValue,
+            is_token_index_enabled: self.is_token_index_enabled,
+            is_scripthash_index_enabled: self.is_scripthash_index_enabled,
+            plugin_name_map: &self.plugin_name_map,
+        }
+    }
+
+    /// Return [`QueryGroupHistory`] for V2 asset IDs.
+    pub fn v2_asset_history<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> QueryGroupHistory<'a, V2AssetGroup> {
+        QueryGroupHistory {
+            db: &self.db,
+            avalanche: &self.avalanche,
+            mempool: &self.mempool,
+            mempool_history: self.mempool.v2_asset_history(),
+            group: V2AssetGroup,
+            node,
+            is_token_index_enabled: self.is_token_index_enabled,
+            is_scripthash_index_enabled: self.is_scripthash_index_enabled,
+            plugin_name_map: &self.plugin_name_map,
+        }
+    }
+
+    /// Return [`QueryGroupUtxos`] for V2 asset IDs.
+    pub fn v2_asset_utxos<'a>(
+        &'a self,
+        node: &'a Node,
+    ) -> QueryGroupUtxos<'a, V2AssetGroup, UtxoProtobufValue> {
+        QueryGroupUtxos {
+            db: &self.db,
+            avalanche: &self.avalanche,
+            mempool: &self.mempool,
+            node,
+            mempool_utxos: self.mempool.v2_asset_utxos(),
+            group: V2AssetGroup,
+            utxo_mapper: UtxoProtobufValue,
+            is_token_index_enabled: self.is_token_index_enabled,
+            is_scripthash_index_enabled: self.is_scripthash_index_enabled,
+            plugin_name_map: &self.plugin_name_map,
+        }
     }
 
     /// Return [`QueryGroupHistory`] for token IDs to query the tx history of
@@ -1962,6 +2102,319 @@ mod tests {
                 loaded_version: "0.2.0".to_string(),
             },
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_v2_three_branch_and_asset_indexing_mdbx() -> Result<()> {
+        use bitcoinsuite_core::{
+            lotus_v2::Hash32,
+            tx::{Coin, OutPoint, Tx, TxId, TxInput, TxMut, TxOutput},
+        };
+        use chronik_db::{
+            data::DbOutpoint,
+            groups::{
+                ScriptGroup, TokenIdGroup, TokenIdGroupAux,
+                TokenIdHistoryReader, TokenIdHistoryWriter,
+                TokenIdUtxoReader, TokenIdUtxoWriter, V2AssetGroup,
+                V2AssetHistoryReader, V2AssetHistoryWriter,
+                V2AssetUtxoReader, V2AssetUtxoWriter, V2BranchGroup,
+                V2BranchHistoryReader, V2BranchHistoryWriter,
+                V2BranchUtxoReader, V2BranchUtxoWriter, V2ThreeBranchOutput,
+            },
+            index_tx::prepare_indexed_txs,
+            io::{
+                token::TokenWriter, BlockTxs, GroupHistoryMemData,
+                GroupUtxoMemData, TxEntry, TxWriter, TxsMemData, UtxoEntry,
+            },
+            mem::{Mempool, MempoolTx},
+        };
+        use chronik_plugin::data::PluginNameMap;
+        use std::collections::BTreeSet;
+
+        use crate::{subs::Subs, subs_group::TxMsgType};
+
+        let dir = tempdir::TempDir::new("chronik-indexer--v2-3branch-mdbx")?;
+        let db = Db::open(dir.path())?;
+
+        let key_branch = Hash32([0x11; 32]);
+        let script_branch = Hash32([0x22; 32]);
+        let data_branch = Hash32([0x33; 32]);
+        let asset_id = Hash32([0xaa; 32]);
+
+        let v2_out = V2ThreeBranchOutput {
+            key_branch,
+            script_branch: Some(script_branch),
+            data_branch: Some(data_branch),
+            asset_id: Some(asset_id),
+            value: 5_000,
+            is_burn: false,
+        };
+        let v2_script = v2_out.to_script().expect("valid V2 3-branch output");
+
+        let tx1 = Tx::with_txid(
+            TxId::from([1u8; 32]),
+            TxMut {
+                version: 2,
+                inputs: vec![],
+                outputs: vec![TxOutput {
+                    sats: 5_000,
+                    script: v2_script.clone(),
+                }],
+                locktime: 0,
+            },
+        );
+
+        // 1. Verify Mempool V2 branch + asset + token_id indexing + Subs
+        let mut mempool = Mempool::new(ScriptGroup, true, false);
+        let plugin_ctx = PluginContext::default();
+        let plugin_map = PluginNameMap::default();
+        let insert_res = mempool.insert(
+            &db,
+            MempoolTx {
+                tx: tx1.clone(),
+                time_first_seen: 1234,
+            },
+            &plugin_ctx,
+            &plugin_map,
+        )?;
+        let mut subs = Subs::new(ScriptGroup);
+        let mut rx_branch =
+            subs.subs_v2_branch_mut().subscribe_to_member(&data_branch);
+        let mut rx_asset =
+            subs.subs_v2_asset_mut().subscribe_to_member(&asset_id);
+        subs.handle_tx_event(
+            &insert_res.mempool_tx.tx,
+            TxMsgType::AddedToMempool,
+            &insert_res.token_id_aux,
+            &insert_res.plugin_outputs,
+        );
+        assert_eq!(rx_branch.try_recv()?.txid, tx1.txid());
+        assert_eq!(rx_asset.try_recv()?.txid, tx1.txid());
+
+        let expected_mem_hist = BTreeSet::from([(1234, tx1.txid())]);
+        assert_eq!(
+            mempool.v2_branch_history().member_history(&key_branch.0),
+            Some(&expected_mem_hist),
+        );
+        assert_eq!(
+            mempool.v2_branch_history().member_history(&script_branch.0),
+            Some(&expected_mem_hist),
+        );
+        assert_eq!(
+            mempool.v2_branch_history().member_history(&data_branch.0),
+            Some(&expected_mem_hist),
+        );
+        assert_eq!(
+            mempool.v2_asset_history().member_history(&asset_id.0),
+            Some(&expected_mem_hist),
+        );
+        assert_eq!(
+            mempool.token_id_history().member_history(&asset_id.0),
+            Some(&expected_mem_hist),
+        );
+
+        // 2. Connect block with tx1 in libmdbx
+        let mut batch = WriteBatch::default();
+        let tx_writer = TxWriter::new(&db)?;
+        let first_tx_num = tx_writer.insert(
+            &mut batch,
+            &BlockTxs {
+                block_height: 0,
+                txs: vec![TxEntry {
+                    txid: tx1.txid(),
+                    data_pos: 100,
+                    undo_pos: 0,
+                    time_first_seen: 1234,
+                    is_coinbase: true,
+                }],
+            },
+            &mut TxsMemData::default(),
+        )?;
+        let txs_0 = [tx1.clone()];
+        let index_txs = prepare_indexed_txs(&db, first_tx_num, &txs_0)?;
+        V2BranchHistoryWriter::new(&db, V2BranchGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        V2BranchUtxoWriter::new(&db, V2BranchGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        V2AssetHistoryWriter::new(&db, V2AssetGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        V2AssetUtxoWriter::new(&db, V2AssetGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        let processed_tokens =
+            TokenWriter::new(&db)?.insert(&mut batch, &index_txs)?;
+        let token_id_aux =
+            TokenIdGroupAux::from_batch(&index_txs, &processed_tokens);
+        TokenIdHistoryWriter::new(&db, TokenIdGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &token_id_aux,
+            &mut GroupHistoryMemData::default(),
+        )?;
+        TokenIdUtxoWriter::new(&db, TokenIdGroup)?.insert(
+            &mut batch,
+            &index_txs,
+            &token_id_aux,
+            &mut GroupUtxoMemData::default(),
+        )?;
+        db.write_batch(batch)?;
+        mempool.remove_mined(&tx1.txid())?;
+
+        for branch in [key_branch, script_branch, data_branch] {
+            assert_eq!(
+                V2BranchHistoryReader::new(&db)?.page_txs(&branch.0, 0)?,
+                Some(vec![0]),
+            );
+            assert_eq!(
+                V2BranchUtxoReader::new(&db)?.utxos(&branch.0)?,
+                Some(vec![UtxoEntry {
+                    outpoint: DbOutpoint {
+                        tx_num: 0,
+                        out_idx: 0,
+                    },
+                    data: 5_000,
+                }]),
+            );
+        }
+        assert_eq!(
+            V2AssetHistoryReader::new(&db)?.page_txs(&asset_id.0, 0)?,
+            Some(vec![0]),
+        );
+        assert_eq!(
+            V2AssetUtxoReader::new(&db)?.utxos(&asset_id.0)?,
+            Some(vec![UtxoEntry {
+                outpoint: DbOutpoint {
+                    tx_num: 0,
+                    out_idx: 0,
+                },
+                data: 5_000,
+            }]),
+        );
+        assert_eq!(
+            TokenIdHistoryReader::new(&db)?.page_txs(&asset_id.0, 0)?,
+            Some(vec![0]),
+        );
+        assert_eq!(
+            TokenIdUtxoReader::new(&db)?.utxos(&asset_id.0)?,
+            Some(vec![UtxoEntry {
+                outpoint: DbOutpoint {
+                    tx_num: 0,
+                    out_idx: 0,
+                },
+                data: (5_000, v2_script.bytecode().clone()),
+            }]),
+        );
+
+        // 3. Spend tx1 output in tx2 in block 1 (after block 1's coinbase tx)
+        let coinbase_1 = Tx::with_txid(
+            TxId::from([9u8; 32]),
+            TxMut {
+                version: 2,
+                inputs: vec![],
+                outputs: vec![],
+                locktime: 0,
+            },
+        );
+        let tx2 = Tx::with_txid(
+            TxId::from([2u8; 32]),
+            TxMut {
+                version: 2,
+                inputs: vec![TxInput {
+                    prev_out: OutPoint {
+                        txid: tx1.txid(),
+                        out_idx: 0,
+                    },
+                    script: Default::default(),
+                    sequence: 0,
+                    coin: Some(Coin {
+                        output: TxOutput {
+                            sats: 5_000,
+                            script: v2_script,
+                        },
+                        height: 0,
+                        is_coinbase: true,
+                    }),
+                }],
+                outputs: vec![],
+                locktime: 0,
+            },
+        );
+        let mut batch = WriteBatch::default();
+        let first_tx_num_1 = tx_writer.insert(
+            &mut batch,
+            &BlockTxs {
+                block_height: 1,
+                txs: vec![
+                    TxEntry {
+                        txid: coinbase_1.txid(),
+                        data_pos: 180,
+                        undo_pos: 0,
+                        time_first_seen: 0,
+                        is_coinbase: true,
+                    },
+                    TxEntry {
+                        txid: tx2.txid(),
+                        data_pos: 200,
+                        undo_pos: 250,
+                        time_first_seen: 1235,
+                        is_coinbase: false,
+                    },
+                ],
+            },
+            &mut TxsMemData::default(),
+        )?;
+        let txs_1 = [coinbase_1, tx2];
+        let index_txs_1 = prepare_indexed_txs(&db, first_tx_num_1, &txs_1)?;
+        V2BranchHistoryWriter::new(&db, V2BranchGroup)?.insert(
+            &mut batch,
+            &index_txs_1,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        V2BranchUtxoWriter::new(&db, V2BranchGroup)?.insert(
+            &mut batch,
+            &index_txs_1,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        V2AssetHistoryWriter::new(&db, V2AssetGroup)?.insert(
+            &mut batch,
+            &index_txs_1,
+            &(),
+            &mut GroupHistoryMemData::default(),
+        )?;
+        V2AssetUtxoWriter::new(&db, V2AssetGroup)?.insert(
+            &mut batch,
+            &index_txs_1,
+            &(),
+            &mut GroupUtxoMemData::default(),
+        )?;
+        db.write_batch(batch)?;
+
+        // UTXOs are spent, history has both tx_num 0 (tx1) and 2 (tx2)
+        assert_eq!(
+            V2BranchHistoryReader::new(&db)?.page_txs(&key_branch.0, 0)?,
+            Some(vec![0, 2]),
+        );
+        assert_eq!(V2BranchUtxoReader::new(&db)?.utxos(&key_branch.0)?, None);
+        assert_eq!(V2AssetUtxoReader::new(&db)?.utxos(&asset_id.0)?, None);
 
         Ok(())
     }

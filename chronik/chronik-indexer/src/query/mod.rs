@@ -12,6 +12,9 @@ mod plugins;
 mod tx_token_data;
 mod txs;
 mod util;
+pub mod v2_branches;
+pub mod v2_explorer;
+pub mod v2_assets;
 
 pub use self::blocks::*;
 pub use self::broadcast::*;
