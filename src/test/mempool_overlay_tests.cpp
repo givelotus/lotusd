@@ -3,81 +3,64 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <consensus/merkle.h>
+#include <key.h>
 #include <lotus_v2/commitment.h>
-#include <stdexcept>
+#include <lotus_v2/disk_state.h>
 #include <lotus_v2/mempool_overlay.h>
-#include <node/miner.h>
+#include <lotus_v2/signing.h>
+#include <lotus_v2/utxo_fast_filter.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
-#include <test/util/mining.h>
+#include <test/util/random.h>
 #include <test/util/setup_common.h>
+#include <test/util/txmempool.h>
 #include <txmempool.h>
-#include <validation.h>
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <future>
 #include <random>
 #include <vector>
+#include <stdexcept>
+
+BOOST_FIXTURE_TEST_SUITE(mempool_overlay_tests, BasicTestingSetup)
 
 namespace {
 
-CTransactionRef MakeTestCoinbaseTx(int height, Amount value) {
-    CMutableTransaction mtx;
-    mtx.nVersion = 2;
-    mtx.vin.resize(1);
-    mtx.vin[0].prevout = COutPoint();
-    mtx.vin[0].scriptSig =
-        CScript() << height << OP_0 << std::vector<uint8_t>(64, 0x42);
-    mtx.vout.resize(1);
-    mtx.vout[0].nValue = value;
-    mtx.vout[0].scriptPubKey = CScript() << OP_TRUE;
-    return MakeTransactionRef(std::move(mtx));
+CTransactionRef MakeCoinbaseTx(uint32_t height, Amount subsidy = 200 * SATOSHI) {
+    CMutableTransaction cb;
+    cb.nVersion = 2;
+    cb.vin.resize(1);
+    cb.vin[0].prevout = COutPoint();
+    cb.vin[0].nFlags = 2;
+    cb.vin[0].scriptSig = CScript() << height << OP_0;
+    cb.vout.resize(1);
+    cb.vout[0].nValue = subsidy;
+    cb.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    return MakeTransactionRef(std::move(cb));
 }
 
-CTransactionRef MakeTestSpendTx(const COutPoint &prevout, uint32_t locktime,
-                                Amount value_out, size_t num_outputs = 1) {
-    CMutableTransaction mtx;
-    mtx.nVersion = 2;
-    mtx.nLockTime = locktime;
-    mtx.vin.resize(1);
-    mtx.vin[0].prevout = prevout;
-    mtx.vin[0].scriptSig =
-        CScript() << std::vector<uint8_t>(64, uint8_t(locktime & 0xff));
-    mtx.vout.resize(num_outputs);
+CTransactionRef MakeSpendTx(const COutPoint &prevout, uint32_t salt,
+                            Amount out_val, size_t num_outputs = 2) {
+    CMutableTransaction tx;
+    tx.nVersion = 2;
+    tx.nLockTime = salt;
+    tx.vin.resize(1);
+    tx.vin[0].prevout = prevout;
+    tx.vin[0].scriptSig = CScript() << int64_t(salt) << OP_TRUE;
+    tx.vout.resize(num_outputs);
     for (size_t i = 0; i < num_outputs; ++i) {
-        mtx.vout[i].nValue = value_out / int64_t(num_outputs);
-        mtx.vout[i].scriptPubKey =
-            CScript() << OP_DUP << OP_HASH160
-                      << std::vector<uint8_t>(20, uint8_t((locktime + i) & 0xff))
-                      << OP_EQUALVERIFY << OP_CHECKSIG;
+        tx.vout[i].nValue = out_val;
+        tx.vout[i].scriptPubKey = CScript() << int64_t(salt + i) << OP_EQUAL;
     }
-    return MakeTransactionRef(std::move(mtx));
+    return MakeTransactionRef(std::move(tx));
 }
 
 } // namespace
-
-BOOST_FIXTURE_TEST_SUITE(mempool_overlay_tests, TestingSetup)
-
-BOOST_AUTO_TEST_CASE(transaction_subtree_rejects_duplicate_ids) {
-    lotus::v2::TxIdentityPair a{}, b{};
-    a.tx_id.fill(0x42);
-    a.tx_hash.fill(0x17);
-    b = a;
-    b.tx_hash.fill(0x18);
-    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, a}),
-                      std::invalid_argument);
-    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, b}),
-                      std::invalid_argument);
-    // The final key bit is legal: depth 255 may split two distinct keys.
-    b.tx_id[31] ^= 0x80;
-    const auto expected = lotus::v2::BuildTxSubtreeA(std::vector{a, b});
-    BOOST_CHECK(expected == lotus::v2::BuildTxSubtreeA(std::vector{b, a}));
-    BOOST_CHECK(expected != lotus::v2::BuildTxSubtreeA(std::vector{a}));
-}
 
 BOOST_AUTO_TEST_CASE(utxo_arena_reuses_imported_subtrees_and_invalidates_mutations) {
     using namespace lotus::v2;
@@ -134,172 +117,1315 @@ BOOST_AUTO_TEST_CASE(utxo_arena_reuses_imported_subtrees_and_invalidates_mutatio
     BOOST_CHECK(SmtRoot(base) == original_root);
 }
 
-BOOST_AUTO_TEST_CASE(stacked_cow_overlays_and_chained_lookup) {
-    lotus::v2::MerklixOverlayManager mgr;
-    lotus::v2::Hash parent_id{};
-    parent_id.fill(0x11);
-    mgr.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
-                   100, 1700000000);
-
-    // Layer 1 (Epoch 1): tx1 spends external UTXO, creates 2 outputs
-    COutPoint ext1(TxId(uint256S("0101010101010101010101010101010101010101010101010101010101010101")), 0);
-    const CTransactionRef tx1 = MakeTestSpendTx(ext1, 1, 10000 * SATOSHI, 2);
-    BOOST_CHECK(AddTransactionToOverlay(mgr, tx1, 500, 1));
-    const auto &l1 = mgr.FreezeEpochBatch();
-    BOOST_CHECK_EQUAL(l1.GetTxCount(), 1U);
-    BOOST_CHECK_EQUAL(l1.GetTotalFeesSats(), 500);
-    BOOST_CHECK_EQUAL(l1.GetTotalSigChecks(), 1);
-    BOOST_CHECK(!l1.HasDoubleSpends());
-
-    // Layer 2 (Epoch 2): tx2 spends tx1:0 (intra-overlay spend)
-    const CTransactionRef tx2 =
-        MakeTestSpendTx(COutPoint(tx1->GetId(), 0), 2, 9000 * SATOSHI, 1);
-    BOOST_CHECK(AddTransactionToOverlay(mgr, tx2, 600, 2));
-    const auto &l2 = mgr.FreezeEpochBatch();
-    BOOST_CHECK_EQUAL(l2.GetTxCount(), 2U);
-    BOOST_CHECK_EQUAL(l2.GetTotalFeesSats(), 1100);
-    BOOST_CHECK_EQUAL(l2.GetTotalSigChecks(), 3);
-
-    // Layer 3 (Speculative): tx3 spends tx2:0
-    const CTransactionRef tx3 =
-        MakeTestSpendTx(COutPoint(tx2->GetId(), 0), 3, 8000 * SATOSHI, 1);
-    BOOST_CHECK(AddTransactionToOverlay(mgr, tx3, 700, 1));
-    const auto &l3 = mgr.GetSpeculativeOverlay();
-    BOOST_CHECK_EQUAL(l3.GetTxCount(), 3U);
-    BOOST_CHECK_EQUAL(l3.GetTotalFeesSats(), 1800);
-    BOOST_CHECK_EQUAL(l3.GetTotalSigChecks(), 4);
-    BOOST_CHECK_EQUAL(mgr.GetFrozenEpochs().size(), 2U);
-
-    // Verify O(1) chained LookupCoinInStack (L3 -> L2 -> L1):
-    // - tx1:0 is spent by tx2 in L2/L3
-    // - tx1:1 is unspent across the stack
-    // - tx2:0 is spent by tx3 in L3
-    // - tx3:0 is unspent in L3
-    lotus::v2::Outpoint op_tx1_0{}, op_tx1_1{}, op_tx2_0{}, op_tx3_0{};
-    std::memcpy(op_tx1_0.tx_id.data(), tx1->GetId().begin(), 32);
-    op_tx1_0.index = 0;
-    op_tx1_1 = op_tx1_0;
-    op_tx1_1.index = 1;
-    std::memcpy(op_tx2_0.tx_id.data(), tx2->GetId().begin(), 32);
-    op_tx2_0.index = 0;
-    std::memcpy(op_tx3_0.tx_id.data(), tx3->GetId().begin(), 32);
-    op_tx3_0.index = 0;
-
-    bool spent = false;
-    lotus::v2::Coin coin_out{};
-    BOOST_CHECK(!mgr.LookupCoinInStack(op_tx1_0, &coin_out, spent));
-    BOOST_CHECK(spent);
-
-    BOOST_CHECK(mgr.LookupCoinInStack(op_tx1_1, &coin_out, spent));
-    BOOST_CHECK(!spent);
-    BOOST_CHECK_EQUAL(coin_out.output.value, 5000U);
-
-    BOOST_CHECK(!mgr.LookupCoinInStack(op_tx2_0, &coin_out, spent));
-    BOOST_CHECK(spent);
-
-    BOOST_CHECK(mgr.LookupCoinInStack(op_tx3_0, &coin_out, spent));
-    BOOST_CHECK(!spent);
-    BOOST_CHECK_EQUAL(coin_out.output.value, 8000U);
-
-    // Net erased outpoints should elide ephemeral intra-overlay coins (tx1:0, tx2:0)
-    // and only report the base-chain outpoint ext1
-    const auto net_erased = l3.GetNetErasedOutpoints();
-    BOOST_CHECK_EQUAL(net_erased.size(), 1U);
-    const auto net_inserted = l3.GetNetInsertedCoins();
-    BOOST_CHECK_EQUAL(net_inserted.size(), 2U); // tx1:1 and tx3:0
+BOOST_AUTO_TEST_CASE(transaction_subtree_rejects_duplicate_ids) {
+    lotus::v2::TxIdentityPair a{}, b{};
+    a.tx_id.fill(0x42);
+    a.tx_hash.fill(0x17);
+    b = a;
+    b.tx_hash.fill(0x18);
+    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, a}),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(lotus::v2::BuildTxSubtreeA(std::vector{a, b}),
+                      std::invalid_argument);
+    // The final key bit is legal: depth 255 may split two distinct keys.
+    b.tx_id[31] ^= 0x80;
+    const auto expected = lotus::v2::BuildTxSubtreeA(std::vector{a, b});
+    BOOST_CHECK(expected == lotus::v2::BuildTxSubtreeA(std::vector{b, a}));
+    BOOST_CHECK(expected != lotus::v2::BuildTxSubtreeA(std::vector{a}));
 }
 
-BOOST_AUTO_TEST_CASE(positional_merkle_root_and_syndromes) {
-    lotus::v2::MerklixOverlayManager mgr_a;
-    lotus::v2::MerklixOverlayManager mgr_b;
-    lotus::v2::Hash parent_id{};
-    parent_id.fill(0x22);
-    mgr_a.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
-                     200, 1700000100);
-    mgr_b.ResetToTip(parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
-                     200, 1700000100);
+BOOST_AUTO_TEST_CASE(tx_overlay_arena_matches_block_merkle_root) {
+    lotus::v2::TxOverlayArena arena;
+    uint32_t root_idx = lotus::v2::TxOverlayArena::kNullIdx;
+    BOOST_CHECK(arena.SubtreeARoot(root_idx) == lotus::v2::EmptyTxRoot());
 
-    constexpr size_t kNumTxs = 64;
-    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_a;
-    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_b;
-    for (size_t i = 0; i < kNumTxs; ++i) {
-        COutPoint prev(TxId(m_rng.rand256()), uint32_t(i));
-        auto ptx = MakeTestSpendTx(prev, uint32_t(10 + i),
-                                   int64_t(2000 + i) * SATOSHI);
-        batch_a.emplace_back(ptx, 100 + int64_t(i), 1);
-        if (i < kNumTxs - 2) {
-            batch_b.emplace_back(ptx, 100 + int64_t(i), 1);
+    const CTransactionRef cb = MakeCoinbaseTx(1);
+    CBlock empty_block;
+    empty_block.vtx.push_back(cb);
+    BOOST_CHECK_EQUAL(
+        ComputeV2TxRootFromSubtreeA(*cb, arena.SubtreeARoot(root_idx)),
+        BlockMerkleRoot(empty_block));
+
+    std::vector<CTransactionRef> txs;
+    txs.reserve(100);
+    std::vector<uint32_t> historical_roots;
+    for (uint32_t i = 0; i < 100; ++i) {
+        TxId dummy_prev{m_rng.rand256()};
+        CTransactionRef ptx =
+            MakeSpendTx(COutPoint(dummy_prev, i % 4), i + 1, 1000 * SATOSHI);
+        txs.push_back(ptx);
+
+        lotus::v2::Hash tx_id{};
+        lotus::v2::Hash tx_hash{};
+        std::memcpy(tx_id.data(), ptx->GetId().begin(), 32);
+        std::memcpy(tx_hash.data(), ptx->GetHash().begin(), 32);
+        root_idx = arena.InsertTxLeaf(root_idx, tx_id, tx_hash);
+        historical_roots.push_back(root_idx);
+    }
+
+    BOOST_CHECK_EQUAL(arena.Count(root_idx), 100U);
+
+    // Build a block with all 100 transactions sorted in CTOR order
+    CBlock full_block;
+    full_block.vtx.push_back(cb);
+    std::vector<CTransactionRef> sorted_txs = txs;
+    std::sort(sorted_txs.begin(), sorted_txs.end(),
+              [](const CTransactionRef &a, const CTransactionRef &b) {
+                  return a->GetId() < b->GetId();
+              });
+    full_block.vtx.insert(full_block.vtx.end(), sorted_txs.begin(),
+                          sorted_txs.end());
+
+    const uint256 expected_merkle = BlockMerkleRoot(full_block);
+    const uint256 overlay_merkle =
+        ComputeV2TxRootFromSubtreeA(*cb, arena.SubtreeARoot(root_idx));
+    BOOST_CHECK_EQUAL(overlay_merkle, expected_merkle);
+
+    // Path-copying persistence check: snapshot at 50 txs must still match a
+    // 50-tx block even after 50 more txs were inserted.
+    const lotus::v2::Hash root50_before =
+        arena.SubtreeARoot(historical_roots[49]);
+    CBlock block50;
+    block50.vtx.push_back(cb);
+    std::vector<CTransactionRef> first50(txs.begin(), txs.begin() + 50);
+    std::sort(first50.begin(), first50.end(),
+              [](const CTransactionRef &a, const CTransactionRef &b) {
+                  return a->GetId() < b->GetId();
+              });
+    block50.vtx.insert(block50.vtx.end(), first50.begin(), first50.end());
+    BOOST_CHECK_EQUAL(ComputeV2TxRootFromSubtreeA(*cb, root50_before),
+                      BlockMerkleRoot(block50));
+
+    // Erase the last 50 transactions from root_idx and verify it matches root50
+    uint32_t pruned_idx = root_idx;
+    for (size_t i = 50; i < 100; ++i) {
+        lotus::v2::Hash tx_id{};
+        std::memcpy(tx_id.data(), txs[i]->GetId().begin(), 32);
+        pruned_idx = arena.EraseTxLeaf(pruned_idx, tx_id);
+    }
+    BOOST_CHECK_EQUAL(arena.Count(pruned_idx), 50U);
+    BOOST_CHECK(arena.SubtreeARoot(pruned_idx) == root50_before);
+
+    // Erase the remaining 50 transactions and verify EmptyTxRoot is restored
+    for (size_t i = 0; i < 50; ++i) {
+        lotus::v2::Hash tx_id{};
+        std::memcpy(tx_id.data(), txs[i]->GetId().begin(), 32);
+        pruned_idx = arena.EraseTxLeaf(pruned_idx, tx_id);
+    }
+    BOOST_CHECK_EQUAL(arena.Count(pruned_idx), 0U);
+    BOOST_CHECK(arena.SubtreeARoot(pruned_idx) == lotus::v2::EmptyTxRoot());
+}
+
+BOOST_AUTO_TEST_CASE(mempool_overlay_layer_matches_full_block_state_root) {
+    // 1. Create a base block at height 1 with 50 spendable outputs
+    CBlock base_block;
+    base_block.nHeaderVersion = lotus::v2::kHeaderVersion;
+    base_block.nHeight = 1;
+    base_block.nBits = 0x207fffff;
+    base_block.SetBlockTime(1700000000);
+
+    CMutableTransaction base_cb;
+    base_cb.nVersion = 2;
+    base_cb.vin.resize(1);
+    base_cb.vin[0].prevout = COutPoint();
+    base_cb.vin[0].nFlags = 2;
+    base_cb.vin[0].scriptSig = CScript() << 1 << OP_0;
+    base_cb.vout.resize(60);
+    for (size_t i = 0; i < 60; ++i) {
+        base_cb.vout[i].nValue = 100000 * SATOSHI;
+        base_cb.vout[i].scriptPubKey = CScript() << int64_t(i) << OP_TRUE;
+    }
+    base_block.vtx.push_back(MakeTransactionRef(std::move(base_cb)));
+    base_block.hashMerkleRoot = BlockMerkleRoot(base_block);
+    base_block.hashStateRoot = ComputeV2BlockStateRoot(
+        base_block, BlockHash(), 1, 1699999000, /*record=*/false);
+    const BlockHash base_hash = base_block.GetHash();
+    RecordV2BlockState(base_block, base_hash, BlockHash(), 1, 1699999000);
+
+    std::shared_ptr<const lotus::v2::SmtNode> base_utxo_root;
+    lotus::v2::MonetaryState base_mon_state{};
+    BOOST_REQUIRE(
+        GetV2BlockStateSnapshot(base_hash, base_utxo_root, base_mon_state));
+
+    lotus::v2::Hash base_id_hash{};
+    std::memcpy(base_id_hash.data(), base_hash.begin(), 32);
+
+    const uint64_t next_height = 2;
+    const uint64_t parent_mtp = 1700000000;
+
+    lotus::v2::MerklixOverlayManager manager;
+    manager.ResetToTip(base_id_hash, base_utxo_root, base_mon_state,
+                       next_height, parent_mtp);
+
+    // 2. Build 100 transactions:
+    //    - 50 root transactions spending base_block coinbase outputs [0..49]
+    //    - 50 child transactions spending outputs of the first 50 transactions
+    //      (creates intra-template parent-child chains where ~half have
+    //      child.GetId() < parent.GetId() in CTOR order!)
+    std::vector<CTransactionRef> parent_txs;
+    std::vector<CTransactionRef> child_txs;
+    const TxId base_cb_txid = base_block.vtx[0]->GetId();
+
+    for (uint32_t i = 0; i < 50; ++i) {
+        CTransactionRef ptx = MakeSpendTx(COutPoint(base_cb_txid, i),
+                                          1000 + i, 40000 * SATOSHI, 2);
+        parent_txs.push_back(ptx);
+        BOOST_CHECK(AddTransactionToOverlay(manager, ptx, 1000, 1));
+    }
+
+    // Freeze Epoch 1 after 50 parent transactions
+    const auto &epoch1 = manager.FreezeEpochBatch();
+    BOOST_CHECK_EQUAL(epoch1.GetTxCount(), 50U);
+    const lotus::v2::Hash epoch1_tx_root = epoch1.GetSubtreeARoot();
+    const lotus::v2::Hash epoch1_utxo_root = epoch1.GetUtxoRootDigest();
+
+    for (uint32_t i = 0; i < 50; ++i) {
+        CTransactionRef ctx = MakeSpendTx(COutPoint(parent_txs[i]->GetId(), 0),
+                                          2000 + i, 15000 * SATOSHI, 2);
+        child_txs.push_back(ctx);
+        BOOST_CHECK(AddTransactionToOverlay(manager, ctx, 1000, 1));
+    }
+
+    // Verify frozen Epoch 1 roots were not mutated by speculative additions
+    BOOST_CHECK(manager.GetFrozenEpochs().front().GetSubtreeARoot() ==
+                epoch1_tx_root);
+    BOOST_CHECK(manager.GetFrozenEpochs().front().GetUtxoRootDigest() ==
+                epoch1_utxo_root);
+
+    // 3. Remove 10 child transactions and their 10 parent transactions to test
+    //    both intra-overlay spend restoration and base-chain UTXO restoration
+    for (size_t i = 40; i < 50; ++i) {
+        BOOST_CHECK(RemoveTransactionFromOverlay(manager, *child_txs[i]));
+        BOOST_CHECK(RemoveTransactionFromOverlay(manager, *parent_txs[i]));
+    }
+
+    const auto &spec_overlay = manager.GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(spec_overlay.GetTxCount(), 80U);
+
+    // 4. Assemble the full block using the surviving 80 transactions in CTOR
+    //    order and compare both hashMerkleRoot and hashStateRoot against
+    //    from-scratch full block computation.
+    const CTransactionRef cb2 = MakeCoinbaseTx(next_height);
+    CBlock block2;
+    block2.nHeaderVersion = lotus::v2::kHeaderVersion;
+    block2.hashPrevBlock = base_hash;
+    block2.nHeight = next_height;
+    block2.nBits = 0x207fffff;
+    block2.SetBlockTime(1700000120);
+    block2.vtx.push_back(cb2);
+    for (const auto &[tx_id, entry] : spec_overlay.GetOrderedTxs()) {
+        auto ptx = std::static_pointer_cast<const CTransaction>(entry.tx_ref);
+        BOOST_REQUIRE(ptx != nullptr);
+        block2.vtx.push_back(ptx);
+    }
+    BOOST_CHECK_EQUAL(block2.vtx.size(), 81U);
+
+    // Verify CTOR sorting invariant on GetOrderedTxs()
+    for (size_t i = 2; i < block2.vtx.size(); ++i) {
+        BOOST_CHECK(block2.vtx[i - 1]->GetId() < block2.vtx[i]->GetId());
+    }
+
+    const uint256 expected_merkle = BlockMerkleRoot(block2);
+    const uint256 fast_merkle =
+        ComputeV2TxRootFromSubtreeA(*cb2, spec_overlay.GetSubtreeARoot());
+    BOOST_CHECK_EQUAL(fast_merkle, expected_merkle);
+
+    const uint256 expected_state_root = ComputeV2BlockStateRoot(
+        block2, base_hash, next_height, parent_mtp, /*record=*/false);
+    const uint256 fast_state_root = ComputeV2StateRootFromOverlay(
+        *cb2, spec_overlay, block2.nBits, next_height, parent_mtp);
+    BOOST_CHECK_EQUAL(fast_state_root, expected_state_root);
+}
+
+BOOST_AUTO_TEST_CASE(disk_state_commit_finalized_overlay) {
+    const fs::path db_dir = m_args.GetDataDirNet() / "v2_overlay_commit_test";
+    fs::create_directories(db_dir);
+
+    lotus::v2::DiskStateOptions opts{};
+    opts.identity[0] = 0x11;
+    opts.profile_digest[0] = 0x22;
+
+    lotus::v2::DiskStateMetadata genesis_meta{};
+    genesis_meta.tip[0] = 0x01;
+
+    lotus::v2::DiskStateStore store;
+    lotus::v2::DiskStateError err;
+    BOOST_REQUIRE_MESSAGE(
+        lotus::v2::DiskStateStore::Open(fs::PathToString(db_dir), opts,
+                                        genesis_meta, store, err),
+        err.message);
+
+    // Commit Block 1 with 10 base coins into both DiskStateStore and SmtNode
+    std::shared_ptr<const lotus::v2::SmtNode> base_utxo_root;
+    std::vector<lotus::v2::Coin> base_coins;
+    {
+        lotus::v2::DiskStateTransaction txn;
+        BOOST_REQUIRE(store.Begin(txn, err));
+        for (uint32_t i = 0; i < 10; ++i) {
+            lotus::v2::Hash txid{};
+            txid[0] = 0xa0;
+            txid[1] = static_cast<uint8_t>(i);
+            lotus::v2::Coin coin{};
+            coin.outpoint = {txid, 0};
+            coin.output.value = 50000;
+            coin.output.branches = {lotus::v2::Hash32{1}};
+            coin.output.paths = {{0}};
+            coin.creation_height = 1;
+            coin.creation_parent_mtp = 1000;
+            coin.coinbase = false;
+            BOOST_REQUIRE(txn.Insert(coin, err));
+            lotus::v2::SmtInsert(base_utxo_root, coin);
+            base_coins.push_back(coin);
+        }
+        lotus::v2::DiskStateMetadata b1_meta{};
+        b1_meta.tip[0] = 0x02;
+        BOOST_REQUIRE(txn.Commit(b1_meta, err));
+    }
+    const lotus::v2::Hash b1_root = store.Root();
+    BOOST_CHECK(b1_root == lotus::v2::SmtRoot(base_utxo_root));
+
+    // Build an overlay spending base_coins[0..4] in parent txs, and spending
+    // parent_tx[0..4] output 0 in child txs (intra-overlay ephemeral UTXOs).
+    lotus::v2::Hash b1_tip{};
+    b1_tip[0] = 0x02;
+    lotus::v2::MempoolOverlayLayer overlay(
+        b1_tip, base_utxo_root, lotus::v2::GetInitialV2MonetaryState(),
+        /*height=*/2, /*parent_mtp=*/1120);
+
+    std::vector<lotus::v2::Outpoint> ephemeral_outpoints;
+    std::vector<lotus::v2::Outpoint> surviving_outpoints;
+    for (uint32_t i = 0; i < 5; ++i) {
+        lotus::v2::Hash p_txid{}, p_txhash{};
+        p_txid[0] = 0xb0;
+        p_txid[1] = static_cast<uint8_t>(i);
+        p_txhash = p_txid;
+
+        lotus::v2::Coin p_out0{};
+        p_out0.outpoint = {p_txid, 0};
+        p_out0.output.value = 25000;
+        p_out0.output.branches = {lotus::v2::Hash32{1}};
+        p_out0.output.paths = {{0}};
+        p_out0.creation_height = 2;
+        p_out0.creation_parent_mtp = 1120;
+
+        lotus::v2::Coin p_out1 = p_out0;
+        p_out1.outpoint = {p_txid, 1};
+
+        BOOST_REQUIRE(overlay.AddTransaction(
+            p_txid, p_txhash, 200, {base_coins[i].outpoint}, {p_out0, p_out1}));
+        ephemeral_outpoints.push_back(p_out0.outpoint);
+        surviving_outpoints.push_back(p_out1.outpoint);
+
+        // Child tx spends p_out0 in the same overlay
+        lotus::v2::Hash c_txid{}, c_txhash{};
+        c_txid[0] = 0xc0;
+        c_txid[1] = static_cast<uint8_t>(i);
+        c_txhash = c_txid;
+
+        lotus::v2::Coin c_out0{};
+        c_out0.outpoint = {c_txid, 0};
+        c_out0.output.value = 24000;
+        c_out0.output.branches = {lotus::v2::Hash32{1}};
+        c_out0.output.paths = {{0}};
+        c_out0.creation_height = 2;
+        c_out0.creation_parent_mtp = 1120;
+
+        BOOST_REQUIRE(overlay.AddTransaction(
+            c_txid, c_txhash, 200, {p_out0.outpoint}, {c_out0}));
+        surviving_outpoints.push_back(c_out0.outpoint);
+    }
+
+    // Intra-overlay ephemeral outputs must be elided from net deltas
+    BOOST_CHECK_EQUAL(overlay.GetNetErasedOutpoints().size(), 5U);
+    BOOST_CHECK_EQUAL(overlay.GetNetInsertedCoins().size(), 10U);
+
+    // Add a coinbase coin for Block 2
+    lotus::v2::Coin cb_coin{};
+    cb_coin.outpoint.tx_id[0] = 0xd0;
+    cb_coin.outpoint.index = 0;
+    cb_coin.output.value = 200;
+    cb_coin.output.branches = {lotus::v2::Hash32{1}};
+    cb_coin.output.paths = {{0}};
+    cb_coin.creation_height = 2;
+    cb_coin.creation_parent_mtp = 1120;
+    cb_coin.coinbase = true;
+
+    std::shared_ptr<const lotus::v2::SmtNode> expected_root_node =
+        overlay.GetUtxoRoot();
+    lotus::v2::SmtInsert(expected_root_node, cb_coin);
+    const lotus::v2::Hash expected_b2_root =
+        lotus::v2::SmtRoot(expected_root_node);
+
+    lotus::v2::DiskStateMetadata b2_meta{};
+    b2_meta.tip[0] = 0x03;
+    BOOST_REQUIRE_MESSAGE(
+        store.CommitFinalizedOverlay(overlay, {cb_coin}, b2_meta, err),
+        err.message);
+
+    // Verify DiskStateStore root matches the overlay's post-coinbase UTXO root
+    BOOST_CHECK(store.Root() == expected_b2_root);
+
+    // Ephemeral coins must not exist in DiskStateStore; surviving coins must exist
+    for (const auto &ephem : ephemeral_outpoints) {
+        std::optional<lotus::v2::Coin> read_coin;
+        BOOST_REQUIRE(store.ReadCoin(ephem, read_coin, err));
+        BOOST_CHECK(!read_coin.has_value());
+    }
+    for (const auto &surv : surviving_outpoints) {
+        std::optional<lotus::v2::Coin> read_coin;
+        BOOST_REQUIRE(store.ReadCoin(surv, read_coin, err));
+        BOOST_CHECK(read_coin.has_value());
+    }
+
+    // Disconnect Block 2 and verify exact restoration of Block 1 state
+    BOOST_REQUIRE_MESSAGE(store.Disconnect(b2_meta.tip, err), err.message);
+    BOOST_CHECK(store.Root() == b1_root);
+}
+
+BOOST_FIXTURE_TEST_CASE(txmempool_speculative_merklix_overlay, TestingSetup) {
+    CBlock b1;
+    b1.nHeaderVersion = 1;
+    b1.nHeight = 1;
+    b1.nBits = 0x207fffff;
+    b1.SetBlockTime(1000);
+    b1.vtx.push_back(MakeCoinbaseTx(1));
+    std::vector<COutPoint> b1_coins;
+    for (uint32_t i = 0; i < 12; ++i) {
+        TxId dummy_prev{FastRandomContext().rand256()};
+        auto tx = MakeSpendTx(COutPoint(dummy_prev, 0), i + 1, 100 * SATOSHI, 2);
+        b1.vtx.push_back(tx);
+        b1_coins.emplace_back(tx->GetId(), 0);
+    }
+    std::sort(b1.vtx.begin() + 1, b1.vtx.end(),
+              [](const CTransactionRef &a, const CTransactionRef &b) {
+                  return a->GetId() < b->GetId();
+              });
+    b1.hashMerkleRoot = BlockMerkleRoot(b1);
+    b1.hashStateRoot = ComputeV2BlockStateRoot(b1, BlockHash{}, 1, 900, false);
+    b1.nSize = ::GetSerializeSize(b1);
+    const BlockHash b1_hash = b1.GetHash();
+    RecordV2BlockState(b1, b1_hash, BlockHash{}, 1, 900);
+
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    LOCK2(cs_main, pool.cs);
+    pool.clear();
+    pool.ConnectBlockReset(b1_hash, /*next_height=*/2, /*next_mtp=*/1000);
+
+    std::vector<CTransactionRef> epoch1_txs;
+    for (size_t i = 0; i < 6; ++i) {
+        auto tx = MakeSpendTx(b1_coins[i], static_cast<uint32_t>(100 + i),
+                              40 * SATOSHI, 2);
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        epoch1_txs.push_back(tx);
+    }
+
+    const auto &frozen_epoch1 = pool.FreezeEpochBatch();
+    BOOST_CHECK_EQUAL(frozen_epoch1.GetTxCount(), 6U);
+
+    // Add 4 more txs (including a child of epoch1_txs[0]) and remove 1 tx
+    std::vector<CTransactionRef> extra_txs;
+    auto child_tx = MakeSpendTx(COutPoint(epoch1_txs[0]->GetId(), 0), 200,
+                                35 * SATOSHI, 1);
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(child_tx));
+    extra_txs.push_back(child_tx);
+
+    for (size_t i = 6; i < 9; ++i) {
+        auto tx = MakeSpendTx(b1_coins[i], static_cast<uint32_t>(300 + i),
+                              40 * SATOSHI, 2);
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        extra_txs.push_back(tx);
+    }
+
+    // Remove extra_txs.back() from mempool and verify overlay reflects removal
+    pool.removeRecursive(*extra_txs.back(), MemPoolRemovalReason::CONFLICT);
+    extra_txs.pop_back();
+
+    // Frozen epoch 1 must remain unaffected at 6 txs
+    BOOST_CHECK_EQUAL(
+        pool.GetMerklixOverlay().GetFrozenEpochs().front().GetTxCount(), 6U);
+
+    // Speculative overlay must have 6 + 3 = 9 txs in exact CTOR order
+    const auto &spec = pool.GetMerklixOverlay().GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(spec.GetTxCount(), 9U);
+
+    CBlock b2;
+    b2.nHeaderVersion = 1;
+    b2.hashPrevBlock = b1_hash;
+    b2.nHeight = 2;
+    b2.nBits = 0x207fffff;
+    b2.SetBlockTime(1120);
+    b2.vtx.push_back(MakeCoinbaseTx(2));
+    for (const auto &[_, oentry] : spec.GetOrderedTxs()) {
+        b2.vtx.push_back(
+            std::static_pointer_cast<const CTransaction>(oentry.tx_ref));
+    }
+
+    const uint256 expected_merkle = BlockMerkleRoot(b2);
+    const uint256 overlay_merkle =
+        ComputeV2TxRootFromSubtreeA(*b2.vtx[0], spec.GetSubtreeARoot());
+    BOOST_CHECK_EQUAL(overlay_merkle, expected_merkle);
+
+    const uint256 expected_state =
+        ComputeV2BlockStateRoot(b2, b1_hash, 2, 1000, false);
+    const uint256 overlay_state =
+        ComputeV2StateRootFromOverlay(*b2.vtx[0], spec, b2.nBits, 2, 1000);
+    BOOST_CHECK_EQUAL(overlay_state, expected_state);
+
+    // Exercise arena Reserve, UtxoOverlayArena(root) constructor,
+    // GetDefaultV2MonetaryProfile, and MerklixOverlayManager::RemoveTransaction
+    BOOST_CHECK_EQUAL(lotus::v2::GetDefaultV2MonetaryProfile().ema_min, 4U);
+    lotus::v2::TxOverlayArena tx_arena;
+    tx_arena.Reserve(64);
+    lotus::v2::UtxoOverlayArena utxo_arena(spec.GetUtxoRoot());
+    utxo_arena.Reserve(64);
+    BOOST_CHECK(utxo_arena.RootDigest() == spec.GetUtxoRootDigest());
+
+    lotus::v2::Hash rem_txid{};
+    std::memcpy(rem_txid.data(), extra_txs.back()->GetId().begin(), 32);
+    BOOST_CHECK(pool.GetOverlayManager().RemoveTransaction(rem_txid));
+    BOOST_CHECK(!pool.GetOverlayManager().RemoveTransaction(rem_txid));
+
+    // Exercise SmtInsert/SmtErase duplicate/noop paths, invalid coin rejection,
+    // TxOverlayArena/UtxoOverlayArena duplicate/noop paths, and frozen epoch re-anchoring
+    {
+        std::shared_ptr<const lotus::v2::SmtNode> smt_root;
+        lotus::v2::Coin invalid_coin{};
+        lotus::v2::SmtInsert(smt_root, invalid_coin);
+        BOOST_CHECK(smt_root == nullptr);
+
+        const auto net_coins = spec.GetNetInsertedCoins();
+        BOOST_REQUIRE_GE(net_coins.size(), 2U);
+        const lotus::v2::Coin c1 = net_coins[0];
+        const lotus::v2::Coin c2 = net_coins[1];
+        lotus::v2::SmtInsert(smt_root, c1);
+        // Re-inserting identical single leaf returns the same node
+        lotus::v2::SmtInsert(smt_root, c1);
+        // Erasing non-existent outpoint on single leaf returns the same node
+        lotus::v2::SmtErase(smt_root, c2.outpoint);
+        lotus::v2::SmtInsert(smt_root, c2);
+        // Re-inserting identical leaf in branch returns the same node
+        lotus::v2::SmtInsert(smt_root, c2);
+        // Erasing non-existent outpoint in branch returns the same node
+        lotus::v2::SmtErase(smt_root, lotus::v2::Outpoint{lotus::v2::Hash{}, 999});
+
+        lotus::v2::Hash h1{}, h2{}, h3{}, h_alt{};
+        h1[0] = 1;
+        h2[0] = 2;
+        h3[0] = 3;
+        h_alt[0] = 9;
+        uint32_t tx_root = lotus::v2::TxOverlayArena::kNullIdx;
+        BOOST_CHECK_EQUAL(tx_arena.EraseTxLeaf(tx_root, h1),
+                          lotus::v2::TxOverlayArena::kNullIdx);
+        tx_root = tx_arena.InsertTxLeaf(tx_root, h1, h1);
+        // Duplicate same tx_hash on single leaf
+        tx_root = tx_arena.InsertTxLeaf(tx_root, h1, h1);
+        // Updated tx_hash on single leaf
+        tx_root = tx_arena.InsertTxLeaf(tx_root, h1, h_alt);
+        // Erase non-existent on single leaf
+        BOOST_CHECK_EQUAL(tx_arena.EraseTxLeaf(tx_root, h2), tx_root);
+        tx_root = tx_arena.InsertTxLeaf(tx_root, h2, h2);
+        // Duplicate same tx_hash on branch
+        BOOST_CHECK_EQUAL(tx_arena.InsertTxLeaf(tx_root, h2, h2), tx_root);
+        // Erase non-existent on branch
+        BOOST_CHECK_EQUAL(tx_arena.EraseTxLeaf(tx_root, h3), tx_root);
+
+        lotus::v2::UtxoOverlayArena u_arena;
+        u_arena.InsertCoin(invalid_coin);
+        u_arena.InsertCoin(c1);
+        // Duplicate same coin on single leaf
+        u_arena.InsertCoin(c1);
+        lotus::v2::Coin c1_mod = c1;
+        c1_mod.output.value += 500;
+        // Updated coin on single leaf
+        u_arena.InsertCoin(c1_mod);
+        u_arena.InsertCoin(c2);
+        // Duplicate same coin on branch
+        u_arena.InsertCoin(c2);
+
+        // Frozen epoch re-anchoring on same-tip / unset-tip overlay manager
+        lotus::v2::MerklixOverlayManager mgr;
+        BOOST_CHECK(mgr.AddTransaction(h1, h1, 100, {c1.outpoint}, {c2}, 10, 1));
+        BOOST_CHECK(!mgr.AddTransaction(h1, h1, 100, {c1.outpoint}, {c2}, 10, 1));
+        mgr.FreezeEpochBatch();
+        BOOST_CHECK_EQUAL(mgr.GetFrozenEpochs().size(), 1U);
+        mgr.ReanchorExistingTxs(h3, smt_root,
+                                lotus::v2::GetInitialV2MonetaryState(), 10,
+                                2000);
+        // Re-anchoring with identical anchor parameters is a no-op
+        mgr.ReanchorExistingTxs(h3, smt_root,
+                                lotus::v2::GetInitialV2MonetaryState(), 10,
+                                2000);
+        BOOST_CHECK_EQUAL(mgr.GetFrozenEpochs().size(), 1U);
+        BOOST_CHECK_EQUAL(mgr.GetFrozenEpochs()[0].GetHeight(), 10U);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(utxo_fast_filter_hamilton_uhs, TestingSetup) {
+    lotus::v2::UtxoFastFilter filter;
+    filter.ReservePerShard(256, 64);
+
+    constexpr size_t kNumUnspent = 10000;
+    constexpr size_t kNumSpent = 2000;
+    std::vector<lotus::v2::Outpoint> unspent_ops;
+    unspent_ops.reserve(kNumUnspent);
+    for (size_t i = 0; i < kNumUnspent; ++i) {
+        lotus::v2::Outpoint op{};
+        uint64_t seed = 0x9e3779b97f4a7c15ULL * (i + 1);
+        std::memcpy(op.tx_id.data(), &seed, sizeof(seed));
+        op.tx_id[0] = static_cast<uint8_t>((i * 7) & 0xFF);
+        op.tx_id[31] = static_cast<uint8_t>((i >> 8) & 0xFF);
+        op.index = static_cast<uint32_t>(i % 4);
+        unspent_ops.push_back(op);
+        filter.AddUnspent(op);
+    }
+
+    BOOST_CHECK_EQUAL(filter.UnspentCount(), kNumUnspent);
+    BOOST_CHECK_EQUAL(filter.MempoolSpentCount(), 0U);
+
+    for (size_t i = 0; i < kNumSpent; ++i) {
+        filter.MarkSpentInMempool(unspent_ops[i]);
+    }
+    BOOST_CHECK_EQUAL(filter.MempoolSpentCount(), kNumSpent);
+
+    for (size_t i = 0; i < kNumUnspent; ++i) {
+        BOOST_CHECK(filter.MayExistInChainOrMempool(unspent_ops[i]));
+        if (i < kNumSpent) {
+            BOOST_CHECK(filter.IsSpentInMempool(unspent_ops[i]));
+        } else {
+            BOOST_CHECK(!filter.IsSpentInMempool(unspent_ops[i]));
         }
     }
 
-    BOOST_CHECK_EQUAL(AddTransactionsToOverlayBatch(mgr_a, batch_a), kNumTxs);
-    BOOST_CHECK_EQUAL(AddTransactionsToOverlayBatch(mgr_b, batch_b),
-                      kNumTxs - 2);
-
-    const auto &spec_a = mgr_a.GetSpeculativeOverlay();
-    const auto &spec_b = mgr_b.GetSpeculativeOverlay();
-
-    // 1. Verify GF(2^64) algebraic syndrome (s1, s3, s5) recovers the exact 2 missing txs
-    const auto delta_syn =
-        spec_a.GetSyndrome().SymmetricDifference(spec_b.GetSyndrome());
-    const auto decoded = lotus::v2::DecodeBucketSyndrome(delta_syn);
-    BOOST_CHECK(decoded.status == lotus::v2::ReconcileStatus::Decoded);
-    BOOST_REQUIRE_EQUAL(decoded.roots.size(), 2U);
-
-    const auto [k0, k1] = spec_a.GetSipHashKey();
-    lotus::v2::Hash id_missing_1{}, id_missing_2{};
-    std::memcpy(id_missing_1.data(),
-                std::get<0>(batch_a[kNumTxs - 2])->GetId().begin(), 32);
-    std::memcpy(id_missing_2.data(),
-                std::get<0>(batch_a[kNumTxs - 1])->GetId().begin(), 32);
-    uint64_t s_missing_1 = lotus::v2::ComputeShortTxId(k0, k1, id_missing_1);
-    uint64_t s_missing_2 = lotus::v2::ComputeShortTxId(k0, k1, id_missing_2);
-    if (s_missing_1 > s_missing_2) {
-        std::swap(s_missing_1, s_missing_2);
+    // Verify non-existent outpoints are rejected and measure lookup latency
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t false_positives = 0;
+    for (size_t i = 0; i < kNumUnspent; ++i) {
+        lotus::v2::Outpoint missing = unspent_ops[i];
+        missing.tx_id[15] ^= 0xFF;
+        missing.index += 10;
+        if (filter.IsSpentInMempool(missing) ||
+            filter.MayExistInChainOrMempool(missing)) {
+            ++false_positives;
+        }
     }
-    BOOST_CHECK_EQUAL(decoded.roots[0], s_missing_1);
-    BOOST_CHECK_EQUAL(decoded.roots[1], s_missing_2);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ns_per_check =
+        std::chrono::duration<double, std::nano>(t1 - t0).count() /
+        static_cast<double>(kNumUnspent * 2);
+    BOOST_CHECK_EQUAL(false_positives, 0U);
+    BOOST_TEST_MESSAGE("UtxoFastFilter average negative lookup: " << ns_per_check << " ns");
 
-    // 2. Verify O(log N) positional Merkle root matches standard BlockMerkleRoot
-    const CTransactionRef cb = MakeTestCoinbaseTx(200, 50 * COIN);
-    CBlock block;
-    block.vtx.push_back(cb);
-    for (const auto &[_, oentry] : spec_a.GetOrderedTxs()) {
-        block.vtx.push_back(
-            std::static_pointer_cast<const CTransaction>(oentry.tx_ref));
+    // Unmark half of the spent outpoints and remove 500 unspent outpoints
+    for (size_t i = 0; i < kNumSpent / 2; ++i) {
+        BOOST_CHECK(filter.UnmarkSpentInMempool(unspent_ops[i]));
+        BOOST_CHECK(!filter.IsSpentInMempool(unspent_ops[i]));
     }
-    const uint256 expected_merkle = BlockMerkleRoot(block);
+    BOOST_CHECK_EQUAL(filter.MempoolSpentCount(), kNumSpent / 2);
 
-    lotus::v2::Hash cb_txid{};
-    std::memcpy(cb_txid.data(), cb->GetId().begin(), 32);
-    const lotus::v2::Hash fast_merkle =
-        spec_a.ComputePositionalMerkleRoot(cb_txid);
-    uint256 fast_merkle_u256;
-    std::memcpy(fast_merkle_u256.begin(), fast_merkle.data(), 32);
-    BOOST_CHECK_EQUAL(fast_merkle_u256, expected_merkle);
-
-    // Verify left-spine branch authenticates both null_merkle_root and hashMerkleRoot
-    const auto &branch = spec_a.GetCoinbaseMerkleBranch();
-    BOOST_CHECK_LE(branch.size(), 16U);
-    BOOST_CHECK(lotus::v2::ComputeMerkleRootFromLeftSpine(lotus::v2::Hash{},
-                                                          branch) ==
-                spec_a.GetNullMerkleRoot());
-    BOOST_CHECK(lotus::v2::ComputeMerkleRootFromLeftSpine(cb_txid, branch) ==
-                fast_merkle);
-
-    // 3. Verify lazy UtxoRoot digest matches eager CommitStateRootInHeader mode
-    lotus::v2::MempoolOverlayLayer eager_layer(
-        parent_id, nullptr, lotus::v2::GetInitialV2MonetaryState(), 200,
-        1700000100);
-    eager_layer.SetCommitStateRootInHeader(true);
-    for (const auto &[ptx, fee, sigops] : batch_a) {
-        BOOST_CHECK(AddTransactionToOverlay(eager_layer, ptx, fee, sigops));
+    for (size_t i = kNumUnspent - 500; i < kNumUnspent; ++i) {
+        BOOST_CHECK(filter.RemoveUnspent(unspent_ops[i]));
+        BOOST_CHECK(!filter.MayExistInChainOrMempool(unspent_ops[i]));
     }
-    BOOST_CHECK(spec_a.GetSubtreeARoot() == eager_layer.GetSubtreeARoot());
-    BOOST_CHECK(spec_a.GetUtxoRootDigest() == eager_layer.GetUtxoRootDigest());
+    BOOST_CHECK_EQUAL(filter.UnspentCount(), kNumUnspent - 500);
+
+    filter.ClearMempool();
+    BOOST_CHECK_EQUAL(filter.MempoolSpentCount(), 0U);
+    BOOST_CHECK_EQUAL(filter.UnspentCount(), kNumUnspent - 500);
+
+    filter.ClearAll();
+    BOOST_CHECK_EQUAL(filter.UnspentCount(), 0U);
+
+    // Verify CTxMemPool integration
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    LOCK2(cs_main, pool.cs);
+    pool.clear();
+
+    TxId parent_txid{FastRandomContext().rand256()};
+    COutPoint spent_prevout(parent_txid, 0);
+    COutPoint unspent_prevout(parent_txid, 1);
+    pool.GetUtxoFastFilter().AddUnspent(parent_txid.begin(), 0);
+    pool.GetUtxoFastFilter().AddUnspent(parent_txid.begin(), 1);
+
+    BOOST_CHECK(!pool.isSpent(spent_prevout));
+    BOOST_CHECK(!pool.IsSpentFast(spent_prevout));
+    BOOST_CHECK(pool.MayExistInChainOrMempoolFast(spent_prevout));
+
+    auto tx1 = MakeSpendTx(spent_prevout, 42, 50 * SATOSHI, 2);
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+
+    COutPoint tx1_out0(tx1->GetId(), 0);
+    BOOST_CHECK(pool.isSpent(spent_prevout));
+    BOOST_CHECK(pool.IsSpentFast(spent_prevout));
+    BOOST_CHECK(!pool.isSpent(unspent_prevout));
+    BOOST_CHECK(pool.MayExistInChainOrMempoolFast(tx1_out0));
+
+    // Removing due to CONFLICT should unmark spent_prevout and remove tx1_out0 from UHS
+    pool.removeRecursive(*tx1, MemPoolRemovalReason::CONFLICT);
+    BOOST_CHECK(!pool.isSpent(spent_prevout));
+    BOOST_CHECK(!pool.IsSpentFast(spent_prevout));
+    BOOST_CHECK(!pool.MayExistInChainOrMempoolFast(tx1_out0));
+    BOOST_CHECK(pool.MayExistInChainOrMempoolFast(spent_prevout));
+
+    // Re-add and remove due to BLOCK confirmation: spent_prevout is consumed from UHS,
+    // while tx1_out0 remains unspent in the chain UHS.
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+    pool.removeRecursive(*tx1, MemPoolRemovalReason::BLOCK);
+    BOOST_CHECK(!pool.isSpent(spent_prevout));
+    BOOST_CHECK(!pool.MayExistInChainOrMempoolFast(spent_prevout));
+    BOOST_CHECK(pool.MayExistInChainOrMempoolFast(tx1_out0));
 }
 
-BOOST_AUTO_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip) {
+BOOST_AUTO_TEST_CASE(monaddb_16_shard_parallel_merklix_and_prefetch) {
+    // 1. Verify TxOverlayArena::InsertBatchParallel produces 100% bit-identical
+    //    SubtreeARoot to serial InsertTxLeaf across edge cases and 800-tx batches.
+    {
+        std::vector<std::pair<lotus::v2::Hash, lotus::v2::Hash>> all_txs;
+        all_txs.reserve(800);
+        for (uint32_t i = 0; i < 800; ++i) {
+            lotus::v2::Hash txid{}, txhash{};
+            uint256 r1 = m_rng.rand256();
+            uint256 r2 = m_rng.rand256();
+            std::memcpy(txid.data(), r1.begin(), 32);
+            std::memcpy(txhash.data(), r2.begin(), 32);
+            all_txs.emplace_back(txid, txhash);
+        }
+        // Force first two txs into the exact same depth-4 shard (shard 0x05)
+        all_txs[0].first[0] = (all_txs[0].first[0] & 0xF0u) | 0x05u;
+        all_txs[1].first[0] = (all_txs[1].first[0] & 0xF0u) | 0x05u;
+
+        // Case 1a: 1 tx
+        lotus::v2::TxOverlayArena serial_arena, parallel_arena;
+        uint32_t s_root = serial_arena.InsertTxLeaf(
+            lotus::v2::TxOverlayArena::kNullIdx, all_txs[0].first,
+            all_txs[0].second);
+        uint32_t p_root = parallel_arena.InsertBatchParallel(
+            lotus::v2::TxOverlayArena::kNullIdx,
+            std::span<const std::pair<lotus::v2::Hash, lotus::v2::Hash>>(
+                all_txs.data(), 1));
+        BOOST_CHECK_EQUAL(parallel_arena.Count(p_root), 1U);
+        BOOST_CHECK(parallel_arena.SubtreeARoot(p_root) ==
+                    serial_arena.SubtreeARoot(s_root));
+
+        // Case 1b: 2nd tx in the SAME shard (incremental batch onto single-leaf root)
+        s_root = serial_arena.InsertTxLeaf(s_root, all_txs[1].first,
+                                           all_txs[1].second);
+        p_root = parallel_arena.InsertBatchParallel(
+            p_root,
+            std::span<const std::pair<lotus::v2::Hash, lotus::v2::Hash>>(
+                all_txs.data() + 1, 1));
+        BOOST_CHECK_EQUAL(parallel_arena.Count(p_root), 2U);
+        BOOST_CHECK(parallel_arena.SubtreeARoot(p_root) ==
+                    serial_arena.SubtreeARoot(s_root));
+
+        // Case 1c: Batch of next 498 txs (total 500)
+        for (size_t i = 2; i < 500; ++i) {
+            s_root = serial_arena.InsertTxLeaf(s_root, all_txs[i].first,
+                                               all_txs[i].second);
+        }
+        p_root = parallel_arena.InsertBatchParallel(
+            p_root,
+            std::span<const std::pair<lotus::v2::Hash, lotus::v2::Hash>>(
+                all_txs.data() + 2, 498));
+        BOOST_CHECK_EQUAL(parallel_arena.Count(p_root), 500U);
+        BOOST_CHECK(parallel_arena.SubtreeARoot(p_root) ==
+                    serial_arena.SubtreeARoot(s_root));
+
+        // Case 1d: Incremental batch of remaining 300 txs (total 800)
+        for (size_t i = 500; i < 800; ++i) {
+            s_root = serial_arena.InsertTxLeaf(s_root, all_txs[i].first,
+                                               all_txs[i].second);
+        }
+        p_root = parallel_arena.InsertBatchParallel(
+            p_root,
+            std::span<const std::pair<lotus::v2::Hash, lotus::v2::Hash>>(
+                all_txs.data() + 500, 300));
+        BOOST_CHECK_EQUAL(parallel_arena.Count(p_root), 800U);
+        BOOST_CHECK(parallel_arena.SubtreeARoot(p_root) ==
+                    serial_arena.SubtreeARoot(s_root));
+    }
+
+    // 2. Verify SmtBatchUpdateParallel and UtxoOverlayArena::BatchUpdateParallel
+    //    produce 100% bit-identical UtxoRoot digests to serial SmtErase/SmtInsert.
+    std::vector<lotus::v2::Coin> base_coins;
+    base_coins.reserve(600);
+    for (uint32_t i = 0; i < 600; ++i) {
+        lotus::v2::Coin coin{};
+        uint256 r = m_rng.rand256();
+        std::memcpy(coin.outpoint.tx_id.data(), r.begin(), 32);
+        coin.outpoint.index = i % 4;
+        coin.output.value = 10000 + i * 10;
+        coin.output.branches = {lotus::v2::Hash32{1}};
+        coin.output.paths = {{0}};
+        coin.creation_height = 1;
+        coin.creation_parent_mtp = 1000;
+        coin.coinbase = (i == 0);
+        base_coins.push_back(coin);
+    }
+
+    std::shared_ptr<const lotus::v2::SmtNode> serial_smt_root;
+    for (const auto &c : base_coins) {
+        lotus::v2::SmtInsert(serial_smt_root, c);
+    }
+
+    std::shared_ptr<const lotus::v2::SmtNode> parallel_smt_root;
+    lotus::v2::SmtBatchUpdateParallel(parallel_smt_root, {}, base_coins);
+    BOOST_REQUIRE(parallel_smt_root != nullptr);
+    BOOST_CHECK_EQUAL(parallel_smt_root->count, 600U);
+    BOOST_CHECK(lotus::v2::SmtRoot(parallel_smt_root) ==
+                lotus::v2::SmtRoot(serial_smt_root));
+
+    lotus::v2::UtxoOverlayArena serial_utxo_arena(serial_smt_root);
+    lotus::v2::UtxoOverlayArena parallel_utxo_arena(parallel_smt_root);
+
+    // Prepare 250 erasures from base_coins and 400 new coin insertions
+    std::vector<lotus::v2::Outpoint> batch_erased;
+    batch_erased.reserve(250);
+    for (size_t i = 0; i < 250; ++i) {
+        batch_erased.push_back(base_coins[i * 2].outpoint);
+    }
+    std::vector<lotus::v2::Coin> batch_inserted;
+    batch_inserted.reserve(400);
+    for (uint32_t i = 0; i < 400; ++i) {
+        lotus::v2::Coin coin{};
+        uint256 r = m_rng.rand256();
+        std::memcpy(coin.outpoint.tx_id.data(), r.begin(), 32);
+        coin.outpoint.index = i % 3;
+        coin.output.value = 5000 + i * 5;
+        coin.output.branches = {lotus::v2::Hash32{1}};
+        coin.output.paths = {{0}};
+        coin.creation_height = 2;
+        coin.creation_parent_mtp = 1120;
+        coin.coinbase = false;
+        batch_inserted.push_back(coin);
+    }
+
+    for (const auto &op : batch_erased) {
+        lotus::v2::SmtErase(serial_smt_root, op);
+        serial_utxo_arena.EraseOutpoint(op);
+    }
+    for (const auto &c : batch_inserted) {
+        lotus::v2::SmtInsert(serial_smt_root, c);
+        serial_utxo_arena.InsertCoin(c);
+    }
+
+    lotus::v2::SmtBatchUpdateParallel(parallel_smt_root, batch_erased,
+                                      batch_inserted);
+    parallel_utxo_arena.BatchUpdateParallel(batch_erased, batch_inserted);
+
+    BOOST_CHECK(lotus::v2::SmtRoot(parallel_smt_root) ==
+                lotus::v2::SmtRoot(serial_smt_root));
+    BOOST_CHECK(parallel_utxo_arena.RootDigest() ==
+                serial_utxo_arena.RootDigest());
+    BOOST_CHECK(parallel_utxo_arena.RootDigest() ==
+                lotus::v2::SmtRoot(parallel_smt_root));
+    BOOST_CHECK(lotus::v2::SmtRoot(parallel_utxo_arena.GetSmtRoot()) ==
+                lotus::v2::SmtRoot(serial_smt_root));
+
+    // 3. Verify DiskStateStore::PrefetchOutpointsAsync on a live MDBX store
+    const fs::path db_dir = m_args.GetDataDirNet() / "v2_prefetch_async_test";
+    fs::create_directories(db_dir);
+
+    lotus::v2::DiskStateOptions opts{};
+    opts.identity[0] = 0x33;
+    opts.profile_digest[0] = 0x44;
+
+    lotus::v2::DiskStateMetadata genesis_meta{};
+    genesis_meta.tip[0] = 0x01;
+
+    lotus::v2::DiskStateStore store;
+    lotus::v2::DiskStateError err;
+    BOOST_REQUIRE_MESSAGE(
+        lotus::v2::DiskStateStore::Open(fs::PathToString(db_dir), opts,
+                                        genesis_meta, store, err),
+        err.message);
+
+    {
+        lotus::v2::DiskStateTransaction txn;
+        BOOST_REQUIRE(store.Begin(txn, err));
+        for (size_t i = 0; i < 64; ++i) {
+            BOOST_REQUIRE(txn.Insert(base_coins[i], err));
+        }
+        lotus::v2::DiskStateMetadata b1_meta{};
+        b1_meta.tip[0] = 0x02;
+        BOOST_REQUIRE(txn.Commit(b1_meta, err));
+    }
+
+    std::vector<lotus::v2::Outpoint> prefetch_ops;
+    prefetch_ops.reserve(64);
+    for (size_t i = 0; i < 64; ++i) {
+        prefetch_ops.push_back(base_coins[i].outpoint);
+    }
+    BOOST_REQUIRE_MESSAGE(store.PrefetchOutpointsAsync(prefetch_ops, err),
+                          err.message);
+
+    for (size_t i = 0; i < 64; ++i) {
+        std::optional<lotus::v2::Coin> found;
+        BOOST_REQUIRE(store.ReadCoin(prefetch_ops[i], found, err));
+        BOOST_CHECK(found.has_value());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(kaspa_finality_horizon_undo_pruning) {
+    const fs::path db_dir = m_args.GetDataDirNet() / "v2_kaspa_undo_prune_test";
+    fs::create_directories(db_dir);
+
+    lotus::v2::DiskStateOptions opts{};
+    opts.identity[0] = 0x55;
+    opts.profile_digest[0] = 0x66;
+
+    const lotus::v2::MonetaryState mon = lotus::v2::GetInitialV2MonetaryState();
+    const auto mon_bytes = lotus::v2::EncodeMonetaryState(mon);
+
+    auto make_header_and_meta = [&](uint64_t height,
+                                    const lotus::v2::Hash &prev_id,
+                                    const lotus::v2::Hash &utxo_root,
+                                    lotus::v2::Header &hdr_out,
+                                    lotus::v2::DiskStateMetadata &meta_out) {
+        hdr_out = lotus::v2::Header{};
+        hdr_out.prev_id = prev_id;
+        hdr_out.bits = 0x207fffff;
+        hdr_out.time = 1000 + height * 120;
+        hdr_out.nonce = height;
+        hdr_out.version = lotus::v2::kHeaderVersion;
+        hdr_out.size = 200;
+        hdr_out.height = height;
+        hdr_out.tx_root[0] = static_cast<uint8_t>(height + 1);
+        hdr_out.state_root =
+            lotus::v2::StateRoot(opts.identity, height, utxo_root, mon);
+
+        std::array<uint8_t, lotus::v2::HEADER_SIZE> hdr_bytes{};
+        BOOST_REQUIRE(lotus::v2::SerializeHeader(hdr_out, hdr_bytes));
+        lotus::v2::Hash bid{};
+        BOOST_REQUIRE(lotus::v2::BlockId(opts.identity, hdr_out, bid));
+
+        meta_out = lotus::v2::DiskStateMetadata{};
+        meta_out.tip = bid;
+        meta_out.header.assign(hdr_bytes.begin(), hdr_bytes.end());
+        meta_out.monetary.assign(mon_bytes.begin(), mon_bytes.end());
+    };
+
+    std::vector<lotus::v2::Header> headers(6);
+    std::vector<lotus::v2::DiskStateMetadata> metas(6);
+    std::vector<lotus::v2::Hash> roots(6);
+    std::vector<lotus::v2::Coin> coins(6);
+
+    std::shared_ptr<const lotus::v2::SmtNode> running_smt;
+    roots[0] = lotus::v2::EmptyUtxoRoot();
+    make_header_and_meta(0, lotus::v2::Hash{}, roots[0], headers[0], metas[0]);
+
+    lotus::v2::DiskStateStore store;
+    lotus::v2::DiskStateError err;
+    BOOST_REQUIRE_MESSAGE(
+        lotus::v2::DiskStateStore::Open(fs::PathToString(db_dir), opts,
+                                        metas[0], store, err),
+        err.message);
+    BOOST_CHECK_EQUAL(store.PrunedUndoHorizonHeight(), 0U);
+
+    // Connect blocks 1..5, each spending the previous block's coin (for h >= 2)
+    // and inserting a new coin.
+    for (uint64_t h = 1; h <= 5; ++h) {
+        lotus::v2::Coin c{};
+        c.outpoint.tx_id[0] = static_cast<uint8_t>(0x80 + h);
+        c.outpoint.index = 0;
+        c.output.value = 50000 + h * 1000;
+        c.output.branches = {lotus::v2::Hash32{1}};
+        c.output.paths = {{0}};
+        c.creation_height = h;
+        c.creation_parent_mtp = 900 + h * 120;
+        c.coinbase = false;
+        coins[h] = c;
+
+        if (h >= 2) {
+            lotus::v2::SmtErase(running_smt, coins[h - 1].outpoint);
+        }
+        lotus::v2::SmtInsert(running_smt, c);
+        roots[h] = lotus::v2::SmtRoot(running_smt);
+        make_header_and_meta(h, metas[h - 1].tip, roots[h], headers[h],
+                             metas[h]);
+
+        lotus::v2::DiskStateTransaction txn;
+        BOOST_REQUIRE_MESSAGE(store.Begin(txn, err), err.message);
+        if (h >= 2) {
+            BOOST_REQUIRE_MESSAGE(txn.Erase(coins[h - 1].outpoint, err),
+                                  err.message);
+        }
+        BOOST_REQUIRE_MESSAGE(txn.Insert(c, err), err.message);
+        BOOST_REQUIRE_MESSAGE(txn.Commit(metas[h], err), err.message);
+        BOOST_CHECK(store.Root() == roots[h]);
+    }
+
+    // Verify undo locations exist for all blocks 1..5 before pruning
+    for (uint64_t h = 1; h <= 5; ++h) {
+        std::optional<lotus::v2::DiskUndoLocation> uloc;
+        BOOST_REQUIRE(store.ReadUndoLocation(metas[h].tip, uloc, err));
+        BOOST_CHECK(uloc.has_value());
+    }
+
+    // Prune finalized undo records up to cutoff = 5 - 2 = 3 (heights 1, 2, 3)
+    uint64_t pruned_count = 0;
+    BOOST_REQUIRE_MESSAGE(
+        store.PruneFinalizedUndoHorizon(5, 2, err, &pruned_count), err.message);
+    BOOST_CHECK_EQUAL(pruned_count, 3U);
+    BOOST_CHECK_EQUAL(store.PrunedUndoHorizonHeight(), 3U);
+    BOOST_CHECK(store.Root() == roots[5]);
+
+    // Idempotent second call prunes 0 additional records
+    uint64_t second_pruned = 99;
+    BOOST_REQUIRE_MESSAGE(
+        store.PruneFinalizedUndoHorizon(5, 2, err, &second_pruned),
+        err.message);
+    BOOST_CHECK_EQUAL(second_pruned, 0U);
+
+    // Undo locations for h = 1, 2, 3 are pruned; h = 4, 5 remain intact
+    for (uint64_t h = 1; h <= 5; ++h) {
+        std::optional<lotus::v2::DiskUndoLocation> uloc;
+        BOOST_REQUIRE(store.ReadUndoLocation(metas[h].tip, uloc, err));
+        if (h <= 3) {
+            BOOST_CHECK(!uloc.has_value());
+        } else {
+            BOOST_CHECK(uloc.has_value());
+        }
+    }
+
+    // Reverse-peel from h=5 -> h=4 and h=4 -> h=3 (above horizon) succeeds
+    BOOST_REQUIRE_MESSAGE(
+        store.PeelBlockStateReverse(metas[5].tip, metas[4], headers[4],
+                                    {coins[5].outpoint}, {coins[4]}, err),
+        err.message);
+    BOOST_CHECK(store.Root() == roots[4]);
+
+    BOOST_REQUIRE_MESSAGE(
+        store.PeelBlockStateReverse(metas[4].tip, metas[3], headers[3],
+                                    {coins[4].outpoint}, {coins[3]}, err),
+        err.message);
+    BOOST_CHECK(store.Root() == roots[3]);
+
+    // Reverse-peel from h=3 -> h=2 (past pruned finality horizon) must fail cleanly
+    BOOST_CHECK(!store.PeelBlockStateReverse(metas[3].tip, metas[2], headers[2],
+                                             {coins[3].outpoint}, {coins[2]},
+                                             err));
+    BOOST_CHECK(err.code == lotus::v2::DiskStateErrorCode::UndoMismatch);
+    BOOST_CHECK(store.Root() == roots[3]);
+
+    // Disconnect at h=3 (pruned horizon) must also fail cleanly with Missing
+    BOOST_CHECK(!store.Disconnect(metas[3].tip, err));
+    BOOST_CHECK(err.code == lotus::v2::DiskStateErrorCode::Missing);
+    BOOST_CHECK(store.Root() == roots[3]);
+
+    // Reopen store from disk and verify pruned horizon metadata persists
+    store = lotus::v2::DiskStateStore{};
+    opts.existing_only = true;
+    BOOST_REQUIRE_MESSAGE(
+        lotus::v2::DiskStateStore::Open(fs::PathToString(db_dir), opts,
+                                        metas[0], store, err),
+        err.message);
+    BOOST_CHECK_EQUAL(store.PrunedUndoHorizonHeight(), 3U);
+    BOOST_CHECK(store.Root() == roots[3]);
+    BOOST_CHECK(!store.Disconnect(metas[3].tip, err));
+    BOOST_CHECK(err.code == lotus::v2::DiskStateErrorCode::Missing);
+}
+
+BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, TestingSetup) {
+    // 1. Coalesced 16-shard AddTransactionsToOverlayBatch vs serial AddTransactionToOverlay
+    CBlock base_block;
+    base_block.nHeaderVersion = lotus::v2::kHeaderVersion;
+    base_block.nHeight = 1;
+    base_block.nBits = 0x207fffff;
+    base_block.SetBlockTime(1700000000);
+
+    CMutableTransaction base_cb;
+    base_cb.nVersion = 2;
+    base_cb.vin.resize(1);
+    base_cb.vin[0].prevout = COutPoint();
+    base_cb.vin[0].nFlags = 2;
+    base_cb.vin[0].scriptSig = CScript() << 1 << OP_0;
+    base_cb.vout.resize(300);
+    for (size_t i = 0; i < 300; ++i) {
+        base_cb.vout[i].nValue = 100000 * SATOSHI;
+        base_cb.vout[i].scriptPubKey = CScript() << int64_t(i) << OP_TRUE;
+    }
+    base_block.vtx.push_back(MakeTransactionRef(std::move(base_cb)));
+    base_block.hashMerkleRoot = BlockMerkleRoot(base_block);
+    base_block.hashStateRoot = ComputeV2BlockStateRoot(
+        base_block, BlockHash(), 1, 1699999000, /*record=*/false);
+    const BlockHash base_hash = base_block.GetHash();
+    RecordV2BlockState(base_block, base_hash, BlockHash(), 1, 1699999000);
+
+    std::shared_ptr<const lotus::v2::SmtNode> base_utxo_root;
+    lotus::v2::MonetaryState base_mon_state{};
+    BOOST_REQUIRE(
+        GetV2BlockStateSnapshot(base_hash, base_utxo_root, base_mon_state));
+
+    lotus::v2::Hash base_id_hash{};
+    std::memcpy(base_id_hash.data(), base_hash.begin(), 32);
+
+    const uint64_t next_height = 2;
+    const uint64_t parent_mtp = 1700000000;
+
+    std::vector<CTransactionRef> batch_txs;
+    batch_txs.reserve(500);
+    const TxId base_cb_txid = base_block.vtx[0]->GetId();
+    for (uint32_t i = 0; i < 250; ++i) {
+        auto ptx = MakeSpendTx(COutPoint(base_cb_txid, i), 1000 + i,
+                               40000 * SATOSHI, 2);
+        batch_txs.push_back(ptx);
+    }
+    // 250 child transactions spending outputs of the first 250 parent transactions
+    for (uint32_t i = 0; i < 250; ++i) {
+        auto ctx = MakeSpendTx(COutPoint(batch_txs[i]->GetId(), 0), 2000 + i,
+                               15000 * SATOSHI, 2);
+        batch_txs.push_back(ctx);
+    }
+
+    lotus::v2::MerklixOverlayManager serial_mgr;
+    serial_mgr.ResetToTip(base_id_hash, base_utxo_root, base_mon_state,
+                          next_height, parent_mtp);
+    const auto t_serial_0 = std::chrono::steady_clock::now();
+    for (const auto &ptx : batch_txs) {
+        BOOST_CHECK(AddTransactionToOverlay(serial_mgr, ptx, 1000, 1));
+    }
+    const auto t_serial_1 = std::chrono::steady_clock::now();
+
+    lotus::v2::MerklixOverlayManager batch_mgr;
+    batch_mgr.ResetToTip(base_id_hash, base_utxo_root, base_mon_state,
+                         next_height, parent_mtp);
+    std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_tuples;
+    batch_tuples.reserve(batch_txs.size());
+    for (size_t i = 0; i < batch_txs.size(); ++i) {
+        batch_tuples.emplace_back(batch_txs[i], 1000, 1);
+    }
+    const auto t_batch_0 = std::chrono::steady_clock::now();
+    const size_t added =
+        AddTransactionsToOverlayBatch(batch_mgr, batch_tuples);
+    const auto t_batch_1 = std::chrono::steady_clock::now();
+    BOOST_CHECK_EQUAL(added, 500U);
+
+    const double serial_ms =
+        std::chrono::duration<double, std::milli>(t_serial_1 - t_serial_0)
+            .count();
+    const double batch_ms =
+        std::chrono::duration<double, std::milli>(t_batch_1 - t_batch_0)
+            .count();
+    BOOST_TEST_MESSAGE("Overlay 500-tx add: serial=" << serial_ms
+                       << " ms, coalesced_batch=" << batch_ms
+                       << " ms (speedup=" << (serial_ms / std::max(0.001, batch_ms))
+                       << "x)");
+
+    const auto &serial_spec = serial_mgr.GetSpeculativeOverlay();
+    const auto &batch_spec = batch_mgr.GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(batch_spec.GetTxCount(), 500U);
+    BOOST_CHECK(batch_spec.GetSubtreeARoot() == serial_spec.GetSubtreeARoot());
+    BOOST_CHECK(batch_spec.GetUtxoRootDigest() ==
+                serial_spec.GetUtxoRootDigest());
+    BOOST_CHECK(lotus::v2::SmtRoot(batch_spec.GetUtxoRoot()) ==
+                lotus::v2::SmtRoot(serial_spec.GetUtxoRoot()));
+
+    const CTransactionRef cb2 = MakeCoinbaseTx(next_height);
+    const uint256 serial_state_root = ComputeV2StateRootFromOverlay(
+        *cb2, serial_spec, 0x207fffff, next_height, parent_mtp);
+    const uint256 batch_state_root = ComputeV2StateRootFromOverlay(
+        *cb2, batch_spec, 0x207fffff, next_height, parent_mtp);
+    BOOST_CHECK_EQUAL(batch_state_root, serial_state_root);
+
+    // Verify CTxMemPool ScopedSnapshotDefer coalesces addUnchecked into a single
+    // 16-shard batch flush and produces the exact same overlay state root.
+    CTxMemPool &pool = *m_node.mempool;
+    TestMemPoolEntryHelper entry;
+    {
+        LOCK2(cs_main, pool.cs);
+        pool.clear();
+        pool.ConnectBlockReset(base_hash, next_height, parent_mtp);
+        {
+            CTxMemPool::ScopedSnapshotDefer defer(pool);
+            for (const auto &ptx : batch_txs) {
+                pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(ptx));
+            }
+        }
+        const auto &pool_spec = pool.GetMerklixOverlay().GetSpeculativeOverlay();
+        BOOST_CHECK_EQUAL(pool_spec.GetTxCount(), 500U);
+        BOOST_CHECK(pool_spec.GetSubtreeARoot() ==
+                    serial_spec.GetSubtreeARoot());
+        BOOST_CHECK(pool_spec.GetUtxoRootDigest() ==
+                    serial_spec.GetUtxoRootDigest());
+        const uint256 pool_state_root = ComputeV2StateRootFromOverlay(
+            *cb2, pool_spec, 0x207fffff, next_height, parent_mtp);
+        BOOST_CHECK_EQUAL(pool_state_root, serial_state_root);
+    }
+
+    // 2. BuildNextV2BlockState candidate cache speedup across 3 consecutive calls
+    CBlock block2;
+    block2.nHeaderVersion = lotus::v2::kHeaderVersion;
+    block2.hashPrevBlock = base_hash;
+    block2.nHeight = next_height;
+    block2.nBits = 0x207fffff;
+    block2.SetBlockTime(1700000120);
+    block2.vtx.push_back(cb2);
+    for (const auto &[_, oentry] : batch_spec.GetOrderedTxs()) {
+        block2.vtx.push_back(
+            std::static_pointer_cast<const CTransaction>(oentry.tx_ref));
+    }
+    const auto t_b2_first0 = std::chrono::steady_clock::now();
+    const uint256 b2_state_1 = ComputeV2BlockStateRoot(
+        block2, base_hash, next_height, parent_mtp, /*record=*/false);
+    const auto t_b2_first1 = std::chrono::steady_clock::now();
+    const uint256 b2_state_2 = ComputeV2BlockStateRoot(
+        block2, base_hash, next_height, parent_mtp, /*record=*/false);
+    const uint256 b2_state_3 = ComputeV2BlockStateRoot(
+        block2, base_hash, next_height, parent_mtp, /*record=*/true);
+    const auto t_b2_cached = std::chrono::steady_clock::now();
+    BOOST_CHECK_EQUAL(b2_state_1, serial_state_root);
+    BOOST_CHECK_EQUAL(b2_state_2, b2_state_1);
+    BOOST_CHECK_EQUAL(b2_state_3, b2_state_1);
+    const double first_b2_ms =
+        std::chrono::duration<double, std::milli>(t_b2_first1 - t_b2_first0)
+            .count();
+    const double cached_b2_ms =
+        std::chrono::duration<double, std::milli>(t_b2_cached - t_b2_first1)
+            .count() /
+        2.0;
+    BOOST_TEST_MESSAGE("BuildNextV2BlockState 500-tx: uncached=" << first_b2_ms
+                       << " ms, cached=" << cached_b2_ms << " ms");
+
+    // 3. Legacy 64-byte Schnorr Multi-Scalar Multiplication Batch Verification
+    constexpr size_t kNumSigs = 500;
+    std::vector<CPubKey> pubkeys(kNumSigs);
+    std::vector<uint256> msgs(kNumSigs);
+    std::vector<std::array<uint8_t, 64>> sigs(kNumSigs);
+    for (size_t i = 0; i < kNumSigs; ++i) {
+        CKey key;
+        key.MakeNewKey(/*fCompressed=*/true);
+        pubkeys[i] = key.GetPubKey();
+        msgs[i] = m_rng.rand256();
+        BOOST_REQUIRE(key.SignSchnorr(msgs[i], sigs[i]));
+    }
+
+    const auto t_ind_0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < kNumSigs; ++i) {
+        BOOST_CHECK(pubkeys[i].VerifySchnorr(msgs[i], sigs[i]));
+    }
+    const auto t_ind_1 = std::chrono::steady_clock::now();
+
+    lotus::v2::BatchSigCollector collector;
+    const auto t_msm_0 = std::chrono::steady_clock::now();
+    for (size_t i = 0; i < kNumSigs; ++i) {
+        BOOST_CHECK(collector.AddLegacySchnorr(
+            std::span<const uint8_t>(pubkeys[i].data(), pubkeys[i].size()),
+            std::span<const uint8_t>(sigs[i].data(), 64), msgs[i].begin()));
+    }
+    BOOST_CHECK(collector.VerifyAll());
+    const auto t_msm_1 = std::chrono::steady_clock::now();
+
+    const double ind_ms =
+        std::chrono::duration<double, std::milli>(t_ind_1 - t_ind_0).count();
+    const double msm_ms =
+        std::chrono::duration<double, std::milli>(t_msm_1 - t_msm_0).count();
+    BOOST_TEST_MESSAGE("Legacy 64B Schnorr 500-sig verify: individual="
+                       << ind_ms << " ms, batch_msm=" << msm_ms
+                       << " ms (speedup=" << (ind_ms / std::max(0.001, msm_ms))
+                       << "x)");
+
+    // Mutate one signature byte in the batch and verify VerifyAll() rejects it
+    lotus::v2::BatchSigCollector bad_collector;
+    for (size_t i = 0; i < kNumSigs; ++i) {
+        auto sig_copy = sigs[i];
+        if (i == kNumSigs / 2) {
+            sig_copy[63] ^= 0x01;
+        }
+        BOOST_CHECK(bad_collector.AddLegacySchnorr(
+            std::span<const uint8_t>(pubkeys[i].data(), pubkeys[i].size()),
+            std::span<const uint8_t>(sig_copy.data(), 64), msgs[i].begin()));
+    }
+    BOOST_CHECK(!bad_collector.VerifyAll());
+}
+
+BOOST_AUTO_TEST_CASE(smt_node_pure_v7_and_legacy_adapter) {
+    // Verify SmtNode and OverlayTxEntry no longer carry dual-state script_pubkey vectors
+    static_assert(sizeof(lotus::v2::SmtNode) <= 128,
+                  "SmtNode must remain compact without dual-state script_pubkey");
+
+    const CTransactionRef legacy_cb = MakeCoinbaseTx(42, 500 * SATOSHI);
+    const CTransaction v7_cb = AdaptLegacyTxToV7(*legacy_cb);
+    BOOST_CHECK_EQUAL(v7_cb.nVersion, 7U);
+    BOOST_CHECK(v7_cb.fHasV2Lock);
+    BOOST_CHECK_EQUAL(v7_cb.nV2Lock, 0U);
+    BOOST_CHECK(v7_cb.IsCoinBase());
+    BOOST_REQUIRE_EQUAL(v7_cb.vin.size(), 1U);
+    BOOST_CHECK_EQUAL(v7_cb.vin[0].nFlags, 2U);
+    BOOST_CHECK(v7_cb.vin[0].fHasCoinbaseData);
+    BOOST_CHECK(!v7_cb.vin[0].vCoinbaseData.empty());
+    BOOST_REQUIRE_EQUAL(v7_cb.vout.size(), 1U);
+    BOOST_CHECK(!v7_cb.vout[0].vBranches.empty());
+    BOOST_CHECK_EQUAL(v7_cb.vout[0].vPaths.size(), 1U);
+
+    // Pure v7 wire serialization roundtrip on adapted coinbase
+    {
+        DataStream ss{};
+        ss << v7_cb;
+        uint32_t wire_ver = 0;
+        DataStream peek(ss);
+        peek >> wire_ver;
+        BOOST_CHECK_EQUAL(wire_ver, 7U);
+        CTransaction roundtrip(deserialize, ss);
+        BOOST_CHECK_EQUAL(roundtrip.nVersion, 7U);
+        BOOST_CHECK_EQUAL(roundtrip.GetId(), v7_cb.GetId());
+        BOOST_CHECK_EQUAL(roundtrip.GetHash(), v7_cb.GetHash());
+    }
+
+    // Spend transaction adaptation with height locktime and MTP locktime
+    const COutPoint prevout(v7_cb.GetId(), 0);
+    const CTransactionRef legacy_spend =
+        MakeSpendTx(prevout, 12345, 200 * SATOSHI, 2);
+    CMutableTransaction mtx_spend(*legacy_spend);
+    AdaptLegacyTxToV7(mtx_spend);
+    BOOST_CHECK_EQUAL(mtx_spend.nVersion, 7U);
+    BOOST_CHECK(mtx_spend.fHasV2Lock);
+    BOOST_CHECK_EQUAL(mtx_spend.nV2Lock, (uint64_t(12345) << 8) | 1ULL);
+    BOOST_CHECK_EQUAL(mtx_spend.vin[0].nFlags, 1U);
+    BOOST_CHECK(!mtx_spend.vin[0].vWitnesses.empty());
+    for (const auto &txout : mtx_spend.vout) {
+        BOOST_CHECK(!txout.vBranches.empty());
+        BOOST_CHECK_EQUAL(txout.vPaths.size(), 1U);
+    }
+
+    // Pure v7 wire roundtrip on adapted spend tx
+    {
+        DataStream ss{};
+        ss << mtx_spend;
+        uint32_t wire_ver = 0;
+        DataStream peek(ss);
+        peek >> wire_ver;
+        BOOST_CHECK_EQUAL(wire_ver, 7U);
+        CTransaction roundtrip(deserialize, ss);
+        BOOST_CHECK_EQUAL(roundtrip.nVersion, 7U);
+        BOOST_CHECK_EQUAL(roundtrip.GetId(), mtx_spend.GetId());
+        BOOST_CHECK_EQUAL(roundtrip.GetHash(), mtx_spend.GetHash());
+    }
+
+    // LookupV2SmtCoin returns canonical FromV2Output CTxOut without dual-state script_pubkey
+    std::shared_ptr<const lotus::v2::SmtNode> root;
+    lotus::v2::Hash txid{};
+    std::memcpy(txid.data(), v7_cb.GetId().begin(), 32);
+    lotus::v2::Coin coin{
+        {txid, 0},
+        v7_cb.vout[0].ToV2Output(),
+        42,
+        1700000000,
+        true};
+    lotus::v2::SmtInsert(root, coin);
+    uint32_t looked_up_height = 0;
+    bool looked_up_cb = false;
+    auto looked_up = LookupV2SmtCoin(root, prevout, &looked_up_height,
+                                     &looked_up_cb);
+    BOOST_REQUIRE(looked_up.has_value());
+    BOOST_CHECK_EQUAL(looked_up_height, 42U);
+    BOOST_CHECK(looked_up_cb);
+    BOOST_CHECK_EQUAL(looked_up->nValue, 500 * SATOSHI);
+    BOOST_CHECK(looked_up->vBranches == v7_cb.vout[0].vBranches);
+}
+
+BOOST_FIXTURE_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip, TestingSetup) {
     auto &pool = *Assert(m_node.mempool);
     LOCK2(cs_main, pool.cs);
     const BlockHash tip(uint256S("11"));
@@ -308,9 +1434,9 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip) {
     lotus::v2::Hash tip_id{};
     std::copy(tip.begin(), tip.end(), tip_id.begin());
     BOOST_CHECK(manager.IsAnchoredAt(tip_id, 100, 1000));
-    const auto parent_tx = MakeTestSpendTx(COutPoint(TxId(uint256S("22")), 0),
+    const auto parent_tx = MakeSpendTx(COutPoint(TxId(uint256S("22")), 0),
                                           1, 10000 * SATOSHI);
-    const auto child_tx = MakeTestSpendTx(COutPoint(parent_tx->GetId(), 0),
+    const auto child_tx = MakeSpendTx(COutPoint(parent_tx->GetId(), 0),
                                          2, 9000 * SATOSHI);
     TestMemPoolEntryHelper entry;
     pool.addUnchecked(entry.Fee(500 * SATOSHI).FromTx(parent_tx));
@@ -319,7 +1445,11 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip) {
     // does not materialize writes deferred by the mempool.
     pool.GetMerklixOverlay();
     BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 2U);
-    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTotalFeesSats(), 1100);
+    int64_t total_fees = 0;
+    for (const auto &[id, entry] : manager.GetSpeculativeOverlay().GetOrderedTxs()) {
+        total_fees += entry.fee_sats;
+    }
+    BOOST_CHECK_EQUAL(total_fees, 1100);
     const auto frozen_root = pool.FreezeEpochBatch().GetSubtreeARoot();
     pool.removeRecursive(*child_tx, MemPoolRemovalReason::CONFLICT);
     pool.GetMerklixOverlay();
