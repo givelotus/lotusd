@@ -15,6 +15,7 @@
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <net_processing.h>
+#include <netmessagemaker.h>
 #include <node/chainstatemanager_args.h>
 #include <policy/block/parkingpolicy.h>
 #include <policy/block/preconsensus.h>
@@ -71,6 +72,59 @@ namespace {
 } // namespace avalanche
 
 BOOST_AUTO_TEST_SUITE(preconsensus_batch_tests)
+
+BOOST_FIXTURE_TEST_CASE(avaresponse_burst_preserves_individual_messages,
+                        AvalancheTestingSetup) {
+    LogInstance().EnableCategory(BCLog::NET);
+    const CKey key = CKey::MakeCompressedKey();
+    for (bool have_pubkey : {false, true}) {
+        auto *node = new CNode(have_pubkey ? 901 : 900, nullptr, CAddress(),
+                              0, 0, 0, CAddress(), "",
+                              ConnectionType::OUTBOUND_FULL_RELAY, false);
+        node->SetCommonVersion(PROTOCOL_VERSION);
+        node->m_has_all_wanted_services = true;
+        m_node.peerman->InitializeNode(config, *node, NODE_NETWORK);
+        node->nVersion = PROTOCOL_VERSION;
+        node->fSuccessfullyConnected = true;
+        node->m_avalanche_enabled = true;
+        if (have_pubkey) {
+            LOCK(node->cs_avalanche_pubkey);
+            node->m_avalanche_pubkey = key.GetPubKey();
+        }
+        m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
+        constexpr int count = 5;
+        for (int i = 0; i < count; ++i) {
+            Response response(i, 0, {});
+            HashWriter hash;
+            hash << response;
+            SchnorrSig sig;
+            BOOST_REQUIRE(key.SignSchnorr(hash.GetHash(), sig));
+            auto msg = NetMsg::Make(NetMsgType::AVARESPONSE, response, sig);
+            if (have_pubkey && i == 2) msg.data.resize(1);
+            BOOST_REQUIRE(m_connman->ReceiveMsgFrom(*node, msg));
+        }
+        node->fPauseSend = false;
+        int no_pubkey_processed = 0;
+        {
+            DebugLogHelper log("invalid-ava-response-signature",
+                [&](const std::string *line) {
+                    if (line) ++no_pubkey_processed;
+                    return false;
+                });
+            std::atomic<bool> interrupt{false};
+            LOCK(NetEventsInterface::g_msgproc_mutex);
+            m_node.peerman->ProcessMessages(config, node, interrupt);
+        }
+        if (have_pubkey) {
+            // The malformed middle message must not discard either valid
+            // prefix or suffix. Unsolicited valid responses reach registerVotes.
+            BOOST_CHECK_EQUAL(node->m_avalanche_message_fault_counter, count - 1);
+        } else {
+            BOOST_CHECK_EQUAL(no_pubkey_processed, count);
+        }
+    }
+}
 
 BOOST_FIXTURE_TEST_CASE(avalanche_defaults_keep_upstream_unparking,
                         BasicTestingSetup) {
@@ -708,7 +762,7 @@ BOOST_FIXTURE_TEST_CASE(
         BOOST_REQUIRE(active_chainstate.ActivateBestChain(state, nullptr,
                                                           m_node.avalanche.get()));
         BOOST_CHECK_EQUAL(parks, 1);
-        m_node.avalanche->updatedBlockTip();
+        AvalancheTest::updatedBlockTip(*m_node.avalanche);
         BOOST_CHECK(m_node.avalanche->getFinalizedMempoolBatches(
             chaintip->GetBlockHash()).empty());
         // A delayed response cannot revive records for the connected parent.
