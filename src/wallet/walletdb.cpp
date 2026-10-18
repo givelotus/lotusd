@@ -16,7 +16,7 @@
 #include <util/fs.h>
 #include <util/time.h>
 #include <util/translation.h>
-#include <wallet/bdb.h>
+#include <wallet/sqlite.h>
 #include <wallet/wallet.h>
 
 #include <atomic>
@@ -1132,36 +1132,37 @@ std::unique_ptr<WalletDatabase> MakeDatabase(const fs::path &path,
         return nullptr;
     }
 
-    std::optional<DatabaseFormat> format;
-    if (exists) {
-        if (ExistsBerkeleyDatabase(path)) {
-            format = DatabaseFormat::BERKELEY;
-        }
-    } else if (options.require_existing) {
-        error = Untranslated(
-            strprintf("Failed to load database path '%s'. Path does not exist.",
-                      fs::PathToString(path)));
-        status = DatabaseStatus::FAILED_NOT_FOUND;
+    if (exists && !fs::is_directory(path)) {
+        error =
+            Untranslated("Wallet path must be a directory containing "
+                         "wallet.sqlite; legacy wallet files are unsupported.");
+        status = DatabaseStatus::FAILED_BAD_PATH;
         return nullptr;
     }
-
-    if (!format && options.require_existing) {
-        error = Untranslated(strprintf("Failed to load database path '%s'. "
-                                       "Data is not in recognized format.",
-                                       fs::PathToString(path)));
+    if (fs::exists(path / "wallet.dat")) {
+        error = Untranslated("Legacy wallet.dat wallets are unsupported; no "
+                             "migration is available.");
         status = DatabaseStatus::FAILED_BAD_FORMAT;
         return nullptr;
     }
-
-    if (format && options.require_create) {
-        error = Untranslated(strprintf(
-            "Failed to create database path '%s'. Database already exists.",
-            fs::PathToString(path)));
+    const bool database_exists = fs::exists(path / WALLET_DATABASE_FILENAME);
+    if (database_exists && !ExistsSQLiteDatabase(path)) {
+        error =
+            Untranslated("Wallet database is not a Lotus V2 SQLite wallet.");
+        status = DatabaseStatus::FAILED_BAD_FORMAT;
+        return nullptr;
+    }
+    if (!database_exists && options.require_existing) {
+        error = Untranslated("Wallet SQLite database does not exist.");
+        status = DatabaseStatus::FAILED_NOT_FOUND;
+        return nullptr;
+    }
+    if (database_exists && options.require_create) {
+        error = Untranslated("Wallet SQLite database already exists.");
         status = DatabaseStatus::FAILED_ALREADY_EXISTS;
         return nullptr;
     }
-
-    return MakeBerkeleyDatabase(path, options, status, error);
+    return MakeSQLiteDatabase(path, options, status, error);
 }
 
 /**
@@ -1173,6 +1174,6 @@ std::unique_ptr<WalletDatabase> CreateDummyWalletDatabase() {
 
 /** Return object for accessing temporary in-memory database. */
 std::unique_ptr<WalletDatabase> CreateMockWalletDatabase() {
-    return std::make_unique<BerkeleyDatabase>(
-        std::make_shared<BerkeleyEnvironment>(), "");
+    return std::make_unique<SQLiteDatabase>(fs::path{}, fs::path{}, true,
+                                            "lotus-v2-wallet-storage-mock");
 }
