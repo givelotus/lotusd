@@ -211,10 +211,15 @@ public:
 };
 
 enum class DatabaseFormat {
-    BERKELEY,
+    SQLITE,
 };
 
+inline constexpr const char *WALLET_DATABASE_FILENAME = "wallet.sqlite";
+
 struct DatabaseOptions {
+    // Storage profile only: the future V2 wallet caller must supply its chain
+    // profile digest. The inherited RPC wallet uses a development-only marker.
+    std::string wallet_profile;
     bool require_existing = false;
     bool require_create = false;
     uint64_t create_flags = 0;
