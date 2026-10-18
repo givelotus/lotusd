@@ -6,6 +6,7 @@
 #include <config.h>
 #include <consensus/validation.h>
 #include <key.h>
+#include <lotus_v2/commitment.h>
 #include <policy/policy.h>
 #include <script/scriptcache.h>
 #include <script/sighashtype.h>
@@ -19,8 +20,89 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <future>
 
 BOOST_AUTO_TEST_SUITE(txvalidationcache_tests)
+
+BOOST_FIXTURE_TEST_CASE(native_advisory_precompute_avoids_locks, TestingSetup) {
+    // An invalid native transaction is sufficient: advisory staging must leave
+    // its verdict to the unchanged authoritative admission path.
+    CMutableTransaction native_mtx;
+    native_mtx.nVersion = 7;
+    native_mtx.nV2Lock = 0;
+    const std::vector<uint8_t> script{0x4e}; // Native OP_1.
+    CTxIn input(COutPoint(TxId(uint256S("123456")), 0));
+    input.nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = script;
+    input.vWitnesses = {witness};
+    native_mtx.vin.push_back(std::move(input));
+    lotus::v2::Output output;
+    output.value = 1;
+    output.branches = {lotus::v2::BranchLeaf(script)};
+    output.paths = {{0}};
+    native_mtx.vout.push_back(CTxOut::FromV2Output(output));
+    const auto tx = MakeTransactionRef(native_mtx);
+    const auto check_default = [](const PrecomputedAdmissionChecks &checks) {
+        BOOST_CHECK(checks.txid.IsNull());
+        BOOST_CHECK(checks.spent_outputs.empty());
+        BOOST_CHECK(!checks.regular_tx_checked);
+        BOOST_CHECK(!checks.standard.ran);
+        BOOST_CHECK(!checks.consensus.ran);
+    };
+    const auto check_without_lock = [&](auto &mutex) {
+        std::promise<void> started;
+        std::future<PrecomputedAdmissionChecks> result;
+        {
+            LOCK(mutex);
+            result = std::async(std::launch::async, [&] {
+                started.set_value();
+                return PrecomputeMempoolAdmission(*m_node.chainman, tx, {});
+            });
+            started.get_future().wait();
+            BOOST_CHECK(result.wait_for(std::chrono::seconds{1}) ==
+                        std::future_status::ready);
+        }
+        check_default(result.get());
+    };
+    check_without_lock(cs_main);
+    check_without_lock(m_node.mempool->cs);
+
+    // A native-only batch must reach the unlocked phase without first waiting
+    // for cs_main. Phase C must still take the lock and reject both transactions.
+    std::promise<void> between;
+    std::future<std::vector<std::optional<MempoolAcceptResult>>> staged;
+    StagedAdmissionStats stats;
+    {
+        LOCK(cs_main);
+        StagedAdmissionOptions options;
+        options.test_between_phases = [&] { between.set_value(); };
+        staged = std::async(std::launch::async, [&, options] {
+            return AcceptToMemoryPoolStaged(*m_node.chainman, {tx, tx}, options,
+                                            &stats);
+        });
+        BOOST_CHECK(between.get_future().wait_for(std::chrono::seconds{1}) ==
+                    std::future_status::ready);
+    }
+    const auto results = staged.get();
+    BOOST_REQUIRE_EQUAL(results.size(), 2U);
+    BOOST_CHECK_EQUAL(stats.precomputed, 0U);
+    for (const auto &result : results) {
+        BOOST_REQUIRE(result.has_value());
+        BOOST_CHECK(result->m_result_type != MempoolAcceptResult::ResultType::VALID);
+    }
+    // Mixed legacy/native staging must retain authoritative rejection as well.
+    CMutableTransaction legacy_mtx;
+    legacy_mtx.nVersion = 2;
+    const auto mixed = AcceptToMemoryPoolStaged(*m_node.chainman,
+        {MakeTransactionRef(legacy_mtx), tx}, {}, nullptr);
+    BOOST_REQUIRE_EQUAL(mixed.size(), 2U);
+    for (const auto &result : mixed) {
+        BOOST_REQUIRE(result.has_value());
+        BOOST_CHECK(result->m_result_type != MempoolAcceptResult::ResultType::VALID);
+    }
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+}
 
 BOOST_FIXTURE_TEST_CASE(tx_mempool_block_doublespend, TestChain100Setup) {
     // Make sure skipping validation of transactions that were validated going

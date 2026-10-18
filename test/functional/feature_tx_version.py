@@ -21,7 +21,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_greater_than_or_equal
 
-OK_VERSIONS = [1, 2]
+OK_VERSIONS = [1, 2, 7]
 BAD_VERSIONS = [
     0x80000000,
     0x80000001,
@@ -29,7 +29,6 @@ BAD_VERSIONS = [
     0xFFFFFFFF,
     0,
     3,
-    7,
     0x100,
     0x7FFFFFFF,
 ]

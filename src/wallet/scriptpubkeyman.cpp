@@ -6,6 +6,7 @@
 #include <common/args.h>
 #include <config.h>
 #include <key_io.h>
+#include <lotus_v2/commitment.h>
 #include <logging.h>
 #include <node/types.h>
 #include <outputtype.h>
@@ -155,6 +156,14 @@ IsMineResult IsMineInner(const LegacyScriptPubKeyMan &keystore,
 }
 
 } // namespace
+
+
+std::optional<CScript>
+LegacyScriptPubKeyMan::GetScriptForV2Branch(const uint256 &) const {
+    // No supported native ownership provider exists at this prefix.
+    // Legacy IsMine(CScript) remains unchanged.
+    return std::nullopt;
+}
 
 isminetype LegacyScriptPubKeyMan::IsMine(const CScript &script) const {
     switch (IsMineInner(*this, script, IsMineSigVersion::TOP)) {
@@ -823,6 +832,7 @@ bool LegacyScriptPubKeyMan::RemoveWatchOnly(const CScript &dest) {
     {
         LOCK(cs_KeyStore);
         setWatchOnly.erase(dest);
+        ++m_watch_only_removals;
         CPubKey pubKey;
         if (ExtractPubKey(dest, pubKey)) {
             mapWatchKeys.erase(pubKey.GetID());
@@ -1688,6 +1698,13 @@ DescriptorScriptPubKeyMan::GetNewDestination(const OutputType type) {
     }
 }
 
+std::optional<CScript>
+DescriptorScriptPubKeyMan::GetScriptForV2Branch(const uint256 &) const {
+    // No supported native ownership provider exists at this prefix.
+    // Legacy IsMine(CScript) remains unchanged.
+    return std::nullopt;
+}
+
 isminetype DescriptorScriptPubKeyMan::IsMine(const CScript &script) const {
     LOCK(cs_desc_man);
     if (m_map_script_pub_keys.count(script) > 0) {
@@ -2388,6 +2405,8 @@ void DescriptorScriptPubKeyMan::UpdateWalletDescriptor(
 
     m_map_pubkeys.clear();
     m_map_script_pub_keys.clear();
+    m_v2_branch_scripts.clear();
+    m_v2_branch_index_size = 0;
     m_max_cached_index = -1;
     m_wallet_descriptor = descriptor;
 }
