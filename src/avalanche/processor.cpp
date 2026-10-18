@@ -888,13 +888,10 @@ void Processor::avaproofsSent(NodeId nodeid) {
  */
 bool Processor::isQuorumEstablished() {
     AssertLockNotHeld(cs_main);
-
-    {
-        LOCK(cs_peerManager);
-        if (peerManager->getNodeCount() < 8) {
-            // There is no point polling if we know the vote cannot converge
-            return false;
-        }
+    const auto quorum = peerManager->getQuorumMetrics();
+    if (quorum.nodeCount < 8) {
+        // Keep upstream's unlatched eight-node eligibility rule.
+        return false;
     }
 
     /*
@@ -923,22 +920,12 @@ bool Processor::isQuorumEstablished() {
 
     auto localProof = getLocalProof();
 
-    // Get the registered proof score and registered score we have nodes for
-    uint32_t totalPeersScore;
-    uint32_t connectedPeersScore;
-    {
-        LOCK(cs_peerManager);
-        totalPeersScore = peerManager->getTotalPeersScore();
-        connectedPeersScore = peerManager->getConnectedPeersScore();
-
-        // Consider that we are always connected to our proof, even if we are
-        // the single node using that proof.
-        if (localProof &&
-            peerManager->forPeer(localProof->getId(), [](const Peer &peer) {
-                return peer.node_count == 0;
-            })) {
-            connectedPeersScore += localProof->getScore();
-        }
+    // Read all peer metrics from the same published generation. Separate
+    // independent atomic reads could mix pre- and post-update quorum state.
+    const uint32_t totalPeersScore = quorum.totalScore;
+    uint32_t connectedPeersScore = quorum.connectedScore;
+    if (localProof && quorum.localProofHasNoNode) {
+        connectedPeersScore += localProof->getScore();
     }
 
     // Ensure enough is being staked overall

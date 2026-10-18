@@ -803,6 +803,7 @@ BOOST_FIXTURE_TEST_CASE(batch_default_requires_normal_finalization_score,
         node->nVersion = 1;
         node->fSuccessfullyConnected = true;
         m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
         nodes[i] = node;
         m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
             BOOST_CHECK(pm.addNode(node->GetId(), proofid,
@@ -945,6 +946,7 @@ BOOST_FIXTURE_TEST_CASE(mysticeti_contention_fallback_to_metastable_snowball,
         node->nVersion = 1;
         node->fSuccessfullyConnected = true;
         m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
         nodes[i] = node;
         m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
             BOOST_CHECK(pm.addNode(node->GetId(), proofid,
@@ -1148,6 +1150,7 @@ BOOST_FIXTURE_TEST_CASE(
         node->nVersion = 1;
         node->fSuccessfullyConnected = true;
         m_connman->AddTestNode(*node);
+        m_node.avalanche->setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
         nodes[i] = node;
         m_node.avalanche->withPeerManager([&](avalanche::PeerManager &pm) {
             BOOST_CHECK(pm.addNode(node->GetId(), proofid,
