@@ -22,38 +22,17 @@ class BlockValidationState;
  * Formatter for undo information for a CTxIn
  *
  * Contains the prevout's CTxOut being spent, and its metadata as well (coinbase
- * or not, height). The serialization contains a dummy value of zero. This is
- * compatible with older versions which expect to see the transaction version
- * there.
+ * or not, height, paid fee share and effective expiration). Native records use
+ * the same explicitly versioned codec as chainstate and snapshots.
  */
 struct TxInUndoFormatter {
+    // The native versioned Coin codec preserves both ordinary spent outputs
+    // and expired outputs. Old rev records require a full reindex.
     template <typename Stream> void Ser(Stream &s, const Coin &txout) {
-        ::Serialize(
-            s, VARINT(txout.GetHeight() * 2 + (txout.IsCoinBase() ? 1 : 0)));
-        if (txout.GetHeight() > 0) {
-            // Required to maintain compatibility with older undo format.
-            ::Serialize(s, uint8_t(0));
-        }
-        ::Serialize(s, Using<TxOutCompression>(txout.GetTxOut()));
+        ::Serialize(s, txout);
     }
-
     template <typename Stream> void Unser(Stream &s, Coin &txout) {
-        uint32_t nCode = 0;
-        ::Unserialize(s, VARINT(nCode));
-        uint32_t nHeight = nCode / 2;
-        bool fCoinBase = nCode & 1;
-        if (nHeight > 0) {
-            // Old versions stored the version number for the last spend of a
-            // transaction's outputs. Non-final spends were indicated with
-            // height = 0.
-            unsigned int nVersionDummy = 0;
-            ::Unserialize(s, VARINT(nVersionDummy));
-        }
-
-        CTxOut out;
-        ::Unserialize(s, Using<TxOutCompression>(out));
-
-        txout = Coin(std::move(out), nHeight, fCoinBase);
+        ::Unserialize(s, txout);
     }
 };
 
@@ -68,13 +47,28 @@ public:
     }
 };
 
+/** Undo entry for a C17a expired Coin swept at block height */
+struct ExpiredCoinUndo {
+    COutPoint outpoint;
+    Coin coin;
+
+    SERIALIZE_METHODS(ExpiredCoinUndo, obj) {
+        READWRITE(obj.outpoint);
+        READWRITE(Using<TxInUndoFormatter>(obj.coin));
+    }
+};
+
 /** Undo information for a CBlock */
 class CBlockUndo {
 public:
     // For all but the coinbase
     std::vector<CTxUndo> vtxundo;
+    // C17a deterministically swept expired UTXOs
+    std::vector<ExpiredCoinUndo> vexpired;
 
-    SERIALIZE_METHODS(CBlockUndo, obj) { READWRITE(obj.vtxundo); }
+    SERIALIZE_METHODS(CBlockUndo, obj) {
+        READWRITE(obj.vtxundo, obj.vexpired);
+    }
 };
 
 /**

@@ -105,6 +105,9 @@ CCoinsViewCache::FetchCoin(const COutPoint &outpoint) const {
             if (m_lookup_metric) {
                 m_lookup_metric->Add(1);
             }
+            m_min_expiration_height = std::min(
+                m_min_expiration_height,
+                ret->second.coin.GetExpirationHeight());
         } else {
             cacheCoins.erase(ret);
             if (m_lookup_metric) {
@@ -169,6 +172,8 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin coin,
         Assume(TrySub(cachedCoinsUsage, it->second.coin.DynamicMemoryUsage()));
     }
     it->second.coin = std::move(coin);
+    m_min_expiration_height = std::min(
+        m_min_expiration_height, it->second.coin.GetExpirationHeight());
     CCoinsCacheEntry::SetDirty(*it, m_sentinel);
     ++m_dirty_count;
     if (fresh) {
@@ -186,6 +191,11 @@ void CCoinsViewCache::EmplaceCoinInternalDANGER(COutPoint &&outpoint,
     auto [it, inserted] =
         cacheCoins.try_emplace(std::move(outpoint), std::move(coin));
     if (inserted) {
+        if (!it->second.coin.IsSpent()) {
+            m_min_expiration_height = std::min(
+                m_min_expiration_height,
+                it->second.coin.GetExpirationHeight());
+        }
         CCoinsCacheEntry::SetDirty(*it, m_sentinel);
         ++m_dirty_count;
         cachedCoinsUsage += mem_usage;
@@ -193,9 +203,23 @@ void CCoinsViewCache::EmplaceCoinInternalDANGER(COutPoint &&outpoint,
 }
 
 void AddCoins(CCoinsViewCache &cache, const CTransaction &tx, int nHeight,
-              bool check_for_overwrite) {
+              bool check_for_overwrite, uint64_t nTxFeeAtoms) {
     bool fCoinbase = tx.IsCoinBase();
     const TxId txid = tx.GetId();
+    size_t spendable_outputs = 0;
+    if (!fCoinbase) {
+        for (const auto &out : tx.vout) {
+            if (!out.scriptPubKey.IsUnspendable() && (out.nFlags & 0x02) == 0) {
+                ++spendable_outputs;
+            }
+        }
+    }
+    const uint64_t fee_per_output =
+        fCoinbase ? 0
+                  : lotus::v2::ComputeTxFeePerSpendableOutput(
+                        nTxFeeAtoms, spendable_outputs);
+    const uint64_t exp_height = lotus::v2::ComputeUtxoExpirationHeight(
+        static_cast<uint64_t>(std::max(0, nHeight)), fCoinbase, fee_per_output);
     for (size_t i = 0; i < tx.vout.size(); ++i) {
         const COutPoint outpoint(txid, i);
         bool overwrite =
@@ -203,8 +227,10 @@ void AddCoins(CCoinsViewCache &cache, const CTransaction &tx, int nHeight,
         // Coinbase transactions can always be overwritten,
         // in order to correctly deal with the pre-BIP30 occurrences of
         // duplicate coinbase transactions.
-        cache.AddCoin(outpoint, Coin(tx.vout[i], nHeight, fCoinbase),
-                      overwrite);
+        cache.AddCoin(
+            outpoint,
+            Coin(tx.vout[i], nHeight, fCoinbase, fee_per_output, exp_height),
+            overwrite);
     }
 }
 
@@ -230,6 +256,71 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin *moveout) {
         it->second.coin.Clear();
     }
     return true;
+}
+
+void CCoinsViewCache::UpdateCoinFeeLifespan(const COutPoint &outpoint,
+                                            uint64_t fee_per_output,
+                                            uint64_t exp_height) {
+    auto it = cacheCoins.find(outpoint);
+    if (it != cacheCoins.end() && !it->second.coin.IsSpent()) {
+        it->second.coin.nFeePerOutput = fee_per_output;
+        it->second.coin.nExpirationHeight = exp_height;
+        m_min_expiration_height =
+            std::min(m_min_expiration_height, exp_height);
+    }
+}
+
+std::vector<std::pair<COutPoint, Coin>>
+CCoinsViewCache::SweepExpiredCoins(uint64_t nHeight, size_t max_sweeps) {
+    if (max_sweeps == 0 || nHeight < m_min_expiration_height) {
+        return {};
+    }
+    struct Candidate {
+        uint64_t exp_height;
+        lotus::v2::Hash key;
+        COutPoint outpoint;
+    };
+    std::vector<Candidate> candidates;
+    uint64_t next_min_exp = std::numeric_limits<uint64_t>::max();
+    for (const auto &[outpoint, entry] : cacheCoins) {
+        if (entry.coin.IsSpent()) {
+            continue;
+        }
+        const uint64_t exp_h = entry.coin.GetExpirationHeight();
+        if (nHeight >= exp_h) {
+            lotus::v2::Outpoint v2op{};
+            std::memcpy(v2op.tx_id.data(), outpoint.GetTxId().begin(), 32);
+            v2op.index = outpoint.GetN();
+            candidates.push_back({exp_h, lotus::v2::OutpointKey(v2op), outpoint});
+        } else if (exp_h < next_min_exp) {
+            next_min_exp = exp_h;
+        }
+    }
+    if (candidates.empty()) {
+        m_min_expiration_height = next_min_exp;
+        return {};
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate &a, const Candidate &b) {
+                  if (a.exp_height != b.exp_height) {
+                      return a.exp_height < b.exp_height;
+                  }
+                  return a.key < b.key;
+              });
+    const size_t count = std::min(candidates.size(), max_sweeps);
+    if (candidates.size() > count) {
+        next_min_exp = std::min(next_min_exp, candidates[count].exp_height);
+    }
+    m_min_expiration_height = next_min_exp;
+    std::vector<std::pair<COutPoint, Coin>> swept;
+    swept.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        Coin moved;
+        if (SpendCoin(candidates[i].outpoint, &moved)) {
+            swept.emplace_back(candidates[i].outpoint, std::move(moved));
+        }
+    }
+    return swept;
 }
 
 static const Coin coinEmpty;
@@ -294,6 +385,11 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor &cursor,
                 } else {
                     entry.coin = it->second.coin;
                 }
+                if (!entry.coin.IsSpent()) {
+                    m_min_expiration_height = std::min(
+                        m_min_expiration_height,
+                        entry.coin.GetExpirationHeight());
+                }
                 CCoinsCacheEntry::SetDirty(*itUs, m_sentinel);
                 ++m_dirty_count;
                 cachedCoinsUsage += entry.coin.DynamicMemoryUsage();
@@ -333,6 +429,11 @@ void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor &cursor,
                 } else {
                     itUs->second.coin = it->second.coin;
                 }
+                if (!itUs->second.coin.IsSpent()) {
+                    m_min_expiration_height = std::min(
+                        m_min_expiration_height,
+                        itUs->second.coin.GetExpirationHeight());
+                }
                 cachedCoinsUsage += itUs->second.coin.DynamicMemoryUsage();
                 if (!itUs->second.IsDirty()) {
                     CCoinsCacheEntry::SetDirty(*itUs, m_sentinel);
@@ -358,6 +459,7 @@ void CCoinsViewCache::Flush(bool reallocate_cache) {
         ReallocateCache();
     }
     cachedCoinsUsage = 0;
+    m_min_expiration_height = lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS;
 }
 
 void CCoinsViewCache::Sync() {
@@ -375,6 +477,7 @@ void CCoinsViewCache::Reset() noexcept {
     cacheCoins.clear();
     cachedCoinsUsage = 0;
     m_dirty_count = 0;
+    m_min_expiration_height = lotus::v2::UTXO_MIN_LIFESPAN_BLOCKS;
     SetBestBlock(BlockHash{uint256::ZERO});
 }
 

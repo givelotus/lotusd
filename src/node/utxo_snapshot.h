@@ -29,7 +29,7 @@ namespace node {
 //! All metadata fields come from an untrusted file, so must be validated
 //! before being used. Thus, new fields should be added only if needed.
 class SnapshotMetadata {
-    inline static const uint16_t VERSION{2};
+    inline static const uint16_t VERSION{3};
     const std::set<uint16_t> m_supported_versions{VERSION};
     const CMessageHeader::MessageMagic m_network_magic;
 
