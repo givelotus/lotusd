@@ -188,6 +188,23 @@ Hash IndexedNode(uint16_t layer, const Hash &left, const Hash &right) {
 Hash IndexedTreeRoot(std::span<const Hash> leaves) {
     if (leaves.empty()) return TaggedHash(HashDomain::MerkleIndex, std::array<uint8_t, 1>{2});
     if (leaves.size() == 1) return leaves[0];
+    if (leaves.size() == 2) return IndexedNode(0, leaves[0], leaves[1]);
+    if (leaves.size() <= 16) {
+        std::array<Hash, 16> cur{};
+        size_t n = leaves.size();
+        std::copy(leaves.begin(), leaves.end(), cur.begin());
+        uint16_t layer = 0;
+        while (n > 1) {
+            if (n & 1) cur[n++] = Hash{};
+            const size_t half = n / 2;
+            for (size_t i = 0; i < half; ++i) {
+                cur[i] = IndexedNode(layer, cur[2 * i], cur[2 * i + 1]);
+            }
+            n = half;
+            ++layer;
+        }
+        return cur[0];
+    }
     std::vector<Hash> cur(leaves.begin(), leaves.end());
     uint16_t layer = 0;
     while (cur.size() > 1) {
