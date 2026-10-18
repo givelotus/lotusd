@@ -369,7 +369,7 @@ CDBWrapper::CDBWrapper(const DBParams &params)
     dbwrapper_private::HandleError(rc, "mdbx_env_set_geometry");
 
     const MDBX_env_flags_t env_flags = static_cast<MDBX_env_flags_t>(
-        MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC | MDBX_COALESCE |
+        MDBX_SAFE_NOSYNC | MDBX_NOMETASYNC |
         MDBX_LIFORECLAIM | MDBX_NOSTICKYTHREADS | MDBX_NOMEMINIT);
 
     rc = mdbx_env_open(m_env, fs::PathToString(m_active_path).c_str(),
