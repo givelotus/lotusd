@@ -243,7 +243,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
     }
 
     return pindexPrev->GetMedianTimePast() >=
-           activation_time.value_or(params.sandersActivationTime);
+           activation_time.value_or(0xffffffff);
 }
 
 namespace {
@@ -3347,60 +3347,14 @@ static uint32_t GetNextBlockScriptFlags(const CBlockIndex *pindex,
                                         const ChainstateManager &chainman) {
     const Consensus::Params &consensusparams = chainman.GetConsensus();
 
-    uint32_t flags = SCRIPT_VERIFY_NONE;
-
-    // Enforce P2SH (BIP16)
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_P2SH)) {
-        flags |= SCRIPT_VERIFY_P2SH;
-    }
-
-    // Enforce the DERSIG (BIP66) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_DERSIG)) {
-        flags |= SCRIPT_VERIFY_DERSIG;
-    }
-
-    // Start enforcing CHECKLOCKTIMEVERIFY (BIP65) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CLTV)) {
-        flags |= SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-    }
-
-    // Start enforcing CSV (BIP68, BIP112 and BIP113) rule.
-    if (DeploymentActiveAfter(pindex, chainman, Consensus::DEPLOYMENT_CSV)) {
-        flags |= SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
-    }
-
-    // If the UAHF is enabled, we start accepting replay protected txns
-    if (IsUAHFenabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_STRICTENC;
-        flags |= SCRIPT_ENABLE_SIGHASH_FORKID;
-    }
-
-    // If the DAA HF is enabled, we start rejecting transaction that use a high
-    // s in their signature. We also make sure that signature that are supposed
-    // to fail (for instance in multisig or other forms of smart contracts) are
-    // null.
-    if (IsDAAEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_LOW_S;
-        flags |= SCRIPT_VERIFY_NULLFAIL;
-    }
-
-    // When the magnetic anomaly fork is enabled, we start accepting
-    // transactions using the OP_CHECKDATASIG opcode and it's verify
-    // alternative. We also start enforcing push only signatures and
-    // clean stack.
-    if (IsMagneticAnomalyEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_VERIFY_SIGPUSHONLY;
-        flags |= SCRIPT_VERIFY_CLEANSTACK;
-    }
-
-    if (IsGravitonEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENABLE_SCHNORR_MULTISIG;
-        flags |= SCRIPT_VERIFY_MINIMALDATA;
-    }
-
-    if (IsPhononEnabled(consensusparams, pindex)) {
-        flags |= SCRIPT_ENFORCE_SIGCHECKS;
-    }
+    uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_DERSIG |
+                     SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
+                     SCRIPT_VERIFY_CHECKSEQUENCEVERIFY |
+                     SCRIPT_VERIFY_STRICTENC | SCRIPT_ENABLE_SIGHASH_FORKID |
+                     SCRIPT_VERIFY_LOW_S | SCRIPT_VERIFY_NULLFAIL |
+                     SCRIPT_VERIFY_SIGPUSHONLY | SCRIPT_VERIFY_CLEANSTACK |
+                     SCRIPT_ENABLE_SCHNORR_MULTISIG |
+                     SCRIPT_VERIFY_MINIMALDATA | SCRIPT_ENFORCE_SIGCHECKS;
 
     // We make sure this node will have replay protection during the next hard
     // fork.
@@ -6341,22 +6295,6 @@ static bool ContextualCheckBlockHeader(
                              "block timestamp too far in the future");
     }
 
-    // Reject blocks with outdated version
-    if ((block.nVersion < 2 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_HEIGHTINCB)) ||
-        (block.nVersion < 3 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_DERSIG)) ||
-        (block.nVersion < 4 &&
-         DeploymentActiveAfter(pindexPrev, chainman,
-                               Consensus::DEPLOYMENT_CLTV))) {
-        return state.Invalid(
-            BlockValidationResult::BLOCK_INVALID_HEADER,
-            strprintf("bad-version(0x%08x)", block.nVersion),
-            strprintf("rejected nVersion=0x%08x block", block.nVersion));
-    }
-
     return true;
 }
 
@@ -6373,24 +6311,13 @@ static bool ContextualCheckBlock(const CBlock &block,
                                  const CBlockIndex *pindexPrev) {
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
-    // Enforce BIP113 (Median Time Past).
-    bool enforce_locktime_median_time_past{false};
-    if (DeploymentActiveAfter(pindexPrev, chainman,
-                              Consensus::DEPLOYMENT_CSV)) {
-        assert(pindexPrev != nullptr);
-        enforce_locktime_median_time_past = true;
-    }
-
+    // Always enforce BIP113 (Median Time Past) from genesis.
     const int64_t nMedianTimePast =
         pindexPrev == nullptr ? 0 : pindexPrev->GetMedianTimePast();
 
-    const int64_t nLockTimeCutoff{enforce_locktime_median_time_past
-                                      ? nMedianTimePast
-                                      : block.GetBlockTime()};
+    const int64_t nLockTimeCutoff = nMedianTimePast;
 
     const Consensus::Params params = chainman.GetConsensus();
-    const bool fIsMagneticAnomalyEnabled =
-        IsMagneticAnomalyEnabled(params, pindexPrev);
 
     // Check transactions:
     // - canonical ordering
@@ -6399,25 +6326,23 @@ static bool ContextualCheckBlock(const CBlock &block,
     const CTransaction *prevTx = nullptr;
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
-        if (fIsMagneticAnomalyEnabled) {
-            if (prevTx && (tx.GetId() <= prevTx->GetId())) {
-                if (tx.GetId() == prevTx->GetId()) {
-                    return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                         "tx-duplicate",
-                                         strprintf("Duplicated transaction %s",
-                                                   tx.GetId().ToString()));
-                }
-
-                return state.Invalid(
-                    BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
-                    strprintf("Transaction order is invalid (%s < %s)",
-                              tx.GetId().ToString(),
-                              prevTx->GetId().ToString()));
+        if (prevTx && (tx.GetId() <= prevTx->GetId())) {
+            if (tx.GetId() == prevTx->GetId()) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     "tx-duplicate",
+                                     strprintf("Duplicated transaction %s",
+                                               tx.GetId().ToString()));
             }
 
-            if (prevTx || !tx.IsCoinBase()) {
-                prevTx = &tx;
-            }
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "tx-ordering",
+                strprintf("Transaction order is invalid (%s < %s)",
+                          tx.GetId().ToString(),
+                          prevTx->GetId().ToString()));
+        }
+
+        if (prevTx || !tx.IsCoinBase()) {
+            prevTx = &tx;
         }
 
         TxValidationState tx_state;
@@ -6430,8 +6355,7 @@ static bool ContextualCheckBlock(const CBlock &block,
     }
 
     // Enforce rule that the coinbase starts with serialized block height
-    if (DeploymentActiveAfter(pindexPrev, chainman,
-                              Consensus::DEPLOYMENT_HEIGHTINCB)) {
+    if (nHeight >= 1) {
         CScript expect = CScript() << nHeight;
         if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
             !std::equal(expect.begin(), expect.end(),
