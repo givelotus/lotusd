@@ -1013,3 +1013,5 @@ endif()
 if(BUILD_IGUANA)
 	add_subdirectory(iguana)
 endif()
+
+target_link_libraries(common lotus_v2_header)
