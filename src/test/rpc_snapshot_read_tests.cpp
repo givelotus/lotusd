@@ -8,7 +8,9 @@
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
+#include <lotus_v2/commitment.h>
 #include <minerfund.h>
+#include <node/miner.h>
 #include <node/snapshot.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
@@ -21,6 +23,7 @@
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/strencodings.h>
+#include <util/time.h>
 #include <validation.h>
 
 #include <boost/asio/co_spawn.hpp>
@@ -36,7 +39,7 @@
 #include <thread>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_read_tests, TestChain100Setup)
+BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_read_tests, NativeSnapshotChainSetup)
 
 BOOST_AUTO_TEST_CASE(header_only_snapshot_rechecks_new_block_metadata) {
     auto &manager = *m_node.chainman;
@@ -76,10 +79,8 @@ BOOST_AUTO_TEST_CASE(lockfree_rpc_reads_while_cs_main_and_mempool_locked) {
         return call_rpc_params(method, UniValue(UniValue::VARR));
     };
 
-    CScript pubKeyScript = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    CMutableTransaction mempool_mtx = CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, pubKeyScript,
-        50 * COIN - 1000 * SATOSHI, /*submit=*/true);
+    const auto mempool_mtx = CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, m_coinbase_txns[0]->vout[0].nValue - 1000 * SATOSHI);
     const std::string mempool_txid = mempool_mtx.GetId().GetHex();
     const std::string confirmed_txid = m_coinbase_txns[1]->GetId().GetHex();
     const std::string spent_cb_txid = m_coinbase_txns[0]->GetId().GetHex();
