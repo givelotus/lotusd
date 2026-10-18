@@ -264,6 +264,16 @@ bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
                           nSpendHeight - coin.GetHeight()));
         }
 
+        // C17a: Reject spending expired UTXOs (spend height >= expiration height)
+        if (nSpendHeight >= 0 &&
+            coin.IsExpired(static_cast<uint64_t>(nSpendHeight))) {
+            return state.Invalid(
+                TxValidationResult::TX_CONSENSUS, "bad-txns-input-expired",
+                strprintf("tried to spend expired coin at height %d (expired at %llu)",
+                          nSpendHeight,
+                          static_cast<unsigned long long>(coin.GetExpirationHeight())));
+        }
+
         const CTxOut &prev_txout = coin.GetTxOut();
         uint256 tok_id;
         uint64_t tok_val = 0;
@@ -366,6 +376,16 @@ bool CheckTxInputsFromSpentCoins(const CTransaction &tx,
                 "bad-txns-premature-spend-of-coinbase",
                 strprintf("tried to spend coinbase at depth %d",
                           nSpendHeight - coin.GetHeight()));
+        }
+
+        // C17a: Reject spending expired UTXOs (spend height >= expiration height)
+        if (nSpendHeight >= 0 &&
+            coin.IsExpired(static_cast<uint64_t>(nSpendHeight))) {
+            return state.Invalid(
+                TxValidationResult::TX_CONSENSUS, "bad-txns-input-expired",
+                strprintf("tried to spend expired coin at height %d (expired at %llu)",
+                          nSpendHeight,
+                          static_cast<unsigned long long>(coin.GetExpirationHeight())));
         }
 
         const CTxOut &prev_txout = coin.GetTxOut();
