@@ -354,6 +354,8 @@ public:
                     const BlockHash &hashBlock) override;
     CCoinsViewCursor *Cursor() const override;
     size_t EstimateSize() const override;
+    void PrefetchOutpointsAsync(
+        const std::vector<COutPoint> &outpoints) const override;
 };
 
 /**
@@ -408,6 +410,8 @@ public:
         throw std::logic_error(
             "CCoinsViewCache cursor iteration not supported.");
     }
+    void PrefetchOutpointsAsync(
+        const std::vector<COutPoint> &outpoints) const override;
 
     /**
      * Check if we have the given utxo already loaded in this cache.

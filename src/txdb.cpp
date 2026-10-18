@@ -114,6 +114,24 @@ bool CCoinsViewDB::HaveCoin(const COutPoint &outpoint) const {
     return m_db->Exists(CoinEntry(&outpoint));
 }
 
+void CCoinsViewDB::PrefetchOutpointsAsync(
+    const std::vector<COutPoint> &outpoints) const {
+    if (outpoints.empty() || !m_db) {
+        return;
+    }
+    std::vector<std::vector<uint8_t>> keys;
+    keys.reserve(outpoints.size());
+    DataStream ssKey{};
+    ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
+    for (const COutPoint &op : outpoints) {
+        ssKey.clear();
+        ssKey << CoinEntry(&op);
+        const auto key_span = MakeUCharSpan(ssKey);
+        keys.emplace_back(key_span.begin(), key_span.end());
+    }
+    m_db->PrefetchRawKeys(keys);
+}
+
 BlockHash CCoinsViewDB::GetBestBlock() const {
     BlockHash hashBestChain;
     if (!m_db->Read(DB_BEST_BLOCK, hashBestChain)) {
