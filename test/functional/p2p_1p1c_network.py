@@ -11,7 +11,7 @@ too-low-feerate transactions). The packages should be received and accepted by a
 from decimal import Decimal
 from math import ceil
 
-from test_framework.messages import msg_tx
+from test_framework.messages import XEC, msg_tx
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_greater_than, fill_mempool
@@ -91,6 +91,29 @@ class PackageRelayTest(BitcoinTestFramework):
         high_fee_child_2outs = wallet.create_self_transfer_multi(
             utxos_to_spend=low_fee_parent_2outs["new_utxos"][::-1],
             fee_per_output=fee_2outs * 100,
+        )
+        package_vsize = (
+            low_fee_parent_2outs["tx"].billable_size()
+            + high_fee_child_2outs["tx"].billable_size()
+        )
+        minfees = [node.getmempoolinfo()["mempoolminfee"] for node in self.nodes]
+        # Retained allocator chunks change the eviction threshold. Size CPFP
+        # against the measured minimum instead of assuming a fixed fee clears it.
+        child_fee = max(
+            fee_2outs * 100,
+            ceil(2 * max(minfees) * package_vsize * XEC / 1000),
+        )
+        high_fee_child_2outs = wallet.create_self_transfer_multi(
+            utxos_to_spend=low_fee_parent_2outs["new_utxos"][::-1],
+            fee_per_output=child_fee,
+        )
+        assert_greater_than(
+            min(minfees),
+            low_fee_parent_2outs["fee"] * 1000 / low_fee_parent_2outs["tx"].billable_size(),
+        )
+        assert_greater_than(
+            (low_fee_parent_2outs["fee"] + high_fee_child_2outs["fee"]) * 1000 / package_vsize,
+            max(minfees),
         )
         return (
             [low_fee_parent_2outs["hex"], high_fee_child_2outs["hex"]],

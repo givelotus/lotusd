@@ -6,6 +6,7 @@
 #define BITCOIN_INDIRECTMAP_H
 
 #include <map>
+#include <memory>
 
 template <class T> struct DereferencingComparator {
     bool operator()(const T a, const T b) const { return *a < *b; }
@@ -23,9 +24,15 @@ template <class T> struct DereferencingComparator {
  * Objects pointed to by keys must not be modified in any way that changes the
  * result of DereferencingComparator.
  */
-template <class K, class T> class indirectmap {
+template <class K, class T,
+          class Allocator = std::allocator<std::pair<const K *const, T>>>
+class indirectmap {
 private:
-    typedef std::map<const K *, T, DereferencingComparator<const K *>> base;
+    using MapAllocator = typename std::allocator_traits<
+        Allocator>::template rebind_alloc<std::pair<const K *const, T>>;
+    typedef std::map<const K *, T, DereferencingComparator<const K *>,
+                     MapAllocator>
+        base;
     base m;
 
 public:
@@ -33,6 +40,7 @@ public:
     typedef typename base::const_iterator const_iterator;
     typedef typename base::size_type size_type;
     typedef typename base::value_type value_type;
+    typedef typename base::allocator_type allocator_type;
 
     // passthrough (pointer interface)
     std::pair<iterator, bool> insert(const value_type &value) {
@@ -60,6 +68,7 @@ public:
     const_iterator end() const { return m.end(); }
     const_iterator cbegin() const { return m.cbegin(); }
     const_iterator cend() const { return m.cend(); }
+    allocator_type get_allocator() const { return m.get_allocator(); }
 };
 
 #endif // BITCOIN_INDIRECTMAP_H

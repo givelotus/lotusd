@@ -18,6 +18,7 @@
 #include <policy/packages.h>
 #include <primitives/transaction.h>
 #include <radix.h>
+#include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <lotus_v2/utxo_fast_filter.h>
 #include <txconflicting.h>
@@ -29,6 +30,20 @@
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 #include <boost/multi_index_container.hpp>
+
+namespace memusage {
+template <typename X, typename Y, typename T, std::size_t SlotsPerChunk>
+static inline size_t DynamicUsage(
+    const indirectmap<X, Y, ChunkedSlabAllocator<T, SlotsPerChunk>> &m) {
+    return m.get_allocator().resource()->TotalAllocatedBytes();
+}
+
+template <typename X, typename Y, typename T, std::size_t SlotsPerChunk>
+static inline size_t IncrementalDynamicUsage(
+    const indirectmap<X, Y, ChunkedSlabAllocator<T, SlotsPerChunk>> &m) {
+    return MallocUsage(sizeof(stl_tree_node<std::pair<const X *, Y>>));
+}
+} // namespace memusage
 
 #include <atomic>
 #include <map>
@@ -287,7 +302,8 @@ public:
             boost::multi_index::ordered_unique<
                 boost::multi_index::tag<entry_id>,
                 boost::multi_index::identity<CTxMemPoolEntryRef>,
-                CompareTxMemPoolEntryByEntryId>>>
+                CompareTxMemPoolEntryByEntryId>>,
+        ChunkedSlabAllocator<CTxMemPoolEntryRef>>
         indexed_transaction_set;
 
     /**
@@ -351,7 +367,10 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
-    indirectmap<COutPoint, CTransactionRef> mapNextTx GUARDED_BY(cs);
+    indirectmap<
+        COutPoint, CTransactionRef,
+        ChunkedSlabAllocator<std::pair<const COutPoint *const, CTransactionRef>>>
+        mapNextTx GUARDED_BY(cs);
     std::map<TxId, Amount> mapDeltas GUARDED_BY(cs);
 
     using Options = kernel::MemPoolOptions;
