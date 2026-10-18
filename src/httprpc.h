@@ -18,6 +18,9 @@ private:
     RPCServer &rpcServer;
 
     bool ProcessHTTPRequest(HTTPRequest *request);
+    boost::asio::awaitable<bool>
+    ProcessHTTPRequestAsync(HTTPRequest *request,
+                            boost::asio::any_io_executor executor);
 
 public:
     const std::any &context;
@@ -29,6 +32,14 @@ public:
     static bool DelegateHTTPRequest(HTTPRPCRequestProcessor *requestProcessor,
                                     HTTPRequest *request) {
         return requestProcessor->ProcessHTTPRequest(request);
+    }
+
+    static boost::asio::awaitable<bool>
+    DelegateHTTPRequestAsync(HTTPRPCRequestProcessor *requestProcessor,
+                             HTTPRequest *request,
+                             boost::asio::any_io_executor executor) {
+        co_return co_await requestProcessor->ProcessHTTPRequestAsync(
+            request, std::move(executor));
     }
 };
 

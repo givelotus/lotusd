@@ -37,6 +37,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <rpc/async_waiter.h>
+
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
+
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <unordered_map>
@@ -54,83 +65,179 @@ static const size_t MIN_SUPPORTED_BODY_SIZE = 0x02000000;
 class HTTPWorkItem final : public HTTPClosure {
 public:
     HTTPWorkItem(Config &_config, std::unique_ptr<HTTPRequest> _req,
-                 const std::string &_path, const HTTPRequestHandler &_func)
+                 const std::string &_path, const HTTPAsyncRequestHandler &_func)
         : req(std::move(_req)), path(_path), func(_func), config(&_config) {}
 
-    void operator()() override { func(*config, req.get(), path); }
+    void operator()() override {}
+
+    boost::asio::awaitable<void>
+    ExecuteAsync(boost::asio::any_io_executor executor) {
+        co_await func(*config, req.get(), path, std::move(executor));
+        co_return;
+    }
 
     std::unique_ptr<HTTPRequest> req;
 
 private:
     std::string path;
-    HTTPRequestHandler func;
+    HTTPAsyncRequestHandler func;
     Config *config;
 };
 
 /**
- * Simple work queue for distributing work over multiple threads.
- * Work items are simply callable objects.
+ * Non-blocking Boost.Asio coroutine dispatcher pool for HTTP requests.
+ * Suspended long-polls yield workers, but still count toward the bounded
+ * request capacity: configured workqueue depth plus worker count, matching
+ * the maximum queued/running request count of the upstream dispatcher.
  */
-template <typename WorkItem> class WorkQueue {
+class HTTPCoroutinePool {
 private:
-    Mutex cs;
-    std::condition_variable cond GUARDED_BY(cs);
-    std::deque<std::unique_ptr<WorkItem>> queue GUARDED_BY(cs);
-    bool running GUARDED_BY(cs){true};
-    const size_t maxDepth;
+    Mutex m_mutex;
+    std::condition_variable m_cv GUARDED_BY(m_mutex);
+    bool m_running GUARDED_BY(m_mutex){true};
+    size_t m_queued_requests GUARDED_BY(m_mutex){0};
+    size_t m_total_in_flight GUARDED_BY(m_mutex){0};
+    const size_t m_max_depth;
+    size_t m_max_in_flight{0};
+    std::unique_ptr<boost::asio::thread_pool> m_pool;
+    std::atomic<size_t> m_suspended_coroutines{0};
+    std::unordered_map<
+        const evhttp_connection *,
+        std::weak_ptr<boost::asio::strand<boost::asio::any_io_executor>>>
+        m_conn_strands GUARDED_BY(m_mutex);
 
 public:
-    explicit WorkQueue(size_t _maxDepth) : maxDepth(_maxDepth) {}
-    /**
-     * Precondition: worker threads have all stopped (they have all been joined)
-     */
-    ~WorkQueue() = default;
+    explicit HTTPCoroutinePool(size_t max_depth) : m_max_depth(max_depth) {}
+    ~HTTPCoroutinePool() { WaitExit(); }
 
-    /** Enqueue a work item */
-    bool Enqueue(WorkItem *item) EXCLUSIVE_LOCKS_REQUIRED(!cs) {
-        LOCK(cs);
-        if (!running || queue.size() >= maxDepth) {
-            return false;
+    void Start(int num_threads) {
+        const size_t threads = static_cast<size_t>(std::max(1, num_threads));
+        m_max_in_flight = m_max_depth + threads;
+        m_pool = std::make_unique<boost::asio::thread_pool>(threads);
+        for (size_t i = 0; i < threads; ++i) {
+            boost::asio::post(*m_pool, [i]() {
+                util::ThreadRename(strprintf("httpworker.%zu", i));
+            });
         }
-        queue.emplace_back(std::unique_ptr<WorkItem>(item));
-        cond.notify_one();
+    }
+
+    boost::asio::any_io_executor GetExecutor() const {
+        if (!m_pool) {
+            return {};
+        }
+        return m_pool->get_executor();
+    }
+
+    bool Enqueue(const evhttp_connection *conn,
+                 std::unique_ptr<HTTPWorkItem> &item)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        std::shared_ptr<boost::asio::strand<boost::asio::any_io_executor>>
+            strand;
+        {
+            LOCK(m_mutex);
+            if (!m_running || !m_pool || m_queued_requests >= m_max_depth ||
+                m_total_in_flight >= m_max_in_flight) {
+                return false;
+            }
+            ++m_queued_requests;
+            ++m_total_in_flight;
+
+            if (conn != nullptr) {
+                auto &weak_strand = m_conn_strands[conn];
+                strand = weak_strand.lock();
+                if (!strand) {
+                    strand = std::make_shared<
+                        boost::asio::strand<boost::asio::any_io_executor>>(
+                        m_pool->get_executor());
+                    weak_strand = strand;
+                }
+                if (m_conn_strands.size() > 256) {
+                    for (auto it = m_conn_strands.begin();
+                         it != m_conn_strands.end();) {
+                        if (it->second.expired()) {
+                            it = m_conn_strands.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                }
+            } else {
+                strand = std::make_shared<
+                    boost::asio::strand<boost::asio::any_io_executor>>(
+                    m_pool->get_executor());
+            }
+        }
+
+        HTTPWorkItem *raw_item = item.release();
+        boost::asio::any_io_executor pool_exec = m_pool->get_executor();
+        boost::asio::co_spawn(
+            *strand,
+            [this, strand, raw_item,
+             pool_exec]() -> boost::asio::awaitable<void> {
+                std::unique_ptr<HTTPWorkItem> owned_item(raw_item);
+                {
+                    LOCK(m_mutex);
+                    if (m_queued_requests > 0) {
+                        --m_queued_requests;
+                    }
+                }
+                struct InFlightGuard {
+                    HTTPCoroutinePool *pool;
+                    ~InFlightGuard() {
+                        LOCK(pool->m_mutex);
+                        if (--pool->m_total_in_flight == 0) {
+                            pool->m_cv.notify_all();
+                        }
+                    }
+                } guard{this};
+
+                co_await owned_item->ExecuteAsync(pool_exec);
+                co_return;
+            },
+            boost::asio::detached);
         return true;
     }
 
-    /** Thread function */
-    void Run() EXCLUSIVE_LOCKS_REQUIRED(!cs) {
-        while (true) {
-            std::unique_ptr<WorkItem> i;
-            {
-                WAIT_LOCK(cs, lock);
-                while (running && queue.empty()) {
-                    cond.wait(lock);
-                }
-                if (!running && queue.empty()) {
-                    break;
-                }
-                i = std::move(queue.front());
-                queue.pop_front();
-            }
-            (*i)();
-        }
+    void OnSuspend() noexcept {
+        m_suspended_coroutines.fetch_add(1, std::memory_order_relaxed);
     }
 
-    /** Interrupt and exit loops */
-    void Interrupt() EXCLUSIVE_LOCKS_REQUIRED(!cs) {
-        LOCK(cs);
-        running = false;
-        cond.notify_all();
+    void OnResume() noexcept {
+        m_suspended_coroutines.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    void Interrupt() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        {
+            LOCK(m_mutex);
+            m_running = false;
+        }
+        GetRPCBlockChangeWaiter().NotifyAll();
+    }
+
+    void WaitExit() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        Interrupt();
+        {
+            WAIT_LOCK(m_mutex, lock);
+            m_cv.wait(lock, [this]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+                return m_total_in_flight == 0;
+            });
+            m_conn_strands.clear();
+        }
+        if (m_pool) {
+            m_pool->join();
+            m_pool.reset();
+        }
     }
 };
 
 struct HTTPPathHandler {
     HTTPPathHandler(std::string _prefix, bool _exactMatch,
-                    HTTPRequestHandler _handler)
-        : prefix(_prefix), exactMatch(_exactMatch), handler(_handler) {}
+                    HTTPAsyncRequestHandler _handler)
+        : prefix(std::move(_prefix)), exactMatch(_exactMatch),
+          handler(std::move(_handler)) {}
     std::string prefix;
     bool exactMatch;
-    HTTPRequestHandler handler;
+    HTTPAsyncRequestHandler handler;
 };
 
 /** HTTP module state */
@@ -141,8 +248,8 @@ static struct event_base *eventBase = nullptr;
 static struct evhttp *eventHTTP = nullptr;
 //! List of subnets to allow RPC connections from
 static std::vector<CSubNet> rpc_allow_subnets;
-//! Work queue for handling longer requests off the event loop thread
-static std::unique_ptr<WorkQueue<HTTPClosure>> g_work_queue{nullptr};
+//! Coroutine pool for handling requests off the event loop thread
+static std::unique_ptr<HTTPCoroutinePool> g_work_queue{nullptr};
 //! Handlers for (sub)paths
 static std::vector<HTTPPathHandler> pathHandlers;
 //! Bound listening sockets
@@ -351,15 +458,12 @@ static void http_request_cb(struct evhttp_request *req, void *arg) {
         }
     }
 
-    // Dispatch to worker thread.
+    // Dispatch to coroutine worker pool.
     if (i != iend) {
         std::unique_ptr<HTTPWorkItem> item(
             new HTTPWorkItem(config, std::move(hreq), path, i->handler));
         assert(g_work_queue);
-        if (g_work_queue->Enqueue(item.get())) {
-            /* if true, queue took ownership */
-            item.release();
-        } else {
+        if (!g_work_queue->Enqueue(conn, item)) {
             LogPrintf("WARNING: request rejected because http work queue depth "
                       "exceeded, it can be increased with the -rpcworkqueue= "
                       "setting\n");
@@ -440,12 +544,6 @@ static bool HTTPBindAddresses(struct evhttp *http) {
     return !boundSockets.empty();
 }
 
-/** Simple wrapper to set thread name and run work queue */
-static void HTTPWorkQueueRun(WorkQueue<HTTPClosure> *queue, int worker_num) {
-    util::ThreadRename(strprintf("httpworker.%i", worker_num));
-    queue->Run();
-}
-
 /** libevent event log callback */
 static void libevent_log_cb(int severity, const char *msg) {
     BCLog::Level level;
@@ -515,7 +613,7 @@ bool InitHTTPServer(Config &config) {
         (long)gArgs.GetIntArg("-rpcworkqueue", DEFAULT_HTTP_WORKQUEUE), 1L);
     LogDebug(BCLog::HTTP, "creating work queue of depth %d\n", workQueueDepth);
 
-    g_work_queue = std::make_unique<WorkQueue<HTTPClosure>>(workQueueDepth);
+    g_work_queue = std::make_unique<HTTPCoroutinePool>(workQueueDepth);
     // transfer ownership to eventBase/HTTP via .release()
     eventBase = base_ctr.release();
     eventHTTP = http_ctr.release();
@@ -531,18 +629,15 @@ void UpdateHTTPServerLogging(bool enable) {
 }
 
 static std::thread g_thread_http;
-static std::vector<std::thread> g_thread_http_workers;
 
 void StartHTTPServer() {
     int rpcThreads = std::max(
         (long)gArgs.GetIntArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
     LogInfo("Starting HTTP server with %d worker threads\n", rpcThreads);
-    g_thread_http = std::thread(ThreadHTTP, eventBase);
-
-    for (int i = 0; i < rpcThreads; i++) {
-        g_thread_http_workers.emplace_back(HTTPWorkQueueRun, g_work_queue.get(),
-                                           i);
+    if (g_work_queue) {
+        g_work_queue->Start(rpcThreads);
     }
+    g_thread_http = std::thread(ThreadHTTP, eventBase);
 }
 
 void InterruptHTTPServer() {
@@ -560,10 +655,7 @@ void StopHTTPServer() {
     LogDebug(BCLog::HTTP, "Stopping HTTP server\n");
     if (g_work_queue) {
         LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
-        for (auto &thread : g_thread_http_workers) {
-            thread.join();
-        }
-        g_thread_http_workers.clear();
+        g_work_queue->WaitExit();
     }
     // Unlisten sockets, these are what make the event loop running, which means
     // that after this and all connections are closed the event loop will quit.
@@ -796,6 +888,16 @@ std::optional<std::string> GetQueryParameterFromUri(const char *uri,
 }
 void RegisterHTTPHandler(const std::string &prefix, bool exactMatch,
                          const HTTPRequestHandler &handler) {
+    RegisterHTTPAsyncHandler(
+        prefix, exactMatch,
+        [handler](Config &config, HTTPRequest *req, const std::string &path,
+                  boost::asio::any_io_executor) -> boost::asio::awaitable<bool> {
+            co_return handler(config, req, path);
+        });
+}
+
+void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
+                              const HTTPAsyncRequestHandler &handler) {
     LogDebug(BCLog::HTTP, "Registering HTTP handler for %s (exactmatch %d)\n",
              prefix, exactMatch);
     pathHandlers.push_back(HTTPPathHandler(prefix, exactMatch, handler));
@@ -815,4 +917,23 @@ void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch) {
                  exactMatch);
         pathHandlers.erase(i);
     }
+}
+
+void HTTPReleaseWorkQueueSlot() noexcept {
+    if (g_work_queue) {
+        g_work_queue->OnSuspend();
+    }
+}
+
+void HTTPAcquireWorkQueueSlot() noexcept {
+    if (g_work_queue) {
+        g_work_queue->OnResume();
+    }
+}
+
+boost::asio::any_io_executor GetHTTPThreadPoolExecutor() {
+    if (g_work_queue) {
+        return g_work_queue->GetExecutor();
+    }
+    return {};
 }
