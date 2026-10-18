@@ -6,6 +6,9 @@
 #include <chainparams.h>
 #include <config.h>
 #include <interfaces/chain.h>
+#include <lotus_v2/fee_hysteresis.h>
+#include <wallet/fees.h>
+#include <util/time.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <policy/policy.h>
@@ -37,6 +40,22 @@
 using node::MAX_BLOCKFILE_SIZE;
 
 BOOST_FIXTURE_TEST_SUITE(wallet_tests, WalletTestingSetup)
+
+BOOST_AUTO_TEST_CASE(adaptive_fees_via_chain_interface) {
+    auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
+    const auto now = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    controller.Reset(now);
+    controller.SetRpcAdmissionRatePerKCu(9000, now);
+    const auto info = controller.GetFeeRateInfo(now);
+    const CFeeRate admission(static_cast<int64_t>(info.rpc_admission_feerate_per_kcu) * SATOSHI);
+    const CFeeRate recommended(static_cast<int64_t>(info.recommended_sdk_feerate_per_kcu) * SATOSHI);
+    BOOST_CHECK(m_wallet.chain().rpcAdmissionFee() == admission);
+    // The wallet's chain abstraction must publish congestion estimates itself.
+    BOOST_CHECK(m_wallet.chain().estimateFee() >= recommended);
+    BOOST_CHECK(GetRequiredFeeRate(m_wallet) >= admission);
+    BOOST_CHECK(GetMinimumFeeRate(m_wallet, CCoinControl{}) >= recommended);
+    controller.Reset(now);
+}
 
 static std::shared_ptr<CWallet> TestLoadWallet(WalletContext &context) {
     DatabaseOptions options;

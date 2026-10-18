@@ -20,7 +20,8 @@ Amount GetMinimumFee(const CWallet &wallet, unsigned int nTxBytes,
 }
 
 CFeeRate GetRequiredFeeRate(const CWallet &wallet) {
-    return std::max(wallet.m_min_fee, wallet.chain().relayMinFee());
+    return std::max({wallet.m_min_fee, wallet.chain().relayMinFee(),
+                     wallet.chain().rpcAdmissionFee()});
 }
 
 CFeeRate GetMinimumFeeRate(const CWallet &wallet,
@@ -37,6 +38,7 @@ CFeeRate GetMinimumFeeRate(const CWallet &wallet,
         if (neededFeeRate == CFeeRate()) {
             neededFeeRate = wallet.m_fallback_fee;
         }
+
     }
 
     // Prevent user from paying a fee below the min relay fee.

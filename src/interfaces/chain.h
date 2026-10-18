@@ -218,6 +218,9 @@ public:
     //! Estimate fee
     virtual CFeeRate estimateFee() const = 0;
 
+    //! Current local RPC admission floor; zero when the provider has no adaptive policy.
+    virtual CFeeRate rpcAdmissionFee() const { return {}; }
+
     //! Relay current minimum fee (from -minrelaytxfee settings).
     virtual CFeeRate relayMinFee() = 0;
 
