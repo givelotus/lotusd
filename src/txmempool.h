@@ -700,6 +700,7 @@ private:
     mutable lotus::v2::MerklixOverlayManager m_merklix_overlay GUARDED_BY(cs);
     mutable std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
         m_pending_overlay_adds GUARDED_BY(cs);
+    mutable std::vector<TxId> m_pending_overlay_removes GUARDED_BY(cs);
     /** Set ancestor state for an entry */
     void UpdateEntryForAncestors(txiter it, const setEntries *setAncestors)
         EXCLUSIVE_LOCKS_REQUIRED(cs);
