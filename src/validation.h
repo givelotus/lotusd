@@ -323,6 +323,15 @@ struct PackageMempoolAcceptResult {
         : m_tx_results{{txid, result}} {}
 };
 
+/** Optional caller fee limits, enforced before any mempool mutation in the same ATMP. */
+struct MempoolAdmissionLimits {
+    Amount max_fee{Amount::zero()};
+    bool rpc_fee_hysteresis{false};
+};
+
+/** Diagnostic count of single-transaction admission attempts, including dry runs. */
+uint64_t GetMempoolAdmissionAttempts() noexcept;
+
 /**
  * Try to add a transaction to the mempool. This is an internal function and is
  * exposed only for testing. Client code should use
@@ -348,7 +357,8 @@ struct PackageMempoolAcceptResult {
 MempoolAcceptResult
 AcceptToMemoryPool(Chainstate &active_chainstate, const CTransactionRef &tx,
                    int64_t accept_time, bool bypass_limits,
-                   bool test_accept = false, unsigned int heightOverride = 0)
+                   bool test_accept = false, unsigned int heightOverride = 0,
+                   const MempoolAdmissionLimits &limits = {})
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
@@ -1743,7 +1753,8 @@ public:
      *                             submit to mempool.
      */
     [[nodiscard]] MempoolAcceptResult
-    ProcessTransaction(const CTransactionRef &tx, bool test_accept = false)
+    ProcessTransaction(const CTransactionRef &tx, bool test_accept = false,
+                       const MempoolAdmissionLimits &limits = {})
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     //! Load the block tree and coins database from disk, initializing state if

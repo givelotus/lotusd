@@ -56,7 +56,7 @@ static const CFeeRate DEFAULT_MAX_RAW_TX_FEE_RATE{COIN / 10};
 [[nodiscard]] TransactionError
 BroadcastTransaction(const NodeContext &node, CTransactionRef tx,
                      std::string &err_string, Amount max_tx_fee, bool relay,
-                     bool wait_callback);
+                     bool wait_callback, bool rpc_fee_hysteresis = false);
 
 /**
  * Return transaction with a given txid.

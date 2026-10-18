@@ -481,6 +481,7 @@ public:
          * fee.
          */
         const bool m_package_feerates;
+        MempoolAdmissionLimits m_limits{};
 
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const Config &config, int64_t accept_time,
@@ -1183,6 +1184,30 @@ MemPoolAccept::AcceptSingleTransaction(const CTransactionRef &ptx,
                 single_txid);
         }
         return MempoolAcceptResult::Failure(ws.m_state);
+    }
+
+    if (args.m_limits.max_fee > Amount::zero() && ws.m_base_fees > args.m_limits.max_fee) {
+        ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "max-fee-exceeded");
+        return MempoolAcceptResult::Failure(ws.m_state);
+    }
+    if (args.m_limits.rpc_fee_hysteresis) {
+        const auto now = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+        const auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
+        const auto info = controller.GetFeeRateInfo(now);
+        if (info.rpc_admission_feerate_per_kcu > info.consensus_floor_per_kcu) {
+            const auto check = controller.EvaluateTransactionFee(
+                lotus::v2::FeeTier::RpcAdmission, ws.m_vsize,
+                std::max<int64_t>(0, ws.m_base_fees / SATOSHI), now);
+            if (!check.accepted) {
+                ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
+                    "rpc-fee-hysteresis-insufficient",
+                    strprintf("required_fee_sats=%u, required_rate_per_kcu=%u, "
+                              "recommended_sdk_feerate_per_kcu=%u, recommended_sdk_fee_sats=%u",
+                              check.required_fee_sats, check.required_rate_per_kcu,
+                              info.recommended_sdk_feerate_per_kcu, check.recommended_sdk_fee_sats));
+                return MempoolAcceptResult::Failure(ws.m_state);
+            }
+        }
     }
 
     if (!ConsensusScriptChecks(args, ws)) {
@@ -2018,12 +2043,21 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package &package,
 }
 } // namespace
 
+namespace {
+std::atomic<uint64_t> g_mempool_admission_attempts{0};
+}
+uint64_t GetMempoolAdmissionAttempts() noexcept {
+    return g_mempool_admission_attempts.load(std::memory_order_relaxed);
+}
+
 MempoolAcceptResult AcceptToMemoryPool(Chainstate &active_chainstate,
                                        const CTransactionRef &tx,
                                        int64_t accept_time, bool bypass_limits,
                                        bool test_accept,
-                                       unsigned int heightOverride) {
+                                       unsigned int heightOverride,
+                                       const MempoolAdmissionLimits &limits) {
     AssertLockHeld(::cs_main);
+    g_mempool_admission_attempts.fetch_add(1, std::memory_order_relaxed);
     assert(active_chainstate.GetMempool() != nullptr);
     CTxMemPool &pool{*active_chainstate.GetMempool()};
 
@@ -2031,6 +2065,7 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate &active_chainstate,
     auto args = MemPoolAccept::ATMPArgs::SingleAccept(
         active_chainstate.m_chainman.GetConfig(), accept_time, bypass_limits,
         coins_to_uncache, test_accept, heightOverride);
+    args.m_limits = limits;
     MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate)
                                      .AcceptSingleTransaction(tx, args);
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
@@ -6102,7 +6137,8 @@ bool ChainstateManager::ProcessNewBlock(
 
 MempoolAcceptResult
 ChainstateManager::ProcessTransaction(const CTransactionRef &tx,
-                                      bool test_accept) {
+                                      bool test_accept,
+                                      const MempoolAdmissionLimits &limits) {
     AssertLockHeld(cs_main);
     Chainstate &active_chainstate = ActiveChainstate();
     if (!active_chainstate.GetMempool()) {
@@ -6111,7 +6147,7 @@ ChainstateManager::ProcessTransaction(const CTransactionRef &tx,
         return MempoolAcceptResult::Failure(state);
     }
     auto result = AcceptToMemoryPool(active_chainstate, tx, GetTime(),
-                                     /*bypass_limits=*/false, test_accept);
+                                     /*bypass_limits=*/false, test_accept, 0, limits);
     active_chainstate.GetMempool()->check(
         active_chainstate.CoinsTip(), active_chainstate.m_chain.Height() + 1);
     return result;
