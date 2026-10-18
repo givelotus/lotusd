@@ -35,6 +35,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -377,7 +378,9 @@ public:
 
     // addUnchecked must update state for all parents of a given transaction,
     // updating child links as necessary.
-    void addUnchecked(CTxMemPoolEntryRef entry)
+    txiter addUnchecked(CTxMemPoolEntryRef entry,
+                        bool search_mempool_parents = true,
+                        std::span<const txiter> batch_parent_iters = {})
         EXCLUSIVE_LOCKS_REQUIRED(cs, cs_main);
 
     void removeRecursive(const CTransaction &tx, MemPoolRemovalReason reason)
