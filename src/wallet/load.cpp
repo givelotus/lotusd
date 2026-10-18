@@ -28,8 +28,7 @@ bool VerifyWallets(WalletContext &context) {
     if (gArgs.IsArgSet("-walletdir")) {
         const fs::path wallet_dir{gArgs.GetPathArg("-walletdir")};
         std::error_code error;
-        // The canonical path cleans the path, preventing >1 Berkeley
-        // environment instances for the same directory
+        // Canonicalize directory aliases before duplicate-wallet checks.
         fs::path canonical_wallet_dir = fs::canonical(wallet_dir, error);
         if (error || !fs::exists(canonical_wallet_dir)) {
             chain.initError(
@@ -58,8 +57,7 @@ bool VerifyWallets(WalletContext &context) {
 
     chain.initMessage(_("Verifying wallet(s)...").translated);
 
-    // For backwards compatibility if an unnamed top level wallet exists in the
-    // wallets directory, include it in the default list of wallets to load.
+    // Include an existing unnamed SQLite wallet in the default load list.
     if (!gArgs.IsArgSet("wallet")) {
         DatabaseOptions options;
         DatabaseStatus status;
