@@ -842,6 +842,9 @@ public:
     }
     void MarkPeerKnownTx(NodeId peer_id, const TxId &txid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    void MarkPeerKnownTxBatch(NodeId peer_id,
+                              std::span<const CTransactionRef> txs) override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
 
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler &scheduler) override;
@@ -854,6 +857,8 @@ public:
     bool IgnoresIncomingTxs() override { return m_opts.ignore_incoming_txs; }
     void SendPings() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void RelayTransaction(const TxId &txid) override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    void RelayTransactionBatch(std::span<const CTransactionRef> txs) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void RelayProof(const avalanche::ProofId &proofid) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
@@ -3313,11 +3318,72 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     }
 }
 
+void PeerManagerImpl::RelayTransactionBatch(
+    std::span<const CTransactionRef> txs) {
+    if (txs.empty()) {
+        return;
+    }
+    const auto local_ids = m_mempool.GetUnbroadcastTxs();
+    LOCK(m_peer_mutex);
+    for (auto &it : m_peer_map) {
+        Peer &peer = *it.second;
+        auto tx_relay = peer.GetTxRelay();
+        if (!tx_relay) {
+            continue;
+        }
+        LOCK(tx_relay->m_tx_inventory_mutex);
+        if (tx_relay->m_next_inv_send_time == 0s) {
+            continue;
+        }
+        for (const auto &tx : txs) {
+            if (!tx) {
+                continue;
+            }
+            const TxId &txid = tx->GetId();
+            if (!tx_relay->m_tx_inventory_known_filter.contains(txid) ||
+                tx_relay->m_avalanche_stalled_txids.count(txid) > 0) {
+                tx_relay->m_tx_inventory_to_send.insert(txid);
+                if (local_ids.count(txid))
+                    tx_relay->m_local_inventory_to_send.insert(txid);
+            }
+        }
+    }
+}
+
 void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
     if (PeerRef peer = GetPeerRef(peer_id)) {
         AddKnownTx(*peer, txid);
     }
     WITH_LOCK(cs_main, m_txrequest.ForgetInvId(txid));
+}
+
+void PeerManagerImpl::MarkPeerKnownTxBatch(
+    NodeId peer_id, std::span<const CTransactionRef> txs) {
+    if (txs.empty()) {
+        return;
+    }
+    if (PeerRef peer = GetPeerRef(peer_id)) {
+        if (auto tx_relay = peer->GetTxRelay()) {
+            LOCK(tx_relay->m_tx_inventory_mutex);
+            for (const auto &tx : txs) {
+                if (!tx) {
+                    continue;
+                }
+                const TxId &txid = tx->GetId();
+                tx_relay->m_tx_inventory_known_filter.insert(txid);
+                tx_relay->m_tx_inventory_to_send.erase(txid);
+                tx_relay->m_local_inventory_to_send.erase(txid);
+            }
+        }
+    }
+    LOCK(cs_main);
+    if (m_txrequest.Size() > 0) {
+        for (const auto &tx : txs) {
+            if (tx) {
+                m_txrequest.ForgetInvId(tx->GetId());
+            }
+        }
+    }
 }
 
 void PeerManagerImpl::RelayProof(const avalanche::ProofId &proofid) {
