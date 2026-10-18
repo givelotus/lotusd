@@ -10,12 +10,8 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <common/system.h>
-#include <consensus/activation.h>
 #include <consensus/params.h>
 #include <pow/aserti32d.h>
-#include <pow/daa.h>
-#include <pow/eda.h>
-#include <pow/grasberg.h>
 #include <primitives/blockhash.h>
 
 uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
