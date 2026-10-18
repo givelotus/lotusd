@@ -1474,4 +1474,122 @@ bool PeelDiskBlockReverse(const std::vector<uint8_t> &block_wire,
     return true;
 }
 
+bool PeelDiskBlockWindowReverse(const std::vector<ReversePeelBlockStep> &steps,
+                                const HeaderChainProfile &header_profile,
+                                OrdinaryCandidateProfile ordinary_profile,
+                                const MonetaryProfile &monetary_profile,
+                                const BlockCostProfile &cost_profile,
+                                DiskStateStore &store,
+                                std::string &error) {
+    if (steps.empty()) {
+        error = "empty reverse peel block window";
+        return false;
+    }
+    if (!store.IsOpen()) {
+        error = "disk state store is closed";
+        return false;
+    }
+    const DiskStateMetadata meta_h = store.Metadata();
+    MonetaryState monetary_cur{};
+    try {
+        monetary_cur = DecodeMonetaryState(meta_h.monetary);
+    } catch (const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+    std::vector<Coin> coins_h;
+    DiskStateError disk_err{};
+    if (!store.ExportCoins(coins_h, disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
+    UtxoSet state_cur;
+    for (const Coin &c : coins_h) {
+        state_cur.Insert(c);
+    }
+
+    // Track net delta across the entire K-block reverse peel window:
+    // - net_erased_from_initial: outpoints present in the initial disk store at
+    //   height h that must be erased to reach height h - K.
+    // - net_inserted_at_end: prior spent coins restored during the window that
+    //   were NOT created later inside the same window (cross-block ephemeral
+    //   UTXOs created at h_i and spent at h_j > h_i cancel out in RAM).
+    std::set<Outpoint, OutpointLess> net_erased_from_initial;
+    std::map<Outpoint, Coin, OutpointLess> net_inserted_at_end;
+
+    for (const ReversePeelBlockStep &step : steps) {
+        FramedBlock block;
+        if (!DecodeBlockWire(step.block_wire, ordinary_profile.transaction,
+                             header_profile.chain_id, block, error)) {
+            return false;
+        }
+        const auto parent_mtp = ParentMedianTime(
+            header_profile, step.parent_header, step.history);
+        if (!parent_mtp) {
+            error = "failed computing ParentMedianTime for windowed disk reverse peel";
+            return false;
+        }
+        std::vector<Coin> net_created;
+        std::vector<Coin> prior_spent;
+        if (!PartitionBlockOutputsAndSpends(block, *parent_mtp, step.undo_msg,
+                                            net_created, prior_spent, error)) {
+            return false;
+        }
+        if (!PeelBlockReverse(step.block_wire, step.undo_msg,
+                              step.parent_header, step.history, header_profile,
+                              ordinary_profile, monetary_profile, cost_profile,
+                              state_cur, monetary_cur, error)) {
+            return false;
+        }
+
+        // Apply step (erase net_created, insert prior_spent) to cumulative delta:
+        for (const Coin &c : net_created) {
+            const auto ins_it = net_inserted_at_end.find(c.outpoint);
+            if (ins_it != net_inserted_at_end.end()) {
+                // Cross-block ephemeral UTXO: spent in a later block of the
+                // window and created in this block; cancels out completely!
+                net_inserted_at_end.erase(ins_it);
+            } else {
+                net_erased_from_initial.insert(c.outpoint);
+            }
+        }
+        for (const Coin &spent : prior_spent) {
+            net_inserted_at_end[spent.outpoint] = spent;
+        }
+    }
+
+    std::vector<Outpoint> final_erased(net_erased_from_initial.begin(),
+                                       net_erased_from_initial.end());
+    std::vector<Coin> final_inserted;
+    final_inserted.reserve(net_inserted_at_end.size());
+    for (const auto &[op, coin] : net_inserted_at_end) {
+        (void)op;
+        final_inserted.push_back(coin);
+    }
+
+    const ReversePeelBlockStep &last_step = steps.back();
+    DiskStateMetadata final_parent_meta{};
+    BlockId(header_profile.chain_id, last_step.parent_header,
+            final_parent_meta.tip);
+    std::array<uint8_t, HEADER_SIZE> raw_parent{};
+    SerializeHeader(last_step.parent_header, raw_parent);
+    final_parent_meta.header.assign(raw_parent.begin(), raw_parent.end());
+    final_parent_meta.monetary.assign(
+        last_step.undo_msg.parent_monetary_state.begin(),
+        last_step.undo_msg.parent_monetary_state.end());
+    if (!last_step.history.empty()) {
+        final_parent_meta.auxiliary =
+            EncodeDiskChainContext(last_step.history, {});
+    }
+
+    if (!store.PeelBlockStateReverse(meta_h.tip, final_parent_meta,
+                                     last_step.parent_header, final_erased,
+                                     final_inserted, disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
 } // namespace lotus::v2
