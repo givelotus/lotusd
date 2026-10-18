@@ -1004,7 +1004,13 @@ public:
                                  !m_headers_presync_mutex, g_msgproc_mutex);
     void UpdateLastBlockAnnounceTime(NodeId node,
                                      int64_t time_in_seconds) override;
-
+    void DiscouragePeer(NodeId peer_id,
+                        const std::string &reason = "") override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex) {
+        if (PeerRef peer = GetPeerRef(peer_id)) {
+            Misbehaving(*peer, reason);
+        }
+    }
 
 private:
     /**
@@ -7607,7 +7613,7 @@ void PeerManagerImpl::ProcessMessage(
             // Just respond with an empty headers message, to tell the peer to
             // go away but not treat us as unresponsive.
             MakeAndPushMessage(pfrom, NetMsgType::HEADERS,
-                               std::vector<CBlock>());
+                               std::vector<CBlockHeader>());
             return;
         }
 
@@ -7636,9 +7642,7 @@ void PeerManagerImpl::ProcessMessage(
             }
         }
 
-        // we must use CBlocks, as CBlockHeaders won't include the 0x00 nTx
-        // count at the end
-        std::vector<CBlock> vHeaders;
+        std::vector<CBlockHeader> vHeaders;
         int nLimit = MAX_HEADERS_RESULTS;
         LogDebug(BCLog::NET, "getheaders %d to %s from peer=%d\n",
                  (pindex ? pindex->nHeight : -1),
@@ -8169,8 +8173,7 @@ void PeerManagerImpl::ProcessMessage(
         headers.resize(nCount);
         for (unsigned int n = 0; n < nCount; n++) {
             vRecv >> headers[n];
-            // Ignore tx count; assume it is 0.
-            ReadCompactSize(vRecv);
+            // Note: Lotus headers don't have a superfluous tx count at the end
         }
 
         ProcessHeadersMessage(config, pfrom, *peer, std::move(headers),
@@ -10904,16 +10907,23 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             // many blocks, or if the peer doesn't want headers, just add all to
             // the inv queue.
             LOCK(peer->m_block_inv_mutex);
-            std::vector<CBlock> vHeaders;
+            std::vector<CBlockHeader> vHeaders;
+            const bool is_hb_sealed_peer =
+                gArgs.GetBoolArg("-highbandwidthtx", false) &&
+                m_v2_protocol_handler.IsHighBandwidthShortTxPeer(pto->GetId());
             bool fRevertToInv =
                 ((!peer->m_prefers_headers &&
-                  (!state.m_requested_hb_cmpctblocks ||
+                  (!(state.m_requested_hb_cmpctblocks || is_hb_sealed_peer) ||
                    peer->m_blocks_for_headers_relay.size() > 1)) ||
                  peer->m_blocks_for_headers_relay.size() >
                      MAX_BLOCKS_TO_ANNOUNCE);
             // last header queued for delivery
             const CBlockIndex *pBestIndex = nullptr;
             // ensure pindexBestKnownBlock is up-to-date
+            if (auto known_hash =
+                    m_v2_protocol_handler.GetLastPeerKnownBlock(pto->GetId())) {
+                UpdateBlockAvailability(pto->GetId(), *known_hash);
+            }
             ProcessBlockAvailability(pto->GetId());
 
             if (!fRevertToInv) {
@@ -10952,9 +10962,11 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         // Keep looking for the first new block.
                         continue;
                     } else if (pindex->pprev == nullptr ||
-                               PeerHasHeader(&state, pindex->pprev)) {
+                               PeerHasHeader(&state, pindex->pprev) ||
+                               (is_hb_sealed_peer &&
+                                pindex->pprev->pprev == nullptr)) {
                         // Peer doesn't have this header but they do have the
-                        // prior one. Start sending headers.
+                        // prior one (or the prior one is genesis).
                         fFoundStartingHeader = true;
                         vHeaders.push_back(pindex->GetBlockHeader());
                     } else {
@@ -10966,11 +10978,9 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 }
             }
             if (!fRevertToInv && !vHeaders.empty()) {
-                const bool use_sealed_header =
-                    vHeaders.size() == 1 && pBestIndex != nullptr &&
-                    m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
-                        pto->GetId());
-                if (use_sealed_header) {
+                if (vHeaders.size() == 1 && is_hb_sealed_peer &&
+                    vHeaders.front().nHeaderVersion ==
+                        lotus::v2::kHeaderVersion) {
                     std::optional<CSerializedNetMsg> cached_sealed_msg;
                     {
                         LOCK(m_most_recent_block_mutex);
