@@ -12,8 +12,21 @@ struct NodeContext;
 } // namespace node
 
 namespace chronik_bridge {
+class ChronikBridge;
 struct Chronik;
 } // namespace chronik_bridge
+
+class CBlock;
+class CBlockIndex;
+
+namespace chronik_v2 {
+struct Binding;
+struct NativeBlock;
+
+Binding get_v2_binding(const chronik_bridge::ChronikBridge &bridge);
+NativeBlock bridge_v2_native_block(const CBlock &block,
+                                   const CBlockIndex &bindex);
+} // namespace chronik_v2
 
 namespace chronik {
 

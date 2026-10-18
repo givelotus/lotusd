@@ -74,6 +74,8 @@ pub struct ChronikServerParams {
     pub settings: ChronikSettings,
     /// Shared subscription limiter (Chronik WS + Electrum)
     pub subscription_limiter: SubscriptionLimiterRef,
+    /// Optional V2 branch & explorer HTTP state
+    pub v2_state: Option<crate::v2::V2HttpState>,
 }
 
 /// Chronik HTTP server, holding all the data/handles required to serve an
@@ -86,6 +88,7 @@ pub struct ChronikServer {
     pause_notify: PauseNotifyRef,
     settings: ChronikSettings,
     subscription_limiter: SubscriptionLimiterRef,
+    v2_state: Option<crate::v2::V2HttpState>,
 }
 
 /// Errors for [`ChronikServer`].
@@ -136,6 +139,7 @@ impl ChronikServer {
             pause_notify: params.pause_notify,
             settings: params.settings,
             subscription_limiter: params.subscription_limiter,
+            v2_state: params.v2_state,
         })
     }
 
@@ -179,6 +183,7 @@ impl ChronikServer {
             self.pause_notify.clone(),
             self.settings.clone(),
             self.subscription_limiter.clone(),
+            self.v2_state.clone(),
         )
     }
 
@@ -188,6 +193,7 @@ impl ChronikServer {
         pause_notify: PauseNotifyRef,
         settings: ChronikSettings,
         subscription_limiter: SubscriptionLimiterRef,
+        v2_state: Option<crate::v2::V2HttpState>,
     ) -> Router {
         let enable_cors = settings.enable_cors;
         let mut router = Router::new()
@@ -299,7 +305,11 @@ impl ChronikServer {
             )
             .route("/ws", routing::get(handle_ws))
             .route("/pause", routing::get(handle_pause))
-            .route("/resume", routing::get(handle_resume))
+            .route("/resume", routing::get(handle_resume));
+        if let Some(v2_state) = v2_state {
+            router = router.merge(crate::v2::router(v2_state));
+        }
+        let mut router = router
             .fallback(handlers::handle_not_found)
             .layer(axum::middleware::from_fn(record_request_metrics))
             .layer(Extension(indexer))

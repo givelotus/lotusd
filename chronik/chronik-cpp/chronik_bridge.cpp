@@ -42,10 +42,82 @@ chronik_bridge::OutPoint BridgeOutPoint(const COutPoint &outpoint) {
     };
 }
 
+template <typename TxOutT>
+rust::Vec<uint8_t> BridgeTxOutputScript(const TxOutT &output) {
+    if constexpr (requires {
+                      output.vBranches;
+                      output.nFlags;
+                      output.tokenId;
+                      output.vPaths;
+                  }) {
+        if (output.scriptPubKey.size() <= 1 && !output.vBranches.empty()) {
+            uint8_t flags = output.nFlags & 0x03;
+            const bool has_token = !output.tokenId.IsNull() || (flags & 1) != 0;
+            if (has_token) {
+                flags |= 1;
+            }
+            const bool is_burn = (flags & 2) != 0;
+            std::vector<uint8_t> out;
+            out.push_back(flags);
+            const uint64_t val = static_cast<uint64_t>(
+                std::max<int64_t>(0, output.nValue / Amount::satoshi()));
+            for (int i = 0; i < 8; ++i) {
+                out.push_back(static_cast<uint8_t>((val >> (8 * i)) & 0xff));
+            }
+            if (has_token) {
+                out.insert(out.end(), output.tokenId.begin(),
+                           output.tokenId.end());
+            }
+            out.push_back(static_cast<uint8_t>(output.vBranches.size()));
+            for (const auto &branch : output.vBranches) {
+                out.insert(out.end(), branch.begin(), branch.end());
+            }
+            if (is_burn) {
+                out.push_back(0);
+            } else if (!output.vPaths.empty()) {
+                out.push_back(static_cast<uint8_t>(output.vPaths.size()));
+                for (const auto &path : output.vPaths) {
+                    out.push_back(static_cast<uint8_t>(path.size()));
+                    out.insert(out.end(), path.begin(), path.end());
+                }
+            } else {
+                out.push_back(static_cast<uint8_t>(output.vBranches.size()));
+                for (size_t idx = 0; idx < output.vBranches.size(); ++idx) {
+                    out.push_back(1);
+                    out.push_back(static_cast<uint8_t>(idx));
+                }
+            }
+            return chronik::util::ToRustVec<uint8_t>(out);
+        }
+    }
+    return chronik::util::ToRustVec<uint8_t>(output.scriptPubKey);
+}
+
+template <typename TxInT>
+rust::Vec<uint8_t> BridgeTxInputScript(const TxInT &input) {
+    if constexpr (requires {
+                      input.vCoinbaseData;
+                      input.vWitnesses;
+                      input.nFlags;
+                  }) {
+        if (input.scriptSig.empty()) {
+            if (input.nFlags == 2 && !input.vCoinbaseData.empty()) {
+                return chronik::util::ToRustVec<uint8_t>(input.vCoinbaseData);
+            }
+            if (!input.vWitnesses.empty() &&
+                !input.vWitnesses[0].script.empty()) {
+                return chronik::util::ToRustVec<uint8_t>(
+                    input.vWitnesses[0].script);
+            }
+        }
+    }
+    return chronik::util::ToRustVec<uint8_t>(input.scriptSig);
+}
+
 chronik_bridge::TxOutput BridgeTxOutput(const CTxOut &output) {
     return {
         .sats = output.nValue / Amount::satoshi(),
-        .script = chronik::util::ToRustVec<uint8_t>(output.scriptPubKey),
+        .script = BridgeTxOutputScript(output),
     };
 }
 
@@ -66,6 +138,9 @@ BridgeTxInputs(bool isCoinbase, Span<const CTxIn> inputs,
     bridged_inputs.reserve(inputs.size());
     for (size_t idx = 0; idx < inputs.size(); ++idx) {
         const CTxIn &input = inputs[idx];
+        if (!isCoinbase && input.nFlags == 3) {
+            continue;
+        }
         chronik_bridge::Coin bridge_coin{}; // empty coin
         if (!isCoinbase) {
             if (idx >= spent_coins.size()) {
@@ -75,7 +150,7 @@ BridgeTxInputs(bool isCoinbase, Span<const CTxIn> inputs,
         }
         bridged_inputs.push_back({
             .prev_out = BridgeOutPoint(input.prevout),
-            .script = chronik::util::ToRustVec<uint8_t>(input.scriptSig),
+            .script = BridgeTxInputScript(input),
             .sequence = input.nSequence,
             .coin = std::move(bridge_coin),
         });
@@ -352,7 +427,7 @@ bool ChronikBridge::is_avalanche_finalized_preconsensus(
 }
 
 Tx bridge_tx(const CTransaction &tx, const std::vector<::Coin> &spent_coins) {
-    return BridgeTx(false, tx, spent_coins);
+    return BridgeTx(spent_coins.empty() && tx.IsCoinBase(), tx, spent_coins);
 }
 
 const CBlockIndex &ChronikBridge::find_fork(const CBlockIndex &index) const {
@@ -364,6 +439,67 @@ const CBlockIndex &ChronikBridge::find_fork(const CBlockIndex &index) const {
         throw block_index_not_found();
     }
     return *fork;
+}
+
+void ChronikBridge::decode_raw_tx(rust::Slice<const uint8_t> raw_tx,
+                                  Tx &tx) const {
+    std::optional<CMutableTransaction> node_tx;
+    try {
+        DataStream stream{chronik::util::FromRustSlice(raw_tx)};
+        CMutableTransaction mtx;
+        stream >> mtx;
+        node_tx = std::move(mtx);
+    } catch (const std::exception &e) {
+        // A v7 frame has no legacy interpretation. Reject malformed native
+        // bytes instead of constructing a different transaction from defaults.
+        if (raw_tx.size() >= 4 && raw_tx[0] == 7 && raw_tx[1] == 0 &&
+            raw_tx[2] == 0 && raw_tx[3] == 0) {
+            throw std::runtime_error(e.what());
+        }
+    }
+    if (node_tx) {
+        // A native V2 tx has no legacy-shaped fields: take the node's
+        // inputs, outputs and identity, as indexed once it is broadcast.
+        const CTransaction ctx{std::move(*node_tx)};
+        const bool is_coinbase = ctx.IsCoinBase();
+        rust::Vec<TxInput> inputs;
+        inputs.reserve(ctx.vin.size());
+        for (const CTxIn &input : ctx.vin) {
+            if (!is_coinbase && input.nFlags == 3) {
+                continue;
+            }
+            inputs.push_back({
+                .prev_out = BridgeOutPoint(input.prevout),
+                .script = BridgeTxInputScript(input),
+                .sequence = input.nSequence,
+                .coin = {},
+            });
+        }
+        tx.txid = chronik::util::HashToArray(ctx.GetId());
+        tx.version = ctx.nVersion;
+        tx.inputs = std::move(inputs);
+        tx.outputs = BridgeTxOutputs(ctx.vout);
+        tx.locktime = ctx.nLockTime;
+        return;
+    }
+    CMutableTransaction mtx;
+    mtx.nVersion = tx.version;
+    mtx.nLockTime = tx.locktime;
+    mtx.vin.reserve(tx.inputs.size());
+    for (const TxInput &in : tx.inputs) {
+        mtx.vin.emplace_back(
+            COutPoint(TxId(chronik::util::ArrayToHash(in.prev_out.txid)),
+                      in.prev_out.out_idx),
+            CScript(in.script.data(), in.script.data() + in.script.size()),
+            in.sequence);
+    }
+    mtx.vout.reserve(tx.outputs.size());
+    for (const TxOutput &out : tx.outputs) {
+        mtx.vout.emplace_back(
+            out.sats * SATOSHI,
+            CScript(out.script.data(), out.script.data() + out.script.size()));
+    }
+    tx.txid = chronik::util::HashToArray(CTransaction(mtx).GetId());
 }
 
 void ChronikBridge::lookup_spent_coins(
@@ -459,20 +595,18 @@ int64_t ChronikBridge::estimate_feerate_sats_per_kb() const {
         return -1;
     }
 
+    const int64_t mempool_sats_per_kb =
+        m_node.mempool->estimateFee().GetFeePerK() / Amount::satoshi();
     const int64_t now_ms =
         TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
-    const lotus::v2::FeeRateInfo fee_info =
+    const auto fee_info =
         lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(now_ms);
-    const int64_t hysteresis_rate =
+    const int64_t hysteresis_sats_per_kb = static_cast<int64_t>(
         fee_info.rpc_admission_feerate_per_kcu >
                 fee_info.consensus_floor_per_kcu
-            ? static_cast<int64_t>(std::min<uint64_t>(
-                  fee_info.recommended_sdk_feerate_per_kcu, INT64_MAX))
-            : static_cast<int64_t>(std::min<uint64_t>(
-                  fee_info.rpc_admission_feerate_per_kcu, INT64_MAX));
-    const Amount feeRateSatsPerK = m_node.mempool->estimateFee().GetFeePerK();
-    return std::max<int64_t>(feeRateSatsPerK / Amount::satoshi(),
-                             hysteresis_rate);
+            ? std::min<uint64_t>(fee_info.recommended_sdk_feerate_per_kcu, INT64_MAX)
+            : std::min<uint64_t>(fee_info.rpc_admission_feerate_per_kcu, INT64_MAX));
+    return std::max(mempool_sats_per_kb, hysteresis_sats_per_kb);
 }
 
 int64_t ChronikBridge::min_relay_feerate_sats_per_kb() const {
@@ -480,16 +614,15 @@ int64_t ChronikBridge::min_relay_feerate_sats_per_kb() const {
         return -1;
     }
 
-    const int64_t now_ms =
-        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
-    const uint64_t rpc_rate_per_kcu =
-        lotus::v2::GetGlobalFeeHysteresisController().GetRpcAdmissionRatePerKCu(
-            now_ms);
-    const int64_t base_relay =
+    const int64_t base_relay_sats_per_kb =
         m_node.mempool->m_opts.min_relay_feerate.GetFeePerK() /
         Amount::satoshi();
-    return std::max<int64_t>(base_relay,
-                             static_cast<int64_t>(std::min<uint64_t>(rpc_rate_per_kcu, INT64_MAX)));
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const int64_t rpc_admission_sats_per_kb = static_cast<int64_t>(
+        std::min<uint64_t>(lotus::v2::GetGlobalFeeHysteresisController()
+            .GetRpcAdmissionRatePerKCu(now_ms), INT64_MAX));
+    return std::max(base_relay_sats_per_kb, rpc_admission_sats_per_kb);
 }
 
 bool ChronikBridge::get_feerate_info(std::array<uint8_t, 32> mempool_txid,
@@ -524,6 +657,54 @@ std::unique_ptr<ChronikBridge> make_bridge(const node::NodeContext &node) {
     return std::make_unique<ChronikBridge>(node);
 }
 
+rust::Vec<uint8_t>
+encode_v2_three_branch_output_script(const V2ThreeBranchOutputDesc &desc) {
+    std::vector<std::array<uint8_t, 32>> branches;
+    branches.reserve(3);
+    branches.push_back(desc.key_branch);
+    if (desc.script_branch && *desc.script_branch != desc.key_branch) {
+        branches.push_back(*desc.script_branch);
+    }
+    if (desc.data_branch && *desc.data_branch != desc.key_branch &&
+        (!desc.script_branch || *desc.data_branch != *desc.script_branch)) {
+        branches.push_back(*desc.data_branch);
+    }
+
+    uint8_t flags = 0;
+    const std::array<uint8_t, 32> zero_hash{};
+    const bool has_token = desc.token_id && *desc.token_id != zero_hash;
+    if (has_token) {
+        flags |= 1;
+    }
+    if (desc.is_burn) {
+        flags |= 2;
+    }
+
+    std::vector<uint8_t> out;
+    out.push_back(flags);
+    const uint64_t val = static_cast<uint64_t>(desc.sats);
+    for (int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<uint8_t>((val >> (8 * i)) & 0xff));
+    }
+    if (has_token) {
+        out.insert(out.end(), desc.token_id->begin(), desc.token_id->end());
+    }
+    out.push_back(static_cast<uint8_t>(branches.size()));
+    for (const auto &branch : branches) {
+        out.insert(out.end(), branch.begin(), branch.end());
+    }
+    if (desc.is_burn) {
+        out.push_back(0);
+    } else {
+        out.push_back(static_cast<uint8_t>(branches.size()));
+        for (size_t idx = 0; idx < branches.size(); ++idx) {
+            out.push_back(1);
+            out.push_back(static_cast<uint8_t>(idx));
+        }
+    }
+    return chronik::util::ToRustVec<uint8_t>(out);
+}
+
 chronik_bridge::Block bridge_block(const CBlock &block,
                                    const CBlockUndo &block_undo,
                                    const CBlockIndex &bindex)
@@ -538,12 +719,10 @@ BlockInfo get_block_info(const CBlockIndex &bindex) {
     };
 }
 
-std::array<uint8_t, 80> get_block_header(const CBlockIndex &index) {
+rust::Vec<uint8_t> get_block_header(const CBlockIndex &index) {
     DataStream ser_header{};
     ser_header << index.GetBlockHeader();
-    std::array<uint8_t, 80> array;
-    std::copy_n(MakeUCharSpan(ser_header).begin(), 80, array.begin());
-    return array;
+    return chronik::util::ToRustVec<uint8_t>(MakeUCharSpan(ser_header));
 }
 
 const CBlockIndex &get_block_ancestor(const CBlockIndex &index,
@@ -577,6 +756,28 @@ int64_t calc_fee(size_t num_bytes, int64_t sats_fee_per_kb) {
 
 int64_t default_max_raw_tx_fee_rate_per_kb() {
     return node::DEFAULT_MAX_RAW_TX_FEE_RATE.GetFeePerK() / SATOSHI;
+}
+
+V2FeeRateInfo get_v2_fee_rate_info() {
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const lotus::v2::FeeRateInfo info =
+        lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(now_ms);
+    return V2FeeRateInfo{
+        .consensus_floor_per_kcu = info.consensus_floor_per_kcu,
+        .p2p_relay_feerate_per_kcu = info.p2p_relay_feerate_per_kcu,
+        .rpc_admission_feerate_per_kcu = info.rpc_admission_feerate_per_kcu,
+        .recommended_sdk_feerate_per_kcu = info.recommended_sdk_feerate_per_kcu,
+        .marginal_burn_feerate_per_kcu = info.marginal_burn_feerate_per_kcu,
+        .hysteresis_window_ms = info.hysteresis_window_ms,
+        .hysteresis_discount_permille = info.hysteresis_discount_permille,
+        .ema_block_size_bytes = info.ema_block_size_bytes,
+        .adaptive_target_block_size = info.adaptive_target_block_size,
+        .adaptive_max_block_size = info.adaptive_max_block_size,
+        .adaptive_max_generated_block_size =
+            info.adaptive_max_generated_block_size,
+        .mempool_backlog_bytes = info.mempool_backlog_bytes,
+    };
 }
 
 bool init_error(const rust::Str msg) {
