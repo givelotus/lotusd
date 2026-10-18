@@ -850,6 +850,30 @@ BOOST_AUTO_TEST_CASE(bijective_reverse_block_peeling_and_hole_12_intra_block_spe
         p.monetary, p.cost, peel_store, error));
     BOOST_CHECK(peel_store.Root() == utxo_0.Root());
     BOOST_CHECK(peel_store.Metadata().tip == p.header.genesis_id);
+
+    // Also verify windowed multi-block reverse peel (B3 -> B0 in one disk batch,
+    // cancelling funding_coin created in B1 and spent in B3 in RAM).
+    const auto window_store_dir =
+        m_args.GetDataDirNet() / "fast_sync_peel_window_store";
+    std::filesystem::create_directories(window_store_dir);
+    DiskStateStore window_store;
+    BOOST_REQUIRE_MESSAGE(
+        DiskStateStore::Open(window_store_dir.string(), disk_opts, {},
+                             window_store, derr),
+        derr.message);
+    BOOST_REQUIRE(ImportVerifiedFastSyncPivotToDisk(
+        hdr_3, p.header.chain_id, {hdr_3, hdr_2, hdr_1, hdr_0}, pivot_roots,
+        pivot_shards, window_store, error));
+    const std::vector<ReversePeelBlockStep> window_steps = {
+        {b3_mined.wire, undo_3, hdr_2, history_b3},
+        {b2_mined.wire, undo_2, hdr_1, history_b2},
+        {b1_mined.wire, undo_1, hdr_0, history_b1},
+    };
+    BOOST_REQUIRE(PeelDiskBlockWindowReverse(
+        window_steps, p.header, p.ordinary, p.monetary, p.cost, window_store,
+        error));
+    BOOST_CHECK(window_store.Root() == utxo_0.Root());
+    BOOST_CHECK(window_store.Metadata().tip == p.header.genesis_id);
 }
 
 BOOST_AUTO_TEST_CASE(fast_sync_wire_and_validation_edge_cases) {
