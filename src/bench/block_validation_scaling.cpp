@@ -31,7 +31,6 @@ namespace {
 CBlock MakeSyntheticBlock(size_t n_txs) {
     FastRandomContext rng{/*fDeterministic=*/true};
     CBlock block;
-    block.nVersion = 1;
     block.vtx.reserve(n_txs);
     for (size_t i = 0; i < n_txs; ++i) {
         CMutableTransaction mtx;

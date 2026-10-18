@@ -6,11 +6,28 @@
 #ifndef BITCOIN_PRIMITIVES_BLOCK_H
 #define BITCOIN_PRIMITIVES_BLOCK_H
 
+#include <array>
+#include <lotus_v2/header.h>
+#include <lotus_v2/monetary.h>
+#include <memory>
 #include <primitives/blockhash.h>
 #include <primitives/transaction.h>
 #include <serialize.h>
+#include <span>
+#include <stdexcept>
 #include <uint256.h>
 #include <util/time.h>
+
+// Local persistence/cache failure, distinct from a peer consensus violation.
+class V2StateCacheError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+typedef std::array<uint8_t, 6> block_time_t;
+
+const lotus::v2::ChainId &GetActiveV2ChainId();
+void SetActiveV2ChainId(const lotus::v2::ChainId &chain_id);
 
 /**
  * Nodes collect new transactions into a block, hash them into a hash tree, and
@@ -22,39 +39,91 @@
  */
 class CBlockHeader {
 public:
-    // header
-    int32_t nVersion;
+    /** Hash of block this block is extending, or all zeros for genesis block */
     BlockHash hashPrevBlock;
-    uint256 hashMerkleRoot;
-    uint32_t nTime;
+    /** Target blockhash should meet encoded compactly */
     uint32_t nBits;
-    uint32_t nNonce;
+    /** Block time of the block encoded little endian (6 bytes) */
+    block_time_t vTime;
+    /** Nonce for miners to tweak the blockhash */
+    uint64_t nNonce;
+    /** Version of the header; lotus::v2::kHeaderVersion (2) for Lotus V2 */
+    uint32_t nHeaderVersion;
+    /** Size of the block in bytes */
+    uint64_t nSize;
+    /** Height of the block; length of the chain from genesis */
+    uint64_t nHeight;
+    /** Merkle root of the txs in the block (tx_root) */
+    uint256 hashMerkleRoot;
+    /** Sparse Merkle Tree state root after applying this block (state_root) */
+    uint256 hashStateRoot;
 
     CBlockHeader() { SetNull(); }
 
     SERIALIZE_METHODS(CBlockHeader, obj) {
-        READWRITE(obj.nVersion, obj.hashPrevBlock, obj.hashMerkleRoot,
-                  obj.nTime, obj.nBits, obj.nNonce);
+        READWRITE(obj.hashPrevBlock);
+        READWRITE(obj.nBits);
+        READWRITE(obj.vTime);
+        READWRITE(obj.nNonce);
+        READWRITE(obj.nHeaderVersion);
+        READWRITE(obj.nSize);
+        READWRITE(obj.nHeight);
+        READWRITE(obj.hashMerkleRoot);
+        READWRITE(obj.hashStateRoot);
     }
 
     void SetNull() {
-        nVersion = 0;
         hashPrevBlock = BlockHash();
-        hashMerkleRoot.SetNull();
-        nTime = 0;
         nBits = 0;
+        vTime.fill(0);
         nNonce = 0;
+        nHeaderVersion = 0;
+        nSize = 0;
+        nHeight = 0;
+        hashMerkleRoot.SetNull();
+        hashStateRoot.SetNull();
     }
 
     bool IsNull() const { return (nBits == 0); }
 
+    lotus::v2::Header ToV2Header() const;
+    static CBlockHeader FromV2Header(const lotus::v2::Header &h);
+
     BlockHash GetHash() const;
 
     NodeSeconds Time() const {
-        return NodeSeconds{std::chrono::seconds{nTime}};
+        return NodeSeconds{std::chrono::seconds{GetBlockTime()}};
     }
 
-    int64_t GetBlockTime() const { return (int64_t)nTime; }
+    /**
+     * Block time as advertised in the block header.
+     * Might not correspond to actual mined or received time.
+     */
+    int64_t GetBlockTime() const {
+        return uint64_t(vTime[0]) | (uint64_t(vTime[1]) << 8) |
+               (uint64_t(vTime[2]) << 16) | (uint64_t(vTime[3]) << 24) |
+               (uint64_t(vTime[4]) << 32) | (uint64_t(vTime[5]) << 40);
+    }
+
+    /** Set the block time as advertised in the block header. */
+    void SetBlockTime(uint64_t nTime) {
+        vTime = {{
+            uint8_t((nTime & 0x0000000000ffULL)),
+            uint8_t((nTime & 0x00000000ff00ULL) >> 8),
+            uint8_t((nTime & 0x000000ff0000ULL) >> 16),
+            uint8_t((nTime & 0x0000ff000000ULL) >> 24),
+            uint8_t((nTime & 0x00ff00000000ULL) >> 32),
+            uint8_t((nTime & 0xff0000000000ULL) >> 40),
+        }};
+    }
+
+    /**
+     * Block size, with full encoding, including header and txs.
+     */
+    uint64_t GetSize() const { return nSize; }
+
+    /** Set the advertised block size in the block header. */
+    void SetSize(uint64_t size) { nSize = size; }
 };
 
 class CBlock : public CBlockHeader {
@@ -87,14 +156,17 @@ public:
     }
 
     CBlockHeader GetBlockHeader() const {
-        CBlockHeader block;
-        block.nVersion = nVersion;
-        block.hashPrevBlock = hashPrevBlock;
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime = nTime;
-        block.nBits = nBits;
-        block.nNonce = nNonce;
-        return block;
+        CBlockHeader header;
+        header.hashPrevBlock = hashPrevBlock;
+        header.nBits = nBits;
+        header.vTime = vTime;
+        header.nNonce = nNonce;
+        header.nHeaderVersion = nHeaderVersion;
+        header.nSize = nSize;
+        header.nHeight = nHeight;
+        header.hashMerkleRoot = hashMerkleRoot;
+        header.hashStateRoot = hashStateRoot;
+        return header;
     }
 
     std::string ToString() const;
@@ -136,12 +208,71 @@ struct CBlockLocator {
 };
 
 namespace lotus::v2 {
+struct Coin;
+struct SmtNode;
+struct MonetaryState;
+struct BlockUndoMessage;
+class UtxoOverlayArena;
 class MempoolOverlayLayer;
 class MerklixOverlayManager;
 } // namespace lotus::v2
 
+struct V2TemplateBaseState {
+    std::shared_ptr<const lotus::v2::SmtNode> utxo_root;
+    // [Patch 035 optimization] Flat arena snapshot from MerklixOverlayManager
+    // avoids exporting O(U) shared_ptr<SmtNode> trees on every mempool update.
+    std::shared_ptr<const lotus::v2::UtxoOverlayArena> utxo_arena;
+    lotus::v2::MonetaryState mon_state{};
+    lotus::v2::MonetaryInteger sum_non_cb_effective_cost{0};
+    size_t non_cb_tx_count{0};
+    uint64_t height{0};
+    uint64_t parent_mtp{0};
+};
+
+void SetV2StatePersistDir(const std::string &dir_path);
+// False if a pending native state could not be persisted.
+bool FlushV2BlockStatesToDisk();
+bool GetV2BlockStateSnapshot(
+    const BlockHash &blockHash,
+    std::shared_ptr<const lotus::v2::SmtNode> &utxo_root_out,
+    lotus::v2::MonetaryState &mon_state_out);
+uint256 ComputeV2BlockStateRoot(const CBlock &block,
+                                const BlockHash &hashPrevBlock,
+                                uint64_t nHeight,
+                                uint64_t nParentMtp,
+                                bool record = false);
+void RecordV2BlockState(const CBlock &block,
+                        const BlockHash &blockHash,
+                        const BlockHash &hashPrevBlock,
+                        uint64_t nHeight,
+                        uint64_t nParentMtp);
+// Only validation may enable its existing min-difficulty-network zero-root
+// policy (currently testnet/regtest, unless -strictstateroot is enabled).
+void RecordV2BlockState(const CBlock &block,
+                        const BlockHash &blockHash,
+                        const BlockHash &hashPrevBlock,
+                        uint64_t nHeight,
+                        uint64_t nParentMtp,
+                        bool allow_uncommitted_state_root);
+uint64_t GetV2BlockCirculatingSupply(const BlockHash &blockHash);
+void SetV2BlockCirculatingSupplyForTest(const BlockHash &blockHash,
+                                        uint64_t circulating_supply);
 uint256 ComputeV2TxRootFromSubtreeA(const CTransaction &coinbase_tx,
-                                    const std::array<uint8_t, 32> &subtree_a_root);
+                                    const lotus::v2::Hash &subtree_a_root);
+uint256 ComputeV2StateRootFromOverlay(
+    const CTransaction &coinbase_tx,
+    const lotus::v2::MempoolOverlayLayer &overlay,
+    uint32_t nBits,
+    uint64_t nHeight,
+    uint64_t nParentMtp,
+    bool record = false,
+    const BlockHash *pBlockHash = nullptr);
+uint256 ComputeV2StateRootFromOverlay(
+    const CTransaction &coinbase_tx,
+    const lotus::v2::MempoolOverlayLayer &overlay,
+    uint32_t nBits, uint64_t nHeight, uint64_t nParentMtp,
+    bool record, const BlockHash *pBlockHash,
+    const uint256 *declared_state_root);
 bool AddTransactionToOverlay(lotus::v2::MempoolOverlayLayer &overlay,
                              const CTransactionRef &ptx,
                              int64_t fee_sats = 0,
@@ -160,5 +291,37 @@ bool RemoveTransactionFromOverlay(lotus::v2::MempoolOverlayLayer &overlay,
                                   const CTransaction &tx);
 bool RemoveTransactionFromOverlay(lotus::v2::MerklixOverlayManager &manager,
                                   const CTransaction &tx);
+V2TemplateBaseState BuildV2TemplateBaseState(
+    std::span<const CTransactionRef> non_coinbase_txs,
+    const BlockHash &hashPrevBlock,
+    uint64_t nHeight,
+    uint64_t nParentMtp);
+uint256 ComputeV2StateRootFromTemplate(
+    const V2TemplateBaseState &base_state,
+    const CTransaction &coinbase_tx,
+    uint32_t nBits);
+bool GetV2BlockStateCoinsAndMonetary(
+    const BlockHash &blockHash,
+    uint64_t nHeight,
+    std::vector<lotus::v2::Coin> &coins_out,
+    lotus::v2::MonetaryState &monetary_out);
+// A configured persistence failure leaves the snapshot unpublished and returns
+// false. With no persistence directory this remains an in-memory import.
+bool ImportV2BlockStateCoinsAndMonetary(
+    const BlockHash &blockHash,
+    const std::vector<lotus::v2::Coin> &coins,
+    const lotus::v2::MonetaryState &monetary_state,
+    bool is_tip = true);
+lotus::v2::MonetaryState AdvanceV2BlockMonetaryState(
+    const CBlock &block,
+    const lotus::v2::MonetaryState &parent_mon_state);
+std::shared_ptr<const lotus::v2::SmtNode>
+GetV2BlockUtxoRoot(const BlockHash &blockHash, bool *found_out = nullptr);
+std::optional<CTxOut>
+LookupV2SmtCoin(const std::shared_ptr<const lotus::v2::SmtNode> &root,
+                const COutPoint &outpoint,
+                uint32_t *height_out = nullptr,
+                bool *coinbase_out = nullptr);
 
 #endif // BITCOIN_PRIMITIVES_BLOCK_H
+
