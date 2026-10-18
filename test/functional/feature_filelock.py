@@ -42,7 +42,10 @@ class FilelockTest(BitcoinTestFramework):
                 "Check that we can't start a second bitcoind instance using the same"
                 " wallet"
             )
-            expected_msg = "Error: Error initializing wallet database environment"
+            expected_msg = (
+                r"Error: (SQLiteDatabase: Unable to obtain an exclusive lock|"
+                r"Wallet SQLite format, version or profile does not match)"
+            )
             self.nodes[1].assert_start_raises_init_error(
                 extra_args=[
                     f"-walletdir={wallet_dir}",
