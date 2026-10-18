@@ -34,6 +34,7 @@ from queue import Empty, Queue
 from typing import Any, Dict, NamedTuple, Set, Tuple
 
 from test_framework import reporting, worker
+from test_framework.functional_prereqs import check_chronik_proto
 from test_framework.results import FAILED, PASSED, SKIPPED, JobResult, parse_job_name
 from test_framework.util import MAX_NODES, PORT_RANGE
 
@@ -88,6 +89,7 @@ TEST_FRAMEWORK_MODULES = [
     "blocktools",
     "currency",
     "discovery",
+    "functional_prereqs",
     "merkle",
     "reporting",
     "messages",
@@ -110,6 +112,8 @@ NON_TESTS = {
     "create_cache.py",
     # A standalone benchmark script, run by hand
     "lotus_v2_loopback_tps_stress.py",
+    # Standalone three-node manual integration script with its own fixed ports.
+    "lotus_v2_native_e2e.py",
     "test_runner.py",
 }
 
@@ -559,6 +563,13 @@ def main():
         sys.exit(0)
 
     check_script_prefixes(all_tests)
+    try:
+        check_chronik_proto(
+            build_dir, config["components"].getboolean("ENABLE_CHRONIK"), test_list
+        )
+    except RuntimeError as error:
+        logging.error("%s", error)
+        sys.exit(1)
 
     if not args.keepcache:
         shutil.rmtree(os.path.join(build_dir, "test", "cache"), ignore_errors=True)
@@ -1206,7 +1217,7 @@ def check_script_prefixes(all_scripts):
     LEEWAY = 0
 
     good_prefixes_re = re.compile(
-        "(abc_)?(example|feature|interface|mempool|mining|p2p|rpc|wallet|tool|chronik)_"
+        "(abc_|lotus_)?(example|feature|interface|mempool|mining|p2p|rpc|wallet|tool|chronik|v2)_"
     )
     bad_script_names = [
         script for script in all_scripts if good_prefixes_re.match(script) is None

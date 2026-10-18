@@ -73,7 +73,10 @@ class GetChainTipsTest(BitcoinTestFramework):
 
         block_time += 1
         block2 = create_block(
-            invalid_block.hash_int, create_coinbase(2), block_time, version=4
+            invalid_block.hash_int,
+            create_coinbase(start_height + 2),
+            block_time,
+            version=4,
         )
         block2.solve()
 

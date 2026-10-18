@@ -195,19 +195,16 @@ class AssumeutxoTest(BitcoinTestFramework):
             [
                 b"\xff" * 32,
                 0,
-                "74fab8900700c8a0a4c6b50330252d92d651088939a41b307a8fcdddfed65f77",
+                "6ca2711adf456bc585565c7680cf252122dba36d5ca2545d9dd89e381ca410ce",
                 None,
             ],
             # wrong txid coins count
             # We expect the first txid in the dump to have one coin, and we set the value to 2.
-            # The deserialization code manages to accidentally read a second coin before choking
-            # on the third coin when if finally finds some random data that doesn't pass sanity
-            # tests (block height > snapshot height).
             [
                 (2).to_bytes(1, "little"),
                 32,
                 None,
-                "[snapshot] bad snapshot data after deserializing 2 coins",
+                "[snapshot] bad snapshot data after deserializing 1 coins",
             ],
             # txid coins count exceeds coins left
             [
@@ -220,34 +217,34 @@ class AssumeutxoTest(BitcoinTestFramework):
             [
                 b"\x01",
                 33,
-                "3872c8e52554070ca410faff98e42f63c99d08f536be343af7c04143e0e8f2b2",
+                "e3e416b9bc2a511784c5e011effccf435287f727d09ff49e69a68ae903ad7218",
                 None,
             ],
             # wrong coin code VARINT((coinbase ? 1 : 0) | (height << 1))
-            # We expect b"\x81" (as seen in a dump of valid_snapshot_path)
+            # We expect b"\x81\x31" (as seen in a dump of valid_snapshot_path)
             [
-                b"\x80",
+                b"\x81\x30",
                 34,
-                "b14c9595737179fe57e6d7a9f8e879a440833fa95ba52d210f1f7e3c02be64b2",
+                "6bb417196d49051c67337d41ed3baac2914c6d4d5311442556814e7eed9ffa00",
                 None,
             ],
             # another wrong coin code
             [
-                b"\x83",
+                b"\x81\x33",
                 34,
-                "296b4acd0d41dd4c0e845a7ed0cbdc602e5a7d092d5b4948a72835d2158f1e8e",
+                "be53e93a04b109368721eb59408b9ac00708af02eeef65907ed48969f609c98a",
                 None,
             ],
             # wrong coin case with height 364 and coinbase 0
             [
-                b"\x84\x58",
+                b"\x84\x58\x32\x00",
                 34,
                 None,
                 "[snapshot] bad snapshot data after deserializing 0 coins",
             ],
             # Amount exceeds MAX_MONEY
             [
-                b"\xca\xd2\x8f\x5a",
+                b"\xca\xd2\x8f\x5a\x00",
                 36,
                 None,
                 "[snapshot] bad snapshot data after deserializing 0 coins - bad tx out value",
@@ -268,7 +265,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             log_msg = (
                 custom_message
                 if custom_message is not None
-                else f"[snapshot] bad snapshot content hash: expected a966794ed5a2f9debaefc7ca48dbc5d5e12a89ff9fe45bd00ec5732d074580a9, got {wrong_hash}"
+                else f"[snapshot] bad snapshot content hash: expected 372adda95d453e80ce3d77396daa852c7bf620be323ea38eb61a34859dafc2b0, got {wrong_hash}"
             )
             expected_error(log_msg=log_msg)
 
@@ -276,7 +273,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         for node in self.nodes[1:4]:
             msg = (
                 "Unable to load UTXO snapshot: The base block header "
-                "(118a7d5473bccce9b314789e14ce426fc65fb09dfeda0131032bb6d86ed2fd0b) "
+                "(156d32f7cfa190182e918cca120b40d581ea751c956a04cb1bf03f2b20c7bf9f) "
                 "must appear in the headers chain. Make sure all headers are syncing, "
                 "and call loadtxoutset again."
             )
@@ -531,7 +528,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             assert_equal(node.getblockcount(), height - 1)
             msg = (
                 "Unable to load UTXO snapshot: The base block header "
-                "(118a7d5473bccce9b314789e14ce426fc65fb09dfeda0131032bb6d86ed2fd0b) "
+                "(156d32f7cfa190182e918cca120b40d581ea751c956a04cb1bf03f2b20c7bf9f) "
                 "is part of an invalid chain."
             )
             assert_raises_rpc_error(-32603, msg, node.loadtxoutset, dump_output_path)
@@ -611,7 +608,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         def check_dump_output(output):
             assert_equal(
                 output["txoutset_hash"],
-                "a966794ed5a2f9debaefc7ca48dbc5d5e12a89ff9fe45bd00ec5732d074580a9",
+                "372adda95d453e80ce3d77396daa852c7bf620be323ea38eb61a34859dafc2b0",
             )
             assert_equal(output["nchaintx"], blocks[SNAPSHOT_BASE_HEIGHT].chain_tx)
 
@@ -646,7 +643,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         dump_output4 = n0.dumptxoutset(path="utxos4.dat", rollback=prev_snap_height)
         assert_equal(
             dump_output4["txoutset_hash"],
-            "9f399ed4096b53d236b7f8473fddaa76eb11b7b5d92849a21e1cd8ac475d1dc4",
+            "0e2e9c0d7eb80914d04f9942c1ab3eace3adeb2513a2b6fafd12309736de6975",
         )
         assert sha256sum_file(dump_output["path"]) != sha256sum_file(
             dump_output4["path"]
