@@ -108,6 +108,12 @@ bool ComputeIdentitiesValidated(const Transaction &tx,
                                 const TxProfile &profile,
                                 const ChainId &chain_id,
                                 IdentityDigests &result, std::string &error);
+// Fast path when canonical wire framing has been validated and txid/txhash are
+// already known: populates txid/txhash and computes output commitments only
+// when non-mode-0 sighashes may be requested.
+bool ComputeOutputIdentitiesOnly(const Transaction &tx, const Hash &known_txid,
+                                 const Hash &known_txhash,
+                                 IdentityDigests &result, std::string &error);
 bool ComputeCoinsRoot(const Transaction &tx, const ResolvedCoins &resolved,
                       Hash &result, std::string &error);
 bool ComputeOwnInputHash(const Transaction &tx, const TxProfile &profile,
