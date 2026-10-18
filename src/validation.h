@@ -460,7 +460,6 @@ struct PrecomputedBatchTxData {
 void PrecomputeSingleTxData(const CTransaction &tx,
                             PrecomputedBatchTxData &out);
 
-
 /**
  * [Patch 036 optimization] Validate and optionally commit an all-or-nothing
  * batch of raw transactions in a single pass under cs_main, coalescing RCU
@@ -1185,6 +1184,15 @@ public:
     //! Does this chainstate have a UTXO set attached?
     bool HasCoinsViews() const { return (bool)m_coins_views; }
 
+    //! Issue MDBX page hints while cs_main protects the coins-view lifetime.
+    void PrefetchOutpointsLockFree(
+        const std::vector<COutPoint> &outpoints) const EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+        AssertLockHeld(cs_main);
+        if (m_coins_views && outpoints.size() >= 16) {
+            m_coins_views->m_dbview.PrefetchOutpointsAsync(outpoints);
+        }
+    }
+
     //! The cache size of the on-disk coins view.
     size_t m_coinsdb_cache_size_bytes{0};
 
@@ -1252,7 +1260,7 @@ public:
     bool ConnectBlock(const CBlock &block, BlockValidationState &state,
                       CBlockIndex *pindex, CCoinsViewCache &view,
                       BlockValidationOptions options,
-                      Amount *blockFees = nullptr, bool fJustCheck = false, bool force_script_checks = false)
+                      Amount *blockFees = nullptr, bool fJustCheck = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
@@ -1761,6 +1769,15 @@ public:
     }
 
     const CBlockIndex *GetAvalancheFinalizedTip() const;
+
+    //! Protect both the active-chainstate pointer and its coins view during page hints.
+    void PrefetchActiveOutpointsLockFree(
+        const std::vector<COutPoint> &outpoints) const {
+        LOCK(cs_main);
+        if (m_active_chainstate) {
+            m_active_chainstate->PrefetchOutpointsLockFree(outpoints);
+        }
+    }
 
     //! The state of a background sync (for net processing)
     bool BackgroundSyncInProgress() const EXCLUSIVE_LOCKS_REQUIRED(GetMutex()) {
