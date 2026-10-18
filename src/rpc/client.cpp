@@ -231,6 +231,7 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     {"setstakingreward", 2, "append"},
     {"setflakyproof", 1, "flaky"},
     {"getfinaltransactions", 0, "verbose"},
+    {"estimatesmartfee", 0, "conf_target"},
 };
 
 /**
