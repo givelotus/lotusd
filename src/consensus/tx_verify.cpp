@@ -49,21 +49,17 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
                              "bad-txns-nonfinal", "non-final transaction");
     }
 
-    if (IsMagneticAnomalyEnabled(params, nHeight)) {
-        // Size limit
-        if (::GetSerializeSize(tx) < MIN_TX_SIZE) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-undersize");
-        }
+    // Size limit
+    if (::GetSerializeSize(tx) < MIN_TX_SIZE) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-undersize");
     }
 
-    if (IsWellingtonEnabled(params, nHeight)) {
-        // Restrict version to 1 and 2
-        if (tx.nVersion > CTransaction::MAX_VERSION ||
-            tx.nVersion < CTransaction::MIN_VERSION) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-version");
-        }
+    // Restrict version to 1 and 2
+    if (tx.nVersion > CTransaction::MAX_VERSION ||
+        tx.nVersion < CTransaction::MIN_VERSION) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-version");
     }
 
     return true;

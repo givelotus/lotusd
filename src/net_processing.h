@@ -118,8 +118,8 @@ static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
 static constexpr bool DEFAULT_TXRELAY_SHORTIDS{true};
 /**
  * Default for -txrelaypushhb: whether bursts of 16 or more transactions are
- * pushed as unsolicited shorttx bodies to high-bandwidth peers (BIP152
- * high-bandwidth, noban, -highbandwidthtx) instead of being announced. Off:
+ * pushed as unsolicited shorttx bodies to peers that explicitly negotiate
+ * TXRELAY_HIGH_BANDWIDTH instead of being announced. Off:
  * the relay simulation puts the latency gain at ~0.1 s against a duplicate
  * body in most cases. Receiving pushed bodies is unchanged.
  */
