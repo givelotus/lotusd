@@ -240,7 +240,7 @@ class Processor final : public NetEventsInterface {
      */
     uint32_t minQuorumScore;
     double minQuorumConnectedScoreRatio;
-    std::atomic<bool> quorumIsEstablished{false};
+    mutable std::atomic<bool> quorumIsEstablished{false};
     std::atomic<bool> m_canShareLocalProof{false};
     int64_t minAvaproofsNodeCount;
     std::atomic<int64_t> avaproofsNodeCounter{0};
@@ -504,6 +504,7 @@ public:
     };
     /** Quorum figures, read without a lock (for metrics) */
     QuorumFigures getQuorumFigures() const;
+    bool isQuorumEstablished() const;
     bool isQuorumEstablished() LOCKS_EXCLUDED(cs_main)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_stakingRewards,
                                  !cs_finalizedItems);

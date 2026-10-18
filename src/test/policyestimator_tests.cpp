@@ -42,6 +42,8 @@ BOOST_AUTO_TEST_CASE(MempoolMinimumFeeEstimate) {
     while (blocknum < 200) {
         for (int64_t j = 0; j < 100; j++) {
             // make transaction unique
+            tx.vin[0].prevout =
+                COutPoint(TxId(uint256{1}), uint32_t(10000 * blocknum + j));
             tx.vin[0].nSequence = 10000 * blocknum + j;
             TxId txid = tx.GetId();
             mpool.addUnchecked(
@@ -76,6 +78,8 @@ BOOST_AUTO_TEST_CASE(MempoolMinimumFeeEstimate) {
     // but don't mine them.
     for (int64_t i = 0; i < 10000; i++) {
         // Mutate the hash
+        tx.vin[0].prevout =
+            COutPoint(TxId(uint256{2}), uint32_t(10000 * blocknum + i));
         tx.vin[0].nSequence = 10000 * blocknum + i;
         // Add new transaction to the mempool with a increasing fee
         // The average should end up as 1/2 * 100 *

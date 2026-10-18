@@ -76,6 +76,9 @@ void CTxMemPool::CalculateMemPoolAncestors(
         // GetMemPoolParents() is only valid for entries in the mempool, so we
         // iterate mapTx to find parents.
         for (const CTxIn &in : tx.vin) {
+            if (in.nFlags == 3) {
+                continue;
+            }
             if (!fSearchFinalized &&
                 isAvalancheFinalizedPreConsensus(in.prevout.GetTxId())) {
                 continue;
@@ -153,6 +156,10 @@ CTxMemPool::CTxMemPool(const Config &config, Options opts)
 CTxMemPool::~CTxMemPool() = default;
 
 bool CTxMemPool::isSpent(const COutPoint &outpoint) const {
+    if (!m_utxo_fast_filter.IsSpentInMempool(outpoint.GetTxId().begin(),
+                                             outpoint.GetN())) {
+        return false;
+    }
     return mapNextTx.contains(outpoint);
 }
 
@@ -202,6 +209,9 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
     const CTransactionRef tx = entry->GetSharedTx();
     const TxId *last_parent_txid = nullptr;
     for (const CTxIn &in : tx->vin) {
+        if (in.nFlags == 3) {
+            continue;
+        }
         // Admission excludes conflicting claims under cs before reaching here.
         Assume(m_next_tx.insert(in.prevout, tx));
         m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(), in.prevout.GetN());
@@ -284,6 +294,9 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
         }
     }
     for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            continue;
+        }
         // A removed entry only ever gives up its own claims.
         const auto removed_claim{m_next_tx.extractEntry(txin.prevout)};
         Assume(removed_claim && removed_claim->value.get() == &tx);
@@ -386,6 +399,9 @@ void CTxMemPool::removeConflicts(const CTransaction &tx) {
     // Remove transactions which depend on inputs of tx, recursively
     AssertLockHeld(cs);
     for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            continue;
+        }
         if (auto txConflictRef = mapNextTx.get(txin.prevout).value_or(nullptr)) {
             const CTransaction &txConflict = *txConflictRef;
             if (txConflict != tx) {
@@ -705,6 +721,9 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
 
         CTxMemPoolEntry::Parents setParentCheck;
         for (const CTxIn &txin : tx.vin) {
+            if (txin.nFlags == 3) {
+                continue;
+            }
             // Check that every mempool transaction's inputs refer to available
             // coins, or other mempool tx's.
             txiter parentIt = mapTx.find(txin.prevout.GetTxId());
@@ -758,6 +777,9 @@ void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
         assert(Consensus::CheckTxInputs(tx, dummy_state, mempoolDuplicate,
                                         spendheight, txfee));
         for (const auto &input : tx.vin) {
+            if (input.nFlags == 3) {
+                continue;
+            }
             mempoolDuplicate.SpendCoin(input.prevout);
         }
         AddCoins(mempoolDuplicate, tx, std::numeric_limits<int>::max());
@@ -1186,7 +1208,9 @@ bool CTxMemPool::CanFitRawTxBatch(
                  LiveTxTree::NodeBytes();
         std::set<TxId> parents;
         for (const auto &input : entry->GetTx().vin) {
-            usage += next_tx_node_usage;
+            if (input.nFlags != 3) {
+                usage += next_tx_node_usage;
+            }
             const auto &id = input.prevout.GetTxId();
             if (exists(id) || staged.count(id)) parents.insert(id);
         }
