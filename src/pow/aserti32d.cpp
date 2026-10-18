@@ -89,9 +89,9 @@ arith_uint256 CalculateASERT(const arith_uint256 &refTarget,
     // Input target must never be zero nor exceed powLimit.
     assert(refTarget > 0 && refTarget <= powLimit);
 
-    // We need some leading zero bits in powLimit in order to have room to
-    // handle overflows easily. 32 leading zero bits is more than enough.
-    assert((powLimit >> 224) == 0);
+    // We need at least 17 leading zero bits in powLimit so refTarget * factor
+    // (< 2^239 * 2^17 = 2^256) never overflows 256-bit arithmetic.
+    assert((powLimit >> 239) == 0);
 
     // Height diff should NOT be negative.
     assert(nHeightDiff >= 0);

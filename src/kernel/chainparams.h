@@ -62,6 +62,11 @@ struct AssumeutxoData {
     //! The hash of the base block for this snapshot. Used to refer to
     //! assumeutxo data prior to having a loaded blockindex.
     BlockHash blockhash;
+
+    //! Native monetary state committed by the trusted snapshot anchor header.
+    //! The legacy UTXO file does not contain monetary history; import verifies
+    //! this state together with its reconstructed coins against that header.
+    std::optional<lotus::v2::MonetaryState> native_monetary_state{};
 };
 
 /**

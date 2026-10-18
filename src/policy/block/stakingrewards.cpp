@@ -46,7 +46,18 @@ bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
             continue;
         }
 
-        auto it = std::find(winners.begin(), winners.end(), o.scriptPubKey);
+        auto it = std::find_if(winners.begin(), winners.end(), [&](const CScript &w) {
+            if (o.scriptPubKey == w) {
+                return true;
+            }
+            if (!o.vBranches.empty()) {
+                const lotus::v2::Output expected = CTxOut(o.nValue, w).ToV2Output();
+                return o.nFlags == expected.flags &&
+                       o.vBranches == expected.branches &&
+                       o.vPaths == expected.paths;
+            }
+            return false;
+        });
         if (it != winners.end()) {
             if (it != winners.begin()) {
                 LogDebug(BCLog::AVALANCHE,
