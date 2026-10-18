@@ -1,11 +1,9 @@
 #include "tagged_hash.h"
 
-#include <crypto/sha256.h>
+#include "vendor/blake3/blake3.h"
 
-#include <array>
 #include <cstdlib>
 #include <cstring>
-#include <string_view>
 
 namespace lotus::v2 {
 namespace {
@@ -32,44 +30,28 @@ constexpr std::string_view TagView(HashDomain domain) noexcept {
     }
     std::abort();
 }
-
-constexpr size_t kNumDomains = static_cast<size_t>(HashDomain::PreconsensusBatch) + 1;
-
-CSHA256 MakeTagMidstate(HashDomain domain) {
-    const std::string_view tag = TagView(domain);
-    uint8_t tag_hash[CSHA256::OUTPUT_SIZE];
-    CSHA256()
-        .Write(reinterpret_cast<const uint8_t *>(tag.data()), tag.size())
-        .Finalize(tag_hash);
-    CSHA256 hasher;
-    hasher.Write(tag_hash, CSHA256::OUTPUT_SIZE);
-    hasher.Write(tag_hash, CSHA256::OUTPUT_SIZE);
-    return hasher;
-}
-
-const std::array<CSHA256, kNumDomains> &GetTagMidstates() {
-    static const std::array<CSHA256, kNumDomains> kMidstates = []() {
-        std::array<CSHA256, kNumDomains> arr{};
-        for (size_t i = 0; i < kNumDomains; ++i) {
-            arr[i] = MakeTagMidstate(static_cast<HashDomain>(i));
-        }
-        return arr;
-    }();
-    return kMidstates;
-}
 } // namespace
 
 Hash TaggedHash(HashDomain domain, std::span<const uint8_t> payload) {
-    const size_t idx = static_cast<size_t>(domain);
-    if (idx >= kNumDomains) {
-        std::abort();
-    }
-    CSHA256 hasher = GetTagMidstates()[idx];
-    if (!payload.empty()) {
-        hasher.Write(payload.data(), payload.size());
+    const std::string_view tag = TagView(domain);
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (payload.size() <= 960) {
+        uint8_t combined[1024];
+        std::memcpy(combined, tag.data(), tag.size());
+        combined[tag.size()] = 0;
+        if (!payload.empty()) {
+            std::memcpy(combined + tag.size() + 1, payload.data(), payload.size());
+        }
+        blake3_hasher_update(&hasher, combined, tag.size() + 1 + payload.size());
+    } else {
+        blake3_hasher_update(&hasher, tag.data(), tag.size());
+        constexpr uint8_t separator = 0;
+        blake3_hasher_update(&hasher, &separator, 1);
+        blake3_hasher_update(&hasher, payload.data(), payload.size());
     }
     Hash result;
-    hasher.Finalize(result.data());
+    blake3_hasher_finalize(&hasher, result.data(), result.size());
     return result;
 }
 
