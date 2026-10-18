@@ -4,6 +4,12 @@
 
 #include <net/v2_protocol_handler.h>
 
+#include <avalanche/processor.h>
+#include <avalanche/stateanchor.h>
+#include <lotus_v2/fast_sync.h>
+#include <lotus_v2/legacy_coin.h>
+#include <node/snapshot.h>
+
 #include <blockencodings.h>
 #include <chain.h>
 #include <chainparams.h>
@@ -1713,6 +1719,596 @@ BOOST_AUTO_TEST_CASE(inventory_broadcast_constants) {
     BOOST_CHECK_EQUAL(OUTBOUND_INVENTORY_BROADCAST_INTERVAL.count(), 2000);
     BOOST_CHECK_EQUAL(INVENTORY_BROADCAST_PER_SECOND, 2500U);
     BOOST_CHECK_EQUAL(INVENTORY_MAX_RECENT_RELAY, 350000U);
+}
+
+
+BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+
+    // 1. Verify wire message types and MSG_AVA_STATE_ANCHOR inventory type
+    const auto &all_types = getAllNetMessageTypes();
+    for (const char *msg :
+         {NetMsgType::GETUTXOROOTS, NetMsgType::UTXOROOTS,
+          NetMsgType::GETUTXOSHARD, NetMsgType::UTXOSHARD,
+          NetMsgType::GETBLOCKUNDO, NetMsgType::BLOCKUNDO}) {
+        BOOST_CHECK(std::find(all_types.begin(), all_types.end(),
+                              std::string(msg)) != all_types.end());
+        CMessageHeader hdr(Params().NetMagic(), msg, 64);
+        BOOST_CHECK(hdr.IsMessageTypeValid());
+    }
+    CInv anchor_inv(MSG_AVA_STATE_ANCHOR, uint256{42});
+    BOOST_CHECK(anchor_inv.IsMsgStateAnchor());
+
+    // 2. Verify lossless bijective CTxOut::ToV2Output() / lotus::v2::LegacyTxOutput()
+    //    across standard and arbitrary scripts
+    {
+        std::vector<CScript> test_scripts;
+        CScript p2pkh;
+        p2pkh << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 0x11)
+              << OP_EQUALVERIFY << OP_CHECKSIG;
+        test_scripts.push_back(p2pkh);
+
+        CScript p2sh;
+        p2sh << OP_HASH160 << std::vector<uint8_t>(20, 0x22) << OP_EQUAL;
+        test_scripts.push_back(p2sh);
+
+        CScript taproot;
+        taproot << uint8_t(0x62) << OP_1 << std::vector<uint8_t>(33, 0x02);
+        test_scripts.push_back(taproot);
+
+        CScript taproot_state;
+        taproot_state << uint8_t(0x62) << OP_1 << std::vector<uint8_t>(33, 0x03)
+                      << std::vector<uint8_t>(32, 0xaa);
+        test_scripts.push_back(taproot_state);
+
+        CScript op_return;
+        op_return << OP_RETURN << std::vector<uint8_t>{0xde, 0xad, 0xbe, 0xef};
+        test_scripts.push_back(op_return);
+
+        CScript raw_custom = MakeRedeemScriptForAttempt(7);
+        test_scripts.push_back(raw_custom);
+
+        for (const CScript &spk : test_scripts) {
+            CTxOut orig(12345678 * SATOSHI, spk);
+            lotus::v2::Output v2_out = lotus::v2::LegacyStateOutput(orig);
+            CTxOut roundtrip = lotus::v2::LegacyTxOutput(v2_out);
+            BOOST_CHECK(orig == roundtrip);
+        }
+    }
+
+    // 3. Mine 102 authentic blocks on top of Genesis:
+    //    - Block 1 pays coinbase to p2sh_spk
+    //    - Blocks 2..100 mature Block 1's coinbase
+    //    - Block 101 spends Block 1's coinbase output
+    //    - Block 102 spends Block 101's output (prior-block spend) AND includes
+    //      a CTOR-ordered child transaction spending that transaction's output
+    //      within Block 102 (intra-block spend)
+    const Config &config = m_node.chainman->GetConfig();
+    const Consensus::Params &params = config.GetChainParams().GetConsensus();
+    const CScript redeem_script = MakeRedeemScriptForAttempt(1);
+    const CScript p2sh_spk =
+        GetScriptForDestination(ScriptHash(redeem_script));
+
+    TxId block1_cb_txid;
+    TxId block101_txid;
+    for (int b = 1; b <= 102; ++b) {
+        std::shared_ptr<CBlock> blk =
+            PrepareBlock(config, m_node, p2sh_spk);
+        if (b == 1) {
+            block1_cb_txid = blk->vtx[0]->GetId();
+        } else if (b == 101) {
+            CMutableTransaction mtx_101;
+            mtx_101.nVersion = 2;
+            mtx_101.vin.resize(1);
+            mtx_101.vin[0].prevout = COutPoint(block1_cb_txid, 0);
+            mtx_101.vin[0].scriptSig = CScript() << ToByteVector(redeem_script);
+            mtx_101.vout.resize(1);
+            mtx_101.vout[0].nValue =
+                blk->vtx[0]->GetValueOut() - 10000 * SATOSHI;
+            mtx_101.vout[0].scriptPubKey = p2sh_spk;
+            CTransactionRef tx_101 = MakeTransactionRef(std::move(mtx_101));
+            block101_txid = tx_101->GetId();
+            blk->vtx.push_back(tx_101);
+        } else if (b == 102) {
+            CMutableTransaction mtx_parent;
+            mtx_parent.nVersion = 2;
+            mtx_parent.vin.resize(1);
+            mtx_parent.vin[0].prevout = COutPoint(block101_txid, 0);
+            mtx_parent.vin[0].scriptSig =
+                CScript() << ToByteVector(redeem_script);
+            mtx_parent.vout.resize(1);
+            mtx_parent.vout[0].nValue =
+                blk->vtx[0]->GetValueOut() - 20000 * SATOSHI;
+            mtx_parent.vout[0].scriptPubKey = p2sh_spk;
+            CTransactionRef tx_parent =
+                MakeTransactionRef(std::move(mtx_parent));
+
+            // Grind nLockTime on tx_child so tx_parent->GetId() < tx_child->GetId()
+            // (satisfying CTOR while spending tx_parent intra-block).
+            CTransactionRef tx_child;
+            for (uint32_t lt = 0; lt < 10000; ++lt) {
+                CMutableTransaction mtx_child;
+                mtx_child.nVersion = 2;
+                mtx_child.nLockTime = lt;
+                mtx_child.vin.resize(1);
+                mtx_child.vin[0].prevout = COutPoint(tx_parent->GetId(), 0);
+                mtx_child.vin[0].scriptSig =
+                    CScript() << ToByteVector(redeem_script);
+                mtx_child.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+                mtx_child.vout.resize(1);
+                mtx_child.vout[0].nValue =
+                    blk->vtx[0]->GetValueOut() - 30000 * SATOSHI;
+                mtx_child.vout[0].scriptPubKey = p2sh_spk;
+                CTransactionRef cand = MakeTransactionRef(std::move(mtx_child));
+                if (tx_parent->GetId() < cand->GetId()) {
+                    tx_child = cand;
+                    break;
+                }
+            }
+            BOOST_REQUIRE(tx_child != nullptr);
+
+            blk->vtx.push_back(tx_parent);
+            blk->vtx.push_back(tx_child);
+        }
+        {
+            LOCK(cs_main);
+            blk->hashMerkleRoot = BlockMerkleRoot(*blk);
+        }
+        while (!CheckProofOfWork(blk->GetHash(), blk->nBits, params)) {
+            ++blk->nNonce;
+        }
+        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
+            blk, /*force_processing=*/true, /*min_pow_checked=*/true, nullptr));
+    }
+
+    CBlockIndex *pivot_index = nullptr;
+    BlockHash pivot_hash;
+    lotus::v2::Hash pivot_utxo_root{};
+    {
+        LOCK(cs_main);
+        pivot_index = m_node.chainman->ActiveTip();
+        BOOST_REQUIRE(pivot_index != nullptr);
+        BOOST_REQUIRE_EQUAL(pivot_index->nHeight, 102);
+        pivot_hash = pivot_index->GetBlockHash();
+
+        Chainstate::FastSyncBlockState pivot_state;
+        std::string err;
+        BOOST_REQUIRE(
+            m_node.chainman->ActiveChainstate()
+                .ExportV2BlockStateCoinsAndMonetary(pivot_index, pivot_state,
+                                                    err));
+        pivot_utxo_root = pivot_state.utxo_root;
+    }
+
+    // 4. Verify deterministic Avalanche StateAnchorId computation
+    uint256 anchor_root_u256;
+    std::memcpy(anchor_root_u256.begin(), pivot_utxo_root.data(), 32);
+    const avalanche::StateAnchorId anchor_id(pivot_hash, anchor_root_u256);
+    const avalanche::StateAnchorId anchor_id_dup(pivot_hash, anchor_root_u256);
+    BOOST_CHECK(anchor_id == anchor_id_dup);
+
+    uint256 conflicting_root_u256 = anchor_root_u256;
+    conflicting_root_u256.begin()[0] ^= 0xff;
+    const avalanche::StateAnchorId conflicting_anchor_id(pivot_hash,
+                                                         conflicting_root_u256);
+    BOOST_CHECK(anchor_id != conflicting_anchor_id);
+
+    // Set up PeerManager + V2PeerProtocolHandler with two peers:
+    // - peer_bad (sends Byzantine/corrupted shards & undo coins)
+    // - peer_honest (serves valid UTXOROOTS, UTXOSHARD, and BLOCKUNDO)
+    auto connman = std::make_unique<ConnmanTestMsg>(config, 0x7788, 0x7788,
+                                                    *m_node.addrman);
+    PeerManager::Options peer_opts;
+    peer_opts.deterministic_rng = true;
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                     *m_node.chainman, *m_node.mempool,
+                                     /*avalanche=*/nullptr, peer_opts);
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    connman->Init(options);
+
+    V2PeerProtocolHandler *v2_handler = peerman->GetV2ProtocolHandler();
+    BOOST_REQUIRE(v2_handler != nullptr);
+
+    CAddress addr_legacy(MakeTestIp(0xa0b0c05f), NODE_NONE);
+    CNode peer_legacy(/*id=*/959, /*sock=*/nullptr, addr_legacy,
+                      /*nKeyedNetGroupIn=*/0, /*nLocalHostNonceIn=*/0,
+                      /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                      ConnectionType::OUTBOUND_FULL_RELAY,
+                      /*inbound_onion=*/false);
+    connman->Handshake(peer_legacy, /*successfully_connected=*/true,
+                       ServiceFlags(NODE_NETWORK), ServiceFlags(NODE_NETWORK),
+                       PROTOCOL_VERSION, /*relay_txs=*/true);
+    v2_handler->RegisterPeerNode(peer_legacy);
+
+    CAddress addr_bad(MakeTestIp(0xa0b0c060), NODE_NONE);
+    CNode peer_bad(/*id=*/960, /*sock=*/nullptr, addr_bad,
+                   /*nKeyedNetGroupIn=*/0, /*nLocalHostNonceIn=*/0,
+                   /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                   ConnectionType::OUTBOUND_FULL_RELAY,
+                   /*inbound_onion=*/false);
+    connman->Handshake(peer_bad, /*successfully_connected=*/true,
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       PROTOCOL_VERSION, /*relay_txs=*/true);
+    v2_handler->RegisterPeerNode(peer_bad);
+
+    CAddress addr_honest(MakeTestIp(0xa0b0c061), NODE_NONE);
+    CNode peer_honest(/*id=*/961, /*sock=*/nullptr, addr_honest,
+                      /*nKeyedNetGroupIn=*/1, /*nLocalHostNonceIn=*/0,
+                      /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                      ConnectionType::OUTBOUND_FULL_RELAY,
+                      /*inbound_onion=*/false);
+    connman->Handshake(peer_honest, /*successfully_connected=*/true,
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       PROTOCOL_VERSION, /*relay_txs=*/true);
+    v2_handler->RegisterPeerNode(peer_honest);
+
+    // 5. Verify opt-out to traditional sync (-snapsync=0 and -reversesync=0) and
+    //    NODE_UTXO_SHARD service capability filtering
+    {
+        std::string cap_err;
+        BOOST_CHECK(!v2_handler->StartFastSyncSwarm(
+            pivot_hash, {peer_legacy.GetId()}, /*auto_peel=*/false, cap_err));
+        BOOST_CHECK(cap_err.find("NODE_UTXO_SHARD") != std::string::npos);
+
+        v2_handler->SetSnapSyncEnabled(false);
+        BOOST_CHECK(!v2_handler->IsSnapSyncEnabled());
+        {
+            LOCK(cs_main);
+            BOOST_CHECK(!m_node.chainman->ActiveChainstate().IsSnapSyncEnabled());
+        }
+        std::string opt_out_err;
+        BOOST_CHECK(!v2_handler->StartFastSyncSwarm(
+            pivot_hash, {peer_honest.GetId()}, /*auto_peel=*/false,
+            opt_out_err));
+        BOOST_CHECK(opt_out_err.find("disabled") != std::string::npos);
+
+        v2_handler->SetSnapSyncEnabled(true);
+        v2_handler->SetReverseSyncEnabled(false);
+        BOOST_CHECK(!v2_handler->IsReverseSyncEnabled());
+        BOOST_CHECK(!v2_handler->IsSnapSyncEnabled());
+        BOOST_CHECK(!v2_handler->StartReversePeelSwarm(
+            {peer_honest.GetId()}, opt_out_err));
+        BOOST_CHECK(opt_out_err.find("disabled") != std::string::npos);
+
+        // Re-enable SnapSync and ReverseSync
+        v2_handler->SetSnapSyncEnabled(true);
+        v2_handler->SetReverseSyncEnabled(true);
+        BOOST_CHECK(v2_handler->IsSnapSyncEnabled());
+        BOOST_CHECK(v2_handler->IsReverseSyncEnabled());
+    }
+
+    // 6. Export valid UtxoRootsMessage and non-empty depth-8 UtxoShardMessages for the pivot
+    //    and verify O(256) ExportUtxoRootsFromSmt / O(k+|shard|) ExportUtxoShardFromSmt
+    //    match full UtxoSet exports bit-for-bit, and VerifyUtxoRootsAgainstAnchor
+    //    rejects missing (std::nullopt) state anchors!
+    lotus::v2::Hash pivot_v2_hash{};
+    std::memcpy(pivot_v2_hash.data(), pivot_hash.begin(), 32);
+    lotus::v2::UtxoRootsMessage valid_roots_msg;
+    std::vector<lotus::v2::UtxoShardMessage> valid_shards;
+    {
+        LOCK(cs_main);
+        Chainstate::FastSyncBlockState pivot_state;
+        std::string err;
+        BOOST_REQUIRE(
+            m_node.chainman->ActiveChainstate()
+                .ExportV2BlockStateCoinsAndMonetary(pivot_index, pivot_state,
+                                                    err));
+        BOOST_REQUIRE(pivot_state.smt_root != nullptr);
+        BOOST_REQUIRE(lotus::v2::ExportUtxoRootsForBlock(
+            pivot_state.utxo, pivot_v2_hash, pivot_state.height,
+            pivot_state.monetary, valid_roots_msg, err));
+
+        lotus::v2::UtxoRootsMessage smt_roots_msg;
+        BOOST_REQUIRE(lotus::v2::ExportUtxoRootsFromSmt(
+            pivot_state.smt_root, pivot_v2_hash, pivot_state.height,
+            pivot_state.monetary, smt_roots_msg, err));
+        BOOST_CHECK(lotus::v2::EncodeUtxoRootsMessage(valid_roots_msg) ==
+                    lotus::v2::EncodeUtxoRootsMessage(smt_roots_msg));
+
+        // Mandatory finalized state anchor check: std::nullopt anchor MUST be rejected!
+        lotus::v2::Hash dummy_folded{};
+        std::string anchor_err;
+        BOOST_CHECK(!lotus::v2::VerifyUtxoRootsAgainstAnchor(
+            pivot_v2_hash, pivot_state.height, std::nullopt, valid_roots_msg,
+            dummy_folded, anchor_err));
+        BOOST_CHECK(anchor_err.find("missing finalized") !=
+                    std::string::npos);
+
+        std::vector<lotus::v2::UtxoShardMessage> adaptive_shards;
+        BOOST_REQUIRE(lotus::v2::ExportAdaptiveUtxoShards(
+            pivot_state.utxo, pivot_v2_hash, adaptive_shards, err,
+            /*max_shard_leaves=*/1));
+        BOOST_CHECK(!adaptive_shards.empty());
+
+        // Export all non-empty depth-8 shards for the P2P swarm test
+        for (uint16_t s = 0; s < 256; ++s) {
+            if (valid_roots_msg.shards[s].cardinality_tag == 0) {
+                continue;
+            }
+            lotus::v2::UtxoShardMessage shard_msg;
+            BOOST_REQUIRE(lotus::v2::ExportUtxoShard(
+                pivot_state.utxo, pivot_v2_hash, /*prefix_depth=*/8, s,
+                shard_msg, err));
+            lotus::v2::UtxoShardMessage smt_shard_msg;
+            BOOST_REQUIRE(lotus::v2::ExportUtxoShardFromSmt(
+                pivot_state.smt_root, pivot_v2_hash, /*prefix_depth=*/8, s,
+                smt_shard_msg, err));
+            std::vector<uint8_t> b1, b2;
+            BOOST_REQUIRE(lotus::v2::EncodeUtxoShardMessage(shard_msg, b1, err));
+            BOOST_REQUIRE(
+                lotus::v2::EncodeUtxoShardMessage(smt_shard_msg, b2, err));
+            BOOST_CHECK(b1 == b2);
+            valid_shards.push_back(std::move(shard_msg));
+        }
+        BOOST_REQUIRE(!valid_shards.empty());
+    }
+
+    // 7. Start FastSyncSwarm across [peer_bad, peer_honest]:
+    //    - peer_bad is queried first for GETUTXOROOTS; we send a forged UTXOROOTS
+    //      from peer_bad and verify peer_bad is banned/disconnected and the swarm
+    //      fails over to peer_honest!
+    std::atomic<bool> interrupt{false};
+    std::chrono::microseconds cur_time{500'000};
+    {
+        LOCK(peer_bad.cs_vSend);
+        peer_bad.vSendMsg.clear();
+    }
+    {
+        LOCK(peer_honest.cs_vSend);
+        peer_honest.vSendMsg.clear();
+    }
+
+    std::string swarm_err;
+    BOOST_REQUIRE(v2_handler->StartFastSyncSwarm(
+        pivot_hash, {peer_bad.GetId(), peer_honest.GetId()},
+        /*auto_peel=*/false, swarm_err));
+
+    // A silent supplier must fail over through the normal SendMessages tick,
+    // even when no incoming message calls the swarm handler.
+    const auto timeout_start = GetTime<std::chrono::seconds>();
+    SetMockTime(timeout_start + 31s);
+    BOOST_CHECK(peerman->SendMessages(config, &peer_bad));
+    BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().banned_swarm_peers, 1U);
+    BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().active_peers, 1U);
+    BOOST_CHECK(peerman->SendMessages(config, &peer_honest));
+    BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().banned_swarm_peers, 1U);
+    SetMockTime(0s);
+    // Restart the session to retain the independent forged-root regression.
+    BOOST_REQUIRE(v2_handler->StartFastSyncSwarm(
+        pivot_hash, {peer_bad.GetId(), peer_honest.GetId()},
+        /*auto_peel=*/false, swarm_err));
+
+    // Deliver forged UTXOROOTS from peer_bad -> must disconnect peer_bad and
+    // fail over to peer_honest!
+    {
+        lotus::v2::UtxoRootsMessage forged_roots = valid_roots_msg;
+        forged_roots.shards[valid_shards[0].prefix_bits & 0xFFu].subtree_root[0] ^= 0xff;
+        const std::vector<uint8_t> encoded_forged =
+            lotus::v2::EncodeUtxoRootsMessage(forged_roots);
+        DataStream ss{encoded_forged};
+        peerman->ProcessMessage(config, peer_bad, NetMsgType::UTXOROOTS, ss,
+                                cur_time, interrupt);
+        BOOST_CHECK(peer_bad.fDisconnect);
+    }
+
+    // Deliver valid UTXOROOTS from peer_honest -> schedules non-empty shards!
+    cur_time += 100us;
+    {
+        const std::vector<uint8_t> encoded_roots =
+            lotus::v2::EncodeUtxoRootsMessage(valid_roots_msg);
+        DataStream ss{encoded_roots};
+        peerman->ProcessMessage(config, peer_honest, NetMsgType::UTXOROOTS, ss,
+                                cur_time, interrupt);
+    }
+    auto swarm_status = v2_handler->GetFastSyncSwarmStatus();
+    BOOST_CHECK(swarm_status.state == FastSyncSwarmState::FETCHING_SHARDS);
+    BOOST_CHECK_EQUAL(swarm_status.total_non_empty_shards, valid_shards.size());
+
+    // Deliver all non-empty valid UTXOSHARD messages from peer_honest -> activates
+    // the verified pivot!
+    for (const auto &shard_msg : valid_shards) {
+        cur_time += 2'000'000us;
+        std::vector<uint8_t> encoded_shard;
+        std::string enc_err;
+        BOOST_REQUIRE(lotus::v2::EncodeUtxoShardMessage(
+            shard_msg, encoded_shard, enc_err));
+        DataStream ss{encoded_shard};
+        peerman->ProcessMessage(config, peer_honest, NetMsgType::UTXOSHARD, ss,
+                                cur_time, interrupt);
+    }
+
+    swarm_status = v2_handler->GetFastSyncSwarmStatus();
+    BOOST_CHECK(swarm_status.state == FastSyncSwarmState::COMPLETED);
+    BOOST_CHECK_EQUAL(swarm_status.verified_shards, valid_shards.size());
+    {
+        LOCK(cs_main);
+        m_node.chainman->CheckBlockIndex();
+        BOOST_CHECK(m_node.chainman->ActiveChainstate().IsFastSyncActive());
+        BOOST_CHECK_EQUAL(
+            m_node.chainman->ActiveChainstate().GetEarliestVerifiedHeight(),
+            pivot_index->nHeight);
+        // Allow peeling all 102 blocks down to genesis in this test:
+        m_node.chainman->ActiveChainstate().SetFastSyncMaxPeelBlocks(102);
+    }
+    const auto snap_after_pivot = node::GetChainTipSnapshot();
+    BOOST_REQUIRE(snap_after_pivot != nullptr);
+    BOOST_CHECK(snap_after_pivot->fast_sync_active);
+    BOOST_CHECK_EQUAL(snap_after_pivot->earliest_verified_height,
+                      pivot_index->nHeight);
+
+    // 8. Verify ReverseSyncCoordinator peels all blocks from pivot_index->nHeight
+    //    down to Genesis (height 0) without any Merklix state root in the 80-byte
+    //    block header!
+    //    - Add a second peer (peer_bad2) to test Byzantine forged undo coin
+    //      rejection and failover during reverse peeling.
+    CAddress addr_bad2(MakeTestIp(0xa0b0c062), NODE_NONE);
+    CNode peer_bad2(/*id=*/962, /*sock=*/nullptr, addr_bad2,
+                    /*nKeyedNetGroupIn=*/2, /*nLocalHostNonceIn=*/0,
+                    /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                    ConnectionType::OUTBOUND_FULL_RELAY,
+                    /*inbound_onion=*/false);
+    connman->Handshake(peer_bad2, /*successfully_connected=*/true,
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       ServiceFlags(NODE_NETWORK | NODE_UTXO_SHARD),
+                       PROTOCOL_VERSION, /*relay_txs=*/true);
+    v2_handler->RegisterPeerNode(peer_bad2);
+
+    BOOST_REQUIRE(v2_handler->StartReversePeelSwarm(
+        {peer_bad2.GetId(), peer_honest.GetId()}, swarm_err));
+
+    // Pump GETBLOCKUNDO / BLOCKUNDO until earliest_verified_height reaches 0
+    bool injected_forged_undo = false;
+    for (int step = 0; step < 110; ++step) {
+        int cur_earliest = 0;
+        CBlockIndex *cur_pindex = nullptr;
+        {
+            LOCK(cs_main);
+            cur_earliest =
+                m_node.chainman->ActiveChainstate().GetEarliestVerifiedHeight();
+            cur_pindex = m_node.chainman->ActiveChain()[cur_earliest];
+        }
+        if (cur_earliest <= 0) {
+            break;
+        }
+        BOOST_REQUIRE(cur_pindex != nullptr);
+
+        // Build the authentic BlockUndoMessage for cur_pindex using HandleGetBlockUndo
+        // on peer_honest.
+        lotus::v2::GetBlockUndoRequest ureq{};
+        std::memcpy(ureq.block_id.data(),
+                    cur_pindex->GetBlockHash().begin(), 32);
+        {
+            LOCK(peer_honest.cs_vSend);
+            peer_honest.vSendMsg.clear();
+        }
+        {
+            const std::vector<uint8_t> encoded_ureq =
+                lotus::v2::EncodeGetBlockUndoRequest(ureq);
+            DataStream getundo_ss{encoded_ureq};
+            cur_time += 2'000'000us;
+            peerman->ProcessMessage(config, peer_honest,
+                                    NetMsgType::GETBLOCKUNDO, getundo_ss,
+                                    cur_time, interrupt);
+        }
+
+        lotus::v2::BlockUndoMessage valid_undo_msg;
+        bool decoded_undo = false;
+        {
+            V1TransportDeserializer deser(config, peer_honest.GetId());
+            LOCK(peer_honest.cs_vSend);
+            for (const auto &chunk : peer_honest.vSendMsg) {
+                Span<const uint8_t> sp{chunk};
+                while (!sp.empty()) {
+                    const int ret = deser.Read(config, sp);
+                    BOOST_REQUIRE_GE(ret, 0);
+                    if (deser.Complete()) {
+                        bool reject = false;
+                        CNetMessage msg = deser.GetMessage(0us, reject);
+                        BOOST_REQUIRE(!reject);
+                        if (msg.m_type == NetMsgType::BLOCKUNDO) {
+                            const auto u_span = MakeUCharSpan(msg.m_recv);
+                            const std::vector<uint8_t> u_bytes(u_span.begin(),
+                                                               u_span.end());
+                            std::string dec_err;
+                            decoded_undo = lotus::v2::DecodeBlockUndoMessage(
+                                u_bytes, valid_undo_msg, dec_err);
+                        }
+                    }
+                }
+            }
+            peer_honest.vSendMsg.clear();
+        }
+        BOOST_REQUIRE(decoded_undo);
+
+        // On the first block with spent coins, first send a forged BlockUndoMessage
+        // from peer_bad2 and verify it is rejected & peer_bad2 is disconnected!
+        if (!injected_forged_undo &&
+            !valid_undo_msg.prior_spent_coins.empty()) {
+            injected_forged_undo = true;
+            lotus::v2::BlockUndoMessage forged_undo = valid_undo_msg;
+            forged_undo.prior_spent_coins[0].output.value += 1000;
+            std::vector<uint8_t> encoded_forged_undo;
+            std::string enc_err;
+            BOOST_REQUIRE(lotus::v2::EncodeBlockUndoMessage(
+                forged_undo, encoded_forged_undo, enc_err));
+            DataStream bad_ss{encoded_forged_undo};
+            cur_time += 100us;
+            peerman->ProcessMessage(config, peer_bad2, NetMsgType::BLOCKUNDO,
+                                    bad_ss, cur_time, interrupt);
+            BOOST_CHECK(peer_bad2.fDisconnect);
+        }
+
+        // Exercise undo-before-body ordering once. Hide an already stored
+        // historical body (as after pruning), then deliver it through the real
+        // BLOCK message path. The undo must wait for ABC to accept the body.
+        const bool missing_body = (step == 1);
+        CBlock pending_body;
+        if (missing_body) {
+            LOCK(cs_main);
+            BOOST_REQUIRE(m_node.chainman->m_blockman.ReadBlock(pending_body, *cur_pindex));
+            m_node.chainman->m_blockman.m_have_pruned = true;
+            cur_pindex->nStatus = cur_pindex->nStatus.withData(false).withUndo(false);
+        }
+
+        // Now deliver the authentic BlockUndoMessage from peer_honest
+        {
+            std::vector<uint8_t> encoded_ok_undo;
+            std::string enc_err;
+            BOOST_REQUIRE(lotus::v2::EncodeBlockUndoMessage(
+                valid_undo_msg, encoded_ok_undo, enc_err));
+            DataStream ok_ss{encoded_ok_undo};
+            cur_time += 100us;
+            peerman->ProcessMessage(config, peer_honest, NetMsgType::BLOCKUNDO,
+                                    ok_ss, cur_time, interrupt);
+        }
+        if (missing_body) {
+            BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().blocks_peeled, 1U);
+            BOOST_CHECK(v2_handler->IsFastSyncBlockRequested(cur_pindex->GetBlockHash()));
+            // Same header, invalid body: no storage and no reverse progress.
+            CBlock corrupt_body = pending_body;
+            corrupt_body.vtx.clear();
+            DataStream corrupt_stream{};
+            corrupt_stream << corrupt_body;
+            peerman->ProcessMessage(config, peer_honest, NetMsgType::BLOCK,
+                                    corrupt_stream, cur_time, interrupt);
+            BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().blocks_peeled, 1U);
+            { LOCK(cs_main); BOOST_CHECK(!cur_pindex->nStatus.hasData()); }
+            DataStream body_stream{};
+            body_stream << pending_body;
+            peerman->ProcessMessage(config, peer_honest, NetMsgType::BLOCK,
+                                    body_stream, cur_time, interrupt);
+            { LOCK(cs_main); BOOST_CHECK(cur_pindex->nStatus.hasData()); }
+            BOOST_CHECK_EQUAL(v2_handler->GetFastSyncSwarmStatus().blocks_peeled, 2U);
+        }
+    }
+
+    BOOST_CHECK(injected_forged_undo);
+    swarm_status = v2_handler->GetFastSyncSwarmStatus();
+    BOOST_CHECK(swarm_status.state == FastSyncSwarmState::COMPLETED);
+    BOOST_CHECK_EQUAL(swarm_status.blocks_peeled, 102U);
+    {
+        LOCK(cs_main);
+        m_node.chainman->CheckBlockIndex();
+        BOOST_CHECK(!m_node.chainman->ActiveChainstate().IsFastSyncActive());
+        BOOST_CHECK_EQUAL(
+            m_node.chainman->ActiveChainstate().GetEarliestVerifiedHeight(), 0);
+    }
+    const auto snap_after_peel = node::GetChainTipSnapshot();
+    BOOST_REQUIRE(snap_after_peel != nullptr);
+    BOOST_CHECK(!snap_after_peel->fast_sync_active);
+    BOOST_CHECK_EQUAL(snap_after_peel->earliest_verified_height, 0);
+
+    peerman->FinalizeNode(config, peer_legacy);
+    peerman->FinalizeNode(config, peer_bad);
+    peerman->FinalizeNode(config, peer_bad2);
+    peerman->FinalizeNode(config, peer_honest);
+    // Disconnected peers must not remain eligible through the fallback node map.
+    BOOST_CHECK(!v2_handler->StartFastSyncSwarm(
+        pivot_hash, {peer_honest.GetId()}, false, swarm_err));
+    BOOST_CHECK(swarm_err.find("no NODE_UTXO_SHARD") != std::string::npos);
 }
 
 

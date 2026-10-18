@@ -2400,6 +2400,7 @@ void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
         LOCK(m_peer_mutex);
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
+    m_v2_protocol_handler.RegisterPeerNode(node);
     if (!node.IsInboundConn()) {
         PushNodeVersion(config, node, *peer);
     }
@@ -2566,6 +2567,7 @@ scheduleLater:
 
 void PeerManagerImpl::FinalizeNode(const Config &config, const CNode &node) {
     NodeId nodeid = node.GetId();
+    m_v2_protocol_handler.RemovePeer(nodeid);
     {
         LOCK(cs_main);
         {
@@ -2913,7 +2915,9 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_chainparams(chainman.GetParams()), m_connman(connman),
       m_addrman(addrman), m_banman(banman), m_chainman(chainman),
       m_mempool(pool), m_avalanche(avalanche), m_opts{opts},
-      m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this} {}
+      m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this} {
+    m_v2_protocol_handler.SetAvalancheProcessor(m_avalanche);
+}
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler &scheduler) {
     // Stale tip checking and peer eviction are on two different timers, but we
@@ -4931,8 +4935,16 @@ void PeerManagerImpl::ProcessBlock(const Config &config, CNode &node,
                                    bool force_processing,
                                    bool min_pow_checked) {
     bool new_block{false};
-    m_chainman.ProcessNewBlock(block, force_processing, min_pow_checked,
-                               &new_block, m_avalanche);
+    const BlockHash hash = block->GetHash();
+    force_processing |= m_v2_protocol_handler.IsFastSyncBlockRequested(hash);
+    const bool accepted = m_chainman.ProcessNewBlock(
+        block, force_processing, min_pow_checked, &new_block, m_avalanche);
+    // AcceptBlock stores only bodies passing the normal ABC block checks.
+    // PeelFastSyncBlock still performs the actual ConnectBlock/script checks;
+    // receiving a body alone never certifies historical UTXO/script validity.
+    if (accepted) {
+        m_v2_protocol_handler.BlockDataReceived(hash);
+    }
     if (new_block) {
         node.m_last_block_time = GetTime<std::chrono::seconds>();
         // In case this block came from a different peer than we requested
@@ -5080,7 +5092,9 @@ void PeerManagerImpl::ProcessMessage(
         pfrom.m_has_all_wanted_services =
             HasAllDesirableServiceFlags(nServices);
         peer->m_their_services = nServices;
+        m_v2_protocol_handler.SetPeerServices(pfrom.GetId(), nServices);
         if (m_avalanche) m_avalanche->setNodeMempoolBatchServices(pfrom.GetId(), nServices);
+        if (m_avalanche) m_avalanche->setNodeSupportsStateAnchor(pfrom.GetId(), (nServices & NODE_UTXO_SHARD) != 0);
         pfrom.SetAddrLocal(addrMe);
         {
             LOCK(pfrom.m_subver_mutex);
@@ -8851,6 +8865,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
     }
 
     const auto current_time{GetTime<std::chrono::microseconds>()};
+    m_v2_protocol_handler.CheckFastSyncTimeouts(pto->GetId(), current_time);
 
     if (pto->IsAddrFetchConn() &&
         current_time - pto->m_connected > 10 * AVG_ADDRESS_BROADCAST_INTERVAL) {

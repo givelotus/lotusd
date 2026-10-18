@@ -23,6 +23,7 @@
 #include <logging/timer.h>
 #include <net.h>
 #include <net_processing.h>
+#include <net/v2_protocol_handler.h>
 #include <node/blockstorage.h>
 #include <node/coinstats.h>
 #include <node/context.h>
@@ -3382,6 +3383,179 @@ static RPCHelpMan getchainstates() {
         }};
 }
 
+static RPCHelpMan syncutxoshardswarm() {
+    return RPCHelpMan{
+        "syncutxoshardswarm",
+        "\nStart an autonomous multi-peer Fast UTXO Shard Sync swarm session for a pivot block.\n",
+        {
+            {"pivot_blockhash", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "The authenticated pivot block hash"},
+            {"peer_ids",
+             RPCArg::Type::ARR,
+             RPCArg::Optional::OMITTED,
+             "Optional list of peer IDs to include in the swarm (defaults to all connected peers)",
+             {
+                 {"peer_id", RPCArg::Type::NUM, RPCArg::Optional::OMITTED,
+                  "A connected peer ID"},
+             }},
+            {"auto_peel", RPCArg::Type::BOOL, RPCArg::Default{false},
+             "Whether to peel historical blocks after activation, bounded by -reversesynchorizon"},
+        },
+        RPCResult{RPCResult::Type::OBJ,
+                  "",
+                  "",
+                  {
+                      {RPCResult::Type::STR, "swarm_state",
+                       "current swarm state"},
+                      {RPCResult::Type::STR_HEX, "pivot_blockhash",
+                       "the target pivot block hash"},
+                      {RPCResult::Type::NUM, "pivot_height",
+                       "the target pivot height"},
+                      {RPCResult::Type::NUM, "active_peers",
+                       "number of healthy peers in the swarm"},
+                  }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            if (!node.peerman) {
+                throw JSONRPCError(RPC_CLIENT_P2P_DISABLED,
+                                   "Error: Peer-to-peer functionality missing or disabled");
+            }
+            auto *v2_handler = node.peerman->GetV2ProtocolHandler();
+            if (!v2_handler) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                                   "State-sync protocol handler unavailable");
+            }
+
+            const BlockHash pivot_hash(
+                ParseHashV(request.params[0], "pivot_blockhash"));
+            std::vector<NodeId> peer_ids;
+            if (!request.params[1].isNull()) {
+                for (const UniValue &v :
+                     request.params[1].get_array().getValues()) {
+                    peer_ids.push_back(v.getInt<int64_t>());
+                }
+            }
+            const bool auto_peel =
+                request.params[2].isNull() ? false : request.params[2].get_bool();
+
+            std::string err;
+            if (!v2_handler->StartFastSyncSwarm(pivot_hash, peer_ids, auto_peel,
+                                                err)) {
+                throw JSONRPCError(RPC_MISC_ERROR, err);
+            }
+
+            const auto status = v2_handler->GetFastSyncSwarmStatus();
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("swarm_state",
+                       lotus::v2::net::FastSyncSwarmStateToString(status.state));
+            res.pushKV("pivot_blockhash", status.pivot_block_hash.GetHex());
+            res.pushKV("pivot_height", status.pivot_height);
+            res.pushKV("active_peers",
+                       static_cast<uint64_t>(status.active_peers));
+            return res;
+        },
+    };
+}
+
+static RPCHelpMan getfastsyncinfo() {
+    return RPCHelpMan{
+        "getfastsyncinfo",
+        "\nReturn Fast UTXO Shard Sync and Reverse Peeling Swarm status.\n",
+        {},
+        RPCResult{RPCResult::Type::OBJ,
+                  "",
+                  "",
+                  {
+                      {RPCResult::Type::BOOL, "fast_sync_active",
+                       "whether fast-sync reverse peeling is active on the chainstate"},
+                      {RPCResult::Type::NUM, "earliest_verified_height",
+                       "reverse-validation cursor height; input creation provenance remains provisional until genesis"},
+                      {RPCResult::Type::STR, "swarm_state",
+                       "current P2P swarm state"},
+                      {RPCResult::Type::STR_HEX, "pivot_blockhash",
+                       "swarm target pivot block hash"},
+                      {RPCResult::Type::NUM, "pivot_height",
+                       "swarm target pivot height"},
+                      {RPCResult::Type::NUM, "total_non_empty_shards",
+                       "number of non-empty shards to fetch"},
+                      {RPCResult::Type::NUM, "verified_shards",
+                       "number of cryptographically verified shards"},
+                      {RPCResult::Type::NUM, "pending_shards",
+                       "number of shards queued for dispatch"},
+                      {RPCResult::Type::NUM, "in_flight_shards",
+                       "number of shards currently in flight"},
+                      {RPCResult::Type::NUM, "active_peers",
+                       "number of healthy swarm peers"},
+                      {RPCResult::Type::NUM, "banned_swarm_peers",
+                       "number of peers banned from the swarm due to invalid payloads"},
+                      {RPCResult::Type::NUM, "coins_imported",
+                       "number of coins imported at pivot activation"},
+                      {RPCResult::Type::NUM, "corrupted_roots_rejected",
+                       "number of corrupted UTXOROOTS messages rejected"},
+                      {RPCResult::Type::NUM, "corrupted_shards_rejected",
+                       "number of corrupted UTXOSHARD messages rejected"},
+                      {RPCResult::Type::NUM, "corrupted_undo_rejected",
+                       "number of corrupted BLOCKUNDO messages rejected"},
+                      {RPCResult::Type::NUM, "blocks_peeled",
+                       "number of historical blocks peeled via the swarm"},
+                  }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            ChainstateManager &chainman = EnsureChainman(node);
+
+            bool fast_sync_active = false;
+            int earliest_verified_height = 0;
+            {
+                LOCK(cs_main);
+                Chainstate &active_chainstate = chainman.ActiveChainstate();
+                fast_sync_active = active_chainstate.IsFastSyncActive();
+                earliest_verified_height =
+                    active_chainstate.GetEarliestVerifiedHeight();
+            }
+
+            lotus::v2::net::FastSyncSwarmStatus status{};
+            if (node.peerman && node.peerman->GetV2ProtocolHandler()) {
+                status =
+                    node.peerman->GetV2ProtocolHandler()->GetFastSyncSwarmStatus();
+            }
+
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("fast_sync_active", fast_sync_active);
+            res.pushKV("earliest_verified_height", earliest_verified_height);
+            res.pushKV("swarm_state",
+                       lotus::v2::net::FastSyncSwarmStateToString(status.state));
+            res.pushKV("pivot_blockhash", status.pivot_block_hash.GetHex());
+            res.pushKV("pivot_height", status.pivot_height);
+            res.pushKV("total_non_empty_shards",
+                       static_cast<uint64_t>(status.total_non_empty_shards));
+            res.pushKV("verified_shards",
+                       static_cast<uint64_t>(status.verified_shards));
+            res.pushKV("pending_shards",
+                       static_cast<uint64_t>(status.pending_shards));
+            res.pushKV("in_flight_shards",
+                       static_cast<uint64_t>(status.in_flight_shards));
+            res.pushKV("active_peers",
+                       static_cast<uint64_t>(status.active_peers));
+            res.pushKV("banned_swarm_peers",
+                       static_cast<uint64_t>(status.banned_swarm_peers));
+            res.pushKV("coins_imported", status.coins_imported);
+            res.pushKV("corrupted_roots_rejected",
+                       status.corrupted_roots_rejected);
+            res.pushKV("corrupted_shards_rejected",
+                       status.corrupted_shards_rejected);
+            res.pushKV("corrupted_undo_rejected",
+                       status.corrupted_undo_rejected);
+            res.pushKV("blocks_peeled", status.blocks_peeled);
+            return res;
+        },
+    };
+}
+
+
 void RegisterBlockchainRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
@@ -3410,6 +3584,8 @@ void RegisterBlockchainRPCCommands(CRPCTable &t) {
         { "blockchain",         getchainstates,                    },
 
         /* Not shown in help */
+        { "hidden",             getfastsyncinfo,                   },
+        { "hidden",             syncutxoshardswarm,                },
         { "hidden",             invalidateblock,                   },
         { "hidden",             parkblock,                         },
         { "hidden",             reconsiderblock,                   },

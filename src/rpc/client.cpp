@@ -27,6 +27,8 @@ public:
  * @note Parameter indexes start from 0.
  */
 static const CRPCConvertParam vRPCConvertParams[] = {
+    {"syncutxoshardswarm", 1, "peer_ids"},
+    {"syncutxoshardswarm", 2, "auto_peel"},
     {"setmocktime", 0, "timestamp"},
     {"mockscheduler", 0, "delta_time"},
     {"utxoupdatepsbt", 1, "descriptors"},
