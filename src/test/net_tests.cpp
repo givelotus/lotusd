@@ -12,7 +12,12 @@
 #include <clientversion.h>
 #include <compat/compat.h>
 #include <config.h>
+#include <crypto/sha256.h>
+#include <hash.h>
 #include <net_processing.h>
+#include <net_websocket.h>
+#include <net_websocket_bridge.h>
+#include <net_zstd_dict.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <netmessagemaker.h>
@@ -1030,6 +1035,27 @@ BOOST_AUTO_TEST_CASE(get_local_addr_for_peer_port) {
     BOOST_REQUIRE(chosen_local_addr);
     BOOST_CHECK(*chosen_local_addr == peer_us);
 
+    // An inbound WebSocket peer reached our HTTP/WebSocket port, not our P2P
+    // port: only the address it saw may be used, as for outbound peers.
+    CNode peer_ws{
+        /*id=*/0,
+        /*sock=*/nullptr,
+        /*addrIn=*/CAddress{CService{peer_in_in_addr, 8333}, NODE_NETWORK},
+        /*nKeyedNetGroupIn=*/0,
+        /*nLocalHostNonceIn=*/0,
+        /*nLocalExtraEntropyIn=*/0,
+        /*addrBindIn=*/CAddress{},
+        /*addrNameIn=*/std::string{},
+        /*conn_type_in=*/ConnectionType::INBOUND,
+        /*inbound_onion=*/false,
+        CNodeOptions{.websocket_info =
+                         std::make_shared<WebSocketTransportInfo>()}};
+    peer_ws.fSuccessfullyConnected = true;
+    peer_ws.SetAddrLocal(peer_us);
+    chosen_local_addr = GetLocalAddrForPeer(peer_ws);
+    BOOST_REQUIRE(chosen_local_addr);
+    BOOST_CHECK(*chosen_local_addr == expected);
+
     m_node.args->ForceSetArg("-bind", "");
 }
 
@@ -1567,6 +1593,140 @@ BOOST_AUTO_TEST_CASE(inactivity_check) {
     }
 
     connman.ClearNodes();
+}
+
+namespace {
+/** A P2P message header (magic + command + length + checksum) and payload */
+std::vector<uint8_t> FakeP2PMessage(const std::string &command,
+                                    const std::vector<uint8_t> &payload) {
+    const auto &magic{Params().NetMagic()};
+    std::vector<uint8_t> msg(magic.begin(), magic.end());
+    std::string cmd{command};
+    cmd.resize(CMessageHeader::MESSAGE_TYPE_SIZE, '\0');
+    msg.insert(msg.end(), cmd.begin(), cmd.end());
+    const uint32_t len = payload.size();
+    for (int i = 0; i < 4; ++i) {
+        msg.push_back((len >> (8 * i)) & 0xff);
+    }
+    const uint256 hash{Hash(payload)};
+    msg.insert(msg.end(), hash.begin(), hash.begin() + 4);
+    msg.insert(msg.end(), payload.begin(), payload.end());
+    return msg;
+}
+
+/** An inv announcing one random transaction */
+std::vector<uint8_t> FakeInvTx(FastRandomContext &rng) {
+    std::vector<uint8_t> payload{1, 1, 0, 0, 0};
+    const uint256 txid{rng.rand256()};
+    payload.insert(payload.end(), txid.begin(), txid.end());
+    return FakeP2PMessage("inv", payload);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(p2p_zstd_session_roundtrip) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (const bool use_dict : {false, true}) {
+        P2PZstdSession sender{use_dict};
+        P2PZstdSession receiver{use_dict};
+        std::vector<uint8_t> all_in, all_out;
+        // Messages of many sizes, including empty and > the bridge chunk.
+        for (size_t size : {0, 1, 24, 61, 1000, 70000, 300000}) {
+            std::vector<uint8_t> in = rng.randbytes<uint8_t>(size);
+            if (size > 100) {
+                // Make part of it compressible.
+                std::fill(in.begin(), in.begin() + size / 2, 0x42);
+            }
+            std::vector<uint8_t> frame;
+            sender.CompressFrame(in, frame);
+            std::vector<uint8_t> out;
+            receiver.DecompressFrame(frame, out);
+            // Each frame decodes completely on its own (ZSTD_e_flush)
+            BOOST_CHECK(out == in);
+            all_in.insert(all_in.end(), in.begin(), in.end());
+            all_out.insert(all_out.end(), out.begin(), out.end());
+        }
+        BOOST_CHECK(all_out == all_in);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_zstd_session_warm_window_and_dict) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    const auto inv{FakeInvTx(rng)};
+    const auto ping{FakeP2PMessage("ping", rng.randbytes<uint8_t>(8))};
+
+    // The prebaked dictionary helps the very first small message.
+    std::vector<uint8_t> plain_frame, dict_frame;
+    P2PZstdSession plain{false}, dict{true};
+    plain.CompressFrame(ping, plain_frame);
+    dict.CompressFrame(ping, dict_frame);
+    BOOST_CHECK_LT(dict_frame.size(), plain_frame.size());
+
+    // A message repeated on the same stream compresses to a back-reference.
+    std::vector<uint8_t> first, second;
+    P2PZstdSession session{false};
+    session.CompressFrame(inv, first);
+    session.CompressFrame(inv, second);
+    BOOST_CHECK_LT(second.size(), first.size() / 3);
+
+    // Both peers must use the dictionary: a plain decoder can't decode it.
+    P2PZstdSession wrong{false};
+    std::vector<uint8_t> out;
+    std::vector<uint8_t> dict_inv;
+    P2PZstdSession dict2{true};
+    dict2.CompressFrame(inv, dict_inv);
+    bool failed{false};
+    try {
+        wrong.DecompressFrame(dict_inv, out);
+    } catch (const std::runtime_error &) {
+        failed = true;
+    }
+    BOOST_CHECK(failed || out != inv);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_zstd_session_rejects_garbage) {
+    P2PZstdSession session{true};
+    std::vector<uint8_t> out;
+    const std::vector<uint8_t> garbage{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01};
+    BOOST_CHECK_THROW(session.DecompressFrame(garbage, out),
+                      std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_zstd_dict_is_stable) {
+    // Changing the v1 dictionary breaks interoperability; see
+    // contrib/devtools/gen-p2p-zstd-dict.py.
+    BOOST_CHECK_EQUAL(sizeof(P2P_ZSTD_DICT_V1), 9586U);
+    CSHA256 hasher;
+    hasher.Write(P2P_ZSTD_DICT_V1, sizeof(P2P_ZSTD_DICT_V1));
+    uint8_t digest[CSHA256::OUTPUT_SIZE];
+    hasher.Finalize(digest);
+    BOOST_CHECK_EQUAL(HexStr(digest), P2P_ZSTD_DICT_V1_SHA256);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_websocket_negotiation) {
+    using C = P2PWebSocketCompression;
+    auto check = [](std::string_view offer, bool deflate,
+                    const std::string &token, C mode) {
+        const auto [selected, compression] =
+            p2pws::NegotiateP2PCompression(offer, deflate);
+        BOOST_CHECK_EQUAL(selected, token);
+        BOOST_CHECK(compression == mode);
+    };
+    check("p2p-zstd-v1, p2p-zstd", false, "p2p-zstd-v1", C::ZSTD_DICT);
+    check("p2p-zstd,p2p-zstd-v1", false, "p2p-zstd-v1", C::ZSTD_DICT);
+    check(" p2p-zstd ", true, "p2p-zstd", C::ZSTD);
+    check("chat, superchat", true, "", C::PERMESSAGE_DEFLATE);
+    check("", false, "", C::NONE);
+    check("p2p-zstd-v10", false, "", C::NONE);
+
+    BOOST_CHECK(p2pws::CompressionFromSelectedProtocol("p2p-zstd-v1", false) ==
+                C::ZSTD_DICT);
+    BOOST_CHECK(p2pws::CompressionFromSelectedProtocol("", true) ==
+                C::PERMESSAGE_DEFLATE);
+    BOOST_CHECK_EQUAL(P2PWebSocketCompressionName(C::ZSTD_DICT), "p2p-zstd-v1");
+
+    BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(125, false), 2U);
+    BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(126, false), 4U);
+    BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(65536, true), 14U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
