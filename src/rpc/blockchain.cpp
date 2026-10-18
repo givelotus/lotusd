@@ -1520,6 +1520,12 @@ RPCHelpMan getblockchaininfo() {
                 {RPCResult::Type::NUM, "prune_target_size",
                  "the target size used by pruning (only present if automatic "
                  "pruning is enabled)"},
+                {RPCResult::Type::BOOL, "fast_sync_active",
+                 "whether the active chainstate was installed from a fast-sync "
+                 "UTXO snapshot whose history is not yet fully verified"},
+                {RPCResult::Type::NUM, "earliest_verified_height",
+                 "lowest height from which the active chain's blocks have been "
+                 "verified (0 unless fast sync is active)"},
                 {RPCResult::Type::STR, "warnings",
                  "any network and blockchain warnings"},
             }},
@@ -1557,6 +1563,9 @@ RPCHelpMan getblockchaininfo() {
                 }
             }
 
+            obj.pushKV("fast_sync_active", snap.fast_sync_active);
+            obj.pushKV("earliest_verified_height",
+                       snap.earliest_verified_height);
             obj.pushKV("warnings", GetWarnings(false).original);
             return obj;
         },
