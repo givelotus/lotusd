@@ -1,4 +1,5 @@
 #include "ordinary_validation.h"
+#include "lock.h"
 #include "vendor/blake3/blake3.h"
 
 #include <algorithm>
@@ -208,10 +209,8 @@ Hash OrdinaryValidationProfileDigest(const OrdinaryCandidateProfile &op) {
 bool CheckOrdinaryLocks(const Transaction &tx, const std::vector<Coin> &spent,
                         const OrdinaryCandidateProfile &profile,
                         std::string &error) {
-    const uint8_t kind = uint8_t(tx.lock);
-    const uint64_t value = tx.lock >> 8;
-    if ((kind == 1 && profile.candidate_height < value) ||
-        (kind == 2 && profile.parent_mtp < value)) {
+    if (!AbsoluteLockSatisfied(tx.lock, profile.candidate_height,
+                               profile.parent_mtp)) {
         error = "absolute lock";
         return false;
     }
