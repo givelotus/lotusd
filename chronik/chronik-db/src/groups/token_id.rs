@@ -130,6 +130,40 @@ impl Group for TokenIdGroup {
 }
 
 impl TokenIdGroupAux {
+    fn v2_asset_ids_for_tx(tx: &Tx) -> Option<(MaybeTokenIds, MaybeTokenIds)> {
+        let mut any_v2_asset = false;
+        let input_ids = tx
+            .inputs
+            .iter()
+            .map(|input| {
+                let coin = input.coin.as_ref()?;
+                let v2_out =
+                    crate::groups::decode_v2_output_script(&coin.output.script)?;
+                if v2_out.has_token() {
+                    any_v2_asset = true;
+                    Some(TokenId::from_be_bytes(v2_out.token_id.0))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let output_ids = tx
+            .outputs
+            .iter()
+            .map(|output| {
+                let v2_out =
+                    crate::groups::decode_v2_output_script(&output.script)?;
+                if v2_out.has_token() && !v2_out.is_burn() {
+                    any_v2_asset = true;
+                    Some(TokenId::from_be_bytes(v2_out.token_id.0))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        any_v2_asset.then_some((input_ids, output_ids))
+    }
+
     /// Build aux data from a processed token batch
     pub fn from_batch(
         txs: &[IndexTx<'_>],
@@ -138,6 +172,9 @@ impl TokenIdGroupAux {
         let mut aux = HashMap::with_capacity(batch.valid_txs.len());
         for tx in txs {
             let Some(spent_tokens) = batch.spent_tokens.get(&tx.tx_num) else {
+                if let Some(v2_ids) = Self::v2_asset_ids_for_tx(tx.tx) {
+                    aux.insert(tx.tx.txid(), v2_ids);
+                }
                 continue;
             };
             let token_tx = batch.valid_txs.get(&tx.tx_num);
@@ -189,6 +226,9 @@ impl TokenIdGroupAux {
         let mut aux = HashMap::with_capacity(db_token_txs.len());
         for tx in txs {
             let Some(db_token_tx) = db_token_txs.get(&tx.tx_num) else {
+                if let Some(v2_ids) = Self::v2_asset_ids_for_tx(tx.tx) {
+                    aux.insert(tx.tx.txid(), v2_ids);
+                }
                 continue;
             };
             let db_token_id = |db_token: &DbToken| -> Option<TokenId> {
@@ -214,7 +254,10 @@ impl TokenIdGroupAux {
     pub fn from_mempool(tx: &Tx, mempool: &MempoolTokens) -> Self {
         let mut aux = HashMap::new();
         let Some(token_tx) = mempool.token_tx(tx.txid_ref()) else {
-            return TokenIdGroupAux::default();
+            if let Some(v2_ids) = Self::v2_asset_ids_for_tx(tx) {
+                aux.insert(tx.txid(), v2_ids);
+            }
+            return TokenIdGroupAux { txs: aux };
         };
         let output_token_ids = token_tx
             .outputs
