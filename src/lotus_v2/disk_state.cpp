@@ -242,6 +242,121 @@ struct Path {
         return depth == o.depth && prefix == o.prefix;
     }
 };
+bool DecomposeNodeKey(BytesView full_key, Bytes &anchor_subkey_out, unsigned &slot_out) {
+    if (full_key.size() != 35 || full_key[0] != 'N') return false;
+    const unsigned depth = static_cast<unsigned>(uint8_t(full_key[33])) |
+                           (static_cast<unsigned>(uint8_t(full_key[34])) << 8);
+    if (depth > 256) return false;
+    for (unsigned d = depth; d < 256; ++d) {
+        if ((uint8_t(full_key[1 + d / 8]) >> (7u - (d % 8u))) & 1u) return false;
+    }
+    const unsigned anchor_depth = depth & ~3u;
+    const unsigned rel_depth = depth & 3u;
+    unsigned rel_bits = 0;
+    for (unsigned k = 0; k < rel_depth; ++k) {
+        const unsigned d = anchor_depth + k;
+        const unsigned bit = (uint8_t(full_key[1 + d / 8]) >> (7u - (d % 8u))) & 1u;
+        rel_bits |= (bit << k);
+    }
+    slot_out = ((1u << rel_depth) - 1u) + rel_bits;
+    anchor_subkey_out.assign(full_key.data() + 1, 34);
+    for (unsigned k = 0; k < rel_depth; ++k) {
+        const unsigned d = anchor_depth + k;
+        anchor_subkey_out[d / 8] = static_cast<char>(
+            uint8_t(anchor_subkey_out[d / 8]) & ~uint8_t(1u << (7u - (d % 8u))));
+    }
+    anchor_subkey_out[32] = static_cast<char>(anchor_depth & 0xffu);
+    anchor_subkey_out[33] = static_cast<char>((anchor_depth >> 8) & 0xffu);
+    return true;
+}
+std::optional<Bytes> UnpackLogicalNodeKey(BytesView anchor_subkey, unsigned slot) {
+    if (anchor_subkey.size() != 34 || slot >= 15) return std::nullopt;
+    const unsigned anchor_depth = static_cast<unsigned>(uint8_t(anchor_subkey[32])) |
+                                  (static_cast<unsigned>(uint8_t(anchor_subkey[33])) << 8);
+    if (anchor_depth > 256 || (anchor_depth & 3u) != 0) return std::nullopt;
+    unsigned rel_depth = 0;
+    unsigned rel_bits = 0;
+    if (slot >= 7) {
+        rel_depth = 3;
+        rel_bits = slot - 7;
+    } else if (slot >= 3) {
+        rel_depth = 2;
+        rel_bits = slot - 3;
+    } else if (slot >= 1) {
+        rel_depth = 1;
+        rel_bits = slot - 1;
+    }
+    const unsigned depth = anchor_depth + rel_depth;
+    if (depth > 256) return std::nullopt;
+    for (unsigned d = anchor_depth; d < 256; ++d) {
+        if ((uint8_t(anchor_subkey[d / 8]) >> (7u - (d % 8u))) & 1u) return std::nullopt;
+    }
+    Bytes out(35, '\0');
+    out[0] = 'N';
+    std::memcpy(out.data() + 1, anchor_subkey.data(), 32);
+    for (unsigned k = 0; k < rel_depth; ++k) {
+        if ((rel_bits >> k) & 1u) {
+            const unsigned d = anchor_depth + k;
+            out[1 + d / 8] = static_cast<char>(
+                uint8_t(out[1 + d / 8]) | uint8_t(1u << (7u - (d % 8u))));
+        }
+    }
+    out[33] = static_cast<char>(depth & 0xffu);
+    out[34] = static_cast<char>((depth >> 8) & 0xffu);
+    return out;
+}
+bool DecodeJmtPack(BytesView raw, std::array<BytesView, 15> &views_out, uint16_t &mask_out) {
+    views_out.fill(BytesView{});
+    mask_out = 0;
+    if (raw.empty()) return false;
+    if (raw[0] != 'J') {
+        views_out[0] = raw;
+        mask_out = 1u;
+        return true;
+    }
+    if (raw.size() < 3) return false;
+    const uint16_t mask = static_cast<uint16_t>(uint8_t(raw[1])) |
+                          (static_cast<uint16_t>(uint8_t(raw[2])) << 8);
+    if ((mask & 0x8000u) != 0 || mask == 0) return false;
+    size_t at = 3;
+    for (unsigned slot = 0; slot < 15; ++slot) {
+        if ((mask & (1u << slot)) == 0) continue;
+        if (raw.size() - at < 4) return false;
+        const uint32_t len = static_cast<uint32_t>(uint8_t(raw[at])) |
+                             (static_cast<uint32_t>(uint8_t(raw[at + 1])) << 8) |
+                             (static_cast<uint32_t>(uint8_t(raw[at + 2])) << 16) |
+                             (static_cast<uint32_t>(uint8_t(raw[at + 3])) << 24);
+        at += 4;
+        if (raw.size() - at < len) return false;
+        views_out[slot] = raw.substr(at, len);
+        at += len;
+    }
+    if (at != raw.size()) return false;
+    mask_out = mask;
+    return true;
+}
+std::optional<Bytes> EncodeJmtPack(const std::array<std::optional<Bytes>, 15> &slots) {
+    uint16_t mask = 0;
+    size_t total_bytes = 3;
+    for (unsigned s = 0; s < 15; ++s) {
+        if (slots[s].has_value()) {
+            mask |= static_cast<uint16_t>(1u << s);
+            total_bytes += 4 + slots[s]->size();
+        }
+    }
+    if (mask == 0) return std::nullopt;
+    Bytes out;
+    out.reserve(total_bytes);
+    out.push_back('J');
+    Put(out, mask, 2);
+    for (unsigned s = 0; s < 15; ++s) {
+        if (slots[s].has_value()) {
+            Put(out, slots[s]->size(), 4);
+            out.append(slots[s]->data(), slots[s]->size());
+        }
+    }
+    return out;
+}
 Bytes CoinKey(const Outpoint &outpoint) {
     char buf[37];
     buf[0] = 'C';
@@ -751,6 +866,11 @@ struct DiskStateStore::Impl {
     mutable bool blocks_dir_ready{false};
     mutable std::set<int> dirty_flat_fds;
     mutable bool flat_directory_dirty{false};
+    mutable Bytes cached_jmt_anchor;
+    mutable Bytes cached_jmt_raw;
+    mutable std::array<BytesView, 15> cached_jmt_views{};
+    mutable uint16_t cached_jmt_mask{0};
+    mutable bool cached_jmt_valid{false};
     Head head;
     bool active{};
     bool poisoned{};
@@ -769,6 +889,7 @@ struct DiskStateStore::Impl {
         Close();
     }
     void Close() {
+        cached_jmt_valid = false;
         if (cached_read_txn) {
             mdbx_txn_abort(cached_read_txn);
             cached_read_txn = nullptr;
@@ -839,6 +960,7 @@ struct DiskStateStore::Impl {
     }
 
     void ResetReadTxn() const {
+        cached_jmt_valid = false;
         if (cached_read_txn && read_txn_active) {
             mdbx_txn_reset(cached_read_txn);
             read_txn_active = false;
@@ -961,6 +1083,33 @@ struct DiskStateStore::Impl {
 
     ValueView RawGetView(BytesView key) const {
         MDBX_txn *rtxn = EnsureReadTxn();
+        if (key.size() == 35 && key[0] == 'N') {
+            Bytes anchor_subkey;
+            unsigned slot = 0;
+            if (DecomposeNodeKey(key, anchor_subkey, slot)) {
+                if (!cached_jmt_valid || cached_jmt_anchor != anchor_subkey) {
+                    MDBX_val k{const_cast<char *>(anchor_subkey.data()), anchor_subkey.size()};
+                    MDBX_val v{};
+                    const int rc = mdbx_get(rtxn, dbi_smt_nodes, &k, &v);
+                    if (rc == MDBX_NOTFOUND) {
+                        cached_jmt_anchor = std::move(anchor_subkey);
+                        cached_jmt_raw.clear();
+                        cached_jmt_views.fill(BytesView{});
+                        cached_jmt_mask = 0;
+                        cached_jmt_valid = true;
+                        return std::nullopt;
+                    }
+                    CheckMdbx(rc, "mdbx_get(smt_nodes)");
+                    cached_jmt_raw.assign(static_cast<const char *>(v.iov_base), v.iov_len);
+                    Require(DecodeJmtPack(cached_jmt_raw, cached_jmt_views, cached_jmt_mask),
+                            "corrupt JMT subtree pack");
+                    cached_jmt_anchor = std::move(anchor_subkey);
+                    cached_jmt_valid = true;
+                }
+                if ((cached_jmt_mask & (1u << slot)) == 0) return std::nullopt;
+                return cached_jmt_views[slot];
+            }
+        }
         MDBX_dbi dbi{};
         BytesView subkey;
         RouteKey(key, dbi, subkey);
@@ -1395,7 +1544,23 @@ struct DiskStateStore::Impl {
                 }
             }
 
+            struct JmtSubtreeUpdate {
+                std::array<bool, 15> touched{};
+                std::array<Value, 15> values{};
+            };
+            std::map<Bytes, JmtSubtreeUpdate> jmt_updates;
+
             for (const auto &[key, value] : batch.ops) {
+                if (key.size() == 35 && key[0] == 'N') {
+                    Bytes anchor_subkey;
+                    unsigned slot = 0;
+                    if (DecomposeNodeKey(key, anchor_subkey, slot)) {
+                        auto &upd = jmt_updates[anchor_subkey];
+                        upd.touched[slot] = true;
+                        upd.values[slot] = value;
+                        continue;
+                    }
+                }
                 if (key.size() == 33 && key[0] == 'U') {
                     const BytesView id_sub = BytesView(key).substr(1);
                     MDBX_val uk{const_cast<char *>(id_sub.data()), id_sub.size()};
@@ -1441,6 +1606,35 @@ struct DiskStateStore::Impl {
                 } else {
                     const int drc = mdbx_del(wtxn, dbi, &k, nullptr);
                     if (drc != MDBX_SUCCESS && drc != MDBX_NOTFOUND) CheckMdbx(drc, "mdbx_del");
+                }
+            }
+            for (const auto &[anchor_subkey, upd] : jmt_updates) {
+                std::array<BytesView, 15> existing_views{};
+                uint16_t existing_mask = 0;
+                MDBX_val ak{const_cast<char *>(anchor_subkey.data()), anchor_subkey.size()};
+                MDBX_val av{};
+                const int grc = mdbx_get(wtxn, dbi_smt_nodes, &ak, &av);
+                if (grc == MDBX_SUCCESS) {
+                    Require(DecodeJmtPack(BytesView(static_cast<const char *>(av.iov_base), av.iov_len),
+                                          existing_views, existing_mask),
+                            "corrupt JMT subtree pack");
+                } else if (grc != MDBX_NOTFOUND) {
+                    CheckMdbx(grc, "mdbx_get(smt_nodes)");
+                }
+                std::array<std::optional<Bytes>, 15> slots{};
+                for (unsigned s = 0; s < 15; ++s) {
+                    if (upd.touched[s]) {
+                        slots[s] = upd.values[s];
+                    } else if (existing_mask & (1u << s)) {
+                        slots[s] = Bytes(existing_views[s]);
+                    }
+                }
+                if (const auto packed = EncodeJmtPack(slots)) {
+                    MDBX_val pv{const_cast<char *>(packed->data()), packed->size()};
+                    CheckMdbx(mdbx_put(wtxn, dbi_smt_nodes, &ak, &pv, MDBX_UPSERT), "mdbx_put(smt_nodes)");
+                } else {
+                    const int drc = mdbx_del(wtxn, dbi_smt_nodes, &ak, nullptr);
+                    if (drc != MDBX_SUCCESS && drc != MDBX_NOTFOUND) CheckMdbx(drc, "mdbx_del(smt_nodes)");
                 }
             }
             // Never publish a durable location/cursor before its block and
@@ -3515,6 +3709,22 @@ bool RawDiskStateSnapshot(const std::string &directory,
                     full_key.append(sk.data(), sk.size());
                     const DiskUndoLocation loc = ParseLocation(sv);
                     out[std::move(full_key)] = impl.ReadFlatSegment(false, loc);
+                } else if (prefix == 'N') {
+                    std::array<BytesView, 15> views{};
+                    uint16_t mask = 0;
+                    if (sk.size() == 34 && !sv.empty() && sv[0] == 'J' &&
+                        DecodeJmtPack(sv, views, mask)) {
+                        for (unsigned slot = 0; slot < 15; ++slot) {
+                            if ((mask & (1u << slot)) == 0) continue;
+                            if (const auto full_key = UnpackLogicalNodeKey(sk, slot)) {
+                                out[*full_key] = Bytes(views[slot]);
+                            }
+                        }
+                    } else {
+                        Bytes full_key(1, 'N');
+                        full_key.append(sk.data(), sk.size());
+                        out[std::move(full_key)] = Bytes(sv);
+                    }
                 } else {
                     Bytes full_key(1, prefix);
                     full_key.append(sk.data(), sk.size());
