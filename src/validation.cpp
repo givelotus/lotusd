@@ -2428,7 +2428,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // require the UTXO set.
         prevheights.resize(tx.vin.size());
         for (size_t j = 0; j < tx.vin.size(); j++) {
-            prevheights[j] = view.AccessCoin(tx.vin[j].prevout).GetHeight();
+            prevheights[j] =
+                (tx.vin[j].nSequence & CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)
+                    ? 0
+                    : view.AccessCoin(tx.vin[j].prevout).GetHeight();
         }
 
         if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
