@@ -76,6 +76,25 @@ static CBlock CreateGenesisBlock(uint64_t nTime, uint64_t nNonce,
                               nBits, nVersion, genesisReward);
 }
 
+static std::vector<std::pair<CScript, uint32_t>>
+CreateDefaultDeveloperTreasuryOutputs() {
+    // Deterministic standard P2PKH node-developer treasury payout slate
+    // (7000 bps / 70% core protocol development, 3000 bps / 30% ecosystem &
+    // infrastructure maintenance).
+    const CScript primaryDevScript =
+        CScript() << OP_DUP << OP_HASH160
+                  << ParseHex("7a4f1b2c3d4e5f60718293a4b5c6d7e8f9012345")
+                  << OP_EQUALVERIFY << OP_CHECKSIG;
+    const CScript secondaryDevScript =
+        CScript() << OP_DUP << OP_HASH160
+                  << ParseHex("c3d4e5f60718293a4b5c6d7e8f90123456789abc")
+                  << OP_EQUALVERIFY << OP_CHECKSIG;
+    return {
+        {primaryDevScript, 7000},
+        {secondaryDevScript, 3000},
+    };
+}
+
 /**
  * Main network
  */
@@ -106,6 +125,11 @@ public:
 
         // The staking rewards are enabled by default on mainnet.
         consensus.enableStakingRewards = true;
+
+        // Built-in default node-developer treasury payout slate on mainnet.
+        consensus.enableDefaultTreasury = true;
+        consensus.defaultTreasuryOutputs =
+            CreateDefaultDeveloperTreasuryOutputs();
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
@@ -221,6 +245,11 @@ public:
         // The staking rewards are disabled by default on testnet.
         consensus.enableStakingRewards = false;
 
+        // Built-in default node-developer treasury payout slate on testnet.
+        consensus.enableDefaultTreasury = false;
+        consensus.defaultTreasuryOutputs =
+            CreateDefaultDeveloperTreasuryOutputs();
+
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork =
             ChainParamsConstants::TESTNET_MINIMUM_CHAIN_WORK;
@@ -319,6 +348,13 @@ public:
 
         // The staking rewards are disabled by default on regtest.
         consensus.enableStakingRewards = false;
+
+        // Built-in default node-developer treasury payout slate on regtest
+        // (auto-synthesis disabled by default for regtest backward compatibility
+        // unless opted in via -avalanchedefaulttreasury=1 or -avalanchetreasuryaddress).
+        consensus.enableDefaultTreasury = false;
+        consensus.defaultTreasuryOutputs =
+            CreateDefaultDeveloperTreasuryOutputs();
 
         // The best chain should have at least this much work.
         consensus.nMinimumChainWork = uint256S("0x00");
