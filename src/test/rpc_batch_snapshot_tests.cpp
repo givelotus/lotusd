@@ -210,6 +210,49 @@ BOOST_AUTO_TEST_CASE(parallel_batch_decode_reports_earliest_error_without_admiss
 }
 
 
+BOOST_AUTO_TEST_CASE(batch_decode_preserves_order_after_reused_worker_failures) {
+    GlobalConfig config;
+    std::vector<std::string> hexes, ids;
+    for (size_t i = 0; i < 40; ++i) {
+        CMutableTransaction tx;
+        tx.nVersion = 2;
+        tx.vin.emplace_back(COutPoint(TxId(uint256::ONE), uint32_t(i)));
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        const auto immutable = MakeTransactionRef(std::move(tx));
+        hexes.push_back(EncodeHexTx(*immutable));
+        ids.push_back(immutable->GetId().GetHex());
+    }
+    for (const auto *method : {"testrawtxbatch", "submitrawtxbatch"}) {
+        for (unsigned pass = 0; pass < 4; ++pass) {
+            JSONRPCRequest req;
+            req.context = &m_node;
+            req.strMethod = method;
+            req.params = UniValue(UniValue::VARR);
+            UniValue batch(UniValue::VARR);
+            for (size_t i = 0; i < hexes.size(); ++i) {
+                batch.push_back(pass % 2 && i == 3 ? "bad-first" :
+                                pass % 2 && i == 35 ? "bad-later" : hexes[i]);
+            }
+            req.params.push_back(std::move(batch));
+            if (pass % 2) {
+                BOOST_CHECK_EXCEPTION(tableRPC.execute(config, req), UniValue,
+                    [](const UniValue &error) {
+                        return error.find_value("message").get_str() ==
+                               "TX decode failed: bad-first";
+                    });
+            } else {
+                const auto result = tableRPC.execute(config, req);
+                const auto &rows = result.find_value("results").get_array();
+                BOOST_REQUIRE_EQUAL(rows.size(), ids.size());
+                for (size_t i = 0; i < ids.size(); ++i) {
+                    BOOST_CHECK_EQUAL(rows[i].find_value("txid").get_str(), ids[i]);
+                }
+            }
+            BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(batch_resolved_inputs_consensus_differential) {
     FastRandomContext rng(true);
     auto options = m_node.mempool->m_opts;

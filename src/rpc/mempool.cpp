@@ -30,12 +30,12 @@
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/moneystr.h>
+#include <util/parallel_range.h>
 #include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
 
 #include <atomic>
-#include <thread>
 
 using kernel::DumpMempool;
 
@@ -1225,75 +1225,46 @@ static RPCHelpMan submitpackage() {
 
 static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
                                      std::vector<CTransactionRef> &txns,
-                                     UniValue *txids_arr) {
+                                     std::vector<std::string> &txid_hexes,
+                                     UniValue *txids_arr,
+                                     std::vector<PrecomputedBatchTxData>
+                                         *precomputed_out = nullptr) {
     const auto &raw_vals = raw_transactions.getValues();
     const size_t n = raw_vals.size();
+    // Validate types before parallel work so RPC type errors retain array order.
     for (const auto &rawtx : raw_vals) {
         (void)rawtx.get_str();
     }
     txns.resize(n);
-    if (n < 32) {
-        for (size_t i = 0; i < n; ++i) {
+    txid_hexes.resize(n);
+    if (precomputed_out != nullptr) precomputed_out->resize(n);
+
+    std::atomic<size_t> first_fail{n};
+    auto decode = [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            if (i >= first_fail.load(std::memory_order_relaxed)) break;
             CMutableTransaction mtx;
             if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
-                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
-                                   "TX decode failed: " +
-                                       raw_vals[i].get_str());
-            }
-            txns[i] = MakeTransactionRef(std::move(mtx));
-            if (txids_arr != nullptr) {
-                txids_arr->push_back(txns[i]->GetId().GetHex());
-            }
-        }
-        return;
-    }
-
-    const size_t hw = std::max<size_t>(
-        1, std::min<size_t>(8, std::thread::hardware_concurrency()));
-    const size_t num_threads = std::min(hw, (n + 15) / 16);
-    std::atomic<size_t> next_idx{0};
-    std::atomic<size_t> first_fail{n};
-
-    std::vector<std::string> hex_ids(txids_arr != nullptr ? n : 0);
-
-    auto worker = [&]() {
-        while (true) {
-            const size_t base =
-                next_idx.fetch_add(8, std::memory_order_relaxed);
-            if (base >= n ||
-                base >= first_fail.load(std::memory_order_relaxed)) {
+                size_t cur = first_fail.load(std::memory_order_relaxed);
+                while (i < cur && !first_fail.compare_exchange_weak(
+                                      cur, i, std::memory_order_relaxed)) {}
                 break;
             }
-            const size_t end = std::min(n, base + 8);
-            for (size_t i = base; i < end; ++i) {
-                if (i >= first_fail.load(std::memory_order_relaxed)) {
-                    break;
-                }
-                CMutableTransaction mtx;
-                if (!DecodeHexTx(mtx, raw_vals[i].get_str())) {
-                    size_t cur = first_fail.load(std::memory_order_relaxed);
-                    while (i < cur &&
-                           !first_fail.compare_exchange_weak(
-                               cur, i, std::memory_order_relaxed)) {
-                    }
-                    break;
-                }
-                txns[i] = MakeTransactionRef(std::move(mtx));
-                if (txids_arr != nullptr) {
-                    hex_ids[i] = txns[i]->GetId().GetHex();
-                }
+            txns[i] = MakeTransactionRef(std::move(mtx));
+            if (precomputed_out != nullptr) {
+                PrecomputeSingleTxData(*txns[i], (*precomputed_out)[i]);
             }
+            txid_hexes[i] = txns[i]->GetId().GetHex();
         }
     };
-
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads > 0 ? num_threads - 1 : 0);
-    for (size_t t = 1; t < num_threads; ++t) {
-        threads.emplace_back(worker);
-    }
-    worker();
-    for (auto &th : threads) {
-        th.join();
+    if (n <= 8) {
+        decode(0, n);
+    } else {
+        // Separate from RPC dispatch and admission workers: waiting for this
+        // job never depends on an RPC/admission thread becoming available.
+        // Contended submissions run inline rather than queueing more work.
+        static util::ParallelRangeExecutor decoder_workers;
+        decoder_workers.Run(n, /*grain=*/8, decode);
     }
 
     const size_t bad = first_fail.load(std::memory_order_relaxed);
@@ -1303,9 +1274,7 @@ static void DecodeRawTxBatchParallel(const UniValue &raw_transactions,
     }
     if (txids_arr != nullptr) {
         txids_arr->reserve(n);
-        for (size_t i = 0; i < n; ++i) {
-            txids_arr->push_back(std::move(hex_ids[i]));
-        }
+        for (const auto &txid_hex : txid_hexes) txids_arr->push_back(txid_hex);
     }
 }
 
@@ -1417,7 +1386,10 @@ static RPCHelpMan testrawtxbatch() {
                     : CFeeRate(AmountFromValue(request.params[1]));
 
             std::vector<CTransactionRef> txns;
-            DecodeRawTxBatchParallel(raw_transactions, txns, nullptr);
+            std::vector<std::string> txid_hexes;
+            std::vector<PrecomputedBatchTxData> precomputed_batch;
+            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes, nullptr,
+                                     &precomputed_batch);
 
             NodeContext &node = EnsureAnyNodeContext(request.context);
             CTxMemPool &mempool = EnsureMemPool(node);
@@ -1428,7 +1400,8 @@ static RPCHelpMan testrawtxbatch() {
                 LOCK(::cs_main);
                 return ProcessRawTxBatch(chainstate, mempool, txns,
                                          /*test_accept=*/true,
-                                         max_raw_tx_fee_rate);
+                                         max_raw_tx_fee_rate,
+                                         &precomputed_batch);
             }();
 
             UniValue results_arr(UniValue::VARR);
@@ -1441,9 +1414,11 @@ static RPCHelpMan testrawtxbatch() {
             const auto &fee_ctrl =
                 lotus::v2::GetGlobalFeeHysteresisController();
 
-            for (const auto &tx : txns) {
+            for (size_t idx = 0; idx < txns.size(); ++idx) {
+                const auto &tx = txns[idx];
+                const auto &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
-                result_inner.pushKV("txid", tx->GetId().GetHex());
+                result_inner.pushKV("txid", txid_hex);
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
@@ -1485,9 +1460,13 @@ static RPCHelpMan testrawtxbatch() {
                         "effective-feerate",
                         tx_result.m_effective_feerate.value().GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    for (const auto &txid :
-                         tx_result.m_txids_fee_calculations.value()) {
-                        effective_includes_res.push_back(txid.ToString());
+                    const auto &includes = tx_result.m_txids_fee_calculations.value();
+                    if (includes.size() == 1 && includes[0] == tx->GetId()) {
+                        effective_includes_res.push_back(txid_hex);
+                    } else {
+                        for (const auto &txid : includes) {
+                            effective_includes_res.push_back(txid.ToString());
+                        }
                     }
                     fees.pushKV("effective-includes",
                                 std::move(effective_includes_res));
@@ -1658,8 +1637,11 @@ static RPCHelpMan submitrawtxbatch() {
                     : CFeeRate(AmountFromValue(request.params[1]));
 
             std::vector<CTransactionRef> txns;
+            std::vector<std::string> txid_hexes;
+            std::vector<PrecomputedBatchTxData> precomputed_batch;
             UniValue txids_arr(UniValue::VARR);
-            DecodeRawTxBatchParallel(raw_transactions, txns, &txids_arr);
+            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes, &txids_arr,
+                                     &precomputed_batch);
 
             AssertLockNotHeld(cs_main);
             NodeContext &node = EnsureAnyNodeContext(request.context);
@@ -1681,7 +1663,8 @@ static RPCHelpMan submitrawtxbatch() {
                 PackageMempoolAcceptResult res =
                     ProcessRawTxBatch(chainstate, mempool, txns,
                                       /*test_accept=*/false,
-                                      max_raw_tx_fee_rate);
+                                      max_raw_tx_fee_rate,
+                                      &precomputed_batch);
 
                 if (res.m_state.IsValid() &&
                     res.m_tx_results.size() == txns.size()) {
@@ -1706,9 +1689,11 @@ static RPCHelpMan submitrawtxbatch() {
             all_allowed = package_result.m_state.IsValid();
             bool exit_early{false};
 
-            for (const auto &tx : txns) {
+            for (size_t idx = 0; idx < txns.size(); ++idx) {
+                const auto &tx = txns[idx];
+                const auto &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
-                result_inner.pushKV("txid", tx->GetId().GetHex());
+                result_inner.pushKV("txid", txid_hex);
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
@@ -1747,9 +1732,13 @@ static RPCHelpMan submitrawtxbatch() {
                         "effective-feerate",
                         tx_result.m_effective_feerate.value().GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    for (const auto &txid :
-                         tx_result.m_txids_fee_calculations.value()) {
-                        effective_includes_res.push_back(txid.ToString());
+                    const auto &includes = tx_result.m_txids_fee_calculations.value();
+                    if (includes.size() == 1 && includes[0] == tx->GetId()) {
+                        effective_includes_res.push_back(txid_hex);
+                    } else {
+                        for (const auto &txid : includes) {
+                            effective_includes_res.push_back(txid.ToString());
+                        }
                     }
                     fees.pushKV("effective-includes",
                                 std::move(effective_includes_res));
