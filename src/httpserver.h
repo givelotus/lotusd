@@ -10,15 +10,28 @@
 #include <boost/asio/awaitable.hpp>
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
 static const int DEFAULT_HTTP_THREADS = 4;
 static const int DEFAULT_HTTP_WORKQUEUE = 16;
 static const int DEFAULT_HTTP_SERVER_TIMEOUT = 30;
+//! Threads doing socket I/O, TLS and WebSocket framing for the HTTP server.
+static const int DEFAULT_HTTP_IO_THREADS = 2;
+static const bool DEFAULT_HTTP_TLS_EPHEMERAL = true;
+static const bool DEFAULT_HTTP_TLS_MUTUAL = false;
+static const char *const HTTP_TLS_CERT_FILENAME = "node_tls_cert.pem";
+static const char *const HTTP_TLS_KEY_FILENAME = "node_tls_key.pem";
+//! Replies at least this large are zstd-compressed if the client accepts it.
+static const size_t HTTP_ZSTD_MIN_REPLY_SIZE = 512;
 
-struct evhttp_request;
+/**
+ * Opaque token kept for source compatibility with code that used to queue
+ * libevent timers. It now identifies the HTTP server's Boost.Asio I/O context.
+ */
 struct event_base;
+struct HTTPRequestImpl;
 
 class Config;
 class CService;
@@ -43,7 +56,7 @@ void InterruptHTTPServer();
 /** Stop HTTP server */
 void StopHTTPServer();
 
-/** Change logging level for libevent. */
+/** Change logging level for libevent (still used by torcontrol). */
 void UpdateHTTPServerLogging(bool enable);
 
 /** Handler for requests to a certain HTTP path */
@@ -92,22 +105,31 @@ public:
 boost::asio::any_io_executor GetHTTPThreadPoolExecutor();
 
 /**
- * Return evhttp event base. This can be used by submodules to
- * queue timers or custom events.
+ * Return an opaque, non-null token for the HTTP server's I/O context once the
+ * server is initialized. This can be passed to HTTPEvent to queue timers or
+ * cross-thread triggers.
  */
 struct event_base *EventBase();
 
 /**
+ * Parse a raw HTTP/1.1 request (request line, headers and body). Returns
+ * nullptr if it is not a complete, valid request. The returned request is not
+ * connected to any client: replies are discarded. Used by tests and fuzzers.
+ */
+std::unique_ptr<HTTPRequest> ParseHTTPRequestForTesting(const std::string &raw);
+
+/**
  * In-flight HTTP request.
- * Thin C++ wrapper around evhttp_request.
+ * Thin C++ wrapper around a Boost.Beast request and its pending response.
  */
 class HTTPRequest {
 private:
-    struct evhttp_request *req;
+    std::unique_ptr<HTTPRequestImpl> m_impl;
     bool replySent;
 
 public:
-    explicit HTTPRequest(struct evhttp_request *req, bool replySent = false);
+    explicit HTTPRequest(std::unique_ptr<HTTPRequestImpl> impl,
+                         bool replySent = false);
     ~HTTPRequest();
 
     enum RequestMethod { UNKNOWN, GET, POST, HEAD, PUT, OPTIONS };
@@ -120,6 +142,15 @@ public:
 
     /** Get request method */
     RequestMethod GetRequestMethod() const;
+
+    /** Whether the request arrived over TLS (https:// or wss://) */
+    bool IsTLS() const;
+
+    /**
+     * Hex SHA-256 fingerprint of the TLS client certificate, or an empty
+     * string if none was presented (see -tlsmutual).
+     */
+    std::string GetClientCertFingerprint() const;
 
     /**
      * Get the query parameter value from request uri for a specified key, or
@@ -142,7 +173,7 @@ public:
     std::pair<bool, std::string> GetHeader(const std::string &hdr) const;
 
     /**
-     * Read request body.
+     * Read request body. A "Content-Encoding: zstd" body is decompressed.
      *
      * @note As this consumes the underlying buffer, call this only once.
      * Repeated calls will return an empty string.
@@ -160,13 +191,16 @@ public:
      * Write HTTP reply.
      * nStatus is the HTTP status code to send.
      * strReply is the body of the reply. Keep it empty to send a standard
-     * message.
+     * message. Replies of at least HTTP_ZSTD_MIN_REPLY_SIZE bytes are sent
+     * with "Content-Encoding: zstd" when the client's Accept-Encoding allows
+     * it and no Content-Encoding header was written.
+     * Pass an rvalue (e.g. std::move) to hand the body over without copying.
      *
      * @note Can be called only once. As this will give the request back to the
      * main thread, do not call any other HTTPRequest methods after calling
      * this.
      */
-    void WriteReply(int nStatus, const std::string &strReply = "");
+    void WriteReply(int nStatus, std::string strReply = "");
 };
 
 /**
@@ -187,11 +221,7 @@ std::optional<std::string> GetQueryParameterFromUri(const char *uri,
                                                     const std::string &key);
 
 /** Event handler closure */
-class HTTPClosure {
-public:
-    virtual void operator()() = 0;
-    virtual ~HTTPClosure() = default;
-};
+
 
 /**
  * Event class. This can be used either as a cross-thread trigger or as a
@@ -219,7 +249,8 @@ public:
     std::function<void()> handler;
 
 private:
-    struct event *ev;
+    struct State;
+    std::shared_ptr<State> m_state;
 };
 
 #endif // BITCOIN_HTTPSERVER_H

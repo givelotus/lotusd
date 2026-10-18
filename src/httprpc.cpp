@@ -393,7 +393,7 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
         }
 
         req->WriteHeader("Content-Type", "application/json");
-        req->WriteReply(HTTP_OK, strReply);
+        req->WriteReply(HTTP_OK, std::move(strReply));
     } catch (const UniValue &objError) {
         JSONErrorReply(req, objError, jreq.id);
         return false;

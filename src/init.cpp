@@ -1562,6 +1562,37 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_HTTP_SERVER_TIMEOUT),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::RPC);
+    argsman.AddArg("-rpciothreads=<n>",
+                   strprintf("Number of threads performing HTTP/WebSocket "
+                             "socket I/O and TLS (default: %d)",
+                             DEFAULT_HTTP_IO_THREADS),
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::RPC);
+    argsman.AddArg(
+        "-tlscert=<file>",
+        "PEM certificate chain used for TLS (https:// and wss://) on the RPC "
+        "port. Plain http:// and ws:// keep working on the same port; the "
+        "protocol is detected per connection. Requires -tlskey.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-tlskey=<file>",
+                   "PEM private key matching -tlscert",
+                   ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE,
+                   OptionsCategory::RPC);
+    argsman.AddArg(
+        "-tlsephemeral",
+        strprintf("When -tlscert is not set, serve TLS on the RPC port with a "
+                  "self-signed EC P-256 certificate kept in <datadir>/%s and "
+                  "<datadir>/%s, generating it if needed (default: %d)",
+                  HTTP_TLS_CERT_FILENAME, HTTP_TLS_KEY_FILENAME,
+                  DEFAULT_HTTP_TLS_EPHEMERAL),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-tlsmutual",
+        strprintf("Request (but do not require) TLS client certificates on "
+                  "the RPC port and record their SHA-256 fingerprint "
+                  "(default: %d)",
+                  DEFAULT_HTTP_TLS_MUTUAL),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
 
 #if HAVE_DECL_FORK
     argsman.AddArg("-daemon",

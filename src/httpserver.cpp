@@ -12,27 +12,47 @@
 #include <logging.h>
 #include <netbase.h>
 #include <node/ui_interface.h>
+#include <random.h>
 #include <rpc/protocol.h> // For HTTP status codes
 #include <shutdown.h>
 #include <sync.h>
 #include <util/check.h>
+#include <util/fs.h>
 #include <util/strencodings.h>
+#include <util/string.h>
 #include <util/threadnames.h>
 #include <util/translation.h>
 
-#include <event2/buffer.h>
-#include <event2/bufferevent.h>
+// libevent is no longer used by the HTTP server, but torcontrol still uses it
+// and its logging is configured from here.
 #include <event2/event.h>
-#include <event2/http.h>
-#include <event2/keyvalq_struct.h>
-#include <event2/thread.h>
-#include <event2/util.h>
 
-#include <support/events.h>
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ip/v6_only.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <openssl/bn.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
+#include <zstd.h>
+
+#include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -49,8 +69,21 @@
 
 #include <atomic>
 #include <deque>
-#include <memory>
+#include <map>
 #include <unordered_map>
+#include <memory>
+#include <thread>
+
+#ifndef WIN32
+#include <sys/socket.h>
+#include <sys/stat.h>
+#endif
+
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace asio = boost::asio;
+namespace ssl = asio::ssl;
+using tcp = asio::ip::tcp;
 
 /** Maximum size of http request (request line + headers) */
 static const size_t MAX_HEADERS_SIZE = 8192;
@@ -61,14 +94,28 @@ static const size_t MAX_HEADERS_SIZE = 8192;
  */
 static const size_t MIN_SUPPORTED_BODY_SIZE = 0x02000000;
 
+using BeastRequest = http::request<http::string_body>;
+using BeastResponse = http::response<http::string_body>;
+
+/** Backing store of an HTTPRequest (see httpserver.h). */
+struct HTTPRequestImpl {
+    BeastRequest beast_req;
+    BeastResponse beast_res;
+    CService peer_address;
+    bool is_tls{false};
+    std::string client_cert_fingerprint_hex;
+    uint64_t max_body_size{0};
+    //! Delivers the finished response to the connection that owns the
+    //! request. May be called from any thread. Empty for detached requests.
+    std::function<void(BeastResponse &&)> send_reply_fn;
+};
+
 /** HTTP request work item */
-class HTTPWorkItem final : public HTTPClosure {
+class HTTPWorkItem final {
 public:
     HTTPWorkItem(Config &_config, std::unique_ptr<HTTPRequest> _req,
                  const std::string &_path, const HTTPAsyncRequestHandler &_func)
         : req(std::move(_req)), path(_path), func(_func), config(&_config) {}
-
-    void operator()() override {}
 
     boost::asio::awaitable<void>
     ExecuteAsync(boost::asio::any_io_executor executor) {
@@ -102,7 +149,7 @@ private:
     std::unique_ptr<boost::asio::thread_pool> m_pool;
     std::atomic<size_t> m_suspended_coroutines{0};
     std::unordered_map<
-        const evhttp_connection *,
+        uint64_t,
         std::weak_ptr<boost::asio::strand<boost::asio::any_io_executor>>>
         m_conn_strands GUARDED_BY(m_mutex);
 
@@ -128,7 +175,7 @@ public:
         return m_pool->get_executor();
     }
 
-    bool Enqueue(const evhttp_connection *conn,
+    bool Enqueue(uint64_t conn,
                  std::unique_ptr<HTTPWorkItem> &item)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
         std::shared_ptr<boost::asio::strand<boost::asio::any_io_executor>>
@@ -142,7 +189,7 @@ public:
             ++m_queued_requests;
             ++m_total_in_flight;
 
-            if (conn != nullptr) {
+            if (conn != 0) {
                 auto &weak_strand = m_conn_strands[conn];
                 strand = weak_strand.lock();
                 if (!strand) {
@@ -242,82 +289,86 @@ struct HTTPPathHandler {
 
 /** HTTP module state */
 
-//! libevent event loop
-static struct event_base *eventBase = nullptr;
-//! HTTP server
-static struct evhttp *eventHTTP = nullptr;
+//! I/O context running accept loops, connections and HTTPEvent timers. It is
+//! never destroyed once created so that late HTTPEvent destructors are safe.
+static std::unique_ptr<asio::io_context> g_io;
+//! Listening sockets, each bound to its own strand
+static std::vector<std::unique_ptr<tcp::acceptor>> g_acceptors;
+//! TLS context for connections detected as TLS, if TLS is enabled
+static std::unique_ptr<ssl::context> g_ssl_ctx;
+//! The configuration handlers are invoked with
+static Config *g_config{nullptr};
+//! Maximum accepted request body size
+static uint64_t g_max_body_size{MIN_SUPPORTED_BODY_SIZE};
+//! Idle/read/write timeout
+static std::chrono::seconds g_server_timeout{DEFAULT_HTTP_SERVER_TIMEOUT};
+//! Set by InterruptHTTPServer: reject new requests with 503
+static std::atomic<bool> g_reject_requests{false};
 //! List of subnets to allow RPC connections from
 static std::vector<CSubNet> rpc_allow_subnets;
 //! Coroutine pool for handling requests off the event loop thread
 static std::unique_ptr<HTTPCoroutinePool> g_work_queue{nullptr};
 //! Handlers for (sub)paths
 static std::vector<HTTPPathHandler> pathHandlers;
-//! Bound listening sockets
-static std::vector<evhttp_bound_socket *> boundSockets;
 
 /**
- * @brief Helps keep track of open `evhttp_connection`s with active
- * `evhttp_requests`
+ * Tracks live connections (so they can be closed on shutdown) and requests
+ * whose reply has not been written yet (so shutdown can wait for them).
  */
-class HTTPRequestTracker {
+class HTTPConnectionTracker {
 private:
     mutable Mutex m_mutex;
     mutable std::condition_variable m_cv;
-    //! For each connection, keep a counter of how many requests are open
-    std::unordered_map<const evhttp_connection *, size_t>
-        m_tracker GUARDED_BY(m_mutex);
+    uint64_t m_next_id GUARDED_BY(m_mutex){0};
+    //! Native socket handle of each open connection
+    std::map<uint64_t, SOCKET> m_connections GUARDED_BY(m_mutex);
+    size_t m_active_requests GUARDED_BY(m_mutex){0};
 
-    void RemoveConnectionInternal(const decltype(m_tracker)::iterator it)
-        EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
-        m_tracker.erase(it);
-        if (m_tracker.empty()) {
+public:
+    uint64_t AddConnection(SOCKET fd) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        LOCK(m_mutex);
+        const uint64_t id{m_next_id++};
+        m_connections.emplace(id, fd);
+        return id;
+    }
+    void RemoveConnection(uint64_t id) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        LOCK(m_mutex);
+        m_connections.erase(id);
+    }
+    void AddRequest() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        WITH_LOCK(m_mutex, ++m_active_requests);
+    }
+    void RemoveRequest() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        LOCK(m_mutex);
+        if (m_active_requests > 0 && --m_active_requests == 0) {
             m_cv.notify_all();
         }
     }
-
-public:
-    //! Increase request counter for the associated connection by 1
-    void AddRequest(evhttp_request *req) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
-        const evhttp_connection *conn{
-            Assert(evhttp_request_get_connection(Assert(req)))};
-        WITH_LOCK(m_mutex, ++m_tracker[conn]);
+    size_t CountActiveRequests() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        return WITH_LOCK(m_mutex, return m_active_requests);
     }
-    //! Decrease request counter for the associated connection by 1, remove
-    //! connection if counter is 0
-    void RemoveRequest(evhttp_request *req) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
-        const evhttp_connection *conn{
-            Assert(evhttp_request_get_connection(Assert(req)))};
-        LOCK(m_mutex);
-        auto it{m_tracker.find(conn)};
-        if (it != m_tracker.end() && it->second > 0) {
-            if (--(it->second) == 0) {
-                RemoveConnectionInternal(it);
-            }
-        }
-    }
-    //! Remove a connection entirely
-    void RemoveConnection(const evhttp_connection *conn)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
-        LOCK(m_mutex);
-        auto it{m_tracker.find(Assert(conn))};
-        if (it != m_tracker.end()) {
-            RemoveConnectionInternal(it);
-        }
-    }
-    size_t CountActiveConnections() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
-        return WITH_LOCK(m_mutex, return m_tracker.size());
-    }
-    //! Wait until there are no more connections with active requests in the
-    //! tracker
-    void WaitUntilEmpty() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+    //! Wait until every dispatched request has had its reply written
+    void WaitUntilNoActiveRequests() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
         WAIT_LOCK(m_mutex, lock);
         m_cv.wait(lock, [this]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
-            return m_tracker.empty();
+            return m_active_requests == 0;
         });
     }
+    //! Shut down every open connection. Pending reads and writes on them
+    //! complete with an error, which ends their coroutines. Only the OS
+    //! socket is touched, so this is safe from any thread.
+    void ShutdownAll() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex) {
+        LOCK(m_mutex);
+        for (const auto &[id, fd] : m_connections) {
+#ifdef WIN32
+            ::shutdown(fd, SD_BOTH);
+#else
+            ::shutdown(fd, SHUT_RDWR);
+#endif
+        }
+    }
 };
-//! Track active requests
-static HTTPRequestTracker g_requests;
+static HTTPConnectionTracker g_connections;
 
 /** Check if a network address is allowed to access the HTTP server */
 static bool ClientAllowed(const CNetAddr &netaddr) {
@@ -382,39 +433,102 @@ std::string RequestMethodString(HTTPRequest::RequestMethod m) {
     }
 }
 
-/** HTTP request callback */
-static void http_request_cb(struct evhttp_request *req, void *arg) {
-    Config &config = *reinterpret_cast<Config *>(arg);
-
-    evhttp_connection *conn{evhttp_request_get_connection(req)};
-    // Track active requests
-    {
-        g_requests.AddRequest(req);
-        evhttp_request_set_on_complete_cb(
-            req,
-            [](struct evhttp_request *req, void *) {
-                g_requests.RemoveRequest(req);
-            },
-            nullptr);
-        evhttp_connection_set_closecb(
-            conn,
-            [](evhttp_connection *conn, void *arg) {
-                g_requests.RemoveConnection(conn);
-            },
-            nullptr);
-    }
-
-    // Disable reading to work around a libevent bug, fixed in 2.2.0.
-    if (event_get_version_number() >= 0x02010600 &&
-        event_get_version_number() < 0x02020001) {
-        if (conn) {
-            bufferevent *bev = evhttp_connection_get_bufferevent(conn);
-            if (bev) {
-                bufferevent_disable(bev, EV_READ);
-            }
+/** Whether a comma-separated header value lists `token` (q=0 excluded) */
+static bool HeaderListsToken(std::string_view value, std::string_view token) {
+    while (!value.empty()) {
+        const size_t comma{value.find(',')};
+        std::string_view item{value.substr(0, comma)};
+        value = comma == std::string_view::npos ? std::string_view{}
+                                                : value.substr(comma + 1);
+        std::string_view params;
+        if (const size_t semi{item.find(';')}; semi != std::string_view::npos) {
+            params = item.substr(semi + 1);
+            item = item.substr(0, semi);
         }
+        item = util::TrimStringView(item);
+        if (!beast::iequals(item, token)) {
+            continue;
+        }
+        // Reject an explicit "q=0" / "q=0.0" weight.
+        params = util::TrimStringView(params);
+        if (params.size() >= 3 && (params[0] == 'q' || params[0] == 'Q') &&
+            params[1] == '=' &&
+            params.substr(2).find_first_not_of("0.") ==
+                std::string_view::npos) {
+            return false;
+        }
+        return true;
     }
-    auto hreq = std::make_unique<HTTPRequest>(req);
+    return false;
+}
+
+/** Fill in fields of a response that libevent used to add by default */
+static void FinalizeResponse(BeastResponse &res, unsigned version) {
+    res.version(version);
+    if (res.find(http::field::content_type) == res.end()) {
+        res.set(http::field::content_type, "text/html; charset=ISO-8859-1");
+    }
+    res.prepare_payload();
+}
+
+static BeastResponse MakeSimpleResponse(int status, unsigned version,
+                                        std::string body = {}) {
+    BeastResponse res{static_cast<http::status>(status), version};
+    res.body() = std::move(body);
+    FinalizeResponse(res, version);
+    return res;
+}
+
+/**
+ * One-shot rendezvous between a worker thread producing a reply and the
+ * connection coroutine waiting for it. Only touched on the connection's
+ * strand.
+ */
+struct ReplySlot {
+    asio::steady_timer timer;
+    std::optional<BeastResponse> response;
+    explicit ReplySlot(const asio::any_io_executor &exec)
+        : timer(exec, asio::steady_timer::time_point::max()) {}
+};
+
+/** Per-connection facts shared by every request on it */
+struct HTTPConnectionInfo {
+    uint64_t connection_id{0};
+    CService peer;
+    CService local;
+    bool is_tls{false};
+    std::string client_cert_fingerprint_hex;
+};
+
+/**
+ * Route a parsed request (the logic of the former libevent http_request_cb)
+ * and wait for its reply.
+ */
+static asio::awaitable<BeastResponse>
+DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
+    const unsigned version{beast_req.version()};
+    auto executor{co_await asio::this_coro::executor};
+
+    g_connections.AddRequest();
+    if (g_reject_requests.load()) {
+        LogDebug(BCLog::HTTP, "Rejecting request while shutting down\n");
+        co_return MakeSimpleResponse(HTTP_SERVICE_UNAVAILABLE, version);
+    }
+
+    auto slot{std::make_shared<ReplySlot>(executor)};
+    auto impl{std::make_unique<HTTPRequestImpl>()};
+    impl->beast_req = std::move(beast_req);
+    impl->peer_address = conn.peer;
+    impl->is_tls = conn.is_tls;
+    impl->client_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
+    impl->max_body_size = g_max_body_size;
+    impl->send_reply_fn = [slot, executor](BeastResponse &&res) {
+        asio::post(executor, [slot, res = std::move(res)]() mutable {
+            slot->response = std::move(res);
+            slot->timer.cancel();
+        });
+    };
+    auto hreq{std::make_unique<HTTPRequest>(std::move(impl))};
 
     // Early address-based allow check
     if (!ClientAllowed(hreq->GetPeer())) {
@@ -423,76 +537,318 @@ static void http_request_cb(struct evhttp_request *req, void *arg) {
                  "RPC access\n",
                  hreq->GetPeer().ToStringAddrPort());
         hreq->WriteReply(HTTP_FORBIDDEN);
-        return;
-    }
-
-    // Early reject unknown HTTP methods
-    if (hreq->GetRequestMethod() == HTTPRequest::UNKNOWN) {
+    } else if (hreq->GetRequestMethod() == HTTPRequest::UNKNOWN) {
+        // Early reject unknown HTTP methods
         LogDebug(BCLog::HTTP,
                  "HTTP request from %s rejected: Unknown HTTP request method\n",
                  hreq->GetPeer().ToStringAddrPort());
         hreq->WriteReply(HTTP_BAD_METHOD);
-        return;
-    }
-
-    LogDebug(BCLog::HTTP, "Received a %s request for %s from %s\n",
-             RequestMethodString(hreq->GetRequestMethod()),
-             SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100),
-             hreq->GetPeer().ToStringAddrPort());
-
-    // Find registered handler for prefix
-    std::string strURI = hreq->GetURI();
-    std::string path;
-    std::vector<HTTPPathHandler>::const_iterator i = pathHandlers.begin();
-    std::vector<HTTPPathHandler>::const_iterator iend = pathHandlers.end();
-    for (; i != iend; ++i) {
-        bool match = false;
-        if (i->exactMatch) {
-            match = (strURI == i->prefix);
-        } else {
-            match = (strURI.substr(0, i->prefix.size()) == i->prefix);
-        }
-        if (match) {
-            path = strURI.substr(i->prefix.size());
-            break;
-        }
-    }
-
-    // Dispatch to coroutine worker pool.
-    if (i != iend) {
-        std::unique_ptr<HTTPWorkItem> item(
-            new HTTPWorkItem(config, std::move(hreq), path, i->handler));
-        assert(g_work_queue);
-        if (!g_work_queue->Enqueue(conn, item)) {
-            LogPrintf("WARNING: request rejected because http work queue depth "
-                      "exceeded, it can be increased with the -rpcworkqueue= "
-                      "setting\n");
-            item->req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
-                                  "Work queue depth exceeded");
-        }
     } else {
-        hreq->WriteReply(HTTP_NOT_FOUND);
+        LogDebug(BCLog::HTTP, "Received a %s request for %s from %s\n",
+                 RequestMethodString(hreq->GetRequestMethod()),
+                 SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100),
+                 hreq->GetPeer().ToStringAddrPort());
+
+        // Find registered handler for prefix
+        std::string strURI = hreq->GetURI();
+        std::string path;
+        std::vector<HTTPPathHandler>::const_iterator i = pathHandlers.begin();
+        std::vector<HTTPPathHandler>::const_iterator iend = pathHandlers.end();
+        for (; i != iend; ++i) {
+            bool match = false;
+            if (i->exactMatch) {
+                match = (strURI == i->prefix);
+            } else {
+                match = (strURI.substr(0, i->prefix.size()) == i->prefix);
+            }
+            if (match) {
+                path = strURI.substr(i->prefix.size());
+                break;
+            }
+        }
+
+        // Dispatch to worker thread.
+        if (i != iend) {
+            std::unique_ptr<HTTPWorkItem> item(
+                new HTTPWorkItem(*g_config, std::move(hreq), path, i->handler));
+            assert(g_work_queue);
+            if (!g_work_queue->Enqueue(conn.connection_id, item)) {
+                LogPrintf("WARNING: request rejected because http work queue "
+                          "depth exceeded, it can be increased with the "
+                          "-rpcworkqueue= setting\n");
+                item->req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
+                                      "Work queue depth exceeded");
+            }
+        } else {
+            hreq->WriteReply(HTTP_NOT_FOUND);
+        }
+    }
+
+    // The reply is posted to this strand, so it cannot be delivered before
+    // this coroutine suspends here.
+    if (!slot->response) {
+        co_await slot->timer.async_wait(asio::as_tuple(asio::use_awaitable));
+    }
+    if (!slot->response) {
+        // Only possible if the reply sink was dropped without a reply.
+        slot->response =
+            MakeSimpleResponse(HTTP_INTERNAL_SERVER_ERROR, version);
+    }
+    co_return std::move(*slot->response);
+}
+
+template <typename Stream>
+static asio::awaitable<boost::system::error_code>
+WriteResponse(Stream &stream, BeastResponse &res) {
+    beast::get_lowest_layer(stream).expires_after(g_server_timeout);
+    auto [ec, n] = co_await http::async_write(
+        stream, res, asio::as_tuple(asio::use_awaitable));
+    co_return ec;
+}
+
+/** Serve HTTP/1.1 keep-alive requests on an established (TLS or plain) stream */
+template <typename Stream>
+static asio::awaitable<void> ServeHTTP(Stream &stream,
+                                       beast::flat_buffer &buffer,
+                                       const HTTPConnectionInfo &conn) {
+    while (true) {
+        http::request_parser<http::string_body> parser;
+        parser.header_limit(MAX_HEADERS_SIZE);
+        parser.body_limit(g_max_body_size);
+
+        beast::get_lowest_layer(stream).expires_after(g_server_timeout);
+        auto [hdr_ec, hdr_n] = co_await http::async_read_header(
+            stream, buffer, parser, asio::as_tuple(asio::use_awaitable));
+        if (hdr_ec) {
+            if (hdr_ec == http::error::end_of_stream ||
+                hdr_ec == asio::error::eof || hdr_ec == beast::error::timeout ||
+                hdr_ec == asio::error::operation_aborted ||
+                hdr_ec == asio::error::connection_reset ||
+                hdr_ec == ssl::error::stream_truncated) {
+                co_return;
+            }
+            // Malformed or oversized request line/headers (libevent also
+            // answered these with 400).
+            LogDebug(BCLog::HTTP, "Bad HTTP request from %s: %s\n",
+                     conn.peer.ToStringAddrPort(), hdr_ec.message());
+            BeastResponse res{MakeSimpleResponse(HTTP_BAD_REQUEST, 11)};
+            res.keep_alive(false);
+            co_await WriteResponse(stream, res);
+            co_return;
+        }
+
+        const auto &header{parser.get()};
+        if (auto expect{header.find(http::field::expect)};
+            expect != header.end() &&
+            beast::iequals(expect->value(), "100-continue")) {
+            http::response<http::empty_body> cont{http::status::continue_,
+                                                  header.version()};
+            auto [ec, n] = co_await http::async_write(
+                stream, cont, asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                co_return;
+            }
+        }
+
+        if (!parser.is_done()) {
+            // Beast otherwise reuses its initial 512-byte capacity as the
+            // parser consumes each chunk. Grow lazily for bodies, with bounded
+            // read-ahead rather than one receive operation per tiny chunk.
+            constexpr uint64_t body_read_chunk = 16 * 1024;
+            buffer.reserve(std::min<uint64_t>(
+                body_read_chunk, parser.content_length().value_or(body_read_chunk)));
+            auto [body_ec, body_n] = co_await http::async_read(
+                stream, buffer, parser, asio::as_tuple(asio::use_awaitable));
+            if (body_ec) {
+                if (body_ec == http::error::body_limit) {
+                    BeastResponse res{MakeSimpleResponse(
+                        413 /* Payload Too Large */, header.version())};
+                    res.keep_alive(false);
+                    co_await WriteResponse(stream, res);
+                }
+                co_return;
+            }
+        }
+
+        BeastRequest req{parser.release()};
+        const bool keep_alive{req.keep_alive()};
+        const unsigned version{req.version()};
+        const bool is_head{req.method() == http::verb::head};
+
+        // Handlers may take arbitrarily long (e.g. long polling).
+        beast::get_lowest_layer(stream).expires_never();
+        BeastResponse res{co_await DispatchRequest(std::move(req), conn)};
+
+        bool close{!keep_alive || g_reject_requests.load()};
+        if (auto c{res.find(http::field::connection)};
+            c != res.end() && beast::iequals(c->value(), "close")) {
+            close = true;
+        }
+        res.version(version);
+        res.keep_alive(!close);
+        if (is_head) {
+            // Keep Content-Length, send no body.
+            res.body().clear();
+        }
+        const auto ec{co_await WriteResponse(stream, res)};
+        g_connections.RemoveRequest();
+        if (ec || close) {
+            co_return;
+        }
     }
 }
 
-/** Callback to reject HTTP requests after shutdown. */
-static void http_reject_request_cb(struct evhttp_request *req, void *) {
-    LogDebug(BCLog::HTTP, "Rejecting request while shutting down\n");
-    evhttp_send_error(req, HTTP_SERVUNAVAIL, nullptr);
+static std::string ClientCertFingerprint(SSL *ssl) {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    X509 *cert = SSL_get1_peer_certificate(ssl);
+#else
+    X509 *cert = SSL_get_peer_certificate(ssl);
+#endif
+    if (!cert) {
+        return {};
+    }
+    unsigned char md[EVP_MAX_MD_SIZE];
+    unsigned int len{0};
+    std::string hex;
+    if (X509_digest(cert, EVP_sha256(), md, &len) == 1) {
+        hex = HexStr(Span<const unsigned char>{md, len});
+    }
+    X509_free(cert);
+    return hex;
 }
 
-/** Event dispatcher thread */
-static bool ThreadHTTP(struct event_base *base) {
-    util::ThreadRename("http");
-    LogDebug(BCLog::HTTP, "Entering http event loop\n");
-    event_base_dispatch(base);
-    // Event loop will be interrupted by InterruptHTTPServer()
-    LogDebug(BCLog::HTTP, "Exited http event loop\n");
-    return event_base_got_break(base) == 0;
+/** Connection coroutine: detect TLS, then serve HTTP on the resulting stream */
+static asio::awaitable<void> HandleConnection(tcp::socket socket) {
+    HTTPConnectionInfo conn;
+    {
+        boost::system::error_code ec;
+        const auto remote{socket.remote_endpoint(ec)};
+        if (!ec) {
+            conn.peer = LookupNumeric(remote.address().to_string(),
+                                      remote.port());
+        }
+        const auto local{socket.local_endpoint(ec)};
+        if (!ec) {
+            conn.local =
+                LookupNumeric(local.address().to_string(), local.port());
+        }
+        socket.set_option(tcp::no_delay(true), ec);
+    }
+    const uint64_t conn_id{g_connections.AddConnection(socket.native_handle())};
+    conn.connection_id = conn_id;
+
+    try {
+        beast::tcp_stream stream{std::move(socket)};
+        beast::flat_buffer buffer;
+        stream.expires_after(g_server_timeout);
+        auto [detect_ec, is_tls] = co_await beast::async_detect_ssl(
+            stream, buffer, asio::as_tuple(asio::use_awaitable));
+        if (detect_ec) {
+            // Client went away before sending anything.
+        } else if (!is_tls) {
+            co_await ServeHTTP(stream, buffer, conn);
+            boost::system::error_code ec;
+            stream.socket().shutdown(tcp::socket::shutdown_send, ec);
+        } else if (!g_ssl_ctx) {
+            LogDebug(BCLog::HTTP,
+                     "TLS connection from %s rejected: TLS is disabled\n",
+                     conn.peer.ToStringAddrPort());
+        } else {
+            beast::ssl_stream<beast::tcp_stream> tls_stream{std::move(stream),
+                                                            *g_ssl_ctx};
+            auto [hs_ec, used] = co_await tls_stream.async_handshake(
+                ssl::stream_base::server, buffer.data(),
+                asio::as_tuple(asio::use_awaitable));
+            if (hs_ec) {
+                LogDebug(BCLog::HTTP, "TLS handshake with %s failed: %s\n",
+                         conn.peer.ToStringAddrPort(), hs_ec.message());
+            } else {
+                buffer.consume(used);
+                conn.is_tls = true;
+                conn.client_cert_fingerprint_hex =
+                    ClientCertFingerprint(tls_stream.native_handle());
+                co_await ServeHTTP(tls_stream, buffer, conn);
+                tls_stream.next_layer().expires_after(std::chrono::seconds{5});
+                co_await tls_stream.async_shutdown(
+                    asio::as_tuple(asio::use_awaitable));
+            }
+        }
+    } catch (const std::exception &e) {
+        LogDebug(BCLog::HTTP, "HTTP connection from %s ended: %s\n",
+                 conn.peer.ToStringAddrPort(), e.what());
+    }
+    g_connections.RemoveConnection(conn_id);
+}
+
+static asio::awaitable<void> AcceptLoop(tcp::acceptor &acceptor) {
+    while (acceptor.is_open()) {
+        auto [ec, socket] = co_await acceptor.async_accept(
+            asio::make_strand(*g_io), asio::as_tuple(asio::use_awaitable));
+        if (ec) {
+            if (ec == asio::error::operation_aborted || !acceptor.is_open()) {
+                break;
+            }
+            LogDebug(BCLog::HTTP, "HTTP accept failed: %s\n", ec.message());
+            // Back off on resource exhaustion (e.g. EMFILE).
+            asio::steady_timer t{acceptor.get_executor(),
+                                 std::chrono::milliseconds{50}};
+            co_await t.async_wait(asio::as_tuple(asio::use_awaitable));
+            continue;
+        }
+        auto executor{socket.get_executor()};
+        asio::co_spawn(executor, HandleConnection(std::move(socket)),
+                       asio::detached);
+    }
+}
+
+/** Bind one listening socket. Returns false on failure. */
+static bool BindEndpoint(const std::string &host, uint16_t port) {
+    std::vector<tcp::endpoint> candidates;
+    boost::system::error_code ec;
+    if (host.empty()) {
+        candidates.emplace_back(asio::ip::address_v6::any(), port);
+        candidates.emplace_back(asio::ip::address_v4::any(), port);
+    } else if (auto addr{asio::ip::make_address(host, ec)}; !ec) {
+        candidates.emplace_back(addr, port);
+    } else {
+        tcp::resolver resolver{*g_io};
+        auto results{resolver.resolve(host, std::to_string(port),
+                                      tcp::resolver::passive, ec)};
+        if (!ec) {
+            for (const auto &r : results) {
+                candidates.push_back(r.endpoint());
+            }
+        }
+    }
+    for (const auto &endpoint : candidates) {
+        auto acceptor{
+            std::make_unique<tcp::acceptor>(asio::make_strand(*g_io))};
+        acceptor->open(endpoint.protocol(), ec);
+        if (ec) {
+            continue;
+        }
+        acceptor->set_option(asio::socket_base::reuse_address(true), ec);
+        if (endpoint.address().is_v6() &&
+            endpoint.address().to_v6().is_unspecified()) {
+            // Dual-stack "any", like getaddrinfo(NULL) did for libevent.
+            acceptor->set_option(asio::ip::v6_only(false), ec);
+        }
+        acceptor->bind(endpoint, ec);
+        if (ec) {
+            continue;
+        }
+        acceptor->listen(asio::socket_base::max_listen_connections, ec);
+        if (ec) {
+            continue;
+        }
+        g_acceptors.push_back(std::move(acceptor));
+        return true;
+    }
+    return false;
 }
 
 /** Bind HTTP server to specified addresses */
-static bool HTTPBindAddresses(struct evhttp *http) {
+static bool HTTPBindAddresses() {
     uint16_t http_port{static_cast<uint16_t>(
         gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
     std::vector<std::pair<std::string, uint16_t>> endpoints;
@@ -527,21 +883,18 @@ static bool HTTPBindAddresses(struct evhttp *http) {
          i != endpoints.end(); ++i) {
         LogDebug(BCLog::HTTP, "Binding RPC on address %s port %i\n", i->first,
                  i->second);
-        evhttp_bound_socket *bind_handle = evhttp_bind_socket_with_handle(
-            http, i->first.empty() ? nullptr : i->first.c_str(), i->second);
-        if (bind_handle) {
+        if (BindEndpoint(i->first, i->second)) {
             const std::optional<CNetAddr> addr{LookupHost(i->first, false)};
             if (i->first.empty() || (addr.has_value() && addr->IsBindAny())) {
                 LogPrintf("WARNING: the RPC server is not safe to expose to "
                           "untrusted networks such as the public internet\n");
             }
-            boundSockets.push_back(bind_handle);
         } else {
             LogPrintf("Binding RPC on address %s port %i failed.\n", i->first,
                       i->second);
         }
     }
-    return !boundSockets.empty();
+    return !g_acceptors.empty();
 }
 
 /** libevent event log callback */
@@ -564,6 +917,160 @@ static void libevent_log_cb(int severity, const char *msg) {
     LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
 }
 
+namespace {
+struct EVPPKeyDeleter {
+    void operator()(EVP_PKEY *p) const { EVP_PKEY_free(p); }
+};
+struct EVPPKeyCtxDeleter {
+    void operator()(EVP_PKEY_CTX *p) const { EVP_PKEY_CTX_free(p); }
+};
+struct X509Deleter {
+    void operator()(X509 *p) const { X509_free(p); }
+};
+struct BNDeleter {
+    void operator()(BIGNUM *p) const { BN_free(p); }
+};
+} // namespace
+
+static bool AddX509Extension(X509 *cert, int nid, const char *value) {
+    X509V3_CTX ctx;
+    X509V3_set_ctx_nodb(&ctx);
+    X509V3_set_ctx(&ctx, cert, cert, nullptr, nullptr, 0);
+    X509_EXTENSION *ext =
+        X509V3_EXT_conf_nid(nullptr, &ctx, nid, const_cast<char *>(value));
+    if (!ext) {
+        return false;
+    }
+    const bool ok{X509_add_ext(cert, ext, -1) == 1};
+    X509_EXTENSION_free(ext);
+    return ok;
+}
+
+/**
+ * Generate a self-signed EC P-256 certificate valid for 10 years and write it
+ * and its key (mode 0600) as PEM files.
+ */
+static bool GenerateSelfSignedCertificate(const fs::path &cert_path,
+                                          const fs::path &key_path) {
+    std::unique_ptr<EVP_PKEY_CTX, EVPPKeyCtxDeleter> pctx{
+        EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr)};
+    EVP_PKEY *raw_key{nullptr};
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) != 1 ||
+        EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx.get(),
+                                               NID_X9_62_prime256v1) != 1 ||
+        EVP_PKEY_CTX_set_ec_param_enc(pctx.get(), OPENSSL_EC_NAMED_CURVE) !=
+            1 ||
+        EVP_PKEY_keygen(pctx.get(), &raw_key) != 1) {
+        return false;
+    }
+    std::unique_ptr<EVP_PKEY, EVPPKeyDeleter> key{raw_key};
+
+    std::unique_ptr<X509, X509Deleter> cert{X509_new()};
+    std::unique_ptr<BIGNUM, BNDeleter> serial{BN_new()};
+    if (!cert || !serial || X509_set_version(cert.get(), 2) != 1 ||
+        BN_rand(serial.get(), 127, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY) != 1 ||
+        !BN_to_ASN1_INTEGER(serial.get(),
+                            X509_get_serialNumber(cert.get())) ||
+        !X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600) ||
+        !X509_gmtime_adj(X509_getm_notAfter(cert.get()),
+                         10L * 365 * 24 * 3600) ||
+        X509_set_pubkey(cert.get(), key.get()) != 1) {
+        return false;
+    }
+    std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> name{
+        X509_NAME_new(), &X509_NAME_free};
+    if (!name ||
+        X509_NAME_add_entry_by_txt(
+            name.get(), "CN", MBSTRING_ASC,
+            reinterpret_cast<const unsigned char *>("bitcoind node"), -1, -1,
+            0) != 1 ||
+        X509_set_subject_name(cert.get(), name.get()) != 1 ||
+        X509_set_issuer_name(cert.get(), name.get()) != 1 ||
+        !AddX509Extension(cert.get(), NID_basic_constraints,
+                          "critical,CA:FALSE") ||
+        !AddX509Extension(cert.get(), NID_subject_alt_name,
+                          "DNS:localhost,IP:127.0.0.1,IP:::1") ||
+        X509_sign(cert.get(), key.get(), EVP_sha256()) == 0) {
+        return false;
+    }
+
+    FILE *key_file = fsbridge::fopen(key_path, "wb");
+    if (!key_file) {
+        return false;
+    }
+#ifndef WIN32
+    fchmod(fileno(key_file), S_IRUSR | S_IWUSR);
+#endif
+    const bool key_ok{PEM_write_PrivateKey(key_file, key.get(), nullptr,
+                                           nullptr, 0, nullptr, nullptr) == 1};
+    const bool key_closed{fclose(key_file) == 0};
+    if (!key_ok || !key_closed) {
+        return false;
+    }
+    FILE *cert_file = fsbridge::fopen(cert_path, "wb");
+    if (!cert_file) {
+        return false;
+    }
+    const bool cert_ok{PEM_write_X509(cert_file, cert.get()) == 1};
+    const bool cert_closed{fclose(cert_file) == 0};
+    return cert_ok && cert_closed;
+}
+
+/** Set up g_ssl_ctx from -tlscert/-tlskey or the datadir certificate */
+static bool InitTLS() {
+    g_ssl_ctx.reset();
+    fs::path cert_path, key_path;
+    if (gArgs.IsArgSet("-tlscert") || gArgs.IsArgSet("-tlskey")) {
+        if (!gArgs.IsArgSet("-tlscert") || !gArgs.IsArgSet("-tlskey")) {
+            LogPrintf("Error: -tlscert and -tlskey must be used together\n");
+            return false;
+        }
+        cert_path = gArgs.GetPathArg("-tlscert");
+        key_path = gArgs.GetPathArg("-tlskey");
+    } else if (gArgs.GetBoolArg("-tlsephemeral", DEFAULT_HTTP_TLS_EPHEMERAL)) {
+        cert_path = gArgs.GetDataDirNet() / HTTP_TLS_CERT_FILENAME;
+        key_path = gArgs.GetDataDirNet() / HTTP_TLS_KEY_FILENAME;
+        if (!fs::exists(cert_path) || !fs::exists(key_path)) {
+            LogPrintf("Generating self-signed TLS certificate %s\n",
+                      fs::PathToString(cert_path));
+            if (!GenerateSelfSignedCertificate(cert_path, key_path)) {
+                LogPrintf("Error: failed to generate a TLS certificate\n");
+                return false;
+            }
+        }
+    } else {
+        LogPrintf("TLS disabled on the RPC port\n");
+        return true;
+    }
+
+    auto ctx{std::make_unique<ssl::context>(ssl::context::tls_server)};
+    try {
+        ctx->set_options(ssl::context::default_workarounds |
+                         ssl::context::no_sslv2 | ssl::context::no_sslv3 |
+                         ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1 |
+                         ssl::context::single_dh_use);
+        ctx->use_certificate_chain_file(fs::PathToString(cert_path));
+        ctx->use_private_key_file(fs::PathToString(key_path),
+                                  ssl::context::pem);
+    } catch (const boost::system::system_error &e) {
+        LogPrintf("Error: unable to load TLS certificate %s / key %s: %s\n",
+                  fs::PathToString(cert_path), fs::PathToString(key_path),
+                  e.what());
+        return false;
+    }
+    if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL)) {
+        // Ask for a client certificate, accept any (including self-signed
+        // node certificates); the fingerprint is exposed per request.
+        ctx->set_verify_mode(ssl::verify_peer);
+        ctx->set_verify_callback(
+            [](bool, ssl::verify_context &) { return true; });
+    }
+    g_ssl_ctx = std::move(ctx);
+    LogPrintf("TLS enabled on the RPC port using %s\n",
+              fs::PathToString(cert_path));
+    return true;
+}
+
 bool InitHTTPServer(Config &config) {
     if (!InitHTTPAllowList()) {
         return false;
@@ -574,36 +1081,23 @@ bool InitHTTPServer(Config &config) {
     // Update libevent's log handling.
     UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT));
 
-#ifdef WIN32
-    evthread_use_windows_threads();
-#else
-    evthread_use_pthreads();
-#endif
-
-    raii_event_base base_ctr = obtain_event_base();
-
-    /* Create a new evhttp object to handle requests. */
-    raii_evhttp http_ctr = obtain_evhttp(base_ctr.get());
-    struct evhttp *http = http_ctr.get();
-    if (!http) {
-        LogPrintf("couldn't create evhttp. Exiting.\n");
+    if (!InitTLS()) {
         return false;
     }
 
-    evhttp_set_timeout(http, gArgs.GetIntArg("-rpcservertimeout",
-                                             DEFAULT_HTTP_SERVER_TIMEOUT));
-    evhttp_set_max_headers_size(http, MAX_HEADERS_SIZE);
-    evhttp_set_max_body_size(http, MIN_SUPPORTED_BODY_SIZE +
-                                       2 * config.GetMaxBlockSize());
-    evhttp_set_gencb(http, http_request_cb, &config);
+    g_config = &config;
+    g_server_timeout = std::chrono::seconds{std::max<int64_t>(
+        gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT), 1)};
+    g_max_body_size = MIN_SUPPORTED_BODY_SIZE + 2 * config.GetMaxBlockSize();
+    g_reject_requests = false;
 
-    // Only POST and OPTIONS are supported, but we return HTTP 405 for the
-    // others
-    evhttp_set_allowed_methods(
-        http, EVHTTP_REQ_GET | EVHTTP_REQ_POST | EVHTTP_REQ_HEAD |
-                  EVHTTP_REQ_PUT | EVHTTP_REQ_DELETE | EVHTTP_REQ_OPTIONS);
+    if (!g_io) {
+        g_io = std::make_unique<asio::io_context>();
+    } else {
+        g_io->restart();
+    }
 
-    if (!HTTPBindAddresses(http)) {
+    if (!HTTPBindAddresses()) {
         LogPrintf("Unable to bind any endpoint for RPC server\n");
         return false;
     }
@@ -614,9 +1108,6 @@ bool InitHTTPServer(Config &config) {
     LogDebug(BCLog::HTTP, "creating work queue of depth %d\n", workQueueDepth);
 
     g_work_queue = std::make_unique<HTTPCoroutinePool>(workQueueDepth);
-    // transfer ownership to eventBase/HTTP via .release()
-    eventBase = base_ctr.release();
-    eventHTTP = http_ctr.release();
     return true;
 }
 
@@ -628,24 +1119,34 @@ void UpdateHTTPServerLogging(bool enable) {
     }
 }
 
-static std::thread g_thread_http;
+static std::vector<std::thread> g_thread_http_io;
+static std::optional<asio::executor_work_guard<asio::io_context::executor_type>>
+    g_io_work;
 
 void StartHTTPServer() {
-    int rpcThreads = std::max(
+    const int rpcThreads = std::max(
         (long)gArgs.GetIntArg("-rpcthreads", DEFAULT_HTTP_THREADS), 1L);
-    LogInfo("Starting HTTP server with %d worker threads\n", rpcThreads);
-    if (g_work_queue) {
-        g_work_queue->Start(rpcThreads);
+    const int ioThreads = std::max(
+        (long)gArgs.GetIntArg("-rpciothreads", DEFAULT_HTTP_IO_THREADS), 1L);
+    LogInfo("Starting HTTP server with %d coroutine worker threads and %d I/O threads\n",
+            rpcThreads, ioThreads);
+    if (g_work_queue) g_work_queue->Start(rpcThreads);
+    g_io_work.emplace(asio::make_work_guard(*g_io));
+    for (auto &acceptor : g_acceptors) {
+        asio::co_spawn(acceptor->get_executor(), AcceptLoop(*acceptor), asio::detached);
     }
-    g_thread_http = std::thread(ThreadHTTP, eventBase);
+    for (int i = 0; i < ioThreads; ++i) {
+        g_thread_http_io.emplace_back([i] {
+            util::ThreadRename(i == 0 ? std::string{"http"} : strprintf("http.%i", i));
+            g_io->run();
+        });
+    }
 }
 
 void InterruptHTTPServer() {
     LogDebug(BCLog::HTTP, "Interrupting HTTP server\n");
-    if (eventHTTP) {
-        // Reject requests on current connections
-        evhttp_set_gencb(eventHTTP, http_reject_request_cb, nullptr);
-    }
+    // Reject requests on current connections
+    g_reject_requests = true;
     if (g_work_queue) {
         g_work_queue->Interrupt();
     }
@@ -657,235 +1158,381 @@ void StopHTTPServer() {
         LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
         g_work_queue->WaitExit();
     }
-    // Unlisten sockets, these are what make the event loop running, which means
-    // that after this and all connections are closed the event loop will quit.
-    for (evhttp_bound_socket *socket : boundSockets) {
-        evhttp_del_accept_socket(eventHTTP, socket);
+    // Stop accepting connections.
+    for (auto &acceptor : g_acceptors) {
+        asio::post(acceptor->get_executor(), [&acceptor] {
+            boost::system::error_code ec;
+            acceptor->close(ec);
+        });
     }
-    boundSockets.clear();
-    {
-        if (const auto n_connections{g_requests.CountActiveConnections()};
-            n_connections != 0) {
+    if (!g_thread_http_io.empty()) {
+        // Let the I/O threads flush replies of requests already handled.
+        if (const auto n{g_connections.CountActiveRequests()}; n != 0) {
             LogDebug(BCLog::HTTP,
-                     "Waiting for %d connections to stop HTTP server\n",
-                     n_connections);
+                     "Waiting for %d requests to stop HTTP server\n", n);
         }
-        g_requests.WaitUntilEmpty();
+        g_connections.WaitUntilNoActiveRequests();
     }
-    if (eventHTTP) {
-        // Schedule a callback to call evhttp_free in the event base thread, so
-        // that evhttp_free does not need to be called again after the handling
-        // of unfinished request connections that follows.
-        event_base_once(
-            eventBase, -1, EV_TIMEOUT,
-            [](evutil_socket_t, short, void *) {
-                evhttp_free(eventHTTP);
-                eventHTTP = nullptr;
-            },
-            nullptr, nullptr);
-    }
-    if (eventBase) {
-        LogDebug(BCLog::HTTP, "Waiting for HTTP event thread to exit\n");
-        if (g_thread_http.joinable()) {
-            g_thread_http.join();
+    g_connections.ShutdownAll();
+    if (g_io) {
+        LogDebug(BCLog::HTTP, "Waiting for HTTP I/O threads to exit\n");
+        g_io_work.reset();
+        g_io->stop();
+        for (auto &thread : g_thread_http_io) {
+            thread.join();
         }
-        event_base_free(eventBase);
-        eventBase = nullptr;
+        g_thread_http_io.clear();
     }
+    g_acceptors.clear();
     g_work_queue.reset();
+    g_ssl_ctx.reset();
     LogDebug(BCLog::HTTP, "Stopped HTTP server\n");
 }
 
 struct event_base *EventBase() {
-    return eventBase;
+    return reinterpret_cast<struct event_base *>(g_io.get());
 }
 
-static void httpevent_callback_fn(evutil_socket_t, short, void *data) {
-    // Static handler: simply call inner handler
-    HTTPEvent *self = static_cast<HTTPEvent *>(data);
-    self->handler();
-    if (self->deleteWhenTriggered) {
-        delete self;
-    }
-}
+struct HTTPEvent::State {
+    // A strand: the timer may be touched from several I/O threads.
+    explicit State(asio::io_context &io) : timer(asio::make_strand(io)) {}
+    Mutex mutex;
+    bool cancelled GUARDED_BY(mutex){false};
+    asio::steady_timer timer;
+};
 
 HTTPEvent::HTTPEvent(struct event_base *base, bool _deleteWhenTriggered,
                      const std::function<void()> &_handler)
     : deleteWhenTriggered(_deleteWhenTriggered), handler(_handler) {
-    ev = event_new(base, -1, 0, httpevent_callback_fn, this);
-    assert(ev);
+    auto *io = reinterpret_cast<asio::io_context *>(base);
+    assert(io);
+    m_state = std::make_shared<State>(*io);
 }
 HTTPEvent::~HTTPEvent() {
-    event_free(ev);
+    {
+        LOCK(m_state->mutex);
+        m_state->cancelled = true;
+    }
+    asio::post(m_state->timer.get_executor(),
+               [state = m_state] { state->timer.cancel(); });
 }
 void HTTPEvent::trigger(struct timeval *tv) {
+    auto run = [this, state = m_state](const boost::system::error_code &ec) {
+        if (ec == asio::error::operation_aborted) {
+            return;
+        }
+        if (deleteWhenTriggered) {
+            // Nobody else owns a self-deleting event.
+            handler();
+            delete this;
+            return;
+        }
+        LOCK(state->mutex);
+        if (!state->cancelled) {
+            handler();
+        }
+    };
     if (tv == nullptr) {
-        // Immediately trigger event in main thread.
-        event_active(ev, 0, 0);
+        // Immediately trigger event in the I/O thread.
+        asio::post(m_state->timer.get_executor(),
+                   [run] { run(boost::system::error_code{}); });
     } else {
-        // Trigger after timeval passed.
-        evtimer_add(ev, tv);
+        // Trigger after timeval passed. The timer is only touched on the I/O
+        // context.
+        const auto delay{std::chrono::seconds{tv->tv_sec} +
+                         std::chrono::microseconds{tv->tv_usec}};
+        asio::post(m_state->timer.get_executor(),
+                   [state = m_state, delay, run] {
+                       state->timer.expires_after(delay);
+                       state->timer.async_wait(run);
+                   });
     }
 }
-HTTPRequest::HTTPRequest(struct evhttp_request *_req, bool _replySent)
-    : req(_req), replySent(_replySent) {}
+
+HTTPRequest::HTTPRequest(std::unique_ptr<HTTPRequestImpl> impl,
+                         bool _replySent)
+    : m_impl(std::move(impl)), replySent(_replySent) {}
 HTTPRequest::~HTTPRequest() {
     if (!replySent) {
         // Keep track of whether reply was sent to avoid request leaks
         LogPrintf("%s: Unhandled request\n", __func__);
         WriteReply(HTTP_INTERNAL_SERVER_ERROR, "Unhandled request");
     }
-    // evhttpd cleans up the request, as long as a reply was sent.
 }
 
 std::pair<bool, std::string>
 HTTPRequest::GetHeader(const std::string &hdr) const {
-    const struct evkeyvalq *headers = evhttp_request_get_input_headers(req);
-    assert(headers);
-    const char *val = evhttp_find_header(headers, hdr.c_str());
-    if (val) {
-        return std::make_pair(true, val);
+    assert(m_impl);
+    auto it = m_impl->beast_req.find(hdr);
+    if (it != m_impl->beast_req.end()) {
+        return std::make_pair(true, std::string{it->value()});
     } else {
         return std::make_pair(false, "");
     }
 }
 
-std::string HTTPRequest::ReadBody() {
-    struct evbuffer *buf = evhttp_request_get_input_buffer(req);
-    if (!buf) {
-        return "";
+/** Decompress a zstd body, refusing output larger than max_size */
+static std::optional<std::string> ZstdDecompressBounded(const std::string &in,
+                                                        uint64_t max_size) {
+    std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{
+        ZSTD_createDCtx(), &ZSTD_freeDCtx};
+    if (!dctx) {
+        return std::nullopt;
     }
-    size_t size = evbuffer_get_length(buf);
-    /**
-     * Trivial implementation: if this is ever a performance bottleneck,
-     * internal copying can be avoided in multi-segment buffers by using
-     * evbuffer_peek and an awkward loop. Though in that case, it'd be even
-     * better to not copy into an intermediate string but use a stream
-     * abstraction to consume the evbuffer on the fly in the parsing algorithm.
-     */
-    const char *data = (const char *)evbuffer_pullup(buf, size);
+    std::string out;
+    const unsigned long long frame_size{
+        ZSTD_getFrameContentSize(in.data(), in.size())};
+    if (frame_size != ZSTD_CONTENTSIZE_UNKNOWN &&
+        frame_size != ZSTD_CONTENTSIZE_ERROR) {
+        if (frame_size > max_size) {
+            return std::nullopt;
+        }
+        out.reserve(frame_size);
+    }
+    ZSTD_inBuffer input{in.data(), in.size(), 0};
+    std::vector<char> chunk(ZSTD_DStreamOutSize());
+    size_t ret{1};
+    while (input.pos < input.size || ret != 0) {
+        ZSTD_outBuffer output{chunk.data(), chunk.size(), 0};
+        ret = ZSTD_decompressStream(dctx.get(), &output, &input);
+        if (ZSTD_isError(ret)) {
+            return std::nullopt;
+        }
+        out.append(chunk.data(), output.pos);
+        if (out.size() > max_size) {
+            return std::nullopt;
+        }
+        if (input.pos == input.size && output.pos < output.size && ret != 0) {
+            // Truncated frame.
+            return std::nullopt;
+        }
+    }
+    return out;
+}
 
-    // returns nullptr in case of empty buffer.
-    if (!data) {
+std::string HTTPRequest::ReadBody() {
+    if (!m_impl) {
         return "";
     }
-    std::string rv(data, size);
-    evbuffer_drain(buf, size);
-    return rv;
+    std::string body = std::move(m_impl->beast_req.body());
+    m_impl->beast_req.body().clear();
+    if (body.empty()) {
+        return "";
+    }
+    auto ce = m_impl->beast_req.find(http::field::content_encoding);
+    if (ce != m_impl->beast_req.end() && beast::iequals(ce->value(), "zstd")) {
+        auto decoded = ZstdDecompressBounded(body, m_impl->max_body_size);
+        if (!decoded) {
+            LogDebug(BCLog::HTTP, "Invalid zstd request body from %s\n",
+                     m_impl->peer_address.ToStringAddrPort());
+            return "";
+        }
+        return std::move(*decoded);
+    }
+    return body;
 }
 
 void HTTPRequest::WriteHeader(const std::string &hdr,
                               const std::string &value) {
-    struct evkeyvalq *headers = evhttp_request_get_output_headers(req);
-    assert(headers);
-    evhttp_add_header(headers, hdr.c_str(), value.c_str());
+    assert(m_impl);
+    m_impl->beast_res.insert(hdr, value);
 }
 
-/**
- * Closure sent to main thread to request a reply to be sent to a HTTP request.
- * Replies must be sent in the main loop in the main http thread, this cannot be
- * done from worker threads.
- */
-void HTTPRequest::WriteReply(int nStatus, const std::string &strReply) {
-    assert(!replySent && req);
+void HTTPRequest::WriteReply(int nStatus, std::string strReply) {
+    assert(!replySent && m_impl);
     if (ShutdownRequested()) {
         WriteHeader("Connection", "close");
     }
-    // Send event to main http thread to send reply message
-    struct evbuffer *evb = evhttp_request_get_output_buffer(req);
-    assert(evb);
-    evbuffer_add(evb, strReply.data(), strReply.size());
-    auto req_copy = req;
-    HTTPEvent *ev = new HTTPEvent(eventBase, true, [req_copy, nStatus] {
-        evhttp_send_reply(req_copy, nStatus, nullptr, nullptr);
-        // Re-enable reading from the socket. This is the second part of the
-        // libevent workaround above.
-        if (event_get_version_number() >= 0x02010600 &&
-            event_get_version_number() < 0x02020001) {
-            evhttp_connection *conn = evhttp_request_get_connection(req_copy);
-            if (conn) {
-                bufferevent *bev = evhttp_connection_get_bufferevent(conn);
-                if (bev) {
-                    bufferevent_enable(bev, EV_READ | EV_WRITE);
-                }
+    BeastResponse &res = m_impl->beast_res;
+    res.result(static_cast<unsigned>(nStatus));
+
+    bool compressed{false};
+    if (strReply.size() >= HTTP_ZSTD_MIN_REPLY_SIZE &&
+        res.find(http::field::content_encoding) == res.end()) {
+        auto ae = m_impl->beast_req.find(http::field::accept_encoding);
+        if (ae != m_impl->beast_req.end() &&
+            HeaderListsToken(ae->value(), "zstd")) {
+            std::string out(ZSTD_compressBound(strReply.size()), '\0');
+            const size_t n{ZSTD_compress(out.data(), out.size(),
+                                         strReply.data(), strReply.size(),
+                                         /*compressionLevel=*/1)};
+            if (!ZSTD_isError(n)) {
+                out.resize(n);
+                res.body() = std::move(out);
+                res.set(http::field::content_encoding, "zstd");
+                res.set(http::field::vary, "Accept-Encoding");
+                compressed = true;
             }
         }
-    });
-    ev->trigger(nullptr);
+    }
+    if (!compressed) {
+        res.body() = std::move(strReply);
+    }
+    FinalizeResponse(res, m_impl->beast_req.version());
+
+    if (m_impl->send_reply_fn) {
+        m_impl->send_reply_fn(std::move(res));
+    }
     replySent = true;
-    // transferred back to main thread.
-    req = nullptr;
+    // transferred back to the connection.
+    m_impl.reset();
 }
 
 CService HTTPRequest::GetPeer() const {
-    evhttp_connection *con = evhttp_request_get_connection(req);
-    CService peer;
-    if (con) {
-        // evhttp retains ownership over returned address string
-        const char *address = "";
-        uint16_t port = 0;
-        evhttp_connection_get_peer(con, (char **)&address, &port);
-        peer = LookupNumeric(address, port);
-    }
-    return peer;
+    return m_impl ? m_impl->peer_address : CService{};
 }
 
 std::string HTTPRequest::GetURI() const {
-    return evhttp_request_get_uri(req);
+    return std::string{m_impl->beast_req.target()};
 }
 
 HTTPRequest::RequestMethod HTTPRequest::GetRequestMethod() const {
-    switch (evhttp_request_get_command(req)) {
-        case EVHTTP_REQ_GET:
+    switch (m_impl->beast_req.method()) {
+        case http::verb::get:
             return GET;
-        case EVHTTP_REQ_POST:
+        case http::verb::post:
             return POST;
-        case EVHTTP_REQ_HEAD:
+        case http::verb::head:
             return HEAD;
-        case EVHTTP_REQ_PUT:
+        case http::verb::put:
             return PUT;
-        case EVHTTP_REQ_OPTIONS:
+        case http::verb::options:
             return OPTIONS;
         default:
             return UNKNOWN;
     }
 }
 
+bool HTTPRequest::IsTLS() const {
+    return m_impl && m_impl->is_tls;
+}
+
+std::string HTTPRequest::GetClientCertFingerprint() const {
+    return m_impl ? m_impl->client_cert_fingerprint_hex : std::string{};
+}
+
 std::optional<std::string>
 HTTPRequest::GetQueryParameter(const std::string &key) const {
-    const char *uri{evhttp_request_get_uri(req)};
-
-    return GetQueryParameterFromUri(uri, key);
+    const std::string uri{GetURI()};
+    return GetQueryParameterFromUri(uri.c_str(), key);
 }
+
+std::unique_ptr<HTTPRequest> ParseHTTPRequestForTesting(const std::string &raw) {
+    http::request_parser<http::string_body> parser;
+    parser.header_limit(MAX_HEADERS_SIZE);
+    parser.body_limit(MIN_SUPPORTED_BODY_SIZE);
+    parser.eager(true);
+    boost::system::error_code ec;
+    parser.put(asio::buffer(raw), ec);
+    if (ec || !parser.is_done()) {
+        return nullptr;
+    }
+    auto impl{std::make_unique<HTTPRequestImpl>()};
+    impl->beast_req = parser.release();
+    impl->max_body_size = MIN_SUPPORTED_BODY_SIZE;
+    return std::make_unique<HTTPRequest>(std::move(impl), /*replySent=*/true);
+}
+
+namespace {
+int HexValue(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+bool IsHexChar(char c) {
+    return HexValue(c) >= 0;
+}
+bool IsUnreserved(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || IsDigit(c) ||
+           c == '-' || c == '.' || c == '_' || c == '~';
+}
+bool IsSubDelim(char c) {
+    return std::strchr("!$&'()*+,;=", c) != nullptr && c != '\0';
+}
+
+/**
+ * Validate the RFC 3986 characters of a URI or relative reference, as
+ * libevent's evhttp_uri_parse did: every character is unreserved, a
+ * sub-delimiter, one of ":@/?#[]" or a complete "%XX" escape.
+ */
+bool IsValidURIChars(std::string_view uri) {
+    for (size_t i = 0; i < uri.size(); ++i) {
+        const char c{uri[i]};
+        if (c == '%') {
+            if (i + 2 >= uri.size() || !IsHexChar(uri[i + 1]) ||
+                !IsHexChar(uri[i + 2])) {
+                return false;
+            }
+            i += 2;
+        } else if (!IsUnreserved(c) && !IsSubDelim(c) &&
+                   std::strchr(":@/?#[]", c) == nullptr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Percent-decode, also mapping '+' to ' ' (as evhttp did for values) */
+std::string DecodeQueryValue(std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ++i) {
+        const char c{in[i]};
+        if (c == '+') {
+            out.push_back(' ');
+        } else if (c == '%' && i + 2 < in.size() && IsHexChar(in[i + 1]) &&
+                   IsHexChar(in[i + 2])) {
+            out.push_back(
+                static_cast<char>(HexValue(in[i + 1]) * 16 + HexValue(in[i + 2])));
+            i += 2;
+        } else {
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+} // namespace
 
 std::optional<std::string> GetQueryParameterFromUri(const char *uri,
                                                     const std::string &key) {
-    evhttp_uri *uri_parsed{evhttp_uri_parse(uri)};
-    if (!uri_parsed) {
+    const std::string_view uri_view{uri};
+    if (!IsValidURIChars(uri_view)) {
         throw std::runtime_error("URI parsing failed, it likely contained RFC "
                                  "3986 invalid characters");
     }
-    const char *query{evhttp_uri_get_query(uri_parsed)};
-    std::optional<std::string> result;
-
-    if (query) {
-        // Parse the query string into a key-value queue and iterate over it
-        struct evkeyvalq params_q;
-        evhttp_parse_query_str(query, &params_q);
-
-        for (struct evkeyval *param{params_q.tqh_first}; param != nullptr;
-             param = param->next.tqe_next) {
-            if (param->key == key) {
-                result = param->value;
-                break;
-            }
-        }
-        evhttp_clear_headers(&params_q);
+    const size_t qpos{uri_view.find('?')};
+    if (qpos == std::string_view::npos) {
+        return std::nullopt;
     }
-    evhttp_uri_free(uri_parsed);
+    std::string_view query{uri_view.substr(qpos + 1)};
+    query = query.substr(0, query.find('#'));
 
+    // Like evhttp_parse_query_str: a malformed pair (no '=' or an empty key)
+    // invalidates the whole query string.
+    std::optional<std::string> result;
+    while (!query.empty()) {
+        const size_t amp{query.find('&')};
+        const std::string_view pair{query.substr(0, amp)};
+        query = amp == std::string_view::npos ? std::string_view{}
+                                              : query.substr(amp + 1);
+        const size_t eq{pair.find('=')};
+        if (eq == std::string_view::npos || eq == 0) {
+            return std::nullopt;
+        }
+        if (!result && pair.substr(0, eq) == key) {
+            result = DecodeQueryValue(pair.substr(eq + 1));
+        }
+    }
     return result;
 }
+
 void RegisterHTTPHandler(const std::string &prefix, bool exactMatch,
                          const HTTPRequestHandler &handler) {
     RegisterHTTPAsyncHandler(
