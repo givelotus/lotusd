@@ -272,7 +272,9 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
             node.getmempoolinfo()["finalized_txs_sigchecks"], mempool_tx_sigchecks
         )
 
-        self.log.info("Check the node rejects txs that conflict with a finalized tx")
+        self.log.info(
+            "Check the node rejects txs that conflict with a finalized tx via txn-mempool-conflict"
+        )
 
         another_conflicting_tx = wallet.create_self_transfer(utxo_to_spend=utxo)
         another_conflicting_txid = int(another_conflicting_tx["txid"], 16)
@@ -280,18 +282,17 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
             [from_wallet_tx(another_conflicting_tx)],
             node,
             success=False,
-            reject_reason="finalized-tx-conflict",
+            reject_reason="txn-mempool-conflict",
         )
-        # This transaction is plain invalid, so it is NOT stored in the
-        # conflicting pool
         assert_equal(
-            node.gettransactionstatus(another_conflicting_tx["txid"])["pool"], "none"
+            node.gettransactionstatus(another_conflicting_tx["txid"])["pool"],
+            "conflicting",
         )
         poll_node.send_poll([another_conflicting_txid], MSG_TX)
         assert_response(
             poll_node,
             avakey,
-            [AvalancheVote(AvalancheTxVoteError.INVALID, another_conflicting_txid)],
+            [AvalancheVote(AvalancheTxVoteError.CONFLICTING, another_conflicting_txid)],
         )
 
         self.log.info("Check the node can mine a finalized tx")
@@ -382,7 +383,7 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         )
 
         self.log.info(
-            "The node rejects blocks that contains tx conflicting with a finalized one"
+            "In Lotus V2, PoW blocks containing a tx conflicting with a finalized mempool tx are accepted"
         )
 
         utxo = wallet.get_utxo()
@@ -393,10 +394,10 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         assert txid in node.getrawmempool()
 
         blockhash = node.getbestblockhash()
-        blocktime = node.getblock(blockhash, 2)["time"]
+        blocktime = node.getblock(blockhash, 2)["time"] + 1
         conflicting_block = create_block(
             int(blockhash, 16),
-            create_coinbase(node.getblockcount() - 1),
+            create_coinbase(node.getblockcount() + 1),
             ntime=blocktime,
         )
         conflicting_tx = wallet.create_self_transfer(utxo_to_spend=utxo)["tx"]
@@ -410,28 +411,13 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         peer.send_blocks_and_test(
             [conflicting_block],
             node,
-            success=False,
-            reject_reason="finalized-tx-conflict",
-        )
-
-        # The tx is still finalized as the block is rejected
-        assert node.isfinaltransaction(txid)
-        assert txid in node.getrawmempool()
-
-        # The block is accepted if we remove the offending transaction
-        conflicting_block.vtx.remove(conflicting_tx)
-        conflicting_block.hashMerkleRoot = conflicting_block.calc_merkle_root()
-        conflicting_block.solve()
-
-        peer.send_blocks_and_test(
-            [conflicting_block],
-            node,
         )
 
         self.log.info("Check the node stores the conflicting txs")
 
         tip = self.generate(node, 1)[0]
         assert_equal(node.getrawmempool(), [])
+        wallet.rescan_utxos()
 
         self.wait_until(lambda: has_finalized_block(tip))
 
@@ -641,21 +627,23 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
                 [conflicting_tx_obj], node, success=False, expect_disconnect=False
             )
 
-        # A new conflict is rejected because it conflicts with the finalized tx
+        # A new conflict is rejected because it conflicts with the mempool tx
         another_conflicting_tx = wallet.create_self_transfer(
             utxo_to_spend=utxo, fee_rate=Decimal("4000")
         )
         another_conflicting_tx_obj = from_wallet_tx(another_conflicting_tx)
         with node.assert_debug_log(
-            ["finalized-tx-conflict"],
-            [f"stored conflicting tx {another_conflicting_tx['txid']}"],
+            [
+                "txn-mempool-conflict",
+                f"stored conflicting tx {another_conflicting_tx['txid']}",
+            ],
         ):
             peer.send_txs_and_test(
                 [another_conflicting_tx_obj],
                 node,
                 success=False,
                 expect_disconnect=False,
-                reject_reason="finalized-tx-conflict",
+                reject_reason="txn-mempool-conflict",
             )
 
         self.log.info("Check the node drops staled transactions")
@@ -720,7 +708,7 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         self.wait_until(lambda: has_finalized_tx(stalled_txid))
 
         self.log.info(
-            "The node parks a block that contains a tx conflicting with a disconnected finalized one"
+            "In Lotus V2, the node accepts a heavier chain containing a tx conflicting with a disconnected finalized one"
         )
 
         tip = self.generate(node, 1, sync_fun=self.no_op)[0]
@@ -748,8 +736,7 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         tx_b = wallet.create_self_transfer(utxo_to_spend=utxo)
         assert tx_b["txid"] != txid_a
 
-        # Create a competing block Y containing tx B. This block is invalid by
-        # preconsensus policy.
+        # Create a competing block Y containing tx B.
         block_y = create_block(
             int(parent_txid, 16),
             create_coinbase(parent_height + 1),
@@ -769,19 +756,15 @@ class AvalancheTransactionVotingTest(BitcoinTestFramework):
         block_y2.solve()
 
         # Send both blocks at the same time. Since X is not finalized, and Y2
-        # has more work, the node will attempt to switch the tip to Y2. The node
-        # will first disconnect X, then attempt to connect Y2. This will fail
-        # because Y is rejected by preconsensus policy.
+        # has more work, the node switches the tip to Y2 under Lotus V2 PoW rules.
         peer.send_blocks_and_test(
             [block_y, block_y2],
             node,
-            success=False,
+            success=True,
             force_send=True,
-            reject_reason="finalized-tx-conflict",
         )
 
-        assert_equal(node.getbestblockhash(), blockhash_x)
-        assert_equal(node.isfinaltransaction(txid_a, blockhash_x), True)
+        assert_equal(node.getbestblockhash(), block_y2.hash_hex)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ class InvalidateTest(BitcoinTestFramework):
         )
         block = create_block(
             int(tip, 16),
-            create_coinbase(self.nodes[0].getblockcount()),
+            create_coinbase(self.nodes[0].getblockcount() + 1),
             block_time,
             version=4,
         )
