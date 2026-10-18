@@ -1778,49 +1778,8 @@ static RPCHelpMan submitrawtxbatch() {
                 if (node.validation_signals) {
                     node.validation_signals->SyncWithValidationInterfaceQueue();
                 }
-                if (node.connman) {
-                    const bool force_hb_tx =
-                        gArgs.GetBoolArg("-highbandwidthtx", false);
-                    lotus::v2::net::V2PeerProtocolHandler *v2_handler =
-                        node.peerman ? node.peerman->GetV2ProtocolHandler()
-                                     : nullptr;
-                    node.connman->ForEachNode([&](CNode *pnode) {
-                        if (!pnode || pnode->IsBlockOnlyConn()) {
-                            return;
-                        }
-                        const bool is_hb_peer =
-                            pnode->m_bip152_highbandwidth_from.load() ||
-                            pnode->m_bip152_highbandwidth_to.load() ||
-                            (v2_handler &&
-                             v2_handler->IsHighBandwidthShortTxPeer(
-                                 pnode->GetId())) ||
-                            force_hb_tx;
-                        if (!is_hb_peer) {
-                            return;
-                        }
-                        if (node.peerman) {
-                            node.peerman->MarkPeerKnownTxBatch(pnode->GetId(),
-                                                               txns);
-                        }
-                        for (size_t offset = 0; offset < txns.size();
-                             offset +=
-                             lotus::v2::net::ShortTxResponse::MAX_TXS) {
-                            const size_t chunk_end = std::min(
-                                offset +
-                                    lotus::v2::net::ShortTxResponse::MAX_TXS,
-                                txns.size());
-                            lotus::v2::net::ShortTxResponse resp;
-                            resp.scope = static_cast<uint8_t>(
-                                lotus::v2::net::ReconScope::LIVE_MEMPOOL);
-                            resp.context_id = uint256::ZERO;
-                            resp.txs.assign(txns.begin() + offset,
-                                            txns.begin() + chunk_end);
-                            node.connman->PushMessage(
-                                pnode,
-                                NetMsg::Make(NetMsgType::SHORTTX, resp));
-                        }
-                    });
-                }
+                // Locally originated batches use the ordinary first-hop
+                // trickle; SendMessages may still coalesce the eventual relay.
                 if (node.peerman) {
                     node.peerman->RelayTransactionBatch(txns);
                 }

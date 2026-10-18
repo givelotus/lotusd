@@ -15,6 +15,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <consensus/merkle.h>
+#include <logging.h>
 #include <net.h>
 #include <net_processing.h>
 #include <netmessagemaker.h>
@@ -1707,6 +1708,176 @@ BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
     SetMockTime(0);
 }
 
+BOOST_AUTO_TEST_CASE(malformed_later_tx_does_not_discard_decoded_prefix) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman =
+        std::make_unique<ConnmanTestMsg>(config, 987, 654, *m_node.addrman);
+    auto peerman =
+        PeerManager::make(*connman, *m_node.addrman, nullptr, *m_node.chainman,
+                          *m_node.mempool, nullptr, {});
+    CConnman::Options opts;
+    opts.m_msgproc = {peerman.get()};
+    opts.nSendBufferMaxSize = 1024 * 1024;
+    connman->Init(opts);
+    WITH_LOCK(cs_main, SetMockTime(m_node.chainman->ActiveChain().Tip()->GetBlockTime()));
+    BOOST_REQUIRE(!m_node.chainman->IsInitialBlockDownload());
+    CAddress addr(MakeTestIp(0xa0b0c050), NODE_NONE);
+    CNode node(500, nullptr, addr, 0, 0, 0, CAddress(), "",
+               ConnectionType::OUTBOUND_FULL_RELAY, false);
+    connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK, PROTOCOL_VERSION,
+                       true);
+    FastRandomContext rng(uint256{57});
+    auto tx = MakeNonCoinbaseTx(rng, 0x51);
+    BOOST_REQUIRE(tx);
+    FundTxInputInCoinsTip(*m_node.chainman, *tx);
+    auto good = NetMsg::Make(NetMsgType::TX, tx);
+    CSerializedNetMsg malformed;
+    malformed.m_type = NetMsgType::TX;
+    malformed.data = {0xff};
+    BOOST_REQUIRE(connman->ReceiveMsgFrom(node, good));
+    BOOST_REQUIRE(connman->ReceiveMsgFrom(node, malformed));
+    connman->ProcessMessagesOnce(node);
+    BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+    peerman->FinalizeNode(config, node);
+    SetMockTime(0);
+}
+
+BOOST_AUTO_TEST_CASE(invalid_last_member_does_not_double_burst_admission_work) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman =
+        std::make_unique<ConnmanTestMsg>(config, 987, 655, *m_node.addrman);
+    auto peerman =
+        PeerManager::make(*connman, *m_node.addrman, nullptr, *m_node.chainman,
+                          *m_node.mempool, nullptr, {});
+    CConnman::Options opts;
+    opts.m_msgproc = {peerman.get()};
+    opts.nSendBufferMaxSize = 1024 * 1024;
+    connman->Init(opts);
+    WITH_LOCK(cs_main, SetMockTime(m_node.chainman->ActiveChain().Tip()->GetBlockTime()));
+    BOOST_REQUIRE(!m_node.chainman->IsInitialBlockDownload());
+    CAddress addr(MakeTestIp(0xa0b0c051), NODE_NONE);
+    CNode node(501, nullptr, addr, 0, 0, 0, CAddress(), "",
+               ConnectionType::OUTBOUND_FULL_RELAY, false);
+    connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK, PROTOCOL_VERSION,
+                       true);
+    FastRandomContext rng(uint256{64});
+    std::vector<TxId> valid_ids;
+    for (unsigned i = 0; i < 256; ++i) {
+        auto tx = MakeNonCoinbaseTx(rng, i);
+        BOOST_REQUIRE(tx);
+        FundTxInputInCoinsTip(*m_node.chainman, *tx);
+        if (i == 255) {
+            CMutableTransaction invalid(*tx);
+            invalid.vin[0].scriptSig = CScript() << OP_FALSE;
+            tx = MakeTransactionRef(std::move(invalid));
+        } else
+            valid_ids.push_back(tx->GetId());
+        auto msg = NetMsg::Make(NetMsgType::TX, tx);
+        BOOST_REQUIRE(connman->ReceiveMsgFrom(node, msg));
+    }
+    const bool logged_before = LogInstance().WillLogCategory(BCLog::TXPACKAGES);
+    LogInstance().EnableCategory(BCLog::TXPACKAGES);
+    std::atomic<size_t> checks{0};
+    auto callback =
+        LogInstance().PushBackCallback([&](const std::string &line) {
+            if (line.find("tx-admission-precheck txid=") != std::string::npos)
+                ++checks;
+        });
+    const auto started_at = std::chrono::steady_clock::now();
+    connman->ProcessMessagesOnce(node);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started_at);
+    BOOST_TEST_MESSAGE("256-TX burst admission_prechecks=" << checks.load()
+                       << " diagnostic_elapsed_us=" << elapsed.count());
+    LogInstance().DeleteCallback(callback);
+    if (!logged_before) LogInstance().DisableCategory(BCLog::TXPACKAGES);
+    BOOST_CHECK_GT(checks.load(), 0);
+    BOOST_CHECK_LE(checks.load(), 257);
+    for (const auto &id : valid_ids)
+        BOOST_CHECK(m_node.mempool->exists(id));
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 255);
+    peerman->FinalizeNode(config, node);    SetMockTime(0);
+}
+
+BOOST_AUTO_TEST_CASE(local_and_low_bandwidth_bursts_keep_normal_trickle) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    for (unsigned scenario = 0; scenario < 4; ++scenario) {
+        const bool high_bandwidth = scenario & 1;
+        const bool local = scenario & 2;
+        auto connman =
+            std::make_unique<ConnmanTestMsg>(config, 123, 456, *m_node.addrman);
+        PeerManager::Options peer_opts;
+        peer_opts.deterministic_rng = true;
+        auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                         *m_node.chainman, *m_node.mempool,
+                                         nullptr, peer_opts);
+        CConnman::Options opts;
+        opts.m_msgproc = {peerman.get()};
+        opts.nSendBufferMaxSize = 1024 * 1024;
+        connman->Init(opts);
+        SetMockTime(1'700'000'000);
+        CAddress addr(MakeTestIp(0xa0b0c040 + scenario), NODE_NONE);
+        CNode node(400 + scenario, nullptr, addr, 0, 0, 0, CAddress(), "",
+                   ConnectionType::OUTBOUND_FULL_RELAY, false);
+        connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
+                           PROTOCOL_VERSION, true);
+        BOOST_CHECK(peerman->SendMessages(config, &node));
+        WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
+        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
+            node.GetId(), high_bandwidth);
+        FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
+        std::vector<CTransactionRef> txs;
+        TestMemPoolEntryHelper entry;
+        for (unsigned i = 0; i < 17; ++i) {
+            auto tx = MakeNonCoinbaseTx(rng, 0x60 + i);
+            BOOST_REQUIRE(tx);
+            {
+                LOCK2(cs_main, m_node.mempool->cs);
+                m_node.mempool->addUnchecked(entry.FromTx(tx));
+                if (local) m_node.mempool->AddUnbroadcastTx(tx->GetId());
+            }
+            txs.push_back(tx);
+        }
+        peerman->RelayTransactionBatch(txs);
+        // The fast path must retain known-inventory suppression as well.
+        peerman->MarkPeerKnownTx(node.GetId(), txs.back()->GetId());
+        BOOST_CHECK(peerman->SendMessages(config, &node));
+        size_t announced = 0;
+        V1TransportDeserializer deserializer(config, node.GetId());
+        {
+            LOCK(node.cs_vSend);
+            for (const auto &chunk : node.vSendMsg) {
+                Span<const uint8_t> bytes{chunk};
+                while (!bytes.empty()) {
+                    BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                    if (!deserializer.Complete()) continue;
+                    bool rejected = false;
+                    auto msg = deserializer.GetMessage(0us, rejected);
+                    BOOST_CHECK(!rejected);
+                    if (msg.m_type == NetMsgType::INV) {
+                        std::vector<CInv> invs;
+                        msg.m_recv >> invs;
+                        for (const auto &inv : invs)
+                            announced += inv.IsMsgTx();
+                    } else if (msg.m_type == NetMsgType::SHORTTX) {
+                        ShortTxResponse response;
+                        msg.m_recv >> response;
+                        announced += response.txs.size();
+                        for (const auto &tx : response.txs)
+                            BOOST_CHECK(tx->GetId() != txs.back()->GetId());
+                    }
+                }
+            }
+        }
+        BOOST_CHECK_EQUAL(announced, high_bandwidth && !local ? 16 : 0);
+        peerman->FinalizeNode(config, node);
+    }
+    SetMockTime(0);
+}
+
 BOOST_AUTO_TEST_CASE(inventory_broadcast_constants) {
     // Verify Stage H1 inventory broadcast constants
     static_assert(INBOUND_INVENTORY_BROADCAST_INTERVAL ==
@@ -2311,6 +2482,322 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
     BOOST_CHECK(swarm_err.find("no NODE_UTXO_SHARD") != std::string::npos);
 }
 
+
+BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman = std::make_unique<ConnmanTestMsg>(config, 0x3560, 0x3560,
+                                                    *m_node.addrman);
+    PeerManager::Options peer_opts;
+    peer_opts.deterministic_rng = true;
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+                                     *m_node.chainman, *m_node.mempool,
+                                     /*avalanche=*/nullptr, peer_opts);
+
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    connman->Init(options);
+
+    V2PeerProtocolHandler *v2_handler = peerman->GetV2ProtocolHandler();
+    BOOST_REQUIRE(v2_handler != nullptr);
+
+    const int64_t base_time = 1'700'000'000;
+    SetMockTime(base_time);
+
+    CAddress addr_from(MakeTestIp(0xa0b0c040), NODE_NONE);
+    CNode peer_from(/*id=*/910, /*sock=*/nullptr, addr_from,
+                    /*nKeyedNetGroupIn=*/0, /*nLocalHostNonceIn=*/0,
+                    /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                    ConnectionType::OUTBOUND_FULL_RELAY,
+                    /*inbound_onion=*/false);
+    connman->Handshake(
+        /*node=*/peer_from,
+        /*successfully_connected=*/true,
+        /*remote_services=*/ServiceFlags(NODE_NETWORK),
+        /*local_services=*/ServiceFlags(NODE_NETWORK),
+        /*version=*/PROTOCOL_VERSION,
+        /*relay_txs=*/true);
+
+    CAddress addr_to(MakeTestIp(0xa0b0c041), NODE_NONE);
+    CNode peer_to(/*id=*/911, /*sock=*/nullptr, addr_to,
+                  /*nKeyedNetGroupIn=*/1, /*nLocalHostNonceIn=*/0,
+                  /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                  ConnectionType::OUTBOUND_FULL_RELAY,
+                  /*inbound_onion=*/false);
+    connman->Handshake(
+        /*node=*/peer_to,
+        /*successfully_connected=*/true,
+        /*remote_services=*/ServiceFlags(NODE_NETWORK),
+        /*local_services=*/ServiceFlags(NODE_NETWORK),
+        /*version=*/PROTOCOL_VERSION,
+        /*relay_txs=*/true);
+
+    CAddress addr_hb(MakeTestIp(0xa0b0c042), NODE_NONE);
+    CNode peer_hb(/*id=*/912, /*sock=*/nullptr, addr_hb,
+                  /*nKeyedNetGroupIn=*/2, /*nLocalHostNonceIn=*/0,
+                  /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                  ConnectionType::OUTBOUND_FULL_RELAY,
+                  /*inbound_onion=*/false);
+    connman->Handshake(
+        /*node=*/peer_hb,
+        /*successfully_connected=*/true,
+        /*remote_services=*/ServiceFlags(NODE_NETWORK),
+        /*local_services=*/ServiceFlags(NODE_NETWORK),
+        /*version=*/PROTOCOL_VERSION,
+        /*relay_txs=*/true);
+    peer_hb.m_bip152_highbandwidth_from = true;
+
+    BOOST_CHECK(peerman->SendMessages(config, &peer_from));
+    BOOST_CHECK(peerman->SendMessages(config, &peer_to));
+    BOOST_CHECK(peerman->SendMessages(config, &peer_hb));
+    {
+        LOCK(peer_from.cs_vSend);
+        peer_from.vSendMsg.clear();
+    }
+    {
+        LOCK(peer_to.cs_vSend);
+        peer_to.vSendMsg.clear();
+    }
+    {
+        LOCK(peer_hb.cs_vSend);
+        peer_hb.vSendMsg.clear();
+    }
+
+    FastRandomContext rng(uint256{88});
+    std::atomic<bool> interrupt{false};
+    auto cur_time = std::chrono::microseconds{base_time * 1'000'000};
+
+    // 1. Batch of 20 valid transactions in SHORTTX (including a parent-child
+    //    pair placed out of topological order: child before parent):
+    std::vector<CTransactionRef> valid_batch;
+    for (int i = 0; i < 18; ++i) {
+        CTransactionRef tx = MakeNonCoinbaseTx(rng, static_cast<uint8_t>(0x10 + i));
+        BOOST_REQUIRE(tx != nullptr);
+        FundTxInputInCoinsTip(*m_node.chainman, *tx);
+        valid_batch.push_back(tx);
+    }
+
+    // Create a parent tx and a child tx spending parent's output 0, and place
+    // child BEFORE parent in the SHORTTX payload to test topological sorting.
+    const CScript parent_redeem = MakeRedeemScriptForAttempt(8);
+    const CScript parent_spk =
+        GetScriptForDestination(ScriptHash(parent_redeem));
+    CMutableTransaction parent_mtx;
+    parent_mtx.nVersion = 2;
+    parent_mtx.vin.resize(1);
+    parent_mtx.vin[0].prevout = COutPoint(TxId(rng.rand256()), 7);
+    parent_mtx.vin[0].scriptSig =
+        CScript() << ToByteVector(MakeRedeemScriptForAttempt(7));
+    parent_mtx.vout.resize(1);
+    parent_mtx.vout[0].nValue = 50000 * SATOSHI;
+    parent_mtx.vout[0].scriptPubKey = parent_spk;
+    CTransactionRef parent_tx = MakeTransactionRef(std::move(parent_mtx));
+    FundTxInputInCoinsTip(*m_node.chainman, *parent_tx);
+
+    CMutableTransaction child_mtx;
+    child_mtx.nVersion = 2;
+    child_mtx.vin.resize(1);
+    child_mtx.vin[0].prevout = COutPoint(parent_tx->GetId(), 0);
+    child_mtx.vin[0].scriptSig = CScript() << ToByteVector(parent_redeem);
+    child_mtx.vout.resize(1);
+    child_mtx.vout[0].nValue = 40000 * SATOSHI;
+    child_mtx.vout[0].scriptPubKey = parent_spk;
+    CTransactionRef child_tx = MakeTransactionRef(std::move(child_mtx));
+
+    // Put child_tx before parent_tx!
+    valid_batch.push_back(child_tx);
+    valid_batch.push_back(parent_tx);
+    BOOST_REQUIRE_EQUAL(valid_batch.size(), 20U);
+
+    // 1a. Unsolicited SHORTTX from a non-HB peer without a preceding GETSHORTTX
+    //     MUST be dropped with 0 transactions admitted to the mempool!
+    {
+        ShortTxResponse resp;
+        resp.scope = static_cast<uint8_t>(ReconScope::LIVE_MEMPOOL);
+        resp.context_id = uint256::ZERO;
+        resp.txs = valid_batch;
+        DataStream ss{};
+        ss << resp;
+        peerman->ProcessMessage(config, peer_from, NetMsgType::SHORTTX, ss,
+                                cur_time, interrupt);
+    }
+    BOOST_CHECK_EQUAL(v2_handler->GetStats().unsolicited_shorttx_dropped, 1U);
+    for (const auto &tx : valid_batch) {
+        BOOST_CHECK(!m_node.mempool->exists(tx->GetId()));
+    }
+
+    // 1b. Solicited SHORTTX (matching a recorded GETSHORTTX request) for the
+    //     first 2 transactions is accepted and batch-admitted!
+    cur_time += 2'000'000us;
+    {
+        const auto [k0, k1] = DeriveReconSipHashKey(
+            ReconScope::LIVE_MEMPOOL, uint256::ZERO, 0);
+        v2_handler->RecordPendingShortTxRequest(
+            peer_from.GetId(), ReconScope::LIVE_MEMPOOL, uint256::ZERO, k0, k1,
+            {ComputeMerklixShortId(k0, k1, valid_batch[0]->GetId()),
+             ComputeMerklixShortId(k0, k1, valid_batch[1]->GetId())});
+
+        ShortTxResponse solicited_resp;
+        solicited_resp.scope = static_cast<uint8_t>(ReconScope::LIVE_MEMPOOL);
+        solicited_resp.context_id = uint256::ZERO;
+        solicited_resp.txs = {valid_batch[0], valid_batch[1], valid_batch[2]};
+        DataStream ss{};
+        ss << solicited_resp;
+        peerman->ProcessMessage(config, peer_from, NetMsgType::SHORTTX, ss,
+                                cur_time, interrupt);
+    }
+    BOOST_CHECK(m_node.mempool->exists(valid_batch[0]->GetId()));
+    BOOST_CHECK(m_node.mempool->exists(valid_batch[1]->GetId()));
+    // A peer without high-bandwidth opt-in cannot smuggle an unrequested body
+    // beside the two bodies we solicited.
+    BOOST_CHECK(!m_node.mempool->exists(valid_batch[2]->GetId()));
+
+    // 1c. Preemptive SHORTTX from an opted-in High-Bandwidth peer
+    //     (m_bip152_highbandwidth_to = true or SetHighBandwidthShortTxPeer) is
+    //     accepted and batch-ingested without needing a prior GETSHORTTX!
+    cur_time += 2'000'000us;
+    peer_from.m_bip152_highbandwidth_to = true;
+    v2_handler->SetHighBandwidthShortTxPeer(peer_from.GetId(), true);
+    BOOST_CHECK(v2_handler->IsHighBandwidthShortTxPeer(peer_from.GetId()));
+    // A delayed solicited response and a proactive body batch can overlap.
+    // One pending match must not discard the other bodies we opted to accept.
+    {
+        const auto [k0, k1] = DeriveReconSipHashKey(
+            ReconScope::LIVE_MEMPOOL, uint256::ZERO, 0);
+        v2_handler->RecordPendingShortTxRequest(
+            peer_from.GetId(), ReconScope::LIVE_MEMPOOL, uint256::ZERO, k0, k1,
+            {ComputeMerklixShortId(k0, k1, valid_batch[0]->GetId())});
+    }
+    {
+        ShortTxResponse resp;
+        resp.scope = static_cast<uint8_t>(ReconScope::LIVE_MEMPOOL);
+        resp.context_id = uint256::ZERO;
+        resp.txs = valid_batch;
+        DataStream ss{};
+        ss << resp;
+        peerman->ProcessMessage(config, peer_from, NetMsgType::SHORTTX, ss,
+                                cur_time, interrupt);
+    }
+
+    // All 20 transactions must be admitted through ordinary transaction validation.
+    for (const auto &tx : valid_batch) {
+        BOOST_CHECK(m_node.mempool->exists(tx->GetId()));
+    }
+
+    // 2. Verify outgoing relay:
+    //    - peer_from (originator) receives neither SHORTTX nor INV
+    //    - peer_to (normal low-bandwidth peer) receives INV (and NEVER unsolicited SHORTTX)
+    //    - peer_hb (opted-in High-Bandwidth peer) receives preemptive SHORTTX!
+    BOOST_CHECK(peerman->SendMessages(config, &peer_from));
+    BOOST_CHECK(peerman->SendMessages(config, &peer_hb));
+    // Ordinary peers keep the upstream randomized trickle; this assertion
+    // checks eventual INV relay, while the HB peer above sends immediately.
+    SetMockTime(base_time + 60);
+    BOOST_CHECK(peerman->SendMessages(config, &peer_to));
+
+    {
+        V1TransportDeserializer deser_from(config, peer_from.GetId());
+        LOCK(peer_from.cs_vSend);
+        for (const auto &chunk : peer_from.vSendMsg) {
+            Span<const uint8_t> sp{chunk};
+            while (!sp.empty()) {
+                const int ret = deser_from.Read(config, sp);
+                BOOST_REQUIRE_GE(ret, 0);
+                if (deser_from.Complete()) {
+                    bool reject = false;
+                    CNetMessage msg = deser_from.GetMessage(0us, reject);
+                    BOOST_CHECK(!reject);
+                    BOOST_CHECK_NE(msg.m_type, NetMsgType::SHORTTX);
+                    BOOST_CHECK_NE(msg.m_type, NetMsgType::INV);
+                }
+            }
+        }
+    }
+
+    size_t inv_relayed_to_normal_peer = 0;
+    {
+        V1TransportDeserializer deser_to(config, peer_to.GetId());
+        LOCK(peer_to.cs_vSend);
+        for (const auto &chunk : peer_to.vSendMsg) {
+            Span<const uint8_t> sp{chunk};
+            while (!sp.empty()) {
+                const int ret = deser_to.Read(config, sp);
+                BOOST_REQUIRE_GE(ret, 0);
+                if (deser_to.Complete()) {
+                    bool reject = false;
+                    CNetMessage msg = deser_to.GetMessage(0us, reject);
+                    BOOST_CHECK(!reject);
+                    BOOST_CHECK_NE(msg.m_type, NetMsgType::SHORTTX);
+                    if (msg.m_type == NetMsgType::INV) {
+                        std::vector<CInv> vInv;
+                        msg.m_recv >> vInv;
+                        inv_relayed_to_normal_peer += vInv.size();
+                    }
+                }
+            }
+        }
+    }
+    BOOST_CHECK_EQUAL(inv_relayed_to_normal_peer, 20U);
+
+    size_t shorttx_relayed_to_hb_peer = 0;
+    {
+        V1TransportDeserializer deser_hb(config, peer_hb.GetId());
+        LOCK(peer_hb.cs_vSend);
+        for (const auto &chunk : peer_hb.vSendMsg) {
+            Span<const uint8_t> sp{chunk};
+            while (!sp.empty()) {
+                const int ret = deser_hb.Read(config, sp);
+                BOOST_REQUIRE_GE(ret, 0);
+                if (deser_hb.Complete()) {
+                    bool reject = false;
+                    CNetMessage msg = deser_hb.GetMessage(0us, reject);
+                    BOOST_CHECK(!reject);
+                    if (msg.m_type == NetMsgType::SHORTTX) {
+                        ShortTxResponse relayed_resp;
+                        msg.m_recv >> relayed_resp;
+                        shorttx_relayed_to_hb_peer += relayed_resp.txs.size();
+                    }
+                }
+            }
+        }
+    }
+    BOOST_CHECK_EQUAL(shorttx_relayed_to_hb_peer, 20U);
+
+    // 3. Partial-valid fallback when one transaction in a SHORTTX batch is invalid:
+    cur_time += 2'000'000us;
+    CTransactionRef mixed_valid_1 = MakeNonCoinbaseTx(rng, 0x41);
+    CTransactionRef mixed_valid_2 = MakeNonCoinbaseTx(rng, 0x42);
+    CTransactionRef mixed_invalid = MakeNonCoinbaseTx(rng, 0x43); // unfunded!
+    BOOST_REQUIRE(mixed_valid_1 && mixed_valid_2 && mixed_invalid);
+    FundTxInputInCoinsTip(*m_node.chainman, *mixed_valid_1);
+    FundTxInputInCoinsTip(*m_node.chainman, *mixed_valid_2);
+
+    const uint256 mixed_ctx = rng.rand256();
+    {
+        ShortTxResponse mixed_resp;
+        mixed_resp.scope = static_cast<uint8_t>(ReconScope::BLOCK_RECON);
+        mixed_resp.context_id = mixed_ctx;
+        mixed_resp.txs = {mixed_valid_1, mixed_invalid, mixed_valid_2};
+        DataStream ss{};
+        ss << mixed_resp;
+        peerman->ProcessMessage(config, peer_from, NetMsgType::SHORTTX, ss,
+                                cur_time, interrupt);
+    }
+
+    BOOST_CHECK(m_node.mempool->exists(mixed_valid_1->GetId()));
+    BOOST_CHECK(m_node.mempool->exists(mixed_valid_2->GetId()));
+    BOOST_CHECK(!m_node.mempool->exists(mixed_invalid->GetId()));
+
+    const auto scoped_mixed =
+        v2_handler->GetScopedTransactions(ReconScope::BLOCK_RECON, mixed_ctx);
+    BOOST_CHECK_EQUAL(scoped_mixed.size(), 2U);
+
+    SetMockTime(0);
+    peerman->FinalizeNode(config, peer_from);
+    peerman->FinalizeNode(config, peer_to);
+    peerman->FinalizeNode(config, peer_hb);
+}
 
 BOOST_AUTO_TEST_CASE(root_count_one_xor_requires_bucket_proof) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
