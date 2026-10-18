@@ -4,6 +4,7 @@
 """Test mempool limiting together/eviction with the wallet."""
 
 from decimal import Decimal
+from math import ceil
 
 from test_framework.messages import XEC
 from test_framework.p2p import P2PTxInvStore
@@ -193,6 +194,24 @@ class MempoolLimitTest(BitcoinTestFramework):
         tx_child = miniwallet.create_self_transfer_multi(
             utxos_to_spend=coins, fee_per_output=10000
         )
+        # Slab allocation changes how many flooding transactions fit in the
+        # memory limit, and therefore the rolling minimum fee after eviction.
+        # Keep this a real CPFP package at the observed minimum, rather than
+        # relying on the fixed child fee to exceed that minimum by accident.
+        package_vsize = tx_poor["tx"].billable_size() + tx_child["tx"].billable_size()
+        mempoolmin_feerate = node.getmempoolinfo()["mempoolminfee"]
+        child_fee_sats = max(
+            int(DEFAULT_FEE * XEC),
+            ceil(2 * mempoolmin_feerate * package_vsize * XEC / 1000),
+        )
+        tx_child = miniwallet.create_self_transfer_multi(
+            utxos_to_spend=coins, fee_per_output=child_fee_sats
+        )
+        assert_greater_than(mempoolmin_feerate, relayfee)
+        assert_greater_than(
+            (tx_poor["fee"] + tx_child["fee"]) * 1000 / package_vsize,
+            mempoolmin_feerate,
+        )
         package_txns.append(tx_child)
 
         submitpackage_result = node.submitpackage([tx["hex"] for tx in package_txns])
@@ -205,7 +224,7 @@ class MempoolLimitTest(BitcoinTestFramework):
             poor_parent_result["fees"]["base"], tx_poor["tx"].billable_size(), relayfee
         )
         assert_equal(rich_parent_result["fees"]["base"], 0)
-        assert_equal(child_result["fees"]["base"], DEFAULT_FEE)
+        assert_equal(child_result["fees"]["base"], Decimal(child_fee_sats) / XEC)
         # The "rich" parent does not require CPFP so its effective feerate is
         # just its individual feerate.
         assert_fee_amount(
