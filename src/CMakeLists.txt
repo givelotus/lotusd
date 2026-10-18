@@ -872,6 +872,7 @@ if(BUILD_CHAINSTATE)
 		node/blockfitter.cpp
 		node/blockstorage.cpp
 		node/chainstate.cpp
+		node/snapshot.cpp
 		node/utxo_snapshot.cpp
 		policy/fees.cpp
 		policy/packages.cpp
@@ -975,7 +976,7 @@ if(BUILD_CHAINSTATE)
 			# To access the config/ and obj/ directories
 			${CMAKE_CURRENT_BINARY_DIR}
 	)
-	target_link_libraries(bitcoinkernel crypto univalue secp256k1 lotus_v2_mdbx leveldb)
+	target_link_libraries(bitcoinkernel crypto univalue secp256k1 lotus_v2_header lotus_v2_mdbx leveldb)
 	link_boost_headers_only(bitcoinkernel headers)
 
 	if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
