@@ -72,6 +72,13 @@ protected:
         const CTransactionRef &tx,
         std::shared_ptr<const std::vector<Coin>> spent_coins,
         uint64_t mempool_sequence) {}
+    virtual void TransactionAddedToMempool(
+        const CTransactionRef &tx,
+        std::shared_ptr<const std::vector<Coin>> spent_coins,
+        uint64_t mempool_sequence,
+        int64_t entry_time) {
+        TransactionAddedToMempool(tx, std::move(spent_coins), mempool_sequence);
+    }
 
     /**
      * Notifies listeners of a transaction leaving mempool.
