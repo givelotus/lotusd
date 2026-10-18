@@ -1151,6 +1151,44 @@ BOOST_AUTO_TEST_CASE(v2_nullfail_and_batch_sig_collector) {
         BOOST_CHECK_EQUAL(*fail_st, corrupt_idx);
         BOOST_CHECK_EQUAL(*fail_mt, corrupt_idx);
     }
+
+    // 3. Verify BatchSigCollector::FirstFailingIndex on mixed BIP340 + legacy
+    //    Schnorr items (both single-threaded and multi-threaded worker pool).
+    CKey legacy_key;
+    legacy_key.Set(secret.begin(), secret.end(), true);
+    const CPubKey legacy_pubkey = legacy_key.GetPubKey();
+    std::vector<uint256> legacy_msgs(64);
+    std::vector<std::vector<uint8_t>> legacy_sigs(64);
+    for (size_t j = 0; j < 64; ++j) {
+        legacy_msgs[j] = uint256{};
+        legacy_msgs[j].begin()[0] = static_cast<uint8_t>(j);
+        legacy_msgs[j].begin()[1] = 0x77;
+        BOOST_REQUIRE(legacy_key.SignSchnorr(legacy_msgs[j], legacy_sigs[j]));
+    }
+    for (size_t corrupt_leg : {size_t(0), size_t(19), size_t(63)}) {
+        BatchSigCollector mixed;
+        for (size_t i = 0; i < 32; ++i) {
+            BOOST_REQUIRE(mixed.Add(pubkey, sigs[i], msgs[i]));
+        }
+        for (size_t j = 0; j < 64; ++j) {
+            auto ls = legacy_sigs[j];
+            if (j == corrupt_leg) {
+                ls[11] ^= 0x02;
+            }
+            BOOST_REQUIRE(mixed.AddLegacySchnorr(
+                std::span<const uint8_t>(legacy_pubkey.data(),
+                                         legacy_pubkey.size()),
+                ls, legacy_msgs[j].begin()));
+        }
+        BOOST_CHECK(!mixed.VerifyAll(1));
+        BOOST_CHECK(!mixed.VerifyAll(4));
+        const auto fail_st = mixed.FirstFailingIndex(1);
+        const auto fail_mt = mixed.FirstFailingIndex(4);
+        BOOST_REQUIRE(fail_st.has_value());
+        BOOST_REQUIRE(fail_mt.has_value());
+        BOOST_CHECK_EQUAL(*fail_st, 32U + corrupt_leg);
+        BOOST_CHECK_EQUAL(*fail_mt, 32U + corrupt_leg);
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(v2_parallel_utxo_dependency_validation,
@@ -1406,7 +1444,58 @@ BOOST_FIXTURE_TEST_CASE(v2_native_v7_chained_schnorr_batch_and_block,
     }
 }
 
+BOOST_AUTO_TEST_CASE(legacy_to_v7_adapter_roundtrip) {
+    // 1. AdaptLegacyOutputToV7 on standard output, OP_RETURN burn output, and empty scriptPubKey
+    CTxOut spend_out(1234 * SATOSHI, CScript() << OP_TRUE);
+    AdaptLegacyOutputToV7(spend_out);
+    BOOST_CHECK_EQUAL(spend_out.nFlags, 0U);
+    BOOST_CHECK_EQUAL(spend_out.vBranches.size(), 1U);
+    BOOST_CHECK_EQUAL(spend_out.vPaths.size(), 1U);
+
+    CTxOut burn_out(0 * SATOSHI, CScript() << OP_RETURN << std::vector<uint8_t>{1, 2, 3});
+    AdaptLegacyOutputToV7(burn_out);
+    BOOST_CHECK_EQUAL(burn_out.nFlags, 2U);
+    BOOST_CHECK_EQUAL(burn_out.vBranches.size(), 1U);
+    BOOST_CHECK(burn_out.vPaths.empty());
+
+    CTxOut empty_spk_out(500 * SATOSHI, CScript());
+    AdaptLegacyOutputToV7(empty_spk_out);
+    BOOST_CHECK_EQUAL(empty_spk_out.nFlags, 0U);
+    BOOST_CHECK_EQUAL(empty_spk_out.vBranches.size(), 1U);
+    BOOST_CHECK(!empty_spk_out.scriptPubKey.empty());
+
+    // 2. AdaptLegacyInputToV7 on spend input with non-standard sequence and coinbase input
+    TxId dummy_txid = TxId(uint256::ONE);
+    CTxIn spend_in(COutPoint(dummy_txid, 2), CScript() << OP_1, 0x80000001U);
+    AdaptLegacyInputToV7(spend_in);
+    BOOST_CHECK_EQUAL(spend_in.nFlags, 1U);
+    BOOST_CHECK_EQUAL(spend_in.nSequence, uint32_t(CTxIn::SEQUENCE_FINAL));
+    BOOST_REQUIRE_EQUAL(spend_in.vWitnesses.size(), 1U);
+    BOOST_CHECK(!spend_in.vWitnesses[0].script.empty());
+
+    // 3. Full transaction with MTP locktime (>= 500,000,000)
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.nLockTime = 1700000000U;
+    mtx.vin.push_back(spend_in);
+    mtx.vout.push_back(spend_out);
+    mtx.vout.push_back(burn_out);
+
+    const CTransaction adapted = AdaptLegacyTxToV7(CTransaction(mtx));
+    BOOST_CHECK_EQUAL(adapted.nVersion, 7U);
+    BOOST_CHECK(adapted.fHasV2Lock);
+    BOOST_CHECK_EQUAL(adapted.nV2Lock, (uint64_t(1700000000U) << 8) | 2ULL);
+
+    DataStream ss{};
+    ss << adapted;
+    const size_t expected_size = ss.size();
+    CTransaction deserialized(deserialize, ss);
+    BOOST_CHECK_EQUAL(deserialized.nVersion, 7U);
+    BOOST_CHECK_EQUAL(deserialized.GetId(), adapted.GetId());
+    BOOST_CHECK_EQUAL(deserialized.GetHash(), adapted.GetHash());
+    BOOST_CHECK_EQUAL(deserialized.GetTotalSize(), expected_size);
+    BOOST_CHECK_EQUAL(GetSerializeSize(deserialized), expected_size);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
-
-
 

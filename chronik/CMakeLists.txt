@@ -18,6 +18,11 @@ if(CHRONIK_IMPLEMENTATION STREQUAL "native")
     return()
 endif()
 
+# Match src/ Debug definitions for every C++ translation unit, including the
+# generated CXX bridges. sync.h defines inline lock operations differently with
+# DEBUG_LOCKORDER; mixing those definitions can pop an empty lock stack.
+add_compile_definitions_to_configuration(Debug DEBUG DEBUG_LOCKORDER ABORT_ON_FAILED_ASSUME)
+
 include(RustHelper)
 
 set(CHRONIK_CARGO_FLAGS --locked)
@@ -125,7 +130,8 @@ set(CXXBRIDGE_GENERATED_FOLDER
 set(CHRONIK_BRIDGE_GENERATED_CPP_FILES
     "${CXXBRIDGE_GENERATED_FOLDER}/chronik-bridge/src/ffi.rs.cc")
 set(CHRONIK_LIB_GENERATED_CPP_FILES
-    "${CXXBRIDGE_GENERATED_FOLDER}/chronik_lib/src/ffi.rs.cc")
+    "${CXXBRIDGE_GENERATED_FOLDER}/chronik_lib/src/ffi.rs.cc"
+    "${CXXBRIDGE_GENERATED_FOLDER}/chronik_lib/src/v2_ffi.rs.cc")
 
 add_custom_command(
     OUTPUT
@@ -153,6 +159,7 @@ target_include_directories(chronik-bridge
 target_link_libraries(chronik-bridge
     util
     lotus_v2_mdbx
+    leveldb
 )
 
 # Chronik library
@@ -162,6 +169,7 @@ add_library(chronik
     chronik-cpp/chronik.cpp
     chronik-cpp/chronik_inprocess.cpp
     chronik-cpp/chronik_validationinterface.cpp
+    ../src/lotus_v2/chronik_explorer.cpp
     ${CHRONIK_LIB_GENERATED_CPP_FILES}
 )
 target_link_libraries(chronik
