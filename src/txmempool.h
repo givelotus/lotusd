@@ -19,6 +19,7 @@
 #include <primitives/transaction.h>
 #include <radix.h>
 #include <sync.h>
+#include <lotus_v2/utxo_fast_filter.h>
 #include <txconflicting.h>
 #include <txorphanage.h>
 #include <uint256radixkey.h>
@@ -665,7 +666,29 @@ public:
         ScopedSnapshotDefer &operator=(const ScopedSnapshotDefer &) = delete;
     };
 
+    bool TryClearAllForConnectedBlock(const std::vector<CTransactionRef> &vtx)
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
+
+    /**
+     * Project Hamilton (opencbdc-tx) style 64-shard compact in-memory UHS
+     * and mempool-spent outpoint fast-filter (<50 ns double-spend rejection).
+     */
+    lotus::v2::UtxoFastFilter &GetUtxoFastFilter() const noexcept {
+        return m_utxo_fast_filter;
+    }
+
+    bool IsSpentFast(const COutPoint &outpoint) const noexcept {
+        return m_utxo_fast_filter.IsSpentInMempool(
+            outpoint.GetTxId().begin(), outpoint.GetN());
+    }
+
+    bool MayExistInChainOrMempoolFast(const COutPoint &outpoint) const noexcept {
+        return m_utxo_fast_filter.MayExistInChainOrMempool(
+            outpoint.GetTxId().begin(), outpoint.GetN());
+    }
+
 private:
+    mutable lotus::v2::UtxoFastFilter m_utxo_fast_filter;
     mutable std::set<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
     mutable bool m_snapshot_initialized GUARDED_BY(cs){false};
     mutable bool m_snapshot_needs_reset GUARDED_BY(cs){true};

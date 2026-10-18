@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <txmempool.h>
+#include <node/snapshot.h>
 
 #include <chainparams.h>
 #include <common/args.h>
@@ -899,6 +900,92 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(setAvalancheFinalized_chained_txs) {
+    CTxMemPool &pool = *Assert(m_node.mempool);
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    const Consensus::Params &params = chainman.GetConsensus();
+    TestMemPoolEntryHelper entry;
+
+    LOCK2(cs_main, pool.cs);
+    const CBlockIndex &tip = *Assert(chainman.ActiveTip());
+
+    CScript scriptSig;
+    for (int i = 0; i < 100; ++i) {
+        scriptSig << OP_1;
+    }
+
+    std::vector<CTxMemPoolEntryRef> entries;
+    entries.reserve(100);
+    TxId prevId{FastRandomContext().rand256()};
+    for (size_t i = 0; i < 100; ++i) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.resize(1);
+        mtx.vin[0].prevout = COutPoint(prevId, 0);
+        mtx.vin[0].scriptSig = scriptSig;
+        mtx.vout.emplace_back((100000 - int64_t(i) * 1000) * SATOSHI,
+                              CScript() << OP_TRUE);
+        CTransactionRef tx = MakeTransactionRef(mtx);
+        prevId = tx->GetId();
+
+        auto mempoolEntry = entry.Fee(1000 * SATOSHI).FromTx(tx);
+        pool.addUnchecked(mempoolEntry);
+        entries.push_back(mempoolEntry);
+    }
+
+    // Finalize the 50th transaction in the chain: all 50 ancestors (0..49)
+    // should finalize together.
+    std::vector<TxId> finalizedTxIds;
+    BOOST_CHECK(pool.setAvalancheFinalized(
+        entries[49], params, tip, chainman.ActiveChainstate(), finalizedTxIds));
+    BOOST_CHECK_EQUAL(finalizedTxIds.size(), 50U);
+    BOOST_CHECK_EQUAL(pool.GetFinalizedTxCount(), 50U);
+    for (size_t i = 0; i < 50; ++i) {
+        BOOST_CHECK(
+            pool.isAvalancheFinalizedPreConsensus(entries[i]->GetTx().GetId()));
+    }
+    for (size_t i = 50; i < 100; ++i) {
+        BOOST_CHECK(!pool.isAvalancheFinalizedPreConsensus(
+            entries[i]->GetTx().GetId()));
+    }
+
+    // Verify CalculateMemPoolAncestors stops at already-finalized ancestors
+    // when fSearchFinalized is false (both with and without fSearchForParents).
+    for (const bool fSearchForParents : {false, true}) {
+        CTxMemPool::setEntries unfinalizedAncestors;
+        pool.CalculateMemPoolAncestors(entries[52], unfinalizedAncestors,
+                                       fSearchForParents,
+                                       /*fSearchFinalized=*/false);
+        BOOST_CHECK_EQUAL(unfinalizedAncestors.size(), 2U);
+
+        CTxMemPool::setEntries allAncestors;
+        pool.CalculateMemPoolAncestors(entries[52], allAncestors,
+                                       fSearchForParents,
+                                       /*fSearchFinalized=*/true);
+        BOOST_CHECK_EQUAL(allAncestors.size(), 52U);
+    }
+
+    // Re-finalizing an already-finalized transaction is a no-op that succeeds
+    // with an empty newly-finalized list.
+    BOOST_CHECK(pool.setAvalancheFinalized(
+        entries[25], params, tip, chainman.ActiveChainstate(), finalizedTxIds));
+    BOOST_CHECK(finalizedTxIds.empty());
+    BOOST_CHECK_EQUAL(pool.GetFinalizedTxCount(), 50U);
+
+    // Finalizing the remaining descendants one by one should only finalize the
+    // new child each time without re-walking or re-reporting finalized parents.
+    for (size_t i = 50; i < 100; ++i) {
+        BOOST_CHECK(pool.setAvalancheFinalized(entries[i], params, tip,
+                                               chainman.ActiveChainstate(),
+                                               finalizedTxIds));
+        BOOST_CHECK_EQUAL(finalizedTxIds.size(), 1U);
+        BOOST_CHECK_EQUAL(finalizedTxIds[0], entries[i]->GetTx().GetId());
+        BOOST_CHECK_EQUAL(pool.GetFinalizedTxCount(), i + 1);
+        BOOST_CHECK(
+            pool.isAvalancheFinalizedPreConsensus(entries[i]->GetTx().GetId()));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(unchecked_long_chain_storage) {
     // Exercise the unchecked mempool container with a 100-transaction chain.
     // addUnchecked bypasses input/script checks and admission policy; this is
@@ -927,6 +1014,102 @@ BOOST_AUTO_TEST_CASE(unchecked_long_chain_storage) {
     }
 
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 100UL);
+}
+
+BOOST_AUTO_TEST_CASE(bulk_clear_requires_exact_unique_transaction_set) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 2; ++i) {
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{uint256{uint8_t(i + 1)}}, 0);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        txs.push_back(MakeTransactionRef(tx));
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(txs.back()));
+    }
+    const auto updates = pool.GetTransactionsUpdated();
+    const auto sequence = pool.GetSequence();
+    BOOST_CHECK(!pool.TryClearAllForConnectedBlock({txs[0], txs[0], txs[0]}));
+    BOOST_CHECK_EQUAL(pool.size(), 2U);
+    BOOST_CHECK_EQUAL(pool.GetTransactionsUpdated(), updates);
+    BOOST_CHECK_EQUAL(pool.GetSequence(), sequence);
+}
+
+BOOST_AUTO_TEST_CASE(bulk_clear_preserves_fee_history_and_frozen_epochs) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    CMutableTransaction tx;
+    tx.vin.emplace_back(TxId{uint256{uint8_t(1)}}, 0);
+    tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+    auto ref = MakeTransactionRef(tx);
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(ref));
+    pool.TrimToSize(0);
+    BOOST_REQUIRE_GT(pool.GetRollingMinimumFeeRate(), 0);
+    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(ref));
+    pool.FreezeEpochBatch();
+    const auto fee = pool.GetRollingMinimumFeeRate();
+    const auto updates = pool.GetTransactionsUpdated();
+    const auto sequence = pool.GetSequence();
+    BOOST_REQUIRE(pool.TryClearAllForConnectedBlock({ref, ref}));
+    BOOST_CHECK_EQUAL(pool.GetRollingMinimumFeeRate(), fee);
+    BOOST_CHECK_EQUAL(pool.GetTransactionsUpdated(), updates + 1);
+    BOOST_CHECK_EQUAL(pool.GetSequence(), sequence + 1);
+    BOOST_CHECK_EQUAL(pool.GetMerklixOverlay().GetFrozenEpochs().size(), 1U);
+    BOOST_CHECK_EQUAL(pool.GetMerklixOverlay().GetSpeculativeOverlay().GetTxCount(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(bulk_clear_matches_staged_block_removal_state) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper helper;
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 3; ++i) {
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{uint256{uint8_t(i + 1)}}, 0);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        txs.push_back(MakeTransactionRef(tx));
+    }
+    const auto exercise = [&](bool bulk) EXCLUSIVE_LOCKS_REQUIRED(cs_main, pool.cs) {
+        pool.clear(true);
+        pool.GetUtxoFastFilter().ClearAll();
+        pool.addUnchecked(helper.Fee(1000 * SATOSHI).FromTx(txs[0]));
+        pool.TrimToSize(0);
+        for (const auto &tx : txs) {
+            pool.addUnchecked(helper.Fee(1000 * SATOSHI).FromTx(tx));
+            pool.AddUnbroadcastTx(tx->GetId());
+        }
+        pool.FreezeEpochBatch();
+        const auto updates = pool.GetTransactionsUpdated();
+        const auto sequence = pool.GetSequence();
+        const auto before = node::GetGlobalSnapshotPublisher().Load();
+        {
+            CTxMemPool::ScopedSnapshotDefer defer(pool);
+            if (bulk) {
+                auto block_txs = txs;
+                block_txs.insert(block_txs.begin(), txs[0]);
+                BOOST_REQUIRE(pool.TryClearAllForConnectedBlock(block_txs));
+            } else {
+                CTxMemPool::setEntries all;
+                for (auto it = pool.mapTx.begin(); it != pool.mapTx.end(); ++it) all.insert(it);
+                pool.RemoveStaged(all, MemPoolRemovalReason::BLOCK);
+                pool.updateFeeForBlock();
+            }
+        }
+        const auto after = node::GetGlobalSnapshotPublisher().Load();
+        const auto &overlay = pool.GetMerklixOverlay();
+        return std::make_tuple(pool.size(), pool.mapNextTx.size(),
+            pool.GetTotalTxSize(), pool.GetTotalFee(), pool.DynamicMemoryUsage(),
+            pool.GetTransactionsUpdated() - updates, pool.GetSequence() - sequence,
+            pool.GetRollingMinimumFeeRate(), pool.GetUnbroadcastTxCount(),
+            pool.GetUtxoFastFilter().MempoolSpentCount(),
+            pool.GetUtxoFastFilter().UnspentCount(), overlay.GetFrozenEpochs().size(),
+            overlay.GetSpeculativeOverlay().GetTxCount(), after->mempool_size);
+    };
+    const auto staged = exercise(false);
+    const auto bulk = exercise(true);
+    BOOST_CHECK(staged == bulk);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

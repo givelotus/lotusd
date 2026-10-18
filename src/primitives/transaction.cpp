@@ -152,6 +152,12 @@ TxHash CMutableTransaction::GetHash() const {
     return TxHash(ComputeCMutableTransactionHash(*this));
 }
 
+uint32_t CTransaction::ComputeSerializedSize() const {
+    SizeComputer writer;
+    SerializeTransaction(*this, writer);
+    return writer.size();
+}
+
 uint256 CTransaction::ComputeHash() const {
     return (HashWriter{} << *this).GetHash();
 }
@@ -162,13 +168,13 @@ uint256 CTransaction::ComputeHash() const {
  */
 CTransaction::CTransaction()
     : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
-      hash() {}
+      m_serialize_size(ComputeSerializedSize()), hash() {}
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : vin(tx.vin), vout(tx.vout), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+      nLockTime(tx.nLockTime), m_serialize_size(ComputeSerializedSize()), hash(ComputeHash()) {}
 CTransaction::CTransaction(CMutableTransaction &&tx)
     : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
-      nLockTime(tx.nLockTime), hash(ComputeHash()) {}
+      nLockTime(tx.nLockTime), m_serialize_size(ComputeSerializedSize()), hash(ComputeHash()) {}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();
@@ -182,10 +188,6 @@ Amount CTransaction::GetValueOut() const {
     }
     assert(MoneyRange(nValueOut));
     return nValueOut;
-}
-
-unsigned int CTransaction::GetTotalSize() const {
-    return ::GetSerializeSize(*this);
 }
 
 std::string CTransaction::ToString() const {

@@ -154,6 +154,10 @@ void DisconnectedBlockTransactions::removeForBlock(
         return;
     }
 
+    CTxMemPool::ScopedSnapshotDefer snap_defer(pool);
+    if (queuedTx.empty() && pool.TryClearAllForConnectedBlock(vtx)) {
+        return;
+    }
     addForBlock(vtx, pool);
 
     for (const CTransactionRef &tx :

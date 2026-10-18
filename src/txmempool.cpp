@@ -194,6 +194,7 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
     std::set<TxId> setParentTransactions;
     for (const CTxIn &in : tx->vin) {
         mapNextTx.insert(std::make_pair(&in.prevout, tx));
+        m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(), in.prevout.GetN());
         setParentTransactions.insert(in.prevout.GetTxId());
     }
     // Don't bother worrying about child transactions of this one. It is
@@ -205,6 +206,11 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
         UpdateParent(newit, pit, true);
     }
 
+    for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+        if (!tx->vout[i].IsNull() && !tx->vout[i].scriptPubKey.IsUnspendable()) {
+            m_utxo_fast_filter.AddUnspent(tx->GetId().begin(), i);
+        }
+    }
     UpdateParentsOf(true, newit);
     AddTransactionToOverlay(m_merklix_overlay, tx,
                             entry->GetFee() / SATOSHI, entry->GetSigChecks());
@@ -221,7 +227,8 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     // even if not directly reported below.
     uint64_t mempool_sequence = GetAndIncrementSequence();
 
-    const TxId &txid = (*it)->GetTx().GetId();
+    const CTransaction &tx = (*it)->GetTx();
+    const TxId &txid = tx.GetId();
     MarkSnapshotEntryChanged(txid);
     RemoveTransactionFromOverlay(m_merklix_overlay, (*it)->GetTx());
 
@@ -242,8 +249,17 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
         }
     }
 
-    for (const CTxIn &txin : (*it)->GetTx().vin) {
+    if (reason != MemPoolRemovalReason::BLOCK) {
+        for (uint32_t i = 0; i < tx.vout.size(); ++i) {
+            if (!tx.vout[i].IsNull() && !tx.vout[i].scriptPubKey.IsUnspendable())
+                m_utxo_fast_filter.RemoveUnspent(txid.begin(), i);
+        }
+    }
+    for (const CTxIn &txin : tx.vin) {
         mapNextTx.erase(txin.prevout);
+        m_utxo_fast_filter.UnmarkSpentInMempool(txin.prevout.GetTxId().begin(), txin.prevout.GetN());
+        if (reason == MemPoolRemovalReason::BLOCK)
+            m_utxo_fast_filter.RemoveUnspent(txin.prevout.GetTxId().begin(), txin.prevout.GetN());
     }
 
     /* add logging because unchecked */
@@ -398,6 +414,7 @@ void CTxMemPool::_clear() {
     m_merklix_overlay.Clear();
     mapTx.clear();
     mapNextTx.clear();
+    m_utxo_fast_filter.ClearMempool();
     totalTxSize = 0;
     m_total_fee = Amount::zero();
     cachedInnerUsage = 0;
@@ -433,6 +450,30 @@ void CTxMemPool::ConnectBlockReset(const BlockHash &tip_hash,
                                   uint64_t next_height,
                                   uint64_t parent_mtp) {
     SyncMerklixOverlayToTip(tip_hash, next_height, parent_mtp);
+}
+
+bool CTxMemPool::TryClearAllForConnectedBlock(
+    const std::vector<CTransactionRef> &vtx) {
+    AssertLockHeld(cs);
+    if (!mapDeltas.empty() || vtx.size() <= 1 ||
+        mapTx.size() != vtx.size() - 1) {
+        return false;
+    }
+    setEntries entries;
+    for (size_t i = 1; i < vtx.size(); ++i) {
+        const auto found = mapTx.find(vtx[i]->GetId());
+        if (found == mapTx.end() || !entries.insert(found).second) {
+            return false;
+        }
+    }
+    // A single staged removal retains fee history, epoch snapshots, filter
+    // updates, sequence accounting and every per-entry side effect. Publishing
+    // remains coalesced, without _clear's unrelated reset semantics.
+    ScopedSnapshotDefer defer(*this);
+    RemoveStaged(entries, MemPoolRemovalReason::BLOCK);
+    updateFeeForBlock();
+    node::PublishMempoolSnapshot(*this);
+    return true;
 }
 
 void CTxMemPool::clear(bool include_finalized_txs) {
