@@ -18,6 +18,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <functional>
+
 const auto NoMalleation = [](AutoFile &file, node::SnapshotMetadata &meta) {};
 
 /**
@@ -34,7 +36,8 @@ template <typename F = decltype(NoMalleation)>
 static bool CreateAndActivateUTXOSnapshot(TestingSetup *fixture,
                                           F malleation = NoMalleation,
                                           bool reset_chainstate = false,
-                                          bool in_memory_chainstate = false) {
+                                          bool in_memory_chainstate = false,
+                                          std::function<void()> before_activate = {}) {
     node::NodeContext &node = fixture->m_node;
     fs::path root = fixture->m_path_root;
 
@@ -132,6 +135,8 @@ static bool CreateAndActivateUTXOSnapshot(TestingSetup *fixture,
     if (tip->pprev) {
         new_active.m_chain.SetTip(*(tip->pprev));
     }
+
+    if (before_activate) before_activate();
 
     auto res = node.chainman->ActivateSnapshot(auto_infile, metadata,
                                                in_memory_chainstate);

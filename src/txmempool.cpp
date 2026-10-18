@@ -14,6 +14,7 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <logging.h>
+#include <node/snapshot.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <primitives/block.h>
@@ -141,6 +142,8 @@ CTxMemPool::CTxMemPool(const Config &config, Options opts)
       m_opts{std::move(opts)} {
     // lock free clear
     _clear();
+    LOCK(cs);
+    node::PublishMempoolSnapshot(*this);
 }
 
 CTxMemPool::~CTxMemPool() = default;
@@ -209,6 +212,8 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
     m_total_fee += entry->GetFee();
+    MarkSnapshotEntryChanged(tx->GetId());
+    node::PublishMempoolSnapshot(*this);
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
@@ -217,6 +222,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     uint64_t mempool_sequence = GetAndIncrementSequence();
 
     const TxId &txid = (*it)->GetTx().GetId();
+    MarkSnapshotEntryChanged(txid);
     RemoveTransactionFromOverlay(m_merklix_overlay, (*it)->GetTx());
 
     if (reason != MemPoolRemovalReason::BLOCK) {
@@ -342,6 +348,7 @@ void CTxMemPool::updateFeeForBlock() {
     AssertLockHeld(cs);
     lastRollingFeeUpdate = GetTime();
     blockSinceLastRollingFeeBump = true;
+    node::PublishMempoolSnapshot(*this);
 }
 
 void CTxMemPool::removeForFinalizedBlock(
@@ -349,6 +356,7 @@ void CTxMemPool::removeForFinalizedBlock(
         &confirmedTxIdsInNonFinalizedBlocks) {
     AssertLockHeld(cs);
 
+    ScopedSnapshotDefer snapshot_defer(*this);
     std::vector<CTxMemPoolEntryRef> finalizedTxsToKeep;
     finalizedTxs.forEachLeaf(
         [&](const CTxMemPoolEntryRef &entry) NO_THREAD_SAFETY_ANALYSIS {
@@ -381,9 +389,12 @@ void CTxMemPool::removeForFinalizedBlock(
     }
 
     nTransactionsUpdated++;
+    node::PublishMempoolSnapshot(*this);
 }
 
 void CTxMemPool::_clear() {
+    m_snapshot_changed_entries.clear();
+    m_snapshot_needs_reset = true;
     m_merklix_overlay.Clear();
     mapTx.clear();
     mapNextTx.clear();
@@ -398,7 +409,9 @@ void CTxMemPool::_clear() {
 
 const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
     AssertLockHeld(cs);
-    return m_merklix_overlay.FreezeEpochBatch();
+    const auto &frozen = m_merklix_overlay.FreezeEpochBatch();
+    node::PublishMempoolSnapshot(*this);
+    return frozen;
 }
 
 void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
@@ -430,6 +443,7 @@ void CTxMemPool::clear(bool include_finalized_txs) {
         std::swap(finalizedTxs, empty);
         m_finalizedTxsFitter.resetBlock();
     }
+    node::PublishMempoolSnapshot(*this);
 }
 
 void CTxMemPool::check(const CCoinsViewCache &active_coins_tip,
@@ -709,6 +723,7 @@ bool CTxMemPool::setAvalancheFinalized(const CTxMemPoolEntryRef &tx,
     }
 
     nTransactionsUpdated++;
+    node::PublishMempoolSnapshot(*this);
 
     return true;
 }
@@ -779,7 +794,9 @@ void CTxMemPool::PrioritiseTransaction(const TxId &txid,
                 e->UpdateModifiedFee(nFeeDelta);
             });
             ++nTransactionsUpdated;
+            MarkSnapshotEntryChanged(txid);
         }
+        node::PublishMempoolSnapshot(*this);
     }
     LogPrintf("PrioritiseTransaction: %s fee += %s\n", txid.ToString(),
               FormatMoney(nFeeDelta));
@@ -797,7 +814,10 @@ void CTxMemPool::ApplyDelta(const TxId &txid, Amount &nFeeDelta) const {
 
 void CTxMemPool::ClearPrioritisation(const TxId &txid) {
     AssertLockHeld(cs);
-    mapDeltas.erase(txid);
+    if (mapDeltas.erase(txid) > 0) {
+        MarkSnapshotEntryChanged(txid);
+        node::PublishMempoolSnapshot(*this);
+    }
 }
 
 CTransactionRef CTxMemPool::GetConflictTx(const COutPoint &prevout) const {
@@ -886,10 +906,27 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
 
+void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
+    LOCK(cs);
+    if (exists(txid) && m_unbroadcast_txids.insert(txid).second) {
+        node::PublishMempoolUnbroadcastSnapshot(*this, txid, true);
+    }
+}
+
+CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
+    AssertLockHeld(m_pool.cs);
+    assert(m_pool.m_snapshot_defer_depth > 0);
+    if (--m_pool.m_snapshot_defer_depth == 0 && m_pool.m_snapshot_dirty) {
+        m_pool.m_snapshot_dirty = false;
+        node::PublishMempoolSnapshot(m_pool);
+    }
+}
+
 void CTxMemPool::RemoveUnbroadcastTx(const TxId &txid, const bool unchecked) {
     LOCK(cs);
 
     if (m_unbroadcast_txids.erase(txid)) {
+        node::PublishMempoolUnbroadcastSnapshot(*this, txid, false);
         LogDebug(
             BCLog::MEMPOOL, "Removed %i from set of unbroadcast txns%s\n",
             txid.GetHex(),
@@ -900,6 +937,7 @@ void CTxMemPool::RemoveUnbroadcastTx(const TxId &txid, const bool unchecked) {
 void CTxMemPool::RemoveStaged(const setEntries &stage,
                               MemPoolRemovalReason reason) {
     AssertLockHeld(cs);
+    ScopedSnapshotDefer snapshot_defer(*this);
     UpdateForRemoveFromMempool(stage);
 
     // Remove txs in reverse-topological order
@@ -907,10 +945,12 @@ void CTxMemPool::RemoveStaged(const setEntries &stage,
     for (txiter it : stageRevTopo) {
         removeUnchecked(it, reason);
     }
+    if (!stage.empty()) node::PublishMempoolSnapshot(*this);
 }
 
 int CTxMemPool::Expire(std::chrono::seconds time) {
     AssertLockHeld(cs);
+    ScopedSnapshotDefer snapshot_defer(*this);
     indexed_transaction_set::index<entry_time>::type::iterator it =
         mapTx.get<entry_time>().begin();
     setEntries toremove;
@@ -943,6 +983,7 @@ int CTxMemPool::Expire(std::chrono::seconds time) {
 void CTxMemPool::LimitSize(CCoinsViewCache &coins_cache) {
     AssertLockHeld(::cs_main);
     AssertLockHeld(cs);
+    ScopedSnapshotDefer snapshot_defer(*this);
     int expired = Expire(GetTime<std::chrono::seconds>() - m_opts.expiry);
     if (expired != 0) {
         LogDebug(BCLog::MEMPOOL,
@@ -958,6 +999,7 @@ void CTxMemPool::LimitSize(CCoinsViewCache &coins_cache) {
 
 void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add) {
     AssertLockHeld(cs);
+    MarkSnapshotEntryChanged((*entry)->GetTx().GetId());
     CTxMemPoolEntry::Children s;
     if (add && (*entry)->GetMemPoolChildren().insert(*child).second) {
         cachedInnerUsage += memusage::IncrementalDynamicUsage(s);
@@ -968,6 +1010,7 @@ void CTxMemPool::UpdateChild(txiter entry, txiter child, bool add) {
 
 void CTxMemPool::UpdateParent(txiter entry, txiter parent, bool add) {
     AssertLockHeld(cs);
+    MarkSnapshotEntryChanged((*entry)->GetTx().GetId());
     CTxMemPoolEntry::Parents s;
     if (add && (*entry)->GetMemPoolParents().insert(*parent).second) {
         cachedInnerUsage += memusage::IncrementalDynamicUsage(s);
@@ -1010,6 +1053,7 @@ void CTxMemPool::trackPackageRemoved(const CFeeRate &rate) {
 void CTxMemPool::TrimToSize(size_t sizelimit,
                             std::vector<COutPoint> *pvNoSpendsRemaining) {
     AssertLockHeld(cs);
+    ScopedSnapshotDefer snapshot_defer(*this);
 
     unsigned nTxnRemoved = 0;
     size_t finalizedTxsSkipped = 0;
@@ -1089,7 +1133,9 @@ bool CTxMemPool::GetLoadTried() const {
 
 void CTxMemPool::SetLoadTried(bool load_tried) {
     LOCK(cs);
+    if (m_load_tried == load_tried) return;
     m_load_tried = load_tried;
+    node::PublishMempoolSnapshot(*this);
 }
 
 std::string RemovalReasonToString(const MemPoolRemovalReason &r) noexcept {

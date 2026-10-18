@@ -47,4 +47,35 @@ static void RpcMempool(benchmark::Bench &bench) {
     bench.run([&] { (void)MempoolToJSON(pool, /*verbose*/ true); });
 }
 
+static void RpcMempoolInfo(benchmark::Bench &bench) {
+    const TestingSetup test_setup{
+        ChainType::MAIN,
+        /* extra_args */
+        {
+            "-nodebuglogfile",
+            "-nodebug",
+        },
+    };
+    CTxMemPool &pool = *Assert(test_setup.m_node.mempool);
+    {
+        LOCK2(cs_main, pool.cs);
+        for (int i = 0; i < 1000; ++i) {
+            CMutableTransaction tx = CMutableTransaction();
+            tx.vin.resize(1);
+            tx.vin[0].scriptSig = CScript() << OP_1;
+            tx.vout.resize(1);
+            tx.vout[0].scriptPubKey = CScript() << OP_1 << OP_EQUAL;
+            tx.vout[0].nValue = i * COIN;
+            const CTransactionRef tx_r{MakeTransactionRef(tx)};
+            AddTx(tx_r, /* fee */ i * COIN, pool);
+        }
+    }
+
+    bench.run([&] {
+        auto info = MempoolInfoToJSON(pool);
+        ankerl::nanobench::doNotOptimizeAway(info);
+    });
+}
+
 BENCHMARK(RpcMempool);
+BENCHMARK(RpcMempoolInfo);

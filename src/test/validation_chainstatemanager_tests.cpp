@@ -8,6 +8,7 @@
 #include <kernel/disconnected_transactions.h>
 #include <node/chainstatemanager_args.h>
 #include <node/kernel_notifications.h>
+#include <node/snapshot.h>
 #include <node/utxo_snapshot.h>
 #include <primitives/blockhash.h>
 #include <random.h>
@@ -36,6 +37,26 @@ using node::SnapshotMetadata;
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(validation_chainstatemanager_tests, TestingSetup)
+
+// A chainstate switch must replace the last immutable RPC generation even
+// though the ChainstateManager object's address remains unchanged.
+BOOST_FIXTURE_TEST_CASE(snapshot_activation_publishes_new_rpc_tip, TestChain100Setup) {
+    mineBlocks(10);
+    auto &manager = *m_node.chainman;
+    BOOST_REQUIRE(CreateAndActivateUTXOSnapshot(
+        this, NoMalleation, false, true, [&] {
+            LOCK(::cs_main);
+            BOOST_REQUIRE_EQUAL(manager.ActiveHeight(), 109);
+            node::PublishChainTipSnapshot(manager, m_node.mempool.get());
+            BOOST_REQUIRE_EQUAL(node::GetChainTipSnapshot()->height, 109);
+        }));
+    const auto published = node::GetChainTipSnapshot();
+    BOOST_REQUIRE(published);
+    BOOST_CHECK_EQUAL(published->chainman_ptr, &manager);
+    BOOST_CHECK_EQUAL(published->height, 110);
+    BOOST_CHECK_EQUAL(published->best_block_hash,
+                     WITH_LOCK(::cs_main, return manager.ActiveTip()->GetBlockHash()));
+}
 
 //! Basic tests for ChainstateManager.
 //!

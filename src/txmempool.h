@@ -559,14 +559,7 @@ public:
     size_t DynamicMemoryUsage() const;
 
     /** Adds a transaction to the unbroadcast set */
-    void AddUnbroadcastTx(const TxId &txid) {
-        LOCK(cs);
-        // Sanity check the transaction is in the mempool & insert into
-        // unbroadcast set.
-        if (exists(txid)) {
-            m_unbroadcast_txids.insert(txid);
-        }
-    }
+    void AddUnbroadcastTx(const TxId &txid);
 
     /** Removes a transaction from the unbroadcast set */
     void RemoveUnbroadcastTx(const TxId &txid, const bool unchecked = false);
@@ -635,7 +628,45 @@ public:
                            uint64_t next_height, uint64_t parent_mtp)
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
+    double GetRollingMinimumFeeRate() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return rollingMinimumFeeRate; }
+    int64_t GetLastRollingFeeUpdate() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return lastRollingFeeUpdate; }
+    bool GetBlockSinceLastRollingFeeBump() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return blockSinceLastRollingFeeBump; }
+
+    void MarkSnapshotEntryChanged(const TxId &id) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        m_snapshot_changed_entries.insert(id);
+    }
+    const std::set<TxId> &SnapshotChangedEntries() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        return m_snapshot_changed_entries;
+    }
+    bool HasSnapshotState() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return m_snapshot_initialized; }
+    bool SnapshotNeedsReset() const EXCLUSIVE_LOCKS_REQUIRED(cs) { return m_snapshot_needs_reset; }
+    void ClearSnapshotChanges() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        m_snapshot_changed_entries.clear();
+        m_snapshot_needs_reset = false;
+        m_snapshot_initialized = true;
+    }
+    bool DeferSnapshotIfActive() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        if (m_snapshot_defer_depth == 0) return false;
+        m_snapshot_dirty = true;
+        return true;
+    }
+    void ClearSnapshotDirty() const EXCLUSIVE_LOCKS_REQUIRED(cs) { m_snapshot_dirty = false; }
+    class ScopedSnapshotDefer {
+        const CTxMemPool &m_pool;
+    public:
+        explicit ScopedSnapshotDefer(const CTxMemPool &pool) EXCLUSIVE_LOCKS_REQUIRED(pool.cs)
+            : m_pool(pool) { ++m_pool.m_snapshot_defer_depth; }
+        ~ScopedSnapshotDefer();
+        ScopedSnapshotDefer(const ScopedSnapshotDefer &) = delete;
+        ScopedSnapshotDefer &operator=(const ScopedSnapshotDefer &) = delete;
+    };
+
 private:
+    mutable std::set<TxId> m_snapshot_changed_entries GUARDED_BY(cs);
+    mutable bool m_snapshot_initialized GUARDED_BY(cs){false};
+    mutable bool m_snapshot_needs_reset GUARDED_BY(cs){true};
+    mutable unsigned int m_snapshot_defer_depth GUARDED_BY(cs){0};
+    mutable bool m_snapshot_dirty GUARDED_BY(cs){false};
     mutable lotus::v2::MerklixOverlayManager m_merklix_overlay GUARDED_BY(cs);
     /** Set ancestor state for an entry */
     void UpdateEntryForAncestors(txiter it, const setEntries *setAncestors)

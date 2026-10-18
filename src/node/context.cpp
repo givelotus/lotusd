@@ -12,11 +12,12 @@
 #include <net.h>
 #include <net_processing.h>
 #include <node/kernel_notifications.h>
+#include <node/snapshot.h>
 #include <scheduler.h>
 #include <txmempool.h>
 #include <validation.h>
 
 namespace node {
-NodeContext::NodeContext() = default;
+NodeContext::NodeContext() : snapshot_publisher(GetGlobalSnapshotPublisherPtr()) {}
 NodeContext::~NodeContext() = default;
 } // namespace node
