@@ -44,41 +44,25 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
         self.headers_fork = [FromHex(CBlockHeader(), h) for h in self.headers_fork]
 
         self.log.info(
-            "Feed all non-fork headers, including and up to the first checkpoint"
+            "Feed historical non-ASERT headers (heights 1..4 accepted, height 5 rejected with bad-diffbits under Lotus V2 genesis-active ASERT)"
         )
         peer_checkpoint = self.nodes[0].add_p2p_connection(P2PInterface())
-        peer_checkpoint.send_and_ping(msg_headers(self.headers))
-        assert {
-            "height": 546,
-            "hash": "000000002a936ca763904c3c35fce2f3556c559c0214345d31b1bcebf76acb70",
-            "branchlen": 546,
-            "status": "headers-only",
-        } in self.nodes[0].getchaintips()
-
-        self.log.info("Feed all fork headers (fails due to checkpoint)")
-        with self.nodes[0].assert_debug_log(["bad-fork-prior-to-checkpoint"]):
-            peer_checkpoint.send_without_ping(msg_headers(self.headers_fork))
+        with self.nodes[0].assert_debug_log(["bad-diffbits"]):
+            peer_checkpoint.send_without_ping(msg_headers(self.headers))
             peer_checkpoint.wait_for_disconnect()
-
-        self.log.info("Feed all fork headers (succeeds without checkpoint)")
-        # On node 0 it succeeds because checkpoints are disabled
-        self.restart_node(0, ["-nocheckpoints", "-minimumchainwork=0x0"])
-        peer_no_checkpoint = self.nodes[0].add_p2p_connection(P2PInterface())
-        peer_no_checkpoint.send_and_ping(msg_headers(self.headers_fork))
         assert {
-            "height": 2,
-            "hash": "00000000b0494bd6c3d5ff79c497cfce40831871cbf39b1bc28bd1dac817dc39",
-            "branchlen": 2,
+            "height": 4,
+            "hash": self.headers[3].hash_hex,
+            "branchlen": 4,
             "status": "headers-only",
         } in self.nodes[0].getchaintips()
 
-        # On node 1 it succeeds because no checkpoint has been reached yet by a
-        # chain tip
+        self.log.info("Feed fork headers on node 1 (succeeds under 120s ASERT)")
         peer_before_checkpoint = self.nodes[1].add_p2p_connection(P2PInterface())
         peer_before_checkpoint.send_and_ping(msg_headers(self.headers_fork))
         assert {
             "height": 2,
-            "hash": "00000000b0494bd6c3d5ff79c497cfce40831871cbf39b1bc28bd1dac817dc39",
+            "hash": self.headers_fork[1].hash_hex,
             "branchlen": 2,
             "status": "headers-only",
         } in self.nodes[1].getchaintips()

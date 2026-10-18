@@ -160,8 +160,8 @@ UniValue blockheaderToJSON(const CBlockIndex &tip,
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
     result.pushKV("height", blockindex.nHeight);
-    result.pushKV("version", blockindex.nVersion);
-    result.pushKV("versionHex", strprintf("%08x", blockindex.nVersion));
+    result.pushKV("version", blockindex.nHeaderVersion);
+    result.pushKV("versionHex", strprintf("%08x", blockindex.nHeaderVersion));
     result.pushKV("merkleroot", blockindex.hashMerkleRoot.GetHex());
     result.pushKV("time", blockindex.nTime);
     result.pushKV("mediantime", blockindex.GetMedianTimePast());
@@ -687,9 +687,9 @@ static RPCHelpMan getblockheader() {
                     result.pushKV("confirmations",
                                   snap->height - hdr->height + 1);
                     result.pushKV("height", hdr->height);
-                    result.pushKV("version", hdr->header.nVersion);
+                    result.pushKV("version", hdr->header.nHeaderVersion);
                     result.pushKV("versionHex",
-                                  strprintf("%08x", hdr->header.nVersion));
+                                  strprintf("%08x", hdr->header.nHeaderVersion));
                     result.pushKV("merkleroot",
                                   hdr->header.hashMerkleRoot.GetHex());
                     result.pushKV("time", hdr->time);
