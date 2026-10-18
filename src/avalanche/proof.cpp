@@ -225,14 +225,11 @@ bool Proof::verify(const Amount &stakeUtxoDustThreshold,
     return true;
 }
 
-bool Proof::verify(const Amount &stakeUtxoDustThreshold,
-                   const ChainstateManager &chainman,
-                   ProofValidationState &state) const {
+bool Proof::verifyUtxos(const Amount &stakeUtxoDustThreshold,
+                        const ChainstateManager &chainman,
+                        ProofValidationState &state) const {
     AssertLockHeld(cs_main);
-    if (!verify(stakeUtxoDustThreshold, state)) {
-        // state is set by verify.
-        return false;
-    }
+    (void)stakeUtxoDustThreshold;
 
     const CBlockIndex *activeTip = chainman.ActiveTip();
     const int64_t tipMedianTimePast =
@@ -314,6 +311,18 @@ bool Proof::verify(const Amount &stakeUtxoDustThreshold,
     }
 
     return true;
+}
+
+bool Proof::verify(const Amount &stakeUtxoDustThreshold,
+                   const ChainstateManager &chainman,
+                   ProofValidationState &state) const {
+    AssertLockHeld(cs_main);
+    if (!verify(stakeUtxoDustThreshold, state)) {
+        // state is set by verify.
+        return false;
+    }
+
+    return verifyUtxos(stakeUtxoDustThreshold, chainman, state);
 }
 
 } // namespace avalanche

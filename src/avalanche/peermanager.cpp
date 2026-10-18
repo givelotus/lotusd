@@ -323,8 +323,10 @@ bool PeerManager::registerProof(const ProofRef &proof,
 
     // Check the proof's validity.
     ProofValidationState validationState;
-    if (!WITH_LOCK(cs_main, return proof->verify(stakeUtxoDustThreshold,
-                                                 chainman, validationState))) {
+    if (!proof->verify(stakeUtxoDustThreshold, validationState) ||
+        !WITH_LOCK(cs_main, return proof->verifyUtxos(
+                                stakeUtxoDustThreshold, chainman,
+                                validationState))) {
         if (isImmatureState(validationState)) {
             immatureProofPool.addProofIfPreferred(proof);
             if (immatureProofPool.countProofs() >

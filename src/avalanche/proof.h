@@ -174,6 +174,10 @@ public:
 
     bool verify(const Amount &stakeUtxoDustThreshold,
                 ProofValidationState &state) const;
+    bool verifyUtxos(const Amount &stakeUtxoDustThreshold,
+                     const ChainstateManager &chainman,
+                     ProofValidationState &state) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     bool verify(const Amount &stakeUtxoDustThreshold,
                 const ChainstateManager &chainman,
                 ProofValidationState &state) const
