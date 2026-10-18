@@ -421,6 +421,12 @@ public:
     bool HaveCoinInCache(const COutPoint &outpoint) const;
 
     /**
+     * Return a pointer to an unspent Coin in this cache if already present,
+     * or nullptr without querying the backing CCoinsView or modifying cacheCoins.
+     */
+    const Coin *PeekCoin(const COutPoint &outpoint) const;
+
+    /**
      * Return a reference to Coin in the cache, or coinEmpty if not found.
      * This is more efficient than GetCoin.
      *
