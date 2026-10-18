@@ -21,3 +21,5 @@ endif()
 target_sources(lotus_v2_header PRIVATE
     output.cpp commitment.cpp sparse_state.cpp mempool_overlay.cpp)
 target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
+
+target_sources(lotus_v2_header PRIVATE blocksnap.cpp)
