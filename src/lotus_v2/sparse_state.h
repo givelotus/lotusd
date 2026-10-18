@@ -14,7 +14,8 @@
 
 namespace lotus::v2 {
 
-constexpr size_t MAX_COIN_BYTES = 868;
+// Internal legacy state coins may carry any spendable ABC script (<=10000).
+constexpr size_t MAX_COIN_BYTES = 10068;
 
 struct Outpoint {
     Hash tx_id{};

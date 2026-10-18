@@ -342,8 +342,9 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
         next->automatic_pruning = false;
         next->prune_target_size = 0;
     }
-    next->fast_sync_active = false;
-    next->earliest_verified_height = 0;
+    next->fast_sync_active = active_chainstate.IsFastSyncActive();
+    next->earliest_verified_height =
+        active_chainstate.GetEarliestVerifiedHeight();
     next->chain_type_string = chainparams.GetChainTypeString();
     next->nBits = tip->nBits;
     next->consensus_params = chainparams.GetConsensus();

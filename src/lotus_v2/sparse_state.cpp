@@ -108,7 +108,16 @@ bool EncodeCoin(const Coin &coin, std::vector<uint8_t> &encoded) {
     if (coin.output.IsBurn()) return false;
     std::vector<uint8_t> output;
     std::string error;
-    if (!EncodeOutput(coin.output, output, error)) return false;
+    if (coin.output.legacy_script) {
+        const auto &script = *coin.output.legacy_script;
+        if (script.size() > 10000 || coin.output.flags ||
+            coin.output.token_id != Hash32{} || !coin.output.branches.empty() ||
+            !coin.output.paths.empty()) return false;
+        output.push_back(0x80); // State-transfer-only discriminator.
+        for (unsigned i = 0; i < 8; ++i) output.push_back(uint8_t(coin.output.value >> (8 * i)));
+        PutCompactSize(output, script.size());
+        output.insert(output.end(), script.begin(), script.end());
+    } else if (!EncodeOutput(coin.output, output, error)) return false;
     std::vector<uint8_t> result;
     result.reserve(36 + 9 + output.size() + 17);
     result.insert(result.end(), coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end());
@@ -145,9 +154,23 @@ bool DecodeCoinBytes(std::span<const uint8_t> encoded, Coin &out) {
             out_len |= uint64_t(encoded[pos++]) << (8 * i);
         }
     }
-    if (pos + out_len + 17 != encoded.size()) return false;
+    if (out_len > encoded.size() - pos || encoded.size() - pos - out_len != 17) return false;
     std::string error;
-    if (!DecodeOutput(std::vector<uint8_t>(encoded.begin() + pos,
+    if (out_len && encoded[pos] == 0x80) {
+        const size_t end = pos + size_t(out_len);
+        size_t cursor = pos + 1;
+        if (end - cursor < 9) return false;
+        for (unsigned i = 0; i < 8; ++i) coin.output.value |= uint64_t(encoded[cursor++]) << (8 * i);
+        uint64_t len = encoded[cursor++];
+        if (len >= 253) {
+            const unsigned width = len == 253 ? 2 : len == 254 ? 4 : 8;
+            if (end - cursor < width) return false;
+            len = 0;
+            for (unsigned i = 0; i < width; ++i) len |= uint64_t(encoded[cursor++]) << (8 * i);
+        }
+        if (len > 10000 || len != end - cursor) return false;
+        coin.output.legacy_script.emplace(encoded.begin() + cursor, encoded.begin() + end);
+    } else if (!DecodeOutput(std::vector<uint8_t>(encoded.begin() + pos,
                                            encoded.begin() + pos + out_len),
                       coin.output, error)) {
         return false;

@@ -6841,6 +6841,9 @@ void PeerManagerImpl::ProcessMessage(
                             avalanche::StakeContenderId(inv.hash));
                     }
                 } break;
+                case MSG_AVA_STATE_ANCHOR: {
+                    vote = m_avalanche->getStateAnchorStatus(avalanche::StateAnchorId(inv.hash));
+                } break;
                 case MSG_AVA_MEMPOOL_BATCH: {
                     if (m_avalanche->isMempoolBatchKnown(inv.hash)) {
                         vote = m_avalanche->isMempoolBatchLocallyAccepted(
@@ -7261,6 +7264,24 @@ void PeerManagerImpl::ProcessMessage(
                 }
             }
 
+            if (auto pitem = std::get_if<const avalanche::StateAnchorId>(&item)) {
+                logVoteUpdate(u, "state_anchor", *pitem);
+                switch (u.getStatus()) {
+                    case avalanche::VoteStatus::Finalized:
+                        m_avalanche->finalizeStateAnchor(*pitem);
+                        m_avalanche->setRecentlyFinalized(*pitem);
+                        break;
+                    case avalanche::VoteStatus::Accepted:
+                        m_avalanche->acceptStateAnchor(*pitem);
+                        break;
+                    case avalanche::VoteStatus::Rejected:
+                    case avalanche::VoteStatus::Invalid:
+                        m_avalanche->rejectStateAnchor(*pitem);
+                        break;
+                    default: break;
+                }
+                continue;
+            }
             if (auto pitem =
                     std::get_if<const avalanche::MempoolBatchVoteItem>(&item)) {
                 logVoteUpdate(u, "mempool_batch", pitem->GetId());

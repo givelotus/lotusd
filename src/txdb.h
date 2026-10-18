@@ -63,6 +63,17 @@ public:
                     const BlockHash &hashBlock) override;
     CCoinsViewCursor *Cursor() const override;
 
+    // One MDBX transaction publishes both the verified replacement UTXO set
+    // and its provisional pivot marker. The old database survives aborts.
+    void InstallFastSyncSnapshot(const BlockHash &pivot, const uint256 &root,
+        const std::vector<std::pair<COutPoint, Coin>> &coins);
+    std::optional<std::pair<BlockHash, uint256>> GetFastSyncSnapshot() const;
+    void ClearFastSyncSnapshot();
+    // Authenticated predecessor verification progresses independently of the
+    // live UTXO tip and original provisional pivot.
+    std::optional<std::pair<BlockHash, uint256>> GetFastSyncProgress() const;
+    void SetFastSyncProgress(const BlockHash &block, const uint256 &root);
+
     //! Whether an unsupported database format is used.
     bool NeedsUpgrade();
     size_t EstimateSize() const override;

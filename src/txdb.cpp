@@ -25,6 +25,8 @@ static constexpr uint8_t DB_BLOCK_INDEX{'b'};
 
 static constexpr uint8_t DB_BEST_BLOCK{'B'};
 static constexpr uint8_t DB_HEAD_BLOCKS{'H'};
+static constexpr uint8_t DB_FAST_SYNC_SNAPSHOT{'Y'};
+static constexpr uint8_t DB_FAST_SYNC_PROGRESS{'P'};
 static constexpr uint8_t DB_FLAG{'F'};
 static constexpr uint8_t DB_REINDEX_FLAG{'R'};
 static constexpr uint8_t DB_LAST_BLOCK{'l'};
@@ -126,6 +128,52 @@ std::vector<BlockHash> CCoinsViewDB::GetHeadBlocks() const {
         return std::vector<BlockHash>();
     }
     return vhashHeadBlocks;
+}
+
+std::optional<std::pair<BlockHash, uint256>> CCoinsViewDB::GetFastSyncSnapshot() const {
+    std::pair<BlockHash, uint256> state;
+    if (!m_db->Read(DB_FAST_SYNC_SNAPSHOT, state)) return std::nullopt;
+    return state;
+}
+
+void CCoinsViewDB::ClearFastSyncSnapshot() {
+    CDBBatch batch(*m_db);
+    batch.Erase(DB_FAST_SYNC_SNAPSHOT);
+    batch.Erase(DB_FAST_SYNC_PROGRESS);
+    m_db->WriteBatch(batch, true);
+}
+
+std::optional<std::pair<BlockHash, uint256>> CCoinsViewDB::GetFastSyncProgress() const {
+    std::pair<BlockHash, uint256> progress;
+    if (!m_db->Read(DB_FAST_SYNC_PROGRESS, progress)) return std::nullopt;
+    return progress;
+}
+
+void CCoinsViewDB::SetFastSyncProgress(const BlockHash &block, const uint256 &root) {
+    m_db->Write(DB_FAST_SYNC_PROGRESS, std::make_pair(block, root), true);
+}
+
+void CCoinsViewDB::InstallFastSyncSnapshot(const BlockHash &pivot,
+    const uint256 &root, const std::vector<std::pair<COutPoint, Coin>> &coins) {
+    CDBBatch batch(*m_db);
+    {
+        std::unique_ptr<CCoinsViewCursor> cursor(Cursor());
+        while (cursor && cursor->Valid()) {
+            COutPoint key;
+            if (!cursor->GetKey(key)) throw std::runtime_error("invalid coin database key");
+            batch.Erase(CoinEntry(&key));
+            cursor->Next();
+        }
+    }
+    for (const auto &[outpoint, coin] : coins) {
+        if (coin.IsSpent()) throw std::invalid_argument("spent snapshot coin");
+        batch.Write(CoinEntry(&outpoint), coin);
+    }
+    batch.Erase(DB_HEAD_BLOCKS);
+    batch.Write(DB_BEST_BLOCK, pivot);
+    batch.Write(DB_FAST_SYNC_SNAPSHOT, std::make_pair(pivot, root));
+    batch.Write(DB_FAST_SYNC_PROGRESS, std::make_pair(pivot, root));
+    m_db->WriteBatch(batch, true);
 }
 
 void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor &cursor,

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace lotus::v2 {
@@ -24,6 +25,8 @@ struct Output {
     Hash32 token_id{};
     std::vector<Hash32> branches;
     std::vector<std::vector<uint8_t>> paths;
+    // State transfer only; EncodeOutput rejects this legacy representation.
+    std::optional<std::vector<uint8_t>> legacy_script;
 
     bool HasToken() const { return (flags & 1) != 0; }
     bool IsBurn() const { return (flags & 2) != 0; }
