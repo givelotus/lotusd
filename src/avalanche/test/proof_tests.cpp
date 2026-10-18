@@ -977,4 +977,100 @@ BOOST_AUTO_TEST_CASE(stake_amount_overflow) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(batch_verify_64_stakes_and_error_precedence) {
+    auto masterKey = CKey::MakeCompressedKey();
+    const CPubKey masterPub = masterKey.GetPubKey();
+    const uint64_t sequence = 42;
+    const int64_t expiration = 0;
+
+    ProofBuilder pb(sequence, expiration, masterKey,
+                    UNSPENDABLE_ECREG_PAYOUT_SCRIPT);
+    for (int i = 0; i < 64; ++i) {
+        auto stakeKey = CKey::MakeCompressedKey();
+        BOOST_CHECK(pb.addUTXO(
+            COutPoint(TxId(m_rng.rand256()), uint32_t(i)),
+            (100 + i) * PROOF_DUST_THRESHOLD, 10 + uint32_t(i), false,
+            stakeKey));
+    }
+
+    ProofRef validProof = pb.build();
+    BOOST_CHECK_EQUAL(validProof->getStakes().size(), 64U);
+
+    {
+        ProofValidationState state;
+        BOOST_CHECK(validProof->verify(PROOF_DUST_THRESHOLD, state));
+        BOOST_CHECK(state.GetResult() == ProofValidationResult::NONE);
+    }
+
+    // Corrupting the master signature should fail with INVALID_PROOF_SIGNATURE.
+    {
+        SchnorrSig badMasterSig = validProof->getSignature();
+        badMasterSig[0] ^= 0x01;
+        Proof badMasterProof(sequence, expiration, masterPub,
+                             validProof->getStakes(),
+                             validProof->getPayoutScript(), badMasterSig);
+
+        ProofValidationState state;
+        BOOST_CHECK(!badMasterProof.verify(PROOF_DUST_THRESHOLD, state));
+        BOOST_CHECK(state.GetResult() ==
+                    ProofValidationResult::INVALID_PROOF_SIGNATURE);
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "invalid-proof-signature");
+    }
+
+    // Corrupting any single stake signature across the 64 stakes should report
+    // INVALID_STAKE_SIGNATURE with that exact stake's TxId.
+    for (size_t badIdx : {size_t{0}, size_t{17}, size_t{31}, size_t{32},
+                          size_t{63}}) {
+        std::vector<SignedStake> stakes = validProof->getStakes();
+        SchnorrSig badSig = stakes[badIdx].getSignature();
+        badSig[badIdx % badSig.size()] ^= 0x80;
+        stakes[badIdx] = SignedStake(stakes[badIdx].getStake(), badSig);
+
+        Proof badStakeProof(sequence, expiration, masterPub, std::move(stakes),
+                            validProof->getPayoutScript(),
+                            validProof->getSignature());
+
+        ProofValidationState state;
+        BOOST_CHECK(!badStakeProof.verify(PROOF_DUST_THRESHOLD, state));
+        BOOST_CHECK(state.GetResult() ==
+                    ProofValidationResult::INVALID_STAKE_SIGNATURE);
+        BOOST_CHECK_EQUAL(state.GetRejectReason(), "invalid-stake-signature");
+        BOOST_CHECK_EQUAL(
+            state.GetDebugMessage(),
+            strprintf("TxId: %s", validProof->getStakes()[badIdx]
+                                      .getStake()
+                                      .getUTXO()
+                                      .GetTxId()
+                                      .ToString()));
+    }
+
+    // Corrupting two stake signatures (19 and 51) must deterministically report
+    // the first failing stake (index 19).
+    {
+        std::vector<SignedStake> stakes = validProof->getStakes();
+        for (size_t badIdx : {size_t{19}, size_t{51}}) {
+            SchnorrSig badSig = stakes[badIdx].getSignature();
+            badSig[0] ^= 0x40;
+            stakes[badIdx] = SignedStake(stakes[badIdx].getStake(), badSig);
+        }
+
+        Proof multiBadStakeProof(sequence, expiration, masterPub,
+                                 std::move(stakes),
+                                 validProof->getPayoutScript(),
+                                 validProof->getSignature());
+
+        ProofValidationState state;
+        BOOST_CHECK(!multiBadStakeProof.verify(PROOF_DUST_THRESHOLD, state));
+        BOOST_CHECK(state.GetResult() ==
+                    ProofValidationResult::INVALID_STAKE_SIGNATURE);
+        BOOST_CHECK_EQUAL(
+            state.GetDebugMessage(),
+            strprintf("TxId: %s", validProof->getStakes()[19]
+                                      .getStake()
+                                      .getUTXO()
+                                      .GetTxId()
+                                      .ToString()));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
