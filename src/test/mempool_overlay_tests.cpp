@@ -244,6 +244,38 @@ BOOST_AUTO_TEST_CASE(positional_merkle_root_and_syndromes) {
     BOOST_CHECK(spec_a.GetUtxoRootDigest() == eager_layer.GetUtxoRootDigest());
 }
 
+BOOST_AUTO_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip) {
+    auto &pool = *Assert(m_node.mempool);
+    LOCK2(cs_main, pool.cs);
+    const BlockHash tip(uint256S("11"));
+    pool.ConnectBlockReset(tip, 100, 1000);
+    auto &manager = pool.GetMerklixOverlay();
+    lotus::v2::Hash tip_id{};
+    std::copy(tip.begin(), tip.end(), tip_id.begin());
+    BOOST_CHECK(manager.IsAnchoredAt(tip_id, 100, 1000));
+    const auto parent_tx = MakeTestSpendTx(COutPoint(TxId(uint256S("22")), 0),
+                                          1, 10000 * SATOSHI);
+    const auto child_tx = MakeTestSpendTx(COutPoint(parent_tx->GetId(), 0),
+                                         2, 9000 * SATOSHI);
+    TestMemPoolEntryHelper entry;
+    pool.addUnchecked(entry.Fee(500 * SATOSHI).FromTx(parent_tx));
+    pool.addUnchecked(entry.Fee(600 * SATOSHI).FromTx(child_tx));
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 2U);
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTotalFeesSats(), 1100);
+    const auto frozen_root = pool.FreezeEpochBatch().GetSubtreeARoot();
+    pool.removeRecursive(*child_tx, MemPoolRemovalReason::CONFLICT);
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 1U);
+    BOOST_REQUIRE_EQUAL(manager.GetFrozenEpochs().size(), 1U);
+    BOOST_CHECK(manager.GetFrozenEpochs().back().GetSubtreeARoot() == frozen_root);
+    const BlockHash next_tip(uint256S("33"));
+    pool.ConnectBlockReset(next_tip, 101, 1010);
+    BOOST_CHECK(manager.GetFrozenEpochs().empty());
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 1U);
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetHeight(), 101U);
+    pool.clear();
+    BOOST_CHECK_EQUAL(manager.GetSpeculativeOverlay().GetTxCount(), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
     // Many small batches into a growing overlay must give exactly the state
     // of inserting the same transactions one at a time, in both UTXO-root
