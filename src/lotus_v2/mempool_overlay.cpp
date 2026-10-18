@@ -228,15 +228,33 @@ Hash ComputeTxNodeHash(unsigned depth, const Hash &left, const Hash &right) {
     return TaggedHash(HashDomain::TxRoot, buf);
 }
 
+uint32_t ClampExpirationHeight32(uint64_t exp_height) noexcept {
+    return static_cast<uint32_t>(
+        std::min<uint64_t>(exp_height, UINT32_MAX));
+}
+
 std::shared_ptr<const SmtNode> MakeSmtLeaf(
     const Coin &coin, const Hash &key, const Hash &leaf_hash) {
+    Coin stored = coin;
+    if (stored.expiration_height == 0) {
+        stored.expiration_height = ComputeUtxoExpirationHeight(
+            stored.creation_height, stored.coinbase, stored.fee_per_output);
+    }
     auto node = std::make_shared<SmtNode>();
     node->digest = leaf_hash;
     node->count = 1;
-    node->total_value = coin.output.value;
+    node->total_value = stored.output.value;
+    node->min_expiration_height =
+        ClampExpirationHeight32(stored.expiration_height);
     node->key = key;
-    node->coin = std::make_shared<const Coin>(coin);
+    node->coin = std::make_shared<const Coin>(std::move(stored));
     return node;
+}
+
+uint32_t ChildMinExpiration(const std::shared_ptr<const SmtNode> &a,
+                            const std::shared_ptr<const SmtNode> &b) noexcept {
+    return std::min(a ? a->min_expiration_height : UINT32_MAX,
+                    b ? b->min_expiration_height : UINT32_MAX);
 }
 
 std::shared_ptr<const SmtNode>
@@ -248,9 +266,11 @@ JoinSmtLeaves(const std::shared_ptr<const SmtNode> &existing,
         ++split;
     }
     const uint64_t pair_value = existing->total_value + added->total_value;
+    const uint32_t pair_min_exp = ChildMinExpiration(existing, added);
     auto subtree = std::make_shared<SmtNode>();
     subtree->count = 2;
     subtree->total_value = pair_value;
+    subtree->min_expiration_height = pair_min_exp;
     const unsigned old_bit = SmtKeyBit(existing->key, split);
     subtree->child[old_bit] = existing;
     subtree->child[1 - old_bit] = added;
@@ -259,6 +279,7 @@ JoinSmtLeaves(const std::shared_ptr<const SmtNode> &existing,
         auto parent = std::make_shared<SmtNode>();
         parent->count = 2;
         parent->total_value = pair_value;
+        parent->min_expiration_height = pair_min_exp;
         parent->child[SmtKeyBit(old_key, d)] = std::move(subtree);
         parent->Refresh(d);
         subtree = std::move(parent);
@@ -274,7 +295,9 @@ SmtInsertAt(const std::shared_ptr<const SmtNode> &node, const Coin &coin,
     }
     if (node->IsLeaf()) {
         if (node->key == key) {
-            if (node->digest == leaf_hash) {
+            const uint64_t coin_exp = ComputeUtxoExpirationHeight(coin);
+            if (node->digest == leaf_hash &&
+                node->min_expiration_height == coin_exp) {
                 return node;
             }
             return MakeSmtLeaf(coin, key, leaf_hash);
@@ -294,6 +317,8 @@ SmtInsertAt(const std::shared_ptr<const SmtNode> &node, const Coin &coin,
                   (next->child[1] ? next->child[1]->count : 0);
     next->total_value = (next->child[0] ? next->child[0]->total_value : 0) +
                         (next->child[1] ? next->child[1]->total_value : 0);
+    next->min_expiration_height =
+        ChildMinExpiration(next->child[0], next->child[1]);
     next->Refresh(depth);
     return next;
 }
@@ -326,6 +351,8 @@ SmtEraseAt(const std::shared_ptr<const SmtNode> &node,
     next->count = new_count;
     next->total_value = (next->child[0] ? next->child[0]->total_value : 0) +
                         (next->child[1] ? next->child[1]->total_value : 0);
+    next->min_expiration_height =
+        ChildMinExpiration(next->child[0], next->child[1]);
     next->Refresh(depth);
     return next;
 }
@@ -340,9 +367,11 @@ JoinSmtLeavesBatch(const std::shared_ptr<const SmtNode> &existing,
         ++split;
     }
     const uint64_t pair_value = existing->total_value + added->total_value;
+    const uint64_t pair_min_exp = ChildMinExpiration(existing, added);
     auto subtree = std::make_shared<SmtNode>();
     subtree->count = 2;
     subtree->total_value = pair_value;
+    subtree->min_expiration_height = pair_min_exp;
     const unsigned old_bit = SmtKeyBit(existing->key, split);
     subtree->child[old_bit] = existing;
     subtree->child[1 - old_bit] = added;
@@ -350,6 +379,7 @@ JoinSmtLeavesBatch(const std::shared_ptr<const SmtNode> &existing,
         auto parent = std::make_shared<SmtNode>();
         parent->count = 2;
         parent->total_value = pair_value;
+        parent->min_expiration_height = pair_min_exp;
         parent->child[SmtKeyBit(old_key, d)] = std::move(subtree);
         subtree = std::move(parent);
     }
@@ -364,7 +394,9 @@ SmtInsertBatchAt(const std::shared_ptr<const SmtNode> &node, const Coin &coin,
     }
     if (node->IsLeaf()) {
         if (node->key == key) {
-            if (node->digest == leaf_hash) {
+            const uint64_t coin_exp = ComputeUtxoExpirationHeight(coin);
+            if (node->digest == leaf_hash &&
+                node->min_expiration_height == coin_exp) {
                 return node;
             }
             return MakeSmtLeaf(coin, key, leaf_hash);
@@ -391,6 +423,8 @@ SmtInsertBatchAt(const std::shared_ptr<const SmtNode> &node, const Coin &coin,
         mut->total_value =
             (mut->child[0] ? mut->child[0]->total_value : 0) +
             (mut->child[1] ? mut->child[1]->total_value : 0);
+        mut->min_expiration_height =
+            ChildMinExpiration(mut->child[0], mut->child[1]);
         return node;
     }
     auto next = std::make_shared<SmtNode>();
@@ -400,6 +434,8 @@ SmtInsertBatchAt(const std::shared_ptr<const SmtNode> &node, const Coin &coin,
                   (next->child[1] ? next->child[1]->count : 0);
     next->total_value = (next->child[0] ? next->child[0]->total_value : 0) +
                         (next->child[1] ? next->child[1]->total_value : 0);
+    next->min_expiration_height =
+        ChildMinExpiration(next->child[0], next->child[1]);
     return next;
 }
 
@@ -441,6 +477,8 @@ SmtEraseBatchAt(const std::shared_ptr<const SmtNode> &node,
         mut->total_value =
             (mut->child[0] ? mut->child[0]->total_value : 0) +
             (mut->child[1] ? mut->child[1]->total_value : 0);
+        mut->min_expiration_height =
+            ChildMinExpiration(mut->child[0], mut->child[1]);
         return node;
     }
     auto next = std::make_shared<SmtNode>();
@@ -449,6 +487,8 @@ SmtEraseBatchAt(const std::shared_ptr<const SmtNode> &node,
     next->count = new_count;
     next->total_value = (next->child[0] ? next->child[0]->total_value : 0) +
                         (next->child[1] ? next->child[1]->total_value : 0);
+    next->min_expiration_height =
+        ChildMinExpiration(next->child[0], next->child[1]);
     return next;
 }
 
@@ -464,6 +504,8 @@ void FinalizeSmtBatch(const std::shared_ptr<const SmtNode> &node,
                  (mut->child[1] ? mut->child[1]->count : 0);
     mut->total_value = (mut->child[0] ? mut->child[0]->total_value : 0) +
                        (mut->child[1] ? mut->child[1]->total_value : 0);
+    mut->min_expiration_height =
+        ChildMinExpiration(mut->child[0], mut->child[1]);
     mut->Refresh(depth);
 }
 
@@ -507,10 +549,34 @@ ZipSmtFromDepth4(unsigned depth, unsigned prefix,
     branch->count = total;
     branch->total_value =
         (left ? left->total_value : 0) + (right ? right->total_value : 0);
+    branch->min_expiration_height = ChildMinExpiration(left, right);
     branch->child[0] = std::move(left);
     branch->child[1] = std::move(right);
     branch->Refresh(depth);
     return branch;
+}
+
+struct ExpiredLeafCandidate {
+    uint64_t expiration_height;
+    Hash key;
+    Coin coin;
+};
+
+void CollectExpiredSmtAt(const std::shared_ptr<const SmtNode> &node,
+                         uint64_t block_height,
+                         std::vector<ExpiredLeafCandidate> &out) {
+    if (!node || node->min_expiration_height > block_height) {
+        return;
+    }
+    if (node->IsLeaf()) {
+        if (node->coin && IsUtxoExpired(*node->coin, block_height)) {
+            out.push_back({ComputeUtxoExpirationHeight(*node->coin), node->key,
+                           *node->coin});
+        }
+        return;
+    }
+    CollectExpiredSmtAt(node->child[0], block_height, out);
+    CollectExpiredSmtAt(node->child[1], block_height, out);
 }
 
 } // namespace
@@ -546,6 +612,7 @@ void SmtBatchUpdateParallel(
     if (erased.empty() && inserted.empty()) {
         return;
     }
+
     std::vector<Hash> erased_keys(erased.size());
     ParallelForRange(erased.size(), 32, [&](size_t begin, size_t end) {
         for (size_t i = begin; i < end; ++i) {
@@ -626,6 +693,48 @@ std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
 
 Hash SmtRoot(const std::shared_ptr<const SmtNode> &root) {
     return root ? root->digest : EmptyUtxoRoot();
+}
+
+std::vector<Coin> SmtCollectExpired(
+    const std::shared_ptr<const SmtNode> &root, uint64_t block_height,
+    size_t max_sweeps) {
+    if (!root || max_sweeps == 0 ||
+        root->min_expiration_height > block_height) {
+        return {};
+    }
+    std::vector<ExpiredLeafCandidate> candidates;
+    CollectExpiredSmtAt(root, block_height, candidates);
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ExpiredLeafCandidate &a, const ExpiredLeafCandidate &b) {
+                  if (a.expiration_height != b.expiration_height) {
+                      return a.expiration_height < b.expiration_height;
+                  }
+                  return a.key < b.key;
+              });
+    const size_t count = std::min(candidates.size(), max_sweeps);
+    std::vector<Coin> out;
+    out.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        out.push_back(std::move(candidates[i].coin));
+    }
+    return out;
+}
+
+ExpirySweepResult SmtSweepExpired(
+    std::shared_ptr<const SmtNode> &root, uint64_t block_height,
+    uint64_t total_block_fees_atoms, size_t max_sweeps) {
+    ExpirySweepResult res{};
+    res.swept_coins = SmtCollectExpired(root, block_height, max_sweeps);
+    res.swept_count = res.swept_coins.size();
+    for (const Coin &coin : res.swept_coins) {
+        if (!coin.output.HasToken()) {
+            res.burned_value_atoms += coin.output.value;
+        }
+        SmtErase(root, coin.outpoint);
+    }
+    res.cleaning_crew_bounty_atoms =
+        ComputeCleaningCrewBounty(res.swept_count, total_block_fees_atoms);
+    return res;
 }
 
 Hash EmptyTxRoot() {
@@ -1192,6 +1301,9 @@ UtxoOverlayArena::ExportSmtNode(uint32_t node_idx) const {
     smt->count = n.count;
     if (n.is_leaf) {
         smt->total_value = n.coin ? n.coin->output.value : 0;
+        smt->min_expiration_height =
+            n.coin ? ClampExpirationHeight32(ComputeUtxoExpirationHeight(*n.coin))
+                   : UINT32_MAX;
         smt->key = n.key;
         smt->coin = n.coin;
         return smt;
@@ -1202,16 +1314,22 @@ UtxoOverlayArena::ExportSmtNode(uint32_t node_idx) const {
         (n.child[1] != kNullIdx) ? ExportSmtNode(n.child[1]) : n.base_child[1];
     smt->total_value = (smt->child[0] ? smt->child[0]->total_value : 0) +
                        (smt->child[1] ? smt->child[1]->total_value : 0);
+    smt->min_expiration_height = ChildMinExpiration(smt->child[0], smt->child[1]);
     return smt;
 }
 
 uint32_t UtxoOverlayArena::MakeLeaf(const Coin &coin, const Hash &key,
                                     const Hash &leaf_hash) {
+    Coin stored = coin;
+    if (stored.expiration_height == 0) {
+        stored.expiration_height = ComputeUtxoExpirationHeight(
+            stored.creation_height, stored.coinbase, stored.fee_per_output);
+    }
     UtxoOverlayNode leaf{};
     leaf.digest = leaf_hash;
     leaf.count = 1;
     leaf.key = key;
-    leaf.coin = std::make_shared<const Coin>(coin);
+    leaf.coin = std::make_shared<const Coin>(std::move(stored));
     leaf.is_leaf = true;
     return AllocNode(leaf);
 }
@@ -2427,6 +2545,8 @@ void MerklixOverlayManager::ReanchorExistingTxs(
                 for (auto &coin : entry.created_coins) {
                     coin.creation_height = next_height;
                     coin.creation_parent_mtp = parent_mtp;
+                    coin.expiration_height = ComputeUtxoExpirationHeight(
+                        next_height, coin.coinbase, coin.fee_per_output);
                 }
                 batch.push_back(std::move(entry));
             }
@@ -2448,6 +2568,8 @@ void MerklixOverlayManager::ReanchorExistingTxs(
         for (auto &coin : entry.created_coins) {
             coin.creation_height = next_height;
             coin.creation_parent_mtp = parent_mtp;
+            coin.expiration_height = ComputeUtxoExpirationHeight(
+                next_height, coin.coinbase, coin.fee_per_output);
         }
         batch.push_back(std::move(entry));
     }
