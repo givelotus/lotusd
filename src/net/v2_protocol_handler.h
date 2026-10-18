@@ -8,6 +8,7 @@
 #include <blockencodings.h>
 #include <lotus_v2/blocksnap.h>
 #include <lotus_v2/commitment.h>
+#include <lotus_v2/fast_sync.h>
 #include <net.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -20,6 +21,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -32,6 +34,10 @@
 class ChainstateManager;
 class CTxMemPool;
 class PeerManager;
+
+namespace avalanche {
+class Processor;
+} // namespace avalanche
 
 namespace lotus::v2::net {
 
@@ -341,15 +347,59 @@ struct V2ProtocolHandlerStats {
     uint64_t unsolicited_shorttx_dropped{0};
     uint64_t rate_limited_messages{0};
     uint64_t malformed_messages{0};
+    uint64_t getutxoroots_received{0};
+    uint64_t utxoroots_received{0};
+    uint64_t getutxoshard_received{0};
+    uint64_t utxoshard_received{0};
+    uint64_t getblockundo_received{0};
+    uint64_t blockundo_received{0};
+    uint64_t swarm_corrupted_roots_rejected{0};
+    uint64_t swarm_corrupted_shards_rejected{0};
+    uint64_t swarm_corrupted_undo_rejected{0};
+    uint64_t swarm_shards_verified{0};
+    uint64_t swarm_blocks_peeled{0};
+};
+
+enum class FastSyncSwarmState : uint8_t {
+    IDLE = 0,
+    FETCHING_ROOTS = 1,
+    FETCHING_SHARDS = 2,
+    PIVOT_ACTIVE_PEELING = 3,
+    COMPLETED = 4,
+    FAILED = 5,
+};
+
+const char *FastSyncSwarmStateToString(FastSyncSwarmState state) noexcept;
+
+struct FastSyncSwarmStatus {
+    FastSyncSwarmState state{FastSyncSwarmState::IDLE};
+    BlockHash pivot_block_hash{};
+    int pivot_height{0};
+    std::optional<uint256> avalanche_state_anchor{};
+    size_t total_non_empty_shards{0};
+    size_t verified_shards{0};
+    size_t pending_shards{0};
+    size_t in_flight_shards{0};
+    size_t active_peers{0};
+    size_t banned_swarm_peers{0};
+    uint64_t coins_imported{0};
+    uint64_t corrupted_roots_rejected{0};
+    uint64_t corrupted_shards_rejected{0};
+    uint64_t corrupted_undo_rejected{0};
+    uint64_t blocks_peeled{0};
 };
 
 /**
- * Constructor-injected handler for Lotus V2 P2P protocol messages:
+ * Constructor-injected handler for Lotus V2 / Tachyon P2P protocol messages:
  * - SealedHeader ("sealedheader") fast-path O(1) block reconstruction and
  *   automatic getdata fallback.
  * - Generalized Merklix Set Reconciliation ("merklixsync", "getmerklixbuck",
  *   "merklixbuck", "getshorttx", "shorttx") across LIVE_MEMPOOL, EPOCH_BATCH,
  *   BLOCK_RECON, and AVA_CONFLICT_SET scopes.
+ * - Tachyon SnapSync 256-Shard UTXO Fast Sync & Bijective Reverse Block Peeling
+ *   Swarm Coordinator ("getutxoroots", "utxoroots", "getutxoshard",
+ *   "utxoshard", "getblockundo", "blockundo") anchored via Avalanche state-root
+ *   quorum polling without requiring a state root in the 80-byte block header.
  */
 class V2PeerProtocolHandler {
 public:
@@ -364,6 +414,22 @@ public:
 
     V2PeerProtocolHandler(ChainstateManager &chainman, CTxMemPool &mempool,
                           CConnman &connman, PeerManager &peerman);
+
+    void SetAvalancheProcessor(avalanche::Processor *avalanche)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void SetSnapSyncEnabled(std::optional<bool> enabled)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void SetReverseSyncEnabled(std::optional<bool> enabled)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void SetServeUtxoShards(std::optional<bool> enabled)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool IsSnapSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool IsReverseSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool IsServeUtxoShardsEnabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void SetPeerServices(NodeId peer_id, ServiceFlags services)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    ServiceFlags GetPeerServices(NodeId peer_id) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /**
      * Dispatch a V2 protocol message if msg_type is handled by this handler.
@@ -394,6 +460,71 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void HandleShortTx(CNode &pfrom, DataStream &vRecv,
                        std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    void HandleGetUtxoRoots(CNode &pfrom, DataStream &vRecv,
+                            std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void HandleUtxoRoots(CNode &pfrom, DataStream &vRecv,
+                         std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void HandleGetUtxoShard(CNode &pfrom, DataStream &vRecv,
+                            std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void HandleUtxoShard(CNode &pfrom, DataStream &vRecv,
+                         std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void HandleGetBlockUndo(CNode &pfrom, DataStream &vRecv,
+                            std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void HandleBlockUndo(CNode &pfrom, DataStream &vRecv,
+                         std::chrono::microseconds time_received)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
+     * Register a CNode reference for direct P2P message pushing (also recorded
+     * automatically in TryHandleMessage; useful for unit tests using
+     * stack-allocated CNode instances).
+     */
+    void RegisterPeerNode(CNode &pnode) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
+     * Start an autonomous multi-peer Fast-Sync UTXO Shard Swarm session for
+     * pivot_hash across peer_ids (or all connected peers if peer_ids is empty).
+     */
+    bool StartFastSyncSwarm(const BlockHash &pivot_hash,
+                            const std::vector<NodeId> &peer_ids,
+                            bool auto_peel,
+                            std::string &err)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
+     * Start or resume multi-peer reverse block peeling (GETBLOCKUNDO /
+     * BLOCKUNDO) backwards from earliest_verified_height toward genesis.
+     */
+    bool StartReversePeelSwarm(const std::vector<NodeId> &peer_ids,
+                               std::string &err)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /**
+     * Split a pending or in-flight shard (prefix_depth, prefix_bits) into two
+     * adaptive sub-shards at prefix_depth + 1 and dispatch them across healthy
+     * swarm peers.
+     */
+    bool SplitSwarmShardToSubShards(uint8_t prefix_depth, uint16_t prefix_bits,
+                                    std::string &err)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /** Requested historical bodies must be accepted by ABC before undo replay. */
+    bool IsFastSyncBlockRequested(const BlockHash &hash) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void BlockDataReceived(const BlockHash &hash)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Called by the normal peer send loop, including while no reply arrives. */
+    void CheckFastSyncTimeouts(NodeId peer_id, std::chrono::microseconds now)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    FastSyncSwarmStatus GetFastSyncSwarmStatus() const
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /**
@@ -548,12 +679,81 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 private:
+    struct ShardKey {
+        uint8_t prefix_depth{8};
+        uint16_t prefix_bits{0};
+
+        bool operator==(const ShardKey &o) const noexcept {
+            return prefix_depth == o.prefix_depth &&
+                   prefix_bits == o.prefix_bits;
+        }
+        bool operator<(const ShardKey &o) const noexcept {
+            if (prefix_depth != o.prefix_depth) {
+                return prefix_depth < o.prefix_depth;
+            }
+            return prefix_bits < o.prefix_bits;
+        }
+    };
+
+    struct FastSyncSwarmCoordinatorState {
+        FastSyncSwarmState state{FastSyncSwarmState::IDLE};
+        BlockHash pivot_hash{};
+        lotus::v2::Hash pivot_v2_id{};
+        int pivot_height{0};
+        std::optional<lotus::v2::Hash> expected_anchor{};
+        bool auto_peel{false};
+        std::vector<NodeId> healthy_peers;
+        std::unordered_set<NodeId> banned_peers;
+        size_t rr_cursor{0};
+        std::map<NodeId, std::chrono::microseconds> request_deadlines;
+        NodeId roots_in_flight_peer{-1};
+        bool has_verified_roots{false};
+        lotus::v2::UtxoRootsMessage verified_roots{};
+        size_t total_non_empty_shards{0};
+        std::deque<ShardKey> pending_shards;
+        std::map<ShardKey, NodeId> in_flight_shards;
+        std::map<ShardKey, lotus::v2::UtxoShardMessage> verified_shards;
+        uint64_t coins_imported{0};
+        uint64_t blocks_peeled{0};
+        BlockHash undo_in_flight_hash{};
+        NodeId undo_in_flight_peer{-1};
+        std::optional<lotus::v2::BlockUndoMessage> pending_undo_for_block{};
+        NodeId pending_undo_peer{-1};
+    };
+
+    bool PeerSupportsUtxoShardsLocked(NodeId peer_id) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    void GetScopedTransactionsAndRoot(ReconScope scope,
+                                      const uint256 &context_id,
+                                      std::vector<CTransactionRef> &out_txs,
+                                      uint256 &out_root) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool SendRawPayloadToPeerLocked(NodeId peer_id, const char *msg_type,
+                                    Span<const uint8_t> payload)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    bool RequestSwarmRootsLocked() EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    void DispatchPendingSwarmShardsLocked() EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    void HandleSwarmPeerFailureLocked(NodeId peer_id,
+                                      std::optional<ShardKey> failed_shard)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+    bool RequestNextReversePeelBlockLocked(int target_height,
+                                           const BlockHash &target_hash,
+                                           bool need_block_data = false)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+
     ChainstateManager &m_chainman;
     CTxMemPool &m_mempool;
     CConnman &m_connman;
     PeerManager &m_peerman;
 
     mutable Mutex m_mutex;
+    avalanche::Processor *m_avalanche GUARDED_BY(m_mutex){nullptr};
+    std::optional<bool> m_snapsync_enabled_override GUARDED_BY(m_mutex);
+    std::optional<bool> m_reversesync_enabled_override GUARDED_BY(m_mutex);
+    std::optional<bool> m_serve_utxo_shards_override GUARDED_BY(m_mutex);
+    std::unordered_map<NodeId, CNode *> m_peer_nodes GUARDED_BY(m_mutex);
+    std::unordered_map<NodeId, ServiceFlags> m_peer_services GUARDED_BY(m_mutex);
+    FastSyncSwarmCoordinatorState m_swarm GUARDED_BY(m_mutex);
     std::map<BlockHash, std::vector<CandidateOverlayEntry>>
         m_candidate_overlays GUARDED_BY(m_mutex);
 

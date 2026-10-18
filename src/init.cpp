@@ -2960,6 +2960,10 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
     }
 
+    if (args.GetBoolArg("-serveutxoshards", true)) {
+        nLocalServices = ServiceFlags(nLocalServices | NODE_UTXO_SHARD);
+    }
+
     PeerManager::Options peerman_opts{};
     ApplyArgsManOptions(args, peerman_opts);
 
