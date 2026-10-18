@@ -14,6 +14,7 @@
 #include <config.h>
 #include <feerate.h>
 #include <logging.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <node/blockstorage.h>
 #include <node/coin.h>
 #include <node/context.h>
@@ -24,6 +25,7 @@
 #include <streams.h>
 #include <sync.h>
 #include <undo.h>
+#include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
 
@@ -455,8 +457,20 @@ int64_t ChronikBridge::estimate_feerate_sats_per_kb() const {
         return -1;
     }
 
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const lotus::v2::FeeRateInfo fee_info =
+        lotus::v2::GetGlobalFeeHysteresisController().GetFeeRateInfo(now_ms);
+    const int64_t hysteresis_rate =
+        fee_info.rpc_admission_feerate_per_kcu >
+                fee_info.consensus_floor_per_kcu
+            ? static_cast<int64_t>(std::min<uint64_t>(
+                  fee_info.recommended_sdk_feerate_per_kcu, INT64_MAX))
+            : static_cast<int64_t>(std::min<uint64_t>(
+                  fee_info.rpc_admission_feerate_per_kcu, INT64_MAX));
     const Amount feeRateSatsPerK = m_node.mempool->estimateFee().GetFeePerK();
-    return feeRateSatsPerK / Amount::satoshi();
+    return std::max<int64_t>(feeRateSatsPerK / Amount::satoshi(),
+                             hysteresis_rate);
 }
 
 int64_t ChronikBridge::min_relay_feerate_sats_per_kb() const {
@@ -464,8 +478,16 @@ int64_t ChronikBridge::min_relay_feerate_sats_per_kb() const {
         return -1;
     }
 
-    return m_node.mempool->m_opts.min_relay_feerate.GetFeePerK() /
-           Amount::satoshi();
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const uint64_t rpc_rate_per_kcu =
+        lotus::v2::GetGlobalFeeHysteresisController().GetRpcAdmissionRatePerKCu(
+            now_ms);
+    const int64_t base_relay =
+        m_node.mempool->m_opts.min_relay_feerate.GetFeePerK() /
+        Amount::satoshi();
+    return std::max<int64_t>(base_relay,
+                             static_cast<int64_t>(std::min<uint64_t>(rpc_rate_per_kcu, INT64_MAX)));
 }
 
 bool ChronikBridge::get_feerate_info(std::array<uint8_t, 32> mempool_txid,
