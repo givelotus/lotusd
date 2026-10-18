@@ -364,8 +364,11 @@ extern const char *SHORTTX;
  * Nucleation relay capability (sent after verack): {uint32 version, uint64
  * flags}. A peer that receives it with a flag it also supports may use that
  * feature towards the sender: TXRELAY_INVSHORT (short-id announcements) and
- * TXRELAY_RECON (continuous LIVE_MEMPOOL reconciliation). Stock peers ignore
- * the unknown message and keep receiving ordinary INVs.
+ * TXRELAY_RECON (continuous LIVE_MEMPOOL reconciliation), and
+ * TXRELAY_HIGH_BANDWIDTH (sealedheader announcements and unsolicited shorttx
+ * bodies). High-bandwidth formats require explicit remote advertisement;
+ * ordinary BIP152 negotiation does not opt into them. Stock peers ignore the
+ * unknown message and keep receiving ordinary INVs/compact blocks.
  */
 extern const char *SENDINVSHORT;
 /**
