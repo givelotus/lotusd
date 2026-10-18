@@ -3428,12 +3428,43 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         const bool isCoinBase = tx.IsCoinBase();
         nInputs += tx.vin.size();
 
+        // The following checks do not apply to the coinbase.
+        if (isCoinBase) {
+            continue;
+        }
+
+        // Spend inputs in a single CCoinsViewCache lookup per input, capturing
+        // the spent Coin into blockundo.vtxundo[txIndex].vprevout for
+        // CheckTxInputsFromSpentCoins, BIP68 prevheights, and Pass 2 parallel
+        // script verification.
+        CTxUndo &txundo = blockundo.vtxundo.at(txIndex);
+        txundo.vprevout.resize(tx.vin.size());
+        prevheights.resize(tx.vin.size());
+        bool inputs_ok = true;
+        for (size_t j = 0; j < tx.vin.size(); j++) {
+            if (!view.SpendCoin(tx.vin[j].prevout, &txundo.vprevout[j])) {
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                              "bad-txns-inputs-missingorspent",
+                              "CheckTxInputs: inputs missing/spent in "
+                              "transaction " +
+                                  tx.GetId().ToString());
+                inputs_ok = false;
+                break;
+            }
+            prevheights[j] =
+                (tx.vin[j].nSequence & CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)
+                    ? 0
+                    : txundo.vprevout[j].GetHeight();
+        }
+        if (!inputs_ok) {
+            break;
+        }
+
         {
             Amount txfee = Amount::zero();
             TxValidationState tx_state;
-            if (!isCoinBase &&
-                !Consensus::CheckTxInputs(tx, tx_state, view, pindex->nHeight,
-                                          txfee)) {
+            if (!Consensus::CheckTxInputsFromSpentCoins(
+                    tx, txundo.vprevout, tx_state, pindex->nHeight, txfee)) {
                 // Any transaction validation failure in ConnectBlock is a block
                 // consensus failure.
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
@@ -3452,22 +3483,9 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             break;
         }
 
-        // The following checks do not apply to the coinbase.
-        if (isCoinBase) {
-            continue;
-        }
-
-        // Check that transaction is BIP68 final BIP68 lock checks (as
+        // Check that transaction is BIP68 final. BIP68 lock checks (as
         // opposed to nLockTime checks) must be in ConnectBlock because they
         // require the UTXO set.
-        prevheights.resize(tx.vin.size());
-        for (size_t j = 0; j < tx.vin.size(); j++) {
-            prevheights[j] =
-                (tx.vin[j].nSequence & CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)
-                    ? 0
-                    : view.AccessCoin(tx.vin[j].prevout).GetHeight();
-        }
-
         if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
             state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                           "bad-txns-nonfinal",
@@ -3516,12 +3534,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             }
         }
 
-        // Note: this must execute in the same iteration as CheckTxInputs (not
-        // in a separate loop) in order to detect double spends. SpendCoins
-        // also snapshots the exact spent Coin for each input into
-        // blockundo.vtxundo[txIndex].vprevout, forming the static UTXO
-        // dependency snapshot for Pass 2 parallel script verification.
-        SpendCoins(view, tx, blockundo.vtxundo.at(txIndex), pindex->nHeight);
         txIndex++;
     }
     const auto time_3{SteadyClock::now()};
