@@ -96,7 +96,13 @@ BOOST_AUTO_TEST_CASE(slab_script_v2_bridge_and_move) {
         mutable_tx.vout.emplace_back(123 * SATOSHI, expected);
         CTransactionRef tx = MakeTransactionRef(std::move(mutable_tx));
         const CTxOut &original = tx->vout[0];
-        const CTxOut roundtrip = CTxOut::FromV2Output(original.ToV2Output());
+        const auto native_output = original.ToV2Output();
+        std::vector<uint8_t> expected_wire;
+        std::string encode_error;
+        BOOST_REQUIRE(lotus::v2::EncodeOutput(native_output, expected_wire,
+                                             encode_error));
+        const CScript expected_native_script(expected_wire.begin(), expected_wire.end());
+        const CTxOut roundtrip = CTxOut::FromV2Output(native_output);
         BOOST_CHECK(roundtrip == original);
         // The transaction's const view must copy on std::move, rather than
         // transferring a view whose lifetime would end with its slab owner.
@@ -107,7 +113,11 @@ BOOST_AUTO_TEST_CASE(slab_script_v2_bridge_and_move) {
         tx.reset();
         BOOST_CHECK(moved == expected);
         if (!moved.empty()) moved[0] = OP_FALSE;
-        BOOST_CHECK(roundtrip.scriptPubKey == expected);
+        // Native outputs retain their canonical encoded payload, not the
+        // original legacy script. Check those exact bytes after both owners
+        // have changed/died, preserving the slab lifetime assertion.
+        BOOST_CHECK(roundtrip.scriptPubKey == expected_native_script);
+        BOOST_CHECK(roundtrip.ToV2Output() == native_output);
     }
 }
 
@@ -1370,6 +1380,79 @@ BOOST_AUTO_TEST_CASE(contiguous_streams_are_read_in_place) {
     BOOST_CHECK(tx.GetId() == mtx.GetId());
     BOOST_CHECK_EQUAL(reader.size(), 1U);
     BOOST_CHECK(scratch == sentinel);
+}
+
+BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_double_charging_slab) {
+    // This oracle sums individual allocator-rounded capacities, independently
+    // of RecursiveDynamicUsage and its input/output helpers.
+    auto allocation = [](const auto &vector) {
+        using Element = typename std::decay_t<decltype(vector)>::value_type;
+        return memusage::MallocUsage(vector.capacity() * sizeof(Element));
+    };
+    for (const bool coinbase : {false, true}) {
+        CMutableTransaction mutable_tx;
+        mutable_tx.nVersion = 7;
+        mutable_tx.fHasV2Lock = true;
+        mutable_tx.vin.resize(coinbase ? 1 : 2);
+        for (auto &input : mutable_tx.vin) {
+            input.nFlags = coinbase ? 2 : 1;
+            if (coinbase) {
+                input.vCoinbaseData.reserve(256);
+                input.vCoinbaseData.resize(80, 0x42);
+                input.fHasCoinbaseData = true;
+            } else {
+                input.prevout = COutPoint(TxId{uint256::ONE}, 0);
+                input.vWitnesses.reserve(4);
+                input.vWitnesses.resize(2);
+                for (auto &witness : input.vWitnesses) {
+                    witness.script.reserve(300);
+                    witness.script.resize(40, 0x4e);
+                    witness.siblings.reserve(4);
+                    witness.siblings.resize(2);
+                    witness.arguments.reserve(5);
+                    witness.arguments.resize(3);
+                    for (auto &argument : witness.arguments) {
+                        argument.reserve(160);
+                        argument.resize(80, 0x24);
+                    }
+                }
+            }
+        }
+        mutable_tx.vout.resize(2);
+        for (auto &output : mutable_tx.vout) {
+            output.nValue = 1000 * SATOSHI;
+            output.vBranches.resize(2);
+            output.vPaths.reserve(4);
+            output.vPaths = {{0}, {1}};
+            for (auto &path : output.vPaths) path.reserve(50);
+        }
+        const CTransaction tx{mutable_tx};
+        size_t native_heaps = 0;
+        for (const auto &input : tx.vin) {
+            size_t expected = allocation(input.vWitnesses) + allocation(input.vCoinbaseData);
+            for (const auto &witness : input.vWitnesses) {
+                expected += allocation(witness.script) + allocation(witness.siblings) +
+                            allocation(witness.arguments);
+                for (const auto &argument : witness.arguments) expected += allocation(argument);
+            }
+            BOOST_CHECK_EQUAL(RecursiveDynamicUsage(input), expected);
+            native_heaps += expected;
+        }
+        for (const auto &output : tx.vout) {
+            size_t expected = allocation(output.vBranches) + allocation(output.vPaths);
+            for (const auto &path : output.vPaths) expected += allocation(path);
+            BOOST_CHECK_EQUAL(RecursiveDynamicUsage(output), expected);
+            native_heaps += expected;
+        }
+        BOOST_CHECK_GT(native_heaps, 0);
+        BOOST_CHECK_EQUAL(RecursiveDynamicUsage(tx), tx.GetStorageSize() + native_heaps);
+    }
+    CMutableTransaction legacy;
+    legacy.nVersion = 2;
+    legacy.vin.emplace_back(COutPoint{TxId{uint256::ONE}, 0}, CScript() << std::vector<uint8_t>(500, 0x42));
+    legacy.vout.emplace_back(1000 * SATOSHI, CScript() << std::vector<uint8_t>(500, 0x24));
+    const CTransaction tx{legacy};
+    BOOST_CHECK_EQUAL(RecursiveDynamicUsage(tx), tx.GetStorageSize());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

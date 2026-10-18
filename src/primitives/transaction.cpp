@@ -4,16 +4,14 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <primitives/transaction.h>
-
 #include <consensus/amount.h>
 #include <crypto/hex_base.h>
 #include <hash.h>
-#include <lotus_v2/commitment.h>
-#include <lotus_v2/output.h>
+#include <lotus_v2/tagged_hash.h>
+#include <primitives/block.h>
 #include <streams.h>
 #include <support/allocators/chunked_slab.h>
 #include <tinyformat.h>
-
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -26,11 +24,107 @@ std::string COutPoint::ToString() const {
     return strprintf("COutPoint(%s, %u)", txid.ToString().substr(0, 10), n);
 }
 
+lotus::v2::Input CTxIn::ToV2Input() const {
+    lotus::v2::Input in;
+    std::memcpy(in.prev_txid.data(), prevout.GetTxId().begin(), 32);
+    in.prev_index = prevout.GetN();
+    in.sequence = nSequence;
+    if (nFlags != 0) {
+        in.flags = nFlags;
+        in.path_index = nPathIndex;
+        in.witnesses = vWitnesses;
+        in.has_coinbase_data = fHasCoinbaseData;
+        in.coinbase_data = vCoinbaseData;
+        if (in.flags == 2) {
+            in.sequence = SEQUENCE_FINAL;
+            if (!in.has_coinbase_data && !scriptSig.empty()) {
+                in.has_coinbase_data = true;
+                in.coinbase_data.assign(scriptSig.begin(), scriptSig.end());
+            }
+        } else if (in.flags == 1) {
+            if (in.sequence != SEQUENCE_FINAL && (in.sequence & ~0x40ffffU)) {
+                in.sequence = SEQUENCE_FINAL;
+            }
+            if (in.witnesses.empty()) {
+                lotus::v2::BranchWitness w;
+                w.script.assign(scriptSig.begin(), scriptSig.end());
+                if (w.script.empty()) {
+                    w.script = {0x4e};
+                }
+                in.witnesses.push_back(std::move(w));
+            }
+        }
+        return in;
+    }
+    if (prevout.IsNull()) {
+        in.flags = 2;
+        in.prev_index = 0;
+        in.sequence = SEQUENCE_FINAL;
+        if (!scriptSig.empty()) {
+            in.has_coinbase_data = true;
+            in.coinbase_data.assign(scriptSig.begin(), scriptSig.end());
+        }
+    } else {
+        in.flags = 1;
+        in.path_index = 0;
+        if (in.sequence != SEQUENCE_FINAL && (in.sequence & ~0x40ffffU)) {
+            in.sequence = SEQUENCE_FINAL;
+        }
+        lotus::v2::BranchWitness w;
+        w.script.assign(scriptSig.begin(), scriptSig.end());
+        if (w.script.empty()) {
+            w.script = {0x4e};
+        }
+        in.witnesses.push_back(std::move(w));
+    }
+    return in;
+}
+
+CTxIn CTxIn::FromV2Input(const lotus::v2::Input &in) {
+    uint256 prev_hash;
+    std::memcpy(prev_hash.begin(), in.prev_txid.data(), 32);
+    CTxIn txin;
+    txin.prevout = COutPoint(TxId(prev_hash), in.prev_index);
+    txin.nSequence = in.sequence;
+    txin.nFlags = in.flags;
+    txin.nPathIndex = in.path_index;
+    txin.vWitnesses = in.witnesses;
+    txin.fHasCoinbaseData = in.has_coinbase_data;
+    txin.vCoinbaseData = in.coinbase_data;
+    if (in.flags == 2 && in.has_coinbase_data) {
+        txin.scriptSig.assign(in.coinbase_data.begin(), in.coinbase_data.end());
+    } else if (!in.witnesses.empty() && in.witnesses[0].script.size() <= 28) {
+        txin.scriptSig.assign(in.witnesses[0].script.begin(),
+                              in.witnesses[0].script.end());
+    }
+    return txin;
+}
+
+CTxIn CTxIn::FromV2Input(lotus::v2::Input &&in) {
+    uint256 prev_hash;
+    std::memcpy(prev_hash.begin(), in.prev_txid.data(), 32);
+    CTxIn txin;
+    txin.prevout = COutPoint(TxId(prev_hash), in.prev_index);
+    txin.nSequence = in.sequence;
+    txin.nFlags = in.flags;
+    txin.nPathIndex = in.path_index;
+    txin.fHasCoinbaseData = in.has_coinbase_data;
+    if (in.flags == 2 && in.has_coinbase_data) {
+        txin.scriptSig.assign(in.coinbase_data.begin(), in.coinbase_data.end());
+    } else if (!in.witnesses.empty() && in.witnesses[0].script.size() <= 28) {
+        txin.scriptSig.assign(in.witnesses[0].script.begin(),
+                              in.witnesses[0].script.end());
+    }
+    txin.vWitnesses = std::move(in.witnesses);
+    txin.vCoinbaseData = std::move(in.coinbase_data);
+    return txin;
+}
+
 std::string CTxIn::ToString() const {
     std::string str;
     str += "CTxIn(";
     str += prevout.ToString();
-    if (prevout.IsNull()) {
+    if (prevout.IsNull() || nFlags == 2) {
         str += strprintf(", coinbase %s", HexStr(scriptSig));
     } else {
         str += strprintf(", scriptSig=%s", HexStr(scriptSig).substr(0, 24));
@@ -159,25 +253,302 @@ std::string CTxOut::ToString() const {
 }
 
 CMutableTransaction::CMutableTransaction()
-    : nVersion{CTransaction::CURRENT_VERSION}, nLockTime{0} {}
+    : nVersion{CTransaction::CURRENT_VERSION}, nLockTime{0}, fHasV2Lock{false},
+      nV2Lock{0} {}
 CMutableTransaction::CMutableTransaction(const CTransaction &tx)
-    : vin(tx.vin.begin(), tx.vin.end()), vout(tx.vout.begin(), tx.vout.end()),
-      nVersion{tx.nVersion},
-      nLockTime{tx.nLockTime} {}
+    : vin(tx.vin.begin(), tx.vin.end()), vout(tx.vout.begin(), tx.vout.end()), nVersion{tx.nVersion},
+      nLockTime{tx.nLockTime}, fHasV2Lock{tx.fHasV2Lock}, nV2Lock{tx.nV2Lock} {}
 
-static uint256 ComputeCMutableTransactionHash(const CMutableTransaction &tx) {
-    return (HashWriter{} << tx).GetHash();
+lotus::v2::Transaction CMutableTransaction::ToV2Transaction() const {
+    lotus::v2::Transaction v2tx;
+    const bool is_cb =
+        (vin.size() == 1 && (vin[0].prevout.IsNull() || vin[0].nFlags == 2));
+    v2tx.lock =
+        fHasV2Lock
+            ? nV2Lock
+            : ((is_cb || nLockTime == 0)
+                   ? 0ULL
+                   : ((uint64_t(nLockTime) << 8) |
+                      (nLockTime < 500000000U ? 1ULL : 2ULL)));
+    v2tx.inputs.reserve(vin.size());
+    for (const auto &in : vin) {
+        v2tx.inputs.push_back(in.ToV2Input());
+    }
+    v2tx.outputs.reserve(vout.size());
+    for (const auto &out : vout) {
+        v2tx.outputs.push_back(out.ToV2Output());
+    }
+    return v2tx;
+}
+
+CMutableTransaction
+CMutableTransaction::FromV2Transaction(const lotus::v2::Transaction &tx) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.fHasV2Lock = true;
+    mtx.nV2Lock = tx.lock;
+    mtx.nLockTime = static_cast<uint32_t>(tx.lock >> 8);
+    mtx.vin.reserve(tx.inputs.size());
+    for (const auto &in : tx.inputs) {
+        mtx.vin.push_back(CTxIn::FromV2Input(in));
+    }
+    mtx.vout.reserve(tx.outputs.size());
+    for (const auto &out : tx.outputs) {
+        mtx.vout.push_back(CTxOut::FromV2Output(out));
+    }
+    return mtx;
+}
+
+lotus::v2::Transaction CTransaction::ToV2Transaction() const {
+    lotus::v2::Transaction v2tx;
+    v2tx.lock =
+        fHasV2Lock
+            ? nV2Lock
+            : ((IsCoinBase() || nLockTime == 0)
+                   ? 0ULL
+                   : ((uint64_t(nLockTime) << 8) |
+                      (nLockTime < 500000000U ? 1ULL : 2ULL)));
+    v2tx.inputs.reserve(vin.size());
+    for (const auto &in : vin) {
+        v2tx.inputs.push_back(in.ToV2Input());
+    }
+    v2tx.outputs.reserve(vout.size());
+    for (const auto &out : vout) {
+        v2tx.outputs.push_back(out.ToV2Output());
+    }
+    return v2tx;
+}
+
+static void ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
+                                  uint32_t nVersion,
+                                  lotus::v2::Hash32 &txid_out,
+                                  lotus::v2::Hash32 &txhash_out,
+                                  lotus::v2::Hash32 *outputs_root_out = nullptr) {
+    std::string err;
+    if (lotus::v2::ComputeTransactionIdentities(
+            v2tx, lotus::v2::DefaultTxProfile, GetActiveV2ChainId(), txid_out,
+            txhash_out, err, outputs_root_out)) {
+        if (nVersion != 7) {
+            txid_out[0] ^= uint8_t(nVersion & 0xffU);
+            txhash_out[0] ^= uint8_t(nVersion & 0xffU);
+        }
+        return;
+    }
+    if (outputs_root_out) {
+        *outputs_root_out = lotus::v2::Hash32{};
+    }
+    std::vector<uint8_t> core_bytes;
+    std::vector<uint8_t> full_bytes;
+    for (unsigned i = 0; i < 4; ++i) {
+        core_bytes.push_back(uint8_t(nVersion >> (8 * i)));
+        full_bytes.push_back(uint8_t(nVersion >> (8 * i)));
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+        core_bytes.push_back(uint8_t(v2tx.lock >> (8 * i)));
+        full_bytes.push_back(uint8_t(v2tx.lock >> (8 * i)));
+    }
+    for (const auto &in : v2tx.inputs) {
+        core_bytes.insert(core_bytes.end(), in.prev_txid.begin(),
+                          in.prev_txid.end());
+        full_bytes.insert(full_bytes.end(), in.prev_txid.begin(),
+                          in.prev_txid.end());
+        for (unsigned i = 0; i < 4; ++i) {
+            core_bytes.push_back(uint8_t(in.prev_index >> (8 * i)));
+            full_bytes.push_back(uint8_t(in.prev_index >> (8 * i)));
+            core_bytes.push_back(uint8_t(in.sequence >> (8 * i)));
+            full_bytes.push_back(uint8_t(in.sequence >> (8 * i)));
+        }
+        core_bytes.push_back(in.flags);
+        full_bytes.push_back(in.flags);
+        if (!in.witnesses.empty()) {
+            full_bytes.insert(full_bytes.end(), in.witnesses[0].script.begin(),
+                              in.witnesses[0].script.end());
+        }
+        if (in.has_coinbase_data) {
+            core_bytes.insert(core_bytes.end(), in.coinbase_data.begin(),
+                              in.coinbase_data.end());
+            full_bytes.insert(full_bytes.end(), in.coinbase_data.begin(),
+                              in.coinbase_data.end());
+        }
+    }
+    for (const auto &out : v2tx.outputs) {
+        std::vector<uint8_t> owire;
+        if (lotus::v2::EncodeOutput(out, owire, err)) {
+            core_bytes.insert(core_bytes.end(), owire.begin(), owire.end());
+            full_bytes.insert(full_bytes.end(), owire.begin(), owire.end());
+        }
+    }
+    txid_out = lotus::v2::TaggedHash(lotus::v2::HashDomain::TxId, core_bytes);
+    txhash_out =
+        lotus::v2::TaggedHash(lotus::v2::HashDomain::TxHash, full_bytes);
 }
 
 TxId CMutableTransaction::GetId() const {
-    return TxId(ComputeCMutableTransactionHash(*this));
+    lotus::v2::Hash32 txid{}, txhash{};
+    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    uint256 out;
+    std::memcpy(out.begin(), txid.data(), 32);
+    return TxId(out);
 }
 
 TxHash CMutableTransaction::GetHash() const {
-    return TxHash(ComputeCMutableTransactionHash(*this));
+    lotus::v2::Hash32 txid{}, txhash{};
+    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    uint256 out;
+    std::memcpy(out.begin(), txhash.data(), 32);
+    return TxHash(out);
 }
 
+uint256 CTransaction::ComputeHash() const {
+    lotus::v2::Hash32 txid{}, txhash{};
+    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    uint256 out;
+    std::memcpy(out.begin(), txid.data(), 32);
+    return out;
+}
 
+uint256 CTransaction::ComputeWitnessHash() const {
+    lotus::v2::Hash32 txid{}, txhash{};
+    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    uint256 out;
+    std::memcpy(out.begin(), txhash.data(), 32);
+    return out;
+}
+
+void CTransaction::InitHashes() {
+    if (nVersion == 7 && fHasV2Lock && !vin.empty() && vin.size() <= 16 &&
+        !vout.empty() && vout.size() <= 16 && (nV2Lock & 0xffU) <= 2 &&
+        ((nV2Lock & 0xffU) != 0 || nV2Lock == 0)) {
+        bool fast_ok = true;
+        uint32_t total_size = 16;
+        std::array<lotus::v2::Hash32, 16> core_leaves{};
+        std::array<lotus::v2::Hash32, 16> full_leaves{};
+        std::array<lotus::v2::Hash32, 16> out_leaves{};
+        for (size_t i = 0; i < vin.size(); ++i) {
+            const CTxIn &in = vin[i];
+            if (in.nFlags != 1 || in.fHasCoinbaseData ||
+                !in.vCoinbaseData.empty() ||
+                in.nPathIndex >= lotus::v2::MAX_OUTPUT_PATHS ||
+                in.vWitnesses.size() != 1 ||
+                (in.nSequence != UINT32_MAX && (in.nSequence & ~0x40ffffU))) {
+                fast_ok = false;
+                break;
+            }
+            const auto &w = in.vWitnesses[0];
+            if (!w.siblings.empty() || w.script.size() > 160 ||
+                w.arguments.size() > 1 ||
+                (w.arguments.size() == 1 && w.arguments[0].size() > 80)) {
+                fast_ok = false;
+                break;
+            }
+            for (size_t j = 0; j < i; ++j) {
+                if (vin[j].prevout == in.prevout) {
+                    fast_ok = false;
+                    break;
+                }
+            }
+            if (!fast_ok) {
+                break;
+            }
+            std::array<uint8_t, 300> buf{};
+            std::memcpy(buf.data(), in.prevout.GetTxId().begin(), 32);
+            const uint32_t prev_n = in.prevout.GetN();
+            for (size_t b = 0; b < 4; ++b) {
+                buf[32 + b] = static_cast<uint8_t>(prev_n >> (8 * b));
+                buf[36 + b] = static_cast<uint8_t>(in.nSequence >> (8 * b));
+            }
+            buf[40] = 1;
+            buf[41] = in.nPathIndex;
+            buf[42] = 1;
+            buf[43] = static_cast<uint8_t>(w.script.size());
+            if (!w.script.empty()) {
+                std::memcpy(buf.data() + 44, w.script.data(), w.script.size());
+            }
+            const size_t core_len = 45 + w.script.size();
+            buf[core_len - 1] = 0; // siblings.size() == 0
+            core_leaves[i] = lotus::v2::InputCoreLeaf(
+                std::span<const uint8_t>(buf.data(), core_len));
+            size_t full_len = core_len;
+            if (w.arguments.empty()) {
+                buf[full_len++] = 0;
+            } else {
+                const auto &arg0 = w.arguments[0];
+                buf[full_len++] = 1;
+                buf[full_len++] = static_cast<uint8_t>(arg0.size());
+                if (!arg0.empty()) {
+                    std::memcpy(buf.data() + full_len, arg0.data(),
+                                arg0.size());
+                    full_len += arg0.size();
+                }
+            }
+            full_leaves[i] = lotus::v2::InputFullLeaf(
+                std::span<const uint8_t>(buf.data(), full_len));
+            total_size += static_cast<uint32_t>(full_len);
+        }
+        if (fast_ok) {
+            for (size_t j = 0; j < vout.size(); ++j) {
+                const CTxOut &out = vout[j];
+                if (out.vBranches.empty() || (out.nFlags & 0x02U) != 0 ||
+                    out.scriptPubKey.size() != 45 ||
+                    out.scriptPubKey[0] != 0x00 ||
+                    out.scriptPubKey[9] != 0x01 ||
+                    out.scriptPubKey[42] != 0x01 ||
+                    out.scriptPubKey[43] != 0x01 ||
+                    out.scriptPubKey[44] != 0x00) {
+                    fast_ok = false;
+                    break;
+                }
+                out_leaves[j] = lotus::v2::OutputLeaf(std::span<const uint8_t>(
+                    out.scriptPubKey.data(), out.scriptPubKey.size()));
+                total_size += static_cast<uint32_t>(out.scriptPubKey.size());
+            }
+        }
+        if (fast_ok) {
+            const lotus::v2::Hash inputs_root = lotus::v2::IndexedTreeRoot(
+                std::span<const lotus::v2::Hash>(core_leaves.data(),
+                                                 vin.size()));
+            const lotus::v2::Hash full_inputs_root = lotus::v2::IndexedTreeRoot(
+                std::span<const lotus::v2::Hash>(full_leaves.data(),
+                                                 vin.size()));
+            const lotus::v2::Hash outputs_root = lotus::v2::IndexedTreeRoot(
+                std::span<const lotus::v2::Hash>(out_leaves.data(),
+                                                 vout.size()));
+            lotus::v2::TxHeaderCore header{};
+            header[0] = 7;
+            for (size_t i = 0; i < 8; ++i) {
+                header[4 + i] = static_cast<uint8_t>(nV2Lock >> (8 * i));
+            }
+            header[12] = static_cast<uint8_t>(vin.size());
+            header[13] = static_cast<uint8_t>(vin.size() >> 8);
+            header[14] = static_cast<uint8_t>(vout.size());
+            header[15] = static_cast<uint8_t>(vout.size() >> 8);
+            const auto &chain_id = GetActiveV2ChainId();
+            const lotus::v2::Hash txid = lotus::v2::TransactionId(
+                chain_id, header, inputs_root, outputs_root);
+            const lotus::v2::Hash txhash = lotus::v2::TransactionHash(
+                chain_id, header, full_inputs_root, outputs_root);
+            std::memcpy(hash.begin(), txid.data(), 32);
+            std::memcpy(m_witness_hash.begin(), txhash.data(), 32);
+            std::memcpy(m_outputs_hash.begin(), outputs_root.data(), 32);
+            m_serialize_size = total_size;
+            return;
+        }
+    }
+    lotus::v2::Hash32 txid{}, txhash{}, outputs_root{};
+    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash,
+                          &outputs_root);
+    std::memcpy(hash.begin(), txid.data(), 32);
+    std::memcpy(m_witness_hash.begin(), txhash.data(), 32);
+    std::memcpy(m_outputs_hash.begin(), outputs_root.data(), 32);
+    SizeComputer counter;
+    SerializeTransaction(*this, counter);
+    m_serialize_size = counter.size();
+}
+
+/**
+ * For backward compatibility, the hash is initialized to 0.
+ * TODO: remove the need for this default constructor entirely.
+ */
 namespace {
 /** Appends serialized bytes to a vector. */
 class AppendWriter {
@@ -204,6 +575,7 @@ TransactionWire SerializeWire(const CMutableTransaction &tx,
     wire.bytes = buf;
     wire.n_inputs = tx.vin.size();
     wire.n_outputs = tx.vout.size();
+    wire.source = &tx;
     for (const CTxIn &in : tx.vin) {
         if (IsLongScript(in.scriptSig.size())) {
             wire.long_script_bytes += in.scriptSig.size();
@@ -218,7 +590,7 @@ TransactionWire SerializeWire(const CMutableTransaction &tx,
 }
 
 /** Serialization of CTransaction(): version 2, no inputs or outputs. */
-constexpr uint8_t NULL_TRANSACTION_WIRE[] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+constexpr uint8_t NULL_TRANSACTION_WIRE[] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 /**
  * Transaction storage holds the inputs, then the outputs, then the bytes of
@@ -241,11 +613,6 @@ StorageOffsets Offsets(size_t n_inputs, size_t n_outputs,
 static_assert(alignof(CTxIn) <= alignof(std::max_align_t) &&
               alignof(CTxOut) <= alignof(std::max_align_t));
 
-uint256 HashSerialization(Span<const uint8_t> wire) {
-    HashWriter hasher;
-    hasher.write(MakeByteSpan(wire));
-    return hasher.GetHash();
-}
 
 /**
  * Slot sizes of the transaction storage slabs: 128-byte steps up to 2 KiB,
@@ -304,44 +671,20 @@ void DeallocateTransactionStorage(void *p, size_t bytes) noexcept {
     DeallocateStorage(p, bytes);
 }
 
-TransactionWire ScanTransactionWire(Span<const uint8_t> bytes) {
-    size_t pos = 0;
-    auto skip = [&](uint64_t count) {
-        if (count > bytes.size() - pos) {
-            throw std::ios_base::failure("ScanTransactionWire(): end of data");
-        }
-        pos += count;
-    };
-    auto read_compact_size = [&]() {
-        SpanReader reader{bytes.subspan(pos)};
-        const uint64_t n = ReadCompactSize(reader);
-        pos = bytes.size() - reader.size();
-        return n;
-    };
-    TransactionWire wire;
-    auto skip_script = [&]() {
-        const uint64_t size = read_compact_size();
-        if (IsLongScript(size)) {
-            wire.long_script_bytes += size;
-        }
-        skip(size);
-    };
-    skip(sizeof(uint32_t));
-    const uint64_t n_inputs = read_compact_size();
-    for (uint64_t i = 0; i < n_inputs; ++i) {
-        skip(sizeof(uint256) + sizeof(uint32_t));
-        skip_script();
-        skip(sizeof(uint32_t));
-    }
-    const uint64_t n_outputs = read_compact_size();
-    for (uint64_t i = 0; i < n_outputs; ++i) {
-        skip(sizeof(int64_t));
-        skip_script();
-    }
-    skip(sizeof(uint32_t));
-    wire.bytes = bytes.first(pos);
-    wire.n_inputs = n_inputs;
-    wire.n_outputs = n_outputs;
+TransactionWire ScanTransactionWire(Span<const uint8_t> bytes,
+                                    CMutableTransaction *retained) {
+    SpanReader reader{bytes};
+    CMutableTransaction temporary;
+    CMutableTransaction &decoded = retained ? *retained : temporary;
+    UnserializeTransaction(decoded, reader);
+    TransactionWire wire{bytes.first(bytes.size() - reader.size()),
+                         static_cast<uint32_t>(decoded.vin.size()),
+                         static_cast<uint32_t>(decoded.vout.size())};
+    wire.movable_source = retained;
+    for (const auto &in : decoded.vin)
+        if (IsLongScript(in.scriptSig.size())) wire.long_script_bytes += in.scriptSig.size();
+    for (const auto &out : decoded.vout)
+        if (IsLongScript(out.scriptPubKey.size())) wire.long_script_bytes += out.scriptPubKey.size();
     return wire;
 }
 
@@ -361,58 +704,66 @@ CTransaction::Layout CTransaction::Place(const TransactionWire &wire,
     auto *scripts = reinterpret_cast<uint8_t *>(base + offsets.scripts);
     size_t scripts_used = 0;
 
-    // The bytes were produced by serialization or checked by
-    // ReadTransactionWire, so decoding them cannot fail. Short scripts are
-    // copied into their CScript; long ones into storage, which they borrow.
-    const Span<const uint8_t> bytes = wire.bytes;
-    SpanReader reader{bytes};
-    auto read_script = [&]() {
-        const uint64_t size = ReadCompactSize(reader);
-        const size_t offset = bytes.size() - reader.size();
-        reader = SpanReader{bytes.subspan(offset + size)};
-        Span<const uint8_t> script = bytes.subspan(offset, size);
-        if (IsLongScript(size)) {
-            uint8_t *dest = scripts + scripts_used;
-            std::copy(script.begin(), script.end(), dest);
-            scripts_used += size;
-            script = {dest, script.size()};
-        }
-        return CScript::Borrow(script);
-    };
-
+    CMutableTransaction parsed;
+    CMutableTransaction *movable = wire.movable_source;
+    const CMutableTransaction *decoded = movable ? movable : wire.source;
+    if (!decoded) {
+        SpanReader reader{wire.bytes};
+        UnserializeTransaction(parsed, reader);
+        if (!reader.empty()) throw std::ios_base::failure("native transaction trailing bytes");
+        decoded = &parsed;
+        movable = &parsed;
+    }
+    if (decoded->vin.size() != wire.n_inputs || decoded->vout.size() != wire.n_outputs)
+        throw std::ios_base::failure("native transaction storage framing mismatch");
     Layout layout;
-    reader >> layout.nVersion;
-    ReadCompactSize(reader);
+    layout.nVersion = decoded->nVersion;
+    layout.nLockTime = decoded->nLockTime;
+    layout.fHasV2Lock = decoded->fHasV2Lock;
+    layout.nV2Lock = decoded->nV2Lock;
+    // Copy short scripts inline; copy long scripts into this transaction's
+    // slab tail. Native extension vectors retain their own original ownership.
+    auto store_script = [&](const CScript &script) {
+        Span<const uint8_t> bytes{script.data(), script.size()};
+        if (IsLongScript(bytes.size())) {
+            if (bytes.size() > wire.long_script_bytes - scripts_used)
+                throw std::ios_base::failure("native long script storage mismatch");
+            auto *dest = scripts + scripts_used;
+            std::copy(bytes.begin(), bytes.end(), dest);
+            scripts_used += bytes.size();
+            bytes = {dest, bytes.size()};
+        }
+        return CScript::Borrow(bytes);
+    };
+    uint32_t constructed_inputs = 0, constructed_outputs = 0;
+    try {
     for (uint32_t i = 0; i < wire.n_inputs; ++i) {
-        COutPoint prevout;
-        reader >> prevout;
-        CScript script = read_script();
-        uint32_t sequence;
-        reader >> sequence;
-        // Created const: borrowed scripts must never be modified in place.
-        ::new (static_cast<void *>(base + i * sizeof(CTxIn)))
-            const CTxIn(prevout, std::move(script), sequence);
+        auto *slot = static_cast<void *>(base + i * sizeof(CTxIn));
+        CTxIn input = movable ? std::move(movable->vin[i]) : decoded->vin[i];
+        input.scriptSig = store_script(input.scriptSig);
+        ::new (slot) const CTxIn(std::move(input));
+        ++constructed_inputs;
     }
-    ReadCompactSize(reader);
     for (uint32_t i = 0; i < wire.n_outputs; ++i) {
-        Amount value;
-        reader >> value;
-        ::new (static_cast<void *>(base + offsets.vout + i * sizeof(CTxOut)))
-            const CTxOut(value, read_script());
+        auto *slot = static_cast<void *>(base + offsets.vout + i * sizeof(CTxOut));
+        CTxOut output = movable ? std::move(movable->vout[i]) : decoded->vout[i];
+        output.scriptPubKey = store_script(output.scriptPubKey);
+        ::new (slot) const CTxOut(std::move(output));
+        ++constructed_outputs;
     }
-    reader >> layout.nLockTime;
-    assert(reader.empty());
-    assert(scripts_used == wire.long_script_bytes);
+    } catch (...) {
+        std::destroy_n(std::launder(reinterpret_cast<const CTxIn *>(base)), constructed_inputs);
+        std::destroy_n(std::launder(reinterpret_cast<const CTxOut *>(base + offsets.vout)), constructed_outputs);
+        throw;
+    }
 
     layout.vin = {std::launder(reinterpret_cast<const CTxIn *>(base)),
                   wire.n_inputs};
     layout.vout = {
         std::launder(reinterpret_cast<const CTxOut *>(base + offsets.vout)),
         wire.n_outputs};
-    // Hash now: the serialization is not kept, and a contiguous stream may
-    // release it as soon as this returns.
-    layout.hash = HashSerialization(bytes);
-    layout.serialize_size = bytes.size();
+    assert(scripts_used == wire.long_script_bytes);
+    layout.serialize_size = wire.bytes.size();
     layout.long_script_bytes = wire.long_script_bytes;
     layout.owned = owned;
     return layout;
@@ -431,10 +782,10 @@ CTransaction::Layout CTransaction::OwnedLayout(const TransactionWire &wire) {
 
 CTransaction::CTransaction(const Layout &layout)
     : vin(layout.vin), vout(layout.vout), nVersion(layout.nVersion),
-      nLockTime(layout.nLockTime), hash(layout.hash),
-      m_serialize_size(layout.serialize_size),
+      nLockTime(layout.nLockTime), fHasV2Lock(layout.fHasV2Lock), nV2Lock(layout.nV2Lock),
+      hash(), m_witness_hash(), m_outputs_hash(),
       m_long_script_bytes(layout.long_script_bytes),
-      m_owns_storage(layout.owned) {}
+      m_owns_storage(layout.owned) { InitHashes(); }
 
 /**
  * For backward compatibility, the hash is initialized to 0.
@@ -442,8 +793,12 @@ CTransaction::CTransaction(const Layout &layout)
  */
 CTransaction::CTransaction()
     : vin(), vout(), nVersion(CTransaction::CURRENT_VERSION), nLockTime(0),
-      hash(), m_serialize_size(sizeof(NULL_TRANSACTION_WIRE)),
-      m_long_script_bytes(0), m_owns_storage(false) {}
+      fHasV2Lock(false), nV2Lock(0), hash(), m_witness_hash(), m_outputs_hash(),
+      m_long_script_bytes(0), m_owns_storage(false) {
+    SizeComputer counter;
+    SerializeTransaction(*this, counter);
+    m_serialize_size = counter.size();
+}
 
 CTransaction::CTransaction(const CMutableTransaction &tx)
     : CTransaction(OwnedLayout(SerializeWire(tx, TransactionScratchBuffer()))) {
@@ -506,17 +861,7 @@ Span<const uint8_t> CTransaction::SerializeToScratch() const {
     // m_serialize_size is exact, so the writes below fill buf exactly.
     buf.resize(m_serialize_size);
     RawWriter writer{buf.data()};
-    // Same bytes as SerializeTransaction over std::vector fields.
-    writer << nVersion;
-    WriteCompactSize(writer, vin.size());
-    for (const CTxIn &in : vin) {
-        writer << in;
-    }
-    WriteCompactSize(writer, vout.size());
-    for (const CTxOut &out : vout) {
-        writer << out;
-    }
-    writer << nLockTime;
+    SerializeTransaction(*this, writer);
     assert(writer.pos() == buf.data() + buf.size());
     return buf;
 }
@@ -525,7 +870,9 @@ const PrecomputedTransactionData &CTransaction::FillPrecomputedData() const {
     // Hashing is deterministic, so racing callers compute identical data; only
     // the thread that claims the slot writes it.
     const PrecomputedTransactionData computed =
-        PrecomputedTransactionData::Compute(*this);
+        nVersion == 7 && !vin.empty() && (vin[0].nFlags == 1 || vin[0].nFlags == 3)
+            ? PrecomputedTransactionData{}
+            : PrecomputedTransactionData::Compute(*this);
     uint8_t expected = PRECOMPUTED_EMPTY;
     if (m_precomputed_state.compare_exchange_strong(
             expected, PRECOMPUTED_WRITING, std::memory_order_relaxed)) {
@@ -544,6 +891,9 @@ const PrecomputedTransactionData &CTransaction::FillPrecomputedData() const {
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();
     for (const auto &tx_out : vout) {
+        if ((tx_out.nFlags & 1) != 0) {
+            continue;
+        }
         if (!MoneyRange(tx_out.nValue) ||
             !MoneyRange(nValueOut + tx_out.nValue)) {
             throw std::runtime_error(std::string(__func__) +
