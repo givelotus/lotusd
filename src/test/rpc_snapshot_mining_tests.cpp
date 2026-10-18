@@ -4,6 +4,8 @@
 
 #include <config.h>
 #include <consensus/amount.h>
+#include <consensus/merkle.h>
+#include <consensus/validation.h>
 #include <consensus/tx_check.h>
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
@@ -45,7 +47,13 @@ const node::MiningTemplateSnapshot &NativeMiningTemplate(
 }
 } // namespace
 
-BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_mining_tests, TestChain100Setup)
+struct NativeMiningRPCSetup : TestChain100Setup {
+    NativeMiningRPCSetup() {
+        m_node.args->ForceSetArg("-gbtwithoutpeers", "1");
+        SetMockTime(m_node.chainman->ActiveTip()->GetBlockTime() + 1);
+    }
+};
+BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_mining_tests, NativeMiningRPCSetup)
 
 BOOST_AUTO_TEST_CASE(
     abc_mempool_batch_removal_and_prioritisation_snapshot_coalescing) {
@@ -210,9 +218,14 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
             req.context = &m_node;
             req.strMethod = "getblocktemplate";
             req.params = UniValue(UniValue::VARR);
-            UniValue res = co_await tableRPC.executeAsync(
-                config, req, pool.get_executor());
-            gbt_promise.set_value(std::move(res));
+            try {
+                UniValue res = co_await tableRPC.executeAsync(config, req, pool.get_executor());
+                gbt_promise.set_value(std::move(res));
+            } catch (const UniValue &error) {
+                gbt_promise.set_exception(std::make_exception_ptr(std::runtime_error(error.write())));
+            } catch (...) {
+                gbt_promise.set_exception(std::current_exception());
+            }
         },
         boost::asio::detached);
 
@@ -250,6 +263,9 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     BOOST_CHECK_EQUAL(header_hex.size(), 268U);
     const std::string coinbase_hex = gbt_res.find_value("coinbasetxhex").get_str();
     BOOST_REQUIRE(!coinbase_hex.empty());
+    CMutableTransaction decoded_coinbase;
+    BOOST_REQUIRE(DecodeHexTx(decoded_coinbase, coinbase_hex));
+    BOOST_CHECK(CTransaction(decoded_coinbase).IsCoinBase());
 
     JSONRPCRequest submit_req;
     submit_req.context = &m_node;
@@ -301,9 +317,14 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_mineraddress_and_submitsealedblock) {
             tmpl_req.pushKV("mineraddress", minerAddr);
             req.params = UniValue(UniValue::VARR);
             req.params.push_back(std::move(tmpl_req));
-            UniValue res = co_await tableRPC.executeAsync(
-                config, req, pool.get_executor());
-            gbt_promise.set_value(std::move(res));
+            try {
+                UniValue res = co_await tableRPC.executeAsync(config, req, pool.get_executor());
+                gbt_promise.set_value(std::move(res));
+            } catch (const UniValue &error) {
+                gbt_promise.set_exception(std::make_exception_ptr(std::runtime_error(error.write())));
+            } catch (...) {
+                gbt_promise.set_exception(std::current_exception());
+            }
         },
         boost::asio::detached);
 
@@ -315,12 +336,13 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_mineraddress_and_submitsealedblock) {
     const std::string cb_hex = gbt_res.find_value("coinbasetxhex").get_str();
     BOOST_CHECK_EQUAL(header_hex.size(), 268U);
     BOOST_CHECK(!cb_hex.empty());
-    BOOST_CHECK_GT(gbt_res.find_value("blocksize").getInt<int64_t>(), 80);
+    BOOST_CHECK_GT(gbt_res.find_value("blocksize").getInt<int64_t>(), 134);
 
     CMutableTransaction decoded_cb;
     BOOST_REQUIRE(DecodeHexTx(decoded_cb, cb_hex));
     BOOST_REQUIRE(!decoded_cb.vout.empty());
-    BOOST_CHECK(decoded_cb.vout[0].scriptPubKey == expectedMinerSpk);
+    BOOST_CHECK(decoded_cb.vout[0].ToV2Output() ==
+        CTxOut(decoded_cb.vout[0].nValue, expectedMinerSpk).ToV2Output());
 
     CBlockHeader header;
     BOOST_REQUIRE(DecodeHexBlockHeader(header, header_hex));

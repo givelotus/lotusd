@@ -17,6 +17,7 @@
 #include <script/standard.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <test/util/native_snapshot_setup.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/strencodings.h>
@@ -217,6 +218,64 @@ BOOST_AUTO_TEST_CASE(lockfree_rpc_reads_while_cs_main_and_mempool_locked) {
     BOOST_CHECK(rawtx_blk_res.find_value("in_active_chain").get_bool());
     BOOST_CHECK_EQUAL(rawtx_blk_res.find_value("confirmations").getInt<int>(),
                       99);
+}
+
+BOOST_FIXTURE_TEST_CASE(mempool_info_preserves_deferred_overlay_for_root_readers,
+                        NativeSnapshotChainSetup) {
+    CTxMemPool &pool = *m_node.mempool;
+    // Keep a reference to the manager itself, without invoking its flushing
+    // accessor again until the explicit root-read phase below.
+    auto &manager = WITH_LOCK(pool.cs, return pool.GetMerklixOverlay());
+    BOOST_REQUIRE_EQUAL(
+        WITH_LOCK(pool.cs, return manager.GetSpeculativeOverlay().GetTxCount()),
+        0U);
+    std::vector<lotus::v2::TxIdentityPair> identities;
+    CTransactionRef previous = m_coinbase_txns[0];
+    for (size_t i = 0; i < 3; ++i) {
+        const auto tx = CreateNativeMempoolTransaction(
+            previous, 0, previous->vout[0].nValue - 1000 * SATOSHI);
+        previous = MakeTransactionRef(tx);
+        lotus::v2::TxIdentityPair identity;
+        std::memcpy(identity.tx_id.data(), previous->GetId().begin(), 32);
+        std::memcpy(identity.tx_hash.data(), previous->GetHash().begin(), 32);
+        identities.push_back(identity);
+
+        JSONRPCRequest request;
+        request.context = &m_node;
+        request.strMethod = "getmempoolinfo";
+        request.params = UniValue(UniValue::VARR);
+        const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
+        BOOST_REQUIRE(snapshot);
+        const auto result = tableRPC.execute(GlobalConfig{}, request);
+        BOOST_CHECK_EQUAL(result["size"].getInt<uint64_t>(), i + 1);
+        BOOST_CHECK_EQUAL(result["bytes"].getInt<uint64_t>(), snapshot->mempool_bytes);
+        BOOST_CHECK_EQUAL(result["usage"].getInt<uint64_t>(), snapshot->mempool_usage);
+        UniValue expected(UniValue::VOBJ);
+        expected.pushKV("total_fee", snapshot->total_fee);
+        BOOST_CHECK_EQUAL(result["total_fee"].write(), expected["total_fee"].write());
+        // Status polling must not drain deferred transactions or construct
+        // whole-mempool roots as an unrelated read side effect.
+        BOOST_CHECK_EQUAL(
+            WITH_LOCK(pool.cs, return manager.GetSpeculativeOverlay().GetTxCount()),
+            0U);
+    }
+    // The first real mining snapshot read must still construct the complete
+    // commitment from this pinned generation after scalar polling did no work.
+    const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
+    BOOST_REQUIRE(snapshot);
+    snapshot->EnsureMiningTemplate();
+    snapshot->mining_template.EnsureRoots();
+    BOOST_CHECK_EQUAL(snapshot->mining_template.non_coinbase_txs.size(),
+                      identities.size());
+    BOOST_CHECK(snapshot->mining_template.subtree_a_root ==
+                lotus::v2::TransactionSubtreeARoot(identities));
+    // Its actual root consumer drained all accepted transactions, with exactly
+    // the same transaction commitment as an independent construction.
+    LOCK(pool.cs);
+    const auto &overlay = pool.GetMerklixOverlay().GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(overlay.GetTxCount(), identities.size());
+    BOOST_CHECK(overlay.GetSubtreeARoot() ==
+                lotus::v2::TransactionSubtreeARoot(identities));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
