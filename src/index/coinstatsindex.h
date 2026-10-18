@@ -20,6 +20,7 @@ static constexpr bool DEFAULT_COINSTATSINDEX{false};
  */
 class CoinStatsIndex final : public BaseIndex {
 private:
+    friend struct CoinStatsIndexTestAccess;
     std::unique_ptr<BaseIndex::DB> m_db;
 
     MuHash3072 m_muhash;
@@ -35,6 +36,10 @@ private:
     Amount m_total_unspendables_bip30{Amount::zero()};
     Amount m_total_unspendables_scripts{Amount::zero()};
     Amount m_total_unspendables_unclaimed_rewards{Amount::zero()};
+    Amount m_total_unspendables_expired{Amount::zero()};
+    Amount m_total_cleaning_bounty{Amount::zero()};
+
+    void StoreStats(const CBlockIndex *pindex);
 
     bool ReverseBlock(const CBlock &block, const CBlockIndex *pindex);
 

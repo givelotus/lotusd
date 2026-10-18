@@ -270,7 +270,7 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_layer_matches_full_block_state_root) {
         CTransactionRef ptx = MakeSpendTx(COutPoint(base_cb_txid, i),
                                           1000 + i, 40000 * SATOSHI, 2);
         parent_txs.push_back(ptx);
-        BOOST_CHECK(AddTransactionToOverlay(manager, ptx, 1000, 1));
+        BOOST_CHECK(AddTransactionToOverlay(manager, ptx, 20000, 1));
     }
 
     // Freeze Epoch 1 after 50 parent transactions
@@ -283,7 +283,7 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_layer_matches_full_block_state_root) {
         CTransactionRef ctx = MakeSpendTx(COutPoint(parent_txs[i]->GetId(), 0),
                                           2000 + i, 15000 * SATOSHI, 2);
         child_txs.push_back(ctx);
-        BOOST_CHECK(AddTransactionToOverlay(manager, ctx, 1000, 1));
+        BOOST_CHECK(AddTransactionToOverlay(manager, ctx, 10000, 1));
     }
 
     // Verify frozen Epoch 1 roots were not mutated by speculative additions
@@ -516,7 +516,7 @@ BOOST_FIXTURE_TEST_CASE(txmempool_speculative_merklix_overlay, TestingSetup) {
     for (size_t i = 0; i < 6; ++i) {
         auto tx = MakeSpendTx(b1_coins[i], static_cast<uint32_t>(100 + i),
                               40 * SATOSHI, 2);
-        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        pool.addUnchecked(entry.Fee(20 * SATOSHI).FromTx(tx));
         epoch1_txs.push_back(tx);
     }
 
@@ -527,13 +527,13 @@ BOOST_FIXTURE_TEST_CASE(txmempool_speculative_merklix_overlay, TestingSetup) {
     std::vector<CTransactionRef> extra_txs;
     auto child_tx = MakeSpendTx(COutPoint(epoch1_txs[0]->GetId(), 0), 200,
                                 35 * SATOSHI, 1);
-    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(child_tx));
+    pool.addUnchecked(entry.Fee(5 * SATOSHI).FromTx(child_tx));
     extra_txs.push_back(child_tx);
 
     for (size_t i = 6; i < 9; ++i) {
         auto tx = MakeSpendTx(b1_coins[i], static_cast<uint32_t>(300 + i),
                               40 * SATOSHI, 2);
-        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        pool.addUnchecked(entry.Fee(20 * SATOSHI).FromTx(tx));
         extra_txs.push_back(tx);
     }
 
@@ -1179,12 +1179,17 @@ BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, Testing
         batch_txs.push_back(ctx);
     }
 
+    // These fixtures bypass admission: supply the actual input-minus-output
+    // fee so their authenticated lifetime matches full block construction.
+    auto actual_fee = [](const CTransactionRef &tx) -> int64_t {
+        return tx->vout[0].nValue == 40000 * SATOSHI ? 20000 : 10000;
+    };
     lotus::v2::MerklixOverlayManager serial_mgr;
     serial_mgr.ResetToTip(base_id_hash, base_utxo_root, base_mon_state,
                           next_height, parent_mtp);
     const auto t_serial_0 = std::chrono::steady_clock::now();
     for (const auto &ptx : batch_txs) {
-        BOOST_CHECK(AddTransactionToOverlay(serial_mgr, ptx, 1000, 1));
+        BOOST_CHECK(AddTransactionToOverlay(serial_mgr, ptx, actual_fee(ptx), 1));
     }
     const auto t_serial_1 = std::chrono::steady_clock::now();
 
@@ -1194,7 +1199,7 @@ BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, Testing
     std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> batch_tuples;
     batch_tuples.reserve(batch_txs.size());
     for (size_t i = 0; i < batch_txs.size(); ++i) {
-        batch_tuples.emplace_back(batch_txs[i], 1000, 1);
+        batch_tuples.emplace_back(batch_txs[i], actual_fee(batch_txs[i]), 1);
     }
     const auto t_batch_0 = std::chrono::steady_clock::now();
     const size_t added =
@@ -1240,7 +1245,7 @@ BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, Testing
         {
             CTxMemPool::ScopedSnapshotDefer defer(pool);
             for (const auto &ptx : batch_txs) {
-                pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(ptx));
+                pool.addUnchecked(entry.Fee(actual_fee(ptx) * SATOSHI).FromTx(ptx));
             }
         }
         const auto &pool_spec = pool.GetMerklixOverlay().GetSpeculativeOverlay();

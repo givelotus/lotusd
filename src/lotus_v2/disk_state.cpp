@@ -260,7 +260,7 @@ Bytes CoinBytes(const Coin &coin) {
     return Bytes(reinterpret_cast<const char *>(encoded.data()), encoded.size());
 }
 Coin ParseCoin(BytesView bytes) {
-    Require(bytes.size() <= MAX_COIN_BYTES && bytes.size() >= 54, "coin size");
+    Require(bytes.size() <= MAX_COIN_BYTES && bytes.size() >= 37 + COIN_METADATA_BYTES, "coin size");
     Reader r{bytes};
     Coin coin;
     coin.outpoint.tx_id = r.Digest();
@@ -283,6 +283,9 @@ Coin ParseCoin(BytesView bytes) {
     coin.creation_parent_mtp = r.Int();
     const auto flag = r.Int(1);
     Require(flag <= 1, "coinbase flag"); coin.coinbase = flag;
+    Require(r.Int(1) == COIN_ENCODING_VERSION, "coin encoding version");
+    coin.fee_per_output = r.Int();
+    coin.expiration_height = r.Int();
     r.End();
     std::vector<uint8_t> canonical;
     Require(EncodeCoin(coin, canonical) &&
@@ -359,7 +362,7 @@ Node ParseNode(BytesView bytes, const Path &path, const Summary &expected) {
 }
 struct Head { Summary root; DiskStateMetadata metadata; };
 Bytes Schema(const DiskStateOptions &options) {
-    Bytes bytes("LotusV2State\1", 13);
+    Bytes bytes("LotusV2State\5", 13);
     PutHash(bytes, options.identity); PutHash(bytes, options.profile_digest); return bytes;
 }
 void CheckMetadata(const DiskStateMetadata &metadata, size_t cap) {
@@ -479,7 +482,7 @@ Bytes ExpandCompactHeadBytes(BytesView stored, ReadFlatFn &&read_flat) {
 Bytes StorageSchema(const DiskStateOptions &options) {
     Bytes bytes = Schema(options);
     if (!options.header_index) return bytes;
-    bytes[12] = options.candidates ? 4 : options.recovery ? 3 : 2; // Explicit development format, never migrated implicitly.
+    bytes[12] = options.candidates ? 8 : options.recovery ? 7 : 6; // Explicit development format, never migrated implicitly.
     const auto &p = *options.header_index;
     PutHash(bytes, p.chain_id); PutHash(bytes, p.genesis_id); Put(bytes, p.version, 4);
     Put(bytes, p.genesis_time); Put(bytes, p.genesis_bits, 4); PutHash(bytes, p.pow_limit);
@@ -2722,7 +2725,8 @@ bool DiskStateStore::PeelBlockStateReverse(
     const Hash &expected_tip_h, const DiskStateMetadata &parent_metadata,
     const Header &parent_header,
     const std::vector<Outpoint> &net_created_to_erase,
-    const std::vector<Coin> &prior_spent_to_insert, DiskStateError &error) {
+    const std::vector<Coin> &prior_spent_to_insert, DiskStateError &error,
+    const std::vector<Coin> &expired_swept_to_insert) {
     return Guard(error, [&] {
         if (!impl_) Fail(DiskStateErrorCode::Closed, "closed store");
         impl_->Usable();
@@ -2757,6 +2761,15 @@ bool DiskStateStore::PeelBlockStateReverse(
             bool existing = false;
             tx.AuthCheckCoin(coin.outpoint, leaf.coin_outpoint_key, existing);
             if (existing) Fail(DiskStateErrorCode::Duplicate, "reverse peel prior spent coin already present");
+            Bytes bytes = leaf.coin_bytes;
+            tx.head.root = tx.InsertAt(Path{}, tx.head.root, leaf);
+            tx.Set(CoinKey(coin.outpoint), std::move(bytes));
+        }
+        for (const Coin &coin : expired_swept_to_insert) {
+            Node leaf = Leaf(coin);
+            bool existing = false;
+            tx.AuthCheckCoin(coin.outpoint, leaf.coin_outpoint_key, existing);
+            if (existing) Fail(DiskStateErrorCode::Duplicate, "reverse peel expired swept coin already present");
             Bytes bytes = leaf.coin_bytes;
             tx.head.root = tx.InsertAt(Path{}, tx.head.root, leaf);
             tx.Set(CoinKey(coin.outpoint), std::move(bytes));
