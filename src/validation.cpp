@@ -32,6 +32,7 @@
 #include <kernel/notifications_interface.h>
 #include <logging.h>
 #include <logging/timer.h>
+#include <lotus_v2/signing.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
 #include <node/snapshot.h>
@@ -70,7 +71,10 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
+#include <functional>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -281,6 +285,164 @@ static bool CheckInputsFromMempoolAndCache(
 }
 
 namespace {
+
+struct ParallelTxScriptError {
+    TxValidationResult result{TxValidationResult::TX_CONSENSUS};
+    ScriptError script_err{ScriptError::UNKNOWN};
+    std::string reject_reason;
+    std::string debug_message;
+};
+
+std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+    const uint32_t flags, bool sigCacheStore,
+    const PrecomputedTransactionData &txdata, SignatureCache &signature_cache,
+    int &nSigChecksOut, TxSigCheckLimiter &txLimitSigChecks,
+    CheckInputsLimiter *pBlockLimitSigChecks,
+    lotus::v2::BatchSigCollector *sig_collector,
+    bool consensus_only = false) {
+    assert(!tx.IsCoinBase());
+    assert(resolved_inputs.size() == tx.vin.size());
+
+    int nSigChecksTotal = 0;
+    for (size_t i = 0; i < tx.vin.size(); i++) {
+        assert(!resolved_inputs[i].IsSpent());
+        const CTxOut &prev_txout = resolved_inputs[i].GetTxOut();
+
+        CScriptCheck check(prev_txout, tx, signature_cache, i, flags,
+                           sigCacheStore, txdata, &txLimitSigChecks,
+                           pBlockLimitSigChecks, sig_collector);
+        if (auto result = check(); result.has_value()) {
+            uint32_t mandatoryFlags =
+                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
+            // Block flags are consensus requirements. The policy fallback is
+            // only meaningful for mempool checks that add standardness flags.
+            if (!consensus_only && flags != mandatoryFlags) {
+                CScriptCheck check2(prev_txout, tx, signature_cache, i,
+                                    mandatoryFlags, sigCacheStore, txdata,
+                                    nullptr, nullptr, nullptr);
+                auto mandatory_result = check2();
+                if (!mandatory_result.has_value()) {
+                    return ParallelTxScriptError{
+                        TxValidationResult::TX_NOT_STANDARD, result->first,
+                        strprintf("non-mandatory-script-verify-flag (%s)",
+                                  ScriptErrorString(result->first)),
+                        result->second};
+                }
+                result = mandatory_result;
+            }
+            return ParallelTxScriptError{
+                TxValidationResult::TX_CONSENSUS, result->first,
+                strprintf("mandatory-script-verify-flag-failed (%s)",
+                          ScriptErrorString(result->first)),
+                result->second};
+        }
+        nSigChecksTotal += check.GetScriptExecutionMetrics().nSigChecks;
+    }
+    nSigChecksOut = nSigChecksTotal;
+    return std::nullopt;
+}
+
+class ParallelScriptWorkerPool {
+public:
+    static ParallelScriptWorkerPool &Instance() {
+        static ParallelScriptWorkerPool pool;
+        return pool;
+    }
+
+    template <typename Fn>
+    void Run(size_t num_workers, Fn &&fn) {
+        if (num_workers <= 1) {
+            fn(0);
+            return;
+        }
+        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
+        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
+        EnsureWorkers(num_workers - 1);
+        const size_t active = std::min(num_workers - 1, m_threads.size());
+        if (active == 0) {
+            dispatch_lock.unlock();
+            task_fn(0);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_task = &task_fn;
+            m_active_workers = active;
+            m_remaining.store(active, std::memory_order_release);
+            ++m_generation;
+        }
+        m_cv_start.notify_all();
+        task_fn(0);
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_cv_done.wait(lock, [this]() {
+                return m_remaining.load(std::memory_order_acquire) == 0;
+            });
+            m_task = nullptr;
+        }
+    }
+
+private:
+    ParallelScriptWorkerPool() = default;
+    ~ParallelScriptWorkerPool() {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_stop = true;
+            ++m_generation;
+        }
+        m_cv_start.notify_all();
+        for (auto &t : m_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
+
+    void EnsureWorkers(size_t count) {
+        while (m_threads.size() < count) {
+            const size_t worker_id = m_threads.size() + 1;
+            m_threads.emplace_back([this, worker_id]() {
+                uint64_t seen_gen = 0;
+                while (true) {
+                    const std::function<void(size_t)> *fn = nullptr;
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_cv_start.wait(lock, [this, &seen_gen]() {
+                            return m_stop || m_generation != seen_gen;
+                        });
+                        if (m_stop) {
+                            return;
+                        }
+                        seen_gen = m_generation;
+                        if (worker_id <= m_active_workers) {
+                            fn = m_task;
+                        }
+                    }
+                    if (fn != nullptr) {
+                        (*fn)(worker_id);
+                        if (m_remaining.fetch_sub(
+                                1, std::memory_order_acq_rel) == 1) {
+                            std::lock_guard<std::mutex> lock(m_mutex);
+                            m_cv_done.notify_one();
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    std::mutex m_dispatch_mutex;
+    std::mutex m_mutex;
+    std::condition_variable m_cv_start;
+    std::condition_variable m_cv_done;
+    std::vector<std::thread> m_threads;
+    const std::function<void(size_t)> *m_task{nullptr};
+    size_t m_active_workers{0};
+    std::atomic<size_t> m_remaining{0};
+    uint64_t m_generation{0};
+    bool m_stop{false};
+};
 
 class MemPoolAccept {
 public:
@@ -2029,7 +2191,10 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     if (!VerifyScript(scriptSig, m_tx_out.scriptPubKey, nFlags,
                       CachingTransactionSignatureChecker(
                           ptxTo, nIn, m_tx_out.nValue, cacheStore,
-                          *m_signature_cache, txdata),
+                          *m_signature_cache, txdata,
+                          ((nFlags & SCRIPT_VERIFY_NULLFAIL) != 0)
+                              ? m_sig_collector
+                              : nullptr),
                       metrics, &error)) {
         return std::make_pair(error, std::move(debug_str));
     }
@@ -2690,10 +2855,21 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         }
     }
 
+    struct PendingBlockTxCheck {
+        size_t tx_index;
+        ScriptCacheKey cache_key;
+    };
+    std::vector<PendingBlockTxCheck> pending_script_txs;
+    if (fScriptChecks && block.vtx.size() > 1) {
+        pending_script_txs.reserve(block.vtx.size() - 1);
+    }
+
     size_t txIndex = 0;
     // nSigChecksRet may be accurate (found in cache) or 0 (checks were
-    // deferred into vChecks).
-    int nSigChecksRet;
+    // deferred into Pass 2).
+    int nSigChecksRet = 0;
+    const bool fCacheResults = fJustCheck;
+    const bool fEnforceSigCheck = flags & SCRIPT_ENFORCE_SIGCHECKS;
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
         const bool isCoinBase = tx.IsCoinBase();
@@ -2747,11 +2923,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             break;
         }
 
-        // Don't cache results if we're actually connecting blocks (still
-        // consult the cache, though).
-        bool fCacheResults = fJustCheck;
-
-        const bool fEnforceSigCheck = flags & SCRIPT_ENFORCE_SIGCHECKS;
         if (!fEnforceSigCheck) {
             // Historically, there has been transactions with a very high
             // sigcheck count, so we need to disable this check for such
@@ -2759,31 +2930,32 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             nSigChecksTxLimiters[txIndex] = TxSigCheckLimiter::getDisabled();
         }
 
-        std::vector<CScriptCheck> vChecks;
-        TxValidationState tx_state;
-        if (fScriptChecks &&
-            !CheckInputScripts(tx, tx_state, view, flags, fCacheResults,
-                               fCacheResults, PrecomputedTransactionData(tx),
-                               m_chainman.m_validation_cache, nSigChecksRet,
-                               nSigChecksTxLimiters[txIndex],
-                               &nSigChecksBlockLimiter, &vChecks)) {
-            // Any transaction validation failure in ConnectBlock is a block
-            // consensus failure
-            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                          tx_state.GetRejectReason(),
-                          tx_state.GetDebugMessage());
-            break;
-        }
-
-        if (control) {
-            control->Add(std::move(vChecks));
+        if (fScriptChecks) {
+            ScriptCacheKey hashCacheEntry(
+                tx, flags,
+                m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
+            ScriptCacheElement elem(hashCacheEntry, 0);
+            if (m_chainman.m_validation_cache.m_script_execution_cache.get(
+                    elem, /*erase=*/!fCacheResults)) {
+                nSigChecksRet = elem.nSigChecks;
+                if (!nSigChecksTxLimiters[txIndex].consume_and_check(
+                        nSigChecksRet) ||
+                    !nSigChecksBlockLimiter.consume_and_check(nSigChecksRet)) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                  "too-many-sigchecks", "");
+                    break;
+                }
+            } else {
+                nSigChecksRet = 0;
+                pending_script_txs.push_back({txIndex, hashCacheEntry});
+            }
         }
 
         // Note: this must execute in the same iteration as CheckTxInputs (not
-        // in a separate loop) in order to detect double spends. However,
-        // this does not prevent double-spending by duplicated transaction
-        // inputs in the same transaction (cf. CVE-2018-17144) -- that check is
-        // done in CheckBlock (CheckRegularTransaction).
+        // in a separate loop) in order to detect double spends. SpendCoins
+        // also snapshots the exact spent Coin for each input into
+        // blockundo.vtxundo[txIndex].vprevout, forming the static UTXO
+        // dependency snapshot for Pass 2 parallel script verification.
         SpendCoins(view, tx, blockundo.vtxundo.at(txIndex), pindex->nHeight);
         txIndex++;
     }
@@ -2814,14 +2986,130 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     if (blockFees) {
         *blockFees = nFees;
     }
-    if (control) {
-        auto parallel_result = control->Complete();
-        if (parallel_result.has_value() && state.IsValid()) {
-            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                          strprintf("mandatory-script-verify-flag-failed (%s)",
-                                    ScriptErrorString(parallel_result->first)),
-                          parallel_result->second);
+
+    // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script &
+    // Batch Schnorr Signature Verification using blockundo.vtxundo[txIndex].
+    if (fScriptChecks && state.IsValid() && !pending_script_txs.empty()) {
+        const size_t n_pending = pending_script_txs.size();
+        const unsigned int hw_threads =
+            std::max(1u, std::thread::hardware_concurrency());
+        const size_t num_workers =
+            (n_pending >= 2)
+                ? std::min<size_t>(n_pending, static_cast<size_t>(hw_threads))
+                : 1;
+        std::vector<std::optional<ParallelTxScriptError>> tx_errors(n_pending);
+        std::vector<int> tx_sigchecks(n_pending, 0);
+        std::vector<lotus::v2::BatchSigCollector> worker_collectors(
+            num_workers);
+        std::atomic<size_t> next_k{0};
+        std::atomic<size_t> min_failed_k{n_pending};
+
+        auto worker_fn = [&](size_t tid) {
+            lotus::v2::BatchSigCollector &local_sigs = worker_collectors[tid];
+            while (true) {
+                const size_t k = next_k.fetch_add(1, std::memory_order_relaxed);
+                if (k >= n_pending ||
+                    k > min_failed_k.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                const size_t t_idx = pending_script_txs[k].tx_index;
+                const CTransaction &tx = *block.vtx[t_idx + 1];
+                const std::vector<Coin> &resolved_inputs =
+                    blockundo.vtxundo[t_idx].vprevout;
+                PrecomputedTransactionData txdata(tx);
+                auto err = VerifyTxScriptsFromResolvedCoins(
+                    tx, resolved_inputs, flags, fCacheResults, txdata,
+                    m_chainman.m_validation_cache.m_signature_cache,
+                    tx_sigchecks[k], nSigChecksTxLimiters[t_idx],
+                    &nSigChecksBlockLimiter, &local_sigs, /*consensus_only=*/true);
+                if (err.has_value()) {
+                    tx_errors[k] = std::move(err);
+                    size_t prev = min_failed_k.load(std::memory_order_relaxed);
+                    while (k < prev &&
+                           !min_failed_k.compare_exchange_weak(
+                               prev, k, std::memory_order_relaxed)) {
+                    }
+                }
+            }
+        };
+
+        ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
+
+        for (size_t k = 0; k < n_pending; ++k) {
+            if (tx_errors[k].has_value()) {
+                if (tx_errors[k]->script_err ==
+                    ScriptError::SIGCHECKS_LIMIT_EXCEEDED) {
+                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                  "too-many-sigchecks",
+                                  tx_errors[k]->debug_message);
+                } else {
+                    state.Invalid(
+                        BlockValidationResult::BLOCK_CONSENSUS,
+                        strprintf("mandatory-script-verify-flag-failed (%s)",
+                                  ScriptErrorString(tx_errors[k]->script_err)),
+                        tx_errors[k]->debug_message);
+                }
+                break;
+            }
         }
+
+        if (state.IsValid()) {
+            lotus::v2::BatchSigCollector combined_sigs;
+            for (const auto &wc : worker_collectors) {
+                combined_sigs.Merge(wc);
+            }
+            if (!combined_sigs.Empty() && !combined_sigs.VerifyAll()) {
+                for (size_t k = 0; k < n_pending; ++k) {
+                    const size_t t_idx = pending_script_txs[k].tx_index;
+                    const CTransaction &tx = *block.vtx[t_idx + 1];
+                    const std::vector<Coin> &resolved_inputs =
+                        blockundo.vtxundo[t_idx].vprevout;
+                    PrecomputedTransactionData txdata(tx);
+                    int dummy_sigchecks = 0;
+                    TxSigCheckLimiter dummy_tx_limiter =
+                        TxSigCheckLimiter::getDisabled();
+                    TxSigCheckLimiter dummy_block_limiter =
+                        TxSigCheckLimiter::getDisabled();
+                    auto err = VerifyTxScriptsFromResolvedCoins(
+                        tx, resolved_inputs, flags, /*cache_results=*/false,
+                        txdata,
+                        m_chainman.m_validation_cache.m_signature_cache,
+                        dummy_sigchecks, dummy_tx_limiter,
+                        &dummy_block_limiter, /*sig_collector=*/nullptr,
+                        /*consensus_only=*/true);
+                    if (err.has_value()) {
+                        state.Invalid(
+                            BlockValidationResult::BLOCK_CONSENSUS,
+                            strprintf(
+                                "mandatory-script-verify-flag-failed (%s)",
+                                ScriptErrorString(err->script_err)),
+                            err->debug_message);
+                        break;
+                    }
+                }
+                if (state.IsValid()) {
+                    state.Invalid(
+                        BlockValidationResult::BLOCK_CONSENSUS,
+                        strprintf("mandatory-script-verify-flag-failed (%s)",
+                                  ScriptErrorString(ScriptError::EVAL_FALSE)),
+                        "Batch signature verification failed");
+                }
+            } else if (fCacheResults) {
+                m_chainman.m_validation_cache.m_signature_cache.SetBatch(
+                    combined_sigs);
+            }
+        }
+
+        if (state.IsValid() && fCacheResults) {
+            for (size_t k = 0; k < n_pending; ++k) {
+                m_chainman.m_validation_cache.m_script_execution_cache.insert(
+                    ScriptCacheElement{pending_script_txs[k].cache_key,
+                                       tx_sigchecks[k]});
+            }
+        }
+    }
+    if (control) {
+        (void)control->Complete();
     }
     if (!state.IsValid()) {
         LogInfo("Block validation error: %s\n", state.ToString());

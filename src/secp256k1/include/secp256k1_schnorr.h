@@ -54,6 +54,15 @@ SECP256K1_API int secp256k1_schnorr_sign(
   const void *ndata
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4);
 
+SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_schnorr_verify_batch(
+  const secp256k1_context *ctx,
+  const unsigned char * const *sig64,
+  const unsigned char * const *msghash32,
+  const secp256k1_pubkey * const *pubkey,
+  const unsigned char *rand32,
+  size_t n_sigs
+) SECP256K1_ARG_NONNULL(1);
+
 # ifdef __cplusplus
 }
 # endif

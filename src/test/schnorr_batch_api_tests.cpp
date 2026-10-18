@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <hash.h>
+#include <lotus_v2/batch_randomizers.h>
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorrsig.h>
@@ -17,6 +18,23 @@
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(schnorr_batch_api_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(batch_weights_use_fresh_secret_seeds) {
+    constexpr size_t count = 32;
+    const auto first = lotus::v2::GenerateBatchRandomizers(count, "legacy");
+    const auto second = lotus::v2::GenerateBatchRandomizers(count, "legacy");
+    const auto bip340 = lotus::v2::GenerateBatchRandomizers(count, "bip340");
+    BOOST_CHECK_EQUAL(first.size(), 32 * count);
+    BOOST_CHECK(first != second);
+    BOOST_CHECK(first != bip340);
+    BOOST_CHECK(std::all_of(first.begin(), first.begin() + 32,
+                            [](uint8_t x) { return x == 0; }));
+    for (size_t i = 1; i < count; ++i) {
+        BOOST_CHECK(!std::equal(first.begin() + 32 * i,
+                               first.begin() + 32 * (i + 1),
+                               second.begin() + 32 * i));
+    }
+}
 
 BOOST_AUTO_TEST_CASE(bip340_batch_matches_individual_verification) {
     const std::unique_ptr<secp256k1_context, decltype(&secp256k1_context_destroy)>
