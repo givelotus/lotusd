@@ -95,6 +95,13 @@ class NetTest(BitcoinTestFramework):
         self.generate(wallet, 1)
         # Make a transaction so we can see it in the getpeerinfo results
         wallet.send_self_transfer(from_node=self.nodes[0])
+        # Advance the frozen relay clock so the privacy-preserving inventory
+        # timer can announce this transaction before the next synchronization.
+        first_block_time = time_now
+        time_now += 60
+        for node in self.nodes:
+            node.setmocktime(time_now)
+        self.sync_mempools()
         tip = self.generate(self.nodes[1], 1)[0]
 
         stake = create_coinbase_stakes(
@@ -124,7 +131,12 @@ class NetTest(BitcoinTestFramework):
         ):
             assert field in peer_info[node][peer].keys()
             if peer_info[node][peer][field] != 0:
-                assert_equal(peer_info[node][peer][field], time_now)
+                # Node 1 received node 0's block before the relay clock tick;
+                # node 0 received node 1's later block after that tick.
+                expected_time = (
+                    first_block_time if node == 1 and field == "last_block" else time_now
+                )
+                assert_equal(peer_info[node][peer][field], expected_time)
         # check both sides of bidirectional connection between nodes
         # the address bound to on one side will be the source address for the
         # other node

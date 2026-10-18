@@ -56,6 +56,8 @@ class P2PLeakTxTest(BitcoinTestFramework):
         self.log.debug("Generate transaction and block")
         inbound_peer.last_message.pop("inv", None)
         txid = self.miniwallet.send_self_transfer(from_node=self.gen_node)["txid"]
+        # This positive announcement wait must advance the frozen relay timer.
+        self.gen_node.bumpmocktime(60)
         inbound_peer.wait_until(
             lambda: (
                 "inv" in inbound_peer.last_message
@@ -113,6 +115,7 @@ class P2PLeakTxTest(BitcoinTestFramework):
 
         self.log.info("Transaction is broadcast")
         tx = self.miniwallet.send_self_transfer(from_node=self.gen_node)
+        self.gen_node.bumpmocktime(60)
         inbound_peer.wait_for_broadcast(txns=[tx["txid"]])
 
         self.wait_until(lambda: has_invalidated_tx(tx["txid"]))
