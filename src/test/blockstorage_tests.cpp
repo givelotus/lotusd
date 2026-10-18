@@ -48,11 +48,13 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
         CBlockIndex *pindex = active_tip->GetAncestor(height);
         CBlock block;
         BOOST_CHECK(chainman.m_blockman.ReadBlock(block, *pindex));
-        // + 81 = CBlockHeader + CompactSize
+        const uint32_t header_and_count =
+            uint32_t(::GetSerializeSize(CBlockHeader()) + 1);
         CheckReadTx(
             chainman.m_blockman,
-            WITH_LOCK(cs_main,
-                      return FlatFilePos(pindex->nFile, pindex->nDataPos + 81)),
+            WITH_LOCK(cs_main, return FlatFilePos(pindex->nFile,
+                                                  pindex->nDataPos +
+                                                      header_and_count)),
             *block.vtx[0]);
     }
 
@@ -72,17 +74,20 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
         WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
     BOOST_CHECK_EQUAL(ptest->GetBlockHash(), testBlock.GetHash());
 
+    const uint32_t header_and_count =
+        uint32_t(::GetSerializeSize(CBlockHeader()) + 1);
     // Check coinbase tx
     CheckReadTx(chainman.m_blockman,
-                WITH_LOCK(cs_main, return FlatFilePos(ptest->nFile,
-                                                      ptest->nDataPos + 81)),
+                WITH_LOCK(cs_main,
+                          return FlatFilePos(ptest->nFile,
+                                             ptest->nDataPos + header_and_count)),
                 *testBlock.vtx[0]);
     // Check 2nd tx
     CheckReadTx(
         chainman.m_blockman,
         WITH_LOCK(cs_main,
                   return FlatFilePos(ptest->nFile,
-                                     ptest->nDataPos + 81 +
+                                     ptest->nDataPos + header_and_count +
                                          ::GetSerializeSize(testBlock.vtx[0]))),
         *testBlock.vtx[1]);
     // Check undo data of 2nd tx
