@@ -5,6 +5,8 @@
 #include <config.h>
 #include <consensus/amount.h>
 #include <consensus/tx_check.h>
+#include <consensus/tx_verify.h>
+#include <policy/policy.h>
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
@@ -205,6 +207,54 @@ BOOST_AUTO_TEST_CASE(parallel_batch_decode_reports_earliest_error_without_admiss
         return e.find_value("message").get_str() == "TX decode failed: badhex-at-seven";
     });
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+}
+
+
+BOOST_AUTO_TEST_CASE(batch_resolved_inputs_consensus_differential) {
+    FastRandomContext rng(true);
+    auto options = m_node.mempool->m_opts;
+    options.require_standard = false;
+    CTxMemPool pool(GetConfig(), options);
+    LOCK(cs_main);
+    auto &chainstate = m_node.chainman->ActiveChainstate();
+    CBlockIndex *tip = chainstate.m_chain.Tip();
+    CBlockIndex next;
+    next.pprev = tip;
+    next.nHeight = tip->nHeight + 1;
+    for (unsigned trial = 0; trial < 500; ++trial) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        std::vector<int> heights;
+        const unsigned count = 1 + rng.randrange(4);
+        for (unsigned i = 0; i < count; ++i) {
+            const COutPoint op{TxId(rng.rand256()), i};
+            uint32_t sequence = rng.randrange(128);
+            if (trial % 3 == 0) sequence |= CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG;
+            if (trial % 7 == 0) sequence |= CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG;
+            mtx.vin.emplace_back(op, CScript(), sequence);
+            const unsigned height = rng.randrange(tip->nHeight + 1);
+            heights.push_back(height);
+            chainstate.CoinsTip().AddCoin(op,
+                Coin{CTxOut{1000000 * SATOSHI, CScript() << OP_TRUE},
+                     height, trial % 11 == 0}, false);
+        }
+        mtx.vout.emplace_back(static_cast<int64_t>(count * 1000000 - 10000) * SATOSHI,
+                              CScript() << std::vector<uint8_t>(80, 0)
+                                        << OP_DROP << OP_TRUE);
+        const auto tx = MakeTransactionRef(mtx);
+        TxValidationState expected_state;
+        Amount expected_fee{};
+        const bool expected = SequenceLocks(*tx, STANDARD_LOCKTIME_VERIFY_FLAGS,
+                                             heights, next) &&
+            Consensus::CheckTxInputs(*tx, expected_state, chainstate.CoinsTip(),
+                                     next.nHeight, expected_fee);
+        const auto result = ProcessRawTxBatch(chainstate, pool, {tx}, true);
+        const auto it = result.m_tx_results.find(tx->GetId());
+        BOOST_REQUIRE(it != result.m_tx_results.end());
+        BOOST_CHECK_EQUAL(it->second.m_result_type ==
+                          MempoolAcceptResult::ResultType::VALID, expected);
+        BOOST_CHECK_EQUAL(pool.size(), 0U);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

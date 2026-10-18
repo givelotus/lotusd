@@ -117,6 +117,12 @@ std::optional<Coin> CCoinsViewCache::GetCoin(const COutPoint &outpoint) const {
     return std::nullopt;
 }
 
+const Coin *CCoinsViewCache::PeekCoin(const COutPoint &outpoint) const {
+    const auto it = cacheCoins.find(outpoint);
+    return it != cacheCoins.end() && !it->second.coin.IsSpent()
+        ? &it->second.coin : nullptr;
+}
+
 void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin coin,
                               bool possible_overwrite) {
     assert(!coin.IsSpent());
