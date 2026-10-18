@@ -11,12 +11,21 @@
 #include <consensus/validation.h>
 #include <crypto/sha256.h>
 #include <crypto/siphash.h>
+#include <lotus_v2/blocksnap.h>
 #include <random.h>
 #include <streams.h>
 #include <txmempool.h>
 #include <validation.h>
 
 #include <unordered_map>
+
+MinedHeader::MinedHeader(const CBlock &block)
+    : header(block),
+      coinbase_tx(block.vtx.empty() ? CTransactionRef{} : block.vtx[0]) {
+    uint256 unused_null_root;
+    lotus::v2::ComputeBlockCoinbaseMerkleBranch(block, unused_null_root,
+                                                coinbase_merkle_branch);
+}
 
 CBlockHeaderAndShortTxIDs::CBlockHeaderAndShortTxIDs(const CBlock &block,
                                                      const uint64_t nonce)
