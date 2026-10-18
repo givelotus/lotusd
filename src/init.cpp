@@ -2257,6 +2257,20 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION,
         OptionsCategory::AVALANCHE);
     argsman.AddArg(
+        "-avaminquorumnodes",
+        strprintf("Minimum number of connected avalanche nodes required for a "
+                  "usable quorum (default: %u)",
+                  AVALANCHE_DEFAULT_MIN_QUORUM_NODES),
+        ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION,
+        OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-avaminquorumsupplypermille",
+        strprintf("Minimum staked ratio in permille (1/1000ths) of circulating "
+                  "supply required for a usable quorum (default: %u)",
+                  AVALANCHE_DEFAULT_MIN_QUORUM_SUPPLY_PERMILLE),
+        ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION,
+        OptionsCategory::AVALANCHE);
+    argsman.AddArg(
         "-avastalevotethreshold",
         strprintf("Number of avalanche votes before a voted item goes stale "
                   "when voting confidence is low (default: %u)",
