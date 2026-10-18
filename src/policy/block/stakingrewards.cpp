@@ -15,13 +15,9 @@
 
 #include <vector>
 
-/**
- * Percentage of the block reward to be sent to staking rewards.
- */
-static constexpr int STAKING_REWARD_RATIO = 10;
-
 bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
-    if (!m_blockIndex.pprev) {
+    if (!IsStakingRewardsActivated(m_consensusParams, m_blockIndex.pprev) ||
+        !m_avalanche.isQuorumEstablished()) {
         return true;
     }
 
@@ -30,8 +26,7 @@ bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
     const BlockHash blockhash = m_blockIndex.GetBlockHash();
 
     std::vector<CScript> winners;
-    if (!IsStakingRewardsActivated(m_consensusParams, m_blockIndex.pprev) ||
-        !m_avalanche.getStakingRewardWinners(m_blockIndex.pprev->GetBlockHash(),
+    if (!m_avalanche.getStakingRewardWinners(m_blockIndex.pprev->GetBlockHash(),
                                              winners)) {
         LogDebug(BCLog::AVALANCHE,
                  "Staking rewards for block %s: not ready yet\n",
@@ -46,18 +41,7 @@ bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
             continue;
         }
 
-        auto it = std::find_if(winners.begin(), winners.end(), [&](const CScript &w) {
-            if (o.scriptPubKey == w) {
-                return true;
-            }
-            if (!o.vBranches.empty()) {
-                const lotus::v2::Output expected = CTxOut(o.nValue, w).ToV2Output();
-                return o.nFlags == expected.flags &&
-                       o.vBranches == expected.branches &&
-                       o.vPaths == expected.paths;
-            }
-            return false;
-        });
+        auto it = std::find(winners.begin(), winners.end(), o.scriptPubKey);
         if (it != winners.end()) {
             if (it != winners.begin()) {
                 LogDebug(BCLog::AVALANCHE,
