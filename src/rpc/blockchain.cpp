@@ -159,10 +159,12 @@ UniValue blockheaderToJSON(const CBlockIndex &tip,
     const CBlockIndex *pnext;
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
+    result.pushKV("size", blockindex.nSize);
     result.pushKV("height", blockindex.nHeight);
-    result.pushKV("version", blockindex.nHeaderVersion);
+    result.pushKV("version", uint64_t(blockindex.nHeaderVersion));
     result.pushKV("versionHex", strprintf("%08x", blockindex.nHeaderVersion));
     result.pushKV("merkleroot", blockindex.hashMerkleRoot.GetHex());
+    result.pushKV("stateroot", blockindex.hashStateRoot.GetHex());
     result.pushKV("time", blockindex.nTime);
     result.pushKV("mediantime", blockindex.GetMedianTimePast());
     result.pushKV("nonce", blockindex.nNonce);
@@ -316,21 +318,17 @@ static RPCHelpMan waitfornewblock() {
                 timeout = request.params[0].getInt<int>();
             }
 
-            CUpdatedBlock initial_block;
+            CUpdatedBlock block;
             {
                 LOCK(cs_blockchange);
-                initial_block = latestblock;
+                block = latestblock;
             }
-
             co_await GetRPCBlockChangeWaiter().WaitUntil(
-                executor, std::chrono::milliseconds(timeout), [initial_block]() {
+                executor, std::chrono::milliseconds(timeout), [&block]() {
                     LOCK(cs_blockchange);
-                    return latestblock.height != initial_block.height ||
-                           latestblock.hash != initial_block.hash ||
-                           !IsRPCRunning();
+                    return latestblock.height != block.height ||
+                           latestblock.hash != block.hash || !IsRPCRunning();
                 });
-
-            CUpdatedBlock block;
             {
                 LOCK(cs_blockchange);
                 block = latestblock;
@@ -381,7 +379,7 @@ static RPCHelpMan waitforblock() {
             }
 
             co_await GetRPCBlockChangeWaiter().WaitUntil(
-                executor, std::chrono::milliseconds(timeout), [hash]() {
+                executor, std::chrono::milliseconds(timeout), [&hash]() {
                     LOCK(cs_blockchange);
                     return latestblock.hash == hash || !IsRPCRunning();
                 });
@@ -686,17 +684,20 @@ static RPCHelpMan getblockheader() {
                     result.pushKV("hash", hdr->hash.GetHex());
                     result.pushKV("confirmations",
                                   snap->height - hdr->height + 1);
+                    result.pushKV("size", hdr->size);
                     result.pushKV("height", hdr->height);
-                    result.pushKV("version", hdr->header.nHeaderVersion);
+                    result.pushKV("version",
+                                  uint64_t(hdr->header.nHeaderVersion));
                     result.pushKV("versionHex",
                                   strprintf("%08x", hdr->header.nHeaderVersion));
                     result.pushKV("merkleroot",
                                   hdr->header.hashMerkleRoot.GetHex());
+                    result.pushKV("stateroot",
+                                  hdr->header.hashStateRoot.GetHex());
                     result.pushKV("time", hdr->time);
                     result.pushKV("mediantime", hdr->mediantime);
-                    result.pushKV("nonce", uint64_t(hdr->header.nNonce));
-                    result.pushKV("bits",
-                                  strprintf("%08x", hdr->header.nBits));
+                    result.pushKV("nonce", hdr->header.nNonce);
+                    result.pushKV("bits", strprintf("%08x", hdr->header.nBits));
                     result.pushKV("difficulty", hdr->difficulty);
                     result.pushKV("chainwork", hdr->chainwork.GetHex());
                     result.pushKV("nTx", tx_count);
@@ -1369,26 +1370,57 @@ RPCHelpMan gettxout() {
             }
 
             auto snap = LoadOrInitChainSnapshot(request.context, chainman);
-            if (snap && fMempool && snap->mempool_valid &&
-                snap->mempool_ptr == node.mempool.get()) {
-                if (snap->IsSpentInMempool(out)) {
+            if (snap && snap->has_utxo_snapshot &&
+                (!fMempool ||
+                 (snap->mempool_valid &&
+                  snap->mempool_ptr == node.mempool.get()))) {
+                std::optional<Coin> snap_coin;
+                if (fMempool) {
+                    if (!snap->IsSpentInMempool(out)) {
+                        if (const auto *entry =
+                                snap->FindMempoolEntry(out.GetTxId())) {
+                            if (entry->tx &&
+                                out.GetN() < entry->tx->vout.size()) {
+                                snap_coin.emplace(entry->tx->vout[out.GetN()],
+                                                  MEMPOOL_HEIGHT, false);
+                            }
+                        } else {
+                            uint32_t coin_height = 0;
+                            bool is_cb = false;
+                            if (auto txout = LookupV2SmtCoin(
+                                    snap->tip_utxo_root, out, &coin_height,
+                                    &is_cb)) {
+                                snap_coin.emplace(std::move(*txout),
+                                                  coin_height, is_cb);
+                            }
+                        }
+                    }
+                } else {
+                    uint32_t coin_height = 0;
+                    bool is_cb = false;
+                    if (auto txout = LookupV2SmtCoin(snap->tip_utxo_root, out,
+                                                     &coin_height, &is_cb)) {
+                        snap_coin.emplace(std::move(*txout), coin_height,
+                                          is_cb);
+                    }
+                }
+                if (!snap_coin) {
                     return UniValue::VNULL;
                 }
-                if (const auto *entry =
-                        snap->FindMempoolEntry(out.GetTxId())) {
-                    if (!entry->tx || out.GetN() >= entry->tx->vout.size()) {
-                        return UniValue::VNULL;
-                    }
-                    const CTxOut &txout = entry->tx->vout[out.GetN()];
-                    ret.pushKV("bestblock", snap->best_block_hash.GetHex());
+                ret.pushKV("bestblock", snap->best_block_hash.GetHex());
+                if (snap_coin->GetHeight() == MEMPOOL_HEIGHT) {
                     ret.pushKV("confirmations", 0);
-                    ret.pushKV("value", txout.nValue);
-                    UniValue o(UniValue::VOBJ);
-                    ScriptPubKeyToUniv(txout.scriptPubKey, o, true);
-                    ret.pushKV("scriptPubKey", std::move(o));
-                    ret.pushKV("coinbase", false);
-                    return ret;
+                } else {
+                    ret.pushKV(
+                        "confirmations",
+                        int64_t(snap->height - snap_coin->GetHeight() + 1));
                 }
+                ret.pushKV("value", snap_coin->GetTxOut().nValue);
+                UniValue o(UniValue::VOBJ);
+                ScriptPubKeyToUniv(snap_coin->GetTxOut().scriptPubKey, o, true);
+                ret.pushKV("scriptPubKey", std::move(o));
+                ret.pushKV("coinbase", snap_coin->IsCoinBase());
+                return ret;
             }
 
             LOCK(cs_main);
@@ -3380,6 +3412,259 @@ static RPCHelpMan getchainstates() {
         }};
 }
 
+static RPCHelpMan setfastsyncpivot() {
+    return RPCHelpMan{
+        "setfastsyncpivot",
+        "\nVerify and import a V2 fast-sync UTXO shard pivot and activate reverse block peeling.\n",
+        {
+            {"blockhash", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "The pivot block hash"},
+            {"utxoroots_hex", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
+             "Hex-encoded UTXOROOTS message"},
+            {"utxoshards",
+             RPCArg::Type::ARR,
+             RPCArg::Optional::OMITTED,
+             "Array of hex-encoded UTXOSHARD messages",
+             {
+                 {"utxoshard_hex", RPCArg::Type::STR_HEX,
+                  RPCArg::Optional::OMITTED, "Hex-encoded UTXOSHARD message"},
+             }},
+        },
+        RPCResult{RPCResult::Type::OBJ,
+                  "",
+                  "",
+                  {
+                      {RPCResult::Type::BOOL, "fast_sync_active",
+                       "whether fast-sync reverse peeling is active"},
+                      {RPCResult::Type::NUM, "earliest_verified_height",
+                       "the pivot height where reverse peeling begins"},
+                      {RPCResult::Type::NUM, "coins_imported",
+                       "number of UTXO coins imported from verified shards"},
+                  }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            ChainstateManager &chainman = EnsureAnyChainman(request.context);
+            Chainstate &active_chainstate = chainman.ActiveChainstate();
+
+            const BlockHash block_hash(ParseHashV(request.params[0], "blockhash"));
+            {
+                LOCK(cs_main);
+                const CBlockIndex *pindex =
+                    chainman.m_blockman.LookupBlockIndex(block_hash);
+                if (!pindex) {
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                       "Block not found");
+                }
+            }
+
+            uint64_t coins_imported = 0;
+            if (!request.params[1].isNull()) {
+                if (!IsHex(request.params[1].get_str())) {
+                    throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                       "utxoroots_hex must be hexadecimal");
+                }
+                const std::vector<uint8_t> roots_bytes =
+                    ParseHex(request.params[1].get_str());
+                lotus::v2::UtxoRootsMessage roots_msg{};
+                std::string err;
+                if (!lotus::v2::DecodeUtxoRootsMessage(roots_bytes, roots_msg,
+                                                       err)) {
+                    throw JSONRPCError(
+                        RPC_DESERIALIZATION_ERROR,
+                        strprintf("Invalid UTXOROOTS payload: %s", err));
+                }
+                if (request.params[2].isNull() || !request.params[2].isArray()) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                       "utxoshards array is required when "
+                                       "utxoroots_hex is provided");
+                }
+                std::vector<lotus::v2::UtxoShardMessage> shard_msgs;
+                for (const UniValue &shard_val :
+                     request.params[2].get_array().getValues()) {
+                    if (!shard_val.isStr() || !IsHex(shard_val.get_str())) {
+                        throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                           "utxoshard_hex must be hexadecimal");
+                    }
+                    const std::vector<uint8_t> shard_bytes =
+                        ParseHex(shard_val.get_str());
+                    lotus::v2::UtxoShardMessage shard_msg{};
+                    if (!lotus::v2::DecodeUtxoShardMessage(shard_bytes,
+                                                           shard_msg, err)) {
+                        throw JSONRPCError(
+                            RPC_DESERIALIZATION_ERROR,
+                            strprintf("Invalid UTXOSHARD payload: %s", err));
+                    }
+                    shard_msgs.push_back(std::move(shard_msg));
+                }
+
+                lotus::v2::UtxoSet assembled_utxo;
+                lotus::v2::MonetaryState assembled_monetary{};
+                {
+                    LOCK(cs_main);
+                    CBlockIndex *pindex_pivot =
+                        chainman.m_blockman.LookupBlockIndex(block_hash);
+                    if (!pindex_pivot) {
+                        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                           "Block not found");
+                    }
+                    if (!lotus::v2::AssembleAndVerifyFastSyncPivot(
+                            pindex_pivot->GetBlockHeader().ToV2Header(),
+                            GetActiveV2ChainId(), roots_msg, shard_msgs,
+                            assembled_utxo, assembled_monetary, err)) {
+                        throw JSONRPCError(
+                            RPC_VERIFY_ERROR,
+                            strprintf("Fast-sync shard verification failed: %s",
+                                      err));
+                    }
+                    if (!active_chainstate.ActivateVerifiedFastSyncPivot(
+                            pindex_pivot, assembled_utxo.Coins(),
+                            assembled_monetary, err)) {
+                        throw JSONRPCError(RPC_VERIFY_ERROR, err);
+                    }
+                    coins_imported = assembled_utxo.Coins().size();
+                }
+            } else {
+                LOCK(cs_main);
+                const CBlockIndex *pindex =
+                    chainman.m_blockman.LookupBlockIndex(block_hash);
+                active_chainstate.ActivateFastSyncPivot(pindex->nHeight);
+                node::PublishChainTipSnapshot(chainman,
+                                              active_chainstate.GetMempool());
+            }
+
+            LOCK(cs_main);
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("fast_sync_active",
+                       active_chainstate.IsFastSyncActive());
+            res.pushKV("earliest_verified_height",
+                       active_chainstate.GetEarliestVerifiedHeight());
+            res.pushKV("coins_imported", coins_imported);
+            return res;
+        },
+    };
+}
+
+static RPCHelpMan peelfastsyncblock() {
+    return RPCHelpMan{
+        "peelfastsyncblock",
+        "\nVerify and peel one historical V2 block backwards using a BLOCKUNDO message.\n",
+        {
+            {"blockhash", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "The block hash at earliest_verified_height to peel backwards"},
+            {"blockundo_hex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "Hex-encoded BLOCKUNDO message"},
+            {"block_hex", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
+             "Optional hex-encoded block when not yet stored on disk"},
+        },
+        RPCResult{RPCResult::Type::OBJ,
+                  "",
+                  "",
+                  {
+                      {RPCResult::Type::STR_HEX, "peeled_blockhash",
+                       "the hash of the peeled block"},
+                      {RPCResult::Type::STR_HEX, "parent_blockhash",
+                       "the hash of the verified parent block"},
+                      {RPCResult::Type::NUM, "parent_height",
+                       "the height of the verified parent block"},
+                      {RPCResult::Type::NUM, "earliest_verified_height",
+                       "updated earliest_verified_height"},
+                      {RPCResult::Type::BOOL, "fast_sync_active",
+                       "whether fast-sync reverse peeling remains active"},
+                      {RPCResult::Type::NUM, "intra_block_spends",
+                       "number of intra-block spent coins partitioned out"},
+                      {RPCResult::Type::NUM, "prior_spends_restored",
+                       "number of prior-block spent coins restored"},
+                      {RPCResult::Type::NUM, "net_outputs_removed",
+                       "number of net unspent block outputs removed"},
+                  }},
+        RPCExamples{""},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            ChainstateManager &chainman = EnsureAnyChainman(request.context);
+            Chainstate &active_chainstate = chainman.ActiveChainstate();
+
+            {
+                LOCK(cs_main);
+                if (!active_chainstate.IsFastSyncActive()) {
+                    throw JSONRPCError(
+                        RPC_MISC_ERROR,
+                        "Fast-sync reverse peeling is not active");
+                }
+            }
+
+            const BlockHash block_hash(ParseHashV(request.params[0], "blockhash"));
+            {
+                LOCK(cs_main);
+                const CBlockIndex *pindex =
+                    chainman.m_blockman.LookupBlockIndex(block_hash);
+                if (!pindex || pindex->nHeight <= 0 || !pindex->pprev) {
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                       "Valid non-genesis block not found");
+                }
+                if (pindex->nHeight !=
+                    active_chainstate.GetEarliestVerifiedHeight()) {
+                    throw JSONRPCError(
+                        RPC_INVALID_PARAMETER,
+                        strprintf("Block height %d does not match "
+                                  "earliest_verified_height %d",
+                                  pindex->nHeight,
+                                  active_chainstate.GetEarliestVerifiedHeight()));
+                }
+            }
+
+            if (!IsHex(request.params[1].get_str())) {
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                   "blockundo_hex must be hexadecimal");
+            }
+            const std::vector<uint8_t> undo_bytes =
+                ParseHex(request.params[1].get_str());
+            lotus::v2::BlockUndoMessage undo_msg{};
+            std::string err;
+            if (!lotus::v2::DecodeBlockUndoMessage(undo_bytes, undo_msg, err)) {
+                throw JSONRPCError(
+                    RPC_DESERIALIZATION_ERROR,
+                    strprintf("Invalid BLOCKUNDO payload: %s", err));
+            }
+
+            CBlock provided_block;
+            const CBlock *block_ptr = nullptr;
+            if (!request.params[2].isNull()) {
+                if (!DecodeHexBlk(provided_block,
+                                  request.params[2].get_str())) {
+                    throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                                       "Block decode failed");
+                }
+                block_ptr = &provided_block;
+            }
+
+            Chainstate::FastSyncPeelResult peel_res{};
+            {
+                LOCK(cs_main);
+                if (!active_chainstate.PeelFastSyncBlock(
+                        block_hash, undo_msg, block_ptr, peel_res, err)) {
+                    throw JSONRPCError(RPC_VERIFY_ERROR, err);
+                }
+            }
+
+            UniValue res(UniValue::VOBJ);
+            res.pushKV("peeled_blockhash", peel_res.peeled_blockhash.GetHex());
+            res.pushKV("parent_blockhash", peel_res.parent_blockhash.GetHex());
+            res.pushKV("parent_height", peel_res.parent_height);
+            res.pushKV("earliest_verified_height",
+                       peel_res.earliest_verified_height);
+            res.pushKV("fast_sync_active", peel_res.fast_sync_active);
+            res.pushKV("intra_block_spends",
+                       static_cast<uint64_t>(peel_res.intra_block_spends));
+            res.pushKV("prior_spends_restored",
+                       static_cast<uint64_t>(peel_res.prior_spends_restored));
+            res.pushKV("net_outputs_removed",
+                       static_cast<uint64_t>(peel_res.net_outputs_removed));
+            return res;
+        },
+    };
+}
+
 static RPCHelpMan syncutxoshardswarm() {
     return RPCHelpMan{
         "syncutxoshardswarm",
@@ -3581,6 +3866,8 @@ void RegisterBlockchainRPCCommands(CRPCTable &t) {
         { "blockchain",         getchainstates,                    },
 
         /* Not shown in help */
+        { "hidden", setfastsyncpivot, },
+        { "hidden", peelfastsyncblock, },
         { "hidden",             getfastsyncinfo,                   },
         { "hidden",             syncutxoshardswarm,                },
         { "hidden",             invalidateblock,                   },
@@ -3597,3 +3884,4 @@ void RegisterBlockchainRPCCommands(CRPCTable &t) {
         t.appendCommand(c.name, &c);
     }
 }
+
