@@ -221,20 +221,13 @@ class BIP68_112_113Test(BitcoinTestFramework):
         self.last_block_time = long_past_time
         self.tip = int(self.nodes[0].getbestblockhash(), 16)
 
-        # CSV is not activated yet.
-        assert_equal(get_csv_status(self.nodes[0]), False)
-
-        # Generate 489 more version 4 blocks
-        test_blocks = self.generate_blocks(489)
+        # In Lotus V2, BIP68/112/113 (CSV) are active from genesis.
+        # Generate 100 blocks to mature all 82 coinbases and establish 600s MTP spacing.
+        test_blocks = self.generate_blocks(100)
         # Test #1
         self.send_blocks(test_blocks)
 
-        # Still not activated.
-        assert_equal(get_csv_status(self.nodes[0]), False)
-
-        # Inputs at height = 572
-        #
-        # Put inputs for all tests in the chain at height 572 (tip now = 571) (time increases by 600s per block)
+        # Put inputs for all tests in the chain (time increases by 600s per block)
         # Note we reuse inputs for v1 and v2 txs so must test these separately
         # 16 normal inputs
         bip68inputs = []
@@ -267,7 +260,7 @@ class BIP68_112_113Test(BitcoinTestFramework):
         bip113input = self.send_generic_input_tx(self.coinbase_blocks)
 
         self.nodes[0].setmocktime(self.last_block_time + 600)
-        # 1 block generated for inputs to be in chain at height 572
+        # 1 block generated for inputs to be in chain
         inputblockhash = self.generate(self.nodes[0], 1)[0]
         self.nodes[0].setmocktime(0)
         self.tip = int(inputblockhash, 16)
@@ -279,11 +272,6 @@ class BIP68_112_113Test(BitcoinTestFramework):
         test_blocks = self.generate_blocks(2)
         # Test #2
         self.send_blocks(test_blocks)
-
-        self.log.info(
-            "Not yet activated, height = 574 (will activate for block 576, not 575)"
-        )
-        assert_equal(get_csv_status(self.nodes[0]), False)
 
         # Test both version 1 and version 2 transactions for all tests
         # BIP113 test transaction will be modified before each use to
@@ -336,85 +324,12 @@ class BIP68_112_113Test(BitcoinTestFramework):
 
         self.log.info("TESTING")
 
-        self.log.info("Pre-Soft Fork Tests. All txs should pass.")
-        self.log.info("Test version 1 txs")
-
-        success_txs = []
-        # add BIP113 tx and -1 CSV tx
-        # = MTP of prior block (not <) but < time put on current block
-        bip113tx_v1.nLockTime = self.last_block_time - 600 * 5
-        success_txs.append(bip113tx_v1)
-        success_txs.append(bip112tx_special_v1)
-        success_txs.append(self.spend_tx(bip112tx_special_v1))
-        # add BIP 68 txs
-        success_txs.extend(all_rlt_txs(bip68txs_v1))
-        # add BIP 112 with seq=10 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_v1)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v1)]
-        )
-        # try BIP 112 with seq=9 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_9_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v1)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_9_v1))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v1)]
-        )
-        # Test #3
-        self.send_blocks([self.create_test_block(success_txs)])
-        self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-
-        self.log.info("Test version 2 txs")
-
-        success_txs = []
-        # add BIP113 tx and -1 CSV tx
-        # = MTP of prior block (not <) but < time put on current block
-        bip113tx_v2.nLockTime = self.last_block_time - 600 * 5
-        success_txs.append(bip113tx_v2)
-        success_txs.append(bip112tx_special_v2)
-        success_txs.append(self.spend_tx(bip112tx_special_v2))
-        # add BIP 68 txs
-        success_txs.extend(all_rlt_txs(bip68txs_v2))
-        # add BIP 112 with seq=10 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_v2)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_v2)]
-        )
-        # try BIP 112 with seq=9 txs
-        success_txs.extend(all_rlt_txs(bip112txs_vary_nSequence_9_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_nSequence_9_v2)]
-        )
-        success_txs.extend(all_rlt_txs(bip112txs_vary_OP_CSV_9_v2))
-        success_txs.extend(
-            [self.spend_tx(tx) for tx in all_rlt_txs(bip112txs_vary_OP_CSV_9_v2)]
-        )
-        # Test #4
-        self.send_blocks([self.create_test_block(success_txs)])
-        self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-
-        # 1 more version 4 block to get us to height 575 so the fork should
-        # now be active for the next block
+        # 1 more version 4 block so relative height/MTP match the post-activation test vector expectations
         test_blocks = self.generate_blocks(1)
         # Test #5
         self.send_blocks(test_blocks)
-        assert_equal(get_csv_status(self.nodes[0]), False)
 
-        self.generate(self.nodes[0], 1)
-        assert_equal(get_csv_status(self.nodes[0]), True)
-        self.nodes[0].invalidateblock(self.nodes[0].getbestblockhash())
-
-        self.log.info("Post-Soft Fork Tests.")
+        self.log.info("Post-Soft Fork Tests (Genesis-Active in Lotus V2).")
 
         self.log.info("BIP 113 tests")
         # BIP 113 tests should now fail regardless of version number

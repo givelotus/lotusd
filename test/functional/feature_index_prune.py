@@ -101,7 +101,7 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
                 # The difference in number of blocks per block file between
                 # Bitcoin ABC and Bitcoin Core is caused by additional witness
                 # data in coinbase transactions for core.
-                assert_equal(pruneheight_new, 345)
+                assert_equal(pruneheight_new, 268)
 
         self.log.info(
             "check if we can access the tips blockfilter and coinstats when we have pruned some blocks"
@@ -150,8 +150,8 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
         )
         for i in range(3):
             pruneheight_2 = self.nodes[i].pruneblockchain(1000)
-            # 2 * 346 - 1 = 691 blocks
-            assert_equal(pruneheight_2, 691)
+            # 3 * 269 - 1 = 806 blocks
+            assert_equal(pruneheight_2, 806)
             # Restart the nodes again with the indices activated
             self.restart_node(i, extra_args=self.extra_args[i])
 
@@ -195,7 +195,10 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
         for node in self.nodes[:2]:
             with node.assert_debug_log(["limited pruning to height 2489"]):
                 pruneheight_new = node.pruneblockchain(2500)
-                assert_equal(pruneheight_new, 6 * 346 - 1)
+                # 269 blocks per file. The tip is 2500, so blocks above
+                # 2500 - 288 = 2212 are kept and the file holding 2152..2420
+                # stays: pruning ends at the end of the eighth file.
+                assert_equal(pruneheight_new, 8 * 269 - 1)
 
         self.log.info(
             "ensure that prune locks don't prevent indices from failing in a reorg scenario"
