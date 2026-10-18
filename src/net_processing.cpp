@@ -8915,6 +8915,14 @@ void PeerManagerImpl::ProcessMessage(
                 }
             }
 
+            if (auto pitem =
+                    std::get_if<const avalanche::MempoolBatchVoteItem>(&item)) {
+                logVoteUpdate(u, "mempool_batch", pitem->GetId());
+                if (u.getStatus() == avalanche::VoteStatus::Finalized) {
+                    m_avalanche->setRecentlyFinalized(pitem->GetId());
+                }
+            }
+
             if (!fPreconsensus) {
                 continue;
             }
@@ -9264,6 +9272,47 @@ void PeerManagerImpl::ProcessMessage(
             return;
         }
         m_avalanche->addTreasuryContender(prevblockhash, outputs, totalReward);
+        return;
+    }
+
+    if (msg_type == NetMsgType::AVABATCH) {
+        if (!m_avalanche) {
+            return;
+        }
+        avalanche::MempoolBatchAnnouncement announcement;
+        vRecv >> announcement;
+        if (announcement.tx_count == 0 || !announcement.IsValid()) {
+            return;
+        }
+        const bool known_prev = WITH_LOCK(
+            cs_main, return m_chainman.m_blockman.LookupBlockIndex(
+                                announcement.prev_block_hash) != nullptr);
+        if (!known_prev) {
+            return;
+        }
+        bool locally_accepted = false;
+        {
+            LOCK(m_mempool.cs);
+            const auto &spec =
+                m_mempool.GetMerklixOverlay().GetSpeculativeOverlay();
+            lotus::v2::Hash sub_a{};
+            std::memcpy(sub_a.data(), announcement.subtree_a_root.begin(), 32);
+            if (spec.GetTxCount() == announcement.tx_count &&
+                spec.GetSubtreeARoot() == sub_a) {
+                locally_accepted = true;
+                std::vector<CTransactionRef> ordered_txs;
+                ordered_txs.reserve(spec.GetTxCount());
+                for (const auto &[_, oentry] : spec.GetOrderedTxs()) {
+                    ordered_txs.push_back(
+                        std::static_pointer_cast<const CTransaction>(
+                            oentry.tx_ref));
+                }
+                m_v2_protocol_handler.RegisterCandidateOverlay(
+                    announcement.prev_block_hash, std::move(ordered_txs));
+            }
+        }
+        m_avalanche->registerMempoolBatch(announcement,
+                                          /*locallyAccepted=*/locally_accepted);
         return;
     }
 
