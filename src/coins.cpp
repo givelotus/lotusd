@@ -227,6 +227,12 @@ void CCoinsViewCache::SetBestBlock(const BlockHash &hashBlockIn) {
 
 void CCoinsViewCache::BatchWrite(CoinsViewCacheCursor &cursor,
                                  const BlockHash &hashBlockIn) {
+    const size_t target = cacheCoins.size() + (cursor.GetDirtyCount() + 1) / 2;
+    // reserve() may shrink an unordered_map. Do not rehash an already-large
+    // CoinsTip merely to merge a small child cache.
+    if (target > cacheCoins.bucket_count() * cacheCoins.max_load_factor()) {
+        cacheCoins.reserve(target);
+    }
     for (auto it{cursor.Begin()}; it != cursor.End();
          it = cursor.NextAndMaybeErase(*it)) {
         if (!it->second.IsDirty()) {
