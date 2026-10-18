@@ -18,13 +18,17 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <typeinfo>
 #include <utility>
 
@@ -1757,6 +1761,80 @@ struct DiskStateTransaction::Impl {
         }
         return SetBranchLazy(path, children[0], children[1]);
     }
+    void StageFinalizedOverlay(const std::vector<Outpoint> &erased,
+                               const std::vector<Coin> &inserted,
+                               const std::vector<Coin> &coinbase_coins) {
+        Usable();
+        if (coinbase_coins.size() > std::numeric_limits<size_t>::max() - inserted.size())
+            throw std::length_error("finalized overlay size");
+        const size_t total_inserted = inserted.size() + coinbase_coins.size();
+        if (erased.size() > std::numeric_limits<size_t>::max() - total_inserted)
+            throw std::length_error("finalized overlay size");
+        const size_t total = erased.size() + total_inserted;
+        std::vector<Hash> erased_keys(erased.size());
+        std::vector<Node> prepared_leaves(total_inserted);
+        std::vector<std::exception_ptr> preparation_errors(total);
+        // Workers touch only independent output slots and immutable input coins.
+        // No database access, transaction mutation or authentication is parallel.
+        const auto prepare = [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; ++i) {
+                try {
+                    if (i < erased.size()) {
+                        erased_keys[i] = OutpointKey(erased[i]);
+                    } else {
+                        const size_t j = i - erased.size();
+                        const Coin &coin = j < inserted.size()
+                            ? inserted[j] : coinbase_coins[j - inserted.size()];
+                        prepared_leaves[j] = Leaf(coin);
+                    }
+                } catch (...) {
+                    // Preserve serial failure precedence, including a missing or
+                    // corrupt erase before a later invalid inserted coin.
+                    preparation_errors[i] = std::current_exception();
+                }
+            }
+        };
+        if (total >= 32) {
+            const unsigned hw = std::thread::hardware_concurrency();
+            const size_t workers = std::min<size_t>(hw > 1 ? hw : 4, 8);
+            const size_t chunk = total / workers + (total % workers != 0);
+            std::vector<std::future<void>> futures;
+            futures.reserve(workers);
+            for (size_t begin = 0; begin < total; begin += chunk) {
+                const size_t end = begin + std::min(chunk, total - begin);
+                try {
+                    futures.push_back(std::async(std::launch::async, prepare, begin, end));
+                } catch (const std::system_error &) {
+                    // Thread exhaustion changes scheduling, not commit behavior.
+                    prepare(begin, end);
+                }
+            }
+            for (auto &future : futures) future.get();
+        } else {
+            prepare(0, total);
+        }
+        for (size_t i = 0; i < erased.size(); ++i) {
+            if (preparation_errors[i]) std::rethrow_exception(preparation_errors[i]);
+            const Outpoint &outpoint = erased[i];
+            bool existing = false;
+            AuthCheckCoin(outpoint, erased_keys[i], existing);
+            if (!existing) Fail(DiskStateErrorCode::Missing, "missing coin");
+            head.root = EraseAt(Path{}, head.root, outpoint, erased_keys[i]);
+            Set(CoinKey(outpoint), std::nullopt);
+        }
+        for (size_t i = 0; i < total_inserted; ++i) {
+            if (preparation_errors[erased.size() + i])
+                std::rethrow_exception(preparation_errors[erased.size() + i]);
+            const Node &leaf = prepared_leaves[i];
+            const Outpoint &outpoint = leaf.coin->outpoint;
+            bool existing = false;
+            AuthCheckCoin(outpoint, leaf.coin_outpoint_key, existing);
+            if (existing) Fail(DiskStateErrorCode::Duplicate, "duplicate coin");
+            Bytes bytes = leaf.coin_bytes;
+            head.root = InsertAt(Path{}, head.root, leaf);
+            Set(CoinKey(outpoint), std::move(bytes));
+        }
+    }
     void End() { finished = true; store->active = false; }
     DiskStateStats Stats() const {
         FlushNodes();
@@ -3073,23 +3151,11 @@ bool DiskStateStore::CommitFinalizedOverlay(
     if (!Begin(txn, error)) {
         return false;
     }
-    for (const auto &op : erased) {
-        if (!txn.Erase(op, error)) {
-            txn.Abort();
-            return false;
-        }
-    }
-    for (const auto &coin : overlay.GetNetInsertedCoins()) {
-        if (!txn.Insert(coin, error)) {
-            txn.Abort();
-            return false;
-        }
-    }
-    for (const auto &cb_coin : coinbase_coins) {
-        if (!txn.Insert(cb_coin, error)) {
-            txn.Abort();
-            return false;
-        }
+    if (!Guard(error, [&] {
+            txn.impl_->StageFinalizedOverlay(erased, overlay.GetNetInsertedCoins(), coinbase_coins);
+        })) {
+        txn.Abort();
+        return false;
     }
     return txn.Commit(next, error);
 }
@@ -3107,23 +3173,11 @@ bool DiskStateStore::CommitFinalizedOverlay(
     if (!Begin(txn, error)) {
         return false;
     }
-    for (const auto &op : erased) {
-        if (!txn.Erase(op, error)) {
-            txn.Abort();
-            return false;
-        }
-    }
-    for (const auto &coin : overlay.GetNetInsertedCoins()) {
-        if (!txn.Insert(coin, error)) {
-            txn.Abort();
-            return false;
-        }
-    }
-    for (const auto &cb_coin : coinbase_coins) {
-        if (!txn.Insert(cb_coin, error)) {
-            txn.Abort();
-            return false;
-        }
+    if (!Guard(error, [&] {
+            txn.impl_->StageFinalizedOverlay(erased, overlay.GetNetInsertedCoins(), coinbase_coins);
+        })) {
+        txn.Abort();
+        return false;
     }
     return txn.Commit(next, fully_connected, error);
 }
