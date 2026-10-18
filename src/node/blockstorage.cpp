@@ -876,8 +876,11 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo &blockundo,
     // Write undo information to disk
     if (block.GetUndoPos().IsNull()) {
         FlatFilePos pos;
+        DataStream undo_stream{};
+        undo_stream.reserve(blockundo.vtxundo.size() * 64 + 32);
+        undo_stream << blockundo;
         const unsigned int blockundo_size{
-            static_cast<unsigned int>(GetSerializeSize(blockundo))};
+            static_cast<unsigned int>(undo_stream.size())};
         if (!FindUndoPos(state, block.nFile, pos,
                          blockundo_size + UNDO_DATA_DISK_OVERHEAD)) {
             LogError("FindUndoPos failed\n");
@@ -895,12 +898,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo &blockundo,
 
         // Write undo data
         pos.nPos += BLOCK_SERIALIZATION_HEADER_SIZE;
-        fileout << blockundo;
+        fileout.write(MakeByteSpan(undo_stream));
 
         // calculate & write checksum
         HashWriter hasher{};
         hasher << block.pprev->GetBlockHash();
-        hasher << blockundo;
+        hasher.write(MakeByteSpan(undo_stream));
         fileout << hasher.GetHash();
 
         // rev files are written in block height order, whereas blk files are
@@ -1091,11 +1094,12 @@ FlatFilePos BlockManager::WriteBlock(const CBlock &block, int nHeight) {
         return FlatFilePos();
     }
 
-    // Write index header
-    fileout << GetParams().DiskMagic() << block_size;
-    // Write block
+    // Write index header and block in a single buffered write
     pos.nPos += BLOCK_SERIALIZATION_HEADER_SIZE;
-    fileout << block;
+    DataStream block_stream{};
+    block_stream.reserve(block_size + BLOCK_SERIALIZATION_HEADER_SIZE);
+    block_stream << GetParams().DiskMagic() << block_size << block;
+    fileout.write(MakeByteSpan(block_stream));
     return pos;
 }
 
