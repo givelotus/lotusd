@@ -19,6 +19,7 @@
 #include <kernel/chain.h>
 #include <kernel/cs_main.h>
 #include <protocol.h>
+#include <support/allocators/chunked_slab.h>
 #include <sync.h>
 #include <txdb.h>
 #include <util/fs.h>
@@ -68,8 +69,13 @@ static constexpr size_t UNDO_DATA_DISK_OVERHEAD{
 // Because validation code takes pointers to the map's CBlockIndex objects, if
 // we ever switch to another associative container, we need to either use a
 // container that has stable addressing (true of all std associative
-// containers), or make the key a `std::unique_ptr<CBlockIndex>`
-using BlockMap = std::unordered_map<BlockHash, CBlockIndex, BlockHasher>;
+// containers), or make the key a `std::unique_ptr<CBlockIndex>`.
+// Nodes are carved from contiguous slab chunks, which never move, so this
+// keeps stable addressing while packing CBlockIndex entries densely for
+// pprev/GetAncestor() traversal. The map is only mutated under cs_main.
+using BlockMap = std::unordered_map<
+    BlockHash, CBlockIndex, BlockHasher, std::equal_to<BlockHash>,
+    ChunkedSlabAllocator<std::pair<const BlockHash, CBlockIndex>, 16384>>;
 
 struct PruneLockInfo {
     //! Height of earliest block that should be kept and not pruned
