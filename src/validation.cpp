@@ -21,6 +21,7 @@
 #include <chainparams.h>
 #include <checkpoints.h>
 #include <checkqueue.h>
+#include <common/args.h>
 #include <config.h>
 #include <consensus/activation.h>
 #include <consensus/amount.h>
@@ -32,6 +33,7 @@
 #include <kernel/notifications_interface.h>
 #include <logging.h>
 #include <logging/timer.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/signing.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
@@ -3659,6 +3661,17 @@ static void UpdateTipLog(const CCoinsViewCache &coins_tip,
         coins_tip.GetCacheSize());
 }
 
+static void SyncAdaptiveCapacityTip(const CBlockIndex *tip)
+    EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+    auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
+    const bool available = controller.HasCompleteAdaptiveHistory();
+    controller.SyncActiveTip(tip, TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now()));
+    if (available && !controller.HasCompleteAdaptiveHistory()) {
+        LogWarning("Adaptive capacity history unavailable (missing ancestor block size); "
+                   "using configured baseline capacity. Complete ancestry and restart to reconstruct.\n");
+    }
+}
+
 void Chainstate::UpdateTip(const CBlockIndex *pindexNew) {
     AssertLockHeld(::cs_main);
     const auto &coins_tip = CoinsTip();
@@ -3677,6 +3690,8 @@ void Chainstate::UpdateTip(const CBlockIndex *pindexNew) {
         }
         return;
     }
+
+    SyncAdaptiveCapacityTip(pindexNew);
 
     // New best block
     if (m_mempool) {
@@ -5340,6 +5355,7 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
     // Size limits.
     auto nMaxBlockSize = validationOptions.getExcessiveBlockSize();
 
+
     // Bail early if there is no way this block is of reasonable size.
     if ((block.vtx.size() * MIN_TRANSACTION_SIZE) > nMaxBlockSize) {
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
@@ -6207,6 +6223,9 @@ bool Chainstate::LoadChainTip() {
     PruneBlockIndexCandidates();
 
     tip = m_chain.Tip();
+    if (this == &m_chainman.ActiveChainstate()) {
+        SyncAdaptiveCapacityTip(tip);
+    }
     LogPrintf(
         "Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f\n",
         tip->GetBlockHash().ToString(), m_chain.Height(),

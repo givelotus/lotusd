@@ -7,6 +7,7 @@
 #include <common/args.h>
 #include <config.h>
 #include <consensus/consensus.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <policy/policy.h>
 #include <util/moneystr.h>
 
@@ -40,7 +41,7 @@ BlockFitter::BlockFitter(const Options &options) {
 void ApplyArgsManOptions(const ArgsManager &args, const Config &config,
                          BlockFitter::Options &options) {
     // Block resource limits
-    // If -blockmaxsize is not given, limit to DEFAULT_MAX_GENERATED_BLOCK_SIZE
+    // If -blockmaxsize is not given, limit to adaptive max generated block size
     // If only one is given, only restrict the specified resource.
     // If both are given, restrict both.
     options.nExcessiveBlockSize = config.GetMaxBlockSize();
@@ -48,6 +49,11 @@ void ApplyArgsManOptions(const ArgsManager &args, const Config &config,
     if (gArgs.IsArgSet("-blockmaxsize")) {
         options.nMaxGeneratedBlockSize =
             gArgs.GetIntArg("-blockmaxsize", DEFAULT_MAX_GENERATED_BLOCK_SIZE);
+    } else if (gArgs.GetBoolArg("-adaptiveblocksize", true)) {
+        options.nMaxGeneratedBlockSize = std::max(
+            DEFAULT_MAX_GENERATED_BLOCK_SIZE,
+            lotus::v2::GetGlobalFeeHysteresisController()
+                .GetAdaptiveMaxGeneratedBlockSize());
     }
 
     Amount n = Amount::zero();
