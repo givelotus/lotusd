@@ -36,6 +36,9 @@ static bool CheckTransactionCommon(const CTransaction &tx,
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                  "bad-txns-vout-negative");
         }
+        if ((txout.nFlags & 1) != 0) {
+            continue;
+        }
 
         if (txout.nValue > MAX_MONEY) {
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
@@ -63,6 +66,15 @@ bool CheckCoinbase(const CTransaction &tx, TxValidationState &state) {
         return false;
     }
 
+    if (tx.vin[0].nFlags == 2) {
+        if (tx.vin[0].vCoinbaseData.size() > 8192 ||
+            tx.vin[0].scriptSig.size() > 8192) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                 "bad-cb-length");
+        }
+        return true;
+    }
+
     if (tx.vin[0].scriptSig.size() < 2 ||
         tx.vin[0].scriptSig.size() > MAX_COINBASE_SCRIPTSIG_SIZE) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-cb-length");
@@ -85,12 +97,16 @@ bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
     if (tx.vin.size() <= 8) {
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             const auto &txin = tx.vin[i];
-            if (txin.prevout.IsNull()) {
+            if (txin.nFlags != 3 &&
+                (txin.prevout.IsNull() || txin.nFlags == 2)) {
                 return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                      "bad-txns-prevout-null");
             }
+            const bool is_mint = (txin.nFlags == 3);
             for (size_t j = 0; j < i; ++j) {
-                if (txin.prevout == tx.vin[j].prevout) {
+                const bool prev_is_mint = (tx.vin[j].nFlags == 3);
+                if (is_mint == prev_is_mint &&
+                    txin.prevout == tx.vin[j].prevout) {
                     return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                          "bad-txns-inputs-duplicate");
                 }
@@ -100,8 +116,16 @@ bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
     }
 
     std::unordered_set<COutPoint, SaltedOutpointHasher> vInOutPoints;
+    std::unordered_set<COutPoint, SaltedOutpointHasher> vMintTokens;
     for (const auto &txin : tx.vin) {
-        if (txin.prevout.IsNull()) {
+        if (txin.nFlags == 3) {
+            if (!vMintTokens.insert(txin.prevout).second) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-inputs-duplicate");
+            }
+            continue;
+        }
+        if (txin.prevout.IsNull() || txin.nFlags == 2) {
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                  "bad-txns-prevout-null");
         }

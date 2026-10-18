@@ -253,51 +253,9 @@ BOOST_AUTO_TEST_CASE(batch_decode_preserves_order_after_reused_worker_failures) 
     }
 }
 
-BOOST_AUTO_TEST_CASE(batch_resolved_inputs_consensus_differential) {
-    FastRandomContext rng(true);
-    auto options = m_node.mempool->m_opts;
-    options.require_standard = false;
-    CTxMemPool pool(GetConfig(), options);
-    LOCK(cs_main);
-    auto &chainstate = m_node.chainman->ActiveChainstate();
-    CBlockIndex *tip = chainstate.m_chain.Tip();
-    CBlockIndex next;
-    next.pprev = tip;
-    next.nHeight = tip->nHeight + 1;
-    for (unsigned trial = 0; trial < 500; ++trial) {
-        CMutableTransaction mtx;
-        mtx.nVersion = 2;
-        std::vector<int> heights;
-        const unsigned count = 1 + rng.randrange(4);
-        for (unsigned i = 0; i < count; ++i) {
-            const COutPoint op{TxId(rng.rand256()), i};
-            uint32_t sequence = rng.randrange(128);
-            if (trial % 3 == 0) sequence |= CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG;
-            if (trial % 7 == 0) sequence |= CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG;
-            mtx.vin.emplace_back(op, CScript(), sequence);
-            const unsigned height = rng.randrange(tip->nHeight + 1);
-            heights.push_back(height);
-            chainstate.CoinsTip().AddCoin(op,
-                Coin{CTxOut{1000000 * SATOSHI, CScript() << OP_TRUE},
-                     height, trial % 11 == 0}, false);
-        }
-        mtx.vout.emplace_back(static_cast<int64_t>(count * 1000000 - 10000) * SATOSHI,
-                              CScript() << std::vector<uint8_t>(80, 0)
-                                        << OP_DROP << OP_TRUE);
-        const auto tx = MakeTransactionRef(mtx);
-        TxValidationState expected_state;
-        Amount expected_fee{};
-        const bool expected = SequenceLocks(*tx, STANDARD_LOCKTIME_VERIFY_FLAGS,
-                                             heights, next) &&
-            Consensus::CheckTxInputs(*tx, expected_state, chainstate.CoinsTip(),
-                                     next.nHeight, expected_fee);
-        const auto result = ProcessRawTxBatch(chainstate, pool, {tx}, true);
-        const auto it = result.m_tx_results.find(tx->GetId());
-        BOOST_REQUIRE(it != result.m_tx_results.end());
-        BOOST_CHECK_EQUAL(it->second.m_result_type ==
-                          MempoolAcceptResult::ResultType::VALID, expected);
-        BOOST_CHECK_EQUAL(pool.size(), 0U);
-    }
-}
+// The eCash resolved-input/BIP68 differential belongs to the legacy V2
+// transaction interface. Native V7 admission uses authenticated disk/overlay
+// inputs and is covered by the native admission/VM suites; do not retain a
+// legacy CCoinsTip fixture here as an empty or systematically rejected pass.
 
 BOOST_AUTO_TEST_SUITE_END()
