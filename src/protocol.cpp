@@ -61,6 +61,7 @@ const char *GETAVAPROOFS = "getavaproofs";
 const char *AVAPROOFS = "avaproofs";
 const char *AVAPROOFSREQ = "avaproofsreq";
 const char *AVATREASURY = "avatreasury";
+const char *AVABATCH = "avabatch";
 const char *MINEDHEADER = "minedheader";
 const char *SEALEDHEADER = "sealedheader";
 const char *SEALEDBLOCK = "sealedblock";
@@ -116,13 +117,14 @@ static const std::string allNetMessageTypes[] = {
     NetMsgType::AVAPROOF,       NetMsgType::GETAVAADDR,
     NetMsgType::GETAVAPROOFS,   NetMsgType::AVAPROOFS,
     NetMsgType::AVAPROOFSREQ,   NetMsgType::AVATREASURY,
-    NetMsgType::MINEDHEADER,    NetMsgType::SEALEDHEADER,
-    NetMsgType::SEALEDBLOCK,    NetMsgType::MERKLIXSYNC,
-    NetMsgType::GETMERKLIXBUCK, NetMsgType::MERKLIXBUCK,
-    NetMsgType::GETSHORTTX,     NetMsgType::SHORTTX,
-    NetMsgType::GETUTXOROOTS,   NetMsgType::UTXOROOTS,
-    NetMsgType::GETUTXOSHARD,   NetMsgType::UTXOSHARD,
-    NetMsgType::GETBLOCKUNDO,   NetMsgType::BLOCKUNDO,
+    NetMsgType::AVABATCH,       NetMsgType::MINEDHEADER,
+    NetMsgType::SEALEDHEADER,   NetMsgType::SEALEDBLOCK,
+    NetMsgType::MERKLIXSYNC,    NetMsgType::GETMERKLIXBUCK,
+    NetMsgType::MERKLIXBUCK,    NetMsgType::GETSHORTTX,
+    NetMsgType::SHORTTX,        NetMsgType::GETUTXOROOTS,
+    NetMsgType::UTXOROOTS,      NetMsgType::GETUTXOSHARD,
+    NetMsgType::UTXOSHARD,      NetMsgType::GETBLOCKUNDO,
+    NetMsgType::BLOCKUNDO,
     NetMsgType::SENDINVSHORT, NetMsgType::INVSHORT,
 };
 static const std::vector<std::string>
@@ -243,6 +245,8 @@ std::string CInv::GetMessageType() const {
             return cmd.append("stakecontender");
         case MSG_AVA_TREASURY_CONTENDER:
             return cmd.append(NetMsgType::AVATREASURY);
+        case MSG_AVA_MEMPOOL_BATCH:
+            return cmd.append(NetMsgType::AVABATCH);
         default:
             throw std::out_of_range(strprintf(
                 "CInv::GetMessageType(): type=%d unknown type", type));
