@@ -5,9 +5,7 @@
 #include <net/v2_protocol_handler.h>
 
 #include <avalanche/processor.h>
-#include <avalanche/stateanchor.h>
 #include <lotus_v2/fast_sync.h>
-#include <lotus_v2/legacy_coin.h>
 #include <node/snapshot.h>
 
 #include <blockencodings.h>
@@ -42,6 +40,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <vector>
@@ -249,7 +248,12 @@ BOOST_AUTO_TEST_CASE(sealedheader_fast_path_and_fallback_getdata) {
     fallback_block->vtx.push_back(missing_tx);
     {
         LOCK(cs_main);
+        const CBlockIndex *tip = m_node.chainman->ActiveTip();
         fallback_block->hashMerkleRoot = BlockMerkleRoot(*fallback_block);
+        fallback_block->hashStateRoot = ComputeV2BlockStateRoot(
+            *fallback_block, fallback_block->hashPrevBlock,
+            fallback_block->nHeight, uint64_t(tip->GetMedianTimePast()), false);
+        fallback_block->SetSize(::GetSerializeSize(*fallback_block));
     }
     while (!CheckProofOfWork(fallback_block->GetHash(), fallback_block->nBits,
                              config.GetChainParams().GetConsensus())) {
@@ -721,17 +725,17 @@ BOOST_AUTO_TEST_CASE(adversarial_c1_d1_d2_hardening_gates) {
     overlay_block->vtx.push_back(overlay_tx);
     {
         LOCK(cs_main);
+        const CBlockIndex *tip = m_node.chainman->ActiveTip();
         overlay_block->hashMerkleRoot = BlockMerkleRoot(*overlay_block);
+        overlay_block->hashStateRoot = ComputeV2BlockStateRoot(
+            *overlay_block, overlay_block->hashPrevBlock,
+            overlay_block->nHeight, uint64_t(tip->GetMedianTimePast()), false);
+        overlay_block->SetSize(::GetSerializeSize(*overlay_block));
     }
     while (!CheckProofOfWork(overlay_block->GetHash(), overlay_block->nBits,
                              config.GetChainParams().GetConsensus())) {
         ++overlay_block->nNonce;
     }
-
-    uint256 overlay_null_root;
-    std::vector<uint256> overlay_cb_branch;
-    lotus::v2::ComputeBlockCoinbaseMerkleBranch(
-        *overlay_block, overlay_null_root, overlay_cb_branch);
 
     // Register candidate overlay & scoped transactions, test explicit
     // MatchCandidateOverlay (including std::binary_search comparator lambda),
@@ -748,44 +752,38 @@ BOOST_AUTO_TEST_CASE(adversarial_c1_d1_d2_hardening_gates) {
                                       overlay_block->GetHash(), {overlay_tx});
     {
         auto matched_explicit = v2_handler->MatchCandidateOverlay(
-            *overlay_block, overlay_block->vtx[0], overlay_cb_branch);
+            *overlay_block, overlay_block->vtx[0]);
         BOOST_REQUIRE(matched_explicit != nullptr);
         BOOST_CHECK_EQUAL(matched_explicit->vtx.size(), 2U);
         BOOST_CHECK(!matched_explicit->m_checked_merkle_root);
-        // A reconstructed block must still run the duplicate-tail mutation
-        // check: [coinbase,a,b] and [coinbase,a,b,b] share a Merkle root.
+        // Native roots bind the full transaction list, but duplicate detection
+        // must still run after reconstruction rather than trust a checked flag.
         auto mutation = *matched_explicit;
         auto tail = MakeNonCoinbaseTx(rng, 0x35);
         mutation.vtx.push_back(tail);
         mutation.hashMerkleRoot = BlockMerkleRoot(mutation);
         mutation.vtx.push_back(tail);
-        BOOST_CHECK(mutation.hashMerkleRoot == BlockMerkleRoot(mutation));
+        bool duplicate = false;
+        mutation.hashMerkleRoot = BlockMerkleRoot(mutation, &duplicate);
+        BOOST_CHECK(duplicate);
         BlockValidationState mutation_state;
         BOOST_CHECK(!CheckBlock(mutation, mutation_state,
             config.GetChainParams().GetConsensus(),
             BlockValidationOptions(config).withCheckPoW(false)));
         BOOST_CHECK_EQUAL(mutation_state.GetRejectReason(), "bad-txns-duplicate");
 
-        // Merkle root mismatch in explicit candidate loop
-        CBlockHeader bad_mr_hdr = *overlay_block;
-        bad_mr_hdr.hashMerkleRoot.begin()[0] ^= 0xFF;
+        // State root mismatch in explicit candidate loop (hits line 547)
+        CBlockHeader bad_sr_hdr = *overlay_block;
+        bad_sr_hdr.hashStateRoot.begin()[0] ^= 0xFF;
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        bad_mr_hdr, overlay_block->vtx[0], overlay_cb_branch) ==
-                    nullptr);
+                        bad_sr_hdr, overlay_block->vtx[0]) == nullptr);
 
-        // Tampered coinbase Merkle branch in explicit candidate loop
-        std::vector<uint256> bad_branch = overlay_cb_branch;
-        bad_branch[0].begin()[0] ^= 0xFF;
-        BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        *overlay_block, overlay_block->vtx[0], bad_branch) ==
-                    nullptr);
-
-        // Coinbase txid collision with candidate tx
+        // Coinbase txid collision with candidate tx (hits cb_dup line 520)
         CBlock dup_cb_blk = *overlay_block;
         dup_cb_blk.vtx[0] = overlay_tx;
         dup_cb_blk.hashMerkleRoot = BlockMerkleRoot(dup_cb_blk);
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        dup_cb_blk, overlay_tx, overlay_cb_branch) == nullptr);
+                        dup_cb_blk, overlay_tx) == nullptr);
     }
     v2_handler->ClearCandidateOverlays();
     v2_handler->SetScopedTransactions(ReconScope::BLOCK_RECON,
@@ -796,35 +794,34 @@ BOOST_AUTO_TEST_CASE(adversarial_c1_d1_d2_hardening_gates) {
         TestMemPoolEntryHelper entry;
         LOCK2(cs_main, m_node.mempool->cs);
         const CBlockIndex *tip = m_node.chainman->ActiveTip();
+        // First sync with mismatched height (nHeight + 1) to exercise fallback
+        // ComputeV2BlockStateRoot in try_match_layer (lines 410-421)
         m_node.mempool->SyncMerklixOverlayToTip(
-            overlay_block->hashPrevBlock, uint32_t(tip->nHeight + 2),
+            overlay_block->hashPrevBlock, overlay_block->nHeight + 1,
             uint64_t(tip->GetMedianTimePast()));
         m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(overlay_tx));
     }
     {
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        *overlay_block, overlay_block->vtx[0],
-                        overlay_cb_branch) != nullptr);
-        CBlockHeader bad_mr_hdr = *overlay_block;
-        bad_mr_hdr.hashMerkleRoot.begin()[0] ^= 0xFF;
+                        *overlay_block, overlay_block->vtx[0]) != nullptr);
+        CBlockHeader bad_sr_hdr = *overlay_block;
+        bad_sr_hdr.hashStateRoot.begin()[0] ^= 0xFF;
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        bad_mr_hdr, overlay_block->vtx[0], overlay_cb_branch) ==
-                    nullptr);
+                        bad_sr_hdr, overlay_block->vtx[0]) == nullptr);
     }
     {
         LOCK2(cs_main, m_node.mempool->cs);
         const CBlockIndex *tip = m_node.chainman->ActiveTip();
         m_node.mempool->SyncMerklixOverlayToTip(
-            overlay_block->hashPrevBlock, uint32_t(tip->nHeight + 1),
+            overlay_block->hashPrevBlock, overlay_block->nHeight,
             uint64_t(tip->GetMedianTimePast()));
         m_node.mempool->FreezeEpochBatch();
     }
     {
-        CBlockHeader bad_mr_hdr = *overlay_block;
-        bad_mr_hdr.hashMerkleRoot.begin()[0] ^= 0xFF;
+        CBlockHeader bad_sr_hdr = *overlay_block;
+        bad_sr_hdr.hashStateRoot.begin()[0] ^= 0xFF;
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
-                        bad_mr_hdr, overlay_block->vtx[0], overlay_cb_branch) ==
-                    nullptr);
+                        bad_sr_hdr, overlay_block->vtx[0]) == nullptr);
     }
 
     SealedHeader overlay_sealed(*overlay_block);
@@ -1440,7 +1437,7 @@ BOOST_AUTO_TEST_CASE(
 }
 
 
-BOOST_AUTO_TEST_CASE(ecash_rejects_v2_commitment_in_legacy_header) {
+BOOST_AUTO_TEST_CASE(native_accepts_matching_v2_commitment_and_rejects_mismatch) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const Config &config = m_node.chainman->GetConfig();
     auto connman = std::make_unique<ConnmanTestMsg>(config, 91, 92,
@@ -1460,7 +1457,15 @@ BOOST_AUTO_TEST_CASE(ecash_rejects_v2_commitment_in_legacy_header) {
     std::copy(root.begin(), root.end(), subtree.begin());
     block->hashMerkleRoot = lotus::v2::net::ComputeV2TxRootFromSubtreeA(
         *block->vtx[0], subtree);
-    BOOST_REQUIRE(block->hashMerkleRoot != BlockMerkleRoot(*block));
+    {
+        LOCK(cs_main);
+        block->hashStateRoot = ComputeV2BlockStateRoot(*block, block->hashPrevBlock,
+            block->nHeight, m_node.chainman->ActiveTip()->GetMedianTimePast(), false);
+        block->SetSize(::GetSerializeSize(*block));
+    }
+    BOOST_REQUIRE(block->hashMerkleRoot == BlockMerkleRoot(*block));
+    BOOST_CHECK(handler->MatchCandidateOverlay(*block, block->vtx[0]) != nullptr);
+    block->hashMerkleRoot.begin()[0] ^= 1;
     BOOST_CHECK(handler->MatchCandidateOverlay(*block, block->vtx[0]) == nullptr);
 
     // Exercise the speculative-overlay path independently of explicit candidates.
@@ -1473,7 +1478,9 @@ BOOST_AUTO_TEST_CASE(ecash_rejects_v2_commitment_in_legacy_header) {
             *block->vtx[0], m_node.mempool->GetMerklixOverlay()
                                 .GetSpeculativeOverlay().GetSubtreeARoot());
     }
-    BOOST_REQUIRE(block->hashMerkleRoot != BlockMerkleRoot(*block));
+    BOOST_REQUIRE(block->hashMerkleRoot == BlockMerkleRoot(*block));
+    BOOST_CHECK(handler->MatchCandidateOverlay(*block, block->vtx[0]) != nullptr);
+    block->hashMerkleRoot.begin()[0] ^= 1;
     BOOST_CHECK(handler->MatchCandidateOverlay(*block, block->vtx[0]) == nullptr);
 }
 
@@ -1992,6 +1999,7 @@ BOOST_AUTO_TEST_CASE(inventory_broadcast_constants) {
 
 
 BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
+    gArgs.ForceSetArg("-reversesynchorizon", "0");
     LOCK(NetEventsInterface::g_msgproc_mutex);
 
     // 1. Verify wire message types and MSG_AVA_STATE_ANCHOR inventory type
@@ -2005,162 +2013,74 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
         CMessageHeader hdr(Params().NetMagic(), msg, 64);
         BOOST_CHECK(hdr.IsMessageTypeValid());
     }
-    CInv anchor_inv(MSG_AVA_STATE_ANCHOR, uint256{42});
-    BOOST_CHECK(anchor_inv.IsMsgStateAnchor());
-
-    // 2. Verify lossless bijective CTxOut::ToV2Output() / lotus::v2::LegacyTxOutput()
-    //    across standard and arbitrary scripts
-    {
-        std::vector<CScript> test_scripts;
-        CScript p2pkh;
-        p2pkh << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 0x11)
-              << OP_EQUALVERIFY << OP_CHECKSIG;
-        test_scripts.push_back(p2pkh);
-
-        CScript p2sh;
-        p2sh << OP_HASH160 << std::vector<uint8_t>(20, 0x22) << OP_EQUAL;
-        test_scripts.push_back(p2sh);
-
-        CScript taproot;
-        taproot << uint8_t(0x62) << OP_1 << std::vector<uint8_t>(33, 0x02);
-        test_scripts.push_back(taproot);
-
-        CScript taproot_state;
-        taproot_state << uint8_t(0x62) << OP_1 << std::vector<uint8_t>(33, 0x03)
-                      << std::vector<uint8_t>(32, 0xaa);
-        test_scripts.push_back(taproot_state);
-
-        CScript op_return;
-        op_return << OP_RETURN << std::vector<uint8_t>{0xde, 0xad, 0xbe, 0xef};
-        test_scripts.push_back(op_return);
-
-        CScript raw_custom = MakeRedeemScriptForAttempt(7);
-        test_scripts.push_back(raw_custom);
-
-        for (const CScript &spk : test_scripts) {
-            CTxOut orig(12345678 * SATOSHI, spk);
-            lotus::v2::Output v2_out = lotus::v2::LegacyStateOutput(orig);
-            CTxOut roundtrip = lotus::v2::LegacyTxOutput(v2_out);
-            BOOST_CHECK(orig == roundtrip);
-        }
+    // Native outputs bind program branches and extension metadata; legacy
+    // arbitrary-script roundtrips remain covered at the eCash prefix.
+    for (size_t length : {size_t(1), size_t(25), size_t(10000)}) {
+        lotus::v2::Output output;
+        output.value = 12345678;
+        output.branches = {lotus::v2::BranchLeaf(std::vector<uint8_t>(length, 0x4e))};
+        output.paths = {{0}};
+        BOOST_CHECK(CTxOut::FromV2Output(output).ToV2Output() == output);
     }
-
-    // 3. Mine 102 authentic blocks on top of Genesis:
-    //    - Block 1 pays coinbase to p2sh_spk
-    //    - Blocks 2..100 mature Block 1's coinbase
-    //    - Block 101 spends Block 1's coinbase output
-    //    - Block 102 spends Block 101's output (prior-block spend) AND includes
-    //      a CTOR-ordered child transaction spending that transaction's output
-    //      within Block 102 (intra-block spend)
     const Config &config = m_node.chainman->GetConfig();
     const Consensus::Params &params = config.GetChainParams().GetConsensus();
-    const CScript redeem_script = MakeRedeemScriptForAttempt(1);
-    const CScript p2sh_spk =
-        GetScriptForDestination(ScriptHash(redeem_script));
-
-    TxId block1_cb_txid;
-    TxId block101_txid;
-    for (int b = 1; b <= 102; ++b) {
-        std::shared_ptr<CBlock> blk =
-            PrepareBlock(config, m_node, p2sh_spk);
-        if (b == 1) {
-            block1_cb_txid = blk->vtx[0]->GetId();
-        } else if (b == 101) {
-            CMutableTransaction mtx_101;
-            mtx_101.nVersion = 2;
-            mtx_101.vin.resize(1);
-            mtx_101.vin[0].prevout = COutPoint(block1_cb_txid, 0);
-            mtx_101.vin[0].scriptSig = CScript() << ToByteVector(redeem_script);
-            mtx_101.vout.resize(1);
-            mtx_101.vout[0].nValue =
-                blk->vtx[0]->GetValueOut() - 10000 * SATOSHI;
-            mtx_101.vout[0].scriptPubKey = p2sh_spk;
-            CTransactionRef tx_101 = MakeTransactionRef(std::move(mtx_101));
-            block101_txid = tx_101->GetId();
-            blk->vtx.push_back(tx_101);
-        } else if (b == 102) {
-            CMutableTransaction mtx_parent;
-            mtx_parent.nVersion = 2;
-            mtx_parent.vin.resize(1);
-            mtx_parent.vin[0].prevout = COutPoint(block101_txid, 0);
-            mtx_parent.vin[0].scriptSig =
-                CScript() << ToByteVector(redeem_script);
-            mtx_parent.vout.resize(1);
-            mtx_parent.vout[0].nValue =
-                blk->vtx[0]->GetValueOut() - 20000 * SATOSHI;
-            mtx_parent.vout[0].scriptPubKey = p2sh_spk;
-            CTransactionRef tx_parent =
-                MakeTransactionRef(std::move(mtx_parent));
-
-            // Grind nLockTime on tx_child so tx_parent->GetId() < tx_child->GetId()
-            // (satisfying CTOR while spending tx_parent intra-block).
-            CTransactionRef tx_child;
-            for (uint32_t lt = 0; lt < 10000; ++lt) {
-                CMutableTransaction mtx_child;
-                mtx_child.nVersion = 2;
-                mtx_child.nLockTime = lt;
-                mtx_child.vin.resize(1);
-                mtx_child.vin[0].prevout = COutPoint(tx_parent->GetId(), 0);
-                mtx_child.vin[0].scriptSig =
-                    CScript() << ToByteVector(redeem_script);
-                mtx_child.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
-                mtx_child.vout.resize(1);
-                mtx_child.vout[0].nValue =
-                    blk->vtx[0]->GetValueOut() - 30000 * SATOSHI;
-                mtx_child.vout[0].scriptPubKey = p2sh_spk;
-                CTransactionRef cand = MakeTransactionRef(std::move(mtx_child));
-                if (tx_parent->GetId() < cand->GetId()) {
-                    tx_child = cand;
-                    break;
-                }
-            }
-            BOOST_REQUIRE(tx_child != nullptr);
-
-            blk->vtx.push_back(tx_parent);
-            blk->vtx.push_back(tx_child);
+    const std::vector<uint8_t> program{0x4e};
+    const CScript funding_program(program.begin(), program.end());
+    auto spend = [&](const COutPoint &prevout, Amount value) {
+        CMutableTransaction tx;
+        tx.nVersion = 7; tx.fHasV2Lock = true; tx.nV2Lock = 0;
+        CTxIn input(prevout);
+        input.nFlags = 1; input.nPathIndex = 0;
+        lotus::v2::BranchWitness witness; witness.script = program;
+        input.vWitnesses = {witness}; tx.vin.push_back(std::move(input));
+        lotus::v2::Output output;
+        output.value = value / SATOSHI;
+        output.branches = {lotus::v2::BranchLeaf(program)}; output.paths = {{0}};
+        tx.vout.push_back(CTxOut::FromV2Output(output));
+        return MakeTransactionRef(std::move(tx));
+    };
+    TxId block1_cb_txid, block101_txid;
+    Amount funding_value;
+    for (int height = 1; height <= 102; ++height) {
+        auto block = PrepareBlock(config, m_node, funding_program);
+        if (height == 1) {
+            block1_cb_txid = block->vtx[0]->GetId();
+            funding_value = block->vtx[0]->GetValueOut();
+        } else if (height == 101) {
+            auto tx = spend(COutPoint(block1_cb_txid, 0), funding_value - 10000 * SATOSHI);
+            block101_txid = tx->GetId(); block->vtx.push_back(tx);
+        } else if (height == 102) {
+            auto parent = spend(COutPoint(block101_txid, 0), funding_value - 20000 * SATOSHI);
+            auto child = spend(COutPoint(parent->GetId(), 0), funding_value - 30000 * SATOSHI);
+            block->vtx.push_back(parent); block->vtx.push_back(child);
+            std::sort(block->vtx.begin() + 1, block->vtx.end(),
+                [](const auto &left, const auto &right) { return left->GetId() < right->GetId(); });
         }
         {
             LOCK(cs_main);
-            blk->hashMerkleRoot = BlockMerkleRoot(*blk);
+            block->hashMerkleRoot = BlockMerkleRoot(*block);
+            block->hashStateRoot = ComputeV2BlockStateRoot(*block, block->hashPrevBlock,
+                block->nHeight, m_node.chainman->ActiveTip()->GetMedianTimePast(), false);
+            block->SetSize(::GetSerializeSize(*block));
         }
-        while (!CheckProofOfWork(blk->GetHash(), blk->nBits, params)) {
-            ++blk->nNonce;
-        }
-        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
-            blk, /*force_processing=*/true, /*min_pow_checked=*/true, nullptr));
+        while (!CheckProofOfWork(block->GetHash(), block->nBits, params)) ++block->nNonce;
+        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(block, true, true, nullptr));
     }
-
-    CBlockIndex *pivot_index = nullptr;
+    CBlockIndex *pivot_index;
     BlockHash pivot_hash;
-    lotus::v2::Hash pivot_utxo_root{};
     {
         LOCK(cs_main);
         pivot_index = m_node.chainman->ActiveTip();
-        BOOST_REQUIRE(pivot_index != nullptr);
         BOOST_REQUIRE_EQUAL(pivot_index->nHeight, 102);
         pivot_hash = pivot_index->GetBlockHash();
-
-        Chainstate::FastSyncBlockState pivot_state;
-        std::string err;
-        BOOST_REQUIRE(
-            m_node.chainman->ActiveChainstate()
-                .ExportV2BlockStateCoinsAndMonetary(pivot_index, pivot_state,
-                                                    err));
-        pivot_utxo_root = pivot_state.utxo_root;
+        auto header = pivot_index->GetBlockHeader().ToV2Header();
+        auto conflicting = header; conflicting.state_root[0] ^= 1;
+        BOOST_CHECK(header.state_root != conflicting.state_root);
+        lotus::v2::Hash original_id, conflicting_id;
+        BOOST_REQUIRE(lotus::v2::BlockId(GetActiveV2ChainId(), header, original_id));
+        BOOST_REQUIRE(lotus::v2::BlockId(GetActiveV2ChainId(), conflicting, conflicting_id));
+        BOOST_CHECK(original_id != conflicting_id);
     }
-
-    // 4. Verify deterministic Avalanche StateAnchorId computation
-    uint256 anchor_root_u256;
-    std::memcpy(anchor_root_u256.begin(), pivot_utxo_root.data(), 32);
-    const avalanche::StateAnchorId anchor_id(pivot_hash, anchor_root_u256);
-    const avalanche::StateAnchorId anchor_id_dup(pivot_hash, anchor_root_u256);
-    BOOST_CHECK(anchor_id == anchor_id_dup);
-
-    uint256 conflicting_root_u256 = anchor_root_u256;
-    conflicting_root_u256.begin()[0] ^= 0xff;
-    const avalanche::StateAnchorId conflicting_anchor_id(pivot_hash,
-                                                         conflicting_root_u256);
-    BOOST_CHECK(anchor_id != conflicting_anchor_id);
 
     // Set up PeerManager + V2PeerProtocolHandler with two peers:
     // - peer_bad (sends Byzantine/corrupted shards & undo coins)
@@ -2259,58 +2179,55 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
     std::vector<lotus::v2::UtxoShardMessage> valid_shards;
     {
         LOCK(cs_main);
-        Chainstate::FastSyncBlockState pivot_state;
+        std::vector<lotus::v2::Coin> coins;
+        lotus::v2::MonetaryState monetary;
+        BOOST_REQUIRE(GetV2BlockStateCoinsAndMonetary(pivot_hash, pivot_index->nHeight, coins, monetary));
+        lotus::v2::UtxoSet utxo;
+        for (const auto &coin : coins) BOOST_REQUIRE(utxo.Insert(coin));
         std::string err;
-        BOOST_REQUIRE(
-            m_node.chainman->ActiveChainstate()
-                .ExportV2BlockStateCoinsAndMonetary(pivot_index, pivot_state,
-                                                    err));
-        BOOST_REQUIRE(pivot_state.smt_root != nullptr);
-        BOOST_REQUIRE(lotus::v2::ExportUtxoRootsForBlock(
-            pivot_state.utxo, pivot_v2_hash, pivot_state.height,
-            pivot_state.monetary, valid_roots_msg, err));
-
-        lotus::v2::UtxoRootsMessage smt_roots_msg;
-        BOOST_REQUIRE(lotus::v2::ExportUtxoRootsFromSmt(
-            pivot_state.smt_root, pivot_v2_hash, pivot_state.height,
-            pivot_state.monetary, smt_roots_msg, err));
-        BOOST_CHECK(lotus::v2::EncodeUtxoRootsMessage(valid_roots_msg) ==
-                    lotus::v2::EncodeUtxoRootsMessage(smt_roots_msg));
-
-        // Mandatory finalized state anchor check: std::nullopt anchor MUST be rejected!
-        lotus::v2::Hash dummy_folded{};
-        std::string anchor_err;
-        BOOST_CHECK(!lotus::v2::VerifyUtxoRootsAgainstAnchor(
-            pivot_v2_hash, pivot_state.height, std::nullopt, valid_roots_msg,
-            dummy_folded, anchor_err));
-        BOOST_CHECK(anchor_err.find("missing finalized") !=
-                    std::string::npos);
-
+        auto header = pivot_index->GetBlockHeader().ToV2Header();
+        BOOST_REQUIRE(lotus::v2::ExportUtxoRoots(utxo, GetActiveV2ChainId(), header,
+                                              monetary, valid_roots_msg, err));
+        bool found = false;
+        const auto root = GetV2BlockUtxoRoot(pivot_hash, &found);
+        BOOST_REQUIRE(found);
+        BOOST_CHECK(lotus::v2::SmtRoot(root) == utxo.Root());
+        auto unauthenticated = header; unauthenticated.state_root.fill(0);
+        BOOST_CHECK(!lotus::v2::VerifyUtxoRootsAgainstHeader(unauthenticated,
+            GetActiveV2ChainId(), valid_roots_msg, err));
         std::vector<lotus::v2::UtxoShardMessage> adaptive_shards;
-        BOOST_REQUIRE(lotus::v2::ExportAdaptiveUtxoShards(
-            pivot_state.utxo, pivot_v2_hash, adaptive_shards, err,
-            /*max_shard_leaves=*/1));
+        // The direct OutpointKey keeps the transaction ID's first 16 bits:
+        // sibling outputs cannot be split by the depth-16 wire shard limit.
+        // Derive the smallest feasible cap from those raw transaction ID bits,
+        // independently of the exporter and OutpointKey implementation.
+        std::array<size_t, 65536> prefix_counts{};
+        size_t minimum_shard_cap = 0;
+        for (const auto &coin : coins) {
+            const auto &id = coin.outpoint.tx_id;
+            const uint16_t prefix = uint16_t(id[0]) | (uint16_t(id[1]) << 8);
+            minimum_shard_cap = std::max(minimum_shard_cap, ++prefix_counts[prefix]);
+        }
+        BOOST_REQUIRE_GT(minimum_shard_cap, 1U);
+        BOOST_CHECK(!lotus::v2::ExportAdaptiveUtxoShards(utxo, pivot_v2_hash,
+            adaptive_shards, err, minimum_shard_cap - 1));
+        BOOST_CHECK_EQUAL(err, "sub-shard at maximum depth 16 still exceeds leaf limit");
+        BOOST_CHECK(adaptive_shards.empty());
+        BOOST_REQUIRE_MESSAGE(lotus::v2::ExportAdaptiveUtxoShards(utxo, pivot_v2_hash,
+            adaptive_shards, err, minimum_shard_cap), err);
+        size_t exported_coins = 0;
+        for (const auto &shard : adaptive_shards) {
+            BOOST_CHECK_LE(shard.coins.size(), minimum_shard_cap);
+            exported_coins += shard.coins.size();
+        }
+        BOOST_CHECK_EQUAL(exported_coins, coins.size());
         BOOST_CHECK(!adaptive_shards.empty());
-
-        // Export all non-empty depth-8 shards for the P2P swarm test
-        for (uint16_t s = 0; s < 256; ++s) {
-            if (valid_roots_msg.shards[s].cardinality_tag == 0) {
-                continue;
-            }
-            lotus::v2::UtxoShardMessage shard_msg;
-            BOOST_REQUIRE(lotus::v2::ExportUtxoShard(
-                pivot_state.utxo, pivot_v2_hash, /*prefix_depth=*/8, s,
-                shard_msg, err));
-            lotus::v2::UtxoShardMessage smt_shard_msg;
-            BOOST_REQUIRE(lotus::v2::ExportUtxoShardFromSmt(
-                pivot_state.smt_root, pivot_v2_hash, /*prefix_depth=*/8, s,
-                smt_shard_msg, err));
-            std::vector<uint8_t> b1, b2;
-            BOOST_REQUIRE(lotus::v2::EncodeUtxoShardMessage(shard_msg, b1, err));
-            BOOST_REQUIRE(
-                lotus::v2::EncodeUtxoShardMessage(smt_shard_msg, b2, err));
-            BOOST_CHECK(b1 == b2);
-            valid_shards.push_back(std::move(shard_msg));
+        for (uint16_t prefix = 0; prefix < 256; ++prefix) {
+            if (valid_roots_msg.shards[prefix].cardinality_tag == 0) continue;
+            lotus::v2::UtxoShardMessage shard;
+            BOOST_REQUIRE(lotus::v2::ExportUtxoShard(utxo, pivot_v2_hash, 8, prefix, shard, err));
+            BOOST_REQUIRE(lotus::v2::VerifyAndBuildUtxoShard(valid_roots_msg.shards[prefix],
+                pivot_index->nHeight, shard, nullptr, err));
+            valid_shards.push_back(std::move(shard));
         }
         BOOST_REQUIRE(!valid_shards.empty());
     }
@@ -2400,9 +2317,9 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
             m_node.chainman->ActiveChainstate().GetEarliestVerifiedHeight(),
             pivot_index->nHeight);
         // Allow peeling all 102 blocks down to genesis in this test:
-        m_node.chainman->ActiveChainstate().SetFastSyncMaxPeelBlocks(102);
+        // Native reverse verification continues to genesis without a shallow horizon.
     }
-    const auto snap_after_pivot = node::GetChainTipSnapshot();
+    const auto snap_after_pivot = node::GetGlobalSnapshotPublisher().Load();
     BOOST_REQUIRE(snap_after_pivot != nullptr);
     BOOST_CHECK(snap_after_pivot->fast_sync_active);
     BOOST_CHECK_EQUAL(snap_after_pivot->earliest_verified_height,
@@ -2565,7 +2482,7 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
         BOOST_CHECK_EQUAL(
             m_node.chainman->ActiveChainstate().GetEarliestVerifiedHeight(), 0);
     }
-    const auto snap_after_peel = node::GetChainTipSnapshot();
+    const auto snap_after_peel = node::GetGlobalSnapshotPublisher().Load();
     BOOST_REQUIRE(snap_after_peel != nullptr);
     BOOST_CHECK(!snap_after_peel->fast_sync_active);
     BOOST_CHECK_EQUAL(snap_after_peel->earliest_verified_height, 0);
@@ -3176,7 +3093,12 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
     v2_block->vtx.push_back(tx1);
     {
         LOCK(cs_main);
+        const CBlockIndex *tip = m_node.chainman->ActiveTip();
         v2_block->hashMerkleRoot = BlockMerkleRoot(*v2_block);
+        v2_block->hashStateRoot = ComputeV2BlockStateRoot(
+            *v2_block, v2_block->hashPrevBlock, v2_block->nHeight,
+            uint64_t(tip->GetMedianTimePast()), false);
+        v2_block->SetSize(::GetSerializeSize(*v2_block));
     }
     while (!CheckProofOfWork(v2_block->GetHash(), v2_block->nBits, params)) {
         ++v2_block->nNonce;
@@ -3332,6 +3254,438 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         !v2_handler->PeerKnowsBlock(peer_hb->GetId(), v2_block->GetHash()));
 
     connman->ClearTestNodes();
+}
+
+BOOST_AUTO_TEST_CASE(
+    fast_sync_swarm_multi_peer_fault_injection_and_forward_mining) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+
+    const Config &config = m_node.chainman->GetConfig();
+    auto connman = std::make_unique<ConnmanTestMsg>(config, 0x2448, 0x2448,
+                                                    *m_node.addrman);
+    auto peerman =
+        PeerManager::make(*connman, *m_node.addrman, nullptr, *m_node.chainman,
+                          *m_node.mempool, /*avalanche=*/nullptr, {});
+
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    connman->Init(options);
+
+    V2PeerProtocolHandler *v2_handler = peerman->GetV2ProtocolHandler();
+    BOOST_REQUIRE(v2_handler != nullptr);
+
+    // 1. Mine 6 V2 blocks so we have an authenticated pivot at height 6 with
+    //    multiple non-empty depth-8 UTXO shards.
+    for (int i = 0; i < 6; ++i) {
+        std::shared_ptr<CBlock> blk =
+            PrepareBlock(config, m_node, CScript() << OP_TRUE);
+        BOOST_REQUIRE(blk != nullptr);
+        {
+            LOCK(cs_main);
+            const CBlockIndex *tip = m_node.chainman->ActiveTip();
+            blk->hashMerkleRoot = BlockMerkleRoot(*blk);
+            blk->hashStateRoot = ComputeV2BlockStateRoot(
+                *blk, blk->hashPrevBlock, blk->nHeight,
+                uint64_t(tip->GetMedianTimePast()), /*record=*/false);
+            blk->SetSize(::GetSerializeSize(*blk));
+        }
+        while (!CheckProofOfWork(blk->GetHash(), blk->nBits,
+                                 config.GetChainParams().GetConsensus())) {
+            ++blk->nNonce;
+        }
+        bool new_block = false;
+        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
+            blk, /*force_processing=*/true, /*min_pow_checked=*/true,
+            &new_block));
+        BOOST_CHECK(new_block);
+    }
+
+    BlockHash pivot_hash{};
+    CBlockHeader pivot_hdr{};
+    std::vector<BlockHash> chain_hashes(7);
+    {
+        LOCK(cs_main);
+        BOOST_REQUIRE_EQUAL(m_node.chainman->ActiveChain().Height(), 6);
+        for (int h = 0; h <= 6; ++h) {
+            chain_hashes[h] =
+                m_node.chainman->ActiveChain()[h]->GetBlockHash();
+        }
+        pivot_hash = chain_hashes[6];
+        pivot_hdr = m_node.chainman->ActiveChain()[6]->GetBlockHeader();
+    }
+
+    // Export ground-truth UTXOROOTS, UTXOSHARDs, and BLOCKUNDOs for heights 6..1
+    // via a server-side P2P request to v2_handler before clearing CoinsTip.
+    CAddress addr_srv(MakeTestIp(0xa0b0c050), NODE_NONE);
+    CNode peer_srv(/*id=*/500, /*sock=*/nullptr, addr_srv,
+                   /*nKeyedNetGroupIn=*/0, /*nLocalHostNonceIn=*/0,
+                   /*nLocalExtraEntropyIn=*/0, CAddress(), /*pszDest=*/"",
+                   ConnectionType::OUTBOUND_FULL_RELAY,
+                   /*inbound_onion=*/false);
+    v2_handler->RegisterPeerNode(peer_srv);
+
+    auto pop_sent_messages = [&](CNode &node) {
+        std::vector<CNetMessage> out;
+        V1TransportDeserializer deser(config, node.GetId());
+        LOCK(node.cs_vSend);
+        for (const auto &chunk : node.vSendMsg) {
+            Span<const uint8_t> sp{chunk};
+            while (!sp.empty()) {
+                const int ret = deser.Read(config, sp);
+                BOOST_REQUIRE_GE(ret, 0);
+                if (deser.Complete()) {
+                    bool reject = false;
+                    out.push_back(deser.GetMessage(0us, reject));
+                    BOOST_CHECK(!reject);
+                }
+            }
+        }
+        node.vSendMsg.clear();
+        return out;
+    };
+
+    lotus::v2::Hash pivot_v2_id{};
+    std::memcpy(pivot_v2_id.data(), pivot_hash.begin(), 32);
+    std::chrono::microseconds cur_time{1'000'000};
+
+    // Request UTXOROOTS via HandleGetUtxoRoots
+    lotus::v2::UtxoRootsMessage valid_roots{};
+    std::vector<uint8_t> valid_roots_wire;
+    {
+        const auto req_bytes = lotus::v2::EncodeGetUtxoRootsRequest(
+            lotus::v2::GetUtxoRootsRequest{pivot_v2_id});
+        DataStream ss{req_bytes};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_srv, NetMsgType::GETUTXOROOTS, ss, cur_time));
+        auto msgs = pop_sent_messages(peer_srv);
+        BOOST_REQUIRE_EQUAL(msgs.size(), 1U);
+        BOOST_CHECK_EQUAL(msgs[0].m_type, NetMsgType::UTXOROOTS);
+        const auto sp = MakeUCharSpan(msgs[0].m_recv);
+        valid_roots_wire.assign(sp.begin(), sp.end());
+        std::string err;
+        BOOST_REQUIRE(lotus::v2::DecodeUtxoRootsMessage(valid_roots_wire,
+                                                        valid_roots, err));
+    }
+
+    // Collect all non-empty depth-8 shards and also depth-9 sub-shards for the
+    // first non-empty shard.
+    std::vector<uint16_t> non_empty_d8;
+    std::map<std::pair<uint8_t, uint16_t>, std::vector<uint8_t>> shard_wires;
+    for (uint16_t s = 0; s < lotus::v2::kFastSyncShardCount; ++s) {
+        if (valid_roots.shards[s].cardinality_tag != 0) {
+            non_empty_d8.push_back(s);
+            std::vector<uint8_t> req_bytes;
+            std::string err;
+            BOOST_REQUIRE(lotus::v2::EncodeGetUtxoShardRequest(
+                lotus::v2::GetUtxoShardRequest{pivot_v2_id, 8, s}, req_bytes,
+                err));
+            DataStream ss{req_bytes};
+            cur_time += std::chrono::milliseconds{10};
+            BOOST_CHECK(v2_handler->TryHandleMessage(
+                peer_srv, NetMsgType::GETUTXOSHARD, ss, cur_time));
+            auto msgs = pop_sent_messages(peer_srv);
+            BOOST_REQUIRE_EQUAL(msgs.size(), 1U);
+            BOOST_CHECK_EQUAL(msgs[0].m_type, NetMsgType::UTXOSHARD);
+            const auto sp = MakeUCharSpan(msgs[0].m_recv);
+            shard_wires[{8, s}] = std::vector<uint8_t>(sp.begin(), sp.end());
+        }
+    }
+    BOOST_REQUIRE_GE(non_empty_d8.size(), 2U);
+    const uint16_t split_shard = non_empty_d8[0];
+    for (uint16_t sub_bits :
+         {split_shard, static_cast<uint16_t>(split_shard | (1U << 8))}) {
+        std::vector<uint8_t> req_bytes;
+        std::string err;
+        BOOST_REQUIRE(lotus::v2::EncodeGetUtxoShardRequest(
+            lotus::v2::GetUtxoShardRequest{pivot_v2_id, 9, sub_bits}, req_bytes,
+            err));
+        DataStream ss{req_bytes};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_srv, NetMsgType::GETUTXOSHARD, ss, cur_time));
+        auto msgs = pop_sent_messages(peer_srv);
+        BOOST_REQUIRE_EQUAL(msgs.size(), 1U);
+        const auto sp = MakeUCharSpan(msgs[0].m_recv);
+        shard_wires[{9, sub_bits}] =
+            std::vector<uint8_t>(sp.begin(), sp.end());
+    }
+
+    // Also export BLOCKUNDO messages for heights 6..1 via HandleGetBlockUndo
+    std::map<int, std::vector<uint8_t>> undo_wires;
+    for (int h = 6; h >= 1; --h) {
+        lotus::v2::GetBlockUndoRequest ureq{};
+        std::memcpy(ureq.block_id.data(), chain_hashes[h].begin(), 32);
+        const auto req_bytes = lotus::v2::EncodeGetBlockUndoRequest(ureq);
+        DataStream ss{req_bytes};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_srv, NetMsgType::GETBLOCKUNDO, ss, cur_time));
+        auto msgs = pop_sent_messages(peer_srv);
+        BOOST_REQUIRE_EQUAL(msgs.size(), 1U);
+        BOOST_CHECK_EQUAL(msgs[0].m_type, NetMsgType::BLOCKUNDO);
+        const auto sp = MakeUCharSpan(msgs[0].m_recv);
+        undo_wires[h] = std::vector<uint8_t>(sp.begin(), sp.end());
+    }
+    v2_handler->RemovePeer(peer_srv);
+
+    // 2. Spend/clear all coins in CoinsTip() before starting the fast-sync swarm
+    //    so we prove ActivateVerifiedFastSyncPivot reconstructs CoinsTip() and
+    //    MerklixOverlayManager from the verified shards!
+    std::vector<COutPoint> expected_outpoints;
+    {
+        LOCK(cs_main);
+        Chainstate &cs = m_node.chainman->ActiveChainstate();
+        CCoinsViewCache &coins_tip = cs.CoinsTip();
+        coins_tip.Flush();
+        std::unique_ptr<CCoinsViewCursor> cursor(cs.CoinsDB().Cursor());
+        while (cursor && cursor->Valid()) {
+            COutPoint op;
+            if (cursor->GetKey(op)) {
+                expected_outpoints.push_back(op);
+            }
+            cursor->Next();
+        }
+        BOOST_REQUIRE_EQUAL(expected_outpoints.size(), 6U);
+        for (const COutPoint &op : expected_outpoints) {
+            BOOST_CHECK(coins_tip.SpendCoin(op));
+        }
+        coins_tip.Flush();
+        for (const COutPoint &op : expected_outpoints) {
+            BOOST_CHECK(!coins_tip.HaveCoin(op));
+        }
+    }
+
+    // 3. Register 3 swarm peers:
+    //    - peer_bad_roots (201): sends corrupted UTXOROOTS
+    //    - peer_bad_shard (202): sends valid UTXOROOTS, then corrupted UTXOSHARD
+    //    - peer_honest    (203): serves valid UTXOSHARDs and BLOCKUNDOs
+    CAddress addr1(MakeTestIp(0xa0b0c051), NODE_NONE);
+    CAddress addr2(MakeTestIp(0xa0b0c052), NODE_NONE);
+    CAddress addr3(MakeTestIp(0xa0b0c053), NODE_NONE);
+    CNode peer_bad_roots(/*id=*/201, /*sock=*/nullptr, addr1, 0, 0, 0,
+                         CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                         false);
+    CNode peer_bad_shard(/*id=*/202, /*sock=*/nullptr, addr2, 0, 0, 0,
+                         CAddress(), "", ConnectionType::OUTBOUND_FULL_RELAY,
+                         false);
+    CNode peer_honest(/*id=*/203, /*sock=*/nullptr, addr3, 0, 0, 0, CAddress(),
+                      "", ConnectionType::OUTBOUND_FULL_RELAY, false);
+    v2_handler->RegisterPeerNode(peer_bad_roots);
+    v2_handler->RegisterPeerNode(peer_bad_shard);
+    v2_handler->RegisterPeerNode(peer_honest);
+    v2_handler->SetPeerServices(peer_bad_roots.GetId(), NODE_UTXO_SHARD);
+    v2_handler->SetPeerServices(peer_bad_shard.GetId(), NODE_UTXO_SHARD);
+    v2_handler->SetPeerServices(peer_honest.GetId(), NODE_UTXO_SHARD);
+
+    std::string err;
+    BOOST_REQUIRE(v2_handler->StartFastSyncSwarm(
+        pivot_hash, {201, 202, 203}, /*auto_peel=*/true, err));
+    {
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::FETCHING_ROOTS);
+        BOOST_CHECK_EQUAL(st.active_peers, 3U);
+        auto msgs_201 = pop_sent_messages(peer_bad_roots);
+        BOOST_REQUIRE_EQUAL(msgs_201.size(), 1U);
+        BOOST_CHECK_EQUAL(msgs_201[0].m_type, NetMsgType::GETUTXOROOTS);
+    }
+
+    // 4. Fault Injection 1: peer_bad_roots (201) sends tampered UTXOROOTS.
+    //    Verify it is rejected, peer 201 is banned from the swarm, and
+    //    GETUTXOROOTS is automatically re-sent to peer_bad_shard (202).
+    {
+        std::vector<uint8_t> tampered_roots = valid_roots_wire;
+        tampered_roots[96 + split_shard * 33] =
+            (tampered_roots[96 + split_shard * 33] == 1) ? 2 : 1;
+        DataStream ss{tampered_roots};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_bad_roots, NetMsgType::UTXOROOTS, ss, cur_time));
+
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::FETCHING_ROOTS);
+        BOOST_CHECK_EQUAL(st.corrupted_roots_rejected, 1U);
+        BOOST_CHECK_EQUAL(st.banned_swarm_peers, 1U);
+        BOOST_CHECK_EQUAL(st.active_peers, 2U);
+
+        auto msgs_202 = pop_sent_messages(peer_bad_shard);
+        BOOST_REQUIRE_EQUAL(msgs_202.size(), 1U);
+        BOOST_CHECK_EQUAL(msgs_202[0].m_type, NetMsgType::GETUTXOROOTS);
+    }
+
+    // 5. peer_bad_shard (202) sends valid UTXOROOTS -> swarm transitions to
+    //    FETCHING_SHARDS and dispatches GETUTXOSHARD across peers 202 and 203.
+    {
+        DataStream ss{valid_roots_wire};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_bad_shard, NetMsgType::UTXOROOTS, ss, cur_time));
+
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::FETCHING_SHARDS);
+        BOOST_CHECK_EQUAL(st.total_non_empty_shards, non_empty_d8.size());
+        BOOST_CHECK_EQUAL(st.in_flight_shards, non_empty_d8.size());
+        (void)pop_sent_messages(peer_bad_shard);
+        (void)pop_sent_messages(peer_honest);
+    }
+
+    // 6. Test adaptive sub-shard splitting on split_shard (depth 8 -> depth 9).
+    BOOST_REQUIRE(
+        v2_handler->SplitSwarmShardToSubShards(8, split_shard, err));
+    {
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.total_non_empty_shards, non_empty_d8.size() + 1);
+        (void)pop_sent_messages(peer_bad_shard);
+        (void)pop_sent_messages(peer_honest);
+    }
+
+    // 7. Fault Injection 2: peer_bad_shard (202) sends a corrupted UTXOSHARD
+    //    for non_empty_d8[1]. Verify it is rejected, peer 202 is banned from
+    //    the swarm, and all shards assigned to peer 202 are automatically
+    //    re-requested from peer_honest (203)!
+    {
+        std::vector<uint8_t> bad_shard = shard_wires.at({8, non_empty_d8[1]});
+        bad_shard.back() ^= 0x01;
+        DataStream ss{bad_shard};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_bad_shard, NetMsgType::UTXOSHARD, ss, cur_time));
+
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::FETCHING_SHARDS);
+        BOOST_CHECK_EQUAL(st.corrupted_shards_rejected, 1U);
+        BOOST_CHECK_EQUAL(st.banned_swarm_peers, 2U);
+        BOOST_CHECK_EQUAL(st.active_peers, 1U);
+
+        auto re_dispatched = pop_sent_messages(peer_honest);
+        BOOST_CHECK(!re_dispatched.empty());
+    }
+
+    // 8. peer_honest (203) delivers the two depth-9 sub-shards for split_shard
+    //    and the depth-8 shards for the remaining non-empty shards.
+    for (uint16_t sub_bits :
+         {split_shard, static_cast<uint16_t>(split_shard | (1U << 8))}) {
+        DataStream ss{shard_wires.at({9, sub_bits})};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_honest, NetMsgType::UTXOSHARD, ss, cur_time));
+    }
+    for (size_t i = 1; i < non_empty_d8.size(); ++i) {
+        DataStream ss{shard_wires.at({8, non_empty_d8[i]})};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_honest, NetMsgType::UTXOSHARD, ss, cur_time));
+    }
+
+    // 9. Verify pivot activation populated CoinsTip(), V2BlockStateSnapshot,
+    //    and MerklixOverlayManager, and transitioned the swarm to
+    //    PIVOT_ACTIVE_PEELING!
+    {
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::PIVOT_ACTIVE_PEELING);
+        BOOST_CHECK_EQUAL(st.verified_shards, non_empty_d8.size() + 1);
+        BOOST_CHECK_EQUAL(st.coins_imported, 6U);
+
+        LOCK(cs_main);
+        Chainstate &cs = m_node.chainman->ActiveChainstate();
+        BOOST_CHECK(cs.IsFastSyncActive());
+        BOOST_CHECK_EQUAL(cs.GetEarliestVerifiedHeight(), 6);
+        for (const COutPoint &op : expected_outpoints) {
+            BOOST_CHECK(cs.CoinsTip().HaveCoin(op));
+        }
+
+        LOCK(m_node.mempool->cs);
+        const lotus::v2::Hash overlay_parent =
+            m_node.mempool->GetOverlayManager()
+                .GetSpeculativeOverlay()
+                .GetParentBlockId();
+        BOOST_CHECK(overlay_parent == pivot_v2_id);
+    }
+
+    // 10. Mine and connect Block 7 on top of the fast-synced pivot at height 6!
+    {
+        std::shared_ptr<CBlock> blk7 =
+            PrepareBlock(config, m_node, CScript() << OP_TRUE);
+        BOOST_REQUIRE(blk7 != nullptr);
+        BOOST_CHECK_EQUAL(blk7->nHeight, 7U);
+        {
+            LOCK(cs_main);
+            const CBlockIndex *tip = m_node.chainman->ActiveTip();
+            blk7->hashMerkleRoot = BlockMerkleRoot(*blk7);
+            blk7->hashStateRoot = ComputeV2BlockStateRoot(
+                *blk7, blk7->hashPrevBlock, blk7->nHeight,
+                uint64_t(tip->GetMedianTimePast()), /*record=*/false);
+            blk7->SetSize(::GetSerializeSize(*blk7));
+        }
+        while (!CheckProofOfWork(blk7->GetHash(), blk7->nBits,
+                                 config.GetChainParams().GetConsensus())) {
+            ++blk7->nNonce;
+        }
+        bool new_block = false;
+        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
+            blk7, /*force_processing=*/true, /*min_pow_checked=*/true,
+            &new_block));
+        BOOST_CHECK(new_block);
+        LOCK(cs_main);
+        BOOST_CHECK_EQUAL(m_node.chainman->ActiveChain().Height(), 7);
+    }
+
+    // 11. Complete reverse block peeling 6 -> 0 via BLOCKUNDO messages from
+    //     peer_honest (203) and verify Hole 16 completion!
+    for (int h = 6; h >= 1; --h) {
+        auto msgs = pop_sent_messages(peer_honest);
+        BOOST_REQUIRE_EQUAL(msgs.size(), 1U);
+        BOOST_CHECK_EQUAL(msgs[0].m_type, NetMsgType::GETBLOCKUNDO);
+
+        DataStream ss{undo_wires.at(h)};
+        cur_time += std::chrono::milliseconds{10};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_honest, NetMsgType::BLOCKUNDO, ss, cur_time));
+    }
+
+    {
+        const auto st = v2_handler->GetFastSyncSwarmStatus();
+        BOOST_CHECK_EQUAL(st.state, FastSyncSwarmState::COMPLETED);
+        BOOST_CHECK_EQUAL(st.blocks_peeled, 6U);
+
+        LOCK(cs_main);
+        Chainstate &cs = m_node.chainman->ActiveChainstate();
+        BOOST_CHECK(!cs.IsFastSyncActive());
+        BOOST_CHECK_EQUAL(cs.GetEarliestVerifiedHeight(), 0);
+        BOOST_CHECK(cs.FastSyncPivotBase() == nullptr);
+        for (int h = 1; h <= 6; ++h) {
+            const CBlockIndex *pidx = cs.m_chain[h];
+            BOOST_REQUIRE(pidx != nullptr);
+            BOOST_CHECK(pidx->nStatus.hasUndo());
+            BOOST_CHECK_GT(pidx->m_chain_tx_count, 0U);
+        }
+    }
+
+    // 12. Verify -serveutxoshards=0 (SetServeUtxoShards(false)) drops
+    //     GETUTXOROOTS / GETUTXOSHARD / GETBLOCKUNDO without serving payloads,
+    //     and SetPeerServices tracks NODE_UTXO_SHARD.
+    {
+        v2_handler->SetPeerServices(peer_honest.GetId(), NODE_UTXO_SHARD);
+        BOOST_CHECK_EQUAL(v2_handler->GetPeerServices(peer_honest.GetId()),
+                          NODE_UTXO_SHARD);
+
+        v2_handler->SetServeUtxoShards(false);
+        BOOST_CHECK(!v2_handler->IsServeUtxoShardsEnabled());
+        const auto stats_before = v2_handler->GetStats();
+        lotus::v2::GetUtxoRootsRequest req{pivot_v2_id};
+        DataStream ss{lotus::v2::EncodeGetUtxoRootsRequest(req)};
+        BOOST_CHECK(v2_handler->TryHandleMessage(
+            peer_honest, NetMsgType::GETUTXOROOTS, ss, cur_time));
+        const auto stats_after = v2_handler->GetStats();
+        BOOST_CHECK_EQUAL(stats_after.getutxoroots_received,
+                          stats_before.getutxoroots_received);
+        BOOST_CHECK(pop_sent_messages(peer_honest).empty());
+        v2_handler->SetServeUtxoShards(true);
+        BOOST_CHECK(v2_handler->IsServeUtxoShardsEnabled());
+    }
+
+    v2_handler->RemovePeer(peer_bad_roots);
+    v2_handler->RemovePeer(peer_bad_shard);
+    v2_handler->RemovePeer(peer_honest);
 }
 
 // SOURCE-ONLY insertion inside v2_protocol_handler_tests before its suite end.
