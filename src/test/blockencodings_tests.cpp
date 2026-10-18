@@ -43,7 +43,7 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
 
     block.vtx.resize(3);
     block.vtx[0] = MakeTransactionRef(tx);
-    block.nVersion = 42;
+    block.nHeaderVersion = 42;
     block.hashPrevBlock = BlockHash(ctx.rand256());
     block.nBits = 0x207fffff;
 
@@ -389,7 +389,7 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest) {
     auto rand_ctx(FastRandomContext(uint256{42}));
     block.vtx.resize(1);
     block.vtx[0] = MakeTransactionRef(std::move(coinbase));
-    block.nVersion = 42;
+    block.nHeaderVersion = 42;
     block.hashPrevBlock = BlockHash(rand_ctx.rand256());
     block.nBits = 0x207fffff;
 

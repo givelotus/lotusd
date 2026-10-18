@@ -67,17 +67,20 @@ BOOST_FIXTURE_TEST_CASE(stakecontender_computeid, TestChain100Setup) {
         StakeContenderId(chaintip->GetAncestor(0)->GetBlockHash(), proofid1)
             .ToString());
 
+    // Keep the identity vector independent of mined fixture header changes.
+    // Independent SHA256d over the explicit LE block/proof bytes.
+    const BlockHash other_block{uint256S("0101010101010101010101010101010101010101010101010101010101010101")};
     // Different prevblock should give different hash
     BOOST_CHECK_EQUAL(
-        "f8535480ac419d395127f592c13be827cbbced02614d2c06e4a599eb1cf43034",
-        StakeContenderId(chaintip->GetBlockHash(), proofid1).ToString());
+        "0739e297f2c71bcb78a28a4043ca095f15125cf12db4829a4434bc5f9d66149e",
+        StakeContenderId(other_block, proofid1).ToString());
 
     // So should a different proof id
     ProofId proofid2 = ProofId::fromHex(
         "e01bac293ed39e8d5e06214e7fe0bceb9646ef253ce501dcd7a475f802ab07f1");
     BOOST_CHECK_EQUAL(
-        "e4cafd6af9987403999ae77f3c622027ce765679ab068d215884253b547590f2",
-        StakeContenderId(chaintip->GetBlockHash(), proofid2).ToString());
+        "e2689332e48406a5bd0da4202a4c39b4c37092131d165380ada3a46709cc0c82",
+        StakeContenderId(other_block, proofid2).ToString());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
