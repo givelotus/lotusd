@@ -27,7 +27,8 @@ FUZZ_TARGET(block_header) {
             uint256S("fffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
                      "fffffff"));
         assert(hash != blockhash_max);
-        assert(block_header->GetBlockTime() == block_header->nTime);
+        assert(block_header->GetBlockTime() ==
+               block_header->Time().time_since_epoch().count());
         assert(block_header->IsNull() == (block_header->nBits == 0));
     }
     {
