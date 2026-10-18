@@ -58,7 +58,7 @@ namespace {
                                                bool forPoll = false) {
             auto r = p.voteRecords.getReadView();
             return p.getInvsForNextPoll(r, DEFAULT_AVALANCHE_MAX_ELEMENT_POLL,
-                forPoll, p.nodeSupportsStateAnchor(peer), p.nodeSupportsMempoolBatch(peer));
+                forPoll, p.nodeSupportsMempoolBatch(peer));
         }
 
         static NodeId getSuitableNodeToQuery(Processor &p) {
@@ -302,8 +302,11 @@ struct BlockProvider {
         const BlockHash blockHash = block.GetHash();
 
         LOCK(cs_main);
-        return Assert(fixture->m_node.chainman)
+        auto *index = Assert(fixture->m_node.chainman)
             ->m_blockman.LookupBlockIndex(blockHash);
+        BOOST_REQUIRE(index);
+        BOOST_REQUIRE_EQUAL(fixture->m_node.chainman->ActiveTip()->GetBlockHash(), blockHash);
+        return index;
     }
 
     uint256 getVoteItemId(const CBlockIndex *pindex) const {
@@ -596,7 +599,6 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
     processor.setNodeMempoolBatchServices(capable, ServiceFlags(NODE_AVALANCHE | NODE_MERKLIX_EPOCH));
     processor.setNodeMempoolBatchServices(stock, NODE_AVALANCHE);
     processor.setNodeMempoolBatchServices(shard_only, ServiceFlags(NODE_AVALANCHE | NODE_UTXO_SHARD));
-    processor.setNodeSupportsStateAnchor(shard_only, true);
     AnyVoteItem batch = MempoolBatchVoteItem(GetRandHash());
     VoteRecord record(true);
     AvalancheTest::addVoteRecord(processor, batch, record);
@@ -607,8 +609,6 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
     AvalancheTest::addVoteRecord(processor, block, record);
     AnyVoteItem stake = StakeContenderId(GetRandHash());
     AvalancheTest::addVoteRecord(processor, stake, record);
-    AnyVoteItem anchor = StateAnchorId(GetRandHash());
-    AvalancheTest::addVoteRecord(processor, anchor, record);
     auto count = [](const std::vector<CInv> &invs, uint32_t type) {
         return std::count_if(invs.begin(), invs.end(), [type](const CInv &inv) { return inv.type == type; });
     };
@@ -618,11 +618,9 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
         BOOST_CHECK_EQUAL(count(invs, MSG_BLOCK), 1);
         BOOST_CHECK_EQUAL(count(invs, MSG_AVA_PROOF), 1);
         BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STAKE_CONTENDER), 1);
-        BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STATE_ANCHOR), peer == shard_only ? 1 : 0);
     }
     auto invs = AvalancheTest::getInvsForPeer(processor, capable);
     BOOST_CHECK_EQUAL(count(invs, MSG_AVA_MEMPOOL_BATCH), 1);
-    BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STATE_ANCHOR), 0);
     // Repeated stock-peer polls must not reserve any inflight batch slots.
     for (int i = 0; i < AVALANCHE_MAX_INFLIGHT_POLL + 1; ++i)
         AvalancheTest::getInvsForPeer(processor, stock, true);
@@ -842,7 +840,8 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(vote_item_register, P, VoteItemProviders) {
     auto registerNewVote = [&](const Response &resp) {
         runEventLoop();
         auto nodeid = avanodes[nextNodeIndex++ % avanodes.size()]->GetId();
-        BOOST_CHECK(registerVotes(nodeid, resp, updates));
+        std::string error;
+        BOOST_CHECK_MESSAGE(registerVotes(nodeid, resp, updates, error), error);
     };
 
     // Let's vote for this item a few times.
