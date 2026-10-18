@@ -67,14 +67,11 @@ bool AreOnTheSameFork(const CBlockIndex *pa, const CBlockIndex *pb);
 
 /** Used to marshal pointers into hashes for db storage. */
 class CDiskBlockIndex : public CBlockIndex {
-    /**
-     * Historically CBlockLocator's version field has been written to disk
-     * streams as the client version, but the value has never been used.
-     *
-     * Hard-code to the highest client version ever written.
-     * SerParams can be used if the field requires any meaning in the future.
-     **/
-    static constexpr int DUMMY_VERSION = 320400;
+    /** Legacy records use the historical client-version tag (up to 320400).
+     * Development tag 320401 retains block sizes after pruning for deterministic
+     * adaptive-policy reconstruction; old conditional-size records remain readable.
+     */
+    static constexpr int DUMMY_VERSION = 320401;
 
 public:
     BlockHash hashPrev;
@@ -89,12 +86,15 @@ public:
         LOCK(::cs_main);
         int _nVersion = DUMMY_VERSION;
         READWRITE(VARINT_MODE(_nVersion, VarIntMode::NONNEGATIVE_SIGNED));
+        if (_nVersion > DUMMY_VERSION) throw std::ios_base::failure("unknown block-index record format");
 
         READWRITE(VARINT_MODE(obj.nHeight, VarIntMode::NONNEGATIVE_SIGNED));
         READWRITE(obj.nStatus);
         READWRITE(VARINT(obj.nTx));
 
-        if (obj.nStatus.hasData()) {
+        // Adaptive policy reconstruction needs sizes even after block files are pruned.
+        // 320400 stored the size only while hasData; 320401 always preserves it.
+        if (_nVersion >= 320401 || obj.nStatus.hasData()) {
             READWRITE(VARINT(obj.nSize));
         }
 

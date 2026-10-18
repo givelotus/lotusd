@@ -6,11 +6,15 @@
 #include <protocol.h>
 
 #include <chainparams.h>
+#include <common/args.h>
 #include <common/system.h>
 #include <config.h>
 #include <logging.h>
+#include <lotus_v2/fee_hysteresis.h>
 
+#include <algorithm>
 #include <atomic>
+#include <limits>
 
 static std::atomic<bool> g_initial_block_download_completed(false);
 
@@ -181,13 +185,23 @@ bool CMessageHeader::IsMessageTypeValid() const {
     return true;
 }
 
+uint64_t lotus::v2::GetBlockPayloadLimit(const Config &config) {
+    uint64_t capacity = config.GetMaxBlockSize();
+    if (!gArgs.IsArgSet("-excessiveblocksize") && gArgs.GetBoolArg("-adaptiveblocksize", true)) {
+        capacity = std::max(capacity, GetGlobalFeeHysteresisController().GetAdaptiveMaxBlockSize());
+    }
+    constexpr uint64_t margin = 256 * 1024;
+    return capacity > std::numeric_limits<uint64_t>::max() - margin
+               ? std::numeric_limits<uint64_t>::max() : capacity + margin;
+}
+
 bool CMessageHeader::IsOversized(const Config &config) const {
     // Scale the maximum accepted size with the block size for messages with
     // block content
     if (NetMsgType::IsBlockLike(GetMessageType())) {
         // Keep some headroom (256 KiB) so we can detect bugs where a node is
         // producing a slightly oversized block.
-        return nMessageSize > config.GetMaxBlockSize() + 256 * 1024;
+        return nMessageSize > lotus::v2::GetBlockPayloadLimit(config);
     }
 
     return nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH;

@@ -6,6 +6,7 @@
 
 #include <consensus/consensus.h> // DEFAULT_MAX_BLOCK_SIZE
 
+
 GlobalConfig::GlobalConfig()
     : useCashAddr(false), nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
 

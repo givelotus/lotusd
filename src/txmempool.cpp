@@ -14,6 +14,7 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <logging.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <node/snapshot.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
@@ -814,13 +815,21 @@ TxMempoolInfo CTxMemPool::info(const TxId &txid) const {
 }
 
 CFeeRate CTxMemPool::estimateFee() const {
+    const int64_t now_ms =
+        TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    const uint64_t rpc_rate_per_kcu =
+        lotus::v2::GetGlobalFeeHysteresisController().GetRpcAdmissionRatePerKCu(
+            now_ms);
+    const CFeeRate hysteresis_feerate(
+        Amount(static_cast<int64_t>(rpc_rate_per_kcu) * SATOSHI));
+
     LOCK(cs);
 
     // minerPolicy uses recent blocks to figure out a reasonable fee.  This
     // may disagree with the rollingMinimumFeerate under certain scenarios
     // where the mempool  increases rapidly, or blocks are being mined which
     // do not contain propagated transactions.
-    return std::max(m_opts.min_relay_feerate, GetMinFee());
+    return std::max({m_opts.min_relay_feerate, GetMinFee(), hysteresis_feerate});
 }
 
 void CTxMemPool::PrioritiseTransaction(const TxId &txid,
