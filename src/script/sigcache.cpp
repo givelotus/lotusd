@@ -5,6 +5,7 @@
 
 #include <script/sigcache.h>
 
+#include <crypto/common.h>
 #include <crypto/sha256.h>
 #include <logging.h>
 #include <pubkey.h>
@@ -13,11 +14,63 @@
 #include <span.h>
 #include <uint256.h>
 
+#include <array>
+#include <cstring>
+#include <exception>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <vector>
 
-SignatureCache::SignatureCache(const size_t max_size_bytes) {
+namespace {
+uint64_t NextTlsCacheOwner() noexcept {
+    static std::atomic<uint64_t> next{1};
+    uint64_t owner = next.load(std::memory_order_relaxed);
+    while (owner != std::numeric_limits<uint64_t>::max()) {
+        if (next.compare_exchange_weak(owner, owner + 1,
+                                       std::memory_order_relaxed)) return owner;
+    }
+    // Never wrap and reuse an identity, even in a theoretically exhausted process.
+    std::terminate();
+}
+
+struct TlsSigCache {
+    static constexpr size_t kMask = 4095;
+    struct Slot {
+        uint64_t owner{0};
+        uint256 entry{};
+    };
+    std::array<Slot, kMask + 1> slots{};
+
+    static size_t Index(const uint256 &entry) noexcept {
+        return static_cast<size_t>(ReadLE64(entry.begin())) & kMask;
+    }
+
+    bool Contains(const SignatureCache *owner,
+                  const uint256 &entry) const noexcept {
+        const Slot &s = slots[Index(entry)];
+        return s.owner == owner->TlsOwner() && s.entry == entry;
+    }
+
+    void Insert(const SignatureCache *owner, const uint256 &entry) noexcept {
+        Slot &s = slots[Index(entry)];
+        s.owner = owner->TlsOwner();
+        s.entry = entry;
+    }
+
+    void Erase(const SignatureCache *owner, const uint256 &entry) noexcept {
+        Slot &s = slots[Index(entry)];
+        if (s.owner == owner->TlsOwner() && s.entry == entry) {
+            s.owner = 0;
+        }
+    }
+};
+
+thread_local TlsSigCache g_tls_sigcache;
+} // namespace
+
+SignatureCache::SignatureCache(const size_t max_size_bytes)
+    : m_tls_owner(NextTlsCacheOwner()) {
     uint256 nonce = GetRandHash();
     // We want the nonce to be 64 bytes long to force the hasher to process
     // this chunk, which makes later hash computations more efficient. We
@@ -25,11 +78,18 @@ SignatureCache::SignatureCache(const size_t max_size_bytes) {
     m_salted_hasher.Write(nonce.begin(), 32);
     m_salted_hasher.Write(nonce.begin(), 32);
 
-    const auto [num_elems, approx_size_bytes] =
-        setValid.setup_bytes(max_size_bytes);
+    const size_t per_shard_bytes = std::max<size_t>(1, max_size_bytes / kNumShards);
+    size_t total_elems = 0;
+    size_t total_approx_bytes = 0;
+    for (auto &shard : m_shards) {
+        const auto [num_elems, approx_size_bytes] =
+            shard.setValid.setup_bytes(per_shard_bytes);
+        total_elems += num_elems;
+        total_approx_bytes += approx_size_bytes;
+    }
     LogPrintf("Using %zu MiB out of %zu MiB requested for signature cache, "
               "able to store %zu elements\n",
-              approx_size_bytes >> 20, max_size_bytes >> 20, num_elems);
+              total_approx_bytes >> 20, max_size_bytes >> 20, total_elems);
 }
 
 void SignatureCache::ComputeEntry(uint256 &entry, const uint256 &hash,
@@ -43,13 +103,32 @@ void SignatureCache::ComputeEntry(uint256 &entry, const uint256 &hash,
 }
 
 bool SignatureCache::Get(const uint256 &entry, const bool erase) {
-    std::shared_lock<std::shared_mutex> lock(cs_sigcache);
-    return setValid.contains(entry, erase);
+    if (!erase && g_tls_sigcache.Contains(this, entry)) {
+        return true;
+    }
+    if (erase) {
+        g_tls_sigcache.Erase(this, entry);
+    }
+    Shard &shard =
+        m_shards[static_cast<size_t>(ReadLE64(entry.begin())) & (kNumShards - 1)];
+    if (!shard.has_entries.load(std::memory_order_acquire)) {
+        return false;
+    }
+    std::shared_lock<std::shared_mutex> lock(shard.mutex);
+    const bool found = shard.setValid.contains(entry, erase);
+    if (found && !erase) {
+        g_tls_sigcache.Insert(this, entry);
+    }
+    return found;
 }
 
 void SignatureCache::Set(const uint256 &entry) {
-    std::unique_lock<std::shared_mutex> lock(cs_sigcache);
-    setValid.insert(entry);
+    g_tls_sigcache.Insert(this, entry);
+    Shard &shard =
+        m_shards[static_cast<size_t>(ReadLE64(entry.begin())) & (kNumShards - 1)];
+    std::unique_lock<std::shared_mutex> lock(shard.mutex);
+    shard.setValid.insert(entry);
+    shard.has_entries.store(true, std::memory_order_release);
 }
 
 template <typename F>
