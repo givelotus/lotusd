@@ -23,7 +23,7 @@ class UTXOSetHashTest(BitcoinTestFramework):
         # the cache
         assert_equal(
             self.nodes[0].gettxoutsetinfo()["hash_serialized"],
-            "b32ec1dda5a53cd025b95387aad344a801825fe46a60ff952ce26528f01d3be8",
+            "49a1258456887c475a853700a4e8c19856dc946106fe02bf21425fcc6b98a155",
         )
         assert_equal(
             self.nodes[0].gettxoutsetinfo("muhash")["muhash"],
@@ -65,7 +65,14 @@ class UTXOSetHashTest(BitcoinTestFramework):
 
             for tx in block.vtx:
                 for n, tx_out in enumerate(tx.vout):
-                    coinbase = 1 if not tx.vin[0].prevout.txid else 0
+                    coinbase = (
+                        1
+                        if (
+                            not tx.vin[0].prevout.txid
+                            or getattr(tx.vin[0], "nFlags", 0) == 2
+                        )
+                        else 0
+                    )
 
                     data = COutPoint(tx.txid_int, n).serialize()
                     data += (height * 2 + coinbase).to_bytes(4, "little", signed=True)
