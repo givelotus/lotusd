@@ -43,6 +43,7 @@
 #include <policy/block/preconsensus.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
+#include <policy/block/treasury.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -5724,6 +5725,11 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                 if (avalanche->isQuorumEstablished()) {
                     parkingPolicies.emplace_back(
                         std::make_unique<StakingRewardsPolicy>(
+                            *avalanche, consensusParams, *pindexNew,
+                            blockConnecting, blockSubsidy));
+
+                    parkingPolicies.emplace_back(
+                        std::make_unique<TreasuryPolicy>(
                             *avalanche, consensusParams, *pindexNew,
                             blockConnecting, blockSubsidy));
 

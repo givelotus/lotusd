@@ -175,7 +175,7 @@ BOOST_AUTO_TEST_CASE(inventory_classification) {
     }
     for (uint32_t t :
          {uint32_t{MSG_AVA_PROOF}, uint32_t{MSG_AVA_STAKE_CONTENDER},
-          uint32_t{MSG_AVA_STATE_ANCHOR}, uint32_t{MSG_AVA_MEMPOOL_BATCH}}) {
+          uint32_t{MSG_AVA_TREASURY_CONTENDER}, uint32_t{MSG_AVA_MEMPOOL_BATCH}}) {
         BOOST_CHECK(ClassifyMessage("inv", SerializeInv({CInv{t, Hash(4)}})) ==
                     StreamClass::AVALANCHE);
     }
