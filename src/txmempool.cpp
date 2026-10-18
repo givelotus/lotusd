@@ -16,6 +16,7 @@
 #include <logging.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
+#include <primitives/block.h>
 #include <reverse_iterator.h>
 #include <undo.h>
 #include <util/check.h>
@@ -202,6 +203,8 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
     }
 
     UpdateParentsOf(true, newit);
+    AddTransactionToOverlay(m_merklix_overlay, tx,
+                            entry->GetFee() / SATOSHI, entry->GetSigChecks());
 
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
@@ -214,6 +217,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     uint64_t mempool_sequence = GetAndIncrementSequence();
 
     const TxId &txid = (*it)->GetTx().GetId();
+    RemoveTransactionFromOverlay(m_merklix_overlay, (*it)->GetTx());
 
     if (reason != MemPoolRemovalReason::BLOCK) {
         if (m_opts.signals) {
@@ -380,6 +384,7 @@ void CTxMemPool::removeForFinalizedBlock(
 }
 
 void CTxMemPool::_clear() {
+    m_merklix_overlay.Clear();
     mapTx.clear();
     mapNextTx.clear();
     totalTxSize = 0;
@@ -389,6 +394,32 @@ void CTxMemPool::_clear() {
     blockSinceLastRollingFeeBump = false;
     rollingMinimumFeeRate = 0;
     ++nTransactionsUpdated;
+}
+
+const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
+    AssertLockHeld(cs);
+    return m_merklix_overlay.FreezeEpochBatch();
+}
+
+void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
+                                       uint64_t next_height,
+                                       uint64_t parent_mtp) const {
+    AssertLockHeld(cs);
+    lotus::v2::Hash tip_id{};
+    std::copy(tip_hash.begin(), tip_hash.end(), tip_id.begin());
+    if (!m_merklix_overlay.IsAnchoredAt(tip_id, next_height, parent_mtp)) {
+        // eCash does not commit this arena's UTXO/monetary state in its header.
+        // These neutral adapter values never replace eCash consensus checks.
+        m_merklix_overlay.ReanchorExistingTxs(
+            tip_id, nullptr, lotus::v2::GetInitialV2MonetaryState(),
+            next_height, parent_mtp);
+    }
+}
+
+void CTxMemPool::ConnectBlockReset(const BlockHash &tip_hash,
+                                  uint64_t next_height,
+                                  uint64_t parent_mtp) {
+    SyncMerklixOverlayToTip(tip_hash, next_height, parent_mtp);
 }
 
 void CTxMemPool::clear(bool include_finalized_txs) {
