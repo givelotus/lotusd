@@ -88,7 +88,6 @@ public:
         READWRITE(VARINT_MODE(_nVersion, VarIntMode::NONNEGATIVE_SIGNED));
         if (_nVersion > DUMMY_VERSION) throw std::ios_base::failure("unknown block-index record format");
 
-        READWRITE(VARINT_MODE(obj.nHeight, VarIntMode::NONNEGATIVE_SIGNED));
         READWRITE(obj.nStatus);
         READWRITE(VARINT(obj.nTx));
 
@@ -109,23 +108,29 @@ public:
         }
 
         // block header
-        READWRITE(obj.nVersion);
         READWRITE(obj.hashPrev);
-        READWRITE(obj.hashMerkleRoot);
-        READWRITE(obj.nTime);
         READWRITE(obj.nBits);
+        READWRITE(obj.nTime);
         READWRITE(obj.nNonce);
+        READWRITE(obj.nHeaderVersion);
+        READWRITE(obj.nSize);
+        READWRITE(obj.nHeight);
+        READWRITE(obj.hashMerkleRoot);
+        READWRITE(obj.hashStateRoot);
     }
 
     BlockHash ConstructBlockHash() const {
-        CBlockHeader block;
-        block.nVersion = nVersion;
-        block.hashPrevBlock = hashPrev;
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime = nTime;
-        block.nBits = nBits;
-        block.nNonce = nNonce;
-        return block.GetHash();
+        CBlockHeader header;
+        header.hashPrevBlock = hashPrev;
+        header.nBits = nBits;
+        header.SetBlockTime(nTime);
+        header.nNonce = nNonce;
+        header.nHeaderVersion = nHeaderVersion;
+        header.SetSize(nSize);
+        header.nHeight = uint64_t(nHeight);
+        header.hashMerkleRoot = hashMerkleRoot;
+        header.hashStateRoot = hashStateRoot;
+        return header.GetHash();
     }
 
     BlockHash GetBlockHash() = delete;

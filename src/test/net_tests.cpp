@@ -1607,7 +1607,7 @@ BOOST_AUTO_TEST_CASE(initial_advertise_from_version_message) {
                /*inbound_onion=*/false};
 
     const uint64_t services{NODE_NETWORK};
-    const int64_t time{Params().GenesisBlock().nTime};
+    const int64_t time{Params().GenesisBlock().GetBlockTime()};
 
     // Force ChainstateManager::IsInitialBlockDownload() to return false.
     // Otherwise PushAddress() isn't called by PeerManager::ProcessMessage().
