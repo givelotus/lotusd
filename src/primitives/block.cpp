@@ -1265,11 +1265,8 @@ uint256 ComputeV2StateRootFromTemplate(
                         true});
                 }
             }
-            // The arena extra-coin digest optimization arrives at native046.
-            // Until then, preserve the same commitment with the existing COW SMT.
-            auto utxo_root = base_state.utxo_arena->GetSmtRoot();
-            for (const auto &coin : cb_coins) SmtInsert(utxo_root, coin);
-            utxo_root_hash = SmtRoot(utxo_root);
+            utxo_root_hash =
+                base_state.utxo_arena->RootDigestWithExtraCoins(cb_coins);
         } else {
             std::shared_ptr<const SmtNode> utxo_root = base_state.utxo_root;
             for (size_t j = 0; j < coinbase_tx.vout.size(); ++j) {
