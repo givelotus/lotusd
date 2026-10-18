@@ -1553,12 +1553,20 @@ private:
     txrelay::TxRelayIndex m_txrelay_index;
     /** Features we offer in sendinvshort (txrelay::Feature) */
     uint64_t OurTxRelayFeatures() const {
-        if (!m_opts.txrelay_shortids) {
-            return 0;
+        uint64_t features{0};
+        if (m_opts.txrelay_shortids) {
+            features |= txrelay::TXRELAY_INVSHORT;
+            if (m_opts.txrecon_interval > 0ms) {
+                features |= txrelay::TXRELAY_RECON;
+            }
         }
-        uint64_t features{txrelay::TXRELAY_INVSHORT};
-        if (m_opts.txrecon_interval > 0ms) {
-            features |= txrelay::TXRELAY_RECON;
+        const bool disabled_for_test =
+            Params().GetChainType() == ChainType::REGTEST &&
+            gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
+        if (!disabled_for_test &&
+            (gArgs.GetBoolArg("-highbandwidthtx", false) ||
+             m_opts.txrelay_push_hb)) {
+            features |= txrelay::TXRELAY_HIGH_BANDWIDTH;
         }
         return features;
     }
@@ -2748,10 +2756,6 @@ void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
         m_peer_map.emplace_hint(m_peer_map.end(), nodeid, peer);
     }
     m_v2_protocol_handler.RegisterPeerNode(node);
-    if (gArgs.GetBoolArg("-highbandwidthtx", false) &&
-        !node.IsBlockOnlyConn()) {
-        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(nodeid, true);
-    }
     if (!node.IsInboundConn()) {
         PushNodeVersion(config, node, *peer);
     }
@@ -3646,6 +3650,7 @@ void PeerManagerImpl::NewPoWValidBlock(
                 ProcessBlockAvailability(pnode->GetId());
                 CNodeState &state = *State(pnode->GetId());
                 if (is_v2_sealed_candidate &&
+                    gArgs.GetBoolArg("-highbandwidthtx", false) &&
                     m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
                         pnode->GetId()) &&
                     !PeerHasHeader(&state, pindex) &&
@@ -3695,7 +3700,7 @@ void PeerManagerImpl::UpdatedBlockTip(const CBlockIndex *pindexNew,
     }
 
     // A new tip is a new short-id epoch (new key).
-    if (OurTxRelayFeatures() != 0) {
+    if (m_opts.txrelay_shortids) {
         UpdateRelayEpochTo(pindexNew->GetBlockHash(), pindexNew->nHeight);
     }
 
@@ -4180,7 +4185,7 @@ void PeerManagerImpl::DrainRelayQueue() {
     if (batch.empty()) {
         return;
     }
-    if (OurTxRelayFeatures() != 0 && !m_txrelay_index.Current()) {
+    if (m_opts.txrelay_shortids && !m_txrelay_index.Current()) {
         UpdateRelayEpoch();
     }
 
@@ -6908,14 +6913,6 @@ void PeerManagerImpl::ProcessMessage(
                                     !tx_relay->m_relay_ready));
         }
 
-        const bool disable_shorttx_for_test =
-            Params().GetChainType() == ChainType::REGTEST &&
-            gArgs.GetBoolArg("-testdisablehighbandwidthshorttx", false);
-        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
-            pfrom.GetId(), !disable_shorttx_for_test &&
-                               gArgs.GetBoolArg("-highbandwidthtx", false) &&
-                               !pfrom.IsBlockOnlyConn());
-
         if (auto *metrics{node::GetNodeMetrics()};
             metrics && pfrom.m_metrics_connected_at !=
                            std::chrono::steady_clock::time_point{}) {
@@ -7088,7 +7085,15 @@ void PeerManagerImpl::ProcessMessage(
         uint64_t flags{0};
         vRecv >> version >> flags;
         // Any version: flags are only ever added, each with its meaning.
-        peer->m_txrelay_features = flags & OurTxRelayFeatures();
+        peer->m_txrelay_features =
+            peer->GetTxRelay() && !pfrom.IsBlockOnlyConn()
+                ? flags & OurTxRelayFeatures()
+                : 0;
+        // Local opt-in, compact-block negotiation and permissions cannot prove
+        // that the remote peer understands our private block/transaction wire.
+        m_v2_protocol_handler.SetHighBandwidthShortTxPeer(
+            pfrom.GetId(), peer->m_txrelay_features &
+                               txrelay::TXRELAY_HIGH_BANDWIDTH);
         LogDebug(BCLog::NET, "sendinvshort version=%u flags=%u peer=%d\n",
                  version, flags, pfrom.GetId());
         return;
@@ -11146,11 +11151,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             const bool high_bandwidth_peer =
                 m_opts.txrelay_push_hb && !disable_shorttx_for_test &&
                 !pto->IsBlockOnlyConn() &&
-                (pto->m_bip152_highbandwidth_from.load() ||
-                 pto->m_bip152_highbandwidth_to.load() ||
-                 pto->HasPermission(NetPermissionFlags::NoBan) ||
-                 m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
-                     pto->GetId()));
+                (peer->m_txrelay_features & txrelay::TXRELAY_HIGH_BANDWIDTH);
             // Every peer announces transactions on the same fixed relay
             // tick (-txrelaytick) of the monotonic clock; there is no
             // random per-peer delay.

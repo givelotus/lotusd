@@ -13,6 +13,7 @@
 #include <blockencodings.h>
 #include <chain.h>
 #include <chainparams.h>
+#include <common/args.h>
 #include <net/txrelay_index.h>
 #include <config.h>
 #include <consensus/merkle.h>
@@ -1624,8 +1625,14 @@ BOOST_AUTO_TEST_CASE(permissions_follow_fixed_relay_tick) {
                    std::move(node_opts));
         connman->Handshake(node, true, NODE_NETWORK, NODE_NETWORK,
                            PROTOCOL_VERSION, true);
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         // Prime both clocks before any transaction exists. A single relay
         // cannot trigger the 16-item fast-burst threshold.
         BOOST_REQUIRE(peerman->SendMessages(config, &node));
@@ -1710,8 +1717,14 @@ BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
                            PROTOCOL_VERSION, true);
         BOOST_CHECK(peerman->SendMessages(config, &node));
         WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
         std::vector<CTransactionRef> txs;
         TestMemPoolEntryHelper entry;
@@ -1902,8 +1915,14 @@ BOOST_AUTO_TEST_CASE(bursts_wait_for_the_relay_tick) {
                            PROTOCOL_VERSION, true);
         BOOST_CHECK(peerman->SendMessages(config, &node));
         WITH_LOCK(node.cs_vSend, node.vSendMsg.clear());
-        peerman->GetV2ProtocolHandler()->SetHighBandwidthShortTxPeer(
-            node.GetId(), high_bandwidth);
+        DataStream capability{};
+        capability << txrelay::SENDINVSHORT_VERSION
+                   << (high_bandwidth
+                           ? uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH}
+                           : uint64_t{0});
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                capability, 0us, interrupt);
         FastRandomContext rng(uint256{static_cast<uint8_t>(100 + scenario)});
         std::vector<CTransactionRef> txs;
         TestMemPoolEntryHelper entry;
@@ -2816,6 +2835,16 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
     std::atomic<bool> interrupt{false};
     auto cur_time = std::chrono::microseconds{base_time * 1'000'000};
 
+    // BIP152 high bandwidth alone does not opt into private body pushes.
+    // Negotiate the actual remote capability before checking outgoing SHORTTX.
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_hb.GetId()));
+    DataStream hb_offer{};
+    hb_offer << txrelay::SENDINVSHORT_VERSION
+             << uint64_t{txrelay::TXRELAY_HIGH_BANDWIDTH};
+    peerman->ProcessMessage(config, peer_hb, NetMsgType::SENDINVSHORT,
+                            hb_offer, cur_time, interrupt);
+    BOOST_CHECK(v2_handler->IsHighBandwidthShortTxPeer(peer_hb.GetId()));
+
     // 1. Batch of 20 valid transactions in SHORTTX (including a parent-child
     //    pair placed out of topological order: child before parent):
     std::vector<CTransactionRef> valid_batch;
@@ -3050,6 +3079,10 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
 
 BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    struct ResetArgs {
+        ~ResetArgs() { gArgs.ClearForcedArg("-highbandwidthtx"); }
+    } reset_args;
+    gArgs.ForceSetArg("-highbandwidthtx", "1");
     SetMockTime(
         WITH_LOCK(cs_main, return m_node.chainman->ActiveTip()->GetBlockTime()));
 
@@ -3112,19 +3145,22 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         connman->AddTestNode(*p);
     }
 
-    // Opt in peer_sender and peer_hb as high-bandwidth V2 peers; keep peer_normal
-    // as a standard low-bandwidth peer.
-    peer_sender->m_bip152_highbandwidth_to = true;
-    peer_sender->m_bip152_highbandwidth_from = true;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_sender->GetId(), true);
-
-    peer_hb->m_bip152_highbandwidth_to = true;
-    peer_hb->m_bip152_highbandwidth_from = true;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_hb->GetId(), true);
-
-    peer_normal->m_bip152_highbandwidth_to = false;
-    peer_normal->m_bip152_highbandwidth_from = false;
-    v2_handler->SetHighBandwidthShortTxPeer(peer_normal->GetId(), false);
+    // Only an explicit remote private-format offer enables sealed relay.
+    // Stock peers can request BIP152 high bandwidth without supporting it.
+    auto offer = [&](CNode &node, uint64_t flags) {
+        DataStream message{};
+        message << txrelay::SENDINVSHORT_VERSION << flags;
+        std::atomic<bool> interrupt{false};
+        peerman->ProcessMessage(config, node, NetMsgType::SENDINVSHORT,
+                                message, 0us, interrupt);
+    };
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_hb->GetId()));
+    offer(*peer_sender, txrelay::TXRELAY_HIGH_BANDWIDTH);
+    offer(*peer_hb, txrelay::TXRELAY_HIGH_BANDWIDTH | (1ULL << 40));
+    BOOST_CHECK(v2_handler->IsHighBandwidthShortTxPeer(peer_hb->GetId()));
+    peer_normal->m_bip152_highbandwidth_to = true;
+    peer_normal->m_bip152_highbandwidth_from = true;
+    BOOST_CHECK(!v2_handler->IsHighBandwidthShortTxPeer(peer_normal->GetId()));
 
     // 1. Build a valid V2 block containing tx1 on top of the current tip, and
     //    add tx1 to the mempool WITHOUT manually calling SyncMerklixOverlayToTip
@@ -3233,6 +3269,23 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         }
     }
     BOOST_CHECK_EQUAL(hb_sealedheader_count, 1U);
+
+    {
+        V1TransportDeserializer deserializer(config, peer_normal->GetId());
+        LOCK(peer_normal->cs_vSend);
+        for (const auto &chunk : peer_normal->vSendMsg) {
+            Span<const uint8_t> bytes{chunk};
+            while (!bytes.empty()) {
+                BOOST_REQUIRE_GE(deserializer.Read(config, bytes), 0);
+                if (deserializer.Complete()) {
+                    bool rejected{false};
+                    const auto message = deserializer.GetMessage(0us, rejected);
+                    BOOST_CHECK(!rejected);
+                    BOOST_CHECK_NE(message.m_type, NetMsgType::SEALEDHEADER);
+                }
+            }
+        }
+    }
 
     // 3. Verify duplicate SEALEDHEADER from peer_hb for an already-connected
     //    block is a no-op (no fallback GETDATA(MSG_CMPCT_BLOCK) emitted).
