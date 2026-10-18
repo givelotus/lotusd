@@ -25,6 +25,16 @@ class AddrMan;
 class CTxMemPool;
 class ChainstateManager;
 class Config;
+struct PrecomputedAdmissionChecks;
+
+/**
+ * Context-free checks and transaction-owned sighash data for a received burst,
+ * in receive order. No coins, scripts, relay state or admission decisions are
+ * inspected here. Null slots remain unchecked. Call without cs_main held.
+ */
+std::vector<PrecomputedAdmissionChecks>
+PrecomputeTxRelayBatch(const std::vector<CTransactionRef> &txs)
+    LOCKS_EXCLUDED(cs_main);
 
 /**
  * Default for -maxorphantx, maximum number of orphan transactions kept in
