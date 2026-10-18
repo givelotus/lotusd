@@ -133,6 +133,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 	TESTS
 		activation_tests.cpp
 		addrman_tests.cpp
+		rpc_snapshot_read_tests.cpp
 		allocator_tests.cpp
 		amount_tests.cpp
 		arith_uint256_tests.cpp

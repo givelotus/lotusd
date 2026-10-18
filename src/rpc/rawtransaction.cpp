@@ -16,6 +16,7 @@
 #include <node/coin.h>
 #include <node/context.h>
 #include <node/psbt.h>
+#include <node/snapshot.h>
 #include <node/transaction.h>
 #include <policy/packages.h>
 #include <policy/policy.h>
@@ -171,11 +172,128 @@ static RPCHelpMan getrawtransaction() {
                                : request.params[1].get_bool();
             }
 
-            if (!request.params[2].isNull()) {
+            node::SnapshotPublisher &publisher =
+                node.snapshot_publisher ? *node.snapshot_publisher
+                                        : node::GetGlobalSnapshotPublisher();
+            auto snap = publisher.Load();
+            if ((!snap || !snap->chain_valid ||
+                 snap->chainman_ptr != &chainman) &&
+                request.params[2].isNull()) {
+                // Lazy one-time initialization if no snapshot has been published yet.
                 LOCK(cs_main);
+                node::PublishChainTipSnapshot(chainman, node.mempool.get());
+                snap = publisher.Load();
+            }
 
+            if (request.params[2].isNull()) {
+                const bool mempool_snap_ready =
+                    !node.mempool ||
+                    (snap && snap->mempool_valid &&
+                     snap->mempool_ptr == node.mempool.get());
+                if (node.mempool && snap && snap->mempool_valid &&
+                    snap->mempool_ptr == node.mempool.get()) {
+                    if (const auto *entry = snap->FindMempoolEntry(txid)) {
+                        if (entry->tx) {
+                            if (!fVerbose) {
+                                return EncodeHexTx(*entry->tx);
+                            }
+                            UniValue result(UniValue::VOBJ);
+                            TxToUniv(*entry->tx, BlockHash(), result, true);
+                            return result;
+                        }
+                    }
+                }
+                if (mempool_snap_ready) {
+                    if (!g_txindex) {
+                        throw JSONRPCError(
+                            RPC_INVALID_ADDRESS_OR_KEY,
+                            "No such mempool transaction. Use -txindex or "
+                            "provide a block hash to enable blockchain "
+                            "transaction queries. Use gettransaction for "
+                            "wallet transactions.");
+                    }
+                    const bool f_txindex_ready =
+                        g_txindex->BlockUntilSyncedToCurrentChain();
+                    CTransactionRef indexed_tx;
+                    BlockHash indexed_block;
+                    if (g_txindex->FindTx(txid, indexed_block, indexed_tx) &&
+                        indexed_tx) {
+                        if (!fVerbose) {
+                            return EncodeHexTx(*indexed_tx);
+                        }
+                        if (snap && snap->chain_valid &&
+                            snap->chainman_ptr == &chainman &&
+                            snap->active_chain) {
+                            if (const auto *hdr =
+                                    snap->active_chain->FindByHash(
+                                        indexed_block)) {
+                                UniValue result(UniValue::VOBJ);
+                                TxToUniv(*indexed_tx, BlockHash(), result,
+                                         true);
+                                result.pushKV("blockhash",
+                                              indexed_block.GetHex());
+                                result.pushKV("confirmations",
+                                              1 + snap->height - hdr->height);
+                                result.pushKV("time", hdr->time);
+                                result.pushKV("blocktime", hdr->time);
+                                return result;
+                            }
+                        }
+                    } else {
+                        const std::string errmsg =
+                            !f_txindex_ready
+                                ? "No such mempool transaction. Blockchain "
+                                  "transactions are still in the process of "
+                                  "being indexed"
+                                : "No such mempool or blockchain transaction";
+                        throw JSONRPCError(
+                            RPC_INVALID_ADDRESS_OR_KEY,
+                            errmsg +
+                                ". Use gettransaction for wallet transactions.");
+                    }
+                }
+            } else {
                 BlockHash blockhash(
                     ParseHashV(request.params[2], "parameter 3"));
+                if (snap && snap->chain_valid &&
+                    snap->chainman_ptr == &chainman && snap->active_chain) {
+                    if (const auto *hdr =
+                            snap->active_chain->FindByHash(blockhash)) {
+                        if (!hdr->has_data) {
+                            throw JSONRPCError(RPC_MISC_ERROR,
+                                               "Block not available");
+                        }
+                        CBlock block;
+                        if (chainman.m_blockman.ReadBlock(block,
+                                                          hdr->data_pos)) {
+                            for (const auto &ptx : block.vtx) {
+                                if (ptx->GetId() == txid) {
+                                    if (!fVerbose) {
+                                        return EncodeHexTx(*ptx);
+                                    }
+                                    UniValue result(UniValue::VOBJ);
+                                    result.pushKV("in_active_chain", true);
+                                    TxToUniv(*ptx, BlockHash(), result, true);
+                                    result.pushKV("blockhash",
+                                                  blockhash.GetHex());
+                                    result.pushKV("confirmations",
+                                                  1 + snap->height -
+                                                      hdr->height);
+                                    result.pushKV("time", hdr->time);
+                                    result.pushKV("blocktime", hdr->time);
+                                    return result;
+                                }
+                            }
+                            throw JSONRPCError(
+                                RPC_INVALID_ADDRESS_OR_KEY,
+                                "No such transaction found in the provided "
+                                "block. Use gettransaction for wallet "
+                                "transactions.");
+                        }
+                    }
+                }
+
+                LOCK(cs_main);
                 blockindex = chainman.m_blockman.LookupBlockIndex(blockhash);
                 if (!blockindex) {
                     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,

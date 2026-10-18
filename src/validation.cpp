@@ -3614,6 +3614,7 @@ bool ChainstateManager::NotifyHeaderTip() {
             fNotify = true;
             fInitialBlockDownload = IsInitialBlockDownload();
             m_last_notified_header = pindexHeader;
+            node::PublishBestHeaderSnapshot(*this);
         }
     }
 
@@ -6703,6 +6704,16 @@ std::vector<Chainstate *> ChainstateManager::GetAll() {
     return out;
 }
 
+// Startup/reset switches can select a chainstate before it has a loaded tip.
+// Retire its previous RPC generation rather than publishing an unready view.
+static void InvalidateChainstateRpcSnapshot(const ChainstateManager &chainman) {
+    auto &publisher = node::GetGlobalSnapshotPublisher();
+    const auto current = publisher.Load();
+    if (current && current->chainman_ptr == &chainman) {
+        publisher.Publish(std::make_shared<const node::ChainAndMempoolSnapshot>());
+    }
+}
+
 Chainstate &ChainstateManager::InitializeChainstate(CTxMemPool *mempool) {
     AssertLockHeld(::cs_main);
     assert(!m_ibd_chainstate);
@@ -6710,6 +6721,7 @@ Chainstate &ChainstateManager::InitializeChainstate(CTxMemPool *mempool) {
 
     m_ibd_chainstate = std::make_unique<Chainstate>(mempool, m_blockman, *this);
     m_active_chainstate = m_ibd_chainstate.get();
+    InvalidateChainstateRpcSnapshot(*this);
     return *m_active_chainstate;
 }
 
@@ -6940,6 +6952,9 @@ util::Result<CBlockIndex *> ChainstateManager::ActivateSnapshot(
                   (1000 * 1000));
 
     this->MaybeRebalanceCaches();
+    // The manager identity is unchanged, but RPC readers must observe the
+    // newly active snapshot before loadtxoutset returns.
+    node::PublishChainTipSnapshot(*this, m_active_chainstate->m_mempool);
     return snapshot_start_block;
 }
 
@@ -7257,6 +7272,7 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
                   "and stopping node\n");
 
         m_active_chainstate = m_ibd_chainstate.get();
+        InvalidateChainstateRpcSnapshot(*this);
         m_snapshot_chainstate->m_disabled = true;
         assert(!this->IsUsable(m_snapshot_chainstate.get()));
         assert(this->IsUsable(m_ibd_chainstate.get()));
@@ -7408,6 +7424,7 @@ void ChainstateManager::MaybeRebalanceCaches() {
 }
 
 void ChainstateManager::ResetChainstates() {
+    InvalidateChainstateRpcSnapshot(*this);
     m_ibd_chainstate.reset();
     m_snapshot_chainstate.reset();
     m_active_chainstate = nullptr;
@@ -7480,6 +7497,7 @@ ChainstateManager::ActivateExistingSnapshot(BlockHash base_blockhash) {
     m_snapshot_chainstate->m_mempool = m_active_chainstate->m_mempool;
     m_active_chainstate->m_mempool = nullptr;
     m_active_chainstate = m_snapshot_chainstate.get();
+    InvalidateChainstateRpcSnapshot(*this);
     return *m_snapshot_chainstate;
 }
 
@@ -7544,6 +7562,7 @@ bool ChainstateManager::DeleteSnapshotChainstate() {
     m_active_chainstate = m_ibd_chainstate.get();
     m_active_chainstate->m_mempool = m_snapshot_chainstate->m_mempool;
     m_snapshot_chainstate.reset();
+    node::PublishChainTipSnapshot(*this, m_active_chainstate->m_mempool);
     return true;
 }
 
@@ -7573,6 +7592,7 @@ void ChainstateManager::RecalculateBestHeader() {
             m_best_header = &entry.second;
         }
     }
+    node::PublishBestHeaderSnapshot(*this);
 }
 
 bool ChainstateManager::ValidatedSnapshotCleanup() {

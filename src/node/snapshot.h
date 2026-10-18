@@ -241,6 +241,10 @@ inline void UpdateChainTipSnapshot(ChainstateManager &chainman,
     PublishChainTipSnapshot(chainman, mempool);
 }
 
+/** Refresh best-header/IBD metadata after header-only admission or header
+ * invalidation/reconsideration, sharing the existing active-chain index. */
+void PublishBestHeaderSnapshot(ChainstateManager &chainman);
+
 /**
  * Publish an updated mempool snapshot when the mempool changes.
  * Must be called with mempool.cs held.

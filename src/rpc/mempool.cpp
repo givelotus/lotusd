@@ -10,6 +10,7 @@
 #include <core_io.h>
 #include <node/context.h>
 #include <node/mempool_persist_args.h>
+#include <node/snapshot.h>
 #include <node/types.h>
 #include <policy/settings.h>
 #include <primitives/transaction.h>
@@ -400,6 +401,46 @@ static void entryToJSON(const CTxMemPool &pool, UniValue &info,
     info.pushKV("unbroadcast", pool.IsUnbroadcastTx(tx.GetId()));
 }
 
+static void entrySnapshotToJSON(UniValue &info,
+                                const node::MempoolEntrySnapshot &e) {
+    UniValue fees(UniValue::VOBJ);
+    fees.pushKV("base", e.fee);
+    fees.pushKV("modified", e.modified_fee);
+    info.pushKV("fees", std::move(fees));
+
+    info.pushKV("size", static_cast<int>(e.tx_size));
+    info.pushKV("time", e.time);
+    info.pushKV("height", e.height);
+
+    UniValue depends(UniValue::VARR);
+    depends.reserve(e.depends.size());
+    for (const std::string &dep : e.depends) {
+        depends.push_back(dep);
+    }
+    info.pushKV("depends", std::move(depends));
+
+    UniValue spent(UniValue::VARR);
+    spent.reserve(e.spentby.size());
+    for (const std::string &child : e.spentby) {
+        spent.push_back(child);
+    }
+    info.pushKV("spentby", std::move(spent));
+    info.pushKV("unbroadcast", e.unbroadcast);
+}
+
+static std::shared_ptr<const node::ChainAndMempoolSnapshot>
+LoadOrInitMempoolSnapshot(const CTxMemPool &pool) {
+    auto snap = node::GetGlobalSnapshotPublisher().Load();
+    if (snap && snap->mempool_valid && snap->mempool_ptr == &pool) {
+        return snap;
+    }
+    {
+        LOCK(pool.cs);
+        node::PublishMempoolSnapshot(pool);
+    }
+    return node::GetGlobalSnapshotPublisher().Load();
+}
+
 UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
                        bool include_mempool_sequence) {
     if (verbose) {
@@ -408,28 +449,26 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
                 RPC_INVALID_PARAMETER,
                 "Verbose results cannot contain mempool sequence values.");
         }
-        LOCK(pool.cs);
+        const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
+        const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
+        snap.EnsureMempoolVectors();
         UniValue o(UniValue::VOBJ);
-        for (const CTxMemPoolEntryRef &e : pool.mapTx) {
-            const TxId &txid = e->GetTx().GetId();
+        for (const node::MempoolEntrySnapshot &e : snap.mempool_entries) {
             UniValue info(UniValue::VOBJ);
-            entryToJSON(pool, info, e);
+            entrySnapshotToJSON(info, e);
             // Mempool has unique entries so there is no advantage in using
             // UniValue::pushKV, which checks if the key already exists in O(N).
             // UniValue::pushKVEnd is used instead which currently is O(1).
-            o.pushKVEnd(txid.ToString(), std::move(info));
+            o.pushKVEnd(e.txid.ToString(), std::move(info));
         }
         return o;
     } else {
-        uint64_t mempool_sequence;
-        std::vector<TxId> vtxids;
-        {
-            LOCK(pool.cs);
-            pool.getAllTxIds(vtxids);
-            mempool_sequence = pool.GetSequence();
-        }
+        const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
+        const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
+        snap.EnsureMempoolVectors();
         UniValue a(UniValue::VARR);
-        for (const TxId &txid : vtxids) {
+        a.reserve(snap.mempool_txids.size());
+        for (const TxId &txid : snap.mempool_txids) {
             a.push_back(txid.ToString());
         }
 
@@ -438,7 +477,7 @@ UniValue MempoolToJSON(const CTxMemPool &pool, bool verbose,
         } else {
             UniValue o(UniValue::VOBJ);
             o.pushKV("txids", std::move(a));
-            o.pushKV("mempool_sequence", mempool_sequence);
+            o.pushKV("mempool_sequence", snap.mempool_sequence);
             return o;
         }
     }
@@ -671,40 +710,58 @@ static RPCHelpMan getmempoolentry() {
             TxId txid(ParseHashV(request.params[0], "parameter 1"));
 
             const CTxMemPool &mempool = EnsureAnyMemPool(request.context);
-            LOCK(mempool.cs);
+            const auto snap_ptr = LoadOrInitMempoolSnapshot(mempool);
+            const node::ChainAndMempoolSnapshot &snap =
+                *CHECK_NONFATAL(snap_ptr);
 
-            CTxMemPool::txiter it = mempool.mapTx.find(txid);
-            if (it == mempool.mapTx.end()) {
+            const node::MempoolEntrySnapshot *entry =
+                snap.FindMempoolEntry(txid);
+            if (!entry) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
                                    "Transaction not in mempool");
             }
 
             UniValue info(UniValue::VOBJ);
-            entryToJSON(mempool, info, *it);
+            entrySnapshotToJSON(info, *entry);
             return info;
         },
     };
 }
 
 UniValue MempoolInfoToJSON(const CTxMemPool &pool) {
-    // Make sure this call is atomic in the pool.
-    LOCK(pool.cs);
+    const auto snap_ptr = LoadOrInitMempoolSnapshot(pool);
+    const node::ChainAndMempoolSnapshot &snap = *CHECK_NONFATAL(snap_ptr);
+    double rolling_fee = snap.rolling_minimum_fee_rate;
+    if (snap.block_since_last_rolling_fee_bump && rolling_fee != 0) {
+        const int64_t time = GetTime();
+        if (time > snap.last_rolling_fee_update + 10) {
+            double halflife = CTxMemPool::ROLLING_FEE_HALFLIFE;
+            if (snap.mempool_usage < snap.max_mempool / 4) {
+                halflife /= 4;
+            } else if (snap.mempool_usage < snap.max_mempool / 2) {
+                halflife /= 2;
+            }
+            rolling_fee =
+                rolling_fee /
+                pow(2.0, (time - snap.last_rolling_fee_update) / halflife);
+        }
+    }
+    const CFeeRate decayed_min_fee = std::max(
+        CFeeRate(int64_t(ceill(rolling_fee)) * SATOSHI), snap.min_relay_tx_fee);
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("loaded", pool.GetLoadTried());
-    ret.pushKV("size", (int64_t)pool.size());
-    ret.pushKV("bytes", (int64_t)pool.GetTotalTxSize());
-    ret.pushKV("finalized_txs_size", (int64_t)pool.GetFinalizedTxCount());
-    ret.pushKV("finalized_txs_bytes", (int64_t)pool.GetTotalFinalizedTxSize());
+    ret.pushKV("loaded", snap.mempool_loaded);
+    ret.pushKV("size", (int64_t)snap.mempool_size);
+    ret.pushKV("bytes", (int64_t)snap.mempool_bytes);
+    ret.pushKV("finalized_txs_size", (int64_t)snap.finalized_txs_size);
+    ret.pushKV("finalized_txs_bytes", (int64_t)snap.finalized_txs_bytes);
     ret.pushKV("finalized_txs_sigchecks",
-               (int64_t)pool.GetTotalFinalizedTxSigchecks());
-    ret.pushKV("usage", (int64_t)pool.DynamicMemoryUsage());
-    ret.pushKV("total_fee", pool.GetTotalFee());
-    ret.pushKV("maxmempool", pool.m_opts.max_size_bytes);
-    ret.pushKV(
-        "mempoolminfee",
-        std::max(pool.GetMinFee(), pool.m_opts.min_relay_feerate).GetFeePerK());
-    ret.pushKV("minrelaytxfee", pool.m_opts.min_relay_feerate.GetFeePerK());
-    ret.pushKV("unbroadcastcount", uint64_t{pool.GetUnbroadcastTxs().size()});
+               (int64_t)snap.finalized_txs_sigchecks);
+    ret.pushKV("usage", (int64_t)snap.mempool_usage);
+    ret.pushKV("total_fee", snap.total_fee);
+    ret.pushKV("maxmempool", snap.max_mempool);
+    ret.pushKV("mempoolminfee", decayed_min_fee.GetFeePerK());
+    ret.pushKV("minrelaytxfee", snap.min_relay_tx_fee.GetFeePerK());
+    ret.pushKV("unbroadcastcount", uint64_t{snap.unbroadcast_count});
     return ret;
 }
 

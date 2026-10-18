@@ -409,6 +409,35 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
     publisher.Publish(std::move(next));
 }
 
+void PublishBestHeaderSnapshot(ChainstateManager &chainman)
+    NO_THREAD_SAFETY_ANALYSIS {
+    AssertLockHeld(::cs_main);
+    if (g_chain_publication.depth && g_chain_publication.chainman == &chainman) {
+        g_chain_publication.dirty = true;
+        return;
+    }
+    auto &publisher = GetGlobalSnapshotPublisher();
+    auto prev = publisher.Load();
+    if (!prev || !prev->chain_valid || prev->chainman_ptr != &chainman) return;
+    // Serialize with mempool writers so a header refresh cannot overwrite a
+    // newer mempool generation. Readers still acquire neither writer lock.
+    auto &chainstate = chainman.ActiveChainstate();
+    LOCK(chainstate.MempoolMutex());
+    prev = publisher.Load();
+    if (!prev || !prev->chain_valid || prev->chainman_ptr != &chainman) return;
+    const int height = chainman.m_best_header ? chainman.m_best_header->nHeight : -1;
+    const bool ibd = chainman.IsInitialBlockDownload();
+    if (prev->headers_height == height && prev->initial_block_download == ibd) return;
+    auto next = CloneChainStateOnly(prev.get());
+    next->headers_height = height;
+    next->initial_block_download = ibd;
+    if (const auto *mempool = chainstate.GetMempool()) {
+        PopulateMempoolScalarsLocked(*next, *mempool);
+        CaptureMempoolEntriesLocked(*next, *mempool, prev.get());
+    }
+    publisher.Publish(std::move(next));
+}
+
 void PublishMempoolSnapshot(const CTxMemPool &mempool)
     NO_THREAD_SAFETY_ANALYSIS {
     AssertLockHeld(mempool.cs);
