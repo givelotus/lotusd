@@ -23,18 +23,22 @@
 
 static CBlock CreateGenesisBlock(const char *pszTimestamp,
                                  const CScript &genesisOutputScript,
-                                 uint32_t nTime, uint32_t nNonce,
-                                 uint32_t nBits, int32_t nVersion,
+                                 uint64_t nTime, uint64_t nNonce,
+                                 uint32_t nBits, uint32_t nVersion,
                                  const Amount genesisReward) {
     CMutableTransaction txNew;
-    txNew.nVersion = 1;
+    txNew.nVersion = 7;
     txNew.vin.resize(1);
     txNew.vout.resize(1);
+    txNew.vin[0].nFlags = 2;
     txNew.vin[0].scriptSig =
         CScript() << 486604799 << CScriptNum(4)
                   << std::vector<uint8_t>((const uint8_t *)pszTimestamp,
                                           (const uint8_t *)pszTimestamp +
                                               strlen(pszTimestamp));
+    txNew.vin[0].fHasCoinbaseData = true;
+    txNew.vin[0].vCoinbaseData.assign(txNew.vin[0].scriptSig.begin(),
+                                      txNew.vin[0].scriptSig.end());
     txNew.vout[0].nValue = genesisReward;
     txNew.vout[0].scriptPubKey = genesisOutputScript;
 
@@ -43,27 +47,23 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
     genesis.nBits = nBits;
     genesis.nNonce = nNonce;
     genesis.nHeaderVersion = nVersion;
+    genesis.nHeight = 0;
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
     genesis.hashPrevBlock.SetNull();
     genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
+    genesis.hashStateRoot =
+        ComputeV2BlockStateRoot(genesis, BlockHash(), 0, 0, false);
+    genesis.SetSize(GetSerializeSize(genesis));
+    RecordV2BlockState(genesis, genesis.GetHash(), BlockHash(), 0, 0);
     return genesis;
 }
 
 /**
  * Build the genesis block. Note that the output of its generation transaction
  * cannot be spent since it did not originally exist in the database.
- *
- * CBlock(hash=000000000019d6, ver=1, hashPrevBlock=00000000000000,
- * hashMerkleRoot=4a5e1e, nTime=1231006505, nBits=1d00ffff, nNonce=2083236893,
- * vtx=1)
- *   CTransaction(hash=4a5e1e, ver=1, vin.size=1, vout.size=1, nLockTime=0)
- *     CTxIn(COutPoint(000000, -1), coinbase
- * 04ffff001d0104455468652054696d65732030332f4a616e2f32303039204368616e63656c6c6f72206f6e206272696e6b206f66207365636f6e64206261696c6f757420666f722062616e6b73)
- *     CTxOut(nValue=50.00000000, scriptPubKey=0x5F1DF16B2B704C8A578D0B)
- *   vMerkleTree: 4a5e1e
  */
-static CBlock CreateGenesisBlock(uint32_t nTime, uint32_t nNonce,
-                                 uint32_t nBits, int32_t nVersion,
+static CBlock CreateGenesisBlock(uint64_t nTime, uint64_t nNonce,
+                                 uint32_t nBits, uint32_t nVersion,
                                  const Amount genesisReward) {
     const char *pszTimestamp =
         "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks";
@@ -136,15 +136,10 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::MAINNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1,
-                                     50 * COIN);
+        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff,
+                                     lotus::v2::kHeaderVersion, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock ==
-               uint256S("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1"
-                        "b60a8ce26f"));
-        assert(genesis.hashMerkleRoot ==
-               uint256S("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b"
-                        "7afdeda33b"));
+        assert(!consensus.hashGenesisBlock.IsNull());
 
         // Note that of those which support the service bits prefix, most only
         // support a subset of possible options. This is fine at runtime as
@@ -210,7 +205,7 @@ public:
         consensus.BIP66Height = 0;
         consensus.CSVHeight = 0;
         consensus.powLimit = uint256S(
-            "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+            "00007fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         // two weeks
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60;
         consensus.nPowTargetSpacing = 2 * 60;
@@ -250,15 +245,10 @@ public:
         m_assumed_chain_state_size =
             ChainParamsConstants::TESTNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis =
-            CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff,
+                                     lotus::v2::kHeaderVersion, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock ==
-               uint256S("000000000933ea01ad0ee984209779baaec3ced90fa3f408719526"
-                        "f8d77f4943"));
-        assert(genesis.hashMerkleRoot ==
-               uint256S("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b"
-                        "7afdeda33b"));
+        assert(!consensus.hashGenesisBlock.IsNull());
 
         vFixedSeeds.clear();
         vSeeds.clear();
@@ -318,6 +308,7 @@ public:
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60;
         consensus.nPowTargetSpacing = 2 * 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        consensus.allowNullStateRoot = true;
         consensus.fPowNoRetargeting = true;
 
         // two days
@@ -349,14 +340,15 @@ public:
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
-        genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1296688602, 4, 0x207fffff,
+                                     lotus::v2::kHeaderVersion, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         assert(consensus.hashGenesisBlock ==
-               uint256S("0x0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b"
-                        "1a11466e2206"));
+               uint256S("0x720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561"
+                        "c99b7e50723e4"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("0x4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab212"
-                        "7b7afdeda33b"));
+               uint256S("0xab7a9a3a45e6decf448edff44e2904ba8531902e11e5bc8a7bf8"
+                        "833661220aca"));
 
         //! Regtest mode doesn't have any fixed seeds.
         vFixedSeeds.clear();
@@ -373,21 +365,21 @@ public:
         m_assumeutxo_data = {
             {.height = 110,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0xd754ca97ef24c5132f8d2147c19310b7a6b"
-                                         "d136766430304735a73372fe36213")},
+                 AssumeutxoHash{uint256S("0x55bfa44a715a7c563ce126e22f5f73fcd9b"
+                                         "51d693659a6e13f8e71629f90c522")},
              .m_chain_tx_count = 111,
              .blockhash =
-                 BlockHash{uint256S("0x47cfb2b77860d250060e78d3248bb05092876545"
-                                    "3cbcbdbc121e3c48b99a376c")}},
+                 BlockHash{uint256S("0x5dd051b6e04941b271ac64a7efba8ace94e77ce0"
+                                    "9665b42ea809e6bcb920a198")}},
             {// For use by test/functional/feature_assumeutxo.py
              .height = 299,
              .hash_serialized =
-                 AssumeutxoHash{uint256S("0xa966794ed5a2f9debaefc7ca48dbc5d5e12"
-                                         "a89ff9fe45bd00ec5732d074580a9")},
+                 AssumeutxoHash{uint256S("0x372adda95d453e80ce3d77396daa852c7bf"
+                                         "620be323ea38eb61a34859dafc2b0")},
              .m_chain_tx_count = 334,
              .blockhash =
-                 BlockHash{uint256S("0x118a7d5473bccce9b314789e14ce426fc65fb09d"
-                                    "feda0131032bb6d86ed2fd0b")}},
+                 BlockHash{uint256S("0x156d32f7cfa190182e918cca120b40d581ea751c"
+                                    "956a04cb1bf03f2b20c7bf9f")}},
         };
 
         chainTxData = ChainTxData{0, 0, 0};

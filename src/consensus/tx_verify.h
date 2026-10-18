@@ -37,7 +37,9 @@ bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
  * pre-spent Coins (e.g. CTxUndo::vprevout populated by SpendCoin) without
  * performing redundant CCoinsViewCache lookups.
  * Preconditions: tx.IsCoinBase() is false, spent_coins.size() == tx.vin.size(),
- * and the caller has successfully spent every input into spent_coins.
+ * and the caller has successfully spent every non-authority input into
+ * spent_coins. Native authority inputs (nFlags == 3) use positional placeholders
+ * and are checked by the native authority rules instead of spending a Coin.
  * Missing coins are defensively rejected, but error precedence for combinations
  * of invalid inputs outside that precondition need not match CheckTxInputs.
  */

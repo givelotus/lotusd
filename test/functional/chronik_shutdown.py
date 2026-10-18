@@ -41,16 +41,25 @@ class ChronikShutdown(BitcoinTestFramework):
             txs = []
             if i > 101:
                 txid = coinbase_txs[i - 101].txid_int
-                fan_tx = CTransaction()
-                fan_tx.vin = [CTxIn(COutPoint(txid, 0))]
-                fan_tx.vout = [CTxOut(1000, CScript([OP_TRUE]))] * 8000
-                fan_txid_int = fan_tx.txid_int
-                txs.append(fan_tx)
+                # Preserve all 8,000 fan outputs and 2,666 three-input
+                # spends under the universal 256-output transaction limit.
+                split_tx = CTransaction()
+                split_tx.vin = [CTxIn(COutPoint(txid, 0))]
+                split_tx.vout = [CTxOut(250_000, CScript([OP_TRUE]))] * 32
+                txs.append(split_tx)
+                fan_outpoints = []
+                for split_idx in range(32):
+                    fan_tx = CTransaction()
+                    fan_tx.vin = [CTxIn(COutPoint(split_tx.txid_int, split_idx))]
+                    fan_tx.vout = [CTxOut(1000, CScript([OP_TRUE]))] * 250
+                    txs.append(fan_tx)
+                    fan_outpoints.extend(
+                        COutPoint(fan_tx.txid_int, k) for k in range(250)
+                    )
+                assert len(fan_outpoints) == 8000
                 for j in range(0, 7997, 3):
                     tx = CTransaction()
-                    tx.vin = [
-                        CTxIn(COutPoint(fan_txid_int, k)) for k in range(j, j + 3)
-                    ]
+                    tx.vin = [CTxIn(fan_outpoints[k]) for k in range(j, j + 3)]
                     tx.vout = [CTxOut(1000, CScript([OP_TRUE]))]
                     txs.append(tx)
             block = create_block(
