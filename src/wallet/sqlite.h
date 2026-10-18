@@ -18,6 +18,7 @@ private:
     SQLiteDatabase &m_database;
 
     bool m_cursor_init = false;
+    bool m_active_txn = false;
 
     sqlite3_stmt *m_read_stmt{nullptr};
     sqlite3_stmt *m_insert_stmt{nullptr};
@@ -59,6 +60,7 @@ private:
     const std::string m_dir_path;
 
     const std::string m_file_path;
+    const std::string m_profile;
 
     void Cleanup() noexcept;
 
@@ -67,7 +69,7 @@ public:
 
     /** Create DB handle to real database */
     SQLiteDatabase(const fs::path &dir_path, const fs::path &file_path,
-                   bool mock = false);
+                   bool mock, std::string profile);
 
     ~SQLiteDatabase();
 
@@ -80,8 +82,8 @@ public:
     void Close() override;
 
     /* These functions are unused */
-    void AddRef() override { assert(false); }
-    void RemoveRef() override { assert(false); }
+    void AddRef() override { ++m_refcount; }
+    void RemoveRef() override { --m_refcount; }
 
     /** Rewrite the entire database on disk */
     bool Rewrite(const char *skip = nullptr) override;

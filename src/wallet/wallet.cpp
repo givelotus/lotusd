@@ -413,7 +413,7 @@ RestoreWallet(WalletContext &context, const fs::path &backup_file,
 
     const fs::path wallet_path =
         fsbridge::AbsPathJoin(GetWalletDir(), fs::u8path(wallet_name));
-    auto wallet_file = wallet_path / "wallet.dat";
+    auto wallet_file = wallet_path / WALLET_DATABASE_FILENAME;
     std::shared_ptr<CWallet> wallet;
 
     try {
@@ -886,15 +886,11 @@ bool CWallet::EncryptWallet(const SecureString &strWalletPassphrase) {
         }
         Lock();
 
-        // Need to completely rewrite the wallet file; if we don't, bdb might
+        // Need to completely rewrite the wallet file; if we don't, SQLite might
         // keep bits of the unencrypted private key in slack space in the
         // database file.
         database->Rewrite();
 
-        // BDB seems to have a bad habit of writing old data into
-        // slack space in .dat files; that is bad if the old data is
-        // unencrypted private keys. So:
-        database->ReloadDbEnv();
     }
 
     NotifyStatusChanged(this);
@@ -2783,28 +2779,28 @@ MakeWalletDatabase(const std::string &name, const DatabaseOptions &options,
     // 1. Path where a directory can be created.
     // 2. Path to an existing directory.
     // 3. Path to a symlink to a directory.
-    // 4. For backwards compatibility, the name of a data file in -walletdir.
     const fs::path wallet_path =
         fsbridge::AbsPathJoin(GetWalletDir(), fs::PathFromString(name));
-    fs::file_type path_type = fs::symlink_status(wallet_path).type();
+    const fs::file_type path_type = fs::symlink_status(wallet_path).type();
     if (!(path_type == fs::file_type::not_found ||
           path_type == fs::file_type::directory ||
           (path_type == fs::file_type::symlink &&
-           fs::is_directory(wallet_path)) ||
-          (path_type == fs::file_type::regular &&
-           fs::PathFromString(name).filename() == fs::PathFromString(name)))) {
-        error_string = Untranslated(
-            strprintf("Invalid -wallet path '%s'. -wallet path should point to "
-                      "a directory where wallet.dat and "
-                      "database/log.?????????? files can be stored, a location "
-                      "where such a directory could be created, "
-                      "or (for backwards compatibility) the name of an "
-                      "existing data file in -walletdir (%s)",
-                      name, fs::quoted(fs::PathToString(GetWalletDir()))));
+           fs::is_directory(wallet_path)))) {
+        error_string = Untranslated(strprintf(
+            "Invalid -wallet path '%s'. Wallet path must be a directory "
+            "containing wallet.sqlite; legacy wallet files are unsupported.",
+            name));
         status = DatabaseStatus::FAILED_BAD_PATH;
         return nullptr;
     }
-    return MakeDatabase(wallet_path, options, status, error_string);
+    DatabaseOptions storage_options = options;
+    // This inherited ABC wallet adapter is only for storage development tests.
+    // A future V2 wallet adapter must pass the approved V2 chain/profile
+    // digest.
+    if (storage_options.wallet_profile.empty()) {
+        storage_options.wallet_profile = "lotus-v2-wallet-storage-development";
+    }
+    return MakeDatabase(wallet_path, storage_options, status, error_string);
 }
 
 std::shared_ptr<CWallet>
@@ -2857,7 +2853,7 @@ CWallet::Create(WalletContext &context, const std::string &name,
         !walletInstance->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) &&
         !walletInstance->IsWalletFlagSet(WALLET_FLAG_BLANK_WALLET);
     if (fFirstRun) {
-        // Ensure this wallet.dat can only be opened by clients supporting
+        // Ensure this wallet database can only be opened by clients supporting
         // HD with chain split and expects no default key.
         walletInstance->SetMinVersion(FEATURE_LATEST);
 
