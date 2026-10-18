@@ -1153,7 +1153,8 @@ BOOST_AUTO_TEST_CASE(bulk_clear_matches_staged_block_removal_state) {
         const auto updates = pool.GetTransactionsUpdated();
         const auto sequence = pool.GetSequence();
         const auto before = node::GetGlobalSnapshotPublisher().Load();
-        const auto before_template = before->GetMiningTemplate().template_id;
+        before->EnsureMiningTemplate();
+        const auto before_template = before->mining_template.template_id;
         {
             CTxMemPool::ScopedSnapshotDefer defer(pool);
             if (bulk) {
@@ -1168,6 +1169,7 @@ BOOST_AUTO_TEST_CASE(bulk_clear_matches_staged_block_removal_state) {
             }
         }
         const auto after = node::GetGlobalSnapshotPublisher().Load();
+        after->EnsureMiningTemplate();
         const auto &overlay = pool.GetMerklixOverlay();
         return std::make_tuple(pool.size(), pool.mapNextTx.size(),
             pool.GetTotalTxSize(), pool.GetTotalFee(), pool.DynamicMemoryUsage(),
@@ -1176,7 +1178,7 @@ BOOST_AUTO_TEST_CASE(bulk_clear_matches_staged_block_removal_state) {
             pool.GetUtxoFastFilter().MempoolSpentCount(),
             pool.GetUtxoFastFilter().UnspentCount(), overlay.GetFrozenEpochs().size(),
             overlay.GetSpeculativeOverlay().GetTxCount(), after->mempool_size,
-            after->GetMiningTemplate().template_id - before_template);
+            after->mining_template.template_id - before_template);
     };
     const auto staged = exercise(false);
     const auto bulk = exercise(true);

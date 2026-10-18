@@ -647,12 +647,6 @@ public:
 
 
     /** Shared speculative transaction overlay; not proof of script validity. */
-    bool HasPendingOverlayChanges() const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        AssertLockHeld(cs);
-        return !m_pending_overlay_adds.empty() ||
-               !m_pending_overlay_removes.empty();
-    }
-
     lotus::v2::MerklixOverlayManager &GetMerklixOverlay() const
         EXCLUSIVE_LOCKS_REQUIRED(cs) {
         AssertLockHeld(cs);
