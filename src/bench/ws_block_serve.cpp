@@ -36,8 +36,7 @@ namespace {
 CBlock MakeBlock(size_t bytes) {
     FastRandomContext rng{/*fDeterministic=*/true};
     CBlock block;
-    block.nVersion = 1;
-    block.nTime = 1700000000;
+    block.SetBlockTime(1700000000);
     block.nBits = 0x207fffff;
     CMutableTransaction coinbase;
     coinbase.vin.resize(1);

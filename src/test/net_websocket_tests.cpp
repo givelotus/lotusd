@@ -747,7 +747,7 @@ P2PMessage MakeBlockMessage(FastRandomContext &rng, size_t size) {
     std::vector<uint8_t> payload;
     CBlockHeader header;
     header.nNonce = rng.rand32();
-    header.nTime = rng.rand32();
+    header.SetBlockTime(rng.rand32());
     VectorWriter{payload, 0, header};
     auto body{rng.randbytes<uint8_t>(size)};
     // Like transactions: random hashes and keys between repeated structure.

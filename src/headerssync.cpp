@@ -21,9 +21,9 @@ constexpr size_t HEADER_COMMITMENT_PERIOD{610};
 // 14521/610 = ~23.8 commitments
 constexpr size_t REDOWNLOAD_BUFFER_SIZE{14521};
 
-// Our memory analysis assumes 48 bytes for a CompressedHeader (so we should
+// Our memory analysis assumes 104 bytes for a CompressedHeader (so we should
 // re-calculate parameters if we compress further)
-static_assert(sizeof(CompressedHeader) == 48);
+static_assert(sizeof(CompressedHeader) == 104);
 
 HeadersSyncState::HeadersSyncState(NodeId id,
                                    const Consensus::Params &consensus_params,
