@@ -887,27 +887,70 @@ void V2PeerProtocolHandler::SetScopedTransactions(
     m_scoped_txs[key] = std::move(entry);
 }
 
-std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
-    ReconScope scope, const uint256 &context_id) const {
+void V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
+    ReconScope scope, const uint256 &context_id,
+    std::vector<CTransactionRef> &out_txs, uint256 *out_root) const {
     {
         LOCK(m_mutex);
         auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
         if (it != m_scoped_txs.end()) {
-            return it->second.txs;
+            out_txs = it->second.txs;
+            if (out_root) {
+                std::memcpy(out_root->begin(), it->second.subtree_a_root.data(), 32);
+            }
+            return;
         }
     }
     if (scope == ReconScope::LIVE_MEMPOOL) {
         std::vector<CTransactionRef> mempool_txs;
         {
             LOCK(m_mempool.cs);
+            if (m_mempool.mapTx.size() <= MAX_SCOPED_TXS) {
+                const auto &layer =
+                    m_mempool.GetMerklixOverlay().GetSpeculativeOverlay();
+                const auto &ordered = layer.GetOrderedTxs();
+                out_txs.clear();
+                out_txs.reserve(ordered.size());
+                for (const auto &[_, oentry] : ordered) {
+                    if (oentry.tx_ref) {
+                        out_txs.push_back(
+                            std::static_pointer_cast<const CTransaction>(
+                                oentry.tx_ref));
+                    }
+                }
+                if (out_txs.size() == m_mempool.mapTx.size()) {
+                    if (out_root) {
+                        const lotus::v2::Hash root = layer.GetSubtreeARoot();
+                        std::memcpy(out_root->begin(), root.data(), 32);
+                    }
+                    return;
+                }
+            }
             mempool_txs.reserve(m_mempool.mapTx.size());
             for (const auto &entry : m_mempool.mapTx) {
                 mempool_txs.push_back(entry->GetSharedTx());
             }
         }
-        return NormalizeCtorTxList(mempool_txs);
+        out_txs = NormalizeCtorTxList(mempool_txs);
+        if (out_root) {
+            const lotus::v2::Hash root = ComputeSubtreeAHash(out_txs);
+            std::memcpy(out_root->begin(), root.data(), 32);
+        }
+        return;
     }
-    return {};
+    out_txs.clear();
+    if (out_root) {
+        const lotus::v2::Hash empty_root = lotus::v2::EmptyTxRoot();
+        std::memcpy(out_root->begin(), empty_root.data(), 32);
+    }
+}
+
+std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
+    ReconScope scope, const uint256 &context_id) const {
+    std::vector<CTransactionRef> txs;
+    // Bucket drill-down needs membership only, not a Merklix root.
+    GetScopedTransactionsAndRoot(scope, context_id, txs, nullptr);
+    return txs;
 }
 
 MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
