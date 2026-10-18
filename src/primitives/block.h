@@ -135,4 +135,30 @@ struct CBlockLocator {
     bool IsNull() const { return vHave.empty(); }
 };
 
+namespace lotus::v2 {
+class MempoolOverlayLayer;
+class MerklixOverlayManager;
+} // namespace lotus::v2
+
+uint256 ComputeV2TxRootFromSubtreeA(const CTransaction &coinbase_tx,
+                                    const std::array<uint8_t, 32> &subtree_a_root);
+bool AddTransactionToOverlay(lotus::v2::MempoolOverlayLayer &overlay,
+                             const CTransactionRef &ptx,
+                             int64_t fee_sats = 0,
+                             int64_t sigchecks = 0);
+bool AddTransactionToOverlay(lotus::v2::MerklixOverlayManager &manager,
+                             const CTransactionRef &ptx,
+                             int64_t fee_sats = 0,
+                             int64_t sigchecks = 0);
+size_t AddTransactionsToOverlayBatch(
+    lotus::v2::MempoolOverlayLayer &overlay,
+    std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> txs);
+size_t AddTransactionsToOverlayBatch(
+    lotus::v2::MerklixOverlayManager &manager,
+    std::span<const std::tuple<CTransactionRef, int64_t, int64_t>> txs);
+bool RemoveTransactionFromOverlay(lotus::v2::MempoolOverlayLayer &overlay,
+                                  const CTransaction &tx);
+bool RemoveTransactionFromOverlay(lotus::v2::MerklixOverlayManager &manager,
+                                  const CTransaction &tx);
+
 #endif // BITCOIN_PRIMITIVES_BLOCK_H

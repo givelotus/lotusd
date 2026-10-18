@@ -8,8 +8,11 @@
 #include <consensus/amount.h>
 #include <crypto/hex_base.h>
 #include <hash.h>
+#include <lotus_v2/commitment.h>
+#include <lotus_v2/output.h>
 #include <tinyformat.h>
 
+#include <algorithm>
 #include <cassert>
 
 std::string COutPoint::ToString() const {
@@ -30,6 +33,98 @@ std::string CTxIn::ToString() const {
     }
     str += ")";
     return str;
+}
+
+lotus::v2::Output CTxOut::ToV2Output() const {
+    lotus::v2::Output out;
+    out.value = nValue >= Amount::zero()
+                    ? static_cast<uint64_t>(nValue / SATOSHI)
+                    : 0;
+    const bool is_burn = scriptPubKey.IsUnspendable();
+    out.flags = is_burn ? 2 : 0;
+
+    // Pack [uint16_t len_le, scriptPubKey[0..len-1]] across up to 16 branches
+    // (31 payload bytes per branch, with branch[k][31] = uint8_t(0x81 + k))
+    // so CTxOut <-> lotus::v2::Output is a 100% lossless bijection for
+    // UTXOSHARD and BLOCKUNDO serialization while satisfying all V2 Output
+    // branch-uniqueness and Merklix UtxoLeaf invariants.
+    constexpr size_t kMaxPackedScriptBytes =
+        lotus::v2::MAX_OUTPUT_BRANCHES * 31 - 2;
+    if (scriptPubKey.size() <= kMaxPackedScriptBytes) {
+        const uint16_t script_len = static_cast<uint16_t>(scriptPubKey.size());
+        std::vector<uint8_t> packed(2 + script_len);
+        packed[0] = static_cast<uint8_t>(script_len & 0xffU);
+        packed[1] = static_cast<uint8_t>((script_len >> 8U) & 0xffU);
+        if (script_len > 0) {
+            std::copy(scriptPubKey.begin(), scriptPubKey.end(),
+                      packed.begin() + 2);
+        }
+        const size_t num_branches =
+            std::max<size_t>(1, (packed.size() + 30) / 31);
+        out.branches.resize(num_branches);
+        for (size_t k = 0; k < num_branches; ++k) {
+            out.branches[k].fill(0);
+            const size_t offset = k * 31;
+            const size_t chunk =
+                offset < packed.size()
+                    ? std::min<size_t>(31, packed.size() - offset)
+                    : 0;
+            if (chunk > 0) {
+                std::copy_n(packed.data() + offset, chunk,
+                            out.branches[k].data());
+            }
+            out.branches[k][31] = static_cast<uint8_t>(0x81U + k);
+        }
+    } else {
+        std::vector<uint8_t> script_bytes(scriptPubKey.begin(),
+                                          scriptPubKey.end());
+        out.branches = {lotus::v2::BranchLeaf(script_bytes)};
+    }
+
+    if (!is_burn) {
+        out.paths = {{0}};
+    }
+    return out;
+}
+
+CTxOut CTxOut::FromV2Output(const lotus::v2::Output &out) {
+    const Amount val = static_cast<int64_t>(out.value) * SATOSHI;
+    if (!out.branches.empty() &&
+        out.branches.size() <= lotus::v2::MAX_OUTPUT_BRANCHES) {
+        bool valid_tags = true;
+        for (size_t k = 0; k < out.branches.size(); ++k) {
+            if (out.branches[k][31] != static_cast<uint8_t>(0x81U + k)) {
+                valid_tags = false;
+                break;
+            }
+        }
+        if (valid_tags) {
+            const uint16_t script_len =
+                static_cast<uint16_t>(out.branches[0][0]) |
+                (static_cast<uint16_t>(out.branches[0][1]) << 8U);
+            const size_t total_packed = 2 + static_cast<size_t>(script_len);
+            const size_t expected_branches =
+                std::max<size_t>(1, (total_packed + 30) / 31);
+            if (expected_branches == out.branches.size()) {
+                std::vector<uint8_t> packed(out.branches.size() * 31);
+                for (size_t k = 0; k < out.branches.size(); ++k) {
+                    std::copy_n(out.branches[k].data(), 31,
+                                packed.data() + k * 31);
+                }
+                return CTxOut(
+                    val, CScript(packed.begin() + 2,
+                                 packed.begin() + 2 + script_len));
+            }
+        }
+    }
+    if (out.IsBurn()) {
+        return CTxOut(val, CScript() << OP_RETURN);
+    }
+    CScript script;
+    if (!out.branches.empty()) {
+        script = CScript(out.branches[0].begin(), out.branches[0].end());
+    }
+    return CTxOut(val, std::move(script));
 }
 
 std::string CTxOut::ToString() const {

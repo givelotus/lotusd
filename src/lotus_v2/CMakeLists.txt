@@ -14,3 +14,10 @@ target_include_directories(lotus_v2_header PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" 
 target_link_libraries(lotus_v2_header PUBLIC crypto)
 
 target_sources(lotus_v2_header PRIVATE set_reconciliation.cpp)
+
+if(NOT TARGET Boost::headers)
+    find_package(Boost 1.64 REQUIRED)
+endif()
+target_sources(lotus_v2_header PRIVATE
+    output.cpp commitment.cpp sparse_state.cpp mempool_overlay.cpp)
+target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
