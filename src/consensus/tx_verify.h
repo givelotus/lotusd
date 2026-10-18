@@ -14,6 +14,7 @@
 struct Amount;
 class CBlockIndex;
 class CCoinsViewCache;
+class Coin;
 class CTransaction;
 class TxValidationState;
 
@@ -30,6 +31,20 @@ struct Params;
 bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
                    const CCoinsViewCache &inputs, int nSpendHeight,
                    Amount &txfee);
+
+/**
+ * Validate transaction input maturity, value ranges, and fee directly from
+ * pre-spent Coins (e.g. CTxUndo::vprevout populated by SpendCoin) without
+ * performing redundant CCoinsViewCache lookups.
+ * Preconditions: tx.IsCoinBase() is false, spent_coins.size() == tx.vin.size(),
+ * and the caller has successfully spent every input into spent_coins.
+ * Missing coins are defensively rejected, but error precedence for combinations
+ * of invalid inputs outside that precondition need not match CheckTxInputs.
+ */
+bool CheckTxInputsFromSpentCoins(const CTransaction &tx,
+                                 const std::vector<Coin> &spent_coins,
+                                 TxValidationState &state, int nSpendHeight,
+                                 Amount &txfee);
 
 } // namespace Consensus
 
