@@ -12,16 +12,21 @@
 #include <validation.h>
 #include <consensus/amount.h>
 #include <feerate.h>
+#include <key.h>
 #include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/vm.h>
 #include <policy/fees.h>
 #include <rpc/server.h>
 #include <rpc/protocol.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/moneystr.h>
+#include <util/strencodings.h>
 #include <util/time.h>
 
 #include <test/util/setup_common.h>
+#include <test/util/native_snapshot_setup.h>
+#include <test/util/transaction_utils.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -45,6 +50,305 @@ BOOST_AUTO_TEST_CASE(FeeRounder) {
 
     // check that MAX_MONEY rounds to 9170997
     BOOST_CHECK_EQUAL(fee_rounder.round(MAX_MONEY), 9170997 * SATOSHI);
+}
+
+BOOST_AUTO_TEST_CASE(FeeHysteresisScheduleAndWindow) {
+    lotus::v2::FeeHysteresisController ctrl;
+
+    // Default uncongested state at t = 0 ms
+    const auto info0 = ctrl.GetFeeRateInfo(0);
+    BOOST_CHECK_EQUAL(info0.consensus_floor_per_kcu, 1000ULL);
+    BOOST_CHECK_EQUAL(info0.p2p_relay_feerate_per_kcu, 1000ULL);
+    BOOST_CHECK_EQUAL(info0.rpc_admission_feerate_per_kcu, 1000ULL);
+    BOOST_CHECK_EQUAL(info0.recommended_sdk_feerate_per_kcu, 1050ULL);
+    BOOST_CHECK_EQUAL(info0.hysteresis_window_ms, 30000);
+    BOOST_CHECK_EQUAL(info0.hysteresis_discount_permille, 150ULL);
+
+    // Rising congestion at t = 10,000 ms: RPC admission jumps to 2,000 per kCU.
+    // Because t = 0 ms (rate 1,000) is still inside the 30-second rolling window
+    // [t - 30,000, t], P2P relay stays anchored at 1,000 so in-flight transactions
+    // signed just before the spike still propagate across P2P.
+    ctrl.SetRpcAdmissionRatePerKCu(2000, 10000);
+    const auto info_rising = ctrl.GetFeeRateInfo(10000);
+    BOOST_CHECK_EQUAL(info_rising.rpc_admission_feerate_per_kcu, 2000ULL);
+    BOOST_CHECK_EQUAL(info_rising.recommended_sdk_feerate_per_kcu, 2100ULL);
+    BOOST_CHECK_EQUAL(info_rising.p2p_relay_feerate_per_kcu, 1000ULL);
+
+    // After 30 seconds of sustained congestion (t = 40,001 ms), the t = 0 sample
+    // expires from the rolling window; rolling min is 2,000, so P2P relay rate
+    // becomes floor(0.85 * 2000) = 1,700 per kCU.
+    const auto info_sustained = ctrl.GetFeeRateInfo(40001);
+    BOOST_CHECK_EQUAL(info_sustained.rpc_admission_feerate_per_kcu, 2000ULL);
+    BOOST_CHECK_EQUAL(info_sustained.recommended_sdk_feerate_per_kcu, 2100ULL);
+    BOOST_CHECK_EQUAL(info_sustained.p2p_relay_feerate_per_kcu, 1700ULL);
+
+    // Falling congestion at t = 45,000 ms: RPC admission drops to 1,400 per kCU.
+    // Rolling min in [15,000, 45,000] immediately becomes 1,400, so P2P relay drops
+    // to floor(0.85 * 1400) = 1,190 per kCU.
+    ctrl.SetRpcAdmissionRatePerKCu(1400, 45000);
+    const auto info_falling = ctrl.GetFeeRateInfo(45000);
+    BOOST_CHECK_EQUAL(info_falling.rpc_admission_feerate_per_kcu, 1400ULL);
+    BOOST_CHECK_EQUAL(info_falling.recommended_sdk_feerate_per_kcu, 1470ULL);
+    BOOST_CHECK_EQUAL(info_falling.p2p_relay_feerate_per_kcu, 1190ULL);
+
+    // Congestion clears via UpdateCongestion below target capacity: clamped at 1,000.
+    const uint64_t cleared_rate = ctrl.UpdateCongestion(10'000'000, 25'000'000, 50000);
+    BOOST_CHECK_EQUAL(cleared_rate, 1000ULL);
+    BOOST_CHECK_EQUAL(ctrl.GetP2pRelayRatePerKCu(50000), 1000ULL);
+
+    // Dynamic congestion above target capacity scales quadratically above 1,000.
+    const uint64_t congested_rate = ctrl.UpdateCongestion(50'000'000, 25'000'000, 90000);
+    BOOST_CHECK_EQUAL(congested_rate, 3000ULL);
+}
+
+BOOST_AUTO_TEST_CASE(ThreeTierAdmissionAndBounceDiagnostics) {
+    lotus::v2::FeeHysteresisController ctrl;
+    ctrl.Reset(0);
+    ctrl.SetRpcAdmissionRatePerKCu(2000, 0);
+    // Advance past the 30s window so rolling min is 2,000 and P2P rate is 1,700.
+    const int64_t now_ms = 35000;
+    const uint64_t tx_cu = 2500;
+
+    // 1. RPC Bounce Diagnostics (Tier 1):
+    // Required fee at 2,000 sats/kCU for 2,500 CU = 5,000 sats.
+    // Recommended SDK fee (+5% cushion = 2,100 sats/kCU) = 5,250 sats.
+    // A transaction paying 4,500 sats is rejected at Tier 1 with exact diagnostics.
+    const auto rpc_reject = ctrl.EvaluateTransactionFee(
+        lotus::v2::FeeTier::RpcAdmission, tx_cu, /*paid_fee_sats=*/4500, now_ms);
+    BOOST_CHECK(!rpc_reject.accepted);
+    BOOST_CHECK_EQUAL(rpc_reject.required_rate_per_kcu, 2000ULL);
+    BOOST_CHECK_EQUAL(rpc_reject.required_fee_sats, 5000ULL);
+    BOOST_CHECK_EQUAL(rpc_reject.recommended_sdk_fee_sats, 5250ULL);
+
+    // Re-signing with required_fee_sats (or recommended_sdk_fee_sats) succeeds in 1 round-trip.
+    const auto rpc_accept = ctrl.EvaluateTransactionFee(
+        lotus::v2::FeeTier::RpcAdmission, tx_cu, rpc_reject.recommended_sdk_fee_sats, now_ms);
+    BOOST_CHECK(rpc_accept.accepted);
+
+    // 2. P2P Relay Hysteresis Band (Tier 2):
+    // The same 4,500-sat transaction (>= 4,250 sats required at 1,700 sats/kCU)
+    // is accepted over P2P relay, preventing mempool divergence across peers.
+    const auto p2p_accept = ctrl.EvaluateTransactionFee(
+        lotus::v2::FeeTier::P2pRelay, tx_cu, /*paid_fee_sats=*/4500, now_ms);
+    BOOST_CHECK(p2p_accept.accepted);
+    BOOST_CHECK_EQUAL(p2p_accept.required_rate_per_kcu, 1700ULL);
+    BOOST_CHECK_EQUAL(p2p_accept.required_fee_sats, 4250ULL);
+
+    // 3. Consensus Floor Invariance (Tier 3):
+    // Even if local RPC admission spikes to 50,000 sats/kCU, avabatch and block
+    // validation only enforce the 1,000 sats/kCU consensus floor (2,500 sats).
+    ctrl.SetRpcAdmissionRatePerKCu(50000, now_ms);
+    const auto consensus_accept = ctrl.EvaluateTransactionFee(
+        lotus::v2::FeeTier::ConsensusFloor, tx_cu, /*paid_fee_sats=*/2500, now_ms);
+    BOOST_CHECK(consensus_accept.accepted);
+    BOOST_CHECK_EQUAL(consensus_accept.required_rate_per_kcu, 1000ULL);
+    BOOST_CHECK_EQUAL(consensus_accept.required_fee_sats, 2500ULL);
+}
+
+BOOST_AUTO_TEST_CASE(VmEnumerateConstantBoundAndExecutedCost) {
+    const lotus::v2::VmProfile profile{4096, 16, 1024, 128, 32, 8192, 16, 1000};
+    lotus::v2::VmCostProfile schedule{};
+    schedule.max_invocation_cost = 1'000'000;
+    schedule.structural_byte_cost = 1;
+    for (auto &op : schedule.opcode) {
+        op = {1, 1, 1};
+    }
+
+    auto eval_script = [&](const std::string &hex,
+                           const std::vector<lotus::v2::VmBytes> &args = {}) {
+        const auto code = ParseHex(hex);
+        return lotus::v2::EvaluateVmCharged(code, args, profile, schedule);
+    };
+
+    // <1> ENUMERATE DROP ENDENUMERATE <1>: constant k = 1 charges 1 iteration (74 CU),
+    // not 256 iterations (4,664 CU).
+    const auto enum1 = eval_script("4e69796a4e");
+    BOOST_CHECK(enum1.charged);
+    BOOST_CHECK_EQUAL(static_cast<int>(enum1.invocation.status),
+                      static_cast<int>(lotus::v2::VmStatus::Success));
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum1.accounting_cost), 74ULL);
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum1.invocation.executed_cost), 74ULL);
+
+    // <5> ENUMERATE DROP ENDENUMERATE <1>: constant k = 5 charges 5 iterations (146 CU).
+    const auto enum5 = eval_script("5269796a4e");
+    BOOST_CHECK(enum5.charged);
+    BOOST_CHECK_EQUAL(static_cast<int>(enum5.invocation.status),
+                      static_cast<int>(lotus::v2::VmStatus::Success));
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum5.accounting_cost), 56ULL + 5ULL * 18ULL);
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum5.invocation.executed_cost), 56ULL + 5ULL * 18ULL);
+
+    // Dynamic ENUMERATE (top of stack is runtime value 1, not a literal opcode)
+    // retains the worst-case 256 bound for accounting_cost (4,646 CU) while reporting
+    // exact runtime executed_cost (56 CU).
+    const lotus::v2::VmBytes one_arg(lotus::v2::VM_MIN_NUMERIC_BYTES, 0);
+    std::vector<lotus::v2::VmBytes> dyn_args{one_arg};
+    dyn_args[0][0] = 1;
+    const auto enum_dyn = eval_script("69796a4e", dyn_args);
+    BOOST_CHECK(enum_dyn.charged);
+    BOOST_CHECK_EQUAL(static_cast<int>(enum_dyn.invocation.status),
+                      static_cast<int>(lotus::v2::VmStatus::Success));
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum_dyn.accounting_cost), 4646ULL);
+    BOOST_CHECK_EQUAL(static_cast<uint64_t>(enum_dyn.invocation.executed_cost), 56ULL);
+    BOOST_CHECK_LT(static_cast<uint64_t>(enum_dyn.invocation.executed_cost),
+                   static_cast<uint64_t>(enum_dyn.accounting_cost));
+
+    // Early BREAK inside <5> ENUMERATE DROP <1> BREAK ENDENUMERATE <1>:
+    // static accounting_cost charges all 5 iterations, while executed_cost charges only 1.
+    const auto enum_break = eval_script("5269794e6b6a4e");
+    BOOST_CHECK(enum_break.charged);
+    BOOST_CHECK_EQUAL(static_cast<int>(enum_break.invocation.status),
+                      static_cast<int>(lotus::v2::VmStatus::Success));
+    BOOST_CHECK_GT(static_cast<uint64_t>(enum_break.invocation.executed_cost), 0ULL);
+    BOOST_CHECK_LT(static_cast<uint64_t>(enum_break.invocation.executed_cost),
+                   static_cast<uint64_t>(enum_break.accounting_cost));
+}
+
+BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainSetup) {
+    GlobalConfig config;
+    auto &fee_ctrl = lotus::v2::GetGlobalFeeHysteresisController();
+    fee_ctrl.Reset(TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now()));
+
+    // 1. Verify getfeerateinfo RPC returns all expected hysteresis and adaptive block size fields.
+    {
+        JSONRPCRequest req;
+        req.context = &m_node;
+        req.strMethod = "getfeerateinfo";
+        req.params = UniValue(UniValue::VARR);
+        UniValue res = tableRPC.execute(config, req);
+        BOOST_CHECK_EQUAL(res.find_value("consensus_floor_per_kcu").getInt<uint64_t>(), 1000ULL);
+        BOOST_CHECK_EQUAL(res.find_value("p2p_relay_feerate_per_kcu").getInt<uint64_t>(), 1000ULL);
+        BOOST_CHECK_EQUAL(res.find_value("rpc_admission_feerate_per_kcu").getInt<uint64_t>(), 1000ULL);
+        BOOST_CHECK_EQUAL(res.find_value("recommended_sdk_feerate_per_kcu").getInt<uint64_t>(), 1050ULL);
+        BOOST_CHECK_EQUAL(
+            res.find_value("marginal_burn_feerate_per_kcu").getInt<uint64_t>(),
+            lotus::v2::FeeHysteresisController::ComputeMarginalBurnFeeRatePerKCu(
+                0, lotus::v2::DEFAULT_MIN_ADAPTIVE_TARGET_BYTES));
+        BOOST_CHECK_EQUAL(res.find_value("hysteresis_window_ms").getInt<int64_t>(), 30000);
+        BOOST_CHECK_EQUAL(res.find_value("hysteresis_discount_permille").getInt<uint64_t>(), 150ULL);
+        BOOST_CHECK_EQUAL(res.find_value("ema_block_size_bytes").getInt<uint64_t>(),
+                          lotus::v2::DEFAULT_MIN_ADAPTIVE_TARGET_BYTES);
+        BOOST_CHECK_EQUAL(res.find_value("adaptive_target_block_size").getInt<uint64_t>(),
+                          lotus::v2::DEFAULT_MIN_ADAPTIVE_TARGET_BYTES);
+        BOOST_CHECK_EQUAL(res.find_value("adaptive_max_block_size").getInt<uint64_t>(),
+                          32'000'000ULL);
+        BOOST_CHECK_EQUAL(res.find_value("adaptive_max_generated_block_size").getInt<uint64_t>(),
+                          16'000'000ULL);
+    }
+
+    // 2. Verify testrawtxbatch rejects legacy non-v7 transactions by default,
+    // and reports required_cu, required_fee_sats, and recommended_sdk_fee_sats
+    // on pure version=7 transactions while enforcing Tier 1 RPC fee hysteresis.
+    const std::vector<uint8_t> v2_op_true_script{0x4e};
+    const lotus::v2::Hash v2_op_true_leaf = lotus::v2::BranchLeaf(v2_op_true_script);
+    const Amount cb_val = m_coinbase_txns[0]->vout[0].nValue;
+    const CMutableTransaction funding = CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, cb_val - 2000 * SATOSHI);
+    const CTransactionRef funding_tx = MakeTransactionRef(funding);
+    // The format rejection must not depend on a legacy signature or admission.
+    CMutableTransaction legacy_mtx = funding;
+    legacy_mtx.nVersion = 2;
+    legacy_mtx.fHasV2Lock = false;
+    const CTransactionRef legacy_tx = MakeTransactionRef(legacy_mtx);
+    const std::string legacy_tx_hex = EncodeHexTx(*legacy_tx);
+
+    {
+        JSONRPCRequest req;
+        req.context = &m_node;
+        req.strMethod = "testrawtxbatch";
+        UniValue arr(UniValue::VARR);
+        arr.push_back(legacy_tx_hex);
+        req.params = UniValue(UniValue::VARR);
+        req.params.push_back(std::move(arr));
+
+        UniValue res = tableRPC.execute(config, req);
+        BOOST_CHECK(!res.find_value("allowed").get_bool());
+        const UniValue &tx_res = res.find_value("results").get_array()[0];
+        BOOST_CHECK(!tx_res.find_value("allowed").get_bool());
+        BOOST_CHECK_EQUAL(tx_res.find_value("reject-reason").get_str(),
+                          "bad-txns-non-v7-format");
+    }
+
+    // Confirm genuinely admitted native funding before evaluating the candidate.
+    auto block = node::BlockAssembler(
+                     config, m_node.chainman->ActiveChainstate(), m_node.mempool.get())
+                     .CreateNewBlock(CScript(program.begin(), program.end()))->block;
+    BOOST_REQUIRE_EQUAL(block.vtx.size(), 2U);
+    BOOST_REQUIRE(block.vtx[1]->GetId() == funding_tx->GetId());
+    while (!CheckProofOfWork(block.GetHash(), block.nBits,
+                             config.GetChainParams().GetConsensus())) {
+        ++block.nNonce;
+    }
+    BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
+        std::make_shared<const CBlock>(block), true, true, nullptr));
+    BOOST_REQUIRE(m_node.chainman->ActiveTip()->GetBlockHash() == block.GetHash());
+    BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 0U);
+
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.fHasV2Lock = true;
+    mtx.nV2Lock = 0;
+    mtx.nLockTime = 0;
+    CTxIn txin(COutPoint(funding_tx->GetId(), 0), CScript(), CTxIn::SEQUENCE_FINAL);
+    txin.nFlags = 1;
+    txin.nPathIndex = 0;
+    lotus::v2::BranchWitness wit;
+    wit.script = v2_op_true_script;
+    txin.vWitnesses = {wit};
+    mtx.vin.push_back(std::move(txin));
+    lotus::v2::Output v2_out;
+    v2_out.flags = 0;
+    v2_out.value = static_cast<uint64_t>((funding.vout[0].nValue - 2000 * SATOSHI) / SATOSHI);
+    v2_out.branches = {v2_op_true_leaf};
+    v2_out.paths = {{0}};
+    mtx.vout.push_back(CTxOut::FromV2Output(v2_out));
+    CTransactionRef tx = MakeTransactionRef(mtx);
+    const std::string tx_hex = EncodeHexTx(*tx);
+
+    {
+        JSONRPCRequest req;
+        req.context = &m_node;
+        req.strMethod = "testrawtxbatch";
+        UniValue arr(UniValue::VARR);
+        arr.push_back(tx_hex);
+        req.params = UniValue(UniValue::VARR);
+        req.params.push_back(std::move(arr));
+
+        UniValue res = tableRPC.execute(config, req);
+        BOOST_CHECK(res.find_value("allowed").get_bool());
+        const UniValue &tx_res = res.find_value("results").get_array()[0];
+        const uint64_t req_cu = tx_res.find_value("required_cu").getInt<uint64_t>();
+        const uint64_t req_fee = tx_res.find_value("required_fee_sats").getInt<uint64_t>();
+        const uint64_t sdk_fee = tx_res.find_value("recommended_sdk_fee_sats").getInt<uint64_t>();
+        BOOST_CHECK_GT(req_cu, 0ULL);
+        BOOST_CHECK_EQUAL(req_fee, req_cu);
+        BOOST_CHECK_GE(sdk_fee, req_fee);
+    }
+
+    // Raise RPC admission rate to 50,000 sats/kCU so 2,000 sats is insufficient at Tier 1.
+    const int64_t now_ms = TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+    fee_ctrl.SetRpcAdmissionRatePerKCu(50000, now_ms);
+    {
+        JSONRPCRequest req;
+        req.context = &m_node;
+        req.strMethod = "testrawtxbatch";
+        UniValue arr(UniValue::VARR);
+        arr.push_back(tx_hex);
+        req.params = UniValue(UniValue::VARR);
+        req.params.push_back(std::move(arr));
+
+        UniValue res = tableRPC.execute(config, req);
+        BOOST_CHECK(!res.find_value("allowed").get_bool());
+        const UniValue &tx_res = res.find_value("results").get_array()[0];
+        BOOST_CHECK(!tx_res.find_value("allowed").get_bool());
+        BOOST_CHECK_EQUAL(tx_res.find_value("reject-reason").get_str(),
+                          "rpc-fee-hysteresis-insufficient");
+        const uint64_t req_cu = tx_res.find_value("required_cu").getInt<uint64_t>();
+        BOOST_CHECK_EQUAL(tx_res.find_value("required_fee_sats").getInt<uint64_t>(),
+                          req_cu * 50ULL);
+        BOOST_CHECK_EQUAL(tx_res.find_value("recommended_sdk_fee_sats").getInt<uint64_t>(),
+                          (req_cu * 52500ULL + 999ULL) / 1000ULL);
+    }
+    fee_ctrl.Reset(now_ms);
 }
 
 BOOST_AUTO_TEST_CASE(AdaptiveBlockSizeAndFeeHysteresis) {
@@ -108,8 +412,7 @@ BOOST_FIXTURE_TEST_CASE(UnifiedFeeEstimationRpcsUnderCongestion,
     };
 
     // 1. At idle, estimatefee, estimatesmartfee("ECONOMICAL"), and getmempoolinfo
-    // report 1,000 sats/kB (10.00 XEC/kB), and estimatesmartfee("CONSERVATIVE")
-    // reports 1,050 sats/kB.
+    // report 1,000 sats/kB, and estimatesmartfee("CONSERVATIVE") reports 1,050 sats/kB.
     {
         const UniValue info_res = call_rpc("getfeerateinfo");
         BOOST_CHECK_EQUAL(
@@ -164,8 +467,6 @@ BOOST_FIXTURE_TEST_CASE(UnifiedFeeEstimationRpcsUnderCongestion,
         TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
     const uint64_t congested_rpc_rate =
         fee_ctrl.UpdateCongestion(1'000'000'000ULL, 100'000'000ULL, congested_ms);
-    // At 1 GB utilization vs 100 MB target (excess = 9x target):
-    // rate = 1000 * (1 + 9 + 81) = 91,000 sats/kB; at 80 MB target, > 140,000 sats/kB.
     BOOST_CHECK_EQUAL(congested_rpc_rate, 91'000ULL);
     const uint64_t high_rpc_rate =
         fee_ctrl.UpdateCongestion(1'000'000'000ULL, 80'000'000ULL, congested_ms);
@@ -224,16 +525,30 @@ BOOST_FIXTURE_TEST_CASE(single_rpc_admission_attempt_under_congestion, TestChain
     controller.Reset(now);
     controller.SetRpcAdmissionRatePerKCu(9000, now);
     CMutableTransaction tx;
+    tx.nVersion = 7;
+    tx.fHasV2Lock = true;
+    tx.nV2Lock = 0;
     const COutPoint funding(TxId(uint256S("123456")), 0);
-    const CScript redeem = CScript() << OP_TRUE;
-    const CScript standard = GetScriptForDestination(ScriptHash(redeem));
-    tx.vin.emplace_back(funding, CScript() << std::vector<uint8_t>{OP_TRUE});
-    tx.vout.emplace_back(10 * COIN - 2000 * SATOSHI, standard);
-    tx.vout.emplace_back(Amount::zero(), CScript() << OP_RETURN << std::vector<uint8_t>(32));
+    const std::vector<uint8_t> script{0x4e}; // Native VM OP_1.
+    lotus::v2::Output output;
+    output.flags = 0;
+    output.value = 10 * COIN / SATOSHI;
+    output.branches = {lotus::v2::BranchLeaf(script)};
+    output.paths = {{0}};
+    const CTxOut funding_output = CTxOut::FromV2Output(output);
+    CTxIn input(funding, CScript(), CTxIn::SEQUENCE_FINAL);
+    input.nFlags = 1;
+    input.nPathIndex = 0;
+    lotus::v2::BranchWitness witness;
+    witness.script = script;
+    input.vWitnesses = {witness};
+    tx.vin.push_back(input);
+    output.value -= 2000;
+    tx.vout.push_back(CTxOut::FromV2Output(output));
     {
         LOCK(cs_main);
         m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(
-            funding, Coin(CTxOut(10 * COIN, standard), 0, false), false);
+            funding, Coin(funding_output, 0, false), false);
     }
     JSONRPCRequest req;
     req.context = &m_node;
@@ -258,15 +573,18 @@ BOOST_FIXTURE_TEST_CASE(single_rpc_admission_attempt_under_congestion, TestChain
         {
             LOCK(cs_main);
             m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(
-                rejected.vin[0].prevout, Coin(CTxOut(10 * COIN, standard), 0, false), false);
+                rejected.vin[0].prevout, Coin(funding_output, 0, false), false);
         }
         req.params = UniValue(UniValue::VARR);
         req.params.push_back(EncodeHexTx(CTransaction(rejected)));
         if (cap_maximum) req.params.push_back(UniValue(UniValue::VNUM, "0.01"));
+        // Native mempool publication recomputes pressure after the prior RPC.
+        // Re-establish this admission's deliberately congested policy sample.
+        controller.SetRpcAdmissionRatePerKCu(9000, now);
         const auto attempts = GetMempoolAdmissionAttempts();
         try {
             tableRPC.execute(m_node.chainman->GetConfig(), req);
-            BOOST_ERROR("fee-constrained transaction unexpectedly admitted");
+            BOOST_ERROR("fee-constrained transaction unexpectedly admitted: " << id << " fee=" << fee / SATOSHI << " size=" << ::GetSerializeSize(CTransaction(rejected)) << " rate=" << controller.GetFeeRateInfo(now).rpc_admission_feerate_per_kcu);
         } catch (const UniValue &error) {
             if (cap_maximum) BOOST_CHECK_EQUAL(error.find_value("code").getInt<int>(), RPC_VERIFY_ERROR);
             else BOOST_CHECK(error.find_value("message").get_str().find("rpc-fee-hysteresis-insufficient") != std::string::npos);
@@ -373,30 +691,40 @@ BOOST_AUTO_TEST_CASE(adaptive_block_message_bound_tracks_current_capacity) {
     controller.Reset(0);
 }
 
-BOOST_AUTO_TEST_CASE(adaptive_policy_preserves_ecash_block_validity_limit) {
+BOOST_AUTO_TEST_CASE(adaptive_policy_native_capacity_hook) {
     GlobalConfig config;
     auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
     controller.Reset(0);
+    BOOST_CHECK_EQUAL(config.GetMaxBlockSize(), DEFAULT_MAX_BLOCK_SIZE);
     controller.RecordConnectedBlock(64'000'000, 1000);
     BOOST_CHECK_GT(controller.GetAdaptiveMaxBlockSize(), DEFAULT_MAX_BLOCK_SIZE);
+    // This is a V2-only consensus/config hook. The shared eCash owner tests
+    // the opposite invariant: local adaptive policy never expands ABC validity.
+    BOOST_CHECK_EQUAL(config.GetMaxBlockSize(), controller.GetAdaptiveMaxBlockSize());
+    BOOST_CHECK_EQUAL(lotus::v2::GetBlockPayloadLimit(config),
+                      config.GetMaxBlockSize() + 256 * 1024);
+    controller.Reset(0);
     BOOST_CHECK_EQUAL(config.GetMaxBlockSize(), DEFAULT_MAX_BLOCK_SIZE);
-    CMutableTransaction cb;
-    cb.vin.resize(1);
-    cb.vin[0].scriptSig = CScript() << OP_0 << OP_0;
-    cb.vout.emplace_back(SATOSHI, CScript() << OP_TRUE);
-    while (::GetSerializeSize(cb) < MIN_TRANSACTION_SIZE) cb.vout[0].scriptPubKey << OP_NOP;
-    CMutableTransaction tx;
-    tx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0), CScript() << OP_TRUE);
-    tx.vout.emplace_back(SATOSHI, CScript() << OP_TRUE);
-    while (::GetSerializeSize(tx) < MIN_TRANSACTION_SIZE) tx.vout[0].scriptPubKey << OP_NOP;
+}
+
+BOOST_AUTO_TEST_CASE(native_adaptive_validity_limit_respects_explicit_block_bound) {
+    GlobalConfig config;
+    auto &controller = lotus::v2::GetGlobalFeeHysteresisController();
+    controller.Reset(0);
+    // G capacity follows connected block history, not a synthetic backlog.
+    controller.RecordConnectedBlock(64'000'000, 1000);
+    BOOST_CHECK_GT(controller.GetAdaptiveMaxBlockSize(), DEFAULT_MAX_BLOCK_SIZE);
+    BOOST_CHECK_EQUAL(config.GetMaxBlockSize(), controller.GetAdaptiveMaxBlockSize());
+    // Native consensus follows the adaptive configuration, while an explicit
+    // validation bound still rejects a header claiming a larger block.
     CBlock block;
+    block.nHeaderVersion = lotus::v2::kHeaderVersion;
     block.nBits = 0x207fffff;
-    block.vtx.assign(DEFAULT_MAX_BLOCK_SIZE / MIN_TRANSACTION_SIZE + 1, MakeTransactionRef(tx));
-    block.vtx[0] = MakeTransactionRef(cb);
+    block.nSize = DEFAULT_MAX_BLOCK_SIZE + 1;
     BlockValidationState state;
     const BlockValidationOptions options(DEFAULT_MAX_BLOCK_SIZE, false, false);
     BOOST_CHECK(!CheckBlock(block, state, config.GetChainParams().GetConsensus(), options));
-    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-length");
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-blk-size");
     controller.Reset(0);
 }
 

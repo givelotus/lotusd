@@ -60,10 +60,15 @@ PrepareBlock(const Config &config, const NodeContext &node,
                                      ->block);
 
     LOCK(cs_main);
-    block->SetBlockTime(Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1);
-    if (block->hashMerkleRoot.IsNull()) {
-        block->hashMerkleRoot = BlockMerkleRoot(*block);
-    }
+    const CBlockIndex *pindexPrev = Assert(node.chainman)->ActiveTip();
+    block->nHeaderVersion = 2;
+    block->nHeight = uint64_t(pindexPrev->nHeight + 1);
+    block->SetBlockTime(pindexPrev->GetMedianTimePast() + 1);
+    block->hashMerkleRoot = BlockMerkleRoot(*block);
+    block->hashStateRoot = ComputeV2BlockStateRoot(
+        *block, block->hashPrevBlock, block->nHeight,
+        uint64_t(pindexPrev->GetMedianTimePast()), false);
+    block->SetSize(::GetSerializeSize(*block));
 
     return block;
 }
@@ -90,9 +95,13 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
         hashPrevBlock = pblock->hashPrevBlock;
     }
 
+    const int nHeight = pindexPrev->nHeight + 1;
     CMutableTransaction tx_coinbase{*pblock->vtx.at(0)};
+    tx_coinbase.vin.at(0).prevout =
+        COutPoint(TxId(pindexPrev->GetBlockHash()), static_cast<uint32_t>(nHeight));
+    tx_coinbase.vin.at(0).nFlags = 2;
     tx_coinbase.vin.at(0).scriptSig =
-        CScript{} << pindexPrev->nHeight + 1
+        CScript{} << nHeight
                   << getExcessiveBlockSizeSig(nExcessiveBlockSize);
 
     // Make sure the coinbase is big enough.
@@ -101,10 +110,20 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
         tx_coinbase.vin[0].scriptSig
             << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
     }
+    tx_coinbase.vin[0].fHasCoinbaseData = true;
+    tx_coinbase.vin[0].vCoinbaseData.assign(
+        tx_coinbase.vin[0].scriptSig.begin(),
+        tx_coinbase.vin[0].scriptSig.end());
 
     assert(tx_coinbase.vin[0].scriptSig.size() <= MAX_COINBASE_SCRIPTSIG_SIZE);
     assert(::GetSerializeSize(tx_coinbase) >= MIN_TX_SIZE);
 
     pblock->vtx[0] = MakeTransactionRef(std::move(tx_coinbase));
+    pblock->nHeaderVersion = 2;
+    pblock->nHeight = uint64_t(nHeight);
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+    pblock->hashStateRoot = ComputeV2BlockStateRoot(
+        *pblock, pblock->hashPrevBlock, pblock->nHeight,
+        uint64_t(pindexPrev->GetMedianTimePast()), false);
+    pblock->SetSize(::GetSerializeSize(*pblock));
 }

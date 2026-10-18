@@ -7,6 +7,7 @@
 #include <config/bitcoin-config.h>
 #endif
 
+#include <lotus_v2/development_command.h>
 #include <chainparams.h>
 #include <clientversion.h>
 #include <common/args.h>
@@ -311,6 +312,11 @@ int main(int argc, char *argv[]) {
     NodeContext node;
 
     SetupEnvironment();
+
+    // Explicit development mode has its own manifest and required data path.
+    // It never selects or initializes an inherited network chainstate.
+    if (argc > 1 && std::string(argv[1]) == "-lotusv2development")
+        return lotus::v2::RunDevelopmentCommand(argc, argv);
 
     // Connect lotusd signal handlers
     noui_connect();

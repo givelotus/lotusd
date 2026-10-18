@@ -13,6 +13,9 @@
 #include <consensus/params.h>
 #include <pow/aserti32d.h>
 #include <primitives/blockhash.h>
+#include <lotus_v2/header.h>
+
+#include <cstring>
 
 uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
                              const CBlockHeader *pblock,
@@ -71,17 +74,20 @@ bool PermittedDifficultyTransition(const Consensus::Params &params,
 
 bool CheckProofOfWork(const BlockHash &hash, uint32_t nBits,
                       const Consensus::Params &params) {
-    arith_uint256 bnTarget;
-    if (!NBitsToTarget(params, nBits, bnTarget)) {
+    if (!params.hashGenesisBlock.IsNull() && hash == params.hashGenesisBlock) {
+        return true;
+    }
+
+    lotus::v2::Hash pow_limit{};
+    std::memcpy(pow_limit.data(), params.powLimit.begin(), 32);
+    lotus::v2::Hash target{};
+    if (!lotus::v2::DecodeTarget(nBits, pow_limit, target)) {
         return false;
     }
 
-    // Check proof of work matches claimed amount
-    if (UintToArith256(hash) > bnTarget) {
-        return false;
-    }
-
-    return true;
+    lotus::v2::Hash block_id{};
+    std::memcpy(block_id.data(), hash.begin(), 32);
+    return lotus::v2::MeetsTarget(block_id, target);
 }
 
 bool NBitsToTarget(const Consensus::Params &params, uint32_t nBits,
