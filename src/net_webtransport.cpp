@@ -145,9 +145,8 @@ StreamClass DefaultInventoryClass(std::string_view type) {
 } // namespace
 
 StreamClass ClassifyInventoryType(uint32_t inv_type, bool announcement) {
-    const uint32_t kind{inv_type == MSG_AVA_MEMPOOL_BATCH
-                            ? inv_type
-                            : inv_type & MSG_TYPE_MASK};
+    const uint32_t kind{
+        inv_type & (MSG_TYPE_MASK | MSG_TYPE_AVALANCHE_INBOUND)};
     switch (kind) {
         case MSG_TX:
             return announcement ? StreamClass::TX_ANNOUNCE
@@ -159,7 +158,7 @@ StreamClass ClassifyInventoryType(uint32_t inv_type, bool announcement) {
             return StreamClass::BLOCK;
         case MSG_AVA_PROOF:
         case MSG_AVA_STAKE_CONTENDER:
-        case MSG_AVA_STATE_ANCHOR:
+        case MSG_AVA_TREASURY_CONTENDER:
         case MSG_AVA_MEMPOOL_BATCH:
             return StreamClass::AVALANCHE;
         default:
