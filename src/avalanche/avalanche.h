@@ -52,6 +52,17 @@ static constexpr double AVALANCHE_DEFAULT_MIN_QUORUM_CONNECTED_STAKE_RATIO =
  */
 static constexpr double AVALANCHE_DEFAULT_MIN_AVAPROOFS_NODE_COUNT = 8;
 
+/**
+ * Default minimum number of connected Avalanche nodes required for quorum.
+ */
+static constexpr size_t AVALANCHE_DEFAULT_MIN_QUORUM_NODES = 8;
+
+/**
+ * Default minimum staked ratio in permille (1/1000ths) of circulating supply
+ * required for quorum (1 permille = 0.1%).
+ */
+static constexpr uint64_t AVALANCHE_DEFAULT_MIN_QUORUM_SUPPLY_PERMILLE = 1;
+
 /** Default for -persistavapeers */
 static constexpr bool DEFAULT_PERSIST_AVAPEERS{true};
 
