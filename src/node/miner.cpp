@@ -41,12 +41,12 @@
 namespace node {
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
                    const CBlockIndex *pindexPrev, int64_t adjustedTime) {
-    int64_t nOldTime = pblock->nTime;
+    int64_t nOldTime = pblock->GetBlockTime();
     int64_t nNewTime{
         std::max<int64_t>(pindexPrev->GetMedianTimePast() + 1, adjustedTime)};
 
     if (nOldTime < nNewTime) {
-        pblock->nTime = nNewTime;
+        pblock->SetBlockTime(nNewTime);
     }
 
     // Updating time can change work required on testnet:
@@ -121,14 +121,14 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     const Consensus::Params &consensusParams = chainParams.GetConsensus();
 
-    pblock->nVersion = ComputeBlockVersion(pindexPrev, consensusParams);
+    pblock->nHeaderVersion = ComputeBlockVersion(pindexPrev, consensusParams);
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
     if (chainParams.MineBlocksOnDemand()) {
-        pblock->nVersion = gArgs.GetIntArg("-blockversion", pblock->nVersion);
+        pblock->nHeaderVersion = gArgs.GetIntArg("-blockversion", pblock->nHeaderVersion);
     }
 
-    pblock->nTime = TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
+    pblock->SetBlockTime(TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
     m_lock_time_cutoff = pindexPrev->GetMedianTimePast();
 
     bool shouldAddFinalizedTxs =

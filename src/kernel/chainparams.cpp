@@ -39,10 +39,10 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
     txNew.vout[0].scriptPubKey = genesisOutputScript;
 
     CBlock genesis;
-    genesis.nTime = nTime;
+    genesis.SetBlockTime(nTime);
     genesis.nBits = nBits;
     genesis.nNonce = nNonce;
-    genesis.nVersion = nVersion;
+    genesis.nHeaderVersion = nVersion;
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
     genesis.hashPrevBlock.SetNull();
     genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
@@ -176,26 +176,9 @@ public:
 
         checkpointData = CheckpointData(ChainType::MAIN);
 
-        m_assumeutxo_data = {
-            // v0.31.5
-            {.height = 896'800,
-             .hash_serialized =
-                 AssumeutxoHash{uint256S("0x2f783c045f353b4a900139f8a66c7bcbb62"
-                                         "c93a4f298472d77dad9bfb0186665")},
-             .m_chain_tx_count = 299'407'257,
-             .blockhash =
-                 BlockHash{uint256S("0x0000000000000000297efb200794348b44bff4bf"
-                                    "b31716cf64dc45bac0a251ea")}},
-            // v0.32.0
-            {.height = 916'000,
-             .hash_serialized =
-                 AssumeutxoHash{uint256S("0x20f077a8fcc08bb9cb3753df845c9a4257c"
-                                         "e500684dfa5a95d1061701c4fa35d")},
-             .m_chain_tx_count = 299'856'530,
-             .blockhash =
-                 BlockHash{uint256S("0x00000000000000003fc542691c35873ba4ba7a44"
-                                    "05ce612a62f121988fb8a46d")}},
-        };
+        // eCash snapshot commitments do not authenticate this native chain.
+        // Add native assumptions only with independently verified snapshot data.
+        m_assumeutxo_data = {};
 
         // Data as of block
         // 000000000000000001d2ce557406b017a928be25ee98906397d339c3f68eec5d
@@ -304,26 +287,9 @@ public:
 
         checkpointData = CheckpointData(ChainType::TESTNET);
 
-        m_assumeutxo_data = {
-            // v0.31.5
-            {.height = 1'661'000,
-             .hash_serialized =
-                 AssumeutxoHash{uint256S("0xc7a2aa5dfdbafa2d6a6613d254d25a2ab9d"
-                                         "893c01099d241f1e7a3785cb5f50f")},
-             .m_chain_tx_count = 63'977'749,
-             .blockhash =
-                 BlockHash{uint256S("0x000000000000c7d18ee9b71a1ab4d8d21aa9d758"
-                                    "7bf260e93df029ccb392d403")}},
-            // v0.32.0
-            {.height = 1'680'000,
-             .hash_serialized =
-                 AssumeutxoHash{uint256S("0x53026f5c5f3bfdbfb3acda49d5531dfcbbb"
-                                         "544cfa0e15e3fcecc22d681aa9986")},
-             .m_chain_tx_count = 63'999'716,
-             .blockhash =
-                 BlockHash{uint256S("0x000000000003c4467ce74a73c902e80b5924cfdf"
-                                    "2695bea8991963f26ac6f4b1")}},
-        };
+        // eCash snapshot commitments do not authenticate this native chain.
+        // Add native assumptions only with independently verified snapshot data.
+        m_assumeutxo_data = {};
 
         // Data as of block
         // 000000000005b07ecf85563034d13efd81c1a29e47e22b20f4fc6919d5b09cd6
