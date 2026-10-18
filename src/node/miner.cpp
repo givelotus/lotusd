@@ -121,46 +121,62 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     const Consensus::Params &consensusParams = chainParams.GetConsensus();
 
-    pblock->nHeaderVersion = ComputeBlockVersion(pindexPrev, consensusParams);
-    // -regtest only: allow overriding block.nVersion with
+    pblock->nHeaderVersion = lotus::v2::kHeaderVersion;
+    // -regtest only: allow overriding block.nHeaderVersion with
     // -blockversion=N to test forking scenarios
     if (chainParams.MineBlocksOnDemand()) {
-        pblock->nHeaderVersion = gArgs.GetIntArg("-blockversion", pblock->nHeaderVersion);
+        pblock->nHeaderVersion =
+            gArgs.GetIntArg("-blockversion", pblock->nHeaderVersion);
     }
 
-    pblock->SetBlockTime(TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
+    pblock->SetBlockTime(
+        TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    UpdateTime(pblock, chainParams, pindexPrev,
+               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
+    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
+    pblock->nNonce = 0;
+    pblock->nHeight = uint64_t(nHeight);
+    pblock->hashStateRoot = pindexPrev->hashStateRoot;
     m_lock_time_cutoff = pindexPrev->GetMedianTimePast();
 
     bool shouldAddFinalizedTxs =
         m_avalanche && add_finalized_txs &&
         m_avalanche->isPreconsensusActivated(pindexPrev);
 
+    avalanche::MempoolBatchAnnouncement finalized_batch;
+    const bool has_finalized_batch =
+        m_avalanche &&
+        m_avalanche->getFinalizedBatchForBlock(pindexPrev->GetBlockHash(),
+                                               finalized_batch);
+
     bool use_speculative_overlay = false;
+    std::optional<lotus::v2::MempoolOverlayLayer> selected_overlay;
 
     if (m_mempool) {
         LOCK(m_mempool->cs);
         m_mempool->SyncMerklixOverlayToTip(
             pindexPrev->GetBlockHash(), uint64_t(nHeight),
             uint64_t(pindexPrev->GetMedianTimePast()));
-        const auto &spec_overlay =
-            m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
-        if (!shouldAddFinalizedTxs && !fPrintPriority &&
-            m_mempool->mapDeltas.empty() && !spec_overlay.HasDoubleSpends() &&
-            spec_overlay.GetTxCount() > 0 &&
-            spec_overlay.GetTxCount() == m_mempool->size() &&
-            blockFitter.testTxFits(m_mempool->GetTotalTxSize(),
-                                   spec_overlay.GetTotalSigChecks())) {
-            bool all_overlay_txs_eligible = true;
+        const auto &overlay_mgr = m_mempool->GetMerklixOverlay();
+        const auto &spec_overlay = overlay_mgr.GetSpeculativeOverlay();
+        const auto &frozen_epochs = overlay_mgr.GetFrozenEpochs();
+
+        auto try_use_overlay_layer =
+            [&](const lotus::v2::MempoolOverlayLayer &layer)
+                EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs) -> bool {
+            if (layer.GetTxCount() == 0) {
+                return false;
+            }
             // Bulk reuse must satisfy the same fee and cumulative resource
             // limits as individual selection, without mutating its counters
             // until every overlay transaction has qualified.
             auto overlay_fitter = blockFitter;
-            for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
+            for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
                 const auto tx = std::static_pointer_cast<const CTransaction>(
                     oentry.tx_ref);
                 if (!tx) {
-                    all_overlay_txs_eligible = false;
-                    break;
+                    return false;
                 }
                 const auto entry = m_mempool->mapTx.find(tx->GetId());
                 if (entry == m_mempool->mapTx.end() ||
@@ -171,26 +187,57 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
                     !overlay_fitter.testTxFits(tx->GetTotalSize(),
                                               oentry.sigchecks) ||
                     !CheckTx(*tx)) {
-                    all_overlay_txs_eligible = false;
-                    break;
+                    return false;
                 }
                 overlay_fitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
                                     oentry.fee_sats * SATOSHI);
             }
-            if (all_overlay_txs_eligible) {
-                use_speculative_overlay = true;
-                pblocktemplate->entries.reserve(spec_overlay.GetTxCount() + 1);
-                for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
-                    auto tx = std::static_pointer_cast<const CTransaction>(
-                        oentry.tx_ref);
-                    const Amount fee = oentry.fee_sats * SATOSHI;
-                    pblocktemplate->entries.emplace_back(tx, fee,
-                                                         oentry.sigchecks);
-                    blockFitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
-                                      fee);
+            selected_overlay.emplace(layer);
+            use_speculative_overlay = true;
+            pblocktemplate->entries.reserve(layer.GetTxCount() + 1);
+            for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
+                auto tx = std::static_pointer_cast<const CTransaction>(
+                    oentry.tx_ref);
+                const Amount fee = oentry.fee_sats * SATOSHI;
+                pblocktemplate->entries.emplace_back(tx, fee,
+                                                     oentry.sigchecks);
+                blockFitter.addTx(tx->GetTotalSize(), oentry.sigchecks, fee);
+            }
+            return true;
+        };
+
+        if (has_finalized_batch) {
+            lotus::v2::Hash fin_sub_a{};
+            std::memcpy(fin_sub_a.data(),
+                        finalized_batch.subtree_a_root.begin(), 32);
+            for (auto it = frozen_epochs.rbegin(); it != frozen_epochs.rend();
+                 ++it) {
+                if (it->GetSubtreeARoot() == fin_sub_a &&
+                    try_use_overlay_layer(*it)) {
+                    break;
+                }
+            }
+            if (!use_speculative_overlay &&
+                spec_overlay.GetSubtreeARoot() == fin_sub_a) {
+                try_use_overlay_layer(spec_overlay);
+            }
+        }
+
+        if (!use_speculative_overlay && !shouldAddFinalizedTxs) {
+            for (auto it = frozen_epochs.rbegin(); it != frozen_epochs.rend();
+                 ++it) {
+                if (try_use_overlay_layer(*it)) {
+                    break;
                 }
             }
         }
+
+        if (!use_speculative_overlay && !shouldAddFinalizedTxs &&
+            spec_overlay.GetTxCount() > 0 &&
+            spec_overlay.GetTxCount() == m_mempool->size()) {
+            try_use_overlay_layer(spec_overlay);
+        }
+
         if (!use_speculative_overlay) {
             if (shouldAddFinalizedTxs) {
                 addFinalizedTxs(*m_mempool);
@@ -222,14 +269,19 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     m_last_block_size = blockFitter.nBlockSize;
 
     // Create coinbase transaction.
+    const Amount blockSubsidy = GetBlockSubsidy(nHeight, consensusParams);
     CMutableTransaction coinbaseTx;
     coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout = COutPoint();
+    coinbaseTx.vin[0].prevout = COutPoint(TxId(pindexPrev->GetBlockHash()),
+                                          static_cast<uint32_t>(nHeight));
+    coinbaseTx.vin[0].nFlags = 2;
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
-    coinbaseTx.vout[0].nValue =
-        blockFitter.nFees + GetBlockSubsidy(nHeight, consensusParams);
+    coinbaseTx.vout[0].nValue = blockFitter.nFees + blockSubsidy;
     coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    coinbaseTx.vin[0].fHasCoinbaseData = true;
+    coinbaseTx.vin[0].vCoinbaseData.assign(coinbaseTx.vin[0].scriptSig.begin(),
+                                           coinbaseTx.vin[0].scriptSig.end());
 
     const Amount blockReward = coinbaseTx.vout[0].nValue;
 
@@ -257,16 +309,16 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     if (coinbaseSize < MIN_TX_SIZE) {
         coinbaseTx.vin[0].scriptSig
             << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
+        coinbaseTx.vin[0].vCoinbaseData.assign(
+            coinbaseTx.vin[0].scriptSig.begin(),
+            coinbaseTx.vin[0].scriptSig.end());
     }
 
     pblocktemplate->entries[0].tx = MakeTransactionRef(coinbaseTx);
     pblocktemplate->entries[0].fees = -1 * blockFitter.nFees;
     pblock->vtx[0] = pblocktemplate->entries[0].tx;
 
-    uint64_t nSerializeSize =
-        80 + GetSizeOfCompactSize(pblock->vtx.size()) +
-        pblock->vtx[0]->GetTotalSize() +
-        (blockFitter.nBlockSize - BlockFitter::COINBASE_RESERVED_SIZE);
+    uint64_t nSerializeSize = GetSerializeSize(*pblock);
 
     LogInfoEvent(
         BCLog::ALL, "block_template_created",
@@ -276,23 +328,31 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         .Field(BCLog::LogField::AmountSats, blockFitter.nFees / SATOSHI)
         .Field(BCLog::LogField::SigChecks, blockFitter.nBlockSigChecks);
 
-    // Fill in header.
-    pblock->hashPrevBlock = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainParams, pindexPrev,
-               TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
-    pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
-    pblock->nNonce = 0;
-    // The selected ordered transaction vector is the only source of this root.
-    // An overlay count cannot prove transaction identity or mutation freedom.
+    // Fill in size and roots.
+    pblock->SetSize(nSerializeSize);
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+    if (use_speculative_overlay && selected_overlay.has_value()) {
+        pblock->hashStateRoot = ComputeV2StateRootFromOverlay(
+            *pblock->vtx[0], *selected_overlay, pblock->nBits, uint64_t(nHeight),
+            uint64_t(pindexPrev->GetMedianTimePast()), false);
+    } else {
+        pblock->hashStateRoot = ComputeV2BlockStateRoot(
+            *pblock, pindexPrev->GetBlockHash(), uint64_t(nHeight),
+            uint64_t(pindexPrev->GetMedianTimePast()), false);
+    }
     pblocktemplate->entries[0].sigChecks = 0;
 
     BlockValidationState state;
+    const uint64_t validity_max_block_size =
+        use_speculative_overlay
+            ? std::max<uint64_t>(blockFitter.getMaxGeneratedBlockSize(),
+                                 nSerializeSize)
+            : blockFitter.getMaxGeneratedBlockSize();
     if (test_block_validity &&
         !TestBlockValidity(
             state, chainParams, m_chainstate, *pblock, pindexPrev,
             GetAdjustedTime,
-            BlockValidationOptions(blockFitter.getMaxGeneratedBlockSize())
+            BlockValidationOptions(validity_max_block_size)
                 .withCheckPoW(false)
                 .withCheckMerkleRoot(false))) {
         throw std::runtime_error(strprintf("%s: TestBlockValidity failed: %s",
