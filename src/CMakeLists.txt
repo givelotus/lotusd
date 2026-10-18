@@ -626,12 +626,14 @@ add_library(server
 	avalanche/delegation.cpp
 	avalanche/delegationbuilder.cpp
 	avalanche/peermanager.cpp
+	avalanche/preconsensus.cpp
 	avalanche/processor.cpp
 	avalanche/proof.cpp
 	avalanche/proofid.cpp
 	avalanche/proofbuilder.cpp
 	avalanche/proofpool.cpp
 	avalanche/stakecontendercache.cpp
+	avalanche/treasury.cpp
 	avalanche/voterecord.cpp
 	banman.cpp
 	blockencodings.cpp
@@ -1037,11 +1039,13 @@ if(BUILD_CHAINSTATE)
 		avalanche/delegation.cpp
 		avalanche/delegationbuilder.cpp
 		avalanche/peermanager.cpp
+		avalanche/preconsensus.cpp
 		avalanche/processor.cpp
 		avalanche/proof.cpp
 		avalanche/proofid.cpp
 		avalanche/proofpool.cpp
 		avalanche/stakecontendercache.cpp
+		avalanche/treasury.cpp
 		avalanche/voterecord.cpp
 		cashaddr.cpp         # via cashaddrenc.cpp
 		cashaddrenc.cpp      # via key_io.cpp
