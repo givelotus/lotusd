@@ -274,6 +274,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		serialize_tests.cpp
 		serialize_intcode_tests.cpp
 		settings_tests.cpp
+		set_reconciliation_tests.cpp
 		shortidprocessor_tests.cpp
 		sigcache_tests.cpp
 		sigcache_sharding_tests.cpp

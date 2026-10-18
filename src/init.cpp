@@ -916,6 +916,12 @@ void SetupServerArgs(NodeContext &node) {
                              "getrawtransaction rpc call (default: %d)",
                              DEFAULT_TXINDEX),
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-strictstateroot",
+                   "Require a non-null V2 block state root on regtest too "
+                   "(default: 0; the root is always required on mainnet and "
+                   "testnet, and always checked when it is non-null)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::DEBUG_TEST);
 #if ENABLE_CHRONIK
     argsman.AddArg(
         "-chronik",
