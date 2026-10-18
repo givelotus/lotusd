@@ -13,6 +13,7 @@
 #include <primitives/transaction.h>
 #include <util/check.h>
 #include <util/task_runner.h>
+#include <util/time.h>
 
 #include <future>
 #include <tuple>
@@ -199,10 +200,11 @@ void ValidationSignals::TransactionAddedToMempool(
     const CTransactionRef &tx,
     std::shared_ptr<const std::vector<Coin>> spent_coins,
     uint64_t mempool_sequence) {
-    auto event = [tx, spent_coins, mempool_sequence, this] {
+    const int64_t entry_time = GetTime<std::chrono::seconds>().count();
+    auto event = [tx, spent_coins, mempool_sequence, entry_time, this] {
         m_internals->Iterate([&](CValidationInterface &callbacks) {
             callbacks.TransactionAddedToMempool(tx, spent_coins,
-                                                mempool_sequence);
+                                                mempool_sequence, entry_time);
         });
     };
     ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s", __func__,
@@ -219,14 +221,16 @@ void ValidationSignals::TransactionsAddedToMempoolBatch(
                                   items[0].mempool_sequence);
         return;
     }
+    const int64_t entry_time = GetTime<std::chrono::seconds>().count();
     auto shared_items =
         std::make_shared<std::vector<MempoolAddedBatchItem>>(std::move(items));
     const size_t count = shared_items->size();
-    auto event = [shared_items, this] {
+    auto event = [shared_items, entry_time, this] {
         m_internals->Iterate([&](CValidationInterface &callbacks) {
             for (const auto &item : *shared_items) {
-                callbacks.TransactionAddedToMempool(item.tx, item.spent_coins,
-                                                    item.mempool_sequence);
+                callbacks.TransactionAddedToMempool(
+                    item.tx, item.spent_coins, item.mempool_sequence,
+                    entry_time);
             }
         });
     };
