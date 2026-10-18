@@ -10,6 +10,7 @@
 #include <txmempool.h>
 
 #include <memory>
+#include <optional>
 #include <rust/cxx.h>
 #include <vector>
 
@@ -29,6 +30,7 @@ class uint256;
 namespace chronik_bridge {
 
 struct BlockInfo;
+struct V2FeeRateInfo;
 struct Block;
 struct Tx;
 struct OutPoint;
@@ -92,6 +94,8 @@ public:
 
     const CBlockIndex &find_fork(const CBlockIndex &index) const;
 
+    void decode_raw_tx(rust::Slice<const uint8_t> raw_tx, Tx &tx) const;
+
     void lookup_spent_coins(Tx &, rust::Vec<OutPoint> &not_found,
                             rust::Vec<OutPoint> &coins_to_uncache) const;
     void uncache_coins(rust::Slice<const OutPoint>) const;
@@ -119,6 +123,23 @@ public:
 
 std::unique_ptr<ChronikBridge> make_bridge(const node::NodeContext &node);
 
+/**
+ * Description of a Lotus V2 3-branch Taproot-style output (`key_branch`,
+ * optional `script_branch`, optional `data_branch`, and optional `token_id` /
+ * `AssetId`) for bridging into Chronik's indexer.
+ */
+struct V2ThreeBranchOutputDesc {
+    int64_t sats{0};
+    std::array<uint8_t, 32> key_branch{};
+    std::optional<std::array<uint8_t, 32>> script_branch{};
+    std::optional<std::array<uint8_t, 32>> data_branch{};
+    std::optional<std::array<uint8_t, 32>> token_id{};
+    bool is_burn{false};
+};
+
+rust::Vec<uint8_t>
+encode_v2_three_branch_output_script(const V2ThreeBranchOutputDesc &desc);
+
 Tx bridge_tx(const CTransaction &tx, const std::vector<Coin> &spent_coins);
 
 Block bridge_block(const CBlock &block, const CBlockUndo &block_undo,
@@ -126,7 +147,7 @@ Block bridge_block(const CBlock &block, const CBlockUndo &block_undo,
 
 BlockInfo get_block_info(const CBlockIndex &index);
 
-std::array<uint8_t, 80> get_block_header(const CBlockIndex &index);
+rust::Vec<uint8_t> get_block_header(const CBlockIndex &index);
 
 const CBlockIndex &get_block_ancestor(const CBlockIndex &index, int32_t height);
 
@@ -137,6 +158,8 @@ rust::Vec<uint8_t> decompress_script(rust::Slice<const uint8_t> compressed);
 int64_t calc_fee(size_t num_bytes, int64_t sats_fee_per_kb);
 
 int64_t default_max_raw_tx_fee_rate_per_kb();
+
+V2FeeRateInfo get_v2_fee_rate_info();
 
 bool init_error(const rust::Str msg);
 

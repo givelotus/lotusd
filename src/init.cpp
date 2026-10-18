@@ -946,7 +946,8 @@ void SetupServerArgs(NodeContext &node) {
                   DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT),
         ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
     argsman.AddArg("-chroniktokenindex",
-                   "Enable token indexing in Chronik (default: 1)",
+                   "Enable SLP/ALP token indexing in Chronik (default: 1; "
+                   "not supported on Lotus V2 nodes, default 0)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
     argsman.AddArg("-chroniklokadidindex",
                    "Enable LOKAD ID indexing in Chronik (default: 1)",
