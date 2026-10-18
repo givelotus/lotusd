@@ -5,7 +5,7 @@
 #ifndef LOTUS_V2_SET_RECONCILIATION_H
 #define LOTUS_V2_SET_RECONCILIATION_H
 
-#include "tagged_hash.h"
+#include "header.h"
 
 #include <cstddef>
 #include <cstdint>

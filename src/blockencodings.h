@@ -49,26 +49,19 @@ public:
 };
 
 /**
- * Sealed header message (sealedheader): carries the CBlockHeader, the
- * coinbase transaction, and the leftmost-spine coinbase_merkle_branch +
- * epoch_batch_ids for O(1) full CBlock reconstruction against a reconciled
- * local candidate overlay / CTOR mempool.
+ * Sealed header message (sealedheader): carries only the V2
+ * CBlockHeader and the coinbase transaction for O(1) full CBlock reconstruction
+ * against a reconciled local candidate overlay / CTOR mempool.
  */
-class MinedHeader {
+class SealedHeader {
 public:
     CBlockHeader header;
     CTransactionRef coinbase_tx;
-    std::vector<uint256> coinbase_merkle_branch;
-    std::vector<uint256> epoch_batch_ids;
 
-    MinedHeader() = default;
-    explicit MinedHeader(const CBlock &block);
-    MinedHeader(const CBlockHeader &headerIn, CTransactionRef coinbaseIn,
-                std::vector<uint256> branchIn = {},
-                std::vector<uint256> epochIdsIn = {})
-        : header(headerIn), coinbase_tx(std::move(coinbaseIn)),
-          coinbase_merkle_branch(std::move(branchIn)),
-          epoch_batch_ids(std::move(epochIdsIn)) {}
+    SealedHeader() = default;
+    explicit SealedHeader(const CBlock &block);
+    SealedHeader(const CBlockHeader &headerIn, CTransactionRef coinbaseIn)
+        : header(headerIn), coinbase_tx(std::move(coinbaseIn)) {}
 
     bool IsNull() const {
         return header.IsNull() || coinbase_tx == nullptr;
@@ -76,22 +69,17 @@ public:
 
     bool IsValid() const {
         return !header.IsNull() && coinbase_tx != nullptr &&
-               !coinbase_tx->IsNull() && coinbase_tx->IsCoinBase() &&
-               coinbase_merkle_branch.size() <= 32 &&
-               epoch_batch_ids.size() <= 16;
+               !coinbase_tx->IsNull() && coinbase_tx->IsCoinBase();
     }
 
-    SERIALIZE_METHODS(MinedHeader, obj) {
-        READWRITE(obj.header, Using<TransactionCompression>(obj.coinbase_tx),
-                  obj.coinbase_merkle_branch, obj.epoch_batch_ids);
+    SERIALIZE_METHODS(SealedHeader, obj) {
+        READWRITE(obj.header, Using<TransactionCompression>(obj.coinbase_tx));
     }
 };
 
-using MinedHeaderAnnounce = MinedHeader;
-using SealedHeader = MinedHeader;
-using SealedHeaderAnnounce = MinedHeader;
-using SealedBlock = MinedHeader;
-using SealedBlockAnnounce = MinedHeader;
+using SealedHeaderAnnounce = SealedHeader;
+using MinedHeader = SealedHeader;
+using MinedHeaderAnnounce = SealedHeader;
 
 // Dumb serialization/storage-helper for CBlockHeaderAndShortTxIDs and
 // PartiallyDownloadedBlock
