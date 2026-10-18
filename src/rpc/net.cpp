@@ -171,6 +171,31 @@ static RPCHelpMan getpeerinfo() {
                     {RPCResult::Type::STR, "connection_type",
                      "Type of connection: \n" +
                          Join(CONNECTION_TYPE_DOC, ",\n") + "."},
+                    {RPCResult::Type::STR, "transport",
+                     "How the P2P stream is carried: tcp, ws (WebSocket) "
+                     "or wss (WebSocket over TLS)"},
+                    {RPCResult::Type::OBJ,
+                     "websocket",
+                     /*optional=*/true,
+                     "WebSocket transport details, for ws and wss peers",
+                     {
+                         {RPCResult::Type::BOOL, "tls",
+                          "Whether the WebSocket runs over TLS"},
+                         {RPCResult::Type::STR, "compression",
+                          "none, permessage-deflate, p2p-zstd or p2p-zstd-v1 "
+                          "(zstd with the prebaked P2P dictionary)"},
+                         {RPCResult::Type::NUM, "payload_bytes_sent",
+                          "P2P bytes sent (before compression)"},
+                         {RPCResult::Type::NUM, "payload_bytes_recv",
+                          "P2P bytes received (after decompression)"},
+                         {RPCResult::Type::NUM, "wire_bytes_sent",
+                          "WebSocket frame bytes sent, excluding TLS"},
+                         {RPCResult::Type::NUM, "wire_bytes_recv",
+                          "WebSocket frame bytes received, excluding TLS"},
+                         {RPCResult::Type::STR_HEX, "peer_cert_fingerprint",
+                          /*optional=*/true,
+                          "SHA-256 of the peer's TLS certificate, if any"},
+                     }},
                     {RPCResult::Type::NUM, "startingheight",
                      "The starting height (block) of the peer"},
                     {RPCResult::Type::NUM, "presynced_headers",
@@ -338,6 +363,26 @@ static RPCHelpMan getpeerinfo() {
                 obj.pushKV("bytesrecv_per_msg", std::move(recvPerMsgType));
                 obj.pushKV("connection_type",
                            ConnectionTypeAsString(stats.m_conn_type));
+                if (const auto &ws = stats.m_websocket_info) {
+                    obj.pushKV("transport", ws->tls ? "wss" : "ws");
+                    UniValue wsobj(UniValue::VOBJ);
+                    wsobj.pushKV("tls", ws->tls);
+                    wsobj.pushKV("compression",
+                                 P2PWebSocketCompressionName(ws->compression));
+                    wsobj.pushKV("payload_bytes_sent",
+                                 ws->payload_bytes_sent.load());
+                    wsobj.pushKV("payload_bytes_recv",
+                                 ws->payload_bytes_recv.load());
+                    wsobj.pushKV("wire_bytes_sent", ws->wire_bytes_sent.load());
+                    wsobj.pushKV("wire_bytes_recv", ws->wire_bytes_recv.load());
+                    if (!ws->peer_cert_fingerprint_hex.empty()) {
+                        wsobj.pushKV("peer_cert_fingerprint",
+                                     ws->peer_cert_fingerprint_hex);
+                    }
+                    obj.pushKV("websocket", std::move(wsobj));
+                } else {
+                    obj.pushKV("transport", "tcp");
+                }
 
                 ret.push_back(std::move(obj));
             }
@@ -658,6 +703,20 @@ static RPCHelpMan getnettotals() {
                      {RPCResult::Type::NUM, "time_left_in_cycle",
                       "Seconds left in current time cycle"},
                  }},
+                {RPCResult::Type::OBJ,
+                 "websocket",
+                 "Totals over P2P WebSocket peers (also counted above as "
+                 "uncompressed P2P bytes)",
+                 {
+                     {RPCResult::Type::NUM, "payload_bytes_sent",
+                      "P2P bytes sent (before compression)"},
+                     {RPCResult::Type::NUM, "payload_bytes_recv",
+                      "P2P bytes received (after decompression)"},
+                     {RPCResult::Type::NUM, "wire_bytes_sent",
+                      "WebSocket frame bytes sent, excluding TLS"},
+                     {RPCResult::Type::NUM, "wire_bytes_recv",
+                      "WebSocket frame bytes received, excluding TLS"},
+                 }},
             }},
         RPCExamples{HelpExampleCli("getnettotals", "") +
                     HelpExampleRpc("getnettotals", "")},
@@ -685,6 +744,16 @@ static RPCHelpMan getnettotals() {
                 "time_left_in_cycle",
                 count_seconds(connman.GetMaxOutboundTimeLeftInCycle()));
             obj.pushKV("uploadtarget", std::move(outboundLimit));
+
+            const auto &ws_totals{GetWebSocketTransportTotals()};
+            UniValue websocket(UniValue::VOBJ);
+            websocket.pushKV("payload_bytes_sent",
+                             ws_totals.payload_bytes_sent.load());
+            websocket.pushKV("payload_bytes_recv",
+                             ws_totals.payload_bytes_recv.load());
+            websocket.pushKV("wire_bytes_sent", ws_totals.wire_bytes_sent.load());
+            websocket.pushKV("wire_bytes_recv", ws_totals.wire_bytes_recv.load());
+            obj.pushKV("websocket", std::move(websocket));
             return obj;
         },
     };
