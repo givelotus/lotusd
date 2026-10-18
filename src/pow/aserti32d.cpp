@@ -11,7 +11,7 @@ uint32_t GetNextASERTWorkRequired(const CBlockIndex *pindexPrev,
                                   const Consensus::Params &params) noexcept {
     return GetNextASERTWorkRequired(
         pindexPrev, pblock, params,
-        pindexPrev->GetAncestor(params.axionHeight));
+        pindexPrev->GetAncestor(1));
 }
 
 /**
