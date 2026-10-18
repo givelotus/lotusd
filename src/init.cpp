@@ -857,6 +857,7 @@ void SetupServerArgs(NodeContext &node) {
                   "by a net-specific datadir location. (default: %s)",
                   BITCOIN_PID_FILENAME),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-prunefinalized=<n>", "Automatically prune finalized block and undo data older than <n> blocks behind the active/finalized tip while retaining all headers (default: 0 = disabled)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
         "-prune=<n>",
         strprintf("Reduce storage requirements by enabling pruning (deleting) "
