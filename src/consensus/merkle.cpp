@@ -4,7 +4,10 @@
 
 #include <consensus/merkle.h>
 #include <hash.h>
+#include <lotus_v2/commitment.h>
 
+#include <cstring>
+#include <set>
 #include <algorithm>
 #include <cassert>
 
@@ -70,13 +73,35 @@ uint256 ComputeMerkleRoot(std::vector<uint256> hashes, bool *mutated) {
 }
 
 uint256 BlockMerkleRoot(const CBlock &block, bool *mutated) {
-    std::vector<uint256> leaves;
-    // capacity rounded up to even
-    leaves.reserve((block.vtx.size() + 1) & ~1ULL);
-    for (size_t s = 0; s < block.vtx.size(); s++) {
-        leaves.push_back(block.vtx[s]->GetId());
+    if (block.vtx.empty()) {
+        if (mutated) {
+            *mutated = false;
+        }
+        return uint256();
     }
-    return ComputeMerkleRoot(std::move(leaves), mutated);
+    bool duplicate = false;
+    std::set<TxId> seen_ids;
+    std::vector<lotus::v2::TxIdentityPair> pairs;
+    pairs.reserve(block.vtx.size());
+    for (const auto &tx : block.vtx) {
+        if (!seen_ids.insert(tx->GetId()).second) {
+            duplicate = true;
+        }
+        lotus::v2::TxIdentityPair pair{};
+        std::memcpy(pair.tx_hash.data(), tx->GetHash().begin(), 32);
+        std::memcpy(pair.tx_id.data(), tx->GetId().begin(), 32);
+        pairs.push_back(pair);
+    }
+    if (mutated) {
+        *mutated = duplicate;
+    }
+    lotus::v2::Hash root{};
+    if (!lotus::v2::TransactionRoot(pairs, root)) {
+        return uint256();
+    }
+    uint256 out;
+    std::memcpy(out.begin(), root.data(), 32);
+    return out;
 }
 
 uint256 ComputeMerkleRootChunked(size_t n,
@@ -140,14 +165,8 @@ uint256 ComputeMerkleRootChunked(size_t n,
 }
 
 uint256 BlockMerkleRootParallel(const CBlock &block, bool *mutated,
-                                size_t n_tasks, const MerkleTaskRunner &run) {
-    const size_t n{block.vtx.size()};
-    // The smallest power of two giving at most n_tasks subtrees.
-    size_t chunk{1};
-    while (chunk * std::max<size_t>(n_tasks, 1) < n) {
-        chunk <<= 1;
-    }
-    return ComputeMerkleRootChunked(
-        n, [&](size_t i) -> uint256 { return block.vtx[i]->GetId(); }, mutated,
-        chunk, run);
+                                size_t /*n_tasks*/, const MerkleTaskRunner & /*run*/) {
+    // Native commitments include TxHash and TxId and use TransactionRoot.
+    // The shared SHA256D subtree optimization is not a native root algorithm.
+    return BlockMerkleRoot(block, mutated);
 }

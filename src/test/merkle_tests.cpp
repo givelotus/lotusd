@@ -151,7 +151,7 @@ static std::vector<uint256> BlockMerkleBranch(const CBlock &block,
     std::vector<uint256> leaves;
     leaves.resize(block.vtx.size());
     for (size_t s = 0; s < block.vtx.size(); s++) {
-        leaves[s] = block.vtx[s]->GetHash();
+        leaves[s] = block.vtx[s]->GetId();
     }
     return ComputeMerkleBranch(leaves, position);
 }
@@ -201,6 +201,15 @@ BlockGetMerkleBranch(const CBlock &block,
         j += nSize;
     }
     return vMerkleBranch;
+}
+
+static uint256 LegacyBlockMerkleRoot(const CBlock &block,
+                                     bool *mutated = nullptr) {
+    std::vector<uint256> leaves(block.vtx.size());
+    for (size_t s = 0; s < block.vtx.size(); s++) {
+        leaves[s] = block.vtx[s]->GetId();
+    }
+    return ComputeMerkleRoot(std::move(leaves), mutated);
 }
 
 static inline int ctz(uint32_t i) {
@@ -254,8 +263,12 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
             }
             // Compute the root of the block before mutating it.
             bool unmutatedMutated = false;
-            uint256 unmutatedRoot = BlockMerkleRoot(block, &unmutatedMutated);
+            uint256 unmutatedRoot =
+                LegacyBlockMerkleRoot(block, &unmutatedMutated);
             BOOST_CHECK(unmutatedMutated == false);
+            bool v2Unmutated = false;
+            (void)BlockMerkleRoot(block, &v2Unmutated);
+            BOOST_CHECK(v2Unmutated == false);
             // Optionally mutate by duplicating the last transactions, resulting
             // in the same merkle root.
             block.vtx.resize(ntx3);
@@ -275,12 +288,15 @@ BOOST_AUTO_TEST_CASE(merkle_test) {
                 BlockBuildMerkleTree(block, &oldMutated, merkleTree);
             // Compute the merkle root using the new mechanism.
             bool newMutated = false;
-            uint256 newRoot = BlockMerkleRoot(block, &newMutated);
+            uint256 newRoot = LegacyBlockMerkleRoot(block, &newMutated);
+            bool v2Mutated = false;
+            (void)BlockMerkleRoot(block, &v2Mutated);
             BOOST_CHECK(oldRoot == newRoot);
             BOOST_CHECK(newRoot == unmutatedRoot);
             BOOST_CHECK((newRoot == uint256()) == (ntx == 0));
             BOOST_CHECK(oldMutated == newMutated);
             BOOST_CHECK(newMutated == !!mutate);
+            BOOST_CHECK(v2Mutated == !!mutate);
             // If no mutation was done (once for every ntx value), try up to 16
             // branches.
             if (mutate == 0) {
@@ -322,8 +338,12 @@ BOOST_AUTO_TEST_CASE(merkle_test_oneTx_block) {
     CMutableTransaction mtx;
     mtx.nLockTime = 0;
     block.vtx[0] = MakeTransactionRef(std::move(mtx));
-    uint256 root = BlockMerkleRoot(block, &mutated);
-    BOOST_CHECK_EQUAL(root, block.vtx[0]->GetHash());
+    uint256 root = LegacyBlockMerkleRoot(block, &mutated);
+    BOOST_CHECK_EQUAL(root, block.vtx[0]->GetId());
+    BOOST_CHECK_EQUAL(mutated, false);
+
+    uint256 v2root = BlockMerkleRoot(block, &mutated);
+    BOOST_CHECK(!v2root.IsNull());
     BOOST_CHECK_EQUAL(mutated, false);
 }
 
@@ -342,12 +362,15 @@ BOOST_AUTO_TEST_CASE(merkle_test_OddTxWithRepeatedLastTx_block) {
     blockWithRepeatedLastTx = block;
     blockWithRepeatedLastTx.vtx.push_back(blockWithRepeatedLastTx.vtx.back());
 
-    uint256 rootofBlock = BlockMerkleRoot(block, &mutated);
+    uint256 rootofBlock = LegacyBlockMerkleRoot(block, &mutated);
     BOOST_CHECK_EQUAL(mutated, false);
 
     uint256 rootofBlockWithRepeatedLastTx =
-        BlockMerkleRoot(blockWithRepeatedLastTx, &mutated);
+        LegacyBlockMerkleRoot(blockWithRepeatedLastTx, &mutated);
     BOOST_CHECK_EQUAL(rootofBlock, rootofBlockWithRepeatedLastTx);
+    BOOST_CHECK_EQUAL(mutated, true);
+
+    (void)BlockMerkleRoot(blockWithRepeatedLastTx, &mutated);
     BOOST_CHECK_EQUAL(mutated, true);
 }
 
@@ -370,9 +393,9 @@ BOOST_AUTO_TEST_CASE(merkle_test_LeftSubtreeRightSubtree) {
         rightSubtreeBlock.vtx.push_back(block.vtx[pos]);
     }
 
-    uint256 root = BlockMerkleRoot(block);
-    uint256 rootOfLeftSubtree = BlockMerkleRoot(leftSubtreeBlock);
-    uint256 rootOfRightSubtree = BlockMerkleRoot(rightSubtreeBlock);
+    uint256 root = LegacyBlockMerkleRoot(block);
+    uint256 rootOfLeftSubtree = LegacyBlockMerkleRoot(leftSubtreeBlock);
+    uint256 rootOfRightSubtree = LegacyBlockMerkleRoot(rightSubtreeBlock);
     std::vector<uint256> leftRight;
     leftRight.push_back(rootOfLeftSubtree);
     leftRight.push_back(rootOfRightSubtree);

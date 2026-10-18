@@ -96,7 +96,7 @@ bool ScriptIsChange(const CWallet &wallet, const CScript &script) {
 }
 
 bool OutputIsChange(const CWallet &wallet, const CTxOut &txout) {
-    return ScriptIsChange(wallet, txout.scriptPubKey);
+    return ScriptIsChange(wallet, wallet.GetScriptForOutput(txout));
 }
 
 Amount OutputGetChange(const CWallet &wallet, const CTxOut &txout) {
@@ -295,7 +295,7 @@ void CachedTxGetAmounts(const CWallet &wallet, const CWalletTx &wtx,
         // In either case, we need to get the destination address.
         CTxDestination address;
 
-        if (!ExtractDestination(txout.scriptPubKey, address) &&
+        if (!ExtractDestination(wallet.GetScriptForOutput(txout), address) &&
             !txout.scriptPubKey.IsUnspendable()) {
             wallet.WalletLogPrintf("CWalletTx::GetAmounts: Unknown transaction "
                                    "type found, txid %s\n",
@@ -436,7 +436,7 @@ std::map<CTxDestination, Amount> GetAddressBalances(const CWallet &wallet) {
             if (!wallet.IsMine(wtx.tx->vout[i])) {
                 continue;
             }
-            if (!ExtractDestination(wtx.tx->vout[i].scriptPubKey, addr)) {
+            if (!ExtractDestination(wallet.GetScriptForOutput(wtx.tx->vout[i]), addr)) {
                 continue;
             }
 
@@ -469,9 +469,9 @@ std::set<std::set<CTxDestination>> GetAddressGroupings(const CWallet &wallet) {
                 }
 
                 if (!ExtractDestination(
-                        wallet.mapWallet.at(txin.prevout.GetTxId())
-                            .tx->vout[txin.prevout.GetN()]
-                            .scriptPubKey,
+                        wallet.GetScriptForOutput(
+                            wallet.mapWallet.at(txin.prevout.GetTxId())
+                                .tx->vout[txin.prevout.GetN()]),
                         address)) {
                     continue;
                 }
@@ -485,7 +485,7 @@ std::set<std::set<CTxDestination>> GetAddressGroupings(const CWallet &wallet) {
                 for (const auto &txout : wtx.tx->vout) {
                     if (OutputIsChange(wallet, txout)) {
                         CTxDestination txoutAddr;
-                        if (!ExtractDestination(txout.scriptPubKey,
+                        if (!ExtractDestination(wallet.GetScriptForOutput(txout),
                                                 txoutAddr)) {
                             continue;
                         }
@@ -505,7 +505,7 @@ std::set<std::set<CTxDestination>> GetAddressGroupings(const CWallet &wallet) {
         for (const auto &txout : wtx.tx->vout) {
             if (wallet.IsMine(txout)) {
                 CTxDestination address;
-                if (!ExtractDestination(txout.scriptPubKey, address)) {
+                if (!ExtractDestination(wallet.GetScriptForOutput(txout), address)) {
                     continue;
                 }
 
