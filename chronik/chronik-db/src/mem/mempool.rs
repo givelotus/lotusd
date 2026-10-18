@@ -22,7 +22,9 @@ use crate::{
     groups::{
         LokadIdGroup, MempoolLokadIdHistory, MempoolScriptHistory,
         MempoolScriptUtxos, MempoolTokenIdHistory, MempoolTokenIdUtxos,
-        ScriptGroup, TokenIdGroup, TokenIdGroupAux,
+        MempoolV2AssetHistory, MempoolV2AssetUtxos, MempoolV2BranchHistory,
+        MempoolV2BranchUtxos, ScriptGroup, TokenIdGroup, TokenIdGroupAux,
+        V2AssetGroup, V2BranchGroup,
     },
     mem::{MempoolSpentBy, MempoolTokens},
     plugins::MempoolPlugins,
@@ -36,6 +38,10 @@ pub struct Mempool {
     txs: HashMap<TxId, MempoolTx>,
     script_history: MempoolScriptHistory,
     script_utxos: MempoolScriptUtxos,
+    v2_branch_history: MempoolV2BranchHistory,
+    v2_branch_utxos: MempoolV2BranchUtxos,
+    v2_asset_history: MempoolV2AssetHistory,
+    v2_asset_utxos: MempoolV2AssetUtxos,
     spent_by: MempoolSpentBy,
     tokens: MempoolTokens,
     token_id_history: MempoolTokenIdHistory,
@@ -91,6 +97,10 @@ impl Mempool {
             txs: HashMap::new(),
             script_history: MempoolScriptHistory::new(script_group.clone()),
             script_utxos: MempoolScriptUtxos::new(script_group),
+            v2_branch_history: MempoolV2BranchHistory::new(V2BranchGroup),
+            v2_branch_utxos: MempoolV2BranchUtxos::new(V2BranchGroup),
+            v2_asset_history: MempoolV2AssetHistory::new(V2AssetGroup),
+            v2_asset_utxos: MempoolV2AssetUtxos::new(V2AssetGroup),
             spent_by: MempoolSpentBy::default(),
             tokens: MempoolTokens::default(),
             token_id_history: MempoolTokenIdHistory::new(TokenIdGroup),
@@ -113,6 +123,18 @@ impl Mempool {
         let txid = mempool_tx.tx.txid();
         self.script_history.insert(&mempool_tx, &());
         self.script_utxos.insert(
+            &mempool_tx,
+            |txid| self.txs.contains_key(txid),
+            &(),
+        )?;
+        self.v2_branch_history.insert(&mempool_tx, &());
+        self.v2_branch_utxos.insert(
+            &mempool_tx,
+            |txid| self.txs.contains_key(txid),
+            &(),
+        )?;
+        self.v2_asset_history.insert(&mempool_tx, &());
+        self.v2_asset_utxos.insert(
             &mempool_tx,
             |txid| self.txs.contains_key(txid),
             &(),
@@ -172,6 +194,18 @@ impl Mempool {
             |txid| self.txs.contains_key(txid),
             &(),
         )?;
+        self.v2_branch_history.remove(&mempool_tx, &());
+        self.v2_branch_utxos.remove(
+            &mempool_tx,
+            |txid| self.txs.contains_key(txid),
+            &(),
+        )?;
+        self.v2_asset_history.remove(&mempool_tx, &());
+        self.v2_asset_utxos.remove(
+            &mempool_tx,
+            |txid| self.txs.contains_key(txid),
+            &(),
+        )?;
         self.spent_by.remove(&mempool_tx)?;
         let token_id_aux;
         if self.is_token_index_enabled {
@@ -205,6 +239,10 @@ impl Mempool {
         if let Some(mempool_tx) = self.txs.remove(txid) {
             self.script_history.remove(&mempool_tx, &());
             self.script_utxos.remove_mined(&mempool_tx, &());
+            self.v2_branch_history.remove(&mempool_tx, &());
+            self.v2_branch_utxos.remove_mined(&mempool_tx, &());
+            self.v2_asset_history.remove(&mempool_tx, &());
+            self.v2_asset_utxos.remove_mined(&mempool_tx, &());
             self.spent_by.remove(&mempool_tx)?;
             if self.is_token_index_enabled {
                 let token_id_aux =
@@ -247,6 +285,9 @@ impl Mempool {
                 );
                 token_tx = Some(probed_token_tx);
                 spent_tokens = probed_spent_tokens;
+            } else {
+                token_id_aux =
+                    TokenIdGroupAux::from_mempool(&mempool_tx.tx, &self.tokens);
             }
         }
         let plugin_outputs = self.plugins.probe(
@@ -287,6 +328,26 @@ impl Mempool {
     /// Tx history of UTXOs in the mempool.
     pub fn script_utxos(&self) -> &MempoolScriptUtxos {
         &self.script_utxos
+    }
+
+    /// Tx history of V2 branch root hashes in the mempool.
+    pub fn v2_branch_history(&self) -> &MempoolV2BranchHistory {
+        &self.v2_branch_history
+    }
+
+    /// UTXOs by V2 branch root hash in the mempool.
+    pub fn v2_branch_utxos(&self) -> &MempoolV2BranchUtxos {
+        &self.v2_branch_utxos
+    }
+
+    /// Tx history of V2 asset IDs in the mempool.
+    pub fn v2_asset_history(&self) -> &MempoolV2AssetHistory {
+        &self.v2_asset_history
+    }
+
+    /// UTXOs by V2 asset ID in the mempool.
+    pub fn v2_asset_utxos(&self) -> &MempoolV2AssetUtxos {
+        &self.v2_asset_utxos
     }
 
     /// Which tx outputs have been spent by tx in the mempool.
