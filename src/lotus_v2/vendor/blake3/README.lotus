@@ -1,0 +1,10 @@
+Official BLAKE3 C reference implementation, pinned to
+https://github.com/BLAKE3-team/BLAKE3/tree/f55849f89cd85083c1c9daa2c5de20766f309c00
+
+Copied unchanged: c/blake3.c, c/blake3.h, c/blake3_impl.h,
+c/blake3_dispatch.c, c/blake3_portable.c, c/blake3_neon.c,
+c/blake3_sse2.c, c/blake3_sse41.c, c/blake3_avx2.c, c/blake3_avx512.c,
+and LICENSE_A2.
+Licensed under Apache-2.0 as permitted by upstream's dual/multiple license.
+Hardware SIMD intrinsics (NEON on ARM64, SSE2/SSE4.1/AVX2/AVX-512 on x86_64)
+are enabled with runtime dispatch and portable fallback.
