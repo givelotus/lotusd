@@ -48,7 +48,7 @@ hex-literal = "0.3"
 # Async runtime
 [dependencies.tokio]
 version = "1.25"
-features = ["sync", "rt", "rt-multi-thread", "macros"]
+features = ["sync", "rt", "rt-multi-thread", "macros", "time"]
 
 [dev-dependencies]
 # Colorful diffs for assertions

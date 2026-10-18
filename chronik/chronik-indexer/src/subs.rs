@@ -13,6 +13,7 @@ use bitcoinsuite_core::{
 use chronik_db::{
     groups::{
         LokadIdGroup, ScriptGroup, TokenIdGroup, TokenIdGroupAux, TxIdGroup,
+        V2AssetGroup, V2BranchGroup,
     },
     io::BlockHeight,
     plugins::PluginsGroup,
@@ -62,6 +63,8 @@ pub struct Subs {
     subs_txs: broadcast::Sender<TxMsg>,
     subs_txid: SubsGroup<TxIdGroup>,
     subs_script: SubsGroup<ScriptGroup>,
+    subs_v2_branch: SubsGroup<V2BranchGroup>,
+    subs_v2_asset: SubsGroup<V2AssetGroup>,
     subs_token_id: SubsGroup<TokenIdGroup>,
     subs_lokad_id: SubsGroup<LokadIdGroup>,
     subs_plugins: SubsGroup<PluginsGroup>,
@@ -75,6 +78,8 @@ impl Subs {
             subs_txs: broadcast::channel(TXS_CHANNEL_CAPACITY).0,
             subs_txid: SubsGroup::new(TxIdGroup),
             subs_script: SubsGroup::new(script_group),
+            subs_v2_branch: SubsGroup::new(V2BranchGroup),
+            subs_v2_asset: SubsGroup::new(V2AssetGroup),
             subs_token_id: SubsGroup::new(TokenIdGroup),
             subs_lokad_id: SubsGroup::new(LokadIdGroup),
             subs_plugins: SubsGroup::new(PluginsGroup),
@@ -99,6 +104,16 @@ impl Subs {
     /// Mutable reference to the script subscribers.
     pub fn subs_script_mut(&mut self) -> &mut SubsGroup<ScriptGroup> {
         &mut self.subs_script
+    }
+
+    /// Mutable reference to the V2 branch root hash subscribers.
+    pub fn subs_v2_branch_mut(&mut self) -> &mut SubsGroup<V2BranchGroup> {
+        &mut self.subs_v2_branch
+    }
+
+    /// Mutable reference to the V2 asset ID subscribers.
+    pub fn subs_v2_asset_mut(&mut self) -> &mut SubsGroup<V2AssetGroup> {
+        &mut self.subs_v2_asset
     }
 
     /// Mutable reference to the token ID subscribers.
@@ -127,6 +142,8 @@ impl Subs {
         self.broadcast_tx_msg(tx.txid(), msg_type);
         self.subs_txid.handle_tx_event(tx, &(), msg_type);
         self.subs_script.handle_tx_event(tx, &(), msg_type);
+        self.subs_v2_branch.handle_tx_event(tx, &(), msg_type);
+        self.subs_v2_asset.handle_tx_event(tx, &(), msg_type);
         self.subs_token_id
             .handle_tx_event(tx, token_id_aux, msg_type);
         self.subs_lokad_id.handle_tx_event(tx, &(), msg_type);
@@ -144,6 +161,8 @@ impl Subs {
     ) {
         if self.subs_txid.is_empty()
             && self.subs_script.is_empty()
+            && self.subs_v2_branch.is_empty()
+            && self.subs_v2_asset.is_empty()
             && self.subs_token_id.is_empty()
             && self.subs_lokad_id.is_empty()
             && self.subs_plugins.is_empty()
@@ -156,6 +175,8 @@ impl Subs {
             self.broadcast_tx_msg(tx.txid(), msg_type);
             self.subs_txid.handle_tx_event(tx, &(), msg_type);
             self.subs_script.handle_tx_event(tx, &(), msg_type);
+            self.subs_v2_branch.handle_tx_event(tx, &(), msg_type);
+            self.subs_v2_asset.handle_tx_event(tx, &(), msg_type);
             self.subs_token_id
                 .handle_tx_event(tx, token_id_aux, msg_type);
             self.subs_lokad_id.handle_tx_event(tx, &(), msg_type);
