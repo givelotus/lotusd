@@ -28,6 +28,7 @@
 #include <net.h>
 #include <node/context.h>
 #include <node/miner.h>
+#include <node/mining_pool.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
 #include <policy/policy.h>
@@ -2463,6 +2464,196 @@ static RPCHelpMan estimatesmartfee() {
     };
 }
 
+static bool ParsePoolUint64Param(const UniValue &val, uint64_t &out) {
+    if (val.isNum()) {
+        out = val.getInt<uint64_t>();
+        return true;
+    }
+    if (!val.isStr()) {
+        return false;
+    }
+    std::string s = val.get_str();
+    if (s.empty()) {
+        return false;
+    }
+    int base = 10;
+    if (s.rfind("0x", 0) == 0 || s.rfind("0X", 0) == 0) {
+        s = s.substr(2);
+        base = 16;
+    } else {
+        for (char c : s) {
+            if ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+                base = 16;
+                break;
+            }
+        }
+    }
+    char *endptr = nullptr;
+    errno = 0;
+    const unsigned long long parsed =
+        std::strtoull(s.c_str(), &endptr, base);
+    if (errno != 0 || endptr == s.c_str() || *endptr != '\0') {
+        return false;
+    }
+    out = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+static RPCHelpMan getminingjob() {
+    return RPCHelpMan{
+        "getminingjob",
+        "Returns a Lotus V2 134-byte header mining job from the built-in PPLNS "
+        "mining pool.\n",
+        {
+            {"worker_id", RPCArg::Type::STR, RPCArg::Default{"default"},
+             "Worker identifier (Lotus address, script hex, or sub:<user>)"},
+            {"longpoll", RPCArg::Type::BOOL, RPCArg::Default{false},
+             "Wait for the next block tip change before returning"},
+        },
+        RPCResult{RPCResult::Type::ANY, "", "Mining job JSON object"},
+        RPCExamples{HelpExampleCli("getminingjob", "\"sub:alice\"") +
+                    HelpExampleRpc("getminingjob", "\"sub:alice\", false")},
+        [](const RPCHelpMan &self, const Config &config,
+           const JSONRPCRequest &request,
+           boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            auto &pool = node.mining_pool ? *node.mining_pool
+                                          : node::GetGlobalMiningPool();
+            if (!pool.IsEnabled(node.args)) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                                   "Built-in mining pool is disabled");
+            }
+            const std::string worker_id =
+                request.params[0].isNull() ? "default"
+                                           : request.params[0].get_str();
+            const bool longpoll =
+                !request.params[1].isNull() && request.params[1].get_bool();
+
+            if (longpoll && node.chainman) {
+                BlockHash watched_tip;
+                {
+                    LOCK(cs_main);
+                    if (const CBlockIndex *tip = node.chainman->ActiveTip()) {
+                        watched_tip = tip->GetBlockHash();
+                    }
+                }
+                const auto deadline =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::seconds(15);
+                co_await GetRPCBlockChangeWaiter().WaitUntilDeadline(
+                    executor, deadline, [&node, &watched_tip]() {
+                        LOCK(cs_main);
+                        const CBlockIndex *tip =
+                            node.chainman ? node.chainman->ActiveTip()
+                                          : nullptr;
+                        return !tip || tip->GetBlockHash() != watched_tip ||
+                               !IsRPCRunning();
+                    });
+            }
+
+            co_return pool.GetMiningJobJSON(config, node, worker_id);
+        },
+    };
+}
+
+static RPCHelpMan submitminingshare() {
+    return RPCHelpMan{
+        "submitminingshare",
+        "Submits a mined share to the built-in Lotus V2 PPLNS mining pool.\n",
+        {
+            {"job_id", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The job identifier returned by getminingjob",
+             RPCArgOptions{.skip_type_check = true}},
+            {"worker_id", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The worker identifier"},
+            {"nonce", RPCArg::Type::NUM, RPCArg::Optional::NO,
+             "The 64-bit nonce (integer or hex string)",
+             RPCArgOptions{.skip_type_check = true}},
+            {"ntime", RPCArg::Type::NUM, RPCArg::Optional::OMITTED,
+             "Optional 64-bit block timestamp",
+             RPCArgOptions{.skip_type_check = true}},
+        },
+        RPCResult{RPCResult::Type::ANY, "", "Share validation result"},
+        RPCExamples{
+            HelpExampleCli("submitminingshare", "\"1\" \"sub:alice\" 12345") +
+            HelpExampleRpc("submitminingshare", "\"1\", \"sub:alice\", 12345")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            auto &pool = node.mining_pool ? *node.mining_pool
+                                          : node::GetGlobalMiningPool();
+            if (!pool.IsEnabled(node.args)) {
+                throw JSONRPCError(RPC_MISC_ERROR,
+                                   "Built-in mining pool is disabled");
+            }
+
+            uint64_t job_id = 0;
+            if (!ParsePoolUint64Param(request.params[0], job_id)) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid job_id");
+            }
+            const std::string worker_id = request.params[1].get_str();
+            uint64_t nonce = 0;
+            if (!ParsePoolUint64Param(request.params[2], nonce)) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid nonce");
+            }
+            std::optional<uint64_t> ntime_opt;
+            if (!request.params[3].isNull()) {
+                uint64_t parsed_time = 0;
+                if (!ParsePoolUint64Param(request.params[3], parsed_time)) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid ntime");
+                }
+                ntime_opt = parsed_time;
+            }
+
+            const auto res = pool.SubmitShare(config, node, job_id, worker_id,
+                                              ntime_opt, nonce);
+            return res.ToUniValue();
+        },
+    };
+}
+
+static RPCHelpMan getpoolinfo() {
+    return RPCHelpMan{
+        "getpoolinfo",
+        "Returns summary statistics for the built-in Lotus V2 PPLNS mining "
+        "pool.\n",
+        {},
+        RPCResult{RPCResult::Type::ANY, "", "Pool info JSON object"},
+        RPCExamples{HelpExampleCli("getpoolinfo", "") +
+                    HelpExampleRpc("getpoolinfo", "")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            auto &pool = node.mining_pool ? *node.mining_pool
+                                          : node::GetGlobalMiningPool();
+            return pool.GetPoolInfoJSON();
+        },
+    };
+}
+
+static RPCHelpMan getpoolworker() {
+    return RPCHelpMan{
+        "getpoolworker",
+        "Returns per-worker statistics and newsletter credits from the "
+        "built-in Lotus V2 PPLNS mining pool.\n",
+        {
+            {"worker_id", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The worker identifier (Lotus address, script hex, or sub:<user>)"},
+        },
+        RPCResult{RPCResult::Type::ANY, "", "Worker statistics JSON object"},
+        RPCExamples{HelpExampleCli("getpoolworker", "\"sub:alice\"") +
+                    HelpExampleRpc("getpoolworker", "\"sub:alice\"")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            auto &pool = node.mining_pool ? *node.mining_pool
+                                          : node::GetGlobalMiningPool();
+            return pool.GetWorkerStatsJSON(request.params[0].get_str());
+        },
+    };
+}
+
 void RegisterMiningRPCCommands(CRPCTable &t) {
     // clang-format off
     static const CRPCCommand commands[] = {
@@ -2479,6 +2670,10 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         {"mining",      submitsealedheader,    },
         {"mining",      submitsealedblock,     },
         {"mining",      submitheader,          },
+        {"mining",      getminingjob,          },
+        {"mining",      submitminingshare,     },
+        {"mining",      getpoolinfo,           },
+        {"mining",      getpoolworker,         },
 
         {"generating",  generatetoaddress,     },
         {"generating",  generatetodescriptor,  },
