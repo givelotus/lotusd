@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 bool RTTPolicy::operator()(BlockPolicyValidationState &state) {
     if (!m_blockIndex.pprev) {
@@ -57,7 +58,7 @@ bool RTTPolicy::operator()(BlockPolicyValidationState &state) {
  * arbitrary integer >= 1.
  * The factor is computed as:
  *   RTT_K * gamma(1 + 1/RTT_K)^RTT_K / (T^(RTT_K-1))
- * Where T is the target time between blocks, aka 600s.
+ * Where T is the target time between blocks, aka 120s.
  *
  * We apply this formula on a list of previous blocks so we obtain RTT for
  * various windows: 2 blocks, 5 blocks, 11 blocks and 17 blocks. The highest
@@ -79,19 +80,19 @@ static constexpr double RTT_K{6.};
 
 static const double RTT_CONSTANT_FACTOR_1 =
     RTT_K * std::pow(std::tgamma(1. + 1. / RTT_K), RTT_K) /
-    std::pow(150., RTT_K - 1.);
+    std::pow(30., RTT_K - 1.);
 static const double RTT_CONSTANT_FACTOR_2 =
     RTT_K * std::pow(std::tgamma(1. + 1. / RTT_K), RTT_K) /
-    std::pow(600., RTT_K - 1.);
+    std::pow(120., RTT_K - 1.);
 static const double RTT_CONSTANT_FACTOR_5 =
     RTT_K * std::pow(std::tgamma(1. + 1. / RTT_K), RTT_K) /
-    std::pow(2400., RTT_K - 1.);
+    std::pow(480., RTT_K - 1.);
 static const double RTT_CONSTANT_FACTOR_11 =
     RTT_K * std::pow(std::tgamma(1. + 1. / RTT_K), RTT_K) /
-    std::pow(6000., RTT_K - 1.);
+    std::pow(1200., RTT_K - 1.);
 static const double RTT_CONSTANT_FACTOR_17 =
     RTT_K * std::pow(std::tgamma(1. + 1. / RTT_K), RTT_K) /
-    std::pow(9600., RTT_K - 1.);
+    std::pow(1920., RTT_K - 1.);
 static const std::vector<double> RTT_CONSTANT_FACTOR = {
     0.,
     RTT_CONSTANT_FACTOR_1,
@@ -146,7 +147,9 @@ GetNextRTTWorkRequired(const CBlockIndex *pprev, int64_t now,
     }
     const double prevTargetDouble = prevTarget.getdouble();
 
-    double minTarget = UintToArith256(consensusParams.powLimit).getdouble();
+    const double powLimitDouble =
+        UintToArith256(consensusParams.powLimit).getdouble();
+    double minTarget = std::numeric_limits<double>::infinity();
     for (size_t i : {1, 2, 5, 11, 17}) {
         // Zero (or negative) difftime are not possible, so clamp to minimum 1s
         const int64_t diffTime =
@@ -159,7 +162,7 @@ GetNextRTTWorkRequired(const CBlockIndex *pprev, int64_t now,
     }
 
     arith_uint256 nextTarget = arith_uint256::fromDouble(minTarget);
-    if (minTarget < 1. ||
+    if (minTarget < 1. || minTarget > powLimitDouble ||
         nextTarget > UintToArith256(consensusParams.powLimit)) {
         return std::nullopt;
     }
