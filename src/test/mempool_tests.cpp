@@ -1112,4 +1112,66 @@ BOOST_AUTO_TEST_CASE(bulk_clear_matches_staged_block_removal_state) {
     BOOST_CHECK(staged == bulk);
 }
 
+BOOST_AUTO_TEST_CASE(deferred_overlay_remove_readd_matches_authoritative_pool) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 3; ++i) {
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{uint256{uint8_t(i + 1)}}, 0);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        txs.push_back(MakeTransactionRef(tx));
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(txs.back()));
+    }
+    const auto before = pool.GetMerklixOverlay().GetSpeculativeOverlay().GetSubtreeARoot();
+    {
+        CTxMemPool::ScopedSnapshotDefer defer(pool);
+        pool.removeRecursive(*txs[0], MemPoolRemovalReason::MANUAL);
+        pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(txs[0]));
+    }
+    BOOST_CHECK_EQUAL(pool.size(), 3U);
+    const auto &spec = pool.GetMerklixOverlay().GetSpeculativeOverlay();
+    BOOST_CHECK_EQUAL(spec.GetTxCount(), pool.size());
+    BOOST_CHECK(spec.GetSubtreeARoot() == before);
+}
+
+BOOST_AUTO_TEST_CASE(deferred_overlay_randomized_operations_match_full_rebuild) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    FastRandomContext random(uint256{uint8_t(9)});
+    std::vector<CTransactionRef> txs;
+    for (uint32_t i = 0; i < 8; ++i) {
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{uint256{uint8_t(i + 1)}}, 0);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        txs.push_back(MakeTransactionRef(tx));
+    }
+    for (size_t round = 0; round < 64; ++round) {
+        {
+            CTxMemPool::ScopedSnapshotDefer defer(pool);
+            for (size_t op = 0; op < 8; ++op) {
+                const auto &tx = txs[random.randrange(txs.size())];
+                if (pool.exists(tx->GetId())) {
+                    pool.removeRecursive(*tx, MemPoolRemovalReason::MANUAL);
+                } else {
+                    pool.addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+                }
+            }
+        }
+        lotus::v2::MerklixOverlayManager rebuilt;
+        std::vector<std::tuple<CTransactionRef, int64_t, int64_t>> current;
+        for (const auto &item : pool.mapTx.get<entry_id>()) {
+            current.emplace_back(item->GetSharedTx(), item->GetFee() / SATOSHI,
+                                 item->GetSigChecks());
+        }
+        AddTransactionsToOverlayBatch(rebuilt, current);
+        const auto &actual = pool.GetMerklixOverlay().GetSpeculativeOverlay();
+        const auto &expected = rebuilt.GetSpeculativeOverlay();
+        BOOST_CHECK_EQUAL(actual.GetTxCount(), expected.GetTxCount());
+        BOOST_CHECK(actual.GetSubtreeARoot() == expected.GetSubtreeARoot());
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
