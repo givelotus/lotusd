@@ -7,10 +7,14 @@
 #define BITCOIN_CONSENSUS_PARAMS_H
 
 #include <primitives/blockhash.h>
+#include <script/script.h>
 #include <uint256.h>
 
 #include <chrono>
+#include <cstdint>
 #include <limits>
+#include <utility>
+#include <vector>
 
 namespace Consensus {
 
@@ -51,6 +55,15 @@ struct Params {
 
     /** Enable or disable the staking rewards by default */
     bool enableStakingRewards;
+
+    /** Enable or disable the default node-developer treasury slate by default */
+    bool enableDefaultTreasury{false};
+
+    /**
+     * Built-in default node-developer treasury destinations and their relative
+     * weights (basis points or arbitrary positive weights).
+     */
+    std::vector<std::pair<CScript, uint32_t>> defaultTreasuryOutputs;
 
     /** Proof of work parameters */
     uint256 powLimit;

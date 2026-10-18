@@ -66,6 +66,7 @@ MSG_FILTERED_BLOCK = 3
 MSG_CMPCT_BLOCK = 4
 MSG_AVA_PROOF = 0x1F000001
 MSG_AVA_STAKE_CONTENDER = 0x1F000002
+MSG_AVA_TREASURY_CONTENDER = 0x20000005
 MSG_AVA_MEMPOOL_BATCH = 0x20000006
 MSG_TYPE_MASK = 0xFFFFFFFF >> 2
 
@@ -317,6 +318,7 @@ class CInv:
         MSG_CMPCT_BLOCK: "CompactBlock",
         MSG_AVA_PROOF: "avalanche proof",
         MSG_AVA_STAKE_CONTENDER: "avalanche stake contender",
+        MSG_AVA_TREASURY_CONTENDER: "avalanche treasury contender",
         MSG_AVA_MEMPOOL_BATCH: "avalanche mempool batch",
     }
 
