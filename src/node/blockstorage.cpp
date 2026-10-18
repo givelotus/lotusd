@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <node/blockstorage.h>
+#include <lotus_v2/fee_hysteresis.h>
 
 #include <avalanche/processor.h>
 #include <blockindexcomparators.h>
@@ -1012,10 +1013,12 @@ bool BlockManager::ReadRawBlock(std::vector<uint8_t> &block,
             return false;
         }
 
-        if (blk_size > MAX_SIZE) {
+        const uint64_t max_blk_size =
+            lotus::v2::GetBlockPayloadLimit(GetConfig());
+        if (blk_size > max_blk_size) {
             LogError("%s: Block data is larger than maximum deserialization "
                      "size for %s: %s versus %s\n",
-                     __func__, pos.ToString(), blk_size, MAX_SIZE);
+                     __func__, pos.ToString(), blk_size, max_blk_size);
             return false;
         }
 
