@@ -238,6 +238,15 @@ class PeerManager {
     uint32_t totalPeersScore = 0;
     uint32_t connectedPeersScore = 0;
 
+    // Writers are serialized by the owning processor peer-manager lock.
+    // Sequentially consistent atomics and a generation guard publish a
+    // coherent tuple without acquiring that mutex on quorum reads.
+    std::atomic<uint64_t> m_atomicQuorumGeneration{0};
+    std::atomic<size_t> m_atomicNodeCount{0};
+    std::atomic<uint32_t> m_atomicTotalPeersScore{0};
+    std::atomic<uint32_t> m_atomicConnectedPeersScore{0};
+    std::atomic<bool> m_atomicLocalProofHasNoNode{false};
+
     Amount stakeUtxoDustThreshold;
 
     ChainstateManager &chainman;
@@ -448,6 +457,28 @@ public:
      */
     uint32_t getTotalPeersScore() const { return totalPeersScore; }
     uint32_t getConnectedPeersScore() const { return connectedPeersScore; }
+    struct QuorumMetrics {
+        size_t nodeCount;
+        uint32_t totalScore;
+        uint32_t connectedScore;
+        bool localProofHasNoNode;
+    };
+
+    QuorumMetrics getQuorumMetrics() const {
+        for (;;) {
+            const auto generation = m_atomicQuorumGeneration.load();
+            if (generation & 1) {
+                continue;
+            }
+            const QuorumMetrics metrics{
+                m_atomicNodeCount.load(), m_atomicTotalPeersScore.load(),
+                m_atomicConnectedPeersScore.load(),
+                m_atomicLocalProofHasNoNode.load()};
+            if (generation == m_atomicQuorumGeneration.load()) {
+                return metrics;
+            }
+        }
+    }
 
     bool saveRemoteProof(const ProofId &proofid, const NodeId nodeid,
                          const bool present);
@@ -572,6 +603,8 @@ private:
     bool isStakingPreconsensusActivated() const {
         return m_stakingPreConsensus;
     }
+
+    void updateAtomicQuorumMetrics();
 
     friend struct ::avalanche::TestPeerManager;
 };

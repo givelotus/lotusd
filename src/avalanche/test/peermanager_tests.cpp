@@ -25,6 +25,8 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <atomic>
+#include <thread>
 
 #include <limits>
 #include <optional>
@@ -230,6 +232,47 @@ struct NoCoolDownFixture : public PeerManagerFixture {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(peermanager_tests, PeerManagerFixture)
+
+BOOST_AUTO_TEST_CASE(quorum_metrics_are_coherent_during_node_updates) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    avalanche::PeerManager pm(PROOF_DUST_THRESHOLD, chainman);
+    auto proof = buildRandomProof(chainman.ActiveChainstate(), MIN_VALID_PROOF_SCORE);
+    BOOST_REQUIRE(pm.registerProof(proof));
+    const auto score = proof->getScore();
+    const auto initial = pm.getQuorumMetrics();
+    BOOST_CHECK_EQUAL(initial.nodeCount, 0U);
+    BOOST_CHECK_EQUAL(initial.totalScore, score);
+    BOOST_CHECK_EQUAL(initial.connectedScore, 0U);
+
+    std::atomic<bool> done{false};
+    std::atomic<bool> operations_ok{true};
+    std::thread writer([&] {
+        for (unsigned i = 0; i < 10000; ++i) {
+            if (!pm.addNode(1234, proof->getId(), DEFAULT_AVALANCHE_MAX_ELEMENT_POLL) ||
+                !pm.removeNode(1234)) {
+                operations_ok = false;
+                break;
+            }
+        }
+        done = true;
+    });
+    bool coherent = true;
+    size_t reads = 0;
+    do {
+        const auto view = pm.getQuorumMetrics();
+        coherent &= view.totalScore == score &&
+                    ((view.nodeCount == 0 && view.connectedScore == 0) ||
+                     (view.nodeCount == 1 && view.connectedScore == score));
+        ++reads;
+    } while (!done.load());
+    writer.join();
+    BOOST_CHECK(operations_ok.load());
+    BOOST_CHECK(coherent);
+    BOOST_CHECK_GT(reads, 0U);
+    BOOST_CHECK_EQUAL(pm.getQuorumMetrics().nodeCount, 0U);
+    BOOST_CHECK_EQUAL(pm.getQuorumMetrics().connectedScore, 0U);
+}
+
 
 BOOST_AUTO_TEST_CASE(select_peer_linear) {
     // No peers.
