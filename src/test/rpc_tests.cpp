@@ -659,6 +659,29 @@ BOOST_AUTO_TEST_CASE(rpc_convert_values_generatetoaddress) {
     BOOST_CHECK_EQUAL(result[2].getInt<int>(), 9);
 }
 
+BOOST_AUTO_TEST_CASE(rpc_convert_values_setfastsyncpivot) {
+    const auto positional =
+        RPCConvertValues("setfastsyncpivot", {"00", "abcd", R"(["00","ff"])"});
+    BOOST_CHECK(positional[0].isStr());
+    BOOST_CHECK(positional[1].isStr());
+    BOOST_REQUIRE(positional[2].isArray());
+    BOOST_CHECK_EQUAL(positional[2].size(), 2U);
+    BOOST_CHECK_EQUAL(positional[2][0].get_str(), "00");
+
+    const auto named = RPCConvertNamedValues(
+        "setfastsyncpivot",
+        {"blockhash=00", "utxoroots_hex=abcd", R"(utxoshards=["00","ff"])"});
+    BOOST_CHECK(named["blockhash"].isStr());
+    BOOST_CHECK(named["utxoroots_hex"].isStr());
+    BOOST_REQUIRE(named["utxoshards"].isArray());
+    BOOST_CHECK_EQUAL(named["utxoshards"][1].get_str(), "ff");
+    BOOST_CHECK_THROW(RPCConvertValues("setfastsyncpivot", {"00", "abcd", "["}),
+                      std::runtime_error);
+    BOOST_CHECK_THROW(
+        RPCConvertNamedValues("setfastsyncpivot", {"utxoshards=["}),
+        std::runtime_error);
+}
+
 // Make sure errors are triggered appropriately if parameters have the same
 // names.
 BOOST_AUTO_TEST_CASE(check_dup_param_names) {
