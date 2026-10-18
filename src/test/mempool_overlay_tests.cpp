@@ -1467,9 +1467,9 @@ BOOST_FIXTURE_TEST_CASE(mempool_overlay_tracks_admission_removal_and_tip, Testin
 
 BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
     // Many small batches into a growing overlay must give exactly the state
-    // of inserting the same transactions one at a time, in both UTXO-root
-    // modes. This covers the arena and map growth between batches.
-    for (const bool commit_state_root : {false, true}) {
+    // of inserting the same transactions one at a time. Native V2 always
+    // commits the UTXO root; this covers arena and map growth between batches.
+    {
         FastRandomContext rng(/*fDeterministic=*/true);
         auto random_hash = [&] {
             lotus::v2::Hash h;
@@ -1513,8 +1513,6 @@ BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
         lotus::v2::MempoolOverlayLayer batched(
             parent, nullptr, lotus::v2::GetInitialV2MonetaryState(), 200,
             1700000100);
-        serial.SetCommitStateRootInHeader(commit_state_root);
-        batched.SetCommitStateRootInHeader(commit_state_root);
         for (const auto &e : all) {
             BOOST_CHECK(serial.AddTransaction(
                 e.tx_id, e.tx_hash, e.linear_cost, e.spent_outpoints,
@@ -1533,10 +1531,31 @@ BOOST_AUTO_TEST_CASE(batched_inserts_match_serial_inserts_while_growing) {
         BOOST_CHECK(serial.GetSubtreeARoot() == batched.GetSubtreeARoot());
         BOOST_CHECK(serial.GetUtxoRootDigest() ==
                     batched.GetUtxoRootDigest());
-        BOOST_CHECK_EQUAL(serial.GetTotalFeesSats(),
-                          batched.GetTotalFeesSats());
-        BOOST_CHECK_EQUAL(serial.GetTotalSigChecks(),
-                          batched.GetTotalSigChecks());
+        // Native overlays retain these counters in each transaction entry,
+        // rather than exposing the shared miner's cached aggregate accessors.
+        int64_t expected_fees{0}, expected_sigchecks{0};
+        int64_t serial_fees{0}, serial_sigchecks{0};
+        int64_t batch_fees{0}, batch_sigchecks{0};
+        for (const auto &entry : all) {
+            expected_fees += entry.fee_sats;
+            expected_sigchecks += entry.sigchecks;
+        }
+        BOOST_REQUIRE_EQUAL(serial.GetOrderedTxs().size(), all.size());
+        BOOST_REQUIRE_EQUAL(batched.GetOrderedTxs().size(), all.size());
+        for (const auto &[id, entry] : serial.GetOrderedTxs()) {
+            const auto it = batched.GetOrderedTxs().find(id);
+            BOOST_REQUIRE(it != batched.GetOrderedTxs().end());
+            BOOST_CHECK_EQUAL(entry.fee_sats, it->second.fee_sats);
+            BOOST_CHECK_EQUAL(entry.sigchecks, it->second.sigchecks);
+            serial_fees += entry.fee_sats;
+            serial_sigchecks += entry.sigchecks;
+            batch_fees += it->second.fee_sats;
+            batch_sigchecks += it->second.sigchecks;
+        }
+        BOOST_CHECK_EQUAL(serial_fees, expected_fees);
+        BOOST_CHECK_EQUAL(batch_fees, expected_fees);
+        BOOST_CHECK_EQUAL(serial_sigchecks, expected_sigchecks);
+        BOOST_CHECK_EQUAL(batch_sigchecks, expected_sigchecks);
         BOOST_CHECK_EQUAL(serial.GetSumNonCbEffectiveCost(),
                           batched.GetSumNonCbEffectiveCost());
         BOOST_CHECK(serial.GetNetErasedOutpoints() ==
