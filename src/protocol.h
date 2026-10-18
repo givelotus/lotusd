@@ -319,6 +319,41 @@ extern const char *AVAPROOFS;
 extern const char *AVAPROOFSREQ;
 
 /**
+ * Contains a MinedHeader (header + coinbase_tx) for O(1) block
+ * relay when candidate transactions are already reconciled in the local
+ * mempool or candidate overlay.
+ */
+extern const char *MINEDHEADER;
+extern const char *SEALEDHEADER;
+extern const char *SEALEDBLOCK;
+
+/**
+ * Transmits a depth-4 Merklix sync summary (16 buckets) for set reconciliation.
+ */
+extern const char *MERKLIXSYNC;
+
+/**
+ * Requests depth-8 sub-bucket algebraic syndromes for mismatched depth-4
+ * buckets.
+ */
+extern const char *GETMERKLIXBUCK;
+
+/**
+ * Transmits depth-8 sub-bucket algebraic syndromes (count, s1, s3 over GF(2^64)).
+ */
+extern const char *MERKLIXBUCK;
+
+/**
+ * Requests transactions by 64-bit short IDs recovered from Merklix syndromes.
+ */
+extern const char *GETSHORTTX;
+
+/**
+ * Transmits transactions in response to a getshorttx request.
+ */
+extern const char *SHORTTX;
+
+/**
  * Indicate if the message is used to transmit the content of a block.
  * These messages can be significantly larger than usual messages and therefore
  * may need to be processed differently.
@@ -577,6 +612,10 @@ enum GetDataMsg {
     MSG_FILTERED_BLOCK = 3,
     //! Defined in BIP152
     MSG_CMPCT_BLOCK = 4,
+    //! Mined Header (header + coinbase_tx)
+    MSG_MINED_HEADER = 5,
+    MSG_SEALED_HEADER = MSG_MINED_HEADER,
+    MSG_SEALED_BLOCK = MSG_MINED_HEADER,
     MSG_AVA_PROOF = 0x1f000001,
     MSG_AVA_STAKE_CONTENDER = 0x1f000002,
 };
@@ -629,11 +668,21 @@ public:
         auto k = GetKind();
         return k == MSG_CMPCT_BLOCK;
     }
+    bool IsMsgMinedHeader() const {
+        auto k = GetKind();
+        return k == MSG_MINED_HEADER;
+    }
+    bool IsMsgSealedHeader() const {
+        return IsMsgMinedHeader();
+    }
+    bool IsMsgSealedBlock() const {
+        return IsMsgMinedHeader();
+    }
 
     bool IsGenBlkMsg() const {
         auto k = GetKind();
         return k == MSG_BLOCK || k == MSG_FILTERED_BLOCK ||
-               k == MSG_CMPCT_BLOCK;
+               k == MSG_CMPCT_BLOCK || k == MSG_MINED_HEADER;
     }
 };
 

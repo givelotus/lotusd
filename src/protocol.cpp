@@ -56,11 +56,22 @@ const char *GETAVAADDR = "getavaaddr";
 const char *GETAVAPROOFS = "getavaproofs";
 const char *AVAPROOFS = "avaproofs";
 const char *AVAPROOFSREQ = "avaproofsreq";
+const char *MINEDHEADER = "minedheader";
+const char *SEALEDHEADER = "sealedheader";
+const char *SEALEDBLOCK = "sealedblock";
+const char *MERKLIXSYNC = "merklixsync";
+const char *GETMERKLIXBUCK = "getmerklixbuck";
+const char *MERKLIXBUCK = "merklixbuck";
+const char *GETSHORTTX = "getshorttx";
+const char *SHORTTX = "shorttx";
 
 bool IsBlockLike(const std::string &strCommand) {
     return strCommand == NetMsgType::BLOCK ||
            strCommand == NetMsgType::CMPCTBLOCK ||
-           strCommand == NetMsgType::BLOCKTXN;
+           strCommand == NetMsgType::BLOCKTXN ||
+           strCommand == NetMsgType::MINEDHEADER ||
+           strCommand == NetMsgType::SEALEDHEADER ||
+           strCommand == NetMsgType::SEALEDBLOCK;
 }
 }; // namespace NetMsgType
 
@@ -69,20 +80,31 @@ bool IsBlockLike(const std::string &strCommand) {
  * above and in protocol.h.
  */
 static const std::string allNetMessageTypes[] = {
-    NetMsgType::VERSION,     NetMsgType::VERACK,       NetMsgType::ADDR,
-    NetMsgType::ADDRV2,      NetMsgType::SENDADDRV2,   NetMsgType::INV,
-    NetMsgType::GETDATA,     NetMsgType::MERKLEBLOCK,  NetMsgType::GETBLOCKS,
-    NetMsgType::GETHEADERS,  NetMsgType::TX,           NetMsgType::HEADERS,
-    NetMsgType::BLOCK,       NetMsgType::GETADDR,      NetMsgType::MEMPOOL,
-    NetMsgType::PING,        NetMsgType::PONG,         NetMsgType::NOTFOUND,
-    NetMsgType::FILTERLOAD,  NetMsgType::FILTERADD,    NetMsgType::FILTERCLEAR,
-    NetMsgType::SENDHEADERS, NetMsgType::FEEFILTER,    NetMsgType::SENDCMPCT,
-    NetMsgType::CMPCTBLOCK,  NetMsgType::GETBLOCKTXN,  NetMsgType::BLOCKTXN,
-    NetMsgType::GETCFILTERS, NetMsgType::CFILTER,      NetMsgType::GETCFHEADERS,
-    NetMsgType::CFHEADERS,   NetMsgType::GETCFCHECKPT, NetMsgType::CFCHECKPT,
-    NetMsgType::AVAHELLO,    NetMsgType::AVAPOLL,      NetMsgType::AVARESPONSE,
-    NetMsgType::AVAPROOF,    NetMsgType::GETAVAADDR,   NetMsgType::GETAVAPROOFS,
-    NetMsgType::AVAPROOFS,   NetMsgType::AVAPROOFSREQ,
+    NetMsgType::VERSION,        NetMsgType::VERACK,
+    NetMsgType::ADDR,           NetMsgType::ADDRV2,
+    NetMsgType::SENDADDRV2,     NetMsgType::INV,
+    NetMsgType::GETDATA,        NetMsgType::MERKLEBLOCK,
+    NetMsgType::GETBLOCKS,      NetMsgType::GETHEADERS,
+    NetMsgType::TX,             NetMsgType::HEADERS,
+    NetMsgType::BLOCK,          NetMsgType::GETADDR,
+    NetMsgType::MEMPOOL,        NetMsgType::PING,
+    NetMsgType::PONG,           NetMsgType::NOTFOUND,
+    NetMsgType::FILTERLOAD,     NetMsgType::FILTERADD,
+    NetMsgType::FILTERCLEAR,    NetMsgType::SENDHEADERS,
+    NetMsgType::FEEFILTER,      NetMsgType::SENDCMPCT,
+    NetMsgType::CMPCTBLOCK,     NetMsgType::GETBLOCKTXN,
+    NetMsgType::BLOCKTXN,       NetMsgType::GETCFILTERS,
+    NetMsgType::CFILTER,        NetMsgType::GETCFHEADERS,
+    NetMsgType::CFHEADERS,      NetMsgType::GETCFCHECKPT,
+    NetMsgType::CFCHECKPT,      NetMsgType::AVAHELLO,
+    NetMsgType::AVAPOLL,        NetMsgType::AVARESPONSE,
+    NetMsgType::AVAPROOF,       NetMsgType::GETAVAADDR,
+    NetMsgType::GETAVAPROOFS,   NetMsgType::AVAPROOFS,
+    NetMsgType::AVAPROOFSREQ,   NetMsgType::MINEDHEADER,
+    NetMsgType::SEALEDHEADER,   NetMsgType::SEALEDBLOCK,
+    NetMsgType::MERKLIXSYNC,    NetMsgType::GETMERKLIXBUCK,
+    NetMsgType::MERKLIXBUCK,    NetMsgType::GETSHORTTX,
+    NetMsgType::SHORTTX,
 };
 static const std::vector<std::string>
     allNetMessageTypesVec(std::begin(allNetMessageTypes),
@@ -106,8 +128,10 @@ CMessageHeader::CMessageHeader(const MessageMagic &pchMessageStartIn,
         m_msg_type[i] = msg_type[i];
     }
     // Assert that the message type name passed in is not longer than
-    // MESSAGE_TYPE_SIZE
-    assert(msg_type[i] == 0);
+    // MESSAGE_TYPE_SIZE (except GETMERKLIXBUCK which fits the 12-byte wire
+    // header as "getmerklixbu" and expands in GetMessageType()).
+    assert(msg_type[i] == 0 ||
+           strcmp(msg_type, NetMsgType::GETMERKLIXBUCK) == 0);
     for (; i < m_msg_type.size(); ++i) {
         m_msg_type[i] = 0;
     }
@@ -117,9 +141,13 @@ CMessageHeader::CMessageHeader(const MessageMagic &pchMessageStartIn,
 }
 
 std::string CMessageHeader::GetMessageType() const {
-    return std::string(m_msg_type.data(),
-                       m_msg_type.data() +
-                           strnlen(m_msg_type.data(), MESSAGE_TYPE_SIZE));
+    std::string type(m_msg_type.data(),
+                     m_msg_type.data() +
+                         strnlen(m_msg_type.data(), MESSAGE_TYPE_SIZE));
+    if (type == "getmerklixbu") {
+        return NetMsgType::GETMERKLIXBUCK;
+    }
+    return type;
 }
 
 bool CMessageHeader::IsMessageTypeValid() const {
@@ -176,6 +204,8 @@ std::string CInv::GetMessageType() const {
             return cmd.append(NetMsgType::MERKLEBLOCK);
         case MSG_CMPCT_BLOCK:
             return cmd.append(NetMsgType::CMPCTBLOCK);
+        case MSG_SEALED_HEADER:
+            return cmd.append(NetMsgType::SEALEDHEADER);
         case MSG_AVA_PROOF:
             return cmd.append(NetMsgType::AVAPROOF);
         case MSG_AVA_STAKE_CONTENDER:
