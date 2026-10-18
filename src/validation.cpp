@@ -3115,6 +3115,8 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                                      return ret;
                                  }) != parkingPolicies.end()) {
                 pindexNew->nStatus = pindexNew->nStatus.withParked();
+                pindexNew->m_preconsensus_policy_parked =
+                    blockPolicyState.GetRejectReason() == "finalized-batch-mismatch";
                 m_blockman.m_dirty_blockindex.insert(pindexNew);
                 return false;
             }
@@ -3232,12 +3234,16 @@ CBlockIndex *Chainstate::FindMostWorkChain(
             pindexNew = *it;
         }
 
+        // Work-based retry is only for soft policy parks. It must never
+        // override Avalanche-finalized ancestry, regardless of chain work.
+        bool conflictsFinalizedAncestry = false;
         // If this block will cause an avalanche finalized block to be reorged,
         // then we park it.
         {
             LOCK(cs_avalancheFinalizedBlockIndex);
             if (m_avalancheFinalizedBlockIndex &&
                 !AreOnTheSameFork(pindexNew, m_avalancheFinalizedBlockIndex)) {
+                conflictsFinalizedAncestry = true;
                 LogPrintf("Park block %s because it forks prior to the "
                           "avalanche finalized chaintip.\n",
                           pindexNew->GetBlockHash().ToString());
@@ -3247,6 +3253,27 @@ CBlockIndex *Chainstate::FindMostWorkChain(
         }
 
         const CBlockIndex *pindexFork = m_chain.FindFork(pindexNew);
+
+        // A finalized-batch mismatch is a temporary work penalty, even when
+        // general automatic unparking is off (the Avalanche default). It only
+        // applies when every park on the candidate's path is such a park, so
+        // Avalanche rejections and other parks stay parked as upstream.
+        bool fBatchRetryOnly = false;
+        if (!fAutoUnpark) {
+            bool sawBatchPark = false;
+            bool sawOtherPark = false;
+            for (const CBlockIndex *p = pindexNew; p && p != pindexFork;
+                 p = p->pprev) {
+                if (p->nStatus.isParked()) {
+                    if (p->m_preconsensus_policy_parked) {
+                        sawBatchPark = true;
+                    } else {
+                        sawOtherPark = true;
+                    }
+                }
+            }
+            fBatchRetryOnly = sawBatchPark && !sawOtherPark;
+        }
 
         // Check whether all blocks on the path between the currently active
         // chain and the candidate are valid. Just going until the active chain
@@ -3259,7 +3286,8 @@ CBlockIndex *Chainstate::FindMostWorkChain(
             // If this is a parked chain, but it has enough PoW, clear the park
             // state.
             bool fParkedChain = pindexTest->nStatus.isOnParkedChain();
-            if (fAutoUnpark && fParkedChain) {
+            if ((fAutoUnpark || fBatchRetryOnly) && fParkedChain &&
+                !conflictsFinalizedAncestry) {
                 const CBlockIndex *pindexTip = m_chain.Tip();
 
                 // During initialization, pindexTip and/or pindexFork may be
@@ -3293,6 +3321,11 @@ CBlockIndex *Chainstate::FindMostWorkChain(
                         break;
                 }
 
+                // A batch-mismatching head needs one more block of work;
+                // otherwise fork==tip would undo the policy in this same call.
+                if (pindexTest->m_preconsensus_policy_parked) {
+                    requiredWork = std::max(requiredWork, pindexTest->nChainWork);
+                }
                 if (pindexNew->nChainWork > requiredWork) {
                     // We have enough, clear the parked state.
                     LogPrintf("Unpark chain up to block %s as it has "
@@ -3493,6 +3526,14 @@ bool Chainstate::ActivateBestChainStep(
                             pindexParkedDescendant);
                         setBlockIndexCandidates.erase(pindexParkedDescendant);
                         pindexParkedDescendant = pindexParkedDescendant->pprev;
+                    }
+                    // A descendant may already supply the batch-policy grace
+                    // work when its ancestor is parked for the first time.
+                    // Let FindMostWorkChain apply the ordinary work/finality
+                    // checks instead of losing that candidate until new data.
+                    if (pindexConnect->m_preconsensus_policy_parked &&
+                        pindexMostWork != pindexConnect) {
+                        TryAddBlockIndexCandidate(pindexMostWork);
                     }
                     fContinue = false;
                     break;
@@ -4129,6 +4170,9 @@ bool Chainstate::UpdateFlagsForBlock(CBlockIndex *pindexBase,
         (!pindexBase ||
          pindex->GetAncestor(pindexBase->nHeight) == pindexBase)) {
         pindex->nStatus = newStatus;
+        if (!newStatus.isOnParkedChain()) {
+            pindex->m_preconsensus_policy_parked = false;
+        }
         m_blockman.m_dirty_blockindex.insert(pindex);
         if (newStatus.isValid()) {
             m_chainman.m_failed_blocks.erase(pindex);
@@ -4229,6 +4273,7 @@ void Chainstate::TryAddBlockIndexCandidate(CBlockIndex *pindex) {
 
 void Chainstate::UnparkBlockImpl(CBlockIndex *pindex, bool fClearChildren) {
     AssertLockHeld(cs_main);
+    pindex->m_preconsensus_policy_parked = false;
 
     UpdateFlags(
         pindex, m_chainman.m_best_parked,

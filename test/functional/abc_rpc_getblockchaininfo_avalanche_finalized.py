@@ -28,6 +28,8 @@ class AvalancheTest(BitcoinTestFramework):
                 "-avaproofstakeutxodustthreshold=1000000",
                 "-avaproofstakeutxoconfirmations=1",
                 "-avacooldown=0",
+                # Observe voted parking until the explicit unpark/finality checks.
+                "-automaticunparking=0",
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
             ],

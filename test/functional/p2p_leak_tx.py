@@ -27,6 +27,8 @@ class P2PLeakTxTest(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-avacooldown=0",
+                # Keep the manual reorg parked until its explicit restoration.
+                "-automaticunparking=0",
                 "-avaproofstakeutxoconfirmations=1",
                 # Low enough for coinbase transactions to be staked in valid proofs
                 "-avaproofstakeutxodustthreshold=1000000",

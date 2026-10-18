@@ -69,6 +69,10 @@ public:
     //! Verification status of this block. See enum BlockStatus
     BlockStatus nStatus GUARDED_BY(::cs_main){};
 
+    //! Transient soft batch-policy grace; never serialized. Its storage is
+    //! bounded by the block index and dies with that index on shutdown.
+    bool m_preconsensus_policy_parked GUARDED_BY(::cs_main){false};
+
     //! block header
     int32_t nVersion{0};
     uint256 hashMerkleRoot{};

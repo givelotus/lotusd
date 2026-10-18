@@ -27,12 +27,13 @@ constexpr std::string_view TagView(HashDomain domain) noexcept {
     case HashDomain::TxRoot: return "Lotus/v2/txroot";
     case HashDomain::OutpointKey: return "Lotus/v2/outpointkey";
     case HashDomain::Utxo: return "Lotus/v2/utxo";
+    case HashDomain::PreconsensusBatch: return "lotus.v2.preconsensus.batch";
     case HashDomain::State: return "Lotus/v2/state";
     }
     std::abort();
 }
 
-constexpr size_t kNumDomains = static_cast<size_t>(HashDomain::State) + 1;
+constexpr size_t kNumDomains = static_cast<size_t>(HashDomain::PreconsensusBatch) + 1;
 
 CSHA256 MakeTagMidstate(HashDomain domain) {
     const std::string_view tag = TagView(domain);

@@ -52,6 +52,9 @@ class ChronikWsTest(BitcoinTestFramework):
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
                 "-chronik",
+                # Observe manual rejection/invalidation without work-based
+                # automatic retries reconnecting the parked block.
+                "-automaticunparking=0",
                 "-enableminerfund",
                 # Disable staking preconsensus to avoid too many votes
                 "-avalanchestakingpreconsensus=0",

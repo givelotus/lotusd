@@ -39,6 +39,7 @@ from test_framework.messages import (
     msg_avahello,
     msg_avapoll,
     msg_avaproof,
+    msg_avabatch,
     msg_avaproofs,
     msg_avaproofsreq,
     msg_block,
@@ -110,6 +111,7 @@ MESSAGEMAP = {
     b"addrv2": msg_addrv2,
     b"avapoll": msg_avapoll,
     b"avaproof": msg_avaproof,
+    b"avabatch": msg_avabatch,
     b"avaproofs": msg_avaproofs,
     b"avaproofsreq": msg_avaproofsreq,
     b"avaresponse": msg_tcpavaresponse,
@@ -460,6 +462,9 @@ class P2PInterface(P2PConnection):
         pass
 
     def on_avapoll(self, message):
+        pass
+
+    def on_avabatch(self, message):
         pass
 
     def on_avaproof(self, message):
