@@ -365,6 +365,23 @@ ProcessNewPackage(Chainstate &active_chainstate, CTxMemPool &pool,
                   const Package &txns, bool test_accept)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+/** Maximum number of transactions in a testrawtxbatch / submitrawtxbatch call. */
+static constexpr uint32_t MAX_RAWTX_BATCH_COUNT{1000};
+/** Maximum total virtual size of transactions in a rawtxbatch in KB (10 MB). */
+static constexpr uint32_t MAX_RAWTX_BATCH_SIZE_KB{10000};
+
+/**
+ * Validate and optionally commit an all-or-nothing
+ * batch of raw transactions in a single pass under cs_main, coalescing RCU
+ * snapshot publication via CTxMemPool::ScopedSnapshotDefer.
+ */
+PackageMempoolAcceptResult
+ProcessRawTxBatch(Chainstate &active_chainstate, CTxMemPool &pool,
+                  const Package &txns, bool test_accept,
+                  const CFeeRate &max_raw_tx_fee_rate = CFeeRate(Amount::zero()))
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
+
 /**
  * Simple class for regulating resource usage during CheckInputScripts (and
  * CScriptCheck), atomic so as to be compatible with parallel validation.
