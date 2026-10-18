@@ -30,6 +30,9 @@
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/v6_only.hpp>
@@ -41,6 +44,8 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
+#include <boost/beast/websocket.hpp>
+#include <boost/beast/websocket/ssl.hpp>
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -57,6 +62,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <rpc/async_waiter.h>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -83,7 +89,9 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
 namespace ssl = asio::ssl;
+namespace websocket = beast::websocket;
 using tcp = asio::ip::tcp;
+using namespace boost::asio::experimental::awaitable_operators;
 
 /** Maximum size of http request (request line + headers) */
 static const size_t MAX_HEADERS_SIZE = 8192;
@@ -310,6 +318,14 @@ static std::vector<CSubNet> rpc_allow_subnets;
 static std::unique_ptr<HTTPCoroutinePool> g_work_queue{nullptr};
 //! Handlers for (sub)paths
 static std::vector<HTTPPathHandler> pathHandlers;
+//! URI prefixes exempt from the -rpcallowip ACL (they do no RPC auth either)
+static std::vector<std::string> g_public_prefixes;
+
+//! Whether /chronik is served (-chronik and -chronikpubliconrpcport)
+static bool g_chronik_enabled{false};
+static const std::string CHRONIK_PREFIX{"/chronik"};
+//! Maximum size of a Chronik response
+static const uint64_t MAX_CHRONIK_RESPONSE_SIZE = 256 * 1024 * 1024;
 
 /**
  * Tracks live connections (so they can be closed on shutdown) and requests
@@ -369,6 +385,22 @@ public:
     }
 };
 static HTTPConnectionTracker g_connections;
+
+/** Whether uri is prefix itself or continues it with '/' or '?' */
+static bool URIHasPathPrefix(std::string_view uri, std::string_view prefix) {
+    if (uri.substr(0, prefix.size()) != prefix) {
+        return false;
+    }
+    return uri.size() == prefix.size() || uri[prefix.size()] == '/' ||
+           uri[prefix.size()] == '?';
+}
+
+static bool IsPublicPath(std::string_view uri) {
+    return std::any_of(g_public_prefixes.begin(), g_public_prefixes.end(),
+                       [&](const std::string &prefix) {
+                           return URIHasPathPrefix(uri, prefix);
+                       });
+}
 
 /** Check if a network address is allowed to access the HTTP server */
 static bool ClientAllowed(const CNetAddr &netaddr) {
@@ -462,6 +494,32 @@ static bool HeaderListsToken(std::string_view value, std::string_view token) {
     return false;
 }
 
+/**
+ * Replace the response body by its zstd compression if the request accepts
+ * it, the body is large enough and no other encoding is set.
+ */
+static void MaybeCompressZstd(const BeastRequest &req, BeastResponse &res) {
+    if (res.body().size() < HTTP_ZSTD_MIN_REPLY_SIZE ||
+        res.find(http::field::content_encoding) != res.end()) {
+        return;
+    }
+    auto ae = req.find(http::field::accept_encoding);
+    if (ae == req.end() || !HeaderListsToken(ae->value(), "zstd")) {
+        return;
+    }
+    const std::string &in = res.body();
+    std::string out(ZSTD_compressBound(in.size()), '\0');
+    const size_t n{ZSTD_compress(out.data(), out.size(), in.data(), in.size(),
+                                 /*compressionLevel=*/1)};
+    if (ZSTD_isError(n)) {
+        return;
+    }
+    out.resize(n);
+    res.body() = std::move(out);
+    res.set(http::field::content_encoding, "zstd");
+    res.set(http::field::vary, "Accept-Encoding");
+}
+
 /** Fill in fields of a response that libevent used to add by default */
 static void FinalizeResponse(BeastResponse &res, unsigned version) {
     res.version(version);
@@ -531,7 +589,7 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
     auto hreq{std::make_unique<HTTPRequest>(std::move(impl))};
 
     // Early address-based allow check
-    if (!ClientAllowed(hreq->GetPeer())) {
+    if (!IsPublicPath(hreq->GetURI()) && !ClientAllowed(hreq->GetPeer())) {
         LogDebug(BCLog::HTTP,
                  "HTTP request from %s rejected: Client network is not allowed "
                  "RPC access\n",
@@ -606,6 +664,361 @@ WriteResponse(Stream &stream, BeastResponse &res) {
     co_return ec;
 }
 
+/** Map "/chronik/x?y" to "/x?y" */
+static std::string StripChronikPrefix(std::string_view target) {
+    std::string rest{target.substr(CHRONIK_PREFIX.size())};
+    if (rest.empty() || rest[0] != '/') {
+        rest.insert(rest.begin(), '/');
+    }
+    return rest;
+}
+
+/** In-process /chronik handlers, see httpserver.h */
+static GlobalMutex g_chronik_inprocess_mutex;
+static std::shared_ptr<const ChronikInProcessHandlers>
+    g_chronik_inprocess GUARDED_BY(g_chronik_inprocess_mutex);
+//! Open in-process WebSocket sessions, closed when the handlers are cleared
+static std::list<std::weak_ptr<InProcessWebSocket>>
+    g_chronik_inprocess_sessions GUARDED_BY(g_chronik_inprocess_mutex);
+
+static std::shared_ptr<const ChronikInProcessHandlers> GetChronikInProcess() {
+    LOCK(g_chronik_inprocess_mutex);
+    return g_chronik_inprocess;
+}
+
+void SetChronikInProcessHandlers(
+    std::shared_ptr<const ChronikInProcessHandlers> handlers) {
+    std::list<std::weak_ptr<InProcessWebSocket>> sessions;
+    {
+        LOCK(g_chronik_inprocess_mutex);
+        g_chronik_inprocess = std::move(handlers);
+        if (!g_chronik_inprocess) {
+            sessions.swap(g_chronik_inprocess_sessions);
+        }
+    }
+    for (const auto &weak : sessions) {
+        if (auto session = weak.lock()) {
+            session->Close();
+        }
+    }
+}
+
+static InProcessHTTPRequest ToInProcessRequest(const BeastRequest &req,
+                                               const HTTPConnectionInfo &conn) {
+    InProcessHTTPRequest out;
+    out.method = std::string{req.method_string()};
+    out.target = StripChronikPrefix(req.target());
+    for (const auto &f : req) {
+        out.headers.emplace_back(std::string{f.name_string()},
+                                 std::string{f.value()});
+    }
+    out.body = req.body();
+    out.peer_ip = conn.peer.ToStringAddr();
+    return out;
+}
+
+/** Serve a /chronik request with the in-process handler */
+static asio::awaitable<BeastResponse>
+InProcessChronikHTTP(std::shared_ptr<const ChronikInProcessHandlers> handlers,
+                     const BeastRequest &req, const HTTPConnectionInfo &conn) {
+    const unsigned version{req.version()};
+    InProcessHTTPResponse in = co_await asio::async_initiate<
+        decltype(asio::use_awaitable), void(InProcessHTTPResponse)>(
+        [&](auto handler) {
+            using Handler = decltype(handler);
+            struct State {
+                Handler handler;
+                asio::executor_work_guard<asio::associated_executor_t<Handler>>
+                    work;
+            };
+            // Take the work guard before moving the handler.
+            auto work =
+                asio::make_work_guard(asio::get_associated_executor(handler));
+            auto state = std::make_shared<State>(
+                State{std::move(handler), std::move(work)});
+            handlers->http(ToInProcessRequest(req, conn),
+                           [state](InProcessHTTPResponse resp) mutable {
+                               auto ex = state->work.get_executor();
+                               asio::dispatch(ex, [state, resp = std::move(
+                                                              resp)]() mutable {
+                                   std::move(state->handler)(std::move(resp));
+                                   state->work.reset();
+                               });
+                           });
+        },
+        asio::use_awaitable);
+
+    BeastResponse res{static_cast<http::status>(in.status), version};
+    std::optional<std::string> explicit_length;
+    for (auto &[name, value] : in.headers) {
+        if (beast::iequals(name, "content-length")) {
+            explicit_length = value;
+            continue;
+        }
+        if (beast::iequals(name, "transfer-encoding")) {
+            continue;
+        }
+        res.insert(name, value);
+    }
+    res.body() = std::move(in.body);
+    if (res.body().size() > MAX_CHRONIK_RESPONSE_SIZE) {
+        co_return MakeSimpleResponse(500, version,
+                                     "Chronik response too large");
+    }
+    MaybeCompressZstd(req, res);
+    FinalizeResponse(res, version);
+    if (req.method() == http::verb::head && explicit_length &&
+        res.body().empty()) {
+        res.set(http::field::content_length, *explicit_length);
+    }
+    co_return res;
+}
+
+/**
+ * One in-process /chronik/ws session on the connection's strand. Handler
+ * calls happen on that strand, in order; the session object outlives the
+ * stream only as an inert shell (all operations check m_closed).
+ */
+template <typename Stream>
+class InProcessWsSession final
+    : public InProcessWebSocket,
+      public std::enable_shared_from_this<InProcessWsSession<Stream>> {
+public:
+    InProcessWsSession(Stream &stream, asio::any_io_executor ex,
+                       std::shared_ptr<const ChronikInProcessHandlers> handlers)
+        : m_ex(ex), m_ws(stream), m_timer(ex), m_wait(ex),
+          m_handlers(std::move(handlers)) {}
+
+    void SendBinary(std::string msg) override {
+        asio::post(m_ex, [self = this->shared_from_this(),
+                          msg = std::move(msg)]() mutable {
+            self->Enqueue(Out{Out::Kind::Binary, std::move(msg)});
+        });
+    }
+    void Close() override {
+        asio::post(m_ex, [self = this->shared_from_this()] {
+            self->Enqueue(Out{Out::Kind::Close, {}});
+        });
+    }
+    void NotifyActivity() override {
+        asio::post(m_ex, [self = this->shared_from_this()] {
+            self->m_timer.cancel();
+        });
+    }
+
+    asio::awaitable<void>
+    Run(const BeastRequest &req,
+        std::vector<std::pair<std::string, std::string>> extra_headers,
+        const HTTPConnectionInfo &conn) {
+        auto self = this->shared_from_this();
+        beast::get_lowest_layer(m_ws.next_layer()).expires_never();
+        websocket::stream_base::timeout timeout{};
+        timeout.handshake_timeout = std::chrono::seconds(30);
+        timeout.idle_timeout = websocket::stream_base::none();
+        timeout.keep_alive_pings = false;
+        m_ws.set_option(timeout);
+        m_ws.set_option(websocket::stream_base::decorator(
+            [extra_headers](websocket::response_type &res) {
+                for (const auto &[name, value] : extra_headers) {
+                    res.insert(name, value);
+                }
+            }));
+        m_ws.read_message_max(m_handlers->ws_max_message_size);
+        m_ws.binary(true);
+        m_ws.auto_fragment(false);
+        m_ws.control_callback([this](websocket::frame_type,
+                                     beast::string_view) { m_timer.cancel(); });
+        auto [aec] =
+            co_await m_ws.async_accept(req, asio::as_tuple(asio::use_awaitable));
+        if (aec) {
+            co_return;
+        }
+        {
+            LOCK(g_chronik_inprocess_mutex);
+            if (g_chronik_inprocess != m_handlers) {
+                // Unregistered meanwhile: don't start a session.
+                co_return;
+            }
+            g_chronik_inprocess_sessions.remove_if(
+                [](const auto &w) { return w.expired(); });
+            g_chronik_inprocess_sessions.push_back(self);
+        }
+        m_handler = m_handlers->ws_open(self, conn.peer.ToStringAddr());
+        m_pinging = true;
+        asio::co_spawn(m_ex, PingLoop(), asio::detached);
+        co_await ReadLoop();
+        // Wait for the writer and pinger: they use the stream.
+        while (m_writing || m_pinging) {
+            m_wait.expires_at(asio::steady_timer::time_point::max());
+            co_await m_wait.async_wait(asio::as_tuple(asio::use_awaitable));
+        }
+        if (m_handler) {
+            m_handler->OnClosed();
+            m_handler.reset();
+        }
+    }
+
+private:
+    struct Out {
+        enum class Kind { Binary, Ping, Close } kind;
+        std::string data;
+    };
+
+    asio::awaitable<void> ReadLoop() {
+        while (true) {
+            beast::flat_buffer buffer;
+            auto [ec, n] = co_await m_ws.async_read(
+                buffer, asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                break;
+            }
+            m_timer.cancel();
+            if (!m_handler) {
+                continue;
+            }
+            if (m_ws.got_text()) {
+                m_handler->OnText();
+            } else {
+                m_handler->OnBinary(beast::buffers_to_string(buffer.data()));
+            }
+        }
+        m_closed = true;
+        m_out.clear();
+        m_timer.cancel();
+        boost::system::error_code ignored;
+        beast::get_lowest_layer(m_ws.next_layer()).socket().close(ignored);
+    }
+
+    asio::awaitable<void> PingLoop() {
+        auto self = this->shared_from_this();
+        while (!m_closed) {
+            m_timer.expires_after(m_handlers->ws_ping_interval);
+            auto [ec] =
+                co_await m_timer.async_wait(asio::as_tuple(asio::use_awaitable));
+            if (m_closed) {
+                break;
+            }
+            if (ec) {
+                // Cancelled by activity: re-arm
+                continue;
+            }
+            Enqueue(Out{Out::Kind::Ping, m_handlers->ws_ping_payload});
+        }
+        m_pinging = false;
+        m_wait.cancel();
+    }
+
+    void Enqueue(Out msg) {
+        if (m_closed) {
+            return;
+        }
+        if (msg.kind != Out::Kind::Ping) {
+            m_timer.cancel();
+        }
+        m_out.push_back(std::move(msg));
+        if (!m_writing) {
+            m_writing = true;
+            asio::co_spawn(m_ex, WriteLoop(), asio::detached);
+        }
+    }
+
+    asio::awaitable<void> WriteLoop() {
+        auto self = this->shared_from_this();
+        while (!m_out.empty() && !m_closed) {
+            Out msg = std::move(m_out.front());
+            m_out.pop_front();
+            boost::system::error_code ec;
+            switch (msg.kind) {
+                case Out::Kind::Binary: {
+                    auto [wec, n] = co_await m_ws.async_write(
+                        asio::buffer(msg.data),
+                        asio::as_tuple(asio::use_awaitable));
+                    ec = wec;
+                    break;
+                }
+                case Out::Kind::Ping: {
+                    websocket::ping_data payload(msg.data);
+                    auto [pec] = co_await m_ws.async_ping(
+                        payload, asio::as_tuple(asio::use_awaitable));
+                    ec = pec;
+                    break;
+                }
+                case Out::Kind::Close: {
+                    auto [cec] = co_await m_ws.async_close(
+                        websocket::close_code::normal,
+                        asio::as_tuple(asio::use_awaitable));
+                    ec = cec;
+                    m_closed = true;
+                    break;
+                }
+            }
+            if (ec) {
+                m_closed = true;
+                break;
+            }
+        }
+        if (m_closed) {
+            m_out.clear();
+            m_timer.cancel();
+            boost::system::error_code ignored;
+            beast::get_lowest_layer(m_ws.next_layer()).socket().close(ignored);
+        }
+        m_writing = false;
+        m_wait.cancel();
+    }
+
+    asio::any_io_executor m_ex;
+    websocket::stream<Stream &> m_ws;
+    asio::steady_timer m_timer;
+    //! Wakes Run when the writer or pinger finishes
+    asio::steady_timer m_wait;
+    std::shared_ptr<const ChronikInProcessHandlers> m_handlers;
+    std::unique_ptr<InProcessWebSocketHandler> m_handler;
+    std::deque<Out> m_out;
+    bool m_writing{false};
+    bool m_pinging{false};
+    bool m_closed{false};
+};
+
+/**
+ * Serve a /chronik/ws upgrade in process. Returns false (without touching the
+ * stream) if the handlers don't accept it as a WebSocket upgrade.
+ */
+template <typename Stream>
+static asio::awaitable<bool> InProcessChronikWebSocket(
+    std::shared_ptr<const ChronikInProcessHandlers> handlers, Stream &stream,
+    const BeastRequest &req, const HTTPConnectionInfo &conn) {
+    auto extra{handlers->ws_check(ToInProcessRequest(req, conn))};
+    if (!extra) {
+        co_return false;
+    }
+    auto session{std::make_shared<InProcessWsSession<Stream>>(
+        stream, co_await asio::this_coro::executor, handlers)};
+    co_await session->Run(req, std::move(*extra), conn);
+    co_return true;
+}
+
+/**
+ * Handle a WebSocket upgrade request if a WebSocket endpoint matches its
+ * target. Returns true if the connection was taken over.
+ */
+template <typename Stream>
+static asio::awaitable<bool>
+TryHandleWebSocketUpgrade(Stream &stream, const BeastRequest &req,
+                          const HTTPConnectionInfo &conn) {
+    const std::string_view target{req.target()};
+    if (g_chronik_enabled &&
+        URIHasPathPrefix(target, CHRONIK_PREFIX + "/ws")) {
+        // Not a valid upgrade, or Chronik not running: answered by the HTTP
+        // handler.
+        if (auto handlers{GetChronikInProcess()}) {
+            co_return co_await InProcessChronikWebSocket(std::move(handlers),
+                                                         stream, req, conn);
+        }
+    }
+    co_return false;
+}
+
 /** Serve HTTP/1.1 keep-alive requests on an established (TLS or plain) stream */
 template <typename Stream>
 static asio::awaitable<void> ServeHTTP(Stream &stream,
@@ -675,9 +1088,28 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         const unsigned version{req.version()};
         const bool is_head{req.method() == http::verb::head};
 
+        if (websocket::is_upgrade(req) && !g_reject_requests.load() &&
+            co_await TryHandleWebSocketUpgrade(stream, req, conn)) {
+            co_return;
+        }
+
         // Handlers may take arbitrarily long (e.g. long polling).
         beast::get_lowest_layer(stream).expires_never();
-        BeastResponse res{co_await DispatchRequest(std::move(req), conn)};
+        BeastResponse res;
+        if (g_chronik_enabled && !g_reject_requests.load() &&
+            URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
+            g_connections.AddRequest();
+            if (auto handlers{GetChronikInProcess()}) {
+                res = co_await InProcessChronikHTTP(std::move(handlers), req,
+                                                    conn);
+            } else {
+                // Before Chronik started or after it was interrupted
+                res = MakeSimpleResponse(503, version,
+                                         "Chronik is not running");
+            }
+        } else {
+            res = co_await DispatchRequest(std::move(req), conn);
+        }
 
         bool close{!keep_alive || g_reject_requests.load()};
         if (auto c{res.find(http::field::connection)};
@@ -1085,6 +1517,16 @@ bool InitHTTPServer(Config &config) {
         return false;
     }
 
+    g_public_prefixes.clear();
+    g_chronik_enabled =
+        gArgs.GetBoolArg("-chronik", false) &&
+        gArgs.GetBoolArg("-chronikpubliconrpcport",
+                         DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT);
+    if (g_chronik_enabled) {
+        RegisterPublicHTTPPrefix(CHRONIK_PREFIX);
+        LogPrintf("Serving Chronik on the RPC port at %s\n", CHRONIK_PREFIX);
+    }
+
     g_config = &config;
     g_server_timeout = std::chrono::seconds{std::max<int64_t>(
         gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT), 1)};
@@ -1345,29 +1787,9 @@ void HTTPRequest::WriteReply(int nStatus, std::string strReply) {
     }
     BeastResponse &res = m_impl->beast_res;
     res.result(static_cast<unsigned>(nStatus));
-
-    bool compressed{false};
-    if (strReply.size() >= HTTP_ZSTD_MIN_REPLY_SIZE &&
-        res.find(http::field::content_encoding) == res.end()) {
-        auto ae = m_impl->beast_req.find(http::field::accept_encoding);
-        if (ae != m_impl->beast_req.end() &&
-            HeaderListsToken(ae->value(), "zstd")) {
-            std::string out(ZSTD_compressBound(strReply.size()), '\0');
-            const size_t n{ZSTD_compress(out.data(), out.size(),
-                                         strReply.data(), strReply.size(),
-                                         /*compressionLevel=*/1)};
-            if (!ZSTD_isError(n)) {
-                out.resize(n);
-                res.body() = std::move(out);
-                res.set(http::field::content_encoding, "zstd");
-                res.set(http::field::vary, "Accept-Encoding");
-                compressed = true;
-            }
-        }
-    }
-    if (!compressed) {
-        res.body() = std::move(strReply);
-    }
+    // The body is moved through to the socket write: no copies.
+    res.body() = std::move(strReply);
+    MaybeCompressZstd(m_impl->beast_req, res);
     FinalizeResponse(res, m_impl->beast_req.version());
 
     if (m_impl->send_reply_fn) {
@@ -1548,6 +1970,11 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
     LogDebug(BCLog::HTTP, "Registering HTTP handler for %s (exactmatch %d)\n",
              prefix, exactMatch);
     pathHandlers.push_back(HTTPPathHandler(prefix, exactMatch, handler));
+}
+
+void RegisterPublicHTTPPrefix(const std::string &prefix) {
+    LogDebug(BCLog::HTTP, "Exempting %s from the RPC IP allow list\n", prefix);
+    g_public_prefixes.push_back(prefix);
 }
 
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch) {
