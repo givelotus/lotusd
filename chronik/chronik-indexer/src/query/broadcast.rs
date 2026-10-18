@@ -146,9 +146,9 @@ impl QueryBroadcast<'_> {
         let mut coins_to_uncache = Vec::new();
         let mut batch_txids = BTreeSet::new();
         let mut batch_txs = HashMap::new();
-        for mut raw_tx in raw_txs.iter().cloned() {
-            let tx = TxMut::deser(&mut raw_tx).map_err(ParsingFailed)?;
-            let mut ffi_tx = ffi::Tx::from(tx);
+        for raw_tx in raw_txs.iter() {
+            let mut ffi_tx = decode_bridge_tx(raw_tx).map_err(ParsingFailed)?;
+            self.node.bridge.decode_raw_tx(raw_tx, &mut ffi_tx)?;
 
             let mut tx_not_found = Vec::new();
             let mut tx_coins_to_uncache = Vec::new();
@@ -213,8 +213,9 @@ impl QueryBroadcast<'_> {
     /// Parse the tx and validate it as a token tx without broadcasting,
     /// returning verified tx data.
     pub fn validate_tx(&self, raw_tx: Vec<u8>) -> Result<proto::Tx> {
-        let tx = TxMut::deser(&mut raw_tx.into())?;
-        let mut ffi_tx = ffi::Tx::from(tx);
+        let raw_tx = Bytes::from(raw_tx);
+        let mut ffi_tx = decode_bridge_tx(&raw_tx)?;
+        self.node.bridge.decode_raw_tx(&raw_tx, &mut ffi_tx)?;
         let mut coins_to_uncache = Vec::new();
         self.node.bridge.lookup_spent_coins(
             &mut ffi_tx,
@@ -337,4 +338,13 @@ pub fn verify_timeout_finalization(
         );
     }
     Ok(Duration::from_secs(timeout_finalization_secs))
+}
+
+/// Native v7 transactions must be decoded by the node, not the legacy codec.
+/// Preserve the inherited legacy parser and its error text for v1/v2 frames.
+fn decode_bridge_tx(raw_tx: &Bytes) -> std::result::Result<ffi::Tx, DataError> {
+    if raw_tx.starts_with(&7u32.to_le_bytes()) {
+        return Ok(ffi::Tx::default());
+    }
+    TxMut::deser(&mut raw_tx.clone()).map(ffi::Tx::from)
 }

@@ -146,9 +146,7 @@ BOOST_FIXTURE_TEST_CASE(test_find_fork, TestChain100Setup) {
 
 BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
     ChainstateManager &chainman = *Assert(m_node.chainman);
-    LOCK(cs_main);
     const chronik_bridge::ChronikBridge bridge(m_node);
-    CCoinsViewCache &coins_cache = chainman.ActiveChainstate().CoinsTip();
 
     CScript anyoneScript = CScript() << OP_1;
     CScript anyoneP2sh = GetScriptForDestination(ScriptHash(anyoneScript));
@@ -168,7 +166,8 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
         CTxOut(coinTx->vout[0].nValue - 10000 * SATOSHI, anyoneP2sh),
     };
     const MempoolAcceptResult result =
-        m_node.chainman->ProcessTransaction(MakeTransactionRef(tx));
+        WITH_LOCK(chainman.GetMutex(),
+                  return chainman.ProcessTransaction(MakeTransactionRef(tx)));
     BOOST_CHECK_EQUAL(result.m_result_type,
                       MempoolAcceptResult::ResultType::VALID);
     TxId txid = tx.GetId();
@@ -196,6 +195,10 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
         .outputs = {},
         .locktime = 0,
     };
+
+    // Keep direct cache inspection protected, but release the lock when mining.
+    WAIT_LOCK(chainman.GetMutex(), lock);
+    CCoinsViewCache &coins_cache = chainman.ActiveChainstate().CoinsTip();
 
     // Do lookup
     rust::Vec<chronik_bridge::OutPoint> not_found;
@@ -225,9 +228,12 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
     BOOST_CHECK(CScript(script1.data(), script1.data() + script1.size()) ==
                 anyoneP2sh);
 
-    // Mine tx
-    CreateAndProcessBlock({tx}, CScript() << OP_1,
-                          &chainman.ActiveChainstate());
+    // ProcessNewBlock requires the caller not to hold cs_main.
+    {
+        REVERSE_LOCK(lock);
+        CreateAndProcessBlock({tx}, CScript() << OP_1,
+                              &chainman.ActiveChainstate());
+    }
     // Coins are now in the cache
     BOOST_CHECK(coins_cache.HaveCoinInCache(COutPoint(txid, 0)));
     BOOST_CHECK(coins_cache.HaveCoinInCache(COutPoint(txid, 1)));
@@ -258,6 +264,55 @@ BOOST_FIXTURE_TEST_CASE(test_lookup_spent_coin, TestChain100Setup) {
     // Only the 2nd coin is now in cache
     BOOST_CHECK(!coins_cache.HaveCoinInCache(COutPoint(txid, 0)));
     BOOST_CHECK(coins_cache.HaveCoinInCache(COutPoint(txid, 1)));
+}
+
+BOOST_FIXTURE_TEST_CASE(test_decode_raw_tx, TestChain100Setup) {
+    // validate-tx decodes raw txs with the node's decoding: a native V2 (v7)
+    // tx, which the legacy-shaped Rust decoder reads as having no inputs or
+    // outputs, gets its own inputs, outputs and txid, and looking up its
+    // spent coins keeps that txid.
+    const chronik_bridge::ChronikBridge bridge(m_node);
+    std::vector<TxId> txids;
+    for (const int64_t sats : {1000, 2000}) {
+        CMutableTransaction mtx;
+        mtx.vin = {CTxIn(COutPoint(m_coinbase_txns[0]->GetId(), 1), CScript(),
+                         0xffffffff)};
+        mtx.vout = {CTxOut(sats * SATOSHI, CScript() << OP_TRUE)};
+        AdaptLegacyTxToV7(mtx);
+        const CTransaction ctx(mtx);
+        BOOST_REQUIRE_EQUAL(ctx.nVersion, 7);
+        DataStream ss{};
+        ss << ctx;
+        const auto raw = MakeUCharSpan(ss);
+
+        chronik_bridge::Tx tx = {
+            .txid = {},
+            .version = 7,
+            .inputs = {},
+            .outputs = {},
+            .locktime = 0,
+        };
+        bridge.decode_raw_tx(
+            rust::Slice<const uint8_t>(raw.data(), raw.size()), tx);
+        BOOST_CHECK(tx.txid == chronik::util::HashToArray(ctx.GetId()));
+        BOOST_CHECK_EQUAL(tx.version, 7);
+        BOOST_REQUIRE_EQUAL(tx.inputs.size(), 1);
+        BOOST_CHECK(tx.inputs[0].prev_out.txid ==
+                    chronik::util::HashToArray(m_coinbase_txns[0]->GetId()));
+        BOOST_CHECK_EQUAL(tx.inputs[0].prev_out.out_idx, 1);
+        BOOST_CHECK_EQUAL(tx.inputs[0].sequence, 0xffffffff);
+        BOOST_REQUIRE_EQUAL(tx.outputs.size(), 1);
+        BOOST_CHECK_EQUAL(tx.outputs[0].sats, sats);
+        BOOST_CHECK_EQUAL(tx.locktime, ctx.nLockTime);
+
+        const auto txid = tx.txid;
+        rust::Vec<chronik_bridge::OutPoint> not_found;
+        rust::Vec<chronik_bridge::OutPoint> coins_to_uncache;
+        bridge.lookup_spent_coins(tx, not_found, coins_to_uncache);
+        BOOST_CHECK(tx.txid == txid);
+        txids.push_back(ctx.GetId());
+    }
+    BOOST_CHECK(txids[0] != txids[1]);
 }
 
 BOOST_FIXTURE_TEST_CASE(test_load_block, TestChain100Setup) {
@@ -329,15 +384,30 @@ BOOST_FIXTURE_TEST_CASE(test_get_block_header, TestChain100Setup) {
     ChainstateManager &chainman = *Assert(m_node.chainman);
     const CBlockIndex &tip = *chainman.ActiveTip();
 
+    DataStream ser_genesis{};
+    ser_genesis << tip.GetAncestor(0)->GetBlockHeader();
+    DataStream ser_tip{};
+    ser_tip << tip.GetBlockHeader();
+
     BOOST_CHECK_EQUAL(
         HexStr(chronik_bridge::get_block_header(*tip.GetAncestor(0))),
-        "0100000000000000000000000000000000000000000000000000000000000000000000"
-        "003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5"
-        "494dffff7f2002000000");
+        HexStr(ser_genesis));
     BOOST_CHECK_EQUAL(HexStr(chronik_bridge::get_block_header(tip)),
-                      "00000020e0d8e43b1b228a5e07415ea057c06b3a8caf4e9d82c9af6c"
-                      "f04aa87229fa3e507c4ada19c5746e61699678baa1edc97f3258c613"
-                      "64d4f8614e6a0801896ee66773184d5fffff7f2000000000");
+                      HexStr(ser_tip));
+    if (::GetSerializeSize(CBlockHeader()) == 80) {
+        BOOST_CHECK_EQUAL(
+            HexStr(chronik_bridge::get_block_header(*tip.GetAncestor(0))),
+            "010000000000000000000000000000000000000000000000000000000000000000"
+            "0000"
+            "003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a"
+            "dae5"
+            "494dffff7f2002000000");
+        BOOST_CHECK_EQUAL(
+            HexStr(chronik_bridge::get_block_header(tip)),
+            "00000020e0d8e43b1b228a5e07415ea057c06b3a8caf4e9d82c9af6c"
+            "f04aa87229fa3e507c4ada19c5746e61699678baa1edc97f3258c613"
+            "64d4f8614e6a0801896ee66773184d5fffff7f2000000000");
+    }
 }
 
 BOOST_FIXTURE_TEST_CASE(test_bridge_broadcast_tx, TestChain100Setup) {

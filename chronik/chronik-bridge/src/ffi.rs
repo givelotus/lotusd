@@ -9,6 +9,35 @@ pub use self::ffi_inner::*;
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "chronik_bridge")]
 mod ffi_inner {
+    /// Snapshot of the native fee controller, in the controller's fixed units.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct V2FeeRateInfo {
+        /// Native controller field `consensus_floor_per_kcu`.
+        pub consensus_floor_per_kcu: u64,
+        /// Native controller field `p2p_relay_feerate_per_kcu`.
+        pub p2p_relay_feerate_per_kcu: u64,
+        /// Native controller field `rpc_admission_feerate_per_kcu`.
+        pub rpc_admission_feerate_per_kcu: u64,
+        /// Native controller field `recommended_sdk_feerate_per_kcu`.
+        pub recommended_sdk_feerate_per_kcu: u64,
+        /// Native controller field `marginal_burn_feerate_per_kcu`.
+        pub marginal_burn_feerate_per_kcu: u64,
+        /// Native controller field `hysteresis_window_ms`.
+        pub hysteresis_window_ms: i64,
+        /// Native controller field `hysteresis_discount_permille`.
+        pub hysteresis_discount_permille: u64,
+        /// Native controller field `ema_block_size_bytes`.
+        pub ema_block_size_bytes: u64,
+        /// Native controller field `adaptive_target_block_size`.
+        pub adaptive_target_block_size: u64,
+        /// Native controller field `adaptive_max_block_size`.
+        pub adaptive_max_block_size: u64,
+        /// Native controller field `adaptive_max_generated_block_size`.
+        pub adaptive_max_generated_block_size: u64,
+        /// Native controller field `mempool_backlog_bytes`.
+        pub mempool_backlog_bytes: u64,
+    }
+
     /// Info about a block
     #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct BlockInfo {
@@ -130,7 +159,7 @@ mod ffi_inner {
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RawBlockHeader {
         /// Raw block header
-        pub data: [u8; 80],
+        pub data: Vec<u8>,
     }
 
     /// Wrapper struct for a block hash.
@@ -280,6 +309,17 @@ mod ffi_inner {
             block_index: &CBlockIndex,
         ) -> Result<&CBlockIndex>;
 
+        /// Replace `tx`, the legacy-shaped decoding of `raw_tx`, by the
+        /// node's own decoding of `raw_tx`: its inputs and outputs as
+        /// Chronik indexes them, its TxId, and unset (default) coins. If the
+        /// node cannot decode `raw_tx`, keep the legacy-shaped fields and
+        /// set the TxId the node computes for them.
+        fn decode_raw_tx(
+            self: &ChronikBridge,
+            raw_tx: &[u8],
+            tx: &mut Tx,
+        ) -> Result<()>;
+
         /// Lookup the spent coins of a tx and fill them in in-place.
         /// - `not_found` will be the outpoints that couldn't be found in the
         ///   node or the DB.
@@ -358,7 +398,7 @@ mod ffi_inner {
         fn get_block_info(block_index: &CBlockIndex) -> BlockInfo;
 
         /// Get the serialized block header for this CBlockIndex.
-        fn get_block_header(block_index: &CBlockIndex) -> [u8; 80];
+        fn get_block_header(block_index: &CBlockIndex) -> Vec<u8>;
 
         /// CBlockIndex::GetAncestor
         fn get_block_ancestor(
@@ -377,6 +417,9 @@ mod ffi_inner {
 
         /// Default maximum fee rate when broadcasting txs.
         fn default_max_raw_tx_fee_rate_per_kb() -> i64;
+
+        /// Return the native controller snapshot without narrowing fee values.
+        fn get_v2_fee_rate_info() -> V2FeeRateInfo;
 
         /// Calls `SyncWithValidationInterfaceQueue` from validationinterface.h
         /// to make sure wallet/indexes are synced.

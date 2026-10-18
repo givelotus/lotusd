@@ -268,4 +268,24 @@ mod ffi_inner {
             request: BranchRequest,
         ) -> Result<BranchPage>;
     }
+
+    unsafe extern "C++" {
+        include!("blockindex.h");
+        include!("chronik-cpp/chronik_bridge.h");
+        include!("chronik-cpp/chronik_validationinterface.h");
+        include!("primitives/block.h");
+
+        #[namespace = ""]
+        type CBlockIndex = chronik_bridge::ffi::CBlockIndex;
+        #[namespace = ""]
+        type CBlock = chronik_bridge::ffi::CBlock;
+        #[namespace = "chronik_bridge"]
+        type ChronikBridge = chronik_bridge::ffi::ChronikBridge;
+
+        fn get_v2_binding(bridge: &ChronikBridge) -> Binding;
+        fn bridge_v2_native_block(
+            block: &CBlock,
+            bindex: &CBlockIndex,
+        ) -> Result<NativeBlock>;
+    }
 }

@@ -15,7 +15,7 @@ from test_framework.chronik.client import pb
 def genesis_cb_tx():
     return pb.Tx(
         txid=bytes.fromhex(GENESIS_CB_TXID)[::-1],
-        version=1,
+        version=7,
         inputs=[
             pb.TxInput(
                 prev_out=pb.OutPoint(txid=bytes(32), out_idx=0xFFFFFFFF),
