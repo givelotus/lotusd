@@ -6,18 +6,15 @@ Test Chronik's /header and /headers endpoints.
 """
 
 from test_framework.address import ADDRESS_ECREG_P2SH_OP_TRUE, ADDRESS_ECREG_UNSPENDABLE
-from test_framework.blocktools import GENESIS_BLOCK_HASH
+from test_framework.blocktools import GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER
 from test_framework.merkle import merkle_root_and_branch
-from test_framework.messages import hash256
+from test_framework.messages import CBlockHeader, FromHex
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, hex_to_be_bytes
 
 NUM_HEADERS = 10
 
-GENESIS_HEADER = bytes.fromhex(
-    "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7"
-    "a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"
-)
+GENESIS_HEADER = bytes.fromhex(GENESIS_BLOCK_HEADER)
 
 
 class ChronikHeaderTest(BitcoinTestFramework):
@@ -127,7 +124,10 @@ class ChronikHeaderTest(BitcoinTestFramework):
             expected_proto_headers.append(expected_proto)
             assert_equal(proto_header, expected_proto)
             assert_equal(proto_header, chronik.block_header(block_hashes[i]).ok())
-            assert_equal(hash256(proto_header.raw_header)[::-1].hex(), block_hashes[i])
+            assert_equal(
+                FromHex(CBlockHeader(), proto_header.raw_header.hex()).hash_hex,
+                block_hashes[i],
+            )
 
         assert_equal(
             [
