@@ -39,7 +39,7 @@ TransactionError BroadcastTransaction(const NodeContext &node,
                                       const CTransactionRef tx,
                                       std::string &err_string,
                                       const Amount max_tx_fee, bool relay,
-                                      bool wait_callback) {
+                                      bool wait_callback, bool rpc_fee_hysteresis) {
     // BroadcastTransaction can be called by either sendrawtransaction RPC or
     // the wallet. chainman, mempool and peerman are initialized before the RPC
     // server and wallet are started and reset after the RPC server and wallet
@@ -70,23 +70,15 @@ TransactionError BroadcastTransaction(const NodeContext &node,
 
         if (!node.mempool->exists(txid)) {
             // Transaction is not already in the mempool.
-            if (max_tx_fee > Amount::zero()) {
-                // First, call ATMP with test_accept and check the fee. If ATMP
-                // fails here, return error immediately.
-                const MempoolAcceptResult result =
-                    node.chainman->ProcessTransaction(tx, /*test_accept=*/true);
-                if (result.m_result_type !=
-                    MempoolAcceptResult::ResultType::VALID) {
-                    return HandleATMPError(result.m_state, err_string);
-                } else if (result.m_base_fees.value() > max_tx_fee) {
-                    return TransactionError::MAX_FEE_EXCEEDED;
-                }
-            }
-            // Try to submit the transaction to the mempool.
+            // Validate caller fee bounds before insertion in this one ATMP pass.
+            const MempoolAdmissionLimits limits{max_tx_fee, rpc_fee_hysteresis};
             const MempoolAcceptResult result =
-                node.chainman->ProcessTransaction(tx, /*test_accept=*/false);
+                node.chainman->ProcessTransaction(tx, /*test_accept=*/false, limits);
             if (result.m_result_type !=
                 MempoolAcceptResult::ResultType::VALID) {
+                if (result.m_state.GetRejectReason() == "max-fee-exceeded") {
+                    return TransactionError::MAX_FEE_EXCEEDED;
+                }
                 return HandleATMPError(result.m_state, err_string);
             }
 
