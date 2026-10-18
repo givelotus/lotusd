@@ -1,0 +1,12 @@
+# Standalone review target; root integration may add this subdirectory later.
+cmake_minimum_required(VERSION 3.16)
+project(lotus_v2_output_review LANGUAGES CXX)
+add_executable(lotus_v2_output_test ../output.cpp ../test_output.cpp)
+target_compile_features(lotus_v2_output_test PRIVATE cxx_std_17)
+target_compile_options(lotus_v2_output_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+enable_testing()
+add_test(NAME lotus_v2_output_test COMMAND lotus_v2_output_test)
+add_executable(lotus_v2_transaction_test ../output.cpp ../transaction.cpp ../test_transaction.cpp)
+target_compile_features(lotus_v2_transaction_test PRIVATE cxx_std_17)
+target_compile_options(lotus_v2_transaction_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME lotus_v2_transaction_test COMMAND lotus_v2_transaction_test)
