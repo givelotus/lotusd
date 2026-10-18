@@ -152,6 +152,24 @@ impl V2Service {
     pub fn shared_database(&self) -> Arc<Mutex<V2Db>> {
         Arc::clone(&self.db)
     }
+    /// Build a shared V2 HTTP state handle for embedding in ChronikServer.
+    pub fn http_state(&self) -> chronik_http::v2::V2HttpState {
+        let authority = Arc::clone(&self.authority);
+        chronik_http::v2::V2HttpState {
+            db: self.shared_database(),
+            service_epoch: self.service_epoch,
+            index_error: Arc::clone(&self.index_error),
+            node_anchor: Some(Arc::new(move || authority.observe())),
+        }
+    }
+    /// Return the current indexed checkpoint, if initialized.
+    pub fn checkpoint(&self) -> Result<Option<f::Anchor>> {
+        Ok(self
+            .lock()?
+            .checkpoint()
+            .map_err(|e| e.to_string())?
+            .map(ffi_anchor))
+    }
     fn lock(&self) -> Result<MutexGuard<'_, V2Db>> {
         self.db.lock().map_err(|_| "V2 DB lock poisoned".into())
     }
