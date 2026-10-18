@@ -67,6 +67,7 @@
 #include <node/metrics.h>
 #include <node/metrics_collectors.h>
 #include <node/miner.h>
+#include <node/mining_pool.h>
 #include <node/peerman_args.h>
 #include <node/txadmission.h>
 #include <node/transaction.h>
@@ -1874,6 +1875,28 @@ void SetupServerArgs(NodeContext &node) {
                    "Override block version to test forking scenarios",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg(
+        "-miningpool=<0|1>",
+        strprintf("Enable built-in HTTP/SSE mining pool engine (default: %d)",
+                  lotus::v2::node::DEFAULT_MINING_POOL_ENABLED),
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg(
+        "-pooladdress=<addr>",
+        "Fallback Lotus address or script hex for built-in mining pool "
+        "newsletter/unclaimed shares",
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg(
+        "-poolpplnswindow=<n>",
+        strprintf("Number of shares in the built-in mining pool sliding PPLNS "
+                  "window (default: %u)",
+                  lotus::v2::node::DEFAULT_POOL_PPLNS_WINDOW),
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg(
+        "-pooltargetspacing=<sec>",
+        strprintf("Target seconds between worker shares for automatic vardiff "
+                  "in the built-in mining pool (default: %d)",
+                  lotus::v2::node::DEFAULT_POOL_TARGET_SPACING_SEC),
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
     argsman.AddArg("-server", "Accept command line and JSON-RPC commands",
                    ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
@@ -2762,6 +2785,8 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
                         "supported."),
                       db_backend));
     }
+
+    node::GetGlobalMiningPool().Configure(args, config);
 
     // parse and validate enabled filter types
     std::string blockfilterindex_value =
