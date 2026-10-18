@@ -10,6 +10,7 @@
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
+#include <lotus_v2/commitment.h>
 #include <minerfund.h>
 #include <node/snapshot.h>
 #include <pow/pow.h>
@@ -41,26 +42,31 @@ BOOST_FIXTURE_TEST_SUITE(rpc_batch_snapshot_tests, TestChain100Setup)
 
 BOOST_AUTO_TEST_CASE(testrawtxbatch_and_submitrawtxbatch_all_or_nothing) {
     GlobalConfig config;
-    CKey parent_key;
-    parent_key.MakeNewKey(true);
-    CScript parent_spk =
-        GetScriptForDestination(PKHash(parent_key.GetPubKey()));
-
-    CKey child_key;
-    child_key.MakeNewKey(true);
-    CScript child_spk = GetScriptForDestination(PKHash(child_key.GetPubKey()));
-
-    // Create a parent transaction and a child transaction spending the parent.
-    const Amount cb_val = m_coinbase_txns[0]->vout[0].nValue;
-    CMutableTransaction parent_mtx = CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, parent_spk,
-        cb_val - 2000 * SATOSHI, /*submit=*/false);
-    CTransactionRef parent_tx = MakeTransactionRef(parent_mtx);
-
-    CMutableTransaction child_mtx = CreateValidMempoolTransaction(
-        parent_tx, 0, 101, parent_key, child_spk, cb_val - 4000 * SATOSHI,
-        /*submit=*/false);
-    CTransactionRef child_tx = MakeTransactionRef(child_mtx);
+    const std::vector<uint8_t> program{0x4e};
+    lotus::v2::Output output;
+    output.value = 100000;
+    output.branches = {lotus::v2::BranchLeaf(program)};
+    output.paths = {{0}};
+    const COutPoint funding(TxId(uint256S("1001")), 0);
+    {
+        LOCK(cs_main);
+        m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(funding,
+            Coin(CTxOut::FromV2Output(output), 100, false), false);
+    }
+    auto spend = [&](const COutPoint &prevout, uint64_t value) {
+        CMutableTransaction tx;
+        tx.nVersion = 7; tx.fHasV2Lock = true; tx.nV2Lock = 0;
+        CTxIn input(prevout); input.nFlags = 1; input.nPathIndex = 0;
+        lotus::v2::BranchWitness witness; witness.script = program;
+        input.vWitnesses = {witness}; tx.vin.push_back(std::move(input));
+        auto next = output; next.value = value;
+        tx.vout.push_back(CTxOut::FromV2Output(next));
+        return tx;
+    };
+    const auto parent_mtx = spend(funding, 98000);
+    const auto parent_tx = MakeTransactionRef(parent_mtx);
+    const auto child_mtx = spend(COutPoint(parent_tx->GetId(), 0), 96000);
+    const auto child_tx = MakeTransactionRef(child_mtx);
 
     // Also create an invalid transaction spending a nonexistent outpoint.
     CMutableTransaction invalid_mtx = child_mtx;
@@ -246,6 +252,9 @@ BOOST_AUTO_TEST_CASE(batch_decode_preserves_order_after_reused_worker_failures) 
                 BOOST_REQUIRE_EQUAL(rows.size(), ids.size());
                 for (size_t i = 0; i < ids.size(); ++i) {
                     BOOST_CHECK_EQUAL(rows[i].find_value("txid").get_str(), ids[i]);
+                    BOOST_CHECK_EQUAL(rows[i].find_value("allowed").get_bool(), false);
+                    BOOST_CHECK_EQUAL(rows[i].find_value("reject-reason").get_str(),
+                                      "bad-txns-non-v7-format");
                 }
             }
             BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
