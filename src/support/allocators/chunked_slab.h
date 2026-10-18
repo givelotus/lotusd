@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <type_traits>
 #include <utility>
@@ -438,6 +439,251 @@ template <typename T1, typename T2, std::size_t SlotsPerChunk>
 bool operator!=(const ChunkedSlabAllocator<T1, SlotsPerChunk> &a,
                 const ChunkedSlabAllocator<T2, SlotsPerChunk> &b) noexcept {
     return !(a == b);
+}
+
+/**
+ * Process-wide, mutex-guarded slab arena for one (SlotSize, SlotAlign) class.
+ *
+ * Threads reach the pool only in batches, through the per-thread magazines of
+ * GlobalConcurrentSlabAllocator, so the mutex is taken once per
+ * MAGAZINE_BATCH allocations or deallocations rather than once per call.
+ *
+ * The pool is constructed on first use in static storage and intentionally
+ * never destroyed: objects released during static destruction (for example a
+ * global CTransactionRef) can still return their slot safely.
+ */
+template <std::size_t SlotSize, std::size_t SlotAlign,
+          std::size_t SlotsPerChunk>
+class ConcurrentSlabPool final {
+    std::mutex m_mutex;
+    SlabArena m_arena{SlotSize, SlotAlign, SlotsPerChunk};
+    //! Slots handed out to threads (in use or cached in a magazine).
+    std::size_t m_outstanding{0};
+
+    ConcurrentSlabPool() = default;
+
+public:
+    ConcurrentSlabPool(const ConcurrentSlabPool &) = delete;
+    ConcurrentSlabPool &operator=(const ConcurrentSlabPool &) = delete;
+
+    static ConcurrentSlabPool &Get() {
+        alignas(ConcurrentSlabPool) static std::byte
+            storage[sizeof(ConcurrentSlabPool)];
+        static ConcurrentSlabPool *const pool =
+            ::new (static_cast<void *>(storage)) ConcurrentSlabPool();
+        return *pool;
+    }
+
+    /**
+     * Fill out[0..count) with free slots. Returns the number of slots
+     * provided, which is less than count only if a chunk allocation failed
+     * after at least one slot was obtained; throws std::bad_alloc otherwise.
+     */
+    std::size_t AllocateBatch(void **out, std::size_t count) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::size_t i = 0;
+        try {
+            for (; i < count; ++i) {
+                out[i] = m_arena.template AllocateSlot<SlotSize, SlotAlign>();
+            }
+        } catch (const std::bad_alloc &) {
+            if (i == 0) {
+                throw;
+            }
+        }
+        m_outstanding += i;
+        return i;
+    }
+
+    void DeallocateBatch(void *const *in, std::size_t count) noexcept {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (std::size_t i = 0; i < count; ++i) {
+            m_arena.DeallocateSlot(in[i]);
+        }
+        m_outstanding -= count;
+    }
+
+    [[nodiscard]] std::size_t NumAllocatedChunks() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_arena.NumAllocatedChunks();
+    }
+
+    [[nodiscard]] std::size_t OutstandingSlots() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_outstanding;
+    }
+};
+
+/**
+ * Stateless, thread-safe allocator for single objects of type T, backed by a
+ * process-wide ConcurrentSlabPool (one per slot size/alignment class).
+ *
+ * Each thread keeps a magazine of up to MAGAZINE_SIZE free slots. The fast
+ * path of allocate(1) / deallocate(p, 1) only touches that thread-local
+ * magazine: no locks and no atomics. A thread refills or flushes
+ * MAGAZINE_BATCH slots at a time under the pool mutex. Objects may be freed on
+ * a different thread than the one that allocated them; the slot simply joins
+ * the freeing thread's magazine.
+ *
+ * When a thread exits, its magazine is flushed back to the pool. Any slot
+ * released on that thread afterwards (by later thread_local or static
+ * destructors) bypasses the magazine and goes straight to the pool.
+ *
+ * Multi-object allocations (n != 1) use aligned ::operator new.
+ * Like any slab, memory is reused for objects of the same class but never
+ * returned to the system.
+ */
+template <typename T, std::size_t SlotsPerChunk = 16384>
+class GlobalConcurrentSlabAllocator {
+    static_assert(SlotsPerChunk > 0, "SlotsPerChunk must be positive");
+
+    static constexpr std::size_t SlotAlign() noexcept {
+        return std::max(alignof(T), alignof(SlabArena::FreeNode));
+    }
+
+    static constexpr std::size_t SlotSize() noexcept {
+        constexpr std::size_t align = SlotAlign();
+        constexpr std::size_t raw =
+            std::max(sizeof(T), sizeof(SlabArena::FreeNode));
+        return ((raw + align - 1) / align) * align;
+    }
+
+    using Pool = ConcurrentSlabPool<SlotSize(), SlotAlign(), SlotsPerChunk>;
+
+    static constexpr std::size_t MAGAZINE_SIZE = 64;
+    static constexpr std::size_t MAGAZINE_BATCH = MAGAZINE_SIZE / 2;
+
+    enum class MagazineState : uint8_t { UNREGISTERED, LIVE, RETIRED };
+
+    // Trivially destructible, so it stays usable during thread teardown.
+    struct Magazine {
+        void *slots[MAGAZINE_SIZE];
+        uint32_t count;
+        MagazineState state;
+    };
+    static_assert(std::is_trivially_destructible_v<Magazine>);
+
+    static Magazine &LocalMagazine() noexcept {
+        static thread_local constinit Magazine magazine{};
+        return magazine;
+    }
+
+    struct MagazineRetirer {
+        ~MagazineRetirer() {
+            Magazine &mag = LocalMagazine();
+            if (mag.count > 0) {
+                Pool::Get().DeallocateBatch(mag.slots, mag.count);
+                mag.count = 0;
+            }
+            mag.state = MagazineState::RETIRED;
+        }
+    };
+
+    static void RegisterThread(Magazine &mag) {
+        static thread_local MagazineRetirer retirer;
+        (void)retirer;
+        mag.state = MagazineState::LIVE;
+    }
+
+    static void *AllocateSlow(Magazine &mag) {
+        if (mag.state == MagazineState::UNREGISTERED) {
+            RegisterThread(mag);
+        }
+        if (mag.state == MagazineState::RETIRED) {
+            void *slot;
+            Pool::Get().AllocateBatch(&slot, 1);
+            return slot;
+        }
+        mag.count = static_cast<uint32_t>(
+            Pool::Get().AllocateBatch(mag.slots, MAGAZINE_BATCH));
+        return mag.slots[--mag.count];
+    }
+
+    static void DeallocateSlow(Magazine &mag, void *p) noexcept {
+        if (mag.state == MagazineState::UNREGISTERED) {
+            RegisterThread(mag);
+        }
+        if (mag.state == MagazineState::RETIRED) {
+            Pool::Get().DeallocateBatch(&p, 1);
+            return;
+        }
+        if (mag.count == MAGAZINE_SIZE) {
+            Pool::Get().DeallocateBatch(mag.slots + MAGAZINE_BATCH,
+                                        MAGAZINE_SIZE - MAGAZINE_BATCH);
+            mag.count = MAGAZINE_BATCH;
+        }
+        mag.slots[mag.count++] = p;
+    }
+
+public:
+    using value_type = T;
+    using size_type = std::size_t;
+    using difference_type = std::ptrdiff_t;
+    using is_always_equal = std::true_type;
+
+    template <typename U> struct rebind {
+        using other = GlobalConcurrentSlabAllocator<U, SlotsPerChunk>;
+    };
+
+    constexpr GlobalConcurrentSlabAllocator() noexcept = default;
+    template <typename U>
+    constexpr GlobalConcurrentSlabAllocator(
+        const GlobalConcurrentSlabAllocator<U, SlotsPerChunk> &) noexcept {}
+
+    [[nodiscard]] T *allocate(std::size_t n) {
+        if (n != 1) {
+            return static_cast<T *>(
+                ::operator new(n * sizeof(T), std::align_val_t{alignof(T)}));
+        }
+        Magazine &mag = LocalMagazine();
+        if (mag.state == MagazineState::LIVE && mag.count > 0) {
+            return static_cast<T *>(mag.slots[--mag.count]);
+        }
+        return static_cast<T *>(AllocateSlow(mag));
+    }
+
+    void deallocate(T *p, std::size_t n) noexcept {
+        if (p == nullptr) {
+            return;
+        }
+        if (n != 1) {
+            ::operator delete(p, n * sizeof(T), std::align_val_t{alignof(T)});
+            return;
+        }
+        Magazine &mag = LocalMagazine();
+        if (mag.state == MagazineState::LIVE && mag.count < MAGAZINE_SIZE) {
+            mag.slots[mag.count++] = p;
+            return;
+        }
+        DeallocateSlow(mag, p);
+    }
+
+    /** Chunks carved by the pool backing T's slot class. */
+    [[nodiscard]] static std::size_t NumAllocatedChunks() {
+        return Pool::Get().NumAllocatedChunks();
+    }
+
+    /**
+     * Slots currently in use or cached in live thread magazines for T's slot
+     * class. Excludes slots that exited threads have flushed back.
+     */
+    [[nodiscard]] static std::size_t OutstandingSlots() {
+        return Pool::Get().OutstandingSlots();
+    }
+};
+
+template <typename T1, typename T2, std::size_t SlotsPerChunk>
+constexpr bool
+operator==(const GlobalConcurrentSlabAllocator<T1, SlotsPerChunk> &,
+           const GlobalConcurrentSlabAllocator<T2, SlotsPerChunk> &) noexcept {
+    return true;
+}
+
+template <typename T1, typename T2, std::size_t SlotsPerChunk>
+constexpr bool
+operator!=(const GlobalConcurrentSlabAllocator<T1, SlotsPerChunk> &,
+           const GlobalConcurrentSlabAllocator<T2, SlotsPerChunk> &) noexcept {
+    return false;
 }
 
 #endif // BITCOIN_SUPPORT_ALLOCATORS_CHUNKED_SLAB_H

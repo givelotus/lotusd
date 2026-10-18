@@ -23,6 +23,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(mempool_tests, TestingSetup)
@@ -1394,6 +1399,126 @@ BOOST_AUTO_TEST_CASE(mempool_slab_allocator_churn) {
     BOOST_CHECK_EQUAL(
         pool.mapNextTx.get_allocator().resource()->TotalAllocatedChunkBytes(), 0U);
 
+}
+
+BOOST_AUTO_TEST_CASE(MakeTransactionRefConcurrentChurn) {
+    // CTransactionRefs are created on network/RPC threads and released on
+    // validation threads. Churn them through a bounded queue from 8
+    // producers to 4 consumers and check every transaction arrives intact.
+    constexpr uint32_t PRODUCERS{8};
+    constexpr uint32_t CONSUMERS{4};
+    constexpr uint32_t PER_PRODUCER{20000};
+    constexpr size_t QUEUE_CAPACITY{1024};
+
+    std::mutex mutex;
+    std::condition_variable cv_not_full, cv_not_empty;
+    std::deque<CTransactionRef> queue;
+    uint32_t producers_done{0};
+
+    std::vector<std::thread> threads;
+    for (uint32_t p = 0; p < PRODUCERS; ++p) {
+        threads.emplace_back([&, p] {
+            for (uint32_t i = 0; i < PER_PRODUCER; ++i) {
+                CMutableTransaction mtx;
+                mtx.nLockTime = p;
+                mtx.vin.emplace_back(TxId{uint256{uint8_t(p + 1)}}, i);
+                mtx.vout.emplace_back(int64_t(p) * PER_PRODUCER * SATOSHI +
+                                          int64_t(i) * SATOSHI,
+                                      CScript() << OP_TRUE);
+                CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+                std::unique_lock lock(mutex);
+                cv_not_full.wait(
+                    lock, [&] { return queue.size() < QUEUE_CAPACITY; });
+                queue.push_back(std::move(tx));
+                cv_not_empty.notify_one();
+            }
+            std::lock_guard lock(mutex);
+            ++producers_done;
+            cv_not_empty.notify_all();
+        });
+    }
+
+    std::vector<uint64_t> consumed(CONSUMERS, 0);
+    std::vector<uint64_t> errors(CONSUMERS, 0);
+    std::vector<std::unordered_set<const CTransaction *>> addresses(CONSUMERS);
+    for (uint32_t c = 0; c < CONSUMERS; ++c) {
+        threads.emplace_back([&, c] {
+            while (true) {
+                CTransactionRef tx;
+                {
+                    std::unique_lock lock(mutex);
+                    cv_not_empty.wait(lock, [&] {
+                        return !queue.empty() || producers_done == PRODUCERS;
+                    });
+                    if (queue.empty()) {
+                        return;
+                    }
+                    tx = std::move(queue.front());
+                    queue.pop_front();
+                    cv_not_full.notify_one();
+                }
+                const Amount expected{
+                    int64_t(tx->nLockTime) * PER_PRODUCER * SATOSHI +
+                    int64_t(tx->vin[0].prevout.GetN()) * SATOSHI};
+                if (tx->vin.size() != 1 || tx->vout.size() != 1 ||
+                    tx->vout[0].nValue != expected ||
+                    (consumed[c] % 64 == 0 &&
+                     tx->GetId() != CMutableTransaction(*tx).GetId())) {
+                    ++errors[c];
+                }
+                addresses[c].insert(tx.get());
+                ++consumed[c];
+                // tx is released here, on a different thread than the one
+                // that allocated it.
+            }
+        });
+    }
+    for (auto &thread : threads) {
+        thread.join();
+    }
+
+    uint64_t total{0};
+    std::unordered_set<const CTransaction *> distinct;
+    for (uint32_t c = 0; c < CONSUMERS; ++c) {
+        BOOST_CHECK_EQUAL(errors[c], 0U);
+        total += consumed[c];
+        distinct.insert(addresses[c].begin(), addresses[c].end());
+    }
+    BOOST_CHECK_EQUAL(total, uint64_t{PRODUCERS} * PER_PRODUCER);
+    // At most QUEUE_CAPACITY + a few in-flight transactions and per-thread
+    // magazines are live at once, so slots must be recycled.
+    BOOST_CHECK_LT(distinct.size(), total / 8);
+
+    // References created after the churn still work normally.
+    CMutableTransaction mtx;
+    mtx.vout.emplace_back(SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef tx = MakeTransactionRef(mtx);
+    BOOST_CHECK(tx->GetId() == mtx.GetId());
+}
+
+BOOST_AUTO_TEST_CASE(DeserializeTransactionRef) {
+    // CTransactionRefs read from the network or from blocks are deserialized
+    // through the slab-backed Unserialize overload.
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId{uint256{uint8_t(7)}}, 3);
+    mtx.vout.emplace_back(42 * SATOSHI, CScript() << OP_TRUE);
+    const CTransactionRef expected = MakeTransactionRef(mtx);
+
+    DataStream ss{};
+    ss << expected;
+    CTransactionRef ptx;
+    ss >> ptx;
+    BOOST_REQUIRE(ptx);
+    BOOST_CHECK(ptx->GetHash() == expected->GetHash());
+
+    std::vector<CTransactionRef> vtx{expected, expected};
+    DataStream block_ss{};
+    block_ss << vtx;
+    std::vector<CTransactionRef> decoded;
+    block_ss >> decoded;
+    BOOST_REQUIRE_EQUAL(decoded.size(), 2U);
+    BOOST_CHECK(decoded[0]->GetHash() == expected->GetHash());
+    BOOST_CHECK(decoded[0] != decoded[1]);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

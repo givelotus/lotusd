@@ -3,12 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <common/system.h>
+#include <support/allocators/chunked_slab.h>
 
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <atomic>
 #include <memory>
+#include <thread>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(allocator_tests, BasicTestingSetup)
 
@@ -239,6 +243,101 @@ BOOST_AUTO_TEST_CASE(lockedpool_tests_live) {
     BOOST_CHECK(pool.stats().total <= (initial.total + LockedPool::ARENA_SIZE));
     // Usage must be back to where it started
     BOOST_CHECK(pool.stats().used == initial.used);
+}
+
+namespace {
+// Odd size and a small chunk give this test its own slab pool.
+struct SlabTestObject {
+    uint64_t words[7];
+};
+using SlabTestAllocator = GlobalConcurrentSlabAllocator<SlabTestObject, 64>;
+} // namespace
+
+BOOST_AUTO_TEST_CASE(global_concurrent_slab_allocator) {
+    SlabTestAllocator alloc;
+    BOOST_CHECK((alloc == GlobalConcurrentSlabAllocator<int, 64>{}));
+
+    // Worker threads count mismatches instead of using BOOST_CHECK, which is
+    // not thread-safe.
+    std::atomic<int> mismatches{0};
+
+    // Allocate and free on a worker thread: the thread's magazine is flushed
+    // back to the pool when it exits.
+    std::thread([&mismatches] {
+        SlabTestAllocator a;
+        std::vector<SlabTestObject *> objs;
+        for (int i = 0; i < 1000; ++i) {
+            objs.push_back(a.allocate(1));
+            objs.back()->words[0] = uint64_t(i);
+        }
+        for (int i = 0; i < 1000; ++i) {
+            if (objs[i]->words[0] != uint64_t(i)) {
+                ++mismatches;
+            }
+            a.deallocate(objs[i], 1);
+        }
+    }).join();
+    BOOST_CHECK_EQUAL(SlabTestAllocator::OutstandingSlots(), 0U);
+    const size_t chunks_after_first = SlabTestAllocator::NumAllocatedChunks();
+    BOOST_CHECK_GE(chunks_after_first, 1000U / 64);
+
+    // Cross-thread churn: producers allocate, consumers free. Repeating the
+    // same workload must reuse slots rather than carve new chunks.
+    auto churn = [&mismatches] {
+        constexpr int PAIRS{4};
+        constexpr int PER_THREAD{20000};
+        constexpr int BATCH{256};
+        std::vector<std::thread> threads;
+        for (int t = 0; t < PAIRS; ++t) {
+            threads.emplace_back([&mismatches] {
+                SlabTestAllocator a;
+                for (int done = 0; done < PER_THREAD; done += BATCH) {
+                    std::vector<SlabTestObject *> batch;
+                    for (int i = 0; i < BATCH; ++i) {
+                        batch.push_back(a.allocate(1));
+                        batch.back()->words[6] = uint64_t(done + i);
+                    }
+                    // Free on a different thread than the allocating one.
+                    std::thread([&batch, &mismatches, done] {
+                        SlabTestAllocator b;
+                        for (int i = 0; i < BATCH; ++i) {
+                            if (batch[i]->words[6] != uint64_t(done + i)) {
+                                ++mismatches;
+                            }
+                            b.deallocate(batch[i], 1);
+                        }
+                    }).join();
+                }
+            });
+        }
+        for (auto &thread : threads) {
+            thread.join();
+        }
+    };
+    churn();
+    BOOST_CHECK_EQUAL(SlabTestAllocator::OutstandingSlots(), 0U);
+    const size_t chunks_after_churn = SlabTestAllocator::NumAllocatedChunks();
+    churn();
+    BOOST_CHECK_EQUAL(SlabTestAllocator::OutstandingSlots(), 0U);
+    BOOST_CHECK_EQUAL(SlabTestAllocator::NumAllocatedChunks(),
+                      chunks_after_churn);
+    BOOST_CHECK_EQUAL(mismatches.load(), 0);
+
+    // A slot released by a thread_local destructor that runs after the
+    // thread's magazine was retired goes straight back to the pool.
+    struct LateFree {
+        SlabTestObject *obj{nullptr};
+        ~LateFree() { SlabTestAllocator{}.deallocate(obj, 1); }
+    };
+    std::thread([] {
+        static thread_local LateFree late;
+        late.obj = SlabTestAllocator{}.allocate(1);
+    }).join();
+    BOOST_CHECK_EQUAL(SlabTestAllocator::OutstandingSlots(), 0U);
+
+    // Multi-object requests bypass the slab.
+    SlabTestObject *array = alloc.allocate(3);
+    alloc.deallocate(array, 3);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
