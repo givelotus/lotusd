@@ -102,7 +102,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         )
 
         self.log.info("  - snapshot file with unsupported version")
-        for version in [0, 1, 3]:
+        for version in [0, 1, 2, 4]:
             with open(bad_snapshot_path, "wb") as f:
                 f.write(
                     valid_snapshot_contents[:5]

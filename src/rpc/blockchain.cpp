@@ -1124,6 +1124,9 @@ static RPCHelpMan gettxoutsetinfo() {
                    "Coinbase subsidy amount of this block"},
                   {RPCResult::Type::STR_AMOUNT, "new_outputs_ex_coinbase",
                    "Total amount of new outputs created by this block"},
+                  {RPCResult::Type::STR_AMOUNT, "cleaning_bounty",
+                   "Native daemon cleaning bounty, additional to subsidy and "
+                   "fees"},
                   {RPCResult::Type::STR_AMOUNT, "unspendable",
                    "Total amount of unspendable outputs created in this block"},
                   {RPCResult::Type::OBJ,
@@ -1138,6 +1141,8 @@ static RPCHelpMan gettxoutsetinfo() {
                        {RPCResult::Type::STR_AMOUNT, "scripts",
                         "Amounts sent to scripts that are unspendable (for "
                         "example OP_RETURN outputs)"},
+                       {RPCResult::Type::STR_AMOUNT, "expired",
+                        "Native existing outputs burned by the expiry sweep"},
                        {RPCResult::Type::STR_AMOUNT, "unclaimed_rewards",
                         "Fee rewards that miners did not claim in their "
                         "coinbase transaction"},
@@ -1268,6 +1273,9 @@ static RPCHelpMan gettxoutsetinfo() {
                         "new_outputs_ex_coinbase",
                         stats.total_new_outputs_ex_coinbase_amount -
                             prev_stats.total_new_outputs_ex_coinbase_amount);
+                    block_info.pushKV("cleaning_bounty",
+                                      stats.total_cleaning_bounty -
+                                          prev_stats.total_cleaning_bounty);
                     block_info.pushKV("unspendable",
                                       stats.total_unspendable_amount -
                                           prev_stats.total_unspendable_amount);
@@ -1283,6 +1291,9 @@ static RPCHelpMan gettxoutsetinfo() {
                     unspendables.pushKV(
                         "scripts", stats.total_unspendables_scripts -
                                        prev_stats.total_unspendables_scripts);
+                    unspendables.pushKV(
+                        "expired", stats.total_unspendables_expired -
+                                       prev_stats.total_unspendables_expired);
                     unspendables.pushKV(
                         "unclaimed_rewards",
                         stats.total_unspendables_unclaimed_rewards -

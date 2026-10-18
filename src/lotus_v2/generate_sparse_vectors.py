@@ -29,7 +29,9 @@ OUTPUT = b"\x00" + le(1000, 8) + b"\x01" + b"\x11" * 32 + b"\x01\x01\x00"
 
 def coin(index, height=7, mtp=1234, coinbase=1):
     outpoint = TXID + le(index, 4)
-    record = outpoint + cs(len(OUTPUT)) + OUTPUT + le(height, 8) + le(mtp, 8) + bytes([coinbase])
+    expiry = min((1 << 64) - 1, height + (21024000 if coinbase else 131400))
+    record = (outpoint + cs(len(OUTPUT)) + OUTPUT + le(height, 8) + le(mtp, 8)
+              + bytes([coinbase, 2]) + le(0, 8) + le(expiry, 8))
     key = bytearray(TXID)
     for i, byte in enumerate(le(index, 4)):
         key[28 + i] ^= byte

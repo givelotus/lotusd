@@ -119,7 +119,7 @@ bool EncodeCoin(const Coin &coin, std::vector<uint8_t> &encoded) {
         output.insert(output.end(), script.begin(), script.end());
     } else if (!EncodeOutput(coin.output, output, error)) return false;
     std::vector<uint8_t> result;
-    result.reserve(36 + 9 + output.size() + 17);
+    result.reserve(36 + 9 + output.size() + COIN_METADATA_BYTES);
     result.insert(result.end(), coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end());
     for (unsigned i = 0; i < 4; ++i) result.push_back(static_cast<uint8_t>(coin.outpoint.index >> (8 * i)));
     PutCompactSize(result, output.size());
@@ -127,13 +127,17 @@ bool EncodeCoin(const Coin &coin, std::vector<uint8_t> &encoded) {
     for (unsigned i = 0; i < 8; ++i) result.push_back(static_cast<uint8_t>(coin.creation_height >> (8 * i)));
     for (unsigned i = 0; i < 8; ++i) result.push_back(static_cast<uint8_t>(coin.creation_parent_mtp >> (8 * i)));
     result.push_back(coin.coinbase ? 1 : 0);
+    result.push_back(COIN_ENCODING_VERSION);
+    for (unsigned i = 0; i < 8; ++i) result.push_back(uint8_t(coin.fee_per_output >> (8 * i)));
+    const uint64_t expiry = ComputeUtxoExpirationHeight(coin);
+    for (unsigned i = 0; i < 8; ++i) result.push_back(uint8_t(expiry >> (8 * i)));
     if (result.size() > MAX_COIN_BYTES) return false;
     encoded = std::move(result);
     return true;
 }
 
 bool DecodeCoinBytes(std::span<const uint8_t> encoded, Coin &out) {
-    if (encoded.size() < 36 + 1 + 17 || encoded.size() > MAX_COIN_BYTES) {
+    if (encoded.size() < 36 + 1 + COIN_METADATA_BYTES || encoded.size() > MAX_COIN_BYTES) {
         return false;
     }
     Coin coin;
@@ -154,7 +158,7 @@ bool DecodeCoinBytes(std::span<const uint8_t> encoded, Coin &out) {
             out_len |= uint64_t(encoded[pos++]) << (8 * i);
         }
     }
-    if (out_len > encoded.size() - pos || encoded.size() - pos - out_len != 17) return false;
+    if (out_len > encoded.size() - pos || encoded.size() - pos - out_len != COIN_METADATA_BYTES) return false;
     std::string error;
     if (out_len && encoded[pos] == 0x80) {
         const size_t end = pos + size_t(out_len);
@@ -185,6 +189,11 @@ bool DecodeCoinBytes(std::span<const uint8_t> encoded, Coin &out) {
     const uint8_t cb_flag = encoded[pos + 16];
     if (cb_flag > 1) return false;
     coin.coinbase = (cb_flag == 1);
+    if (encoded[pos + 17] != COIN_ENCODING_VERSION) return false;
+    for (unsigned i = 0; i < 8; ++i) {
+        coin.fee_per_output |= uint64_t(encoded[pos + 18 + i]) << (8 * i);
+        coin.expiration_height |= uint64_t(encoded[pos + 26 + i]) << (8 * i);
+    }
     std::vector<uint8_t> roundtrip;
     if (!EncodeCoin(coin, roundtrip) || roundtrip.size() != encoded.size() ||
         !std::equal(roundtrip.begin(), roundtrip.end(), encoded.begin())) {
@@ -247,7 +256,12 @@ bool UtxoSet::Insert(const Coin &coin) {
     for (const Coin &existing : coins_) {
         if (existing.outpoint == coin.outpoint || OutpointKey(existing.outpoint) == key) return false;
     }
-    coins_.push_back(coin);
+    Coin stored = coin;
+    if (stored.expiration_height == 0) {
+        stored.expiration_height = ComputeUtxoExpirationHeight(
+            stored.creation_height, stored.coinbase, stored.fee_per_output);
+    }
+    coins_.push_back(std::move(stored));
     return true;
 }
 
@@ -263,6 +277,54 @@ const Coin *UtxoSet::Find(const Outpoint &outpoint) const {
     auto it = std::find_if(coins_.begin(), coins_.end(),
                            [&](const Coin &coin) { return coin.outpoint == outpoint; });
     return it == coins_.end() ? nullptr : &(*it);
+}
+
+std::vector<Coin> UtxoSet::CollectExpiredCoins(uint64_t block_height,
+                                               size_t max_sweeps) const {
+    if (max_sweeps == 0) return {};
+    struct Candidate {
+        uint64_t expiration_height;
+        Hash key;
+        Coin coin;
+    };
+    std::vector<Candidate> candidates;
+    for (const Coin &coin : coins_) {
+        if (IsUtxoExpired(coin, block_height)) {
+            candidates.push_back(
+                {ComputeUtxoExpirationHeight(coin), OutpointKey(coin.outpoint), coin});
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate &a, const Candidate &b) {
+                  if (a.expiration_height != b.expiration_height) {
+                      return a.expiration_height < b.expiration_height;
+                  }
+                  return a.key < b.key;
+              });
+    const size_t count = std::min(candidates.size(), max_sweeps);
+    std::vector<Coin> out;
+    out.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        out.push_back(std::move(candidates[i].coin));
+    }
+    return out;
+}
+
+ExpirySweepResult UtxoSet::SweepExpired(uint64_t block_height,
+                                        uint64_t total_block_fees_atoms,
+                                        size_t max_sweeps) {
+    ExpirySweepResult res{};
+    res.swept_coins = CollectExpiredCoins(block_height, max_sweeps);
+    res.swept_count = res.swept_coins.size();
+    for (const Coin &coin : res.swept_coins) {
+        if (!coin.output.HasToken()) {
+            res.burned_value_atoms += coin.output.value;
+        }
+        Erase(coin.outpoint);
+    }
+    res.cleaning_crew_bounty_atoms =
+        ComputeCleaningCrewBounty(res.swept_count, total_block_fees_atoms);
+    return res;
 }
 
 Hash UtxoSet::Root() const { return RootOf(Entries(coins_), 0); }

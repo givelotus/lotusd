@@ -619,12 +619,28 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
     std::vector<lotus::v2::Coin> ordered_created;
     ordered_created.reserve(block.vtx.size() * 2);
 
+    // CTOR may place a child before its parent. Fee lookup must include all
+    // block-created values, while the coalesced state update stays unchanged.
+    for (const auto &transaction : block.vtx) {
+        lotus::v2::Hash id{};
+        std::copy_n(transaction->GetId().begin(), 32, id.begin());
+        for (size_t index = 0; index < transaction->vout.size(); ++index) {
+            if (transaction->vout[index].scriptPubKey.IsUnspendable()) continue;
+            const auto output = transaction->vout[index].ToV2Output();
+            if (!output.IsBurn()) {
+                const lotus::v2::Outpoint outpoint{id, uint32_t(index)};
+                block_created.emplace(outpoint, lotus::v2::Coin{outpoint, output});
+            }
+        }
+    }
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
         const uint64_t linear_cost =
-            ::GetSerializeSize(tx) +
+            uint64_t(tx.GetTotalSize()) +
             uint64_t(tx.vin.size() * 64 + tx.vout.size() * 64);
         tx_linear_costs.push_back(linear_cost);
+        uint64_t resolved_in_value = 0;
+        bool all_inputs_resolved = !tx.IsCoinBase();
         if (!tx.IsCoinBase()) {
             for (const auto &txin : tx.vin) {
                 if (txin.nFlags != 3) {
@@ -632,11 +648,51 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
                     std::memcpy(op.tx_id.data(), txin.prevout.GetTxId().begin(),
                                 32);
                     op.index = txin.prevout.GetN();
+                    if (all_inputs_resolved) {
+                        auto it_bc = block_created.find(op);
+                        if (it_bc != block_created.end()) {
+                            if (!it_bc->second.output.HasToken()) {
+                                resolved_in_value += it_bc->second.output.value;
+                            }
+                        } else if (auto found =
+                                       lotus::v2::SmtFind(state.utxo_root, op)) {
+                            if (!found->output.HasToken()) {
+                                resolved_in_value += found->output.value;
+                            }
+                        } else {
+                            all_inputs_resolved = false;
+                        }
+                    }
                     block_spent.insert(op);
                     ordered_spent.push_back(op);
                 }
             }
         }
+        size_t spendable_outputs = 0;
+        uint64_t native_out_value = 0;
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            if (tx.vout[j].scriptPubKey.IsUnspendable()) {
+                continue;
+            }
+            const lotus::v2::Output v2out = tx.vout[j].ToV2Output();
+            if (!v2out.HasToken()) {
+                native_out_value += v2out.value;
+            }
+            if (!v2out.IsBurn()) {
+                ++spendable_outputs;
+            }
+        }
+        const uint64_t tx_fee_atoms =
+            (all_inputs_resolved && resolved_in_value >= native_out_value)
+                ? (resolved_in_value - native_out_value)
+                : 0;
+        const uint64_t fee_per_output =
+            tx.IsCoinBase() ? 0
+                            : lotus::v2::ComputeTxFeePerSpendableOutput(
+                                  tx_fee_atoms, spendable_outputs);
+        const uint64_t exp_height = lotus::v2::ComputeUtxoExpirationHeight(
+            nHeight, tx.IsCoinBase(), fee_per_output);
+
         lotus::v2::Hash txid{};
         std::memcpy(txid.data(), tx.GetId().begin(), 32);
         for (size_t j = 0; j < tx.vout.size(); ++j) {
@@ -650,7 +706,9 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
                     v2out,
                     nHeight,
                     nParentMtp,
-                    tx.IsCoinBase()};
+                    tx.IsCoinBase(),
+                    fee_per_output,
+                    exp_height};
                 block_created[coin.outpoint] = coin;
                 ordered_created.push_back(std::move(coin));
             }
@@ -680,6 +738,17 @@ V2BlockStateSnapshot BuildNextV2BlockState(const CBlock &block,
         }
         for (const auto &coin : state.inserted_coins) {
             SmtInsert(state.utxo_root, coin);
+        }
+    }
+
+    // C17a deterministic block-level expiry sweep (capped at MAX_EXPIRY_SWEEPS_PER_BLOCK).
+    if (state.utxo_root &&
+        state.utxo_root->min_expiration_height <= nHeight) {
+        const auto expired_coins =
+            lotus::v2::SmtCollectExpired(state.utxo_root, nHeight);
+        for (const auto &exp_coin : expired_coins) {
+            SmtErase(state.utxo_root, exp_coin.outpoint);
+            state.erased_outpoints.push_back(exp_coin.outpoint);
         }
     }
 
@@ -716,6 +785,7 @@ void ExtractOverlayTxData(
     const CTransaction &tx,
     uint64_t nHeight,
     uint64_t nParentMtp,
+    int64_t fee_sats,
     lotus::v2::Hash &tx_id,
     lotus::v2::Hash &tx_hash,
     uint64_t &linear_cost,
@@ -742,6 +812,17 @@ void ExtractOverlayTxData(
 
     created_coins.clear();
     created_coins.reserve(tx.vout.size());
+    size_t spendable_outputs = 0;
+    for (const auto &output : tx.vout) {
+        if (!output.scriptPubKey.IsUnspendable() &&
+            !output.ToV2Output().IsBurn()) ++spendable_outputs;
+    }
+    const uint64_t fee_share = tx.IsCoinBase() ? 0 :
+        lotus::v2::ComputeTxFeePerSpendableOutput(
+            fee_sats > 0 ? static_cast<uint64_t>(fee_sats) : 0,
+            spendable_outputs);
+    const uint64_t exp_height = lotus::v2::ComputeUtxoExpirationHeight(
+        nHeight, tx.IsCoinBase(), fee_share);
     for (size_t j = 0; j < tx.vout.size(); ++j) {
         if (tx.vout[j].scriptPubKey.IsUnspendable()) {
             continue;
@@ -753,7 +834,9 @@ void ExtractOverlayTxData(
                 v2out,
                 nHeight,
                 nParentMtp,
-                tx.IsCoinBase()};
+                tx.IsCoinBase(),
+                fee_share,
+                exp_height};
             created_coins.push_back(std::move(coin));
         }
     }
@@ -1064,7 +1147,7 @@ bool AddTransactionToOverlay(lotus::v2::MempoolOverlayLayer &overlay,
     std::vector<lotus::v2::Outpoint> spent;
     std::vector<lotus::v2::Coin> created;
     ExtractOverlayTxData(*ptx, overlay.GetHeight(), overlay.GetParentMtp(),
-                         tx_id, tx_hash, linear_cost, spent, created);
+                         fee_sats, tx_id, tx_hash, linear_cost, spent, created);
     return overlay.AddTransaction(tx_id, tx_hash, linear_cost, spent, created,
                                   fee_sats, sigchecks, ptx,
                                   OverlayPayloadBytes(ptx));
@@ -1100,7 +1183,7 @@ size_t AddTransactionsToOverlayBatch(
                 continue;
             }
             auto &e = entries[i];
-            ExtractOverlayTxData(*ptx, nHeight, nParentMtp, e.tx_id, e.tx_hash,
+            ExtractOverlayTxData(*ptx, nHeight, nParentMtp, fee_sats, e.tx_id, e.tx_hash,
                                  e.linear_cost, e.spent_outpoints,
                                  e.created_coins);
             e.fee_sats = fee_sats;

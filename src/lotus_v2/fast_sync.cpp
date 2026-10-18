@@ -83,7 +83,7 @@ bool ReadCompactSize(const std::vector<uint8_t> &bytes, size_t &offset,
 
 bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
                               std::string &error) {
-    if (len < 54 || len > MAX_COIN_BYTES) {
+    if (len < 37 + COIN_METADATA_BYTES || len > MAX_COIN_BYTES) {
         error = "invalid coin byte length";
         return false;
     }
@@ -97,7 +97,7 @@ bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
     uint64_t out_len = 0;
     if (!ReadCompactSize(buf, offset, MAX_OUTPUT_BYTES, out_len) ||
         buf.size() - offset < out_len ||
-        buf.size() - (offset + static_cast<size_t>(out_len)) != 17) {
+        buf.size() - (offset + static_cast<size_t>(out_len)) != COIN_METADATA_BYTES) {
         error = "invalid coin output framing";
         return false;
     }
@@ -115,6 +115,12 @@ bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
         return false;
     }
     out.coinbase = (cb_flag == 1);
+    if (buf[offset + 17] != COIN_ENCODING_VERSION) {
+        error = "invalid coin encoding version";
+        return false;
+    }
+    out.fee_per_output = ReadLE64(buf.data() + offset + 18);
+    out.expiration_height = ReadLE64(buf.data() + offset + 26);
 
     std::vector<uint8_t> reencoded;
     if (!EncodeCoin(out, reencoded) || reencoded != buf) {
@@ -1107,6 +1113,48 @@ bool PartitionBlockOutputsAndSpends(
         return false;
     }
 
+    // Reconstruct the same authenticated lifetime metadata as forward
+    // ordinary validation before comparing surviving canonical coin bytes.
+    std::map<Outpoint, const Coin *, OutpointLess> prior_by_outpoint;
+    for (const Coin &coin : prior_spent) {
+        prior_by_outpoint.emplace(coin.outpoint, &coin);
+    }
+    for (size_t tx_idx = 0; tx_idx < block.transactions.size(); ++tx_idx) {
+        const Transaction &tx = block.transactions[tx_idx];
+        __uint128_t native_inputs = 0, native_outputs = 0;
+        size_t spendable_outputs = 0;
+        if (tx_idx != 0) {
+            for (const Input &input : tx.inputs) {
+                if (input.flags != 1) continue;
+                const Outpoint op{input.prev_txid, input.prev_index};
+                const auto created = created_in_block.find(op);
+                const Coin &coin = created != created_in_block.end()
+                    ? created->second.second : *prior_by_outpoint.at(op);
+                if (!coin.output.HasToken()) native_inputs += coin.output.value;
+            }
+        }
+        for (const Output &output : tx.outputs) {
+            if (!output.HasToken()) native_outputs += output.value;
+            if (!output.IsBurn()) ++spendable_outputs;
+        }
+        if (tx_idx != 0 && native_inputs < native_outputs) {
+            error = "reverse peel native inflation";
+            return false;
+        }
+        const __uint128_t fee = tx_idx == 0 ? 0 : native_inputs - native_outputs;
+        const uint64_t fee_share = ComputeTxFeePerSpendableOutput(
+            fee > UINT64_MAX ? UINT64_MAX : static_cast<uint64_t>(fee),
+            spendable_outputs);
+        for (size_t j = 0; j < tx.outputs.size(); ++j) {
+            if (tx.outputs[j].IsBurn()) continue;
+            Coin &coin = created_in_block.at(
+                {block.transaction_identities[tx_idx].txid, uint32_t(j)}).second;
+            coin.fee_per_output = fee_share;
+            coin.expiration_height = ComputeUtxoExpirationHeight(
+                block.header.height, coin.coinbase, fee_share);
+        }
+    }
+
     // O_h^net = O_h^all \ I_h^intra
     std::vector<Coin> net_created;
     net_created.reserve(created_order.size() - intra_spent.size());
@@ -1146,8 +1194,13 @@ bool EncodeBlockUndoMessage(const BlockUndoMessage &msg,
         error = "blockundo prior_spent_coins exceeds limit";
         return false;
     }
+    if (msg.expired_swept_coins.size() > MAX_EXPIRY_SWEEPS_PER_BLOCK) {
+        error = "blockundo expired_swept_coins exceeds limit";
+        return false;
+    }
     std::vector<uint8_t> buf;
-    buf.reserve(32 + 56 + msg.prior_spent_coins.size() * 64);
+    buf.reserve(32 + 56 + msg.prior_spent_coins.size() * 64 +
+                msg.expired_swept_coins.size() * 64);
     buf.insert(buf.end(), msg.block_id.begin(), msg.block_id.end());
     buf.insert(buf.end(), msg.parent_monetary_state.begin(),
                msg.parent_monetary_state.end());
@@ -1160,6 +1213,19 @@ bool EncodeBlockUndoMessage(const BlockUndoMessage &msg,
         }
         WriteCompactSize(buf, encoded_coin.size());
         buf.insert(buf.end(), encoded_coin.begin(), encoded_coin.end());
+    }
+    if (!msg.expired_swept_coins.empty()) {
+        WriteCompactSize(buf, msg.expired_swept_coins.size());
+        for (const Coin &coin : msg.expired_swept_coins) {
+            std::vector<uint8_t> encoded_coin;
+            if (!EncodeCoin(coin, encoded_coin)) {
+                error = "blockundo failed to encode expired swept coin";
+                return false;
+            }
+            WriteCompactSize(buf, encoded_coin.size());
+            buf.insert(buf.end(), encoded_coin.begin(), encoded_coin.end());
+            WriteCompactSize(buf, coin.fee_per_output);
+        }
     }
     out = std::move(buf);
     error.clear();
@@ -1196,6 +1262,41 @@ bool DecodeBlockUndoMessage(const std::vector<uint8_t> &bytes,
             return false;
         }
         offset += static_cast<size_t>(coin_len);
+    }
+    if (offset < bytes.size()) {
+        uint64_t exp_count = 0;
+        if (!ReadCompactSize(bytes, offset, MAX_EXPIRY_SWEEPS_PER_BLOCK,
+                             exp_count) ||
+            exp_count == 0) {
+            error = "trailing bytes in blockundo message";
+            return false;
+        }
+        parsed.expired_swept_coins.resize(static_cast<size_t>(exp_count));
+        for (size_t i = 0; i < parsed.expired_swept_coins.size(); ++i) {
+            uint64_t coin_len = 0;
+            if (!ReadCompactSize(bytes, offset, MAX_COIN_BYTES, coin_len) ||
+                bytes.size() - offset < coin_len) {
+                error = "truncated blockundo expired coin record";
+                return false;
+            }
+            if (!DecodeCanonicalCoinBytes(
+                    bytes.data() + offset, static_cast<size_t>(coin_len),
+                    parsed.expired_swept_coins[i], error)) {
+                return false;
+            }
+            offset += static_cast<size_t>(coin_len);
+            uint64_t fee_per_out = 0;
+            if (!ReadCompactSize(bytes, offset,
+                                 std::numeric_limits<uint64_t>::max(),
+                                 fee_per_out)) {
+                error = "truncated blockundo expired coin fee_per_output";
+                return false;
+            }
+            if (parsed.expired_swept_coins[i].fee_per_output != fee_per_out) {
+                error = "blockundo fee disagrees with committed coin";
+                return false;
+            }
+        }
     }
     if (offset != bytes.size()) {
         error = "trailing bytes in blockundo message";
@@ -1240,6 +1341,7 @@ bool BuildBlockUndoMessage(const std::vector<uint8_t> &block_wire,
     BlockUndoMessage msg;
     msg.block_id = block_id;
     msg.parent_monetary_state = EncodeMonetaryState(parent_monetary);
+    UtxoSet post_spends_utxo = pre_block_utxo;
     for (size_t tx_idx = 1; tx_idx < block.transactions.size(); ++tx_idx) {
         const Transaction &tx = block.transactions[tx_idx];
         for (const Input &input : tx.inputs) {
@@ -1255,8 +1357,11 @@ bool BuildBlockUndoMessage(const std::vector<uint8_t> &block_wire,
                 return false;
             }
             msg.prior_spent_coins.push_back(it->second);
+            post_spends_utxo.Erase(op);
         }
     }
+    msg.expired_swept_coins =
+        post_spends_utxo.CollectExpiredCoins(block.header.height);
 
     out = std::move(msg);
     error.clear();
@@ -1346,9 +1451,20 @@ bool PeelBlockReverse(const std::vector<uint8_t> &block_wire,
             return false;
         }
     }
+    for (const Coin &exp_coin : undo_msg.expired_swept_coins) {
+        if (current_view.contains(exp_coin.outpoint)) {
+            error = "reverse peel expired swept coin already exists in state_at_h";
+            return false;
+        }
+        if (exp_coin.output.IsBurn() ||
+            !IsUtxoExpired(exp_coin, block.header.height)) {
+            error = "reverse peel expired swept coin is not expired at block height";
+            return false;
+        }
+    }
 
     // Peel Merklix state backwards from height h to h - 1:
-    // erase O_h^net and insert I_h^prior.
+    // erase O_h^net and insert I_h^prior and expired_swept_coins.
     UtxoSet peeled_state = state_at_h;
     for (const Coin &created : net_created) {
         peeled_state.Erase(created.outpoint);
@@ -1356,6 +1472,12 @@ bool PeelBlockReverse(const std::vector<uint8_t> &block_wire,
     for (const Coin &spent : prior_spent) {
         if (!peeled_state.Insert(spent)) {
             error = "reverse peel failed inserting I_h^prior into Merklix state";
+            return false;
+        }
+    }
+    for (const Coin &exp_coin : undo_msg.expired_swept_coins) {
+        if (!peeled_state.Insert(exp_coin)) {
+            error = "reverse peel failed inserting expired_swept_coins into Merklix state";
             return false;
         }
     }
@@ -1466,7 +1588,7 @@ bool PeelDiskBlockReverse(const std::vector<uint8_t> &block_wire,
 
     if (!store.PeelBlockStateReverse(meta_h.tip, parent_meta, parent_header,
                                      net_created_outpoints, prior_spent,
-                                     disk_err)) {
+                                     disk_err, undo_msg.expired_swept_coins)) {
         error = disk_err.message;
         return false;
     }
