@@ -52,9 +52,8 @@ BOOST_AUTO_TEST_CASE(policy_minerfund) {
         blockhashes[i] = BlockHash(uint256(i));
         blocks[i].phashBlock = &blockhashes[i];
         blocks[i].pprev = &blocks[i - 1];
-        blocks[i].nHeight = consensusParams.wellingtonHeight - 5 + i;
+        blocks[i].nHeight = i;
     }
-    CBlockIndex &firstBlockIndexRef = blocks[1];
     CBlockIndex &lastBlockIndexRef = blocks.back();
 
     const Amount blockReward =
@@ -72,14 +71,6 @@ BOOST_AUTO_TEST_CASE(policy_minerfund) {
         }
     };
 
-    // Before wellington activation, the block policy is not enforced
-    BOOST_CHECK(
-        !IsWellingtonEnabled(consensusParams, firstBlockIndexRef.pprev));
-    checkMinerFundPolicy(BlockWithoutMinerFund(blockReward), firstBlockIndexRef,
-                         true);
-
-    // After wellington activation, the block policy is enforced
-    BOOST_CHECK(IsWellingtonEnabled(consensusParams, lastBlockIndexRef.pprev));
     checkMinerFundPolicy(BlockWithoutMinerFund(blockReward), lastBlockIndexRef,
                          false);
 
@@ -101,50 +92,9 @@ BOOST_AUTO_TEST_CASE(policy_minerfund) {
         checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
                              lastBlockIndexRef, true);
     }
-
-    // Blocks with sufficient miner fund before Cowperthwaite activation...
     for (const Amount &amount : minerFundsSufficient) {
         checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
                              lastBlockIndexRef, true);
-    }
-
-    // ... but not after Cowperthwaite activation
-    CBlockIndex cowperthwaiteBlockIndex;
-    BlockHash cowperthwaiteBlockHash = BlockHash(uint256(13));
-    cowperthwaiteBlockIndex.phashBlock = &cowperthwaiteBlockHash;
-    cowperthwaiteBlockIndex.pprev = &lastBlockIndexRef;
-    lastBlockIndexRef.nHeight = consensusParams.cowperthwaiteHeight;
-    cowperthwaiteBlockIndex.nHeight = consensusParams.cowperthwaiteHeight + 1;
-
-    BOOST_CHECK(
-        IsCowperthwaiteEnabled(consensusParams, cowperthwaiteBlockIndex.pprev));
-
-    for (const Amount &amount : minerFundsSufficient) {
-        checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
-                             cowperthwaiteBlockIndex, false);
-    }
-
-    // Update the miner fund values
-    minerFund = GetMinerFundAmount(consensusParams, blockReward,
-                                   cowperthwaiteBlockIndex.pprev);
-    minerFundsSufficient = {minerFund, minerFund + 1 * SATOSHI};
-
-    // Blocks with sufficient miner fund after Cowperthwaite activation
-    for (const Amount &amount : minerFundsSufficient) {
-        checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
-                             cowperthwaiteBlockIndex, true);
-    }
-
-    // Sanity check the always rejected/accepted blocks are unchanged
-    // Blocks with not enough miner fund are always rejected
-    for (const Amount &amount : minerFundsTooSmall) {
-        checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
-                             cowperthwaiteBlockIndex, false);
-    }
-    // Blocks with enough miner fund are always accepted
-    for (const Amount &amount : minerFundsAlwaysSufficient) {
-        checkMinerFundPolicy(BlockWithMinerFund(chainparams, amount),
-                             cowperthwaiteBlockIndex, true);
     }
 }
 

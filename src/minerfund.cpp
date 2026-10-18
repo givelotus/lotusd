@@ -16,16 +16,12 @@
 /**
  * Percentage of the block reward to be sent to the fund.
  */
-static constexpr int LEGACY_MINER_FUND_RATIO = 8;
 static constexpr int MINER_FUND_RATIO = 32;
 
 Amount GetMinerFundAmount(const Consensus::Params &params,
                           const Amount &coinbaseValue,
                           const CBlockIndex *pprev) {
-    const int minerFundRatio = IsCowperthwaiteEnabled(params, pprev)
-                                   ? MINER_FUND_RATIO
-                                   : LEGACY_MINER_FUND_RATIO;
-    return minerFundRatio * coinbaseValue / 100;
+    return MINER_FUND_RATIO * coinbaseValue / 100;
 }
 
 static CTxDestination BuildDestination(const std::string &dest) {

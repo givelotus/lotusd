@@ -9,26 +9,26 @@
 #include <consensus/params.h>
 
 bool IsUAHFenabled(const Consensus::Params &params, int nHeight) {
-    return nHeight >= params.uahfHeight;
+    return true;
 }
 
 bool IsUAHFenabled(const Consensus::Params &params,
                    const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsUAHFenabled(params, pindexPrev->nHeight);
 }
 
 bool IsDAAEnabled(const Consensus::Params &params, int nHeight) {
-    return nHeight >= params.daaHeight;
+    return true;
 }
 
 bool IsDAAEnabled(const Consensus::Params &params,
                   const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsDAAEnabled(params, pindexPrev->nHeight);
@@ -36,13 +36,13 @@ bool IsDAAEnabled(const Consensus::Params &params,
 
 bool IsMagneticAnomalyEnabled(const Consensus::Params &params,
                               int32_t nHeight) {
-    return nHeight >= params.magneticAnomalyHeight;
+    return true;
 }
 
 bool IsMagneticAnomalyEnabled(const Consensus::Params &params,
                               const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsMagneticAnomalyEnabled(params, pindexPrev->nHeight);
@@ -50,79 +50,78 @@ bool IsMagneticAnomalyEnabled(const Consensus::Params &params,
 
 static bool IsGravitonEnabled(const Consensus::Params &params,
                               int32_t nHeight) {
-    return nHeight >= params.gravitonHeight;
+    return true;
 }
 
 bool IsGravitonEnabled(const Consensus::Params &params,
                        const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsGravitonEnabled(params, pindexPrev->nHeight);
 }
 
 static bool IsPhononEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.phononHeight;
+    return true;
 }
 
 bool IsPhononEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsPhononEnabled(params, pindexPrev->nHeight);
 }
 
 static bool IsAxionEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.axionHeight;
+    return true;
 }
 
 bool IsAxionEnabled(const Consensus::Params &params,
                     const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsAxionEnabled(params, pindexPrev->nHeight);
 }
 
 bool IsWellingtonEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.wellingtonHeight;
+    return true;
 }
 
 bool IsWellingtonEnabled(const Consensus::Params &params,
                          const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsWellingtonEnabled(params, pindexPrev->nHeight);
 }
 
 bool IsCowperthwaiteEnabled(const Consensus::Params &params, int32_t nHeight) {
-    return nHeight >= params.cowperthwaiteHeight;
+    return true;
 }
 
 bool IsCowperthwaiteEnabled(const Consensus::Params &params,
                             const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsCowperthwaiteEnabled(params, pindexPrev->nHeight);
 }
 
 bool IsMengerEnabled(const Consensus::Params &params, int64_t nMedianTimePast) {
-    return nMedianTimePast >= gArgs.GetIntArg("-mengeractivationtime",
-                                              params.mengerActivationTime);
+    return true;
 }
 
 bool IsMengerEnabled(const Consensus::Params &params,
                      const CBlockIndex *pindexPrev) {
     if (pindexPrev == nullptr) {
-        return false;
+        return true;
     }
 
     return IsMengerEnabled(params, pindexPrev->GetMedianTimePast());
