@@ -812,6 +812,9 @@ public:
      * returns 0
      */
     Amount GetDebit(const CTxIn &txin, const isminefilter &filter) const;
+    /** Known branch script for ownership/address queries; never rewrites wire. */
+    CScript GetScriptForOutput(const CTxOut &txout) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     isminetype IsMine(const CTxOut &txout) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     ;

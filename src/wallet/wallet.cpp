@@ -1179,6 +1179,25 @@ bool CWallet::LoadToWallet(const TxId &txid, const UpdateWalletTxFn &fill_wtx) {
     return true;
 }
 
+CScript CWallet::GetScriptForOutput(const CTxOut &out) const {
+    AssertLockHeld(cs_wallet);
+    // Resolve only a known plain native branch for wallet ownership/address
+    // queries. The transaction and its canonical output bytes stay immutable.
+    if (out.nFlags != 0 || out.vBranches.size() != 1 ||
+        out.vPaths.size() != 1 || out.vPaths[0].size() != 1 ||
+        out.vPaths[0][0] != 0) {
+        return out.scriptPubKey;
+    }
+    uint256 branch;
+    std::copy(out.vBranches[0].begin(), out.vBranches[0].end(), branch.begin());
+    for (const auto &spk_man_pair : m_spk_managers) {
+        if (auto script = spk_man_pair.second->GetScriptForV2Branch(branch)) {
+            return std::move(*script);
+        }
+    }
+    return out.scriptPubKey;
+}
+
 bool CWallet::AddToWalletIfInvolvingMe(const CTransactionRef &ptx,
                                        CWalletTx::Confirmation confirm,
                                        bool fUpdate) {
@@ -1223,7 +1242,7 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransactionRef &ptx,
         // loop though all outputs
         for (const CTxOut &txout : ptx->vout) {
             for (const auto &spk_man_pair : m_spk_managers) {
-                spk_man_pair.second->MarkUnusedAddresses(txout.scriptPubKey);
+                spk_man_pair.second->MarkUnusedAddresses(GetScriptForOutput(txout));
             }
         }
 
@@ -1507,7 +1526,7 @@ Amount CWallet::GetDebit(const CTxIn &txin, const isminefilter &filter) const {
 
 isminetype CWallet::IsMine(const CTxOut &txout) const {
     AssertLockHeld(cs_wallet);
-    return IsMine(txout.scriptPubKey);
+    return IsMine(GetScriptForOutput(txout));
 }
 
 isminetype CWallet::IsMine(const CTxDestination &dest) const {

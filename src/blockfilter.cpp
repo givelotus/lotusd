@@ -190,7 +190,11 @@ static GCSFilter::ElementSet BasicFilterElements(const CBlock &block,
 
     for (const CTransactionRef &tx : block.vtx) {
         for (const CTxOut &txout : tx->vout) {
-            const CScript &script = txout.scriptPubKey;
+            // V7 serialization commits the native output form. Constructors
+            // may still carry a legacy script view until wire decoding.
+            CTxOut canonical;
+            if (tx->nVersion == 7) canonical = CTxOut::FromV2Output(txout.ToV2Output());
+            const CScript &script = tx->nVersion == 7 ? canonical.scriptPubKey : txout.scriptPubKey;
             if (script.empty() || script[0] == OP_RETURN) {
                 continue;
             }
