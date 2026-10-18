@@ -3279,4 +3279,117 @@ BOOST_AUTO_TEST_CASE(stake_contender_local_winners) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(quorum_node_count_and_circulating_supply_gate) {
+    setArg("-persistavapeers", "0");
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    Chainstate &active_chainstate = chainman.ActiveChainstate();
+    const CBlockIndex *chaintip =
+        WITH_LOCK(chainman.GetMutex(), return chainman.ActiveTip());
+    const BlockHash tipHash = chaintip->GetBlockHash();
+
+    // 1. Validate parameter range checks for -avaminquorumnodes and
+    // -avaminquorumsupplypermille
+    {
+        setArg("-avaminquorumnodes", "-1");
+        bilingual_str error;
+        BOOST_CHECK(Processor::MakeProcessor(
+                        *m_node.args, *m_node.chain, m_node.connman.get(),
+                        chainman, m_node.mempool.get(), *m_node.scheduler,
+                        error) == nullptr);
+        BOOST_CHECK(!error.empty());
+        setArg("-avaminquorumnodes", "8");
+    }
+    {
+        setArg("-avaminquorumsupplypermille", "1001");
+        bilingual_str error;
+        BOOST_CHECK(Processor::MakeProcessor(
+                        *m_node.args, *m_node.chain, m_node.connman.get(),
+                        chainman, m_node.mempool.get(), *m_node.scheduler,
+                        error) == nullptr);
+        BOOST_CHECK(!error.empty());
+        setArg("-avaminquorumsupplypermille", "0");
+    }
+
+    // 2. Test -avaminquorumnodes=10 gate
+    {
+        setArg("-avaminquorumnodes", "10");
+        setArg("-avaminquorumsupplypermille", "0");
+        bilingual_str error;
+        auto processor = Processor::MakeProcessor(
+            *m_node.args, *m_node.chain, m_node.connman.get(), chainman,
+            m_node.mempool.get(), *m_node.scheduler, error);
+        BOOST_REQUIRE(processor != nullptr);
+
+        auto proof =
+            buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE * 10);
+        processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.registerProof(proof));
+            for (NodeId n = 0; n < 9; n++) {
+                BOOST_CHECK(pm.addNode(n, proof->getId(),
+                                       DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+            }
+        });
+        // 9 nodes < 10 required
+        BOOST_CHECK(!processor->isQuorumEstablished());
+
+        // Add 10th node -> quorum established
+        processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.addNode(9, proof->getId(),
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+        BOOST_CHECK(processor->isQuorumEstablished());
+
+        // Remove 10th node -> drops below minQuorumNodes again
+        processor->withPeerManager(
+            [&](avalanche::PeerManager &pm) { BOOST_CHECK(pm.removeNode(9)); });
+        BOOST_CHECK(!processor->isQuorumEstablished());
+    }
+
+    // 3. Test -avaminquorumsupplypermille gate (10 permille = 1.0% of supply)
+    {
+        setArg("-avaminquorumnodes", "8");
+        setArg("-avaminquorumsupplypermille", "10");
+        // Set circulating supply to 200 * PROOF_DUST_THRESHOLD -> 1% (10
+        // permille) is 2 * PROOF_DUST_THRESHOLD.
+        const uint64_t supplySatoshis =
+            200ULL * uint64_t(PROOF_DUST_THRESHOLD / SATOSHI);
+        SetV2BlockCirculatingSupplyForTest(tipHash, supplySatoshis);
+
+        bilingual_str error;
+        auto processor = Processor::MakeProcessor(
+            *m_node.args, *m_node.chain, m_node.connman.get(), chainman,
+            m_node.mempool.get(), *m_node.scheduler, error);
+        BOOST_REQUIRE(processor != nullptr);
+
+        // Register 1 proof with MIN_VALID_PROOF_SCORE (1 * PROOF_DUST_THRESHOLD
+        // < 1% of 200 * PROOF_DUST_THRESHOLD)
+        auto proof1 = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+        processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.registerProof(proof1));
+            for (NodeId n = 0; n < 8; n++) {
+                BOOST_CHECK(pm.addNode(n, proof1->getId(),
+                                       DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+            }
+        });
+        // Node count (8) is met, but staked supply < required (2 *
+        // PROOF_DUST_THRESHOLD)
+        BOOST_CHECK(!processor->isQuorumEstablished());
+
+        // Register a second proof with MIN_VALID_PROOF_SCORE (total 2 *
+        // PROOF_DUST_THRESHOLD >= 1% of 200 * PROOF_DUST_THRESHOLD)
+        auto proof2 = buildRandomProof(active_chainstate, MIN_VALID_PROOF_SCORE);
+        processor->withPeerManager([&](avalanche::PeerManager &pm) {
+            BOOST_CHECK(pm.registerProof(proof2));
+            BOOST_CHECK(pm.addNode(8, proof2->getId(),
+                                   DEFAULT_AVALANCHE_MAX_ELEMENT_POLL));
+        });
+        BOOST_CHECK(processor->isQuorumEstablished());
+
+        SetV2BlockCirculatingSupplyForTest(tipHash, 0);
+        setArg("-avaminquorumsupplypermille", "0");
+    }
+}
+
+
+
 BOOST_AUTO_TEST_SUITE_END()
