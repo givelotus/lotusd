@@ -3597,7 +3597,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 fScriptChecks = (GetBlockProofEquivalentTime(
                                      *m_chainman.m_best_header, *pindex,
                                      *m_chainman.m_best_header,
-                                     consensusParams) <= 60 * 60 * 24 * 7 * 2);
+                                     consensusParams) <= 60 * 60 * 24 * 5);
             }
         }
     }
