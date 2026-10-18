@@ -53,7 +53,7 @@ struct MempoolBatchAnnouncement {
     bool IsValid() const { return !prev_block_hash.IsNull() && tx_count > 0; }
 
     /**
-     * Compute the 32-byte batch ID via tagged SHA256("lotus.v2.preconsensus.batch", serialized announcement)
+     * Compute the 32-byte batch ID via TaggedHash(HashDomain::PreconsensusBatch, ...)
      * over the 168-byte announcement header.
      */
     uint256 ComputeBatchId() const;

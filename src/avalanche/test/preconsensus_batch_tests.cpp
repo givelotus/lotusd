@@ -395,12 +395,12 @@ BOOST_FIXTURE_TEST_CASE(mempool_batch_serialization_and_id, BasicTestingSetup) {
     BOOST_CHECK(deserialized == batch);
     BOOST_CHECK_EQUAL(deserialized.ComputeBatchId(), batch.ComputeBatchId());
 
-    // 2. Verify the eCash tagged SHA256 identifier and field sensitivity
+    // 2. Verify the native tagged BLAKE3 identifier and field sensitivity
     const uint256 idOrig = batch.ComputeBatchId();
     BOOST_CHECK(!idOrig.IsNull());
-    // Independent Python hashlib vector over explicit 168-byte LE serialization.
+    // Independent Python blake3 vector over domain || NUL || 168-byte LE serialization.
     BOOST_CHECK_EQUAL(idOrig.GetHex(),
-        "f2550ec763722f0d511967da83bcfc5a4b5460f09a6001b17ed2ebcf85716f23");
+        "cf456a4b7889237c3adace3e092fa4186c2c8c00642735c13eb8d80c7d977d46");
 
     MempoolBatchAnnouncement modifiedEpoch = batch;
     modifiedEpoch.epoch_seq = 43;
