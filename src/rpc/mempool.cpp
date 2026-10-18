@@ -9,6 +9,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <core_io.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/mempool_overlay.h>
 #include <net.h>
 #include <net/v2_protocol_handler.h>
@@ -1336,6 +1337,16 @@ static RPCHelpMan testrawtxbatch() {
                            /*optional=*/true, "Rejection reason string"},
                           {RPCResult::Type::STR, "reject-details",
                            /*optional=*/true, "Rejection details string"},
+                          {RPCResult::Type::NUM, "required_cu",
+                           /*optional=*/true,
+                           "Required transaction compute units (CU)"},
+                          {RPCResult::Type::NUM, "required_fee_sats",
+                           /*optional=*/true,
+                           "Minimum required RPC admission fee in satoshis"},
+                          {RPCResult::Type::NUM, "recommended_sdk_fee_sats",
+                           /*optional=*/true,
+                           "Recommended SDK fee in satoshis (includes +5% "
+                           "anti-bounce cushion)"},
                       }},
                  }},
             },
@@ -1378,6 +1389,10 @@ static RPCHelpMan testrawtxbatch() {
                 package_result.m_state.GetResult() !=
                 PackageValidationResult::PCKG_POLICY;
             bool exit_early{false};
+            const int64_t now_ms =
+                TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const auto &fee_ctrl =
+                lotus::v2::GetGlobalFeeHysteresisController();
 
             for (const auto &tx : txns) {
                 UniValue result_inner(UniValue::VOBJ);
@@ -1389,9 +1404,30 @@ static RPCHelpMan testrawtxbatch() {
                     continue;
                 }
                 const auto &tx_result = it->second;
+                const uint64_t tx_cu = static_cast<uint64_t>(std::max<int64_t>(
+                    0, tx_result.m_vsize.has_value()
+                           ? tx_result.m_vsize.value()
+                           : GetVirtualTransactionSize(*tx)));
+                const uint64_t paid_fee_sats =
+                    tx_result.m_base_fees.has_value()
+                        ? static_cast<uint64_t>(std::max<int64_t>(
+                              0, tx_result.m_base_fees.value() / SATOSHI))
+                        : 0ULL;
+                const lotus::v2::FeeCheckResult fee_eval =
+                    fee_ctrl.EvaluateTransactionFee(
+                        lotus::v2::FeeTier::RpcAdmission, tx_cu, paid_fee_sats,
+                        now_ms);
+                result_inner.pushKV("required_cu", fee_eval.tx_cu);
+                result_inner.pushKV("required_fee_sats",
+                                    fee_eval.required_fee_sats);
+                result_inner.pushKV("recommended_sdk_fee_sats",
+                                    fee_eval.recommended_sdk_fee_sats);
 
                 if (tx_result.m_result_type ==
-                        MempoolAcceptResult::ResultType::VALID) {
+                        MempoolAcceptResult::ResultType::VALID &&
+                    (fee_eval.accepted ||
+                     fee_ctrl.GetRpcAdmissionRatePerKCu(now_ms) <=
+                         fee_ctrl.GetConsensusFloorPerKCu())) {
                     const Amount fee = tx_result.m_base_fees.value();
                     const int64_t virtual_size = tx_result.m_vsize.value();
                     result_inner.pushKV("allowed", true);
@@ -1409,6 +1445,22 @@ static RPCHelpMan testrawtxbatch() {
                     fees.pushKV("effective-includes",
                                 std::move(effective_includes_res));
                     result_inner.pushKV("fees", std::move(fees));
+                } else if (tx_result.m_result_type ==
+                               MempoolAcceptResult::ResultType::VALID &&
+                           !fee_eval.accepted) {
+                    all_allowed = false;
+                    result_inner.pushKV("allowed", false);
+                    result_inner.pushKV("reject-reason",
+                                        "rpc-fee-hysteresis-insufficient");
+                    result_inner.pushKV(
+                        "reject-details",
+                        strprintf("paid %llu sats < required %llu sats "
+                                  "(recommended SDK fee: %llu sats)",
+                                  static_cast<unsigned long long>(paid_fee_sats),
+                                  static_cast<unsigned long long>(
+                                      fee_eval.required_fee_sats),
+                                  static_cast<unsigned long long>(
+                                      fee_eval.recommended_sdk_fee_sats)));
                 } else {
                     all_allowed = false;
                     result_inner.pushKV("allowed", false);
@@ -1526,6 +1578,16 @@ static RPCHelpMan submitrawtxbatch() {
                            /*optional=*/true, "Rejection reason string"},
                           {RPCResult::Type::STR, "reject-details",
                            /*optional=*/true, "Rejection details string"},
+                          {RPCResult::Type::NUM, "required_cu",
+                           /*optional=*/true,
+                           "Required transaction compute units (CU)"},
+                          {RPCResult::Type::NUM, "required_fee_sats",
+                           /*optional=*/true,
+                           "Minimum required RPC admission fee in satoshis"},
+                          {RPCResult::Type::NUM, "recommended_sdk_fee_sats",
+                           /*optional=*/true,
+                           "Recommended SDK fee in satoshis (includes +5% "
+                           "anti-bounce cushion)"},
                       }},
                  }},
             },
@@ -1561,6 +1623,10 @@ static RPCHelpMan submitrawtxbatch() {
             UniValue results_arr(UniValue::VARR);
             bool all_allowed = false;
             std::string package_error_str;
+            const int64_t now_ms =
+                TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
+            const auto &fee_ctrl =
+                lotus::v2::GetGlobalFeeHysteresisController();
 
             const PackageMempoolAcceptResult package_result = [&] {
                 LOCK2(::cs_main, mempool.cs);
@@ -1603,6 +1669,24 @@ static RPCHelpMan submitrawtxbatch() {
                     continue;
                 }
                 const auto &tx_result = it->second;
+                const uint64_t tx_cu = static_cast<uint64_t>(std::max<int64_t>(
+                    0, tx_result.m_vsize.has_value()
+                           ? tx_result.m_vsize.value()
+                           : GetVirtualTransactionSize(*tx)));
+                const uint64_t paid_fee_sats =
+                    tx_result.m_base_fees.has_value()
+                        ? static_cast<uint64_t>(std::max<int64_t>(
+                              0, tx_result.m_base_fees.value() / SATOSHI))
+                        : 0ULL;
+                const lotus::v2::FeeCheckResult fee_eval =
+                    fee_ctrl.EvaluateTransactionFee(
+                        lotus::v2::FeeTier::RpcAdmission, tx_cu, paid_fee_sats,
+                        now_ms);
+                result_inner.pushKV("required_cu", fee_eval.tx_cu);
+                result_inner.pushKV("required_fee_sats",
+                                    fee_eval.required_fee_sats);
+                result_inner.pushKV("recommended_sdk_fee_sats",
+                                    fee_eval.recommended_sdk_fee_sats);
 
                 if (tx_result.m_result_type ==
                     MempoolAcceptResult::ResultType::VALID) {
