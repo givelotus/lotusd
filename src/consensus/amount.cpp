@@ -6,37 +6,19 @@
 
 #include <consensus/amount.h>
 
-#include <common/args.h>
-#include <currencyunit.h>
 #include <univalue.h>
 
 #include <tinyformat.h>
 
-#include <atomic>
-
 using namespace std::string_view_literals;
 
-static constexpr Currency BCHA{COIN, SATOSHI, 8, "BCHA"sv};
-static constexpr Currency XEC{100 * SATOSHI, SATOSHI, 2, "XEC"sv};
-
-static_assert(BCHA.baseunit > 1 * SATOSHI,
-              "BCHA base unit must be greater than 1 satoshi");
-static_assert(XEC.baseunit > 1 * SATOSHI,
-              "XEC base unit must be greater than 1 satoshi");
-
-//! -1 until SetECash() is called, then 0 (BCHA) or 1 (XEC)
-static std::atomic<int> g_ecash{-1};
-
-void Currency::SetECash(bool ecash) {
-    g_ecash.store(ecash ? 1 : 0, std::memory_order_relaxed);
-}
+// RPCs retain atom precision; a wallet's two-decimal display is a separate UI
+// choice. Do not change COIN or any serialized/consensus amount to denominate
+// XPI.
+static constexpr Currency XPI{1000000 * SATOSHI, SATOSHI, 6, "XPI"sv};
 
 const Currency &Currency::get() {
-    const int ecash{g_ecash.load(std::memory_order_relaxed)};
-    if (ecash >= 0) {
-        return ecash ? XEC : BCHA;
-    }
-    return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? XEC : BCHA;
+    return XPI;
 }
 
 std::string Amount::ToString() const {
