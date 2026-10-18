@@ -47,15 +47,16 @@ void HeadersGeneratorSetup::GenerateHeaders(std::vector<CBlockHeader> &headers,
         headers.push_back(CBlockHeader());
         CBlockHeader &next_header = headers.back();
         ;
-        next_header.nVersion = nVersion;
+        next_header.nHeaderVersion = 2;
+        next_header.nHeight = uint64_t(headers.size());
         next_header.hashPrevBlock = prev_hash;
         next_header.hashMerkleRoot = merkle_root;
-        next_header.nTime = prev_time + 1;
+        next_header.SetBlockTime(prev_time + 1);
         next_header.nBits = nBits;
 
         FindProofOfWork(next_header);
         prev_hash = next_header.GetHash();
-        prev_time = next_header.nTime;
+        prev_time = next_header.GetBlockTime();
     }
     return;
 }
@@ -83,13 +84,15 @@ BOOST_AUTO_TEST_CASE(headers_sync_state) {
     // to ensure the headers are different).
     GenerateHeaders(
         first_chain, target_blocks - 1, Params().GenesisBlock().GetHash(),
-        Params().GenesisBlock().nVersion, Params().GenesisBlock().nTime,
-        ArithToUint256(0), Params().GenesisBlock().nBits);
+        Params().GenesisBlock().nHeaderVersion,
+        Params().GenesisBlock().GetBlockTime(), ArithToUint256(0),
+        Params().GenesisBlock().nBits);
 
     GenerateHeaders(
         second_chain, target_blocks - 2, Params().GenesisBlock().GetHash(),
-        Params().GenesisBlock().nVersion, Params().GenesisBlock().nTime,
-        ArithToUint256(1), Params().GenesisBlock().nBits);
+        Params().GenesisBlock().nHeaderVersion,
+        Params().GenesisBlock().GetBlockTime(), ArithToUint256(1),
+        Params().GenesisBlock().nBits);
 
     const CBlockIndex *chain_start = WITH_LOCK(
         ::cs_main, return m_node.chainman->m_blockman.LookupBlockIndex(

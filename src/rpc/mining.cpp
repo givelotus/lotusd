@@ -1418,10 +1418,10 @@ static RPCHelpMan getblocktemplate() {
                     tmpl.non_cb_serialized_size;
 
                 CBlockHeader solved_hdr;
-                solved_hdr.nVersion = tmpl.nHeaderVersion;
+                solved_hdr.nHeaderVersion = tmpl.nHeaderVersion;
                 solved_hdr.hashPrevBlock = tmpl.prev_block_hash;
                 solved_hdr.hashMerkleRoot = merkle_root;
-                solved_hdr.nTime = static_cast<uint32_t>(curtime);
+                solved_hdr.SetBlockTime(curtime);
                 solved_hdr.nBits = nBits;
                 solved_hdr.nNonce = 0;
 
@@ -1619,7 +1619,7 @@ static RPCHelpMan getblocktemplate() {
                 fb_tmpl.template_id = fallback_template_id;
                 fb_tmpl.prev_block_hash = pindexPrev->GetBlockHash();
                 fb_tmpl.next_height = pindexPrev->nHeight + 1;
-                fb_tmpl.nHeaderVersion = pblocktemplate->block.nVersion;
+                fb_tmpl.nHeaderVersion = pblocktemplate->block.nHeaderVersion;
                 fb_tmpl.nBits = pblocktemplate->block.nBits;
                 fb_tmpl.parent_mtp = pindexPrev->GetMedianTimePast();
                 fb_tmpl.min_time = fb_tmpl.parent_mtp + 1;
@@ -1760,7 +1760,7 @@ static RPCHelpMan getblocktemplate() {
             aMutable.push_back("prevblock");
 
             result.pushKV("capabilities", std::move(aCaps));
-            result.pushKV("version", pblock->nVersion);
+            result.pushKV("version", pblock->nHeaderVersion);
             result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
             result.pushKV("transactions", std::move(transactions));
             result.pushKV("coinbaseaux", std::move(aux));
@@ -2158,7 +2158,7 @@ static RPCHelpMan getrawunsolvedblock() {
                 tmpl.template_id = template_id;
                 tmpl.prev_block_hash = pblocktemplate->block.hashPrevBlock;
                 tmpl.next_height = next_height;
-                tmpl.nHeaderVersion = pblocktemplate->block.nVersion;
+                tmpl.nHeaderVersion = pblocktemplate->block.nHeaderVersion;
                 tmpl.nBits = pblocktemplate->block.nBits;
                 for (size_t i = 1; i < pblocktemplate->block.vtx.size(); ++i) {
                     tmpl.non_coinbase_txs.push_back(
