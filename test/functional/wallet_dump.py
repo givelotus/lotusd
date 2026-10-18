@@ -165,7 +165,7 @@ class WalletDumpTest(BitcoinTestFramework):
         ) = read_dump(wallet_unenc_dump, addrs, [multisig_addr], None)
         # Check that file is not corrupt
         assert "# End of dump" in found_comments
-        assert found_comments[0].startswith("# Wallet dump created by Bitcoin ABC")
+        assert found_comments[0].startswith("# Wallet dump created by Lotus")
         assert_equal(
             dump_time_str,
             next(c for c in found_comments if c.startswith("# * Created on")),
@@ -241,8 +241,8 @@ class WalletDumpTest(BitcoinTestFramework):
         result = self.nodes[0].getaddressinfo(multisig_addr)
         assert result["ismine"] is True
 
-        self.log.info("Check that wallet is flushed")
-        with self.nodes[0].assert_debug_log(["Flushing wallet.dat"], timeout=20):
+        self.log.info("Check that wallet keypool allocation is logged")
+        with self.nodes[0].assert_debug_log(["keypool reserve"], timeout=20):
             self.nodes[0].getnewaddress()
 
         # Make sure that dumpwallet doesn't have a lock order issue when there is an unconfirmed tx and it is reloaded

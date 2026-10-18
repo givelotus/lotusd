@@ -36,9 +36,10 @@ BOOST_AUTO_TEST_CASE(psbt_updater_test) {
 
     CTransactionRef prev_tx1;
     s_prev_tx1 >> prev_tx1;
-    m_wallet.mapWallet.emplace(std::piecewise_construct,
-                               std::forward_as_tuple(prev_tx1->GetId()),
-                               std::forward_as_tuple(prev_tx1));
+    m_wallet.mapWallet.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(TxId((HashWriter{} << *prev_tx1).GetHash())),
+        std::forward_as_tuple(prev_tx1));
 
     DataStream s_prev_tx2{ParseHex(
         "0200000001aad73931018bd25f84ae400b68848be09db706eac2ac18298babee71"
@@ -49,9 +50,10 @@ BOOST_AUTO_TEST_CASE(psbt_updater_test) {
         "f8a08f81999428185c97b5d852e4063f618765000000")};
     CTransactionRef prev_tx2;
     s_prev_tx2 >> prev_tx2;
-    m_wallet.mapWallet.emplace(std::piecewise_construct,
-                               std::forward_as_tuple(prev_tx2->GetId()),
-                               std::forward_as_tuple(prev_tx2));
+    m_wallet.mapWallet.emplace(
+        std::piecewise_construct,
+        std::forward_as_tuple(TxId((HashWriter{} << *prev_tx2).GetHash())),
+        std::forward_as_tuple(prev_tx2));
 
     // Add scripts
     CScript rs1;
