@@ -51,7 +51,10 @@ class ToolWalletTest(BitcoinTestFramework):
         stdout, stderr = p.communicate()
         assert_equal(p.poll(), 1)
         assert_equal(stdout, "")
-        assert_equal(stderr.strip(), error)
+        if isinstance(error, tuple):
+            assert stderr.strip() in error, f"{stderr.strip()!r} not in {error!r}"
+        else:
+            assert_equal(stderr.strip(), error)
 
     def assert_tool_output(self, output, *args):
         p = self.bitcoin_wallet_process(*args)
@@ -94,17 +97,16 @@ class ToolWalletTest(BitcoinTestFramework):
         self.assert_raises_tool_error(
             "Error parsing command line arguments: Invalid parameter -foo", "-foo"
         )
-        locked_dir = os.path.join(self.options.tmpdir, "node0", "regtest", "wallets")
         self.assert_raises_tool_error(
-            f'Error initializing wallet database environment "{locked_dir}"!',
+            (
+                "Wallet SQLite format, version or profile does not match.",
+                "SQLiteDatabase: Unable to obtain an exclusive lock on the database, is it being used by another process?",
+            ),
             f"-wallet={self.default_wallet_name}",
             "info",
         )
-        path = os.path.join(
-            self.options.tmpdir, "node0", "regtest", "wallets", "nonexistent.dat"
-        )
         self.assert_raises_tool_error(
-            f"Failed to load database path '{path}'. Path does not exist.",
+            "Wallet SQLite database does not exist.",
             "-wallet=nonexistent.dat",
             "info",
         )
@@ -254,14 +256,11 @@ class ToolWalletTest(BitcoinTestFramework):
         self.log.debug("Wallet file shasum unchanged\n")
 
     def test_salvage(self):
-        # TODO: Check salvage actually salvages and doesn't break things.
-        # https://github.com/bitcoin/bitcoin/issues/7463
-        self.log.info("Check salvage")
-        self.start_node(0)
-        self.nodes[0].createwallet("salvage")
-        self.stop_node(0)
-
-        self.assert_tool_output("", "-wallet=salvage", "salvage")
+        # Legacy BDB salvage command is removed in Lotus V2 SQLite-only mode.
+        self.log.info("Check salvage command is rejected in SQLite-only wallet tool")
+        self.assert_raises_tool_error(
+            "Invalid command: salvage", "-wallet=salvage", "salvage"
+        )
 
     def run_test(self):
         self.wallet_path = os.path.join(
