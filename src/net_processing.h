@@ -342,6 +342,10 @@ public:
      */
     virtual void UpdateLastBlockAnnounceTime(NodeId node,
                                              int64_t time_in_seconds) = 0;
+
+    /** Mark a peer for protocol misbehavior. */
+    virtual void DiscouragePeer(NodeId peer_id,
+                               const std::string &reason = "") {}
 };
 
 #endif // BITCOIN_NET_PROCESSING_H
