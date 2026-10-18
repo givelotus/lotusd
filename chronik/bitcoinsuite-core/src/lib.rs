@@ -14,6 +14,7 @@ abc_rust_lint::lint! {
     pub mod error;
     pub mod hash;
     pub mod net;
+    pub mod lotus_v2;
     pub mod script;
     pub mod ser;
     pub mod tx;
