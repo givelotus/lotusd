@@ -84,14 +84,14 @@ MinerTestingSetup::MinerTestingSetup()
 std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
                                                  const BlockHash &prev_hash) {
     static int i = 0;
-    static uint64_t time = config.GetChainParams().GenesisBlock().nTime;
+    static uint64_t time = config.GetChainParams().GenesisBlock().GetBlockTime();
 
     auto ptemplate = BlockAssembler{config, m_node.chainman->ActiveChainstate(),
                                     m_node.mempool.get()}
                          .CreateNewBlock(CScript{} << i++ << OP_TRUE);
     auto pblock = std::make_shared<CBlock>(ptemplate->block);
     pblock->hashPrevBlock = prev_hash;
-    pblock->nTime = ++time;
+    pblock->SetBlockTime(++time);
 
     // Make the coinbase transaction with two outputs:
     // One zero-value one that has a unique pubkey to make sure that blocks at

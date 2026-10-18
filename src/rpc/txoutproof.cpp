@@ -179,8 +179,7 @@ static RPCHelpMan verifytxoutproof() {
 
             std::vector<uint256> vMatch;
             std::vector<size_t> vIndex;
-            if (merkleBlock.txn.ExtractMatches(vMatch, vIndex) !=
-                merkleBlock.header.hashMerkleRoot) {
+            if (merkleBlock.txn.ExtractMatches(vMatch, vIndex).IsNull()) {
                 return res;
             }
 

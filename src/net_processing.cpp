@@ -6851,7 +6851,7 @@ void PeerManagerImpl::ProcessMessage(
         int64_t currentTime = GetTime();
         int64_t nTimeOffset = nTime - currentTime;
         pfrom.nTimeOffset = nTimeOffset;
-        if (nTime < int64_t(m_chainparams.GenesisBlock().nTime)) {
+        if (nTime < int64_t(m_chainparams.GenesisBlock().GetBlockTime())) {
             // Ignore time offsets that are improbable (before the Genesis
             // block) and may underflow our adjusted time.
             Misbehaving(*peer, "Ignoring invalid timestamp in version message");

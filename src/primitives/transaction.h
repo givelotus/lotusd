@@ -69,6 +69,9 @@ public:
     COutPoint prevout;
     uint32_t nSequence;
     CScript scriptSig;
+    // Native input metadata is consumed by the header-state transition.
+    // Wire encoding is introduced by the following transaction-format commit.
+    uint8_t nFlags{0};
 
     /**
      * Setting nSequence to this value for every input in a transaction disables
