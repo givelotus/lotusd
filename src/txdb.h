@@ -62,6 +62,8 @@ public:
     void BatchWrite(CoinsViewCacheCursor &cursor,
                     const BlockHash &hashBlock) override;
     CCoinsViewCursor *Cursor() const override;
+    void PrefetchOutpointsAsync(
+        const std::vector<COutPoint> &outpoints) const override;
 
     // One MDBX transaction publishes both the verified replacement UTXO set
     // and its provisional pivot marker. The old database survives aborts.

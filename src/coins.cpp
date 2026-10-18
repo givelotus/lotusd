@@ -58,6 +58,12 @@ CCoinsViewCursor *CCoinsViewBacked::Cursor() const {
 size_t CCoinsViewBacked::EstimateSize() const {
     return base->EstimateSize();
 }
+void CCoinsViewBacked::PrefetchOutpointsAsync(
+    const std::vector<COutPoint> &outpoints) const {
+    if (base) {
+        base->PrefetchOutpointsAsync(outpoints);
+    }
+}
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView *baseIn, bool deterministic)
     : CCoinsViewBacked(baseIn), m_deterministic(deterministic),
@@ -68,6 +74,23 @@ CCoinsViewCache::CCoinsViewCache(CCoinsView *baseIn, bool deterministic)
 
 size_t CCoinsViewCache::DynamicMemoryUsage() const {
     return memusage::DynamicUsage(cacheCoins) + cachedCoinsUsage;
+}
+
+void CCoinsViewCache::PrefetchOutpointsAsync(
+    const std::vector<COutPoint> &outpoints) const {
+    if (!base || outpoints.size() < 8) {
+        return;
+    }
+    std::vector<COutPoint> uncached;
+    uncached.reserve(outpoints.size());
+    for (const COutPoint &op : outpoints) {
+        if (!HaveCoinInCache(op)) {
+            uncached.push_back(op);
+        }
+    }
+    if (uncached.size() >= 8) {
+        base->PrefetchOutpointsAsync(uncached);
+    }
 }
 
 CCoinsMap::iterator
