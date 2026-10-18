@@ -315,6 +315,11 @@ extern const char *GETAVAPROOFS;
 extern const char *AVAPROOFS;
 
 /**
+ * Contains an avalanche treasury contender announcement.
+ */
+extern const char *AVATREASURY;
+
+/**
  * Request for missing avalanche proofs after an avaproofs message has been
  * processed.
  */
@@ -669,13 +674,14 @@ public:
 
 /** getdata message type flags */
 const uint32_t MSG_TYPE_MASK = 0xffffffff >> 3;
+const uint32_t MSG_TYPE_AVALANCHE_INBOUND = 0x20000000;
 
 /**
  * getdata / inv message types.
  * These numbers are defined by the protocol. When adding a new value, be sure
  * to mention it in the respective BIP.
  */
-enum GetDataMsg {
+enum GetDataMsg : uint32_t {
     UNDEFINED = 0,
     MSG_TX = 1,
     MSG_BLOCK = 2,
@@ -688,10 +694,9 @@ enum GetDataMsg {
     MSG_MINED_HEADER = 5,
     MSG_SEALED_HEADER = MSG_MINED_HEADER,
     MSG_SEALED_BLOCK = MSG_MINED_HEADER,
-    MSG_AVA_MEMPOOL_BATCH = 0x20000006,
     MSG_AVA_PROOF = 0x1f000001,
     MSG_AVA_STAKE_CONTENDER = 0x1f000002,
-    MSG_AVA_STATE_ANCHOR = 0x1f000003,
+    MSG_AVA_TREASURY_CONTENDER = MSG_TYPE_AVALANCHE_INBOUND | 0x5,
 };
 
 /**
@@ -716,7 +721,9 @@ public:
     std::string GetMessageType() const;
     std::string ToString() const;
 
-    uint32_t GetKind() const { return type == MSG_AVA_MEMPOOL_BATCH ? type : type & MSG_TYPE_MASK; }
+    uint32_t GetKind() const {
+        return type & (MSG_TYPE_MASK | MSG_TYPE_AVALANCHE_INBOUND);
+    }
 
     bool IsMsgTx() const {
         auto k = GetKind();
@@ -729,6 +736,10 @@ public:
     bool IsMsgStakeContender() const {
         auto k = GetKind();
         return k == MSG_AVA_STAKE_CONTENDER;
+    }
+    bool IsMsgTreasuryContender() const {
+        auto k = GetKind();
+        return k == MSG_AVA_TREASURY_CONTENDER;
     }
     bool IsMsgMempoolBatch() const {
         auto k = GetKind();
