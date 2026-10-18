@@ -677,8 +677,8 @@ void PublishChainTipSnapshot(ChainstateManager &chainman,
     dummyHeader.hashPrevBlock = tip->GetBlockHash();
     const int64_t now_time =
         TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
-    dummyHeader.nTime =
-        static_cast<uint32_t>(std::max<int64_t>(tip->GetMedianTimePast() + 1, now_time));
+    dummyHeader.SetBlockTime(
+        static_cast<uint64_t>(std::max<int64_t>(tip->GetMedianTimePast() + 1, now_time)));
     next->next_nBits = GetNextWorkRequired(tip, &dummyHeader, chainparams);
     next->next_subsidy =
         GetBlockSubsidy(tip->nHeight + 1, *next->consensus_params);

@@ -20,30 +20,42 @@
 // A compressed CBlockHeader, which leaves out the prevhash
 struct CompressedHeader {
     // header
-    int32_t nVersion{0};
-    uint256 hashMerkleRoot;
-    uint32_t nTime{0};
     uint32_t nBits{0};
-    uint32_t nNonce{0};
+    uint32_t nHeaderVersion{0};
+    block_time_t vTime{{0}};
+    uint64_t nNonce{0};
+    uint64_t nSize{0};
+    uint64_t nHeight{0};
+    uint256 hashMerkleRoot;
+    uint256 hashStateRoot;
 
-    CompressedHeader() { hashMerkleRoot.SetNull(); }
+    CompressedHeader() {
+        hashMerkleRoot.SetNull();
+        hashStateRoot.SetNull();
+    }
 
     CompressedHeader(const CBlockHeader &header) {
-        nVersion = header.nVersion;
-        hashMerkleRoot = header.hashMerkleRoot;
-        nTime = header.nTime;
         nBits = header.nBits;
+        nHeaderVersion = header.nHeaderVersion;
+        vTime = header.vTime;
         nNonce = header.nNonce;
+        nSize = header.nSize;
+        nHeight = header.nHeight;
+        hashMerkleRoot = header.hashMerkleRoot;
+        hashStateRoot = header.hashStateRoot;
     }
 
     CBlockHeader GetFullHeader(const BlockHash &hash_prev_block) {
         CBlockHeader ret;
-        ret.nVersion = nVersion;
         ret.hashPrevBlock = hash_prev_block;
-        ret.hashMerkleRoot = hashMerkleRoot;
-        ret.nTime = nTime;
         ret.nBits = nBits;
+        ret.nHeaderVersion = nHeaderVersion;
+        ret.vTime = vTime;
         ret.nNonce = nNonce;
+        ret.nSize = nSize;
+        ret.nHeight = nHeight;
+        ret.hashMerkleRoot = hashMerkleRoot;
+        ret.hashStateRoot = hashStateRoot;
         return ret;
     };
 };
@@ -129,7 +141,9 @@ public:
      * Return the block timestamp of the last header received during the
      * PRESYNC phase.
      */
-    uint32_t GetPresyncTime() const { return m_last_header_received.nTime; }
+    int64_t GetPresyncTime() const {
+        return m_last_header_received.GetBlockTime();
+    }
 
     /**
      * Return the amount of work in the chain received during the PRESYNC

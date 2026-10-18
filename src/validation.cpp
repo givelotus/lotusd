@@ -4454,7 +4454,7 @@ static void UpdateTipLog(const CCoinsViewCache &coins_tip,
         .Field(BCLog::LogField::SourceFunction, func_name)
         .Field(BCLog::LogField::BlockHash, tip->GetBlockHash())
         .Field(BCLog::LogField::Height, tip->nHeight)
-        .Field(BCLog::LogField::Version, uint32_t(tip->nVersion))
+        .Field(BCLog::LogField::Version, uint32_t(tip->nHeaderVersion))
         .Field(BCLog::LogField::Log2Work,
                log(tip->nChainWork.getdouble()) / log(2.0))
         .Field(BCLog::LogField::ChainTxCount, tip->GetChainTxCount())

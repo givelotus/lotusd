@@ -90,7 +90,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
             assert len(chaintips) == 1
             assert {
                 "height": 0,
-                "hash": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+                "hash": "720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561c99b7e50723e4",
                 "branchlen": 0,
                 "status": "active",
             } in chaintips
@@ -112,7 +112,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
 
         assert {
             "height": 0,
-            "hash": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+            "hash": "720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561c99b7e50723e4",
             "branchlen": 0,
             "status": "active",
         } in self.nodes[2].getchaintips()
@@ -157,7 +157,9 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
         new_blocks = []
         hashPrevBlock = int(node.getblockhash(0), 16)
         for i in range(2000):
-            block = create_block(hashprev=hashPrevBlock, tmpl=node.getblocktemplate())
+            block = create_block(
+                hashprev=hashPrevBlock, tmpl=node.getblocktemplate(), height=i + 1
+            )
             block.solve()
             new_blocks.append(block)
             hashPrevBlock = block.hash_int
