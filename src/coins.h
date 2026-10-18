@@ -492,6 +492,9 @@ public:
     //! https://stackoverflow.com/questions/42114044/how-to-release-unordered-map-memory
     void ReallocateCache();
 
+    //! Pre-allocate hash table buckets to avoid rehashes during bulk operations.
+    void Reserve(size_t count) { cacheCoins.reserve(count); }
+
     //! Run an internal sanity check on the cache data structure.
     void SanityCheck() const;
 

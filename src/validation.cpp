@@ -2365,6 +2365,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         control.emplace(m_chainman.GetCheckQueue());
     }
 
+    view.Reserve(block.vtx.size() * 2 + 16);
+
     // Add all outputs
     try {
         for (const auto &ptx : block.vtx) {

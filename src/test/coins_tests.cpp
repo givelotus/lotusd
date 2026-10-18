@@ -103,6 +103,23 @@ public:
 
 BOOST_FIXTURE_TEST_SUITE(coins_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(batchwrite_preserves_available_bucket_capacity) {
+    CCoinsView base;
+    CCoinsViewCacheTest parent{&base};
+    parent.Reserve(40000);
+    for (uint32_t i = 0; i < 20000; ++i) {
+        parent.map().try_emplace(COutPoint{TxId{}, i});
+    }
+    const size_t buckets = parent.map().bucket_count();
+    CCoinsViewCacheTest child{&parent};
+    CoinsViewCacheCursor cursor{child.dirty(), child.sentinel(), child.map(),
+                               /*will_erase=*/true};
+    parent.BatchWrite(cursor, BlockHash{});
+    // reserve(size + dirty/2) can shrink a large cache, needlessly walking
+    // every entry even when this child has no dirty coins at all.
+    BOOST_CHECK_EQUAL(parent.map().bucket_count(), buckets);
+}
+
 static const unsigned int NUM_SIMULATION_ITERATIONS = 40000;
 
 struct CacheTest : BasicTestingSetup {
