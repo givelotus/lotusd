@@ -207,12 +207,17 @@ def ToHex(obj):
 
 
 class CAddress:
-    __slots__ = ("net", "ip", "nServices", "port", "time")
+    __slots__ = ("net", "ip", "nServices", "port", "time", "wss_version")
 
     # see https://github.com/bitcoin/bips/blob/master/bip-0155.mediawiki
     NET_IPV4 = 1
+    # Not BIP155: a versioned wss:// endpoint. Version 1: "<name>[/<path>]",
+    # dialed as wss://<name>:<port><path or /p2p/ws>. For NET_WSS, `ip` holds
+    # the body: a str for version 1, bytes for other versions.
+    NET_WSS = 0x10
+    WSS_V1 = 1
 
-    ADDRV2_NET_NAME = {NET_IPV4: "IPv4"}
+    ADDRV2_NET_NAME = {NET_IPV4: "IPv4", NET_WSS: "WSS"}
 
     ADDRV2_ADDRESS_LENGTH = {NET_IPV4: 4}
 
@@ -222,6 +227,7 @@ class CAddress:
         self.net = self.NET_IPV4
         self.ip = "0.0.0.0"
         self.port = 0
+        self.wss_version = self.WSS_V1
 
     def deserialize(self, f, *, with_time=True):
         """Deserialize from addrv1 format (pre-BIP155)"""
@@ -256,17 +262,33 @@ class CAddress:
         self.nServices = deser_compact_size(f)
 
         self.net = int.from_bytes(f.read(1), "little")
-        assert self.net == self.NET_IPV4
+        assert self.net in (self.NET_IPV4, self.NET_WSS)
 
         address_length = deser_compact_size(f)
-        assert address_length == self.ADDRV2_ADDRESS_LENGTH[self.net]
-
-        self.ip = socket.inet_ntoa(f.read(4))
+        if self.net == self.NET_WSS:
+            payload = f.read(address_length)
+            self.wss_version = payload[0]
+            body = payload[1:]
+            self.ip = body.decode("ascii") if self.wss_version == self.WSS_V1 else body
+        else:
+            assert address_length == self.ADDRV2_ADDRESS_LENGTH[self.net]
+            self.ip = socket.inet_ntoa(f.read(4))
 
         self.port = int.from_bytes(f.read(2), "big")
 
     def serialize_v2(self) -> bytes:
         """Serialize in addrv2 format (BIP155)"""
+        if self.net == self.NET_WSS:
+            body = self.ip.encode("ascii") if isinstance(self.ip, str) else self.ip
+            payload = bytes([self.wss_version]) + body
+            return (
+                self.time.to_bytes(4, "little")
+                + ser_compact_size(self.nServices)
+                + self.net.to_bytes(1, "little")
+                + ser_compact_size(len(payload))
+                + payload
+                + self.port.to_bytes(2, "big")
+            )
         assert self.net == self.NET_IPV4
         return (
             self.time.to_bytes(4, "little")

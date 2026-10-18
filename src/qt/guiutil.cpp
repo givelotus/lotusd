@@ -813,6 +813,8 @@ QString NetworkToQString(Network net) {
             return "CJDNS";
         case NET_INTERNAL:
             return QObject::tr("Internal");
+        case NET_WSS:
+            return "WSS";
         case NET_MAX:
             assert(false);
     } // no default case, so the compiler can warn about missing cases

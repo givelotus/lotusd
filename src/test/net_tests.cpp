@@ -17,6 +17,7 @@
 #include <net_processing.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
+#include <net_websocket_dialer.h>
 #include <net_zstd_dict.h>
 #include <netaddress.h>
 #include <netbase.h>
@@ -1727,6 +1728,151 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_negotiation) {
     BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(125, false), 2U);
     BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(126, false), 4U);
     BOOST_CHECK_EQUAL(WebSocketFrameHeaderSize(65536, true), 14U);
+}
+
+BOOST_AUTO_TEST_CASE(net_wss_address) {
+    CNetAddr addr;
+    BOOST_CHECK(addr.SetWSSDomain("Node.Example.COM"));
+    BOOST_CHECK(addr.IsWSS());
+    BOOST_CHECK(addr.IsValid());
+    BOOST_CHECK(addr.IsRoutable());
+    BOOST_CHECK(!addr.IsAddrV1Compatible());
+    BOOST_CHECK_EQUAL(addr.GetNetClass(), NET_WSS);
+    BOOST_CHECK_EQUAL(addr.ToStringAddr(), "node.example.com");
+    BOOST_CHECK_EQUAL(GetNetworkName(NET_WSS), "wss");
+    BOOST_CHECK_EQUAL(ParseNetwork("wss"), NET_WSS);
+    const CService service{addr, 443};
+    BOOST_CHECK_EQUAL(service.ToStringAddrPort(), "node.example.com:443");
+    BOOST_CHECK_EQUAL(WebSocketURLForAddress(service),
+                      "wss://node.example.com:443/p2p/ws");
+
+    for (const char *bad :
+         {"", "-a.com", "a-.com", "a..com", ".a.com", "a.com.", "a_b.com",
+          "a b", "x.y/z"}) {
+        BOOST_CHECK_MESSAGE(!CNetAddr{}.SetWSSDomain(bad), bad);
+    }
+    BOOST_CHECK(!CNetAddr{}.SetWSSDomain(std::string(64, 'a') + ".com"));
+    BOOST_CHECK(CNetAddr{}.SetWSSDomain(std::string(63, 'a') + ".com"));
+    BOOST_CHECK(!CNetAddr{}.SetWSSDomain(std::string(254, 'a')));
+
+    // ADDRv2 round trip with BIP155 network id 0x10: version 1, name only
+    // (the default path is never written out)
+    BOOST_CHECK_EQUAL(addr.GetWSSVersion(), WSS_ADDR_V1);
+    BOOST_CHECK(addr.IsDialableWSS());
+    BOOST_CHECK_EQUAL(addr.GetWSSHost(), "node.example.com");
+    BOOST_CHECK_EQUAL(addr.GetWSSPath(), "/p2p/ws");
+    DataStream s{};
+    ParamsStream ps{CAddress::V2_NETWORK, s};
+    ps << addr;
+    BOOST_CHECK_EQUAL(HexStr(s),
+                      "101101" + HexStr(std::string{"node.example.com"}));
+    CNetAddr decoded;
+    ps >> decoded;
+    BOOST_CHECK(decoded == addr);
+    CNetAddr explicit_default;
+    BOOST_CHECK(explicit_default.SetWSSDomain("node.example.com", "/p2p/ws"));
+    BOOST_CHECK(explicit_default == addr);
+
+    // With a path
+    CNetAddr with_path;
+    BOOST_CHECK(with_path.SetWSSDomain("Node.Example.com", "/Lotus/p2p"));
+    BOOST_CHECK(with_path != addr);
+    BOOST_CHECK_EQUAL(with_path.ToStringAddr(), "node.example.com");
+    BOOST_CHECK_EQUAL(with_path.GetWSSPath(), "/Lotus/p2p");
+    BOOST_CHECK(with_path.GetGroup({}) == addr.GetGroup({}));
+    BOOST_CHECK_EQUAL(WebSocketURLForAddress(CService{with_path, 8443}),
+                      "wss://node.example.com:8443/Lotus/p2p");
+    s.clear();
+    ps << with_path;
+    BOOST_CHECK_EQUAL(HexStr(s), "101b01" + HexStr(std::string{
+                                                "node.example.com/Lotus/p2p"}));
+    ps >> decoded;
+    BOOST_CHECK(decoded == with_path);
+    for (const char *bad :
+         {"/", "p2p", "/a/", "/a?b", "/a#b", "/a%20", "/a b"}) {
+        BOOST_CHECK_MESSAGE(!CNetAddr{}.SetWSSDomain("a.com", bad), bad);
+    }
+    BOOST_CHECK(!CNetAddr{}.SetWSSDomain("a.com", "/" + std::string(255, 'a')));
+    BOOST_CHECK(CNetAddr{}.SetWSSDomain("a.com", "/" + std::string(254, 'a')));
+
+    // A later version is kept and relayed as is, but never dialed, and all
+    // such addresses share one addrman group.
+    for (const std::string body : {"", "anything \x01\xff at all"}) {
+        const std::vector<uint8_t> payload{[&] {
+            std::vector<uint8_t> v{0x02};
+            v.insert(v.end(), body.begin(), body.end());
+            return v;
+        }()};
+        DataStream later{};
+        ParamsStream pl{CAddress::V2_NETWORK, later};
+        pl << uint8_t{0x10} << payload;
+        const std::string wire{HexStr(later)};
+        CNetAddr opaque;
+        pl >> opaque;
+        BOOST_CHECK(opaque.IsWSS());
+        BOOST_CHECK(opaque.IsValid());
+        BOOST_CHECK_EQUAL(opaque.GetWSSVersion(), 2);
+        BOOST_CHECK(!opaque.IsDialableWSS());
+        BOOST_CHECK_EQUAL(opaque.GetWSSPath(), "");
+        BOOST_CHECK(opaque.ToStringAddr().starts_with("wss-v2-"));
+        BOOST_CHECK(opaque.GetGroup({}) == std::vector<uint8_t>({NET_WSS, 2}));
+        pl << opaque;
+        BOOST_CHECK_EQUAL(HexStr(later), wire);
+    }
+
+    // ADDRv1 cannot carry names: serialized as all-zeros (and never relayed
+    // to ADDRv1 peers, see IsAddrV1Compatible).
+    DataStream s1{};
+    ParamsStream ps1{CAddress::V1_NETWORK, s1};
+    ps1 << addr;
+    BOOST_CHECK_EQUAL(HexStr(s1), std::string(32, '0'));
+
+    // Malformed payloads (and bad sizes) from peers are ignored, not fatal:
+    // a bad name, a bad or explicit default path, the reserved version 0 and
+    // an empty payload.
+    for (const std::string &hex :
+         {std::string{"100501"} + HexStr(std::string{"a b."}),
+          std::string{"100a01"} + HexStr(std::string{"a.com/p?q"}),
+          std::string{"100d01"} + HexStr(std::string{"a.com/p2p/ws"}),
+          std::string{"100700"} + HexStr(std::string{"a.com/"}),
+          std::string{"1000"}}) {
+        DataStream bad{ParseHex(hex)};
+        ParamsStream pbad{CAddress::V2_NETWORK, bad};
+        CNetAddr out;
+        pbad >> out;
+        BOOST_CHECK(!out.IsValid());
+        BOOST_CHECK(bad.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
+    auto url{ParseWebSocketURL("wss://Node.example.com/p2p/ws")};
+    BOOST_REQUIRE(url);
+    BOOST_CHECK(url->tls);
+    BOOST_CHECK_EQUAL(url->host, "Node.example.com");
+    BOOST_CHECK_EQUAL(url->port, 443);
+    BOOST_CHECK_EQUAL(url->authority, "Node.example.com:443");
+    BOOST_CHECK_EQUAL(url->target, "/p2p/ws");
+
+    url = ParseWebSocketURL("ws://127.0.0.1:18443");
+    BOOST_REQUIRE(url);
+    BOOST_CHECK(!url->tls);
+    BOOST_CHECK_EQUAL(url->port, 18443);
+    BOOST_CHECK_EQUAL(url->target, "/p2p/ws");
+
+    url = ParseWebSocketURL("wss://[::1]:8443/custom?x=1");
+    BOOST_REQUIRE(url);
+    BOOST_CHECK_EQUAL(url->host, "::1");
+    BOOST_CHECK_EQUAL(url->authority, "[::1]:8443");
+    BOOST_CHECK_EQUAL(url->target, "/custom?x=1");
+
+    for (const char *bad :
+         {"http://a.com", "wss://", "wss://:443", "ws://a.com:99999", "a.com"}) {
+        BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
+    }
+    BOOST_CHECK(IsWebSocketURL("wss://a"));
+    BOOST_CHECK(IsWebSocketURL("ws://a"));
+    BOOST_CHECK(!IsWebSocketURL("1.2.3.4:8333"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

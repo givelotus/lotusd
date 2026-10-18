@@ -5,9 +5,16 @@
 #ifndef BITCOIN_NET_WEBSOCKET_H
 #define BITCOIN_NET_WEBSOCKET_H
 
+#include <netaddress.h>
+#include <util/sock.h>
+
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 
 /**
  * P2P over WebSocket (/p2p/ws).
@@ -21,6 +28,7 @@
 
 //! URI path of the P2P WebSocket endpoint on the RPC/HTTP port
 static const char *const P2P_WEBSOCKET_PATH = "/p2p/ws";
+static_assert(std::string_view{"/p2p/ws"} == P2P_WSS_DEFAULT_PATH);
 //! Accept P2P connections over WebSocket on the RPC/HTTP port
 static const bool DEFAULT_P2P_WEBSOCKET = true;
 //! Sec-WebSocket-Protocol tokens, in order of preference
@@ -72,6 +80,31 @@ struct WebSocketTransportTotals {
     std::atomic<uint64_t> wire_bytes_recv{0};
 };
 WebSocketTransportTotals &GetWebSocketTransportTotals();
+
+/** An established outbound P2P WebSocket, bridged to a socketpair */
+struct WebSocketDialResult {
+    //! CConnman's end of the socketpair
+    std::unique_ptr<Sock> sock;
+    std::shared_ptr<WebSocketTransportInfo> info;
+    //! TCP endpoints of the WebSocket connection
+    CService remote;
+    CService local;
+};
+
+/**
+ * Opens a ws:// or wss:// P2P connection and starts bridging it. Blocking,
+ * with an internal timeout. Provided by the node (net_websocket.cpp).
+ */
+using WebSocketDialer =
+    std::function<std::optional<WebSocketDialResult>(const std::string &url)>;
+void SetWebSocketDialer(WebSocketDialer dialer);
+WebSocketDialer GetWebSocketDialer();
+
+/** Whether a -addnode/-connect string is a ws:// or wss:// URL */
+bool IsWebSocketURL(std::string_view str);
+
+/** The URL dialed for a dialable NET_WSS address: wss://<name>:<port><path> */
+std::string WebSocketURLForAddress(const CService &addr);
 
 /** Size of a WebSocket frame header for a payload of this size */
 constexpr uint64_t WebSocketFrameHeaderSize(uint64_t payload_size,
