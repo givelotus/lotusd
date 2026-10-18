@@ -8,6 +8,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <config.h>
+#include <consensus/consensus.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <node/miner.h>
@@ -21,6 +22,7 @@
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <map>
 #include <thread>
 
 enum class ChainstateRole;
@@ -30,6 +32,30 @@ using node::BlockAssembler;
 namespace validation_block_tests {
 struct MinerTestingSetup : public TestingSetup {
     MinerTestingSetup();
+
+    std::map<BlockHash, int> m_block_heights;
+    std::map<BlockHash, uint64_t> m_block_times;
+    std::map<BlockHash, BlockHash> m_block_parents;
+
+    uint64_t GetParentMedianTimePast(const BlockHash &prev_hash) const {
+        int64_t pmedian[CBlockIndex::nMedianTimeSpan];
+        int64_t *pbegin = &pmedian[CBlockIndex::nMedianTimeSpan];
+        int64_t *pend = &pmedian[CBlockIndex::nMedianTimeSpan];
+        BlockHash cur = prev_hash;
+        for (int i = 0; i < CBlockIndex::nMedianTimeSpan && !cur.IsNull();
+             ++i) {
+            auto it_time = m_block_times.find(cur);
+            if (it_time == m_block_times.end()) {
+                break;
+            }
+            *(--pbegin) = static_cast<int64_t>(it_time->second);
+            auto it_parent = m_block_parents.find(cur);
+            cur = (it_parent != m_block_parents.end()) ? it_parent->second
+                                                       : BlockHash();
+        }
+        std::sort(pbegin, pend);
+        return static_cast<uint64_t>(pbegin[(pend - pbegin) / 2]);
+    }
 
     std::shared_ptr<CBlock> Block(const Config &config,
                                   const BlockHash &prev_hash);
@@ -79,7 +105,13 @@ struct TestSubscriber final : public CValidationInterface {
 
 // Disable reorg protection for this test.
 MinerTestingSetup::MinerTestingSetup()
-    : TestingSetup(ChainType::REGTEST, {"-parkdeepreorg=0"}) {}
+    : TestingSetup(ChainType::REGTEST, {"-parkdeepreorg=0"}) {
+    const CBlock &genesis = Params().GenesisBlock();
+    m_block_heights.emplace(genesis.GetHash(), 0);
+    m_block_times.emplace(genesis.GetHash(), genesis.GetBlockTime());
+    m_block_parents.emplace(genesis.GetHash(), BlockHash());
+    RecordV2BlockState(genesis, genesis.GetHash(), BlockHash(), 0, 0);
+}
 
 std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
                                                  const BlockHash &prev_hash) {
@@ -99,10 +131,31 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     // coinbase reward in a P2SH with OP_TRUE as scriptPubKey to make it easy to
     // spend
     CMutableTransaction txCoinbase(*pblock->vtx[0]);
+    // These branches are built before submission, so the assembler's active
+    // tip may differ from this block's parent. Commit the actual branch height
+    // and claim its subsidy, including across regtest halving boundaries.
+    const int height = m_block_heights.at(prev_hash) + 1;
+    txCoinbase.vin[0].prevout =
+        COutPoint(TxId(prev_hash), static_cast<uint32_t>(height));
+    txCoinbase.vin[0].nFlags = 2;
+    txCoinbase.vin[0].scriptSig = CScript() << height << OP_0;
     txCoinbase.vout.resize(2);
     txCoinbase.vout[1].scriptPubKey = P2SH_OP_TRUE;
-    txCoinbase.vout[1].nValue = txCoinbase.vout[0].nValue;
+    txCoinbase.vout[1].nValue =
+        GetBlockSubsidy(height, config.GetChainParams().GetConsensus());
     txCoinbase.vout[0].nValue = Amount::zero();
+    // Replacing the assembler's height script also removes its size padding.
+    // Keep these otherwise valid coinbases above the consensus minimum.
+    const auto coinbase_size = ::GetSerializeSize(txCoinbase);
+    if (coinbase_size < MIN_TX_SIZE) {
+        txCoinbase.vin[0].scriptSig
+            << std::vector<uint8_t>(MIN_TX_SIZE - coinbase_size - 1);
+    }
+    txCoinbase.vin[0].fHasCoinbaseData = true;
+    txCoinbase.vin[0].vCoinbaseData.assign(
+        txCoinbase.vin[0].scriptSig.begin(),
+        txCoinbase.vin[0].scriptSig.end());
+    assert(::GetSerializeSize(txCoinbase) >= MIN_TX_SIZE);
     pblock->vtx[0] = MakeTransactionRef(std::move(txCoinbase));
 
     return pblock;
@@ -111,12 +164,24 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
 std::shared_ptr<CBlock>
 MinerTestingSetup::FinalizeBlock(const Consensus::Params &params,
                                  std::shared_ptr<CBlock> pblock) {
+    pblock->nHeaderVersion = 2;
+    pblock->nHeight = uint64_t(m_block_heights.at(pblock->hashPrevBlock) + 1);
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+    const uint64_t parent_mtp = GetParentMedianTimePast(pblock->hashPrevBlock);
+    pblock->hashStateRoot = ComputeV2BlockStateRoot(
+        *pblock, pblock->hashPrevBlock, pblock->nHeight, parent_mtp, false);
+    pblock->SetSize(::GetSerializeSize(*pblock));
 
     while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, params)) {
         ++(pblock->nNonce);
     }
 
+    RecordV2BlockState(*pblock, pblock->GetHash(), pblock->hashPrevBlock,
+                       pblock->nHeight, parent_mtp);
+    m_block_heights.emplace(
+        pblock->GetHash(), m_block_heights.at(pblock->hashPrevBlock) + 1);
+    m_block_times.emplace(pblock->GetHash(), pblock->GetBlockTime());
+    m_block_parents.emplace(pblock->GetHash(), pblock->hashPrevBlock);
     return pblock;
 }
 

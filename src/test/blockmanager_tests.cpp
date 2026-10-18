@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
     CBlock block3;
     block3.nHeaderVersion = 3;
 
-    // Native headers are 134 bytes plus the empty transaction vector.
+    // They are 134 bytes header + 1 byte 0x00 for vtx length
     constexpr int TEST_BLOCK_SIZE{135};
 
     // Blockstore is empty
@@ -237,16 +237,16 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
     // Errors are expected because block data is junk, thrown AFTER successful
     // read
     CBlock read_block;
-    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 0);
+    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 0U);
     {
         ASSERT_DEBUG_LOG("ReadBlock: Errors in block header");
         BOOST_CHECK(!blockman.ReadBlock(read_block, pos1));
-        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 1);
+        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 1U);
     }
     {
         ASSERT_DEBUG_LOG("ReadBlock: Errors in block header");
         BOOST_CHECK(!blockman.ReadBlock(read_block, pos2));
-        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2);
+        BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2U);
     }
 
     // During reindex, the flat file block storage will not be written to.
@@ -264,7 +264,7 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file) {
 
     // Block 2 was not overwritten:
     blockman.ReadBlock(read_block, pos2);
-    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2);
+    BOOST_CHECK_EQUAL(read_block.nHeaderVersion, 2U);
 }
 
 BOOST_AUTO_TEST_CASE(blockmap_slab_pointer_stability) {

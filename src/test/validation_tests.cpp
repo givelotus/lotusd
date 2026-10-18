@@ -147,7 +147,7 @@ BOOST_AUTO_TEST_CASE(test_assumeutxo) {
     const auto out110 = *params->AssumeutxoForHeight(110);
     BOOST_CHECK_EQUAL(
         out110.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "55bfa44a715a7c563ce126e22f5f73fcd9b51d693659a6e13f8e71629f90c522");
     BOOST_CHECK_EQUAL(out110.m_chain_tx_count, 111U);
 
     const auto by_hash = params->AssumeutxoForBlockhash(out110.blockhash);
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(test_assumeutxo) {
     const auto out110_2 = *by_hash;
     BOOST_CHECK_EQUAL(
         out110_2.hash_serialized.ToString(),
-        "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213");
+        "55bfa44a715a7c563ce126e22f5f73fcd9b51d693659a6e13f8e71629f90c522");
     BOOST_CHECK_EQUAL(out110_2.m_chain_tx_count, 111U);
 }
 
@@ -200,23 +200,19 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with a single coinbase tx is mutated if the merkle root is not
-        // equal to the coinbase tx's hash.
+        // equal to the block's V2 transaction root.
         block.vtx.push_back(create_coinbase_tx());
-        BOOST_CHECK(block.vtx[0]->GetHash() != block.hashMerkleRoot);
+        BOOST_CHECK(BlockMerkleRoot(block) != block.hashMerkleRoot);
         BOOST_CHECK(is_mutated(block));
-        block.hashMerkleRoot = block.vtx[0]->GetHash();
+        block.hashMerkleRoot = BlockMerkleRoot(block);
         BOOST_CHECK(is_not_mutated(block));
 
         // Block with two transactions is mutated if the merkle root does not
-        // match the double sha256 of the concatenation of the two transaction
-        // hashes.
+        // match the V2 transaction root.
         {
             block.vtx.push_back(MakeTransactionRef(CMutableTransaction{}));
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             BOOST_CHECK(is_not_mutated(block));
         }
 
@@ -224,10 +220,7 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         {
             block.vtx[1] = block.vtx[0];
             BOOST_CHECK(is_mutated(block));
-            HashWriter hasher;
-            hasher << block.vtx[0]->GetId();
-            hasher << block.vtx[1]->GetId();
-            block.hashMerkleRoot = hasher.GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             BOOST_CHECK(is_mutated(block));
         }
 
@@ -235,11 +228,12 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
         block.vtx.clear();
         {
             CMutableTransaction mtx;
+            mtx.nVersion = 1;
             mtx.vin.resize(1);
             mtx.vout.resize(1);
             mtx.vout[0].scriptPubKey.resize(4);
             block.vtx.push_back(MakeTransactionRef(mtx));
-            block.hashMerkleRoot = block.vtx.back()->GetHash();
+            block.hashMerkleRoot = BlockMerkleRoot(block);
             assert(block.vtx.back()->IsCoinBase());
             assert(GetSerializeSize(block.vtx.back()) == 64);
         }
@@ -247,24 +241,7 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
     }
 
     {
-        // Test merkle root malleation
-
-        // Pseudo code to mine transactions tx{1,2,3}:
-        //
-        // ```
-        // loop {
-        //   tx1 = random_tx()
-        //   tx2 = random_tx()
-        //   tx3 = deserialize_tx(txid(tx1) || txid(tx2));
-        //   if serialized_siz(tx3) == 64 {
-        //     print(hex(tx3))
-        //     break
-        //   }
-        // }
-        // ```
-        //
-        // The `random_tx` function used to mine the txs below simply created
-        // empty transactions with a random version field.
+        // Test 64-byte non-coinbase transaction mutation detection
         CMutableTransaction tx1;
         BOOST_CHECK(DecodeHexTx(tx1, "ff204bd0000000000000"));
         CMutableTransaction tx2;
@@ -275,28 +252,23 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
             "cdaf22d00002c6a7f848f8ae4d30054e61dcf3303d6fe01d282163341f06feecc1"
             "0032b3160fcab87bdfe3ecfb769206ef2d991b92f8a268e423a6ef4d485f06"));
         {
-            // Verify that double_sha256(txid1||txid2) == txid3
-            HashWriter hasher;
-            hasher << tx1.GetId();
-            hasher << tx2.GetId();
-            assert(hasher.GetHash() == tx3.GetHash());
             // Verify that tx3 is 64 bytes in size.
             assert(GetSerializeSize(tx3) == 64);
         }
 
         CBlock block;
+        block.vtx.push_back(create_coinbase_tx());
         block.vtx.push_back(MakeTransactionRef(tx1));
         block.vtx.push_back(MakeTransactionRef(tx2));
-        uint256 merkle_root = block.hashMerkleRoot = BlockMerkleRoot(block);
+        block.hashMerkleRoot = BlockMerkleRoot(block);
         BOOST_CHECK(is_not_mutated(block));
 
-        // Mutate the block by replacing the two transactions with one 64-byte
-        // transaction that serializes into the concatenation of the txids of
-        // the transactions in the unmutated block.
+        // Replacing the block with a single 64-byte non-coinbase transaction
+        // is detected as mutated by IsBlockMutated.
         block.vtx.clear();
         block.vtx.push_back(MakeTransactionRef(tx3));
+        block.hashMerkleRoot = BlockMerkleRoot(block);
         BOOST_CHECK(!block.vtx.back()->IsCoinBase());
-        BOOST_CHECK(BlockMerkleRoot(block) == merkle_root);
         BOOST_CHECK(is_mutated(block));
     }
 }

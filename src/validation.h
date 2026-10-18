@@ -732,6 +732,9 @@ class BatchSigCollector;
  * scripts have failed.
  */
 class CScriptCheck {
+public:
+    using V2ResolvedCoins = std::vector<std::optional<lotus::v2::Output>>;
+
 private:
     CTxOut m_tx_out;
     const CTransaction *ptxTo;
@@ -743,21 +746,24 @@ private:
     SignatureCache *m_signature_cache;
     TxSigCheckLimiter *pTxLimitSigChecks;
     CheckInputsLimiter *pBlockLimitSigChecks;
+    std::shared_ptr<const V2ResolvedCoins> m_resolved_coins;
     lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
 
 public:
-    CScriptCheck(const CTxOut &outIn, const CTransaction &txToIn,
-                 SignatureCache &signature_cache, unsigned int nInIn,
-                 uint32_t nFlagsIn, bool cacheIn,
-                 const PrecomputedTransactionData &txdataIn,
-                 TxSigCheckLimiter *pTxLimitSigChecksIn = nullptr,
-                 CheckInputsLimiter *pBlockLimitSigChecksIn = nullptr,
-                 lotus::v2::BatchSigCollector *sigCollectorIn = nullptr)
+    CScriptCheck(
+        const CTxOut &outIn, const CTransaction &txToIn,
+        SignatureCache &signature_cache, unsigned int nInIn, uint32_t nFlagsIn,
+        bool cacheIn, const PrecomputedTransactionData &txdataIn,
+        TxSigCheckLimiter *pTxLimitSigChecksIn = nullptr,
+        CheckInputsLimiter *pBlockLimitSigChecksIn = nullptr,
+        std::shared_ptr<const V2ResolvedCoins> resolvedCoinsIn = nullptr,
+        lotus::v2::BatchSigCollector *sigCollectorIn = nullptr)
         : m_tx_out(outIn), ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn),
           cacheStore(cacheIn), txdata(txdataIn),
           m_signature_cache(&signature_cache),
           pTxLimitSigChecks(pTxLimitSigChecksIn),
           pBlockLimitSigChecks(pBlockLimitSigChecksIn),
+          m_resolved_coins(std::move(resolvedCoinsIn)),
           m_sig_collector(sigCollectorIn) {}
 
     CScriptCheck(const CScriptCheck &) = delete;
@@ -1056,6 +1062,12 @@ public:
      * nullptr if this chainstate was not created from a snapshot.
      */
     const CBlockIndex *SnapshotBase() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    const CBlockIndex *FastSyncPivotBase() const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        return m_fast_sync_pivot_base;
+    }
 
     /**
      * The set of all CBlockIndex entries that have as much work as our current

@@ -49,6 +49,8 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     config.SetMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE);
 
     CBlock block;
+    block.nHeaderVersion = 2;
+    block.SetSize(::GetSerializeSize(block));
     RunCheckOnBlock(config, block, "bad-cb-missing");
 
     CMutableTransaction tx;
@@ -62,6 +64,7 @@ BOOST_AUTO_TEST_CASE(blockfail) {
 
     block.vtx.resize(1);
     block.vtx[0] = MakeTransactionRef(tx);
+    block.SetSize(::GetSerializeSize(block));
     RunCheckOnBlock(config, block);
 
     auto InsecureRandOutPoint = [this]() -> COutPoint {
@@ -71,6 +74,7 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     // No coinbase
     tx.vin[0].prevout = InsecureRandOutPoint();
     block.vtx[0] = MakeTransactionRef(tx);
+    block.SetSize(::GetSerializeSize(block));
 
     RunCheckOnBlock(config, block, "bad-cb-missing");
 
@@ -78,6 +82,7 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     tx = CMutableTransaction(coinbaseTx);
     tx.vin[0].scriptSig.resize(0);
     block.vtx[0] = MakeTransactionRef(tx);
+    block.SetSize(::GetSerializeSize(block));
 
     RunCheckOnBlock(config, block, "bad-cb-length");
 
@@ -85,7 +90,9 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     tx = CMutableTransaction(coinbaseTx);
     block.vtx[0] = MakeTransactionRef(tx);
     auto txSize = ::GetSerializeSize(tx);
-    auto maxTxCount = ((DEFAULT_MAX_BLOCK_SIZE - 1) / txSize) - 1;
+    auto maxTxCount =
+        ((DEFAULT_MAX_BLOCK_SIZE - ::GetSerializeSize(CBlockHeader()) - 5) /
+         txSize);
 
     for (size_t i = 1; i < maxTxCount; i++) {
         tx.vin[0].prevout = InsecureRandOutPoint();
@@ -93,13 +100,14 @@ BOOST_AUTO_TEST_CASE(blockfail) {
     }
 
     // Check that at this point, we still accept the block.
+    block.SetSize(::GetSerializeSize(block));
     RunCheckOnBlock(config, block);
 
     // But reject it with one more transaction as it goes over the maximum
     // allowed block size.
     tx.vin[0].prevout = InsecureRandOutPoint();
     block.vtx.push_back(MakeTransactionRef(tx));
-    RunCheckOnBlock(config, block, "bad-blk-length");
+    RunCheckOnBlock(config, block, "bad-blk-size-mismatch");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

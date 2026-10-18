@@ -51,6 +51,9 @@ bool CheckPackage(const Package &txns, PackageValidationState &state) {
 
     for (const auto &tx : txns) {
         for (const auto &input : tx->vin) {
+            if (input.nFlags == 3) {
+                continue;
+            }
             if (later_txids.find(input.prevout.GetTxId()) !=
                 later_txids.end()) {
                 // The parent is a subsequent transaction in the package.
@@ -66,6 +69,9 @@ bool CheckPackage(const Package &txns, PackageValidationState &state) {
     std::unordered_set<COutPoint, SaltedOutpointHasher> inputs_seen;
     for (const auto &tx : txns) {
         for (const auto &input : tx->vin) {
+            if (input.nFlags == 3) {
+                continue;
+            }
             if (inputs_seen.find(input.prevout) != inputs_seen.end()) {
                 // This input is also present in another tx in the package.
                 return state.Invalid(PackageValidationResult::PCKG_POLICY,
@@ -76,9 +82,11 @@ bool CheckPackage(const Package &txns, PackageValidationState &state) {
         // at a time, we could catch duplicate inputs within a single tx.
         // This is a more severe, consensus error, and we want to report
         // that from CheckTransaction instead.
-        std::transform(tx->vin.begin(), tx->vin.end(),
-                       std::inserter(inputs_seen, inputs_seen.end()),
-                       [](const auto &input) { return input.prevout; });
+        for (const auto &input : tx->vin) {
+            if (input.nFlags != 3) {
+                inputs_seen.insert(input.prevout);
+            }
+        }
     }
     return true;
 }
@@ -94,9 +102,11 @@ bool IsChildWithParents(const Package &package) {
     // child.
     const auto &child = package.back();
     std::unordered_set<TxId, SaltedTxIdHasher> input_txids;
-    std::transform(child->vin.begin(), child->vin.end(),
-                   std::inserter(input_txids, input_txids.end()),
-                   [](const auto &input) { return input.prevout.GetTxId(); });
+    for (const auto &input : child->vin) {
+        if (input.nFlags != 3) {
+            input_txids.insert(input.prevout.GetTxId());
+        }
+    }
 
     // Every transaction must be a parent of the last transaction in the
     // package.
@@ -118,6 +128,9 @@ bool IsChildWithParentsTree(const Package &package) {
     return std::all_of(
         package.cbegin(), package.cend() - 1, [&](const auto &ptx) {
             for (const auto &input : ptx->vin) {
+                if (input.nFlags == 3) {
+                    continue;
+                }
                 if (parent_txids.count(input.prevout.GetTxId()) > 0) {
                     return false;
                 }
