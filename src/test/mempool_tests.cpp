@@ -784,7 +784,9 @@ BOOST_AUTO_TEST_CASE(remove_for_finalized_block) {
     Package txs;
     txs.reserve(100);
     for (size_t i = 0; i < 100; i++) {
-        CTransactionRef tx = make_tx({int64_t(i + 1) * COIN});
+        CMutableTransaction mtx(*make_tx({int64_t(i + 1) * COIN}));
+        mtx.vout[0].scriptPubKey << std::vector<uint8_t>(MIN_TX_SIZE, 0);
+        CTransactionRef tx = MakeTransactionRef(std::move(mtx));
         const TxId &txid = tx->GetId();
         auto mempoolEntry = entry.Fee(1000 * SATOSHI).FromTx(tx);
 
@@ -868,7 +870,7 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
 
     // Fake chain tip
     CBlockIndex active_chain_tip;
-    active_chain_tip.nHeight = params.wellingtonHeight;
+    active_chain_tip.nHeight = 100;
 
     std::array<CBlockIndex, 12> blocks;
     for (size_t i = 0; i < blocks.size(); ++i) {

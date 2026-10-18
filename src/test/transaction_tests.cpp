@@ -946,17 +946,12 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
 
 BOOST_FIXTURE_TEST_CASE(txsize_activation_test, ChainTestingSetup) {
     const Consensus::Params &params = m_node.chainman->GetConsensus();
-    const int32_t magneticAnomalyActivationHeight =
-        params.magneticAnomalyHeight;
 
     // A minimaly sized transction.
     CTransaction minTx;
     TxValidationState state;
 
-    BOOST_CHECK(ContextualCheckTransaction(
-        params, minTx, state, magneticAnomalyActivationHeight - 1, 5678));
-    BOOST_CHECK(!ContextualCheckTransaction(
-        params, minTx, state, magneticAnomalyActivationHeight, 5678));
+    BOOST_CHECK(!ContextualCheckTransaction(params, minTx, state, 0, 5678));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-undersize");
 }
 
