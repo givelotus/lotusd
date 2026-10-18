@@ -54,7 +54,7 @@ namespace {
                                                bool forPoll = false) {
             auto r = p.voteRecords.getReadView();
             return p.getInvsForNextPoll(r, DEFAULT_AVALANCHE_MAX_ELEMENT_POLL,
-                forPoll, p.nodeSupportsMempoolBatch(peer));
+                forPoll, p.nodeSupportsStateAnchor(peer), p.nodeSupportsMempoolBatch(peer));
         }
 
         static NodeId getSuitableNodeToQuery(Processor &p) {
@@ -541,7 +541,8 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
     const NodeId capable = 8801, stock = 8802, shard_only = 8803;
     processor.setNodeMempoolBatchServices(capable, ServiceFlags(NODE_AVALANCHE | NODE_MERKLIX_EPOCH));
     processor.setNodeMempoolBatchServices(stock, NODE_AVALANCHE);
-    processor.setNodeMempoolBatchServices(shard_only, ServiceFlags(NODE_AVALANCHE | (1ULL << 25)));
+    processor.setNodeMempoolBatchServices(shard_only, ServiceFlags(NODE_AVALANCHE | NODE_UTXO_SHARD));
+    processor.setNodeSupportsStateAnchor(shard_only, true);
     AnyVoteItem batch = MempoolBatchVoteItem(GetRandHash());
     VoteRecord record(true);
     AvalancheTest::addVoteRecord(processor, batch, record);
@@ -552,6 +553,8 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
     AvalancheTest::addVoteRecord(processor, block, record);
     AnyVoteItem stake = StakeContenderId(GetRandHash());
     AvalancheTest::addVoteRecord(processor, stake, record);
+    AnyVoteItem anchor = StateAnchorId(GetRandHash());
+    AvalancheTest::addVoteRecord(processor, anchor, record);
     auto count = [](const std::vector<CInv> &invs, uint32_t type) {
         return std::count_if(invs.begin(), invs.end(), [type](const CInv &inv) { return inv.type == type; });
     };
@@ -561,9 +564,11 @@ BOOST_AUTO_TEST_CASE(private_batch_polls_require_epoch_capability) {
         BOOST_CHECK_EQUAL(count(invs, MSG_BLOCK), 1);
         BOOST_CHECK_EQUAL(count(invs, MSG_AVA_PROOF), 1);
         BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STAKE_CONTENDER), 1);
+        BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STATE_ANCHOR), peer == shard_only ? 1 : 0);
     }
     auto invs = AvalancheTest::getInvsForPeer(processor, capable);
     BOOST_CHECK_EQUAL(count(invs, MSG_AVA_MEMPOOL_BATCH), 1);
+    BOOST_CHECK_EQUAL(count(invs, MSG_AVA_STATE_ANCHOR), 0);
     // Repeated stock-peer polls must not reserve any inflight batch slots.
     for (int i = 0; i < AVALANCHE_MAX_INFLIGHT_POLL + 1; ++i)
         AvalancheTest::getInvsForPeer(processor, stock, true);

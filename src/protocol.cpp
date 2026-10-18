@@ -65,6 +65,12 @@ const char *GETMERKLIXBUCK = "getmerklixbuck";
 const char *MERKLIXBUCK = "merklixbuck";
 const char *GETSHORTTX = "getshorttx";
 const char *SHORTTX = "shorttx";
+const char *GETUTXOROOTS = "getutxoroots";
+const char *UTXOROOTS = "utxoroots";
+const char *GETUTXOSHARD = "getutxoshard";
+const char *UTXOSHARD = "utxoshard";
+const char *GETBLOCKUNDO = "getblockundo";
+const char *BLOCKUNDO = "blockundo";
 
 bool IsBlockLike(const std::string &strCommand) {
     return strCommand == NetMsgType::BLOCK ||
@@ -72,7 +78,9 @@ bool IsBlockLike(const std::string &strCommand) {
            strCommand == NetMsgType::BLOCKTXN ||
            strCommand == NetMsgType::MINEDHEADER ||
            strCommand == NetMsgType::SEALEDHEADER ||
-           strCommand == NetMsgType::SEALEDBLOCK;
+           strCommand == NetMsgType::SEALEDBLOCK ||
+           strCommand == NetMsgType::UTXOSHARD ||
+           strCommand == NetMsgType::BLOCKUNDO;
 }
 }; // namespace NetMsgType
 
@@ -105,7 +113,10 @@ static const std::string allNetMessageTypes[] = {
     NetMsgType::SEALEDHEADER,   NetMsgType::SEALEDBLOCK,
     NetMsgType::MERKLIXSYNC,    NetMsgType::GETMERKLIXBUCK,
     NetMsgType::MERKLIXBUCK,    NetMsgType::GETSHORTTX,
-    NetMsgType::SHORTTX,
+    NetMsgType::SHORTTX,        NetMsgType::GETUTXOROOTS,
+    NetMsgType::UTXOROOTS,      NetMsgType::GETUTXOSHARD,
+    NetMsgType::UTXOSHARD,      NetMsgType::GETBLOCKUNDO,
+    NetMsgType::BLOCKUNDO,
 };
 static const std::vector<std::string>
     allNetMessageTypesVec(std::begin(allNetMessageTypes),
@@ -215,6 +226,8 @@ std::string CInv::GetMessageType() const {
             // Stake contender does not have a NetMsgType because there is no
             // contender-specific message, so we hard code the name here.
             return cmd.append("stakecontender");
+        case MSG_AVA_STATE_ANCHOR:
+            return cmd.append("stateanchor");
         default:
             throw std::out_of_range(strprintf(
                 "CInv::GetMessageType(): type=%d unknown type", type));
@@ -256,6 +269,8 @@ static std::string serviceFlagToStr(const size_t bit) {
             return "COMPACT_FILTERS";
         case NODE_AVALANCHE:
             return "AVALANCHE";
+        case NODE_UTXO_SHARD:
+            return "UTXO_SHARD";
         default:
             std::ostringstream stream;
             stream.imbue(std::locale::classic());

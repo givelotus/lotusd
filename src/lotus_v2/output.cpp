@@ -74,6 +74,7 @@ namespace {
     }
 
     bool Valid(const Output &output, std::string &error) {
+        if (output.legacy_script) { error = "legacy state output is not a V2 transaction output"; return false; }
         if (output.flags & 0xfc) {
             error = "flags";
             return false;

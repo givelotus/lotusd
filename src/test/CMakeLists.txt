@@ -162,6 +162,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		checkqueue_tests.cpp
 		coins_tests.cpp
 		rpc_batch_snapshot_tests.cpp
+		ecash_state_sync_tests.cpp
 		coinscachepair_tests.cpp
 		coinstatsindex_tests.cpp
 		compilerbug_tests.cpp

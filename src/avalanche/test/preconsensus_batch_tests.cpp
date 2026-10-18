@@ -64,7 +64,7 @@ namespace {
         static std::vector<CInv> getInvsForNextPoll(Processor &p) {
             auto r = p.voteRecords.getReadView();
             return p.getInvsForNextPoll(r, DEFAULT_AVALANCHE_MAX_ELEMENT_POLL,
-                                        false, /*include_mempool_batches=*/true);
+                                        false, /*include_state_anchors=*/true, /*include_mempool_batches=*/true);
         }
     };
 } // namespace
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(batch_parking_compliant_sibling_arrival_orders) {
             node->nVersion = PROTOCOL_VERSION;
             node->fSuccessfullyConnected = true;
             f.m_connman->AddTestNode(*node);
-            f.m_node.avalanche->setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
+            processor.setNodeMempoolBatchServices(node->GetId(), NODE_MERKLIX_EPOCH);
             BOOST_REQUIRE(processor.withPeerManager([&](avalanche::PeerManager &pm) {
                 return pm.addNode(node->GetId(), proof->getId(),
                                  DEFAULT_AVALANCHE_MAX_ELEMENT_POLL);
