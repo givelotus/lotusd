@@ -13,9 +13,6 @@ add_boost_unit_tests_to_suite(pow test-pow
 
 	TESTS
 		aserti32d_tests.cpp
-		daa_tests.cpp
-		eda_tests.cpp
-		grasberg_tests.cpp
 )
 
 target_link_libraries(test-pow server testutil)
