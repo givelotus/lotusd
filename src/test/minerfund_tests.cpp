@@ -32,34 +32,19 @@ BOOST_AUTO_TEST_CASE(minerfund_whitelist) {
     const CChainParams &chainparams = Params();
     const Consensus::Params &consensusParams = chainparams.GetConsensus();
 
-    std::array<CBlockIndex, 3> blocks;
-
-    blocks[0].nHeight = 1;
-    blocks[1].nHeight = consensusParams.wellingtonHeight;
-    blocks[2].nHeight = consensusParams.wellingtonHeight + 1;
-
-    for (size_t i = 1; i < blocks.size(); ++i) {
-        blocks[i].pprev = &blocks[i - 1];
-    }
+    CBlockIndex block;
+    block.nHeight = 1;
 
     const std::unordered_set<CTxDestination, TxDestinationHasher>
         expectedMinerFund = {DecodeDestination(
             "ecash:prfhcnyqnl5cgrnmlfmms675w93ld7mvvqd0y8lz07", chainparams)};
-    CheckWhitelist(consensusParams, &blocks[0], expectedMinerFund);
-
-    // Test address does not change around Wellington activation
-    BOOST_CHECK(!IsWellingtonEnabled(consensusParams, blocks[1].pprev));
-    CheckWhitelist(consensusParams, &blocks[1], expectedMinerFund);
-
-    BOOST_CHECK(IsWellingtonEnabled(consensusParams, blocks[2].pprev));
-    CheckWhitelist(consensusParams, &blocks[2], expectedMinerFund);
+    CheckWhitelist(consensusParams, &block, expectedMinerFund);
 }
 
 BOOST_AUTO_TEST_CASE(minerfund_amount) {
     const CChainParams &chainparams = Params();
     const Consensus::Params &consensusParams = chainparams.GetConsensus();
 
-    const auto activationHeight = consensusParams.cowperthwaiteHeight;
     CBlockIndex block;
 
     auto checkMinerFundRatio = [&](int64_t expectedPercent) {
@@ -68,18 +53,9 @@ BOOST_AUTO_TEST_CASE(minerfund_amount) {
             expectedPercent * COIN);
     };
 
-    // Before Cowperthwaite activation, the miner fund ratio is 8%
-    block.nHeight = activationHeight - 1000;
-    checkMinerFundRatio(8);
-    block.nHeight = activationHeight - 1;
-    checkMinerFundRatio(8);
-
-    // After Cowperthwaite activation, the miner fund ratio is 32%
-    block.nHeight = activationHeight;
+    block.nHeight = 1;
     checkMinerFundRatio(32);
-    block.nHeight = activationHeight + 1;
-    checkMinerFundRatio(32);
-    block.nHeight = activationHeight + 1000;
+    block.nHeight = 1000;
     checkMinerFundRatio(32);
 }
 
