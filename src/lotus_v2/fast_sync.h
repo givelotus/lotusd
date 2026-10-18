@@ -243,6 +243,25 @@ bool PeelDiskBlockReverse(const std::vector<uint8_t> &block_wire,
                           DiskStateStore &store,
                           std::string &error);
 
+struct ReversePeelBlockStep {
+    std::vector<uint8_t> block_wire;
+    BlockUndoMessage undo_msg;
+    Header parent_header{};
+    std::vector<Header> history;
+};
+
+// Peels a contiguous window of K blocks [h, h - 1, ..., h - K + 1] backwards in
+// RAM with full cryptographic verification at every intermediate height,
+// cancelling cross-block ephemeral UTXOs in memory and committing the net delta
+// to DiskStateStore in a single batch.
+bool PeelDiskBlockWindowReverse(const std::vector<ReversePeelBlockStep> &steps,
+                                const HeaderChainProfile &header_profile,
+                                OrdinaryCandidateProfile ordinary_profile,
+                                const MonetaryProfile &monetary_profile,
+                                const BlockCostProfile &cost_profile,
+                                DiskStateStore &store,
+                                std::string &error);
+
 } // namespace lotus::v2
 
 #endif // LOTUS_V2_FAST_SYNC_H
