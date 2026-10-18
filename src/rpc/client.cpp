@@ -27,6 +27,7 @@ public:
  * @note Parameter indexes start from 0.
  */
 static const CRPCConvertParam vRPCConvertParams[] = {
+    {"setfastsyncpivot", 2, "utxoshards"},
     {"syncutxoshardswarm", 1, "peer_ids"},
     {"syncutxoshardswarm", 2, "auto_peel"},
     {"setmocktime", 0, "timestamp"},
