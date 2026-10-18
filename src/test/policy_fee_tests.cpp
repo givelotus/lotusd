@@ -340,21 +340,21 @@ BOOST_AUTO_TEST_CASE(adaptive_ancestry_size_survives_pruned_index_roundtrip) {
     legacy >> legacy_loaded;
     BOOST_CHECK_EQUAL(legacy_loaded.nSize, index.nSize);
 
-    // Old pruned records omitted size entirely: decode it as unavailable, not zero history.
+    // Legacy native records omitted the redundant cache size when pruned,
+    // but retain nSize in the 134-byte header; decode the old layout exactly.
     index.nStatus = index.nStatus.withData(false);
     CDiskBlockIndex pruned(&index), old_pruned;
     DataStream old_pruned_bytes, prefix, encoded_size;
     old_pruned_bytes << pruned;
     int version = 320401;
     prefix << VARINT_MODE(version, VarIntMode::NONNEGATIVE_SIGNED)
-           << VARINT_MODE(pruned.nHeight, VarIntMode::NONNEGATIVE_SIGNED)
            << pruned.nStatus << VARINT(pruned.nTx);
     encoded_size << VARINT(pruned.nSize);
     old_pruned_bytes.erase(old_pruned_bytes.begin() + prefix.size(),
                            old_pruned_bytes.begin() + prefix.size() + encoded_size.size());
     std::copy(old_tag.begin(), old_tag.end(), old_pruned_bytes.begin());
     old_pruned_bytes >> old_pruned;
-    BOOST_CHECK_EQUAL(old_pruned.nSize, 0);
+    BOOST_CHECK_EQUAL(old_pruned.nSize, index.nSize);
     BOOST_CHECK(old_pruned_bytes.empty());
 
     DataStream future, future_tag;
