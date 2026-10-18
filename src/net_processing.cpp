@@ -33,9 +33,11 @@
 #include <kernel/mempool_entry.h>
 #include <logging.h>
 #include <logging/values.h>
+#include <lotus_v2/fast_sync.h>
 #include <lotus_v2/signing.h>
 #include <merkleblock.h>
 #include <net_block_message_cache.h>
+#include <net/v2_protocol_handler.h>
 #include <netbase.h>
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
@@ -3311,8 +3313,9 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_txrelay_index{opts.txrelay_shortid_bits},
       m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this},
       m_block_messages{opts.block_message_cache_bytes} {
-    m_v2_protocol_handler.SetAvalancheProcessor(m_avalanche);
     m_v2_protocol_handler.SetTxRelayEpochProvider(this);
+    m_v2_protocol_handler.SetServeUtxoShards(
+        gArgs.GetBoolArg("-serveutxoshards", true));
     if (m_opts.parallel_admission) {
         m_tx_admission_queue = std::make_unique<node::TxAdmissionQueue>(
             node::TxAdmissionQueue::Limits{});
@@ -6432,6 +6435,7 @@ void PeerManagerImpl::ProcessBlock(const Config &config, CNode &node,
     // receiving a body alone never certifies historical UTXO/script validity.
     if (accepted) {
         m_v2_protocol_handler.BlockDataReceived(hash);
+        m_v2_protocol_handler.NotifyReversePeelBlockReceived(hash, block);
     }
     if (new_block) {
         node.m_last_block_time = GetTime<std::chrono::seconds>();
