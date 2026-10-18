@@ -437,6 +437,8 @@ void CTxMemPool::_clear() {
     m_overlay_warm.store(true, std::memory_order_relaxed);
     mapTx.clear();
     mapNextTx.clear();
+    mapTx.get_allocator().resource()->ReleaseUnusedChunks();
+    mapNextTx.get_allocator().resource()->ReleaseUnusedChunks();
     m_utxo_fast_filter.ClearMempool();
     totalTxSize = 0;
     m_total_fee = Amount::zero();
@@ -1081,11 +1083,10 @@ void CCoinsViewMemPool::Reset() {
 
 size_t CTxMemPool::DynamicMemoryUsage() const {
     LOCK(cs);
-    // Estimate the overhead of mapTx to be 12 pointers + an allocation, as no
-    // exact formula for boost::multi_index_contained is implemented.
-    return memusage::MallocUsage(sizeof(CTxMemPoolEntry) +
-                                 12 * sizeof(void *)) *
-               mapTx.size() +
+    // Node and bucket storage belongs to the allocator's retained chunks;
+    // count it even when most slots are free. Entries are separate objects.
+    return mapTx.get_allocator().resource()->TotalAllocatedBytes() +
+           memusage::MallocUsage(sizeof(CTxMemPoolEntry)) * mapTx.size() +
            memusage::DynamicUsage(mapNextTx) +
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
@@ -1093,9 +1094,12 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
 bool CTxMemPool::CanFitRawTxBatch(
     const std::vector<const CTxMemPoolEntry *> &entries) const {
     AssertLockHeld(cs);
+    const size_t memory_limit = static_cast<size_t>(std::max<int64_t>(0, m_opts.max_size_bytes));
     size_t usage = DynamicMemoryUsage();
-    const size_t entry_overhead = memusage::MallocUsage(
-        sizeof(CTxMemPoolEntry) + 12 * sizeof(void *));
+    const size_t entry_overhead = memusage::MallocUsage(sizeof(CTxMemPoolEntry));
+    const size_t initial_usage = usage;
+    size_t staged_nodes = 0;
+    size_t staged_inputs = 0;
     const CTxMemPoolEntry::Parents empty_links;
     const size_t edge_usage = 2 * memusage::IncrementalDynamicUsage(empty_links);
     std::set<TxId> staged;
@@ -1103,15 +1107,26 @@ bool CTxMemPool::CanFitRawTxBatch(
         usage += entry_overhead + entry->DynamicMemoryUsage();
         std::set<TxId> parents;
         for (const auto &input : entry->GetTx().vin) {
-            usage += memusage::IncrementalDynamicUsage(mapNextTx);
+            ++staged_inputs;
             const auto &id = input.prevout.GetTxId();
             if (exists(id) || staged.count(id)) parents.insert(id);
         }
         usage += parents.size() * edge_usage;
-        if (usage > m_opts.max_size_bytes) return false;
+        ++staged_nodes;
+        size_t projected = usage +
+            mapTx.get_allocator().resource()->AdditionalChunkBytes(staged_nodes) +
+            mapNextTx.get_allocator().resource()->AdditionalChunkBytes(staged_inputs);
+        const auto &index = mapTx.get<0>();
+        if (mapTx.size() + staged_nodes > index.bucket_count() * index.max_load_factor()) {
+            // Boost grows its prime bucket table geometrically. Reserve room
+            // for both the old table and an upper bound on the new table.
+            projected += 2 * (index.bucket_count() + mapTx.size() + staged_nodes) *
+                         sizeof(void *);
+        }
+        if (projected < initial_usage || projected > memory_limit) return false;
         staged.insert(entry->GetTx().GetId());
     }
-    return usage <= m_opts.max_size_bytes;
+    return usage <= memory_limit;
 }
 
 void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
