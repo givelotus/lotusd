@@ -28,10 +28,11 @@ from typing import Any, Dict, List, Optional
 
 from .address import ADDRESS_ECREG_UNSPENDABLE
 from .authproxy import JSONRPCException
+from .currency import RpcCurrency
 from .descriptors import descsum_create
 from .jsonrpctools import ChronikElectrumClient
 from .log_messages import assert_no_drops, has_message, read_records
-from .messages import XEC, CTransaction, FromHex
+from .messages import CTransaction, FromHex
 from .p2p import P2P_SUBVERSION
 from .util import (
     EncodeDecimal,
@@ -207,6 +208,7 @@ class TestNode:
         self.rpc = None
         self.url = None
         self.relay_fee_cache = None
+        self.rpc_currency_cache = None
         self.log = logging.getLogger(f"TestFramework.node{i}")
         # Cache perf subprocesses here by their data output filename.
         self.perf_subprocesses = {}
@@ -1013,6 +1015,13 @@ class TestNode:
 
         return self.relay_fee_cache
 
+    def rpc_currency(self):
+        # Currency is fixed for this node profile. Cache metadata outside loops
+        # which construct large numbers of transactions.
+        if self.rpc_currency_cache is None:
+            self.rpc_currency_cache = RpcCurrency.from_node(self)
+        return self.rpc_currency_cache
+
     def calculate_fee(self, tx):
         """Estimate the necessary fees (in sats) for an unsigned CTransaction assuming:
         - the current relayfee on node
@@ -1024,8 +1033,9 @@ class TestNode:
         # 107 = length of PUSH(longest_sig = 72 bytes), PUSH(pubkey = 33 bytes)
         billable_size_estimate += len(tx.vin) * 107
 
-        # relay_fee gives a value in XEC per kB.
-        return int(self.relay_fee() / 1000 * billable_size_estimate * XEC)
+        # relay_fee is denominated in the node's RPC currency, not wire atoms.
+        relay_fee_atoms = self.rpc_currency().to_atoms(self.relay_fee())
+        return relay_fee_atoms * billable_size_estimate // 1000
 
     def calculate_fee_from_txid(self, txid):
         ctx = FromHex(CTransaction(), self.getrawtransaction(txid))
