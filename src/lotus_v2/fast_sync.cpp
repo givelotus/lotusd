@@ -1,7 +1,6 @@
 // Copyright (c) 2026 The Lotus developers
-// Tachyon SnapSync: Fast UTXO Shard Sync protocol, Avalanche state-anchor
-// verification, and bijective reverse block peeling without header changes.
 #include "fast_sync.h"
+#include "disk_block.h"
 
 #include <algorithm>
 #include <cstring>
@@ -84,11 +83,44 @@ bool ReadCompactSize(const std::vector<uint8_t> &bytes, size_t &offset,
 
 bool DecodeCanonicalCoinBytes(const uint8_t *data, size_t len, Coin &out,
                               std::string &error) {
-    if (!DecodeCoinBytes(std::span<const uint8_t>(data, len), out)) {
+    if (len < 54 || len > MAX_COIN_BYTES) {
+        error = "invalid coin byte length";
+        return false;
+    }
+    std::copy_n(data, 32, out.outpoint.tx_id.begin());
+    out.outpoint.index = static_cast<uint32_t>(data[32]) |
+                         (static_cast<uint32_t>(data[33]) << 8) |
+                         (static_cast<uint32_t>(data[34]) << 16) |
+                         (static_cast<uint32_t>(data[35]) << 24);
+    std::vector<uint8_t> buf(data, data + len);
+    size_t offset = 36;
+    uint64_t out_len = 0;
+    if (!ReadCompactSize(buf, offset, MAX_OUTPUT_BYTES, out_len) ||
+        buf.size() - offset < out_len ||
+        buf.size() - (offset + static_cast<size_t>(out_len)) != 17) {
+        error = "invalid coin output framing";
+        return false;
+    }
+    std::vector<uint8_t> output_bytes(buf.begin() + offset,
+                                      buf.begin() + offset + static_cast<size_t>(out_len));
+    if (!DecodeOutput(output_bytes, out.output, error)) {
+        return false;
+    }
+    offset += static_cast<size_t>(out_len);
+    out.creation_height = ReadLE64(buf.data() + offset);
+    out.creation_parent_mtp = ReadLE64(buf.data() + offset + 8);
+    const uint8_t cb_flag = buf[offset + 16];
+    if (cb_flag > 1) {
+        error = "invalid coinbase flag in coin";
+        return false;
+    }
+    out.coinbase = (cb_flag == 1);
+
+    std::vector<uint8_t> reencoded;
+    if (!EncodeCoin(out, reencoded) || reencoded != buf) {
         error = "non-canonical coin encoding";
         return false;
     }
-    error.clear();
     return true;
 }
 
@@ -126,8 +158,7 @@ bool ComputeSubtreeEntry(const std::vector<KeyedCoinRef> &entries,
         !ComputeSubtreeEntry(right, depth + 1, right_entry)) {
         return false;
     }
-    return FoldShardPair(static_cast<uint8_t>(depth), left_entry, right_entry,
-                         out);
+    return FoldShardPair(static_cast<uint8_t>(depth), left_entry, right_entry, out);
 }
 
 bool SplitAndExportShardsRecursive(
@@ -186,12 +217,14 @@ bool CheckFastSyncPivotEligibility(const FastSyncPivotCandidate &candidate,
         return false;
     }
     if (!candidate.is_avalanche_finalized) {
+        // Hole 13: Dual Pivot Authentication Gate.
         if (candidate.buried_blocks < kFastSyncMinBuriedBlocks ||
             candidate.distinct_netgroup_confirmations <
                 kFastSyncMinNetgroupConfirmations) {
             error = "unfinalized pivot lacks 100 buried blocks across >= 3 distinct netgroups";
             return false;
         }
+        // Hole 14: Pivot Safety Cushion.
         if (candidate.best_header_height - candidate.pivot_height <
             kFastSyncPivotSafetyCushion) {
             error = "unfinalized pivot violates 10-block safety cushion below tip";
@@ -248,9 +281,7 @@ std::optional<Hash> FoldDepth8ShardRoots(
     std::string *error) {
     for (size_t i = 0; i < shards.size(); ++i) {
         if (!IsValidShardRootEntry(shards[i])) {
-            if (error) {
-                *error = "invalid shard root entry tag or empty digest mismatch";
-            }
+            if (error) *error = "invalid shard root entry tag or empty digest mismatch";
             return std::nullopt;
         }
     }
@@ -269,25 +300,23 @@ std::optional<Hash> FoldDepth8ShardRoots(
     return current[0].subtree_root;
 }
 
-bool VerifyUtxoRootsAgainstAnchor(
-    const Hash &expected_pivot_block_id, uint64_t expected_height,
-    const std::optional<Hash> &expected_utxo_root_anchor,
-    const UtxoRootsMessage &msg, Hash &out_folded_utxo_root,
-    std::string &error) {
-    if (msg.pivot_block_id != expected_pivot_block_id) {
-        error = "utxoroots pivot_block_id does not match expected pivot block";
+bool VerifyUtxoRootsAgainstHeader(const Header &pivot_header,
+                                  const ChainId &chain_id,
+                                  const UtxoRootsMessage &msg,
+                                  std::string &error) {
+    Hash expected_pivot_id{};
+    if (!BlockId(chain_id, pivot_header, expected_pivot_id) ||
+        msg.pivot_block_id != expected_pivot_id) {
+        error = "utxoroots pivot_block_id does not match authenticated pivot header";
         return false;
     }
-    if (msg.height != expected_height) {
-        error = "utxoroots height does not match expected pivot height";
+    if (msg.height != pivot_header.height) {
+        error = "utxoroots height does not match pivot header height";
         return false;
     }
-    if (!expected_utxo_root_anchor.has_value()) {
-        error = "missing finalized Avalanche/epoch UtxoRoot state anchor for pivot";
-        return false;
-    }
+    MonetaryState decoded_monetary{};
     try {
-        (void)DecodeMonetaryState(
+        decoded_monetary = DecodeMonetaryState(
             std::vector<uint8_t>(msg.monetary_state.begin(),
                                  msg.monetary_state.end()));
     } catch (const std::exception &e) {
@@ -298,10 +327,10 @@ bool VerifyUtxoRootsAgainstAnchor(
     if (!folded_utxo_root) {
         return false;
     }
-    out_folded_utxo_root = *folded_utxo_root;
-    if (*folded_utxo_root != *expected_utxo_root_anchor) {
-        error =
-            "utxoroots folded UtxoRoot does not match Avalanche/epoch state anchor";
+    const Hash computed_state_root = StateRoot(
+        chain_id, pivot_header.height, *folded_utxo_root, decoded_monetary);
+    if (computed_state_root != pivot_header.state_root) {
+        error = "utxoroots folded StateRoot does not match pivot header state_root";
         return false;
     }
     error.clear();
@@ -330,10 +359,10 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
     const size_t expected_siblings =
         static_cast<size_t>(shard.prefix_depth - kMinUtxoShardPrefixDepth);
     if (shard.boundary_siblings.size() != expected_siblings) {
-        error =
-            "utxoshard boundary_siblings length does not match prefix_depth - 8";
+        error = "utxoshard boundary_siblings length does not match prefix_depth - 8";
         return false;
     }
+    // Hole 15: Strict leaf cap.
     if (shard.coins.size() > kMaxUtxoShardLeaves) {
         error = "utxoshard exceeds maximum allowed 4096 leaves";
         return false;
@@ -344,6 +373,7 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
     Hash prev_key{};
     for (size_t i = 0; i < shard.coins.size(); ++i) {
         const Coin &coin = shard.coins[i];
+        // Hole 11: Reject burn outputs (C17) and invalid coins.
         if (coin.output.IsBurn()) {
             error = "utxoshard contains unspendable burn output";
             return false;
@@ -358,13 +388,14 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
             return false;
         }
         const Hash key = OutpointKey(coin.outpoint);
+        // Hole 11: Strict prefix enforcement against cross-shard key smuggling.
         if (OutpointPrefixBits(key, shard.prefix_depth) != shard.prefix_bits) {
             error = "utxoshard coin OutpointKey does not match shard prefix_bits";
             return false;
         }
+        // Strict ascending key order (also prevents duplicate keys).
         if (i > 0 && !(prev_key < key)) {
-            error =
-                "utxoshard coins are not in strictly ascending OutpointKey order";
+            error = "utxoshard coins are not in strictly ascending OutpointKey order";
             return false;
         }
         prev_key = key;
@@ -377,9 +408,11 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
         *computed_subshard_out = sub_entry;
     }
 
+    // Fold from depth (prefix_depth - 1) down to depth 8 using boundary_siblings.
     ShardRootEntry cur = sub_entry;
     for (size_t i = 0; i < expected_siblings; ++i) {
-        const uint8_t d = static_cast<uint8_t>((shard.prefix_depth - 1) - i);
+        const uint8_t d =
+            static_cast<uint8_t>((shard.prefix_depth - 1) - i);
         const Hash &sib_hash = shard.boundary_siblings[i];
         const bool bit_is_right = ((shard.prefix_bits >> d) & 1u) != 0;
 
@@ -387,8 +420,14 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
         if (sib_hash == EmptyUtxoRoot()) {
             sib_entry = {0, EmptyUtxoRoot()};
         } else if (cur.cardinality_tag >= 1) {
+            // Whenever cur has >= 1 leaf and sibling is non-empty, the parent
+            // at depth d has >= 2 leaves (cardinality_tag = 2), so sib's tag
+            // (1 or 2) produces the exact same UtxoNode(d, left, right) hash.
             sib_entry = {2, sib_hash};
         } else {
+            // cur is empty (0 leaves), sibling is non-empty.
+            // If expected_depth8_entry has cardinality_tag == 1 and all higher
+            // siblings are empty, sibling is a single collapsed leaf (tag 1).
             bool higher_all_empty = true;
             for (size_t j = i + 1; j < expected_siblings; ++j) {
                 if (shard.boundary_siblings[j] != EmptyUtxoRoot()) {
@@ -411,8 +450,7 @@ bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
     }
 
     if (cur != expected_depth8_entry) {
-        error =
-            "utxoshard folded depth-8 entry does not match authenticated ShardRootEntry";
+        error = "utxoshard folded depth-8 entry does not match authenticated ShardRootEntry";
         return false;
     }
     error.clear();
@@ -609,9 +647,6 @@ bool DecodeUtxoShardMessage(const std::vector<uint8_t> &bytes,
         error = "invalid or excessive utxoshard coin count";
         return false;
     }
-    if (coin_count > (bytes.size() - offset) / 55) {
-        error = "truncated utxoshard coin records"; return false;
-    }
     parsed.coins.resize(static_cast<size_t>(coin_count));
     for (size_t i = 0; i < parsed.coins.size(); ++i) {
         uint64_t coin_len = 0;
@@ -636,10 +671,20 @@ bool DecodeUtxoShardMessage(const std::vector<uint8_t> &bytes,
     return true;
 }
 
-bool ExportUtxoRootsForBlock(const UtxoSet &utxo, const Hash &pivot_block_id,
-                             uint64_t pivot_height,
-                             const MonetaryState &monetary,
-                             UtxoRootsMessage &out, std::string &error) {
+bool ExportUtxoRoots(const UtxoSet &utxo, const ChainId &chain_id,
+                     const Header &pivot_header, const MonetaryState &monetary,
+                     UtxoRootsMessage &out, std::string &error) {
+    Hash pivot_id{};
+    if (!BlockId(chain_id, pivot_header, pivot_id)) {
+        error = "invalid pivot header for ExportUtxoRoots";
+        return false;
+    }
+    if (StateRoot(chain_id, pivot_header.height, utxo.Root(), monetary) !=
+        pivot_header.state_root) {
+        error = "utxo and monetary state do not match pivot_header.state_root";
+        return false;
+    }
+
     std::array<std::vector<KeyedCoinRef>, kFastSyncShardCount> buckets;
     for (const Coin &coin : utxo.Coins()) {
         const Hash key = OutpointKey(coin.outpoint);
@@ -654,8 +699,8 @@ bool ExportUtxoRootsForBlock(const UtxoSet &utxo, const Hash &pivot_block_id,
     }
 
     UtxoRootsMessage msg;
-    msg.pivot_block_id = pivot_block_id;
-    msg.height = pivot_height;
+    msg.pivot_block_id = pivot_id;
+    msg.height = pivot_header.height;
     msg.monetary_state = EncodeMonetaryState(monetary);
     for (size_t s = 0; s < kFastSyncShardCount; ++s) {
         ComputeSubtreeEntry(buckets[s], kMinUtxoShardPrefixDepth,
@@ -663,72 +708,6 @@ bool ExportUtxoRootsForBlock(const UtxoSet &utxo, const Hash &pivot_block_id,
     }
 
     out = msg;
-    error.clear();
-    return true;
-}
-
-namespace {
-
-void PopulateDepth8FromSmt(
-    const std::shared_ptr<const SmtNode> &node, uint8_t depth,
-    uint16_t prefix_bits,
-    std::array<ShardRootEntry, kFastSyncShardCount> &shards) {
-    if (!node || node->count == 0) {
-        return;
-    }
-    if (node->IsLeaf()) {
-        const uint8_t shard_idx = node->key[0];
-        shards[shard_idx] = ShardRootEntry{1, node->digest};
-        return;
-    }
-    if (depth == kMinUtxoShardPrefixDepth) {
-        shards[prefix_bits] = ShardRootEntry{
-            static_cast<uint8_t>(node->count == 1 ? 1 : 2), node->digest};
-        return;
-    }
-    if (node->child[0]) {
-        PopulateDepth8FromSmt(node->child[0], depth + 1, prefix_bits, shards);
-    }
-    if (node->child[1]) {
-        PopulateDepth8FromSmt(
-            node->child[1], depth + 1,
-            static_cast<uint16_t>(prefix_bits | (uint16_t(1u) << depth)),
-            shards);
-    }
-}
-
-void CollectSmtSubtreeCoins(const std::shared_ptr<const SmtNode> &node,
-                            std::vector<KeyedCoinRef> &out) {
-    if (!node || node->count == 0) {
-        return;
-    }
-    if (node->IsLeaf()) {
-        out.push_back(KeyedCoinRef{node->key, node->coin.get()});
-        return;
-    }
-    if (node->child[0]) {
-        CollectSmtSubtreeCoins(node->child[0], out);
-    }
-    if (node->child[1]) {
-        CollectSmtSubtreeCoins(node->child[1], out);
-    }
-}
-
-} // namespace
-
-bool ExportUtxoRootsFromSmt(const std::shared_ptr<const SmtNode> &root,
-                            const Hash &pivot_block_id, uint64_t pivot_height,
-                            const MonetaryState &monetary,
-                            UtxoRootsMessage &out, std::string &error) {
-    UtxoRootsMessage msg;
-    msg.pivot_block_id = pivot_block_id;
-    msg.height = pivot_height;
-    msg.monetary_state = EncodeMonetaryState(monetary);
-    for (size_t s = 0; s < kFastSyncShardCount; ++s) {
-        msg.shards[s] = ShardRootEntry{0, EmptyUtxoRoot()};
-    }
-    PopulateDepth8FromSmt(root, 0, 0, msg.shards);
-    out = std::move(msg);
     error.clear();
     return true;
 }
@@ -760,6 +739,7 @@ bool ExportUtxoShard(const UtxoSet &utxo, const Hash &pivot_block_id,
                   return a.key < b.key;
               });
 
+    // Walk from depth 8 to prefix_depth, recording boundary sibling hashes.
     std::vector<Hash> siblings_top_down;
     siblings_top_down.reserve(prefix_depth - kMinUtxoShardPrefixDepth);
     std::vector<KeyedCoinRef> current = std::move(depth8_entries);
@@ -785,8 +765,7 @@ bool ExportUtxoShard(const UtxoSet &utxo, const Hash &pivot_block_id,
 
     if (current.size() > max_shard_leaves ||
         current.size() > kMaxUtxoShardLeaves) {
-        error =
-            "requested shard exceeds maximum leaf count; split to deeper prefix_depth";
+        error = "requested shard exceeds maximum leaf count; split to deeper prefix_depth";
         return false;
     }
 
@@ -794,85 +773,11 @@ bool ExportUtxoShard(const UtxoSet &utxo, const Hash &pivot_block_id,
     msg.pivot_block_id = pivot_block_id;
     msg.prefix_depth = prefix_depth;
     msg.prefix_bits = prefix_bits;
+    // Order boundary_siblings from depth (prefix_depth - 1) down to depth 8.
     msg.boundary_siblings.assign(siblings_top_down.rbegin(),
                                  siblings_top_down.rend());
     msg.coins.reserve(current.size());
     for (const auto &e : current) {
-        msg.coins.push_back(*e.coin);
-    }
-    out = std::move(msg);
-    error.clear();
-    return true;
-}
-
-bool ExportUtxoShardFromSmt(const std::shared_ptr<const SmtNode> &root,
-                            const Hash &pivot_block_id, uint8_t prefix_depth,
-                            uint16_t prefix_bits, UtxoShardMessage &out,
-                            std::string &error, size_t max_shard_leaves) {
-    if (prefix_depth < kMinUtxoShardPrefixDepth ||
-        prefix_depth > kMaxUtxoShardPrefixDepth) {
-        error = "prefix_depth out of range [8..16]";
-        return false;
-    }
-    if (prefix_depth < 16 && (prefix_bits >> prefix_depth) != 0) {
-        error = "prefix_bits has bits set above prefix_depth";
-        return false;
-    }
-
-    std::shared_ptr<const SmtNode> cur = root;
-    std::vector<Hash> siblings_top_down;
-    siblings_top_down.reserve(prefix_depth - kMinUtxoShardPrefixDepth);
-
-    for (uint8_t d = 0; d < prefix_depth; ++d) {
-        const bool target_bit = ((prefix_bits >> d) & 1u) != 0;
-        Hash sib_hash = EmptyUtxoRoot();
-        std::shared_ptr<const SmtNode> next_node = nullptr;
-
-        if (cur && cur->count > 0) {
-            if (cur->IsLeaf()) {
-                const bool leaf_bit = SmtKeyBit(cur->key, d);
-                if (leaf_bit == target_bit) {
-                    next_node = cur;
-                    sib_hash = EmptyUtxoRoot();
-                } else {
-                    next_node = nullptr;
-                    sib_hash = cur->digest;
-                }
-            } else {
-                next_node = cur->child[target_bit ? 1 : 0];
-                sib_hash = cur->ChildHash(target_bit ? 0 : 1);
-            }
-        }
-
-        if (d >= kMinUtxoShardPrefixDepth) {
-            siblings_top_down.push_back(sib_hash);
-        }
-        cur = std::move(next_node);
-    }
-
-    const size_t sub_count = cur ? cur->count : 0;
-    if (sub_count > max_shard_leaves || sub_count > kMaxUtxoShardLeaves) {
-        error =
-            "requested shard exceeds maximum leaf count; split to deeper prefix_depth";
-        return false;
-    }
-
-    std::vector<KeyedCoinRef> entries;
-    entries.reserve(sub_count);
-    CollectSmtSubtreeCoins(cur, entries);
-    std::sort(entries.begin(), entries.end(),
-              [](const KeyedCoinRef &a, const KeyedCoinRef &b) {
-                  return a.key < b.key;
-              });
-
-    UtxoShardMessage msg;
-    msg.pivot_block_id = pivot_block_id;
-    msg.prefix_depth = prefix_depth;
-    msg.prefix_bits = prefix_bits;
-    msg.boundary_siblings.assign(siblings_top_down.rbegin(),
-                                 siblings_top_down.rend());
-    msg.coins.reserve(entries.size());
-    for (const auto &e : entries) {
         msg.coins.push_back(*e.coin);
     }
     out = std::move(msg);
@@ -913,15 +818,12 @@ bool ExportAdaptiveUtxoShards(const UtxoSet &utxo, const Hash &pivot_block_id,
 }
 
 bool AssembleAndVerifyFastSyncPivot(
-    const Hash &pivot_block_id, uint64_t pivot_height,
-    const std::optional<Hash> &expected_utxo_root_anchor,
+    const Header &pivot_header, const ChainId &chain_id,
     const UtxoRootsMessage &roots_msg,
     const std::vector<UtxoShardMessage> &shards, UtxoSet &out_utxo,
     MonetaryState &out_monetary, std::string &error) {
-    Hash folded_root{};
-    if (!VerifyUtxoRootsAgainstAnchor(pivot_block_id, pivot_height,
-                                      expected_utxo_root_anchor, roots_msg,
-                                      folded_root, error)) {
+    if (!VerifyUtxoRootsAgainstHeader(pivot_header, chain_id, roots_msg,
+                                      error)) {
         return false;
     }
 
@@ -948,8 +850,8 @@ bool AssembleAndVerifyFastSyncPivot(
         if (expected.cardinality_tag == 0) {
             for (const auto *sub : subshards) {
                 ShardRootEntry sub_out{};
-                if (!VerifyAndBuildUtxoShard(expected, pivot_height, *sub,
-                                             &sub_out, error)) {
+                if (!VerifyAndBuildUtxoShard(expected, pivot_header.height,
+                                             *sub, &sub_out, error)) {
                     return false;
                 }
             }
@@ -962,6 +864,8 @@ bool AssembleAndVerifyFastSyncPivot(
             return false;
         }
 
+        // Verify each subshard individually against the depth-8 entry and
+        // collect all coins for depth-8 shard s to ensure no missing sub-branches.
         std::vector<KeyedCoinRef> shard_coins;
         std::set<std::pair<uint8_t, uint16_t>> seen_prefixes;
         for (const auto *sub : subshards) {
@@ -972,8 +876,8 @@ bool AssembleAndVerifyFastSyncPivot(
                 return false;
             }
             ShardRootEntry sub_out{};
-            if (!VerifyAndBuildUtxoShard(expected, pivot_height, *sub, &sub_out,
-                                         error)) {
+            if (!VerifyAndBuildUtxoShard(expected, pivot_header.height, *sub,
+                                         &sub_out, error)) {
                 return false;
             }
             for (const Coin &coin : sub->coins) {
@@ -1008,6 +912,216 @@ bool AssembleAndVerifyFastSyncPivot(
     error.clear();
     return true;
 }
+
+bool ExportDiskUtxoRoots(const DiskStateStore &store, const ChainId &chain_id,
+                         UtxoRootsMessage &out, std::string &error) {
+    if (!store.IsOpen()) {
+        error = "disk state store is closed";
+        return false;
+    }
+    const DiskStateMetadata meta = store.Metadata();
+    Header pivot_header{};
+    if (!ParseHeader(meta.header.data(), meta.header.size(), pivot_header)) {
+        error = "failed to parse pivot header from store metadata";
+        return false;
+    }
+    MonetaryState mon{};
+    try {
+        mon = DecodeMonetaryState(meta.monetary);
+    } catch (const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+    std::vector<Coin> coins;
+    DiskStateError disk_err;
+    if (!store.ExportCoins(coins, disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
+    UtxoSet utxo;
+    for (const Coin &c : coins) {
+        utxo.Insert(c);
+    }
+    return ExportUtxoRoots(utxo, chain_id, pivot_header, mon, out, error);
+}
+
+bool ImportVerifiedFastSyncPivotToDisk(
+    const Header &pivot_header, const ChainId &chain_id,
+    const std::vector<Header> &history, const UtxoRootsMessage &roots_msg,
+    const std::vector<UtxoShardMessage> &shards, DiskStateStore &store,
+    std::string &error) {
+    UtxoSet verified_utxo;
+    MonetaryState verified_monetary{};
+    if (!AssembleAndVerifyFastSyncPivot(pivot_header, chain_id, roots_msg,
+                                        shards, verified_utxo,
+                                        verified_monetary, error)) {
+        return false;
+    }
+    DiskStateMetadata meta;
+    meta.tip = roots_msg.pivot_block_id;
+    std::array<uint8_t, HEADER_SIZE> raw_hdr{};
+    SerializeHeader(pivot_header, raw_hdr);
+    meta.header.assign(raw_hdr.begin(), raw_hdr.end());
+    meta.monetary.assign(roots_msg.monetary_state.begin(),
+                         roots_msg.monetary_state.end());
+    if (!history.empty()) {
+        try {
+            meta.auxiliary = EncodeDiskChainContext(history, {});
+        } catch (const std::exception &e) {
+            error = e.what();
+            return false;
+        }
+    }
+    DiskStateError disk_err;
+    if (!store.ImportFastSyncPivot(meta, pivot_header, verified_utxo.Coins(),
+                                   disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+namespace {
+
+constexpr size_t kMaxBlockUndoCoins = 1000000;
+
+class InMemoryBlockStateTx final : public BlockStateTransaction {
+public:
+    DevelopmentUtxoView view;
+    UtxoSet tree;
+
+    explicit InMemoryBlockStateTx(const UtxoSet &initial) {
+        for (const Coin &c : initial.Coins()) {
+            view.emplace(c.outpoint, c);
+            tree.Insert(c);
+        }
+    }
+
+    CoinReadResult Read(const Outpoint &key, Coin &coin,
+                        std::string &) override {
+        const auto it = view.find(key);
+        if (it == view.end()) return CoinReadResult::Missing;
+        coin = it->second;
+        return CoinReadResult::Found;
+    }
+
+    bool Insert(const Coin &coin, std::string &) override {
+        view.emplace(coin.outpoint, coin);
+        tree.Insert(coin);
+        return true;
+    }
+
+    bool Erase(const Outpoint &key, std::string &) override {
+        view.erase(key);
+        tree.Erase(key);
+        return true;
+    }
+
+    Hash Root() const override { return tree.Root(); }
+
+    void Abort() noexcept override {}
+};
+
+bool PartitionBlockOutputsAndSpends(
+    const FramedBlock &block, uint64_t parent_mtp,
+    const BlockUndoMessage &undo_msg,
+    std::vector<Coin> &out_net_created,
+    std::vector<Coin> &out_prior_spent,
+    std::string &error) {
+    // Step 1: Collect all spendable outputs created in B_h (O_h^all).
+    std::map<Outpoint, std::pair<size_t, Coin>, OutpointLess> created_in_block;
+    std::vector<Outpoint> created_order;
+    for (size_t tx_idx = 0; tx_idx < block.transactions.size(); ++tx_idx) {
+        const Transaction &tx = block.transactions[tx_idx];
+        const Hash &txid = block.transaction_identities[tx_idx].txid;
+        for (size_t j = 0; j < tx.outputs.size(); ++j) {
+            const Output &output = tx.outputs[j];
+            if (output.IsBurn()) continue;
+            Coin coin;
+            coin.outpoint = Outpoint{txid, static_cast<uint32_t>(j)};
+            coin.output = output;
+            coin.creation_height = block.header.height;
+            coin.creation_parent_mtp = parent_mtp;
+            coin.coinbase = (tx_idx == 0);
+            created_in_block.emplace(coin.outpoint, std::pair{tx_idx, coin});
+            created_order.push_back(coin.outpoint);
+        }
+    }
+
+    // Step 2: Partition spent inputs into I_h^intra and I_h^prior (Hole 12 defense).
+    std::set<Outpoint, OutpointLess> seen_spends;
+    std::set<Outpoint, OutpointLess> intra_spent;
+    std::vector<Coin> prior_spent;
+    size_t undo_cursor = 0;
+
+    for (size_t tx_idx = 1; tx_idx < block.transactions.size(); ++tx_idx) {
+        const Transaction &tx = block.transactions[tx_idx];
+        for (const Input &input : tx.inputs) {
+            if (input.flags != 1) continue;
+            const Outpoint op{input.prev_txid, input.prev_index};
+            if (!seen_spends.insert(op).second) {
+                error = "duplicate input spend inside block";
+                return false;
+            }
+            const auto created_it = created_in_block.find(op);
+            if (created_it != created_in_block.end()) {
+                // Intra-block spend (I_h^intra): must be created by an earlier tx in B_h,
+                // and is NEVER read from undo_msg.prior_spent_coins.
+                if (created_it->second.first >= tx_idx) {
+                    error = "intra-block spend references same or later transaction";
+                    return false;
+                }
+                intra_spent.insert(op);
+            } else {
+                // Prior-block spend (I_h^prior): consume next record from undo_msg.
+                if (undo_cursor >= undo_msg.prior_spent_coins.size()) {
+                    error = "blockundo missing prior spent coin record";
+                    return false;
+                }
+                const Coin &prior_coin = undo_msg.prior_spent_coins[undo_cursor++];
+                if (prior_coin.outpoint != op) {
+                    error = "blockundo prior spent coin outpoint mismatch";
+                    return false;
+                }
+                if (prior_coin.creation_height >= block.header.height) {
+                    error = "blockundo prior spent coin has creation_height >= block height";
+                    return false;
+                }
+                if (prior_coin.output.IsBurn()) {
+                    error = "blockundo prior spent coin is a burn output";
+                    return false;
+                }
+                Hash leaf_hash{};
+                if (!UtxoLeaf(prior_coin, leaf_hash)) {
+                    error = "blockundo prior spent coin failed UtxoLeaf validation";
+                    return false;
+                }
+                prior_spent.push_back(prior_coin);
+            }
+        }
+    }
+
+    if (undo_cursor != undo_msg.prior_spent_coins.size()) {
+        error = "blockundo contains trailing unconsumed coins (possible intra-block spend injection)";
+        return false;
+    }
+
+    // O_h^net = O_h^all \ I_h^intra
+    std::vector<Coin> net_created;
+    net_created.reserve(created_order.size() - intra_spent.size());
+    for (const Outpoint &op : created_order) {
+        if (!intra_spent.contains(op)) {
+            net_created.push_back(created_in_block.at(op).second);
+        }
+    }
+
+    out_net_created = std::move(net_created);
+    out_prior_spent = std::move(prior_spent);
+    return true;
+}
+
+} // namespace
 
 std::vector<uint8_t> EncodeGetBlockUndoRequest(const GetBlockUndoRequest &req) {
     return std::vector<uint8_t>(req.block_id.begin(), req.block_id.end());
@@ -1068,9 +1182,6 @@ bool DecodeBlockUndoMessage(const std::vector<uint8_t> &bytes,
         error = "invalid blockundo coin count";
         return false;
     }
-    if (count > (bytes.size() - offset) / 55) {
-        error = "truncated blockundo coin records"; return false;
-    }
     parsed.prior_spent_coins.resize(static_cast<size_t>(count));
     for (size_t i = 0; i < parsed.prior_spent_coins.size(); ++i) {
         uint64_t coin_len = 0;
@@ -1095,164 +1206,270 @@ bool DecodeBlockUndoMessage(const std::vector<uint8_t> &bytes,
     return true;
 }
 
-namespace {
-
-bool SameOutput(const Output &a, const Output &b) {
-    return a == b;
-}
-
-bool SameCoin(const Coin &a, const Coin &b) {
-    return a.outpoint == b.outpoint && a.creation_height == b.creation_height &&
-           a.coinbase == b.coinbase &&
-           a.creation_parent_mtp == b.creation_parent_mtp &&
-           SameOutput(a.output, b.output);
-}
-
-} // namespace
-
-bool VerifyAndPeelReverseBlock(
-    uint64_t block_height, uint64_t parent_mtp,
-    const std::vector<BlockCreatedOutput> &block_outputs,
-    const std::vector<Outpoint> &block_spent_outpoints,
-    const std::vector<Coin> &undo_spent_coins, UtxoSet &peel_utxo,
-    const std::optional<Hash> &expected_parent_utxo_root,
-    Hash &out_parent_utxo_root, std::string &error) {
-    if (block_height == 0) {
-        error = "cannot reverse-peel genesis block";
+bool BuildBlockUndoMessage(const std::vector<uint8_t> &block_wire,
+                           const ChainId &chain_id,
+                           const TxProfile &tx_profile,
+                           const MonetaryState &parent_monetary,
+                           const UtxoSet &pre_block_utxo,
+                           BlockUndoMessage &out,
+                           std::string &error) {
+    FramedBlock block;
+    if (!DecodeBlockWire(block_wire, tx_profile, chain_id, block, error)) {
         return false;
     }
+    Hash block_id{};
+    BlockId(chain_id, block.header, block_id);
 
-    std::map<Outpoint, BlockCreatedOutput, OutpointLess> created_spendable;
-    for (const auto &created : block_outputs) {
-        if (created.output.IsBurn()) {
-            continue;
-        }
-        if (!created_spendable.emplace(created.outpoint, created).second) {
-            error = "duplicate created outpoint in block";
-            return false;
+    DevelopmentUtxoView pre_view;
+    for (const Coin &c : pre_block_utxo.Coins()) {
+        pre_view.emplace(c.outpoint, c);
+    }
+
+    std::set<Outpoint, OutpointLess> created_in_block;
+    for (size_t tx_idx = 0; tx_idx < block.transactions.size(); ++tx_idx) {
+        const Transaction &tx = block.transactions[tx_idx];
+        const Hash &txid = block.transaction_identities[tx_idx].txid;
+        for (size_t j = 0; j < tx.outputs.size(); ++j) {
+            if (!tx.outputs[j].IsBurn()) {
+                created_in_block.insert(
+                    Outpoint{txid, static_cast<uint32_t>(j)});
+            }
         }
     }
 
-    std::set<Outpoint, OutpointLess> seen_spends;
-    std::set<Outpoint, OutpointLess> intra_spends;
-    std::vector<Outpoint> prior_spend_order;
-    prior_spend_order.reserve(block_spent_outpoints.size());
-    for (const Outpoint &sp : block_spent_outpoints) {
-        if (!seen_spends.insert(sp).second) {
-            error = "duplicate spent outpoint in block";
-            return false;
-        }
-        if (created_spendable.count(sp) != 0) {
-            intra_spends.insert(sp);
-        } else {
-            prior_spend_order.push_back(sp);
-        }
-    }
-
-    // Accept either prior-only undo_spent_coins (from wire BlockUndoMessage) or
-    // full-input undo_spent_coins (including intra-block spends).
-    std::vector<Coin> prior_coins;
-    if (undo_spent_coins.size() == prior_spend_order.size()) {
-        prior_coins = undo_spent_coins;
-    } else if (undo_spent_coins.size() == block_spent_outpoints.size()) {
-        prior_coins.reserve(prior_spend_order.size());
-        for (size_t i = 0; i < block_spent_outpoints.size(); ++i) {
-            const Outpoint &sp = block_spent_outpoints[i];
-            const Coin &c = undo_spent_coins[i];
-            if (!(c.outpoint == sp)) {
-                error = "undo spent coin outpoint mismatch";
+    BlockUndoMessage msg;
+    msg.block_id = block_id;
+    msg.parent_monetary_state = EncodeMonetaryState(parent_monetary);
+    for (size_t tx_idx = 1; tx_idx < block.transactions.size(); ++tx_idx) {
+        const Transaction &tx = block.transactions[tx_idx];
+        for (const Input &input : tx.inputs) {
+            if (input.flags != 1) continue;
+            const Outpoint op{input.prev_txid, input.prev_index};
+            // Intra-block spends are omitted from prior_spent_coins (Hole 12).
+            if (created_in_block.contains(op)) {
+                continue;
+            }
+            const auto it = pre_view.find(op);
+            if (it == pre_view.end()) {
+                error = "missing pre-block coin for prior spend in BuildBlockUndoMessage";
                 return false;
             }
-            auto created_it = created_spendable.find(sp);
-            if (created_it != created_spendable.end()) {
-                Coin expected_intra;
-                expected_intra.outpoint = sp;
-                expected_intra.creation_height = block_height;
-                expected_intra.coinbase = created_it->second.is_coinbase;
-                expected_intra.creation_parent_mtp = c.creation_parent_mtp;
-                expected_intra.output = created_it->second.output;
-                if (!SameCoin(c, expected_intra)) {
-                    error = "intra-block spent coin does not match block output";
-                    return false;
-                }
-            } else {
-                prior_coins.push_back(c);
-            }
+            msg.prior_spent_coins.push_back(it->second);
         }
-    } else {
-        error = "undo spent coins count mismatch";
+    }
+
+    out = std::move(msg);
+    error.clear();
+    return true;
+}
+
+bool PeelBlockReverse(const std::vector<uint8_t> &block_wire,
+                      const BlockUndoMessage &undo_msg,
+                      const Header &parent_header,
+                      const std::vector<Header> &history,
+                      const HeaderChainProfile &header_profile,
+                      OrdinaryCandidateProfile ordinary_profile,
+                      const MonetaryProfile &monetary_profile,
+                      const BlockCostProfile &cost_profile,
+                      UtxoSet &state_at_h,
+                      MonetaryState &monetary_at_h,
+                      std::string &error) {
+    FramedBlock block;
+    if (!DecodeBlockWire(block_wire, ordinary_profile.transaction,
+                         header_profile.chain_id, block, error)) {
+        return false;
+    }
+    Hash block_id_h{}, parent_id{};
+    if (!BlockId(header_profile.chain_id, block.header, block_id_h) ||
+        undo_msg.block_id != block_id_h) {
+        error = "blockundo block_id does not match block_wire header";
+        return false;
+    }
+    if (!BlockId(header_profile.chain_id, parent_header, parent_id) ||
+        block.header.prev_id != parent_id ||
+        parent_header.height == std::numeric_limits<uint64_t>::max() ||
+        block.header.height != parent_header.height + 1) {
+        error = "reverse peel parent header linkage or height mismatch";
+        return false;
+    }
+    if (StateRoot(header_profile.chain_id, block.header.height,
+                  state_at_h.Root(), monetary_at_h) != block.header.state_root) {
+        error = "starting state_at_h does not match authenticated header_h.state_root";
+        return false;
+    }
+    const auto parent_mtp =
+        ParentMedianTime(header_profile, parent_header, history);
+    if (!parent_mtp) {
+        error = "reverse peel failed to compute ParentMedianTime";
+        return false;
+    }
+    MonetaryState parent_monetary{};
+    try {
+        parent_monetary = DecodeMonetaryState(
+            std::vector<uint8_t>(undo_msg.parent_monetary_state.begin(),
+                                 undo_msg.parent_monetary_state.end()));
+    } catch (const std::exception &e) {
+        error = std::string("invalid parent_monetary_state in blockundo: ") +
+                e.what();
         return false;
     }
 
-    for (size_t i = 0; i < prior_spend_order.size(); ++i) {
-        const Coin &c = prior_coins[i];
-        if (!(c.outpoint == prior_spend_order[i])) {
-            error = "prior spent coin outpoint order mismatch";
-            return false;
-        }
-        if (c.output.IsBurn()) {
-            error = "prior spent coin cannot be burn output";
-            return false;
-        }
-        if (c.creation_height >= block_height) {
-            error = "prior spent coin creation_height >= block_height";
-            return false;
-        }
-        if (peel_utxo.Find(c.outpoint) != nullptr) {
-            error = "prior spent coin is still present in current UTXO state";
-            return false;
-        }
-    }
-
-    UtxoSet scratch = peel_utxo;
-
-    // 1. Verify and remove all net unspent outputs O_h^net created by block h.
-    for (const auto &[outpoint, created] : created_spendable) {
-        if (intra_spends.count(outpoint) != 0) {
-            continue;
-        }
-        const Coin *existing = scratch.Find(outpoint);
-        if (!existing) {
-            error = "net block output missing from UTXO state at height " +
-                    std::to_string(block_height);
-            return false;
-        }
-        Coin expected_created;
-        expected_created.outpoint = outpoint;
-        expected_created.creation_height = block_height;
-        expected_created.coinbase = created.is_coinbase;
-        expected_created.creation_parent_mtp =
-            (parent_mtp == 0 || existing->creation_parent_mtp == 0)
-                ? existing->creation_parent_mtp
-                : parent_mtp;
-        expected_created.output = created.output;
-        if (!SameCoin(*existing, expected_created)) {
-            error = "net block output in UTXO state does not match block";
-            return false;
-        }
-        if (!scratch.Erase(outpoint)) {
-            error = "failed erasing net block output from UTXO state";
-            return false;
-        }
-    }
-
-    // 2. Restore all prior-block spent coins I_h^prior.
-    for (const Coin &c : prior_coins) {
-        if (!scratch.Insert(c)) {
-            error = "failed inserting prior spent coin into parent UTXO state";
-            return false;
-        }
-    }
-
-    const Hash computed_parent_root = scratch.Root();
-    if (expected_parent_utxo_root.has_value() &&
-        computed_parent_root != *expected_parent_utxo_root) {
-        error = "peeled parent UtxoRoot mismatch against state anchor";
+    std::vector<Coin> net_created;
+    std::vector<Coin> prior_spent;
+    if (!PartitionBlockOutputsAndSpends(block, *parent_mtp, undo_msg,
+                                        net_created, prior_spent, error)) {
         return false;
     }
 
-    peel_utxo = std::move(scratch);
-    out_parent_utxo_root = computed_parent_root;
+    // Verify O_h^net membership with identical canonical bytes in state_at_h,
+    // and verify I_h^prior absence in state_at_h.
+    DevelopmentUtxoView current_view;
+    for (const Coin &c : state_at_h.Coins()) {
+        current_view.emplace(c.outpoint, c);
+    }
+    for (const Coin &expected_created : net_created) {
+        const auto it = current_view.find(expected_created.outpoint);
+        if (it == current_view.end()) {
+            error = "reverse peel missing surviving output O_h^net in state_at_h";
+            return false;
+        }
+        std::vector<uint8_t> b1, b2;
+        if (!EncodeCoin(it->second, b1) || !EncodeCoin(expected_created, b2) ||
+            b1 != b2) {
+            error = "reverse peel surviving output coin bytes mismatch in state_at_h";
+            return false;
+        }
+    }
+    for (const Coin &prior_coin : prior_spent) {
+        if (current_view.contains(prior_coin.outpoint)) {
+            error = "reverse peel prior spent coin already exists in state_at_h";
+            return false;
+        }
+    }
+
+    // Peel Merklix state backwards from height h to h - 1:
+    // erase O_h^net and insert I_h^prior.
+    UtxoSet peeled_state = state_at_h;
+    for (const Coin &created : net_created) {
+        peeled_state.Erase(created.outpoint);
+    }
+    for (const Coin &spent : prior_spent) {
+        if (!peeled_state.Insert(spent)) {
+            error = "reverse peel failed inserting I_h^prior into Merklix state";
+            return false;
+        }
+    }
+
+    // Verify peeled state root against authenticated parent header H_{h-1}!
+    const Hash peeled_state_root =
+        StateRoot(header_profile.chain_id, parent_header.height,
+                  peeled_state.Root(), parent_monetary);
+    if (peeled_state_root != parent_header.state_root) {
+        error = "reverse peel parent StateRoot mismatch against H_{h-1}.state_root";
+        return false;
+    }
+
+    // Execute full forward transaction, signature, VM script, and P05/P06 monetary
+    // validation of B_h against the peeled parent state (Hole 12 complete check).
+    ordinary_profile.candidate_height = block.header.height;
+    ordinary_profile.parent_mtp = *parent_mtp;
+    OrdinaryParentContext parent_ctx{parent_header, header_profile.chain_id,
+                                     parent_monetary};
+    InMemoryBlockStateTx forward_tx(peeled_state);
+    StagedBlockTransition staged_forward{};
+    if (StageCompleteBlock(block_wire, parent_ctx, history, header_profile,
+                           ordinary_profile, monetary_profile, cost_profile,
+                           forward_tx, staged_forward,
+                           error) != CandidateCheckResult::Accepted) {
+        return false;
+    }
+
+    state_at_h = std::move(peeled_state);
+    monetary_at_h = parent_monetary;
+    error.clear();
+    return true;
+}
+
+bool PeelDiskBlockReverse(const std::vector<uint8_t> &block_wire,
+                          const BlockUndoMessage &undo_msg,
+                          const Header &parent_header,
+                          const std::vector<Header> &history,
+                          const HeaderChainProfile &header_profile,
+                          OrdinaryCandidateProfile ordinary_profile,
+                          const MonetaryProfile &monetary_profile,
+                          const BlockCostProfile &cost_profile,
+                          DiskStateStore &store,
+                          std::string &error) {
+    if (!store.IsOpen()) {
+        error = "disk state store is closed";
+        return false;
+    }
+    const DiskStateMetadata meta_h = store.Metadata();
+    MonetaryState monetary_h{};
+    try {
+        monetary_h = DecodeMonetaryState(meta_h.monetary);
+    } catch (const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+    std::vector<Coin> coins_h;
+    DiskStateError disk_err{};
+    if (!store.ExportCoins(coins_h, disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
+    UtxoSet state_h;
+    for (const Coin &c : coins_h) {
+        state_h.Insert(c);
+    }
+
+    FramedBlock block;
+    if (!DecodeBlockWire(block_wire, ordinary_profile.transaction,
+                         header_profile.chain_id, block, error)) {
+        return false;
+    }
+    const auto parent_mtp =
+        ParentMedianTime(header_profile, parent_header, history);
+    if (!parent_mtp) {
+        error = "failed computing ParentMedianTime for disk reverse peel";
+        return false;
+    }
+    std::vector<Coin> net_created;
+    std::vector<Coin> prior_spent;
+    if (!PartitionBlockOutputsAndSpends(block, *parent_mtp, undo_msg,
+                                        net_created, prior_spent, error)) {
+        return false;
+    }
+
+    if (!PeelBlockReverse(block_wire, undo_msg, parent_header, history,
+                          header_profile, ordinary_profile, monetary_profile,
+                          cost_profile, state_h, monetary_h, error)) {
+        return false;
+    }
+
+    std::vector<Outpoint> net_created_outpoints;
+    net_created_outpoints.reserve(net_created.size());
+    for (const Coin &c : net_created) {
+        net_created_outpoints.push_back(c.outpoint);
+    }
+
+    DiskStateMetadata parent_meta{};
+    BlockId(header_profile.chain_id, parent_header, parent_meta.tip);
+    std::array<uint8_t, HEADER_SIZE> raw_parent{};
+    SerializeHeader(parent_header, raw_parent);
+    parent_meta.header.assign(raw_parent.begin(), raw_parent.end());
+    parent_meta.monetary.assign(undo_msg.parent_monetary_state.begin(),
+                                undo_msg.parent_monetary_state.end());
+    if (!history.empty()) {
+        parent_meta.auxiliary = EncodeDiskChainContext(history, {});
+    }
+
+    if (!store.PeelBlockStateReverse(meta_h.tip, parent_meta, parent_header,
+                                     net_created_outpoints, prior_spent,
+                                     disk_err)) {
+        error = disk_err.message;
+        return false;
+    }
     error.clear();
     return true;
 }

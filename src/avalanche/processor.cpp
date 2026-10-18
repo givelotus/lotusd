@@ -1388,12 +1388,6 @@ void Processor::finalizeStateAnchor(const StateAnchorId &anchorId) {
             }
         }
     }
-    lotus::v2::Hash v2_root{};
-    std::memcpy(v2_root.data(), utxo_root.begin(), 32);
-    LOCK(cs_main);
-    if (!chainman.GetAll().empty()) {
-        chainman.ActiveChainstate().SetFastSyncStateAnchor(blockhash, v2_root);
-    }
 }
 
 void Processor::rejectStateAnchor(const StateAnchorId &anchorId) {
@@ -2081,16 +2075,6 @@ void Processor::updatedBlockTip() {
             std::erase_if(m_conflictedBatchEpochs, [&](const auto &entry) {
                 return entry.first != *m_mempoolBatchParent;
             });
-        }
-        std::optional<lotus::v2::Hash> root;
-        {
-            LOCK(cs_main);
-            if (!chainman.GetAll().empty()) root = chainman.ActiveChainstate().GetFastSyncStateAnchor(activeTip->GetBlockHash());
-        }
-        if (root) {
-            uint256 root_id;
-            std::copy(root->begin(), root->end(), root_id.begin());
-            registerStateAnchor(activeTip->GetBlockHash(), root_id, true, false);
         }
     }
     if (activeTip && isStakingPreconsensusActivated(activeTip)) {
