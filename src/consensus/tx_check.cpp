@@ -82,6 +82,23 @@ bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
         return false;
     }
 
+    if (tx.vin.size() <= 8) {
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            const auto &txin = tx.vin[i];
+            if (txin.prevout.IsNull()) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-prevout-null");
+            }
+            for (size_t j = 0; j < i; ++j) {
+                if (txin.prevout == tx.vin[j].prevout) {
+                    return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                         "bad-txns-inputs-duplicate");
+                }
+            }
+        }
+        return true;
+    }
+
     std::unordered_set<COutPoint, SaltedOutpointHasher> vInOutPoints;
     for (const auto &txin : tx.vin) {
         if (txin.prevout.IsNull()) {
