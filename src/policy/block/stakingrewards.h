@@ -19,6 +19,11 @@ namespace avalanche {
 class Processor;
 }
 
+/**
+ * Percentage of the block subsidy to be sent to staking rewards (25%).
+ */
+static constexpr int STAKING_REWARD_RATIO = 25;
+
 class StakingRewardsPolicy : public ParkingPolicy {
 private:
     const avalanche::Processor &m_avalanche;
@@ -31,6 +36,13 @@ public:
     StakingRewardsPolicy(const avalanche::Processor &avalanche,
                          const Consensus::Params &consensusParams,
                          const CBlockIndex &blockIndex, const CBlock &block,
+                         const Amount &blockReward)
+        : m_avalanche(avalanche), m_block(block), m_blockReward(blockReward),
+          m_consensusParams(consensusParams), m_blockIndex(blockIndex) {}
+
+    StakingRewardsPolicy(const avalanche::Processor &avalanche,
+                         const CBlockIndex &blockIndex, const CBlock &block,
+                         const Consensus::Params &consensusParams,
                          const Amount &blockReward)
         : m_avalanche(avalanche), m_block(block), m_blockReward(blockReward),
           m_consensusParams(consensusParams), m_blockIndex(blockIndex) {}
