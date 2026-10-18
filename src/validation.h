@@ -28,7 +28,6 @@
 #include <kernel/chainparams.h>
 #include <kernel/chainstatemanager_opts.h>
 #include <kernel/cs_main.h>
-#include <lotus_v2/fast_sync.h>
 #include <node/blockprefetch.h>
 #include <node/blockstorage.h>
 #include <policy/packages.h>
@@ -53,7 +52,6 @@
 #include <set>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -1001,7 +999,32 @@ protected:
     //! Cached result of LookupBlockIndex(*m_from_snapshot_blockhash)
     const CBlockIndex *m_cached_snapshot_base GUARDED_BY(::cs_main){nullptr};
 
+    //! Base block index when a V2 fast-sync pivot is activated without full
+    //! ancestor block execution.
+    const CBlockIndex *m_fast_sync_pivot_base GUARDED_BY(::cs_main){nullptr};
+
+    //! Earliest block height verified back toward genesis during V2 fast-sync
+    //! reverse block peeling (Hole 16). 0 when fully verified back to genesis.
+    int m_earliest_verified_height GUARDED_BY(::cs_main){0};
+
+    //! True while V2 fast-sync reverse block peeling is active (i.e.
+    //! m_earliest_verified_height > 0).
+    std::optional<bool> m_snapsync_enabled_override GUARDED_BY(::cs_main);
+    std::optional<bool> m_reversesync_enabled_override GUARDED_BY(::cs_main);
+    bool m_fast_sync_active GUARDED_BY(::cs_main){false};
+
 public:
+    struct FastSyncPeelResult {
+        BlockHash peeled_blockhash{};
+        BlockHash parent_blockhash{};
+        int parent_height{0};
+        int earliest_verified_height{0};
+        bool fast_sync_active{false};
+        size_t intra_block_spends{0};
+        size_t prior_spends_restored{0};
+        size_t net_outputs_removed{0};
+    };
+
     //! Reference to a BlockManager instance which itself is shared across all
     //! Chainstate instances.
     node::BlockManager &m_blockman;
@@ -1068,6 +1091,60 @@ public:
         AssertLockHeld(::cs_main);
         return m_fast_sync_pivot_base;
     }
+
+    int GetEarliestVerifiedHeight() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        return m_earliest_verified_height;
+    }
+
+    bool IsFastSyncActive() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        return m_fast_sync_active;
+    }
+
+    void ActivateFastSyncPivot(int pivot_height)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        m_earliest_verified_height = std::max(0, pivot_height);
+        m_fast_sync_active = (m_earliest_verified_height > 0);
+    }
+
+    bool IsSnapSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    bool IsReverseSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void SetSnapSyncEnabled(std::optional<bool> enabled) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_snapsync_enabled_override = enabled;
+    }
+    void SetReverseSyncEnabled(std::optional<bool> enabled) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_reversesync_enabled_override = enabled;
+    }
+    bool ActivateVerifiedFastSyncPivot(
+        CBlockIndex *pindex_pivot,
+        const std::vector<lotus::v2::Coin> &coins,
+        const lotus::v2::MonetaryState &monetary_state, std::string &error)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    bool PeelFastSyncBlock(
+        const BlockHash &block_hash,
+        const lotus::v2::BlockUndoMessage &undo_msg,
+        const CBlock *optional_block,
+        FastSyncPeelResult &result_out,
+        std::string &err_out)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    bool RecordReversePeeledBlock(int peeled_parent_height)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        if (!m_fast_sync_active ||
+            peeled_parent_height != m_earliest_verified_height - 1) {
+            return false;
+        }
+        m_earliest_verified_height = peeled_parent_height;
+        if (m_earliest_verified_height == 0) {
+            m_fast_sync_active = false;
+        }
+        return true;
+    }
+
 
     /**
      * The set of all CBlockIndex entries that have as much work as our current
@@ -1291,106 +1368,7 @@ public:
         return m_mempool ? &m_mempool->cs : nullptr;
     }
 
-    static constexpr int kDefaultFastSyncUndoHorizon = 50;
-    static constexpr size_t MAX_CACHED_FAST_SYNC_STATES = 64;
-
-    struct FastSyncBlockState {
-        std::shared_ptr<const lotus::v2::SmtNode> smt_root;
-        lotus::v2::UtxoSet utxo;
-        lotus::v2::MonetaryState monetary;
-        lotus::v2::Hash utxo_root = lotus::v2::EmptyUtxoRoot();
-        uint64_t height = 0;
-        bool authenticated_anchor = false;
-    };
-
-    bool IsFastSyncActive() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        return m_fast_sync_active;
-    }
-    int GetEarliestVerifiedHeight() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        return m_earliest_verified_height;
-    }
-    const CBlockIndex *GetEarliestVerifiedBlock() const
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        return m_earliest_verified_block;
-    }
-    int GetFastSyncMaxPeelBlocks() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    void SetFastSyncMaxPeelBlocks(std::optional<int> max_blocks)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        m_max_peel_blocks_override = max_blocks;
-    }
-    int GetFastSyncPeeledBlocksCount() const
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        return m_peeled_blocks_count;
-    }
-    bool IsSnapSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    bool IsReverseSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    void SetSnapSyncEnabled(std::optional<bool> enabled)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        m_snapsync_enabled_override = enabled;
-    }
-    void SetReverseSyncEnabled(std::optional<bool> enabled)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
-        m_reversesync_enabled_override = enabled;
-    }
-    void SetFastSyncStateAnchor(const BlockHash &block_hash,
-                                const lotus::v2::Hash &utxo_root)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    std::optional<lotus::v2::Hash>
-    GetFastSyncStateAnchor(const BlockHash &block_hash) const
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    const FastSyncBlockState *
-    GetFastSyncBlockState(const BlockHash &block_hash) const
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    bool ExportV2BlockStateCoinsAndMonetary(
-        const CBlockIndex *pindex, FastSyncBlockState &out_state,
-        std::string &error, bool populate_utxo_set = true)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    bool ActivateVerifiedFastSyncPivot(
-        CBlockIndex *pivot_index, const lotus::v2::UtxoRootsMessage &roots_msg,
-        const std::vector<lotus::v2::UtxoShardMessage> &shards,
-        std::string &error) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    bool PeelFastSyncBlock(const CBlock &block, CBlockIndex *pindex,
-                           const std::vector<lotus::v2::Coin> &spent_coins,
-                           std::string &error)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
 private:
-    void CacheFastSyncBlockState(
-        const BlockHash &block_hash,
-        std::shared_ptr<const lotus::v2::SmtNode> smt_root,
-        const lotus::v2::MonetaryState &monetary,
-        const lotus::v2::Hash &utxo_root, uint64_t height, bool authenticated_anchor = true)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    void UpdateConnectedBlockSmtState(const CBlock &block,
-                                      const CBlockIndex *pindex)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    void UpdateFastSyncPivotBase(CBlockIndex *new_base)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-    bool m_fast_sync_active GUARDED_BY(::cs_main){false};
-    std::vector<CBlockIndex *> m_reverse_checked_blocks GUARDED_BY(::cs_main);
-    int m_earliest_verified_height GUARDED_BY(::cs_main){0};
-    CBlockIndex *m_earliest_verified_block GUARDED_BY(::cs_main){nullptr};
-    CBlockIndex *m_fast_sync_pivot_base GUARDED_BY(::cs_main){nullptr};
-    int m_fast_sync_pivot_height GUARDED_BY(::cs_main){0};
-    int m_peeled_blocks_count GUARDED_BY(::cs_main){0};
-    std::optional<int> m_max_peel_blocks_override GUARDED_BY(::cs_main);
-    std::optional<bool> m_snapsync_enabled_override GUARDED_BY(::cs_main);
-    std::optional<bool> m_reversesync_enabled_override GUARDED_BY(::cs_main);
-    std::optional<lotus::v2::UtxoSet> m_reverse_peel_utxo GUARDED_BY(::cs_main);
-    std::shared_ptr<const lotus::v2::SmtNode>
-        m_reverse_peel_smt_root GUARDED_BY(::cs_main);
-    std::shared_ptr<const lotus::v2::SmtNode>
-        m_tip_smt_root GUARDED_BY(::cs_main);
-    BlockHash m_tip_smt_blockhash GUARDED_BY(::cs_main){};
-    std::unordered_map<uint64_t, std::vector<lotus::v2::Coin>>
-        m_pending_undo_coin_checks GUARDED_BY(::cs_main);
-    std::deque<BlockHash> m_fast_sync_state_fifo GUARDED_BY(::cs_main);
-    std::unordered_map<BlockHash, FastSyncBlockState, SaltedUint256Hasher>
-        m_fast_sync_block_states GUARDED_BY(::cs_main);
-    std::unordered_map<BlockHash, lotus::v2::Hash, SaltedUint256Hasher>
-        m_fast_sync_state_anchors GUARDED_BY(::cs_main);
-
     bool ActivateBestChainStep(
         BlockValidationState &state, CBlockIndex *pindexMostWork,
         const std::shared_ptr<const CBlock> &pblock, bool &fInvalidFound,
