@@ -12,6 +12,7 @@
 #include <consensus/consensus.h>
 #include <consensus/params.h>
 #include <consensus/validation.h>
+#include <lotus_v2/lock.h>
 #include <primitives/transaction.h>
 #include <script/script_flags.h>
 #include <util/check.h>
@@ -19,6 +20,16 @@
 
 static bool IsFinalTx(const CTransaction &tx, int nBlockHeight,
                       int64_t nBlockTime) {
+    // A transaction in the v7 wire format carries the V2 lock, whose value
+    // is 56 bits wide and whose kind byte (not a 500M threshold) says height
+    // or time; its nLockTime is only a truncated display copy. (The wrapped
+    // legacy-grammar form has a legacy nLockTime and no V2 lock.)
+    if (tx.nVersion == 7 && tx.fHasV2Lock) {
+        return lotus::v2::AbsoluteLockSatisfied(
+            tx.nV2Lock, uint64_t(std::max(nBlockHeight, 0)),
+            uint64_t(std::max<int64_t>(nBlockTime, 0)));
+    }
+
     if (tx.nLockTime == 0) {
         return true;
     }
