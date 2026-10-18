@@ -320,6 +320,11 @@ extern const char *AVAPROOFS;
 extern const char *AVATREASURY;
 
 /**
+ * Contains an avalanche pre-consensus mempool batch announcement.
+ */
+extern const char *AVABATCH;
+
+/**
  * Request for missing avalanche proofs after an avaproofs message has been
  * processed.
  */
@@ -697,6 +702,7 @@ enum GetDataMsg : uint32_t {
     MSG_AVA_PROOF = 0x1f000001,
     MSG_AVA_STAKE_CONTENDER = 0x1f000002,
     MSG_AVA_TREASURY_CONTENDER = MSG_TYPE_AVALANCHE_INBOUND | 0x5,
+    MSG_AVA_MEMPOOL_BATCH = MSG_TYPE_AVALANCHE_INBOUND | 0x6,
 };
 
 /**
@@ -745,10 +751,7 @@ public:
         auto k = GetKind();
         return k == MSG_AVA_MEMPOOL_BATCH;
     }
-    bool IsMsgStateAnchor() const {
-        auto k = GetKind();
-        return k == MSG_AVA_STATE_ANCHOR;
-    }
+
     bool IsMsgBlk() const {
         auto k = GetKind();
         return k == MSG_BLOCK;
