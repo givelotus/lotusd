@@ -13,6 +13,7 @@
 #include <net.h>
 #include <net_processing.h>
 #include <node/kernel_notifications.h>
+#include <node/mining_pool.h>
 #include <node/snapshot.h>
 #include <node/transaction.h>
 #include <scheduler.h>
@@ -20,7 +21,9 @@
 #include <validation.h>
 
 namespace node {
-NodeContext::NodeContext() : snapshot_publisher(GetGlobalSnapshotPublisherPtr()) {}
+NodeContext::NodeContext()
+    : snapshot_publisher(GetGlobalSnapshotPublisherPtr()),
+      mining_pool(GetGlobalMiningPoolPtr()) {}
 NodeContext::~NodeContext() {
     rpc_admission.reset();
 }
