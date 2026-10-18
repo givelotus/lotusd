@@ -774,10 +774,12 @@ dependencies = [
  "karyon_net",
  "prost",
  "rustls",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.17",
  "tokio",
+ "tower 0.5.2",
  "tower-http 0.5.2",
  "tower-service",
  "versions",
@@ -877,6 +879,7 @@ version = "0.1.0"
 dependencies = [
  "abc-rust-error",
  "abc-rust-lint",
+ "axum 0.7.9",
  "bitcoinsuite-core",
  "chronik-bridge",
  "chronik-db",
@@ -886,6 +889,7 @@ dependencies = [
  "chronik-util",
  "cxx",
  "cxx-build",
+ "getrandom 0.2.16",
  "thiserror 2.0.17",
  "tokio",
 ]
