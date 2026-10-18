@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.18)
+project(lotus_v2_avalanche_review LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT EXISTS "${LOTUS_ABC_BUILD}/src/config/bitcoin-config.h")
+ message(FATAL_ERROR "Set LOTUS_ABC_BUILD to a configured pinned ABC build")
+endif()
+get_filename_component(LOTUS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+add_library(blake3 STATIC ../vendor/blake3/blake3.c ../vendor/blake3/blake3_dispatch.c ../vendor/blake3/blake3_portable.c)
+target_compile_definitions(blake3 PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0)
+add_executable(avalanche_test ../test_avalanche_v2.cpp ../avalanche_chain.cpp ../avalanche_poll.cpp ../avalanche_quorum.cpp ../avalanche_proof.cpp ../avalanche_protocol.cpp ../commitment.cpp ../tagged_hash.cpp ../../avalanche/proofpool.cpp)
+target_compile_definitions(avalanche_test PRIVATE HAVE_CONFIG_H)
+target_include_directories(avalanche_test PRIVATE "${LOTUS_SRC}" "${LOTUS_ABC_BUILD}/src" "${LOTUS_BOOST_INCLUDE}" ../vendor/blake3)
+target_compile_options(avalanche_test PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter -ffunction-sections -fdata-sections)
+# Pin crypto/random/delegation/vote primitives to the configured ABC build.
+target_link_libraries(avalanche_test PRIVATE blake3
+ "${LOTUS_ABC_BUILD}/src/libserver.a" "${LOTUS_ABC_BUILD}/src/libcommon.a"
+ "${LOTUS_ABC_BUILD}/src/libbitcoinconsensus.a" "${LOTUS_ABC_BUILD}/src/libscript.a" "${LOTUS_ABC_BUILD}/src/libutil.a"
+ "${LOTUS_ABC_BUILD}/src/crypto/libcrypto.a" "${LOTUS_ABC_BUILD}/src/univalue/libunivalue.a" "${LOTUS_ABC_BUILD}/src/secp256k1/libsecp256k1.a")
+if(APPLE)
+ target_link_options(avalanche_test PRIVATE -Wl,-dead_strip)
+else()
+ target_link_options(avalanche_test PRIVATE -Wl,--gc-sections)
+endif()
+enable_testing()
+add_test(NAME avalanche_test COMMAND avalanche_test)
