@@ -5,8 +5,6 @@
 #include <bench/bench.h>
 
 #include <consensus/merkle.h>
-#include <lotus_v2/blocksnap.h>
-#include <primitives/transaction.h>
 #include <random.h>
 #include <uint256.h>
 
@@ -44,46 +42,4 @@ static void MerkleRoot(benchmark::Bench &bench) {
     }
 }
 
-static void SealedBlockMerkleSpine(benchmark::Bench &bench) {
-    FastRandomContext rng{/*fDeterministic=*/true};
-
-    CMutableTransaction cb_mtx;
-    cb_mtx.vin.resize(1);
-    cb_mtx.vin[0].scriptSig = CScript() << OP_0;
-    cb_mtx.vout.resize(1);
-    cb_mtx.vout[0].nValue = 100 * SATOSHI;
-    CTransactionRef cb_tx = MakeTransactionRef(std::move(cb_mtx));
-
-    std::vector<CTransactionRef> non_cb_txs;
-    non_cb_txs.reserve(9000);
-    for (size_t i = 0; i < 9000; ++i) {
-        CMutableTransaction mtx;
-        mtx.vin.resize(1);
-        mtx.vin[0].prevout = COutPoint(TxId(rng.rand256()), uint32_t(i));
-        mtx.vout.resize(1);
-        non_cb_txs.push_back(MakeTransactionRef(std::move(mtx)));
-    }
-    uint256 null_root;
-    std::vector<uint256> branch;
-    lotus::v2::ComputeNullMerkleRootAndBranch(non_cb_txs, null_root, branch);
-
-    lotus::v2::SealedBlock sb;
-    sb.header.nVersion = 1;
-    sb.header.nBits = 0x207fffff;
-    sb.tx_coinbase = cb_tx;
-    sb.coinbase_merkle_branch = branch;
-    sb.header.hashMerkleRoot =
-        lotus::v2::ComputeMerkleRootFromBranch(cb_tx->GetId(), branch, 0);
-
-    bench.name("SealedBlockMerkleSpine")
-        .batch(9001)
-        .unit("leaf")
-        .run([&] {
-            const bool ok = sb.VerifyMerkleSpine(null_root);
-            assert(ok);
-            ankerl::nanobench::doNotOptimizeAway(ok);
-        });
-}
-
 BENCHMARK(MerkleRoot);
-BENCHMARK(SealedBlockMerkleSpine);

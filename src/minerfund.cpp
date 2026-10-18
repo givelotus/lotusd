@@ -68,13 +68,23 @@ bool CheckMinerFund(const Consensus::Params &params,
         }
 
         CTxDestination address;
-        if (!ExtractDestination(o.scriptPubKey, address)) {
-            // Cannot decode address.
+        if (ExtractDestination(o.scriptPubKey, address)) {
+            if (whitelist.find(address) != whitelist.end()) {
+                return true;
+            }
             continue;
         }
 
-        if (whitelist.find(address) != whitelist.end()) {
-            return true;
+        if (!o.vBranches.empty()) {
+            for (const auto &dest : whitelist) {
+                const lotus::v2::Output expected =
+                    CTxOut(o.nValue, GetScriptForDestination(dest)).ToV2Output();
+                if (o.nFlags == expected.flags &&
+                    o.vBranches == expected.branches &&
+                    o.vPaths == expected.paths) {
+                    return true;
+                }
+            }
         }
     }
 

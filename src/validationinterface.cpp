@@ -217,7 +217,7 @@ void ValidationSignals::TransactionAddedToMempool(
         });
     };
     ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s", __func__,
-                          tx->GetHash().ToString());
+                          tx->GetId().ToString());
 }
 
 void ValidationSignals::TransactionsAddedToMempoolBatch(
@@ -256,7 +256,7 @@ void ValidationSignals::TransactionRemovedFromMempool(
         });
     };
     ENQUEUE_AND_LOG_EVENT(event, "%s: txid=%s reason=%s", __func__,
-                          tx->GetHash().ToString(),
+                          tx->GetId().ToString(),
                           RemovalReasonToString(reason));
 }
 

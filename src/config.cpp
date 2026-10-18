@@ -4,8 +4,11 @@
 
 #include <config.h>
 
+#include <common/args.h>
 #include <consensus/consensus.h> // DEFAULT_MAX_BLOCK_SIZE
+#include <lotus_v2/fee_hysteresis.h>
 
+#include <algorithm>
 
 GlobalConfig::GlobalConfig()
     : useCashAddr(false), nMaxBlockSize(DEFAULT_MAX_BLOCK_SIZE) {}
@@ -22,6 +25,14 @@ bool GlobalConfig::SetMaxBlockSize(uint64_t maxBlockSize) {
 }
 
 uint64_t GlobalConfig::GetMaxBlockSize() const {
+    if (nMaxBlockSize >= DEFAULT_MAX_BLOCK_SIZE &&
+        !gArgs.IsArgSet("-excessiveblocksize") &&
+        gArgs.GetBoolArg("-adaptiveblocksize", true)) {
+        return std::max(
+            nMaxBlockSize,
+            lotus::v2::GetGlobalFeeHysteresisController()
+                .GetAdaptiveMaxBlockSize());
+    }
     return nMaxBlockSize;
 }
 
