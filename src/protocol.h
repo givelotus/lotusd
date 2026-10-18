@@ -60,6 +60,8 @@ public:
     std::string GetMessageType() const;
     bool IsMessageTypeValid() const;
     bool IsOversized(const Config &config) const;
+    static uint64_t GetMaxPayloadSize(const Config &config,
+                                      const std::string &msg_type);
 
     SERIALIZE_METHODS(CMessageHeader, obj) {
         READWRITE(obj.pchMessageStart, obj.m_msg_type, obj.nMessageSize,
