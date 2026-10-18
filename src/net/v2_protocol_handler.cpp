@@ -1686,6 +1686,21 @@ void V2PeerProtocolHandler::HandleShortTx(
             }
 
             accepted_txs.reserve(missing_txs.size());
+            const PackageMempoolAcceptResult batch_res = ProcessRawTxBatch(
+                m_chainman.ActiveChainstate(), m_mempool, missing_txs,
+                /*test_accept=*/false);
+            if (batch_res.m_state.IsValid()) {
+                for (const auto &tx : missing_txs) {
+                    const TxId &txid = tx->GetId();
+                    if (m_mempool.exists(txid)) {
+                        valid_txs.push_back(tx);
+                        accepted_txs.push_back(tx);
+                    }
+                }
+            } else {
+                // Per-tx fallback when a SHORTTX batch contains an invalid or
+                // conflicting transaction so valid transactions in the batch
+                // are still admitted.
                 for (const auto &tx : missing_txs) {
                     const TxId &txid = tx->GetId();
                     if (m_mempool.exists(txid)) {
@@ -1701,12 +1716,11 @@ void V2PeerProtocolHandler::HandleShortTx(
                         accepted_txs.push_back(tx);
                     }
                 }
+            }
         }
     }
 
-    for (const auto &tx : valid_txs) {
-        m_peerman.MarkPeerKnownTx(pfrom.GetId(), tx->GetId());
-    }
+    m_peerman.MarkPeerKnownTxBatch(pfrom.GetId(), valid_txs);
 
     if (!valid_txs.empty() &&
         !(scope == ReconScope::LIVE_MEMPOOL && resp.context_id.IsNull())) {
@@ -1716,9 +1730,7 @@ void V2PeerProtocolHandler::HandleShortTx(
         SetScopedTransactions(scope, resp.context_id, std::move(merged));
     }
 
-    for (const auto &tx : accepted_txs) {
-        m_peerman.RelayTransaction(tx->GetId());
-    }
+    m_peerman.RelayTransactionBatch(accepted_txs);
 }
 
 V2ProtocolHandlerStats V2PeerProtocolHandler::GetStats() const {

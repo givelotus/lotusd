@@ -21,8 +21,12 @@ class AtomicTxBatchTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.setup_clean_chain = True
         self.supports_cli = False
-        self.extra_args = [["-avalanche=0", "-highbandwidthtx=1"],
-                           ["-avalanche=0", "-highbandwidthtx=1"]]
+        # This test explicitly verifies shorttx; override the framework's
+        # compatibility default that disables that path for legacy fixtures.
+        self.extra_args = [
+            ["-avalanche=0", "-highbandwidthtx=1", "-testdisablehighbandwidthshorttx=0"],
+            ["-avalanche=0", "-highbandwidthtx=1", "-testdisablehighbandwidthshorttx=0"],
+        ]
 
     def run_test(self):
         node, peer = self.nodes
