@@ -613,6 +613,9 @@ public:
     }
 
     void FlushPendingOverlayAdds() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    void WarmMerklixOverlayIfNeeded(const BlockHash &tip_hash,
+                                   uint64_t next_height, uint64_t next_mtp) const;
+
 
     /** Shared speculative transaction overlay; not proof of script validity. */
     lotus::v2::MerklixOverlayManager &GetMerklixOverlay() const
@@ -701,6 +704,7 @@ private:
     mutable std::vector<std::tuple<CTransactionRef, int64_t, int64_t>>
         m_pending_overlay_adds GUARDED_BY(cs);
     mutable std::vector<TxId> m_pending_overlay_removes GUARDED_BY(cs);
+    mutable std::atomic<bool> m_overlay_warm{false};
     /** Set ancestor state for an entry */
     void UpdateEntryForAncestors(txiter it, const setEntries *setAncestors)
         EXCLUSIVE_LOCKS_REQUIRED(cs);
