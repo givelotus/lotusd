@@ -13,6 +13,10 @@
 #include <util/string.h>
 #include <walletinitinterface.h>
 
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
+
 #include <algorithm>
 #include <cstdio>
 #include <functional>
@@ -400,6 +404,112 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
     return true;
 }
 
+boost::asio::awaitable<bool>
+HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
+    HTTPRequest *req, boost::asio::any_io_executor executor) {
+    if (checkCORS(req)) {
+        co_return true;
+    }
+
+    if (req->GetRequestMethod() != HTTPRequest::POST) {
+        req->WriteReply(HTTP_BAD_METHOD,
+                        "JSONRPC server handles only POST requests");
+        co_return false;
+    }
+
+    std::pair<bool, std::string> authHeader = req->GetHeader("authorization");
+    if (!authHeader.first) {
+        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
+        req->WriteReply(HTTP_UNAUTHORIZED);
+        co_return false;
+    }
+
+    JSONRPCRequest jreq;
+    jreq.context = context;
+    jreq.peerAddr = req->GetPeer().ToStringAddrPort();
+    if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
+        LogPrintf("ThreadRPCServer incorrect password attempt from %s\n",
+                  jreq.peerAddr);
+
+        boost::asio::steady_timer delay_timer(
+            executor, std::chrono::milliseconds{RPC_AUTH_BRUTE_FORCE_DELAY});
+        boost::system::error_code ec;
+        co_await delay_timer.async_wait(
+            boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
+        req->WriteReply(HTTP_UNAUTHORIZED);
+        co_return false;
+    }
+
+    try {
+        UniValue valRequest;
+        if (!valRequest.read(req->ReadBody())) {
+            throw JSONRPCError(RPC_PARSE_ERROR, "Parse error");
+        }
+
+        jreq.URI = req->GetURI();
+
+        std::string strReply;
+        bool user_has_whitelist = g_rpc_whitelist.count(jreq.authUser);
+        if (!user_has_whitelist && g_rpc_whitelist_default) {
+            LogPrintf("RPC User %s not allowed to call any methods\n",
+                      jreq.authUser);
+            req->WriteReply(HTTP_FORBIDDEN);
+            co_return false;
+        } else if (valRequest.isObject()) {
+            jreq.parse(valRequest);
+            if (user_has_whitelist &&
+                !g_rpc_whitelist[jreq.authUser].count(jreq.strMethod)) {
+                LogPrintf("RPC User %s not allowed to call method %s\n",
+                          jreq.authUser, jreq.strMethod);
+                req->WriteReply(HTTP_FORBIDDEN);
+                co_return false;
+            }
+            UniValue result = co_await rpcServer.ExecuteCommandAsync(
+                config, jreq, std::move(executor));
+
+            strReply = JSONRPCReply(result, NullUniValue, jreq.id);
+        } else if (valRequest.isArray()) {
+            if (user_has_whitelist) {
+                for (unsigned int reqIdx = 0; reqIdx < valRequest.size();
+                     reqIdx++) {
+                    if (!valRequest[reqIdx].isObject()) {
+                        throw JSONRPCError(RPC_INVALID_REQUEST,
+                                           "Invalid Request object");
+                    } else {
+                        const UniValue &request = valRequest[reqIdx].get_obj();
+                        std::string strMethod =
+                            request.find_value("method").get_str();
+                        if (!g_rpc_whitelist[jreq.authUser].count(strMethod)) {
+                            LogPrintf(
+                                "RPC User %s not allowed to call method %s\n",
+                                jreq.authUser, strMethod);
+                            req->WriteReply(HTTP_FORBIDDEN);
+                            co_return false;
+                        }
+                    }
+                }
+            }
+            strReply = co_await JSONRPCExecBatchAsync(
+                config, rpcServer, jreq, valRequest.get_array(),
+                std::move(executor));
+        } else {
+            throw JSONRPCError(RPC_PARSE_ERROR, "Top-level object parse error");
+        }
+
+        req->WriteHeader("Content-Type", "application/json");
+        req->WriteReply(HTTP_OK, strReply);
+    } catch (const UniValue &objError) {
+        JSONErrorReply(req, objError, jreq.id);
+        co_return false;
+    } catch (const std::exception &e) {
+        JSONErrorReply(req, JSONRPCError(RPC_PARSE_ERROR, e.what()), jreq.id);
+        co_return false;
+    }
+    co_return true;
+}
+
 static bool InitRPCAuthentication() {
     if (gArgs.GetArg("-rpcpassword", "") == "") {
         LogPrintf("Using random cookie authentication.\n");
@@ -469,13 +579,16 @@ bool StartHTTPRPC(HTTPRPCRequestProcessor &httpRPCRequestProcessor) {
         return false;
     }
 
-    const std::function<bool(Config &, HTTPRequest *, const std::string &)>
-        &rpcFunction =
-            std::bind(&HTTPRPCRequestProcessor::DelegateHTTPRequest,
-                      &httpRPCRequestProcessor, std::placeholders::_2);
-    RegisterHTTPHandler("/", true, rpcFunction);
+    HTTPAsyncRequestHandler rpcFunction =
+        [&httpRPCRequestProcessor](
+            Config &, HTTPRequest *req, const std::string &,
+            boost::asio::any_io_executor executor) -> boost::asio::awaitable<bool> {
+        co_return co_await HTTPRPCRequestProcessor::DelegateHTTPRequestAsync(
+            &httpRPCRequestProcessor, req, std::move(executor));
+    };
+    RegisterHTTPAsyncHandler("/", true, rpcFunction);
     if (g_wallet_init_interface.HasWalletSupport()) {
-        RegisterHTTPHandler("/wallet/", false, rpcFunction);
+        RegisterHTTPAsyncHandler("/wallet/", false, rpcFunction);
     }
     struct event_base *eventBase = EventBase();
     assert(eventBase);

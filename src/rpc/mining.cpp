@@ -32,6 +32,7 @@
 #include <pow/pow.h>
 #include <rpc/blockchain.h>
 #include <rpc/mining.h>
+#include <rpc/async_waiter.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
@@ -883,11 +884,12 @@ static RPCHelpMan getblocktemplate() {
         RPCExamples{HelpExampleCli("getblocktemplate", "") +
                     HelpExampleRpc("getblocktemplate", "")},
         [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
+            const JSONRPCRequest &request, boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
             NodeContext &node = EnsureAnyNodeContext(request.context);
             ChainstateManager &chainman = EnsureChainman(node);
             ArgsManager &argsman = EnsureArgsman(node);
-            LOCK(cs_main);
+            WAIT_LOCK(cs_main, main_lock);
 
             const CChainParams &chainparams = config.GetChainParams();
 
@@ -927,19 +929,19 @@ static RPCHelpMan getblocktemplate() {
                         chainman.m_blockman.LookupBlockIndex(hash);
                     if (pindex) {
                         if (pindex->IsValid(BlockValidity::SCRIPTS)) {
-                            return "duplicate";
+                            co_return "duplicate";
                         }
                         if (pindex->nStatus.isInvalid()) {
-                            return "duplicate-invalid";
+                            co_return "duplicate-invalid";
                         }
-                        return "duplicate-inconclusive";
+                        co_return "duplicate-inconclusive";
                     }
 
                     CBlockIndex *const pindexPrev = active_chain.Tip();
                     // TestBlockValidity only supports blocks built on the
                     // current Tip
                     if (block.hashPrevBlock != pindexPrev->GetBlockHash()) {
-                        return "inconclusive-not-best-prevblk";
+                        co_return "inconclusive-not-best-prevblk";
                     }
                     BlockValidationState state;
                     TestBlockValidity(state, chainparams, active_chainstate,
@@ -947,7 +949,7 @@ static RPCHelpMan getblocktemplate() {
                                       BlockValidationOptions(config)
                                           .withCheckPoW(false)
                                           .withCheckMerkleRoot(true));
-                    return BIP22ValidationResult(config, state);
+                    co_return BIP22ValidationResult(config, state);
                 }
             }
 
@@ -999,43 +1001,38 @@ static RPCHelpMan getblocktemplate() {
                 const auto initialLongpollDelay = isRegtest ? 5s : 1min;
                 const auto newTxCheckLongpollDelay = isRegtest ? 1s : 10s;
 
-                // Release lock while waiting
-                LEAVE_CRITICAL_SECTION(cs_main);
-                {
-                    checktxtime =
-                        std::chrono::steady_clock::now() + initialLongpollDelay;
-
-                    WAIT_LOCK(g_best_block_mutex, lock);
-                    while (g_best_block &&
-                           g_best_block->GetBlockHash() == hashWatchedChain &&
-                           IsRPCRunning()) {
-                        if (g_best_block_cv.wait_until(lock, checktxtime) ==
-                            std::cv_status::timeout) {
-                            // Timeout: Check transactions for update
-                            // without holding the mempool look to avoid
-                            // deadlocks
-                            if (mempool.GetTransactionsUpdated() !=
-                                nTransactionsUpdatedLastLP) {
-                                break;
-                            }
-                            checktxtime += newTxCheckLongpollDelay;
+                // A suspended coroutine must own no thread-affine mutex.
+                main_lock.unlock();
+                checktxtime = SteadyClock::now() + initialLongpollDelay;
+                for (;;) {
+                    co_await GetRPCBlockChangeWaiter().WaitUntilDeadline(
+                        executor, checktxtime, [hashWatchedChain]() {
+                            LOCK(g_best_block_mutex);
+                            return !g_best_block ||
+                                   g_best_block->GetBlockHash() != hashWatchedChain ||
+                                   !IsRPCRunning();
+                        });
+                    {
+                        LOCK(g_best_block_mutex);
+                        if (!g_best_block ||
+                            g_best_block->GetBlockHash() != hashWatchedChain ||
+                            !IsRPCRunning()) {
+                            break;
                         }
                     }
-
-                    if (node.avalanche && IsStakingRewardsActivated(
-                                              consensusParams, g_best_block)) {
-                        // At this point the staking reward winner might not be
-                        // computed yet. Make sure we don't miss the staking
-                        // reward winner on first return of getblocktemplate
-                        // after a block is found when using longpoll.
-                        // Note that if the computation was done already this is
-                        // a no-op. It can only be done now because we're not
-                        // holding cs_main, which would cause a lock order issue
-                        // otherwise.
+                    if (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLastLP) {
+                        break;
+                    }
+                    checktxtime += newTxCheckLongpollDelay;
+                }
+                {
+                    LOCK(g_best_block_mutex);
+                    // Preserve upstream reward computation before reacquiring cs_main.
+                    if (node.avalanche && IsStakingRewardsActivated(consensusParams, g_best_block)) {
                         node.avalanche->computeStakingReward(g_best_block);
                     }
                 }
-                ENTER_CRITICAL_SECTION(cs_main);
+                main_lock.lock();
 
                 if (!IsRPCRunning()) {
                     throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
@@ -1276,7 +1273,7 @@ static RPCHelpMan getblocktemplate() {
                 result.pushKV("rtt", std::move(rtt));
             }
 
-            return result;
+            co_return result;
         },
     };
 }

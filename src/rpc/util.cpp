@@ -19,6 +19,10 @@
 #include <util/string.h>
 #include <util/translation.h>
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/use_future.hpp>
+
 #include <algorithm>
 #include <iterator>
 #include <string_view>
@@ -510,13 +514,79 @@ struct Sections {
 RPCHelpMan::RPCHelpMan(std::string name_, std::string description,
                        std::vector<RPCArg> args, RPCResults results,
                        RPCExamples examples)
-    : RPCHelpMan{std::move(name_),   std::move(description), std::move(args),
-                 std::move(results), std::move(examples),    nullptr} {}
+    : RPCHelpMan{std::move(name_),   std::move(description),
+                 std::move(args),    std::move(results),
+                 std::move(examples), RPCMethodImpl{nullptr}} {}
+
+RPCHelpMan::RPCHelpMan(std::string name_, std::string description,
+                       std::vector<RPCArg> args, RPCResults results,
+                       RPCExamples examples, AsyncRPCMethodImpl async_fun)
+    : m_name{std::move(name_)}, m_fun{nullptr},
+      m_async_fun{std::move(async_fun)}, m_description{std::move(description)},
+      m_args{std::move(args)}, m_results{std::move(results)},
+      m_examples{std::move(examples)} {
+    enum ParamType { POSITIONAL = 1, NAMED = 2, NAMED_ONLY = 4 };
+    std::map<std::string, int> param_names;
+
+    for (const auto &arg : m_args) {
+        std::vector<std::string> names = SplitString(arg.m_names, '|');
+        for (const std::string &name : names) {
+            auto &param_type = param_names[name];
+            CHECK_NONFATAL(!(param_type & POSITIONAL));
+            CHECK_NONFATAL(!(param_type & NAMED_ONLY));
+            param_type |= POSITIONAL;
+        }
+        if (arg.m_type == RPCArg::Type::OBJ_NAMED_PARAMS) {
+            for (const auto &inner : arg.m_inner) {
+                std::vector<std::string> inner_names =
+                    SplitString(inner.m_names, '|');
+                for (const std::string &inner_name : inner_names) {
+                    auto &param_type = param_names[inner_name];
+                    CHECK_NONFATAL(!(param_type & POSITIONAL) ||
+                                   inner.m_opts.also_positional);
+                    CHECK_NONFATAL(!(param_type & NAMED));
+                    CHECK_NONFATAL(!(param_type & NAMED_ONLY));
+                    param_type |=
+                        inner.m_opts.also_positional ? NAMED : NAMED_ONLY;
+                }
+            }
+        }
+        if (arg.m_fallback.index() == 2) {
+            const RPCArg::Type type = arg.m_type;
+            switch (std::get<RPCArg::Default>(arg.m_fallback).getType()) {
+                case UniValue::VOBJ:
+                    CHECK_NONFATAL(type == RPCArg::Type::OBJ);
+                    break;
+                case UniValue::VARR:
+                    CHECK_NONFATAL(type == RPCArg::Type::ARR);
+                    break;
+                case UniValue::VSTR:
+                    CHECK_NONFATAL(type == RPCArg::Type::STR ||
+                                   type == RPCArg::Type::STR_HEX ||
+                                   type == RPCArg::Type::AMOUNT);
+                    break;
+                case UniValue::VNUM:
+                    CHECK_NONFATAL(type == RPCArg::Type::NUM ||
+                                   type == RPCArg::Type::AMOUNT ||
+                                   type == RPCArg::Type::RANGE);
+                    break;
+                case UniValue::VBOOL:
+                    CHECK_NONFATAL(type == RPCArg::Type::BOOL);
+                    break;
+                case UniValue::VNULL:
+                    break;
+                default:
+                    CHECK_NONFATAL(false);
+                    break;
+            }
+        }
+    }
+}
 
 RPCHelpMan::RPCHelpMan(std::string name_, std::string description,
                        std::vector<RPCArg> args, RPCResults results,
                        RPCExamples examples, RPCMethodImpl fun)
-    : m_name{std::move(name_)}, m_fun{std::move(fun)},
+    : m_name{std::move(name_)}, m_fun{std::move(fun)}, m_async_fun{nullptr},
       m_description{std::move(description)}, m_args{std::move(args)},
       m_results{std::move(results)}, m_examples{std::move(examples)} {
     // Map of parameter names and types just used to check whether the names are
@@ -636,8 +706,22 @@ UniValue RPCHelpMan::HandleRequest(const Config &config,
     }
     CHECK_NONFATAL(m_req == nullptr);
     m_req = &request;
-    UniValue ret = m_fun(*this, config, request);
-    m_req = nullptr;
+    struct ReqGuard {
+        const RPCHelpMan *self;
+        ~ReqGuard() { self->m_req = nullptr; }
+    } req_guard{this};
+
+    UniValue ret;
+    if (m_fun) {
+        ret = m_fun(*this, config, request);
+    } else if (m_async_fun) {
+        boost::asio::io_context ioc;
+        auto fut = boost::asio::co_spawn(
+            ioc, m_async_fun(*this, config, request, ioc.get_executor()),
+            boost::asio::use_future);
+        ioc.run();
+        ret = fut.get();
+    }
     if (gArgs.GetBoolArg("-rpcdoccheck", DEFAULT_RPC_DOC_CHECK)) {
         UniValue mismatch{UniValue::VARR};
         for (const auto &res : m_results.m_results) {
@@ -660,6 +744,67 @@ UniValue RPCHelpMan::HandleRequest(const Config &config,
         }
     }
     return ret;
+}
+
+boost::asio::awaitable<UniValue>
+RPCHelpMan::HandleRequestAsync(const Config &config,
+                               const JSONRPCRequest &request,
+                               boost::asio::any_io_executor executor) const {
+    if (!m_async_fun) {
+        co_return HandleRequest(config, request);
+    }
+    if (request.mode == JSONRPCRequest::GET_ARGS) {
+        co_return GetArgMap();
+    }
+    if (request.mode == JSONRPCRequest::GET_HELP ||
+        !IsValidNumArgs(request.params.size())) {
+        throw std::runtime_error(ToString());
+    }
+    UniValue arg_mismatch{UniValue::VOBJ};
+    for (size_t i{0}; i < m_args.size(); ++i) {
+        const auto &arg{m_args.at(i)};
+        UniValue match{arg.MatchesType(request.params[i])};
+        if (!match.isTrue()) {
+            arg_mismatch.pushKV(
+                strprintf("Position %s (%s)", i + 1, arg.m_names),
+                std::move(match));
+        }
+    }
+    if (!arg_mismatch.empty()) {
+        throw JSONRPCError(RPC_TYPE_ERROR, strprintf("Wrong type passed:\n%s",
+                                                     arg_mismatch.write(4)));
+    }
+    CHECK_NONFATAL(m_req == nullptr);
+    m_req = &request;
+    struct ReqGuard {
+        const RPCHelpMan *self;
+        ~ReqGuard() { self->m_req = nullptr; }
+    } req_guard{this};
+
+    UniValue ret = co_await m_async_fun(*this, config, request,
+                                        std::move(executor));
+    if (gArgs.GetBoolArg("-rpcdoccheck", DEFAULT_RPC_DOC_CHECK)) {
+        UniValue mismatch{UniValue::VARR};
+        for (const auto &res : m_results.m_results) {
+            UniValue match{res.MatchesType(ret)};
+            if (match.isTrue()) {
+                mismatch.setNull();
+                break;
+            }
+            mismatch.push_back(std::move(match));
+        }
+        if (!mismatch.isNull()) {
+            std::string explain{mismatch.empty() ? "no possible results defined"
+                                : mismatch.size() == 1 ? mismatch[0].write(4)
+                                                       : mismatch.write(4)};
+            throw std::runtime_error{strprintf(
+                "Internal bug detected: RPC call \"%s\" returned incorrect "
+                "type:\n%s\n%s %s\nPlease report this issue here: %s\n",
+                m_name, explain, PACKAGE_NAME, FormatFullVersion(),
+                PACKAGE_BUGREPORT)};
+        }
+    }
+    co_return ret;
 }
 
 using CheckFn = void(const RPCArg &);

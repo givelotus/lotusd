@@ -18,6 +18,9 @@
 #include <univalue.h>
 #include <util/check.h>
 
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -382,12 +385,22 @@ public:
                RPCExamples examples);
     using RPCMethodImpl = std::function<UniValue(
         const RPCHelpMan &, const Config &config, const JSONRPCRequest &)>;
+    using AsyncRPCMethodImpl = std::function<boost::asio::awaitable<UniValue>(
+        const RPCHelpMan &, const Config &config, const JSONRPCRequest &,
+        boost::asio::any_io_executor)>;
     RPCHelpMan(std::string name, std::string description,
                std::vector<RPCArg> args, RPCResults results,
                RPCExamples examples, RPCMethodImpl fun);
+    RPCHelpMan(std::string name, std::string description,
+               std::vector<RPCArg> args, RPCResults results,
+               RPCExamples examples, AsyncRPCMethodImpl async_fun);
 
+    bool IsAsync() const { return bool(m_async_fun); }
     UniValue HandleRequest(const Config &config,
                            const JSONRPCRequest &request) const;
+    boost::asio::awaitable<UniValue>
+    HandleRequestAsync(const Config &config, const JSONRPCRequest &request,
+                       boost::asio::any_io_executor executor) const;
     /**
      * @brief Helper to get a required or default-valued request argument.
      *
@@ -481,6 +494,7 @@ public:
 
 private:
     const RPCMethodImpl m_fun;
+    const AsyncRPCMethodImpl m_async_fun;
     const std::string m_description;
     const std::vector<RPCArg> m_args;
     const RPCResults m_results;
