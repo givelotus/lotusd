@@ -581,6 +581,29 @@ void SetupServerArgs(NodeContext &node) {
         "EMA block size and mempool backlog up to 1 GB (default: 1)",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
+        "-snapsync",
+        "Enable Tachyon SnapSync 256-shard UTXO fast sync and reverse block "
+        "peeling (set 0 to opt out and use traditional Genesis-upward sync, "
+        "default: 1)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-reversesync",
+        "Enable reverse historical block peeling after SnapSync pivot "
+        "activation (set 0 to opt out and use traditional Genesis-upward "
+        "sync, default: 1)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-reversesynchorizon=<n>",
+        "Maximum number of historical blocks to reverse-peel below a SnapSync "
+        "pivot for shallow reorg safety (0 to peel all the way to Genesis, "
+        "default: 50)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-serveutxoshards",
+        "Advertise NODE_UTXO_SHARD and serve Tachyon SnapSync UTXO shards and "
+        "reverse block undo data to peers (default: 1)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
         "-gbtwithoutpeers",
         "Allow getblocktemplate to succeed without connected P2P peers in "
         "non-regtest networks for standalone benchmark harnesses (default: 0)",

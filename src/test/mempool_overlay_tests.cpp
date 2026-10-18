@@ -79,6 +79,61 @@ BOOST_AUTO_TEST_CASE(transaction_subtree_rejects_duplicate_ids) {
     BOOST_CHECK(expected != lotus::v2::BuildTxSubtreeA(std::vector{a}));
 }
 
+BOOST_AUTO_TEST_CASE(utxo_arena_reuses_imported_subtrees_and_invalidates_mutations) {
+    using namespace lotus::v2;
+    std::vector<lotus::v2::Coin> coins(64);
+    std::shared_ptr<const SmtNode> base;
+    for (size_t i = 0; i < coins.size(); ++i) {
+        coins[i].outpoint.tx_id[0] = static_cast<uint8_t>(i);
+        coins[i].output.value = 100 + i;
+        coins[i].output.legacy_script = std::vector<uint8_t>{OP_TRUE};
+        SmtInsert(base, coins[i]);
+    }
+    const auto original_root = SmtRoot(base);
+    UtxoOverlayArena arena(base);
+    // Loading the path for an idempotent insertion must preserve the imported
+    // immutable node rather than allocate an equivalent exported tree.
+    arena.InsertCoin(coins[0]);
+    BOOST_CHECK(arena.GetSmtRoot() == base);
+    auto absent = coins[0].outpoint;
+    absent.index = 1;
+    arena.EraseOutpoint(absent);
+    BOOST_CHECK(arena.GetSmtRoot() == base);
+
+    auto changed = coins[0];
+    changed.output.value += 1;
+    auto reference = base;
+    SmtInsert(reference, changed);
+    arena.InsertCoin(changed);
+    BOOST_CHECK(arena.GetSmtRoot() != base);
+    BOOST_CHECK(SmtRoot(arena.GetSmtRoot()) == SmtRoot(reference));
+    BOOST_REQUIRE(SmtFind(arena.GetSmtRoot(), changed.outpoint));
+    BOOST_CHECK_EQUAL(SmtFind(arena.GetSmtRoot(), changed.outpoint)->output.value,
+                      changed.output.value);
+    BOOST_CHECK(SmtRoot(base) == original_root);
+
+    arena.Reset(base);
+    std::vector<Outpoint> erased;
+    std::vector<lotus::v2::Coin> inserted;
+    reference = base;
+    for (size_t i = 0; i < 32; ++i) {
+        erased.push_back(coins[i].outpoint);
+        SmtErase(reference, coins[i].outpoint);
+        auto replacement = coins[i];
+        replacement.outpoint.index = 2;
+        inserted.push_back(replacement);
+        SmtInsert(reference, replacement);
+    }
+    arena.BatchUpdateParallel(erased, inserted);
+    BOOST_CHECK(SmtRoot(arena.GetSmtRoot()) == SmtRoot(reference));
+    for (const auto &coin : inserted) {
+        BOOST_REQUIRE(SmtFind(arena.GetSmtRoot(), coin.outpoint));
+        BOOST_CHECK_EQUAL(SmtFind(arena.GetSmtRoot(), coin.outpoint)->output.value,
+                          coin.output.value);
+    }
+    BOOST_CHECK(SmtRoot(base) == original_root);
+}
+
 BOOST_AUTO_TEST_CASE(stacked_cow_overlays_and_chained_lookup) {
     lotus::v2::MerklixOverlayManager mgr;
     lotus::v2::Hash parent_id{};

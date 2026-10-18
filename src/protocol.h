@@ -359,6 +359,42 @@ extern const char *GETSHORTTX;
 extern const char *SHORTTX;
 
 /**
+ * Requests the 256 depth-8 UTXO shard roots and 56-byte monetary state for a
+ * fast-sync pivot block.
+ */
+extern const char *GETUTXOROOTS;
+
+/**
+ * Transmits the 256 depth-8 UTXO shard roots and 56-byte monetary state for a
+ * fast-sync pivot block.
+ */
+extern const char *UTXOROOTS;
+
+/**
+ * Requests a UTXO shard (or sub-shard at prefix depth k in [8..16]) for a
+ * fast-sync pivot block.
+ */
+extern const char *GETUTXOSHARD;
+
+/**
+ * Transmits a UTXO shard (up to 4096 sorted coins plus boundary siblings) for a
+ * fast-sync pivot block.
+ */
+extern const char *UTXOSHARD;
+
+/**
+ * Requests the spent input coins (undo data) for a historical block during
+ * reverse sync peeling.
+ */
+extern const char *GETBLOCKUNDO;
+
+/**
+ * Transmits the spent input coins (undo data) for a historical block during
+ * reverse sync peeling.
+ */
+extern const char *BLOCKUNDO;
+
+/**
  * Indicate if the message is used to transmit the content of a block.
  * These messages can be significantly larger than usual messages and therefore
  * may need to be processed differently.
@@ -418,6 +454,10 @@ enum ServiceFlags : uint64_t {
     // NODE_AVALANCHE means the node supports Bitcoin Cash's avalanche
     // preconsensus mechanism.
     NODE_AVALANCHE = (1 << 24),
+
+    // NODE_UTXO_SHARD means the node supports Tachyon SnapSync UTXO shard
+    // export, reverse block undo serving, and Avalanche state-anchor polling.
+    NODE_UTXO_SHARD = (1 << 25),
 
     // Explicit opt-in for private mempool batch announcements and polls.
     NODE_MERKLIX_EPOCH = (1 << 28),
@@ -627,6 +667,7 @@ enum GetDataMsg {
     MSG_AVA_MEMPOOL_BATCH = 0x20000006,
     MSG_AVA_PROOF = 0x1f000001,
     MSG_AVA_STAKE_CONTENDER = 0x1f000002,
+    MSG_AVA_STATE_ANCHOR = 0x1f000003,
 };
 
 /**
@@ -668,6 +709,10 @@ public:
     bool IsMsgMempoolBatch() const {
         auto k = GetKind();
         return k == MSG_AVA_MEMPOOL_BATCH;
+    }
+    bool IsMsgStateAnchor() const {
+        auto k = GetKind();
+        return k == MSG_AVA_STATE_ANCHOR;
     }
     bool IsMsgBlk() const {
         auto k = GetKind();

@@ -28,6 +28,7 @@
 #include <kernel/chainparams.h>
 #include <kernel/chainstatemanager_opts.h>
 #include <kernel/cs_main.h>
+#include <lotus_v2/fast_sync.h>
 #include <node/blockstorage.h>
 #include <policy/packages.h>
 #include <script/script_error.h>
@@ -49,6 +50,7 @@
 #include <set>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -963,7 +965,7 @@ public:
     bool ConnectBlock(const CBlock &block, BlockValidationState &state,
                       CBlockIndex *pindex, CCoinsViewCache &view,
                       BlockValidationOptions options,
-                      Amount *blockFees = nullptr, bool fJustCheck = false)
+                      Amount *blockFees = nullptr, bool fJustCheck = false, bool force_script_checks = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
@@ -1079,7 +1081,106 @@ public:
         return m_mempool ? &m_mempool->cs : nullptr;
     }
 
+    static constexpr int kDefaultFastSyncUndoHorizon = 50;
+    static constexpr size_t MAX_CACHED_FAST_SYNC_STATES = 64;
+
+    struct FastSyncBlockState {
+        std::shared_ptr<const lotus::v2::SmtNode> smt_root;
+        lotus::v2::UtxoSet utxo;
+        lotus::v2::MonetaryState monetary;
+        lotus::v2::Hash utxo_root = lotus::v2::EmptyUtxoRoot();
+        uint64_t height = 0;
+        bool authenticated_anchor = false;
+    };
+
+    bool IsFastSyncActive() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        return m_fast_sync_active;
+    }
+    int GetEarliestVerifiedHeight() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        return m_earliest_verified_height;
+    }
+    const CBlockIndex *GetEarliestVerifiedBlock() const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        return m_earliest_verified_block;
+    }
+    int GetFastSyncMaxPeelBlocks() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void SetFastSyncMaxPeelBlocks(std::optional<int> max_blocks)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_max_peel_blocks_override = max_blocks;
+    }
+    int GetFastSyncPeeledBlocksCount() const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        return m_peeled_blocks_count;
+    }
+    bool IsSnapSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    bool IsReverseSyncEnabled() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void SetSnapSyncEnabled(std::optional<bool> enabled)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_snapsync_enabled_override = enabled;
+    }
+    void SetReverseSyncEnabled(std::optional<bool> enabled)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        m_reversesync_enabled_override = enabled;
+    }
+    void SetFastSyncStateAnchor(const BlockHash &block_hash,
+                                const lotus::v2::Hash &utxo_root)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    std::optional<lotus::v2::Hash>
+    GetFastSyncStateAnchor(const BlockHash &block_hash) const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    const FastSyncBlockState *
+    GetFastSyncBlockState(const BlockHash &block_hash) const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    bool ExportV2BlockStateCoinsAndMonetary(
+        const CBlockIndex *pindex, FastSyncBlockState &out_state,
+        std::string &error, bool populate_utxo_set = true)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    bool ActivateVerifiedFastSyncPivot(
+        CBlockIndex *pivot_index, const lotus::v2::UtxoRootsMessage &roots_msg,
+        const std::vector<lotus::v2::UtxoShardMessage> &shards,
+        std::string &error) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    bool PeelFastSyncBlock(const CBlock &block, CBlockIndex *pindex,
+                           const std::vector<lotus::v2::Coin> &spent_coins,
+                           std::string &error)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
 private:
+    void CacheFastSyncBlockState(
+        const BlockHash &block_hash,
+        std::shared_ptr<const lotus::v2::SmtNode> smt_root,
+        const lotus::v2::MonetaryState &monetary,
+        const lotus::v2::Hash &utxo_root, uint64_t height, bool authenticated_anchor = true)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void UpdateConnectedBlockSmtState(const CBlock &block,
+                                      const CBlockIndex *pindex)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    void UpdateFastSyncPivotBase(CBlockIndex *new_base)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    bool m_fast_sync_active GUARDED_BY(::cs_main){false};
+    std::vector<CBlockIndex *> m_reverse_checked_blocks GUARDED_BY(::cs_main);
+    int m_earliest_verified_height GUARDED_BY(::cs_main){0};
+    CBlockIndex *m_earliest_verified_block GUARDED_BY(::cs_main){nullptr};
+    CBlockIndex *m_fast_sync_pivot_base GUARDED_BY(::cs_main){nullptr};
+    int m_fast_sync_pivot_height GUARDED_BY(::cs_main){0};
+    int m_peeled_blocks_count GUARDED_BY(::cs_main){0};
+    std::optional<int> m_max_peel_blocks_override GUARDED_BY(::cs_main);
+    std::optional<bool> m_snapsync_enabled_override GUARDED_BY(::cs_main);
+    std::optional<bool> m_reversesync_enabled_override GUARDED_BY(::cs_main);
+    std::optional<lotus::v2::UtxoSet> m_reverse_peel_utxo GUARDED_BY(::cs_main);
+    std::shared_ptr<const lotus::v2::SmtNode>
+        m_reverse_peel_smt_root GUARDED_BY(::cs_main);
+    std::shared_ptr<const lotus::v2::SmtNode>
+        m_tip_smt_root GUARDED_BY(::cs_main);
+    BlockHash m_tip_smt_blockhash GUARDED_BY(::cs_main){};
+    std::unordered_map<uint64_t, std::vector<lotus::v2::Coin>>
+        m_pending_undo_coin_checks GUARDED_BY(::cs_main);
+    std::deque<BlockHash> m_fast_sync_state_fifo GUARDED_BY(::cs_main);
+    std::unordered_map<BlockHash, FastSyncBlockState, SaltedUint256Hasher>
+        m_fast_sync_block_states GUARDED_BY(::cs_main);
+    std::unordered_map<BlockHash, lotus::v2::Hash, SaltedUint256Hasher>
+        m_fast_sync_state_anchors GUARDED_BY(::cs_main);
+
     bool ActivateBestChainStep(
         BlockValidationState &state, CBlockIndex *pindexMostWork,
         const std::shared_ptr<const CBlock> &pblock, bool &fInvalidFound,

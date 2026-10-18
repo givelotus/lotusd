@@ -12,6 +12,7 @@ from test_framework.messages import (
     MSG_BLOCK,
     NODE_BLOOM,
     NODE_NETWORK_LIMITED,
+    NODE_UTXO_SHARD,
     CInv,
     msg_getdata,
     msg_verack,
@@ -61,7 +62,8 @@ class NodeNetworkLimitedTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0].add_p2p_connection(P2PIgnoreInv())
 
-        expected_services = NODE_BLOOM | NODE_NETWORK_LIMITED
+        # UTXO shard service is independent of the pruned block-serving range.
+        expected_services = NODE_BLOOM | NODE_NETWORK_LIMITED | NODE_UTXO_SHARD
 
         self.log.info("Check that node has signalled expected services.")
         assert_equal(node.nServices, expected_services)

@@ -13,6 +13,7 @@
 #include <avalanche/proofcomparator.h>
 #include <avalanche/protocol.h>
 #include <avalanche/stakecontender.h>
+#include <avalanche/stateanchor.h>
 #include <avalanche/voterecord.h> // For AVALANCHE_MAX_INFLIGHT_POLL
 #include <blockindex.h>
 #include <blockindexcomparators.h>
@@ -39,6 +40,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -105,7 +107,7 @@ enum struct VoteStatus : uint8_t {
 };
 
 using AnyVoteItem = std::variant<const ProofRef, const CBlockIndex *,
-                                 const StakeContenderId, const CTransactionRef, const MempoolBatchVoteItem>;
+                                 const StakeContenderId, const CTransactionRef, const MempoolBatchVoteItem, const StateAnchorId>;
 
 class VoteItemUpdate {
     AnyVoteItem item;
@@ -141,6 +143,9 @@ struct VoteMapComparator {
                 [](const MempoolBatchVoteItem &lhs, const MempoolBatchVoteItem &rhs) { return lhs.GetId() < rhs.GetId(); },
                 [](const CTransactionRef &lhs, const CTransactionRef &rhs) {
                     return lhs->GetId() < rhs->GetId();
+                },
+                [](const StateAnchorId &lhs, const StateAnchorId &rhs) {
+                    return lhs < rhs;
                 },
                 [](const auto &lhs, const auto &rhs) {
                     // This serves 2 purposes:
@@ -373,6 +378,24 @@ private:
     std::atomic<uint16_t> m_fastPathConfidenceThreshold{
         DEFAULT_FAST_PATH_CONFIDENCE_THRESHOLD};
 
+    struct StateAnchorEntry {
+        BlockHash blockhash;
+        uint256 utxo_root;
+        // 0 = accepted, 1 = rejected/conflicting, -2 = pending
+        int status{0};
+        bool finalized{false};
+    };
+
+    mutable Mutex cs_stateAnchors;
+    std::unordered_map<StateAnchorId, StateAnchorEntry, SaltedUint256Hasher>
+        stateAnchors GUARDED_BY(cs_stateAnchors);
+    std::unordered_map<BlockHash, uint256, SaltedUint256Hasher>
+        localBlockStateRoots GUARDED_BY(cs_stateAnchors);
+    std::unordered_map<BlockHash, uint256, SaltedUint256Hasher>
+        finalizedBlockStateRoots GUARDED_BY(cs_stateAnchors);
+    std::unordered_map<NodeId, bool>
+        nodeStateAnchorSupport GUARDED_BY(cs_stateAnchors);
+
     Processor(Config avaconfig, interfaces::Chain &chain, CConnman *connmanIn,
               ChainstateManager &chainman, CTxMemPool *mempoolIn,
               CScheduler &scheduler, std::unique_ptr<PeerData> peerDataIn,
@@ -492,7 +515,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!cs_stakingRewards, !cs_peerManager);
     bool setStakingRewardWinners(
         const CBlockIndex *pprev,
-        const std::vector<std::pair<ProofId, CScript>> &winners)
+        std::vector<std::pair<ProofId, CScript>> const &winners)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_stakingRewards);
 
     // Implement NetEventInterface. Only FinalizeNode is of interest.
@@ -509,7 +532,8 @@ public:
     /** Handle removal of a node */
     void FinalizeNode(const ::Config &config,
                       const CNode &node) override LOCKS_EXCLUDED(cs_main)
-        EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_delayedAvahelloNodeIds);
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_delayedAvahelloNodeIds,
+                                 !cs_stateAnchors);
 
     /** Track votes on stake contenders */
     int getStakeContenderStatus(const StakeContenderId &contenderId) const
@@ -586,10 +610,37 @@ public:
         MempoolBatchAnnouncement *outBatch = nullptr, bool force = false)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
 
+    /**
+     * Track and poll Avalanche state anchors (BlockHash + 256-shard Merklix
+     * UtxoRoot) for Tachyon SnapSync pivot and historical epoch blocks.
+     */
+    StateAnchorId registerStateAnchor(const BlockHash &blockhash,
+                                      const uint256 &utxo_root,
+                                      bool localAccepted = true,
+                                      bool poll = true)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors, !cs_finalizedItems);
+    int getStateAnchorStatus(const StateAnchorId &anchorId) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    void acceptStateAnchor(const StateAnchorId &anchorId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    void finalizeStateAnchor(const StateAnchorId &anchorId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    void rejectStateAnchor(const StateAnchorId &anchorId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    std::optional<uint256>
+    getFinalizedStateRoot(const BlockHash &blockhash) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    std::optional<uint256>
+    getLocalStateRoot(const BlockHash &blockhash) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
     void setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
     bool nodeSupportsMempoolBatch(NodeId nodeid) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
+    void setNodeSupportsStateAnchor(NodeId nodeid, bool supports)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
+    bool nodeSupportsStateAnchor(NodeId nodeid) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_stateAnchors);
 
     bool isPreconsensusActivated(const CBlockIndex *pprev) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_finalizationTip);
@@ -600,12 +651,13 @@ public:
 private:
     void updatedBlockTip()
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_finalizedItems,
-                                 !cs_finalizationTip, !cs_stakingRewards);
+                                 !cs_finalizationTip, !cs_stakingRewards,
+                                 !cs_stateAnchors);
     void transactionAddedToMempool(const CTransactionRef &tx)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_finalizedItems, !cs_finalizationTip);
     void runEventLoop()
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_stakingRewards,
-                                 !cs_finalizedItems);
+                                 !cs_finalizedItems, !cs_stateAnchors);
     void clearInvsNotWorthPolling()
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_finalizedItems);
     void clearTimedoutRequests() EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager);
@@ -623,6 +675,7 @@ private:
     std::vector<CInv>
     getInvsForNextPoll(RWCollection<VoteMap>::ReadView &voteRecordsReadView,
                        size_t max_elements, bool forPoll = true,
+                       bool include_state_anchors = true,
                        bool include_mempool_batches = false) const;
     bool sendHelloInternal(CNode *pfrom)
         EXCLUSIVE_LOCKS_REQUIRED(cs_delayedAvahelloNodeIds);
@@ -675,6 +728,8 @@ private:
             LOCKS_EXCLUDED(cs_peerManager, cs_stakingRewards);
         bool operator()(const CTransactionRef &tx) const;
         bool operator()(const MempoolBatchVoteItem &batch) const;
+        bool operator()(const StateAnchorId &anchorId) const
+            LOCKS_EXCLUDED(cs_stateAnchors);
     };
     bool isWorthPolling(const AnyVoteItem &item) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_finalizedItems);
@@ -692,6 +747,8 @@ private:
         bool operator()(const StakeContenderId &contenderId) const;
         bool operator()(const CTransactionRef &tx) const;
         bool operator()(const MempoolBatchVoteItem &batch) const;
+        bool operator()(const StateAnchorId &anchorId) const
+            LOCKS_EXCLUDED(cs_stateAnchors);
     };
     bool getLocalAcceptance(const AnyVoteItem &item) const {
         return std::visit(GetLocalAcceptance(*this), item);
