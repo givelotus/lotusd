@@ -1206,6 +1206,10 @@ bool LegacyScriptPubKeyMan::NewKeyPool() {
     }
     LOCK(cs_KeyStore);
     WalletBatch batch(m_storage.GetDatabase());
+    // Erase the old pool and write the new one in one database transaction
+    // (see TopUp). Returns false if a transaction is already open; its owner
+    // then commits these writes.
+    const bool own_txn = batch.TxnBegin();
 
     for (const int64_t nIndex : setInternalKeyPool) {
         batch.ErasePool(nIndex);
@@ -1225,7 +1229,14 @@ bool LegacyScriptPubKeyMan::NewKeyPool() {
     m_pool_key_to_index.clear();
 
     if (!TopUp()) {
+        if (own_txn) {
+            batch.TxnAbort();
+        }
         return false;
+    }
+    if (own_txn && !batch.TxnCommit()) {
+        throw std::runtime_error(std::string(__func__) +
+                                 ": committing the new keypool failed");
     }
 
     WalletLogPrintf("LegacyScriptPubKeyMan::NewKeyPool rewrote keypool\n");
@@ -1266,6 +1277,14 @@ bool LegacyScriptPubKeyMan::TopUp(unsigned int kpSize) {
         }
         bool internal = false;
         WalletBatch batch(m_storage.GetDatabase());
+        // Each new key takes several writes (key, metadata, HD chain, pool
+        // entry). On SQLite every write outside a transaction is its own
+        // durable commit with several (full) fsyncs, which made a default
+        // 2000-key top-up take minutes. Write them all in one transaction.
+        // If one is already open (NewKeyPool, EncryptWallet), these writes
+        // join it and its owner commits them.
+        const bool own_txn =
+            missingInternal + missingExternal > 0 && batch.TxnBegin();
         for (int64_t i = missingInternal + missingExternal; i--;) {
             if (i < missingInternal) {
                 internal = true;
@@ -1273,6 +1292,10 @@ bool LegacyScriptPubKeyMan::TopUp(unsigned int kpSize) {
 
             CPubKey pubkey(GenerateNewKey(batch, m_hd_chain, internal));
             AddKeypoolPubkeyWithDB(pubkey, internal, batch);
+        }
+        if (own_txn && !batch.TxnCommit()) {
+            throw std::runtime_error(std::string(__func__) +
+                                     ": committing new keypool keys failed");
         }
         if (missingInternal + missingExternal > 0) {
             WalletLogPrintf(

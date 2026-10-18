@@ -4433,7 +4433,7 @@ static RPCHelpMan send() {
                 std::string err_string;
                 std::string hex = EncodeHexTx(CTransaction(mtx));
                 CTransactionRef tx(MakeTransactionRef(std::move(mtx)));
-                result.pushKV("txid", tx->GetHash().GetHex());
+                result.pushKV("txid", tx->GetId().GetHex());
                 if (add_to_wallet && !psbt_opt_in) {
                     pwallet->CommitTransaction(tx, {}, {} /* orderForm */);
                 } else {

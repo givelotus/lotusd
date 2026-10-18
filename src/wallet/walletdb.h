@@ -10,7 +10,7 @@
 #include <key.h>
 #include <script/sign.h>
 #include <script/standard.h> // for CTxDestination
-#include <wallet/bdb.h>
+#include <wallet/db.h>
 #include <wallet/walletutil.h>
 
 #include <cstdint>
@@ -24,10 +24,7 @@
  * encapsulates a database batch update as well as methods to act on the
  * database. It should be agnostic to the database implementation.
  *
- * The following classes are implementation specific:
- * - BerkeleyEnvironment is an environment in which the database exists.
- * - BerkeleyDatabase represents a wallet database.
- * - BerkeleyBatch is a low-level database batch update.
+ * SQLiteDatabase and SQLiteBatch implement the V2 wallet storage backend.
  */
 
 static const bool DEFAULT_FLUSHWALLET = true;
@@ -288,8 +285,7 @@ private:
     WalletDatabase &m_database;
 };
 
-//! Compacts BDB state so that wallet.dat is self-contained (if there are
-//! changes)
+//! Flushes wallet database updates when needed.
 void MaybeCompactWalletDB(WalletContext &context);
 
 //! Callback for filtering key types to deserialize in ReadKeyValue
