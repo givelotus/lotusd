@@ -52,11 +52,11 @@ static uint256 GetVoteItemId(const AnyVoteItem &item) {
                           [](const StakeContenderId &contenderId) {
                               return uint256(contenderId);
                           },
-                          [](const MempoolBatchVoteItem &batch) {
-                              return batch.GetId();
-                          },
                           [](const TreasuryContenderId &contenderId) {
                               return uint256(contenderId);
+                          },
+                          [](const MempoolBatchVoteItem &batch) {
+                              return batch.GetId();
                           },
                           [](const CTransactionRef &tx) {
                               uint256 id = tx->GetId();
@@ -157,7 +157,8 @@ Processor::Processor(Config avaconfigIn, interfaces::Chain &chain,
                      std::unique_ptr<PeerData> peerDataIn, CKey sessionKeyIn,
                      uint32_t minQuorumTotalScoreIn,
                      double minQuorumConnectedScoreRatioIn,
-                     int64_t minAvaproofsNodeCountIn,
+                     int64_t minAvaproofsNodeCountIn, size_t minQuorumNodesIn,
+                     uint64_t minQuorumSupplyPermilleIn,
                      uint32_t staleVoteThresholdIn, uint32_t staleVoteFactorIn,
                      Amount stakeUtxoDustThreshold, bool preConsensus,
                      bool stakingPreConsensus, size_t maxElementPoll)
@@ -169,11 +170,20 @@ Processor::Processor(Config avaconfigIn, interfaces::Chain &chain,
       peerData(std::move(peerDataIn)), sessionKey(std::move(sessionKeyIn)),
       minQuorumScore(minQuorumTotalScoreIn),
       minQuorumConnectedScoreRatio(minQuorumConnectedScoreRatioIn),
+      minQuorumNodes(minQuorumNodesIn),
+      minQuorumSupplyPermille(minQuorumSupplyPermilleIn),
       minAvaproofsNodeCount(minAvaproofsNodeCountIn),
       staleVoteThreshold(staleVoteThresholdIn),
       staleVoteFactor(staleVoteFactorIn), m_preConsensus(preConsensus),
       m_stakingPreConsensus(stakingPreConsensus),
       m_maxElementPoll(maxElementPoll) {
+    {
+        LOCK(cs_main);
+        if (const CBlockIndex *tip = chainman.ActiveTip()) {
+            LOCK(cs_activeTipHash);
+            m_activeTipHash = tip->GetBlockHash();
+        }
+    }
     // Make sure we get notified of chain state changes.
     chainNotificationsHandler =
         chain.handleNotifications(std::make_shared<NotificationsHandler>(this));
@@ -379,6 +389,22 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
         return nullptr;
     }
 
+    int64_t minQuorumNodes = argsman.GetIntArg(
+        "-avaminquorumnodes", AVALANCHE_DEFAULT_MIN_QUORUM_NODES);
+    if (minQuorumNodes < 0) {
+        error = _("The minimum number of quorum nodes should be non-negative");
+        return nullptr;
+    }
+
+    int64_t minQuorumSupplyPermille = argsman.GetIntArg(
+        "-avaminquorumsupplypermille",
+        AVALANCHE_DEFAULT_MIN_QUORUM_SUPPLY_PERMILLE);
+    if (minQuorumSupplyPermille < 0 || minQuorumSupplyPermille > 1000) {
+        error = _(
+            "The avalanche min quorum supply permille must be between 0 and 1000");
+        return nullptr;
+    }
+
     // Determine voting parameters
     int64_t staleVoteThreshold = argsman.GetIntArg(
         "-avastalevotethreshold", AVALANCHE_VOTE_STALE_THRESHOLD);
@@ -426,7 +452,8 @@ Processor::MakeProcessor(const ArgsManager &argsman, interfaces::Chain &chain,
         std::move(avaconfig), chain, connman, chainman, mempool, scheduler,
         std::move(peerData), std::move(sessionKey),
         Proof::amountToScore(minQuorumStake), minQuorumConnectedStakeRatio,
-        minAvaproofsNodeCount, staleVoteThreshold, staleVoteFactor,
+        minAvaproofsNodeCount, minQuorumNodes, minQuorumSupplyPermille,
+        staleVoteThreshold, staleVoteFactor,
         stakeUtxoDustThreshold,
         argsman.GetBoolArg("-avalanchepreconsensus",
                            DEFAULT_AVALANCHE_PRECONSENSUS),
@@ -965,7 +992,7 @@ void Processor::avaproofsSent(NodeId nodeid) {
  */
 bool Processor::isQuorumLatched() const {
     return quorumIsEstablished.load() &&
-           peerManager->getQuorumMetrics().nodeCount >= 8;
+           peerManager->getQuorumMetrics().nodeCount >= minQuorumNodes;
 }
 
 Processor::QuorumFigures Processor::getQuorumFigures() const {
@@ -975,7 +1002,7 @@ Processor::QuorumFigures Processor::getQuorumFigures() const {
 
 bool Processor::isQuorumEstablished() const NO_THREAD_SAFETY_ANALYSIS {
     const auto quorum = peerManager->getQuorumMetrics();
-    if (quorum.nodeCount < 8) {
+    if (quorum.nodeCount < minQuorumNodes) {
         // Keep upstream's unlatched eight-node eligibility rule.
         return false;
     }
@@ -1024,80 +1051,44 @@ bool Processor::isQuorumEstablished() const NO_THREAD_SAFETY_ANALYSIS {
         std::round(double(totalPeersScore) * minQuorumConnectedScoreRatio);
     if (connectedPeersScore < minConnectedScore) {
         return false;
+    }
+
+    if (minQuorumSupplyPermille > 0) {
+        const BlockHash tipHash = WITH_LOCK(cs_activeTipHash, return m_activeTipHash);
+        const uint64_t supply = GetV2BlockCirculatingSupply(tipHash);
+        if (supply > 0 && uint64_t(std::max<int64_t>(0, quorum.totalStakedSatoshis)) * 1000 <
+                              supply * minQuorumSupplyPermille) return false;
     }
 
     quorumIsEstablished.store(true);
     return true;
 }
 
-bool Processor::isQuorumEstablished() {
+bool Processor::isQuorumEstablished() NO_THREAD_SAFETY_ANALYSIS {
     AssertLockNotHeld(cs_main);
-    const auto quorum = peerManager->getQuorumMetrics();
-    if (quorum.nodeCount < 8) {
-        // Keep upstream's unlatched eight-node eligibility rule.
+
+    const bool wasEstablished = quorumIsEstablished.load();
+    if (!std::as_const(*this).isQuorumEstablished()) {
         return false;
     }
 
-    /*
-     * The following parameters can naturally go temporarly below the threshold
-     * under normal circumstances, like during a proof replacement with a lower
-     * stake amount, or the discovery of a new proofs for which we don't have a
-     * node yet.
-     * In order to prevent our node from starting and stopping the polls
-     * spuriously on such event, the quorum establishement is latched. The only
-     * parameters that should not latched is the minimum node count, as this
-     * would cause the poll to be inconclusive anyway and should not happen
-     * under normal circumstances.
-     */
-    if (quorumIsEstablished) {
-        return true;
-    }
-
-    // Don't do Avalanche while node is IBD'ing
-    if (chainman.IsInitialBlockDownload()) {
-        return false;
-    }
-
-    if (avaproofsNodeCounter < minAvaproofsNodeCount) {
-        return false;
-    }
-
-    auto localProof = getLocalProof();
-
-    // Read all peer metrics from the same published generation. Separate
-    // independent atomic reads could mix pre- and post-update quorum state.
-    const uint32_t totalPeersScore = quorum.totalScore;
-    uint32_t connectedPeersScore = quorum.connectedScore;
-    if (localProof && quorum.localProofHasNoNode) {
-        connectedPeersScore += localProof->getScore();
-    }
-
-    // Ensure enough is being staked overall
-    if (totalPeersScore < minQuorumScore) {
-        return false;
-    }
-
-    // Ensure we have connected score for enough of the overall score
-    uint32_t minConnectedScore =
-        std::round(double(totalPeersScore) * minQuorumConnectedScoreRatio);
-    if (connectedPeersScore < minConnectedScore) {
-        return false;
-    }
-
-    quorumIsEstablished = true;
-
-    // Attempt to compute the staking rewards winner now so we don't have to
-    // wait for a block if we already have all the prerequisites.
-    const CBlockIndex *pprev = WITH_LOCK(cs_main, return chainman.ActiveTip());
-    bool computedRewards = false;
-    if (pprev && IsStakingRewardsActivated(chainman.GetConsensus(), pprev)) {
-        computedRewards = computeStakingReward(pprev);
-    }
-    if (pprev && isStakingPreconsensusActivated(pprev) && !computedRewards) {
-        // It's possible to have quorum shortly after startup if peers were
-        // loaded from disk, but staking rewards may not be ready yet. In this
-        // case, we can still promote and poll for contenders.
-        promoteAndPollStakeContenders(pprev);
+    if (!wasEstablished) {
+        // Attempt to compute the staking rewards winner now so we don't have to
+        // wait for a block if we already have all the prerequisites.
+        const CBlockIndex *pprev =
+            WITH_LOCK(cs_main, return chainman.ActiveTip());
+        bool computedRewards = false;
+        if (pprev &&
+            IsStakingRewardsActivated(chainman.GetConsensus(), pprev)) {
+            computedRewards = computeStakingReward(pprev);
+        }
+        if (pprev && isStakingPreconsensusActivated(pprev) &&
+            !computedRewards) {
+            // It's possible to have quorum shortly after startup if peers were
+            // loaded from disk, but staking rewards may not be ready yet. In
+            // this case, we can still promote and poll for contenders.
+            promoteAndPollStakeContenders(pprev);
+        }
     }
 
     return true;
@@ -2088,6 +2079,8 @@ void Processor::updatedBlockTip() {
                 return entry.first != *m_mempoolBatchParent;
             });
         }
+        WITH_LOCK(cs_activeTipHash,
+                  m_activeTipHash = activeTip->GetBlockHash());
     }
     if (activeTip && isStakingPreconsensusActivated(activeTip)) {
         promoteAndPollStakeContenders(activeTip);
@@ -2365,6 +2358,8 @@ AnyVoteItem Processor::getVoteItemFromInv(const CInv &inv) const {
         return {nullptr};
     }
 
+
+
     if (mempool && inv.IsMsgTx()) {
         LOCK(mempool->cs);
         if (CTransactionRef tx = mempool->get(TxId(inv.hash))) {
@@ -2445,6 +2440,8 @@ bool Processor::IsWorthPolling::operator()(
     return processor.getTreasuryContenderStatus(contenderId) != -1;
 }
 
+
+
 bool Processor::IsWorthPolling::operator()(const CTransactionRef &tx) const {
     if (!processor.mempool) {
         return false;
@@ -2495,6 +2492,8 @@ bool Processor::GetLocalAcceptance::operator()(
     AssertLockNotHeld(processor.cs_treasury);
     return processor.getTreasuryContenderStatus(contenderId) == 0;
 }
+
+
 
 bool Processor::GetLocalAcceptance::operator()(
     const CTransactionRef &tx) const {

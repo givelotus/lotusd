@@ -963,8 +963,6 @@ def _lotus_v2_encode_output(out_tuple: tuple) -> bytes:
 
 
 def lotus_v2_compute_tx_identities(tx) -> tuple:
-    if not tx.vin and not tx.vout:
-        return (b"\x00" * 32, b"\x00" * 32)
     is_cb = len(tx.vin) == 1 and (
         (tx.vin[0].prevout.txid == 0 and tx.vin[0].prevout.n == 0xFFFFFFFF)
         or getattr(tx.vin[0], "nFlags", 0) == 2
@@ -3076,6 +3074,98 @@ class msg_avaproofs:
         )
 
 
+class msg_avaproofsreq:
+    __slots__ = "indices"
+    msgtype = b"avaproofsreq"
+
+    def __init__(self):
+        self.indices = []
+
+    def deserialize(self, f):
+        indices_length = deser_compact_size(f)
+
+        # The indices are differentially encoded
+        current_indice = -1
+        for _ in range(indices_length):
+            current_indice += deser_compact_size(f) + 1
+            self.indices.append(current_indice)
+
+    def serialize(self) -> bytes:
+        r = ser_compact_size(len(self.indices))
+
+        if len(self.indices) < 1:
+            return r
+
+        # The indices are differentially encoded
+        r += ser_compact_size(self.indices[0])
+        for i in range(len(self.indices[1:])):
+            r += ser_compact_size(self.indices[i + 1] - self.indices[i] - 1)
+
+        return r
+
+    def __repr__(self):
+        return (
+            f"msg_avaproofsreq(len(shortids)={len(self.indices)}, "
+            f"indices={self.indices})"
+        )
+
+
+def blake3_keyed_single_chunk(key_32: bytes, data: bytes) -> bytes:
+    assert len(key_32) == 32
+    assert len(data) <= 1024
+    key_words = [
+        int.from_bytes(key_32[i * 4 : (i + 1) * 4], "little") for i in range(8)
+    ]
+    cv = list(key_words)
+    num_blocks = max(1, (len(data) + 63) // 64)
+    for b in range(num_blocks):
+        blk = data[b * 64 : (b + 1) * 64]
+        blk_len = len(blk)
+        padded = blk + b"\x00" * (64 - blk_len)
+        words = [
+            int.from_bytes(padded[i * 4 : (i + 1) * 4], "little") for i in range(16)
+        ]
+        # 16 = KEYED_HASH, 1 = CHUNK_START, 2 = CHUNK_END, 8 = ROOT
+        flags = 16 | (1 if b == 0 else 0) | (2 if b == num_blocks - 1 else 0)
+        if b == num_blocks - 1:
+            flags |= 8
+        cv = _blake3_compress(cv, words, 0, blk_len, flags)
+    return b"".join(w.to_bytes(4, "little") for w in cv)
+
+
+class msg_avatreasury:
+    __slots__ = ("prevblockhash", "outputs", "total_reward")
+    msgtype = b"avatreasury"
+
+    def __init__(self, prevblockhash=0, outputs=None, total_reward=0):
+        self.prevblockhash = prevblockhash
+        self.outputs = outputs if outputs is not None else []
+        self.total_reward = total_reward
+
+    def deserialize(self, f):
+        self.prevblockhash = deser_uint256(f)
+        self.outputs = deser_vector(f, CTxOut)
+        self.total_reward = int.from_bytes(f.read(8), "little", signed=True)
+
+    def serialize(self) -> bytes:
+        return (
+            ser_uint256(self.prevblockhash)
+            + ser_vector(self.outputs)
+            + self.total_reward.to_bytes(8, "little", signed=True)
+        )
+
+    def contender_id(self) -> int:
+        key = b"lotus.v2.ava.treasury_contender".ljust(32, b"\x00")
+        payload = ser_uint256(self.prevblockhash) + ser_vector(self.outputs)
+        return uint256_from_str(blake3_keyed_single_chunk(key, payload))
+
+    def __repr__(self):
+        return (
+            f"msg_avatreasury(prevblockhash={self.prevblockhash:064x}, "
+            f"outputs={self.outputs!r}, total_reward={self.total_reward})"
+        )
+
+
 class msg_avabatch:
     __slots__ = (
         "prev_block_hash",
@@ -3127,8 +3217,9 @@ class msg_avabatch:
         )
 
     def batch_id(self) -> int:
-        tag = sha256(b"lotus.v2.preconsensus.batch")
-        return uint256_from_str(sha256(tag + tag + self.serialize()))
+        return uint256_from_str(
+            lotus_v2_tagged_hash("lotus.v2.preconsensus.batch", self.serialize())
+        )
 
     def __repr__(self):
         return (
@@ -3137,39 +3228,164 @@ class msg_avabatch:
         )
 
 
-class msg_avaproofsreq:
-    __slots__ = "indices"
-    msgtype = b"avaproofsreq"
+class msg_getutxoroots:
+    __slots__ = ("pivot_block_id",)
+    msgtype = b"getutxoroots"
 
-    def __init__(self):
-        self.indices = []
+    def __init__(self, pivot_block_id: bytes = b"\x00" * 32):
+        self.pivot_block_id = pivot_block_id
 
     def deserialize(self, f):
-        indices_length = deser_compact_size(f)
-
-        # The indices are differentially encoded
-        current_indice = -1
-        for _ in range(indices_length):
-            current_indice += deser_compact_size(f) + 1
-            self.indices.append(current_indice)
+        self.pivot_block_id = f.read(32)
 
     def serialize(self) -> bytes:
-        r = ser_compact_size(len(self.indices))
+        return self.pivot_block_id
 
-        if len(self.indices) < 1:
-            return r
+    def __repr__(self):
+        return f"msg_getutxoroots(pivot_block_id={self.pivot_block_id.hex()})"
 
-        # The indices are differentially encoded
-        r += ser_compact_size(self.indices[0])
-        for i in range(len(self.indices[1:])):
-            r += ser_compact_size(self.indices[i + 1] - self.indices[i] - 1)
 
-        return r
+class msg_utxoroots:
+    __slots__ = ("raw_payload", "pivot_block_id", "height", "monetary_state", "shards")
+    msgtype = b"utxoroots"
+
+    def __init__(self):
+        self.raw_payload = b""
+        self.pivot_block_id = b"\x00" * 32
+        self.height = 0
+        self.monetary_state = b"\x00" * 56
+        self.shards = []
+
+    def deserialize(self, f):
+        data = f.read()
+        self.raw_payload = data
+        self.pivot_block_id = data[:32]
+        self.height = int.from_bytes(data[32:40], "little")
+        self.monetary_state = data[40:96]
+        self.shards = []
+        offset = 96
+        for _ in range(256):
+            tag = data[offset]
+            root = data[offset + 1 : offset + 33]
+            self.shards.append((tag, root))
+            offset += 33
+
+    def serialize(self) -> bytes:
+        if self.raw_payload:
+            return self.raw_payload
+        out = bytearray()
+        out += self.pivot_block_id
+        out += self.height.to_bytes(8, "little")
+        out += self.monetary_state
+        for tag, root in self.shards:
+            out.append(tag)
+            out += root
+        return bytes(out)
+
+    def __repr__(self):
+        return f"msg_utxoroots(height={self.height}, pivot={self.pivot_block_id.hex()})"
+
+
+class msg_getutxoshard:
+    __slots__ = ("pivot_block_id", "prefix_depth", "prefix_bits")
+    msgtype = b"getutxoshard"
+
+    def __init__(
+        self,
+        pivot_block_id: bytes = b"\x00" * 32,
+        prefix_depth: int = 8,
+        prefix_bits: int = 0,
+    ):
+        self.pivot_block_id = pivot_block_id
+        self.prefix_depth = prefix_depth
+        self.prefix_bits = prefix_bits
+
+    def deserialize(self, f):
+        self.pivot_block_id = f.read(32)
+        self.prefix_depth = int.from_bytes(f.read(1), "little")
+        self.prefix_bits = int.from_bytes(f.read(2), "little")
+
+    def serialize(self) -> bytes:
+        return (
+            self.pivot_block_id
+            + self.prefix_depth.to_bytes(1, "little")
+            + self.prefix_bits.to_bytes(2, "little")
+        )
 
     def __repr__(self):
         return (
-            f"msg_avaproofsreq(len(shortids)={len(self.indices)}, "
-            f"indices={self.indices})"
+            f"msg_getutxoshard(pivot={self.pivot_block_id.hex()}, "
+            f"depth={self.prefix_depth}, bits=0x{self.prefix_bits:04x})"
+        )
+
+
+class msg_utxoshard:
+    __slots__ = ("raw_payload", "pivot_block_id", "prefix_depth", "prefix_bits")
+    msgtype = b"utxoshard"
+
+    def __init__(self, raw_payload: bytes = b""):
+        self.raw_payload = raw_payload
+        self.pivot_block_id = b"\x00" * 32
+        self.prefix_depth = 8
+        self.prefix_bits = 0
+
+    def deserialize(self, f):
+        data = f.read()
+        self.raw_payload = data
+        self.pivot_block_id = data[:32]
+        self.prefix_depth = data[32]
+        self.prefix_bits = int.from_bytes(data[33:35], "little")
+
+    def serialize(self) -> bytes:
+        return self.raw_payload
+
+    def __repr__(self):
+        return (
+            f"msg_utxoshard(pivot={self.pivot_block_id.hex()}, "
+            f"depth={self.prefix_depth}, bits=0x{self.prefix_bits:04x}, "
+            f"bytes={len(self.raw_payload)})"
+        )
+
+
+class msg_getblockundo:
+    __slots__ = ("block_id",)
+    msgtype = b"getblockundo"
+
+    def __init__(self, block_id: bytes = b"\x00" * 32):
+        self.block_id = block_id
+
+    def deserialize(self, f):
+        self.block_id = f.read(32)
+
+    def serialize(self) -> bytes:
+        return self.block_id
+
+    def __repr__(self):
+        return f"msg_getblockundo(block_id={self.block_id.hex()})"
+
+
+class msg_blockundo:
+    __slots__ = ("raw_payload", "block_id", "parent_monetary_state")
+    msgtype = b"blockundo"
+
+    def __init__(self, raw_payload: bytes = b""):
+        self.raw_payload = raw_payload
+        self.block_id = b"\x00" * 32
+        self.parent_monetary_state = b"\x00" * 56
+
+    def deserialize(self, f):
+        data = f.read()
+        self.raw_payload = data
+        self.block_id = data[:32]
+        self.parent_monetary_state = data[32:88]
+
+    def serialize(self) -> bytes:
+        return self.raw_payload
+
+    def __repr__(self):
+        return (
+            f"msg_blockundo(block_id={self.block_id.hex()}, "
+            f"bytes={len(self.raw_payload)})"
         )
 
 
@@ -3184,7 +3400,7 @@ class TestFrameworkMessages(unittest.TestCase):
         malformed = _lotus_v2_encode_output((0, 1234, b"\x00" * 32, branches, [[1, 0]]))
         self.assertIsNone(_lotus_v2_decode_output_bytes(malformed))
 
-    def test_ecash_batch_sha256_identifier_and_wire_round_trip(self):
+    def test_native_batch_blake3_identifier_and_wire_round_trip(self):
         batch = msg_avabatch(
             prev_block_hash=int(
                 "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", 16
@@ -3200,7 +3416,7 @@ class TestFrameworkMessages(unittest.TestCase):
         self.assertEqual(len(batch.serialize()), 168)
         self.assertEqual(
             f"{batch.batch_id():064x}",
-            "f2550ec763722f0d511967da83bcfc5a4b5460f09a6001b17ed2ebcf85716f23",
+            "cf456a4b7889237c3adace3e092fa4186c2c8c00642735c13eb8d80c7d977d46",
         )
         restored = msg_avabatch()
         restored.deserialize(BytesIO(batch.serialize()))

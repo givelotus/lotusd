@@ -35,6 +35,7 @@ void PeerManager::updateAtomicQuorumMetrics() {
     m_atomicNodeCount.store(nodes.size());
     m_atomicTotalPeersScore.store(totalPeersScore);
     m_atomicConnectedPeersScore.store(connectedPeersScore);
+    m_atomicTotalPeersStakedSatoshis.store(totalPeersStakedAmount / SATOSHI);
     bool localNoNode = false;
     if (localProof) {
         forPeer(localProof->getId(), [&](const Peer &peer) {
@@ -45,6 +46,8 @@ void PeerManager::updateAtomicQuorumMetrics() {
     m_atomicLocalProofHasNoNode.store(localNoNode);
     m_atomicQuorumGeneration.fetch_add(1);
 }
+
+
 
 bool PeerManager::addNode(NodeId nodeid, const ProofId &proofid,
                           size_t max_elements) {
@@ -196,6 +199,7 @@ bool PeerManager::removeNodeFromPeer(const PeerSet::iterator &it,
         slots[i] = slots[i].withPeerId(NO_PEER);
     }
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -274,6 +278,7 @@ bool PeerManager::setFinalized(PeerId peerid) {
 
     peers.modify(it, [&](Peer &p) { p.hasFinalized = true; });
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -454,6 +459,7 @@ bool PeerManager::registerProof(const ProofRef &proof,
 
     // Add to our registered score when adding to the peer list
     totalPeersScore += proof->getScore();
+    totalPeersStakedAmount += proof->getStakedAmount();
 
     // If there are nodes waiting for this proof, add them
     auto &pendingNodesView = pendingNodes.get<by_proofid>();
@@ -534,6 +540,7 @@ bool PeerManager::rejectProof(const ProofId &proofid, RejectionMode mode) {
         conflictingProofPool.addProofIfPreferred(proof);
     }
 
+    updateAtomicQuorumMetrics();
     return true;
 }
 
@@ -841,6 +848,8 @@ bool PeerManager::removePeer(const PeerId peerid) {
     // score total.
     assert(totalPeersScore >= it->getScore());
     totalPeersScore -= it->getScore();
+    assert(totalPeersStakedAmount >= it->proof->getStakedAmount());
+    totalPeersStakedAmount -= it->proof->getStakedAmount();
     peers.erase(it);
     updateAtomicQuorumMetrics();
     return true;

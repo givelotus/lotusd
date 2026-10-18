@@ -238,6 +238,8 @@ class Processor final : public NetEventsInterface {
      * Quorum management.
      */
     uint32_t minQuorumScore;
+    size_t minQuorumNodes{AVALANCHE_DEFAULT_MIN_QUORUM_NODES};
+    uint64_t minQuorumSupplyPermille{AVALANCHE_DEFAULT_MIN_QUORUM_SUPPLY_PERMILLE};
     double minQuorumConnectedScoreRatio;
     mutable std::atomic<bool> quorumIsEstablished{false};
     std::atomic<bool> m_canShareLocalProof{false};
@@ -251,6 +253,9 @@ class Processor final : public NetEventsInterface {
     /** Registered interfaces::Chain::Notifications handler. */
     class NotificationsHandler;
     std::unique_ptr<interfaces::Handler> chainNotificationsHandler;
+
+    mutable Mutex cs_activeTipHash;
+    BlockHash m_activeTipHash GUARDED_BY(cs_activeTipHash);
 
     mutable Mutex cs_finalizationTip;
     const CBlockIndex *finalizationTip GUARDED_BY(cs_finalizationTip){nullptr};
@@ -385,7 +390,8 @@ private:
               CScheduler &scheduler, std::unique_ptr<PeerData> peerDataIn,
               CKey sessionKeyIn, uint32_t minQuorumTotalScoreIn,
               double minQuorumConnectedScoreRatioIn,
-              int64_t minAvaproofsNodeCountIn, uint32_t staleVoteThresholdIn,
+              int64_t minAvaproofsNodeCountIn, size_t minQuorumNodesIn,
+              uint64_t minQuorumSupplyPermilleIn, uint32_t staleVoteThresholdIn,
               uint32_t staleVoteFactorIn, Amount stakeUtxoDustThresholdIn,
               bool preConsensus, bool stakingPreConsensus,
               size_t maxElementPoll);
@@ -478,7 +484,7 @@ public:
     /**
      * Whether the quorum is established, as isQuorumEstablished() would
      * answer once it has latched, without its side effects or locks (for
-     * metrics): the latch, and at least 8 nodes.
+     * metrics): the latch, and the configured minimum node count.
      */
     bool isQuorumLatched() const;
     struct QuorumFigures {
@@ -488,7 +494,8 @@ public:
     };
     /** Quorum figures, read without a lock (for metrics) */
     QuorumFigures getQuorumFigures() const;
-    bool isQuorumEstablished() const;
+    bool isQuorumEstablished() const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_activeTipHash);
     bool isQuorumEstablished() LOCKS_EXCLUDED(cs_main)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_stakingRewards,
                                  !cs_finalizedItems);
