@@ -17,6 +17,7 @@
 #include <rpc/server.h>
 #include <script/standard.h>
 #include <streams.h>
+#include <test/util/native_snapshot_setup.h>
 #include <test/util/setup_common.h>
 #include <txmempool.h>
 #include <univalue.h>
@@ -36,7 +37,7 @@
 #include <thread>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(snapshot_rcu_tests, TestChain100Setup)
+BOOST_FIXTURE_TEST_SUITE(snapshot_rcu_tests, NativeSnapshotChainSetup)
 
 // Published copies must survive writer churn and may be retired by readers.
 BOOST_AUTO_TEST_CASE(entry_tree_copy_and_cross_thread_retirement) {
@@ -230,19 +231,14 @@ BOOST_AUTO_TEST_CASE(snapshot_prune_height_and_difficulty_shift_branches) {
 
 BOOST_AUTO_TEST_CASE(
     abc_mempool_batch_removal_and_prioritisation_snapshot_coalescing) {
-    CScript spk = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
     std::vector<CTransactionRef> block_txs;
     constexpr size_t kNumTxs = 4;
     CTransactionRef prev_tx = m_coinbase_txns[0];
-    int prev_height = 1;
     Amount cur_val = prev_tx->vout[0].nValue;
     for (size_t i = 0; i < kNumTxs; ++i) {
         cur_val -= 2000 * SATOSHI;
-        CMutableTransaction mtx = CreateValidMempoolTransaction(
-            prev_tx, 0, prev_height, coinbaseKey, spk, cur_val,
-            /*submit=*/true);
+        CMutableTransaction mtx = CreateNativeMempoolTransaction(prev_tx, 0, cur_val);
         prev_tx = MakeTransactionRef(mtx);
-        prev_height = 101;
         block_txs.push_back(prev_tx);
     }
     BOOST_CHECK_EQUAL(m_node.mempool->size(), kNumTxs);
@@ -297,15 +293,13 @@ BOOST_AUTO_TEST_CASE(
 BOOST_AUTO_TEST_CASE(lazy_mempool_snapshots_pin_historical_values) {
     auto &pool = *m_node.mempool;
     auto &publisher = node::GetGlobalSnapshotPublisher();
-    CScript script = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
     std::vector<std::shared_ptr<const node::ChainAndMempoolSnapshot>> snapshots;
     std::vector<CTransactionRef> txs;
     CTransactionRef parent = m_coinbase_txns[0];
     Amount value = parent->vout[0].nValue;
     for (size_t i = 0; i < 4; ++i) {
         value -= 2000 * SATOSHI;
-        auto tx = MakeTransactionRef(CreateValidMempoolTransaction(
-            parent, 0, i == 0 ? 1 : 101, coinbaseKey, script, value, true));
+        auto tx = MakeTransactionRef(CreateNativeMempoolTransaction(parent, 0, value));
         txs.push_back(tx);
         parent = tx;
         snapshots.push_back(publisher.Load());
@@ -347,9 +341,8 @@ BOOST_AUTO_TEST_CASE(lazy_mempool_snapshots_pin_historical_values) {
 
 BOOST_AUTO_TEST_CASE(lazy_snapshot_materialization_avoids_chain_and_mempool_locks) {
     auto &pool = *m_node.mempool;
-    CScript script = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 1, coinbaseKey,
-                                 script, 50 * COIN - 2000 * SATOSHI, true);
+    CreateNativeMempoolTransaction(m_coinbase_txns[0], 0,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
     const auto snap = node::GetGlobalSnapshotPublisher().Load();
     std::promise<void> begin;
     auto start = begin.get_future();
@@ -372,9 +365,8 @@ BOOST_AUTO_TEST_CASE(chain_and_mempool_rebuild_publish_only_completed_state) {
     auto &pool = *m_node.mempool;
     auto &chainman = *m_node.chainman;
     auto &publisher = node::GetGlobalSnapshotPublisher();
-    CScript script = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 1, coinbaseKey,
-                                 script, 50 * COIN - 2000 * SATOSHI, true);
+    CreateNativeMempoolTransaction(m_coinbase_txns[0], 0,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
     LOCK2(cs_main, pool.cs);
     node::PublishChainTipSnapshot(chainman, &pool);
     const auto before = publisher.Load();

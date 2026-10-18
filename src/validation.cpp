@@ -33,8 +33,6 @@
 #include <kernel/notifications_interface.h>
 #include <logging.h>
 #include <logging/timer.h>
-#include <lotus_v2/fee_hysteresis.h>
-#include <lotus_v2/signing.h>
 #include <logging/values.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
@@ -50,6 +48,9 @@
 #include <pow/pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <lotus_v2/fast_sync.h>
+#include <lotus_v2/tagged_hash.h>
+#include <lotus_v2/vm.h>
 #include <random.h>
 #include <reverse_iterator.h>
 #include <script/script.h>
@@ -76,10 +77,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <condition_variable>
 #include <deque>
-#include <functional>
-#include <mutex>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -171,6 +169,10 @@ std::optional<std::vector<int>> CalculatePrevHeights(const CBlockIndex &tip,
     std::vector<int> prev_heights;
     prev_heights.resize(tx.vin.size());
     for (size_t i = 0; i < tx.vin.size(); ++i) {
+        if (tx.vin[i].nFlags == 3) {
+            prev_heights[i] = 0;
+            continue;
+        }
         if (auto coin{coins.GetCoin(tx.vin[i].prevout)}) {
             // Assume all mempool transaction confirm in the next block.
             prev_heights[i] = coin->GetHeight() == MEMPOOL_HEIGHT
@@ -194,7 +196,6 @@ std::optional<LockPoints> CalculateLockPointsAtTip(CBlockIndex *tip,
                                                    const CCoinsView &coins_view,
                                                    const CTransaction &tx) {
     assert(tip);
-
     auto prev_heights{CalculatePrevHeights(*tip, coins_view, tx)};
     if (!prev_heights.has_value()) {
         return std::nullopt;
@@ -271,6 +272,9 @@ static bool CheckInputsFromMempoolAndCache(
 
     assert(!tx.IsCoinBase());
     for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            continue;
+        }
         const Coin &coin = view.AccessCoin(txin.prevout);
 
         // This coin was checked in PreChecks and MemPoolAccept
@@ -332,8 +336,7 @@ VerifyTxScriptsAgainst(const CTransaction &tx, SpentOutput &&spent_output,
                        SignatureCache &signature_cache, int &nSigChecksOut,
                        TxSigCheckLimiter &txLimitSigChecks,
                        CheckInputsLimiter *pBlockLimitSigChecks,
-                       lotus::v2::BatchSigCollector *sig_collector,
-                       bool consensus_only = false) {
+                       lotus::v2::BatchSigCollector *sig_collector) {
     assert(!tx.IsCoinBase());
 
     int nSigChecksTotal = 0;
@@ -342,13 +345,12 @@ VerifyTxScriptsAgainst(const CTransaction &tx, SpentOutput &&spent_output,
 
         CScriptCheck check(prev_txout, tx, signature_cache, i, flags,
                            sigCacheStore, txdata, &txLimitSigChecks,
-                           pBlockLimitSigChecks, sig_collector);
+                           pBlockLimitSigChecks, /*resolvedCoins=*/nullptr,
+                           sig_collector);
         if (auto result = check(); result.has_value()) {
             uint32_t mandatoryFlags =
                 flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
-            // Block flags are consensus requirements. The policy fallback is
-            // only meaningful for mempool checks that add standardness flags.
-            if (!consensus_only && flags != mandatoryFlags) {
+            if (flags != mandatoryFlags) {
                 CScriptCheck check2(prev_txout, tx, signature_cache, i,
                                     mandatoryFlags, sigCacheStore, txdata,
                                     nullptr, nullptr, nullptr);
@@ -382,21 +384,222 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     CheckInputsLimiter *pBlockLimitSigChecks,
     lotus::v2::BatchSigCollector *sig_collector,
     bool consensus_only = false) {
+    assert(!tx.IsCoinBase());
     assert(resolved_inputs.size() == tx.vin.size());
-    return VerifyTxScriptsAgainst(
-        tx,
-        [&](size_t i) -> const CTxOut & {
+
+    if (tx.nVersion == 7 && !tx.vin.empty() && tx.vin.size() <= 16) {
+        static const lotus::v2::Hash kOpTrueBranchLeaf =
+            lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
+        bool fast_ok = true;
+        bool has_schnorr = false;
+        std::array<lotus::v2::Hash, 16> leaf_hashes{};
+        std::array<lotus::v2::Hash, 16> coin_leaves{};
+        std::array<bool, 16> is_schnorr_in{};
+        for (size_t i = 0; i < tx.vin.size(); ++i) {
+            const CTxIn &in = tx.vin[i];
+            if (in.nFlags != 1 || in.nPathIndex != 0 ||
+                in.vWitnesses.size() != 1 ||
+                !in.vWitnesses[0].siblings.empty() ||
+                resolved_inputs[i].IsSpent()) {
+                fast_ok = false;
+                break;
+            }
+            const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
+            const uint8_t *expected_branch = nullptr;
+            if (prev_out.nFlags == 0 && prev_out.vBranches.size() == 1 &&
+                prev_out.vPaths.size() == 1 &&
+                prev_out.vPaths[0].size() == 1 &&
+                prev_out.vPaths[0][0] == 0) {
+                expected_branch = prev_out.vBranches[0].data();
+            } else if ((prev_out.nFlags & 0x02U) == 0 &&
+                       prev_out.scriptPubKey.size() == 45 &&
+                       prev_out.scriptPubKey[0] == 0x00 &&
+                       prev_out.scriptPubKey[9] == 0x01 &&
+                       prev_out.scriptPubKey[42] == 0x01 &&
+                       prev_out.scriptPubKey[43] == 0x01 &&
+                       prev_out.scriptPubKey[44] == 0x00) {
+                expected_branch = prev_out.scriptPubKey.data() + 10;
+            } else {
+                fast_ok = false;
+                break;
+            }
+            const auto &w = in.vWitnesses[0];
+            if (w.script.size() == 1 && w.script[0] == 0x4e &&
+                w.arguments.empty()) {
+                if (std::memcmp(expected_branch, kOpTrueBranchLeaf.data(),
+                                32) != 0) {
+                    fast_ok = false;
+                    break;
+                }
+                leaf_hashes[i] = kOpTrueBranchLeaf;
+                is_schnorr_in[i] = false;
+            } else if (w.script.size() == 34 && w.script[0] == 0x20 &&
+                       w.script[33] == 0xbb && w.arguments.size() == 1 &&
+                       (w.arguments[0].size() == 64 ||
+                        (w.arguments[0].size() == 65 &&
+                         w.arguments[0][64] == 0))) {
+                leaf_hashes[i] = lotus::v2::BranchLeaf(w.script);
+                if (std::memcmp(expected_branch, leaf_hashes[i].data(), 32) !=
+                    0) {
+                    fast_ok = false;
+                    break;
+                }
+                has_schnorr = true;
+                is_schnorr_in[i] = true;
+            } else {
+                fast_ok = false;
+                break;
+            }
+        }
+        if (fast_ok) {
+            if (!has_schnorr) {
+                nSigChecksOut = 0;
+                return std::nullopt;
+            }
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
+                if (!prev_out.vBranches.empty()) {
+                    std::array<uint8_t, 45> coin_wire{};
+                    const uint64_t val = static_cast<uint64_t>(
+                        std::max<int64_t>(0, prev_out.nValue / SATOSHI));
+                    for (size_t b = 0; b < 8; ++b) {
+                        coin_wire[1 + b] = static_cast<uint8_t>(val >> (8 * b));
+                    }
+                    coin_wire[9] = 0x01;
+                    std::memcpy(coin_wire.data() + 10,
+                                prev_out.vBranches[0].data(), 32);
+                    coin_wire[42] = 0x01;
+                    coin_wire[43] = 0x01;
+                    coin_wire[44] = 0x00;
+                    coin_leaves[i] = lotus::v2::CoinEntryLeaf(coin_wire);
+                } else {
+                    coin_leaves[i] = lotus::v2::CoinEntryLeaf(
+                        std::span<const uint8_t>(prev_out.scriptPubKey.data(),
+                                                 45));
+                }
+            }
+            const lotus::v2::Hash coins_root = lotus::v2::IndexedTreeRoot(
+                std::span<const lotus::v2::Hash>(coin_leaves.data(),
+                                                 tx.vin.size()));
+            std::array<uint8_t, 138> preimage{};
+            const auto &chain_id = GetActiveV2ChainId();
+            std::memcpy(preimage.data(), chain_id.data(), 32);
+            preimage[32] = 0; // mode == 0
+            std::memcpy(preimage.data() + 33, tx.GetId().begin(), 32);
+            std::memcpy(preimage.data() + 65, coins_root.data(), 32);
+            preimage[97] = 1; // invocation.kind == 1
+            // preimage[102..105] = 0 (branch_index == 0)
+            lotus::v2::BatchSigCollector staged_sigs;
+            bool sigs_ok = true;
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                if (!is_schnorr_in[i]) {
+                    continue;
+                }
+                for (size_t b = 0; b < 4; ++b) {
+                    preimage[98 + b] = static_cast<uint8_t>(i >> (8 * b));
+                }
+                std::memcpy(preimage.data() + 106, leaf_hashes[i].data(), 32);
+                const lotus::v2::Hash msg = lotus::v2::TaggedHash(
+                    lotus::v2::HashDomain::Sighash, preimage);
+                const auto &w = tx.vin[i].vWitnesses[0];
+                const std::span<const uint8_t> pubkey(w.script.data() + 1, 32);
+                const std::span<const uint8_t> sig64(w.arguments[0].data(), 64);
+                if (sig_collector != nullptr) {
+                    lotus::v2::BatchSigCollector *target =
+                        (tx.vin.size() == 1) ? sig_collector : &staged_sigs;
+                    if (!target->Add(pubkey, sig64, msg)) {
+                        sigs_ok = false;
+                        break;
+                    }
+                } else {
+                    if (lotus::v2::VerifyBip340Signature(
+                            pubkey, sig64, msg, false) !=
+                        lotus::v2::SignatureStatus::Valid) {
+                        sigs_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (sigs_ok) {
+                if (sig_collector != nullptr && tx.vin.size() > 1) {
+                    sig_collector->Merge(std::move(staged_sigs));
+                }
+                nSigChecksOut = 0;
+                return std::nullopt;
+            }
+        }
+    }
+
+    const bool has_v2_input = std::any_of(
+        tx.vin.begin(), tx.vin.end(),
+        [](const CTxIn &in) { return in.nFlags == 1 || in.nFlags == 3; });
+    std::shared_ptr<CScriptCheck::V2ResolvedCoins> v2_resolved_coins;
+    if (has_v2_input) {
+        v2_resolved_coins =
+            std::make_shared<CScriptCheck::V2ResolvedCoins>(tx.vin.size());
+        for (size_t j = 0; j < tx.vin.size(); ++j) {
+            if (tx.vin[j].nFlags == 3) {
+                (*v2_resolved_coins)[j] = std::nullopt;
+                continue;
+            }
+            assert(!resolved_inputs[j].IsSpent());
+            (*v2_resolved_coins)[j] =
+                resolved_inputs[j].GetTxOut().ToV2Output();
+        }
+    }
+
+    static const CTxOut kEmptyTxOut{};
+    int nSigChecksTotal = 0;
+    for (size_t i = 0; i < tx.vin.size(); i++) {
+        if (tx.vin[i].nFlags != 3) {
             assert(!resolved_inputs[i].IsSpent());
-            return resolved_inputs[i].GetTxOut();
-        },
-        flags, sigCacheStore, txdata, signature_cache, nSigChecksOut,
-        txLimitSigChecks, pBlockLimitSigChecks, sig_collector, consensus_only);
+        }
+        const CTxOut &prev_txout =
+            (tx.vin[i].nFlags == 3 ||
+             (v2_resolved_coins && tx.vin[i].nFlags == 1))
+                ? kEmptyTxOut
+                : resolved_inputs[i].GetTxOut();
+
+        CScriptCheck check(prev_txout, tx, signature_cache, i, flags,
+                           sigCacheStore, txdata, &txLimitSigChecks,
+                           pBlockLimitSigChecks, v2_resolved_coins,
+                           sig_collector);
+        if (auto result = check(); result.has_value()) {
+            uint32_t mandatoryFlags =
+                flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
+            // Block flags are consensus requirements. The policy fallback is
+            // only meaningful for mempool checks that add standardness flags.
+            if (!consensus_only && flags != mandatoryFlags) {
+                CScriptCheck check2(prev_txout, tx, signature_cache, i,
+                                    mandatoryFlags, sigCacheStore, txdata,
+                                    nullptr, nullptr, v2_resolved_coins,
+                                    nullptr);
+                auto mandatory_result = check2();
+                if (!mandatory_result.has_value()) {
+                    return ParallelTxScriptError{
+                        TxValidationResult::TX_NOT_STANDARD, result->first,
+                        strprintf("non-mandatory-script-verify-flag (%s)",
+                                  ScriptErrorString(result->first)),
+                        result->second};
+                }
+                result = mandatory_result;
+            }
+            return ParallelTxScriptError{
+                TxValidationResult::TX_CONSENSUS, result->first,
+                strprintf("mandatory-script-verify-flag-failed (%s)",
+                          ScriptErrorString(result->first)),
+                result->second};
+        }
+        nSigChecksTotal += check.GetScriptExecutionMetrics().nSigChecks;
+    }
+    nSigChecksOut = nSigChecksTotal;
+    return std::nullopt;
 }
 
 /** Whether every input of tx spends, in view, exactly the given outputs. */
 bool SpentOutputsMatch(const CTransaction &tx, const CCoinsViewCache &view,
                        const std::vector<CTxOut> &spent_outputs) {
-    if (spent_outputs.size() != tx.vin.size()) {
+    if (tx.nVersion == 7 || spent_outputs.size() != tx.vin.size()) {
         return false;
     }
     for (size_t i = 0; i < tx.vin.size(); ++i) {
@@ -422,7 +625,7 @@ bool CheckInputScriptsReusing(
     const ScriptCheckOutcome *outcome, ValidationCache &validation_cache,
     int &nSigChecksOut) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
     AssertLockHeld(cs_main);
-    if (precomputed == nullptr || outcome == nullptr || !outcome->ran ||
+    if (tx.nVersion == 7 || precomputed == nullptr || outcome == nullptr || !outcome->ran ||
         outcome->flags != flags ||
         !SpentOutputsMatch(tx, inputs, precomputed->spent_outputs)) {
         return CheckInputScripts(tx, state, inputs, flags, sigCacheStore,
@@ -455,131 +658,7 @@ bool CheckInputScriptsReusing(
     return true;
 }
 
-class ParallelScriptWorkerPool {
-public:
-    static ParallelScriptWorkerPool &Instance() {
-        static ParallelScriptWorkerPool pool;
-        return pool;
-    }
 
-    template <typename Fn>
-    void Run(size_t num_workers, Fn &&fn) {
-        if (num_workers <= 1) {
-            fn(0);
-            return;
-        }
-        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
-        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
-    }
-
-    /**
-     * As Run, but returns false without running anything if another caller
-     * is using the pool (e.g. ConnectBlock's script checks), instead of
-     * waiting for it. Must not be called from a pool task.
-     */
-    template <typename Fn> bool TryRun(size_t num_workers, Fn &&fn) {
-        if (num_workers <= 1) {
-            fn(0);
-            return true;
-        }
-        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex,
-                                                   std::try_to_lock);
-        if (!dispatch_lock.owns_lock()) {
-            return false;
-        }
-        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
-        return true;
-    }
-
-private:
-    template <typename Fn>
-    void RunLocked(std::unique_lock<std::mutex> &dispatch_lock,
-                   size_t num_workers, Fn &&fn) {
-        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
-        EnsureWorkers(num_workers - 1);
-        const size_t active = std::min(num_workers - 1, m_threads.size());
-        if (active == 0) {
-            dispatch_lock.unlock();
-            task_fn(0);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_task = &task_fn;
-            m_active_workers = active;
-            m_remaining.store(active, std::memory_order_release);
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        task_fn(0);
-        {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_cv_done.wait(lock, [this]() {
-                return m_remaining.load(std::memory_order_acquire) == 0;
-            });
-            m_task = nullptr;
-        }
-    }
-
-    ParallelScriptWorkerPool() = default;
-    ~ParallelScriptWorkerPool() {
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            m_stop = true;
-            ++m_generation;
-        }
-        m_cv_start.notify_all();
-        for (auto &t : m_threads) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-    }
-
-    void EnsureWorkers(size_t count) {
-        while (m_threads.size() < count) {
-            const size_t worker_id = m_threads.size() + 1;
-            m_threads.emplace_back([this, worker_id]() {
-                uint64_t seen_gen = 0;
-                while (true) {
-                    const std::function<void(size_t)> *fn = nullptr;
-                    {
-                        std::unique_lock<std::mutex> lock(m_mutex);
-                        m_cv_start.wait(lock, [this, &seen_gen]() {
-                            return m_stop || m_generation != seen_gen;
-                        });
-                        if (m_stop) {
-                            return;
-                        }
-                        seen_gen = m_generation;
-                        if (worker_id <= m_active_workers) {
-                            fn = m_task;
-                        }
-                    }
-                    if (fn != nullptr) {
-                        (*fn)(worker_id);
-                        if (m_remaining.fetch_sub(
-                                1, std::memory_order_acq_rel) == 1) {
-                            std::lock_guard<std::mutex> lock(m_mutex);
-                            m_cv_done.notify_one();
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    std::mutex m_dispatch_mutex;
-    std::mutex m_mutex;
-    std::condition_variable m_cv_start;
-    std::condition_variable m_cv_done;
-    std::vector<std::thread> m_threads;
-    const std::function<void(size_t)> *m_task{nullptr};
-    size_t m_active_workers{0};
-    std::atomic<size_t> m_remaining{0};
-    uint64_t m_generation{0};
-    bool m_stop{false};
-};
 
 class MemPoolAccept {
 public:
@@ -889,7 +968,8 @@ private:
     // temporarily exceeded.
     bool SubmitPackage(const ATMPArgs &args, std::vector<Workspace> &workspaces,
                        PackageValidationState &package_state,
-                       std::map<TxId, MempoolAcceptResult> &results)
+                       std::map<TxId, MempoolAcceptResult> &results,
+                       bool scripts_already_verified = false)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Compare a package's feerate against minimum allowed.
@@ -974,9 +1054,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
         return false;
     }
 
+    const bool is_v2_native_tx =
+        std::any_of(tx.vin.begin(), tx.vin.end(), [](const CTxIn &in) {
+            return in.nFlags != 0 && !in.vWitnesses.empty();
+        });
+
     // Rather not work on nonstandard transactions (unless -testnet)
     std::string reason;
-    if (m_pool.m_opts.require_standard &&
+    if (m_pool.m_opts.require_standard && !is_v2_native_tx &&
         !IsStandardTx(tx, m_pool.m_opts.max_datacarrier_bytes,
                       m_pool.m_opts.permit_bare_multisig,
                       m_pool.m_opts.dust_relay_feerate, reason)) {
@@ -1251,6 +1336,9 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
 
     // Do all inputs exist?
     for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            continue;
+        }
         if (!coins_cache.HaveCoinInCache(txin.prevout)) {
             coins_to_uncache.push_back(txin.prevout);
         }
@@ -1275,12 +1363,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
             return state.Invalid(TxValidationResult::TX_MISSING_INPUTS,
                                  "bad-txns-inputs-missingorspent");
         }
-    }
-
-    // Are the actual inputs available?
-    if (!m_view.HaveInputs(tx)) {
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
-                             "bad-txns-inputs-spent");
     }
 
     // Bring the best block into scope.
@@ -1319,7 +1401,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     }
 
     // Check for non-standard pay-to-script-hash in inputs
-    if (m_pool.m_opts.require_standard &&
+    if (m_pool.m_opts.require_standard && !is_v2_native_tx &&
         !AreInputsStandard(tx, m_view, ws.m_next_block_script_verify_flags)) {
         return state.Invalid(TxValidationResult::TX_INPUTS_NOT_STANDARD,
                              "bad-txns-nonstandard-inputs");
@@ -1491,15 +1573,30 @@ bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
 bool MemPoolAccept::SubmitPackage(
     const ATMPArgs &args, std::vector<Workspace> &workspaces,
     PackageValidationState &package_state,
-    std::map<TxId, MempoolAcceptResult> &results) {
+    std::map<TxId, MempoolAcceptResult> &results,
+    bool scripts_already_verified) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
+    CTxMemPool::ScopedSnapshotDefer snap_defer(m_pool);
+    const CBlockIndex *tip = m_active_chainstate.m_chain.Tip();
+    if (tip) {
+        m_pool.SyncMerklixOverlayToTip(
+            tip->GetBlockHash(), static_cast<uint64_t>(tip->nHeight + 1),
+            static_cast<uint64_t>(tip->GetMedianTimePast()));
+    }
     // Sanity check: none of the transactions should be in the mempool.
     assert(std::all_of(
         workspaces.cbegin(), workspaces.cend(),
         [this](const auto &ws) { return !m_pool.exists(ws.m_ptx->GetId()); }));
 
     bool all_submitted = true;
+    std::vector<ValidationSignals::MempoolAddedBatchItem> batch_signals;
+    if (m_pool.m_opts.signals && workspaces.size() > 1) {
+        batch_signals.reserve(workspaces.size());
+    }
+    auto *batch_signals_ptr =
+        (m_pool.m_opts.signals && workspaces.size() > 1) ? &batch_signals
+                                                         : nullptr;
     // ConsensusScriptChecks adds to the script cache and is therefore
     // consensus-critical; CheckInputsFromMempoolAndCache asserts that
     // transactions only spend coins available from the mempool or UTXO set.
@@ -1507,7 +1604,7 @@ bool MemPoolAccept::SubmitPackage(
     // ConsensusScriptChecks to make the outputs available for subsequent
     // transactions.
     for (Workspace &ws : workspaces) {
-        if (!ConsensusScriptChecks(args, ws)) {
+        if (!scripts_already_verified && !ConsensusScriptChecks(args, ws)) {
             results.emplace(ws.m_ptx->GetId(),
                             MempoolAcceptResult::Failure(ws.m_state));
             // Since PreChecks() passed, this should never fail.
@@ -1526,7 +1623,7 @@ bool MemPoolAccept::SubmitPackage(
         // Instead, allow the mempool to temporarily bypass limits, the maximum
         // package size) while submitting transactions individually and then
         // trim at the very end.
-        if (!Finalize(args, ws)) {
+        if (!Finalize(args, ws, batch_signals_ptr)) {
             results.emplace(ws.m_ptx->GetId(),
                             MempoolAcceptResult::Failure(ws.m_state));
             // Since LimitMempoolSize() won't be called, this should never fail.
@@ -1535,6 +1632,11 @@ bool MemPoolAccept::SubmitPackage(
                                   strprintf("BUG! Adding to mempool failed: %s",
                                             ws.m_ptx->GetId().ToString()));
         }
+    }
+
+    if (batch_signals_ptr != nullptr && !batch_signals.empty()) {
+        m_pool.m_opts.signals->TransactionsAddedToMempoolBatch(
+            std::move(batch_signals));
     }
 
     // It may or may not be the case that all the transactions made it into the
@@ -1664,6 +1766,12 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(
     if (args.m_test_accept) {
         return MempoolAcceptResult::Success(ws.m_vsize, ws.m_base_fees,
                                             effective_feerate, single_txid);
+    }
+
+    if (tip) {
+        m_pool.SyncMerklixOverlayToTip(
+            tip->GetBlockHash(), static_cast<uint64_t>(tip->nHeight + 1),
+            static_cast<uint64_t>(tip->GetMedianTimePast()));
     }
 
     if (!Finalize(args, ws)) {
@@ -1801,6 +1909,134 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(
     return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 
+namespace {
+class ParallelScriptWorkerPool {
+public:
+    static ParallelScriptWorkerPool &Instance() {
+        static ParallelScriptWorkerPool pool;
+        return pool;
+    }
+
+    template <typename Fn>
+    void Run(size_t num_workers, Fn &&fn) {
+        if (num_workers <= 1) {
+            fn(0);
+            return;
+        }
+        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex);
+        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
+    }
+
+    /**
+     * As Run, but returns false without running anything if another caller
+     * is using the pool (e.g. ConnectBlock's script checks), instead of
+     * waiting for it. Must not be called from a pool task.
+     */
+    template <typename Fn> bool TryRun(size_t num_workers, Fn &&fn) {
+        if (num_workers <= 1) {
+            fn(0);
+            return true;
+        }
+        std::unique_lock<std::mutex> dispatch_lock(m_dispatch_mutex,
+                                                   std::try_to_lock);
+        if (!dispatch_lock.owns_lock()) {
+            return false;
+        }
+        RunLocked(dispatch_lock, num_workers, std::forward<Fn>(fn));
+        return true;
+    }
+
+private:
+    template <typename Fn>
+    void RunLocked(std::unique_lock<std::mutex> &dispatch_lock,
+                   size_t num_workers, Fn &&fn) {
+        std::function<void(size_t)> task_fn(std::forward<Fn>(fn));
+        EnsureWorkers(num_workers - 1);
+        const size_t active = std::min(num_workers - 1, m_threads.size());
+        if (active == 0) {
+            dispatch_lock.unlock();
+            task_fn(0);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_task = &task_fn;
+            m_active_workers = active;
+            m_remaining.store(active, std::memory_order_release);
+            ++m_generation;
+        }
+        m_cv_start.notify_all();
+        task_fn(0);
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_cv_done.wait(lock, [this]() {
+                return m_remaining.load(std::memory_order_acquire) == 0;
+            });
+            m_task = nullptr;
+        }
+    }
+
+    ParallelScriptWorkerPool() = default;
+    ~ParallelScriptWorkerPool() {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_stop = true;
+            ++m_generation;
+        }
+        m_cv_start.notify_all();
+        for (auto &t : m_threads) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+    }
+
+    void EnsureWorkers(size_t count) {
+        while (m_threads.size() < count) {
+            const size_t worker_id = m_threads.size() + 1;
+            m_threads.emplace_back([this, worker_id]() {
+                uint64_t seen_gen = 0;
+                while (true) {
+                    const std::function<void(size_t)> *fn = nullptr;
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_cv_start.wait(lock, [this, &seen_gen]() {
+                            return m_stop || m_generation != seen_gen;
+                        });
+                        if (m_stop) {
+                            return;
+                        }
+                        seen_gen = m_generation;
+                        if (worker_id <= m_active_workers) {
+                            fn = m_task;
+                        }
+                    }
+                    if (fn != nullptr) {
+                        (*fn)(worker_id);
+                        if (m_remaining.fetch_sub(
+                                1, std::memory_order_acq_rel) == 1) {
+                            std::lock_guard<std::mutex> lock(m_mutex);
+                            m_cv_done.notify_one();
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    std::mutex m_dispatch_mutex;
+    std::mutex m_mutex;
+    std::condition_variable m_cv_start;
+    std::condition_variable m_cv_done;
+    std::vector<std::thread> m_threads;
+    const std::function<void(size_t)> *m_task{nullptr};
+    size_t m_active_workers{0};
+    std::atomic<size_t> m_remaining{0};
+    uint64_t m_generation{0};
+    bool m_stop{false};
+};
+} // namespace
+
 PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
     const std::vector<CTransactionRef> &txns, ATMPArgs &args,
     const CFeeRate &max_raw_tx_fee_rate,
@@ -1867,6 +2103,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
         for (size_t i = 0; i < batch_count; ++i) {
             const auto &tx = txns[i];
             for (const auto &input : tx->vin) {
+                if (input.nFlags == 3) {
+                    continue;
+                }
                 const TxId &prev_txid = input.prevout.GetTxId();
                 size_t tslot = prev_txid.GetUint64(0) & txid_mask;
                 while (txid_table[tslot].occupied) {
@@ -2285,6 +2524,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package &package,
     // to the mempool.
     const CCoinsViewCache &coins_tip_cache = m_active_chainstate.CoinsTip();
     for (const auto &input : child->vin) {
+        if (input.nFlags == 3) {
+            continue;
+        }
         if (!coins_tip_cache.HaveCoinInCache(input.prevout)) {
             args.m_coins_to_uncache.push_back(input.prevout);
         }
@@ -2296,7 +2538,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package &package,
     m_view.SetBackend(m_active_chainstate.CoinsTip());
     const auto package_or_confirmed = [this, &unconfirmed_parent_txids](
                                           const auto &input) {
-        return unconfirmed_parent_txids.count(input.prevout.GetTxId()) > 0 ||
+        return input.nFlags == 3 ||
+               unconfirmed_parent_txids.count(input.prevout.GetTxId()) > 0 ||
                m_view.HaveCoin(input.prevout);
     };
     if (!std::all_of(child->vin.begin(), child->vin.end(),
@@ -2514,9 +2757,8 @@ AcceptToMemoryPool(Chainstate &active_chainstate, const CTransactionRef &tx,
         active_chainstate.m_chainman.GetConfig(), accept_time, bypass_limits,
         coins_to_uncache, test_accept, heightOverride);
     args.m_limits = limits;
-    MempoolAcceptResult result =
-        MemPoolAccept(pool, active_chainstate)
-            .AcceptSingleTransaction(tx, args, precomputed);
+    MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate)
+                                     .AcceptSingleTransaction(tx, args, precomputed);
     if (!test_accept) {
         RecordMempoolAdmission(result);
     }
@@ -2592,10 +2834,14 @@ void ComputeAdmissionChecks(const CTransaction &tx,
                             uint32_t next_block_script_flags,
                             ValidationCache &validation_cache,
                             PrecomputedAdmissionChecks &out) {
+    out.standard = {};
+    out.consensus = {};
     out.txid = tx.GetId();
     out.regular_tx_checked = true;
     out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
-    if (!out.regular_tx_valid || tx.IsCoinBase() ||
+    // Native deferred records and structural inputs require the existing
+    // authoritative native verifier, not a legacy spent-output outcome.
+    if (tx.nVersion == 7 || !out.regular_tx_valid || tx.IsCoinBase() ||
         out.spent_outputs.size() != tx.vin.size()) {
         return;
     }
@@ -2945,13 +3191,18 @@ const CBlockIndex *Chainstate::SnapshotBase() {
             m_chainman.m_blockman.LookupBlockIndex(*m_from_snapshot_blockhash));
     }
     return m_cached_snapshot_base;
-}
 
 void Chainstate::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                              bool should_wipe, std::string leveldb_name) {
     if (m_from_snapshot_blockhash) {
         leveldb_name += node::SNAPSHOT_CHAINSTATE_SUFFIX;
     }
+
+    SetV2StatePersistDir(
+        in_memory ? std::string{}
+                  : fs::PathToString(m_chainman.m_options.datadir / "v2_state"));
+    const CBlock &genesis = m_chainman.GetParams().GenesisBlock();
+    RecordV2BlockState(genesis, genesis.GetHash(), BlockHash(), 0, 0);
 
     m_coins_views = std::make_unique<CoinsViews>(
         DBParams{.path = m_chainman.m_options.datadir / leveldb_name,
@@ -3151,6 +3402,11 @@ void SpendCoins(CCoinsViewCache &view, const CTransaction &tx, CTxUndo &txundo,
 
     txundo.vprevout.reserve(tx.vin.size());
     for (const CTxIn &txin : tx.vin) {
+        if (txin.nFlags == 3) {
+            txundo.vprevout.emplace_back(CTxOut(Amount::zero(), CScript()), 1,
+                                         false);
+            continue;
+        }
         txundo.vprevout.emplace_back();
         bool is_spent = view.SpendCoin(txin.prevout, &txundo.vprevout.back());
         assert(is_spent);
@@ -3168,6 +3424,11 @@ GetSpentCoins(const CTransactionRef &ptx, const CCoinsViewCache &coins_view) {
     std::vector<Coin> spent_coins;
     spent_coins.reserve(ptx->vin.size());
     for (const CTxIn &input : ptx->vin) {
+        if (input.nFlags == 3) {
+            spent_coins.emplace_back(CTxOut(Amount::zero(), CScript()), 1,
+                                     false);
+            continue;
+        }
         auto coin{coins_view.GetCoin(input.prevout)};
         if (!coin.has_value()) {
             return std::nullopt;
@@ -3180,10 +3441,210 @@ GetSpentCoins(const CTransactionRef &ptx, const CCoinsViewCache &coins_view) {
 std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     ScriptError error{ScriptError::UNKNOWN};
-    auto debug_str = strprintf("input %i of %s, spending %s:%i", nIn,
-                               ptxTo->GetId().ToString(),
-                               ptxTo->vin[nIn].prevout.GetTxId().ToString(),
-                               ptxTo->vin[nIn].prevout.GetN());
+    auto make_debug_str = [&]() {
+        return strprintf("input %i of %s, spending %s:%i", nIn,
+                         ptxTo->GetId().ToString(),
+                         ptxTo->vin[nIn].prevout.GetTxId().ToString(),
+                         ptxTo->vin[nIn].prevout.GetN());
+    };
+    if (ptxTo->vin[nIn].nFlags == 1 || ptxTo->vin[nIn].nFlags == 3) {
+        if (ptxTo->vin[nIn].vWitnesses.empty()) {
+            return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+        }
+        if (!m_resolved_coins && ptxTo->nVersion == 7 &&
+            ptxTo->vin[nIn].nFlags == 1 && ptxTo->vin[nIn].nPathIndex == 0 &&
+            ptxTo->vin[nIn].vWitnesses.size() == 1 &&
+            ptxTo->vin[nIn].vWitnesses[0].siblings.empty() &&
+            ptxTo->vin[nIn].vWitnesses[0].script.size() == 1 &&
+            ptxTo->vin[nIn].vWitnesses[0].script[0] == 0x4e &&
+            ptxTo->vin[nIn].vWitnesses[0].arguments.empty() &&
+            (m_tx_out.nFlags & 0x02U) == 0) {
+            static const lotus::v2::Hash kOpTrueBranchLeaf =
+                lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
+            if (m_tx_out.nFlags == 0 && m_tx_out.vBranches.size() == 1 &&
+                m_tx_out.vPaths.size() == 1 &&
+                m_tx_out.vPaths[0].size() == 1 &&
+                m_tx_out.vPaths[0][0] == 0 &&
+                m_tx_out.vBranches[0] == kOpTrueBranchLeaf) {
+                return std::nullopt;
+            }
+            if (m_tx_out.scriptPubKey.size() == 45 &&
+                m_tx_out.scriptPubKey[0] == 0x00 &&
+                m_tx_out.scriptPubKey[9] == 0x01 &&
+                m_tx_out.scriptPubKey[42] == 0x01 &&
+                m_tx_out.scriptPubKey[43] == 0x01 &&
+                m_tx_out.scriptPubKey[44] == 0x00 &&
+                std::memcmp(m_tx_out.scriptPubKey.data() + 10,
+                            kOpTrueBranchLeaf.data(), 32) == 0) {
+                return std::nullopt;
+            }
+        }
+
+        static constexpr lotus::v2::VmProfile kDefaultVmProfile{
+            10000, 65535, 8192, 1000, 1000, 65536, 64, 1000000};
+        static const lotus::v2::VmCostProfile kDefaultVmCost = []() {
+            lotus::v2::VmCostProfile c{};
+            c.max_invocation_cost = 1000000;
+            c.structural_byte_cost = 1;
+            for (auto &op : c.opcode) {
+                op.base = 1;
+            }
+            return c;
+        }();
+
+        struct CachedPreparedVm {
+            const CTransaction *tx_ptr{nullptr};
+            TxHash tx_hash{};
+            std::weak_ptr<const V2ResolvedCoins> resolved_wp;
+            lotus::v2::Transaction v2tx;
+            lotus::v2::PreparedVmTransaction prepared_vm;
+            lotus::v2::SigningPreparationStatus status{
+                lotus::v2::SigningPreparationStatus::InvalidWitness};
+        };
+        thread_local CachedPreparedVm tl_cache;
+
+        lotus::v2::ResolvedCoins fallback_resolved;
+        const lotus::v2::Transaction *v2tx_ptr = nullptr;
+        lotus::v2::PreparedVmTransaction *prepared_vm_ptr = nullptr;
+        lotus::v2::Transaction local_v2tx;
+        lotus::v2::PreparedVmTransaction local_prepared_vm;
+
+        auto extract_known_v2_ids = [&](lotus::v2::IdentityDigests &ids) {
+            std::memcpy(ids.txid.data(), ptxTo->GetId().begin(), 32);
+            std::memcpy(ids.txhash.data(), ptxTo->GetHash().begin(), 32);
+            std::memcpy(ids.outputs_root.data(),
+                        ptxTo->GetOutputsHash().begin(), 32);
+            if (ptxTo->nVersion != 7) {
+                ids.txid[0] ^= uint8_t(ptxTo->nVersion & 0xffU);
+                ids.txhash[0] ^= uint8_t(ptxTo->nVersion & 0xffU);
+            }
+        };
+
+        if (m_resolved_coins) {
+            if (tl_cache.tx_ptr != ptxTo ||
+                tl_cache.tx_hash != ptxTo->GetHash() ||
+                tl_cache.resolved_wp.lock() != m_resolved_coins) {
+                tl_cache.tx_ptr = ptxTo;
+                tl_cache.tx_hash = ptxTo->GetHash();
+                tl_cache.resolved_wp = m_resolved_coins;
+                tl_cache.v2tx = ptxTo->ToV2Transaction();
+                lotus::v2::IdentityDigests precomputed_ids{};
+                extract_known_v2_ids(precomputed_ids);
+                std::string prep_err;
+                tl_cache.status = tl_cache.prepared_vm.PrepareChecked(
+                    tl_cache.v2tx, lotus::v2::DefaultTxProfile,
+                    GetActiveV2ChainId(), *m_resolved_coins, kDefaultVmCost,
+                    prep_err, &precomputed_ids);
+            }
+            if (tl_cache.status != lotus::v2::SigningPreparationStatus::Ready) {
+                return std::make_pair(ScriptError::EVAL_FALSE,
+                                      make_debug_str());
+            }
+            v2tx_ptr = &tl_cache.v2tx;
+            prepared_vm_ptr = &tl_cache.prepared_vm;
+        } else {
+            local_v2tx = ptxTo->ToV2Transaction();
+            fallback_resolved.resize(local_v2tx.inputs.size());
+            if (ptxTo->vin[nIn].nFlags == 1 && nIn < fallback_resolved.size()) {
+                fallback_resolved[nIn] = m_tx_out.ToV2Output();
+            }
+            lotus::v2::IdentityDigests precomputed_ids{};
+            extract_known_v2_ids(precomputed_ids);
+            std::string prep_err;
+            if (local_prepared_vm.PrepareChecked(
+                    local_v2tx, lotus::v2::DefaultTxProfile,
+                    GetActiveV2ChainId(), fallback_resolved, kDefaultVmCost,
+                    prep_err, &precomputed_ids) !=
+                lotus::v2::SigningPreparationStatus::Ready) {
+                return std::make_pair(ScriptError::EVAL_FALSE,
+                                      make_debug_str());
+            }
+            v2tx_ptr = &local_v2tx;
+            prepared_vm_ptr = &local_prepared_vm;
+        }
+
+        const lotus::v2::Transaction &v2tx = *v2tx_ptr;
+        lotus::v2::PreparedVmTransaction &prepared_vm = *prepared_vm_ptr;
+        const lotus::v2::ResolvedCoins &resolved =
+            m_resolved_coins ? *m_resolved_coins : fallback_resolved;
+
+        if (ptxTo->vin[nIn].nFlags == 1) {
+            if (nIn >= resolved.size() || !resolved[nIn].has_value()) {
+                return std::make_pair(ScriptError::EVAL_FALSE,
+                                      make_debug_str());
+            }
+            const lotus::v2::Output &v2out = *resolved[nIn];
+            if (ptxTo->vin[nIn].nPathIndex >= v2out.paths.size()) {
+                return std::make_pair(ScriptError::EVAL_FALSE,
+                                      make_debug_str());
+            }
+            const auto &path = v2out.paths[ptxTo->vin[nIn].nPathIndex];
+            if (path.size() != ptxTo->vin[nIn].vWitnesses.size()) {
+                return std::make_pair(ScriptError::EVAL_FALSE,
+                                      make_debug_str());
+            }
+            for (size_t j = 0; j < path.size(); ++j) {
+                const auto &w = ptxTo->vin[nIn].vWitnesses[j];
+                const auto ctx =
+                    prepared_vm.Invocation(nIn, j, {}, m_sig_collector);
+                const lotus::v2::VmChargedResult vm_res =
+                    lotus::v2::EvaluateVmCharged(
+                        w.script, w.arguments, kDefaultVmProfile,
+                        prepared_vm.Cost(),
+                        static_cast<uint16_t>(v2tx.inputs.size()),
+                        static_cast<uint16_t>(v2tx.outputs.size()), &ctx);
+                if ((vm_res.invocation.status != lotus::v2::VmStatus::Success &&
+                     vm_res.invocation.status !=
+                         lotus::v2::VmStatus::AutomaticSuccess) ||
+                    !vm_res.charged) {
+                    return std::make_pair(ScriptError::EVAL_FALSE,
+                                          make_debug_str());
+                }
+            }
+            return std::nullopt;
+        }
+
+        // Mint input (nFlags == 3)
+        if (ptxTo->vin[nIn].vWitnesses.size() != 1) {
+            return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+        }
+        const lotus::v2::Hash32 &token_id = v2tx.inputs[nIn].prev_txid;
+        __uint128_t in_tokens = 0;
+        __uint128_t out_tokens = 0;
+        for (const auto &rc : resolved) {
+            if (rc.has_value() && rc->HasToken() && rc->token_id == token_id) {
+                in_tokens += rc->value;
+            }
+        }
+        for (const auto &out : v2tx.outputs) {
+            if (out.HasToken() && out.token_id == token_id) {
+                out_tokens += out.value;
+            }
+        }
+        if (out_tokens <= in_tokens) {
+            return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+        }
+        const __uint128_t amount = out_tokens - in_tokens;
+        lotus::v2::PositiveDelta delta{};
+        for (size_t b = 0; b < delta.size(); ++b) {
+            delta[b] = static_cast<uint8_t>(amount >> (8 * b));
+        }
+        const auto &w = ptxTo->vin[nIn].vWitnesses[0];
+        const auto ctx =
+            prepared_vm.Invocation(nIn, 0, delta, m_sig_collector);
+        const lotus::v2::VmChargedResult vm_res =
+            lotus::v2::EvaluateVmCharged(
+                w.script, w.arguments, kDefaultVmProfile, prepared_vm.Cost(),
+                static_cast<uint16_t>(v2tx.inputs.size()),
+                static_cast<uint16_t>(v2tx.outputs.size()), &ctx);
+        if ((vm_res.invocation.status != lotus::v2::VmStatus::Success &&
+             vm_res.invocation.status !=
+                 lotus::v2::VmStatus::AutomaticSuccess) ||
+            !vm_res.charged) {
+            return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+        }
+        return std::nullopt;
+    }
     if (!VerifyScript(scriptSig, m_tx_out.scriptPubKey, nFlags,
                       CachingTransactionSignatureChecker(
                           ptxTo, nIn, m_tx_out.nValue, cacheStore,
@@ -3192,7 +3653,7 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
                               ? m_sig_collector
                               : nullptr),
                       metrics, &error)) {
-        return std::make_pair(error, std::move(debug_str));
+        return std::make_pair(error, make_debug_str());
     }
     if ((pTxLimitSigChecks &&
          !pTxLimitSigChecks->consume_and_check(metrics.nSigChecks)) ||
@@ -3202,7 +3663,7 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
         // succeeded), but remove the ScriptError::OK which could be
         // misinterpreted.
         return std::make_pair(ScriptError::SIGCHECKS_LIMIT_EXCEEDED,
-                              std::move(debug_str));
+                              make_debug_str());
     }
     return std::nullopt;
 }
@@ -3267,10 +3728,32 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
 
     int nSigChecksTotal = 0;
 
+    const bool has_v2_input = std::any_of(
+        tx.vin.begin(), tx.vin.end(),
+        [](const CTxIn &in) { return in.nFlags == 1 || in.nFlags == 3; });
+    std::shared_ptr<CScriptCheck::V2ResolvedCoins> resolved_coins;
+    if (has_v2_input) {
+        resolved_coins =
+            std::make_shared<CScriptCheck::V2ResolvedCoins>(tx.vin.size());
+        for (size_t j = 0; j < tx.vin.size(); ++j) {
+            if (tx.vin[j].nFlags == 3) {
+                (*resolved_coins)[j] = std::nullopt;
+                continue;
+            }
+            const Coin &c = inputs.AccessCoin(tx.vin[j].prevout);
+            assert(!c.IsSpent());
+            (*resolved_coins)[j] = c.GetTxOut().ToV2Output();
+        }
+    }
+
     for (size_t i = 0; i < tx.vin.size(); i++) {
-        const COutPoint &prevout = tx.vin[i].prevout;
-        const Coin &coin = inputs.AccessCoin(prevout);
-        assert(!coin.IsSpent());
+        CTxOut prev_txout;
+        if (tx.vin[i].nFlags != 3) {
+            const COutPoint &prevout = tx.vin[i].prevout;
+            const Coin &coin = inputs.AccessCoin(prevout);
+            assert(!coin.IsSpent());
+            prev_txout = coin.GetTxOut();
+        }
 
         // We very carefully only pass in things to CScriptCheck which are
         // clearly committed to by tx's hash. This provides a sanity
@@ -3279,9 +3762,9 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         // of CScriptCheck.
 
         // Verify signature
-        CScriptCheck check(
-            coin.GetTxOut(), tx, validation_cache.m_signature_cache, i, flags,
-            sigCacheStore, txdata, &txLimitSigChecks, pBlockLimitSigChecks);
+        CScriptCheck check(prev_txout, tx, validation_cache.m_signature_cache,
+                           i, flags, sigCacheStore, txdata, &txLimitSigChecks,
+                           pBlockLimitSigChecks, resolved_coins);
 
         // If pvChecks is not null, defer the check execution to the caller.
         if (pvChecks) {
@@ -3302,9 +3785,10 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
                 // NOT_STANDARD instead of CONSENSUS to avoid downstream users
                 // splitting the network between upgraded and non-upgraded nodes
                 // by banning CONSENSUS-failing data providers.
-                CScriptCheck check2(coin.GetTxOut(), tx,
+                CScriptCheck check2(prev_txout, tx,
                                     validation_cache.m_signature_cache, i,
-                                    mandatoryFlags, sigCacheStore, txdata);
+                                    mandatoryFlags, sigCacheStore, txdata,
+                                    nullptr, nullptr, resolved_coins);
                 auto mandatory_result = check2();
                 if (!mandatory_result.has_value()) {
                     return state.Invalid(
@@ -3433,6 +3917,9 @@ DisconnectResult ApplyBlockUndo(CBlockUndo &&blockUndo, const CBlock &block,
         }
 
         for (size_t j = 0; j < tx.vin.size(); j++) {
+            if (tx.vin[j].nFlags == 3) {
+                continue;
+            }
             const COutPoint &out = tx.vin[j].prevout;
             DisconnectResult res =
                 UndoCoinSpend(std::move(txundo.vprevout[j]), view, out);
@@ -3534,7 +4021,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // m_adjusted_time_callback() to go backward).
-    if (!CheckBlock(block, state, consensusParams,
+    if (!fJustCheck &&
+        !CheckBlock(block, state, consensusParams,
                     options.withCheckPoW(!fJustCheck)
                         .withCheckMerkleRoot(!fJustCheck))) {
         if (state.GetResult() == BlockValidationResult::BLOCK_MUTATED) {
@@ -3562,6 +4050,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     // Special case for the genesis block, skipping connection of its
     // transactions (its coinbase is unspendable)
     if (block_hash == consensusParams.hashGenesisBlock) {
+        RecordV2BlockState(block, block_hash, BlockHash(), 0, 0);
         if (!fJustCheck) {
             view.SetBestBlock(pindex->GetBlockHash());
             UpdateConnectedBlockSmtState(block, pindex);
@@ -3712,10 +4201,22 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         (!pindexBIP34height ||
          !(pindexBIP34height->GetBlockHash() == consensusParams.BIP34Hash));
 
+    // Lotus V2 coinbases (nVersion == 7, nFlags == 2) commit to
+    // COutPoint(TxId(hashPrevBlock), pindex->nHeight) in vin[0].prevout from
+    // height 1, guaranteeing unique coinbase TxIDs without LevelDB cache-miss
+    // lookups on every output. AddCoins below still enforces !possible_overwrite.
+    const bool fV2UniqueCoinbase =
+        !block.vtx.empty() && block.vtx[0]->nVersion == 7 &&
+        !block.vtx[0]->vin.empty() && block.vtx[0]->vin[0].nFlags == 2 &&
+        block.vtx[0]->vin[0].prevout ==
+            COutPoint(TxId(hashPrevBlock),
+                      static_cast<uint32_t>(pindex->nHeight));
+
     // TODO: Remove BIP30 checking from block height 1,983,702 on, once we have
     // a consensus change that ensures coinbases at those heights can not
     // duplicate earlier coinbases.
-    if (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT) {
+    if (!fV2UniqueCoinbase &&
+        (fEnforceBIP30 || pindex->nHeight >= BIP34_IMPLIES_BIP30_LIMIT)) {
         for (const auto &tx : block.vtx) {
             for (size_t o = 0; o < tx->vout.size(); o++) {
                 if (view.HaveCoin(COutPoint(tx->GetId(), o))) {
@@ -3806,7 +4307,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         block_spent_outpoints.reserve(block.vtx.size() * 2);
         for (size_t i = 1; i < block.vtx.size(); ++i) {
             for (const auto &in : block.vtx[i]->vin) {
-                if (!view.HaveCoinInCache(in.prevout)) {
+                if (in.nFlags != 3 && !view.HaveCoinInCache(in.prevout)) {
                     block_spent_outpoints.push_back(in.prevout);
                 }
             }
@@ -3822,42 +4323,76 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
     };
     std::vector<PendingBlockTxCheck> pending_script_txs;
     std::vector<int> prevalidated_overlay_sigchecks;
-    if (!fJustCheck && fScriptChecks && m_mempool && block.vtx.size() > 1 &&
-        pindex->pprev != nullptr && pindex->pprev->pprev != nullptr &&
-        GetNextBlockScriptFlags(pindex->pprev, m_chainman) ==
-            GetNextBlockScriptFlags(pindex->pprev->pprev, m_chainman)) {
+    uint256 expectedStateRoot;
+    bool used_overlay_state_root = false;
+    if (m_mempool && !block.vtx.empty() && pindex->pprev != nullptr) {
         TRY_LOCK(m_mempool->cs, lock_mempool);
         if (lock_mempool) {
-            const auto &spec =
-                m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
-            const auto &ordered = spec.GetOrderedTxs();
-            if (ordered.size() == block.vtx.size() - 1) {
-                std::vector<int> sigchecks;
-                sigchecks.reserve(ordered.size());
-                size_t idx = 1;
-                bool all_match = true;
-                for (const auto &[_, oentry] : ordered) {
-                    if (block.vtx[idx].get() != oentry.tx_ref.get() ||
-                        oentry.sigchecks < 0) {
-                        all_match = false;
-                        break;
-                    }
-                    const auto entry = m_mempool->mapTx.find(block.vtx[idx]->GetId());
-                    ScriptCacheKey cached_key(*block.vtx[idx], flags,
-                        m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
-                    ScriptCacheElement cached(cached_key, 0);
-                    if (entry == m_mempool->mapTx.end() ||
-                        (*entry)->GetSharedTx().get() != block.vtx[idx].get() ||
-                        !m_chainman.m_validation_cache.m_script_execution_cache.get(cached, false) ||
-                        cached.nSigChecks != oentry.sigchecks) {
-                        all_match = false;
-                        break;
-                    }
-                    sigchecks.push_back(int(oentry.sigchecks));
-                    ++idx;
+            lotus::v2::Hash prev_id{};
+            std::memcpy(prev_id.data(), hashPrevBlock.begin(), 32);
+            const auto &mgr = m_mempool->GetMerklixOverlay();
+            const auto &spec = mgr.GetSpeculativeOverlay();
+            std::shared_ptr<const lotus::v2::SmtNode> base_utxo;
+            lotus::v2::MonetaryState base_mon{};
+            const bool has_snap =
+                GetV2BlockStateSnapshot(hashPrevBlock, base_utxo, base_mon);
+            if (mgr.IsAnchoredAt(
+                    prev_id, uint64_t(pindex->nHeight),
+                    uint64_t(pindex->pprev->GetMedianTimePast())) &&
+                (has_snap || pindex->nHeight <= 1) &&
+                spec.GetBaseUtxoRoot() == base_utxo &&
+                block.vtx.size() == spec.GetTxCount() + 1 &&
+                !block.hashMerkleRoot.IsNull() &&
+                block.hashMerkleRoot ==
+                    ComputeV2TxRootFromSubtreeA(*block.vtx[0],
+                                                spec.GetSubtreeARoot())) {
+                const BlockHash block_hash = pindex->GetBlockHash();
+                try {
+                    expectedStateRoot = ComputeV2StateRootFromOverlay(
+                        *block.vtx[0], spec, block.nBits, uint64_t(pindex->nHeight),
+                        uint64_t(pindex->pprev->GetMedianTimePast()), false,
+                        &block_hash, &block.hashStateRoot);
+                } catch (const V2StateCacheError &error) {
+                    return state.Error(error.what());
                 }
-                if (all_match) {
-                    prevalidated_overlay_sigchecks = std::move(sigchecks);
+                used_overlay_state_root = true;
+
+                if (!fJustCheck && fScriptChecks && block.vtx.size() > 1 &&
+                    pindex->pprev->pprev != nullptr &&
+                    GetNextBlockScriptFlags(pindex->pprev, m_chainman) ==
+                        GetNextBlockScriptFlags(pindex->pprev->pprev,
+                                                m_chainman)) {
+                    const auto &ordered = spec.GetOrderedTxs();
+                    if (ordered.size() == block.vtx.size() - 1) {
+                        std::vector<int> sigchecks;
+                        sigchecks.reserve(ordered.size());
+                        size_t idx = 1;
+                        bool all_match = true;
+                        for (const auto &[_, oentry] : ordered) {
+                            if (block.vtx[idx].get() != oentry.tx_ref.get() ||
+                                oentry.sigchecks < 0) {
+                                all_match = false;
+                                break;
+                            }
+                            const auto entry = m_mempool->mapTx.find(block.vtx[idx]->GetId());
+                            ScriptCacheKey cached_key(*block.vtx[idx], flags,
+                                m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
+                            ScriptCacheElement cached(cached_key, 0);
+                            if (entry == m_mempool->mapTx.end() ||
+                                (*entry)->GetSharedTx().get() != block.vtx[idx].get() ||
+                                !m_chainman.m_validation_cache.m_script_execution_cache.get(cached, false) ||
+                                cached.nSigChecks != oentry.sigchecks) {
+                                all_match = false;
+                                break;
+                            }
+                            sigchecks.push_back(int(oentry.sigchecks));
+                            ++idx;
+                        }
+                        if (all_match) {
+                            prevalidated_overlay_sigchecks =
+                                std::move(sigchecks);
+                        }
+                    }
                 }
             }
         }
@@ -3892,6 +4427,10 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         prevheights.resize(tx.vin.size());
         bool inputs_ok = true;
         for (size_t j = 0; j < tx.vin.size(); j++) {
+            if (tx.vin[j].nFlags == 3) {
+                prevheights[j] = 0;
+                continue;
+            }
             if (!view.SpendCoin(tx.vin[j].prevout, &txundo.vprevout[j])) {
                 state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                               "bad-txns-inputs-missingorspent",
@@ -4018,7 +4557,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         *blockFees = nFees;
     }
 
-    // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script &
+    // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script, VM &
     // Batch Schnorr Signature Verification using blockundo.vtxundo[txIndex].
     if (fScriptChecks && state.IsValid() && !pending_script_txs.empty()) {
         const size_t n_pending = pending_script_txs.size();
@@ -4072,18 +4611,11 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
         for (size_t k = 0; k < n_pending; ++k) {
             if (tx_errors[k].has_value()) {
-                if (tx_errors[k]->script_err ==
-                    ScriptError::SIGCHECKS_LIMIT_EXCEEDED) {
-                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                  "too-many-sigchecks",
-                                  tx_errors[k]->debug_message);
-                } else {
-                    state.Invalid(
-                        BlockValidationResult::BLOCK_CONSENSUS,
-                        strprintf("mandatory-script-verify-flag-failed (%s)",
-                                  ScriptErrorString(tx_errors[k]->script_err)),
-                        tx_errors[k]->debug_message);
-                }
+                state.Invalid(
+                    BlockValidationResult::BLOCK_CONSENSUS,
+                    strprintf("mandatory-script-verify-flag-failed (%s)",
+                              ScriptErrorString(tx_errors[k]->script_err)),
+                    tx_errors[k]->debug_message);
                 break;
             }
         }
@@ -4127,11 +4659,17 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                         BlockValidationResult::BLOCK_CONSENSUS,
                         strprintf("mandatory-script-verify-flag-failed (%s)",
                                   ScriptErrorString(ScriptError::EVAL_FALSE)),
-                        "Batch signature verification failed");
+                        "V2 batch signature verification failed");
                 }
             } else if (fCacheResults) {
-                m_chainman.m_validation_cache.m_signature_cache.SetBatch(
-                    combined_sigs);
+                for (const auto &litem : combined_sigs.LegacyItems()) {
+                    if (litem.store_in_cache) {
+                        uint256 entry;
+                        std::memcpy(entry.begin(), litem.cache_entry.data(), 32);
+                        m_chainman.m_validation_cache.m_signature_cache.Set(
+                            entry);
+                    }
+                }
             }
         }
 
@@ -4165,8 +4703,51 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         Ticks<MillisecondsDouble>(m_chainman.time_verify) /
             m_chainman.num_blocks_total);
 
+    if (!used_overlay_state_root) {
+        try {
+            expectedStateRoot = ComputeV2BlockStateRoot(
+                block, hashPrevBlock, uint64_t(pindex->nHeight),
+                uint64_t(pindex->pprev->GetMedianTimePast()), false);
+        } catch (const V2StateCacheError &error) {
+            return state.Error(error.what());
+        }
+    }
+    const bool requireStateRoot =
+        !block.hashStateRoot.IsNull() ||
+        !consensusParams.allowNullStateRoot ||
+        gArgs.GetBoolArg("-strictstateroot", false);
+    if (block.nHeaderVersion == lotus::v2::kHeaderVersion &&
+        requireStateRoot &&
+        block.hashStateRoot != expectedStateRoot) {
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-blk-stateroot", "hashStateRoot mismatch");
+    }
+
     if (fJustCheck) {
         return true;
+    }
+
+    // Publish only after the declared root has passed the active validation
+    // policy. Min-difficulty networks may explicitly allow a zero commitment
+    // (testnet/regtest unless -strictstateroot); the state remains keyed by the real serialized header hash, never a synthesized one.
+    try {
+        if (used_overlay_state_root && m_mempool) {
+            LOCK(m_mempool->cs);
+            const auto &overlay = m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
+            const auto hash = pindex->GetBlockHash();
+            const auto recorded = ComputeV2StateRootFromOverlay(
+                *block.vtx[0], overlay, block.nBits, uint64_t(pindex->nHeight),
+                uint64_t(pindex->pprev->GetMedianTimePast()), true, &hash,
+                &expectedStateRoot);
+            if (recorded != expectedStateRoot)
+                return state.Error("V2 overlay changed before state publication");
+        } else {
+            RecordV2BlockState(block, pindex->GetBlockHash(), hashPrevBlock,
+                uint64_t(pindex->nHeight), uint64_t(pindex->pprev->GetMedianTimePast()),
+                !requireStateRoot);
+        }
+    } catch (const V2StateCacheError &error) {
+        return state.Error(error.what());
     }
 
     if (!m_blockman.WriteBlockUndo(blockundo, state, *pindex)) {
@@ -4180,7 +4761,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
     // add this block to the view's block chain
     view.SetBestBlock(pindex->GetBlockHash());
-    UpdateConnectedBlockSmtState(block, pindex);
 
     const auto time_5{SteadyClock::now()};
     m_chainman.time_index += time_5 - time_4;
@@ -4390,6 +4970,13 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
                     // entries).
                     const auto empty_cache{(mode == FlushStateMode::ALWAYS) ||
                                            fCacheLarge || fCacheCritical};
+                    // Recovery and the next block also need the native parent
+                    // snapshot. Publish it before any partial coins batch can
+                    // advance DB_HEAD_BLOCKS or terminate through fault injection.
+                    if (!FlushV2BlockStatesToDisk()) {
+                        throw std::runtime_error(
+                            "Unable to persist native block states before coins flush");
+                    }
                     const auto flush_start{SteadyClock::now()};
                     empty_cache ? CoinsTip().Flush() : CoinsTip().Sync();
                     full_flush_completed = true;
@@ -4530,6 +5117,7 @@ void Chainstate::UpdateTip(const CBlockIndex *pindexNew) {
     node::SetTipMetrics(pindexNew->nHeight, pindexNew->GetBlockTime());
 
     node::PublishChainTipSnapshot(m_chainman, m_mempool);
+    GetRPCBlockChangeWaiter().NotifyAll();
 
     UpdateTipLog(coins_tip, pindexNew, params, __func__, "");
 }
@@ -4731,9 +5319,9 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
             !m_filterParkingPoliciesApplied.contains(blockhash)) {
             m_filterParkingPoliciesApplied.insert(blockhash);
 
-            const Amount blockReward =
-                blockFees +
+            const Amount blockSubsidy =
                 GetBlockSubsidy(pindexNew->nHeight, consensusParams);
+            const Amount blockReward = blockFees + blockSubsidy;
 
             std::vector<std::unique_ptr<ParkingPolicy>> parkingPolicies;
             parkingPolicies.emplace_back(std::make_unique<MinerFundPolicy>(
@@ -4759,16 +5347,17 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
                     }
                 }
 
-                parkingPolicies.emplace_back(
-                    std::make_unique<StakingRewardsPolicy>(
-                        *avalanche, consensusParams, *pindexNew,
-                        blockConnecting, blockReward));
-
-                if (m_mempool) {
+                if (avalanche->isQuorumEstablished()) {
                     parkingPolicies.emplace_back(
-                        std::make_unique<PreConsensusPolicy>(
-                            *avalanche, *pindexNew, blockConnecting, m_mempool,
-                            &disconnectpool));
+                        std::make_unique<StakingRewardsPolicy>(
+                            *avalanche, consensusParams, *pindexNew,
+                            blockConnecting));
+
+                    if (m_mempool) {
+                        parkingPolicies.emplace_back(
+                            std::make_unique<PreConsensusPolicy>(
+                                *avalanche, *pindexNew, blockConnecting));
+                    }
                 }
             }
 
@@ -6111,7 +6700,21 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock &block,
                            prev_tx_sum(*pindex))
                     .Field(BCLog::LogField::BugReportURL, PACKAGE_BUGREPORT);
             }
+            const bool was_fast_sync_base =
+                (m_active_chainstate &&
+                 pindex == m_active_chainstate->FastSyncPivotBase());
             pindex->m_chain_tx_count = prev_tx_sum(*pindex);
+            if (was_fast_sync_base) {
+                for (int h = pindex->nHeight + 1; h <= ActiveChain().Height();
+                     ++h) {
+                    CBlockIndex *desc = ActiveChain()[h];
+                    if (desc && desc->nTx > 0 && desc->pprev) {
+                        desc->m_chain_tx_count =
+                            desc->nTx + desc->pprev->m_chain_tx_count;
+                        m_blockman.m_dirty_blockindex.insert(desc);
+                    }
+                }
+            }
             if (pindex->nSequenceId == 0) {
                 // We assign a sequence is when transaction are received to
                 // prevent a miner from being able to broadcast a block but not
@@ -6161,6 +6764,23 @@ static bool CheckBlockHeader(const CBlockHeader &block,
                              "high-hash", "proof of work failed");
     }
 
+    if (block.nHeaderVersion != lotus::v2::kHeaderVersion) {
+        LogPrintf("ERROR: expected block version %u but got %u\n",
+                  lotus::v2::kHeaderVersion, block.nHeaderVersion);
+        return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER,
+                             "bad-blk-version", "block version must be 2");
+    }
+
+    // Check if claimed size is excessive
+    if (block.GetSize() > validationOptions.getExcessiveBlockSize()) {
+        LogPrintf(
+            "ERROR: block has excessive size %u, which is above the limit %u\n",
+            block.GetSize(), validationOptions.getExcessiveBlockSize());
+        return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                             "bad-blk-size",
+                             "block header has excessive claimed size");
+    }
+
     return true;
 }
 
@@ -6194,13 +6814,7 @@ static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
     }
 
     bool mutated;
-    uint256 merkle_root = ValidationBlockMerkleRoot(block, &mutated);
-    if (block.hashMerkleRoot != merkle_root) {
-        return state.Invalid(
-            /*result=*/BlockValidationResult::BLOCK_MUTATED,
-            /*reject_reason=*/"bad-txnmrklroot",
-            /*debug_message=*/"hashMerkleRoot mismatch");
-    }
+    uint256 merkle_root = BlockMerkleRoot(block, &mutated);
 
     // Check for merkle tree malleability (CVE-2012-2459): repeating sequences
     // of transactions in a block without affecting the merkle root of a block,
@@ -6210,6 +6824,13 @@ static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
             /*result=*/BlockValidationResult::BLOCK_MUTATED,
             /*reject_reason=*/"bad-txns-duplicate",
             /*debug_message=*/"duplicate transaction");
+    }
+
+    if (block.hashMerkleRoot != merkle_root) {
+        return state.Invalid(
+            /*result=*/BlockValidationResult::BLOCK_MUTATED,
+            /*reject_reason=*/"bad-txnmrklroot",
+            /*debug_message=*/"hashMerkleRoot mismatch");
     }
 
     block.m_checked_merkle_root = true;
@@ -6248,18 +6869,27 @@ bool CheckBlock(const CBlock &block, BlockValidationState &state,
 
     // Size limits.
     auto nMaxBlockSize = validationOptions.getExcessiveBlockSize();
-
+    if (!block.IsNull() && nMaxBlockSize >= DEFAULT_MAX_BLOCK_SIZE &&
+        !gArgs.IsArgSet("-excessiveblocksize") &&
+        gArgs.GetBoolArg("-adaptiveblocksize", true)) {
+        nMaxBlockSize = std::max(
+            nMaxBlockSize, lotus::v2::DEFAULT_ADAPTIVE_MAX_BLOCK_CEILING);
+    }
 
     // Bail early if there is no way this block is of reasonable size.
     if ((block.vtx.size() * MIN_TRANSACTION_SIZE) > nMaxBlockSize) {
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch", "size limits failed");
     }
 
     auto currentBlockSize = ::GetSerializeSize(block);
-    if (currentBlockSize > nMaxBlockSize) {
+    if (currentBlockSize != block.GetSize()) {
+        LogPrintf("ERROR: block size mismatch: claims to have size %u, but "
+                  "has %u\n",
+                  block.GetSize(), currentBlockSize);
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                             "bad-blk-length", "size limits failed");
+                             "bad-blk-size-mismatch",
+                             "block does not have the size it claims to have");
     }
 
     // And a valid coinbase.
@@ -6405,6 +7035,14 @@ static bool ContextualCheckBlockHeader(
                              "time-too-old", "block's timestamp is too early");
     }
 
+    if (block.nHeight != uint64_t(pindexPrev->nHeight + 1)) {
+        LogPrintf("ERROR: expected block height %d but got %u\n",
+                  pindexPrev->nHeight + 1, block.nHeight);
+        return state.Invalid(
+            BlockValidationResult::BLOCK_INVALID_HEADER, "bad-blk-height",
+            "block height is not one higher than previous block");
+    }
+
     // Check timestamp
     if (block.Time() > now + std::chrono::seconds{MAX_FUTURE_BLOCK_TIME}) {
         return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE,
@@ -6471,15 +7109,29 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that the coinbase starts with serialized block height
+    // Enforce rule that the coinbase commits to parent block and height
     if (nHeight >= 1) {
-        CScript expect = CScript() << nHeight;
-        if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
-            !std::equal(expect.begin(), expect.end(),
-                        block.vtx[0]->vin[0].scriptSig.begin())) {
-            return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                 "bad-cb-height",
-                                 "block height mismatch in coinbase");
+        if (block.vtx[0]->vin[0].nFlags == 2 &&
+            !block.vtx[0]->vin[0].prevout.IsNull() && pindexPrev != nullptr) {
+            lotus::v2::Hash32 parent_id{};
+            std::memcpy(parent_id.data(),
+                        pindexPrev->GetBlockHash().begin(), 32);
+            std::string cb_err;
+            if (!lotus::v2::CheckCoinbaseContext(
+                    block.vtx[0]->ToV2Transaction(), parent_id,
+                    uint64_t(nHeight), cb_err)) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     "bad-cb-height", cb_err);
+            }
+        } else {
+            CScript expect = CScript() << nHeight;
+            if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
+                !std::equal(expect.begin(), expect.end(),
+                            block.vtx[0]->vin[0].scriptSig.begin())) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     "bad-cb-height",
+                                     "block height mismatch in coinbase");
+            }
         }
     }
 
@@ -6847,8 +7499,9 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
         // they will most likely connect on the tip of the background chain.
         std::optional<int> snapshot_base_height = GetSnapshotBaseHeight();
         const bool is_background_block =
-            snapshot_base_height && BackgroundSyncInProgress() &&
-            pindex->nHeight <= snapshot_base_height;
+            ActiveChain().Contains(pindex) ||
+            (snapshot_base_height && BackgroundSyncInProgress() &&
+             pindex->nHeight <= snapshot_base_height);
         const CBlockIndex *pindexFork = ActiveChain().FindFork(pindex);
         if (!is_background_block && pindexFork &&
             pindexFork->nHeight + 1 < ActiveHeight()) {
@@ -7183,7 +7836,8 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
     LogInfoEvent(BCLog::ALL, "chain_verification_started",
                  "Verification progress: 0%");
 
-    const bool is_snapshot_cs{chainstate.m_from_snapshot_blockhash};
+    const bool is_snapshot_cs{chainstate.m_from_snapshot_blockhash.has_value() ||
+                              chainstate.FastSyncPivotBase() != nullptr};
 
     for (pindex = chainstate.m_chain.Tip(); pindex && pindex->pprev;
          pindex = pindex->pprev) {
@@ -7213,9 +7867,11 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
             break;
         }
         if ((chainstate.m_blockman.IsPruneMode() || is_snapshot_cs) &&
-            !pindex->nStatus.hasData()) {
-            // If pruning or running under an assumeutxo snapshot, only go
-            // back as far as we have data.
+            (!pindex->nStatus.hasData() ||
+             (chainstate.FastSyncPivotBase() != nullptr &&
+              pindex->nHeight <= chainstate.FastSyncPivotBase()->nHeight))) {
+            // If pruning or running under an assumeutxo snapshot or fast-sync
+            // pivot, only go back as far as we have connected block/undo data.
             LogInfoEvent(BCLog::ALL, "chain_verification_no_data",
                      "VerifyDB(): block verification stopping at height {height} (no data). This could be due to pruning or use of an assumeutxo snapshot.")
             .Field(BCLog::LogField::Height, pindex->nHeight);
@@ -7775,7 +8431,7 @@ void ChainstateManager::LoadExternalBlockFile(
 
                 // Read size.
                 blkdat >> nSize;
-                if (nSize < 80) {
+                if (nSize < lotus::v2::HEADER_SIZE) {
                     continue;
                 }
             } catch (const std::exception &) {
@@ -8284,6 +8940,7 @@ void ChainstateManager::CheckBlockIndex() {
             rangeUnlinked.first++;
         }
         if (pindex->pprev && pindex->nStatus.hasData() &&
+            pindex != snap_base &&
             pindexFirstNeverProcessed != nullptr &&
             pindexFirstInvalid == nullptr) {
             // If this block has block data available, some parent was never
@@ -9034,6 +9691,58 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
                    uint256{Span{au_data.hash_serialized.data(),
                                 au_data.hash_serialized.size()}})
             .Field(BCLog::LogField::SnapshotHash, maybe_stats->hashSerialized);
+        return false;
+    }
+
+    // The verified legacy coin set alone is not enough to execute a native
+    // successor: native SMT leaves also bind creation MTP, and monetary history
+    // is not carried in the legacy snapshot file. Authenticate both against the
+    // already trusted anchor header before publishing any native state.
+    if (!au_data.native_monetary_state) {
+        LogPrintf("[snapshot] missing native monetary anchor state\n");
+        return false;
+    }
+    std::vector<lotus::v2::Coin> native_coins;
+    native_coins.reserve(maybe_stats->coins_count);
+    lotus::v2::UtxoSet verified_native;
+    std::unique_ptr<CCoinsViewCursor> cursor{snapshot_coinsdb->Cursor()};
+    while (cursor->Valid()) {
+        COutPoint outpoint;
+        Coin coin;
+        if (!cursor->GetKey(outpoint) || !cursor->GetValue(coin)) {
+            LogPrintf("[snapshot] unable to read native anchor coins\n");
+            return false;
+        }
+        const CBlockIndex *creation =
+            snapshot_start_block->GetAncestor(coin.GetHeight());
+        if (!creation) {
+            LogPrintf("[snapshot] missing creation header for native coin\n");
+            return false;
+        }
+        lotus::v2::Outpoint native_outpoint{};
+        std::copy_n(outpoint.GetTxId().begin(), 32, native_outpoint.tx_id.begin());
+        native_outpoint.index = outpoint.GetN();
+        lotus::v2::Coin native_coin{
+            native_outpoint, coin.GetTxOut().ToV2Output(), coin.GetHeight(),
+            creation->pprev ? uint64_t(creation->pprev->GetMedianTimePast()) : 0,
+            coin.IsCoinBase()};
+        if (!verified_native.Insert(native_coin)) {
+            LogPrintf("[snapshot] invalid native anchor coin\n");
+            return false;
+        }
+        native_coins.push_back(std::move(native_coin));
+        cursor->Next();
+    }
+    const auto native_root = lotus::v2::StateRoot(
+        GetActiveV2ChainId(), base_height, verified_native.Root(),
+        *au_data.native_monetary_state);
+    if (native_root != snapshot_start_block->GetBlockHeader().ToV2Header().state_root) {
+        LogPrintf("[snapshot] native anchor state does not match header\n");
+        return false;
+    }
+    if (!ImportV2BlockStateCoinsAndMonetary(
+            base_blockhash, native_coins, *au_data.native_monetary_state)) {
+        LogPrintf("[snapshot] failed to persist native anchor state\n");
         return false;
     }
 

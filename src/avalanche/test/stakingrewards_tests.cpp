@@ -6,7 +6,7 @@
 #include <avalanche/processor.h>
 #include <avalanche/stakecontender.h>
 #include <chainparams.h>
-#include <consensus/activation.h>
+#include <common/args.h>
 #include <net_processing.h>
 #include <policy/block/stakingrewards.h>
 #include <util/chaintype.h>
@@ -16,8 +16,8 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
 #include <limits>
-#include <common/args.h>
 
 using namespace avalanche;
 

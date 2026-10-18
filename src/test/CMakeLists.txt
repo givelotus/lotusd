@@ -80,6 +80,7 @@ if(BUILD_WALLET)
 		../wallet/test/wallet_tests.cpp
 		../wallet/test/walletdb_tests.cpp
 		../wallet/test/wallet_crypto_tests.cpp
+		../wallet/test/v2_wallet_tests.cpp
 	)
 endif()
 
@@ -291,6 +292,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		timedata_tests.cpp
 		torcontrol_tests.cpp
 		transaction_tests.cpp
+		v2_finality_tests.cpp
 		translation_tests.cpp
 		txindex_tests.cpp
 		txadmission_queue_tests.cpp
@@ -304,7 +306,6 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		undo_tests.cpp
 		util_tests.cpp
 		util_threadnames_tests.cpp
-		v2_protocol_handler_tests.cpp
 		tx_merklix_tests.cpp
 		validation_block_tests.cpp
 		validation_chainstate_tests.cpp
@@ -312,6 +313,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		validation_flush_tests.cpp
 		validation_tests.cpp
 		validationinterface_tests.cpp
+		v2_protocol_handler_tests.cpp
 		blockindex_comparator_tests.cpp
 
 		# RPC Tests

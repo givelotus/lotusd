@@ -183,6 +183,7 @@ void DisconnectedBlockTransactions::updateMempoolForReorg(
     Chainstate &active_chainstate, bool fAddToMempool, CTxMemPool &pool) {
     AssertLockHeld(cs_main);
     AssertLockHeld(pool.cs);
+    CTxMemPool::ScopedSnapshotDefer snap_defer(pool);
 
     if (fAddToMempool) {
         // disconnectpool's insertion_order index sorts the entries from oldest

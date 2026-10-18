@@ -956,6 +956,63 @@ Processor::QuorumFigures Processor::getQuorumFigures() const {
     return {quorum.nodeCount, quorum.totalScore, quorum.connectedScore};
 }
 
+bool Processor::isQuorumEstablished() const NO_THREAD_SAFETY_ANALYSIS {
+    const auto quorum = peerManager->getQuorumMetrics();
+    if (quorum.nodeCount < 8) {
+        // Keep upstream's unlatched eight-node eligibility rule.
+        return false;
+    }
+
+    /*
+     * The following parameters can naturally go temporarly below the threshold
+     * under normal circumstances, like during a proof replacement with a lower
+     * stake amount, or the discovery of a new proofs for which we don't have a
+     * node yet.
+     * In order to prevent our node from starting and stopping the polls
+     * spuriously on such event, the quorum establishement is latched. The only
+     * parameters that should not latched is the minimum node count, as this
+     * would cause the poll to be inconclusive anyway and should not happen
+     * under normal circumstances.
+     */
+    if (quorumIsEstablished) {
+        return true;
+    }
+
+    // Don't do Avalanche while node is IBD'ing
+    if (chainman.IsInitialBlockDownload()) {
+        return false;
+    }
+
+    if (avaproofsNodeCounter < minAvaproofsNodeCount) {
+        return false;
+    }
+
+    auto localProof = getLocalProof();
+
+    // Read all peer metrics from the same published generation. Separate
+    // independent atomic reads could mix pre- and post-update quorum state.
+    const uint32_t totalPeersScore = quorum.totalScore;
+    uint32_t connectedPeersScore = quorum.connectedScore;
+    if (localProof && quorum.localProofHasNoNode) {
+        connectedPeersScore += localProof->getScore();
+    }
+
+    // Ensure enough is being staked overall
+    if (totalPeersScore < minQuorumScore) {
+        return false;
+    }
+
+    // Ensure we have connected score for enough of the overall score
+    uint32_t minConnectedScore =
+        std::round(double(totalPeersScore) * minQuorumConnectedScoreRatio);
+    if (connectedPeersScore < minConnectedScore) {
+        return false;
+    }
+
+    quorumIsEstablished.store(true);
+    return true;
+}
+
 bool Processor::isQuorumEstablished() {
     AssertLockNotHeld(cs_main);
     const auto quorum = peerManager->getQuorumMetrics();
