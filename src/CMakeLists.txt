@@ -337,6 +337,7 @@ endif()
 add_subdirectory(crc32c)
 add_subdirectory(crypto)
 add_subdirectory(leveldb)
+add_subdirectory(lotus_v2)
 add_subdirectory(secp256k1)
 add_subdirectory(univalue)
 
@@ -722,6 +723,7 @@ target_include_directories(server PRIVATE leveldb/helpers/memenv)
 
 target_link_libraries(server
 	bitcoinconsensus
+	lotus_v2_mdbx
 	leveldb
 )
 
@@ -972,7 +974,7 @@ if(BUILD_CHAINSTATE)
 			# To access the config/ and obj/ directories
 			${CMAKE_CURRENT_BINARY_DIR}
 	)
-	target_link_libraries(bitcoinkernel crypto univalue secp256k1 leveldb)
+	target_link_libraries(bitcoinkernel crypto univalue secp256k1 lotus_v2_mdbx leveldb)
 	link_boost_headers_only(bitcoinkernel headers)
 
 	if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")

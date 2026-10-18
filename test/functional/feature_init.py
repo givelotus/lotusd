@@ -107,12 +107,12 @@ class InitStressTest(BitcoinTestFramework):
 
         deletion_rounds = [
             {
-                "filepath_glob": "blocks/index/*.ldb",
+                "filepath_glob": "blocks/index/mdbx.dat",
                 "error_message": "Error opening block database.",
                 "startup_args": [],
             },
             {
-                "filepath_glob": "chainstate/*.ldb",
+                "filepath_glob": "chainstate/mdbx.dat",
                 "error_message": "Error opening block database.",
                 "startup_args": ["-checklevel=4"],
             },
@@ -122,23 +122,22 @@ class InitStressTest(BitcoinTestFramework):
                 "startup_args": ["-checkblocks=200", "-checklevel=4"],
             },
             {
-                "filepath_glob": "indexes/txindex/MANIFEST*",
-                "error_message": "LevelDB error: Corruption: CURRENT points to a non-existent file",
+                "filepath_glob": "indexes/txindex/mdbx.dat",
+                "error_message": r"Fatal libmdbx error \(missing mdbx.dat\)",
                 "startup_args": ["-txindex=1"],
             },
-            # Removing these files does not result in a startup error:
-            # 'indexes/blockfilter/basic/*.dat', 'indexes/blockfilter/basic/db/*.*', 'indexes/coinstats/db/*.*',
-            # 'indexes/txindex/*.log', 'indexes/txindex/CURRENT', 'indexes/txindex/LOCK'
+            # MDBX index state lives in mdbx.dat. Its lock files are not
+            # persistent index records and must not be deletion targets.
         ]
 
         perturbation_rounds = [
             {
-                "filepath_glob": "blocks/index/*.ldb",
-                "error_message": "Error loading block database.",
+                "filepath_glob": "blocks/index/mdbx.dat",
+                "error_message": "Error opening block database.",
                 "startup_args": [],
             },
             {
-                "filepath_glob": "chainstate/*.ldb",
+                "filepath_glob": "chainstate/mdbx.dat",
                 "error_message": "Error opening block database.",
                 "startup_args": [],
             },
@@ -148,27 +147,28 @@ class InitStressTest(BitcoinTestFramework):
                 "startup_args": ["-checkblocks=200", "-checklevel=4"],
             },
             {
-                "filepath_glob": "indexes/blockfilter/basic/db/*.*",
-                "error_message": "LevelDB error: Corruption",
+                "filepath_glob": "indexes/blockfilter/basic/db/mdbx.dat",
+                "error_message": r"Fatal libmdbx error \(corrupted mdbx.dat\)",
                 "startup_args": ["-blockfilterindex=1"],
             },
             {
-                "filepath_glob": "indexes/coinstats/db/*.*",
-                "error_message": "LevelDB error: Corruption",
+                "filepath_glob": "indexes/coinstats/db/mdbx.dat",
+                "error_message": r"Fatal libmdbx error \(corrupted mdbx.dat\)",
                 "startup_args": ["-coinstatsindex=1"],
             },
             {
-                "filepath_glob": "indexes/txindex/*.log",
-                "error_message": "LevelDB error: Corruption",
+                "filepath_glob": "indexes/txindex/mdbx.dat",
+                "error_message": r"Fatal libmdbx error \(corrupted mdbx.dat\)",
                 "startup_args": ["-txindex=1"],
             },
             {
-                "filepath_glob": "indexes/txindex/CURRENT",
-                "error_message": "LevelDB error: Corruption",
+                "filepath_glob": "indexes/txindex/mdbx.dat",
+                "error_message": r"Fatal libmdbx error \(mdbx_env_open\)",
                 "startup_args": ["-txindex=1"],
+                # MDBX has no separate CURRENT file or WAL. Damage all three
+                # metadata replicas so another valid replica cannot recover it.
+                "corrupt_mdbx_meta": True,
             },
-            # Perturbing these files does not result in a startup error:
-            # 'indexes/blockfilter/basic/*.dat', 'indexes/txindex/MANIFEST*', 'indexes/txindex/LOCK'
         ]
 
         for round_info in deletion_rounds:
@@ -176,6 +176,7 @@ class InitStressTest(BitcoinTestFramework):
             err_fragment = round_info["error_message"]
             startup_args = round_info["startup_args"]
             target_files = list(node.chain_path.glob(file_patt))
+            assert target_files, f"No essential files matched {file_patt}"
 
             for target_file in target_files:
                 self.log.info(f"Deleting file to ensure failure {target_file}")
@@ -202,15 +203,23 @@ class InitStressTest(BitcoinTestFramework):
             for dir_ in dirs:
                 shutil.copytree(node.chain_path / dir_, node.chain_path / f"{dir_}_bak")
             target_files = list(node.chain_path.glob(file_patt))
+            assert target_files, f"No essential files matched {file_patt}"
 
             for target_file in target_files:
                 self.log.info(f"Perturbing file to ensure failure {target_file}")
                 with open(target_file, "r+b") as tf:
-                    # Since the genesis block is not checked by -checkblocks, the
-                    # perturbation window must be chosen such that a higher block
-                    # in blk*.dat is affected.
-                    tf.seek(150)
-                    tf.write(b"1" * 200)
+                    if round_info.get("corrupt_mdbx_meta"):
+                        # CDBWrapper uses 4096-byte MDBX pages. Preserve the
+                        # file size but invalidate every metadata page header.
+                        for page in range(3):
+                            tf.seek(page * 4096)
+                            tf.write(b"1" * 128)
+                    else:
+                        # Since the genesis block is not checked by -checkblocks,
+                        # affect a higher block in blk*.dat. For MDBX this window
+                        # damages the metadata header and must fail open.
+                        tf.seek(150)
+                        tf.write(b"1" * 200)
 
             start_expecting_error(err_fragment, startup_args)
 

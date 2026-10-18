@@ -332,6 +332,10 @@ public:
 
     //! Estimate database size (0 if not implemented)
     virtual size_t EstimateSize() const { return 0; }
+
+    //! Issue asynchronous OS page-cache readahead hints for a batch of outpoints
+    virtual void PrefetchOutpointsAsync(
+        const std::vector<COutPoint> &outpoints) const {}
 };
 
 /** CCoinsView backed by another CCoinsView */

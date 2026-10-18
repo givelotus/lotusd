@@ -194,7 +194,9 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor &cursor,
 
     LogDebug(BCLog::COINDB, "Writing final batch of %.2f MiB\n",
              batch.SizeEstimate() * (1.0 / 1048576.0));
-    m_db->WriteBatch(batch);
+    // The block files and block index were synchronized before this flush.
+    // Publish the matching chainstate tip durably only after its coin writes.
+    m_db->WriteBatch(batch, true);
     LogDebug(BCLog::COINDB,
              "Committed %u changed transaction outputs (out of "
              "%u) to coin database...\n",
