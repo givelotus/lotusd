@@ -736,7 +736,9 @@ private:
     // Returns true if the transaction is in the mempool after any size
     // limiting is performed, false otherwise.
     bool Finalize(const ATMPArgs &args, Workspace &ws,
-        std::vector<PendingMempoolNotification> *deferred_notifications = nullptr)
+        std::vector<PendingMempoolNotification> *deferred_notifications = nullptr,
+        std::span<const CTxMemPool::txiter> batch_parent_iters = {},
+        CTxMemPool::txiter *out_iter = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Submit all transactions to the mempool and call ConsensusScriptChecks to
@@ -1279,7 +1281,9 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
 }
 
 bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
-    std::vector<PendingMempoolNotification> *deferred_notifications) {
+    std::vector<PendingMempoolNotification> *deferred_notifications,
+    std::span<const CTxMemPool::txiter> batch_parent_iters,
+    CTxMemPool::txiter *out_iter) {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const TxId &txid = ws.m_ptx->GetId();
@@ -1289,7 +1293,9 @@ bool MemPoolAccept::Finalize(const ATMPArgs &args, Workspace &ws,
     // Store transaction in memory
     CTxMemPoolEntry *pentry = ws.m_entry.release();
     auto entry = CTxMemPoolEntryRef::acquire(pentry);
-    m_pool.addUnchecked(entry);
+    const auto newit = m_pool.addUnchecked(entry, !ws.m_inputs_pre_resolved,
+                                         batch_parent_iters);
+    if (out_iter) *out_iter = newit;
 
     auto spentCoins = ws.m_resolved_inputs.empty()
         ? GetSpentCoins(ws.m_ptx, m_view)
@@ -1968,8 +1974,18 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
 
         // No size trimming or script execution can partially accept a batch:
         // both were completed under the same chain/pool locks above.
-        for (Workspace &ws : workspaces) {
-            const bool inserted = Finalize(args, ws, &deferred_notifications);
+        std::vector<CTxMemPool::txiter> batch_iters(workspaces.size());
+        std::vector<CTxMemPool::txiter> parent_iters;
+        for (size_t idx = 0; idx < workspaces.size(); ++idx) {
+            Workspace &ws = workspaces[idx];
+            parent_iters.assign(ws.m_mempool_parent_iters.begin(),
+                                ws.m_mempool_parent_iters.end());
+            for (uint32_t parent_idx : ws.m_batch_parent_indices) {
+                assert(parent_idx < idx);
+                parent_iters.push_back(batch_iters[parent_idx]);
+            }
+            const bool inserted = Finalize(args, ws, &deferred_notifications,
+                                           parent_iters, &batch_iters[idx]);
             assert(inserted);
             const TxId &id = ws.m_ptx->GetId();
             results.emplace(id, MempoolAcceptResult::Success(ws.m_vsize, ws.m_base_fees,
