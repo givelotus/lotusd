@@ -61,7 +61,9 @@ PrepareBlock(const Config &config, const NodeContext &node,
 
     LOCK(cs_main);
     block->nTime = Assert(node.chainman)->ActiveTip()->GetMedianTimePast() + 1;
-    block->hashMerkleRoot = BlockMerkleRoot(*block);
+    if (block->hashMerkleRoot.IsNull()) {
+        block->hashMerkleRoot = BlockMerkleRoot(*block);
+    }
 
     return block;
 }

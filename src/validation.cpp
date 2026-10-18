@@ -3055,7 +3055,49 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         ScriptCacheKey cache_key;
     };
     std::vector<PendingBlockTxCheck> pending_script_txs;
-    if (fScriptChecks && block.vtx.size() > 1) {
+    std::vector<int> prevalidated_overlay_sigchecks;
+    if (!fJustCheck && fScriptChecks && m_mempool && block.vtx.size() > 1 &&
+        pindex->pprev != nullptr && pindex->pprev->pprev != nullptr &&
+        GetNextBlockScriptFlags(pindex->pprev, m_chainman) ==
+            GetNextBlockScriptFlags(pindex->pprev->pprev, m_chainman)) {
+        TRY_LOCK(m_mempool->cs, lock_mempool);
+        if (lock_mempool) {
+            const auto &spec =
+                m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
+            const auto &ordered = spec.GetOrderedTxs();
+            if (ordered.size() == block.vtx.size() - 1) {
+                std::vector<int> sigchecks;
+                sigchecks.reserve(ordered.size());
+                size_t idx = 1;
+                bool all_match = true;
+                for (const auto &[_, oentry] : ordered) {
+                    if (block.vtx[idx].get() != oentry.tx_ref.get() ||
+                        oentry.sigchecks < 0) {
+                        all_match = false;
+                        break;
+                    }
+                    const auto entry = m_mempool->mapTx.find(block.vtx[idx]->GetId());
+                    ScriptCacheKey cached_key(*block.vtx[idx], flags,
+                        m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
+                    ScriptCacheElement cached(cached_key, 0);
+                    if (entry == m_mempool->mapTx.end() ||
+                        (*entry)->GetSharedTx().get() != block.vtx[idx].get() ||
+                        !m_chainman.m_validation_cache.m_script_execution_cache.get(cached, false) ||
+                        cached.nSigChecks != oentry.sigchecks) {
+                        all_match = false;
+                        break;
+                    }
+                    sigchecks.push_back(int(oentry.sigchecks));
+                    ++idx;
+                }
+                if (all_match) {
+                    prevalidated_overlay_sigchecks = std::move(sigchecks);
+                }
+            }
+        }
+    }
+    if (fScriptChecks && block.vtx.size() > 1 &&
+        prevalidated_overlay_sigchecks.empty()) {
         pending_script_txs.reserve(block.vtx.size() - 1);
     }
 
@@ -3126,13 +3168,8 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         }
 
         if (fScriptChecks) {
-            ScriptCacheKey hashCacheEntry(
-                tx, flags,
-                m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
-            ScriptCacheElement elem(hashCacheEntry, 0);
-            if (m_chainman.m_validation_cache.m_script_execution_cache.get(
-                    elem, /*erase=*/!fCacheResults)) {
-                nSigChecksRet = elem.nSigChecks;
+            if (!prevalidated_overlay_sigchecks.empty()) {
+                nSigChecksRet = prevalidated_overlay_sigchecks[txIndex];
                 if (!nSigChecksTxLimiters[txIndex].consume_and_check(
                         nSigChecksRet) ||
                     !nSigChecksBlockLimiter.consume_and_check(nSigChecksRet)) {
@@ -3141,8 +3178,25 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                     break;
                 }
             } else {
-                nSigChecksRet = 0;
-                pending_script_txs.push_back({txIndex, hashCacheEntry});
+                ScriptCacheKey hashCacheEntry(
+                    tx, flags,
+                    m_chainman.m_validation_cache.ScriptExecutionCacheHasher());
+                ScriptCacheElement elem(hashCacheEntry, 0);
+                if (m_chainman.m_validation_cache.m_script_execution_cache.get(
+                        elem, /*erase=*/!fCacheResults)) {
+                    nSigChecksRet = elem.nSigChecks;
+                    if (!nSigChecksTxLimiters[txIndex].consume_and_check(
+                            nSigChecksRet) ||
+                        !nSigChecksBlockLimiter.consume_and_check(
+                            nSigChecksRet)) {
+                        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                      "too-many-sigchecks", "");
+                        break;
+                    }
+                } else {
+                    nSigChecksRet = 0;
+                    pending_script_txs.push_back({txIndex, hashCacheEntry});
+                }
             }
         }
 
