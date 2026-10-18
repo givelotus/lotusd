@@ -209,6 +209,30 @@ void ValidationSignals::TransactionAddedToMempool(
                           tx->GetHash().ToString());
 }
 
+void ValidationSignals::TransactionsAddedToMempoolBatch(
+    std::vector<MempoolAddedBatchItem> &&items) {
+    if (items.empty()) {
+        return;
+    }
+    if (items.size() == 1) {
+        TransactionAddedToMempool(items[0].tx, std::move(items[0].spent_coins),
+                                  items[0].mempool_sequence);
+        return;
+    }
+    auto shared_items =
+        std::make_shared<std::vector<MempoolAddedBatchItem>>(std::move(items));
+    const size_t count = shared_items->size();
+    auto event = [shared_items, this] {
+        m_internals->Iterate([&](CValidationInterface &callbacks) {
+            for (const auto &item : *shared_items) {
+                callbacks.TransactionAddedToMempool(item.tx, item.spent_coins,
+                                                    item.mempool_sequence);
+            }
+        });
+    };
+    ENQUEUE_AND_LOG_EVENT(event, "%s: count=%zu", __func__, count);
+}
+
 void ValidationSignals::TransactionRemovedFromMempool(
     const CTransactionRef &tx, MemPoolRemovalReason reason,
     uint64_t mempool_sequence) {

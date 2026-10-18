@@ -906,6 +906,30 @@ size_t CTxMemPool::DynamicMemoryUsage() const {
            memusage::DynamicUsage(mapDeltas) + cachedInnerUsage;
 }
 
+bool CTxMemPool::CanFitRawTxBatch(
+    const std::vector<const CTxMemPoolEntry *> &entries) const {
+    AssertLockHeld(cs);
+    size_t usage = DynamicMemoryUsage();
+    const size_t entry_overhead = memusage::MallocUsage(
+        sizeof(CTxMemPoolEntry) + 12 * sizeof(void *));
+    const CTxMemPoolEntry::Parents empty_links;
+    const size_t edge_usage = 2 * memusage::IncrementalDynamicUsage(empty_links);
+    std::set<TxId> staged;
+    for (const auto *entry : entries) {
+        usage += entry_overhead + entry->DynamicMemoryUsage();
+        std::set<TxId> parents;
+        for (const auto &input : entry->GetTx().vin) {
+            usage += memusage::IncrementalDynamicUsage(mapNextTx);
+            const auto &id = input.prevout.GetTxId();
+            if (exists(id) || staged.count(id)) parents.insert(id);
+        }
+        usage += parents.size() * edge_usage;
+        if (usage > m_opts.max_size_bytes) return false;
+        staged.insert(entry->GetTx().GetId());
+    }
+    return usage <= m_opts.max_size_bytes;
+}
+
 void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
     LOCK(cs);
     if (exists(txid) && m_unbroadcast_txids.insert(txid).second) {

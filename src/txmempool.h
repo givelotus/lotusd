@@ -557,6 +557,10 @@ public:
     CFeeRate estimateFee() const;
 
     size_t DynamicMemoryUsage() const;
+    /** Check the entire staged batch before publishing any mutation. Unlike
+     * ordinary single admission, an atomic batch does not evict existing txs. */
+    bool CanFitRawTxBatch(const std::vector<const CTxMemPoolEntry *> &entries) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Adds a transaction to the unbroadcast set */
     void AddUnbroadcastTx(const TxId &txid);
