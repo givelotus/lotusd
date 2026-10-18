@@ -764,7 +764,7 @@ static UniValue GetNetworksInfo() {
     for (int n = 0; n < NET_MAX; ++n) {
         enum Network network = static_cast<enum Network>(n);
         if (network == NET_UNROUTABLE || network == NET_CJDNS ||
-            network == NET_INTERNAL) {
+            network == NET_INTERNAL || network == NET_WSS) {
             continue;
         }
         Proxy proxy;
@@ -1144,6 +1144,13 @@ static RPCHelpMan getnodeaddresses() {
                            {RPCResult::Type::STR, "network",
                             "The network (" + Join(GetNetworkNames(), ", ") +
                                 ") the node connected through"},
+                           {RPCResult::Type::STR, "wss_path",
+                            /*optional=*/true,
+                            "For wss addresses: the WebSocket path dialed"},
+                           {RPCResult::Type::NUM, "wss_version",
+                            /*optional=*/true,
+                            "For wss addresses: the address format version "
+                            "(only version 1 is dialed)"},
                        }},
                   }},
         RPCExamples{HelpExampleCli("getnodeaddresses", "8") +
@@ -1189,6 +1196,12 @@ static RPCHelpMan getnodeaddresses() {
                 obj.pushKV("address", addr.ToStringAddr());
                 obj.pushKV("port", addr.GetPort());
                 obj.pushKV("network", GetNetworkName(addr.GetNetClass()));
+                if (addr.IsWSS()) {
+                    if (addr.IsDialableWSS()) {
+                        obj.pushKV("wss_path", addr.GetWSSPath());
+                    }
+                    obj.pushKV("wss_version", addr.GetWSSVersion());
+                }
                 ret.push_back(std::move(obj));
             }
             return ret;

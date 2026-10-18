@@ -654,6 +654,7 @@ add_library(server
 	minerfund.cpp
 	net.cpp
 	net_processing.cpp
+	net_websocket.cpp
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp
