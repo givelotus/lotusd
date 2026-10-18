@@ -61,7 +61,7 @@ struct ConnmanTestMsg : public CConnman {
 constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
     NODE_NONE,      NODE_NETWORK,         NODE_GETUTXO,
     NODE_BLOOM,     NODE_COMPACT_FILTERS, NODE_NETWORK_LIMITED,
-    NODE_AVALANCHE,
+    NODE_AVALANCHE, NODE_UTXO_SHARD,
 };
 
 constexpr NetPermissionFlags ALL_NET_PERMISSION_FLAGS[]{
