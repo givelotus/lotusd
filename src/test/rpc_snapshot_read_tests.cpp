@@ -8,7 +8,9 @@
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
+#include <lotus_v2/commitment.h>
 #include <minerfund.h>
+#include <node/miner.h>
 #include <node/snapshot.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
@@ -21,6 +23,7 @@
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/strencodings.h>
+#include <util/time.h>
 #include <validation.h>
 
 #include <boost/asio/co_spawn.hpp>
@@ -37,26 +40,39 @@
 #include <thread>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_read_tests, TestChain100Setup)
+BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_read_tests, NativeSnapshotChainSetup)
 
 BOOST_AUTO_TEST_CASE(snapshot_graph_ids_preserve_rpc_order_and_mining_dependencies) {
     // The graph is deliberately unchecked: this exercises snapshot graph
     // capture/selection, not script or consensus acceptance. A has two outputs
     // spent by join, so join must have only one dependency edge to A.
-    CMutableTransaction parent_a;
-    parent_a.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetId(), 0));
-    parent_a.vout.emplace_back(100000 * SATOSHI, CScript() << OP_TRUE);
-    parent_a.vout.emplace_back(100000 * SATOSHI, CScript() << OP_TRUE);
-    auto pad = [](CMutableTransaction &tx) {
-        while (::GetSerializeSize(tx) < MIN_TX_SIZE) {
-            tx.vout[0].scriptPubKey << OP_NOP;
-        }
+    auto make_in = [&](const COutPoint &prevout) {
+        CTxIn in(prevout);
+        in.nFlags = 1;
+        in.nPathIndex = 0;
+        lotus::v2::BranchWitness w;
+        w.script = program;
+        in.vWitnesses = {w};
+        return in;
     };
-    pad(parent_a);
+    auto make_out = [&](Amount val) {
+        lotus::v2::Output out;
+        out.value = static_cast<uint64_t>(val / SATOSHI);
+        out.branches = {lotus::v2::BranchLeaf(program)};
+        out.paths = {{0}};
+        return CTxOut::FromV2Output(out);
+    };
+    CMutableTransaction parent_a;
+    parent_a.nVersion = 7;
+    parent_a.nV2Lock = 0;
+    parent_a.vin.push_back(make_in(COutPoint(m_coinbase_txns[0]->GetId(), 0)));
+    parent_a.vout.push_back(make_out(100000 * SATOSHI));
+    parent_a.vout.push_back(make_out(100000 * SATOSHI));
     CMutableTransaction parent_b = parent_a;
     parent_b.vin[0].prevout = COutPoint(m_coinbase_txns[1]->GetId(), 0);
     auto distinguish_order = [](const TxId &fixed, CMutableTransaction &other) {
-        for (uint32_t nonce = 0; nonce < 256; ++nonce) {
+        for (uint32_t nonce = 1; nonce < 90; ++nonce) {
+            other.nV2Lock = (uint64_t(nonce) << 8) | 1;
             other.nLockTime = nonce;
             const auto id = other.GetId();
             if ((fixed < id) != (std::memcmp(fixed.begin(), id.begin(), 32) < 0)) {
@@ -69,14 +85,17 @@ BOOST_AUTO_TEST_CASE(snapshot_graph_ids_preserve_rpc_order_and_mining_dependenci
     const auto a = MakeTransactionRef(parent_a);
     const auto b = MakeTransactionRef(parent_b);
     CMutableTransaction join_tx;
-    join_tx.vin.emplace_back(COutPoint(a->GetId(), 0));
-    join_tx.vin.emplace_back(COutPoint(a->GetId(), 1));
-    join_tx.vin.emplace_back(COutPoint(b->GetId(), 0));
-    join_tx.vout.emplace_back(290000 * SATOSHI, CScript() << OP_TRUE);
+    join_tx.nVersion = 7;
+    join_tx.nV2Lock = 0;
+    join_tx.vin.push_back(make_in(COutPoint(a->GetId(), 0)));
+    join_tx.vin.push_back(make_in(COutPoint(a->GetId(), 1)));
+    join_tx.vin.push_back(make_in(COutPoint(b->GetId(), 0)));
+    join_tx.vout.push_back(make_out(290000 * SATOSHI));
     CMutableTransaction other_tx;
-    other_tx.vin.emplace_back(COutPoint(b->GetId(), 1));
-    other_tx.vout.emplace_back(98000 * SATOSHI, CScript() << OP_TRUE);
-    pad(other_tx);
+    other_tx.nVersion = 7;
+    other_tx.nV2Lock = 0;
+    other_tx.vin.push_back(make_in(COutPoint(b->GetId(), 1)));
+    other_tx.vout.push_back(make_out(98000 * SATOSHI));
     BOOST_REQUIRE(distinguish_order(join_tx.GetId(), other_tx));
     const auto join = MakeTransactionRef(join_tx);
     const auto other = MakeTransactionRef(other_tx);
@@ -183,10 +202,8 @@ BOOST_AUTO_TEST_CASE(lockfree_rpc_reads_while_cs_main_and_mempool_locked) {
         return call_rpc_params(method, UniValue(UniValue::VARR));
     };
 
-    CScript pubKeyScript = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    CMutableTransaction mempool_mtx = CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, pubKeyScript,
-        50 * COIN - 1000 * SATOSHI, /*submit=*/true);
+    const auto mempool_mtx = CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, m_coinbase_txns[0]->vout[0].nValue - 1000 * SATOSHI);
     const std::string mempool_txid = mempool_mtx.GetId().GetHex();
     const std::string confirmed_txid = m_coinbase_txns[1]->GetId().GetHex();
     const std::string spent_cb_txid = m_coinbase_txns[0]->GetId().GetHex();
