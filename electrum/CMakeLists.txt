@@ -18,10 +18,10 @@ if(BUILD_CHRONIK)
 	add_custom_target(check-electrum-functional
 		COMMENT "Run Electrum ABC functional tests..."
 		COMMAND
-			"BITCOIND=${CMAKE_BINARY_DIR}/src/bitcoind"
+			"BITCOIND=${CMAKE_BINARY_DIR}/src/lotusd"
 			"${Python_EXECUTABLE}" ./test_runner.py functional
 		DEPENDS
-			bitcoind
+			lotusd
 			${CMAKE_CURRENT_BINARY_DIR}/test_runner.py
 	)
 
