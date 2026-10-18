@@ -48,6 +48,9 @@ thiserror = "2.0.3"
 # Sort topologically
 topo_sort = "0.4"
 
+# Key-value database
+rocksdb = { version = "0.24", default-features = false }
+
 [dev-dependencies]
 # Colorful diffs for assertions
 pretty_assertions = "1.0"
