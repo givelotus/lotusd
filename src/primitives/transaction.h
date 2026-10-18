@@ -121,6 +121,10 @@ public:
     std::string ToString() const;
 };
 
+namespace lotus::v2 {
+struct Output;
+} // namespace lotus::v2
+
 /**
  * An output of a transaction.  It contains the public key that the next input
  * must be able to sign with to claim it.
@@ -151,6 +155,9 @@ public:
     friend bool operator!=(const CTxOut &a, const CTxOut &b) {
         return !(a == b);
     }
+
+    lotus::v2::Output ToV2Output() const;
+    static CTxOut FromV2Output(const lotus::v2::Output &out);
 
     std::string ToString() const;
 };
