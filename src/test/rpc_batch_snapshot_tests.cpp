@@ -20,6 +20,7 @@
 #include <script/standard.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <test/util/native_snapshot_setup.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/strencodings.h>
@@ -38,36 +39,21 @@
 #include <thread>
 #include <vector>
 
-BOOST_FIXTURE_TEST_SUITE(rpc_batch_snapshot_tests, TestChain100Setup)
+BOOST_FIXTURE_TEST_SUITE(rpc_batch_snapshot_tests, NativeSnapshotChainSetup)
 
 BOOST_AUTO_TEST_CASE(testrawtxbatch_and_submitrawtxbatch_all_or_nothing) {
     GlobalConfig config;
-    const std::vector<uint8_t> program{0x4e};
-    lotus::v2::Output output;
-    output.value = 100000;
-    output.branches = {lotus::v2::BranchLeaf(program)};
-    output.paths = {{0}};
-    const COutPoint funding(TxId(uint256S("1001")), 0);
-    {
-        LOCK(cs_main);
-        m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(funding,
-            Coin(CTxOut::FromV2Output(output), 100, false), false);
-    }
-    auto spend = [&](const COutPoint &prevout, uint64_t value) {
-        CMutableTransaction tx;
-        tx.nVersion = 7; tx.fHasV2Lock = true; tx.nV2Lock = 0;
-        CTxIn input(prevout); input.nFlags = 1; input.nPathIndex = 0;
-        lotus::v2::BranchWitness witness; witness.script = program;
-        input.vWitnesses = {witness}; tx.vin.push_back(std::move(input));
-        auto next = output; next.value = value;
-        tx.vout.push_back(CTxOut::FromV2Output(next));
-        return tx;
-    };
-    const auto parent_mtx = spend(funding, 98000);
+    const Amount value = m_coinbase_txns[0]->vout[0].nValue;
+    const auto parent_mtx = CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, value - 2000 * SATOSHI);
     const auto parent_tx = MakeTransactionRef(parent_mtx);
-    const auto child_mtx = spend(COutPoint(parent_tx->GetId(), 0), 96000);
+    const auto child_mtx = CreateNativeMempoolTransaction(
+        parent_tx, 0, value - 4000 * SATOSHI);
     const auto child_tx = MakeTransactionRef(child_mtx);
-
+    // Both genuine coinbase-funded spends passed admission. Reset only the
+    // fixture pool before exercising the RPC's all-or-nothing transitions.
+    BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 2U);
+    m_node.mempool->clear(true);
     // Also create an invalid transaction spending a nonexistent outpoint.
     CMutableTransaction invalid_mtx = child_mtx;
     invalid_mtx.vin[0].prevout = COutPoint(TxId(uint256::ONE), 0);
@@ -141,13 +127,15 @@ BOOST_AUTO_TEST_CASE(testrawtxbatch_and_submitrawtxbatch_all_or_nothing) {
 }
 
 BOOST_AUTO_TEST_CASE(atomic_batch_rejects_capacity_without_partial_admission) {
-    const CScript spk = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
     const Amount value = m_coinbase_txns[0]->vout[0].nValue;
-    const auto parent = MakeTransactionRef(CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, spk, value - 2000 * SATOSHI, false));
-    const auto child = MakeTransactionRef(CreateValidMempoolTransaction(
-        parent, 0, 101, coinbaseKey, spk, value - 4000 * SATOSHI, false));
+    const auto parent = MakeTransactionRef(CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, value - 2000 * SATOSHI));
+    const auto child = MakeTransactionRef(CreateNativeMempoolTransaction(
+        parent, 0, value - 4000 * SATOSHI));
+    BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 2U);
+    m_node.mempool->clear(true);
     auto options = m_node.mempool->m_opts;
+    const auto ordinary_capacity = options.max_size_bytes;
     options.max_size_bytes = 1;
     CTxMemPool small_pool(GetConfig(), options);
     {
@@ -159,6 +147,18 @@ BOOST_AUTO_TEST_CASE(atomic_batch_rejects_capacity_without_partial_admission) {
     }
     BOOST_CHECK_EQUAL(small_pool.size(), 0U);
     BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+
+    // The same batch must actually validate/admit when capacity is available.
+    options.max_size_bytes = ordinary_capacity;
+    options.signals = nullptr;
+    CTxMemPool roomy_pool(GetConfig(), options);
+    {
+        LOCK(cs_main);
+        const auto control = ProcessRawTxBatch(m_node.chainman->ActiveChainstate(),
+                                               roomy_pool, {parent, child}, false);
+        BOOST_REQUIRE_MESSAGE(control.m_state.IsValid(), control.m_state.ToString());
+        BOOST_CHECK_EQUAL(roomy_pool.size(), 2U);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(atomic_batch_capacity_accounts_for_parent_child_links) {
@@ -197,9 +197,10 @@ BOOST_AUTO_TEST_CASE(atomic_batch_capacity_accounts_for_parent_child_links) {
 
 BOOST_AUTO_TEST_CASE(parallel_batch_decode_reports_earliest_error_without_admission) {
     GlobalConfig config;
-    const auto tx = CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 1,
-        coinbaseKey, GetScriptForRawPubKey(coinbaseKey.GetPubKey()),
-        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, false);
+    const auto tx = CreateNativeMempoolTransaction(m_coinbase_txns[0], 0,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
+    BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 1U);
+    m_node.mempool->clear(true);
     JSONRPCRequest req;
     req.context = &m_node; req.strMethod = "submitrawtxbatch";
     req.params = UniValue(UniValue::VARR);

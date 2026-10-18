@@ -20,6 +20,7 @@
 #include <script/standard.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <test/util/native_snapshot_setup.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/strencodings.h>
@@ -47,7 +48,7 @@ const node::MiningTemplateSnapshot &NativeMiningTemplate(
 }
 } // namespace
 
-struct NativeMiningRPCSetup : TestChain100Setup {
+struct NativeMiningRPCSetup : NativeSnapshotChainSetup {
     NativeMiningRPCSetup() {
         m_node.args->ForceSetArg("-gbtwithoutpeers", "1");
         SetMockTime(m_node.chainman->ActiveTip()->GetBlockTime() + 1);
@@ -57,19 +58,14 @@ BOOST_FIXTURE_TEST_SUITE(rpc_snapshot_mining_tests, NativeMiningRPCSetup)
 
 BOOST_AUTO_TEST_CASE(
     abc_mempool_batch_removal_and_prioritisation_snapshot_coalescing) {
-    CScript spk = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
     std::vector<CTransactionRef> block_txs;
     constexpr size_t kNumTxs = 4;
     CTransactionRef prev_tx = m_coinbase_txns[0];
-    int prev_height = 1;
     Amount cur_val = prev_tx->vout[0].nValue;
     for (size_t i = 0; i < kNumTxs; ++i) {
         cur_val -= 2000 * SATOSHI;
-        CMutableTransaction mtx = CreateValidMempoolTransaction(
-            prev_tx, 0, prev_height, coinbaseKey, spk, cur_val,
-            /*submit=*/true);
+        CMutableTransaction mtx = CreateNativeMempoolTransaction(prev_tx, 0, cur_val);
         prev_tx = MakeTransactionRef(mtx);
-        prev_height = 101;
         block_txs.push_back(prev_tx);
     }
     BOOST_CHECK_EQUAL(m_node.mempool->size(), kNumTxs);
@@ -195,10 +191,8 @@ BOOST_AUTO_TEST_CASE(snapshot_publisher_concurrent_rcu_stress) {
 
 BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     GlobalConfig config;
-    CScript pubKeyScript = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    CMutableTransaction mempool_mtx = CreateValidMempoolTransaction(
-        m_coinbase_txns[0], 0, 1, coinbaseKey, pubKeyScript,
-        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, /*submit=*/true);
+    const auto mempool_mtx = CreateNativeMempoolTransaction(
+        m_coinbase_txns[0], 0, m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
     const std::string mempool_txid = mempool_mtx.GetId().GetHex();
 
     {
@@ -403,9 +397,8 @@ BOOST_AUTO_TEST_CASE(snapshot_mining_template_history_lookup) {
 
 BOOST_AUTO_TEST_CASE(lazy_mining_template_pins_old_generation_and_warm_rpc_avoids_writer_locks) {
     GlobalConfig config;
-    const CScript spk = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
-    const auto tx = CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 1,
-        coinbaseKey, spk, m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, true);
+    const auto tx = CreateNativeMempoolTransaction(m_coinbase_txns[0], 0,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
     { LOCK(cs_main); node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get()); }
     const auto old = node::GetGlobalSnapshotPublisher().Load();
     m_node.mempool->clear(true);
@@ -432,18 +425,33 @@ BOOST_AUTO_TEST_CASE(lazy_mining_template_pins_old_generation_and_warm_rpc_avoid
     pool.join();
 }
 
-BOOST_AUTO_TEST_CASE(snapshot_template_rejects_unchecked_invalid_p2sh) {
+BOOST_AUTO_TEST_CASE(snapshot_template_rejects_unchecked_invalid_native_script) {
     GlobalConfig config;
-    const CScript redeem = CScript() << OP_0;
-    const CScript destination = GetScriptForDestination(ScriptHash(redeem));
-    const auto parent = CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 1,
-        coinbaseKey, destination, m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, true);
+    const std::vector<uint8_t> false_program{0x4d}; // Native OP_0.
+    const auto parent = CreateNativeMempoolTransaction(m_coinbase_txns[0], 0,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, false_program);
     CMutableTransaction bad;
-    bad.vin.emplace_back(COutPoint(parent.GetId(), 0),
-        CScript() << std::vector<uint8_t>(redeem.begin(), redeem.end()));
-    bad.vout.emplace_back(parent.vout[0].nValue - 2000 * SATOSHI,
-                         GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
-    while (::GetSerializeSize(bad) < MIN_TX_SIZE) bad.vout[0].scriptPubKey << OP_NOP;
+    bad.nVersion = 7;
+    bad.fHasV2Lock = true;
+    bad.nV2Lock = 0;
+    CTxIn input(COutPoint(parent.GetId(), 0));
+    input.nFlags = 1;
+    input.nPathIndex = 0;
+    lotus::v2::BranchWitness witness;
+    witness.script = false_program;
+    input.vWitnesses = {witness};
+    bad.vin.push_back(std::move(input));
+    auto output = m_coinbase_txns[0]->vout[0].ToV2Output();
+    output.value = static_cast<uint64_t>((parent.vout[0].nValue - 2000 * SATOSHI) / SATOSHI);
+    bad.vout.push_back(CTxOut::FromV2Output(output));
+    // Prove the negative is script execution, not fee/maturity/metadata policy.
+    {
+        LOCK(cs_main);
+        const auto rejected = m_node.chainman->ProcessTransaction(MakeTransactionRef(bad));
+        BOOST_REQUIRE(rejected.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+        BOOST_CHECK_EQUAL(rejected.m_state.GetRejectReason(),
+            "mandatory-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element)");
+    }
     { LOCK2(cs_main, m_node.mempool->cs);
       m_node.mempool->addUnchecked(TestMemPoolEntryHelper().Fee(2000 * SATOSHI).FromTx(bad));
       node::PublishChainTipSnapshot(*m_node.chainman, m_node.mempool.get()); }
