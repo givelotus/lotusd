@@ -35,7 +35,8 @@ use crate::{
     handlers,
     protobuf::{Protobuf, MAX_REQUEST_BODY_SIZE},
     subscription_limits::SubscriptionLimiterRef,
-    ws::{handle_subscribe_socket, MAX_WS_MESSAGE_SIZE},
+    in_process::InProcessChronik,
+    ws::{handle_subscribe_socket, WsTransport, MAX_WS_MESSAGE_SIZE},
 };
 
 /// Ref-counted indexer with read or write access
@@ -138,15 +139,20 @@ impl ChronikServer {
         })
     }
 
+    /// The same Chronik endpoints, for requests and WebSocket sessions
+    /// accepted by the node's HTTP server (`/chronik` on its listeners).
+    pub fn in_process(&self) -> InProcessChronik {
+        InProcessChronik::new(
+            self.router(),
+            self.indexer.clone(),
+            self.settings.clone(),
+            self.subscription_limiter.clone(),
+        )
+    }
+
     /// Serve a Chronik HTTP endpoint with the given parameters.
     pub async fn serve(self) -> Result<()> {
-        let app = Self::make_router(
-            self.indexer,
-            self.node,
-            self.pause_notify,
-            self.settings,
-            self.subscription_limiter,
-        );
+        let app = self.router();
         let servers = self
             .tcp_listeners
             .into_iter()
@@ -164,6 +170,16 @@ impl ChronikServer {
         let (result, _, _) = futures::future::select_all(servers).await;
         result?;
         Ok(())
+    }
+
+    fn router(&self) -> Router {
+        Self::make_router(
+            self.indexer.clone(),
+            self.node.clone(),
+            self.pause_notify.clone(),
+            self.settings.clone(),
+            self.subscription_limiter.clone(),
+        )
     }
 
     fn make_router(
@@ -852,7 +868,7 @@ async fn handle_ws(
         .max_frame_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |ws| {
             handle_subscribe_socket(
-                ws,
+                WsTransport::Axum(Box::new(ws)),
                 indexer,
                 settings,
                 subscription_limiter,

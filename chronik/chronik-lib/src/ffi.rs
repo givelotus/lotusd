@@ -6,6 +6,7 @@
 
 pub use self::ffi_inner::*;
 use crate::bridge::{setup_chronik, Chronik};
+use crate::in_process::{InProcessServer, InProcessWsSession};
 
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "chronik_bridge")]
@@ -95,6 +96,15 @@ mod ffi_inner {
         Regtest,
     }
 
+    /// Header of an in-process /chronik request or response
+    #[derive(Clone, Debug)]
+    pub struct InProcessHeader {
+        /// Header name
+        pub name: String,
+        /// Header value
+        pub value: String,
+    }
+
     extern "Rust" {
         type Chronik;
         fn setup_chronik(params: SetupParams, node: &NodeContext) -> bool;
@@ -128,6 +138,76 @@ mod ffi_inner {
         // The Result return type will be converted to a C++ exception:
         // https://cxx.rs/binding/result.html#returning-result-from-rust-to-c
         fn stop(&self) -> Result<()>;
+    }
+
+    extern "Rust" {
+        /// Chronik's endpoints for the node's HTTP server (/chronik)
+        type InProcessServer;
+        /// Serve a request (target without the /chronik prefix); completes
+        /// `done` from Chronik's runtime, or drops it if Chronik is stopping.
+        fn http(
+            self: &InProcessServer,
+            method: String,
+            target: String,
+            headers: Vec<InProcessHeader>,
+            body: &[u8],
+            peer_ip: &str,
+            done: UniquePtr<InProcessHttpDone>,
+        );
+        /// Whether an upgrade request is a valid upgrade of Chronik's /ws;
+        /// if so, `extra` gets the extra headers of the 101 response.
+        fn ws_check(
+            self: &InProcessServer,
+            method: String,
+            target: String,
+            headers: Vec<InProcessHeader>,
+            extra: &mut Vec<InProcessHeader>,
+        ) -> bool;
+        /// Start the subscription session of an accepted WebSocket
+        fn ws_open(
+            self: &InProcessServer,
+            peer_ip: &str,
+            sink: UniquePtr<InProcessWsSink>,
+        ) -> Box<InProcessWsSession>;
+
+        /// Receiving side of an in-process WebSocket session
+        type InProcessWsSession;
+        /// Binary message from the client
+        fn on_binary(self: &InProcessWsSession, msg: &[u8]);
+        /// Text message from the client (rejected by Chronik)
+        fn on_text(self: &InProcessWsSession);
+        /// The client disconnected; ends the session
+        fn on_closed(self: &InProcessWsSession);
+    }
+
+    unsafe extern "C++" {
+        include!("chronik-cpp/chronik_inprocess.h");
+
+        /// Completion of an in-process HTTP request (503 if dropped)
+        type InProcessHttpDone;
+        /// Answer the request
+        fn complete(
+            self: &InProcessHttpDone,
+            status: u16,
+            headers: &[InProcessHeader],
+            body: &[u8],
+        );
+
+        /// Sending side of an in-process WebSocket session
+        type InProcessWsSink;
+        /// Queue a binary message
+        fn send_binary(self: &InProcessWsSink, msg: &[u8]);
+        /// Close the session
+        fn close(self: &InProcessWsSink);
+
+        /// Serve /chronik on the node's HTTP server with `server`.
+        #[namespace = "chronik"]
+        fn RegisterChronikInProcess(
+            server: Box<InProcessServer>,
+            ws_ping_interval_ms: u64,
+            ws_ping_payload: &[u8],
+            ws_max_message_size: usize,
+        );
     }
 
     unsafe extern "C++" {

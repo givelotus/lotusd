@@ -37,6 +37,8 @@ use thiserror::Error;
 use tokio::{runtime::Runtime, sync::RwLock};
 
 use crate::ffi::{self, StartChronikValidationInterface};
+use crate::in_process::{InProcessServer, Served, ServedRef};
+use chronik_http::ws::{MAX_WS_MESSAGE_SIZE, WS_PING_PAYLOAD};
 
 /// Errors for [`Chronik`] and [`setup_chronik`].
 #[derive(Debug, Eq, Error, PartialEq)]
@@ -172,6 +174,14 @@ fn try_setup_chronik(
             })
         }
     })?;
+    // Serve /chronik on the node's HTTP server, with the client addresses
+    // it sees (the HTTP server only uses it with -chronikpubliconrpcport).
+    let in_process_chronik = server.in_process();
+    let ws_ping_interval = in_process_chronik.settings().ws_ping_interval;
+    let in_process: ServedRef = Arc::new(Mutex::new(Some(Served {
+        runtime: runtime.handle().clone(),
+        chronik: in_process_chronik,
+    })));
     runtime.spawn({
         let node = Arc::clone(&node);
         async move {
@@ -225,7 +235,14 @@ fn try_setup_chronik(
         indexer,
         pause,
         runtime: Mutex::new(Some(runtime)),
+        in_process: Arc::clone(&in_process),
     });
+    ffi::RegisterChronikInProcess(
+        Box::new(InProcessServer::new(Arc::clone(&in_process))),
+        ws_ping_interval.as_millis().try_into().unwrap_or(u64::MAX),
+        WS_PING_PAYLOAD,
+        MAX_WS_MESSAGE_SIZE,
+    );
     StartChronikValidationInterface(node_context, chronik);
     Ok(())
 }
@@ -299,6 +316,9 @@ pub struct Chronik {
     /// during teardown. The Option is needed to allow for the runtime to
     /// be consumed before the Chronik struct is dropped.
     runtime: Mutex<Option<Runtime>>,
+    /// What /chronik on the node's HTTP server is served with; cleared by
+    /// [`Chronik::interrupt`] before the runtime shuts down.
+    in_process: ServedRef,
 }
 
 impl Chronik {
@@ -402,6 +422,8 @@ impl Chronik {
     /// RocksDB anymore. Chronik keeps indexing validation interface events
     /// after this returns; only [`Chronik::stop`] tears the indexer down.
     pub fn interrupt(&self) {
+        // In-process requests arriving from now on get 503.
+        self.in_process.lock().unwrap().take();
         let mut runtime_guard = self.runtime.lock().unwrap();
         if let Some(runtime) = runtime_guard.take() {
             runtime.shutdown_timeout(Duration::from_secs(60));
