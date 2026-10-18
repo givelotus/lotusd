@@ -43,7 +43,6 @@
 #include <policy/block/preconsensus.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
-#include <policy/block/treasury.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
