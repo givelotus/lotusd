@@ -179,6 +179,29 @@ SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_schnorrsig_verify(
     const secp256k1_xonly_pubkey *pubkey
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(5);
 
+/** Verify a batch of BIP-340 Schnorr signatures over 32-byte messages using
+ *  randomized linear combinations and multi-scalar multiplication
+ *  (Strauss / Pippenger).
+ *
+ *  Returns: 1: all n_sigs signatures are valid
+ *           0: at least one signature is invalid (or scratch allocation failed)
+ *  Args:    ctx: pointer to a context object.
+ *  In:    sig64: array of n_sigs pointers to 64-byte signatures.
+ *         msg32: array of n_sigs pointers to 32-byte messages.
+ *        pubkey: array of n_sigs pointers to x-only public keys.
+ *        rand32: pointer to 32 * n_sigs random bytes for linear combination
+ *                weights (may be NULL when n_sigs <= 1).
+ *        n_sigs: number of signatures in the batch.
+ */
+SECP256K1_API SECP256K1_WARN_UNUSED_RESULT int secp256k1_schnorrsig_verify_batch(
+    const secp256k1_context *ctx,
+    const unsigned char * const *sig64,
+    const unsigned char * const *msg32,
+    const secp256k1_xonly_pubkey * const *pubkey,
+    const unsigned char *rand32,
+    size_t n_sigs
+) SECP256K1_ARG_NONNULL(1);
+
 #ifdef __cplusplus
 }
 #endif
