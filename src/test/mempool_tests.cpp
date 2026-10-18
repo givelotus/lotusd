@@ -899,4 +899,34 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(unchecked_long_chain_storage) {
+    // Exercise the unchecked mempool container with a 100-transaction chain.
+    // addUnchecked bypasses input/script checks and admission policy; this is
+    // not evidence that ProcessTransaction accepts such a chain. No consensus
+    // or ancestor/descendant admission limit is changed by this fixture.
+    // Each transaction references the preceding transaction's single output.
+    // Verify all entries remain present in the container.
+    TestMemPoolEntryHelper entry;
+    entry.SigChecks(0);
+    LOCK2(cs_main, m_node.mempool->cs);
+
+    CMutableTransaction first;
+    first.vin.resize(1);
+    first.vin[0].scriptSig = CScript();
+    first.vout.emplace_back(10000 * SATOSHI, CScript() << OP_TRUE);
+    m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(first));
+
+    TxId prevId = first.GetId();
+    for (int i = 1; i < 100; i++) {
+        CMutableTransaction tx;
+        tx.vin.resize(1);
+        tx.vin[0].prevout = COutPoint(prevId, 0);
+        tx.vout.emplace_back(9000 * SATOSHI, CScript() << OP_TRUE);
+        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx));
+        prevId = tx.GetId();
+    }
+
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 100UL);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
