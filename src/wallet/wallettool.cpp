@@ -6,7 +6,6 @@
 #include <common/system.h>
 #include <util/fs.h>
 #include <util/translation.h>
-#include <wallet/salvage.h>
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
@@ -40,6 +39,7 @@ static void WalletCreate(CWallet *wallet_instance) {
 static std::shared_ptr<CWallet> MakeWallet(const std::string &name,
                                            const fs::path &path, bool create) {
     DatabaseOptions options;
+    options.wallet_profile = "lotus-v2-wallet-storage-development";
     DatabaseStatus status;
     if (create) {
         options.require_create = true;
@@ -130,30 +130,14 @@ bool ExecuteWalletToolFunc(const std::string &command,
         if (wallet_instance) {
             WalletShowInfo(wallet_instance.get());
             wallet_instance->Close();
+        } else {
+            return false;
         }
-    } else if (command == "info" || command == "salvage") {
-        if (command == "info") {
-            std::shared_ptr<CWallet> wallet_instance =
-                MakeWallet(name, path, /* create= */ false);
-            if (!wallet_instance) {
-                return false;
-            }
-            WalletShowInfo(wallet_instance.get());
-            wallet_instance->Close();
-        } else if (command == "salvage") {
-            bilingual_str error;
-            std::vector<bilingual_str> warnings;
-            bool ret = RecoverDatabaseFile(path, error, warnings);
-            if (!ret) {
-                for (const auto &warning : warnings) {
-                    tfm::format(std::cerr, "%s\n", warning.original);
-                }
-                if (!error.empty()) {
-                    tfm::format(std::cerr, "%s\n", error.original);
-                }
-            }
-            return ret;
-        }
+    } else if (command == "info") {
+        auto wallet_instance = MakeWallet(name, path, false);
+        if (!wallet_instance) return false;
+        WalletShowInfo(wallet_instance.get());
+        wallet_instance->Close();
     } else {
         tfm::format(std::cerr, "Invalid command: %s\n", command);
         return false;

@@ -111,10 +111,9 @@ void WalletInit::AddWalletOptions(ArgsManager &argsman) const {
         "-wallet=<path>",
         "Specify wallet path to load at startup. Can be used multiple times to "
         "load multiple wallets. Path is to a directory containing wallet data "
-        "and log files. If the path is not absolute, it is interpreted "
+        "in wallet.sqlite. If the path is not absolute, it is interpreted "
         "relative to <walletdir>. This only loads existing wallets and does "
-        "not create new ones. For backwards compatibility this also accepts "
-        "names of existing top-level data files in <walletdir>.",
+        "not create new ones. Legacy wallet.dat files are unsupported.",
         ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
         OptionsCategory::WALLET);
     argsman.AddArg(
@@ -140,25 +139,6 @@ void WalletInit::AddWalletOptions(ArgsManager &argsman) const {
         "the command.",
         ArgsManager::ALLOW_ANY, OptionsCategory::WALLET);
 #endif
-    argsman.AddArg(
-        "-dblogsize=<n>",
-        strprintf("Flush wallet database activity from memory to disk "
-                  "log every <n> megabytes (default: %u)",
-                  DEFAULT_WALLET_DBLOGSIZE),
-        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-        OptionsCategory::WALLET_DEBUG_TEST);
-    argsman.AddArg(
-        "-flushwallet",
-        strprintf("Run a thread to flush wallet periodically (default: %d)",
-                  DEFAULT_FLUSHWALLET),
-        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-        OptionsCategory::WALLET_DEBUG_TEST);
-    argsman.AddArg("-privdb",
-                   strprintf("Sets the DB_PRIVATE flag in the wallet db "
-                             "environment (default: %d)",
-                             DEFAULT_WALLET_PRIVDB),
-                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
-                   OptionsCategory::WALLET_DEBUG_TEST);
 
     argsman.AddHiddenArgs({"-zapwallettxes"});
 }
