@@ -143,6 +143,7 @@ void DisconnectedBlockTransactions::addForBlock(
 void DisconnectedBlockTransactions::removeForBlock(
     const std::vector<CTransactionRef> &vtx, CTxMemPool &pool) {
     AssertLockHeld(pool.cs);
+    CTxMemPool::ScopedSnapshotDefer snapshot_defer(pool);
 
     if (pool.mapTx.empty() && pool.mapDeltas.empty()) {
         // fast-path for IBD and/or when mempool is empty; there is no need to

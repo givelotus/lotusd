@@ -35,6 +35,7 @@ class Processor;
 } // namespace avalanche
 
 namespace node {
+class SnapshotPublisher;
 class KernelNotifications;
 
 //! NodeContext struct containing references to chain state and connection
@@ -48,6 +49,7 @@ class KernelNotifications;
 //! any member functions. It should just be a collection of references that can
 //! be used without pulling in unwanted dependencies or functionality.
 struct NodeContext {
+    std::shared_ptr<SnapshotPublisher> snapshot_publisher;
     //! libbitcoin_kernel context
     std::unique_ptr<kernel::Context> kernel;
     std::unique_ptr<AddrMan> addrman;

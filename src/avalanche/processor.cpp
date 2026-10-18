@@ -1608,7 +1608,7 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
                 overlay_mgr.GetSpeculativeOverlay().GetParentBlockId() == expectedParentBlock &&
                 overlay_mgr.GetSpeculativeOverlay().GetSubtreeARoot() ==
                     target_root) {
-                overlay_mgr.FreezeEpochBatch();
+                mempool->FreezeEpochBatch();
             }
 
             // Event-driven back-to-back pipelining: if the speculative overlay
@@ -1624,7 +1624,7 @@ void Processor::finalizeMempoolBatch(const uint256 &batchId) {
                 const auto now = Now<SteadyMilliseconds>();
                 if (m_adaptiveEpochController.shouldPipelineNextBatch(
                         tailTxCount, now)) {
-                    const auto &nextLayer = overlay_mgr.FreezeEpochBatch();
+                    const auto &nextLayer = mempool->FreezeEpochBatch();
                     pipelinedNextBatch = BuildBatchAnnouncementFromLayer(
                         batch.prev_block_hash, batch.epoch_seq + 1, batchId,
                         nextLayer);
@@ -1685,7 +1685,7 @@ bool Processor::tryFreezeAndRegisterNextEpochBatch(
                           tailTxCount, now)) {
             return false;
         }
-        const auto &frozenLayer = overlay_mgr.FreezeEpochBatch();
+        const auto &frozenLayer = mempool->FreezeEpochBatch();
         createdBatch = BuildBatchAnnouncementFromLayer(
             prevBlockHash, nextEpochSeq, parentBatchId, frozenLayer);
         m_adaptiveEpochController.recordBatchFrozen(now);
