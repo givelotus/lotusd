@@ -85,7 +85,7 @@ static void SetupCliArgs(ArgsManager &argsman) {
             "arguments are number of blocks to generate (default: %s) and "
             "maximum iterations to try (default: %s), equivalent to RPC "
             "generatetoaddress nblocks and maxtries arguments. Example: "
-            "bitcoin-cli -generate 4 1000",
+            "lotus-cli -generate 4 1000",
             DEFAULT_NBLOCKS, DEFAULT_MAX_TRIES),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
@@ -163,7 +163,7 @@ static void SetupCliArgs(ArgsManager &argsman) {
     argsman.AddArg(
         "-rpcwallet=<walletname>",
         "Send RPC for non-default wallet on RPC server (needs to exactly match "
-        "corresponding -wallet option passed to bitcoind). This changes the "
+        "corresponding -wallet option passed to lotusd). This changes the "
         "RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
@@ -206,14 +206,14 @@ static int AppInitRPC(int argc, char *argv[]) {
             strUsage += FormatParagraph(LicenseInfo());
         } else {
             strUsage += "\n"
-                        "Usage:  bitcoin-cli [options] <command> [params]  "
+                        "Usage:  lotus-cli [options] <command> [params]  "
                         "Send command to " PACKAGE_NAME "\n"
-                        "or:     bitcoin-cli [options] -named <command> "
+                        "or:     lotus-cli [options] -named <command> "
                         "[name=value]...  Send command to " PACKAGE_NAME
                         " (with named arguments)\n"
-                        "or:     bitcoin-cli [options] help                "
+                        "or:     lotus-cli [options] help                "
                         "List commands\n"
-                        "or:     bitcoin-cli [options] help <command>      Get "
+                        "or:     lotus-cli [options] help <command>      Get "
                         "help for a command\n";
 
             strUsage += "\n" + gArgs.GetHelpMessage();
@@ -692,7 +692,7 @@ public:
 
         const UniValue &networkinfo{batch[ID_NETWORKINFO]["result"]};
         if (networkinfo["version"].getInt<int>() < 230000) {
-            throw std::runtime_error("-netinfo requires bitcoind server to be "
+            throw std::runtime_error("-netinfo requires lotusd server to be "
                                      "running v0.23.0 and up");
         }
 
@@ -940,7 +940,7 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string &strMethod,
         }
         throw CConnectionFailed(
             strprintf("Could not connect to the server %s:%d%s\n\nMake sure "
-                      "the bitcoind server is running and that you are "
+                      "the lotusd server is running and that you are "
                       "connecting to the correct RPC port.",
                       host, port, responseErrorMessage));
     } else if (response.status == HTTP_UNAUTHORIZED) {
@@ -1046,7 +1046,7 @@ static void ParseError(const UniValue &error, std::string &strPrint,
         if (err_code.isNum() &&
             err_code.getInt<int>() == RPC_WALLET_NOT_SPECIFIED) {
             strPrint += "\nTry adding \"-rpcwallet=<filename>\" option to "
-                        "bitcoin-cli command line.";
+                        "lotus-cli command line.";
         }
     } else {
         strPrint = "error: " + error.write();

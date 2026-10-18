@@ -8,8 +8,8 @@ import copy
 import time
 from decimal import Decimal
 
+from test_framework.currency import RpcCurrency
 from test_framework.key import ECKey
-from test_framework.messages import XEC
 from test_framework.script import CScript
 from test_framework.signature_hash import (
     SIGHASH_ALL,
@@ -45,6 +45,7 @@ class AtomicTxBatchTest(BitcoinTestFramework):
 
     def run_test(self):
         node, peer = self.nodes
+        currency = RpcCurrency.from_node(node)
         wallet = MiniWallet(node)
         self.generate(wallet, 102)
         chain = wallet.create_self_transfer_chain(chain_length=40)
@@ -117,7 +118,7 @@ class AtomicTxBatchTest(BitcoinTestFramework):
                 tx,
                 0,
                 sighash_type,
-                int(utxo["value"] * XEC),
+                currency.to_atoms(utxo["value"]),
             )
             signature = key.sign_schnorr(digest) + bytes([sighash_type])
             tx.vin[0].scriptSig = CScript([signature])
