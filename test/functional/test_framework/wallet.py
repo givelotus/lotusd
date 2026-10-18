@@ -3,6 +3,8 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """A limited-functionality wallet, which may replace a real wallet in tests"""
 
+import hashlib
+import secrets
 from copy import deepcopy
 from decimal import Decimal
 from enum import Enum
@@ -10,16 +12,28 @@ from typing import Any, Optional
 
 from test_framework import cashaddr
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
-    SCRIPTSIG_OP_TRUE,
     base58_to_byte,
     key_to_p2pkh,
 )
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.currency import XPI_RPC_CURRENCY, RpcCurrency
 from test_framework.hash import hash160
-from test_framework.key import ECKey
-from test_framework.messages import XEC, COutPoint, CTransaction, CTxIn, CTxOut
+from test_framework.key import SECP256K1, SECP256K1_G, SECP256K1_ORDER, ECKey
+from test_framework.messages import (
+    XEC,
+    COutPoint,
+    CTransaction,
+    CTxIn,
+    CTxOut,
+    _lotus_v2_decode_output_bytes,
+    _lotus_v2_encode_output,
+    _lotus_v2_to_output,
+    lotus_v2_branch_leaf,
+    lotus_v2_indexed_tree_root,
+    lotus_v2_tagged_hash,
+    ser_string,
+    ser_uint256,
+)
 from test_framework.script import (
     OP_CHECKSIG,
     OP_DUP,
@@ -28,7 +42,6 @@ from test_framework.script import (
     OP_HASH160,
     CScript,
 )
-from test_framework.txtools import pad_tx, sign_input
 from test_framework.util import (
     assert_equal,
     assert_greater_than_or_equal,
@@ -42,19 +55,10 @@ DEFAULT_FEE = XPI_RPC_CURRENCY.from_atoms(DEFAULT_FEE_ATOMS)
 class MiniWalletMode(Enum):
     """Determines the transaction type the MiniWallet is creating and spending.
 
-    For most purposes, the default mode ADDRESS_OP_TRUE should be sufficient;
-    it simply uses a fixed bech32 P2WSH address whose coins are spent with a
-    witness stack of OP_TRUE, i.e. following an anyone-can-spend policy.
-    However, if the transactions need to be modified by the user (e.g. prepending
-    scriptSig for testing opcodes that are activated by a soft-fork), or the txs
-    should contain an actual signature, the raw modes RAW_OP_TRUE and RAW_P2PK
-    can be useful. Summary of modes:
-
-                    |      output       |           |  tx is   | can modify |  needs
-         mode       |    description    |  address  | standard | scriptSig  | signing
-    ----------------+-------------------+-----------+----------+------------+----------
-    ADDRESS_OP_TRUE | anyone-can-spend  |  bech32   |   yes    |    no      |   no
-    RAW_P2PK        | pay-to-public-key |  - (raw)  |   yes    |    yes     |   yes
+    ADDRESS_OP_TRUE commits the native automatic-success branch (0x4e).
+    RAW_P2PK commits an x-only key and native CHECKSIG (0xbb), spending with
+    a 65-byte mode-1 BIP340 signature. The historical enum names are retained
+    for callers; neither mode emits legacy scripts or ECDSA signatures.
     """
 
     ADDRESS_OP_TRUE = 1
@@ -66,6 +70,7 @@ class MiniWallet:
         self._test_node = test_node
         self._currency = RpcCurrency.from_node(test_node)
         self._utxos = []
+        self._input_values = {}
         self._mode = mode
 
         assert isinstance(mode, MiniWalletMode)
@@ -73,13 +78,11 @@ class MiniWallet:
             # use simple deterministic private key (k=1)
             self._priv_key = ECKey()
             self._priv_key.set((1).to_bytes(32, "big"), True)
-            pub_key = self._priv_key.get_pubkey()
-            self._scriptPubKey = bytes(CScript([pub_key.get_bytes(), OP_CHECKSIG]))
+            pub_key = self._priv_key.get_pubkey().get_bytes()
+            # Native VM: x-only BIP340 CHECKSIG, not legacy ECDSA OP_CHECKSIG.
+            self._scriptPubKey = b"\x20" + pub_key[1:] + b"\xbb"
         elif mode == MiniWalletMode.ADDRESS_OP_TRUE:
-            self._address = ADDRESS_ECREG_P2SH_OP_TRUE
-            self._scriptPubKey = bytes.fromhex(
-                self._test_node.validateaddress(self._address)["scriptPubKey"]
-            )
+            self._scriptPubKey = b"\x4e"
         else:
             raise AssertionError(f"Unsupported MiniWalletMode {mode}")
 
@@ -91,6 +94,7 @@ class MiniWallet:
         self.rescan_utxos()
 
     def _create_utxo(self, *, txid, vout, value, height, coinbase, confirmations):
+        self._input_values[(txid, vout)] = int(value * XEC)
         return {
             "txid": txid,
             "vout": vout,
@@ -101,78 +105,161 @@ class MiniWallet:
         }
 
     def rescan_utxos(self, *, include_mempool=True):
-        """Drop all utxos and rescan the utxo set"""
-        self._utxos = []
-        res = self._test_node.scantxoutset(
-            action="start", scanobjects=[self.get_descriptor()]
-        )
-        assert_equal(True, res["success"])
-        for utxo in res["unspents"]:
-            self._utxos.append(
-                self._create_utxo(
-                    txid=utxo["txid"],
-                    vout=utxo["vout"],
-                    value=utxo["amount"],
-                    height=utxo["height"],
-                    coinbase=utxo["coinbase"],
-                    confirmations=res["height"] - utxo["height"] + 1,
-                )
+        """Rebuild owned native coins from authoritative RPC transaction data."""
+        # Native canonical scriptPubKeys contain the value as well as the
+        # commitment; scantxoutset's exact-script matcher cannot find every
+        # value of a branch. Keep one outpoint map throughout this full scan.
+        # Rebuilding from the active chain preserves reorg/restart semantics.
+        owned = {}
+        height = self._test_node.getblockcount()
+        for n in range(height + 1):
+            block = self._test_node.getblock(self._test_node.getblockhash(n), 2)
+            self._apply_transactions(
+                owned, block["tx"], height=n, confirmations=height - n + 1
             )
         if include_mempool:
-            mempool = self._test_node.getrawmempool()
-            # Sort tx by txid.
-            sorted_mempool = sorted(mempool)
-            for txid in sorted_mempool:
-                self.scan_tx(self._test_node.getrawtransaction(txid=txid, verbose=True))
+            self._apply_transactions(
+                owned,
+                [
+                    self._test_node.getrawtransaction(txid, True)
+                    for txid in self._test_node.getrawmempool()
+                ],
+            )
+        self._utxos = list(owned.values())
 
-    def scan_tx(self, tx):
-        """Scan the tx and adjust the internal list of owned utxos"""
-        for spent in tx["vin"]:
-            # Mark spent. This may happen when the caller has ownership of a
-            # utxo that remained in this wallet. For example, by passing
-            # mark_as_spent=False to get_utxo or by using an utxo returned by a
-            # create_self_transfer* call.
-            try:
-                self.get_utxo(txid=spent["txid"], vout=spent["vout"])
-            except StopIteration:
-                pass
-        for out in tx["vout"]:
-            if out["scriptPubKey"]["hex"] == self._scriptPubKey.hex():
-                self._utxos.append(
-                    self._create_utxo(
-                        txid=tx["txid"],
-                        vout=out["n"],
-                        value=out["value"],
-                        height=0,
-                        coinbase=False,
-                        confirmations=0,
-                    )
+    def _apply_transactions(self, owned, transactions, *, height=0, confirmations=0):
+        # Node-validated blocks and mempool entries may use CTOR order rather
+        # than dependency order. Add all owned outputs, then remove every spent
+        # outpoint. A parent output spent anywhere in this batch cannot survive.
+        # This is linear in outputs + inputs, independent of the owned-set size.
+        transactions = list(transactions)
+        commitment = (
+            0,
+            b"\x00" * 32,
+            [lotus_v2_branch_leaf(self._scriptPubKey)],
+            [[0]],
+        )
+        for tx in transactions:
+            coinbase = bool(tx["vin"] and "coinbase" in tx["vin"][0])
+            for out in tx["vout"]:
+                decoded = _lotus_v2_decode_output_bytes(
+                    bytes.fromhex(out["scriptPubKey"]["hex"])
                 )
+                if decoded == commitment:
+                    key = (tx["txid"], out["n"])
+                    owned[key] = self._create_utxo(
+                        txid=key[0],
+                        vout=key[1],
+                        value=out["value"],
+                        height=height,
+                        coinbase=coinbase,
+                        confirmations=confirmations,
+                    )
+        for tx in transactions:
+            for spent in tx["vin"]:
+                if "txid" in spent:
+                    owned.pop((spent["txid"], spent["vout"]), None)
+
+    def _scan_transactions(self, transactions, **kwargs):
+        owned = {(u["txid"], u["vout"]): u for u in self._utxos}
+        self._apply_transactions(owned, transactions, **kwargs)
+        self._utxos = list(owned.values())
+
+    def scan_tx(self, tx, *, height=0, confirmations=0):
+        """Apply a transaction to the internally tracked owned coins."""
+        self._scan_transactions([tx], height=height, confirmations=confirmations)
 
     def sign_tx(self, tx, amount=None, fixed_length=True):
         """Sign tx that has been created by MiniWallet"""
-        if self._mode == MiniWalletMode.RAW_P2PK:
-            assert amount is not None, "Amount is required to sign in P2PK mode"
-
-            # for exact fee calculation, create only signatures with fixed size by
-            # default (>49.89% probability):
-            #   65 bytes: high-R val (33 bytes) + low-S val (32 bytes)
-            # with the DER header/skeleton data of 6 bytes added, plus 2 bytes scriptSig overhead
-            # (OP_PUSHn and SIGHASH_ALL), this leads to a scriptSig target size of 73 byte
-            tx.vin[0].scriptSig = b""
-            while not len(tx.vin[0].scriptSig) == 73:
-                tx.vin[0].scriptSig = b""
-                sign_input(tx, 0, self._scriptPubKey, self._priv_key, amount=amount)
-                if not fixed_length:
-                    break
-        elif self._mode == MiniWalletMode.ADDRESS_OP_TRUE:
-            for i in range(len(tx.vin)):
-                tx.vin[i].scriptSig = SCRIPTSIG_OP_TRUE
-        else:
-            assert False
+        tx.nVersion = 7
+        for out in tx.vout:
+            flags, value, token, branches, paths = _lotus_v2_to_output(out)
+            out.nFlags, out.tokenId = flags, token
+            out.vBranches, out.vPaths = branches, paths
+            out.scriptPubKey = _lotus_v2_encode_output(
+                (flags, value, token, branches, paths)
+            )
+        output_root = lotus_v2_indexed_tree_root(
+            [
+                lotus_v2_tagged_hash("Lotus/v2/output", ser_string(out.scriptPubKey))
+                for out in tx.vout
+            ]
+        )
+        lock = (
+            tx.nV2Lock
+            if tx.fHasV2Lock
+            else 0
+            if tx.nLockTime == 0
+            else ((tx.nLockTime << 8) | (1 if tx.nLockTime < 500000000 else 2))
+        )
+        for index, txin in enumerate(tx.vin):
+            txin.nFlags, txin.nPathIndex = 1, 0
+            txin.scriptSig = self._scriptPubKey
+            args = []
+            if self._mode == MiniWalletMode.RAW_P2PK:
+                value = self._input_values.get(
+                    (f"{txin.prevout.txid:064x}", txin.prevout.n)
+                )
+                if value is None and len(tx.vin) == 1:
+                    value = amount
+                assert value is not None, (
+                    "individual input amount required for native signing"
+                )
+                leaf = lotus_v2_branch_leaf(self._scriptPubKey)
+                coin = _lotus_v2_encode_output(
+                    (0, int(value), b"\x00" * 32, [leaf], [[0]])
+                )
+                core = (
+                    ser_uint256(txin.prevout.txid)
+                    + txin.prevout.n.to_bytes(4, "little")
+                    + txin.nSequence.to_bytes(4, "little")
+                    + b"\x01\x00\x01"
+                    + ser_string(self._scriptPubKey)
+                    + b"\x00"
+                )
+                own = lotus_v2_tagged_hash("Lotus/v2/owninput", core + ser_string(coin))
+                selector = b"\x01" + index.to_bytes(4, "little") + b"\x00" * 4 + leaf
+                digest = lotus_v2_tagged_hash(
+                    "Lotus/v2/sighash",
+                    b"\x00" * 32
+                    + b"\x01"
+                    + (7).to_bytes(4, "little")
+                    + lock.to_bytes(8, "little")
+                    + own
+                    + output_root
+                    + selector,
+                )
+                # BIP340 uses even-Y public keys and nonces. Fresh nonces avoid
+                # reusing a signing nonce across modified test transactions.
+                secret = int.from_bytes(self._priv_key.get_bytes(), "big")
+                pub = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, secret)]))
+                secret = SECP256K1_ORDER - secret if pub[1] & 1 else secret
+                nonce = secrets.randbelow(SECP256K1_ORDER - 1) + 1
+                point = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, nonce)]))
+                nonce = SECP256K1_ORDER - nonce if point[1] & 1 else nonce
+                rx = point[0].to_bytes(32, "big")
+                tag = hashlib.sha256(b"BIP0340/challenge").digest()
+                challenge = (
+                    int.from_bytes(
+                        hashlib.sha256(
+                            tag + tag + rx + pub[0].to_bytes(32, "big") + digest
+                        ).digest(),
+                        "big",
+                    )
+                    % SECP256K1_ORDER
+                )
+                args = [
+                    rx
+                    + ((nonce + challenge * secret) % SECP256K1_ORDER).to_bytes(
+                        32, "big"
+                    )
+                    + b"\x01"
+                ]
+            txin.vWitnesses = [(self._scriptPubKey, [], args)]
 
     def generate(self, num_blocks, **kwargs):
         """Generate blocks with coinbase outputs to the internal address, and call rescan_utxos"""
+        kwargs.setdefault("invalid_call", False)
         blocks = self._test_node.generatetodescriptor(
             num_blocks, self.get_descriptor(), **kwargs
         )
@@ -284,6 +371,7 @@ class MiniWallet:
         tx.vout[0].nValue -= amount + fee
         # arbitrary output -> to be returned
         tx.vout.append(CTxOut(amount, scriptPubKey))
+        self.sign_tx(tx)
         txid = self.sendrawtransaction(from_node=from_node, tx_hex=tx.serialize().hex())
         return txid, len(tx.vout) - 1
 
@@ -317,6 +405,10 @@ class MiniWallet:
             [sequence] * len(utxos_to_spend) if type(sequence) is int else sequence
         )
         assert_equal(len(utxos_to_spend), len(sequence))
+
+        # Each input signs its own resolved coin, never a summed input value.
+        for utxo in utxos_to_spend:
+            self._input_values[(utxo["txid"], utxo["vout"])] = int(utxo["value"] * XEC)
 
         # calculate output amount
         inputs_value_total = sum(
@@ -353,7 +445,18 @@ class MiniWallet:
             ),
         )
 
-        pad_tx(tx, target_size or 100, deterministic=True)
+        if target_size and len(tx.serialize()) < target_size:
+            # Native burn output padding; never append a legacy wire output.
+            padding = CTxOut(0, b"\x6a")
+            padding.nFlags = 2
+            padding.tokenId = b"\x00" * 32
+            padding.vBranches = [lotus_v2_branch_leaf(b"\x6a")]
+            padding.vPaths = []
+            tx.vout.append(padding)
+            while len(tx.serialize()) < target_size:
+                extra = deepcopy(padding)
+                tx.vout.append(extra)
+            self.sign_tx(tx)
 
         txid = tx.txid_hex
         return {
@@ -367,6 +470,7 @@ class MiniWallet:
                     confirmations=0,
                 )
                 for i in range(len(tx.vout))
+                if not tx.vout[i].nFlags & 2
             ],
             "fee": fee,
             "txid": txid,
@@ -392,16 +496,16 @@ class MiniWallet:
         assert fee_rate >= 0
         assert fee >= 0
 
-        if self._mode == MiniWalletMode.ADDRESS_OP_TRUE:
-            # anyone-can-spend, the size will be enforced by pad_tx()
-            size = 100
-        elif self._mode == MiniWalletMode.RAW_P2PK:
-            # P2PK (73 bytes scriptSig + 35 bytes scriptPubKey + 60 bytes other)
-            size = 168
-        else:
-            assert False
-
-        size = target_size or size
+        # Native witnesses have fixed lengths, so an unsigned-value trial
+        # gives the actual billable size before fee calculation.
+        trial = self.create_self_transfer_multi(
+            utxos_to_spend=[utxo_to_spend],
+            locktime=locktime,
+            sequence=sequence,
+            fee_per_output=0,
+            target_size=target_size,
+        )
+        size = len(trial["tx"].serialize())
 
         send_value = self._currency.round_down(
             utxo_to_spend["value"] - (fee or (fee_rate * (Decimal(size) / 1000)))
@@ -415,8 +519,7 @@ class MiniWallet:
             amount_per_output=self._currency.to_atoms(send_value),
             target_size=target_size,
         )
-        if not target_size:
-            assert_equal(len(tx["tx"].serialize()), size)
+        assert_equal(len(tx["tx"].serialize()), size)
 
         tx["new_utxo"] = tx.pop("new_utxos")[0]
 

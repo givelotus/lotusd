@@ -42,7 +42,8 @@ def get_empty_block(
     height: int, base_block_hash: str, block_time: int, coinbase_pubkey: bytes
 ) -> CBlock:
     block = CBlock()
-    block.nVersion = 0x20000000
+    block.nVersion = 2
+    block.nHeight = height
     block.nTime = block_time
     block.hashPrevBlock = int(base_block_hash, 16)
     # difficulty retargeting is disabled in REGTEST chainparams
@@ -84,7 +85,7 @@ class DeterministicChainSetupTest(BitcoinTestFramework):
         self.log.info("Reproduce the assertion in the TestChain100Setup constructor.")
         mine_blocks(100)
         assert_equal(
-            tip, "5afde277a26b6f36aee8f61a1dbf755587e1c6be63e654a88abe2a1ff0fbfb05"
+            tip, "1b10a65e0c0b43bd9b95af46c5feb3ec7b6c38c8098ba5a9050a09314dcd7789"
         )
 
         self.log.info("Check m_assumeutxo_data at height 110.")
@@ -93,11 +94,11 @@ class DeterministicChainSetupTest(BitcoinTestFramework):
         assert_equal(info["blocks"], 110)
         assert_equal(
             info["bestblockhash"],
-            "47cfb2b77860d250060e78d3248bb050928765453cbcbdbc121e3c48b99a376c",
+            "6f612a6186111e73723d49260a2dc85c426a805776fe5803af805b870c3ff4d8",
         )
         assert_equal(
             node.gettxoutsetinfo()["hash_serialized"],
-            "d754ca97ef24c5132f8d2147c19310b7a6bd136766430304735a73372fe36213",
+            "979957332cd29814873244760d8573d714663fdc4a30021d662e9dfbf3d330c0",
         )
 
 

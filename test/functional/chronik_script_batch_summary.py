@@ -26,7 +26,7 @@ class ChronikScriptBatchSummaryTest(BitcoinTestFramework):
     extra_args = [["-chronik"]]
     rpc_timeout = 240
 
-    requires = {"chronik"}
+    requires = {"chronik", "chronik_token_index"}
 
     def run_test(self):
         from test_framework.chronik.client import pb

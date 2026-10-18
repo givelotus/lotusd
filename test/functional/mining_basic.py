@@ -22,6 +22,7 @@ VERSIONBITS_TOP_BITS = 0x20000000
 def assert_template(node, block, expect, rehash=True):
     if rehash:
         block.hashMerkleRoot = block.calc_merkle_root()
+    block.update_size()
     rsp = node.getblocktemplate(
         template_request={"data": block.serialize().hex(), "mode": "proposal"}
     )
@@ -48,10 +49,14 @@ class MiningTest(BitcoinTestFramework):
         self.log.info("test blockversion")
         self.restart_node(0, extra_args=[f"-mocktime={t}", "-blockversion=1337"])
         self.connect_nodes(0, 1)
-        assert_equal(1337, self.nodes[0].getblocktemplate()["version"])
+        assert_raises_rpc_error(
+            -1,
+            "CreateNewBlock: TestBlockValidity failed: bad-blk-version, block version must be 2",
+            self.nodes[0].getblocktemplate,
+        )
         self.restart_node(0, extra_args=[f"-mocktime={t}"])
         self.connect_nodes(0, 1)
-        assert_equal(VERSIONBITS_TOP_BITS, self.nodes[0].getblocktemplate()["version"])
+        assert_equal(2, self.nodes[0].getblocktemplate()["version"])
         self.restart_node(0)
         self.connect_nodes(0, 1)
 
@@ -96,7 +101,9 @@ class MiningTest(BitcoinTestFramework):
         block.nTime = tmpl["curtime"]
         block.nBits = int(tmpl["bits"], 16)
         block.nNonce = 0
+        block.nHeight = next_height
         block.vtx = [coinbase_tx]
+        block.update_size()
 
         self.log.info("getblocktemplate: Test valid block")
         assert_template(node, block, None)
@@ -246,6 +253,7 @@ class MiningTest(BitcoinTestFramework):
         bad_block_lock = copy.deepcopy(block)
         bad_block_lock.vtx[0].nLockTime = 2**32 - 1
         bad_block_lock.hashMerkleRoot = bad_block_lock.calc_merkle_root()
+        bad_block_lock.nNonce += 1
         bad_block_lock.solve()
         assert_equal(
             node.submitblock(hexdata=bad_block_lock.serialize().hex()),
@@ -258,6 +266,7 @@ class MiningTest(BitcoinTestFramework):
         # Build a "good" block on top of the submitted bad block
         bad_block2 = copy.deepcopy(block)
         bad_block2.hashPrevBlock = bad_block_lock.hash_int
+        bad_block2.nHeight = block.nHeight + 1
         bad_block2.solve()
         assert_raises_rpc_error(
             -25,

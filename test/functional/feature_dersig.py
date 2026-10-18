@@ -14,7 +14,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet, MiniWalletMode
 
-DERSIG_HEIGHT = 1251
+DERSIG_HEIGHT = 103
 
 # A canonical signature consists of:
 # <30> <total len> <02> <len R> <R> <02> <len S> <S> <hashtype>
@@ -55,25 +55,14 @@ class BIP66Test(BitcoinTestFramework):
             for b in self.generate(self.miniwallet, DERSIG_HEIGHT - 1)
         ]
 
-        self.log.info("Test that blocks must now be at least version 3")
-        tip = self.nodes[0].getbestblockhash()
-        block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
-        block = create_block(
-            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time, version=2
-        )
-        block.solve()
-
-        with self.nodes[0].assert_debug_log(
-            expected_msgs=[f"{block.hash_hex}, bad-version(0x00000002)"]
-        ):
-            peer.send_and_ping(msg_block(block))
-            assert_equal(self.nodes[0].getbestblockhash(), tip)
-            peer.sync_with_ping()
-
         self.log.info(
             "Test that transactions with non-DER signatures cannot appear in a block"
         )
-        block.nVersion = 3
+        tip = self.nodes[0].getbestblockhash()
+        block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
+        block = create_block(
+            int(tip, 16), create_coinbase(DERSIG_HEIGHT), block_time, version=4
+        )
 
         coin_txid = self.coinbase_txids[1]
         spendtx = self.create_tx(coin_txid)
@@ -118,7 +107,7 @@ class BIP66Test(BitcoinTestFramework):
             peer.sync_with_ping()
 
         self.log.info(
-            "Test that a version 3 block with a DERSIG-compliant transaction is"
+            "Test that a version 4 block with a DERSIG-compliant transaction is"
             " accepted"
         )
         block.vtx[1] = self.create_tx(self.coinbase_txids[1])

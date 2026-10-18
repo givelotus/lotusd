@@ -32,11 +32,11 @@ class LoggingLoadTest(BitcoinTestFramework):
         self.log.info("Build a 2,000-block backlog with debug=all enabled")
         self.generate(wallet, 2000, sync_fun=self.no_op)
         funding = [
-            wallet.send_self_transfer_multi(from_node=source, num_outputs=1000)
-            for _ in range(5)
+            wallet.send_self_transfer_multi(from_node=source, num_outputs=250)
+            for _ in range(20)
         ]
         self.generate(wallet, 1, sync_fun=self.no_op)
-        # Select the five funding transactions, excluding all coinbases.
+        # Select all funding transactions, excluding all coinbases.
         selected = {item["txid"] for item in funding}
         utxos = [
             u for u in wallet.get_utxos(mark_as_spent=False) if u["txid"] in selected

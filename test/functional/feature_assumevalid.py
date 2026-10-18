@@ -131,8 +131,8 @@ class AssumeValidTest(BitcoinTestFramework):
         self.block_time += 1
         height += 1
 
-        # Bury the assumed valid block 2100 deep
-        for _ in range(2100):
+        # Bury the assumed valid block > 5 days deep (3700 blocks at 120s spacing)
+        for _ in range(3700):
             block = create_block(
                 self.tip, create_coinbase(height), self.block_time, version=4
             )
@@ -156,11 +156,12 @@ class AssumeValidTest(BitcoinTestFramework):
             }
             self.wait_until(lambda: expected in node.getchaintips())
 
+        total_blocks = len(self.blocks)
         p2p0 = self.nodes[0].add_p2p_connection(BaseNode())
         p2p0.send_header_for_blocks(self.blocks[0:2000])
         p2p0.send_header_for_blocks(self.blocks[2000:])
 
-        wait_for_header_sync(self.nodes[0], 2202)
+        wait_for_header_sync(self.nodes[0], total_blocks)
 
         # Send blocks to node0. Block 102 will be rejected.
         self.send_blocks_until_disconnected(p2p0)
@@ -171,16 +172,17 @@ class AssumeValidTest(BitcoinTestFramework):
         p2p1.send_header_for_blocks(self.blocks[0:2000])
         p2p1.send_header_for_blocks(self.blocks[2000:])
 
-        wait_for_header_sync(self.nodes[1], 2202)
+        wait_for_header_sync(self.nodes[1], total_blocks)
 
         # Send all blocks to node1. All blocks will be accepted.
-        for i in range(2202):
+        for i in range(total_blocks):
             p2p1.send_without_ping(msg_block(self.blocks[i]))
-        # Syncing 2200 blocks can take a while on slow systems. Give it plenty
+        # Syncing blocks can take a while on slow systems. Give it plenty
         # of time to sync.
         p2p1.sync_with_ping(960)
         assert_equal(
-            self.nodes[1].getblock(self.nodes[1].getbestblockhash())["height"], 2202
+            self.nodes[1].getblock(self.nodes[1].getbestblockhash())["height"],
+            total_blocks,
         )
 
         p2p2 = self.nodes[2].add_p2p_connection(BaseNode())

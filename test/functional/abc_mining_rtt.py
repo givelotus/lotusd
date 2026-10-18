@@ -79,17 +79,17 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
 
         self.generate(node, 20)
 
-        node.bumpmocktime(10)
+        node.bumpmocktime(2)
         check_gbt_rtt(node.getblocktemplate(), [now] * 5)
-        node.bumpmocktime(10)
+        node.bumpmocktime(2)
         check_gbt_rtt(node.getblocktemplate(), [now] * 5)
 
         self.generate(node, 1)
-        now += 20
+        now += 4
         gbt = node.getblocktemplate()
         # The last block (indice 1) is at now, the previous ones (indices 2, 5,
-        # 11, 17) are at now - 20
-        check_gbt_rtt(gbt, [now] + [now - 20] * 4)
+        # 11, 17) are at now - 4
+        check_gbt_rtt(gbt, [now] + [now - 4] * 4)
 
         self.log.info(
             "Check the node tries to mine blocks with the real time difficulty"
@@ -98,7 +98,7 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
         def get_quorum():
             quorum = []
             for _ in range(QUORUM_NODE_COUNT):
-                node.bumpmocktime(600)
+                node.bumpmocktime(120)
                 quorum.append(get_ava_p2p_interface(self, node))
 
             return quorum
@@ -116,13 +116,14 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
 
         # Mining while the difficulty is high causes the block to be parked
         with node.assert_debug_log(["policy-bad-rtt"]):
-            self.generate(node, 1)
+            self.generate(node, 1, sync_fun=self.no_op)
         assert_equal(node.getbestblockhash(), tip)
 
         # The target should decrease over time
+        gbt = node.getblocktemplate()
         last_target = uint256_from_compact(int(gbt["rtt"]["nexttarget"], 16))
         for _ in range(10):
-            node.bumpmocktime(10)
+            node.bumpmocktime(2)
             gbt = node.getblocktemplate()
 
             assert_greater_than(
@@ -134,12 +135,12 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
             last_target = target
 
         # After some time the difficulty remain constant
-        node.bumpmocktime(600)
+        node.bumpmocktime(120)
         last_target = uint256_from_compact(
             int(node.getblocktemplate()["rtt"]["nexttarget"], 16)
         )
         for _ in range(10):
-            node.bumpmocktime(10)
+            node.bumpmocktime(2)
             gbt = node.getblocktemplate()
 
             assert_equal(
@@ -155,7 +156,7 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
 
         self.log.info("Check the RTT is updated when longpoll returns")
 
-        node.bumpmocktime(200)
+        node.bumpmocktime(40)
 
         now = node.gettime()["adjusted"]
 
@@ -168,14 +169,14 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
         prev_header_times = [
             # Block N-1
             now,
-            # Block N-2: 200s
-            now - 200,
-            # Block N-5: 200s + 100s + 600s + 100s from the test + 600s from the quorum
-            now - 1600,
-            # Block N-11: 200s + 100s + 600s + 100s from the test + 6 * 600s from the quorum
-            now - 5200,
-            # Block N-17: 200s + 100s + 600s + 100s from the test + 12 * 600s from the quorum
-            now - 8800,
+            # Block N-2: 40s
+            now - 40,
+            # Block N-5: 40s + 20s + 120s + 20s from the test + 120s from the quorum
+            now - 320,
+            # Block N-11: 40s + 20s + 120s + 20s from the test + 6 * 120s from the quorum
+            now - 1040,
+            # Block N-17: 40s + 20s + 120s + 20s from the test + 12 * 120s from the quorum
+            now - 1760,
         ]
 
         gbt = node.getblocktemplate()
@@ -184,7 +185,7 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
         thr = LongpollThread(node, gbt["longpollid"])
         thr.start()
 
-        node.bumpmocktime(60)
+        node.bumpmocktime(12)
         mempool_tx = wallet.send_self_transfer(from_node=node)
         assert mempool_tx["txid"] in node.getrawmempool()
 
@@ -195,7 +196,7 @@ class AbcMiningHeartbeatTest(BitcoinTestFramework):
         assert not thr.is_alive()
 
         check_gbt_rtt(thr.longpoll_template, prev_header_times)
-        # The difficulty should be strictly lower after 60s
+        # The difficulty should be strictly lower after 12s
         assert_greater_than(
             uint256_from_compact(int(thr.longpoll_template["rtt"]["nexttarget"], 16)),
             uint256_from_compact(int(gbt["rtt"]["nexttarget"], 16)),
