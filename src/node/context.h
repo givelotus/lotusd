@@ -38,10 +38,15 @@ namespace lotus::v2 {
 class FeePolicyWorker;
 } // namespace lotus::v2
 
+namespace lotus::v2::node {
+class MiningPoolManager;
+} // namespace lotus::v2::node
+
 namespace node {
 class SnapshotPublisher;
 class RpcAdmissionDispatcher;
 class KernelNotifications;
+using lotus::v2::node::MiningPoolManager;
 
 //! NodeContext struct containing references to chain state and connection
 //! state.
@@ -86,6 +91,7 @@ struct NodeContext {
     std::thread background_init_thread;
 
     std::unique_ptr<avalanche::Processor> avalanche;
+    std::shared_ptr<MiningPoolManager> mining_pool;
 
     //! Declare default constructor and destructor that are not inline, so code
     //! instantiating the NodeContext struct doesn't need to #include class
