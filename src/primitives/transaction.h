@@ -9,11 +9,15 @@
 
 #include <consensus/amount.h>
 #include <feerate.h>
+#include <lotus_v2/commitment.h>
+#include <lotus_v2/header.h>
+#include <lotus_v2/output.h>
+#include <lotus_v2/transaction.h>
 #include <primitives/txid.h>
 #include <script/script.h>
 #include <serialize.h>
 #include <span.h>
-
+#include <support/allocators/chunked_slab.h>
 #include <atomic>
 #include <concepts>
 #include <cstddef>
@@ -69,9 +73,13 @@ public:
     COutPoint prevout;
     uint32_t nSequence;
     CScript scriptSig;
-    // Native input metadata is consumed by the header-state transition.
-    // Wire encoding is introduced by the following transaction-format commit.
+
+    // Lotus V2 input fields (flags: 0 = auto-infer, 1 = spend, 2 = coinbase, 3 = mint)
     uint8_t nFlags{0};
+    uint8_t nPathIndex{0};
+    std::vector<lotus::v2::BranchWitness> vWitnesses{};
+    bool fHasCoinbaseData{false};
+    std::vector<uint8_t> vCoinbaseData{};
 
     /**
      * Setting nSequence to this value for every input in a transaction disables
@@ -117,26 +125,35 @@ public:
           scriptSig(std::move(scriptSigIn)) {}
     CTxIn(TxId prevTxId, uint32_t nOut, CScript scriptSigIn = CScript(),
           uint32_t nSequenceIn = SEQUENCE_FINAL)
-        : CTxIn(COutPoint(prevTxId, nOut), std::move(scriptSigIn),
-                nSequenceIn) {}
+        : CTxIn(COutPoint(prevTxId, nOut), scriptSigIn, nSequenceIn) {}
 
     SERIALIZE_METHODS(CTxIn, obj) {
         READWRITE(obj.prevout, obj.scriptSig, obj.nSequence);
     }
 
+    lotus::v2::Input ToV2Input() const;
+    static CTxIn FromV2Input(const lotus::v2::Input &in);
+    static CTxIn FromV2Input(lotus::v2::Input &&in);
+
     friend bool operator==(const CTxIn &a, const CTxIn &b) {
+        if (a.nFlags != 0 && a.nFlags == b.nFlags) {
+            return (a.prevout == b.prevout && a.nSequence == b.nSequence &&
+                    a.nPathIndex == b.nPathIndex &&
+                    a.vWitnesses == b.vWitnesses &&
+                    a.fHasCoinbaseData == b.fHasCoinbaseData &&
+                    a.vCoinbaseData == b.vCoinbaseData);
+        }
         return (a.prevout == b.prevout && a.scriptSig == b.scriptSig &&
-                a.nSequence == b.nSequence);
+                a.nSequence == b.nSequence && a.nFlags == b.nFlags &&
+                a.nPathIndex == b.nPathIndex && a.vWitnesses == b.vWitnesses &&
+                a.fHasCoinbaseData == b.fHasCoinbaseData &&
+                a.vCoinbaseData == b.vCoinbaseData);
     }
 
     friend bool operator!=(const CTxIn &a, const CTxIn &b) { return !(a == b); }
 
     std::string ToString() const;
 };
-
-namespace lotus::v2 {
-struct Output;
-} // namespace lotus::v2
 
 /**
  * An output of a transaction.  It contains the public key that the next input
@@ -146,6 +163,12 @@ class CTxOut {
 public:
     Amount nValue;
     CScript scriptPubKey;
+
+    // Lotus V2 output fields
+    uint8_t nFlags{0};
+    uint256 tokenId{};
+    std::vector<lotus::v2::Hash32> vBranches{};
+    std::vector<std::vector<uint8_t>> vPaths{};
 
     CTxOut() { SetNull(); }
 
@@ -200,11 +223,17 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
 template <typename Stream, typename TxType>
 inline void SerializeTransaction(const TxType &tx, Stream &s) {
     s << tx.nVersion;
-    s << tx.vin;
-    s << tx.vout;
+    WriteCompactSize(s, tx.vin.size());
+    for (const auto &in : tx.vin) s << in;
+    WriteCompactSize(s, tx.vout.size());
+    for (const auto &out : tx.vout) s << out;
     s << tx.nLockTime;
 }
 
+/**
+ * The basic transaction that is broadcasted on the network and contained in
+ * blocks. A transaction can contain multiple inputs and outputs.
+ */
 class CTransaction;
 
 /** Precompute sighash midstate to avoid quadratic hashing */
@@ -232,6 +261,10 @@ struct PrecomputedTransactionData {
 };
 
 /**
+ * The basic transaction that is broadcasted on the network and contained in
+ * blocks. A transaction can contain multiple inputs and outputs.
+ */
+/**
  * A serialized transaction whose structure has been checked, with its input
  * and output counts. Used to build a CTransaction from these bytes.
  */
@@ -239,8 +272,11 @@ struct TransactionWire {
     Span<const uint8_t> bytes;
     uint32_t n_inputs{0};
     uint32_t n_outputs{0};
-    /** Total size of the scripts too long for CScript's inline buffer. */
     size_t long_script_bytes{0};
+    // Used only during immediate construction from an in-memory mutable tx.
+    const CMutableTransaction *source{nullptr};
+    // Consumed synchronously by the builder; never retained by CTransaction.
+    CMutableTransaction *movable_source{nullptr};
 };
 
 /** Whether a script of this size is stored outside CScript's inline buffer. */
@@ -255,7 +291,8 @@ std::vector<uint8_t> &TransactionScratchBuffer();
  * Find the serialized transaction at the start of bytes, checking its
  * structure exactly like ReadTransactionWire, without copying it.
  */
-TransactionWire ScanTransactionWire(Span<const uint8_t> bytes);
+TransactionWire ScanTransactionWire(Span<const uint8_t> bytes,
+                                    CMutableTransaction *decoded = nullptr);
 
 /** Streams whose unread bytes are contiguous in memory, such as DataStream. */
 template <typename Stream>
@@ -271,58 +308,8 @@ concept ContiguousReadStream = requires(Stream &s, size_t n) {
  * the result is only valid until buf is next modified.
  */
 template <typename Stream>
-TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf) {
-    buf.clear();
-    auto read = [&](uint64_t count) {
-        // Bounded steps, so a bogus length cannot force a huge allocation.
-        while (count > 0) {
-            const size_t step = std::min<uint64_t>(count, MAX_VECTOR_ALLOCATE);
-            const size_t old_size = buf.size();
-            buf.resize(old_size + step);
-            s.read(MakeWritableByteSpan(Span{buf}.subspan(old_size)));
-            count -= step;
-        }
-    };
-    struct Appender {
-        std::vector<uint8_t> &out;
-        void write(Span<const std::byte> src) {
-            out.insert(out.end(), UCharCast(src.data()),
-                       UCharCast(src.data()) + src.size());
-        }
-    } appender{buf};
-    auto read_compact_size = [&]() {
-        // ReadCompactSize rejects non-canonical encodings, so writing the
-        // value back reproduces the original bytes.
-        const uint64_t n = ReadCompactSize(s);
-        WriteCompactSize(appender, n);
-        return n;
-    };
-    TransactionWire wire;
-    auto read_script = [&]() {
-        const uint64_t size = read_compact_size();
-        if (IsLongScript(size)) {
-            wire.long_script_bytes += size;
-        }
-        read(size);
-    };
-    read(sizeof(uint32_t));
-    const uint64_t n_inputs = read_compact_size();
-    for (uint64_t i = 0; i < n_inputs; ++i) {
-        read(sizeof(uint256) + sizeof(uint32_t));
-        read_script();
-        read(sizeof(uint32_t));
-    }
-    const uint64_t n_outputs = read_compact_size();
-    for (uint64_t i = 0; i < n_outputs; ++i) {
-        read(sizeof(int64_t));
-        read_script();
-    }
-    read(sizeof(uint32_t));
-    wire.bytes = buf;
-    wire.n_inputs = n_inputs;
-    wire.n_outputs = n_outputs;
-    return wire;
-}
+TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf,
+                                    CMutableTransaction *decoded = nullptr);
 
 /**
  * Read one serialized transaction from s and return build(wire). Bytes of a
@@ -330,17 +317,7 @@ TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf) {
  * has returned; other streams are read into the per-thread scratch buffer.
  */
 template <typename Stream, typename Build>
-auto ReadTransactionWith(Stream &s, Build &&build) {
-    if constexpr (ContiguousReadStream<Stream>) {
-        const TransactionWire wire =
-            ScanTransactionWire({UCharCast(s.data()), size_t(s.size())});
-        auto result = build(wire);
-        s.ignore(wire.bytes.size());
-        return result;
-    } else {
-        return build(ReadTransactionWire(s, TransactionScratchBuffer()));
-    }
-}
+auto ReadTransactionWith(Stream &s, Build &&build);
 
 /**
  * The basic transaction that is broadcasted on the network and contained in
@@ -354,11 +331,11 @@ auto ReadTransactionWith(Stream &s, Build &&build) {
 class CTransaction {
 public:
     // Default transaction version.
-    static constexpr uint32_t CURRENT_VERSION{2};
+    static constexpr uint32_t CURRENT_VERSION{7};
 
     // Consensus: Valid min/max for nVersion, enforced as a consensus rule after
     // Wellington.
-    static constexpr uint32_t MIN_VERSION = 1, MAX_VERSION = 2;
+    static constexpr uint32_t MIN_VERSION = 1, MAX_VERSION = 7;
 
     // The fields are const because the cached hash and size describe them; a
     // CTransaction is never modified after construction.
@@ -366,6 +343,8 @@ public:
     const Span<const CTxOut> vout;
     const uint32_t nVersion;
     const uint32_t nLockTime;
+    const bool fHasV2Lock{false};
+    const uint64_t nV2Lock{0};
 
     /** Bytes needed to hold the inputs, outputs and long scripts of wire. */
     static size_t StorageSize(const TransactionWire &wire);
@@ -409,7 +388,9 @@ public:
     bool IsNull() const { return vin.empty() && vout.empty(); }
 
     TxId GetId() const { return TxId(hash); }
-    TxHash GetHash() const { return TxHash(hash); }
+    TxHash GetHash() const { return TxHash(m_witness_hash); }
+    const uint256 &GetOutputsHash() const { return m_outputs_hash; }
+    lotus::v2::Transaction ToV2Transaction() const;
 
     /** Bytes used by the inputs, outputs and long scripts. */
     size_t GetStorageSize() const;
@@ -436,7 +417,7 @@ public:
     unsigned int GetTotalSize() const { return m_serialize_size; }
 
     bool IsCoinBase() const {
-        return (vin.size() == 1 && vin[0].prevout.IsNull());
+        return (vin.size() == 1 && (vin[0].prevout.IsNull() || vin[0].nFlags == 2));
     }
 
     friend bool operator==(const CTransaction &a, const CTransaction &b) {
@@ -459,7 +440,8 @@ private:
         uint32_t long_script_bytes;
         uint32_t nVersion;
         uint32_t nLockTime;
-        /** Whether this object frees the storage. */
+        bool fHasV2Lock;
+        uint64_t nV2Lock;
         bool owned;
     };
     static Layout Place(const TransactionWire &wire, void *storage,
@@ -467,11 +449,15 @@ private:
     static Layout OwnedLayout(const TransactionWire &wire);
     explicit CTransaction(const Layout &layout);
 
-    const uint256 hash;
-    const uint32_t m_serialize_size;
+    uint256 hash;
+    uint256 m_witness_hash;
+    uint256 m_outputs_hash;
+    uint32_t m_serialize_size{0};
     const uint32_t m_long_script_bytes;
-    /** Whether this object frees its storage, which starts at vin.data(). */
     const bool m_owns_storage;
+    uint256 ComputeHash() const;
+    uint256 ComputeWitnessHash() const;
+    void InitHashes();
 
     /**
      * Sighash midstate, filled on first use. The storage lives inline so the
@@ -502,6 +488,8 @@ public:
     std::vector<CTxOut> vout;
     uint32_t nVersion;
     uint32_t nLockTime;
+    bool fHasV2Lock{false};
+    uint64_t nV2Lock{0};
 
     CMutableTransaction();
     explicit CMutableTransaction(const CTransaction &tx);
@@ -519,6 +507,10 @@ public:
         Unserialize(s);
     }
 
+    lotus::v2::Transaction ToV2Transaction() const;
+    static CMutableTransaction
+    FromV2Transaction(const lotus::v2::Transaction &tx);
+
     /**
      * Compute the id and hash of this CMutableTransaction. This is computed on
      * the fly, as opposed to GetId() and GetHash() in CTransaction, which uses
@@ -532,10 +524,6 @@ public:
         return a.GetHash() == b.GetHash();
     }
 };
-#if defined(__x86_64__)
-static_assert(sizeof(CMutableTransaction) == 56,
-              "sizeof CMutableTransaction is expected to be 56 bytes");
-#endif
 
 using CTransactionRef = std::shared_ptr<const CTransaction>;
 
@@ -613,6 +601,21 @@ CTransactionRef MakeTransactionRef(const TransactionWire &wire);
 CTransactionRef MakeTransactionRef();
 CTransactionRef MakeTransactionRef(const CMutableTransaction &tx);
 
+/** Keep the authoritative decode alive until placement has moved its fields. */
+template <typename Stream, typename Build>
+auto ReadTransactionWith(Stream &s, Build &&build) {
+    CMutableTransaction decoded;
+    if constexpr (ContiguousReadStream<Stream>) {
+        const TransactionWire wire = ScanTransactionWire(
+            {UCharCast(s.data()), size_t(s.size())}, &decoded);
+        auto result = build(wire);
+        s.ignore(wire.bytes.size());
+        return result;
+    } else {
+        return build(ReadTransactionWire(s, TransactionScratchBuffer(), &decoded));
+    }
+}
+
 /**
  * Deserialize transaction references (P2P tx messages, block vtx, disk) into
  * a single allocation as well.
@@ -624,5 +627,43 @@ template <> struct SharedPtrDeserializer<CTransaction> {
         });
     }
 };
+
+
+/** Record exact native bytes while using the authoritative native framing parser. */
+template <typename Stream> class TransactionWireRecorder {
+    Stream &source;
+    std::vector<uint8_t> &bytes;
+public:
+    TransactionWireRecorder(Stream &s, std::vector<uint8_t> &b) : source(s), bytes(b) {}
+    void read(Span<std::byte> out) {
+        source.read(out);
+        bytes.insert(bytes.end(), UCharCast(out.data()), UCharCast(out.data()) + out.size());
+    }
+    template <typename T> TransactionWireRecorder &operator>>(T &obj) {
+        ::Unserialize(*this, obj);
+        return *this;
+    }
+};
+template <typename Stream>
+TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf,
+                                    CMutableTransaction *retained) {
+    buf.clear();
+    TransactionWireRecorder<Stream> recorder{s, buf};
+    CMutableTransaction temporary;
+    CMutableTransaction &decoded = retained ? *retained : temporary;
+    UnserializeTransaction(decoded, recorder);
+    TransactionWire wire{buf, static_cast<uint32_t>(decoded.vin.size()),
+                         static_cast<uint32_t>(decoded.vout.size())};
+    wire.movable_source = retained;
+    for (const auto &in : decoded.vin)
+        if (IsLongScript(in.scriptSig.size())) wire.long_script_bytes += in.scriptSig.size();
+    for (const auto &out : decoded.vout)
+        if (IsLongScript(out.scriptPubKey.size())) wire.long_script_bytes += out.scriptPubKey.size();
+    return wire;
+}
+void AdaptLegacyOutputToV7(CTxOut &txout);
+void AdaptLegacyInputToV7(CTxIn &txin);
+void AdaptLegacyTxToV7(CMutableTransaction &mtx);
+CTransaction AdaptLegacyTxToV7(const CTransaction &tx);
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H
