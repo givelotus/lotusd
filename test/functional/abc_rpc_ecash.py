@@ -3,16 +3,22 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
 Test the getcurrencyinfo RPC.
-Test the effect of the -ecash command line parameter on amounts in RPC
-commands.
+On Lotus V2, XPI has six decimal places and the inherited -ecash option
+is rejected rather than changing the denomination or selecting another chain.
 """
 
+from decimal import Decimal
+
+from test_framework.address import ADDRESS_ECREG_UNSPENDABLE
+from test_framework.messages import CTransaction, FromHex
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal
+from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class ECashRPCTest(BitcoinTestFramework):
     num_nodes = 1
+    setup_clean_chain = True
+    extra_args = [["-fallbackfee=0"]]
 
     def test_currency(self, *, ticker: str, satoshis_per_unit: int, decimals: int):
         info = self.nodes[0].getcurrencyinfo()
@@ -38,15 +44,34 @@ class ECashRPCTest(BitcoinTestFramework):
         )
 
     def run_test(self):
-        self.log.info("Test with -ecash enabled (default setting)")
-        self.test_currency(ticker="XEC", satoshis_per_unit=100, decimals=2)
+        self.test_currency(ticker="XPI", satoshis_per_unit=1_000_000, decimals=6)
+        node = self.nodes[0]
+        # This is the metadata contract used by the shared PWA. Round-trip one
+        # atom and a sub-cent amount through JSON RPC and the actual wire bytes.
+        for atoms in (1, 9999, 10000, 1_234_567):
+            value = Decimal(atoms) / 1_000_000
+            raw = node.createrawtransaction([], {ADDRESS_ECREG_UNSPENDABLE: value})
+            tx = FromHex(CTransaction(), raw)
+            assert_equal(tx.vout[0].nValue, atoms)
+            decoded = node.decoderawtransaction(raw)
+            assert_equal(decoded["vout"][0]["value"], value)
 
-        self.log.info("Test with -ecash disabled")
-        # Disable fallbackfee, because its default setting for tests
-        # is adapted to XEC only.
-        # In BCHA mode, it triggers a "-fallbackfee is set very high!" error.
-        self.restart_node(0, ["-ecash=0", "-fallbackfee=0"])
-        self.test_currency(ticker="BCHA", satoshis_per_unit=100_000_000, decimals=8)
+        assert_raises_rpc_error(
+            -3,
+            "Invalid amount",
+            node.createrawtransaction,
+            [],
+            {ADDRESS_ECREG_UNSPENDABLE: Decimal("0.0000001")},
+        )
+
+        self.stop_node(0)
+        for option in ("-ecash=0", "-ecash=1"):
+            node.assert_start_raises_init_error(
+                extra_args=[option],
+                expected_msg="Error: The -ecash option is not supported on Lotus V2. "
+                "Amounts use XPI (1 XPI = 1000000 atoms); "
+                "this option does not select an eCash chain.",
+            )
 
 
 if __name__ == "__main__":

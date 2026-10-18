@@ -5,6 +5,8 @@
 #include <consensus/amount.h>
 
 #include <test/util/setup_common.h>
+#include <univalue.h>
+#include <util/moneystr.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -163,7 +165,30 @@ BOOST_AUTO_TEST_CASE(ToStringTest) {
     CFeeRate feeRate;
     feeRate = CFeeRate(1 * SATOSHI);
     BOOST_CHECK_EQUAL(feeRate.ToString(),
-                      "0.01 " + Currency::getTicker() + "/kB");
+                      "0.000001 " + Currency::getTicker() + "/kB");
+}
+
+BOOST_AUTO_TEST_CASE(XPIDenominationTest) {
+    const auto &currency = Currency::get();
+    BOOST_CHECK_EQUAL(currency.ticker, "XPI");
+    BOOST_CHECK_EQUAL(currency.baseunit, 1000000 * SATOSHI);
+    BOOST_CHECK_EQUAL(currency.subunit, SATOSHI);
+    BOOST_CHECK_EQUAL(currency.decimals, 6);
+    // COIN is an inherited integer accounting constant, not the XPI
+    // denominator.
+    BOOST_CHECK_EQUAL(COIN / SATOSHI, 100000000);
+    for (int64_t atoms : {0, 1, 9999, 10000, 1234567, 100000000}) {
+        const Amount amount = atoms * SATOSHI;
+        Amount parsed;
+        BOOST_REQUIRE(ParseMoney(FormatMoney(amount), parsed));
+        BOOST_CHECK_EQUAL(parsed, amount);
+    }
+    BOOST_CHECK_EQUAL(UniValue(SATOSHI).write(), "0.000001");
+    BOOST_CHECK_EQUAL(UniValue(1234567 * SATOSHI).write(), "1.234567");
+    BOOST_CHECK_EQUAL((1234567 * SATOSHI).ToString(), "1.234567 XPI");
+    Amount parsed;
+    BOOST_CHECK(!ParseMoney("0.0000001", parsed));
+    BOOST_CHECK(!ParseMoney("1.2345678", parsed));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
