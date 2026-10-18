@@ -19,6 +19,7 @@
 #include <memory>
 #include <new>
 #include <thread>
+#include <stdexcept>
 
 std::string COutPoint::ToString() const {
     return strprintf("COutPoint(%s, %u)", txid.ToString().substr(0, 10), n);
@@ -137,112 +138,151 @@ std::string CTxIn::ToString() const {
 }
 
 lotus::v2::Output CTxOut::ToV2Output() const {
-    lotus::v2::Output out;
-    out.value = nValue >= Amount::zero()
-                    ? static_cast<uint64_t>(nValue / SATOSHI)
-                    : 0;
-    const bool is_burn = scriptPubKey.IsUnspendable();
-    out.flags = is_burn ? 2 : 0;
-
-    // Pack [uint16_t len_le, scriptPubKey[0..len-1]] across up to 16 branches
-    // (31 payload bytes per branch, with branch[k][31] = uint8_t(0x81 + k))
-    // so CTxOut <-> lotus::v2::Output is a 100% lossless bijection for
-    // UTXOSHARD and BLOCKUNDO serialization while satisfying all V2 Output
-    // branch-uniqueness and Merklix UtxoLeaf invariants.
-    constexpr size_t kMaxPackedScriptBytes =
-        lotus::v2::MAX_OUTPUT_BRANCHES * 31 - 2;
-    if (scriptPubKey.size() <= kMaxPackedScriptBytes) {
-        const uint16_t script_len = static_cast<uint16_t>(scriptPubKey.size());
-        const size_t total_packed = 2 + static_cast<size_t>(script_len);
-        const size_t num_branches =
-            std::max<size_t>(1, (total_packed + 30) / 31);
-        out.branches.resize(num_branches);
-        const uint8_t *raw_script = scriptPubKey.data();
-        for (size_t k = 0; k < num_branches; ++k) {
-            out.branches[k].fill(0);
-            uint8_t *dst = out.branches[k].data();
-            if (k == 0) {
-                dst[0] = static_cast<uint8_t>(script_len & 0xffU);
-                dst[1] = static_cast<uint8_t>((script_len >> 8U) & 0xffU);
-                const size_t first_chunk =
-                    std::min<size_t>(29, script_len);
-                if (first_chunk > 0) {
-                    std::copy_n(raw_script, first_chunk, dst + 2);
-                }
-            } else {
-                const size_t script_offset = 29 + (k - 1) * 31;
-                const size_t chunk =
-                    script_offset < script_len
-                        ? std::min<size_t>(31, script_len - script_offset)
-                        : 0;
-                if (chunk > 0) {
-                    std::copy_n(raw_script + script_offset, chunk, dst);
-                }
-            }
-            dst[31] = static_cast<uint8_t>(0x81U + k);
+    const uint64_t val =
+        static_cast<uint64_t>(std::max<int64_t>(0, nValue / SATOSHI));
+    if (!vBranches.empty()) {
+        lotus::v2::Output out;
+        out.flags = nFlags;
+        out.value = val;
+        std::memcpy(out.token_id.data(), tokenId.begin(), 32);
+        out.branches = vBranches;
+        out.paths = vPaths;
+        return out;
+    }
+    if (scriptPubKey.size() >= 43) {
+        if (scriptPubKey.size() == 45 && scriptPubKey[0] == 0x00 &&
+            scriptPubKey[9] == 0x01 && scriptPubKey[42] == 0x01 &&
+            scriptPubKey[43] == 0x01 && scriptPubKey[44] == 0x00) {
+            lotus::v2::Output decoded;
+            decoded.flags = 0;
+            decoded.value = val;
+            decoded.branches.resize(1);
+            std::memcpy(decoded.branches[0].data(), scriptPubKey.data() + 10,
+                        32);
+            decoded.paths = {{0}};
+            return decoded;
         }
-    } else {
-        std::vector<uint8_t> script_bytes(scriptPubKey.begin(),
-                                          scriptPubKey.end());
-        out.branches = {lotus::v2::BranchLeaf(script_bytes)};
+        std::string err;
+        lotus::v2::Output decoded;
+        const std::vector<uint8_t> raw(scriptPubKey.begin(),
+                                       scriptPubKey.end());
+        if (lotus::v2::DecodeOutput(raw, decoded, err)) {
+            decoded.value = val;
+            return decoded;
+        }
+        if (raw[0] == 0x6a && raw.size() >= 44) {
+            const std::vector<uint8_t> sub(raw.begin() + 1, raw.end());
+            if (lotus::v2::DecodeOutput(sub, decoded, err)) {
+                decoded.value = val;
+                return decoded;
+            }
+        }
     }
+    throw std::invalid_argument(
+        "Native output requires an explicit native policy; "
+        "implicit legacy script conversion is unsupported");
+}
 
-    if (!is_burn) {
-        out.paths = {{0}};
+static void PopulateV2ScriptPubKeyWire(const lotus::v2::Output &o,
+                                       CScript &scriptPubKey) {
+    if (o.flags == 0 && o.branches.size() == 1 && o.paths.size() == 1 &&
+        o.paths[0].size() == 1 && o.paths[0][0] == 0) {
+        scriptPubKey.resize(45);
+        uint8_t *p = scriptPubKey.data();
+        p[0] = 0x00;
+        for (size_t i = 0; i < 8; ++i) {
+            p[1 + i] = static_cast<uint8_t>(o.value >> (8 * i));
+        }
+        p[9] = 0x01;
+        std::memcpy(p + 10, o.branches[0].data(), 32);
+        p[42] = 0x01;
+        p[43] = 0x01;
+        p[44] = 0x00;
+        return;
     }
+    std::vector<uint8_t> wire;
+    wire.reserve(64);
+    std::string err;
+    if (lotus::v2::EncodeOutput(o, wire, err)) {
+        if (o.IsBurn()) {
+            scriptPubKey.clear();
+            scriptPubKey.reserve(1 + wire.size());
+            scriptPubKey.push_back(0x6a);
+            scriptPubKey.insert(scriptPubKey.end(), wire.begin(), wire.end());
+        } else {
+            scriptPubKey.assign(wire.begin(), wire.end());
+        }
+    }
+}
+
+CTxOut CTxOut::FromV2Output(const lotus::v2::Output &o) {
+    CTxOut out;
+    out.nValue = static_cast<int64_t>(o.value) * SATOSHI;
+    out.nFlags = o.flags;
+    std::memcpy(out.tokenId.begin(), o.token_id.data(), 32);
+    PopulateV2ScriptPubKeyWire(o, out.scriptPubKey);
+    out.vBranches = o.branches;
+    out.vPaths = o.paths;
     return out;
 }
 
-CTxOut CTxOut::FromV2Output(const lotus::v2::Output &out) {
-    const Amount val = static_cast<int64_t>(out.value) * SATOSHI;
-    if (!out.branches.empty() &&
-        out.branches.size() <= lotus::v2::MAX_OUTPUT_BRANCHES) {
-        bool valid_tags = true;
-        for (size_t k = 0; k < out.branches.size(); ++k) {
-            if (out.branches[k][31] != static_cast<uint8_t>(0x81U + k)) {
-                valid_tags = false;
-                break;
-            }
-        }
-        if (valid_tags) {
-            const uint16_t script_len =
-                static_cast<uint16_t>(out.branches[0][0]) |
-                (static_cast<uint16_t>(out.branches[0][1]) << 8U);
-            const size_t total_packed = 2 + static_cast<size_t>(script_len);
-            const size_t expected_branches =
-                std::max<size_t>(1, (total_packed + 30) / 31);
-            if (expected_branches == out.branches.size()) {
-                CScript script;
-                script.resize(script_len);
-                uint8_t *dst = script.data();
-                const size_t first_chunk =
-                    std::min<size_t>(29, script_len);
-                if (first_chunk > 0) {
-                    std::copy_n(out.branches[0].data() + 2, first_chunk, dst);
-                }
-                for (size_t k = 1; k < out.branches.size(); ++k) {
-                    const size_t script_offset = 29 + (k - 1) * 31;
-                    const size_t chunk =
-                        script_offset < script_len
-                            ? std::min<size_t>(31, script_len - script_offset)
-                            : 0;
-                    if (chunk > 0) {
-                        std::copy_n(out.branches[k].data(), chunk,
-                                    dst + script_offset);
-                    }
-                }
-                return CTxOut(val, std::move(script));
-            }
-        }
+CTxOut CTxOut::FromV2Output(lotus::v2::Output &&o) {
+    CTxOut out;
+    out.nValue = static_cast<int64_t>(o.value) * SATOSHI;
+    out.nFlags = o.flags;
+    std::memcpy(out.tokenId.begin(), o.token_id.data(), 32);
+    PopulateV2ScriptPubKeyWire(o, out.scriptPubKey);
+    out.vBranches = std::move(o.branches);
+    out.vPaths = std::move(o.paths);
+    return out;
+}
+
+void AdaptLegacyOutputToV7(CTxOut &txout) {
+    const lotus::v2::Output out = txout.ToV2Output();
+    txout.nFlags = out.flags;
+    std::memcpy(txout.tokenId.begin(), out.token_id.data(), 32);
+    txout.vBranches = out.branches;
+    txout.vPaths = out.paths;
+    if (txout.scriptPubKey.empty()) {
+        txout.scriptPubKey = CTxOut::FromV2Output(out).scriptPubKey;
     }
-    if (out.IsBurn()) {
-        return CTxOut(val, CScript() << OP_RETURN);
+}
+
+void AdaptLegacyInputToV7(CTxIn &txin) {
+    const CScript orig_script_sig = txin.scriptSig;
+    txin = CTxIn::FromV2Input(txin.ToV2Input());
+    if (!orig_script_sig.empty()) {
+        txin.scriptSig = orig_script_sig;
     }
-    CScript script;
-    if (!out.branches.empty()) {
-        script = CScript(out.branches[0].begin(), out.branches[0].end());
+}
+
+void AdaptLegacyTxToV7(CMutableTransaction &mtx) {
+    const bool is_cb =
+        (mtx.vin.size() == 1 &&
+         (mtx.vin[0].prevout.IsNull() || mtx.vin[0].nFlags == 2));
+    if (!mtx.fHasV2Lock) {
+        mtx.nV2Lock = (is_cb || mtx.nLockTime == 0)
+                          ? 0ULL
+                          : ((uint64_t(mtx.nLockTime) << 8) |
+                             (mtx.nLockTime < 500000000U ? 1ULL : 2ULL));
+        mtx.fHasV2Lock = true;
+    } else if (is_cb) {
+        mtx.nV2Lock = 0ULL;
     }
-    return CTxOut(val, std::move(script));
+    mtx.nLockTime = static_cast<uint32_t>(mtx.nV2Lock >> 8);
+    mtx.nVersion = 7;
+    for (auto &txin : mtx.vin) {
+        AdaptLegacyInputToV7(txin);
+    }
+    for (auto &txout : mtx.vout) {
+        AdaptLegacyOutputToV7(txout);
+    }
+}
+
+CTransaction AdaptLegacyTxToV7(const CTransaction &tx) {
+    CMutableTransaction mtx(tx);
+    AdaptLegacyTxToV7(mtx);
+    return CTransaction(std::move(mtx));
 }
 
 std::string CTxOut::ToString() const {
@@ -566,6 +606,49 @@ public:
     }
 };
 
+// The serialized marker is authoritative: logical version7 can also use the
+// compatibility wrapper, whose output scripts are literal wire fields.
+bool IsPureNativeWire(Span<const uint8_t> bytes) {
+    return bytes.size() >= 4 && bytes[0] == 7 && bytes[1] == 0 &&
+           bytes[2] == 0 && bytes[3] == 0;
+}
+
+bool IsOrdinaryNativeOutput(const CTxOut &out) {
+    return out.nFlags == 0 && out.vBranches.size() == 1 &&
+           out.vPaths.size() == 1 && out.vPaths[0].size() == 1 &&
+           out.vPaths[0][0] == 0;
+}
+
+// The usual 45-byte output needs neither a temporary native Output (which
+// copies extension vectors) nor a temporary script to count its slab tail.
+size_t NativeOutputScriptSize(const CTxOut &out) {
+    if (IsOrdinaryNativeOutput(out)) return 45;
+    CScript canonical;
+    PopulateV2ScriptPubKeyWire(out.ToV2Output(), canonical);
+    // Invalid output models have no canonical encoding. The population helper
+    // leaves their original script intact; preserve its size for validation.
+    return canonical.empty() ? out.scriptPubKey.size() : canonical.size();
+}
+
+void CanonicalizeNativeOutputScript(CTxOut &out) {
+    if (IsOrdinaryNativeOutput(out) && out.scriptPubKey.size() == 45) {
+        const auto &script = out.scriptPubKey;
+        const uint64_t value = static_cast<uint64_t>(
+            std::max<int64_t>(0, out.nValue / SATOSHI));
+        bool matches = script[0] == 0 && script[9] == 1 &&
+                       script[42] == 1 && script[43] == 1 && script[44] == 0 &&
+                       std::equal(out.vBranches[0].begin(),
+                                  out.vBranches[0].end(), script.begin() + 10);
+        for (size_t i = 0; i < 8; ++i) {
+            matches &= script[1 + i] == static_cast<uint8_t>(value >> (8 * i));
+        }
+        if (matches) return;
+    }
+    // Only the script representation changes. Keep the source value and
+    // extension fields, including invalid fields needed by validation tests.
+    PopulateV2ScriptPubKeyWire(out.ToV2Output(), out.scriptPubKey);
+}
+
 TransactionWire SerializeWire(const CMutableTransaction &tx,
                               std::vector<uint8_t> &buf) {
     buf.clear();
@@ -581,10 +664,11 @@ TransactionWire SerializeWire(const CMutableTransaction &tx,
             wire.long_script_bytes += in.scriptSig.size();
         }
     }
+    const bool pure_native = IsPureNativeWire(wire.bytes);
     for (const CTxOut &out : tx.vout) {
-        if (IsLongScript(out.scriptPubKey.size())) {
-            wire.long_script_bytes += out.scriptPubKey.size();
-        }
+        const size_t size = pure_native ? NativeOutputScriptSize(out)
+                                        : out.scriptPubKey.size();
+        if (IsLongScript(size)) wire.long_script_bytes += size;
     }
     return wire;
 }
@@ -747,6 +831,9 @@ CTransaction::Layout CTransaction::Place(const TransactionWire &wire,
     for (uint32_t i = 0; i < wire.n_outputs; ++i) {
         auto *slot = static_cast<void *>(base + offsets.vout + i * sizeof(CTxOut));
         CTxOut output = movable ? std::move(movable->vout[i]) : decoded->vout[i];
+        if (wire.source && IsPureNativeWire(wire.bytes)) {
+            CanonicalizeNativeOutputScript(output);
+        }
         output.scriptPubKey = store_script(output.scriptPubKey);
         ::new (slot) const CTxOut(std::move(output));
         ++constructed_outputs;
