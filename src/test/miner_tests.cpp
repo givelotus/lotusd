@@ -944,4 +944,82 @@ BOOST_AUTO_TEST_CASE(TestCBlockTemplateEntry) {
     BOOST_CHECK_EQUAL(txEntry.sigChecks, 10);
 }
 
+
+BOOST_FIXTURE_TEST_CASE(speculative_overlay_does_not_validate_unchecked_scripts, TestChain100Setup) {
+    CMutableTransaction bad;
+    bad.nVersion = 2;
+    bad.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetId(), 0), CScript() << OP_FALSE);
+    bad.vout.emplace_back(m_coinbase_txns[0]->vout[0].nValue - 1000 * SATOSHI,
+                          CScript() << OP_TRUE);
+    while (::GetSerializeSize(bad) < MIN_TX_SIZE) bad.vout[0].scriptPubKey << OP_NOP;
+    const auto unchecked = MakeTransactionRef(bad);
+    {
+        LOCK2(cs_main, m_node.mempool->cs);
+        m_node.mempool->SyncMerklixOverlayToTip(m_node.chainman->ActiveTip()->GetBlockHash(),
+            101, m_node.chainman->ActiveTip()->GetMedianTimePast());
+        m_node.mempool->addUnchecked(TestMemPoolEntryHelper().Fee(1000 * SATOSHI).FromTx(unchecked));
+    }
+    auto block = CreateBlock({bad}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()),
+                             m_node.chainman->ActiveChainstate());
+    block.vtx[1] = unchecked; // Compact reconstruction can reuse the exact mempool object.
+    m_node.chainman->ProcessNewBlock(std::make_shared<const CBlock>(block), true, true, nullptr);
+    { LOCK(cs_main);
+      const auto *index = m_node.chainman->m_blockman.LookupBlockIndex(block.GetHash());
+      BOOST_REQUIRE(index);
+      BOOST_CHECK(index->nStatus.isInvalid()); }
+    BOOST_CHECK_EQUAL(m_node.chainman->ActiveHeight(), 100);
+}
+
+BOOST_FIXTURE_TEST_CASE(template_root_is_checked_from_selected_transactions, TestChain100Setup) {
+    node::BlockAssembler::Options options;
+    options.test_block_validity = false;
+    const auto block_template = node::BlockAssembler(
+        node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
+        m_node.mempool.get(), options).CreateNewBlock(CScript() << OP_TRUE);
+    BOOST_REQUIRE(block_template);
+    BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
+    BOOST_CHECK(!block_template->block.m_checked_merkle_root);
+}
+
+BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_own_root, AvalancheTestChain100Setup) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    auto *tip = m_node.chainman->ActiveTip();
+    avalanche::AvalancheTest::setFinalizationTip(*m_node.avalanche, tip);
+    BOOST_REQUIRE(m_node.avalanche->isPreconsensusActivated(tip));
+    TestMemPoolEntryHelper helper;
+    std::vector<CTransactionRef> txs;
+    pool.SyncMerklixOverlayToTip(tip->GetBlockHash(), tip->nHeight + 1,
+                                tip->GetMedianTimePast());
+    for (uint32_t i = 0; i < 3; ++i) {
+        CMutableTransaction tx;
+        tx.vin.emplace_back(TxId{uint256{uint8_t(i + 1)}}, 0);
+        tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        while (::GetSerializeSize(tx) < MIN_TX_SIZE) tx.vout[0].scriptPubKey << OP_NOP;
+        txs.push_back(MakeTransactionRef(tx));
+        pool.addUnchecked(helper.Fee(1000 * SATOSHI).FromTx(txs.back()));
+    }
+    (void)pool.GetMerklixOverlay();
+    {
+        CTxMemPool::ScopedSnapshotDefer defer(pool);
+        pool.removeRecursive(*txs[0], MemPoolRemovalReason::MANUAL);
+        pool.addUnchecked(helper.Fee(1000 * SATOSHI).FromTx(txs[0]));
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        std::vector<TxId> finalized;
+        BOOST_REQUIRE(pool.setAvalancheFinalized(*pool.mapTx.find(txs[i]->GetId()),
+            m_node.chainman->GetConsensus(), *tip,
+            m_node.chainman->ActiveChainstate(), finalized));
+    }
+    node::BlockAssembler::Options options;
+    options.add_finalized_txs = true;
+    options.test_block_validity = false;
+    const auto block_template = node::BlockAssembler(
+        node::BlockFitter(config), m_node.chainman->ActiveChainstate(),
+        &pool, options, m_node.avalanche.get()).CreateNewBlock(CScript() << OP_TRUE);
+    BOOST_REQUIRE(block_template);
+    BOOST_CHECK_EQUAL(block_template->block.vtx.size(), 3U);
+    BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

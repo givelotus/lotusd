@@ -18,6 +18,7 @@
 #include <consensus/merkle.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
+#include <feerate.h>
 #include <minerfund.h>
 #include <policy/block/stakingrewards.h>
 #include <policy/policy.h>
@@ -31,8 +32,7 @@
 
 #include <algorithm>
 #include <queue>
-#include <unordered_map>
-#include <utility>
+#include <unordered_set>
 
 namespace node {
 int64_t UpdateTime(CBlockHeader *pblock, const CChainParams &chainParams,
@@ -131,17 +131,76 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
         m_avalanche && add_finalized_txs &&
         m_avalanche->isPreconsensusActivated(pindexPrev);
 
+    bool use_speculative_overlay = false;
+
     if (m_mempool) {
         LOCK(m_mempool->cs);
-        if (shouldAddFinalizedTxs) {
-            addFinalizedTxs(*m_mempool);
-        } else {
-            addTxs(*m_mempool);
+        m_mempool->SyncMerklixOverlayToTip(
+            pindexPrev->GetBlockHash(), uint64_t(nHeight),
+            uint64_t(pindexPrev->GetMedianTimePast()));
+        const auto &spec_overlay =
+            m_mempool->GetMerklixOverlay().GetSpeculativeOverlay();
+        if (!shouldAddFinalizedTxs &&
+            IsMagneticAnomalyEnabled(consensusParams, pindexPrev) &&
+            !fPrintPriority &&
+            m_mempool->mapDeltas.empty() && !spec_overlay.HasDoubleSpends() &&
+            spec_overlay.GetTxCount() > 0 &&
+            spec_overlay.GetTxCount() == m_mempool->size() &&
+            blockFitter.testTxFits(m_mempool->GetTotalTxSize(),
+                                   spec_overlay.GetTotalSigChecks())) {
+            bool all_overlay_txs_eligible = true;
+            // Bulk reuse must satisfy the same fee and cumulative resource
+            // limits as individual selection, without mutating its counters
+            // until every overlay transaction has qualified.
+            auto overlay_fitter = blockFitter;
+            for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
+                const auto tx = std::static_pointer_cast<const CTransaction>(
+                    oentry.tx_ref);
+                if (!tx) {
+                    all_overlay_txs_eligible = false;
+                    break;
+                }
+                const auto entry = m_mempool->mapTx.find(tx->GetId());
+                if (entry == m_mempool->mapTx.end() ||
+                    (*entry)->GetFee() != oentry.fee_sats * SATOSHI ||
+                    (*entry)->GetSigChecks() != oentry.sigchecks ||
+                    overlay_fitter.isBelowBlockMinFeeRate(
+                        (*entry)->GetModifiedFeeRate()) ||
+                    !overlay_fitter.testTxFits(tx->GetTotalSize(),
+                                              oentry.sigchecks) ||
+                    !CheckTx(*tx)) {
+                    all_overlay_txs_eligible = false;
+                    break;
+                }
+                overlay_fitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
+                                    oentry.fee_sats * SATOSHI);
+            }
+            if (all_overlay_txs_eligible) {
+                use_speculative_overlay = true;
+                pblocktemplate->entries.reserve(spec_overlay.GetTxCount() + 1);
+                for (const auto &[_, oentry] : spec_overlay.GetOrderedTxs()) {
+                    auto tx = std::static_pointer_cast<const CTransaction>(
+                        oentry.tx_ref);
+                    const Amount fee = oentry.fee_sats * SATOSHI;
+                    pblocktemplate->entries.emplace_back(tx, fee,
+                                                         oentry.sigchecks);
+                    blockFitter.addTx(tx->GetTotalSize(), oentry.sigchecks,
+                                      fee);
+                }
+            }
+        }
+        if (!use_speculative_overlay) {
+            if (shouldAddFinalizedTxs) {
+                addFinalizedTxs(*m_mempool);
+            } else {
+                addTxs(*m_mempool);
+            }
         }
     }
 
-    // Canonical ordering is naturally enforced when using the radix tree
-    if (!shouldAddFinalizedTxs &&
+    // Canonical ordering is naturally enforced when using the radix tree or
+    // the CTOR-sorted Merklix speculative overlay.
+    if (!shouldAddFinalizedTxs && !use_speculative_overlay &&
         IsMagneticAnomalyEnabled(consensusParams, pindexPrev)) {
         // If magnetic anomaly is enabled, we make sure transaction are
         // canonically ordered.
@@ -204,7 +263,10 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     pblocktemplate->entries[0].fees = -1 * blockFitter.nFees;
     pblock->vtx[0] = pblocktemplate->entries[0].tx;
 
-    uint64_t nSerializeSize = GetSerializeSize(*pblock);
+    uint64_t nSerializeSize =
+        80 + GetSizeOfCompactSize(pblock->vtx.size()) +
+        pblock->vtx[0]->GetTotalSize() +
+        (blockFitter.nBlockSize - BlockFitter::COINBASE_RESERVED_SIZE);
 
     LogPrintf(
         "CreateNewBlock(): total size: %u txs: %u fees: %ld sigChecks %d\n",
@@ -217,6 +279,9 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
                TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime()));
     pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, chainParams);
     pblock->nNonce = 0;
+    // The selected ordered transaction vector is the only source of this root.
+    // An overlay count cannot prove transaction identity or mutation freedom.
+    pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
     pblocktemplate->entries[0].sigChecks = 0;
 
     BlockValidationState state;
