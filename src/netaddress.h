@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <ios>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /**
@@ -57,6 +58,11 @@ enum Network {
     /// A set of addresses that represent the hash of a string or FQDN. We use
     /// them in AddrMan to keep track of which DNS seeds were used.
     NET_INTERNAL,
+
+    /// A DNS name reached with P2P over WebSocket+TLS
+    /// (wss://<name>:<port>/p2p/ws). Only gossiped in ADDRv2 (BIP155 network
+    /// id 0x10), which pre-existing ADDRv2 nodes skip as unknown.
+    NET_WSS,
 
     /// Dummy value to indicate the number of NET_* constants.
     NET_MAX,
@@ -104,6 +110,22 @@ static constexpr size_t ADDR_CJDNS_SIZE = 16;
 
 /// Size of "internal" (NET_INTERNAL) address (in bytes).
 static constexpr size_t ADDR_INTERNAL_SIZE = 10;
+
+/**
+ * NET_WSS address payload: a version byte, then a version-specific body.
+ * Version 1: a DNS name, optionally followed by a "/path" (absent: /p2p/ws).
+ * Other versions are kept and relayed but never dialed, so later formats can
+ * spread through nodes that do not understand them.
+ */
+static constexpr uint8_t WSS_ADDR_V1 = 0x01;
+/// WebSocket path of a NET_WSS address that carries none
+static constexpr std::string_view P2P_WSS_DEFAULT_PATH{"/p2p/ws"};
+/// Maximum size of a NET_WSS address payload (MAX_ADDRV2_SIZE)
+static constexpr size_t ADDR_WSS_MAX_SIZE = 512;
+/// Longest DNS name in a NET_WSS address
+static constexpr size_t WSS_MAX_HOST_SIZE = 253;
+/// Longest path in a version 1 NET_WSS address
+static constexpr size_t WSS_MAX_PATH_SIZE = 255;
 
 /// SAM 3.1 and earlier do not support specifying ports and force the port to 0.
 static constexpr uint16_t I2P_SAM31_PORT{0};
@@ -196,6 +218,36 @@ public:
     bool IsTor() const;
     bool IsI2P() const;
     bool IsCJDNS() const;
+    /** Whether this is a NET_WSS (DNS name reached via wss://) address */
+    bool IsWSS() const { return m_net == NET_WSS; }
+
+    /**
+     * Set this object to the version 1 NET_WSS address of a DNS name
+     * (lowercased) and WebSocket path ("" or "/p2p/ws": the default).
+     * @returns Whether `domain` is a valid DNS name of at most
+     * WSS_MAX_HOST_SIZE characters (letters, digits, '-' and '.', labels of
+     * 1-63 characters not starting or ending with '-'), and `path` a valid
+     * path (see IsValidWSSPath).
+     */
+    bool SetWSSDomain(std::string_view domain, std::string_view path = "");
+
+    /** NET_WSS: the payload version (0 if not NET_WSS) */
+    uint8_t GetWSSVersion() const {
+        return IsWSS() && !m_addr.empty() ? m_addr[0] : 0;
+    }
+    /** NET_WSS: whether this node can dial it (a version it understands) */
+    bool IsDialableWSS() const { return GetWSSVersion() == WSS_ADDR_V1; }
+    /** Dialable NET_WSS: the DNS name */
+    std::string GetWSSHost() const;
+    /** Dialable NET_WSS: the WebSocket path (default /p2p/ws) */
+    std::string GetWSSPath() const;
+
+    /**
+     * Whether `path` can be carried in a NET_WSS address: "/" followed by
+     * 1-254 of A-Z a-z 0-9 - . _ ~ / (no query, fragment or escapes), not
+     * ending in "/".
+     */
+    static bool IsValidWSSPath(std::string_view path);
     [[nodiscard]] bool HasCJDNSPrefix() const { return m_addr[0] == 0xfc; }
     bool IsLocal() const;
     bool IsRoutable() const;
@@ -309,6 +361,9 @@ private:
         TORV3 = 4,
         I2P = 5,
         CJDNS = 6,
+        //! Not part of BIP155: a versioned wss:// endpoint (see WSS_ADDR_V1).
+        //! Nodes that don't know it ignore it, as BIP155 requires.
+        WSS_DOMAIN = 0x10,
     };
 
     /**
@@ -342,6 +397,11 @@ private:
      */
     bool SetNetFromBIP155Network(uint8_t possible_bip155_net,
                                  size_t address_size);
+
+    /** Whether `name` is a valid NET_WSS DNS name (already lowercase) */
+    static bool IsValidWSSDomain(Span<const uint8_t> name);
+    /** Whether `payload` is a well-formed NET_WSS payload of any version */
+    static bool IsValidWSSPayload(Span<const uint8_t> payload);
 
     /**
      * Serialize in pre-ADDRv2/BIP155 format to an array.
@@ -379,12 +439,14 @@ private:
                 break;
             case NET_CJDNS:
                 break;
+            case NET_WSS:
+                break;
             case NET_UNROUTABLE:
             case NET_MAX:
                 assert(false);
         } // no default case, so the compiler can warn about missing cases
 
-        // Serialize TORv3, I2P and CJDNS as all-zeros.
+        // Serialize TORv3, I2P, CJDNS and WSS as all-zeros.
         memset(arr, 0x0, V1_SERIALIZATION_SIZE);
     }
 
@@ -456,6 +518,13 @@ private:
         if (SetNetFromBIP155Network(bip155_net, address_size)) {
             m_addr.resize(address_size);
             s >> Span{m_addr};
+
+            if (m_net == NET_WSS && !IsValidWSSPayload(m_addr)) {
+                // Malformed payload: ignore it like an unknown network.
+                m_net = NET_IPV6;
+                m_addr.assign(ADDR_IPV6_SIZE, 0x0);
+                return;
+            }
 
             if (m_net != NET_IPV6) {
                 return;

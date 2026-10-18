@@ -116,6 +116,9 @@ enum Network ParseNetwork(const std::string &net_in) {
     if (net == "i2p") {
         return NET_I2P;
     }
+    if (net == "wss") {
+        return NET_WSS;
+    }
     return NET_UNROUTABLE;
 }
 
@@ -135,6 +138,8 @@ std::string GetNetworkName(enum Network net) {
             return "cjdns";
         case NET_INTERNAL:
             return "internal";
+        case NET_WSS:
+            return "wss";
         case NET_MAX:
             assert(false);
     } // no default case, so the compiler can warn about missing cases
@@ -147,7 +152,7 @@ std::vector<std::string> GetNetworkNames(bool append_unroutable) {
     for (int n = 0; n < NET_MAX; ++n) {
         const enum Network network { static_cast<Network>(n) };
         if (network == NET_UNROUTABLE || network == NET_CJDNS ||
-            network == NET_INTERNAL) {
+            network == NET_INTERNAL || network == NET_WSS) {
             continue;
         }
         names.emplace_back(GetNetworkName(network));

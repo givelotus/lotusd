@@ -429,6 +429,20 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
     AssertLockNotHeld(m_unused_i2p_sessions_mutex);
     assert(conn_type != ConnectionType::INBOUND);
 
+    // P2P over WebSocket: ws:// and wss:// URLs, and NET_WSS addresses.
+    if (pszDest != nullptr && IsWebSocketURL(pszDest)) {
+        return ConnectWebSocketNode(pszDest, nullptr, fCountFailure,
+                                    conn_type);
+    }
+    if (pszDest == nullptr && addrConnect.IsWSS()) {
+        if (!addrConnect.IsDialableWSS() || IsLocal(addrConnect) ||
+            FindNode(static_cast<CService>(addrConnect))) {
+            return nullptr;
+        }
+        return ConnectWebSocketNode(WebSocketURLForAddress(addrConnect),
+                                    &addrConnect, fCountFailure, conn_type);
+    }
+
     if (pszDest == nullptr) {
         if (IsLocal(addrConnect)) {
             return nullptr;
@@ -1093,6 +1107,82 @@ std::string P2PWebSocketCompressionName(P2PWebSocketCompression c) {
 WebSocketTransportTotals &GetWebSocketTransportTotals() {
     static WebSocketTransportTotals totals;
     return totals;
+}
+
+static GlobalMutex g_websocket_dialer_mutex;
+static WebSocketDialer g_websocket_dialer GUARDED_BY(g_websocket_dialer_mutex);
+
+void SetWebSocketDialer(WebSocketDialer dialer) {
+    LOCK(g_websocket_dialer_mutex);
+    g_websocket_dialer = std::move(dialer);
+}
+
+WebSocketDialer GetWebSocketDialer() {
+    LOCK(g_websocket_dialer_mutex);
+    return g_websocket_dialer;
+}
+
+bool IsWebSocketURL(std::string_view str) {
+    return str.substr(0, 5) == "ws://" || str.substr(0, 6) == "wss://";
+}
+
+std::string WebSocketURLForAddress(const CService &addr) {
+    return strprintf("wss://%s%s", addr.ToStringAddrPort(), addr.GetWSSPath());
+}
+
+CNode *CConnman::ConnectWebSocketNode(const std::string &url,
+                                      const CAddress *wss_addr,
+                                      bool fCountFailure,
+                                      ConnectionType conn_type) {
+    const WebSocketDialer dialer{GetWebSocketDialer()};
+    if (!dialer) {
+        LogPrintf("Cannot connect to %s: P2P over WebSocket is unavailable\n",
+                  url);
+        return nullptr;
+    }
+    LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
+                  "trying WebSocket connection %s\n", url);
+    std::optional<WebSocketDialResult> dialed{dialer(url)};
+    if (wss_addr) {
+        addrman.Attempt(*wss_addr, fCountFailure);
+    }
+    if (!dialed) {
+        return nullptr;
+    }
+
+    // The peer is known by its NET_WSS address if it came from addrman, or
+    // by the IP it resolved to for a -addnode/-connect URL.
+    const CAddress addrConnect{wss_addr ? *wss_addr
+                                        : CAddress{dialed->remote, NODE_NONE}};
+    NetPermissionFlags permission_flags = NetPermissionFlags::None;
+    std::vector<NetWhitelistPermissions> whitelist_permissions =
+        conn_type == ConnectionType::MANUAL
+            ? vWhitelistedRangeOutgoing
+            : std::vector<NetWhitelistPermissions>{};
+    AddWhitelistPermissionFlags(permission_flags, dialed->remote,
+                                whitelist_permissions);
+
+    NodeId id = GetNewNodeId();
+    uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE)
+                         .Write(id)
+                         .Finalize();
+    uint64_t extra_entropy =
+        GetDeterministicRandomizer(RANDOMIZER_ID_EXTRAENTROPY)
+            .Write(id)
+            .Finalize();
+    CNode *pnode = new CNode(
+        id, std::move(dialed->sock), addrConnect,
+        CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy,
+        CAddress{dialed->local, NODE_NONE}, wss_addr ? "" : url, conn_type,
+        /* inbound_onion */ false,
+        CNodeOptions{
+            .permission_flags = permission_flags,
+            .recv_flood_size = nReceiveFloodSize,
+            .websocket_info = std::move(dialed->info),
+        });
+    pnode->AddRef();
+    RandAddEvent(uint32_t(id));
+    return pnode;
 }
 
 void CConnman::AcceptWebSocketPeer(
@@ -2085,6 +2175,11 @@ void CConnman::ThreadOpenConnections(
             }
 
             if (!IsReachable(addr)) {
+                continue;
+            }
+
+            // NET_WSS addresses of later versions are relayed, not dialed.
+            if (addr.IsWSS() && !addr.IsDialableWSS()) {
                 continue;
             }
 

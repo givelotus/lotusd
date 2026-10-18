@@ -1228,6 +1228,14 @@ private:
     CNode *ConnectNode(CAddress addrConnect, const char *pszDest,
                        bool fCountFailure, ConnectionType conn_type)
         EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+    /**
+     * Open an outbound P2P connection over WebSocket to `url` (ws:// or
+     * wss://), via the dialer set with SetWebSocketDialer(). `wss_addr` is
+     * the NET_WSS address the URL was made from, if any.
+     */
+    CNode *ConnectWebSocketNode(const std::string &url,
+                                const CAddress *wss_addr, bool fCountFailure,
+                                ConnectionType conn_type);
     ;
     void AddWhitelistPermissionFlags(
         NetPermissionFlags &flags, const CNetAddr &addr,

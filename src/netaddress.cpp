@@ -44,6 +44,8 @@ CNetAddr::BIP155Network CNetAddr::GetBIP155Network() const {
             return BIP155Network::I2P;
         case NET_CJDNS:
             return BIP155Network::CJDNS;
+        case NET_WSS:
+            return BIP155Network::WSS_DOMAIN;
         case NET_INTERNAL:
             // should have been handled before calling this function
         case NET_UNROUTABLE:
@@ -107,6 +109,13 @@ bool CNetAddr::SetNetFromBIP155Network(uint8_t possible_bip155_net,
             throw std::ios_base::failure(
                 strprintf("BIP155 CJDNS address with length %u (should be %u)",
                           address_size, ADDR_CJDNS_SIZE));
+        case BIP155Network::WSS_DOMAIN:
+            // Not a BIP155 founding network: never throw, ignore bad sizes.
+            if (address_size >= 1 && address_size <= ADDR_WSS_MAX_SIZE) {
+                m_net = NET_WSS;
+                return true;
+            }
+            return false;
     }
 
     // Don't throw on addresses with unknown network ids (maybe from the
@@ -140,6 +149,10 @@ void CNetAddr::SetIP(const CNetAddr &ipIn) {
             break;
         case NET_CJDNS:
             assert(ipIn.m_addr.size() == ADDR_CJDNS_SIZE);
+            break;
+        case NET_WSS:
+            assert(ipIn.m_addr.size() >= 1 &&
+                   ipIn.m_addr.size() <= ADDR_WSS_MAX_SIZE);
             break;
         case NET_INTERNAL:
             assert(ipIn.m_addr.size() == ADDR_INTERNAL_SIZE);
@@ -485,6 +498,10 @@ bool CNetAddr::IsValid() const {
         return false;
     }
 
+    if (IsWSS()) {
+        return IsValidWSSPayload(m_addr);
+    }
+
     // documentation IPv6 address
     if (IsRFC3849()) {
         return false;
@@ -539,6 +556,7 @@ bool CNetAddr::IsAddrV1Compatible() const {
             return m_addr.size() == ADDR_TORV2_SIZE;
         case NET_I2P:
         case NET_CJDNS:
+        case NET_WSS:
             return false;
         case NET_UNROUTABLE:
             // m_net is never and should not be set to NET_UNROUTABLE
@@ -548,6 +566,114 @@ bool CNetAddr::IsAddrV1Compatible() const {
     } // no default case, so the compiler can warn about missing cases
 
     assert(false);
+}
+
+bool CNetAddr::IsValidWSSDomain(Span<const uint8_t> name) {
+    if (name.empty() || name.size() > WSS_MAX_HOST_SIZE) {
+        return false;
+    }
+    size_t label_len{0};
+    for (size_t i = 0; i < name.size(); ++i) {
+        const uint8_t c{name[i]};
+        if (c == '.') {
+            if (label_len == 0 || name[i - 1] == '-') {
+                return false;
+            }
+            label_len = 0;
+            continue;
+        }
+        const bool alnum{(c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')};
+        if (!alnum && !(c == '-' && label_len > 0)) {
+            return false;
+        }
+        if (++label_len > 63) {
+            return false;
+        }
+    }
+    return label_len > 0 && name.back() != '-';
+}
+
+bool CNetAddr::IsValidWSSPath(std::string_view path) {
+    if (path.size() < 2 || path.size() > WSS_MAX_PATH_SIZE || path[0] != '/' ||
+        path.back() == '/') {
+        return false;
+    }
+    return std::all_of(path.begin(), path.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+               c == '~' || c == '/';
+    });
+}
+
+bool CNetAddr::IsValidWSSPayload(Span<const uint8_t> payload) {
+    if (payload.empty() || payload.size() > ADDR_WSS_MAX_SIZE) {
+        return false;
+    }
+    switch (payload[0]) {
+        case 0:
+            // Reserved.
+            return false;
+        case WSS_ADDR_V1: {
+            const auto body{payload.subspan(1)};
+            const auto slash{std::find(body.begin(), body.end(), '/')};
+            const Span<const uint8_t> host{body.data(),
+                                           size_t(slash - body.begin())};
+            if (!IsValidWSSDomain(host)) {
+                return false;
+            }
+            const std::string_view path{
+                reinterpret_cast<const char *>(body.data()) + host.size(),
+                body.size() - host.size()};
+            // Canonical: the default path is never written out.
+            return path.empty() ||
+                   (IsValidWSSPath(path) && path != P2P_WSS_DEFAULT_PATH);
+        }
+        default:
+            // A later version: opaque here.
+            return true;
+    }
+}
+
+bool CNetAddr::SetWSSDomain(std::string_view domain, std::string_view path) {
+    std::vector<uint8_t> name(domain.begin(), domain.end());
+    for (uint8_t &c : name) {
+        if (c >= 'A' && c <= 'Z') {
+            c = c - 'A' + 'a';
+        }
+    }
+    if (!IsValidWSSDomain(name)) {
+        return false;
+    }
+    if (path == P2P_WSS_DEFAULT_PATH) {
+        path = {};
+    }
+    if (!path.empty() && !IsValidWSSPath(path)) {
+        return false;
+    }
+    m_net = NET_WSS;
+    m_addr.clear();
+    m_addr.push_back(WSS_ADDR_V1);
+    m_addr.insert(m_addr.end(), name.begin(), name.end());
+    m_addr.insert(m_addr.end(), path.begin(), path.end());
+    m_scope_id = 0;
+    return true;
+}
+
+std::string CNetAddr::GetWSSHost() const {
+    if (!IsDialableWSS()) {
+        return {};
+    }
+    const auto slash{std::find(m_addr.begin() + 1, m_addr.end(), '/')};
+    return std::string(m_addr.begin() + 1, slash);
+}
+
+std::string CNetAddr::GetWSSPath() const {
+    if (!IsDialableWSS()) {
+        return {};
+    }
+    const auto slash{std::find(m_addr.begin() + 1, m_addr.end(), '/')};
+    return slash == m_addr.end() ? std::string{P2P_WSS_DEFAULT_PATH}
+                                 : std::string(slash, m_addr.end());
 }
 
 enum Network CNetAddr::GetNetwork() const {
@@ -660,6 +786,13 @@ std::string CNetAddr::ToStringAddr() const {
                    ".b32.i2p";
         case NET_CJDNS:
             return IPv6ToString(m_addr, 0);
+        case NET_WSS:
+            if (IsDialableWSS()) {
+                return GetWSSHost();
+            }
+            // A version we cannot read: a stable, name-like label.
+            return strprintf("wss-v%u-%s.invalid", GetWSSVersion(),
+                             HexStr(Hash(m_addr)).substr(0, 16));
         case NET_INTERNAL:
             return EncodeBase32(m_addr) + ".internal";
         case NET_UNROUTABLE:
@@ -834,6 +967,16 @@ std::vector<uint8_t> CNetAddr::GetGroup(const std::vector<bool> &asmap) const {
         uint32_t ipv4 = GetLinkedIPv4();
         vchRet.push_back((ipv4 >> 24) & 0xFF);
         vchRet.push_back((ipv4 >> 16) & 0xFF);
+        return vchRet;
+    } else if (IsWSS()) {
+        // Each DNS name is its own group (whatever the path). All addresses
+        // of a version we cannot read share one group, so they cannot crowd
+        // out usable ones in addrman.
+        vchRet.push_back(GetWSSVersion());
+        if (IsDialableWSS()) {
+            const std::string host{GetWSSHost()};
+            vchRet.insert(vchRet.end(), host.begin(), host.end());
+        }
         return vchRet;
     } else if (IsTor() || IsI2P() || IsCJDNS()) {
         nBits = 4;
@@ -1100,7 +1243,7 @@ std::vector<uint8_t> CService::GetKey() const {
 std::string CService::ToStringAddrPort() const {
     const auto port_str = strprintf("%u", port);
 
-    if (IsIPv4() || IsTor() || IsI2P() || IsInternal()) {
+    if (IsIPv4() || IsTor() || IsI2P() || IsInternal() || IsWSS()) {
         return ToStringAddr() + ":" + port_str;
     } else {
         return "[" + ToStringAddr() + "]:" + port_str;
@@ -1204,6 +1347,7 @@ CSubNet::CSubNet(const CNetAddr &addr) : CSubNet() {
         case NET_ONION:
         case NET_I2P:
         case NET_CJDNS:
+        case NET_WSS:
             valid = true;
             break;
         case NET_INTERNAL:
@@ -1231,6 +1375,7 @@ bool CSubNet::Match(const CNetAddr &addr) const {
         case NET_ONION:
         case NET_I2P:
         case NET_CJDNS:
+        case NET_WSS:
         case NET_INTERNAL:
             return addr == network;
         case NET_UNROUTABLE:
@@ -1270,6 +1415,7 @@ std::string CSubNet::ToString() const {
         case NET_ONION:
         case NET_I2P:
         case NET_CJDNS:
+        case NET_WSS:
         case NET_INTERNAL:
         case NET_UNROUTABLE:
         case NET_MAX:
@@ -1291,6 +1437,7 @@ bool CSubNet::SanityCheck() const {
         case NET_ONION:
         case NET_I2P:
         case NET_CJDNS:
+        case NET_WSS:
             return true;
         case NET_INTERNAL:
         case NET_UNROUTABLE:
