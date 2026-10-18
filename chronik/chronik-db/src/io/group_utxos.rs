@@ -7,18 +7,17 @@
 use std::{marker::PhantomData, time::Instant};
 
 use abc_rust_error::Result;
+use crate::db::{compaction_filter::Decision, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     data::DbOutpoint,
-    db::{Db, MergeOperands, WriteBatch, CF},
+    db::{Db, CF},
     group::{Group, GroupQuery, UtxoData},
     index_tx::IndexTx,
     io::{group_utxos::GroupUtxoError::*, merge::catch_merge_errors},
-    ser::{
-        db_deserialize, db_deserialize_vec, db_serialize_vec, SerError,
-    },
+    ser::{db_deserialize, db_deserialize_vec, db_serialize_vec},
 };
 
 const INSERT: u8 = b'I';
@@ -106,21 +105,23 @@ pub enum GroupUtxoError {
 fn partial_merge_utxos(
     _key: &[u8],
     _existing_value: Option<&[u8]>,
-    _operands: &MergeOperands,
+    _operands: &crate::db::MergeOperands,
 ) -> Option<Vec<u8>> {
+    // We don't use partial merge
     None
 }
 
 fn init_merge_utxos<D: for<'a> Deserialize<'a>>(
     _key: &[u8],
     existing_value: Option<&[u8]>,
-    operands: &MergeOperands,
+    operands: &crate::db::MergeOperands,
 ) -> Result<Vec<UtxoEntry<D>>> {
     let mut entries = match existing_value {
         Some(entries_ser) => db_deserialize_vec::<UtxoEntry<D>>(entries_ser)?,
         None => vec![],
     };
     if operands.into_iter().all(|operand| operand[0] == INSERT) {
+        // If we only have inserts, we can pre-allocate the exact memory we need
         entries.reserve_exact(operands.len());
     }
     Ok(entries)
@@ -166,28 +167,35 @@ fn ser_merge_utxos<D: Serialize>(
     db_serialize_vec::<UtxoEntry<D>>(entries)
 }
 
-#[inline]
-pub(crate) fn encode_outpoint_prefix(outpoint: &DbOutpoint) -> [u8; 12] {
-    let mut prefix = [0u8; 12];
-    prefix[..8].copy_from_slice(&outpoint.tx_num.to_be_bytes());
-    prefix[8..12].copy_from_slice(&outpoint.out_idx.to_be_bytes());
-    prefix
+// We must use a compaction filter that removes empty entries
+fn compaction_filter_utxos(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
+    if value.is_empty() {
+        Decision::Remove
+    } else {
+        Decision::Keep
+    }
 }
 
-#[inline]
-pub(crate) fn encode_utxo_dup<D: UtxoData>(entry: &UtxoEntry<D>) -> Vec<u8> {
-    let cap = D::FIXED_DUP_SIZE.unwrap_or(48);
-    let mut buf = Vec::with_capacity(cap);
-    buf.extend_from_slice(&entry.outpoint.tx_num.to_be_bytes());
-    buf.extend_from_slice(&entry.outpoint.out_idx.to_be_bytes());
+const OUTPOINT_PREFIX_LEN: usize = 12;
+
+fn encode_outpoint_prefix(outpoint: &DbOutpoint) -> [u8; OUTPOINT_PREFIX_LEN] {
+    let mut buf = [0u8; OUTPOINT_PREFIX_LEN];
+    buf[..8].copy_from_slice(&outpoint.tx_num.to_be_bytes());
+    buf[8..12].copy_from_slice(&outpoint.out_idx.to_be_bytes());
+    buf
+}
+
+fn encode_utxo_dup<D: UtxoData>(entry: &UtxoEntry<D>) -> Vec<u8> {
+    let mut buf =
+        Vec::with_capacity(D::FIXED_DUP_SIZE.unwrap_or(OUTPOINT_PREFIX_LEN + 16));
+    buf.extend_from_slice(&encode_outpoint_prefix(&entry.outpoint));
     entry.data.ser_dup_data(&mut buf);
     buf
 }
 
-#[inline]
 fn decode_utxo_dup<D: UtxoData>(bytes: &[u8]) -> Result<UtxoEntry<D>> {
-    if bytes.len() < 12 {
-        return Err(SerError::DeserializeError {
+    if bytes.len() < OUTPOINT_PREFIX_LEN {
+        return Err(crate::ser::SerError::DeserializeError {
             type_name: std::any::type_name::<UtxoEntry<D>>(),
             error: postcard::Error::DeserializeUnexpectedEnd,
             bytes: bytes.to_vec(),
@@ -196,13 +204,14 @@ fn decode_utxo_dup<D: UtxoData>(bytes: &[u8]) -> Result<UtxoEntry<D>> {
     }
     let tx_num = u64::from_be_bytes(bytes[..8].try_into().unwrap());
     let out_idx = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
-    let data = D::deser_dup_data(&bytes[12..]).ok_or_else(|| {
-        SerError::DeserializeError {
-            type_name: std::any::type_name::<D>(),
-            error: postcard::Error::DeserializeUnexpectedEnd,
-            bytes: bytes.to_vec(),
-        }
-    })?;
+    let data =
+        D::deser_dup_data(&bytes[OUTPOINT_PREFIX_LEN..]).ok_or_else(|| {
+            crate::ser::SerError::DeserializeError {
+                type_name: std::any::type_name::<D>(),
+                error: postcard::Error::DeserializeUnexpectedEnd,
+                bytes: bytes.to_vec(),
+            }
+        })?;
     Ok(UtxoEntry {
         outpoint: DbOutpoint { tx_num, out_idx },
         data,
@@ -257,9 +266,14 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
                 tx: index_tx.tx,
             };
             for item in self.group.input_members(query, aux) {
-                let delete_outpoint =
-                    Self::input_utxo(index_tx, item.idx).outpoint;
-                self.delete_utxo_entry(batch, &item.member, &delete_outpoint)?;
+                let delete_entry = Self::input_utxo(index_tx, item.idx);
+                let has_coin = index_tx.tx.inputs[item.idx].coin.is_some();
+                self.delete_utxo_entry(
+                    batch,
+                    &item.member,
+                    &delete_entry,
+                    has_coin,
+                )?;
             }
         }
         stats.t_total += t_start.elapsed().as_secs_f64();
@@ -299,9 +313,13 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
                 tx: index_tx.tx,
             };
             for item in self.group.output_members(query, aux) {
-                let delete_outpoint =
-                    Self::output_utxo(index_tx, item.idx).outpoint;
-                self.delete_utxo_entry(batch, &item.member, &delete_outpoint)?;
+                let delete_entry = Self::output_utxo(index_tx, item.idx);
+                self.delete_utxo_entry(
+                    batch,
+                    &item.member,
+                    &delete_entry,
+                    true,
+                )?;
             }
         }
         stats.t_total += t_start.elapsed().as_secs_f64();
@@ -316,6 +334,7 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
     pub(crate) fn add_cfs(columns: &mut Vec<crate::db::ColumnFamilyDescriptor>) {
         let cf_name = G::utxo_conf().cf_name;
         let mut options = crate::db::Options::default();
+        options.set_dupsort(G::UtxoData::FIXED_DUP_SIZE);
         let merge_op_name = format!("{}::merge_op_utxos", cf_name);
         options.set_merge_operator(
             merge_op_name.as_str(),
@@ -326,7 +345,12 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
             ),
             partial_merge_utxos,
         );
-        options.set_dupsort(G::UtxoData::FIXED_DUP_SIZE.is_some());
+        let compaction_filter_name =
+            format!("{}::compaction_filter_utxos", cf_name);
+        options.set_compaction_filter(
+            &compaction_filter_name,
+            compaction_filter_utxos,
+        );
         columns.push(crate::db::ColumnFamilyDescriptor::new(cf_name, options));
     }
 
@@ -366,19 +390,11 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
         member: &G::Member<'_>,
         new_entry: UtxoEntry<G::UtxoData>,
     ) -> Result<()> {
-        if G::UtxoData::FIXED_DUP_SIZE == Some(12) {
-            batch.put_dup12_cf(
-                self.col.cf,
-                self.group.ser_member(member),
-                encode_outpoint_prefix(&new_entry.outpoint),
-            );
-        } else {
-            batch.put_dup_cf(
-                self.col.cf,
-                self.group.ser_member(member),
-                encode_utxo_dup(&new_entry),
-            );
-        }
+        batch.put_dup_cf(
+            self.col.cf,
+            self.group.ser_member(member),
+            encode_utxo_dup(&new_entry),
+        );
         Ok(())
     }
 
@@ -386,14 +402,22 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
         &self,
         batch: &mut WriteBatch,
         member: &G::Member<'_>,
-        delete_outpoint: &DbOutpoint,
+        delete_entry: &UtxoEntry<G::UtxoData>,
+        has_coin: bool,
     ) -> Result<()> {
-        batch.delete_dup_prefix_cf(
-            self.col.cf,
-            self.group.ser_member(member),
-            encode_outpoint_prefix(delete_outpoint),
-            G::UtxoData::FIXED_DUP_SIZE,
-        );
+        if has_coin && G::UtxoData::FIXED_DUP_SIZE.is_some() {
+            batch.delete_dup_prefix_cf(
+                self.col.cf,
+                self.group.ser_member(member),
+                encode_utxo_dup(delete_entry),
+            );
+        } else {
+            batch.delete_dup_prefix_cf(
+                self.col.cf,
+                self.group.ser_member(member),
+                encode_outpoint_prefix(&delete_entry.outpoint),
+            );
+        }
         Ok(())
     }
 }
@@ -416,12 +440,17 @@ impl<'a, G: Group> GroupUtxoReader<'a, G> {
         &self,
         member: &[u8],
     ) -> Result<Option<Vec<UtxoEntry<G::UtxoData>>>> {
-        self.col.db.get_dups_visit(
-            self.col.cf,
-            member,
-            G::UtxoData::FIXED_DUP_SIZE,
-            decode_utxo_dup::<G::UtxoData>,
-        )
+        let mut entries = Vec::new();
+        self.col
+            .db
+            .get_dups_visit(self.col.cf, member, |raw| {
+                entries.push(decode_utxo_dup::<G::UtxoData>(raw)?);
+                Ok(())
+            })?;
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(entries))
     }
 
     /// Iterate over all group members with a given prefix, starting from some
@@ -431,13 +460,26 @@ impl<'a, G: Group> GroupUtxoReader<'a, G> {
         member_prefix: &'a [u8],
         member_start: &'a [u8],
     ) -> impl Iterator<Item = GroupUtxoIterItem<G>> + 'a {
-        self.col.db.dup_prefix_iterator(
-            self.col.cf,
-            member_prefix,
-            member_start,
-            G::UtxoData::FIXED_DUP_SIZE,
-            decode_utxo_dup::<G::UtxoData>,
-        )
+        self.col
+            .db
+            .dup_prefix_iterator(self.col.cf, member_prefix, member_start)
+            .filter_map(|entry| {
+                let (key, raw_dups) = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => return Some(Err(err)),
+                };
+                if raw_dups.is_empty() {
+                    return None;
+                }
+                let mut utxos = Vec::with_capacity(raw_dups.len());
+                for raw in raw_dups {
+                    match decode_utxo_dup::<G::UtxoData>(&raw) {
+                        Ok(utxo) => utxos.push(utxo),
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+                Some(Ok((key, utxos)))
+            })
     }
 }
 
@@ -465,6 +507,62 @@ mod tests {
         },
         test::{make_inputs_tx, ser_value, ValueGroup},
     };
+
+    use super::{decode_utxo_dup, encode_utxo_dup};
+    use crate::group::{UtxoDataOutput, UtxoDataValue};
+
+    #[test]
+    fn test_utxo_dup_layout() -> Result<()> {
+        // tx_num BE8 || out_idx BE4 || sats LE8 [|| raw script], as eCash
+        // writes it; the native Chronik reads and writes the same bytes.
+        let entry = UtxoEntry::<UtxoDataOutput> {
+            outpoint: DbOutpoint {
+                tx_num: 77,
+                out_idx: 2,
+            },
+            data: (546, vec![0x76, 0xa9].into()),
+        };
+        let ser = encode_utxo_dup(&entry);
+        assert_eq!(
+            hex::encode(&ser),
+            "000000000000004d00000002220200000000000076a9",
+        );
+        assert_eq!(decode_utxo_dup::<UtxoDataOutput>(&ser)?, entry);
+        let empty = UtxoEntry::<UtxoDataOutput> {
+            data: (0, vec![].into()),
+            ..entry.clone()
+        };
+        let ser = encode_utxo_dup(&empty);
+        assert_eq!(ser.len(), 20);
+        assert_eq!(decode_utxo_dup::<UtxoDataOutput>(&ser)?, empty);
+        let value = UtxoEntry::<UtxoDataValue> {
+            outpoint: entry.outpoint,
+            data: 546,
+        };
+        assert_eq!(
+            hex::encode(encode_utxo_dup(&value)),
+            "000000000000004d000000022202000000000000",
+        );
+
+        // Short payloads are reported over the whole entry.
+        assert_eq!(
+            decode_utxo_dup::<UtxoDataOutput>(&[0; 19])
+                .unwrap_err()
+                .to_string(),
+            "Inconsistent DB: Cannot deserialize byte sequence as (i64, \
+             bytes::bytes::Bytes): Hit the end of buffer, expected more \
+             data. Byte sequence: 00000000000000000000000000000000000000",
+        );
+        assert_eq!(
+            decode_utxo_dup::<UtxoDataValue>(&[0; 13])
+                .unwrap_err()
+                .to_string(),
+            "Inconsistent DB: Cannot deserialize byte sequence as i64: Hit \
+             the end of buffer, expected more data. Byte sequence: \
+             00000000000000000000000000",
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_value_group_utxos() -> Result<()> {
@@ -589,6 +687,29 @@ mod tests {
         disconnect_block(&block0)?;
         assert_eq!(read_utxos(100)?, None);
         assert_eq!(read_utxos(200)?, None);
+
+        // Multi-page MDBX_DUPFIXED test (1200 x 20B = 24,000B > 16 KiB page size):
+        // verifies MDBX_SEEK_AND_GET_MULTIPLE + MDBX_NEXT_MULTIPLE in utxos(),
+        // MDBX_GET_MULTIPLE + MDBX_NEXT_MULTIPLE in prefix_iterator(), and
+        // direct exact-match mdbx_del(txn, dbi, &k, &v) on disconnect.
+        let big_block = vec![make_inputs_tx(
+            0x99,
+            [(0x00, u32::MAX, 0xffff)],
+            [500i64; 1200],
+        )];
+        connect_block(&big_block)?;
+        let expected_big: Vec<_> =
+            (0..1200u32).map(|idx| utxo(0, idx, 500)).collect();
+        assert_eq!(read_utxos(500)?, Some(expected_big.clone()));
+        let prefix_items: Vec<_> = group_reader
+            .prefix_iterator(&[], &[])
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(
+            prefix_items,
+            vec![(Box::from(ser_value(500)), expected_big)]
+        );
+        disconnect_block(&big_block)?;
+        assert_eq!(read_utxos(500)?, None);
 
         Ok(())
     }

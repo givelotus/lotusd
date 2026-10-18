@@ -5,6 +5,11 @@
 //! Stores and retrieves data for Chronik in a database.
 
 abc_rust_lint::lint! {
+    #[allow(unsafe_code)]
+    pub mod mdbx;
+    pub mod v2_branch;
+    pub mod v2_explorer;
+    pub mod v2_asset;
     pub mod data;
     pub mod db;
     pub mod group;
