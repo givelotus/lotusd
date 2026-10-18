@@ -336,12 +336,15 @@ private:
 
     /**
      * Helper function to calculate all in-mempool ancestors of staged_ancestors
-     * param@[in]   staged_ancestors    Should contain entries in the mempool.
-     * param@[out]  setAncestors        Will be populated with all mempool
+     * @param[in]   staged_ancestors    Should contain entries in the mempool.
+     * @param[out]  setAncestors        Will be populated with all mempool
      *                                  ancestors.
+     * @param[in]   fSearchFinalized    Whether to traverse into already
+     *                                  avalanche-finalized ancestors.
      */
-    bool CalculateAncestors(setEntries &setAncestors,
-                            CTxMemPoolEntry::Parents &staged_ancestors) const
+    void CalculateAncestors(setEntries &setAncestors,
+                            CTxMemPoolEntry::Parents &staged_ancestors,
+                            bool fSearchFinalized = true) const
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
 public:
@@ -430,15 +433,18 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /**
-     * Try to calculate all in-mempool ancestors of entry.
+     * Calculate all in-mempool ancestors of entry.
      *  (these are all calculated including the tx itself)
      * fSearchForParents = whether to search a tx's vin for in-mempool parents,
      * or look up parents from m_parents. Must be true for entries not in the
      * mempool
+     * fSearchFinalized = whether to traverse into already avalanche-finalized
+     * ancestors.
      */
-    bool CalculateMemPoolAncestors(const CTxMemPoolEntryRef &entry,
+    void CalculateMemPoolAncestors(const CTxMemPoolEntryRef &entry,
                                    setEntries &setAncestors,
-                                   bool fSearchForParents = true) const
+                                   bool fSearchForParents = true,
+                                   bool fSearchFinalized = true) const
         EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /**
