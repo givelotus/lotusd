@@ -4,6 +4,7 @@
 
 fn main() {
     // Build the C++ sources and headers for bridging Rust and C++.
-    let _build = cxx_build::bridge("src/ffi.rs");
+    let _build = cxx_build::bridges(["src/ffi.rs", "src/v2_ffi.rs"]);
     println!("cargo:rerun-if-changed=src/ffi.rs");
+    println!("cargo:rerun-if-changed=src/v2_ffi.rs");
 }
