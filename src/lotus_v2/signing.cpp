@@ -1,8 +1,11 @@
-// Copyright (c) 2026 The Lotus developers
 #include "signing.h"
 #include "batch_randomizers.h"
 
-#include <crypto/sha256.h>
+#include "tagged_hash.h"
+#include "vendor/blake3/blake3.h"
+
+#include "../support/cleanse.h"
+
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorr.h>
@@ -14,10 +17,608 @@
 #include <condition_variable>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 
 namespace lotus::v2 {
+namespace {
+
+    void Integer(uint64_t value, size_t width, std::vector<uint8_t> &out) {
+        for (size_t i = 0; i < width; ++i)
+            out.push_back(uint8_t(value >> (8 * i)));
+    }
+
+    void CompactSize(uint64_t value, std::vector<uint8_t> &out) {
+        if (value < 253)
+            Integer(value, 1, out);
+        else if (value <= 65535) {
+            out.push_back(253);
+            Integer(value, 2, out);
+        } else if (value <= 4294967295ULL) {
+            out.push_back(254);
+            Integer(value, 4, out);
+        } else {
+            out.push_back(255);
+            Integer(value, 8, out);
+        }
+    }
+
+    bool OutputBytes(const Output &output, std::vector<uint8_t> &out,
+                     std::string &error) {
+        return EncodeOutput(output, out, error);
+    }
+
+    bool ResolvedValid(const Transaction &tx, const ResolvedCoins &resolved,
+                       std::string &error) {
+        if (resolved.size() != tx.inputs.size()) {
+            error = "resolved count";
+            return false;
+        }
+        for (size_t i = 0; i < tx.inputs.size(); ++i) {
+            if (tx.inputs[i].flags != 1 && tx.inputs[i].flags != 3) {
+                error = "unsupported input kind for signing";
+                return false;
+            }
+            if (tx.inputs[i].flags == 1 &&
+                (!resolved[i] || resolved[i]->IsBurn())) {
+                error = "spend resolved coin";
+                return false;
+            }
+            if (tx.inputs[i].flags == 3 && resolved[i]) {
+                error = "mint resolved coin";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool NonzeroDelta(const PositiveDelta &delta) {
+        return std::any_of(delta.begin(), delta.end(),
+                           [](uint8_t byte) { return byte != 0; });
+    }
+
+    bool OwnInputHashFromCoinWire(const Input &input, const TxProfile &profile,
+                                  const std::vector<uint8_t> &coin_wire,
+                                  std::vector<uint8_t> &core, Hash &result,
+                                  std::string &error) {
+        core.clear();
+        if (!EncodeInputCore(input, profile, core, error))
+            return false;
+        CompactSize(coin_wire.size(), core);
+        core.insert(core.end(), coin_wire.begin(), coin_wire.end());
+        result = TaggedHash(HashDomain::OwnInput, core);
+        error.clear();
+        return true;
+    }
+
+    bool OwnInputHashOf(const Input &input, const TxProfile &profile,
+                        const Output &coin, Hash &result, std::string &error) {
+        std::vector<uint8_t> core, wire;
+        if (!OutputBytes(coin, wire, error))
+            return false;
+        return OwnInputHashFromCoinWire(input, profile, wire, core, result,
+                                        error);
+    }
+
+    bool WitnessIsAutomaticSuccess(const BranchWitness &w) noexcept {
+        return w.script.size() == 1 && w.script[0] == 0x4e;
+    }
+
+    bool WitnessIsPureMode0Checksig(const BranchWitness &w) noexcept {
+        if (WitnessIsAutomaticSuccess(w)) return true;
+        return w.script.size() == 34 && w.script[0] == 0x20 &&
+               (w.script[33] == 0xbb || w.script[33] == 0xbc) &&
+               w.arguments.size() == 1 &&
+               (w.arguments[0].size() == 64 ||
+                (w.arguments[0].size() == 65 && w.arguments[0][64] == 0));
+    }
+
+    bool WitnessIsMode0Or1Checksig(const BranchWitness &w) noexcept {
+        if (WitnessIsAutomaticSuccess(w)) return true;
+        return w.script.size() == 34 && w.script[0] == 0x20 &&
+               (w.script[33] == 0xbb || w.script[33] == 0xbc) &&
+               w.arguments.size() == 1 &&
+               (w.arguments[0].size() == 64 ||
+                (w.arguments[0].size() == 65 && w.arguments[0][64] <= 1));
+    }
+
+    bool InputIsPureMode0Checksig(const Input &input) noexcept {
+        if (input.flags != 1 || input.witnesses.empty()) return false;
+        for (const auto &w : input.witnesses) {
+            if (!WitnessIsPureMode0Checksig(w)) return false;
+        }
+        return true;
+    }
+
+    bool InputMayUseMode2(const Input &input) noexcept {
+        if (input.flags != 1 || input.witnesses.empty()) return false;
+        for (const auto &w : input.witnesses) {
+            if (!WitnessIsMode0Or1Checksig(w)) return true;
+        }
+        return false;
+    }
+
+    bool TxIsPureMode0Checksig(const Transaction &tx) noexcept {
+        if (tx.inputs.empty()) return false;
+        for (const auto &in : tx.inputs) {
+            if (!InputIsPureMode0Checksig(in)) return false;
+        }
+        return true;
+    }
+
+    bool TxIsAllAutomaticSuccess(const Transaction &tx) noexcept {
+        if (tx.inputs.empty()) return false;
+        for (const auto &in : tx.inputs) {
+            if (in.flags != 1 || in.witnesses.empty()) return false;
+            for (const auto &w : in.witnesses) {
+                if (!WitnessIsAutomaticSuccess(w)) return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace
+
+bool ComputeIdentitiesValidated(const Transaction &tx,
+                                const TxProfile &profile,
+                                const ChainId &chain_id,
+                                IdentityDigests &result, std::string &error) {
+    std::vector<Hash> core_leaves, full_leaves;
+    core_leaves.reserve(tx.inputs.size());
+    full_leaves.reserve(tx.inputs.size());
+    std::vector<uint8_t> core, full;
+    for (const auto &input : tx.inputs) {
+        core.clear();
+        full.clear();
+        if (!EncodeInputCore(input, profile, core, error) ||
+            !EncodeInputFull(input, profile, full, error))
+            return false;
+        core_leaves.push_back(InputCoreLeaf(core));
+        full_leaves.push_back(InputFullLeaf(full));
+    }
+    IdentityDigests computed;
+    computed.inputs_root = IndexedTreeRoot(core_leaves);
+    computed.full_inputs_root = IndexedTreeRoot(full_leaves);
+    computed.output_leaves.reserve(tx.outputs.size());
+    std::vector<uint8_t> wire;
+    for (const auto &output : tx.outputs) {
+        wire.clear();
+        if (!OutputBytes(output, wire, error)) return false;
+        computed.output_leaves.push_back(OutputLeaf(wire));
+    }
+    computed.outputs_root = IndexedTreeRoot(computed.output_leaves);
+    TxHeaderCore header{};
+    header[0] = 7;
+    for (size_t i = 0; i < 8; ++i)
+        header[4 + i] = uint8_t(tx.lock >> (8 * i));
+    header[12] = uint8_t(tx.inputs.size());
+    header[13] = uint8_t(tx.inputs.size() >> 8);
+    header[14] = uint8_t(tx.outputs.size());
+    header[15] = uint8_t(tx.outputs.size() >> 8);
+    computed.txid = TransactionId(chain_id, header, computed.inputs_root,
+                                  computed.outputs_root);
+    computed.txhash = TransactionHash(
+        chain_id, header, computed.full_inputs_root, computed.outputs_root);
+    result = std::move(computed);
+    error.clear();
+    return true;
+}
+
+bool ComputeOutputIdentitiesOnly(const Transaction &tx, const Hash &known_txid,
+                                 const Hash &known_txhash,
+                                 IdentityDigests &result, std::string &error) {
+    IdentityDigests computed{};
+    computed.txid = known_txid;
+    computed.txhash = known_txhash;
+    if (!TxIsPureMode0Checksig(tx)) {
+        computed.output_leaves.reserve(tx.outputs.size());
+        std::vector<uint8_t> wire;
+        for (const auto &output : tx.outputs) {
+            wire.clear();
+            if (!OutputBytes(output, wire, error)) return false;
+            computed.output_leaves.push_back(OutputLeaf(wire));
+        }
+        computed.outputs_root = IndexedTreeRoot(computed.output_leaves);
+    }
+    result = std::move(computed);
+    error.clear();
+    return true;
+}
+
+bool ComputeIdentities(const Transaction &tx, const TxProfile &profile,
+                       const ChainId &chain_id, IdentityDigests &result,
+                       std::string &error) {
+    std::vector<uint8_t> validated_wire;
+    if (!EncodeTransaction(tx, profile, validated_wire, error)) return false;
+    return ComputeIdentitiesValidated(tx, profile, chain_id, result, error);
+}
+
+bool ComputeCoinsRoot(const Transaction &tx, const ResolvedCoins &resolved,
+                      Hash &result, std::string &error) {
+    if (!ResolvedValid(tx, resolved, error)) return false;
+    std::vector<Hash> leaves;
+    leaves.reserve(tx.inputs.size());
+    std::vector<uint8_t> wire;
+    for (size_t i = 0; i < tx.inputs.size(); ++i) {
+        if (tx.inputs[i].flags == 3)
+            leaves.push_back(CoinEntryLeaf({}));
+        else {
+            wire.clear();
+            if (!OutputBytes(*resolved[i], wire, error)) return false;
+            leaves.push_back(CoinEntryLeaf(wire));
+        }
+    }
+    result = IndexedTreeRoot(leaves);
+    error.clear();
+    return true;
+}
+
+bool ComputeOwnInputHash(const Transaction &tx, const TxProfile &profile,
+                         const ResolvedCoins &resolved, size_t input_index,
+                         Hash &result, std::string &error) {
+    if (!ResolvedValid(tx, resolved, error) ||
+        input_index >= tx.inputs.size() || tx.inputs[input_index].flags != 1) {
+        error = "own input spend";
+        return false;
+    }
+    return OwnInputHashOf(tx.inputs[input_index], profile,
+                          *resolved[input_index], result, error);
+}
+
+SigningPreparationStatus PrepareSigningContextChecked(
+    const Transaction &tx, const TxProfile &profile, const ChainId &chain_id,
+    const ResolvedCoins &resolved, PreparedSigningContext &result,
+    std::string &error, const IdentityDigests *precomputed_identities) {
+    try {
+        IdentityDigests computed_ids;
+        const IdentityDigests *ids = precomputed_identities;
+        if (ids == nullptr) {
+            if (!ComputeIdentities(tx, profile, chain_id, computed_ids, error))
+                return SigningPreparationStatus::OperationalError;
+            ids = &computed_ids;
+        }
+        if (!ResolvedValid(tx, resolved, error))
+            return SigningPreparationStatus::OperationalError;
+
+        PreparedSigningContext prepared;
+        prepared.chain_id_ = chain_id;
+        prepared.lock_ = tx.lock;
+        prepared.identities_ = *ids;
+        prepared.txid_ = ids->txid;
+        prepared.outputs_root_ = ids->outputs_root;
+        prepared.output_leaves_ = ids->output_leaves;
+        prepared.own_input_hashes_.resize(tx.inputs.size());
+        prepared.invocations_.resize(tx.inputs.size());
+
+        static const Hash kOpTrueBranchLeaf = []() {
+            const std::array<uint8_t, 1> s{0x4e};
+            return BranchLeaf(s);
+        }();
+
+        if (precomputed_identities != nullptr && TxIsAllAutomaticSuccess(tx)) {
+            for (size_t i = 0; i < tx.inputs.size(); ++i) {
+                const Input &input = tx.inputs[i];
+                const Output &coin = *resolved[i];
+                if (input.path_index >= coin.paths.size() ||
+                    input.witnesses.size() !=
+                        coin.paths[input.path_index].size()) {
+                    error = "positional witness count/index";
+                    return SigningPreparationStatus::InvalidWitness;
+                }
+                const auto &path = coin.paths[input.path_index];
+                auto &invocations = prepared.invocations_[i];
+                invocations.resize(path.size());
+                for (size_t j = 0; j < path.size(); ++j) {
+                    const uint8_t branch_index = path[j];
+                    const BranchWitness &witness = input.witnesses[j];
+                    if (branch_index >= coin.branches.size() ||
+                        (witness.siblings.empty()
+                             ? coin.branches[branch_index] != kOpTrueBranchLeaf
+                             : BranchProofRoot(kOpTrueBranchLeaf,
+                                               witness.siblings) !=
+                                   coin.branches[branch_index])) {
+                        error = "branch membership";
+                        return SigningPreparationStatus::InvalidWitness;
+                    }
+                    invocations[j].kind = 1;
+                }
+            }
+            prepared.ready_ = true;
+            result = std::move(prepared);
+            error.clear();
+            return SigningPreparationStatus::Ready;
+        }
+
+        std::vector<Hash> coin_leaves;
+        coin_leaves.reserve(tx.inputs.size());
+        std::vector<uint8_t> coin_wire, core;
+
+        for (size_t i = 0; i < tx.inputs.size(); ++i) {
+            const Input &input = tx.inputs[i];
+            auto &invocations = prepared.invocations_[i];
+            if (input.flags == 1) {
+                const Output &coin = *resolved[i];
+                if (input.path_index >= coin.paths.size() ||
+                    input.witnesses.size() !=
+                        coin.paths[input.path_index].size()) {
+                    error = "positional witness count/index";
+                    return SigningPreparationStatus::InvalidWitness;
+                }
+                coin_wire.clear();
+                if (!OutputBytes(coin, coin_wire, error))
+                    return SigningPreparationStatus::OperationalError;
+                coin_leaves.push_back(CoinEntryLeaf(coin_wire));
+                if (precomputed_identities == nullptr ||
+                    !InputIsPureMode0Checksig(input)) {
+                    if (!OwnInputHashFromCoinWire(
+                            input, profile, coin_wire, core,
+                            prepared.own_input_hashes_[i].emplace(), error))
+                        return SigningPreparationStatus::OperationalError;
+                    if (i < tx.outputs.size() &&
+                        ids->output_leaves.empty() &&
+                        InputMayUseMode2(input)) {
+                        if (prepared.output_leaves_.empty()) {
+                            prepared.output_leaves_.resize(tx.outputs.size());
+                        }
+                        core.clear();
+                        if (!OutputBytes(tx.outputs[i], core, error))
+                            return SigningPreparationStatus::OperationalError;
+                        prepared.output_leaves_[i] = OutputLeaf(core);
+                    }
+                }
+                const auto &path = coin.paths[input.path_index];
+                invocations.reserve(path.size());
+                for (size_t j = 0; j < path.size(); ++j) {
+                    const uint8_t branch_index = path[j];
+                    const BranchWitness &witness = input.witnesses[j];
+                    const Hash leaf = WitnessIsAutomaticSuccess(witness)
+                                          ? kOpTrueBranchLeaf
+                                          : BranchLeaf(witness.script);
+                    if (branch_index >= coin.branches.size() ||
+                        BranchProofRoot(leaf, witness.siblings) !=
+                            coin.branches[branch_index]) {
+                        error = "branch membership";
+                        return SigningPreparationStatus::InvalidWitness;
+                    }
+                    PreparedSigningContext::Invocation invocation;
+                    invocation.kind = 1;
+                    invocation.selector.reserve(41);
+                    invocation.selector.push_back(1);
+                    Integer(i, 4, invocation.selector);
+                    Integer(branch_index, 4, invocation.selector);
+                    invocation.selector.insert(invocation.selector.end(),
+                                               leaf.begin(), leaf.end());
+                    invocations.push_back(std::move(invocation));
+                }
+            } else if (input.flags == 3) {
+                coin_leaves.push_back(CoinEntryLeaf({}));
+                const BranchWitness &witness = input.witnesses[0];
+                const Hash leaf = BranchLeaf(witness.script);
+                if (BranchProofRoot(leaf, witness.siblings) !=
+                    input.prev_txid) {
+                    error = "mint root";
+                    return SigningPreparationStatus::InvalidWitness;
+                }
+                PreparedSigningContext::Invocation invocation;
+                invocation.kind = 3;
+                invocation.selector.reserve(81);
+                invocation.selector.push_back(3);
+                invocation.selector.insert(invocation.selector.end(),
+                                           input.prev_txid.begin(),
+                                           input.prev_txid.end());
+                invocation.selector.insert(invocation.selector.end(), 16, 0);
+                invocation.selector.insert(invocation.selector.end(),
+                                           leaf.begin(), leaf.end());
+                invocations.push_back(std::move(invocation));
+            }
+        }
+        prepared.coins_root_ = IndexedTreeRoot(coin_leaves);
+        prepared.ready_ = true;
+        result = std::move(prepared);
+        error.clear();
+        return SigningPreparationStatus::Ready;
+    } catch (const std::exception &exception) {
+        error = exception.what();
+        return SigningPreparationStatus::OperationalError;
+    }
+}
+
+bool PrepareSigningContext(const Transaction &tx, const TxProfile &profile,
+                           const ChainId &chain, const ResolvedCoins &coins,
+                           PreparedSigningContext &result, std::string &error) {
+    return PrepareSigningContextChecked(tx, profile, chain, coins, result,
+                                        error) ==
+           SigningPreparationStatus::Ready;
+}
+
+bool ValidateSigningInvocation(const PreparedSigningContext &prepared,
+                               size_t input_index, size_t witness_index,
+                               const std::optional<PositiveDelta> &positive_delta,
+                               std::string &error) {
+    if (!prepared.ready_ || input_index >= prepared.invocations_.size() ||
+        witness_index >= prepared.invocations_[input_index].size()) {
+        error = "signing mode or invocation index";
+        return false;
+    }
+    const auto &invocation =
+        prepared.invocations_[input_index][witness_index];
+    if (invocation.kind == 1 && positive_delta) {
+        error = "spend delta";
+        return false;
+    }
+    if (invocation.kind == 3 &&
+        (!positive_delta || !NonzeroDelta(*positive_delta))) {
+        error = "mint selector delta/mode";
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
+bool SigningMessage(const PreparedSigningContext &prepared, size_t input_index,
+                    size_t witness_index, uint8_t mode,
+                    const std::optional<PositiveDelta> &positive_delta,
+                    Hash &result, std::string &error) {
+    if (!prepared.ready_ || mode > 2 ||
+        input_index >= prepared.invocations_.size() ||
+        witness_index >= prepared.invocations_[input_index].size()) {
+        error = "signing mode or invocation index";
+        return false;
+    }
+    const auto &invocation =
+        prepared.invocations_[input_index][witness_index];
+    if (invocation.kind == 1 && positive_delta) {
+        error = "spend delta";
+        return false;
+    }
+    if (invocation.kind == 3 &&
+        (mode != 0 || !positive_delta || !NonzeroDelta(*positive_delta))) {
+        error = "mint selector delta/mode";
+        return false;
+    }
+    if (mode == 2 && input_index >= prepared.output_leaves_.size()) {
+        error = "partial mode unavailable";
+        return false;
+    }
+    const size_t expected_len =
+        invocation.kind == 3 ? 178 : mode == 0 ? 138 : 150;
+    std::array<uint8_t, 178> preimage{};
+    uint8_t *dst = preimage.data();
+    std::memcpy(dst, prepared.chain_id_.data(), 32);
+    dst += 32;
+    *dst++ = mode;
+    if (mode == 0) {
+        std::memcpy(dst, prepared.txid_.data(), 32);
+        dst += 32;
+        std::memcpy(dst, prepared.coins_root_.data(), 32);
+        dst += 32;
+    } else {
+        if (!prepared.own_input_hashes_[input_index].has_value()) {
+            error = "own input hash unavailable";
+            return false;
+        }
+        dst[0] = 7;
+        dst[1] = 0;
+        dst[2] = 0;
+        dst[3] = 0;
+        dst += 4;
+        for (size_t i = 0; i < 8; ++i) {
+            dst[i] = uint8_t(prepared.lock_ >> (8 * i));
+        }
+        dst += 8;
+        const Hash &own = *prepared.own_input_hashes_[input_index];
+        std::memcpy(dst, own.data(), 32);
+        dst += 32;
+        const Hash &output_commitment = mode == 1
+            ? prepared.outputs_root_ : prepared.output_leaves_[input_index];
+        std::memcpy(dst, output_commitment.data(), 32);
+        dst += 32;
+    }
+    if (invocation.kind == 3) {
+        if (invocation.selector.size() != 81) {
+            error = "sighash preimage width";
+            return false;
+        }
+        std::memcpy(dst, invocation.selector.data(), 33);
+        dst += 33;
+        std::memcpy(dst, positive_delta->data(), 16);
+        dst += 16;
+        std::memcpy(dst, invocation.selector.data() + 49, 32);
+        dst += 32;
+    } else {
+        if (invocation.selector.size() != 41) {
+            error = "sighash preimage width";
+            return false;
+        }
+        std::memcpy(dst, invocation.selector.data(), 41);
+        dst += 41;
+    }
+    if (static_cast<size_t>(dst - preimage.data()) != expected_len) {
+        error = "sighash preimage width";
+        return false;
+    }
+    result = TaggedHash(HashDomain::Sighash,
+                        std::span<const uint8_t>(preimage.data(), expected_len));
+    error.clear();
+    return true;
+}
+
+bool SigningMessage(const Transaction &tx, const TxProfile &profile,
+                    const ChainId &chain_id, const ResolvedCoins &resolved,
+                    size_t input_index, size_t witness_index, uint8_t mode,
+                    const std::optional<PositiveDelta> &positive_delta,
+                    Hash &result, std::string &error) {
+    PreparedSigningContext prepared;
+    if (!PrepareSigningContext(tx, profile, chain_id, resolved, prepared,
+                               error))
+        return false;
+    return SigningMessage(prepared, input_index, witness_index, mode,
+                          positive_delta, result, error);
+}
+
+SignatureStatus VerifyBip340Signature(std::span<const uint8_t> public_key,
+                                      std::span<const uint8_t> signature,
+                                      const Hash &message, bool mint) {
+    if (!((signature.size() == 64) ||
+          (signature.size() == 65 && !mint &&
+           (signature[64] == 1 || signature[64] == 2)))) {
+        return SignatureStatus::InvalidEncoding;
+    }
+    if (public_key.size() != 32) return SignatureStatus::InvalidPublicKey;
+    secp256k1_xonly_pubkey parsed;
+    if (!secp256k1_xonly_pubkey_parse(secp256k1_context_static, &parsed,
+                                      public_key.data())) {
+        return SignatureStatus::InvalidPublicKey;
+    }
+    return secp256k1_schnorrsig_verify(secp256k1_context_static,
+                                       signature.data(), message.data(),
+                                       message.size(), &parsed)
+               ? SignatureStatus::Valid
+               : SignatureStatus::InvalidSignature;
+}
+
+bool SignBip340Message(const std::array<uint8_t, 32> &secret_key,
+                       const Hash &message, uint8_t mode,
+                       const std::array<uint8_t, 32> &aux_randomness,
+                       std::vector<uint8_t> &result, std::string &error) {
+    if (mode > 2) {
+        error = "signing mode";
+        return false;
+    }
+    using ContextPtr = std::unique_ptr<secp256k1_context,
+                                       decltype(&secp256k1_context_destroy)>;
+    ContextPtr ctx(secp256k1_context_create(SECP256K1_CONTEXT_SIGN),
+                   secp256k1_context_destroy);
+    if (!ctx) {
+        error = "secp256k1 context";
+        return false;
+    }
+    // The keypair embeds the private scalar. Keep cleanup attached to its
+    // lifetime, including invalid-key/signing failures and allocation throws.
+    struct ScopedKeypair {
+        secp256k1_keypair value{};
+        ScopedKeypair() = default;
+        ScopedKeypair(const ScopedKeypair &) = delete;
+        ScopedKeypair &operator=(const ScopedKeypair &) = delete;
+        ~ScopedKeypair() { memory_cleanse(&value, sizeof(value)); }
+    } pair;
+    if (!secp256k1_keypair_create(ctx.get(), &pair.value, secret_key.data())) {
+        error = "invalid secret key";
+        return false;
+    }
+    std::vector<uint8_t> sig(64);
+    if (!secp256k1_schnorrsig_sign32(ctx.get(), sig.data(), message.data(),
+                                     &pair.value, aux_randomness.data())) {
+        error = "BIP340 signing failed";
+        return false;
+    }
+    if (mode) sig.push_back(mode);
+    result = std::move(sig);
+    error.clear();
+    return true;
+}
+
 namespace {
 bool VerifyBatchSlice(std::span<const BatchSigItem> slice) {
     if (slice.empty()) return true;
@@ -404,6 +1005,34 @@ BatchSigCollector::FirstFailingIndex(size_t num_threads) const {
     }
 
     return std::nullopt;
+}
+
+void RunParallelSigningWork(
+    size_t total_items, size_t min_grain,
+    const std::function<void(size_t, size_t)> &fn) {
+    if (total_items == 0) {
+        return;
+    }
+    const size_t grain = std::max<size_t>(min_grain, 1);
+    if (total_items < grain * 2) {
+        fn(0, total_items);
+        return;
+    }
+    const size_t hw = std::min<size_t>(
+        std::max<size_t>(std::thread::hardware_concurrency(), 1), 16);
+    const size_t threads =
+        std::min<size_t>(hw, (total_items + grain - 1) / grain);
+    if (threads <= 1) {
+        fn(0, total_items);
+        return;
+    }
+    SigningWorkerPool::Instance().Run(threads, [&](size_t t) {
+        const size_t begin = (total_items * t) / threads;
+        const size_t end = (total_items * (t + 1)) / threads;
+        if (begin < end) {
+            fn(begin, end);
+        }
+    });
 }
 
 } // namespace lotus::v2
