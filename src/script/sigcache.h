@@ -13,6 +13,8 @@
 #include <uint256.h>
 #include <util/hasher.h>
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <shared_mutex>
 #include <vector>
@@ -32,15 +34,24 @@ static constexpr size_t DEFAULT_SIGNATURE_CACHE_BYTES{32 << 20};
  */
 class SignatureCache {
 private:
+    static constexpr size_t kNumShards = 16;
     //! Entries are SHA256(nonce || signature hash || public key || signature):
     CSHA256 m_salted_hasher;
+    //! Process-unique lifetime token; TLS slots must not follow reused addresses.
+    const uint64_t m_tls_owner;
     typedef CuckooCache::cache<CuckooCache::KeyOnly<uint256>,
                                SignatureCacheHasher>
         map_type;
-    map_type setValid;
-    std::shared_mutex cs_sigcache;
+    struct alignas(64) Shard {
+        std::shared_mutex mutex;
+        map_type setValid;
+        std::atomic<bool> has_entries{false};
+    };
+    std::array<Shard, kNumShards> m_shards;
 
 public:
+    //! Internal TLS ownership discriminator; distinct across cache lifetimes.
+    uint64_t TlsOwner() const noexcept { return m_tls_owner; }
     SignatureCache(size_t max_size_bytes);
 
     SignatureCache(const SignatureCache &) = delete;
@@ -53,6 +64,7 @@ public:
     bool Get(const uint256 &entry, const bool erase);
 
     void Set(const uint256 &entry);
+
 };
 
 class CachingTransactionSignatureChecker : public TransactionSignatureChecker {
