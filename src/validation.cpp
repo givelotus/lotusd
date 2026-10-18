@@ -43,13 +43,13 @@
 #include <policy/block/preconsensus.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
-#include <policy/block/treasury.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <lotus_v2/fast_sync.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/tagged_hash.h>
 #include <lotus_v2/vm.h>
 #include <random.h>

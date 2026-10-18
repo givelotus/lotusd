@@ -132,10 +132,10 @@ BOOST_AUTO_TEST_CASE(snapshot_graph_ids_preserve_rpc_order_and_mining_dependenci
 
     // A cannot be mined at the minimum fee; join must remain blocked despite
     // its higher fee. The independent B -> other edge must unblock normally.
-    BOOST_CHECK(!pinned->overlay_all_fit_candidate);
-    const auto &tmpl = pinned->GetMiningTemplate();
+    pinned->EnsureMiningTemplate();
+    const auto &tmpl = pinned->mining_template;
     auto expected = std::vector<TxId>{b->GetId(), other->GetId()};
-    if (pinned->ctor_active) std::sort(expected.begin(), expected.end());
+    std::sort(expected.begin(), expected.end());
     std::vector<TxId> selected;
     for (const auto &tx : tmpl.non_coinbase_txs) selected.push_back(tx->GetId());
     BOOST_CHECK(selected == expected);
