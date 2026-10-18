@@ -400,6 +400,9 @@ bool CCoinsViewCache::HaveInputs(const CTransaction &tx) const {
     }
 
     for (size_t i = 0; i < tx.vin.size(); i++) {
+        if (tx.vin[i].nFlags == 3) {
+            continue;
+        }
         if (!HaveCoin(tx.vin[i].prevout)) {
             return false;
         }
