@@ -18,15 +18,17 @@ import unittest
 from base64 import b64encode
 from collections.abc import Hashable, Mapping
 from copy import deepcopy
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from functools import lru_cache
 from subprocess import CalledProcessError
 from typing import Callable, Dict, Optional, Union
 
 from . import coverage
 from .authproxy import AuthServiceProxy, JSONRPCException
+from .currency import XPI_RPC_CURRENCY, RpcCurrency
 
 logger = logging.getLogger("TestFramework.utils")
+
 
 # Assert functions
 ##################
@@ -51,9 +53,13 @@ def assert_fee_amount(fee, tx_size, fee_per_kB, wiggleroom=2):
     """
     target_fee = satoshi_round(tx_size * fee_per_kB / 1000)
     if fee < (tx_size - wiggleroom) * fee_per_kB / 1000:
-        raise AssertionError(f"Fee of {fee} XEC too low! (Should be {target_fee} XEC)")
+        raise AssertionError(
+            f"Fee of {fee} RPC units too low! (Should be {target_fee})"
+        )
     if fee > (tx_size + wiggleroom) * fee_per_kB / 1000:
-        raise AssertionError(f"Fee of {fee} XEC too high! (Should be {target_fee} XEC)")
+        raise AssertionError(
+            f"Fee of {fee} RPC units too high! (Should be {target_fee})"
+        )
 
 
 def assert_equal(thing1, thing2, *args):
@@ -304,7 +310,7 @@ def hex_to_be_bytes(hex_string: str) -> bytes:
 
 
 def satoshi_round(amount):
-    return Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return XPI_RPC_CURRENCY.round_down(amount)
 
 
 def iter_chunks(lst: list, n: int):
@@ -567,7 +573,7 @@ def write_config(config_path, *, n, chain, extra_config="", disable_autoconnect=
         f.write("chroniktxnumcachebucketsize=100\n")
         # FIXME fix the doc issues and turn this flag on to prevent new doc bugs
         f.write("rpcdoccheck=0\n")
-        f.write("fallbackfee=200\n")
+        f.write(f"fallbackfee={XPI_RPC_CURRENCY.from_atoms(20000)}\n")
         f.write("server=1\n")
         f.write("keypool=1\n")
         f.write("discover=0\n")
@@ -677,7 +683,8 @@ def fill_mempool(test_framework, node, miniwallet):
     txouts = gen_return_txouts()
     relayfee = node.getnetworkinfo()["relayfee"]
 
-    assert_equal(relayfee, Decimal("10"))
+    currency = RpcCurrency.from_node(node)
+    assert_equal(relayfee, currency.from_atoms(1000))
 
     tx_batch_size = 1
     num_of_batches = 75
@@ -717,8 +724,10 @@ def fill_mempool(test_framework, node, miniwallet):
     assert tx_to_be_evicted_id not in node.getrawmempool()
 
     test_framework.log.debug("Check that mempoolminfee is larger than minrelaytxfee")
-    assert_equal(node.getmempoolinfo()["minrelaytxfee"], Decimal("10.00"))
-    assert_greater_than(node.getmempoolinfo()["mempoolminfee"], Decimal("10.00"))
+    assert_equal(node.getmempoolinfo()["minrelaytxfee"], currency.from_atoms(1000))
+    assert_greater_than(
+        node.getmempoolinfo()["mempoolminfee"], currency.from_atoms(1000)
+    )
 
 
 # Transaction/Block functions
@@ -766,9 +775,7 @@ def gen_return_txouts():
 def create_lots_of_big_transactions(
     mini_wallet, node, fee, tx_batch_size, txouts, utxos=None
 ):
-    from .messages import XEC
-
-    fee_sats = int(fee * XEC)
+    fee_sats = RpcCurrency.from_node(node).to_atoms(fee)
     txids = []
     use_internal_utxos = utxos is None
     for _ in range(tx_batch_size):

@@ -163,7 +163,7 @@ static bool AppInit(NodeContext &node, int argc, char *argv[]) {
         if (args.IsArgSet("-version")) {
             strUsage += FormatParagraph(LicenseInfo()) + "\n";
         } else {
-            strUsage += "\nUsage:  bitcoind [options]                     "
+            strUsage += "\nUsage:  lotusd [options]                     "
                         "Start " PACKAGE_NAME "\n";
             strUsage += "\n" + args.GetHelpMessage();
         }
@@ -202,12 +202,12 @@ static bool AppInit(NodeContext &node, int argc, char *argv[]) {
             if (!IsSwitchChar(argv[i][0])) {
                 return InitError(Untranslated(
                     strprintf("Command line contains unexpected token '%s', "
-                              "see bitcoind -h for a list of options.",
+                              "see lotusd -h for a list of options.",
                               argv[i])));
             }
         }
 
-        // -server defaults to true for bitcoind but not for the GUI so do this
+        // -server defaults to true for lotusd but not for the GUI so do this
         // here
         args.SoftSetBoolArg("-server", true);
         // Set this early so that parameter interactions go to console
@@ -312,7 +312,7 @@ int main(int argc, char *argv[]) {
 
     SetupEnvironment();
 
-    // Connect bitcoind signal handlers
+    // Connect lotusd signal handlers
     noui_connect();
 
     return (AppInit(node, argc, argv) ? node.exit_status.load() : EXIT_FAILURE);
