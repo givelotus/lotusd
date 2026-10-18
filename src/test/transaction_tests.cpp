@@ -16,6 +16,7 @@
 #include <core_memusage.h>
 #include <key.h>
 #include <lotus_v2/output.h>
+#include <lotus_v2/commitment.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <script/script.h>
@@ -57,6 +58,26 @@ static COutPoint buildOutPoint(const UniValue &vinput) {
     TxId txid;
     txid.SetHexDeprecated(vinput[0].get_str());
     return COutPoint(txid, vinput[1].getInt<int>());
+}
+
+BOOST_AUTO_TEST_CASE(native_transaction_rejects_implicit_legacy_output) {
+    CMutableTransaction tx;
+    tx.nVersion = 7;
+    tx.vin.emplace_back(COutPoint(TxId{uint256::ONE}, 0));
+    tx.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    tx.vin[0].vWitnesses = {witness};
+    tx.vout.emplace_back(1000 * SATOSHI,
+        GetScriptForDestination(PKHash(uint160{})));
+    BOOST_CHECK_THROW(MakeTransactionRef(tx), std::exception);
+
+    lotus::v2::Output output;
+    output.value = 1000;
+    output.branches = {lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e})};
+    output.paths = {{0}};
+    tx.vout = {CTxOut::FromV2Output(output)};
+    BOOST_CHECK_NO_THROW(MakeTransactionRef(tx));
 }
 
 BOOST_AUTO_TEST_CASE(serialized_size_all_constructors) {
@@ -1336,6 +1357,278 @@ BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
     std::vector<uint8_t> huge_script{bytes.begin(), bytes.begin() + 41};
     huge_script.insert(huge_script.end(), {0xfe, 0x00, 0x00, 0x00, 0x01});
     check(huge_script);
+}
+
+// Immutable pure-native outputs must expose exactly the script representation
+// reconstructed from their wire fields. Legacy-wrapped scripts remain literal.
+BOOST_AUTO_TEST_CASE(native_pure_output_local_and_peer_legacy_spend_agree) {
+    CKey key;
+    const std::array<uint8_t, 32> secret{1};
+    key.Set(secret.begin(), secret.end(), true);
+    FillableSigningProvider keys;
+    BOOST_REQUIRE(keys.AddKey(key));
+    const CScript p2pkh = GetScriptForDestination(PKHash(key.GetPubKey()));
+    CMutableTransaction funding;
+    funding.nVersion = 7;
+    funding.fHasV2Lock = true;
+    funding.vin.resize(1);
+    funding.vin[0].nFlags = 2;
+    funding.vin[0].prevout = COutPoint();
+    funding.vin[0].fHasCoinbaseData = true;
+    funding.vin[0].vCoinbaseData = {1};
+    funding.vin[0].scriptSig = CScript() << OP_TRUE;
+    funding.vout.emplace_back(1000 * SATOSHI, p2pkh);
+    AdaptLegacyOutputToV7(funding.vout[0]);
+    BOOST_REQUIRE(funding.vout[0].scriptPubKey == p2pkh);
+    DataStream bytes;
+    bytes << funding;
+    BOOST_REQUIRE_EQUAL(HexStr(bytes).substr(0, 8), "07000000");
+    const std::string expected_wire = HexStr(bytes);
+    const CTransaction local{funding};
+    const CTransaction peer{deserialize, bytes};
+    BOOST_CHECK(local.vout[0].scriptPubKey == peer.vout[0].scriptPubKey);
+    BOOST_CHECK_EQUAL(local.GetStorageSize(), peer.GetStorageSize());
+    BOOST_CHECK(local.GetId() == peer.GetId());
+    BOOST_CHECK(local.GetHash() == peer.GetHash());
+    BOOST_CHECK(local.GetOutputsHash() == peer.GetOutputsHash());
+    DataStream local_wire;
+    local_wire << local;
+    BOOST_CHECK_EQUAL(HexStr(local_wire), expected_wire);
+
+    CMutableTransaction spend;
+    spend.nVersion = 7; // flags0 selects the legacy-wrapped compatibility wire.
+    spend.vin.emplace_back(local.GetId(), 0);
+    spend.vout.emplace_back(999 * SATOSHI, CScript() << OP_TRUE);
+    BOOST_REQUIRE(SignSignature(keys, p2pkh, spend, 0, 1000 * SATOSHI,
+                                SigHashType().withForkId()));
+    const CTransaction signed_spend{spend};
+    auto verify = [&](const CScript &script, ScriptError &error) {
+        return VerifyScript(signed_spend.vin[0].scriptSig, script,
+                            SCRIPT_ENABLE_SIGHASH_FORKID,
+                            TransactionSignatureChecker(&signed_spend, 0,
+                                                        1000 * SATOSHI),
+                            &error);
+    };
+    ScriptError raw_error, local_error, peer_error;
+    BOOST_REQUIRE(verify(p2pkh, raw_error)); // positive control: signature is valid.
+    const bool local_valid = verify(local.vout[0].scriptPubKey, local_error);
+    const bool peer_valid = verify(peer.vout[0].scriptPubKey, peer_error);
+    BOOST_CHECK(!local_valid);
+    BOOST_CHECK(!peer_valid);
+    BOOST_CHECK_EQUAL(local_valid, peer_valid);
+    BOOST_CHECK(local_error == peer_error);
+}
+
+BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
+    for (size_t raw_size : {size_t{0}, size_t{1}, size_t{28}, size_t{29},
+                            size_t{45}, size_t{253}, size_t{494}}) {
+        for (uint8_t flags : {uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}}) {
+            CMutableTransaction tx;
+            tx.nVersion = 7;
+            tx.fHasV2Lock = true;
+            tx.vin.emplace_back(TxId(uint256::ONE), 0);
+            tx.vin[0].nFlags = 1;
+            lotus::v2::BranchWitness witness;
+            witness.script = {0x4e};
+            tx.vin[0].vWitnesses = {witness};
+            lotus::v2::Output native;
+            native.value = 1234;
+            native.flags = flags;
+            native.token_id[0] = (flags & 1) ? 1 : 0;
+            lotus::v2::Hash32 a{}, b{};
+            a[0] = 2; b[0] = 3;
+            native.branches = {a, b};
+            if (!(flags & 2)) native.paths = {{0}, {0, 1}, {1}};
+            const CTxOut canonical = CTxOut::FromV2Output(native);
+            // One ordinary output exercises the allocation-free canonical fast
+            // path; the second spans burn/token/multibranch codecs and raw sizes.
+            lotus::v2::Output ordinary;
+            ordinary.value = 42;
+            ordinary.branches = {a};
+            ordinary.paths = {{0}};
+            tx.vout.push_back(CTxOut::FromV2Output(ordinary));
+            tx.vout.push_back(canonical);
+            tx.vout.back().scriptPubKey.resize(raw_size);
+            std::fill(tx.vout.back().scriptPubKey.begin(),
+                      tx.vout.back().scriptPubKey.end(), OP_TRUE);
+            DataStream serialized;
+            serialized << tx;
+            const std::vector<uint8_t> bytes(UCharCast(serialized.data()),
+                                            UCharCast(serialized.data()) + serialized.size());
+            const std::string expected_wire = HexStr(serialized);
+            const CTransaction owned{tx};
+            DataStream peer_stream{bytes};
+            const CTransaction decoded{deserialize, peer_stream};
+            BOOST_CHECK(owned.vout[1].scriptPubKey == canonical.scriptPubKey);
+            BOOST_CHECK_EQUAL(owned.GetStorageSize(), decoded.GetStorageSize());
+            BOOST_CHECK(owned.GetId() == decoded.GetId());
+            BOOST_CHECK(owned.GetHash() == decoded.GetHash());
+            if (owned.vout[1].scriptPubKey != canonical.scriptPubKey) continue;
+            auto check = [&](const CTransaction &constructed) {
+                BOOST_REQUIRE_EQUAL(constructed.vout.size(), 2U);
+                for (size_t i = 0; i < constructed.vout.size(); ++i) {
+                    const auto &out = constructed.vout[i];
+                    const auto &expected = decoded.vout[i];
+                    BOOST_CHECK_EQUAL(out.nValue, expected.nValue);
+                    BOOST_CHECK_EQUAL(out.nFlags, expected.nFlags);
+                    BOOST_CHECK(out.tokenId == expected.tokenId);
+                    BOOST_CHECK(out.vBranches == expected.vBranches);
+                    BOOST_CHECK(out.vPaths == expected.vPaths);
+                    BOOST_CHECK(out.scriptPubKey == expected.scriptPubKey);
+                }
+                BOOST_CHECK(constructed.GetId() == decoded.GetId());
+                BOOST_CHECK(constructed.GetHash() == decoded.GetHash());
+                BOOST_CHECK(constructed.GetOutputsHash() == decoded.GetOutputsHash());
+                BOOST_CHECK_EQUAL(constructed.GetStorageSize(), decoded.GetStorageSize());
+                BOOST_CHECK_EQUAL(constructed.GetTotalSize(), bytes.size());
+                DataStream wire;
+                wire << constructed;
+                BOOST_CHECK_EQUAL(HexStr(wire), expected_wire);
+            };
+            check(owned);
+            check(decoded);
+            check(CTransaction{CMutableTransaction{tx}});
+            auto shared = MakeTransactionRef(tx);
+            check(*shared);
+            auto scan = ScanTransactionWire(bytes);
+            // Explicit source-backed external placement and allocate_shared use
+            // the decoded canonical tail size, not the original raw script size.
+            scan.source = &tx;
+            void *storage = AllocateTransactionStorage(CTransaction::StorageSize(scan));
+            {
+                const CTransaction external{scan, storage};
+                check(external);
+            }
+            DeallocateTransactionStorage(storage, CTransaction::StorageSize(scan));
+            auto external_shared = MakeTransactionRef(scan);
+            check(*external_shared);
+            scan.source = nullptr;
+            check(*MakeTransactionRef(scan));
+            CScript retained{std::move(shared->vout[1].scriptPubKey)};
+            BOOST_CHECK(retained.data() != shared->vout[1].scriptPubKey.data());
+            shared.reset();
+            external_shared.reset();
+            BOOST_CHECK(retained == canonical.scriptPubKey);
+
+            // Logical version7 alone must never trigger native normalization.
+            tx.vin[0].nFlags = 0;
+            tx.vin[0].vWitnesses.clear();
+            DataStream legacy_bytes;
+            legacy_bytes << tx;
+            const std::string legacy_wire = HexStr(legacy_bytes);
+            BOOST_REQUIRE_EQUAL(legacy_wire.substr(0, 8), "07000080");
+            const CTransaction wrapped{tx};
+            BOOST_CHECK(wrapped.vout[1].scriptPubKey == tx.vout[1].scriptPubKey);
+            BOOST_CHECK_EQUAL(wrapped.vout[1].nValue, tx.vout[1].nValue);
+            BOOST_CHECK_EQUAL(wrapped.vout[1].nFlags, tx.vout[1].nFlags);
+            BOOST_CHECK(wrapped.vout[1].tokenId == tx.vout[1].tokenId);
+            BOOST_CHECK(wrapped.vout[1].vBranches == tx.vout[1].vBranches);
+            BOOST_CHECK(wrapped.vout[1].vPaths == tx.vout[1].vPaths);
+            DataStream reserialized;
+            reserialized << wrapped;
+            BOOST_CHECK_EQUAL(HexStr(reserialized), legacy_wire);
+            const CTransaction wrapper_decoded{deserialize, legacy_bytes};
+            BOOST_CHECK(wrapper_decoded.vout[1].scriptPubKey == tx.vout[1].scriptPubKey);
+            BOOST_CHECK_EQUAL(wrapper_decoded.vout[1].nValue, tx.vout[1].nValue);
+        }
+    }
+    // Invalid models still reach the existing validation checks with their
+    // original fields; failed encoding must not undercount the slab tail.
+    CMutableTransaction invalid;
+    invalid.nVersion = 7;
+    invalid.fHasV2Lock = true;
+    invalid.vin.emplace_back(TxId(uint256::ONE), 0);
+    invalid.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    invalid.vin[0].vWitnesses = {witness};
+    invalid.vout.emplace_back(123 * SATOSHI,
+                              RawScript(std::vector<uint8_t>(129, OP_TRUE)));
+    invalid.vout[0].nFlags = 4;
+    lotus::v2::Hash32 a{}, b{};
+    a[0] = 1; b[0] = 2;
+    invalid.vout[0].vBranches = {a, b};
+    invalid.vout[0].vPaths = {{0}};
+    const CTransaction invalid_owned{invalid};
+    BOOST_CHECK(invalid_owned.vout[0].scriptPubKey == invalid.vout[0].scriptPubKey);
+    BOOST_CHECK_EQUAL(invalid_owned.vout[0].nFlags, 4);
+    BOOST_CHECK_EQUAL(invalid_owned.ToV2Transaction().outputs[0].flags, 4);
+    DataStream invalid_wire;
+    invalid_wire << invalid_owned;
+    BOOST_CHECK_THROW((CTransaction{deserialize, invalid_wire}), std::ios_base::failure);
+}
+
+BOOST_AUTO_TEST_CASE(native_wire_slab_preserves_extensions_and_identities) {
+    auto roundtrip = [](const CMutableTransaction &tx) {
+        DataStream expected;
+        expected << tx;
+        const auto before = MakeTransactionRef(tx);
+        DataStream stream;
+        stream << before;
+        BOOST_CHECK_EQUAL(HexStr(stream), HexStr(expected));
+        CTransactionRef after;
+        stream >> after;
+        BOOST_REQUIRE(after);
+        BOOST_CHECK(stream.empty());
+        BOOST_CHECK(before->GetId() == tx.GetId());
+        BOOST_CHECK(after->GetId() == before->GetId());
+        BOOST_CHECK(after->GetHash() == before->GetHash());
+        BOOST_CHECK(after->GetOutputsHash() == before->GetOutputsHash());
+        BOOST_CHECK_EQUAL(after->GetTotalSize(), expected.size());
+        BOOST_CHECK_EQUAL(after->nV2Lock, tx.nV2Lock);
+        BOOST_CHECK_EQUAL(after->fHasV2Lock, tx.fHasV2Lock);
+        BOOST_REQUIRE_EQUAL(after->vin.size(), tx.vin.size());
+        BOOST_REQUIRE_EQUAL(after->vout.size(), tx.vout.size());
+        for (size_t i = 0; i < tx.vin.size(); ++i) BOOST_CHECK(after->vin[i] == tx.vin[i]);
+        for (size_t i = 0; i < tx.vout.size(); ++i) BOOST_CHECK(after->vout[i] == tx.vout[i]);
+        const CMutableTransaction copied(*after);
+        DataStream reserialized;
+        reserialized << copied;
+        BOOST_CHECK_EQUAL(HexStr(reserialized), HexStr(expected));
+        return after;
+    };
+    CMutableTransaction spend;
+    spend.nVersion = 7;
+    spend.fHasV2Lock = true;
+    spend.nLockTime = 123;
+    spend.nV2Lock = (uint64_t(123) << 8) | 1;
+    spend.vin.emplace_back(COutPoint(TxId(uint256S("11")), 3));
+    auto &input = spend.vin.back();
+    input.nFlags = 1;
+    input.nSequence = 7;
+    input.nPathIndex = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script.assign(40, 0x51);
+    lotus::v2::Hash sibling{}; sibling[0] = 4;
+    witness.siblings = {sibling};
+    witness.arguments = {{1, 2, 3}, {4, 5}};
+    input.vWitnesses = {witness};
+    lotus::v2::Output output;
+    output.value = 123456;
+    output.flags = 1;
+    output.token_id[0] = 9;
+    lotus::v2::Hash branch{}; branch[0] = 2;
+    output.branches = {branch, sibling};
+    output.paths = {{0}, {1}};
+    spend.vout.push_back(CTxOut::FromV2Output(output));
+    const auto original = roundtrip(spend);
+    spend.vin[0].vWitnesses[0].arguments[0][0] ^= 1;
+    const auto changed = roundtrip(spend);
+    BOOST_CHECK(original->GetId() == changed->GetId());
+    BOOST_CHECK(original->GetHash() != changed->GetHash());
+
+    CMutableTransaction coinbase;
+    coinbase.nVersion = 7;
+    coinbase.fHasV2Lock = true;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout = COutPoint();
+    coinbase.vin[0].nFlags = 2;
+    coinbase.vin[0].fHasCoinbaseData = true;
+    coinbase.vin[0].vCoinbaseData.assign(40, 0x42);
+    coinbase.vin[0].scriptSig = CScript(coinbase.vin[0].vCoinbaseData.begin(), coinbase.vin[0].vCoinbaseData.end());
+    output.flags = 0; output.token_id = {};
+    coinbase.vout.push_back(CTxOut::FromV2Output(output));
+    roundtrip(coinbase);
 }
 
 BOOST_AUTO_TEST_CASE(contiguous_streams_are_read_in_place) {
