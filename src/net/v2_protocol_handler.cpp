@@ -5,14 +5,11 @@
 #include <net/v2_protocol_handler.h>
 
 #include <node/metrics.h>
-
-#include <avalanche/processor.h>
 #include <common/args.h>
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <crypto/siphash.h>
 #include <logging.h>
-#include <lotus_v2/blocksnap.h>
 #include <lotus_v2/set_reconciliation.h>
 #include <lotus_v2/tagged_hash.h>
 #include <net_processing.h>
@@ -77,16 +74,6 @@ ComputeSubtreeAHash(const std::vector<CTransactionRef> &normalized_txs) {
         }
     }
     return lotus::v2::BuildTxSubtreeA(pairs);
-}
-
-CandidateOverlayEntry
-BuildCandidateOverlayEntry(const std::vector<CTransactionRef> &raw_txs) {
-    CandidateOverlayEntry entry;
-    entry.txs = NormalizeCtorTxList(raw_txs);
-    entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
-    lotus::v2::ComputeNullMerkleRootAndBranch(entry.txs, entry.null_merkle_root,
-                                              entry.coinbase_merkle_branch);
-    return entry;
 }
 
 } // namespace
@@ -254,84 +241,6 @@ V2PeerProtocolHandler::V2PeerProtocolHandler(ChainstateManager &chainman,
     : m_chainman(chainman), m_mempool(mempool), m_connman(connman),
       m_peerman(peerman) {}
 
-void V2PeerProtocolHandler::SetAvalancheProcessor(
-    avalanche::Processor *avalanche) {
-    LOCK(m_mutex);
-    m_avalanche = avalanche;
-}
-
-void V2PeerProtocolHandler::SetSnapSyncEnabled(std::optional<bool> enabled) {
-    {
-        LOCK(cs_main);
-        if (!m_chainman.GetAll().empty()) {
-            m_chainman.ActiveChainstate().SetSnapSyncEnabled(enabled);
-        }
-    }
-    LOCK(m_mutex);
-    m_snapsync_enabled_override = enabled;
-}
-
-void V2PeerProtocolHandler::SetReverseSyncEnabled(std::optional<bool> enabled) {
-    {
-        LOCK(cs_main);
-        if (!m_chainman.GetAll().empty()) {
-            m_chainman.ActiveChainstate().SetReverseSyncEnabled(enabled);
-        }
-    }
-    LOCK(m_mutex);
-    m_reversesync_enabled_override = enabled;
-}
-
-void V2PeerProtocolHandler::SetServeUtxoShards(std::optional<bool> enabled) {
-    LOCK(m_mutex);
-    m_serve_utxo_shards_override = enabled;
-}
-
-bool V2PeerProtocolHandler::IsSnapSyncEnabled() const {
-    LOCK(m_mutex);
-    const bool snap =
-        m_snapsync_enabled_override.value_or(gArgs.GetBoolArg("-snapsync", true));
-    const bool rev = m_reversesync_enabled_override.value_or(
-        gArgs.GetBoolArg("-reversesync", true));
-    return snap && rev;
-}
-
-bool V2PeerProtocolHandler::IsReverseSyncEnabled() const {
-    return IsSnapSyncEnabled();
-}
-
-bool V2PeerProtocolHandler::IsServeUtxoShardsEnabled() const {
-    LOCK(m_mutex);
-    return m_serve_utxo_shards_override.value_or(
-        gArgs.GetBoolArg("-serveutxoshards", true));
-}
-
-void V2PeerProtocolHandler::SetPeerServices(NodeId peer_id,
-                                            ServiceFlags services) {
-    LOCK(m_mutex);
-    m_peer_services[peer_id] = services;
-}
-
-ServiceFlags V2PeerProtocolHandler::GetPeerServices(NodeId peer_id) const {
-    LOCK(m_mutex);
-    auto it = m_peer_services.find(peer_id);
-    return it != m_peer_services.end() ? it->second : NODE_NONE;
-}
-
-bool V2PeerProtocolHandler::PeerSupportsUtxoShardsLocked(NodeId peer_id) const {
-    AssertLockHeld(m_mutex);
-    auto it = m_peer_services.find(peer_id);
-    if (it != m_peer_services.end()) {
-        return (it->second & NODE_UTXO_SHARD) != 0;
-    }
-    return false;
-}
-
-void V2PeerProtocolHandler::RegisterPeerNode(CNode &pnode) {
-    LOCK(m_mutex);
-    m_peer_nodes[pnode.GetId()] = &pnode;
-}
-
 bool V2PeerProtocolHandler::TryHandleMessage(
     CNode &pfrom, const std::string &msg_type, DataStream &vRecv,
     std::chrono::microseconds time_received) {
@@ -339,9 +248,8 @@ bool V2PeerProtocolHandler::TryHandleMessage(
         LOCK(m_mutex);
         m_peer_nodes[pfrom.GetId()] = &pfrom;
     }
-    if (msg_type == NetMsgType::MINEDHEADER ||
-        msg_type == NetMsgType::SEALEDHEADER ||
-        msg_type == NetMsgType::SEALEDBLOCK) {
+    if (msg_type == NetMsgType::SEALEDHEADER ||
+        msg_type == NetMsgType::MINEDHEADER) {
         HandleSealedHeader(pfrom, vRecv);
         return true;
     }
@@ -403,8 +311,6 @@ bool V2PeerProtocolHandler::CheckPeerRateLimit(
         (time_received - state.window_start) >= window_us) {
         state.window_start = time_received;
         state.count = 1;
-        m_peer_window_start[peer_id] = time_received;
-        m_peer_msg_counts[peer_id] = 1;
         return true;
     }
     if (state.count >= MAX_SYNC_MESSAGES_PER_WINDOW) {
@@ -412,7 +318,6 @@ bool V2PeerProtocolHandler::CheckPeerRateLimit(
         return false;
     }
     ++state.count;
-    m_peer_msg_counts[peer_id] = state.count;
     return true;
 }
 
@@ -515,7 +420,9 @@ bool V2PeerProtocolHandler::CheckPeerShardRateLimit(
 
 void V2PeerProtocolHandler::RegisterCandidateOverlay(
     const BlockHash &prev_block_hash, std::vector<CTransactionRef> txs) {
-    CandidateOverlayEntry entry = BuildCandidateOverlayEntry(txs);
+    CandidateOverlayEntry entry;
+    entry.txs = NormalizeCtorTxList(txs);
+    entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
     LOCK(m_mutex);
     auto &vec = m_candidate_overlays[prev_block_hash];
     if (vec.size() >= MAX_OVERLAYS_PER_PREV) {
@@ -530,106 +437,89 @@ void V2PeerProtocolHandler::ClearCandidateOverlays() {
 }
 
 std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
-    const CBlockHeader &header, const CTransactionRef &coinbase_tx,
-    const std::vector<uint256> &coinbase_merkle_branch,
-    const std::vector<uint256> &epoch_batch_ids) const {
+    const CBlockHeader &header, const CTransactionRef &coinbase_tx) const {
     if (header.IsNull() || !coinbase_tx || coinbase_tx->IsNull() ||
         !coinbase_tx->IsCoinBase()) {
         return nullptr;
     }
 
     uint64_t parent_mtp = 0;
-    uint64_t next_height = 0;
-    {
+    if (!header.hashStateRoot.IsNull()) {
         LOCK(cs_main);
         const CBlockIndex *pindex_prev =
             m_chainman.m_blockman.LookupBlockIndex(header.hashPrevBlock);
         if (pindex_prev) {
             parent_mtp =
                 static_cast<uint64_t>(pindex_prev->GetMedianTimePast());
-            next_height = static_cast<uint64_t>(pindex_prev->nHeight + 1);
         }
     }
 
-    const TxId cb_txid_u256 = coinbase_tx->GetId();
     lotus::v2::Hash cb_tx_id{};
-    std::memcpy(cb_tx_id.data(), cb_txid_u256.begin(), 32);
+    std::memcpy(cb_tx_id.data(), coinbase_tx->GetId().begin(), 32);
     lotus::v2::Hash prev_block_id{};
     std::memcpy(prev_block_id.data(), header.hashPrevBlock.begin(), 32);
 
     // Check progressive Merklix overlay layers (finalized epoch layers L_k and
-    // live speculative layer L_spec) in O(log N) (<= 16 SHA-256d spine hashes)
-    // using the precomputed positional null_merkle_root + coinbase_merkle_branch
-    // before falling back to explicit candidates.
+    // live speculative layer L_spec) in O(1) using pre-computed Subtree A and
+    // UTXO overlay roots before falling back to explicit candidates.
     std::shared_ptr<const CBlock> overlay_matched;
     bool used_overlay_fastpath = false;
     {
         LOCK(m_mempool.cs);
-        if (!header.hashPrevBlock.IsNull() && m_mempool.size() > 0 &&
-            next_height > 0) {
-            m_mempool.SyncMerklixOverlayToTip(header.hashPrevBlock, next_height,
-                                              parent_mtp);
+        if (!header.hashPrevBlock.IsNull() && m_mempool.size() > 0) {
+            m_mempool.SyncMerklixOverlayToTip(
+                header.hashPrevBlock, static_cast<uint64_t>(header.nHeight),
+                parent_mtp);
         }
-
         auto try_match_layer = [&](const lotus::v2::MempoolOverlayLayer &layer)
             -> std::shared_ptr<const CBlock> {
-            if (layer.Contains(cb_tx_id) || layer.HasDoubleSpends()) {
+            const uint256 expected_merkle_root =
+                lotus::v2::net::ComputeV2TxRootFromSubtreeA(
+                    *coinbase_tx, layer.GetSubtreeARoot());
+            if (expected_merkle_root != header.hashMerkleRoot ||
+                layer.Contains(cb_tx_id)) {
                 return nullptr;
             }
-
-            // 1. Standard positional SHA-256d Merkle spine verification:
-            //    - If caller supplied `coinbase_merkle_branch`, verify both:
-            //      ComputeMerkleRootFromBranch(0, branch) == layer.null_merkle_root
-            //      ComputeMerkleRootFromBranch(cb_txid, branch) == header.hashMerkleRoot
-            //    - Otherwise, verify via layer's cached coinbase_merkle_branch.
-            bool merkle_matched = false;
-            if (!coinbase_merkle_branch.empty()) {
-                const lotus::v2::SealedBlock sealed_blk(
-                    header, coinbase_tx, coinbase_merkle_branch,
-                    epoch_batch_ids);
-                merkle_matched = sealed_blk.VerifyAgainstLayer(layer);
-            } else {
-                const lotus::v2::Hash pos_root =
-                    layer.ComputePositionalMerkleRoot(cb_tx_id);
-                merkle_matched =
-                    (std::memcmp(pos_root.data(), header.hashMerkleRoot.begin(),
-                                 32) == 0);
+            const bool anchored =
+                layer.GetParentBlockId() == prev_block_id &&
+                layer.GetHeight() == static_cast<uint64_t>(header.nHeight) &&
+                layer.GetParentMtp() == parent_mtp;
+            if (!header.hashStateRoot.IsNull() && anchored) {
+                const uint256 expected_state_root =
+                    ComputeV2StateRootFromOverlay(
+                        *coinbase_tx, layer, header.nBits,
+                        static_cast<uint64_t>(header.nHeight), parent_mtp,
+                        /*record=*/false);
+                if (expected_state_root != header.hashStateRoot) {
+                    return nullptr;
+                }
             }
-
-            // eCash commits only the positional transaction Merkle root.
-
-            if (!merkle_matched) {
-                return nullptr;
-            }
-
             auto block = std::make_shared<CBlock>(header);
+            // CheckBlock must still validate the reconstructed transaction root.
             block->vtx.reserve(1 + layer.GetTxCount());
             block->vtx.push_back(coinbase_tx);
             for (const auto &[_, oentry] : layer.GetOrderedTxs()) {
-                CTransactionRef tx =
-                    std::static_pointer_cast<const CTransaction>(oentry.tx_ref);
-                if (!tx) {
-                    uint256 raw_id;
-                    std::memcpy(raw_id.begin(), oentry.tx_id.data(), 32);
-                    tx = m_mempool.get(TxId(raw_id));
-                }
-                if (!tx) {
+                block->vtx.push_back(
+                    std::static_pointer_cast<const CTransaction>(oentry.tx_ref));
+            }
+            if (!header.hashStateRoot.IsNull() && !anchored) {
+                const uint256 expected_state_root = ComputeV2BlockStateRoot(
+                    *block, header.hashPrevBlock,
+                    static_cast<uint64_t>(header.nHeight), parent_mtp,
+                    /*record=*/false);
+                if (expected_state_root != header.hashStateRoot) {
                     return nullptr;
                 }
-                block->vtx.push_back(std::move(tx));
-            }
-            // CheckBlock must still check the Merkle root and duplicate-tail mutation.
-
-            const bool anchored =
-                layer.GetParentBlockId() == prev_block_id &&
-                (next_height == 0 || layer.GetHeight() == next_height) &&
-                layer.GetParentMtp() == parent_mtp;
-            if (anchored) {
+            } else if (!header.hashStateRoot.IsNull() && anchored) {
                 used_overlay_fastpath = true;
             }
             return block;
         };
 
+        // Optimization (rolled into initial V2 protocol handler): query
+        // CTxMemPool::GetOverlayManager()'s frozen pre-consensus epoch layers
+        // (L_k) and speculative mempool layer (L_spec) in O(1) via precomputed
+        // Subtree A and UTXO overlay roots before scanning explicit candidates.
         auto &overlay_mgr = m_mempool.GetOverlayManager();
         const auto &frozen_epochs = overlay_mgr.GetFrozenEpochs();
         for (auto it = frozen_epochs.rbegin(); it != frozen_epochs.rend();
@@ -676,18 +566,14 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
             if (it_scope_prev != m_scoped_txs.end()) {
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_prev->second.txs,
-                    it_scope_prev->second.subtree_a_root,
-                    it_scope_prev->second.null_merkle_root,
-                    it_scope_prev->second.coinbase_merkle_branch});
+                    it_scope_prev->second.subtree_a_root});
             }
             auto it_scope_hash =
                 m_scoped_txs.find(ScopeKey{scope, header.GetHash()});
             if (it_scope_hash != m_scoped_txs.end()) {
                 candidates.push_back(CandidateOverlayEntry{
                     it_scope_hash->second.txs,
-                    it_scope_hash->second.subtree_a_root,
-                    it_scope_hash->second.null_merkle_root,
-                    it_scope_hash->second.coinbase_merkle_branch});
+                    it_scope_hash->second.subtree_a_root});
             }
         }
     }
@@ -702,47 +588,28 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
                 mempool_txs.push_back(entry->GetSharedTx());
             }
         }
-        candidates.push_back(BuildCandidateOverlayEntry(mempool_txs));
+        CandidateOverlayEntry mempool_entry;
+        mempool_entry.txs = NormalizeCtorTxList(mempool_txs);
+        mempool_entry.subtree_a_root = ComputeSubtreeAHash(mempool_entry.txs);
+        candidates.push_back(std::move(mempool_entry));
     }
 
     // Also include the empty non-coinbase candidate set (for coinbase-only
     // blocks).
-    candidates.push_back(BuildCandidateOverlayEntry({}));
+    {
+        CandidateOverlayEntry empty_entry;
+        empty_entry.subtree_a_root = lotus::v2::BuildTxSubtreeA({});
+        candidates.push_back(std::move(empty_entry));
+    }
 
     for (const auto &candidate : candidates) {
-        // Verify coinbase txid does not collide with any candidate transaction.
-        const bool cb_dup = std::binary_search(
-            candidate.txs.begin(), candidate.txs.end(), coinbase_tx,
-            [](const CTransactionRef &a, const CTransactionRef &b) {
-                return a->GetId() < b->GetId();
-            });
-        if (cb_dup) {
-            continue;
-        }
-
-        // Fast positional SHA-256d Merkle spine verification (<= 16 hashes)
-        // before allocating block->vtx!
-        bool merkle_matched = false;
-        if (!coinbase_merkle_branch.empty()) {
-            if (coinbase_merkle_branch.size() ==
-                candidate.coinbase_merkle_branch.size()) {
-                const lotus::v2::SealedBlock sealed_blk(
-                    header, coinbase_tx, coinbase_merkle_branch,
-                    epoch_batch_ids);
-                merkle_matched =
-                    sealed_blk.VerifyMerkleSpine(candidate.null_merkle_root);
-            }
-        } else {
-            const uint256 expected_pos_root =
-                lotus::v2::ComputeMerkleRootFromBranch(
-                    cb_txid_u256, candidate.coinbase_merkle_branch,
-                    /*index=*/0);
-            merkle_matched = (expected_pos_root == header.hashMerkleRoot);
-        }
-
-        // V2 commitment matching belongs in the explicit V2 protocol adapter.
-
-        if (!merkle_matched) {
+        // O(1) Merklix root pre-filter (single BLAKE3 hash over coinbase_leaf
+        // and pre-computed candidate.subtree_a_root) BEFORE allocating
+        // block->vtx or computing ComputeV2BlockStateRoot!
+        const uint256 expected_merkle_root =
+            lotus::v2::net::ComputeV2TxRootFromSubtreeA(
+                *coinbase_tx, candidate.subtree_a_root);
+        if (expected_merkle_root != header.hashMerkleRoot) {
             continue;
         }
 
@@ -752,7 +619,28 @@ std::shared_ptr<const CBlock> V2PeerProtocolHandler::MatchCandidateOverlay(
         for (const auto &tx : candidate.txs) {
             block->vtx.push_back(tx);
         }
-        // CheckBlock must still check the Merkle root and duplicate-tail mutation.
+
+        if (!header.hashStateRoot.IsNull()) {
+            uint64_t parent_mtp = 0;
+            {
+                LOCK(cs_main);
+                const CBlockIndex *pindex_prev =
+                    m_chainman.m_blockman.LookupBlockIndex(
+                        header.hashPrevBlock);
+                if (pindex_prev) {
+                    parent_mtp = static_cast<uint64_t>(
+                        pindex_prev->GetMedianTimePast());
+                }
+            }
+            const uint256 expected_state_root = ComputeV2BlockStateRoot(
+                *block, header.hashPrevBlock,
+                static_cast<uint64_t>(header.nHeight), parent_mtp,
+                /*record=*/false);
+            if (expected_state_root != header.hashStateRoot) {
+                continue;
+            }
+        }
+
         return block;
     }
 
@@ -821,9 +709,8 @@ void V2PeerProtocolHandler::HandleSealedHeader(CNode &pfrom,
         return;
     }
 
-    std::shared_ptr<const CBlock> reconstructed = MatchCandidateOverlay(
-        sealed.header, sealed.coinbase_tx, sealed.coinbase_merkle_branch,
-        sealed.epoch_batch_ids);
+    std::shared_ptr<const CBlock> reconstructed =
+        MatchCandidateOverlay(sealed.header, sealed.coinbase_tx);
     if (reconstructed) {
         node::CountSealedHeader(node::SealedHeaderOutcome::REBUILT);
         {
@@ -856,8 +743,6 @@ void V2PeerProtocolHandler::SetScopedTransactions(
     ScopedTxSetEntry entry;
     entry.txs = NormalizeCtorTxList(txs);
     entry.subtree_a_root = ComputeSubtreeAHash(entry.txs);
-    lotus::v2::ComputeNullMerkleRootAndBranch(entry.txs, entry.null_merkle_root,
-                                              entry.coinbase_merkle_branch);
     LOCK(m_mutex);
     const ScopeKey key{scope, context_id};
     if (m_scoped_txs.find(key) == m_scoped_txs.end() &&
@@ -867,18 +752,13 @@ void V2PeerProtocolHandler::SetScopedTransactions(
     m_scoped_txs[key] = std::move(entry);
 }
 
-void V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
-    ReconScope scope, const uint256 &context_id,
-    std::vector<CTransactionRef> &out_txs, uint256 *out_root) const {
+std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
+    ReconScope scope, const uint256 &context_id) const {
     {
         LOCK(m_mutex);
         auto it = m_scoped_txs.find(ScopeKey{scope, context_id});
         if (it != m_scoped_txs.end()) {
-            out_txs = it->second.txs;
-            if (out_root) {
-                std::memcpy(out_root->begin(), it->second.subtree_a_root.data(), 32);
-            }
-            return;
+            return it->second.txs;
         }
     }
     if (scope == ReconScope::LIVE_MEMPOOL && m_relay_epochs &&
@@ -886,64 +766,21 @@ void V2PeerProtocolHandler::GetScopedTransactionsAndRoot(
         // A relay epoch: the transactions admitted within the
         // reconciliation window, not the whole mempool.
         if (auto window{m_relay_epochs->RelayReconSet(context_id)}) {
-            out_txs = NormalizeCtorTxList(*window);
-            if (out_root) {
-                const lotus::v2::Hash root = ComputeSubtreeAHash(out_txs);
-                std::memcpy(out_root->begin(), root.data(), 32);
-            }
-            return;
+            return NormalizeCtorTxList(*window);
         }
     }
     if (scope == ReconScope::LIVE_MEMPOOL) {
         std::vector<CTransactionRef> mempool_txs;
         {
             LOCK(m_mempool.cs);
-            if (m_mempool.mapTx.size() <= MAX_SCOPED_TXS) {
-                const auto &layer =
-                    m_mempool.GetMerklixOverlay().GetSpeculativeOverlay();
-                const auto &ordered = layer.GetOrderedTxs();
-                out_txs.clear();
-                out_txs.reserve(ordered.size());
-                for (const auto &[_, oentry] : ordered) {
-                    if (oentry.tx_ref) {
-                        out_txs.push_back(
-                            std::static_pointer_cast<const CTransaction>(
-                                oentry.tx_ref));
-                    }
-                }
-                if (out_txs.size() == m_mempool.mapTx.size()) {
-                    if (out_root) {
-                        const lotus::v2::Hash root = layer.GetSubtreeARoot();
-                        std::memcpy(out_root->begin(), root.data(), 32);
-                    }
-                    return;
-                }
-            }
             mempool_txs.reserve(m_mempool.mapTx.size());
             for (const auto &entry : m_mempool.mapTx) {
                 mempool_txs.push_back(entry->GetSharedTx());
             }
         }
-        out_txs = NormalizeCtorTxList(mempool_txs);
-        if (out_root) {
-            const lotus::v2::Hash root = ComputeSubtreeAHash(out_txs);
-            std::memcpy(out_root->begin(), root.data(), 32);
-        }
-        return;
+        return NormalizeCtorTxList(mempool_txs);
     }
-    out_txs.clear();
-    if (out_root) {
-        const lotus::v2::Hash empty_root = lotus::v2::EmptyTxRoot();
-        std::memcpy(out_root->begin(), empty_root.data(), 32);
-    }
-}
-
-std::vector<CTransactionRef> V2PeerProtocolHandler::GetScopedTransactions(
-    ReconScope scope, const uint256 &context_id) const {
-    std::vector<CTransactionRef> txs;
-    // Bucket drill-down needs membership only, not a Merklix root.
-    GetScopedTransactionsAndRoot(scope, context_id, txs, nullptr);
-    return txs;
+    return {};
 }
 
 MerklixSyncSummary V2PeerProtocolHandler::BuildSyncSummary(
@@ -1181,7 +1018,7 @@ MerklixSubBucketDiffResult V2PeerProtocolHandler::DiffSubBucketSummary(
 
     std::array<MerklixSubBucketEntry, 16> local_subs{};
     std::array<std::unordered_set<uint64_t>, 16> local_sub_sids{};
-    std::unordered_set<uint64_t> local_prefix_sids;
+    std::unordered_set<uint64_t> local_prefix_sids{};
     for (const auto &tx : local_txs) {
         const TxId &txid = tx->GetId();
         if (GetMerklixPrefix(txid, parent_bits) != effective_parent_prefix) {
@@ -1349,6 +1186,69 @@ bool V2PeerProtocolHandler::IsHighBandwidthShortTxPeer(NodeId peer_id) const {
     return m_high_bandwidth_shorttx_peers.count(peer_id) > 0;
 }
 
+void V2PeerProtocolHandler::SetSnapSyncEnabled(std::optional<bool> enabled) {
+    {
+        LOCK(cs_main);
+        if (!m_chainman.GetAll().empty()) {
+            m_chainman.ActiveChainstate().SetSnapSyncEnabled(enabled);
+        }
+    }
+    LOCK(m_mutex);
+    m_snapsync_enabled_override = enabled;
+}
+
+void V2PeerProtocolHandler::SetReverseSyncEnabled(std::optional<bool> enabled) {
+    {
+        LOCK(cs_main);
+        if (!m_chainman.GetAll().empty()) {
+            m_chainman.ActiveChainstate().SetReverseSyncEnabled(enabled);
+        }
+    }
+    LOCK(m_mutex);
+    m_reversesync_enabled_override = enabled;
+}
+
+bool V2PeerProtocolHandler::IsSnapSyncEnabled() const {
+    LOCK(m_mutex);
+    const bool snap =
+        m_snapsync_enabled_override.value_or(gArgs.GetBoolArg("-snapsync", true));
+    const bool rev = m_reversesync_enabled_override.value_or(
+        gArgs.GetBoolArg("-reversesync", true));
+    return snap && rev;
+}
+
+bool V2PeerProtocolHandler::IsReverseSyncEnabled() const {
+    return IsSnapSyncEnabled();
+}
+
+void V2PeerProtocolHandler::SetPeerServices(NodeId peer_id,
+                                            ServiceFlags services) {
+    LOCK(m_mutex);
+    m_peer_services[peer_id] = services;
+}
+
+ServiceFlags V2PeerProtocolHandler::GetPeerServices(NodeId peer_id) const {
+    LOCK(m_mutex);
+    auto it = m_peer_services.find(peer_id);
+    if (it != m_peer_services.end()) {
+        return it->second;
+    }
+    return NODE_NONE;
+}
+
+bool V2PeerProtocolHandler::PeerSupportsUtxoShardsLocked(NodeId peer_id) const {
+    AssertLockHeld(m_mutex);
+    const auto node = m_peer_nodes.find(peer_id);
+    if (node != m_peer_nodes.end() && node->second && node->second->fDisconnect) return false;
+    const auto services = m_peer_services.find(peer_id);
+    return services != m_peer_services.end() && (services->second & NODE_UTXO_SHARD) != 0;
+}
+
+void V2PeerProtocolHandler::RegisterPeerNode(CNode &pnode) {
+    LOCK(m_mutex);
+    m_peer_nodes[pnode.GetId()] = &pnode;
+}
+
 void V2PeerProtocolHandler::RemovePeer(NodeId peer_id) {
     LOCK(m_mutex);
     for (auto it = m_pending_shorttx_requests.begin();
@@ -1361,18 +1261,23 @@ void V2PeerProtocolHandler::RemovePeer(NodeId peer_id) {
     }
     m_high_bandwidth_shorttx_peers.erase(peer_id);
     m_peer_rates.erase(peer_id);
-    m_peer_shorttx_windows.erase(peer_id);
     m_peer_shard_windows.erase(peer_id);
     m_peer_relay_windows.erase(peer_id);
-    m_peer_window_start.erase(peer_id);
-    m_peer_msg_counts.erase(peer_id);
     m_peer_known_blocks.erase(peer_id);
     m_peer_nodes.erase(peer_id);
     m_peer_services.erase(peer_id);
     if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS ||
         m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS ||
         m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING) {
-        HandleSwarmPeerFailureLocked(peer_id, std::nullopt);
+        const bool was_in_swarm =
+            std::find(m_swarm.healthy_peers.begin(),
+                      m_swarm.healthy_peers.end(),
+                      peer_id) != m_swarm.healthy_peers.end() ||
+            m_swarm.roots_in_flight_peer == peer_id ||
+            m_swarm.undo_in_flight_peer == peer_id;
+        if (was_in_swarm) {
+            HandleSwarmPeerFailureLocked(peer_id, std::nullopt);
+        }
     }
 }
 
@@ -1454,9 +1359,6 @@ void V2PeerProtocolHandler::HandleMerklixSync(
                 diff.single_missing_short_ids.size(), 0);
         }
     }
-    if (diff.root_matched) {
-        return;
-    }
     FilterRelayHave(pfrom, scope, summary.context_id, summary.salt_k0,
                     summary.salt_k1, diff.single_missing_short_ids);
 
@@ -1505,9 +1407,15 @@ void V2PeerProtocolHandler::HandleGetMerklixBuck(
 
     const uint8_t req_depth = req.depth_bits == 0 ? 4 : req.depth_bits;
     if (!IsValidReconScope(req.scope) || req.bucket_mask == 0 ||
-        (req_depth != 4 && req_depth != 8 && req_depth != 12) ||
-        (req_depth == 4 && req.parent_prefix != 0) ||
-        (req_depth > 4 && req.parent_prefix >= (1U << (req_depth - 4)))) {
+        (req_depth != 4 && req_depth != 8 && req_depth != 12 &&
+         req_depth != 16)) {
+        LOCK(m_mutex);
+        ++m_stats.malformed_messages;
+        return;
+    }
+    const uint16_t max_req_prefix =
+        req_depth == 4 ? 1U : static_cast<uint16_t>(1U << (req_depth - 4));
+    if (req.parent_prefix >= max_req_prefix) {
         LOCK(m_mutex);
         ++m_stats.malformed_messages;
         return;
@@ -1532,18 +1440,26 @@ void V2PeerProtocolHandler::HandleGetMerklixBuck(
         ++m_stats.getmerklixbuck_received;
     }
 
-    const uint8_t child_depth = static_cast<uint8_t>(req_depth + 4);
+    if (req_depth == 16) {
+        MerklixSubBucketSummary sub = BuildSubBucketSummary(
+            scope, req.context_id, req.salt_k0, req.salt_k1, req.parent_prefix,
+            /*depth_bits=*/16);
+        m_connman.PushMessage(&pfrom,
+                              NetMsg::Make(NetMsgType::MERKLIXBUCK, sub));
+        return;
+    }
+
+    const uint8_t child_depth_bits = static_cast<uint8_t>(req_depth + 4);
     for (uint8_t b = 0; b < 16; ++b) {
         if ((req.bucket_mask & (1U << b)) == 0) {
             continue;
         }
         const uint16_t child_parent_prefix =
-            req_depth == 4
-                ? static_cast<uint16_t>(b)
-                : static_cast<uint16_t>((req.parent_prefix << 4) | b);
-        MerklixSubBucketSummary sub = BuildSubBucketSummary(
-            scope, req.context_id, req.salt_k0, req.salt_k1,
-            child_parent_prefix, child_depth);
+            static_cast<uint16_t>((req.parent_prefix << 4) | b);
+        MerklixSubBucketSummary sub =
+            BuildSubBucketSummary(scope, req.context_id, req.salt_k0,
+                                  req.salt_k1, child_parent_prefix,
+                                  child_depth_bits);
         m_connman.PushMessage(&pfrom,
                               NetMsg::Make(NetMsgType::MERKLIXBUCK, sub));
     }
@@ -1881,6 +1797,9 @@ void V2PeerProtocolHandler::HandleShortTx(
                 bool has_internal_deps = false;
                 for (size_t i = 0; i < missing_txs.size(); ++i) {
                     for (const auto &in : missing_txs[i]->vin) {
+                        if (in.nFlags == 3) {
+                            continue;
+                        }
                         auto it = txid_to_idx.find(in.prevout.GetTxId());
                         if (it != txid_to_idx.end() && it->second != i) {
                             children[it->second].push_back(i);
@@ -2127,15 +2046,22 @@ void V2PeerProtocolHandler::DispatchPendingSwarmShardsLocked() {
 }
 
 bool V2PeerProtocolHandler::RequestNextReversePeelBlockLocked(
-    int target_height, const BlockHash &target_hash, bool need_block_data) {
+    int target_height, const BlockHash &target_hash) {
     AssertLockHeld(m_mutex);
-    if (target_height <= 0 || target_hash.IsNull()) {
+    if (target_height <= 0 || target_hash.IsNull() ||
+        (m_swarm.max_peel_blocks > 0 &&
+         m_swarm.blocks_peeled >= m_swarm.max_peel_blocks)) {
         m_swarm.undo_in_flight_hash = BlockHash{};
         m_swarm.undo_in_flight_peer = -1;
-        m_swarm.pending_undo_for_block.reset();
+        m_swarm.need_peel_block = false;
+        m_swarm.pending_peel_block.reset();
+        m_swarm.pending_peel_undo.reset();
         m_swarm.state = FastSyncSwarmState::COMPLETED;
         return true;
     }
+
+    m_swarm.pending_peel_block.reset();
+    m_swarm.pending_peel_undo.reset();
 
     lotus::v2::GetBlockUndoRequest req{};
     std::memcpy(req.block_id.data(), target_hash.begin(), 32);
@@ -2147,21 +2073,18 @@ bool V2PeerProtocolHandler::RequestNextReversePeelBlockLocked(
         ++m_swarm.rr_cursor;
         if (SendRawPayloadToPeerLocked(peer_id, NetMsgType::GETBLOCKUNDO,
                                        Span{payload})) {
-            if (need_block_data) {
-                const std::vector<CInv> invs{CInv(MSG_BLOCK, target_hash)};
-                bool sent_getdata =
-                    m_connman.ForNode(peer_id, [&](CNode *pnode) {
-                        m_connman.PushMessage(
-                            pnode, NetMsg::Make(NetMsgType::GETDATA, invs));
-                        return true;
-                    });
-                if (!sent_getdata) {
-                    auto it = m_peer_nodes.find(peer_id);
-                    if (it != m_peer_nodes.end() && it->second != nullptr) {
-                        m_connman.PushMessage(
-                            it->second,
-                            NetMsg::Make(NetMsgType::GETDATA, invs));
-                    }
+            if (m_swarm.need_peel_block) {
+                std::vector<CInv> vGetData{CInv(MSG_BLOCK, target_hash)};
+                m_connman.ForNode(peer_id, [&](CNode *pnode) {
+                    m_connman.PushMessage(
+                        pnode, NetMsg::Make(NetMsgType::GETDATA, vGetData));
+                    return true;
+                });
+                auto it = m_peer_nodes.find(peer_id);
+                if (it != m_peer_nodes.end() && it->second != nullptr) {
+                    m_connman.PushMessage(
+                        it->second,
+                        NetMsg::Make(NetMsgType::GETDATA, vGetData));
                 }
             }
             m_swarm.pending_undo_for_block.reset();
@@ -2256,8 +2179,9 @@ void V2PeerProtocolHandler::HandleSwarmPeerFailureLocked(
         if (m_swarm.undo_in_flight_peer == peer_id &&
             !m_swarm.undo_in_flight_hash.IsNull()) {
             const BlockHash retry_hash = m_swarm.undo_in_flight_hash;
-            RequestNextReversePeelBlockLocked(/*target_height=*/1, retry_hash,
-                                              /*need_block_data=*/true);
+            // A corrupt undo does not invalidate a body already available
+            // locally. Retain the existing body requirement on failover.
+            RequestNextReversePeelBlockLocked(/*target_height=*/1, retry_hash);
         }
     }
 }
@@ -2265,20 +2189,12 @@ void V2PeerProtocolHandler::HandleSwarmPeerFailureLocked(
 bool V2PeerProtocolHandler::StartFastSyncSwarm(
     const BlockHash &pivot_hash, const std::vector<NodeId> &peer_ids,
     bool auto_peel, std::string &err) {
-    if (!IsSnapSyncEnabled()) {
-        err = "snapsync / reverse sync is disabled (-snapsync=0 or -reversesync=0); using traditional sync";
-        return false;
-    }
+    if (!IsSnapSyncEnabled()) { err = "snapsync / reverse sync disabled"; return false; }
 
+    lotus::v2::Header pivot_header{};
     int pivot_height = 0;
-    std::optional<lotus::v2::Hash> expected_anchor;
     {
         LOCK(cs_main);
-        Chainstate &cs = m_chainman.ActiveChainstate();
-        if (!cs.IsSnapSyncEnabled()) {
-            err = "snapsync / reverse sync is disabled (-snapsync=0 or -reversesync=0); using traditional sync";
-            return false;
-        }
         const CBlockIndex *pindex =
             m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
         if (!pindex) {
@@ -2289,61 +2205,46 @@ bool V2PeerProtocolHandler::StartFastSyncSwarm(
             err = "pivot height must be > 0";
             return false;
         }
+        const CBlockHeader hdr = pindex->GetBlockHeader();
+        if (hdr.hashStateRoot.IsNull()) {
+            err = "pivot block header has null state root";
+            return false;
+        }
+        pivot_header = hdr.ToV2Header();
         pivot_height = pindex->nHeight;
-        expected_anchor = cs.GetFastSyncStateAnchor(pivot_hash);
     }
 
-    avalanche::Processor *ava = nullptr;
-    {
-        LOCK(m_mutex);
-        ava = m_avalanche;
-    }
-    if (!expected_anchor.has_value() && ava) {
-        if (auto fin_root = ava->getFinalizedStateRoot(pivot_hash)) {
-            lotus::v2::Hash h{};
-            std::memcpy(h.data(), fin_root->begin(), 32);
-            expected_anchor = h;
-            LOCK(cs_main);
-            m_chainman.ActiveChainstate().SetFastSyncStateAnchor(pivot_hash, h);
-        }
+    std::vector<NodeId> connman_any_peers;
+    if (peer_ids.empty()) {
+        m_connman.ForEachNode([&](CNode *pnode) {
+            if (pnode && !pnode->fDisconnect) {
+                connman_any_peers.push_back(pnode->GetId());
+            }
+        });
     }
 
     LOCK(m_mutex);
     std::vector<NodeId> peers;
     std::unordered_set<NodeId> seen;
+    auto add_peer = [&](NodeId pid) {
+        if (PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) peers.push_back(pid);
+    };
     if (!peer_ids.empty()) {
-        for (const NodeId pid : peer_ids) {
-            if (PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
-                peers.push_back(pid);
-            }
-        }
+        for (const auto pid : peer_ids) add_peer(pid);
     } else {
-        m_connman.ForEachNode([&](CNode *pnode) NO_THREAD_SAFETY_ANALYSIS {
-            if (pnode && !pnode->fDisconnect &&
-                PeerSupportsUtxoShardsLocked(pnode->GetId()) &&
-                seen.insert(pnode->GetId()).second) {
-                peers.push_back(pnode->GetId());
-            }
-        });
-        for (const auto &[pid, pnode] : m_peer_nodes) {
-            if (pnode && !pnode->fDisconnect &&
-                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
-                peers.push_back(pid);
-            }
-        }
+        for (const auto pid : connman_any_peers) add_peer(pid);
+        for (const auto &[pid, node] : m_peer_nodes) if (node) add_peer(pid);
         std::sort(peers.begin(), peers.end());
     }
-    if (peers.empty()) {
-        err = "no NODE_UTXO_SHARD capable peers available for fast-sync swarm";
-        return false;
-    }
+    if (peers.empty()) { err = "no NODE_UTXO_SHARD capable peers available"; return false; }
 
     m_swarm = FastSyncSwarmCoordinatorState{};
+    m_swarm.max_peel_blocks = std::max<int64_t>(0, gArgs.GetIntArg("-reversesynchorizon", DEFAULT_MAX_PEEL_BLOCKS));
     m_swarm.state = FastSyncSwarmState::FETCHING_ROOTS;
     m_swarm.pivot_hash = pivot_hash;
     std::memcpy(m_swarm.pivot_v2_id.data(), pivot_hash.begin(), 32);
+    m_swarm.pivot_header = pivot_header;
     m_swarm.pivot_height = pivot_height;
-    m_swarm.expected_anchor = expected_anchor;
     m_swarm.auto_peel = auto_peel;
     m_swarm.healthy_peers = std::move(peers);
 
@@ -2358,29 +2259,22 @@ bool V2PeerProtocolHandler::StartFastSyncSwarm(
 
 bool V2PeerProtocolHandler::StartReversePeelSwarm(
     const std::vector<NodeId> &peer_ids, std::string &err) {
-    if (!IsReverseSyncEnabled()) {
-        err = "reverse sync is disabled (-reversesync=0 or -snapsync=0); using traditional sync";
-        return false;
-    }
+    if (!IsReverseSyncEnabled()) { err = "snapsync / reverse sync disabled"; return false; }
 
     BlockHash target_hash{};
     int target_height = 0;
-    bool need_block_data = false;
+    bool need_block = false;
     {
         LOCK(cs_main);
         Chainstate &cs = m_chainman.ActiveChainstate();
-        if (!cs.IsReverseSyncEnabled()) {
-            err = "reverse sync is disabled (-reversesync=0 or -snapsync=0); using traditional sync";
-            return false;
-        }
         if (!cs.IsFastSyncActive()) {
             err = "fast-sync mode is not active";
             return false;
         }
         const int earliest_h = cs.GetEarliestVerifiedHeight();
-        const CBlockIndex *pindex = cs.GetEarliestVerifiedBlock();
-        if (!pindex) {
-            pindex = cs.m_chain[earliest_h];
+        const CBlockIndex *pindex = cs.m_chain[earliest_h];
+        if (!pindex && cs.FastSyncPivotBase()) {
+            pindex = cs.FastSyncPivotBase()->GetAncestor(earliest_h);
         }
         if (!pindex || pindex->nHeight <= 0) {
             err = "earliest verified block index invalid or already at genesis";
@@ -2388,52 +2282,34 @@ bool V2PeerProtocolHandler::StartReversePeelSwarm(
         }
         target_hash = pindex->GetBlockHash();
         target_height = pindex->nHeight;
-        need_block_data = !pindex->nStatus.hasData();
+        need_block = !pindex->nStatus.hasData();
+    }
+
+    std::vector<NodeId> connman_any_peers;
+    if (peer_ids.empty()) {
+        m_connman.ForEachNode([&](CNode *pnode) {
+            if (pnode && !pnode->fDisconnect) {
+                connman_any_peers.push_back(pnode->GetId());
+            }
+        });
     }
 
     LOCK(m_mutex);
-    if (!peer_ids.empty()) {
-        std::vector<NodeId> peers;
-        std::unordered_set<NodeId> seen;
-        for (const NodeId pid : peer_ids) {
-            if (m_swarm.banned_peers.count(pid) == 0 &&
-                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
-                peers.push_back(pid);
-            }
-        }
-        m_swarm.healthy_peers = std::move(peers);
-    } else if (m_swarm.healthy_peers.empty()) {
-        std::vector<NodeId> conn_peers;
-        m_connman.ForEachNode([&](CNode *pnode) {
-            if (pnode && !pnode->fDisconnect) {
-                conn_peers.push_back(pnode->GetId());
-            }
-        });
-        std::unordered_set<NodeId> seen;
-        for (const NodeId pid : conn_peers) {
-            if (m_swarm.banned_peers.count(pid) == 0 &&
-                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
-                m_swarm.healthy_peers.push_back(pid);
-            }
-        }
-        for (const auto &[pid, pnode] : m_peer_nodes) {
-            if (pnode && !pnode->fDisconnect &&
-                m_swarm.banned_peers.count(pid) == 0 &&
-                PeerSupportsUtxoShardsLocked(pid) && seen.insert(pid).second) {
-                m_swarm.healthy_peers.push_back(pid);
-            }
-        }
-        std::sort(m_swarm.healthy_peers.begin(), m_swarm.healthy_peers.end());
+    std::vector<NodeId> candidates = peer_ids.empty() ? connman_any_peers : peer_ids;
+    if (peer_ids.empty()) for (const auto &[pid, node] : m_peer_nodes) if (node) candidates.push_back(pid);
+    std::vector<NodeId> peers;
+    std::unordered_set<NodeId> seen;
+    for (const auto pid : candidates) {
+        if (m_swarm.banned_peers.count(pid) == 0 && PeerSupportsUtxoShardsLocked(pid) &&
+            seen.insert(pid).second) peers.push_back(pid);
     }
-    if (m_swarm.healthy_peers.empty()) {
-        err = "no healthy NODE_UTXO_SHARD peers available for reverse peel swarm";
-        return false;
-    }
-
+    if (peers.empty()) { err = "no healthy NODE_UTXO_SHARD peers available"; return false; }
+    m_swarm.healthy_peers = std::move(peers);
+    m_swarm.max_peel_blocks = std::max<int64_t>(0, gArgs.GetIntArg("-reversesynchorizon", DEFAULT_MAX_PEEL_BLOCKS));
     m_swarm.auto_peel = true;
+    m_swarm.need_peel_block = need_block;
     m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
-    if (!RequestNextReversePeelBlockLocked(target_height, target_hash,
-                                           need_block_data)) {
+    if (!RequestNextReversePeelBlockLocked(target_height, target_hash)) {
         err = "failed to send GETBLOCKUNDO to any swarm peer";
         return false;
     }
@@ -2493,11 +2369,6 @@ FastSyncSwarmStatus V2PeerProtocolHandler::GetFastSyncSwarmStatus() const {
     status.state = m_swarm.state;
     status.pivot_block_hash = m_swarm.pivot_hash;
     status.pivot_height = m_swarm.pivot_height;
-    if (m_swarm.expected_anchor.has_value()) {
-        uint256 anchor_u256;
-        std::memcpy(anchor_u256.begin(), m_swarm.expected_anchor->data(), 32);
-        status.avalanche_state_anchor = anchor_u256;
-    }
     status.total_non_empty_shards = m_swarm.total_non_empty_shards;
     status.verified_shards = m_swarm.verified_shards.size();
     status.pending_shards = m_swarm.pending_shards.size();
@@ -2515,15 +2386,17 @@ FastSyncSwarmStatus V2PeerProtocolHandler::GetFastSyncSwarmStatus() const {
 void V2PeerProtocolHandler::HandleGetUtxoRoots(
     CNode &pfrom, DataStream &vRecv,
     std::chrono::microseconds /*time_received*/) {
+
+    if (!IsServeUtxoShardsEnabled()) {
+        vRecv.ignore(vRecv.size());
+        return;
+    }
     const auto span = MakeUCharSpan(vRecv);
     const std::vector<uint8_t> bytes(span.begin(), span.end());
     vRecv.ignore(vRecv.size());
     {
         LOCK(m_mutex);
         ++m_stats.getutxoroots_received;
-    }
-    if (!IsServeUtxoShardsEnabled()) {
-        return;
     }
 
     lotus::v2::GetUtxoRootsRequest req{};
@@ -2534,14 +2407,15 @@ void V2PeerProtocolHandler::HandleGetUtxoRoots(
             ++m_stats.malformed_messages;
         }
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), "bad-getutxoroots");
         return;
     }
 
     uint256 raw_hash;
     std::memcpy(raw_hash.begin(), req.pivot_block_id.data(), 32);
     const BlockHash block_hash{raw_hash};
-
-    Chainstate::FastSyncBlockState block_state;
+    CBlockHeader hdr;
+    uint64_t height = 0;
     {
         LOCK(cs_main);
         const CBlockIndex *pindex =
@@ -2549,30 +2423,26 @@ void V2PeerProtocolHandler::HandleGetUtxoRoots(
         if (!pindex || !m_chainman.ActiveChain().Contains(pindex)) {
             return;
         }
-        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
-                pindex, block_state, err, /*populate_utxo_set=*/false)) {
+        hdr = pindex->GetBlockHeader();
+        height = static_cast<uint64_t>(pindex->nHeight);
+    }
+
+    std::vector<lotus::v2::Coin> coins;
+    lotus::v2::MonetaryState mon_state{};
+    if (!GetV2BlockStateCoinsAndMonetary(block_hash, height, coins,
+                                         mon_state)) {
+        return;
+    }
+    lotus::v2::UtxoSet utxo_set;
+    for (const auto &c : coins) {
+        if (!utxo_set.Insert(c)) {
             return;
         }
     }
-
-    avalanche::Processor *ava = nullptr;
-    {
-        LOCK(m_mutex);
-        ava = m_avalanche;
-    }
-    if (ava) {
-        uint256 root_u256;
-        std::memcpy(root_u256.begin(), block_state.utxo_root.data(), 32);
-        ava->registerStateAnchor(block_hash, root_u256,
-                                 /*localAccepted=*/true, /*poll=*/true);
-    }
-
     lotus::v2::UtxoRootsMessage roots_msg{};
-    if (!lotus::v2::ExportUtxoRootsFromSmt(block_state.smt_root,
-                                           req.pivot_block_id,
-                                           block_state.height,
-                                           block_state.monetary, roots_msg,
-                                           err)) {
+    if (!lotus::v2::ExportUtxoRoots(utxo_set, GetActiveV2ChainId(),
+                                    hdr.ToV2Header(), mon_state, roots_msg,
+                                    err)) {
         return;
     }
     const std::vector<uint8_t> payload =
@@ -2593,49 +2463,13 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
     const bool decoded =
         lotus::v2::DecodeUtxoRootsMessage(bytes, roots_msg, err);
 
-    BlockHash pivot_hash_for_anchor{};
-    avalanche::Processor *ava = nullptr;
-    {
-        LOCK(m_mutex);
-        pivot_hash_for_anchor = m_swarm.pivot_hash;
-        ava = m_avalanche;
-    }
-
-    std::optional<lotus::v2::Hash> latest_anchor;
-    if (!pivot_hash_for_anchor.IsNull()) {
-        {
-            LOCK(cs_main);
-            if (!m_chainman.GetAll().empty()) {
-                latest_anchor =
-                    m_chainman.ActiveChainstate().GetFastSyncStateAnchor(
-                        pivot_hash_for_anchor);
-            }
-        }
-        if (!latest_anchor.has_value() && ava) {
-            if (auto fin_root =
-                    ava->getFinalizedStateRoot(pivot_hash_for_anchor)) {
-                lotus::v2::Hash h{};
-                std::memcpy(h.data(), fin_root->begin(), 32);
-                latest_anchor = h;
-                LOCK(cs_main);
-                if (!m_chainman.GetAll().empty()) {
-                    m_chainman.ActiveChainstate().SetFastSyncStateAnchor(
-                        pivot_hash_for_anchor, h);
-                }
-            }
-        }
-    }
-
     bool need_discourage = false;
+    std::string discourage_reason;
     bool activate_empty_pivot = false;
     BlockHash pivot_hash{};
-    std::optional<lotus::v2::Hash> candidate_anchor_to_poll;
     {
         LOCK(m_mutex);
         ++m_stats.utxoroots_received;
-        if (latest_anchor.has_value() && !m_swarm.expected_anchor.has_value()) {
-            m_swarm.expected_anchor = latest_anchor;
-        }
         if (!decoded) {
             ++m_stats.malformed_messages;
             ++m_stats.swarm_corrupted_roots_rejected;
@@ -2643,25 +2477,16 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
                 HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
             }
             need_discourage = true;
+            discourage_reason = "bad-utxoroots";
         } else if (m_swarm.state == FastSyncSwarmState::FETCHING_ROOTS &&
                    roots_msg.pivot_block_id == m_swarm.pivot_v2_id) {
-            if (!m_swarm.expected_anchor.has_value() && ava != nullptr &&
-                roots_msg.height ==
-                    static_cast<uint64_t>(m_swarm.pivot_height)) {
-                if (auto cand_folded =
-                        lotus::v2::FoldDepth8ShardRoots(roots_msg.shards)) {
-                    candidate_anchor_to_poll = *cand_folded;
-                    pivot_hash = m_swarm.pivot_hash;
-                }
-            }
-            lotus::v2::Hash folded_root{};
-            if (!lotus::v2::VerifyUtxoRootsAgainstAnchor(
-                    m_swarm.pivot_v2_id,
-                    static_cast<uint64_t>(m_swarm.pivot_height),
-                    m_swarm.expected_anchor, roots_msg, folded_root, err)) {
+            if (!lotus::v2::VerifyUtxoRootsAgainstHeader(
+                    m_swarm.pivot_header, GetActiveV2ChainId(), roots_msg,
+                    err)) {
                 ++m_stats.swarm_corrupted_roots_rejected;
                 HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
-                need_discourage = !candidate_anchor_to_poll.has_value();
+                need_discourage = true;
+                discourage_reason = "bad-utxoroots-commitment";
             } else {
                 m_swarm.has_verified_roots = true;
                 m_swarm.verified_roots = roots_msg;
@@ -2676,9 +2501,9 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
                     }
                 }
                 m_swarm.total_non_empty_shards = m_swarm.pending_shards.size();
-                pivot_hash = m_swarm.pivot_hash;
                 if (m_swarm.pending_shards.empty()) {
                     activate_empty_pivot = true;
+                    pivot_hash = m_swarm.pivot_hash;
                 } else {
                     m_swarm.state = FastSyncSwarmState::FETCHING_SHARDS;
                     DispatchPendingSwarmShardsLocked();
@@ -2687,31 +2512,30 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
         }
     }
 
-    if (candidate_anchor_to_poll.has_value() && !pivot_hash.IsNull() && ava) {
-        uint256 root_u256;
-        std::memcpy(root_u256.begin(), candidate_anchor_to_poll->data(), 32);
-        ava->registerStateAnchor(pivot_hash, root_u256,
-                                 /*localAccepted=*/false, /*poll=*/true);
-    }
-
     if (need_discourage) {
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), discourage_reason);
         return;
     }
 
     if (activate_empty_pivot) {
+        lotus::v2::UtxoSet assembled_utxo;
+        lotus::v2::MonetaryState assembled_monetary{};
         std::string act_err;
         bool activated = false;
-        bool need_block_data = false;
+        bool pivot_need_block = false;
         {
             LOCK(cs_main);
             CBlockIndex *pindex_pivot =
                 m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
             if (pindex_pivot &&
-                m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
-                    pindex_pivot, roots_msg, {}, act_err)) {
-                activated = true;
-                need_block_data = !pindex_pivot->nStatus.hasData();
+                lotus::v2::AssembleAndVerifyFastSyncPivot(
+                    pindex_pivot->GetBlockHeader().ToV2Header(),
+                    GetActiveV2ChainId(), roots_msg, {}, assembled_utxo,
+                    assembled_monetary, act_err)) {
+                activated = m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
+                    pindex_pivot, assembled_utxo.Coins(), assembled_monetary, act_err);
+                pivot_need_block = !pindex_pivot->nStatus.hasData();
             }
         }
         LOCK(m_mutex);
@@ -2719,11 +2543,12 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
             m_swarm.state = FastSyncSwarmState::FAILED;
             return;
         }
-        m_swarm.coins_imported = 0;
+        m_swarm.coins_imported = assembled_utxo.Coins().size();
         if (m_swarm.auto_peel && m_swarm.pivot_height > 0) {
+            m_swarm.need_peel_block = pivot_need_block;
             m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
-            RequestNextReversePeelBlockLocked(
-                m_swarm.pivot_height, m_swarm.pivot_hash, need_block_data);
+            RequestNextReversePeelBlockLocked(m_swarm.pivot_height,
+                                              m_swarm.pivot_hash);
         } else {
             m_swarm.state = FastSyncSwarmState::COMPLETED;
         }
@@ -2732,6 +2557,11 @@ void V2PeerProtocolHandler::HandleUtxoRoots(
 
 void V2PeerProtocolHandler::HandleGetUtxoShard(
     CNode &pfrom, DataStream &vRecv, std::chrono::microseconds time_received) {
+
+    if (!IsServeUtxoShardsEnabled()) {
+        vRecv.ignore(vRecv.size());
+        return;
+    }
     if (!CheckPeerShardRateLimit(pfrom.GetId(), time_received)) {
         vRecv.ignore(vRecv.size());
         return;
@@ -2743,9 +2573,6 @@ void V2PeerProtocolHandler::HandleGetUtxoShard(
         LOCK(m_mutex);
         ++m_stats.getutxoshard_received;
     }
-    if (!IsServeUtxoShardsEnabled()) {
-        return;
-    }
 
     lotus::v2::GetUtxoShardRequest req{};
     std::string err;
@@ -2755,14 +2582,14 @@ void V2PeerProtocolHandler::HandleGetUtxoShard(
             ++m_stats.malformed_messages;
         }
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), "bad-getutxoshard");
         return;
     }
 
     uint256 raw_hash;
     std::memcpy(raw_hash.begin(), req.pivot_block_id.data(), 32);
     const BlockHash block_hash{raw_hash};
-
-    Chainstate::FastSyncBlockState block_state;
+    uint64_t height = 0;
     {
         LOCK(cs_main);
         const CBlockIndex *pindex =
@@ -2770,17 +2597,25 @@ void V2PeerProtocolHandler::HandleGetUtxoShard(
         if (!pindex || !m_chainman.ActiveChain().Contains(pindex)) {
             return;
         }
-        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
-                pindex, block_state, err, /*populate_utxo_set=*/false)) {
+        height = static_cast<uint64_t>(pindex->nHeight);
+    }
+
+    std::vector<lotus::v2::Coin> coins;
+    lotus::v2::MonetaryState mon_state{};
+    if (!GetV2BlockStateCoinsAndMonetary(block_hash, height, coins,
+                                         mon_state)) {
+        return;
+    }
+    lotus::v2::UtxoSet utxo_set;
+    for (const auto &c : coins) {
+        if (!utxo_set.Insert(c)) {
             return;
         }
     }
-
     lotus::v2::UtxoShardMessage shard_msg{};
-    if (!lotus::v2::ExportUtxoShardFromSmt(block_state.smt_root,
-                                           req.pivot_block_id,
-                                           req.prefix_depth, req.prefix_bits,
-                                           shard_msg, err)) {
+    if (!lotus::v2::ExportUtxoShard(utxo_set, req.pivot_block_id,
+                                    req.prefix_depth, req.prefix_bits,
+                                    shard_msg, err)) {
         return;
     }
     std::vector<uint8_t> payload;
@@ -2804,11 +2639,11 @@ void V2PeerProtocolHandler::HandleUtxoShard(
         lotus::v2::DecodeUtxoShardMessage(bytes, shard_msg, err);
 
     bool need_discourage = false;
+    std::string discourage_reason;
     bool all_shards_ready = false;
     BlockHash pivot_hash{};
     lotus::v2::UtxoRootsMessage verified_roots{};
     std::vector<lotus::v2::UtxoShardMessage> verified_shards_vec;
-    uint64_t total_coins_in_shards = 0;
     {
         LOCK(m_mutex);
         ++m_stats.utxoshard_received;
@@ -2819,6 +2654,7 @@ void V2PeerProtocolHandler::HandleUtxoShard(
                 HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
             }
             need_discourage = true;
+            discourage_reason = "bad-utxoshard";
         } else if (m_swarm.state == FastSyncSwarmState::FETCHING_SHARDS &&
                    m_swarm.has_verified_roots &&
                    shard_msg.pivot_block_id == m_swarm.pivot_v2_id) {
@@ -2842,6 +2678,7 @@ void V2PeerProtocolHandler::HandleUtxoShard(
                         ++m_stats.swarm_corrupted_shards_rejected;
                         HandleSwarmPeerFailureLocked(pfrom.GetId(), key);
                         need_discourage = true;
+                        discourage_reason = "bad-utxoshard-proof";
                     } else {
                         ++m_stats.swarm_shards_verified;
                         m_swarm.in_flight_shards.erase(key);
@@ -2859,7 +2696,6 @@ void V2PeerProtocolHandler::HandleUtxoShard(
                             verified_shards_vec.reserve(
                                 m_swarm.verified_shards.size());
                             for (const auto &[_, s] : m_swarm.verified_shards) {
-                                total_coins_in_shards += s.coins.size();
                                 verified_shards_vec.push_back(s);
                             }
                         } else {
@@ -2873,23 +2709,28 @@ void V2PeerProtocolHandler::HandleUtxoShard(
 
     if (need_discourage) {
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), discourage_reason);
         return;
     }
 
     if (all_shards_ready) {
+        lotus::v2::UtxoSet assembled_utxo;
+        lotus::v2::MonetaryState assembled_monetary{};
         std::string act_err;
         bool activated = false;
-        bool need_block_data = false;
+        bool pivot_need_block = false;
         {
             LOCK(cs_main);
             CBlockIndex *pindex_pivot =
                 m_chainman.m_blockman.LookupBlockIndex(pivot_hash);
             if (pindex_pivot &&
-                m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
-                    pindex_pivot, verified_roots, verified_shards_vec,
-                    act_err)) {
-                activated = true;
-                need_block_data = !pindex_pivot->nStatus.hasData();
+                lotus::v2::AssembleAndVerifyFastSyncPivot(
+                    pindex_pivot->GetBlockHeader().ToV2Header(),
+                    GetActiveV2ChainId(), verified_roots, verified_shards_vec,
+                    assembled_utxo, assembled_monetary, act_err)) {
+                activated = m_chainman.ActiveChainstate().ActivateVerifiedFastSyncPivot(
+                    pindex_pivot, assembled_utxo.Coins(), assembled_monetary, act_err);
+                pivot_need_block = !pindex_pivot->nStatus.hasData();
             }
         }
         LOCK(m_mutex);
@@ -2897,11 +2738,12 @@ void V2PeerProtocolHandler::HandleUtxoShard(
             m_swarm.state = FastSyncSwarmState::FAILED;
             return;
         }
-        m_swarm.coins_imported = total_coins_in_shards;
+        m_swarm.coins_imported = assembled_utxo.Coins().size();
         if (m_swarm.auto_peel && m_swarm.pivot_height > 0) {
+            m_swarm.need_peel_block = pivot_need_block;
             m_swarm.state = FastSyncSwarmState::PIVOT_ACTIVE_PEELING;
-            RequestNextReversePeelBlockLocked(
-                m_swarm.pivot_height, m_swarm.pivot_hash, need_block_data);
+            RequestNextReversePeelBlockLocked(m_swarm.pivot_height,
+                                              m_swarm.pivot_hash);
         } else {
             m_swarm.state = FastSyncSwarmState::COMPLETED;
         }
@@ -2911,15 +2753,17 @@ void V2PeerProtocolHandler::HandleUtxoShard(
 void V2PeerProtocolHandler::HandleGetBlockUndo(
     CNode &pfrom, DataStream &vRecv,
     std::chrono::microseconds /*time_received*/) {
+
+    if (!IsServeUtxoShardsEnabled()) {
+        vRecv.ignore(vRecv.size());
+        return;
+    }
     const auto span = MakeUCharSpan(vRecv);
     const std::vector<uint8_t> bytes(span.begin(), span.end());
     vRecv.ignore(vRecv.size());
     {
         LOCK(m_mutex);
         ++m_stats.getblockundo_received;
-    }
-    if (!IsServeUtxoShardsEnabled()) {
-        return;
     }
 
     lotus::v2::GetBlockUndoRequest req{};
@@ -2930,16 +2774,16 @@ void V2PeerProtocolHandler::HandleGetBlockUndo(
             ++m_stats.malformed_messages;
         }
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), "bad-getblockundo");
         return;
     }
 
     uint256 raw_hash;
     std::memcpy(raw_hash.begin(), req.block_id.data(), 32);
     const BlockHash block_hash{raw_hash};
-
-    CBlock block;
     BlockHash parent_hash;
-    Chainstate::FastSyncBlockState parent_state;
+    uint64_t parent_height = 0;
+    CBlock block;
     {
         LOCK(cs_main);
         const CBlockIndex *pindex =
@@ -2952,33 +2796,42 @@ void V2PeerProtocolHandler::HandleGetBlockUndo(
             return;
         }
         parent_hash = pindex->pprev->GetBlockHash();
-        if (!m_chainman.ActiveChainstate().ExportV2BlockStateCoinsAndMonetary(
-                pindex->pprev, parent_state, err,
-                /*populate_utxo_set=*/false)) {
-            return;
+        parent_height = static_cast<uint64_t>(pindex->pprev->nHeight);
+    }
+
+    std::vector<lotus::v2::Coin> parent_coins;
+    lotus::v2::MonetaryState parent_mon_state{};
+    if (!GetV2BlockStateCoinsAndMonetary(parent_hash, parent_height,
+                                         parent_coins, parent_mon_state)) {
+        return;
+    }
+    struct V2OutpointLess {
+        bool operator()(const lotus::v2::Outpoint &a,
+                        const lotus::v2::Outpoint &b) const {
+            if (a.tx_id != b.tx_id) {
+                return a.tx_id < b.tx_id;
+            }
+            return a.index < b.index;
         }
+    };
+    std::map<lotus::v2::Outpoint, lotus::v2::Coin, V2OutpointLess> parent_view;
+    for (const auto &c : parent_coins) {
+        parent_view.emplace(c.outpoint, c);
     }
 
-    avalanche::Processor *ava = nullptr;
-    {
-        LOCK(m_mutex);
-        ava = m_avalanche;
-    }
-    if (ava) {
-        uint256 parent_root_u256;
-        std::memcpy(parent_root_u256.begin(), parent_state.utxo_root.data(),
-                    32);
-        ava->registerStateAnchor(parent_hash, parent_root_u256,
-                                 /*localAccepted=*/true, /*poll=*/true);
-    }
-
-    std::set<COutPoint> created_outpoints;
+    std::set<lotus::v2::Outpoint, V2OutpointLess> created_outpoints;
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
-        const TxId txid = tx.GetId();
+        lotus::v2::Hash txid{};
+        std::memcpy(txid.data(), tx.GetId().begin(), 32);
         for (size_t j = 0; j < tx.vout.size(); ++j) {
-            if (!tx.vout[j].scriptPubKey.IsUnspendable()) {
-                created_outpoints.emplace(txid, static_cast<uint32_t>(j));
+            if (tx.vout[j].scriptPubKey.IsUnspendable()) {
+                continue;
+            }
+            const lotus::v2::Output v2out = tx.vout[j].ToV2Output();
+            if (!v2out.IsBurn()) {
+                created_outpoints.insert(
+                    lotus::v2::Outpoint{txid, static_cast<uint32_t>(j)});
             }
         }
     }
@@ -2986,31 +2839,28 @@ void V2PeerProtocolHandler::HandleGetBlockUndo(
     lotus::v2::BlockUndoMessage undo_msg{};
     undo_msg.block_id = req.block_id;
     undo_msg.parent_monetary_state =
-        lotus::v2::EncodeMonetaryState(parent_state.monetary);
+        lotus::v2::EncodeMonetaryState(parent_mon_state);
     for (const auto &ptx : block.vtx) {
         const CTransaction &tx = *ptx;
         if (tx.IsCoinBase()) {
             continue;
         }
         for (const auto &txin : tx.vin) {
-            if (created_outpoints.count(txin.prevout) > 0) {
-                // Intra-block spend (I_h^intra): excluded from BlockUndo
+            if (txin.nFlags == 3) {
                 continue;
             }
             lotus::v2::Outpoint op{};
             std::memcpy(op.tx_id.data(), txin.prevout.GetTxId().begin(), 32);
             op.index = txin.prevout.GetN();
-            std::shared_ptr<const lotus::v2::Coin> smt_coin =
-                lotus::v2::SmtFind(parent_state.smt_root, op);
-            if (smt_coin) {
-                undo_msg.prior_spent_coins.push_back(*smt_coin);
-            } else {
-                const lotus::v2::Coin *found = parent_state.utxo.Find(op);
-                if (!found) {
-                    return;
-                }
-                undo_msg.prior_spent_coins.push_back(*found);
+            if (created_outpoints.count(op) > 0) {
+                // Intra-block spend (I_h^intra): excluded from BlockUndo
+                continue;
             }
+            const auto it = parent_view.find(op);
+            if (it == parent_view.end()) {
+                return;
+            }
+            undo_msg.prior_spent_coins.push_back(it->second);
         }
     }
     std::vector<uint8_t> payload;
@@ -3033,13 +2883,20 @@ void V2PeerProtocolHandler::HandleBlockUndo(
     const bool decoded =
         lotus::v2::DecodeBlockUndoMessage(bytes, undo_msg, err);
 
+    bool body_missing = false;
+    if (decoded) {
+        uint256 id; std::copy(undo_msg.block_id.begin(), undo_msg.block_id.end(), id.begin());
+        LOCK(cs_main);
+        const auto *index = m_chainman.m_blockman.LookupBlockIndex(BlockHash{id});
+        body_missing = index && !index->nStatus.hasData();
+    }
     BlockHash block_hash{};
     bool should_peel = false;
     bool need_discourage = false;
-    avalanche::Processor *ava = nullptr;
+    std::string discourage_reason;
+    std::shared_ptr<const CBlock> block_override;
     {
         LOCK(m_mutex);
-        ava = m_avalanche;
         ++m_stats.blockundo_received;
         if (!decoded) {
             ++m_stats.malformed_messages;
@@ -3048,19 +2905,31 @@ void V2PeerProtocolHandler::HandleBlockUndo(
                 HandleSwarmPeerFailureLocked(pfrom.GetId(), std::nullopt);
             }
             need_discourage = true;
+            discourage_reason = "bad-blockundo";
         } else {
             uint256 raw_hash;
             std::memcpy(raw_hash.begin(), undo_msg.block_id.data(), 32);
             block_hash = BlockHash{raw_hash};
             if (m_swarm.state == FastSyncSwarmState::PIVOT_ACTIVE_PEELING &&
                 block_hash == m_swarm.undo_in_flight_hash) {
-                should_peel = true;
+                if (body_missing && !m_swarm.need_peel_block && !m_swarm.pending_peel_block) {
+                    m_swarm.need_peel_block = true;
+                    const std::vector<CInv> request{CInv(MSG_BLOCK, block_hash)};
+                    m_connman.PushMessage(&pfrom, NetMsg::Make(NetMsgType::GETDATA, request));
+                }
+                if (m_swarm.need_peel_block && !m_swarm.pending_peel_block) {
+                    m_swarm.pending_peel_undo = undo_msg;
+                } else {
+                    block_override = m_swarm.pending_peel_block;
+                    should_peel = true;
+                }
             }
         }
     }
 
     if (need_discourage) {
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), discourage_reason);
         return;
     }
 
@@ -3068,57 +2937,20 @@ void V2PeerProtocolHandler::HandleBlockUndo(
         return;
     }
 
-    bool peeled = false;
-    bool waiting_for_block_data = false;
-    bool fast_sync_still_active = false;
-    bool next_need_block_data = false;
-    int next_verified_height = 0;
-    BlockHash parent_block_hash{};
+    Chainstate::FastSyncPeelResult peel_res{};
     std::string peel_err;
+    bool peeled = false;
+    bool next_need_block = false;
     {
         LOCK(cs_main);
-        Chainstate &cs = m_chainman.ActiveChainstate();
-        CBlockIndex *pindex =
-            m_chainman.m_blockman.LookupBlockIndex(block_hash);
-        if (pindex && pindex->pprev) {
-            parent_block_hash = pindex->pprev->GetBlockHash();
-            if (ava &&
-                !cs.GetFastSyncStateAnchor(parent_block_hash).has_value()) {
-                if (auto fin_root =
-                        ava->getFinalizedStateRoot(parent_block_hash)) {
-                    lotus::v2::Hash h{};
-                    std::memcpy(h.data(), fin_root->begin(), 32);
-                    cs.SetFastSyncStateAnchor(parent_block_hash, h);
-                }
-            }
-            if (!pindex->nStatus.hasData()) {
-                waiting_for_block_data = true;
-            } else {
-                CBlock block;
-                if (m_chainman.m_blockman.ReadBlock(block, *pindex)) {
-                    peeled = cs.PeelFastSyncBlock(
-                        block, pindex, undo_msg.prior_spent_coins, peel_err);
-                    if (peeled) {
-                        fast_sync_still_active = cs.IsFastSyncActive();
-                        next_verified_height = cs.GetEarliestVerifiedHeight();
-                        next_need_block_data =
-                            !pindex->pprev->nStatus.hasData();
-                    }
-                }
-            }
+        peeled = m_chainman.ActiveChainstate().PeelFastSyncBlock(
+            block_hash, undo_msg, block_override.get(), peel_res, peel_err);
+        if (peeled && peel_res.fast_sync_active &&
+            peel_res.earliest_verified_height > 0) {
+            const CBlockIndex *pnext =
+                m_chainman.m_blockman.LookupBlockIndex(peel_res.parent_blockhash);
+            next_need_block = (pnext && !pnext->nStatus.hasData());
         }
-    }
-
-    if (waiting_for_block_data) {
-        {
-            LOCK(m_mutex);
-            m_swarm.pending_undo_for_block = std::move(undo_msg);
-            m_swarm.pending_undo_peer = pfrom.GetId();
-        }
-        m_connman.PushMessage(
-            &pfrom, NetMsg::Make(NetMsgType::GETDATA,
-                                 std::vector<CInv>{CInv(MSG_BLOCK, block_hash)}));
-        return;
     }
 
     bool peel_failed_discourage = false;
@@ -3133,19 +2965,105 @@ void V2PeerProtocolHandler::HandleBlockUndo(
             ++m_swarm.blocks_peeled;
             m_swarm.undo_in_flight_hash = BlockHash{};
             m_swarm.undo_in_flight_peer = -1;
-            m_swarm.pending_undo_for_block.reset();
-            if (!fast_sync_still_active || next_verified_height <= 0) {
+            m_swarm.need_peel_block = false;
+            m_swarm.pending_peel_block.reset();
+            m_swarm.pending_peel_undo.reset();
+            if (!peel_res.fast_sync_active ||
+                peel_res.earliest_verified_height <= 0 ||
+                (m_swarm.max_peel_blocks > 0 &&
+                 m_swarm.blocks_peeled >= m_swarm.max_peel_blocks)) {
                 m_swarm.state = FastSyncSwarmState::COMPLETED;
             } else if (m_swarm.auto_peel) {
-                RequestNextReversePeelBlockLocked(next_verified_height,
-                                                  parent_block_hash,
-                                                  next_need_block_data);
+                m_swarm.need_peel_block = next_need_block;
+                RequestNextReversePeelBlockLocked(
+                    peel_res.earliest_verified_height,
+                    peel_res.parent_blockhash);
             }
         }
     }
 
     if (peel_failed_discourage) {
         pfrom.fDisconnect = true;
+        m_peerman.DiscouragePeer(pfrom.GetId(), "bad-blockundo-peel");
+    }
+}
+
+void V2PeerProtocolHandler::NotifyReversePeelBlockReceived(
+    const BlockHash &block_hash, const std::shared_ptr<const CBlock> &pblock) {
+    if (!pblock) {
+        return;
+    }
+    lotus::v2::BlockUndoMessage undo_msg{};
+    NodeId undo_peer = -1;
+    bool ready_to_peel = false;
+    {
+        LOCK(m_mutex);
+        if (m_swarm.state != FastSyncSwarmState::PIVOT_ACTIVE_PEELING ||
+            block_hash != m_swarm.undo_in_flight_hash) {
+            return;
+        }
+        m_swarm.pending_peel_block = pblock;
+        m_swarm.need_peel_block = false;
+        if (m_swarm.pending_peel_undo.has_value()) {
+            undo_msg = *m_swarm.pending_peel_undo;
+            undo_peer = m_swarm.undo_in_flight_peer;
+            ready_to_peel = true;
+        }
+    }
+
+    if (!ready_to_peel) {
+        return;
+    }
+
+    Chainstate::FastSyncPeelResult peel_res{};
+    std::string peel_err;
+    bool peeled = false;
+    bool next_need_block = false;
+    {
+        LOCK(cs_main);
+        peeled = m_chainman.ActiveChainstate().PeelFastSyncBlock(
+            block_hash, undo_msg, pblock.get(), peel_res, peel_err);
+        if (peeled && peel_res.fast_sync_active &&
+            peel_res.earliest_verified_height > 0) {
+            const CBlockIndex *pnext =
+                m_chainman.m_blockman.LookupBlockIndex(peel_res.parent_blockhash);
+            next_need_block = (pnext && !pnext->nStatus.hasData());
+        }
+    }
+
+    bool peel_failed_discourage = false;
+    {
+        LOCK(m_mutex);
+        if (!peeled) {
+            ++m_stats.swarm_corrupted_undo_rejected;
+            if (undo_peer >= 0) {
+                HandleSwarmPeerFailureLocked(undo_peer, std::nullopt);
+                peel_failed_discourage = true;
+            }
+        } else {
+            ++m_stats.swarm_blocks_peeled;
+            ++m_swarm.blocks_peeled;
+            m_swarm.undo_in_flight_hash = BlockHash{};
+            m_swarm.undo_in_flight_peer = -1;
+            m_swarm.need_peel_block = false;
+            m_swarm.pending_peel_block.reset();
+            m_swarm.pending_peel_undo.reset();
+            if (!peel_res.fast_sync_active ||
+                peel_res.earliest_verified_height <= 0 ||
+                (m_swarm.max_peel_blocks > 0 &&
+                 m_swarm.blocks_peeled >= m_swarm.max_peel_blocks)) {
+                m_swarm.state = FastSyncSwarmState::COMPLETED;
+            } else if (m_swarm.auto_peel) {
+                m_swarm.need_peel_block = next_need_block;
+                RequestNextReversePeelBlockLocked(
+                    peel_res.earliest_verified_height,
+                    peel_res.parent_blockhash);
+            }
+        }
+    }
+
+    if (peel_failed_discourage && undo_peer >= 0) {
+        m_peerman.DiscouragePeer(undo_peer, "bad-blockundo-peel");
     }
 }
 
