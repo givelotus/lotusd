@@ -161,13 +161,6 @@ struct Currency {
 
     static const Currency &get();
     static std::string getTicker() { return std::string{get().ticker}; }
-
-    /**
-     * Fix the unit chosen by -ecash for the rest of the process, so get()
-     * (called for every amount written as JSON) no longer has to look it up
-     * under the ArgsManager lock. Until this is called, get() reads -ecash.
-     */
-    static void SetECash(bool ecash);
 };
 
 /**

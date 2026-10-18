@@ -132,9 +132,7 @@ class LoggingTest(BitcoinTestFramework):
                 "source_function",
             }, record
             assert record["source_line"].isdigit(), record
-        assert any(
-            record["message"].startswith("Bitcoin ABC version") for record in records
-        )
+        assert any(record["message"].startswith("Lotus version") for record in records)
 
     def test_gcp_format(self):
         self.restart_node(
@@ -152,9 +150,7 @@ class LoggingTest(BitcoinTestFramework):
             location = record["logging.googleapis.com/sourceLocation"]
             assert set(location) == {"file", "line", "function"}
             assert isinstance(location["line"], str)
-        assert any(
-            record["message"].startswith("Bitcoin ABC version") for record in records
-        )
+        assert any(record["message"].startswith("Lotus version") for record in records)
 
     def test_ecs_format(self):
         self.restart_node(
@@ -185,9 +181,7 @@ class LoggingTest(BitcoinTestFramework):
             }
             assert isinstance(record["log.origin.file.line"], int)
             assert "source" not in record
-        assert any(
-            record["message"].startswith("Bitcoin ABC version") for record in records
-        )
+        assert any(record["message"].startswith("Lotus version") for record in records)
 
     def test_syslog_format(self):
         self.log.info("Test RFC 5424 file output")
@@ -211,9 +205,7 @@ class LoggingTest(BitcoinTestFramework):
                 assert fields[2:] == ["-"] * 5
                 records.append(json.loads(payload))
         assert len(records) > 20
-        assert any(
-            record["message"].startswith("Bitcoin ABC version") for record in records
-        )
+        assert any(record["message"].startswith("Lotus version") for record in records)
         assert any(record["message"] == "Shutdown: done" for record in records)
 
     def test_text_priority(self):
@@ -350,7 +342,7 @@ class LoggingTest(BitcoinTestFramework):
         msgs = [r["message"] for r in records]
         # Lines logged before the log file was opened are buffered and
         # written in the selected format too.
-        assert any(m.startswith("Bitcoin ABC version") for m in msgs)
+        assert any(m.startswith("Lotus version") for m in msgs)
         assert any("UpdateTip: new best=" in m and "height=1 " in m for m in msgs)
         assert any(r["category"] == "net" and r["level"] == "debug" for r in records)
         assert any(r["thread"] == "init" for r in records)
