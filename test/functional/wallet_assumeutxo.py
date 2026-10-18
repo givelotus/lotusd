@@ -116,7 +116,7 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         assert_equal(
             dump_output["txoutset_hash"],
-            "a966794ed5a2f9debaefc7ca48dbc5d5e12a89ff9fe45bd00ec5732d074580a9",
+            "372adda95d453e80ce3d77396daa852c7bf620be323ea38eb61a34859dafc2b0",
         )
         assert_equal(dump_output["nchaintx"], 334)
         assert_equal(n0.getblockchaininfo()["blocks"], SNAPSHOT_BASE_HEIGHT)

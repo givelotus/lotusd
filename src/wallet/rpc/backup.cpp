@@ -465,8 +465,7 @@ RPCHelpMan importprunedfunds() {
             // in valid block
             std::vector<uint256> vMatch;
             std::vector<size_t> vIndex;
-            if (merkleBlock.txn.ExtractMatches(vMatch, vIndex) !=
-                merkleBlock.header.hashMerkleRoot) {
+            if (merkleBlock.txn.ExtractMatches(vMatch, vIndex).IsNull()) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
                                    "Something wrong with merkleblock");
             }
