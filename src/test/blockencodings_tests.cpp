@@ -6,6 +6,7 @@
 
 #include <chainparams.h>
 #include <config.h>
+#include <node/snapshot.h>
 #include <consensus/merkle.h>
 #include <lotus_v2/blocksnap.h>
 #include <lotus_v2/mempool_overlay.h>
@@ -69,13 +70,22 @@ static CBlock BuildBlockTestCase(FastRandomContext &ctx) {
 }
 
 // Number of shared use_counts we expect for a tx we haven't touched
-// (block + mempool + pending_overlay_adds + our copy from the GetSharedTx call)
-constexpr long SHARED_TX_OFFSET{4};
+// (block + mempool + shared overlay + immutable snapshot entry + the
+// temporary copy from GetSharedTx). The snapshot deliberately owns its tx so
+// an old generation remains valid after removal from the live mempool.
+constexpr long SHARED_TX_OFFSET{5};
 
 static void expectUseCount(const CTxMemPool &pool, const CTransaction *tx,
                            long expectedCount)
     EXCLUSIVE_LOCKS_REQUIRED(pool.cs) {
     AssertLockHeld(pool.cs);
+
+    const auto snapshot = node::GetGlobalSnapshotPublisher().Load();
+    BOOST_REQUIRE(snapshot && snapshot->mempool_ptr == &pool);
+    BOOST_REQUIRE(snapshot->entry_tree);
+    const auto pinned = snapshot->entry_tree->get(Uint256RadixKey(tx->GetId()));
+    BOOST_REQUIRE(pinned);
+    BOOST_CHECK_EQUAL(pinned->entry.tx.get(), tx);
 
     // Account for the number of shared references in mapNextTx. This should be
     // equal to the number of inputs for this tx.

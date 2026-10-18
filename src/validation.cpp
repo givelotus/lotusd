@@ -32,6 +32,7 @@
 #include <logging/timer.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
+#include <node/snapshot.h>
 #include <node/utxo_snapshot.h>
 #include <policy/block/minerfund.h>
 #include <policy/block/preconsensus.h>
@@ -2752,6 +2753,7 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
                                                   BCLog::BENCH);
 
                     m_blockman.UnlinkPrunedFiles(setFilesToPrune);
+                    node::PublishChainTipSnapshot(m_chainman, m_mempool);
                 }
 
                 if (!CoinsTip().GetBestBlock().IsNull()) {
@@ -2872,6 +2874,8 @@ void Chainstate::UpdateTip(const CBlockIndex *pindexNew) {
         g_best_block = pindexNew;
         g_best_block_cv.notify_all();
     }
+
+    node::PublishChainTipSnapshot(m_chainman, m_mempool);
 
     UpdateTipLog(coins_tip, pindexNew, params, __func__, "");
 }
@@ -3444,6 +3448,8 @@ bool Chainstate::ActivateBestChainStep(
         AssertLockHeld(m_mempool->cs);
     }
 
+    node::ScopedChainSnapshotDefer snapshot_defer(m_chainman, m_mempool);
+
     const CBlockIndex *pindexOldTip = m_chain.Tip();
     const CBlockIndex *pindexFork = m_chain.FindFork(pindexMostWork);
 
@@ -3960,6 +3966,8 @@ bool Chainstate::UnwindBlock(BlockValidationState &state, CBlockIndex *pindex,
         // in between
         LOCK(MempoolMutex());
 
+        node::ScopedChainSnapshotDefer snapshot_defer(m_chainman, m_mempool);
+
         constexpr int maxDisconnectPoolBlocks = 10;
         bool ret = false;
         DisconnectedBlockTransactions disconnectpool;
@@ -4322,6 +4330,8 @@ bool Chainstate::AvalancheFinalizeBlock(CBlockIndex *pindex,
         LOCK(cs_avalancheFinalizedBlockIndex);
         m_avalancheFinalizedBlockIndex = pindex;
     }
+
+    node::PublishChainTipSnapshot(m_chainman, m_mempool);
 
     if (m_chainman.m_options.signals) {
         m_chainman.m_options.signals->BlockFinalized(pindex);

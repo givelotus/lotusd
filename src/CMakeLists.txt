@@ -668,6 +668,7 @@ add_library(server
 	node/coins_view_args.cpp
 	node/connection_types.cpp
 	node/context.cpp
+	node/snapshot.cpp
 	node/database_args.cpp
 	node/eviction.cpp
 	node/interfaces.cpp
