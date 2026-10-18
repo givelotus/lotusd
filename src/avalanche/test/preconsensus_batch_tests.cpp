@@ -65,7 +65,7 @@ namespace {
         static std::vector<CInv> getInvsForNextPoll(Processor &p) {
             auto r = p.voteRecords.getReadView();
             return p.getInvsForNextPoll(r, DEFAULT_AVALANCHE_MAX_ELEMENT_POLL,
-                                        false, /*include_state_anchors=*/true, /*include_mempool_batches=*/true);
+                                        false, /*include_mempool_batches=*/true);
         }
     };
 } // namespace

@@ -55,12 +55,12 @@ const char *CFCHECKPT = "cfcheckpt";
 const char *AVAHELLO = "avahello";
 const char *AVAPOLL = "avapoll";
 const char *AVARESPONSE = "avaresponse";
-const char *AVABATCH = "avabatch";
 const char *AVAPROOF = "avaproof";
 const char *GETAVAADDR = "getavaaddr";
 const char *GETAVAPROOFS = "getavaproofs";
 const char *AVAPROOFS = "avaproofs";
 const char *AVAPROOFSREQ = "avaproofsreq";
+const char *AVATREASURY = "avatreasury";
 const char *MINEDHEADER = "minedheader";
 const char *SEALEDHEADER = "sealedheader";
 const char *SEALEDBLOCK = "sealedblock";
@@ -95,64 +95,35 @@ bool IsBlockLike(const std::string &strCommand) {
  * above and in protocol.h.
  */
 static const std::string allNetMessageTypes[] = {
-    NetMsgType::VERSION,
-    NetMsgType::VERACK,
-    NetMsgType::ADDR,
-    NetMsgType::ADDRV2,
-    NetMsgType::SENDADDRV2,
-    NetMsgType::INV,
-    NetMsgType::GETDATA,
-    NetMsgType::MERKLEBLOCK,
-    NetMsgType::GETBLOCKS,
-    NetMsgType::GETHEADERS,
-    NetMsgType::TX,
-    NetMsgType::HEADERS,
-    NetMsgType::BLOCK,
-    NetMsgType::GETADDR,
-    NetMsgType::MEMPOOL,
-    NetMsgType::PING,
-    NetMsgType::PONG,
-    NetMsgType::NOTFOUND,
-    NetMsgType::FILTERLOAD,
-    NetMsgType::FILTERADD,
-    NetMsgType::FILTERCLEAR,
-    NetMsgType::SENDHEADERS,
-    NetMsgType::FEEFILTER,
-    NetMsgType::SENDCMPCT,
-    NetMsgType::CMPCTBLOCK,
-    NetMsgType::GETBLOCKTXN,
-    NetMsgType::BLOCKTXN,
-    NetMsgType::GETCFILTERS,
-    NetMsgType::CFILTER,
-    NetMsgType::GETCFHEADERS,
-    NetMsgType::CFHEADERS,
-    NetMsgType::GETCFCHECKPT,
-    NetMsgType::CFCHECKPT,
-    NetMsgType::AVAHELLO,
-    NetMsgType::AVAPOLL,
-    NetMsgType::AVARESPONSE,
-    NetMsgType::AVABATCH,
-    NetMsgType::AVAPROOF,
-    NetMsgType::GETAVAADDR,
-    NetMsgType::GETAVAPROOFS,
-    NetMsgType::AVAPROOFS,
-    NetMsgType::AVAPROOFSREQ,
-    NetMsgType::MINEDHEADER,
-    NetMsgType::SEALEDHEADER,
-    NetMsgType::SEALEDBLOCK,
-    NetMsgType::MERKLIXSYNC,
-    NetMsgType::GETMERKLIXBUCK,
-    NetMsgType::MERKLIXBUCK,
-    NetMsgType::GETSHORTTX,
-    NetMsgType::SHORTTX,
-    NetMsgType::SENDINVSHORT,
-    NetMsgType::INVSHORT,
-    NetMsgType::GETUTXOROOTS,
-    NetMsgType::UTXOROOTS,
-    NetMsgType::GETUTXOSHARD,
-    NetMsgType::UTXOSHARD,
-    NetMsgType::GETBLOCKUNDO,
-    NetMsgType::BLOCKUNDO,
+    NetMsgType::VERSION,        NetMsgType::VERACK,
+    NetMsgType::ADDR,           NetMsgType::ADDRV2,
+    NetMsgType::SENDADDRV2,     NetMsgType::INV,
+    NetMsgType::GETDATA,        NetMsgType::MERKLEBLOCK,
+    NetMsgType::GETBLOCKS,      NetMsgType::GETHEADERS,
+    NetMsgType::TX,             NetMsgType::HEADERS,
+    NetMsgType::BLOCK,          NetMsgType::GETADDR,
+    NetMsgType::MEMPOOL,        NetMsgType::PING,
+    NetMsgType::PONG,           NetMsgType::NOTFOUND,
+    NetMsgType::FILTERLOAD,     NetMsgType::FILTERADD,
+    NetMsgType::FILTERCLEAR,    NetMsgType::SENDHEADERS,
+    NetMsgType::FEEFILTER,      NetMsgType::SENDCMPCT,
+    NetMsgType::CMPCTBLOCK,     NetMsgType::GETBLOCKTXN,
+    NetMsgType::BLOCKTXN,       NetMsgType::GETCFILTERS,
+    NetMsgType::CFILTER,        NetMsgType::GETCFHEADERS,
+    NetMsgType::CFHEADERS,      NetMsgType::GETCFCHECKPT,
+    NetMsgType::CFCHECKPT,      NetMsgType::AVAHELLO,
+    NetMsgType::AVAPOLL,        NetMsgType::AVARESPONSE,
+    NetMsgType::AVAPROOF,       NetMsgType::GETAVAADDR,
+    NetMsgType::GETAVAPROOFS,   NetMsgType::AVAPROOFS,
+    NetMsgType::AVAPROOFSREQ,   NetMsgType::AVATREASURY,
+    NetMsgType::MINEDHEADER,    NetMsgType::SEALEDHEADER,
+    NetMsgType::SEALEDBLOCK,    NetMsgType::MERKLIXSYNC,
+    NetMsgType::GETMERKLIXBUCK, NetMsgType::MERKLIXBUCK,
+    NetMsgType::GETSHORTTX,     NetMsgType::SHORTTX,
+    NetMsgType::GETUTXOROOTS,   NetMsgType::UTXOROOTS,
+    NetMsgType::GETUTXOSHARD,   NetMsgType::UTXOSHARD,
+    NetMsgType::GETBLOCKUNDO,   NetMsgType::BLOCKUNDO,
+    NetMsgType::SENDINVSHORT, NetMsgType::INVSHORT,
 };
 static const std::vector<std::string>
     allNetMessageTypesVec(std::begin(allNetMessageTypes),
@@ -264,16 +235,14 @@ std::string CInv::GetMessageType() const {
             return cmd.append(NetMsgType::CMPCTBLOCK);
         case MSG_SEALED_HEADER:
             return cmd.append(NetMsgType::SEALEDHEADER);
-        case MSG_AVA_MEMPOOL_BATCH:
-            return cmd.append(NetMsgType::AVABATCH);
         case MSG_AVA_PROOF:
             return cmd.append(NetMsgType::AVAPROOF);
         case MSG_AVA_STAKE_CONTENDER:
             // Stake contender does not have a NetMsgType because there is no
             // contender-specific message, so we hard code the name here.
             return cmd.append("stakecontender");
-        case MSG_AVA_STATE_ANCHOR:
-            return cmd.append("stateanchor");
+        case MSG_AVA_TREASURY_CONTENDER:
+            return cmd.append(NetMsgType::AVATREASURY);
         default:
             throw std::out_of_range(strprintf(
                 "CInv::GetMessageType(): type=%d unknown type", type));
