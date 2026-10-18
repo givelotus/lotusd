@@ -75,7 +75,7 @@ class ChronikMempoolDisconnectPool(BitcoinTestFramework):
         # Reorg only tx1. tx2 will be removed and then re-added to the mempool
         reorg_block1 = create_block(
             int(block_hashes[-1], 16),
-            create_coinbase(node.getblockcount() + 1, b"\x03" * 33),
+            create_coinbase(node.getblockcount(), b"\x03" * 33),
         )
         reorg_block1.vtx += [tx1]
         reorg_block1.hashMerkleRoot = reorg_block1.calc_merkle_root()
@@ -83,7 +83,7 @@ class ChronikMempoolDisconnectPool(BitcoinTestFramework):
 
         reorg_block2 = create_block(
             reorg_block1.hash_int,
-            create_coinbase(node.getblockcount() + 2, b"\x03" * 33),
+            create_coinbase(node.getblockcount() + 1, b"\x03" * 33),
         )
         reorg_block2.hashMerkleRoot = reorg_block2.calc_merkle_root()
         reorg_block2.solve()
