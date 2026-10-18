@@ -236,6 +236,7 @@ class PeerManager {
      * Quorum management.
      */
     uint32_t totalPeersScore = 0;
+    Amount totalPeersStakedAmount = Amount::zero();
     uint32_t connectedPeersScore = 0;
 
     // Writers are serialized by the owning processor peer-manager lock.
@@ -246,6 +247,7 @@ class PeerManager {
     std::atomic<uint32_t> m_atomicTotalPeersScore{0};
     std::atomic<uint32_t> m_atomicConnectedPeersScore{0};
     std::atomic<bool> m_atomicLocalProofHasNoNode{false};
+    std::atomic<int64_t> m_atomicTotalPeersStakedSatoshis{0};
 
     Amount stakeUtxoDustThreshold;
 
@@ -462,6 +464,7 @@ public:
         uint32_t totalScore;
         uint32_t connectedScore;
         bool localProofHasNoNode;
+        int64_t totalStakedSatoshis;
     };
 
     QuorumMetrics getQuorumMetrics() const {
@@ -473,7 +476,8 @@ public:
             const QuorumMetrics metrics{
                 m_atomicNodeCount.load(), m_atomicTotalPeersScore.load(),
                 m_atomicConnectedPeersScore.load(),
-                m_atomicLocalProofHasNoNode.load()};
+                m_atomicLocalProofHasNoNode.load(),
+                m_atomicTotalPeersStakedSatoshis.load()};
             if (generation == m_atomicQuorumGeneration.load()) {
                 return metrics;
             }
@@ -605,6 +609,8 @@ private:
     }
 
     void updateAtomicQuorumMetrics();
+
+
 
     friend struct ::avalanche::TestPeerManager;
 };
