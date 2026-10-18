@@ -4,18 +4,65 @@
 
 #include <policy/block/preconsensus.h>
 
+#include <avalanche/preconsensus.h>
 #include <avalanche/processor.h>
 #include <blockindex.h>
+#include <consensus/merkle.h>
 #include <kernel/disconnected_transactions.h>
 #include <util/hasher.h>
 
 #include <unordered_map>
+#include <stdexcept>
 
 bool PreConsensusPolicy::operator()(BlockPolicyValidationState &state) {
-    if (!m_mempool || !m_blockIndex.pprev) {
+    if (!m_blockIndex.pprev) {
         return true;
     }
     if (!m_avalanche.isPreconsensusActivated(m_blockIndex.pprev)) {
+        return true;
+    }
+
+    // Verify block compliance against any finalized pre-consensus mempool
+    // batches for m_blockIndex.pprev->GetBlockHash().
+    const auto finalizedBatches = m_avalanche.getFinalizedMempoolBatches(
+        m_blockIndex.pprev->GetBlockHash());
+    if (!finalizedBatches.empty()) {
+        if (m_block.vtx.empty() || !m_block.vtx[0]) {
+            return state.Invalid(BlockPolicyValidationResult::POLICY_VIOLATION,
+                                 "finalized-batch-missing-coinbase",
+                                 "Block is missing coinbase transaction");
+        }
+        // Match the complete non-coinbase set of any finalized batch for
+        // this parent. Newer/larger batches do not invalidate an older match.
+        // The eCash header keeps its positional SHA256d transaction Merkle root.
+        const std::vector<CTransactionRef> nonCoinbaseTxs(m_block.vtx.begin() + 1,
+                                                         m_block.vtx.end());
+        uint256 actualSubtree;
+        try {
+            actualSubtree = avalanche::ComputeV2SubtreeARoot(nonCoinbaseTxs);
+        } catch (const std::invalid_argument &) {
+            return state.Invalid(BlockPolicyValidationResult::POLICY_VIOLATION,
+                                 "finalized-batch-mismatch",
+                                 "Block contains duplicate transaction identifiers");
+        }
+        bool matchedFinalizedBatch = false;
+        for (const auto &batch : finalizedBatches) {
+            if (actualSubtree == batch.subtree_a_root) {
+                matchedFinalizedBatch = true;
+                break;
+            }
+        }
+        if (!matchedFinalizedBatch) {
+            return state.Invalid(
+                BlockPolicyValidationResult::POLICY_VIOLATION,
+                "finalized-batch-mismatch",
+                strprintf("Block %s merkle root does not match finalized "
+                          "mempool batch subtree_a_root",
+                          m_block.GetHash().ToString()));
+        }
+    }
+
+    if (!m_mempool) {
         return true;
     }
 

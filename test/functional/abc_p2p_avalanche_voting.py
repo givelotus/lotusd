@@ -41,6 +41,9 @@ class AvalancheTest(BitcoinTestFramework):
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
                 "-persistavapeers=0",
+                # Observe voted/manual parking until this test explicitly
+                # accepts or unparks the block, without work-based retries.
+                "-automaticunparking=0",
                 "-avalanchestakingpreconsensus=0",
             ],
             [

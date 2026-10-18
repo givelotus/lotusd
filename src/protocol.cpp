@@ -51,6 +51,7 @@ const char *CFCHECKPT = "cfcheckpt";
 const char *AVAHELLO = "avahello";
 const char *AVAPOLL = "avapoll";
 const char *AVARESPONSE = "avaresponse";
+const char *AVABATCH = "avabatch";
 const char *AVAPROOF = "avaproof";
 const char *GETAVAADDR = "getavaaddr";
 const char *GETAVAPROOFS = "getavaproofs";
@@ -98,7 +99,7 @@ static const std::string allNetMessageTypes[] = {
     NetMsgType::CFHEADERS,      NetMsgType::GETCFCHECKPT,
     NetMsgType::CFCHECKPT,      NetMsgType::AVAHELLO,
     NetMsgType::AVAPOLL,        NetMsgType::AVARESPONSE,
-    NetMsgType::AVAPROOF,       NetMsgType::GETAVAADDR,
+    NetMsgType::AVABATCH, NetMsgType::AVAPROOF,       NetMsgType::GETAVAADDR,
     NetMsgType::GETAVAPROOFS,   NetMsgType::AVAPROOFS,
     NetMsgType::AVAPROOFSREQ,   NetMsgType::MINEDHEADER,
     NetMsgType::SEALEDHEADER,   NetMsgType::SEALEDBLOCK,
@@ -206,6 +207,8 @@ std::string CInv::GetMessageType() const {
             return cmd.append(NetMsgType::CMPCTBLOCK);
         case MSG_SEALED_HEADER:
             return cmd.append(NetMsgType::SEALEDHEADER);
+        case MSG_AVA_MEMPOOL_BATCH:
+            return cmd.append(NetMsgType::AVABATCH);
         case MSG_AVA_PROOF:
             return cmd.append(NetMsgType::AVAPROOF);
         case MSG_AVA_STAKE_CONTENDER:

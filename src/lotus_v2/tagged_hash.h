@@ -31,6 +31,7 @@ enum class HashDomain {
     OutpointKey,
     Utxo,
     State,
+    PreconsensusBatch,
 };
 
 // Hardware-accelerated BIP-340 style tagged SHA-256:

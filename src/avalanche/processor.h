@@ -5,8 +5,10 @@
 #ifndef BITCOIN_AVALANCHE_PROCESSOR_H
 #define BITCOIN_AVALANCHE_PROCESSOR_H
 
+#include <avalanche/avalanche.h>
 #include <avalanche/config.h>
 #include <avalanche/node.h>
+#include <avalanche/preconsensus.h>
 #include <avalanche/proof.h>
 #include <avalanche/proofcomparator.h>
 #include <avalanche/protocol.h>
@@ -35,8 +37,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -101,7 +105,7 @@ enum struct VoteStatus : uint8_t {
 };
 
 using AnyVoteItem = std::variant<const ProofRef, const CBlockIndex *,
-                                 const StakeContenderId, const CTransactionRef>;
+                                 const StakeContenderId, const CTransactionRef, const MempoolBatchVoteItem>;
 
 class VoteItemUpdate {
     AnyVoteItem item;
@@ -134,6 +138,7 @@ struct VoteMapComparator {
                 [](const StakeContenderId &lhs, const StakeContenderId &rhs) {
                     return lhs < rhs;
                 },
+                [](const MempoolBatchVoteItem &lhs, const MempoolBatchVoteItem &rhs) { return lhs.GetId() < rhs.GetId(); },
                 [](const CTransactionRef &lhs, const CTransactionRef &rhs) {
                     return lhs->GetId() < rhs->GetId();
                 },
@@ -264,6 +269,40 @@ class Processor final : public NetEventsInterface {
     std::unordered_map<BlockHash, StakingReward, SaltedUint256Hasher>
         stakingRewards GUARDED_BY(cs_stakingRewards);
 
+    // Positive opt-ins only, bounded by connected peers and erased on teardown.
+    mutable Mutex cs_batchPollPeers;
+    std::unordered_set<NodeId> batchPollPeers GUARDED_BY(cs_batchPollPeers);
+
+    mutable Mutex cs_mempoolBatches;
+    std::unordered_map<uint256, MempoolBatchAnnouncement, SaltedUint256Hasher>
+        m_mempoolBatches GUARDED_BY(cs_mempoolBatches);
+    std::deque<uint256> m_mempoolBatchOrder GUARDED_BY(cs_mempoolBatches);
+    // Set by tip notifications; a delayed response cannot resurrect a batch
+    // finalized for an earlier parent after its records have been discarded.
+    std::optional<BlockHash> m_mempoolBatchParent GUARDED_BY(cs_mempoolBatches);
+    std::unordered_set<uint256, SaltedUint256Hasher>
+        m_acceptedMempoolBatches GUARDED_BY(cs_mempoolBatches);
+    std::unordered_map<BlockHash, std::vector<MempoolBatchAnnouncement>,
+                       SaltedUint256Hasher>
+        m_finalizedMempoolBatches GUARDED_BY(cs_mempoolBatches);
+    std::unordered_map<BlockHash, std::unordered_map<uint32_t, uint256>,
+                       SaltedUint256Hasher>
+        m_epochBatchBySlot GUARDED_BY(cs_mempoolBatches);
+    std::unordered_map<BlockHash, std::unordered_set<uint32_t>,
+                       SaltedUint256Hasher>
+        m_conflictedBatchEpochs GUARDED_BY(cs_mempoolBatches);
+    std::unordered_set<uint256, SaltedUint256Hasher>
+        m_conflictedBatchIds GUARDED_BY(cs_mempoolBatches);
+
+public:
+    static constexpr size_t MAX_MEMPOOL_BATCH_RECORDS = 1024;
+
+    using MempoolBatchFinalizedCallback =
+        std::function<void(const MempoolBatchAnnouncement &)>;
+
+private:
+    MempoolBatchFinalizedCallback
+        m_onMempoolBatchFinalized GUARDED_BY(cs_mempoolBatches);
     Processor(Config avaconfig, interfaces::Chain &chain, CConnman *connmanIn,
               ChainstateManager &chainman, CTxMemPool *mempoolIn,
               CScheduler &scheduler, std::unique_ptr<PeerData> peerDataIn,
@@ -314,7 +353,8 @@ public:
                        std::vector<VoteItemUpdate> &updates, bool &disconnect,
                        std::string &error)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_finalizedItems,
-                                 !cs_invalidatedBlocks, !cs_finalizationTip);
+                                 !cs_invalidatedBlocks, !cs_finalizationTip,
+                                 !cs_mempoolBatches);
 
     template <typename Callable>
     auto withPeerManager(Callable &&func) const
@@ -416,6 +456,50 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!cs_stakingRewards, !cs_peerManager,
                                  !cs_finalizedItems);
 
+    /** Track votes and finalization on pre-consensus mempool batches */
+    bool registerMempoolBatch(const MempoolBatchAnnouncement &batch,
+                              bool accepted = true, bool reconcile = true)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
+    bool setMempoolBatchAccepted(const uint256 &batchId, bool accepted = true)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool getMempoolBatch(const uint256 &batchId,
+                         MempoolBatchAnnouncement &outBatch) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool isMempoolBatchKnown(const uint256 &batchId) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool isMempoolBatchLocallyAccepted(const uint256 &batchId) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool isMempoolBatchFinalized(const uint256 &batchId) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool hasMempoolBatchConflict(const uint256 &batchId) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool hasEpochConflict(const BlockHash &prevBlockHash,
+                          uint32_t epochSeq) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    void markMempoolBatchConflict(const uint256 &batchId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    void finalizeMempoolBatch(const uint256 &batchId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches, !cs_finalizedItems);
+    void rejectMempoolBatch(const uint256 &batchId)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    std::vector<MempoolBatchAnnouncement>
+    getFinalizedMempoolBatches(const BlockHash &prevBlockHash) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    bool getFinalizedBatchForBlock(const BlockHash &prevBlockHash,
+                                   MempoolBatchAnnouncement &outBatch) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    void setMempoolBatchFinalizedCallback(MempoolBatchFinalizedCallback cb)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches);
+    void registerBatchFinalizedCallback(MempoolBatchFinalizedCallback cb)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_mempoolBatches) {
+        setMempoolBatchFinalizedCallback(std::move(cb));
+    }
+
+    void setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services)
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
+    bool nodeSupportsMempoolBatch(NodeId nodeid) const
+        EXCLUSIVE_LOCKS_REQUIRED(!cs_batchPollPeers);
+
     bool isPreconsensusActivated(const CBlockIndex *pprev) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_finalizationTip);
     bool isStakingPreconsensusActivated(const CBlockIndex *pprev) const;
@@ -447,7 +531,8 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager);
     std::vector<CInv>
     getInvsForNextPoll(RWCollection<VoteMap>::ReadView &voteRecordsReadView,
-                       size_t max_elements, bool forPoll = true) const;
+                       size_t max_elements, bool forPoll = true,
+                       bool include_mempool_batches = false) const;
     bool sendHelloInternal(CNode *pfrom)
         EXCLUSIVE_LOCKS_REQUIRED(cs_delayedAvahelloNodeIds);
     AnyVoteItem getVoteItemFromInv(const CInv &inv) const
@@ -498,6 +583,7 @@ private:
         bool operator()(const StakeContenderId &contenderId) const
             LOCKS_EXCLUDED(cs_peerManager, cs_stakingRewards);
         bool operator()(const CTransactionRef &tx) const;
+        bool operator()(const MempoolBatchVoteItem &batch) const;
     };
     bool isWorthPolling(const AnyVoteItem &item) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs_finalizedItems);
@@ -514,6 +600,7 @@ private:
             LOCKS_EXCLUDED(cs_peerManager);
         bool operator()(const StakeContenderId &contenderId) const;
         bool operator()(const CTransactionRef &tx) const;
+        bool operator()(const MempoolBatchVoteItem &batch) const;
     };
     bool getLocalAcceptance(const AnyVoteItem &item) const {
         return std::visit(GetLocalAcceptance(*this), item);

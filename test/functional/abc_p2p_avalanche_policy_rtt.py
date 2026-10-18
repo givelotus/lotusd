@@ -31,6 +31,8 @@ class AvalancheRTTTest(BitcoinTestFramework):
                 "-avaproofstakeutxodustthreshold=1000000",
                 "-avaproofstakeutxoconfirmations=1",
                 "-avacooldown=0",
+                # Keep policy parking stable until this test explicitly accepts it.
+                "-automaticunparking=0",
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
                 "-persistavapeers=0",

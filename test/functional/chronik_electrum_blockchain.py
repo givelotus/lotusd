@@ -62,6 +62,9 @@ class ChronikElectrumBlockchain(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-chronik",
+                # Manual disconnect/reconnect notification tests control the
+                # park lifetime explicitly.
+                "-automaticunparking=0",
                 f"-chronikelectrumbind=127.0.0.1:{chronikelectrum_port(0)}:t",
             ]
         ]

@@ -45,6 +45,8 @@ class GetBlockTemplateLPTest(BitcoinTestFramework):
                 "-avaproofstakeutxodustthreshold=1000000",
                 "-avaproofstakeutxoconfirmations=1",
                 "-avacooldown=0",
+                # Keep the explicitly voted parking state stable for longpoll checks.
+                "-automaticunparking=0",
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
             ],

@@ -17,6 +17,7 @@ add_boost_unit_tests_to_suite(avalanche test-avalanche
 		delegation_tests.cpp
 		init_tests.cpp
 		peermanager_tests.cpp
+		preconsensus_batch_tests.cpp
 		processor_tests.cpp
 		proof_tests.cpp
 		proofcomparator_tests.cpp

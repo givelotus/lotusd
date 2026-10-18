@@ -95,6 +95,9 @@ ApplyArgsManOptions(const ArgsManager &args, ChainstateManager::Options &opts) {
         opts.park_deep_reorg = *value;
     }
 
+    // Avalanche-parked chains stay parked unless the operator asks for
+    // unparking. Finalized-batch mismatches are retried by work regardless;
+    // see Chainstate::FindMostWorkChain.
     opts.automatic_unparking = args.GetBoolArg(
         "-automaticunparking",
         !args.GetBoolArg("-avalanche", AVALANCHE_DEFAULT_ENABLED));

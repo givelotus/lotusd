@@ -319,6 +319,11 @@ extern const char *AVAPROOFS;
 extern const char *AVAPROOFSREQ;
 
 /**
+ * Contains an avalanche pre-consensus mempool batch announcement.
+ */
+extern const char *AVABATCH;
+
+/**
  * Contains a MinedHeader (header + coinbase_tx) for O(1) block
  * relay when candidate transactions are already reconciled in the local
  * mempool or candidate overlay.
@@ -413,6 +418,9 @@ enum ServiceFlags : uint64_t {
     // NODE_AVALANCHE means the node supports Bitcoin Cash's avalanche
     // preconsensus mechanism.
     NODE_AVALANCHE = (1 << 24),
+
+    // Explicit opt-in for private mempool batch announcements and polls.
+    NODE_MERKLIX_EPOCH = (1 << 28),
 };
 
 /**
@@ -616,6 +624,7 @@ enum GetDataMsg {
     MSG_MINED_HEADER = 5,
     MSG_SEALED_HEADER = MSG_MINED_HEADER,
     MSG_SEALED_BLOCK = MSG_MINED_HEADER,
+    MSG_AVA_MEMPOOL_BATCH = 0x20000006,
     MSG_AVA_PROOF = 0x1f000001,
     MSG_AVA_STAKE_CONTENDER = 0x1f000002,
 };
@@ -642,7 +651,7 @@ public:
     std::string GetMessageType() const;
     std::string ToString() const;
 
-    uint32_t GetKind() const { return type & MSG_TYPE_MASK; }
+    uint32_t GetKind() const { return type == MSG_AVA_MEMPOOL_BATCH ? type : type & MSG_TYPE_MASK; }
 
     bool IsMsgTx() const {
         auto k = GetKind();
@@ -655,6 +664,10 @@ public:
     bool IsMsgStakeContender() const {
         auto k = GetKind();
         return k == MSG_AVA_STAKE_CONTENDER;
+    }
+    bool IsMsgMempoolBatch() const {
+        auto k = GetKind();
+        return k == MSG_AVA_MEMPOOL_BATCH;
     }
     bool IsMsgBlk() const {
         auto k = GetKind();

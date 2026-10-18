@@ -6,6 +6,7 @@
 #define BITCOIN_POLICY_BLOCK_PRECONSENSUS_H
 
 #include <avalanche/avalanche.h>
+#include <avalanche/preconsensus.h>
 #include <consensus/activation.h>
 #include <consensus/amount.h>
 #include <policy/block/parkingpolicy.h>
@@ -31,9 +32,18 @@ public:
     PreConsensusPolicy(const avalanche::Processor &avalanche,
                        const CBlockIndex &blockIndex, const CBlock &block,
                        const CTxMemPool *mempool,
-                       const DisconnectedBlockTransactions *disconnectpool)
+                       const DisconnectedBlockTransactions *disconnectpool =
+                           nullptr)
         : m_avalanche(avalanche), m_block(block), m_blockIndex(blockIndex),
           m_mempool(mempool), m_disconnectpool(disconnectpool) {}
+
+    PreConsensusPolicy(const avalanche::Processor &avalanche,
+                       const CBlockIndex &blockIndex, const CBlock &block,
+                       const CTxMemPool &mempool,
+                       const DisconnectedBlockTransactions *disconnectpool =
+                           nullptr)
+        : m_avalanche(avalanche), m_block(block), m_blockIndex(blockIndex),
+          m_mempool(&mempool), m_disconnectpool(disconnectpool) {}
 
     bool operator()(BlockPolicyValidationState &state) override
         EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs);

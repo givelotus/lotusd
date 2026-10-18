@@ -580,7 +580,7 @@ void PeerManager::cleanupDanglingProofs(
     needMoreNodes = !newlyDanglingProofs.empty();
 }
 
-NodeId PeerManager::selectNode() {
+NodeId PeerManager::selectNode(const std::function<bool(NodeId)> &eligible) {
     for (int retry = 0; retry < SELECT_NODE_MAX_RETRY; retry++) {
         const PeerId p = selectPeer();
 
@@ -594,9 +594,9 @@ NodeId PeerManager::selectNode() {
         // See if that peer has an available node.
         auto &nview = nodes.get<next_request_time>();
         auto it = nview.lower_bound(boost::make_tuple(p, SteadyMilliseconds()));
-        if (it != nview.end() && it->peerid == p &&
-            it->nextRequestTime <= Now<SteadyMilliseconds>()) {
-            return it->nodeid;
+        const auto now = Now<SteadyMilliseconds>();
+        for (; it != nview.end() && it->peerid == p && it->nextRequestTime <= now; ++it) {
+            if (!eligible || eligible(it->nodeid)) return it->nodeid;
         }
     }
 

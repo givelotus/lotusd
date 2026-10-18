@@ -56,6 +56,7 @@ NODE_BLOOM = 1 << 2
 NODE_COMPACT_FILTERS = 1 << 6
 NODE_NETWORK_LIMITED = 1 << 10
 NODE_AVALANCHE = 1 << 24
+NODE_MERKLIX_EPOCH = 1 << 28
 
 MSG_UNDEFINED = 0
 MSG_TX = 1
@@ -64,6 +65,7 @@ MSG_FILTERED_BLOCK = 3
 MSG_CMPCT_BLOCK = 4
 MSG_AVA_PROOF = 0x1F000001
 MSG_AVA_STAKE_CONTENDER = 0x1F000002
+MSG_AVA_MEMPOOL_BATCH = 0x20000006
 MSG_TYPE_MASK = 0xFFFFFFFF >> 2
 
 FILTER_TYPE_BASIC = 0
@@ -292,6 +294,7 @@ class CInv:
         MSG_CMPCT_BLOCK: "CompactBlock",
         MSG_AVA_PROOF: "avalanche proof",
         MSG_AVA_STAKE_CONTENDER: "avalanche stake contender",
+        MSG_AVA_MEMPOOL_BATCH: "avalanche mempool batch",
     }
 
     def __init__(self, t=0, h=0):
@@ -2164,6 +2167,67 @@ class msg_avaproofs:
         )
 
 
+class msg_avabatch:
+    __slots__ = (
+        "prev_block_hash",
+        "epoch_seq",
+        "parent_batch_id",
+        "subtree_a_root",
+        "utxo_root",
+        "tx_count",
+        "short_ids_hash",
+    )
+    msgtype = b"avabatch"
+
+    def __init__(
+        self,
+        prev_block_hash=0,
+        epoch_seq=1,
+        parent_batch_id=0,
+        subtree_a_root=0,
+        utxo_root=0,
+        tx_count=1,
+        short_ids_hash=0,
+    ):
+        self.prev_block_hash = prev_block_hash
+        self.epoch_seq = epoch_seq
+        self.parent_batch_id = parent_batch_id
+        self.subtree_a_root = subtree_a_root
+        self.utxo_root = utxo_root
+        self.tx_count = tx_count
+        self.short_ids_hash = short_ids_hash
+
+    def deserialize(self, f):
+        self.prev_block_hash = deser_uint256(f)
+        self.epoch_seq = int.from_bytes(f.read(4), "little")
+        self.parent_batch_id = deser_uint256(f)
+        self.subtree_a_root = deser_uint256(f)
+        self.utxo_root = deser_uint256(f)
+        self.tx_count = int.from_bytes(f.read(4), "little")
+        self.short_ids_hash = deser_uint256(f)
+
+    def serialize(self) -> bytes:
+        return (
+            ser_uint256(self.prev_block_hash)
+            + self.epoch_seq.to_bytes(4, "little")
+            + ser_uint256(self.parent_batch_id)
+            + ser_uint256(self.subtree_a_root)
+            + ser_uint256(self.utxo_root)
+            + self.tx_count.to_bytes(4, "little")
+            + ser_uint256(self.short_ids_hash)
+        )
+
+    def batch_id(self) -> int:
+        tag = sha256(b"lotus.v2.preconsensus.batch")
+        return uint256_from_str(sha256(tag + tag + self.serialize()))
+
+    def __repr__(self):
+        return (
+            f"msg_avabatch(prev_block_hash={self.prev_block_hash:064x}, "
+            f"epoch_seq={self.epoch_seq}, tx_count={self.tx_count})"
+        )
+
+
 class msg_avaproofsreq:
     __slots__ = "indices"
     msgtype = b"avaproofsreq"
@@ -2201,6 +2265,29 @@ class msg_avaproofsreq:
 
 
 class TestFrameworkMessages(unittest.TestCase):
+    def test_ecash_batch_sha256_identifier_and_wire_round_trip(self):
+        batch = msg_avabatch(
+            prev_block_hash=int("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", 16),
+            epoch_seq=42,
+            parent_batch_id=int("11" * 32, 16),
+            subtree_a_root=int("deadbeef" * 8, 16),
+            utxo_root=int("aa" * 32, 16),
+            tx_count=128,
+            short_ids_hash=int("bb" * 32, 16),
+        )
+        # Same independently calculated vector as the native batch wire test.
+        self.assertEqual(len(batch.serialize()), 168)
+        self.assertEqual(
+            f"{batch.batch_id():064x}",
+            "f2550ec763722f0d511967da83bcfc5a4b5460f09a6001b17ed2ebcf85716f23",
+        )
+        restored = msg_avabatch()
+        restored.deserialize(BytesIO(batch.serialize()))
+        self.assertEqual(restored.serialize(), batch.serialize())
+        self.assertEqual(restored.batch_id(), batch.batch_id())
+        restored.epoch_seq += 1
+        self.assertNotEqual(restored.batch_id(), batch.batch_id())
+
     def test_avalanche_proof_serialization_round_trip(self):
         """Verify that an AvalancheProof object is unchanged after a round-trip
         of deserialization-serialization.
