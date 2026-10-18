@@ -1285,7 +1285,7 @@ BOOST_FIXTURE_TEST_CASE(rpc_one_worker_serves_reads_while_notification_pending,
     BOOST_CHECK(pending);
     BOOST_CHECK(read_ready);
     BOOST_REQUIRE(write_ready);
-    BOOST_CHECK_EQUAL(result.get().get_str(), spend->GetHash().GetHex());
+    BOOST_CHECK_EQUAL(result.get().get_str(), spend->GetId().GetHex());
     BOOST_CHECK_EQUAL(reading.get()["size"].getInt<int>(), 1);
     BOOST_CHECK(subscriber->indexed);
 }

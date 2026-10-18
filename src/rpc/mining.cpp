@@ -3,6 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <blockvalidity.h>
 #include <cashaddrenc.h>
@@ -20,8 +21,8 @@
 #include <consensus/validation.h>
 #include <core_io.h>
 #include <key_io.h>
+#include <lotus_v2/commitment.h>
 #include <lotus_v2/fee_hysteresis.h>
-#include <lotus_v2/mempool_overlay.h>
 #include <node/snapshot.h>
 #include <minerfund.h>
 #include <net.h>
@@ -41,7 +42,6 @@
 #include <script/script.h>
 #include <script/standard.h>
 #include <shutdown.h>
-#include <streams.h>
 #include <timedata.h>
 #include <txmempool.h>
 #include <univalue.h>
@@ -52,6 +52,7 @@
 #include <validationinterface.h>
 #include <warnings.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -146,12 +147,27 @@ static bool GenerateBlock(ChainstateManager &chainman,
                           avalanche::Processor *const avalanche, CBlock &block,
                           uint64_t &max_tries, BlockHash &block_hash) {
     block_hash.SetNull();
-    block.hashMerkleRoot = BlockMerkleRoot(block);
+    const bool had_merkle_root = !block.hashMerkleRoot.IsNull();
+    if (!had_merkle_root) {
+        block.hashMerkleRoot = BlockMerkleRoot(block);
+    }
+    if (!had_merkle_root || block.hashStateRoot.IsNull()) {
+        LOCK(cs_main);
+        const CBlockIndex *pindexPrev =
+            chainman.m_blockman.LookupBlockIndex(block.hashPrevBlock);
+        const uint64_t mtp =
+            pindexPrev ? uint64_t(pindexPrev->GetMedianTimePast()) : 0;
+        block.hashStateRoot = ComputeV2BlockStateRoot(
+            block, block.hashPrevBlock, block.nHeight, mtp, false);
+    }
+    if (block.GetSize() == 0) {
+        block.SetSize(GetSerializeSize(block));
+    }
 
     const Consensus::Params &params = chainman.GetConsensus();
 
     while (max_tries > 0 &&
-           block.nNonce < std::numeric_limits<uint32_t>::max() &&
+           block.nNonce < std::numeric_limits<uint64_t>::max() &&
            !CheckProofOfWork(block.GetHash(), block.nBits, params) &&
            !ShutdownRequested()) {
         ++block.nNonce;
@@ -160,7 +176,7 @@ static bool GenerateBlock(ChainstateManager &chainman,
     if (max_tries == 0 || ShutdownRequested()) {
         return false;
     }
-    if (block.nNonce == std::numeric_limits<uint32_t>::max()) {
+    if (block.nNonce == std::numeric_limits<uint64_t>::max()) {
         return true;
     }
 
@@ -465,16 +481,23 @@ static RPCHelpMan generateblock() {
 
             // Add transactions
             block.vtx.insert(block.vtx.end(), txs.begin(), txs.end());
+            block.hashMerkleRoot = BlockMerkleRoot(block);
+            block.SetSize(GetSerializeSize(block));
 
             {
                 LOCK(cs_main);
 
+                CBlockIndex *pindexPrev =
+                    chainman.m_blockman.LookupBlockIndex(block.hashPrevBlock);
+                const int64_t mtp =
+                    pindexPrev ? pindexPrev->GetMedianTimePast() : 0;
+                block.hashStateRoot = ComputeV2BlockStateRoot(
+                    block, block.hashPrevBlock, block.nHeight, mtp, false);
+
                 BlockValidationState state;
                 if (!TestBlockValidity(state, chainparams,
                                        chainman.ActiveChainstate(), block,
-                                       chainman.m_blockman.LookupBlockIndex(
-                                           block.hashPrevBlock),
-                                       GetAdjustedTime,
+                                       pindexPrev, GetAdjustedTime,
                                        BlockValidationOptions(config)
                                            .withCheckPoW(false)
                                            .withCheckMerkleRoot(false))) {
@@ -816,8 +839,8 @@ static RPCHelpMan getblocktemplate() {
     return RPCHelpMan{
         "getblocktemplate",
         "If the request parameters include a 'mode' key, that is used to "
-        "explicitly select between the default 'template' request or a "
-        "'proposal'.\n"
+        "explicitly select between the default 'template' request, "
+        "'compact_template', or a 'proposal'.\n"
         "It returns data needed to construct a block to work on.\n"
         "For full specification, see BIPs 22, 23, 9, and 145:\n"
         "    "
@@ -842,9 +865,7 @@ static RPCHelpMan getblocktemplate() {
                   "\"proposal\" (see BIP 23), or omitted"},
                  {"mineraddress", RPCArg::Type::STR, /* treat as named arg */
                   RPCArg::Optional::OMITTED,
-                  "Optional destination address for the coinbase miner payout "
-                  "(overrides default OP_TRUE script in coinbasetxhex and "
-                  "headerhex)"},
+                  "Optional Lotus address for the coinbase miner payout output"},
                  {
                      "capabilities",
                      RPCArg::Type::ARR,
@@ -877,10 +898,38 @@ static RPCHelpMan getblocktemplate() {
                      "The preferred block version"},
                     {RPCResult::Type::STR, "previousblockhash",
                      "The hash of current highest block"},
+                    {RPCResult::Type::NUM, "templateid", /* optional */ true,
+                     "The template identifier for submitsealedblock / submitsealedheader"},
+                    {RPCResult::Type::STR_HEX, "subtreearoot",
+                     /* optional */ true,
+                     "The BLAKE3 Merkle root of non-coinbase transactions"},
+                    {RPCResult::Type::STR_HEX, "merkleroot",
+                     /* optional */ true,
+                     "The block transaction Merkle root for the template coinbase"},
+                    {RPCResult::Type::STR_HEX, "stateroot",
+                     /* optional */ true,
+                     "The block state root for the template coinbase"},
+                    {RPCResult::Type::STR_HEX, "headerhex",
+                     /* optional */ true,
+                     "The 134-byte serialized V2 candidate block header (nonce=0)"},
+                    {RPCResult::Type::STR_HEX, "coinbasetxhex",
+                     /* optional */ true,
+                     "The serialized coinbase transaction (vtx[0]) matching headerhex"},
+                    {RPCResult::Type::STR_HEX, "chainid",
+                     /* optional */ true,
+                     "The 32-byte Lotus V2 ChainId in consensus byte order"},
+                    {RPCResult::Type::STR_HEX, "v2target",
+                     /* optional */ true,
+                     "The 32-byte difficulty target in consensus little-endian byte order"},
+                    {RPCResult::Type::NUM, "blocksize",
+                     /* optional */ true,
+                     "The exact serialized block size in bytes for the template coinbase"},
                     {RPCResult::Type::ARR,
                      "transactions",
+                     /* optional */ true,
                      "contents of non-coinbase transactions that should be "
-                     "included in the next block",
+                     "included in the next block (omitted in compact_template "
+                     "mode)",
                      {
                          {RPCResult::Type::OBJ,
                           "",
@@ -1012,18 +1061,6 @@ static RPCHelpMan getblocktemplate() {
                      "compressed target of next block"},
                     {RPCResult::Type::NUM, "height",
                      "The height of the next block"},
-                    {RPCResult::Type::NUM, "templateid",
-                     "Monotonic template ID for submitsealedheader/submitsealedblock"},
-                    {RPCResult::Type::STR_HEX, "subtreearoot",
-                     "Merklix Subtree-A root for non-coinbase transactions"},
-                    {RPCResult::Type::STR_HEX, "merkleroot",
-                     "Positional SHA-256d Merkle root with default/mineraddress coinbase"},
-                    {RPCResult::Type::STR_HEX, "coinbasetxhex",
-                     "Serialized coinbase transaction in hex"},
-                    {RPCResult::Type::STR_HEX, "headerhex",
-                     "Serialized 80-byte CBlockHeader in hex (160 hex chars)"},
-                    {RPCResult::Type::NUM, "blocksize",
-                     "Total serialized block size in bytes"},
                     {RPCResult::Type::OBJ,
                      "rtt",
                      "The real-time target parameters. Only present after the "
@@ -1088,11 +1125,14 @@ static RPCHelpMan getblocktemplate() {
             NodeContext &node = EnsureAnyNodeContext(request.context);
             ChainstateManager &chainman = EnsureChainman(node);
             ArgsManager &argsman = EnsureArgsman(node);
+
             const CChainParams &chainparams = config.GetChainParams();
 
             std::string strMode = "template";
             UniValue lpval = NullUniValue;
-            CScript minerScriptPubKey = CScript() << OP_TRUE;
+            std::set<std::string> setClientRules;
+            CScript coinbase_script = CScript() << OP_TRUE;
+            bool has_custom_miner_address = false;
             if (!request.params[0].isNull()) {
                 const UniValue &oparam = request.params[0].get_obj();
                 const UniValue &modeval = oparam.find_value("mode");
@@ -1104,20 +1144,20 @@ static RPCHelpMan getblocktemplate() {
                     throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
                 }
                 lpval = oparam.find_value("longpollid");
-
-                const UniValue &addrval = oparam.find_value("mineraddress");
-                if (!addrval.isNull()) {
-                    if (!addrval.isStr() || addrval.get_str().empty()) {
-                        throw JSONRPCError(RPC_INVALID_PARAMETER,
-                                           "mineraddress must be a non-empty string");
-                    }
-                    const CTxDestination dest =
-                        DecodeDestination(addrval.get_str(), chainparams);
+                const UniValue &mineraddr_val =
+                    oparam.find_value("mineraddress");
+                if (mineraddr_val.isStr()) {
+                    const CTxDestination dest = DecodeDestination(
+                        mineraddr_val.get_str(), chainparams);
                     if (!IsValidDestination(dest)) {
                         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                           "Invalid mineraddress");
+                                           "Error: Invalid mineraddress");
                     }
-                    minerScriptPubKey = GetScriptForDestination(dest);
+                    coinbase_script = GetScriptForDestination(dest);
+                    has_custom_miner_address = true;
+                } else if (!mineraddr_val.isNull()) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER,
+                                       "Invalid mineraddress");
                 }
 
                 if (strMode == "proposal") {
@@ -1151,6 +1191,8 @@ static RPCHelpMan getblocktemplate() {
                     }
 
                     CBlockIndex *const pindexPrev = active_chain.Tip();
+                    // TestBlockValidity only supports blocks built on the
+                    // current Tip
                     if (block.hashPrevBlock != pindexPrev->GetBlockHash()) {
                         co_return "inconclusive-not-best-prevblk";
                     }
@@ -1169,10 +1211,9 @@ static RPCHelpMan getblocktemplate() {
             }
             const bool compact_template = (strMode == "compact_template");
 
-            const CConnman &connman = EnsureConnman(node);
-            if (!chainparams.MineBlocksOnDemand() &&
-                !argsman.GetBoolArg("-gbtwithoutpeers", false) &&
-                connman.GetNodeCount(ConnectionDirection::Both) == 0) {
+            if (node.connman &&
+                node.connman->GetNodeCount(ConnectionDirection::Both) == 0 &&
+                !argsman.GetBoolArg("-gbtwithoutpeers", false)) {
                 throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
                                    "Bitcoin is not connected!");
             }
@@ -1183,39 +1224,52 @@ static RPCHelpMan getblocktemplate() {
                     " is in initial sync and waiting for blocks...");
             }
 
-            static std::atomic<unsigned int> nTransactionsUpdatedLast{0};
+            static unsigned int nTransactionsUpdatedLast;
             const CTxMemPool &mempool = EnsureMemPool(node);
+
             const Consensus::Params &consensusParams =
                 chainparams.GetConsensus();
 
+            node::SnapshotPublisher &publisher =
+                node.snapshot_publisher ? *node.snapshot_publisher
+                                        : node::GetGlobalSnapshotPublisher();
+
             if (!lpval.isNull()) {
+                // Wait to respond until either the best block changes, OR a
+                // minute has passed and there are more transactions
                 uint256 hashWatchedChain;
                 std::chrono::steady_clock::time_point checktxtime;
                 unsigned int nTransactionsUpdatedLastLP;
 
                 if (lpval.isStr()) {
+                    // Format: <hashBestChain><nTransactionsUpdatedLast>
                     const std::string &lpstr = lpval.get_str();
+
                     hashWatchedChain =
                         ParseHashV(lpstr.substr(0, 64), "longpollid");
                     nTransactionsUpdatedLastLP =
                         LocaleIndependentAtoi<int64_t>(lpstr.substr(64));
                 } else {
-                    const auto snap = node::GetGlobalSnapshotPublisher().Load();
-                    if (snap && snap->chain_valid) {
-                        hashWatchedChain = snap->best_block_hash;
+                    // NOTE: Spec does not specify behaviour for non-string
+                    // longpollid, but this makes testing easier
+                    auto lp_snap = publisher.Load();
+                    if (lp_snap && lp_snap->chain_valid &&
+                        lp_snap->chainman_ptr == &chainman) {
+                        hashWatchedChain = lp_snap->best_block_hash;
+                        nTransactionsUpdatedLastLP =
+                            lp_snap->transactions_updated;
                     } else {
                         LOCK(cs_main);
                         hashWatchedChain =
                             chainman.ActiveChain().Tip()->GetBlockHash();
+                        nTransactionsUpdatedLastLP = nTransactionsUpdatedLast;
                     }
-                    nTransactionsUpdatedLastLP =
-                        nTransactionsUpdatedLast.load(
-                            std::memory_order_relaxed);
                 }
 
                 const bool isRegtest = chainparams.MineBlocksOnDemand();
                 const auto initialLongpollDelay = isRegtest ? 5s : 1min;
                 const auto newTxCheckLongpollDelay = isRegtest ? 1s : 10s;
+
                 checktxtime =
                     std::chrono::steady_clock::now() + initialLongpollDelay;
 
@@ -1229,7 +1283,7 @@ static RPCHelpMan getblocktemplate() {
                     }
 
                     co_await GetRPCBlockChangeWaiter().WaitUntilDeadline(
-                        executor, checktxtime, [hashWatchedChain]() {
+                        executor, checktxtime, [&hashWatchedChain]() {
                             LOCK(g_best_block_mutex);
                             return !g_best_block ||
                                    g_best_block->GetBlockHash() !=
@@ -1245,6 +1299,9 @@ static RPCHelpMan getblocktemplate() {
                             break;
                         }
                     }
+
+                    // Timeout: Check transactions for update without holding
+                    // the mempool lock to avoid deadlocks.
                     if (mempool.GetTransactionsUpdated() !=
                         nTransactionsUpdatedLastLP) {
                         break;
@@ -1252,14 +1309,19 @@ static RPCHelpMan getblocktemplate() {
                     checktxtime += newTxCheckLongpollDelay;
                 }
 
-                if (node.avalanche) {
-                    const CBlockIndex *best_blk = nullptr;
-                    {
-                        WAIT_LOCK(g_best_block_mutex, lock);
-                        best_blk = g_best_block;
-                    }
-                    if (IsStakingRewardsActivated(consensusParams, best_blk)) {
-                        node.avalanche->computeStakingReward(best_blk);
+                {
+                    LOCK(g_best_block_mutex);
+                    if (node.avalanche && IsStakingRewardsActivated(
+                                              consensusParams, g_best_block)) {
+                        // At this point the staking reward winner might not be
+                        // computed yet. Make sure we don't miss the staking
+                        // reward winner on first return of getblocktemplate
+                        // after a block is found when using longpoll.
+                        // Note that if the computation was done already this is
+                        // a no-op. It can only be done now because we're not
+                        // holding cs_main, which would cause a lock order issue
+                        // otherwise.
+                        node.avalanche->computeStakingReward(g_best_block);
                     }
                 }
 
@@ -1267,11 +1329,15 @@ static RPCHelpMan getblocktemplate() {
                     throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
                                        "Shutting down");
                 }
+                // TODO: Maybe recheck connections/IBD and (if something wrong)
+                // send an expires-immediately template to stop miners?
             }
 
-            // Reuse the completed immutable template from the published snapshot
-            // whenever Avalanche preconsensus mining is not overriding
-            // normal mempool selection.
+            const int64_t configured_block_version =
+                chainparams.MineBlocksOnDemand()
+                    ? gArgs.GetIntArg("-blockversion",
+                                      lotus::v2::kHeaderVersion)
+                    : lotus::v2::kHeaderVersion;
             const bool avalanche_preconsensus_mining =
                 node.avalanche &&
                 argsman.GetBoolArg(
@@ -1279,53 +1345,194 @@ static RPCHelpMan getblocktemplate() {
                     DEFAULT_AVALANCHE_MINING_PRECONSENSUS) &&
                 node.avalanche->isPreconsensusActivated(nullptr);
 
-            auto snap = node::GetGlobalSnapshotPublisher().Load();
+            auto snap = publisher.Load();
             if ((!snap || !snap->chain_valid ||
                  snap->chainman_ptr != &chainman ||
-                 !snap->GetMiningTemplate().template_valid) &&
+                 !snap->mining_template.template_valid) &&
+                configured_block_version == lotus::v2::kHeaderVersion &&
                 !avalanche_preconsensus_mining) {
                 LOCK(cs_main);
                 node::PublishChainTipSnapshot(chainman, &mempool);
-                snap = node::GetGlobalSnapshotPublisher().Load();
+                snap = publisher.Load();
             }
 
-            if (snap && snap->chain_valid && snap->chainman_ptr == &chainman &&
-                snap->GetMiningTemplate().template_valid &&
+            if (snap && snap->chain_valid &&
+                snap->chainman_ptr == &chainman &&
+                snap->mining_template.template_valid &&
+                configured_block_version == lotus::v2::kHeaderVersion &&
                 !avalanche_preconsensus_mining) {
                 snap->EnsureMiningTemplate();
-                const auto &tmpl = snap->GetMiningTemplate();
-                nTransactionsUpdatedLast.store(snap->transactions_updated,
-                                               std::memory_order_relaxed);
-
+                const node::MiningTemplateSnapshot &tmpl =
+                    snap->mining_template;
                 const int64_t adjustedTime =
                     TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
                 const int64_t curtime =
-                    std::max(tmpl.min_time, adjustedTime);
-
+                    std::max<int64_t>(tmpl.min_time, adjustedTime);
                 uint32_t nBits = tmpl.nBits;
-                if (consensusParams.fPowAllowMinDifficultyBlocks &&
-                    curtime > snap->time +
-                                  2 * consensusParams.nPowTargetSpacing) {
-                    nBits = UintToArith256(consensusParams.powLimit)
-                                .GetCompact();
+                if (!consensusParams.fPowNoRetargeting &&
+                    consensusParams.fPowAllowMinDifficultyBlocks &&
+                    snap->height >= 1 &&
+                    curtime >
+                        snap->time + 2 * consensusParams.nPowTargetSpacing) {
+                    nBits = UintToArith256(consensusParams.powLimit).GetCompact();
                 }
+                const Amount coinbasevalue = tmpl.block_reward;
+
+                CMutableTransaction coinbaseTx;
+                coinbaseTx.vin.resize(1);
+                coinbaseTx.vin[0].prevout = COutPoint(
+                    TxId(tmpl.prev_block_hash),
+                    static_cast<uint32_t>(tmpl.next_height));
+                coinbaseTx.vin[0].nFlags = 2;
+                coinbaseTx.vout.resize(1);
+                coinbaseTx.vout[0].scriptPubKey = coinbase_script;
+                coinbaseTx.vout[0].nValue = coinbasevalue;
+                coinbaseTx.vin[0].scriptSig =
+                    CScript() << tmpl.next_height << OP_0;
+                coinbaseTx.vin[0].fHasCoinbaseData = true;
+                coinbaseTx.vin[0].vCoinbaseData.assign(
+                    coinbaseTx.vin[0].scriptSig.begin(),
+                    coinbaseTx.vin[0].scriptSig.end());
+
+                const auto minerFundWhitelist =
+                    GetMinerFundWhitelist(consensusParams);
+                const Amount minerFundAmount =
+                    !minerFundWhitelist.empty()
+                        ? GetMinerFundAmount(consensusParams, coinbasevalue,
+                                             nullptr)
+                        : Amount::zero();
+                const int64_t minerFundMinValue =
+                    int64_t(minerFundAmount / SATOSHI);
+                if (!minerFundWhitelist.empty()) {
+                    coinbaseTx.vout[0].nValue -= minerFundAmount;
+                    coinbaseTx.vout.emplace_back(
+                        minerFundAmount,
+                        GetScriptForDestination(*minerFundWhitelist.begin()));
+                }
+
+                std::vector<CScript> stakingRewardsPayoutScripts;
+                const Amount stakingRewardsAmountVal =
+                    GetStakingRewardsAmount(coinbasevalue);
+                const int64_t stakingRewardsAmount =
+                    stakingRewardsAmountVal / SATOSHI;
+                if (node.avalanche &&
+                    gArgs.GetBoolArg("-avalanchestakingrewards",
+                                     consensusParams.enableStakingRewards)) {
+                    if (node.avalanche->getStakingRewardWinners(
+                            tmpl.prev_block_hash,
+                            stakingRewardsPayoutScripts) &&
+                        !stakingRewardsPayoutScripts.empty()) {
+                        coinbaseTx.vout[0].nValue -= stakingRewardsAmountVal;
+                        coinbaseTx.vout.emplace_back(
+                            stakingRewardsAmountVal,
+                            stakingRewardsPayoutScripts[0]);
+                    } else {
+                        stakingRewardsPayoutScripts.clear();
+                    }
+                }
+
+                uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
+                if (coinbaseSize < MIN_TX_SIZE) {
+                    coinbaseTx.vin[0].scriptSig
+                        << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
+                    coinbaseTx.vin[0].vCoinbaseData.assign(
+                        coinbaseTx.vin[0].scriptSig.begin(),
+                        coinbaseTx.vin[0].scriptSig.end());
+                    coinbaseSize = ::GetSerializeSize(coinbaseTx);
+                }
+                const CTransaction coinbaseConst(coinbaseTx);
+
+                // Compute merkle root in 2 BLAKE3 hashes from pre-computed
+                // Subtree A root (resolved lazily on the snapshot if needed).
+                tmpl.EnsureRoots();
+                lotus::v2::TxIdentityPair cb_pair{};
+                const uint256 cb_hash = coinbaseConst.GetHash();
+                const TxId cb_id = coinbaseConst.GetId();
+                std::memcpy(cb_pair.tx_hash.data(), cb_hash.begin(), 32);
+                std::memcpy(cb_pair.tx_id.data(), cb_id.begin(), 32);
+                const lotus::v2::Hash merkle_root_bytes =
+                    lotus::v2::TransactionRootFromSubtreeA(cb_pair,
+                                                           tmpl.subtree_a_root);
+                uint256 hashMerkleRoot;
+                std::memcpy(hashMerkleRoot.begin(), merkle_root_bytes.data(),
+                            32);
+                uint256 hashSubtreeARoot;
+                std::memcpy(hashSubtreeARoot.begin(),
+                            tmpl.subtree_a_root.data(), 32);
+
+                // Compute state root in ~27 BLAKE3 hashes from pre-computed
+                // UTXO root and effective cost sum.
+                const uint256 hashStateRoot = ComputeV2StateRootFromTemplate(
+                    tmpl.v2_base_state, coinbaseConst, nBits);
+
+                const uint64_t blocksize =
+                    lotus::v2::HEADER_SIZE +
+                    GetSizeOfCompactSize(1 + tmpl.non_coinbase_txs.size()) +
+                    coinbaseSize + tmpl.non_cb_serialized_size;
+                CBlockHeader candidate_header;
+                candidate_header.hashPrevBlock = tmpl.prev_block_hash;
+                candidate_header.nBits = nBits;
+                candidate_header.SetBlockTime(static_cast<uint64_t>(curtime));
+                candidate_header.nNonce = 0;
+                candidate_header.nHeaderVersion = tmpl.nHeaderVersion;
+                candidate_header.SetSize(blocksize);
+                candidate_header.nHeight =
+                    static_cast<uint64_t>(tmpl.next_height);
+                candidate_header.hashMerkleRoot = hashMerkleRoot;
+                candidate_header.hashStateRoot = hashStateRoot;
+                // Overlay membership authenticates neither scripts nor input
+                // provenance. Validate the pinned selection once; warm reads
+                // retain the native cached-root path without writer locks.
+                {
+                    std::lock_guard<std::mutex> validation_lock(*tmpl.validation_mutex);
+                    if (!tmpl.validated) {
+                        CBlock candidate(candidate_header);
+                        candidate.vtx.push_back(MakeTransactionRef(coinbaseTx));
+                        candidate.vtx.insert(candidate.vtx.end(),
+                            tmpl.non_coinbase_txs.begin(), tmpl.non_coinbase_txs.end());
+                        LOCK(cs_main);
+                        auto &chainstate = chainman.ActiveChainstate();
+                        auto *tip = chainstate.m_chain.Tip();
+                        if (!tip || tip->GetBlockHash() != tmpl.prev_block_hash) {
+                            throw JSONRPCError(RPC_VERIFY_ERROR, "Template parent changed during assembly; retry");
+                        }
+                        BlockValidationState state;
+                        if (!TestBlockValidity(state, chainparams, chainstate, candidate,
+                                tip, GetAdjustedTime,
+                                BlockValidationOptions(config).withCheckPoW(false)
+                                                              .withCheckMerkleRoot(true))) {
+                            throw JSONRPCError(RPC_VERIFY_ERROR, "getblocktemplate: " + state.ToString());
+                        }
+                        tmpl.validated = true;
+                    }
+                }
+                DataStream ss_header{};
+                ss_header << candidate_header;
+                lotus::v2::Hash pow_limit_bytes{};
+                std::memcpy(pow_limit_bytes.data(),
+                            consensusParams.powLimit.begin(), 32);
+                lotus::v2::Hash v2_target_bytes{};
+                lotus::v2::DecodeTarget(nBits, pow_limit_bytes,
+                                        v2_target_bytes);
+
+                BlockAssembler::m_last_block_num_txs =
+                    int64_t(tmpl.non_coinbase_txs.size());
+                BlockAssembler::m_last_block_size =
+                    int64_t(1000 + tmpl.non_cb_serialized_size);
+                nTransactionsUpdatedLast = snap->transactions_updated;
 
                 UniValue aCaps(UniValue::VARR);
                 aCaps.push_back("proposal");
 
-                const Amount coinbasevalue = tmpl.block_reward;
-
                 UniValue transactions(UniValue::VARR);
                 if (!compact_template) {
-                    const auto &hex_vec = tmpl.EnsureTxHex();
+                    const auto &tx_hex_vec = tmpl.EnsureTxHex();
                     transactions.reserve(tmpl.non_coinbase_txs.size());
                     for (size_t i = 0; i < tmpl.non_coinbase_txs.size(); ++i) {
                         const CTransaction &tx = *tmpl.non_coinbase_txs[i];
                         UniValue entry(UniValue::VOBJ);
                         entry.reserve(5);
-                        entry.pushKVEnd("data", i < hex_vec.size()
-                                                    ? hex_vec[i]
-                                                    : EncodeHexTx(tx));
+                        entry.pushKVEnd("data", tx_hex_vec[i]);
                         entry.pushKVEnd("txid", tx.GetId().GetHex());
                         entry.pushKVEnd("hash", tx.GetHash().GetHex());
                         entry.pushKVEnd("fee", tmpl.tx_fees[i] / SATOSHI);
@@ -1334,134 +1541,11 @@ static RPCHelpMan getblocktemplate() {
                     }
                 }
 
-                const bool simplifyGbt = argsman.GetBoolArg("-simplegbt", false);
-
+                const bool simplifyGbt =
+                    argsman.GetBoolArg("-simplegbt", false);
                 UniValue result(UniValue::VOBJ);
                 UniValue aux(UniValue::VOBJ);
                 UniValue coinbasetxn(UniValue::VOBJ);
-
-                const auto minerFundWhitelist =
-                    GetMinerFundWhitelist(consensusParams);
-                const bool minerFundEnabled = !minerFundWhitelist.empty();
-                const Amount minerFundAmount =
-                    minerFundEnabled
-                        ? (snap->miner_fund_ratio * coinbasevalue / 100)
-                        : Amount::zero();
-                const int64_t minerFundMinValue =
-                    snap->miner_fund_active ? int64_t(minerFundAmount / SATOSHI) : 0;
-
-                std::vector<CScript> stakingRewardsPayoutScripts;
-                const Amount stakingRewardsAmountVal =
-                    GetStakingRewardsAmount(coinbasevalue);
-                const int64_t stakingRewardsAmount =
-                    stakingRewardsAmountVal / SATOSHI;
-                const bool stakingRewardsEnabled =
-                    argsman.GetBoolArg("-avalanchestakingrewards",
-                                       consensusParams.enableStakingRewards);
-                if (node.avalanche && stakingRewardsEnabled && snap->staking_rewards_active) {
-                    if (!node.avalanche->getStakingRewardWinners(
-                            tmpl.prev_block_hash,
-                            stakingRewardsPayoutScripts)) {
-                        stakingRewardsPayoutScripts.clear();
-                    }
-                }
-
-                // Construct the coinbase transaction (using minerScriptPubKey,
-                // which defaults to OP_TRUE when mineraddress is omitted)
-                // and compute the positional SHA-256d Merkle root in O(log N).
-                CMutableTransaction coinbaseTx;
-                coinbaseTx.vin.resize(1);
-                coinbaseTx.vin[0].prevout = COutPoint();
-                coinbaseTx.vout.resize(1);
-                coinbaseTx.vout[0].scriptPubKey = minerScriptPubKey;
-                coinbaseTx.vout[0].nValue = coinbasevalue;
-                coinbaseTx.vin[0].scriptSig =
-                    CScript() << tmpl.next_height << OP_0;
-                if (minerFundEnabled) {
-                    coinbaseTx.vout[0].nValue -= minerFundAmount;
-                    coinbaseTx.vout.emplace_back(
-                        minerFundAmount,
-                        GetScriptForDestination(*minerFundWhitelist.begin()));
-                }
-                if (!stakingRewardsPayoutScripts.empty()) {
-                    coinbaseTx.vout[0].nValue -= stakingRewardsAmountVal;
-                    coinbaseTx.vout.emplace_back(
-                        stakingRewardsAmountVal,
-                        stakingRewardsPayoutScripts[0]);
-                }
-                uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
-                if (coinbaseSize < MIN_TX_SIZE) {
-                    coinbaseTx.vin[0].scriptSig << std::vector<uint8_t>(
-                        MIN_TX_SIZE - coinbaseSize - 1);
-                    coinbaseSize = ::GetSerializeSize(coinbaseTx);
-                }
-
-                const CTransaction coinbaseTxFinal(coinbaseTx);
-                const TxId cb_txid = coinbaseTxFinal.GetId();
-                lotus::v2::Hash cb_txid_bytes{};
-                std::memcpy(cb_txid_bytes.data(), cb_txid.begin(), 32);
-                tmpl.EnsureTemplateRoots();
-                const lotus::v2::Hash merkle_root_bytes =
-                    lotus::v2::ComputeMerkleRootFromLeftSpine(
-                        cb_txid_bytes, tmpl.coinbase_merkle_branch);
-                uint256 merkle_root;
-                std::memcpy(merkle_root.begin(), merkle_root_bytes.data(), 32);
-
-                uint256 subtree_a_uint;
-                std::memcpy(subtree_a_uint.begin(), tmpl.subtree_a_root.data(),
-                            32);
-
-                const uint64_t num_txs = 1 + tmpl.non_coinbase_txs.size();
-                const uint64_t vtx_varint_bytes = GetSizeOfCompactSize(num_txs);
-                const uint64_t total_block_bytes =
-                    80 + vtx_varint_bytes + coinbaseSize +
-                    tmpl.non_cb_serialized_size;
-
-                CBlockHeader solved_hdr;
-                solved_hdr.nHeaderVersion = tmpl.nHeaderVersion;
-                solved_hdr.hashPrevBlock = tmpl.prev_block_hash;
-                solved_hdr.hashMerkleRoot = merkle_root;
-                solved_hdr.SetBlockTime(curtime);
-                solved_hdr.nBits = nBits;
-                solved_hdr.nNonce = 0;
-
-                // Cold assembly validates the exact selected transactions and
-                // parent UTXO/script context once. Overlay membership and a
-                // Merkle match are not validation provenance. Warm reads take
-                // only this cache-local mutex, never cs_main or mempool.cs.
-                {
-                    std::lock_guard<std::mutex> lock(snap->mining->validation_mutex);
-                    if (!snap->mining->validated) {
-                        CBlock candidate;
-                        static_cast<CBlockHeader &>(candidate) = solved_hdr;
-                        candidate.vtx.push_back(MakeTransactionRef(coinbaseTx));
-                        candidate.vtx.insert(candidate.vtx.end(),
-                            tmpl.non_coinbase_txs.begin(), tmpl.non_coinbase_txs.end());
-                        LOCK(cs_main);
-                        auto &chainstate = chainman.ActiveChainstate();
-                        auto *tip = chainstate.m_chain.Tip();
-                        if (!tip || tip->GetBlockHash() != tmpl.prev_block_hash) {
-                            throw JSONRPCError(RPC_VERIFY_ERROR,
-                                               "Template parent changed during assembly; retry");
-                        }
-                        BlockValidationState state;
-                        if (!TestBlockValidity(state, chainparams, chainstate, candidate,
-                                tip, GetAdjustedTime,
-                                BlockValidationOptions(config).withCheckPoW(false)
-                                                              .withCheckMerkleRoot(true))) {
-                            throw std::runtime_error("getblocktemplate: " + state.ToString());
-                        }
-                        snap->mining->validated = true;
-                    }
-                }
-
-                DataStream ss_hdr{};
-                ss_hdr << solved_hdr;
-
-                BlockAssembler::m_last_block_num_txs =
-                    int64_t(tmpl.non_coinbase_txs.size());
-                BlockAssembler::m_last_block_size =
-                    int64_t(1000 + tmpl.non_cb_serialized_size);
 
                 if (simplifyGbt) {
                     UniValue minerFund(UniValue::VOBJ);
@@ -1488,10 +1572,8 @@ static RPCHelpMan getblocktemplate() {
                         minerFundList.push_back(
                             EncodeDestination(fundDestination, config));
                     }
-
                     minerFund.pushKV("addresses", std::move(minerFundList));
                     minerFund.pushKV("minimumvalue", minerFundMinValue);
-
                     coinbasetxn.pushKV("minerfund", std::move(minerFund));
 
                     if (!stakingRewardsPayoutScripts.empty()) {
@@ -1505,14 +1587,12 @@ static RPCHelpMan getblocktemplate() {
                             std::move(stakingRewardsPayoutScriptObj));
                         stakingRewards.pushKV("minimumvalue",
                                               stakingRewardsAmount);
-
                         coinbasetxn.pushKV("stakingrewards",
                                            std::move(stakingRewards));
                     }
                 }
 
-                arith_uint256 hashTarget =
-                    arith_uint256().SetCompact(nBits);
+                arith_uint256 hashTarget = arith_uint256().SetCompact(nBits);
 
                 UniValue aMutable(UniValue::VARR);
                 aMutable.push_back("time");
@@ -1520,37 +1600,41 @@ static RPCHelpMan getblocktemplate() {
                 aMutable.push_back("prevblock");
 
                 result.pushKV("capabilities", std::move(aCaps));
-                result.pushKV("version", int64_t(tmpl.nHeaderVersion));
+                result.pushKV("version", uint64_t(tmpl.nHeaderVersion));
                 result.pushKV("previousblockhash",
                               tmpl.prev_block_hash.GetHex());
-                result.pushKV("transactions", std::move(transactions));
+                result.pushKV("templateid", tmpl.template_id);
+                result.pushKV("subtreearoot", hashSubtreeARoot.GetHex());
+                result.pushKV("merkleroot", hashMerkleRoot.GetHex());
+                result.pushKV("stateroot", hashStateRoot.GetHex());
+                result.pushKV("headerhex", HexStr(ss_header));
+                result.pushKV("coinbasetxhex", EncodeHexTx(coinbaseConst));
+                result.pushKV("chainid", HexStr(GetActiveV2ChainId()));
+                result.pushKV("v2target", HexStr(v2_target_bytes));
+                result.pushKV("blocksize", blocksize);
+                if (!compact_template) {
+                    result.pushKV("transactions", std::move(transactions));
+                }
                 result.pushKV("coinbaseaux", std::move(aux));
                 result.pushKV("coinbasetxn", std::move(coinbasetxn));
                 result.pushKV("coinbasevalue",
                               int64_t(coinbasevalue / SATOSHI));
                 result.pushKV("longpollid",
-                              tmpl.prev_block_hash.GetHex() +
+                              snap->best_block_hash.GetHex() +
                                   ToString(snap->transactions_updated));
                 result.pushKV("target", hashTarget.GetHex());
                 result.pushKV("mintime", tmpl.min_time);
                 result.pushKV("mutable", std::move(aMutable));
                 result.pushKV("noncerange", "00000000ffffffff");
-                const uint64_t maxBlockSize = config.GetMaxBlockSize();
                 const uint64_t sigCheckLimit =
-                    GetMaxBlockSigChecksCount(maxBlockSize);
+                    GetMaxBlockSigChecksCount(DEFAULT_MAX_BLOCK_SIZE);
                 result.pushKV("sigchecklimit", sigCheckLimit);
-                result.pushKV("sizelimit", maxBlockSize);
+                result.pushKV("sizelimit", DEFAULT_MAX_BLOCK_SIZE);
                 result.pushKV("curtime", curtime);
                 result.pushKV("bits", strprintf("%08x", nBits));
                 result.pushKV("height", int64_t(tmpl.next_height));
-                result.pushKV("templateid", int64_t(tmpl.template_id));
-                result.pushKV("subtreearoot", subtree_a_uint.GetHex());
-                result.pushKV("merkleroot", merkle_root.GetHex());
-                result.pushKV("coinbasetxhex", EncodeHexTx(coinbaseTxFinal));
-                result.pushKV("headerhex", HexStr(ss_hdr));
-                result.pushKV("blocksize", int64_t(total_block_bytes));
 
-                if (argsman.GetBoolArg("-enablertt", DEFAULT_ENABLE_RTT)) {
+                if (gArgs.GetBoolArg("-enablertt", DEFAULT_ENABLE_RTT)) {
                     uint32_t nextTarget = nBits;
                     if (!consensusParams.fPowAllowMinDifficultyBlocks ||
                         (curtime <=
@@ -1574,7 +1658,6 @@ static RPCHelpMan getblocktemplate() {
                     rtt.pushKV("prevbits", strprintf("%08x", snap->nBits));
                     rtt.pushKV("nodetime", adjustedTime);
                     rtt.pushKV("nexttarget", strprintf("%08x", nextTarget));
-
                     result.pushKV("rtt", std::move(rtt));
                 }
 
@@ -1589,56 +1672,75 @@ static RPCHelpMan getblocktemplate() {
             static CBlockIndex *pindexPrev;
             static int64_t time_start;
             static std::unique_ptr<CBlockTemplate> pblocktemplate;
-            static uint64_t fallback_template_id{0};
-            static CScript last_miner_script;
-            if (pindexPrev != active_chain.Tip() ||
-                last_miner_script != minerScriptPubKey ||
-                (mempool.GetTransactionsUpdated() !=
-                     nTransactionsUpdatedLast.load(std::memory_order_relaxed) &&
+            if (pindexPrev != active_chain.Tip() || has_custom_miner_address ||
+                (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast &&
                  GetTime() - time_start > 5)) {
+                // Clear pindexPrev so future calls make a new block, despite
+                // any failures from here on
                 pindexPrev = nullptr;
 
-                nTransactionsUpdatedLast.store(mempool.GetTransactionsUpdated(),
-                                               std::memory_order_relaxed);
+                // Store the pindexBest used before CreateNewBlock, to avoid
+                // races
+                nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
                 CBlockIndex *pindexPrevNew = active_chain.Tip();
                 time_start = GetTime();
 
+                // Create new block
                 pblocktemplate = BlockAssembler{config, active_chainstate,
                                                 &mempool, node.avalanche.get()}
-                                     .CreateNewBlock(minerScriptPubKey);
+                                     .CreateNewBlock(coinbase_script);
                 if (!pblocktemplate) {
                     throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
                 }
 
+                // Need to update only after we know CreateNewBlock succeeded
                 pindexPrev = pindexPrevNew;
-                last_miner_script = minerScriptPubKey;
-                fallback_template_id =
-                    node::GetGlobalSnapshotPublisher().AllocateTemplateId();
-
-                node::MiningTemplateSnapshot fb_tmpl{};
-                fb_tmpl.template_id = fallback_template_id;
-                fb_tmpl.prev_block_hash = pindexPrev->GetBlockHash();
-                fb_tmpl.next_height = pindexPrev->nHeight + 1;
-                fb_tmpl.nHeaderVersion = pblocktemplate->block.nHeaderVersion;
-                fb_tmpl.nBits = pblocktemplate->block.nBits;
-                fb_tmpl.parent_mtp = pindexPrev->GetMedianTimePast();
-                fb_tmpl.min_time = fb_tmpl.parent_mtp + 1;
-                for (size_t i = 1; i < pblocktemplate->block.vtx.size(); ++i) {
-                    fb_tmpl.non_coinbase_txs.push_back(
-                        pblocktemplate->block.vtx[i]);
-                }
-                fb_tmpl.template_valid = true;
-                node::GetGlobalSnapshotPublisher().RecordMiningTemplate(
-                    fb_tmpl);
             }
 
             CHECK_NONFATAL(pindexPrev);
+            // pointer for convenience
             CBlock *pblock = &pblocktemplate->block;
 
+            // Update nTime
             int64_t adjustedTime =
                 TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
             UpdateTime(pblock, chainparams, pindexPrev, adjustedTime);
             pblock->nNonce = 0;
+            pblock->SetSize(GetSerializeSize(*pblock));
+            pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+            pblock->hashStateRoot = ComputeV2BlockStateRoot(
+                *pblock, pindexPrev->GetBlockHash(), pblock->nHeight,
+                uint64_t(pindexPrev->GetMedianTimePast()), false);
+
+            node::MiningTemplateSnapshot fallback_tmpl{};
+            fallback_tmpl.template_id = publisher.AllocateTemplateId();
+            fallback_tmpl.prev_block_hash = pblock->hashPrevBlock;
+            fallback_tmpl.next_height = int(pblock->nHeight);
+            fallback_tmpl.nHeaderVersion = pblock->nHeaderVersion;
+            fallback_tmpl.nBits = pblock->nBits;
+            fallback_tmpl.parent_mtp = pindexPrev->GetMedianTimePast();
+            fallback_tmpl.min_time = fallback_tmpl.parent_mtp + 1;
+            std::vector<lotus::v2::TxIdentityPair> id_pairs;
+            if (pblock->vtx.size() > 1) {
+                id_pairs.reserve(pblock->vtx.size() - 1);
+                fallback_tmpl.non_coinbase_txs.reserve(pblock->vtx.size() - 1);
+                for (size_t i = 1; i < pblock->vtx.size(); ++i) {
+                    fallback_tmpl.non_coinbase_txs.push_back(pblock->vtx[i]);
+                    lotus::v2::TxIdentityPair pair{};
+                    std::memcpy(pair.tx_hash.data(),
+                                pblock->vtx[i]->GetHash().begin(), 32);
+                    std::memcpy(pair.tx_id.data(),
+                                pblock->vtx[i]->GetId().begin(), 32);
+                    id_pairs.push_back(pair);
+                }
+            }
+            fallback_tmpl.subtree_a_root =
+                lotus::v2::TransactionSubtreeARoot(id_pairs);
+            fallback_tmpl.template_valid = true;
+            publisher.RecordMiningTemplate(fallback_tmpl);
+            uint256 hashSubtreeARoot;
+            std::memcpy(hashSubtreeARoot.begin(),
+                        fallback_tmpl.subtree_a_root.data(), 32);
 
             UniValue aCaps(UniValue::VARR);
             aCaps.push_back("proposal");
@@ -1668,9 +1770,10 @@ static RPCHelpMan getblocktemplate() {
                     entry.pushKVEnd("data", EncodeHexTx(tx));
                     entry.pushKVEnd("txid", txId.GetHex());
                     entry.pushKVEnd("hash", tx.GetHash().GetHex());
-                    entry.pushKVEnd(
-                        "fee", pblocktemplate->entries[index_in_template].fees /
-                                   SATOSHI);
+                    entry.pushKVEnd("fee", pblocktemplate
+                                               ->entries[index_in_template]
+                                               .fees /
+                                               SATOSHI);
                     const int64_t sigChecks =
                         pblocktemplate->entries[index_in_template].sigChecks;
                     entry.pushKVEnd("sigchecks", sigChecks);
@@ -1686,6 +1789,7 @@ static RPCHelpMan getblocktemplate() {
             UniValue aux(UniValue::VOBJ);
             UniValue coinbasetxn(UniValue::VOBJ);
 
+            // Compute the miner fund parameters
             const auto minerFundWhitelist =
                 GetMinerFundWhitelist(consensusParams);
             int64_t minerFundMinValue =
@@ -1693,6 +1797,7 @@ static RPCHelpMan getblocktemplate() {
                                            pindexPrev) /
                         SATOSHI);
 
+            // Compute the staking reward parameters
             std::vector<CScript> stakingRewardsPayoutScripts;
             int64_t stakingRewardsAmount =
                 GetStakingRewardsAmount(coinbasevalue) / SATOSHI;
@@ -1759,56 +1864,55 @@ static RPCHelpMan getblocktemplate() {
             aMutable.push_back("transactions");
             aMutable.push_back("prevblock");
 
+            DataStream ss_fallback_header{};
+            ss_fallback_header << pblock->GetBlockHeader();
+            lotus::v2::Hash pow_limit_bytes{};
+            std::memcpy(pow_limit_bytes.data(),
+                        consensusParams.powLimit.begin(), 32);
+            lotus::v2::Hash v2_target_bytes{};
+            lotus::v2::DecodeTarget(pblock->nBits, pow_limit_bytes,
+                                    v2_target_bytes);
+
             result.pushKV("capabilities", std::move(aCaps));
-            result.pushKV("version", pblock->nHeaderVersion);
+
+            result.pushKV("version", uint64_t(pblock->nHeaderVersion));
+
             result.pushKV("previousblockhash", pblock->hashPrevBlock.GetHex());
-            result.pushKV("transactions", std::move(transactions));
+            result.pushKV("templateid", fallback_tmpl.template_id);
+            result.pushKV("subtreearoot", hashSubtreeARoot.GetHex());
+            result.pushKV("merkleroot", pblock->hashMerkleRoot.GetHex());
+            result.pushKV("stateroot", pblock->hashStateRoot.GetHex());
+            result.pushKV("headerhex", HexStr(ss_fallback_header));
+            if (!pblock->vtx.empty()) {
+                result.pushKV("coinbasetxhex", EncodeHexTx(*pblock->vtx[0]));
+            }
+            result.pushKV("chainid", HexStr(GetActiveV2ChainId()));
+            result.pushKV("v2target", HexStr(v2_target_bytes));
+            result.pushKV("blocksize", pblock->GetSize());
+            if (!compact_template) {
+                result.pushKV("transactions", std::move(transactions));
+            }
             result.pushKV("coinbaseaux", std::move(aux));
             result.pushKV("coinbasetxn", std::move(coinbasetxn));
             result.pushKV("coinbasevalue", int64_t(coinbasevalue / SATOSHI));
-            result.pushKV(
-                "longpollid",
-                active_chain.Tip()->GetBlockHash().GetHex() +
-                    ToString(nTransactionsUpdatedLast.load(
-                        std::memory_order_relaxed)));
+            result.pushKV("longpollid",
+                          active_chain.Tip()->GetBlockHash().GetHex() +
+                              ToString(nTransactionsUpdatedLast));
             result.pushKV("target", hashTarget.GetHex());
             result.pushKV("mintime",
                           int64_t(pindexPrev->GetMedianTimePast()) + 1);
             result.pushKV("mutable", std::move(aMutable));
             result.pushKV("noncerange", "00000000ffffffff");
-            const uint64_t maxBlockSize = config.GetMaxBlockSize();
             const uint64_t sigCheckLimit =
-                GetMaxBlockSigChecksCount(maxBlockSize);
+                GetMaxBlockSigChecksCount(DEFAULT_MAX_BLOCK_SIZE);
             result.pushKV("sigchecklimit", sigCheckLimit);
-            result.pushKV("sizelimit", maxBlockSize);
+            result.pushKV("sizelimit", DEFAULT_MAX_BLOCK_SIZE);
             result.pushKV("curtime", pblock->GetBlockTime());
             result.pushKV("bits", strprintf("%08x", pblock->nBits));
             result.pushKV("height", int64_t(pindexPrev->nHeight) + 1);
-            result.pushKV("templateid", int64_t(fallback_template_id));
-            lotus::v2::TxOverlayArena tx_arena;
-            uint32_t tx_root_idx = lotus::v2::TxOverlayArena::kNullIdx;
-            for (size_t i = 1; i < pblock->vtx.size(); ++i) {
-                lotus::v2::Hash tid{};
-                lotus::v2::Hash thash{};
-                std::memcpy(tid.data(), pblock->vtx[i]->GetId().begin(), 32);
-                std::memcpy(thash.data(), pblock->vtx[i]->GetHash().begin(), 32);
-                tx_root_idx = tx_arena.InsertTxLeaf(tx_root_idx, tid, thash);
-            }
-            const lotus::v2::Hash sub_a = tx_arena.SubtreeARoot(tx_root_idx);
-            uint256 sub_a_uint;
-            std::memcpy(sub_a_uint.begin(), sub_a.data(), 32);
-            result.pushKV("subtreearoot", sub_a_uint.GetHex());
-            if (pblock->hashMerkleRoot.IsNull()) {
-                pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
-            }
-            result.pushKV("merkleroot", pblock->hashMerkleRoot.GetHex());
-            DataStream ss_fb_hdr{};
-            ss_fb_hdr << pblock->GetBlockHeader();
-            result.pushKV("coinbasetxhex", EncodeHexTx(*pblock->vtx[0]));
-            result.pushKV("headerhex", HexStr(ss_fb_hdr));
-            result.pushKV("blocksize", int64_t(::GetSerializeSize(*pblock)));
 
             if (isRTTEnabled(consensusParams, pindexPrev)) {
+                // Compute the target for RTT
                 uint32_t nextTarget = pblock->nBits;
                 if (!consensusParams.fPowAllowMinDifficultyBlocks ||
                     (pblock->GetBlockTime() <=
@@ -1834,7 +1938,10 @@ static RPCHelpMan getblocktemplate() {
                     previousIndex = previousIndex->pprev;
                 }
 
+                // Let the miner recompute RTT on their end if they want to do
+                // so
                 UniValue rtt(UniValue::VOBJ);
+
                 UniValue prevHeaderTimes(UniValue::VARR);
                 for (size_t i : {1, 2, 5, 11, 17}) {
                     prevHeaderTimes.push_back(prevHeaderReceivedTime[i]);
@@ -1954,20 +2061,126 @@ static RPCHelpMan submitblock() {
     };
 }
 
-static RPCHelpMan submitsealedheader_impl(const char *method_name) {
+static UniValue SubmitSealedBlockImpl(const Config &config,
+                                      const JSONRPCRequest &request) {
+    CBlockHeader header;
+    if (!DecodeHexBlockHeader(header, request.params[0].get_str())) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                           "Block header decode failed");
+    }
+
+    CMutableTransaction coinbase_mtx;
+    if (!DecodeHexTx(coinbase_mtx, request.params[1].get_str())) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                           "Coinbase transaction decode failed");
+    }
+    CTransactionRef coinbase_tx =
+        MakeTransactionRef(std::move(coinbase_mtx));
+    if (!coinbase_tx->IsCoinBase()) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
+                           "Block does not start with a coinbase");
+    }
+
+    uint64_t template_id = 0;
+    if (!request.params[2].isNull()) {
+        const int64_t raw_id = request.params[2].getInt<int64_t>();
+        if (raw_id < 0) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid templateid");
+        }
+        template_id = static_cast<uint64_t>(raw_id);
+    }
+
+    NodeContext &node = EnsureAnyNodeContext(request.context);
+    ChainstateManager &chainman = EnsureChainman(node);
+    node::SnapshotPublisher &publisher =
+        node.snapshot_publisher ? *node.snapshot_publisher
+                                : node::GetGlobalSnapshotPublisher();
+
+    auto tmpl_opt =
+        publisher.FindMiningTemplate(template_id, header.hashPrevBlock);
+    if (!tmpl_opt) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Mining template not found");
+    }
+    if (header.hashPrevBlock != tmpl_opt->prev_block_hash ||
+        header.nHeight != uint64_t(tmpl_opt->next_height)) {
+        return "template-prevblock-mismatch";
+    }
+
+    auto blockptr = std::make_shared<CBlock>(header);
+    CBlock &block = *blockptr;
+    block.vtx.reserve(1 + tmpl_opt->non_coinbase_txs.size());
+    block.vtx.push_back(std::move(coinbase_tx));
+    block.vtx.insert(block.vtx.end(), tmpl_opt->non_coinbase_txs.begin(),
+                     tmpl_opt->non_coinbase_txs.end());
+    const TxId &cb_txid = block.vtx[0]->GetId();
+    const auto lb = std::lower_bound(
+        tmpl_opt->non_coinbase_txs.begin(), tmpl_opt->non_coinbase_txs.end(),
+        cb_txid, [](const CTransactionRef &a, const TxId &b) {
+            return a->GetId() < b;
+        });
+    const bool cb_collides =
+        (lb != tmpl_opt->non_coinbase_txs.end() && (*lb)->GetId() == cb_txid);
+    if (!cb_collides &&
+        ComputeV2TxRootFromSubtreeA(*block.vtx[0], tmpl_opt->subtree_a_root) ==
+            block.hashMerkleRoot) {
+        block.m_checked_merkle_root = true;
+    }
+
+    const BlockHash hash = block.GetHash();
+    {
+        LOCK(cs_main);
+        const CBlockIndex *pindex =
+            chainman.m_blockman.LookupBlockIndex(hash);
+        if (pindex) {
+            if (pindex->IsValid(BlockValidity::SCRIPTS)) {
+                return "duplicate";
+            }
+            if (pindex->nStatus.isInvalid()) {
+                return "duplicate-invalid";
+            }
+        }
+    }
+
+    bool new_block = false;
+    auto sc = std::make_shared<submitblock_StateCatcher>(hash);
+    CHECK_NONFATAL(chainman.m_options.signals)
+        ->RegisterSharedValidationInterface(sc);
+    bool accepted = chainman.ProcessNewBlock(blockptr,
+                                             /*force_processing=*/true,
+                                             /*min_pow_checked=*/true,
+                                             /*new_block=*/&new_block,
+                                             node.avalanche.get());
+    CHECK_NONFATAL(chainman.m_options.signals)
+        ->UnregisterSharedValidationInterface(sc);
+    if (!new_block && accepted) {
+        return "duplicate";
+    }
+
+    if (!sc->found) {
+        return "inconclusive";
+    }
+
+    CHECK_NONFATAL(chainman.m_options.signals)
+        ->SyncWithValidationInterfaceQueue();
+
+    return BIP22ValidationResult(config, sc->state);
+}
+
+static RPCHelpMan MakeSubmitSealedBlockHelpMan(const char *method_name) {
     return RPCHelpMan{
         method_name,
-        "Submit a solved 80-byte block header and coinbase transaction "
-        "against a cached mining template snapshot without re-uploading the "
-        "non-coinbase transaction list.\n",
+        "Reconstructs a full block from a solved 134-byte header, coinbase "
+        "transaction, and cached template transactions, then submits it to the "
+        "network.\n",
         {
-            {"headerhex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
-             "The 80-byte solved block header in hex (160 hex chars)"},
-            {"coinbasetxhex", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
-             "The serialized coinbase transaction in hex"},
+            {"hexheader", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "the hex-encoded solved block header (134 bytes, or 160 bytes "
+             "with trailing padding)"},
+            {"hexcoinbasetx", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
+             "the hex-encoded coinbase transaction (vtx[0])"},
             {"templateid", RPCArg::Type::NUM, RPCArg::Default{0},
-             "Optional template ID returned by getblocktemplate (0 = latest "
-             "matching prev_block_hash)"},
+             "the template identifier returned by getblocktemplate (0 for "
+             "latest matching template)"},
         },
         {
             RPCResult{"If the block was accepted", RPCResult::Type::NONE, "",
@@ -1975,225 +2188,30 @@ static RPCHelpMan submitsealedheader_impl(const char *method_name) {
             RPCResult{"Otherwise", RPCResult::Type::STR, "",
                       "According to BIP22"},
         },
-        RPCExamples{
-            HelpExampleCli(method_name,
-                           "\"headerhex\" \"coinbasetxhex\" 1") +
-            HelpExampleRpc(method_name,
-                           "\"headerhex\", \"coinbasetxhex\", 1")},
+        RPCExamples{HelpExampleCli(method_name,
+                                   "\"hexheader\" \"hexcoinbasetx\" 1") +
+                    HelpExampleRpc(method_name,
+                                   "\"hexheader\", \"hexcoinbasetx\", 1")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
-            CBlockHeader header;
-            if (!DecodeHexBlockHeader(header, request.params[0].get_str())) {
-                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
-                                   "Block header decode failed");
-            }
-
-            CMutableTransaction coinbase_mtx;
-            if (!DecodeHexTx(coinbase_mtx, request.params[1].get_str())) {
-                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
-                                   "Coinbase transaction decode failed");
-            }
-            CTransactionRef coinbase_tx =
-                MakeTransactionRef(std::move(coinbase_mtx));
-            if (!coinbase_tx->IsCoinBase()) {
-                throw JSONRPCError(RPC_DESERIALIZATION_ERROR,
-                                   "Provided transaction is not a coinbase");
-            }
-
-            uint64_t template_id = 0;
-            if (!request.params[2].isNull()) {
-                template_id = request.params[2].getInt<uint64_t>();
-            }
-
-            const auto tmpl_opt =
-                node::GetGlobalSnapshotPublisher().FindMiningTemplate(
-                    template_id, header.hashPrevBlock);
-            if (!tmpl_opt) {
-                throw JSONRPCError(RPC_VERIFY_ERROR,
-                                   "Template not found in snapshot history");
-            }
-
-            std::shared_ptr<CBlock> blockptr = std::make_shared<CBlock>();
-            CBlock &block = *blockptr;
-            static_cast<CBlockHeader &>(block) = header;
-            block.vtx.reserve(1 + tmpl_opt->non_coinbase_txs.size());
-            block.vtx.push_back(std::move(coinbase_tx));
-            block.vtx.insert(block.vtx.end(),
-                             tmpl_opt->non_coinbase_txs.begin(),
-                             tmpl_opt->non_coinbase_txs.end());
-
-            // Verify the positional SHA-256d Merkle root in O(log N) using the
-            // cached coinbase Merkle branch so CheckBlock can skip full O(N)
-            // BlockMerkleRoot rehashing.
-            tmpl_opt->EnsureTemplateRoots();
-            lotus::v2::Hash cb_txid_bytes{};
-            std::memcpy(cb_txid_bytes.data(), block.vtx[0]->GetId().begin(), 32);
-            const lotus::v2::Hash expected_mroot =
-                lotus::v2::ComputeMerkleRootFromLeftSpine(
-                    cb_txid_bytes, tmpl_opt->coinbase_merkle_branch);
-            if (tmpl_opt->merkle_cache_safe &&
-                std::memcmp(block.hashMerkleRoot.begin(), expected_mroot.data(),
-                            32) == 0) {
-                block.m_checked_merkle_root = true;
-            }
-
-            NodeContext &node = EnsureAnyNodeContext(request.context);
-            ChainstateManager &chainman = EnsureChainman(node);
-            const BlockHash hash = block.GetHash();
-            {
-                LOCK(cs_main);
-                const CBlockIndex *pindex =
-                    chainman.m_blockman.LookupBlockIndex(hash);
-                if (pindex) {
-                    if (pindex->IsValid(BlockValidity::SCRIPTS)) {
-                        return "duplicate";
-                    }
-                    if (pindex->nStatus.isInvalid()) {
-                        return "duplicate-invalid";
-                    }
-                }
-            }
-
-            bool new_block = false;
-            auto sc = std::make_shared<submitblock_StateCatcher>(hash);
-            CHECK_NONFATAL(chainman.m_options.signals)
-                ->RegisterSharedValidationInterface(sc);
-            bool accepted = chainman.ProcessNewBlock(
-                blockptr,
-                /*force_processing=*/true,
-                /*min_pow_checked=*/true,
-                /*new_block=*/&new_block, node.avalanche.get());
-            CHECK_NONFATAL(chainman.m_options.signals)
-                ->UnregisterSharedValidationInterface(sc);
-            if (!new_block && accepted) {
-                return "duplicate";
-            }
-
-            if (!sc->found) {
-                return "inconclusive";
-            }
-
-            CHECK_NONFATAL(chainman.m_options.signals)
-                ->SyncWithValidationInterfaceQueue();
-
-            return BIP22ValidationResult(config, sc->state);
+            return SubmitSealedBlockImpl(config, request);
         },
     };
 }
 
 static RPCHelpMan submitminedheader() {
-    return submitsealedheader_impl("submitminedheader");
+    return MakeSubmitSealedBlockHelpMan("submitminedheader");
 }
 
 static RPCHelpMan submitsealedheader() {
-    return submitsealedheader_impl("submitsealedheader");
+    return MakeSubmitSealedBlockHelpMan("submitsealedheader");
 }
 
 static RPCHelpMan submitsealedblock() {
-    return submitsealedheader_impl("submitsealedblock");
+    return MakeSubmitSealedBlockHelpMan("submitsealedblock");
 }
 
-static RPCHelpMan getrawunsolvedblock() {
-    return RPCHelpMan{
-        "getrawunsolvedblock",
-        "Assembles an unsolved block to a specified address (without PoW "
-        "grinding) and returns its serialized block hex, 80-byte header hex, "
-        "and coinbase transaction hex for external/parallel miners.\n",
-        {
-            {"address", RPCArg::Type::STR, RPCArg::Optional::NO,
-             "The address to send the newly generated lotus to."},
-        },
-        RPCResult{
-            RPCResult::Type::OBJ,
-            "",
-            "",
-            {
-                {RPCResult::Type::STR_HEX, "blockhex",
-                  "Full serialized unsolved block in hex"},
-                {RPCResult::Type::STR_HEX, "headerhex",
-                 "80-byte unsolved header in hex (160 hex chars)"},
-                {RPCResult::Type::STR_HEX, "coinbasetxhex",
-                 "Serialized coinbase transaction in hex"},
-                {RPCResult::Type::NUM, "templateid",
-                 "Template ID for submitsealedheader"},
-                {RPCResult::Type::STR_HEX, "bits", "Compact target nBits"},
-                {RPCResult::Type::STR_HEX, "target", "256-bit PoW target"},
-                {RPCResult::Type::NUM, "height", "Block height"},
-                {RPCResult::Type::NUM, "txcount",
-                 "Total transactions in block (including coinbase)"},
-            }},
-        RPCExamples{HelpExampleCli("getrawunsolvedblock", "\"myaddress\"") +
-                    HelpExampleRpc("getrawunsolvedblock", "\"myaddress\"")},
-        [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
-            CTxDestination destination = DecodeDestination(
-                request.params[0].get_str(), config.GetChainParams());
-            if (!IsValidDestination(destination)) {
-                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                   "Error: Invalid address");
-            }
 
-            NodeContext &node = EnsureAnyNodeContext(request.context);
-            const CTxMemPool &mempool = EnsureMemPool(node);
-            ChainstateManager &chainman = EnsureChainman(node);
-            CScript coinbase_script = GetScriptForDestination(destination);
-
-            std::unique_ptr<CBlockTemplate> pblocktemplate;
-            int next_height = 0;
-            uint64_t template_id = 0;
-            {
-                LOCK(cs_main);
-                next_height = chainman.ActiveChain().Height() + 1;
-                pblocktemplate =
-                    BlockAssembler{config, chainman.ActiveChainstate(),
-                                   &mempool, node.avalanche.get()}
-                        .CreateNewBlock(coinbase_script);
-                if (!pblocktemplate) {
-                    throw JSONRPCError(RPC_INTERNAL_ERROR,
-                                       "Couldn't create new block");
-                }
-                template_id =
-                    node::GetGlobalSnapshotPublisher().AllocateTemplateId();
-                node::MiningTemplateSnapshot tmpl{};
-                tmpl.template_id = template_id;
-                tmpl.prev_block_hash = pblocktemplate->block.hashPrevBlock;
-                tmpl.next_height = next_height;
-                tmpl.nHeaderVersion = pblocktemplate->block.nHeaderVersion;
-                tmpl.nBits = pblocktemplate->block.nBits;
-                for (size_t i = 1; i < pblocktemplate->block.vtx.size(); ++i) {
-                    tmpl.non_coinbase_txs.push_back(
-                        pblocktemplate->block.vtx[i]);
-                }
-                tmpl.template_valid = true;
-                node::GetGlobalSnapshotPublisher().RecordMiningTemplate(tmpl);
-            }
-
-            CBlock &block = pblocktemplate->block;
-            if (block.hashMerkleRoot.IsNull()) {
-                block.hashMerkleRoot = BlockMerkleRoot(block);
-            }
-
-            DataStream ss_block{};
-            ss_block << block;
-            DataStream ss_hdr{};
-            ss_hdr << block.GetBlockHeader();
-
-            arith_uint256 hashTarget =
-                arith_uint256().SetCompact(block.nBits);
-
-            UniValue ret(UniValue::VOBJ);
-            ret.pushKV("blockhex", HexStr(ss_block));
-            ret.pushKV("headerhex", HexStr(ss_hdr));
-            ret.pushKV("coinbasetxhex", EncodeHexTx(*block.vtx[0]));
-            ret.pushKV("templateid", int64_t(template_id));
-            ret.pushKV("bits", strprintf("%08x", block.nBits));
-            ret.pushKV("target", hashTarget.GetHex());
-            ret.pushKV("height", next_height);
-            ret.pushKV("txcount", int64_t(block.vtx.size()));
-            return ret;
-        },
-    };
-}
 
 static RPCHelpMan submitheader() {
     return RPCHelpMan{
@@ -2203,7 +2221,7 @@ static RPCHelpMan submitheader() {
         "\nThrows when the header is invalid.\n",
         {
             {"hexdata", RPCArg::Type::STR_HEX, RPCArg::Optional::NO,
-              "the hex-encoded block header data"},
+             "the hex-encoded block header data"},
         },
         RPCResult{RPCResult::Type::NONE, "", "None"},
         RPCExamples{HelpExampleCli("submitheader", "\"aabbcc\"") +
@@ -2236,6 +2254,98 @@ static RPCHelpMan submitheader() {
                 throw JSONRPCError(RPC_VERIFY_ERROR, state.ToString());
             }
             throw JSONRPCError(RPC_VERIFY_ERROR, state.GetRejectReason());
+        },
+    };
+}
+
+static RPCHelpMan getrawunsolvedblock() {
+    return RPCHelpMan{
+        "getrawunsolvedblock",
+        "Get a serialized block candidate with coinbase sending to the "
+        "specified address",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO,
+             "The address to send the newly generated coins to."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ,
+            "",
+            "",
+            {
+                {RPCResult::Type::STR_HEX, "blockhex",
+                 "Serialized block as hex."},
+                {RPCResult::Type::STR_HEX, "target", "The difficulty target."},
+            },
+        },
+        RPCExamples{"\nCreate an unsolved block to myaddress\n" +
+                    HelpExampleCli("getrawunsolvedblock", "\"myaddress\"") +
+                    "If you are running the Lotus wallet, you can get a new "
+                    "address to send the newly generated coins to with:\n" +
+                    HelpExampleCli("getnewaddress", "")},
+        [&](const RPCHelpMan &self, const Config &config,
+            const JSONRPCRequest &request) -> UniValue {
+            CTxDestination destination = DecodeDestination(
+                request.params[0].get_str(), config.GetChainParams());
+            if (!IsValidDestination(destination)) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                                   "Error: Invalid address");
+            }
+
+            const CChainParams &chainparams = config.GetChainParams();
+            const bool isTestnet = chainparams.IsTestChain();
+
+            NodeContext &node = EnsureAnyNodeContext(request.context);
+            const CConnman &connman = EnsureConnman(node);
+            if (!isTestnet &&
+                connman.GetNodeCount(ConnectionDirection::Both) == 0) {
+                throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED,
+                                   "Node is not connected!");
+            }
+
+            ChainstateManager &chainman = EnsureChainman(node);
+            if (!isTestnet && chainman.IsInitialBlockDownload()) {
+                throw JSONRPCError(
+                    RPC_CLIENT_IN_INITIAL_DOWNLOAD, PACKAGE_NAME
+                    " is in initial sync and waiting for blocks...");
+            }
+
+            LOCK(cs_main);
+            const CTxMemPool &mempool = EnsureMemPool(node);
+            Chainstate &active_chainstate = chainman.ActiveChainstate();
+            CChain &active_chain = active_chainstate.m_chain;
+
+            CBlockIndex *pindexPrevNew = active_chain.Tip();
+
+            CScript coinbase_script = GetScriptForDestination(destination);
+            std::unique_ptr<CBlockTemplate> pblocktemplate =
+                BlockAssembler{config, active_chainstate, &mempool,
+                               node.avalanche.get()}
+                    .CreateNewBlock(coinbase_script);
+            if (!pblocktemplate) {
+                throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
+            }
+
+            CHECK_NONFATAL(pindexPrevNew);
+
+            CBlock *pblock = &pblocktemplate->block;
+            int64_t adjustedTime =
+                TicksSinceEpoch<std::chrono::seconds>(GetAdjustedTime());
+            UpdateTime(pblock, chainparams, pindexPrevNew, adjustedTime);
+            pblock->nNonce = 0;
+            pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
+            pblock->hashStateRoot = ComputeV2BlockStateRoot(
+                *pblock, pindexPrevNew->GetBlockHash(), pblock->nHeight,
+                uint64_t(pindexPrevNew->GetMedianTimePast()), false);
+            pblock->SetSize(GetSerializeSize(*pblock));
+
+            DataStream ssBlock{};
+            ssBlock << *pblock;
+            arith_uint256 hashTarget =
+                arith_uint256().SetCompact(pblock->nBits);
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("blockhex", HexStr(ssBlock));
+            result.pushKV("target", hashTarget.GetHex());
+            return result;
         },
     };
 }
@@ -2363,11 +2473,11 @@ void RegisterMiningRPCCommands(CRPCTable &t) {
         {"mining",      getmininginfo,         },
         {"mining",      prioritisetransaction, },
         {"mining",      getblocktemplate,      },
+        {"mining",      getrawunsolvedblock,   },
         {"mining",      submitblock,           },
         {"mining",      submitminedheader,     },
         {"mining",      submitsealedheader,    },
         {"mining",      submitsealedblock,     },
-        {"mining",      getrawunsolvedblock,   },
         {"mining",      submitheader,          },
 
         {"generating",  generatetoaddress,     },

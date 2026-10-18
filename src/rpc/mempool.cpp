@@ -11,8 +11,7 @@
 #include <core_io.h>
 #include <httpserver.h>
 #include <lotus_v2/fee_hysteresis.h>
-#include <lotus_v2/mempool_overlay.h>
-#include <net.h>
+#include <lotus_v2/signing.h>
 #include <net/v2_protocol_handler.h>
 #include <net_processing.h>
 #include <netmessagemaker.h>
@@ -23,7 +22,6 @@
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <primitives/transaction.h>
-#include <protocol.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
@@ -36,8 +34,11 @@
 #include <validation.h>
 #include <validationinterface.h>
 
+#include <algorithm>
 #include <atomic>
 #include <util/async_completion.h>
+#include <cstdlib>
+#include <vector>
 
 using kernel::DumpMempool;
 
@@ -46,6 +47,18 @@ using node::MempoolPath;
 using node::NodeContext;
 using node::TransactionError;
 using util::ToString;
+
+static bool IsDisallowedNonV7Tx(const CTransaction &tx,
+                                const NodeContext &node) {
+    const bool allow_legacy_tx =
+        (node.args && node.args->GetBoolArg("-allowlegacytx", false)) ||
+        gArgs.GetBoolArg("-allowlegacytx", false) ||
+        (std::getenv("LOTUS_ALLOW_LEGACY_TX") != nullptr);
+    if (allow_legacy_tx) {
+        return false;
+    }
+    return tx.nVersion != 7 || tx.vin.empty() || tx.vin[0].nFlags == 0;
+}
 
 namespace {
 boost::asio::awaitable<void> WaitForRpcNotification(
@@ -150,6 +163,10 @@ static RPCHelpMan sendrawtransaction() {
             std::string err_string;
             AssertLockNotHeld(cs_main);
             NodeContext &node = EnsureAnyNodeContext(request.context);
+            if (IsDisallowedNonV7Tx(*tx, node)) {
+                throw JSONRPCError(RPC_TRANSACTION_REJECTED,
+                                   "bad-txns-non-v7-format");
+            }
             const int64_t now_ms =
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
             const auto &fee_ctrl =
@@ -199,7 +216,7 @@ static RPCHelpMan sendrawtransaction() {
             // Preserve the existing final wallet/indexer fence after relay.
             co_await WaitForRpcValidationQueues(
                 *CHECK_NONFATAL(node.validation_signals), executor);
-            co_return tx->GetHash().GetHex();
+            co_return tx->GetId().GetHex();
         },
     };
 }
@@ -1352,13 +1369,11 @@ static RPCHelpMan testrawtxbatch() {
     const auto ticker = Currency::getTicker();
     return RPCHelpMan{
         "testrawtxbatch",
-        "Returns result of mempool acceptance tests indicating if a batch of "
-        "raw transactions (serialized, hex-encoded) would be accepted by "
-        "mempool in dependency order.\n"
-        "Unlike testmempoolaccept, this supports up to " +
-            ToString(MAX_RAWTX_BATCH_COUNT) +
-            " transactions per call, evaluates parent-child dependencies "
-            "across the batch, and never mutates the mempool.\n",
+        "Test acceptance of a batch of raw transactions (serialized, "
+        "hex-encoded) in dependency order under a single cs_main lock "
+        "acquisition.\n"
+        "Returns an all-or-nothing summary ('allowed') along with per-tx "
+        "validation results.\n",
         {
             {
                 "rawtxs",
@@ -1458,8 +1473,8 @@ static RPCHelpMan testrawtxbatch() {
             std::vector<CTransactionRef> txns;
             std::vector<std::string> txid_hexes;
             std::vector<PrecomputedBatchTxData> precomputed_batch;
-            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes, nullptr,
-                                     &precomputed_batch);
+            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes,
+                                     nullptr, &precomputed_batch);
 
             NodeContext &node = EnsureAnyNodeContext(request.context);
             CTxMemPool &mempool = EnsureMemPool(node);
@@ -1481,14 +1496,25 @@ static RPCHelpMan testrawtxbatch() {
             bool exit_early{false};
             const int64_t now_ms =
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
-            const auto &fee_ctrl =
-                lotus::v2::GetGlobalFeeHysteresisController();
+            const auto &fee_ctrl = lotus::v2::GetGlobalFeeHysteresisController();
 
             for (size_t idx = 0; idx < txns.size(); ++idx) {
                 const auto &tx = txns[idx];
-                const auto &txid_hex = txid_hexes[idx];
+                const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
+                if (IsDisallowedNonV7Tx(*tx, node)) {
+                    all_allowed = false;
+                    result_inner.pushKV("allowed", false);
+                    result_inner.pushKV("reject-reason",
+                                        "bad-txns-non-v7-format");
+                    result_inner.pushKV(
+                        "reject-details",
+                        "bad-txns-non-v7-format, transaction must use Lotus V2 "
+                        "version 7 format");
+                    results_arr.push_back(std::move(result_inner));
+                    continue;
+                }
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
@@ -1530,11 +1556,12 @@ static RPCHelpMan testrawtxbatch() {
                         "effective-feerate",
                         tx_result.m_effective_feerate.value().GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    const auto &includes = tx_result.m_txids_fee_calculations.value();
-                    if (includes.size() == 1 && includes[0] == tx->GetId()) {
+                    const auto &inc =
+                        tx_result.m_txids_fee_calculations.value();
+                    if (inc.size() == 1 && inc[0] == tx->GetId()) {
                         effective_includes_res.push_back(txid_hex);
                     } else {
-                        for (const auto &txid : includes) {
+                        for (const auto &txid : inc) {
                             effective_includes_res.push_back(txid.ToString());
                         }
                     }
@@ -1711,17 +1738,22 @@ static RPCHelpMan submitrawtxbatch() {
                     : CFeeRate(AmountFromValue(request.params[1]));
 
             std::vector<CTransactionRef> txns;
-            std::vector<std::string> txid_hexes;
             std::vector<PrecomputedBatchTxData> precomputed_batch;
             UniValue txids_arr(UniValue::VARR);
-            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes, &txids_arr,
-                                     &precomputed_batch);
+            std::vector<std::string> txid_hexes;
+            DecodeRawTxBatchParallel(raw_transactions, txns, txid_hexes,
+                                     &txids_arr, &precomputed_batch);
 
             AssertLockNotHeld(cs_main);
             NodeContext &node = EnsureAnyNodeContext(request.context);
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
             Chainstate &chainstate = chainman.ActiveChainstate();
+
+            const bool has_disallowed_non_v7 = std::any_of(
+                txns.begin(), txns.end(), [&](const CTransactionRef &tx) {
+                    return IsDisallowedNonV7Tx(*tx, node);
+                });
 
             UniValue results_arr(UniValue::VARR);
             bool all_allowed = false;
@@ -1736,11 +1768,11 @@ static RPCHelpMan submitrawtxbatch() {
                 CTxMemPool::ScopedSnapshotDefer snap_defer(mempool);
                 PackageMempoolAcceptResult res =
                     ProcessRawTxBatch(chainstate, mempool, txns,
-                                      /*test_accept=*/false,
+                                      /*test_accept=*/has_disallowed_non_v7,
                                       max_raw_tx_fee_rate,
                                       &precomputed_batch);
 
-                if (res.m_state.IsValid() &&
+                if (!has_disallowed_non_v7 && res.m_state.IsValid() &&
                     res.m_tx_results.size() == txns.size()) {
                     for (const auto &tx : txns) {
                         mempool.AddUnbroadcastTx(tx->GetId());
@@ -1760,14 +1792,27 @@ static RPCHelpMan submitrawtxbatch() {
                 package_error_str = package_result.m_state.GetRejectReason();
             }
 
-            all_allowed = package_result.m_state.IsValid();
+            all_allowed =
+                !has_disallowed_non_v7 && package_result.m_state.IsValid();
             bool exit_early{false};
 
             for (size_t idx = 0; idx < txns.size(); ++idx) {
                 const auto &tx = txns[idx];
-                const auto &txid_hex = txid_hexes[idx];
+                const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
+                if (IsDisallowedNonV7Tx(*tx, node)) {
+                    all_allowed = false;
+                    result_inner.pushKV("allowed", false);
+                    result_inner.pushKV("reject-reason",
+                                        "bad-txns-non-v7-format");
+                    result_inner.pushKV(
+                        "reject-details",
+                        "bad-txns-non-v7-format, transaction must use Lotus V2 "
+                        "version 7 format");
+                    results_arr.push_back(std::move(result_inner));
+                    continue;
+                }
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
@@ -1775,10 +1820,11 @@ static RPCHelpMan submitrawtxbatch() {
                     continue;
                 }
                 const auto &tx_result = it->second;
-                const uint64_t tx_cu = static_cast<uint64_t>(std::max<int64_t>(
-                    0, tx_result.m_vsize.has_value()
-                           ? tx_result.m_vsize.value()
-                           : GetVirtualTransactionSize(*tx)));
+                const uint64_t tx_cu =
+                    static_cast<uint64_t>(std::max<int64_t>(
+                        0, tx_result.m_vsize.has_value()
+                               ? tx_result.m_vsize.value()
+                               : GetVirtualTransactionSize(*tx)));
                 const uint64_t paid_fee_sats =
                     tx_result.m_base_fees.has_value()
                         ? static_cast<uint64_t>(std::max<int64_t>(
@@ -1806,11 +1852,12 @@ static RPCHelpMan submitrawtxbatch() {
                         "effective-feerate",
                         tx_result.m_effective_feerate.value().GetFeePerK());
                     UniValue effective_includes_res(UniValue::VARR);
-                    const auto &includes = tx_result.m_txids_fee_calculations.value();
-                    if (includes.size() == 1 && includes[0] == tx->GetId()) {
+                    const auto &inc =
+                        tx_result.m_txids_fee_calculations.value();
+                    if (inc.size() == 1 && inc[0] == tx->GetId()) {
                         effective_includes_res.push_back(txid_hex);
                     } else {
-                        for (const auto &txid : includes) {
+                        for (const auto &txid : inc) {
                             effective_includes_res.push_back(txid.ToString());
                         }
                     }
@@ -1838,7 +1885,7 @@ static RPCHelpMan submitrawtxbatch() {
             }
 
             if (all_allowed) {
-                if (node.validation_signals) {
+                if (node.validation_signals && txns.size() <= 64) {
                     node.validation_signals->SyncWithValidationInterfaceQueue();
                 }
                 // Locally originated batches use the ordinary first-hop

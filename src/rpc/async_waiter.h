@@ -39,6 +39,7 @@ private:
 public:
     AsyncBlockChangeWaiter() = default;
 
+
     /**
      * Wake all currently suspended coroutines by cancelling their timers.
      * Safe to call from any thread (validation, mempool, or shutdown).

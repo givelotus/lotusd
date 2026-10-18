@@ -1328,6 +1328,7 @@ static RPCHelpMan createpsbt() {
             CMutableTransaction rawTx =
                 ConstructTransaction(config.GetChainParams(), request.params[0],
                                      request.params[1], request.params[2]);
+            rawTx.nVersion = 2;
 
             // Make a blank psbt
             PartiallySignedTransaction psbtx;
