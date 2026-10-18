@@ -55,6 +55,30 @@ static COutPoint buildOutPoint(const UniValue &vinput) {
     return COutPoint(txid, vinput[1].getInt<int>());
 }
 
+BOOST_AUTO_TEST_CASE(serialized_size_all_constructors) {
+    auto check = [](const CTransaction &tx) {
+        const auto direct_size = ::GetSerializeSize(CMutableTransaction{tx});
+        BOOST_CHECK_EQUAL(tx.GetTotalSize(), direct_size);
+        BOOST_CHECK_EQUAL(::GetSerializeSize(tx), direct_size);
+    };
+    check(CTransaction{});
+    for (size_t length : {size_t{0}, size_t{28}, size_t{253}, size_t{1000}}) {
+        CMutableTransaction mtx;
+        mtx.vin.resize(1);
+        CScript script;
+        script.resize(length);
+        mtx.vout.emplace_back(1 * SATOSHI, std::move(script));
+        const CTransaction copied{mtx};
+        check(copied);
+        const CTransaction moved{std::move(mtx)};
+        check(moved);
+        DataStream wire;
+        wire << copied;
+        const CTransaction decoded{deserialize, wire};
+        check(decoded);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(tx_valid) {
     // Read tests from test/data/tx_valid.json
     // Format is an array of arrays
