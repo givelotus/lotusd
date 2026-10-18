@@ -636,6 +636,12 @@ Hash EmptyTxRoot() {
     return kEmpty;
 }
 
+const MonetaryProfile &GetDefaultV2MonetaryProfile() noexcept {
+    static constexpr MonetaryProfile profile{
+        2, 16, 2, 4, 32, 60, 2, 2000, 3, 1000, 200, Hash{2}};
+    return profile;
+}
+
 MonetaryState GetInitialV2MonetaryState() {
     MonetaryState state{};
     state.bootstrap_reserve = 9;
@@ -1133,6 +1139,9 @@ UtxoOverlayArena::UtxoOverlayArena(std::shared_ptr<const SmtNode> base_root) {
 
 void UtxoOverlayArena::Reset(std::shared_ptr<const SmtNode> base_root) {
     nodes_.clear();
+    if (nodes_.capacity() < 512) {
+        nodes_.reserve(512);
+    }
     UtxoOverlayNode sentinel{};
     sentinel.digest = EmptyUtxoRoot();
     nodes_.push_back(sentinel);
@@ -1165,7 +1174,7 @@ UtxoOverlayArena::ImportSmtNode(const std::shared_ptr<const SmtNode> &smt_node) 
     node.key = smt_node->key;
     node.is_leaf = smt_node->IsLeaf();
     if (node.is_leaf && smt_node->coin) {
-        node.coin = *smt_node->coin;
+        node.coin = smt_node->coin;
     } else {
         node.base_child[0] = smt_node->child[0];
         node.base_child[1] = smt_node->child[1];
@@ -1175,17 +1184,20 @@ UtxoOverlayArena::ImportSmtNode(const std::shared_ptr<const SmtNode> &smt_node) 
 
 std::shared_ptr<const SmtNode>
 UtxoOverlayArena::ExportSmtNode(uint32_t node_idx) const {
+    if (node_idx == kNullIdx) {
+        return nullptr;
+    }
     const UtxoOverlayNode &n = nodes_[node_idx];
-    if (n.base_self) {
+    if (n.base_self && !n.digest_dirty) {
         return n.base_self;
     }
     auto smt = std::make_shared<SmtNode>();
     smt->digest = n.digest;
     smt->count = n.count;
     if (n.is_leaf) {
-        smt->total_value = n.coin.output.value;
+        smt->total_value = n.coin ? n.coin->output.value : 0;
         smt->key = n.key;
-        smt->coin = std::make_shared<const Coin>(n.coin);
+        smt->coin = n.coin;
         return smt;
     }
     smt->child[0] =
@@ -1203,7 +1215,7 @@ uint32_t UtxoOverlayArena::MakeLeaf(const Coin &coin, const Hash &key,
     leaf.digest = leaf_hash;
     leaf.count = 1;
     leaf.key = key;
-    leaf.coin = coin;
+    leaf.coin = std::make_shared<const Coin>(coin);
     leaf.is_leaf = true;
     return AllocNode(leaf);
 }
@@ -1230,12 +1242,49 @@ uint32_t UtxoOverlayArena::ChildCount(const UtxoOverlayNode &node,
     return 0;
 }
 
-void UtxoOverlayArena::RefreshNode(uint32_t idx, unsigned depth) {
+void UtxoOverlayArena::RefreshNode(uint32_t idx, unsigned depth) const {
     const Hash lh = ChildHash(nodes_[idx], 0);
     const Hash rh = ChildHash(nodes_[idx], 1);
     const bool ok = UtxoNode(depth, lh, rh, nodes_[idx].digest);
     assert(ok);
     (void)ok;
+    nodes_[idx].digest_dirty = false;
+}
+
+void UtxoOverlayArena::EnsureDigest(uint32_t idx, unsigned depth) const {
+    if (idx == kNullIdx || nodes_[idx].is_leaf || !nodes_[idx].digest_dirty) {
+        return;
+    }
+    if (depth == 0 && nodes_[idx].count >= 256) {
+        std::array<uint32_t, 16> shard_roots{};
+        shard_roots.fill(kNullIdx);
+        std::array<bool, 16> active{};
+        unsigned active_count = 0;
+        auto collect = [&](auto &self, uint32_t n_idx, unsigned d, unsigned prefix) -> void {
+            if (n_idx == kNullIdx || nodes_[n_idx].is_leaf || !nodes_[n_idx].digest_dirty) {
+                return;
+            }
+            if (d == 4) {
+                shard_roots[prefix] = n_idx;
+                active[prefix] = true;
+                ++active_count;
+                return;
+            }
+            self(self, nodes_[n_idx].child[0], d + 1, prefix);
+            self(self, nodes_[n_idx].child[1], d + 1, prefix | (1u << d));
+        };
+        collect(collect, idx, 0, 0);
+        if (active_count >= 8) {
+            ParallelFor16Shards(active, [&](unsigned s) {
+                EnsureDigest(shard_roots[s], 4);
+            });
+        }
+    }
+    const uint32_t c0 = nodes_[idx].child[0];
+    const uint32_t c1 = nodes_[idx].child[1];
+    EnsureDigest(c0, depth + 1);
+    EnsureDigest(c1, depth + 1);
+    RefreshNode(idx, depth);
 }
 
 uint32_t UtxoOverlayArena::EnsureChildLoaded(uint32_t node_idx, unsigned bit) {
@@ -1264,19 +1313,19 @@ uint32_t UtxoOverlayArena::JoinLeaves(uint32_t existing_idx, uint32_t added_idx,
     UtxoOverlayNode branch{};
     branch.count = 2;
     branch.is_leaf = false;
+    branch.digest_dirty = true;
     const unsigned old_bit = SmtKeyBit(existing_key, split);
     branch.child[old_bit] = existing_idx;
     branch.child[1 - old_bit] = added_idx;
     uint32_t subtree_idx = AllocNode(branch);
-    RefreshNode(subtree_idx, split);
 
     for (unsigned d = split; d-- > depth;) {
         UtxoOverlayNode parent{};
         parent.count = 2;
         parent.is_leaf = false;
+        parent.digest_dirty = true;
         parent.child[SmtKeyBit(existing_key, d)] = subtree_idx;
         subtree_idx = AllocNode(parent);
-        RefreshNode(subtree_idx, d);
     }
     return subtree_idx;
 }
@@ -1301,17 +1350,17 @@ uint32_t UtxoOverlayArena::InsertAt(uint32_t node_idx, const Coin &coin,
     const uint32_t old_child = EnsureChildLoaded(node_idx, bit);
     const uint32_t new_child = InsertAt(old_child, coin, key, leaf_hash,
                                         depth + 1);
-    if (new_child == old_child) {
+    if (new_child == old_child &&
+        (new_child == kNullIdx || !nodes_[new_child].digest_dirty)) {
         return node_idx;
     }
-    UtxoOverlayNode copy = nodes_[node_idx];
-    copy.child[bit] = new_child;
-    copy.base_child[bit].reset();
-    copy.base_self.reset();
-    copy.count = ChildCount(copy, 0) + ChildCount(copy, 1);
-    const uint32_t next_idx = AllocNode(copy);
-    RefreshNode(next_idx, depth);
-    return next_idx;
+    nodes_[node_idx].child[bit] = new_child;
+    nodes_[node_idx].base_child[bit].reset();
+    nodes_[node_idx].base_self.reset();
+    nodes_[node_idx].count =
+        ChildCount(nodes_[node_idx], 0) + ChildCount(nodes_[node_idx], 1);
+    nodes_[node_idx].digest_dirty = true;
+    return node_idx;
 }
 
 uint32_t UtxoOverlayArena::EraseAt(uint32_t node_idx, const Outpoint &outpoint,
@@ -1320,8 +1369,8 @@ uint32_t UtxoOverlayArena::EraseAt(uint32_t node_idx, const Outpoint &outpoint,
         return kNullIdx;
     }
     if (nodes_[node_idx].is_leaf) {
-        if (nodes_[node_idx].key != key ||
-            nodes_[node_idx].coin.outpoint != outpoint) {
+        if (nodes_[node_idx].key != key || !nodes_[node_idx].coin ||
+            nodes_[node_idx].coin->outpoint != outpoint) {
             return node_idx;
         }
         return kNullIdx;
@@ -1329,30 +1378,36 @@ uint32_t UtxoOverlayArena::EraseAt(uint32_t node_idx, const Outpoint &outpoint,
     const unsigned bit = SmtKeyBit(key, depth);
     const uint32_t old_child = EnsureChildLoaded(node_idx, bit);
     const uint32_t new_child = EraseAt(old_child, outpoint, key, depth + 1);
-    if (new_child == old_child) {
+    if (new_child == old_child &&
+        (new_child == kNullIdx || !nodes_[new_child].digest_dirty)) {
         return node_idx;
     }
-    UtxoOverlayNode copy = nodes_[node_idx];
-    copy.child[bit] = new_child;
-    copy.base_child[bit].reset();
-    copy.base_self.reset();
-    const uint32_t new_count = ChildCount(copy, 0) + ChildCount(copy, 1);
+    nodes_[node_idx].child[bit] = new_child;
+    nodes_[node_idx].base_child[bit].reset();
+    nodes_[node_idx].base_self.reset();
+    const uint32_t new_count =
+        ChildCount(nodes_[node_idx], 0) + ChildCount(nodes_[node_idx], 1);
+    if (new_count == 0) {
+        return kNullIdx;
+    }
     if (new_count == 1) {
         if (new_child != kNullIdx) {
             return new_child;
         }
         return EnsureChildLoaded(node_idx, 1 - bit);
     }
-    copy.count = new_count;
-    const uint32_t next_idx = AllocNode(copy);
-    RefreshNode(next_idx, depth);
-    return next_idx;
+    nodes_[node_idx].count = new_count;
+    nodes_[node_idx].digest_dirty = true;
+    return node_idx;
 }
 
 void UtxoOverlayArena::InsertCoin(const Coin &coin) {
     Hash leaf_hash{};
     if (!UtxoLeaf(coin, leaf_hash)) {
         return;
+    }
+    if (nodes_.capacity() < nodes_.size() + 32) {
+        nodes_.reserve(std::max<size_t>(nodes_.capacity() * 2, 1024));
     }
     const Hash key = OutpointKey(coin.outpoint);
     root_idx_ = InsertAt(root_idx_, coin, key, leaf_hash, 0);
@@ -1361,6 +1416,9 @@ void UtxoOverlayArena::InsertCoin(const Coin &coin) {
 }
 
 void UtxoOverlayArena::EraseOutpoint(const Outpoint &outpoint) {
+    if (nodes_.capacity() < nodes_.size() + 32) {
+        nodes_.reserve(std::max<size_t>(nodes_.capacity() * 2, 1024));
+    }
     const Hash key = OutpointKey(outpoint);
     root_idx_ = EraseAt(root_idx_, outpoint, key, 0);
     // [Optimization — Rolls into Patch 020]: Defer SmtNode export until GetSmtRoot()
@@ -1372,6 +1430,11 @@ void UtxoOverlayArena::BatchUpdateParallel(
     std::span<const Coin> inserted) {
     if (erased.empty() && inserted.empty()) {
         return;
+    }
+    EnsureDigest(root_idx_, 0);
+    const size_t needed = nodes_.size() + (erased.size() + inserted.size()) * 4 + 64;
+    if (nodes_.capacity() < needed) {
+        nodes_.reserve(std::max<size_t>(nodes_.capacity() * 2, needed));
     }
 
     std::vector<Hash> erased_keys(erased.size());
@@ -1461,7 +1524,7 @@ void UtxoOverlayArena::BatchUpdateParallel(
             node.key = smt_node->key;
             node.is_leaf = smt_node->IsLeaf();
             if (node.is_leaf && smt_node->coin) {
-                node.coin = *smt_node->coin;
+                node.coin = smt_node->coin;
             } else {
                 node.base_child[0] = smt_node->child[0];
                 node.base_child[1] = smt_node->child[1];
@@ -1521,7 +1584,7 @@ void UtxoOverlayArena::BatchUpdateParallel(
             leaf.digest = leaf_hash;
             leaf.count = 1;
             leaf.key = key;
-            leaf.coin = coin;
+            leaf.coin = std::make_shared<const Coin>(coin);
             leaf.is_leaf = true;
             return alloc_local(leaf);
         };
@@ -1568,7 +1631,7 @@ void UtxoOverlayArena::BatchUpdateParallel(
                     if (node_idx & kLocalBit) {
                         UtxoOverlayNode &mut = loc[node_idx & ~kLocalBit];
                         mut.digest = leaf_hash;
-                        mut.coin = coin;
+                        mut.coin = std::make_shared<const Coin>(coin);
                         mut.base_self.reset();
                         return node_idx;
                     }
@@ -1621,7 +1684,8 @@ void UtxoOverlayArena::BatchUpdateParallel(
             }
             const UtxoOverlayNode &cur_ref = get_node(node_idx);
             if (cur_ref.is_leaf) {
-                if (cur_ref.key != key || cur_ref.coin.outpoint != outpoint) {
+                if (cur_ref.key != key || !cur_ref.coin ||
+                    cur_ref.coin->outpoint != outpoint) {
                     return node_idx;
                 }
                 return kNullIdx;
@@ -1768,14 +1832,284 @@ void UtxoOverlayArena::BatchUpdateParallel(
 
 const std::shared_ptr<const SmtNode> &UtxoOverlayArena::GetSmtRoot() const {
     if (smt_root_dirty_) {
-        current_smt_root_ = ExportSmtNode(root_idx_);
+        // No-op mutations may load paths without changing the imported root.
+        // Preserve that immutable tree before the parallel exporter rebuilds
+        // its upper levels, just as ExportSmtNode preserves clean subtrees.
+        if (root_idx_ != kNullIdx && nodes_[root_idx_].base_self &&
+            !nodes_[root_idx_].digest_dirty) {
+            current_smt_root_ = nodes_[root_idx_].base_self;
+            smt_root_dirty_ = false;
+            return current_smt_root_;
+        }
+        EnsureDigest(root_idx_, 0);
+        if (root_idx_ != kNullIdx && !nodes_[root_idx_].is_leaf &&
+            nodes_[root_idx_].count >= 256) {
+            std::array<uint32_t, 16> shard_idx{};
+            shard_idx.fill(kNullIdx);
+            std::array<std::shared_ptr<const SmtNode>, 16> shard_base{};
+            std::array<bool, 16> active{};
+            auto collect = [&](auto &self, uint32_t n_idx,
+                               const std::shared_ptr<const SmtNode> &b_ptr,
+                               unsigned d, unsigned prefix) -> void {
+                if (d == 4) {
+                    if (n_idx != kNullIdx) {
+                        shard_idx[prefix] = n_idx;
+                        active[prefix] = true;
+                    } else {
+                        shard_base[prefix] = b_ptr;
+                    }
+                    return;
+                }
+                if (n_idx == kNullIdx) {
+                    if (!b_ptr) {
+                        return;
+                    }
+                    if (b_ptr->IsLeaf()) {
+                        const unsigned s =
+                            static_cast<unsigned>(b_ptr->key[0] & 0x0Fu);
+                        shard_base[s] = b_ptr;
+                        return;
+                    }
+                    self(self, kNullIdx, b_ptr->child[0], d + 1, prefix);
+                    self(self, kNullIdx, b_ptr->child[1], d + 1,
+                         prefix | (1u << d));
+                    return;
+                }
+                const UtxoOverlayNode &n = nodes_[n_idx];
+                if (n.is_leaf) {
+                    const unsigned s = static_cast<unsigned>(n.key[0] & 0x0Fu);
+                    shard_idx[s] = n_idx;
+                    active[s] = true;
+                    return;
+                }
+                self(self, n.child[0],
+                     n.child[0] == kNullIdx ? n.base_child[0] : nullptr, d + 1,
+                     prefix);
+                self(self, n.child[1],
+                     n.child[1] == kNullIdx ? n.base_child[1] : nullptr, d + 1,
+                     prefix | (1u << d));
+            };
+            collect(collect, root_idx_, nullptr, 0, 0);
+            ParallelFor16Shards(active, [&](unsigned s) {
+                shard_base[s] = ExportSmtNode(shard_idx[s]);
+            });
+            current_smt_root_ = ZipSmtFromDepth4(0, 0, shard_base);
+        } else {
+            current_smt_root_ = ExportSmtNode(root_idx_);
+        }
         smt_root_dirty_ = false;
     }
     return current_smt_root_;
 }
 
 Hash UtxoOverlayArena::RootDigest() const {
-    return root_idx_ != kNullIdx ? nodes_[root_idx_].digest : EmptyUtxoRoot();
+    if (root_idx_ == kNullIdx) {
+        return EmptyUtxoRoot();
+    }
+    EnsureDigest(root_idx_, 0);
+    return nodes_[root_idx_].digest;
+}
+
+Hash UtxoOverlayArena::RootDigestWithExtraCoins(
+    std::span<const Coin> extra_coins) const {
+    EnsureDigest(root_idx_, 0);
+    if (extra_coins.empty()) {
+        return root_idx_ != kNullIdx ? nodes_[root_idx_].digest
+                                     : EmptyUtxoRoot();
+    }
+
+    constexpr uint32_t kLocalBit = 0x80000000u;
+    std::vector<UtxoOverlayNode> loc;
+    loc.reserve(extra_coins.size() * 8 + 16);
+
+    auto get_node = [&](uint32_t idx) -> const UtxoOverlayNode & {
+        return (idx & kLocalBit) ? loc[idx & ~kLocalBit] : nodes_[idx];
+    };
+    auto alloc_local = [&](const UtxoOverlayNode &n) -> uint32_t {
+        const uint32_t idx = kLocalBit | static_cast<uint32_t>(loc.size());
+        loc.push_back(n);
+        return idx;
+    };
+    auto import_smt_local =
+        [&](const std::shared_ptr<const SmtNode> &smt_node) -> uint32_t {
+        if (!smt_node) {
+            return kNullIdx;
+        }
+        UtxoOverlayNode node{};
+        node.digest = smt_node->digest;
+        node.count = static_cast<uint32_t>(smt_node->count);
+        node.key = smt_node->key;
+        node.is_leaf = smt_node->IsLeaf();
+        if (node.is_leaf && smt_node->coin) {
+            node.coin = smt_node->coin;
+        } else {
+            node.base_child[0] = smt_node->child[0];
+            node.base_child[1] = smt_node->child[1];
+        }
+        return alloc_local(node);
+    };
+    auto ensure_child_local = [&](uint32_t node_idx, unsigned bit) -> uint32_t {
+        const UtxoOverlayNode &cur_ref = get_node(node_idx);
+        if (cur_ref.child[bit] != kNullIdx) {
+            return cur_ref.child[bit];
+        }
+        if (!cur_ref.base_child[bit]) {
+            return kNullIdx;
+        }
+        const std::shared_ptr<const SmtNode> base_ptr = cur_ref.base_child[bit];
+        const uint32_t imported = import_smt_local(base_ptr);
+        if (node_idx & kLocalBit) {
+            UtxoOverlayNode &mut = loc[node_idx & ~kLocalBit];
+            mut.child[bit] = imported;
+            mut.base_child[bit].reset();
+        }
+        return imported;
+    };
+    auto child_hash_local = [&](const UtxoOverlayNode &node,
+                                unsigned bit) -> Hash {
+        if (node.child[bit] != kNullIdx) {
+            return get_node(node.child[bit]).digest;
+        }
+        if (node.base_child[bit]) {
+            return node.base_child[bit]->digest;
+        }
+        return EmptyUtxoRoot();
+    };
+    auto child_count_local = [&](const UtxoOverlayNode &node,
+                                 unsigned bit) -> uint32_t {
+        if (node.child[bit] != kNullIdx) {
+            return get_node(node.child[bit]).count;
+        }
+        if (node.base_child[bit]) {
+            return static_cast<uint32_t>(node.base_child[bit]->count);
+        }
+        return 0;
+    };
+    auto make_leaf_local = [&](const Coin &coin, const Hash &key,
+                               const Hash &leaf_hash) -> uint32_t {
+        UtxoOverlayNode leaf{};
+        leaf.digest = leaf_hash;
+        leaf.count = 1;
+        leaf.key = key;
+        leaf.coin = std::make_shared<const Coin>(coin);
+        leaf.is_leaf = true;
+        return alloc_local(leaf);
+    };
+    auto join_leaves_local = [&](uint32_t existing_idx, uint32_t added_idx,
+                                 unsigned depth) -> uint32_t {
+        const Hash existing_key = get_node(existing_idx).key;
+        const Hash added_key = get_node(added_idx).key;
+        unsigned split = depth;
+        while (split < 256 &&
+               SmtKeyBit(existing_key, split) == SmtKeyBit(added_key, split)) {
+            ++split;
+        }
+        UtxoOverlayNode branch{};
+        branch.count = 2;
+        branch.is_leaf = false;
+        const unsigned old_bit = SmtKeyBit(existing_key, split);
+        branch.child[old_bit] = existing_idx;
+        branch.child[1 - old_bit] = added_idx;
+        uint32_t subtree_idx = alloc_local(branch);
+
+        for (unsigned d = split; d-- > depth;) {
+            UtxoOverlayNode parent{};
+            parent.count = 2;
+            parent.is_leaf = false;
+            parent.child[SmtKeyBit(existing_key, d)] = subtree_idx;
+            subtree_idx = alloc_local(parent);
+        }
+        return subtree_idx;
+    };
+    auto insert_at_local = [&](auto &self, uint32_t node_idx, const Coin &coin,
+                               const Hash &key, const Hash &leaf_hash,
+                               unsigned depth) -> uint32_t {
+        if (node_idx == kNullIdx) {
+            return make_leaf_local(coin, key, leaf_hash);
+        }
+        const UtxoOverlayNode &cur_ref = get_node(node_idx);
+        if (cur_ref.is_leaf) {
+            if (cur_ref.key == key) {
+                if (cur_ref.digest == leaf_hash) {
+                    return node_idx;
+                }
+                if (node_idx & kLocalBit) {
+                    UtxoOverlayNode &mut = loc[node_idx & ~kLocalBit];
+                    mut.digest = leaf_hash;
+                    mut.coin = std::make_shared<const Coin>(coin);
+                    return node_idx;
+                }
+                return make_leaf_local(coin, key, leaf_hash);
+            }
+            const uint32_t added_idx = make_leaf_local(coin, key, leaf_hash);
+            return join_leaves_local(node_idx, added_idx, depth);
+        }
+        if (depth >= 256) {
+            return node_idx;
+        }
+        const unsigned bit = SmtKeyBit(key, depth);
+        const uint32_t old_child = ensure_child_local(node_idx, bit);
+        const uint32_t new_child =
+            self(self, old_child, coin, key, leaf_hash, depth + 1);
+        const bool child_dirty =
+            (new_child != old_child) ||
+            (new_child != kNullIdx && (new_child & kLocalBit) &&
+             loc[new_child & ~kLocalBit].digest == Hash{});
+        if (!child_dirty) {
+            return node_idx;
+        }
+        if (node_idx & kLocalBit) {
+            UtxoOverlayNode &mut = loc[node_idx & ~kLocalBit];
+            mut.child[bit] = new_child;
+            mut.base_child[bit].reset();
+            mut.count = child_count_local(mut, 0) + child_count_local(mut, 1);
+            mut.digest = Hash{};
+            return node_idx;
+        }
+        const UtxoOverlayNode &src = get_node(node_idx);
+        UtxoOverlayNode copy{};
+        copy.child[0] = src.child[0];
+        copy.child[1] = src.child[1];
+        copy.base_child[1 - bit] = src.base_child[1 - bit];
+        copy.child[bit] = new_child;
+        copy.is_leaf = false;
+        copy.count = child_count_local(copy, 0) + child_count_local(copy, 1);
+        return alloc_local(copy);
+    };
+    auto finalize_local = [&](auto &self, uint32_t idx, unsigned depth) -> void {
+        if (idx == kNullIdx || !(idx & kLocalBit)) {
+            return;
+        }
+        const uint32_t local_pos = idx & ~kLocalBit;
+        if (loc[local_pos].is_leaf || loc[local_pos].digest != Hash{}) {
+            return;
+        }
+        const uint32_t c0 = loc[local_pos].child[0];
+        const uint32_t c1 = loc[local_pos].child[1];
+        self(self, c0, depth + 1);
+        self(self, c1, depth + 1);
+        loc[local_pos].count =
+            child_count_local(loc[local_pos], 0) +
+            child_count_local(loc[local_pos], 1);
+        const Hash lh = child_hash_local(loc[local_pos], 0);
+        const Hash rh = child_hash_local(loc[local_pos], 1);
+        const bool ok = UtxoNode(depth, lh, rh, loc[local_pos].digest);
+        assert(ok);
+        (void)ok;
+    };
+
+    uint32_t cur_root = root_idx_;
+    for (const Coin &coin : extra_coins) {
+        Hash leaf_hash{};
+        if (!UtxoLeaf(coin, leaf_hash)) {
+            continue;
+        }
+        const Hash key = OutpointKey(coin.outpoint);
+        cur_root = insert_at_local(insert_at_local, cur_root, coin, key,
+                                   leaf_hash, 0);
+    }
+    finalize_local(finalize_local, cur_root, 0);
+    return cur_root != kNullIdx ? get_node(cur_root).digest : EmptyUtxoRoot();
 }
 
 // ============================================================================
