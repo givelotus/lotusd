@@ -213,8 +213,14 @@ void CTxMemPool::addUnchecked(CTxMemPoolEntryRef entry) {
         }
     }
     UpdateParentsOf(true, newit);
-    AddTransactionToOverlay(m_merklix_overlay, tx,
-                            entry->GetFee() / SATOSHI, entry->GetSigChecks());
+    if (m_snapshot_defer_depth > 0) {
+        m_pending_overlay_adds.emplace_back(tx, entry->GetFee() / SATOSHI,
+                                           entry->GetSigChecks());
+    } else {
+        FlushPendingOverlayAdds();
+        AddTransactionToOverlay(m_merklix_overlay, tx,
+                                entry->GetFee() / SATOSHI, entry->GetSigChecks());
+    }
 
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
@@ -231,6 +237,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     const CTransaction &tx = (*it)->GetTx();
     const TxId &txid = tx.GetId();
     MarkSnapshotEntryChanged(txid);
+    FlushPendingOverlayAdds();
     RemoveTransactionFromOverlay(m_merklix_overlay, (*it)->GetTx());
 
     if (reason != MemPoolRemovalReason::BLOCK) {
@@ -412,6 +419,7 @@ void CTxMemPool::removeForFinalizedBlock(
 void CTxMemPool::_clear() {
     m_snapshot_changed_entries.clear();
     m_snapshot_needs_reset = true;
+    m_pending_overlay_adds.clear();
     m_merklix_overlay.Clear();
     mapTx.clear();
     mapNextTx.clear();
@@ -425,8 +433,17 @@ void CTxMemPool::_clear() {
     ++nTransactionsUpdated;
 }
 
+void CTxMemPool::FlushPendingOverlayAdds() const {
+    AssertLockHeld(cs);
+    if (m_pending_overlay_adds.empty()) return;
+    auto pending = std::move(m_pending_overlay_adds);
+    m_pending_overlay_adds.clear();
+    AddTransactionsToOverlayBatch(m_merklix_overlay, pending);
+}
+
 const lotus::v2::MempoolOverlayLayer &CTxMemPool::FreezeEpochBatch() {
     AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
     const auto &frozen = m_merklix_overlay.FreezeEpochBatch();
     node::PublishMempoolSnapshot(*this);
     return frozen;
@@ -436,6 +453,7 @@ void CTxMemPool::SyncMerklixOverlayToTip(const BlockHash &tip_hash,
                                        uint64_t next_height,
                                        uint64_t parent_mtp) const {
     AssertLockHeld(cs);
+    FlushPendingOverlayAdds();
     lotus::v2::Hash tip_id{};
     std::copy(tip_hash.begin(), tip_hash.end(), tip_id.begin());
     if (!m_merklix_overlay.IsAnchoredAt(tip_id, next_height, parent_mtp)) {
@@ -990,9 +1008,12 @@ void CTxMemPool::AddUnbroadcastTx(const TxId &txid) {
 CTxMemPool::ScopedSnapshotDefer::~ScopedSnapshotDefer() {
     AssertLockHeld(m_pool.cs);
     assert(m_pool.m_snapshot_defer_depth > 0);
-    if (--m_pool.m_snapshot_defer_depth == 0 && m_pool.m_snapshot_dirty) {
-        m_pool.m_snapshot_dirty = false;
-        node::PublishMempoolSnapshot(m_pool);
+    if (--m_pool.m_snapshot_defer_depth == 0) {
+        m_pool.FlushPendingOverlayAdds();
+        if (m_pool.m_snapshot_dirty) {
+            m_pool.m_snapshot_dirty = false;
+            node::PublishMempoolSnapshot(m_pool);
+        }
     }
 }
 
