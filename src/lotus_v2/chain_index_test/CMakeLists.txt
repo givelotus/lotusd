@@ -1,0 +1,13 @@
+# Standalone index/storage checks; full-tree integration remains root-owned.
+cmake_minimum_required(VERSION 3.18)
+project(lotus_v2_chain_index LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+enable_testing()
+add_subdirectory(../disk_state_test disk_state)
+find_path(LOTUS_CHAIN_BOOST_INCLUDE boost/multiprecision/cpp_int.hpp PATHS /opt/homebrew/opt/boost/include REQUIRED)
+add_executable(chain_index_test ../test_chain_index.cpp ../chain_index.cpp ../sparse_state.cpp ../output.cpp ../header.cpp ../tagged_hash.cpp)
+target_include_directories(chain_index_test SYSTEM PRIVATE "${LOTUS_CHAIN_BOOST_INCLUDE}")
+target_link_libraries(chain_index_test PRIVATE lotus_v2_disk_state blake3)
+target_compile_options(chain_index_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME chain_index_test COMMAND chain_index_test)
