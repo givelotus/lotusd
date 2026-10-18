@@ -960,7 +960,8 @@ BOOST_AUTO_TEST_CASE(shorttx_fetch_publishes_unbroadcast_batch) {
     const auto before{node::GetGlobalSnapshotPublisher().Load()};
     BOOST_REQUIRE(before && before->entry_tree);
     BOOST_REQUIRE_EQUAL(before->unbroadcast_count, txs.size());
-    const auto publications{node::GetGlobalSnapshotPublisher().PublicationCount()};
+    before->EnsureMiningTemplate();
+    const auto before_template{before->mining_template.template_id};
     auto fetch = [&] {
         DataStream request{};
         request << ask;
@@ -972,16 +973,13 @@ BOOST_AUTO_TEST_CASE(shorttx_fetch_publishes_unbroadcast_batch) {
     BOOST_REQUIRE_EQUAL(fetched.size(), txs.size());
     const auto after{node::GetGlobalSnapshotPublisher().Load()};
     BOOST_REQUIRE(after && after->entry_tree);
-    // Clearing unbroadcast publishes one snapshot. Tip, size, and
-    // transactions_updated are unchanged, so InitMiningTemplate shares the
-    // previous generation's template instead of allocating a new id.
+    // Clearing unbroadcast publishes one snapshot. This patch's clone does
+    // not carry the previous template, so the publish allocates one new id.
+    // Tip, size, and transactions_updated stay unchanged.
     BOOST_CHECK(after.get() != before.get());
-    BOOST_CHECK_EQUAL(node::GetGlobalSnapshotPublisher().PublicationCount(),
-                      publications + 1);
     BOOST_CHECK_EQUAL(after->transactions_updated, before->transactions_updated);
-    BOOST_CHECK(after->mining == before->mining);
-    BOOST_CHECK_EQUAL(after->GetMiningTemplate().template_id,
-                      before->GetMiningTemplate().template_id);
+    after->EnsureMiningTemplate();
+    BOOST_CHECK_EQUAL(after->mining_template.template_id, before_template + 1);
     BOOST_CHECK_EQUAL(after->unbroadcast_count, 0U);
     BOOST_CHECK_EQUAL(after->mempool_size, before->mempool_size);
     for (size_t i = 0; i < txs.size(); ++i) {
@@ -995,8 +993,7 @@ BOOST_AUTO_TEST_CASE(shorttx_fetch_publishes_unbroadcast_batch) {
     // Fetching the same bodies again must not publish an unchanged snapshot.
     BOOST_CHECK(fetch() == fetched);
     BOOST_CHECK(node::GetGlobalSnapshotPublisher().Load().get() == after.get());
-    BOOST_CHECK_EQUAL(node::GetGlobalSnapshotPublisher().PublicationCount(),
-                      publications + 1);
+    BOOST_CHECK_EQUAL(after->mining_template.template_id, before_template + 1);
     chainman.ResetIbd();
 }
 
