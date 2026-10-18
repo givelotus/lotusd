@@ -30,6 +30,7 @@
 #include <node/snapshot.h>
 #include <node/utxo_snapshot.h>
 #include <primitives/transaction.h>
+#include <rpc/async_waiter.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
@@ -284,6 +285,7 @@ void RPCNotifyBlockChange(const CBlockIndex *pindex) {
         latestblock.height = pindex->nHeight;
     }
     cond_blockchange.notify_all();
+    GetRPCBlockChangeWaiter().NotifyAll();
 }
 
 static RPCHelpMan waitfornewblock() {
@@ -306,39 +308,37 @@ static RPCHelpMan waitfornewblock() {
         RPCExamples{HelpExampleCli("waitfornewblock", "1000") +
                     HelpExampleRpc("waitfornewblock", "1000")},
         [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
+            const JSONRPCRequest &request,
+            boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
             int timeout = 0;
             if (!request.params[0].isNull()) {
                 timeout = request.params[0].getInt<int>();
             }
 
+            CUpdatedBlock initial_block;
+            {
+                LOCK(cs_blockchange);
+                initial_block = latestblock;
+            }
+
+            co_await GetRPCBlockChangeWaiter().WaitUntil(
+                executor, std::chrono::milliseconds(timeout), [initial_block]() {
+                    LOCK(cs_blockchange);
+                    return latestblock.height != initial_block.height ||
+                           latestblock.hash != initial_block.hash ||
+                           !IsRPCRunning();
+                });
+
             CUpdatedBlock block;
             {
-                WAIT_LOCK(cs_blockchange, lock);
-                block = latestblock;
-                if (timeout) {
-                    cond_blockchange.wait_for(
-                        lock, std::chrono::milliseconds(timeout),
-                        [&block]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.height != block.height ||
-                                   latestblock.hash != block.hash ||
-                                   !IsRPCRunning();
-                        });
-                } else {
-                    cond_blockchange.wait(
-                        lock,
-                        [&block]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.height != block.height ||
-                                   latestblock.hash != block.hash ||
-                                   !IsRPCRunning();
-                        });
-                }
+                LOCK(cs_blockchange);
                 block = latestblock;
             }
             UniValue ret(UniValue::VOBJ);
             ret.pushKV("hash", block.hash.GetHex());
             ret.pushKV("height", block.height);
-            return ret;
+            co_return ret;
         },
     };
 }
@@ -369,7 +369,9 @@ static RPCHelpMan waitforblock() {
                                    "\"0000000000079f8ef3d2c688c244eb7a4570b24c9"
                                    "ed7b4a8c619eb02596f8862\", 1000")},
         [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
+            const JSONRPCRequest &request,
+            boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
             int timeout = 0;
 
             BlockHash hash(ParseHashV(request.params[0], "blockhash"));
@@ -378,29 +380,22 @@ static RPCHelpMan waitforblock() {
                 timeout = request.params[1].getInt<int>();
             }
 
+            co_await GetRPCBlockChangeWaiter().WaitUntil(
+                executor, std::chrono::milliseconds(timeout), [hash]() {
+                    LOCK(cs_blockchange);
+                    return latestblock.hash == hash || !IsRPCRunning();
+                });
+
             CUpdatedBlock block;
             {
-                WAIT_LOCK(cs_blockchange, lock);
-                if (timeout) {
-                    cond_blockchange.wait_for(
-                        lock, std::chrono::milliseconds(timeout),
-                        [&hash]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.hash == hash || !IsRPCRunning();
-                        });
-                } else {
-                    cond_blockchange.wait(
-                        lock,
-                        [&hash]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.hash == hash || !IsRPCRunning();
-                        });
-                }
+                LOCK(cs_blockchange);
                 block = latestblock;
             }
 
             UniValue ret(UniValue::VOBJ);
             ret.pushKV("hash", block.hash.GetHex());
             ret.pushKV("height", block.height);
-            return ret;
+            co_return ret;
         },
     };
 }
@@ -428,7 +423,9 @@ static RPCHelpMan waitforblockheight() {
         RPCExamples{HelpExampleCli("waitforblockheight", "100 1000") +
                     HelpExampleRpc("waitforblockheight", "100, 1000")},
         [&](const RPCHelpMan &self, const Config &config,
-            const JSONRPCRequest &request) -> UniValue {
+            const JSONRPCRequest &request,
+            boost::asio::any_io_executor executor)
+            -> boost::asio::awaitable<UniValue> {
             int timeout = 0;
 
             int height = request.params[0].getInt<int>();
@@ -437,30 +434,21 @@ static RPCHelpMan waitforblockheight() {
                 timeout = request.params[1].getInt<int>();
             }
 
+            co_await GetRPCBlockChangeWaiter().WaitUntil(
+                executor, std::chrono::milliseconds(timeout), [height]() {
+                    LOCK(cs_blockchange);
+                    return latestblock.height >= height || !IsRPCRunning();
+                });
+
             CUpdatedBlock block;
             {
-                WAIT_LOCK(cs_blockchange, lock);
-                if (timeout) {
-                    cond_blockchange.wait_for(
-                        lock, std::chrono::milliseconds(timeout),
-                        [&height]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.height >= height ||
-                                   !IsRPCRunning();
-                        });
-                } else {
-                    cond_blockchange.wait(
-                        lock,
-                        [&height]() EXCLUSIVE_LOCKS_REQUIRED(cs_blockchange) {
-                            return latestblock.height >= height ||
-                                   !IsRPCRunning();
-                        });
-                }
+                LOCK(cs_blockchange);
                 block = latestblock;
             }
             UniValue ret(UniValue::VOBJ);
             ret.pushKV("hash", block.hash.GetHex());
             ret.pushKV("height", block.height);
-            return ret;
+            co_return ret;
         },
     };
 }
