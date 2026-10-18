@@ -24,6 +24,7 @@
 #include <validation.h>
 
 #include <test/util/net.h>
+#include <test/util/admission.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <test/util/validation.h>
@@ -199,6 +200,74 @@ struct MockTick {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(txrelay_tests, TestingSetup)
+
+BOOST_AUTO_TEST_CASE(burst_precompute_preserves_receive_slots) {
+    FastRandomContext rng;
+    std::vector<CTransactionRef> txs;
+    for (size_t i = 0; i < 24; ++i) txs.push_back(MakeTx(rng));
+    // Repeated bodies, a null slot and a malformed member must not shift
+    // results onto a different transaction or suppress subsequent work.
+    txs[2] = txs[0];
+    txs[7].reset();
+    CMutableTransaction duplicate_inputs(*txs[11]);
+    duplicate_inputs.vin.push_back(duplicate_inputs.vin.front());
+    txs[11] = MakeTransactionRef(std::move(duplicate_inputs));
+    const auto checks = PrecomputeTxRelayBatch(txs);
+    BOOST_REQUIRE_EQUAL(checks.size(), txs.size());
+    for (size_t i = 0; i < txs.size(); ++i) {
+        const auto &check = checks[i];
+        BOOST_CHECK_EQUAL(check.regular_tx_checked, bool(txs[i]));
+        if (txs[i]) {
+            BOOST_CHECK(check.txid == txs[i]->GetId());
+            BOOST_CHECK_EQUAL(check.regular_tx_valid, i != 11);
+        }
+        // Precomputation cannot manufacture a reusable script verdict.
+        BOOST_CHECK(check.spent_outputs.empty());
+        BOOST_CHECK(!check.standard.ran);
+        BOOST_CHECK(!check.consensus.ran);
+    }
+    BOOST_CHECK_EQUAL(checks[11].regular_tx_state.GetRejectReason(),
+                      "bad-txns-inputs-duplicate");
+    BOOST_CHECK(PrecomputeTxRelayBatch({}).empty());
+    const auto one = PrecomputeTxRelayBatch({txs[0]});
+    BOOST_REQUIRE_EQUAL(one.size(), 1U);
+    BOOST_CHECK(one[0].regular_tx_valid);
+}
+
+BOOST_FIXTURE_TEST_CASE(burst_precompute_keeps_signature_verification,
+                        TestChain100Setup) {
+    auto wallet = admission_test::MakeWallet();
+    admission_test::FundWallet(*this, wallet, 8);
+    std::vector<CTransactionRef> txs;
+    for (const auto &output : wallet.outputs) {
+        txs.push_back(admission_test::SignedSpend(wallet, {output}, 1, true));
+    }
+    CMutableTransaction bad_signature(*txs[3]);
+    bad_signature.vin[0].scriptSig[5] ^= 1;
+    txs[3] = MakeTransactionRef(std::move(bad_signature));
+    const auto checks = PrecomputeTxRelayBatch(txs);
+    BOOST_REQUIRE_EQUAL(checks.size(), txs.size());
+    LOCK(cs_main);
+    for (size_t i = 0; i < txs.size(); ++i) {
+        BOOST_REQUIRE(checks[i].regular_tx_valid);
+        const auto ordinary = m_node.chainman->ProcessTransaction(
+            txs[i], /*test_accept=*/true);
+        const auto staged = m_node.chainman->ProcessTransaction(
+            txs[i], /*test_accept=*/true, {}, &checks[i]);
+        BOOST_CHECK(ordinary.m_result_type == staged.m_result_type);
+        BOOST_CHECK_EQUAL(ordinary.m_state.GetRejectReason(),
+                          staged.m_state.GetRejectReason());
+        BOOST_CHECK_EQUAL(staged.m_state.IsValid(), i != 3);
+        // Even a valid regular result from another slot is advisory only.
+        const auto mismatched = m_node.chainman->ProcessTransaction(
+            txs[i], /*test_accept=*/true, {}, &checks[(i + 1) % checks.size()]);
+        BOOST_CHECK(mismatched.m_result_type == ordinary.m_result_type);
+        BOOST_CHECK_EQUAL(mismatched.m_state.GetRejectReason(),
+                          ordinary.m_state.GetRejectReason());
+    }
+    LOCK(m_node.mempool->cs);
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(relay_tick_alignment) {
     constexpr auto tick{std::chrono::microseconds{10ms}};
