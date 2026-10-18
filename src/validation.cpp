@@ -2584,6 +2584,9 @@ MemPoolAccept::PrepareStaged(const std::vector<CTransactionRef> &txs,
     std::unordered_set<COutPoint, SaltedOutpointHasher> claimed;
     for (size_t i = 0; i < n; ++i) {
         const auto &tx = txs[i];
+        if (tx->nVersion == 7) {
+            continue;
+        }
         if (std::any_of(tx->vin.begin(), tx->vin.end(), [&](const auto &input) {
                 return !claimed.insert(input.prevout).second;
             })) {
@@ -2621,6 +2624,12 @@ PrecomputeMempoolAdmission(ChainstateManager &chainman,
                            const CTransactionRef &tx,
                            const MempoolAdmissionLimits &limits) {
     AssertLockNotHeld(cs_main);
+    // Native scripts deliberately use authoritative admission only. Do not
+    // acquire staging locks or allocate spent-output tables for a skipped tx.
+    if (tx->nVersion == 7) {
+        PrecomputedAdmissionChecks checks;
+        return checks;
+    }
     std::vector<PrecomputedAdmissionChecks> checks(1);
     std::vector<std::vector<COutPoint>> fetched(1);
     bool verify = false;
@@ -2672,8 +2681,12 @@ std::vector<std::optional<MempoolAcceptResult>> AcceptToMemoryPoolStaged(
     std::vector<std::vector<COutPoint>> fetched(n);
     uint32_t script_flags = 0;
 
-    // Phase A: resolve spent outputs under the locks.
-    {
+    // Native entries are never eligible for legacy advisory precomputation.
+    // Mixed batches retain ordinary staging; every batch still runs Phase C.
+    const bool has_legacy = std::any_of(txs.begin(), txs.end(),
+        [](const auto &tx) { return tx->nVersion != 7; });
+    // Phase A: resolve spent outputs under the locks only when useful.
+    if (has_legacy) {
         const auto start = SteadyClock::now();
         LOCK(cs_main);
         const auto acquired = SteadyClock::now();
@@ -6052,23 +6065,10 @@ void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
 }
 
 uint256 ValidationBlockMerkleRoot(const CBlock &block, bool *mutated,
-                                  size_t min_parallel_txs, size_t threads) {
-    if (threads == 0) {
-        threads = block.vtx.size() >= PARALLEL_MERKLE_LARGE_TXS
-                      ? PARALLEL_MERKLE_THREADS_LARGE
-                      : PARALLEL_MERKLE_THREADS;
-    }
-    threads = std::min<size_t>(
-        threads, std::max(1u, std::thread::hardware_concurrency()));
-    if (block.vtx.size() < min_parallel_txs || threads <= 1) {
-        return BlockMerkleRoot(block, mutated);
-    }
-    // Two subtrees per thread, handed out dynamically, absorb uneven speed.
-    return BlockMerkleRootParallel(
-        block, mutated, 2 * threads,
-        [threads](size_t n_tasks, const std::function<void(size_t)> &fn) {
-            RunOnValidationWorkers(threads, n_tasks, fn);
-        });
+                                  size_t /*min_parallel_txs*/, size_t /*threads*/) {
+    // Preserve native TransactionRoot and duplicate-TxId detection. Parallel
+    // native hashing is a separate optimization, not SHA256D chunk reuse.
+    return BlockMerkleRoot(block, mutated);
 }
 
 static bool CheckMerkleRoot(const CBlock &block, BlockValidationState &state) {
