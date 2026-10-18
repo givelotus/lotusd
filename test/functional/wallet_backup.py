@@ -135,7 +135,7 @@ class WalletBackupTest(BitcoinTestFramework):
         not_created_wallet_file = os.path.join(
             node.datadir, self.chain, "wallets", wallet_name
         )
-        error_message = f"Wallet file verification failed. Failed to load database path '{not_created_wallet_file}'. Data is not in recognized format."
+        error_message = "Wallet file verification failed. Wallet database is not a Lotus V2 SQLite wallet."
         assert_raises_rpc_error(
             -18, error_message, node.restorewallet, wallet_name, invalid_wallet_file
         )

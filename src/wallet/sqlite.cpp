@@ -11,56 +11,77 @@
 #include <util/translation.h>
 #include <wallet/db.h>
 
+#include <array>
 #include <cstdint>
+#include <fstream>
 #include <sqlite3.h>
 
-static const char *const DATABASE_FILENAME = "wallet.dat";
+// Storage format identity, independent of any future production ChainID.
+static constexpr int WALLET_APPLICATION_ID = 0x4c563257; // LV2W
+static constexpr int WALLET_SCHEMA_VERSION = 1;
 
-static GlobalMutex g_sqlite_mutex;
-static int g_sqlite_count GUARDED_BY(g_sqlite_mutex) = 0;
-
-static void ErrorLogCallback(void *arg, int code, const char *msg) {
-    // From sqlite3_config() documentation for the SQLITE_CONFIG_LOG option:
-    // "The void pointer that is the second argument to SQLITE_CONFIG_LOG is
-    // passed through as the first parameter to the application-defined logger
-    // function whenever that function is invoked."
-    // Assert that this is the case:
-    assert(arg == nullptr);
-    LogInfoEvent(BCLog::ALL, "sqlite_error",
-                 "SQLite Error. Code: {error_code}. Message: {error}")
-        .Field(BCLog::LogField::ErrorCode, code)
-        .Field(BCLog::LogField::Error, msg);
+static bool CheckSQLiteIdentity(sqlite3 *db,
+                                const std::string *profile = nullptr) {
+    auto integer = [&](const char *sql, int expected) {
+        sqlite3_stmt *stmt{nullptr};
+        bool ok =
+            sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK &&
+            sqlite3_step(stmt) == SQLITE_ROW &&
+            sqlite3_column_int(stmt, 0) == expected;
+        sqlite3_finalize(stmt);
+        return ok;
+    };
+    if (!integer("PRAGMA application_id", WALLET_APPLICATION_ID) ||
+        !integer("PRAGMA user_version", WALLET_SCHEMA_VERSION))
+        return false;
+    sqlite3_stmt *stmt{nullptr};
+    bool ok = sqlite3_prepare_v2(
+                  db, "SELECT profile FROM wallet_metadata WHERE id = 1", -1,
+                  &stmt, nullptr) == SQLITE_OK &&
+              sqlite3_step(stmt) == SQLITE_ROW;
+    if (ok) {
+        const auto *text = sqlite3_column_text(stmt, 0);
+        const int size = sqlite3_column_bytes(stmt, 0);
+        ok = text && size > 0 &&
+             (!profile ||
+              *profile ==
+                  std::string(reinterpret_cast<const char *>(text), size));
+    }
+    sqlite3_finalize(stmt);
+    if (!ok) return false;
+    // Prepare the expected table query before any writable connection is made.
+    stmt = nullptr;
+    ok = sqlite3_prepare_v2(db, "SELECT key, value FROM main LIMIT 0", -1,
+                            &stmt, nullptr) == SQLITE_OK;
+    sqlite3_finalize(stmt);
+    return ok;
 }
 
 SQLiteDatabase::SQLiteDatabase(const fs::path &dir_path,
-                               const fs::path &file_path, bool mock)
+                               const fs::path &file_path, bool mock,
+                               std::string profile)
     : WalletDatabase(), m_mock(mock), m_dir_path(fs::PathToString(dir_path)),
-      m_file_path(fs::PathToString(file_path)) {
-    {
-        LOCK(g_sqlite_mutex);
-        LogInfoEvent(BCLog::ALL, "sqlite_version",
-                     "Using SQLite Version {database_version}")
-            .Field(BCLog::LogField::DatabaseVersion, sqlite3_libversion());
-        LogInfoEvent(BCLog::ALL, "sqlite_wallet_directory",
-                     "Using wallet {wallet}")
-            .Field(BCLog::LogField::Wallet, m_dir_path);
-
-        if (++g_sqlite_count == 1) {
-            // Setup logging
-            int ret =
-                sqlite3_config(SQLITE_CONFIG_LOG, ErrorLogCallback, nullptr);
-            if (ret != SQLITE_OK) {
+      m_file_path(fs::PathToString(file_path)), m_profile(std::move(profile)) {
+    LogInfoEvent(BCLog::ALL, "sqlite_version",
+                 "Using SQLite Version {database_version}")
+        .Field(BCLog::LogField::DatabaseVersion, SQLiteDatabaseVersion());
+    if (m_profile.empty())
+        throw std::runtime_error("SQLiteDatabase: Empty wallet profile");
+    if (!m_mock && fs::exists(file_path)) {
+        sqlite3 *existing{nullptr};
+        int ret = sqlite3_open_v2(m_file_path.c_str(), &existing,
+                                  SQLITE_OPEN_READONLY, nullptr);
+        bool ok = ret == SQLITE_OK && CheckSQLiteIdentity(existing, &m_profile);
+        int err = existing ? sqlite3_errcode(existing) : ret;
+        sqlite3_close(existing);
+        if (!ok) {
+            if (err == SQLITE_BUSY || err == SQLITE_LOCKED) {
                 throw std::runtime_error(
-                    strprintf("SQLiteDatabase: Failed to setup error log: %s\n",
-                              sqlite3_errstr(ret)));
+                    "SQLiteDatabase: Unable to obtain an exclusive lock on the "
+                    "database, is it being used by another process?\n");
             }
-        }
-        // This is a no-op if sqlite3 is already initialized
-        int ret = sqlite3_initialize();
-        if (ret != SQLITE_OK) {
-            throw std::runtime_error(
-                strprintf("SQLiteDatabase: Failed to initialize SQLite: %s\n",
-                          sqlite3_errstr(ret)));
+            throw std::runtime_error("SQLiteDatabase: Unsupported wallet "
+                                     "format, version or profile");
         }
     }
 
@@ -112,9 +133,9 @@ void SQLiteBatch::SetupSQLStatements() {
         }
     }
     if (!m_cursor_stmt) {
-        if ((res = sqlite3_prepare_v2(m_database.m_db,
-                                      "SELECT key, value FROM main", -1,
-                                      &m_cursor_stmt, nullptr)) != SQLITE_OK) {
+        if ((res = sqlite3_prepare_v2(
+                 m_database.m_db, "SELECT key, value FROM main ORDER BY key",
+                 -1, &m_cursor_stmt, nullptr)) != SQLITE_OK) {
             throw std::runtime_error(strprintf(
                 "SQLiteDatabase: Failed to setup SQL statements : %s\n",
                 sqlite3_errstr(res)));
@@ -127,17 +148,11 @@ SQLiteDatabase::~SQLiteDatabase() {
 }
 
 void SQLiteDatabase::Cleanup() noexcept {
-    Close();
-
-    LOCK(g_sqlite_mutex);
-    if (--g_sqlite_count == 0) {
-        int ret = sqlite3_shutdown();
-        if (ret != SQLITE_OK) {
-            LogInfoEvent(BCLog::ALL, "sqlite_shutdown_failed",
-                         "SQLiteDatabase: Failed to shutdown SQLite: {error}")
-                .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
-        }
+    if (m_db && sqlite3_close_v2(m_db) != SQLITE_OK) {
+        LogInfoEvent(BCLog::ALL, "wallet_sqlite_close_failed",
+                     "SQLiteDatabase: Failed to close database");
     }
+    m_db = nullptr;
 }
 
 bool SQLiteDatabase::Verify(bilingual_str &error) {
@@ -193,7 +208,7 @@ void SQLiteDatabase::Open() {
     }
 
     if (m_db == nullptr) {
-        TryCreateDirectories(fs::PathFromString(m_dir_path));
+        if (!m_mock) TryCreateDirectories(fs::PathFromString(m_dir_path));
         int ret = sqlite3_open_v2(m_file_path.c_str(), &m_db, flags, nullptr);
         if (ret != SQLITE_OK) {
             throw std::runtime_error(
@@ -224,7 +239,7 @@ void SQLiteDatabase::Open() {
     if (ret != SQLITE_OK) {
         throw std::runtime_error(
             "SQLiteDatabase: Unable to obtain an exclusive lock on the "
-            "database, is it being used by another bitcoind?\n");
+            "database, is it being used by another process?\n");
     }
     ret = sqlite3_exec(m_db, "COMMIT", nullptr, nullptr, nullptr);
     if (ret != SQLITE_OK) {
@@ -274,31 +289,63 @@ void SQLiteDatabase::Open() {
                       sqlite3_errstr(ret)));
     }
 
-    // Do the db setup things because the table doesn't exist only when we are
-    // creating a new wallet
     if (!table_exists) {
-        ret = sqlite3_exec(m_db,
-                           "CREATE TABLE main(key BLOB PRIMARY KEY NOT NULL, "
-                           "value BLOB NOT NULL)",
-                           nullptr, nullptr, nullptr);
-        if (ret != SQLITE_OK) {
+        // Keep table creation and format identity in the same transaction.
+        const char *schema = "BEGIN EXCLUSIVE;"
+                             "PRAGMA application_id = 1280717399;" // 0x4c563257
+                             "PRAGMA user_version = 1;"
+                             "CREATE TABLE main(key BLOB PRIMARY KEY NOT NULL, "
+                             "value BLOB NOT NULL);"
+                             "CREATE TABLE wallet_metadata(id INTEGER PRIMARY "
+                             "KEY CHECK(id = 1), profile TEXT NOT NULL);";
+        if (sqlite3_exec(m_db, schema, nullptr, nullptr, nullptr) !=
+            SQLITE_OK) {
+            sqlite3_exec(m_db, "ROLLBACK", nullptr, nullptr, nullptr);
             throw std::runtime_error(
-                strprintf("SQLiteDatabase: Failed to create new database: %s\n",
-                          sqlite3_errstr(ret)));
+                "SQLiteDatabase: Failed to create wallet schema");
         }
+        sqlite3_stmt *stmt{nullptr};
+        bool ok =
+            sqlite3_prepare_v2(m_db, "INSERT INTO wallet_metadata VALUES(1, ?)",
+                               -1, &stmt, nullptr) == SQLITE_OK &&
+            sqlite3_bind_text(stmt, 1, m_profile.data(), m_profile.size(),
+                              SQLITE_TRANSIENT) == SQLITE_OK &&
+            sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+        if (!ok || sqlite3_exec(m_db, "COMMIT", nullptr, nullptr, nullptr) !=
+                       SQLITE_OK) {
+            sqlite3_exec(m_db, "ROLLBACK", nullptr, nullptr, nullptr);
+            throw std::runtime_error(
+                "SQLiteDatabase: Failed to store wallet profile");
+        }
+    }
+    if (!CheckSQLiteIdentity(m_db, &m_profile)) {
+        throw std::runtime_error(
+            "SQLiteDatabase: Unsupported wallet format, version or profile");
+    }
+    // Erased unencrypted keys must not remain in free pages after encryption.
+    if (sqlite3_exec(m_db, "PRAGMA secure_delete = ON", nullptr, nullptr,
+                     nullptr) != SQLITE_OK) {
+        throw std::runtime_error(
+            "SQLiteDatabase: Failed to enable secure deletion");
     }
 }
 
 bool SQLiteDatabase::Rewrite(const char *skip) {
     // Rewrite the database using the VACUUM command:
     // https://sqlite.org/lang_vacuum.html
-    int ret = sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr);
-    return ret == SQLITE_OK;
+    if (skip) return false; // Legacy BDB record-prefix recovery is unsupported.
+    return sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 bool SQLiteDatabase::Backup(const std::string &dest) const {
-    sqlite3 *db_copy;
-    int res = sqlite3_open(dest.c_str(), &db_copy);
+    fs::path target = fs::PathFromString(dest);
+    if (fs::is_directory(target)) target /= WALLET_DATABASE_FILENAME;
+    std::error_code ec;
+    if (fs::equivalent(fs::PathFromString(m_file_path), target, ec))
+        return false;
+    sqlite3 *db_copy{nullptr};
+    int res = sqlite3_open(fs::PathToString(target).c_str(), &db_copy);
     if (res != SQLITE_OK) {
         sqlite3_close(db_copy);
         return false;
@@ -329,6 +376,7 @@ bool SQLiteDatabase::Backup(const std::string &dest) const {
 }
 
 void SQLiteDatabase::Close() {
+    if (!m_db) return;
     int res = sqlite3_close(m_db);
     if (res != SQLITE_OK) {
         throw std::runtime_error(
@@ -351,9 +399,9 @@ SQLiteBatch::SQLiteBatch(SQLiteDatabase &database) : m_database(database) {
 }
 
 void SQLiteBatch::Close() {
-    // If m_db is in a transaction (i.e. not in autocommit mode), then abort the
-    // transaction in progress
-    if (m_database.m_db && sqlite3_get_autocommit(m_database.m_db) == 0) {
+    // Abort only a transaction begun by this batch. Other batches can write
+    // inside it without taking ownership of its lifetime.
+    if (m_active_txn) {
         if (TxnAbort()) {
             LogInfoEvent(BCLog::ALL, "sqlite_batch_closed_uncommitted",
                          "SQLiteBatch: Batch closed unexpectedly without the "
@@ -608,11 +656,13 @@ bool SQLiteBatch::TxnBegin() {
         LogInfoEvent(BCLog::ALL, "sqlite_transaction_begin_failed",
                      "SQLiteBatch: Failed to begin the transaction");
     }
+    if (res == SQLITE_OK) m_active_txn = true;
     return res == SQLITE_OK;
 }
 
 bool SQLiteBatch::TxnCommit() {
-    if (!m_database.m_db || sqlite3_get_autocommit(m_database.m_db) != 0) {
+    if (!m_active_txn || !m_database.m_db ||
+        sqlite3_get_autocommit(m_database.m_db) != 0) {
         return false;
     }
     int res = sqlite3_exec(m_database.m_db, "COMMIT TRANSACTION", nullptr,
@@ -621,11 +671,13 @@ bool SQLiteBatch::TxnCommit() {
         LogInfoEvent(BCLog::ALL, "sqlite_transaction_commit_failed",
                      "SQLiteBatch: Failed to commit the transaction");
     }
+    if (res == SQLITE_OK) m_active_txn = false;
     return res == SQLITE_OK;
 }
 
 bool SQLiteBatch::TxnAbort() {
-    if (!m_database.m_db || sqlite3_get_autocommit(m_database.m_db) != 0) {
+    if (!m_active_txn || !m_database.m_db ||
+        sqlite3_get_autocommit(m_database.m_db) != 0) {
         return false;
     }
     int res = sqlite3_exec(m_database.m_db, "ROLLBACK TRANSACTION", nullptr,
@@ -634,27 +686,72 @@ bool SQLiteBatch::TxnAbort() {
         LogInfoEvent(BCLog::ALL, "sqlite_transaction_abort_failed",
                      "SQLiteBatch: Failed to abort the transaction");
     }
+    if (res == SQLITE_OK) m_active_txn = false;
     return res == SQLITE_OK;
 }
 
 bool ExistsSQLiteDatabase(const fs::path &path) {
-    return false;
+    const fs::path file = path / WALLET_DATABASE_FILENAME;
+    std::ifstream stream{file, std::ios::binary};
+    std::array<unsigned char, 72> header{};
+    if (!stream.read(reinterpret_cast<char *>(header.data()), header.size()) ||
+        std::string(reinterpret_cast<const char *>(header.data()), 16) !=
+            std::string("SQLite format 3\0", 16))
+        return false;
+    auto u32 = [&](size_t offset) {
+        return uint32_t(header[offset]) << 24 |
+               uint32_t(header[offset + 1]) << 16 |
+               uint32_t(header[offset + 2]) << 8 | uint32_t(header[offset + 3]);
+    };
+    // Read only the stable format header so loaded, exclusively locked wallets
+    // remain discoverable. Full schema/profile validation happens before open.
+    return u32(68) == WALLET_APPLICATION_ID && u32(60) == WALLET_SCHEMA_VERSION;
 }
 
 std::unique_ptr<SQLiteDatabase>
 MakeSQLiteDatabase(const fs::path &path, const DatabaseOptions &options,
                    DatabaseStatus &status, bilingual_str &error) {
-    const fs::path file = path / DATABASE_FILENAME;
+    if (options.wallet_profile.empty()) {
+        status = DatabaseStatus::FAILED_BAD_FORMAT;
+        error = Untranslated(
+            "Wallet storage requires an explicit profile identity.");
+        return nullptr;
+    }
+    const fs::path file = path / WALLET_DATABASE_FILENAME;
+    if (fs::exists(file)) {
+        sqlite3 *db{nullptr};
+        const int ret = sqlite3_open_v2(fs::PathToString(file).c_str(), &db,
+                                        SQLITE_OPEN_READONLY, nullptr);
+        const bool ok = ret == SQLITE_OK &&
+                        CheckSQLiteIdentity(db, &options.wallet_profile);
+        const int err = db ? sqlite3_errcode(db) : ret;
+        sqlite3_close(db);
+        if (!ok) {
+            if (err == SQLITE_BUSY || err == SQLITE_LOCKED) {
+                status = DatabaseStatus::FAILED_LOAD;
+                error = Untranslated(
+                    "SQLiteDatabase: Unable to obtain an exclusive lock on the "
+                    "database, is it being used by another process?\n");
+                return nullptr;
+            }
+            status = DatabaseStatus::FAILED_BAD_FORMAT;
+            error = Untranslated(
+                "Wallet SQLite format, version or profile does not match.");
+            return nullptr;
+        }
+    }
     try {
-        auto db = std::make_unique<SQLiteDatabase>(path, file);
+        auto db = std::make_unique<SQLiteDatabase>(path, file, false,
+                                                   options.wallet_profile);
         if (options.verify && !db->Verify(error)) {
             status = DatabaseStatus::FAILED_VERIFY;
             return nullptr;
         }
+        status = DatabaseStatus::SUCCESS;
         return db;
     } catch (const std::runtime_error &e) {
         status = DatabaseStatus::FAILED_LOAD;
-        error.original = e.what();
+        error = Untranslated(e.what());
         return nullptr;
     }
 }
