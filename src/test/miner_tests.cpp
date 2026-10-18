@@ -1026,7 +1026,9 @@ BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_o
     BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
 }
 
-BOOST_AUTO_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay) {
+// A genesis snapshot deliberately has no spendable outputs. Use a non-genesis
+// parent so the full builder resolves fees against the same authenticated base.
+BOOST_FIXTURE_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay, TestChain100Setup) {
     LOCK2(cs_main, m_node.mempool->cs);
     m_node.mempool->clear(/*include_finalized_txs=*/true);
     TestMemPoolEntryHelper entry;
@@ -1062,6 +1064,10 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay) {
     dummyCb.vout.emplace_back(200 * SATOSHI, CScript() << OP_TRUE);
     syntheticTipBlock.vtx.push_back(MakeTransactionRef(std::move(dummyCb)));
     syntheticTipBlock.vtx.push_back(fundRef);
+    // This test explicitly installs synthetic funding state. Its synthetic
+    // header must commit that state, just like every RecordV2BlockState caller.
+    syntheticTipBlock.hashStateRoot = ComputeV2BlockStateRoot(
+        syntheticTipBlock, BlockHash{}, uint64_t(tip->nHeight), 0, false);
     RecordV2BlockState(syntheticTipBlock, tip->GetBlockHash(), BlockHash{},
                        uint64_t(tip->nHeight), 0);
 
@@ -1081,7 +1087,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay) {
             CScript() << int64_t(i + 1) << std::vector<uint8_t>(48, 0x42);
         tx.vout.emplace_back(90000 * SATOSHI, CScript() << OP_TRUE);
         CTransactionRef txRef = MakeTransactionRef(std::move(tx));
-        AddUnchecked(entry.Fee(10000 * SATOSHI).FromTx(txRef));
+        m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(txRef));
         rootTxs.push_back(txRef);
     }
     for (uint32_t i = 0; i < 200; ++i) {
@@ -1093,7 +1099,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay) {
             CScript() << int64_t(1000 + i) << std::vector<uint8_t>(48, 0x43);
         child.vout.emplace_back(80000 * SATOSHI, CScript() << OP_TRUE);
         CTransactionRef childRef = MakeTransactionRef(std::move(child));
-        AddUnchecked(entry.Fee(10000 * SATOSHI).FromTx(childRef));
+        m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(childRef));
     }
 
     BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 1000U);

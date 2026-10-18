@@ -98,6 +98,13 @@ void FundTxInputInCoinsTip(ChainstateManager &chainman,
                            const CTransaction &tx) {
     LOCK(cs_main);
     CCoinsViewCache &coins = chainman.ActiveChainstate().CoinsTip();
+    const auto *tip = chainman.ActiveTip();
+    std::vector<lotus::v2::Coin> state_coins;
+    auto monetary = lotus::v2::GetInitialV2MonetaryState();
+    // These tests inject synthetic funding rather than mining it. Keep both
+    // controlled UTXO views identical so full and overlay fee derivation agree.
+    (void)GetV2BlockStateCoinsAndMonetary(tip->GetBlockHash(),
+        std::max(1, tip->nHeight), state_coins, monetary);
     for (const CTxIn &txin : tx.vin) {
         const CScript redeem_script =
             MakeRedeemScriptForAttempt(txin.prevout.GetN());
@@ -108,6 +115,21 @@ void FundTxInputInCoinsTip(ChainstateManager &chainman,
             Coin(CTxOut(tx.GetValueOut() + 10000 * SATOSHI, p2sh_spk),
                  /*nHeightIn=*/1, /*Coinbase=*/false),
             /*possible_overwrite=*/true);
+        lotus::v2::Coin native;
+        std::copy_n(txin.prevout.GetTxId().begin(), 32, native.outpoint.tx_id.begin());
+        native.outpoint.index = txin.prevout.GetN();
+        native.output = CTxOut(tx.GetValueOut() + 10000 * SATOSHI, p2sh_spk).ToV2Output();
+        native.creation_height = 1;
+        state_coins.erase(std::remove_if(state_coins.begin(), state_coins.end(),
+            [&](const auto &old) { return old.outpoint == native.outpoint; }), state_coins.end());
+        state_coins.push_back(std::move(native));
+    }
+    ImportV2BlockStateCoinsAndMonetary(tip->GetBlockHash(), state_coins, monetary);
+    if (auto *pool = chainman.ActiveChainstate().GetMempool()) {
+        LOCK(pool->cs);
+        pool->ConnectBlockReset(tip->GetBlockHash(), tip->nHeight + 1,
+                                tip->GetMedianTimePast());
+        node::PublishMempoolSnapshot(*pool);
     }
 }
 
@@ -799,7 +821,7 @@ BOOST_AUTO_TEST_CASE(adversarial_c1_d1_d2_hardening_gates) {
         m_node.mempool->SyncMerklixOverlayToTip(
             overlay_block->hashPrevBlock, overlay_block->nHeight + 1,
             uint64_t(tip->GetMedianTimePast()));
-        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(overlay_tx));
+        m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(overlay_tx));
     }
     {
         BOOST_CHECK(v2_handler->MatchCandidateOverlay(
@@ -2040,18 +2062,40 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
         return MakeTransactionRef(std::move(tx));
     };
     TxId block1_cb_txid, block101_txid;
-    Amount funding_value;
+    Amount funding_value, split_value;
+    std::map<TxId, uint64_t> expected_fees;
     for (int height = 1; height <= 102; ++height) {
         auto block = PrepareBlock(config, m_node, funding_program);
         if (height == 1) {
             block1_cb_txid = block->vtx[0]->GetId();
             funding_value = block->vtx[0]->GetValueOut();
         } else if (height == 101) {
-            auto tx = spend(COutPoint(block1_cb_txid, 0), funding_value - 10000 * SATOSHI);
+            split_value = (funding_value - 65000 * SATOSHI) / 65;
+            CMutableTransaction split(*spend(COutPoint(block1_cb_txid, 0), split_value));
+            for (size_t index = 1; index < 65; ++index) split.vout.push_back(split.vout[0]);
+            auto tx = MakeTransactionRef(std::move(split));
             block101_txid = tx->GetId(); block->vtx.push_back(tx);
         } else if (height == 102) {
-            auto parent = spend(COutPoint(block101_txid, 0), funding_value - 20000 * SATOSHI);
-            auto child = spend(COutPoint(parent->GetId(), 0), funding_value - 30000 * SATOSHI);
+            // More than64transactions must retain paid lifetime metadata.
+            for (uint32_t index = 0; index < 64; ++index) {
+                auto tx = spend(COutPoint(block101_txid, index), split_value - 1000 * SATOSHI);
+                expected_fees.emplace(tx->GetId(), 1000);
+                block->vtx.push_back(tx);
+            }
+            auto parent = spend(COutPoint(block101_txid, 64), split_value - 1000 * SATOSHI);
+            CTransactionRef child;
+            for (uint64_t extra_fee = 0; extra_fee < 10000; ++extra_fee) {
+                auto candidate = spend(COutPoint(parent->GetId(), 0),
+                    parent->GetValueOut() - int64_t(1000 + extra_fee) * SATOSHI);
+                if (candidate->GetId() < parent->GetId()) {
+                    child = candidate;
+                    expected_fees.emplace(child->GetId(), 1000 + extra_fee);
+                    break;
+                }
+            }
+            BOOST_REQUIRE(child != nullptr);
+            BOOST_REQUIRE(child->GetId() < parent->GetId());
+            expected_fees.emplace(parent->GetId(), 1000);
             block->vtx.push_back(parent); block->vtx.push_back(child);
             std::sort(block->vtx.begin() + 1, block->vtx.end(),
                 [](const auto &left, const auto &right) { return left->GetId() < right->GetId(); });
@@ -2073,6 +2117,21 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
         pivot_index = m_node.chainman->ActiveTip();
         BOOST_REQUIRE_EQUAL(pivot_index->nHeight, 102);
         pivot_hash = pivot_index->GetBlockHash();
+        std::vector<lotus::v2::Coin> paid_coins;
+        lotus::v2::MonetaryState monetary;
+        BOOST_REQUIRE(GetV2BlockStateCoinsAndMonetary(pivot_hash, 102, paid_coins, monetary));
+        size_t checked_paid_outputs = 0;
+        for (const auto &coin : paid_coins) {
+            if (coin.creation_height != 102 || coin.coinbase) continue;
+            uint256 id; std::copy(coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end(), id.begin());
+            const auto expected = expected_fees.find(TxId{id});
+            BOOST_REQUIRE(expected != expected_fees.end());
+            BOOST_CHECK_EQUAL(coin.fee_per_output, expected->second);
+            BOOST_CHECK_EQUAL(lotus::v2::ComputeUtxoExpirationHeight(coin),
+                lotus::v2::ComputeUtxoExpirationHeight(102, false, expected->second));
+            ++checked_paid_outputs;
+        }
+        BOOST_CHECK_EQUAL(checked_paid_outputs, 65U);
         auto header = pivot_index->GetBlockHeader().ToV2Header();
         auto conflicting = header; conflicting.state_root[0] ^= 1;
         BOOST_CHECK(header.state_root != conflicting.state_root);
@@ -3107,7 +3166,7 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
     {
         TestMemPoolEntryHelper entry;
         LOCK2(cs_main, m_node.mempool->cs);
-        m_node.mempool->addUnchecked(entry.Fee(1000 * SATOSHI).FromTx(tx1));
+        m_node.mempool->addUnchecked(entry.Fee(10000 * SATOSHI).FromTx(tx1));
     }
 
     // 2. Deliver SEALEDHEADER from peer_sender.
@@ -3254,6 +3313,97 @@ BOOST_AUTO_TEST_CASE(high_bandwidth_sealedheader_push_and_peer_cleanup) {
         !v2_handler->PeerKnowsBlock(peer_hb->GetId(), v2_block->GetHash()));
 
     connman->ClearTestNodes();
+}
+
+BOOST_AUTO_TEST_CASE(getblockundo_exports_expired_parent_coins) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    const Config &config = m_node.chainman->GetConfig();
+    MineBlock(config, m_node, CScript() << OP_TRUE);
+    MineBlock(config, m_node, CScript() << OP_TRUE);
+
+    auto connman = std::make_unique<ConnmanTestMsg>(config, 0x7134, 0x7134,
+                                                  *m_node.addrman);
+    auto peerman = PeerManager::make(*connman, *m_node.addrman, nullptr,
+        *m_node.chainman, *m_node.mempool, nullptr, {});
+    CConnman::Options options;
+    options.m_msgproc = {peerman.get()};
+    connman->Init(options);
+    auto *handler = peerman->GetV2ProtocolHandler();
+    BOOST_REQUIRE(handler);
+
+    BlockHash block_hash;
+    lotus::v2::Coin swept;
+    {
+        LOCK(cs_main);
+        auto *tip = m_node.chainman->ActiveTip();
+        BOOST_REQUIRE(tip && tip->pprev);
+        block_hash = tip->GetBlockHash();
+        std::vector<lotus::v2::Coin> parent_coins;
+        lotus::v2::MonetaryState parent_monetary;
+        BOOST_REQUIRE(GetV2BlockStateCoinsAndMonetary(
+            tip->pprev->GetBlockHash(), tip->pprev->nHeight,
+            parent_coins, parent_monetary));
+        BOOST_REQUIRE(!parent_coins.empty());
+        swept = parent_coins.front();
+        swept.outpoint.tx_id[0] ^= 0x80;
+        swept.coinbase = false;
+        swept.fee_per_output = 0;
+        // Imported expiry provenance exercises the actual message path without
+        // mining the native 131,400-block lifetime. Ordinary outputs in this
+        // fixture retain their normal, much later expiration.
+        swept.expiration_height = tip->nHeight;
+        parent_coins.push_back(swept);
+        BOOST_REQUIRE(ImportV2BlockStateCoinsAndMonetary(
+            tip->pprev->GetBlockHash(), parent_coins, parent_monetary, false));
+
+
+    }
+
+    CAddress addr(MakeTestIp(0xa0b0c071), NODE_NONE);
+    CNode peer(7134, nullptr, addr, 0, 0, 0, CAddress(), "",
+               ConnectionType::OUTBOUND_FULL_RELAY, false);
+    handler->RegisterPeerNode(peer);
+    lotus::v2::GetBlockUndoRequest request{};
+    std::copy_n(block_hash.begin(), 32, request.block_id.begin());
+    DataStream input{lotus::v2::EncodeGetBlockUndoRequest(request)};
+    BOOST_REQUIRE(handler->TryHandleMessage(
+        peer, NetMsgType::GETBLOCKUNDO, input, 1s));
+
+    std::vector<CNetMessage> messages;
+    V1TransportDeserializer decoder(config, peer.GetId());
+    {
+        LOCK(peer.cs_vSend);
+        for (const auto &chunk : peer.vSendMsg) {
+            Span<const uint8_t> bytes{chunk};
+            while (!bytes.empty()) {
+                BOOST_REQUIRE_GE(decoder.Read(config, bytes), 0);
+                if (decoder.Complete()) {
+                    bool reject = false;
+                    messages.push_back(decoder.GetMessage(0us, reject));
+                    BOOST_REQUIRE(!reject);
+                }
+            }
+        }
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+    BOOST_REQUIRE_EQUAL(messages[0].m_type, NetMsgType::BLOCKUNDO);
+    const auto bytes = MakeUCharSpan(messages[0].m_recv);
+    lotus::v2::BlockUndoMessage undo;
+    std::string error;
+    BOOST_REQUIRE(lotus::v2::DecodeBlockUndoMessage(
+        std::vector<uint8_t>(bytes.begin(), bytes.end()), undo, error));
+    BOOST_REQUIRE_EQUAL(undo.expired_swept_coins.size(), 1U);
+    std::vector<uint8_t> expected, actual;
+    BOOST_REQUIRE(lotus::v2::EncodeCoin(swept, expected));
+    BOOST_REQUIRE(lotus::v2::EncodeCoin(undo.expired_swept_coins[0], actual));
+    BOOST_CHECK(expected == actual);
+    bool found_parent = false;
+    BlockHash parent_hash;
+    { LOCK(cs_main); parent_hash = m_node.chainman->ActiveTip()->pprev->GetBlockHash(); }
+    const auto parent_root = GetV2BlockUtxoRoot(parent_hash, &found_parent);
+    BOOST_REQUIRE(found_parent);
+    BOOST_REQUIRE(lotus::v2::SmtFind(parent_root, swept.outpoint));
+    handler->RemovePeer(peer);
 }
 
 BOOST_AUTO_TEST_CASE(

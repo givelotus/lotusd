@@ -30,7 +30,8 @@ namespace lotus::v2 {
  */
 struct SmtNode {
     Hash digest{};
-    size_t count{0};
+    uint32_t count{0};
+    uint32_t min_expiration_height{UINT32_MAX};
     uint64_t total_value{0};
     Hash key{};
     std::shared_ptr<const Coin> coin;
@@ -61,6 +62,13 @@ void SmtBatchUpdateParallel(
 std::shared_ptr<const Coin> SmtFind(const std::shared_ptr<const SmtNode> &root,
                                     const Outpoint &outpoint);
 Hash SmtRoot(const std::shared_ptr<const SmtNode> &root);
+std::vector<Coin> SmtCollectExpired(
+    const std::shared_ptr<const SmtNode> &root, uint64_t block_height,
+    size_t max_sweeps = MAX_EXPIRY_SWEEPS_PER_BLOCK);
+ExpirySweepResult SmtSweepExpired(
+    std::shared_ptr<const SmtNode> &root, uint64_t block_height,
+    uint64_t total_block_fees_atoms = 0,
+    size_t max_sweeps = MAX_EXPIRY_SWEEPS_PER_BLOCK);
 
 /**
  * Contiguous arena node for the radix-256 Transaction Commitment Subtree A
