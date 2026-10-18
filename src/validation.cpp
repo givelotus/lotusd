@@ -43,6 +43,7 @@
 #include <policy/block/preconsensus.h>
 #include <policy/block/rtt.h>
 #include <policy/block/stakingrewards.h>
+#include <policy/block/treasury.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <pow/pow.h>
@@ -406,24 +407,17 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
                 break;
             }
             const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
-            const uint8_t *expected_branch = nullptr;
-            if (prev_out.nFlags == 0 && prev_out.vBranches.size() == 1 &&
-                prev_out.vPaths.size() == 1 &&
-                prev_out.vPaths[0].size() == 1 &&
-                prev_out.vPaths[0][0] == 0) {
-                expected_branch = prev_out.vBranches[0].data();
-            } else if ((prev_out.nFlags & 0x02U) == 0 &&
-                       prev_out.scriptPubKey.size() == 45 &&
-                       prev_out.scriptPubKey[0] == 0x00 &&
-                       prev_out.scriptPubKey[9] == 0x01 &&
-                       prev_out.scriptPubKey[42] == 0x01 &&
-                       prev_out.scriptPubKey[43] == 0x01 &&
-                       prev_out.scriptPubKey[44] == 0x00) {
-                expected_branch = prev_out.scriptPubKey.data() + 10;
-            } else {
+            if ((prev_out.nFlags & 0x02U) != 0 ||
+                prev_out.scriptPubKey.size() != 45 ||
+                prev_out.scriptPubKey[0] != 0x00 ||
+                prev_out.scriptPubKey[9] != 0x01 ||
+                prev_out.scriptPubKey[42] != 0x01 ||
+                prev_out.scriptPubKey[43] != 0x01 ||
+                prev_out.scriptPubKey[44] != 0x00) {
                 fast_ok = false;
                 break;
             }
+            const uint8_t *expected_branch = prev_out.scriptPubKey.data() + 10;
             const auto &w = in.vWitnesses[0];
             if (w.script.size() == 1 && w.script[0] == 0x4e &&
                 w.arguments.empty()) {
@@ -459,25 +453,8 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
             }
             for (size_t i = 0; i < tx.vin.size(); ++i) {
                 const CTxOut &prev_out = resolved_inputs[i].GetTxOut();
-                if (!prev_out.vBranches.empty()) {
-                    std::array<uint8_t, 45> coin_wire{};
-                    const uint64_t val = static_cast<uint64_t>(
-                        std::max<int64_t>(0, prev_out.nValue / SATOSHI));
-                    for (size_t b = 0; b < 8; ++b) {
-                        coin_wire[1 + b] = static_cast<uint8_t>(val >> (8 * b));
-                    }
-                    coin_wire[9] = 0x01;
-                    std::memcpy(coin_wire.data() + 10,
-                                prev_out.vBranches[0].data(), 32);
-                    coin_wire[42] = 0x01;
-                    coin_wire[43] = 0x01;
-                    coin_wire[44] = 0x00;
-                    coin_leaves[i] = lotus::v2::CoinEntryLeaf(coin_wire);
-                } else {
-                    coin_leaves[i] = lotus::v2::CoinEntryLeaf(
-                        std::span<const uint8_t>(prev_out.scriptPubKey.data(),
-                                                 45));
-                }
+                coin_leaves[i] = lotus::v2::CoinEntryLeaf(
+                    std::span<const uint8_t>(prev_out.scriptPubKey.data(), 45));
             }
             const lotus::v2::Hash coins_root = lotus::v2::IndexedTreeRoot(
                 std::span<const lotus::v2::Hash>(coin_leaves.data(),
@@ -3068,6 +3045,524 @@ const CBlockIndex *Chainstate::SnapshotBase() {
             m_chainman.m_blockman.LookupBlockIndex(*m_from_snapshot_blockhash));
     }
     return m_cached_snapshot_base;
+}
+
+bool Chainstate::IsSnapSyncEnabled() const {
+    AssertLockHeld(::cs_main);
+    const bool snap =
+        m_snapsync_enabled_override.value_or(gArgs.GetBoolArg("-snapsync", true));
+    const bool rev = m_reversesync_enabled_override.value_or(
+        gArgs.GetBoolArg("-reversesync", true));
+    return snap && rev;
+}
+
+bool Chainstate::IsReverseSyncEnabled() const {
+    AssertLockHeld(::cs_main);
+    return IsSnapSyncEnabled();
+}
+
+static bool ContextualCheckBlock(const CBlock &block, BlockValidationState &state,
+                                 const ChainstateManager &chainman,
+                                 const CBlockIndex *pindexPrev);
+
+bool Chainstate::ActivateVerifiedFastSyncPivot(
+    CBlockIndex *pindex_pivot,
+    const std::vector<lotus::v2::Coin> &coins,
+    const lotus::v2::MonetaryState &monetary_state,
+    std::string &error) {
+    AssertLockHeld(::cs_main);
+    if (!IsSnapSyncEnabled()) { error = "snapsync disabled"; return false; }
+    if (!pindex_pivot || !HasCoinsViews()) {
+        error = "Missing pivot or coins view";
+        return false;
+    }
+    lotus::v2::UtxoSet verified;
+    std::vector<std::pair<COutPoint, ::Coin>> installed;
+    installed.reserve(coins.size());
+    for (const auto &coin : coins) {
+        if (coin.creation_height > static_cast<uint64_t>(pindex_pivot->nHeight) ||
+            !verified.Insert(coin)) {
+            error = "Invalid or duplicate pivot coin";
+            return false;
+        }
+        uint256 txid;
+        std::copy(coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end(), txid.begin());
+        installed.emplace_back(COutPoint{TxId{txid}, coin.outpoint.index},
+            ::Coin{CTxOut::FromV2Output(coin.output), uint32_t(coin.creation_height),
+                   coin.coinbase});
+    }
+    const auto root = lotus::v2::StateRoot(GetActiveV2ChainId(),
+        pindex_pivot->nHeight, verified.Root(), monetary_state);
+    if (root != pindex_pivot->GetBlockHeader().ToV2Header().state_root) {
+        error = "Pivot state does not match authenticated header";
+        return false;
+    }
+    const BlockHash pivot_hash = pindex_pivot->GetBlockHash();
+    // Persist the authenticated native snapshot before publishing the atomic
+    // chainstate marker. An interruption before the marker leaves an unused
+    // snapshot; after it, startup can reconstruct provisional history.
+    if (!ImportV2BlockStateCoinsAndMonetary(pivot_hash, coins, monetary_state, true)) {
+        error = "Failed to persist authenticated pivot state";
+        return false;
+    }
+    uint256 marker_root;
+    std::copy(root.begin(), root.end(), marker_root.begin());
+    CoinsDB().InstallFastSyncSnapshot(pivot_hash, marker_root, installed);
+    m_coins_views->InitCache();
+
+    if (!pindex_pivot->IsValid(BlockValidity::SCRIPTS) ||
+        !pindex_pivot->HaveNumChainTxs()) {
+        m_fast_sync_pivot_base = pindex_pivot;
+        if (!pindex_pivot->HaveNumChainTxs()) {
+            pindex_pivot->m_chain_tx_count =
+                static_cast<unsigned int>(pindex_pivot->nHeight + 1);
+            m_blockman.m_dirty_blockindex.insert(pindex_pivot);
+        }
+    }
+
+    if (m_chain.Tip() != pindex_pivot) {
+        m_chain.SetTip(*pindex_pivot);
+        setBlockIndexCandidates.insert(pindex_pivot);
+        PruneBlockIndexCandidates();
+        if (m_mempool) {
+            LOCK(m_mempool->cs);
+            m_mempool->ConnectBlockReset(
+                pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
+                static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+        }
+        UpdateTip(pindex_pivot);
+    } else if (m_mempool) {
+        LOCK(m_mempool->cs);
+        m_mempool->ConnectBlockReset(
+            pivot_hash, static_cast<uint64_t>(pindex_pivot->nHeight + 1),
+            static_cast<uint64_t>(pindex_pivot->GetMedianTimePast()));
+    }
+
+    ActivateFastSyncPivot(pindex_pivot->nHeight);
+    node::PublishChainTipSnapshot(m_chainman, m_mempool);
+    return true;
+}
+
+bool Chainstate::PeelFastSyncBlock(
+    const BlockHash &block_hash,
+    const lotus::v2::BlockUndoMessage &undo_msg,
+    const CBlock *optional_block,
+    FastSyncPeelResult &result_out,
+    std::string &err_out) {
+    AssertLockHeld(::cs_main);
+    if (!IsReverseSyncEnabled()) { err_out = "reverse sync disabled"; return false; }
+    if (!IsFastSyncActive()) {
+        err_out = "Fast-sync reverse peeling is not active";
+        return false;
+    }
+
+    CBlockIndex *pindex = m_blockman.LookupBlockIndex(block_hash);
+    if (!pindex || pindex->nHeight <= 0 || !pindex->pprev) {
+        err_out = "Valid non-genesis block not found";
+        return false;
+    }
+    if (pindex->nHeight != GetEarliestVerifiedHeight()) {
+        err_out = strprintf(
+            "Block height %d does not match earliest_verified_height %d",
+            pindex->nHeight, GetEarliestVerifiedHeight());
+        return false;
+    }
+
+    lotus::v2::Hash expected_block_id{};
+    std::memcpy(expected_block_id.data(), block_hash.begin(), 32);
+    if (undo_msg.block_id != expected_block_id) {
+        err_out = "BLOCKUNDO block_id mismatch";
+        return false;
+    }
+
+    lotus::v2::MonetaryState parent_mon_state{};
+    try {
+        parent_mon_state = lotus::v2::DecodeMonetaryState(
+            std::vector<uint8_t>(undo_msg.parent_monetary_state.begin(),
+                                 undo_msg.parent_monetary_state.end()));
+    } catch (const std::exception &e) {
+        err_out = strprintf("Invalid parent_monetary_state: %s", e.what());
+        return false;
+    }
+
+    CBlock disk_block;
+    const CBlock *block_ptr = optional_block;
+    if (block_ptr) {
+        if (block_ptr->GetHash() != block_hash) {
+            err_out = "Provided block hash does not match target block_hash";
+            return false;
+        }
+    } else {
+        if (!m_blockman.ReadBlock(disk_block, *pindex)) {
+            err_out = "Failed to read block";
+            return false;
+        }
+        block_ptr = &disk_block;
+    }
+    const CBlock &block = *block_ptr;
+    BlockValidationState blk_state;
+    if (!CheckBlock(*block_ptr, blk_state,
+            m_chainman.GetConsensus(),
+            BlockValidationOptions(m_chainman.GetConfig()))) {
+        err_out = strprintf("Invalid block in reverse peel: %s",
+                blk_state.ToString());
+        return false;
+    }
+
+    BlockValidationState contextual_state;
+    if (!ContextualCheckBlock(block, contextual_state, m_chainman, pindex->pprev)) {
+        err_out = "Invalid peeled block context: " + contextual_state.ToString();
+        return false;
+    }
+
+    std::vector<lotus::v2::Coin> current_coins;
+    lotus::v2::MonetaryState current_mon_state{};
+    if (!GetV2BlockStateCoinsAndMonetary(
+            block_hash, static_cast<uint64_t>(pindex->nHeight), current_coins,
+            current_mon_state)) {
+        err_out = "Current block V2 state not found";
+        return false;
+    }
+    lotus::v2::UtxoSet current_utxo;
+    for (const auto &c : current_coins) {
+        if (!current_utxo.Insert(c)) {
+            err_out = "Failed to populate current UTXO set";
+            return false;
+        }
+    }
+
+    const uint64_t height = static_cast<uint64_t>(pindex->nHeight);
+    const uint64_t parent_mtp =
+        static_cast<uint64_t>(pindex->pprev->GetMedianTimePast());
+
+    struct V2OutpointLess {
+        bool operator()(const lotus::v2::Outpoint &a,
+                        const lotus::v2::Outpoint &b) const {
+            if (a.tx_id != b.tx_id) {
+                return a.tx_id < b.tx_id;
+            }
+            return a.index < b.index;
+        }
+    };
+
+    std::map<lotus::v2::Outpoint, lotus::v2::Coin, V2OutpointLess>
+        created_coins;
+    std::map<lotus::v2::Outpoint, size_t, V2OutpointLess> created_tx_index;
+    for (size_t tx_i = 0; tx_i < block.vtx.size(); ++tx_i) {
+        const CTransaction &tx = *block.vtx[tx_i];
+        lotus::v2::Hash txid{};
+        std::memcpy(txid.data(), tx.GetId().begin(), 32);
+        for (size_t j = 0; j < tx.vout.size(); ++j) {
+            if (tx.vout[j].scriptPubKey.IsUnspendable()) {
+                continue;
+            }
+            const lotus::v2::Output v2out = tx.vout[j].ToV2Output();
+            if (!v2out.IsBurn()) {
+                const lotus::v2::Outpoint op{txid, static_cast<uint32_t>(j)};
+                lotus::v2::Coin coin{op, v2out, height, parent_mtp,
+                                     tx.IsCoinBase()};
+                created_coins.emplace(op, std::move(coin));
+                created_tx_index.emplace(op, tx_i);
+            }
+        }
+    }
+
+    std::set<lotus::v2::Outpoint, V2OutpointLess> all_spent;
+    std::set<lotus::v2::Outpoint, V2OutpointLess> intra_spent;
+    std::vector<lotus::v2::Outpoint> prior_spent_order;
+    for (size_t tx_i = 0; tx_i < block.vtx.size(); ++tx_i) {
+        const CTransaction &tx = *block.vtx[tx_i];
+        if (tx.IsCoinBase()) {
+            continue;
+        }
+        for (const auto &txin : tx.vin) {
+            if (txin.nFlags == 3) {
+                continue;
+            }
+            lotus::v2::Outpoint op{};
+            std::memcpy(op.tx_id.data(), txin.prevout.GetTxId().begin(), 32);
+            op.index = txin.prevout.GetN();
+            if (!all_spent.insert(op).second) {
+                err_out = "Duplicate input outpoint in block";
+                return false;
+            }
+            auto it_created = created_tx_index.find(op);
+            if (it_created != created_tx_index.end()) {
+                if (it_created->second == tx_i) {
+                    err_out = "Invalid intra-block self-spend";
+                    return false;
+                }
+                intra_spent.insert(op);
+            } else {
+                prior_spent_order.push_back(op);
+            }
+        }
+    }
+
+    if (undo_msg.prior_spent_coins.size() != prior_spent_order.size()) {
+        err_out =
+            "BLOCKUNDO prior_spent_coins count does not match prior_spent";
+        return false;
+    }
+    for (size_t i = 0; i < undo_msg.prior_spent_coins.size(); ++i) {
+        const auto &coin = undo_msg.prior_spent_coins[i];
+        std::vector<uint8_t> encoded_coin;
+        if (!(coin.outpoint == prior_spent_order[i]) ||
+            !lotus::v2::EncodeCoin(coin, encoded_coin) ||
+            coin.output.IsBurn() || coin.creation_height >= height) {
+            err_out = "Invalid coin in BLOCKUNDO prior_spent_coins";
+            return false;
+        }
+    }
+
+    std::map<lotus::v2::Outpoint, lotus::v2::Coin, V2OutpointLess> current_view;
+    for (const auto &c : current_utxo.Coins()) {
+        current_view.emplace(c.outpoint, c);
+    }
+    lotus::v2::UtxoSet parent_utxo = current_utxo;
+    for (const auto &intra_op : intra_spent) {
+        if (current_view.count(intra_op) > 0) {
+            err_out = "Intra-block spent coin present in end-of-block UTXO";
+            return false;
+        }
+    }
+    size_t net_outputs_removed = 0;
+    for (const auto &[op, expected_coin] : created_coins) {
+        if (intra_spent.count(op) > 0) {
+            continue;
+        }
+        const auto it_actual = current_view.find(op);
+        std::vector<uint8_t> b1, b2;
+        if (it_actual == current_view.end() ||
+            !lotus::v2::EncodeCoin(it_actual->second, b1) ||
+            !lotus::v2::EncodeCoin(expected_coin, b2) || b1 != b2) {
+            err_out = "Net block output missing or mismatched in UTXO_h";
+            return false;
+        }
+        if (!parent_utxo.Erase(op)) {
+            err_out = "Failed to remove net block output";
+            return false;
+        }
+        ++net_outputs_removed;
+    }
+    for (const auto &coin : undo_msg.prior_spent_coins) {
+        if (current_view.count(coin.outpoint) > 0 ||
+            !parent_utxo.Insert(coin)) {
+            err_out = "Failed to restore prior-block spent coin";
+            return false;
+        }
+    }
+
+    CBlockIndex *parent_index = pindex->pprev;
+    const lotus::v2::Header parent_hdr =
+        parent_index->GetBlockHeader().ToV2Header();
+    const lotus::v2::Hash expected_parent_state_root = lotus::v2::StateRoot(
+        GetActiveV2ChainId(), static_cast<uint64_t>(parent_index->nHeight),
+        parent_utxo.Root(), parent_mon_state);
+    if (expected_parent_state_root != parent_hdr.state_root) {
+        err_out = "Peeled parent StateRoot mismatch against parent header";
+        return false;
+    }
+
+    const lotus::v2::MonetaryState expected_current_mon =
+        AdvanceV2BlockMonetaryState(block, parent_mon_state);
+    if (lotus::v2::EncodeMonetaryState(expected_current_mon) !=
+        lotus::v2::EncodeMonetaryState(current_mon_state)) {
+        err_out = "Forward monetary transition mismatch from parent state";
+        return false;
+    }
+
+    // Forward-verify all transaction inputs, sequence locks, fees, scripts,
+    // and locally construct CBlockUndo from the StateRoot-authenticated parent
+    // coins before persisting rev*.dat.
+    {
+        CCoinsView coins_dummy;
+        CCoinsViewCache parent_view(&coins_dummy);
+        parent_view.SetBestBlock(parent_index->GetBlockHash());
+        for (const auto &sc : undo_msg.prior_spent_coins) {
+            const COutPoint outp(TxId(uint256(Span<const uint8_t>(
+                                     sc.outpoint.tx_id.data(), 32))),
+                                 sc.outpoint.index);
+            parent_view.AddCoin(
+                outp,
+                Coin(CTxOut::FromV2Output(sc.output),
+                     static_cast<uint32_t>(sc.creation_height), sc.coinbase),
+                /*possible_overwrite=*/false);
+        }
+        try {
+            for (const auto &ptx : block.vtx) {
+                AddCoins(parent_view, *ptx, pindex->nHeight);
+            }
+        } catch (const std::logic_error &) {
+            err_out = "Duplicate transaction output overwrite in peeled block";
+            return false;
+        }
+
+        const Consensus::Params &consensusParams =
+            m_chainman.GetParams().GetConsensus();
+        int nLockTimeFlags = 0;
+        if (DeploymentActiveAt(*pindex, consensusParams,
+                               Consensus::DEPLOYMENT_CSV)) {
+            nLockTimeFlags |= LOCKTIME_VERIFY_SEQUENCE;
+        }
+        const uint32_t script_flags =
+            GetNextBlockScriptFlags(parent_index, m_chainman);
+        const bool fEnforceSigCheck =
+            (script_flags & SCRIPT_ENFORCE_SIGCHECKS) != 0;
+        CheckInputsLimiter sigchecks_block_limiter(
+            GetMaxBlockSigChecksCount(DEFAULT_MAX_BLOCK_SIZE));
+
+        CBlockUndo blockundo;
+        if (!block.vtx.empty()) {
+            blockundo.vtxundo.resize(block.vtx.size() - 1);
+        }
+        Amount nFees = Amount::zero();
+        std::vector<int> prevheights;
+        size_t tx_undo_idx = 0;
+
+        for (const auto &ptx : block.vtx) {
+            const CTransaction &tx = *ptx;
+            if (tx.IsCoinBase()) {
+                continue;
+            }
+            Amount txfee = Amount::zero();
+            TxValidationState tx_state;
+            if (!Consensus::CheckTxInputs(tx, tx_state, parent_view,
+                                          pindex->nHeight, txfee)) {
+                err_out = "Forward input check failed on peeled block: " +
+                          tx_state.ToString();
+                return false;
+            }
+            nFees += txfee;
+            if (!MoneyRange(nFees)) {
+                err_out = "Accumulated fee out of range in peeled block";
+                return false;
+            }
+
+            prevheights.resize(tx.vin.size());
+            for (size_t j = 0; j < tx.vin.size(); ++j) {
+                prevheights[j] =
+                    (tx.vin[j].nFlags == 3 ||
+                     (tx.vin[j].nSequence &
+                      CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG))
+                        ? 0
+                        : parent_view.AccessCoin(tx.vin[j].prevout).GetHeight();
+            }
+            if (!SequenceLocks(tx, nLockTimeFlags, prevheights, *pindex)) {
+                err_out = "Non-BIP68-final transaction in peeled block";
+                return false;
+            }
+
+            PrecomputedTransactionData txdata(tx);
+            TxSigCheckLimiter tx_sigcheck_limiter =
+                fEnforceSigCheck ? TxSigCheckLimiter()
+                                 : TxSigCheckLimiter::getDisabled();
+            int nSigChecksTx = 0;
+            if (!CheckInputScripts(tx, tx_state, parent_view, script_flags,
+                                   /*cacheSigStore=*/false,
+                                   /*cacheFullScriptStore=*/false, txdata,
+                                   m_chainman.m_validation_cache, nSigChecksTx,
+                                   tx_sigcheck_limiter, &sigchecks_block_limiter,
+                                   /*pvChecks=*/nullptr)) {
+                err_out = "Forward script verification failed on peeled block: " +
+                          tx_state.ToString();
+                return false;
+            }
+
+            SpendCoins(parent_view, tx, blockundo.vtxundo.at(tx_undo_idx),
+                       pindex->nHeight);
+            ++tx_undo_idx;
+        }
+
+        const Amount blockReward =
+            nFees + GetBlockSubsidy(pindex->nHeight, consensusParams);
+        if (!block.vtx.empty() && block.vtx[0]->GetValueOut() > blockReward) {
+            err_out = "Coinbase pays too much in peeled block";
+            return false;
+        }
+
+        if (!pindex->nStatus.hasUndo()) {
+            BlockValidationState undo_state;
+            if (!m_blockman.WriteBlockUndo(blockundo, undo_state, *pindex)) {
+                err_out = "Failed to write local CBlockUndo for peeled block";
+                return false;
+            }
+        }
+    }
+
+    if (!ImportV2BlockStateCoinsAndMonetary(parent_index->GetBlockHash(),
+                                          parent_utxo.Coins(), parent_mon_state,
+                                          /*is_tip=*/false)) {
+        err_out = "Failed to persist authenticated peeled parent state";
+        return false;
+    }
+    // Update block storage and CBlockIndex accounting for the peeled block
+    // and step m_fast_sync_pivot_base / m_chain_tx_count backwards.
+    if (!pindex->nStatus.hasData()) {
+        FlatFilePos blockPos = m_blockman.WriteBlock(block, pindex->nHeight);
+        if (blockPos.IsNull()) {
+            err_out = "Failed to store reverse-verified block";
+            return false;
+        }
+        pindex->nFile = blockPos.nFile;
+        pindex->nDataPos = blockPos.nPos;
+        pindex->nSize = ::GetSerializeSize(block);
+        pindex->nStatus = pindex->nStatus.withData();
+    }
+    if (pindex->nTx == 0) {
+        pindex->nTx = block.vtx.size();
+    }
+    pindex->RaiseValidity(BlockValidity::TRANSACTIONS);
+    // Parent commitments authenticate the reconstruction; complete execution
+    // provenance is established only after peeling reaches genesis.
+    m_blockman.m_dirty_blockindex.insert(pindex);
+    // Publish progress only after the historical body/index and authenticated
+    // predecessor snapshot exist. An interrupted earlier attempt can be replayed.
+    if (!m_blockman.FlushBlockFile(pindex->nFile, false, false)) {
+        err_out = "Failed to flush reverse-verified block";
+        return false;
+    }
+    m_blockman.WriteBlockIndexDB();
+    if (parent_index->nHeight > 0) {
+        uint256 root;
+        const auto parent_root = parent_index->GetBlockHeader().ToV2Header().state_root;
+        std::copy(parent_root.begin(), parent_root.end(), root.begin());
+        CoinsDB().SetFastSyncProgress(parent_index->GetBlockHash(), root);
+    }
+    if (!RecordReversePeeledBlock(parent_index->nHeight)) {
+        err_out = "Failed to update earliest_verified_height";
+        return false;
+    }
+
+    if (parent_index->nHeight == 0) {
+        m_fast_sync_pivot_base = nullptr;
+        for (int h_idx = 1; h_idx <= m_chain.Height(); ++h_idx) {
+            CBlockIndex *blk = m_chain[h_idx];
+            if (blk && blk->nTx > 0 && blk->pprev &&
+                blk->pprev->m_chain_tx_count > 0) {
+                blk->m_chain_tx_count =
+                    blk->pprev->m_chain_tx_count + blk->nTx;
+                blk->RaiseValidity(BlockValidity::SCRIPTS);
+                m_blockman.m_dirty_blockindex.insert(blk);
+            }
+        }
+        m_blockman.WriteBlockIndexDB();
+        CoinsDB().ClearFastSyncSnapshot();
+    }
+
+    node::PublishChainTipSnapshot(m_chainman, m_mempool);
+
+    result_out.peeled_blockhash = block_hash;
+    result_out.parent_blockhash = parent_index->GetBlockHash();
+    result_out.parent_height = parent_index->nHeight;
+    result_out.earliest_verified_height = GetEarliestVerifiedHeight();
+    result_out.fast_sync_active = IsFastSyncActive();
+    result_out.intra_block_spends = intra_spent.size();
+    result_out.prior_spends_restored = undo_msg.prior_spent_coins.size();
+    result_out.net_outputs_removed = net_outputs_removed;
+    err_out.clear();
+    return true;
+}
 
 void Chainstate::InitCoinsDB(size_t cache_size_bytes, bool in_memory,
                              bool should_wipe, std::string leveldb_name) {
@@ -3930,7 +4425,6 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         RecordV2BlockState(block, block_hash, BlockHash(), 0, 0);
         if (!fJustCheck) {
             view.SetBestBlock(pindex->GetBlockHash());
-            UpdateConnectedBlockSmtState(block, pindex);
         }
 
         return true;
@@ -7611,6 +8105,70 @@ bool Chainstate::LoadChainTip() {
     const CCoinsViewCache &coins_cache = CoinsTip();
     // Never called when the coins view is empty
     assert(!coins_cache.GetBestBlock().IsNull());
+    if (const auto marker = CoinsDB().GetFastSyncSnapshot()) {
+        auto *pivot = m_blockman.LookupBlockIndex(marker->first);
+        if (!pivot) return false;
+        const auto root = pivot->GetBlockHeader().ToV2Header().state_root;
+        if (!std::equal(root.begin(), root.end(), marker->second.begin())) return false;
+        std::vector<lotus::v2::Coin> coins;
+        lotus::v2::MonetaryState monetary;
+        if (!GetV2BlockStateCoinsAndMonetary(marker->first, pivot->nHeight, coins, monetary))
+            return false;
+        lotus::v2::UtxoSet verified;
+        for (const auto &coin : coins) if (!verified.Insert(coin)) return false;
+        if (lotus::v2::StateRoot(GetActiveV2ChainId(), pivot->nHeight,
+                               verified.Root(), monetary) != root) return false;
+        CBlockIndex *live_tip =
+            m_blockman.LookupBlockIndex(coins_cache.GetBestBlock());
+        if (!live_tip || live_tip->GetAncestor(pivot->nHeight) != pivot) return false;
+        const auto progress = CoinsDB().GetFastSyncProgress();
+        if (!progress) return false;
+        CBlockIndex *frontier = m_blockman.LookupBlockIndex(progress->first);
+        if (!frontier || frontier->nHeight <= 0 ||
+            frontier->nHeight > pivot->nHeight ||
+            pivot->GetAncestor(frontier->nHeight) != frontier) return false;
+        const auto frontier_root = frontier->GetBlockHeader().ToV2Header().state_root;
+        if (!std::equal(frontier_root.begin(), frontier_root.end(), progress->second.begin()))
+            return false;
+        if (!GetV2BlockStateCoinsAndMonetary(progress->first, frontier->nHeight,
+                                           coins, monetary)) return false;
+        lotus::v2::UtxoSet verified_frontier;
+        for (const auto &coin : coins) if (!verified_frontier.Insert(coin)) return false;
+        if (lotus::v2::StateRoot(GetActiveV2ChainId(), frontier->nHeight,
+                                verified_frontier.Root(), monetary) != frontier_root)
+            return false;
+        m_fast_sync_pivot_base = pivot;
+        ActivateFastSyncPivot(frontier->nHeight);
+        // Block-index loading cannot derive transaction counts through missing
+        // pre-pivot bodies. Restore the same provisional estimate installed at
+        // activation, then link downloaded descendants for normal validation.
+        if (!pivot->HaveNumChainTxs()) pivot->m_chain_tx_count = pivot->nHeight + 1;
+        // A process interruption can leave durable block/index descendants
+        // ahead of the last UTXO flush. Rebuild candidates for all downloaded
+        // descendants of the authenticated pivot so ActivateBestChain can
+        // reconnect them using normal validation, rather than losing that work.
+        auto descendants = m_blockman.GetAllBlockIndices();
+        std::sort(descendants.begin(), descendants.end(),
+                  CBlockIndexHeightOnlyComparator());
+        for (CBlockIndex *descendant : descendants) {
+            if (descendant->nHeight < pivot->nHeight ||
+                descendant->GetAncestor(pivot->nHeight) != pivot) continue;
+            if (descendant != pivot) {
+                if (!descendant->nTx || !descendant->IsValid(BlockValidity::TRANSACTIONS) ||
+                    !descendant->pprev->HaveNumChainTxs()) continue;
+                descendant->m_chain_tx_count = descendant->pprev->m_chain_tx_count + descendant->nTx;
+            }
+            auto range = m_blockman.m_blocks_unlinked.equal_range(descendant->pprev);
+            for (auto it = range.first; it != range.second;) {
+                if (it->second == descendant) it = m_blockman.m_blocks_unlinked.erase(it);
+                else ++it;
+            }
+            TryAddBlockIndexCandidate(descendant);
+        }
+        if (!live_tip->HaveNumChainTxs() ||
+            (live_tip != pivot && !live_tip->IsValid(BlockValidity::SCRIPTS))) return false;
+        setBlockIndexCandidates.insert(live_tip);
+    }
     const CBlockIndex *tip = m_chain.Tip();
 
     if (tip && tip->GetBlockHash() == coins_cache.GetBestBlock()) {
@@ -7624,36 +8182,6 @@ bool Chainstate::LoadChainTip() {
         return false;
     }
     m_chain.SetTip(*pindex);
-    if (auto saved = CoinsDB().GetFastSyncSnapshot()) {
-        auto *pivot = m_blockman.LookupBlockIndex(saved->first);
-        if (!pivot || !m_chain.Contains(pivot) || !IsSnapSyncEnabled()) {
-            LogError("Cannot resume provisional SnapSync pivot; enable -snapsync and -reversesync or reindex");
-            return false;
-        }
-        FastSyncBlockState state;
-        std::string error;
-        if (!ExportV2BlockStateCoinsAndMonetary(pivot, state, error)) {
-            LogError("Cannot reconstruct SnapSync restart state: %s", error);
-            return false;
-        }
-        uint256 root;
-        std::copy(state.utxo_root.begin(), state.utxo_root.end(), root.begin());
-        if (root != saved->second) {
-            LogError("SnapSync restart state does not match authenticated pivot root");
-            return false;
-        }
-        SetFastSyncStateAnchor(saved->first, state.utxo_root);
-        m_reverse_peel_smt_root = state.smt_root;
-        m_reverse_peel_utxo = std::move(state.utxo);
-        m_earliest_verified_block = pivot;
-        m_earliest_verified_height = pivot->nHeight;
-        m_fast_sync_pivot_height = pivot->nHeight;
-        m_peeled_blocks_count = 0;
-        m_pending_undo_coin_checks.clear();
-        m_reverse_checked_blocks.clear();
-        m_fast_sync_active = pivot->nHeight > 0;
-        UpdateFastSyncPivotBase(pivot);
-    }
     PruneBlockIndexCandidates();
 
     tip = m_chain.Tip();
@@ -10247,894 +10775,4 @@ ChainstateManager::GetPruneRange(const Chainstate &chainstate,
     int prune_end = std::min(last_height_can_prune, max_prune);
 
     return {prune_start, prune_end};
-}
-
-namespace {
-
-lotus::v2::Hash BlockHashToV2Hash(const BlockHash &block_hash) {
-    lotus::v2::Hash out{};
-    std::copy_n(block_hash.begin(), 32, out.begin());
-    return out;
-}
-
-lotus::v2::Outpoint OutPointToV2Outpoint(const COutPoint &outpoint) {
-    lotus::v2::Outpoint out{};
-    std::copy_n(outpoint.GetTxId().begin(), 32, out.tx_id.begin());
-    out.index = outpoint.GetN();
-    return out;
-}
-
-COutPoint V2OutpointToOutPoint(const lotus::v2::Outpoint &outpoint) {
-    uint256 txid_u256;
-    std::copy_n(outpoint.tx_id.begin(), 32, txid_u256.begin());
-    return COutPoint(TxId(txid_u256), outpoint.index);
-}
-
-lotus::v2::Coin LegacyCoinToV2Coin(const COutPoint &outpoint,
-                                   const ::Coin &coin) {
-    lotus::v2::Coin v2_coin{};
-    v2_coin.outpoint = OutPointToV2Outpoint(outpoint);
-    v2_coin.creation_height = static_cast<uint64_t>(coin.GetHeight());
-    v2_coin.coinbase = coin.IsCoinBase();
-    v2_coin.creation_parent_mtp = 0;
-    v2_coin.output = lotus::v2::LegacyStateOutput(coin.GetTxOut());
-    return v2_coin;
-}
-
-lotus::v2::MonetaryState
-ComputeMonetaryStateForUtxoSet(const lotus::v2::UtxoSet &utxo,
-                               uint64_t height) {
-    lotus::v2::MonetaryState mon{};
-    uint64_t active_supply = 0;
-    for (const auto &coin : utxo.Coins()) {
-        if (!coin.output.IsBurn()) {
-            active_supply += coin.output.value;
-        }
-    }
-    mon.bootstrap_reserve = active_supply;
-    mon.tail_subsidy = height;
-    mon.prev_work[0] = 1;
-    return mon;
-}
-
-lotus::v2::MonetaryState ComputeMonetaryStateFromSmt(
-    const std::shared_ptr<const lotus::v2::SmtNode> &smt_root,
-    uint64_t height) {
-    lotus::v2::MonetaryState mon{};
-    mon.bootstrap_reserve = smt_root ? smt_root->total_value : 0;
-    mon.tail_subsidy = height;
-    mon.prev_work[0] = 1;
-    return mon;
-}
-
-void PopulateUtxoSetFromSmt(
-    const std::shared_ptr<const lotus::v2::SmtNode> &node,
-    lotus::v2::UtxoSet &utxo_set) {
-    if (!node || node->count == 0) {
-        return;
-    }
-    if (node->IsLeaf()) {
-        if (node->coin) {
-            utxo_set.Insert(*node->coin);
-        }
-        return;
-    }
-    if (node->child[0]) {
-        PopulateUtxoSetFromSmt(node->child[0], utxo_set);
-    }
-    if (node->child[1]) {
-        PopulateUtxoSetFromSmt(node->child[1], utxo_set);
-    }
-}
-
-lotus::v2::Hash ComputeGenesisUtxoRoot(const CBlock &) {
-    return lotus::v2::EmptyUtxoRoot();
-}
-
-} // namespace
-
-bool Chainstate::IsSnapSyncEnabled() const {
-    AssertLockHeld(::cs_main);
-    const bool snap =
-        m_snapsync_enabled_override.value_or(gArgs.GetBoolArg("-snapsync", true));
-    const bool rev = m_reversesync_enabled_override.value_or(
-        gArgs.GetBoolArg("-reversesync", true));
-    return snap && rev;
-}
-
-bool Chainstate::IsReverseSyncEnabled() const {
-    AssertLockHeld(::cs_main);
-    return IsSnapSyncEnabled();
-}
-
-int Chainstate::GetFastSyncMaxPeelBlocks() const {
-    AssertLockHeld(::cs_main);
-    if (m_max_peel_blocks_override.has_value()) {
-        return std::max(0, *m_max_peel_blocks_override);
-    }
-    return std::max<int>(
-        0, gArgs.GetIntArg("-reversesynchorizon", kDefaultFastSyncUndoHorizon));
-}
-
-void Chainstate::CacheFastSyncBlockState(
-    const BlockHash &block_hash,
-    std::shared_ptr<const lotus::v2::SmtNode> smt_root,
-    const lotus::v2::MonetaryState &monetary, const lotus::v2::Hash &utxo_root,
-    uint64_t height, bool authenticated_anchor) {
-    AssertLockHeld(::cs_main);
-    FastSyncBlockState cached_state;
-    cached_state.smt_root = std::move(smt_root);
-    cached_state.monetary = monetary;
-    cached_state.utxo_root = utxo_root;
-    cached_state.height = height;
-    cached_state.authenticated_anchor = authenticated_anchor;
-
-    const bool already_present =
-        m_fast_sync_block_states.find(block_hash) !=
-        m_fast_sync_block_states.end();
-    m_fast_sync_block_states[block_hash] = std::move(cached_state);
-    if (authenticated_anchor) m_fast_sync_state_anchors[block_hash] = utxo_root;
-
-    if (!already_present) {
-        m_fast_sync_state_fifo.push_back(block_hash);
-        while (m_fast_sync_state_fifo.size() > MAX_CACHED_FAST_SYNC_STATES) {
-            const BlockHash oldest = m_fast_sync_state_fifo.front();
-            m_fast_sync_state_fifo.pop_front();
-            if (oldest != m_tip_smt_blockhash) {
-                m_fast_sync_block_states.erase(oldest);
-            }
-        }
-    }
-}
-
-void Chainstate::UpdateConnectedBlockSmtState(const CBlock &block,
-                                              const CBlockIndex *pindex) {
-    AssertLockHeld(::cs_main);
-    if (!pindex || !IsSnapSyncEnabled()) {
-        return;
-    }
-
-    std::shared_ptr<const lotus::v2::SmtNode> smt_root;
-    if (pindex->nHeight == 0) {
-        m_tip_smt_root.reset();
-        m_tip_smt_blockhash = pindex->GetBlockHash();
-        CacheFastSyncBlockState(pindex->GetBlockHash(), nullptr,
-            ComputeMonetaryStateFromSmt(nullptr, 0), lotus::v2::EmptyUtxoRoot(), 0);
-        return;
-    } else if (pindex->pprev) {
-        const BlockHash parent_hash = pindex->pprev->GetBlockHash();
-        if (m_tip_smt_blockhash == parent_hash) {
-            smt_root = m_tip_smt_root;
-        } else {
-            auto parent_it = m_fast_sync_block_states.find(parent_hash);
-            if (parent_it == m_fast_sync_block_states.end()) {
-                return;
-            }
-            smt_root = parent_it->second.smt_root;
-        }
-    } else {
-        return;
-    }
-
-    std::unordered_map<COutPoint, lotus::v2::Coin, SaltedOutpointHasher>
-        created_in_block;
-    std::vector<COutPoint> created_order;
-    std::unordered_set<COutPoint, SaltedOutpointHasher> spent_in_block;
-    std::vector<lotus::v2::Outpoint> net_erased;
-
-    for (size_t tx_i = 0; tx_i < block.vtx.size(); ++tx_i) {
-        const CTransaction &tx = *block.vtx[tx_i];
-        const TxId txid = tx.GetId();
-        for (size_t out_i = 0; out_i < tx.vout.size(); ++out_i) {
-            if (tx.vout[out_i].scriptPubKey.IsUnspendable()) {
-                continue;
-            }
-            const COutPoint outpoint(txid, static_cast<uint32_t>(out_i));
-            lotus::v2::Coin v2_c{};
-            v2_c.outpoint = OutPointToV2Outpoint(outpoint);
-            v2_c.creation_height = static_cast<uint64_t>(pindex->nHeight);
-            v2_c.coinbase = tx.IsCoinBase();
-            v2_c.creation_parent_mtp = 0;
-            v2_c.output = lotus::v2::LegacyStateOutput(tx.vout[out_i]);
-            created_in_block.emplace(outpoint, std::move(v2_c));
-            created_order.push_back(outpoint);
-        }
-    }
-
-    for (size_t tx_i = 1; tx_i < block.vtx.size(); ++tx_i) {
-        const CTransaction &tx = *block.vtx[tx_i];
-        for (const CTxIn &txin : tx.vin) {
-            spent_in_block.insert(txin.prevout);
-            if (created_in_block.find(txin.prevout) == created_in_block.end()) {
-                net_erased.push_back(OutPointToV2Outpoint(txin.prevout));
-            }
-        }
-    }
-
-    std::vector<lotus::v2::Coin> net_inserted;
-    net_inserted.reserve(created_order.size());
-    for (const COutPoint &outpoint : created_order) {
-        if (spent_in_block.find(outpoint) == spent_in_block.end()) {
-            auto it = created_in_block.find(outpoint);
-            if (it != created_in_block.end()) {
-                net_inserted.push_back(std::move(it->second));
-            }
-        }
-    }
-
-    lotus::v2::SmtBatchUpdateParallel(smt_root, net_erased, net_inserted);
-    const uint64_t height = static_cast<uint64_t>(pindex->nHeight);
-    const lotus::v2::Hash utxo_root = lotus::v2::SmtRoot(smt_root);
-    const lotus::v2::MonetaryState monetary =
-        ComputeMonetaryStateFromSmt(smt_root, height);
-
-    m_tip_smt_root = smt_root;
-    m_tip_smt_blockhash = pindex->GetBlockHash();
-    CacheFastSyncBlockState(pindex->GetBlockHash(), std::move(smt_root),
-                            monetary, utxo_root, height);
-}
-
-void Chainstate::UpdateFastSyncPivotBase(CBlockIndex *new_base) {
-    AssertLockHeld(::cs_main);
-    if (!new_base || new_base->nHeight <= 0) {
-        m_fast_sync_pivot_base = nullptr;
-        for (int h = 0; h <= m_chain.Height(); ++h) {
-            CBlockIndex *idx = m_chain[h];
-            if (!idx) {
-                continue;
-            }
-            if (h == 0) {
-                idx->m_chain_tx_count = idx->nTx;
-            } else if (idx->pprev && idx->pprev->m_chain_tx_count > 0 &&
-                       idx->nTx > 0) {
-                idx->m_chain_tx_count = idx->pprev->m_chain_tx_count + idx->nTx;
-            }
-            if (idx->pprev) {
-                auto range =
-                    m_blockman.m_blocks_unlinked.equal_range(idx->pprev);
-                for (auto it = range.first; it != range.second;) {
-                    if (it->second == idx) {
-                        it = m_blockman.m_blocks_unlinked.erase(it);
-                    } else {
-                        ++it;
-                    }
-                }
-            }
-            m_blockman.m_dirty_blockindex.insert(idx);
-        }
-        if (m_chain.Tip()) {
-            setBlockIndexCandidates.insert(m_chain.Tip());
-            PruneBlockIndexCandidates();
-        }
-        return;
-    }
-
-    m_fast_sync_pivot_base = new_base;
-    if (new_base->pprev && new_base->pprev->m_chain_tx_count > 0 &&
-        new_base->nTx > 0) {
-        new_base->m_chain_tx_count =
-            new_base->pprev->m_chain_tx_count + new_base->nTx;
-    } else if (new_base->m_chain_tx_count == 0) {
-        new_base->m_chain_tx_count = std::max<unsigned int>(
-            static_cast<unsigned int>(new_base->nHeight + 1), new_base->nTx);
-    }
-    m_blockman.m_dirty_blockindex.insert(new_base);
-
-    for (int h = new_base->nHeight + 1; h <= m_chain.Height(); ++h) {
-        CBlockIndex *idx = m_chain[h];
-        if (!idx || !idx->pprev) {
-            continue;
-        }
-        if (idx->nTx > 0 && idx->pprev->m_chain_tx_count > 0) {
-            idx->m_chain_tx_count = idx->pprev->m_chain_tx_count + idx->nTx;
-        }
-        auto range = m_blockman.m_blocks_unlinked.equal_range(idx->pprev);
-        for (auto it = range.first; it != range.second;) {
-            if (it->second == idx) {
-                it = m_blockman.m_blocks_unlinked.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        m_blockman.m_dirty_blockindex.insert(idx);
-    }
-
-    if (m_chain.Tip()) {
-        setBlockIndexCandidates.insert(m_chain.Tip());
-        PruneBlockIndexCandidates();
-    }
-}
-
-void Chainstate::SetFastSyncStateAnchor(const BlockHash &block_hash,
-                                        const lotus::v2::Hash &utxo_root) {
-    AssertLockHeld(::cs_main);
-    m_fast_sync_state_anchors[block_hash] = utxo_root;
-}
-
-std::optional<lotus::v2::Hash>
-Chainstate::GetFastSyncStateAnchor(const BlockHash &block_hash) const {
-    AssertLockHeld(::cs_main);
-    auto it = m_fast_sync_state_anchors.find(block_hash);
-    if (it != m_fast_sync_state_anchors.end()) {
-        return it->second;
-    }
-    auto state_it = m_fast_sync_block_states.find(block_hash);
-    if (state_it != m_fast_sync_block_states.end() && state_it->second.authenticated_anchor) {
-        return state_it->second.utxo_root;
-    }
-    return std::nullopt;
-}
-
-const Chainstate::FastSyncBlockState *
-Chainstate::GetFastSyncBlockState(const BlockHash &block_hash) const {
-    AssertLockHeld(::cs_main);
-    auto it = m_fast_sync_block_states.find(block_hash);
-    if (it == m_fast_sync_block_states.end()) {
-        return nullptr;
-    }
-    return &it->second;
-}
-
-bool Chainstate::ExportV2BlockStateCoinsAndMonetary(
-    const CBlockIndex *pindex, FastSyncBlockState &out_state,
-    std::string &error, bool populate_utxo_set) {
-    AssertLockHeld(::cs_main);
-    if (!pindex) {
-        error = "null block index";
-        return false;
-    }
-    auto cached_it = m_fast_sync_block_states.find(pindex->GetBlockHash());
-    if (cached_it != m_fast_sync_block_states.end()) {
-        out_state = cached_it->second;
-        if (populate_utxo_set && out_state.utxo.Coins().empty() &&
-            out_state.smt_root) {
-            PopulateUtxoSetFromSmt(out_state.smt_root, out_state.utxo);
-        }
-        error.clear();
-        return true;
-    }
-    if (!m_chain.Contains(pindex) || !m_chain.Tip()) {
-        error = "requested block is not on the active chain";
-        return false;
-    }
-
-    std::shared_ptr<const lotus::v2::SmtNode> smt_root;
-    const CBlockIndex *tip = m_chain.Tip();
-    if (m_tip_smt_blockhash == tip->GetBlockHash()) {
-        smt_root = m_tip_smt_root;
-    } else {
-        auto tip_it = m_fast_sync_block_states.find(tip->GetBlockHash());
-        if (tip_it != m_fast_sync_block_states.end()) {
-            smt_root = tip_it->second.smt_root;
-            m_tip_smt_root = smt_root;
-            m_tip_smt_blockhash = tip->GetBlockHash();
-        } else {
-            if (!CanFlushToDisk()) {
-                error = "failed flushing CoinsTip before UTXO export";
-                return false;
-            }
-            CoinsTip().Flush();
-
-            std::vector<lotus::v2::Coin> initial_coins;
-            std::unique_ptr<CCoinsViewCursor> pcursor(CoinsDB().Cursor());
-            if (!pcursor) {
-                error = "failed opening CoinsDB cursor";
-                return false;
-            }
-            while (pcursor->Valid()) {
-                COutPoint key;
-                ::Coin coin;
-                if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
-                    if (!coin.IsSpent() &&
-                        !coin.GetTxOut().scriptPubKey.IsUnspendable()) {
-                        initial_coins.push_back(LegacyCoinToV2Coin(key, coin));
-                    }
-                }
-                pcursor->Next();
-            }
-            lotus::v2::SmtBatchUpdateParallel(smt_root, {}, initial_coins);
-            m_tip_smt_root = smt_root;
-            m_tip_smt_blockhash = tip->GetBlockHash();
-            const uint64_t tip_height = static_cast<uint64_t>(tip->nHeight);
-            const lotus::v2::Hash tip_root = lotus::v2::SmtRoot(smt_root);
-            const lotus::v2::MonetaryState tip_monetary =
-                ComputeMonetaryStateFromSmt(smt_root, tip_height);
-            CacheFastSyncBlockState(tip->GetBlockHash(), smt_root, tip_monetary,
-                                    tip_root, tip_height);
-        }
-    }
-
-    // If pindex is an ancestor of the active tip, unwind blocks from Tip() down
-    // to pindex using ReadBlock + ReadBlockUndo and SmtBatchUpdateParallel.
-    const CBlockIndex *cur = tip;
-    while (cur && cur != pindex) {
-        if (cur->pprev) {
-            auto parent_it =
-                m_fast_sync_block_states.find(cur->pprev->GetBlockHash());
-            if (parent_it != m_fast_sync_block_states.end()) {
-                smt_root = parent_it->second.smt_root;
-                cur = cur->pprev;
-                continue;
-            }
-        }
-
-        CBlock block;
-        if (!m_blockman.ReadBlock(block, *cur)) {
-            error = "failed reading block " + cur->GetBlockHash().ToString() +
-                    " while unwinding UTXO state";
-            return false;
-        }
-        CBlockUndo block_undo;
-        if (cur->nHeight > 0 && !m_blockman.ReadBlockUndo(block_undo, *cur)) {
-            error = "failed reading block undo " +
-                    cur->GetBlockHash().ToString() +
-                    " while unwinding UTXO state";
-            return false;
-        }
-        if (cur->nHeight > 0 &&
-            block_undo.vtxundo.size() + 1 != block.vtx.size()) {
-            error = "inconsistent block undo size at " +
-                    cur->GetBlockHash().ToString();
-            return false;
-        }
-
-        std::unordered_set<COutPoint, SaltedOutpointHasher> created_in_block;
-        std::vector<lotus::v2::Outpoint> unwind_erased;
-        std::vector<lotus::v2::Coin> unwind_inserted;
-
-        for (size_t tx_i = 0; tx_i < block.vtx.size(); ++tx_i) {
-            const CTransaction &tx = *block.vtx[tx_i];
-            const TxId txid = tx.GetId();
-            for (size_t out_i = 0; out_i < tx.vout.size(); ++out_i) {
-                if (tx.vout[out_i].scriptPubKey.IsUnspendable()) {
-                    continue;
-                }
-                const COutPoint outpoint(txid, static_cast<uint32_t>(out_i));
-                created_in_block.insert(outpoint);
-                unwind_erased.push_back(OutPointToV2Outpoint(outpoint));
-            }
-        }
-
-        for (size_t tx_i = 1; tx_i < block.vtx.size(); ++tx_i) {
-            const CTransaction &tx = *block.vtx[tx_i];
-            const CTxUndo &tx_undo = block_undo.vtxundo[tx_i - 1];
-            if (tx_undo.vprevout.size() != tx.vin.size()) {
-                error = "inconsistent tx undo input count";
-                return false;
-            }
-            for (size_t in_i = 0; in_i < tx.vin.size(); ++in_i) {
-                if (created_in_block.find(tx.vin[in_i].prevout) !=
-                    created_in_block.end()) {
-                    continue;
-                }
-                const ::Coin &spent = tx_undo.vprevout[in_i];
-                if (spent.IsSpent() ||
-                    spent.GetTxOut().scriptPubKey.IsUnspendable()) {
-                    continue;
-                }
-                unwind_inserted.push_back(
-                    LegacyCoinToV2Coin(tx.vin[in_i].prevout, spent));
-            }
-        }
-
-        lotus::v2::SmtBatchUpdateParallel(smt_root, unwind_erased,
-                                          unwind_inserted);
-        cur = cur->pprev;
-    }
-
-    FastSyncBlockState state;
-    state.smt_root = smt_root;
-    state.height = static_cast<uint64_t>(pindex->nHeight);
-    state.utxo_root = lotus::v2::SmtRoot(smt_root);
-    state.monetary = ComputeMonetaryStateFromSmt(smt_root, state.height);
-
-    state.authenticated_anchor = pindex->IsValid(BlockValidity::SCRIPTS) ||
-        (m_fast_sync_pivot_base && pindex == m_fast_sync_pivot_base);
-    CacheFastSyncBlockState(pindex->GetBlockHash(), smt_root, state.monetary,
-                            state.utxo_root, state.height, state.authenticated_anchor);
-    if (populate_utxo_set && smt_root) {
-        PopulateUtxoSetFromSmt(smt_root, state.utxo);
-    }
-    out_state = std::move(state);
-    error.clear();
-    return true;
-}
-
-bool Chainstate::ActivateVerifiedFastSyncPivot(
-    CBlockIndex *pivot_index, const lotus::v2::UtxoRootsMessage &roots_msg,
-    const std::vector<lotus::v2::UtxoShardMessage> &shards,
-    std::string &error) {
-    AssertLockHeld(::cs_main);
-    if (!IsSnapSyncEnabled()) {
-        error = "snapsync / reverse sync is disabled (-snapsync=0 or -reversesync=0); using traditional sync";
-        return false;
-    }
-    if (!pivot_index) {
-        error = "null pivot block index";
-        return false;
-    }
-    if (pivot_index->nStatus.isInvalid() ||
-        (m_chain.Tip() && pivot_index->nChainWork < m_chain.Tip()->nChainWork)) {
-        error = "invalid or lower-work snapshot pivot";
-        return false;
-    }
-    if (m_mempool) {
-        LOCK(m_mempool->cs);
-        if (m_mempool->size() != 0) {
-            error = "snapshot activation requires an empty mempool";
-            return false;
-        }
-    }
-    if (!CanFlushToDisk()) {
-        error = "chainstate coins views not initialized";
-        return false;
-    }
-
-    const lotus::v2::Hash expected_pivot_id =
-        BlockHashToV2Hash(pivot_index->GetBlockHash());
-    const std::optional<lotus::v2::Hash> expected_anchor =
-        GetFastSyncStateAnchor(pivot_index->GetBlockHash());
-
-    lotus::v2::UtxoSet verified_utxo;
-    lotus::v2::MonetaryState verified_monetary;
-    if (!lotus::v2::AssembleAndVerifyFastSyncPivot(
-            expected_pivot_id, static_cast<uint64_t>(pivot_index->nHeight),
-            expected_anchor, roots_msg, shards, verified_utxo,
-            verified_monetary, error)) {
-        return false;
-    }
-
-    // Validate the entire legacy representation before touching persistent state.
-    try {
-        for (const auto &c : verified_utxo.Coins()) {
-            auto out = lotus::v2::LegacyTxOutput(c.output);
-            if (c.creation_height == 0 || c.creation_height > uint64_t(pivot_index->nHeight) ||
-                c.creation_parent_mtp != 0 || out.scriptPubKey.IsUnspendable()) {
-                error = "invalid legacy pivot coin";
-                return false;
-            }
-        }
-    } catch (const std::exception &e) { error = e.what(); return false; }
-
-    std::vector<std::pair<COutPoint, ::Coin>> replacement;
-    replacement.reserve(verified_utxo.Coins().size());
-    for (const auto &c : verified_utxo.Coins()) {
-        replacement.emplace_back(V2OutpointToOutPoint(c.outpoint),
-            ::Coin(lotus::v2::LegacyTxOutput(c.output), int32_t(c.creation_height), c.coinbase));
-    }
-    // Persist header identities first; one MDBX commit then installs coins,
-    // best-block identity and a restart marker together. Never use partial
-    // forward-connect batches to replace an unrelated snapshot state.
-    CoinsTip().Flush();
-    m_blockman.WriteBlockIndexDB();
-    uint256 root_id;
-    const auto verified_root = verified_utxo.Root();
-    std::copy(verified_root.begin(), verified_root.end(), root_id.begin());
-    CoinsDB().InstallFastSyncSnapshot(pivot_index->GetBlockHash(), root_id, replacement);
-    { auto reset = CoinsTip().CreateResetGuard(); }
-    CoinsTip().SetBestBlock(pivot_index->GetBlockHash());
-
-    m_chain.SetTip(*pivot_index);
-    UpdateFastSyncPivotBase(pivot_index);
-    m_chainman.RecalculateBestHeader();
-
-    std::shared_ptr<const lotus::v2::SmtNode> pivot_smt;
-    lotus::v2::SmtBatchUpdateParallel(pivot_smt, {}, verified_utxo.Coins());
-    const uint64_t pivot_height = static_cast<uint64_t>(pivot_index->nHeight);
-    const lotus::v2::Hash pivot_utxo_root = lotus::v2::SmtRoot(pivot_smt);
-
-    m_tip_smt_root = pivot_smt;
-    m_tip_smt_blockhash = pivot_index->GetBlockHash();
-    m_reverse_peel_smt_root = pivot_smt;
-    CacheFastSyncBlockState(pivot_index->GetBlockHash(), std::move(pivot_smt),
-                            verified_monetary, pivot_utxo_root, pivot_height);
-
-    m_reverse_peel_utxo = std::move(verified_utxo);
-    m_earliest_verified_block = pivot_index;
-    m_earliest_verified_height = pivot_index->nHeight;
-    m_fast_sync_pivot_height = pivot_index->nHeight;
-    m_peeled_blocks_count = 0;
-    m_pending_undo_coin_checks.clear();
-    m_reverse_checked_blocks.clear();
-    m_fast_sync_active = (pivot_index->nHeight > 0);
-
-    BlockValidationState flush_state;
-    if (!FlushStateToDisk(flush_state, FlushStateMode::ALWAYS)) {
-        error = flush_state.ToString(); return false;
-    }
-    node::PublishChainTipSnapshot(m_chainman, m_mempool);
-    error.clear();
-    return true;
-}
-
-bool Chainstate::PeelFastSyncBlock(
-    const CBlock &block, CBlockIndex *pindex,
-    const std::vector<lotus::v2::Coin> &spent_coins, std::string &error) {
-    AssertLockHeld(::cs_main);
-    if (!IsReverseSyncEnabled()) {
-        error = "reverse sync is disabled (-reversesync=0 or -snapsync=0); using traditional sync";
-        return false;
-    }
-    if (!m_fast_sync_active || !m_reverse_peel_utxo.has_value()) {
-        error = "fast sync reverse peeling is not active";
-        return false;
-    }
-    if (!pindex || pindex != m_earliest_verified_block ||
-        pindex->nHeight != m_earliest_verified_height) {
-        error = "block index does not match earliest_verified_height";
-        return false;
-    }
-    if (pindex->nHeight <= 0 || !pindex->pprev) {
-        error = "cannot reverse-peel genesis block";
-        return false;
-    }
-    if (block.GetHash() != pindex->GetBlockHash()) {
-        error = "block hash mismatch against pindex";
-        return false;
-    }
-
-    BlockValidationState block_state;
-    if (!CheckBlock(block, block_state, m_chainman.GetConsensus(),
-                    BlockValidationOptions(m_chainman.GetConfig())
-                        .withCheckPoW(true)
-                        .withCheckMerkleRoot(true)) ||
-        !ContextualCheckBlockHeader(block, block_state, m_blockman, m_chainman,
-                                    pindex->pprev, pindex->Time()) ||
-        !ContextualCheckBlock(block, block_state, m_chainman, pindex->pprev)) {
-        error = "historical block validation failed: " + block_state.ToString();
-        return false;
-    }
-
-    try {
-        for (const auto &c : spent_coins) {
-            auto out = lotus::v2::LegacyTxOutput(c.output);
-            if (c.creation_height == 0 || c.creation_height > uint64_t(pindex->nHeight) ||
-                c.creation_parent_mtp != 0 || out.scriptPubKey.IsUnspendable()) {
-                error = "invalid legacy undo coin";
-                return false;
-            }
-        }
-    } catch (const std::exception &e) { error = e.what(); return false; }
-
-    std::vector<lotus::v2::BlockCreatedOutput> block_outputs;
-    std::vector<lotus::v2::Outpoint> block_spent_outpoints;
-    std::vector<lotus::v2::Outpoint> smt_erased_outputs;
-    std::set<COutPoint> created_in_block;
-    std::unordered_map<COutPoint, lotus::v2::BlockCreatedOutput,
-                       SaltedOutpointHasher>
-        created_output_map;
-    for (size_t tx_i = 0; tx_i < block.vtx.size(); ++tx_i) {
-        const CTransaction &tx = *block.vtx[tx_i];
-        const TxId txid = tx.GetId();
-        for (size_t out_i = 0; out_i < tx.vout.size(); ++out_i) {
-            if (tx.vout[out_i].scriptPubKey.IsUnspendable()) continue;
-            const COutPoint outpoint(txid, static_cast<uint32_t>(out_i));
-            lotus::v2::BlockCreatedOutput created{};
-            created.outpoint = OutPointToV2Outpoint(outpoint);
-            created.output = lotus::v2::LegacyStateOutput(tx.vout[out_i]);
-            created.is_coinbase = tx.IsCoinBase();
-            block_outputs.push_back(created);
-            if (!tx.vout[out_i].scriptPubKey.IsUnspendable()) {
-                created_in_block.insert(outpoint);
-                smt_erased_outputs.push_back(created.outpoint);
-                created_output_map.emplace(outpoint, std::move(created));
-            }
-        }
-    }
-
-    // Verify any pending cross-block undo coin checks scheduled for this block
-    // height by higher peeled blocks before mutating any state.
-    const uint64_t current_height_u64 = static_cast<uint64_t>(pindex->nHeight);
-    auto pending_it = m_pending_undo_coin_checks.find(current_height_u64);
-    if (pending_it != m_pending_undo_coin_checks.end()) {
-        for (const lotus::v2::Coin &expected_coin : pending_it->second) {
-            const COutPoint expected_outpoint =
-                V2OutpointToOutPoint(expected_coin.outpoint);
-            auto found_it = created_output_map.find(expected_outpoint);
-            if (found_it == created_output_map.end() ||
-                !(found_it->second.output == expected_coin.output) ||
-                found_it->second.is_coinbase != expected_coin.coinbase) {
-                error =
-                    "cross-block undo coin creation_height/output mismatch against creating block";
-                return false;
-            }
-        }
-    }
-
-    std::vector<COutPoint> all_inputs;
-    std::vector<COutPoint> prior_inputs;
-    for (size_t tx_i = 1; tx_i < block.vtx.size(); ++tx_i) {
-        const CTransaction &tx = *block.vtx[tx_i];
-        for (const CTxIn &txin : tx.vin) {
-            all_inputs.push_back(txin.prevout);
-            block_spent_outpoints.push_back(OutPointToV2Outpoint(txin.prevout));
-            if (created_in_block.count(txin.prevout) == 0) {
-                prior_inputs.push_back(txin.prevout);
-            }
-        }
-    }
-
-    // Build an isolated CCoinsViewCache containing all prior-block spent coins
-    // so we can run full CheckTxInputs + VerifyScript on every transaction in
-    // the block before mutating the reverse-peel UTXO state.
-    CCoinsView dummy_base;
-    CCoinsViewCache peel_coins_view(&dummy_base);
-    std::vector<lotus::v2::Coin> prior_spent_v2_coins;
-    if (spent_coins.size() == prior_inputs.size()) {
-        prior_spent_v2_coins.reserve(prior_inputs.size());
-        for (size_t i = 0; i < prior_inputs.size(); ++i) {
-            const lotus::v2::Coin &v2_c = spent_coins[i];
-            if (!(v2_c.outpoint == OutPointToV2Outpoint(prior_inputs[i]))) {
-                error = "undo prior spent coin outpoint mismatch";
-                return false;
-            }
-            if (v2_c.creation_height >= current_height_u64) {
-                error = "undo prior spent coin creation_height >= block height";
-                return false;
-            }
-            prior_spent_v2_coins.push_back(v2_c);
-            ::Coin legacy_c(lotus::v2::LegacyTxOutput(v2_c.output),
-                            static_cast<int32_t>(v2_c.creation_height),
-                            v2_c.coinbase);
-            peel_coins_view.AddCoin(prior_inputs[i], std::move(legacy_c),
-                                    /*possible_overwrite=*/true);
-        }
-    } else if (spent_coins.size() == all_inputs.size()) {
-        for (size_t i = 0; i < all_inputs.size(); ++i) {
-            const lotus::v2::Coin &v2_c = spent_coins[i];
-            if (!(v2_c.outpoint == OutPointToV2Outpoint(all_inputs[i]))) {
-                error = "undo spent coin outpoint mismatch";
-                return false;
-            }
-            if (created_in_block.count(all_inputs[i]) == 0) {
-                if (v2_c.creation_height >= current_height_u64) {
-                    error =
-                        "undo prior spent coin creation_height >= block height";
-                    return false;
-                }
-                prior_spent_v2_coins.push_back(v2_c);
-                ::Coin legacy_c(lotus::v2::LegacyTxOutput(v2_c.output),
-                                static_cast<int32_t>(v2_c.creation_height),
-                                v2_c.coinbase);
-                peel_coins_view.AddCoin(all_inputs[i], std::move(legacy_c),
-                                        /*possible_overwrite=*/true);
-            }
-        }
-    } else {
-        error = "undo spent coins count mismatch";
-        return false;
-    }
-
-    std::optional<lotus::v2::Hash> expected_parent_anchor =
-        GetFastSyncStateAnchor(pindex->pprev->GetBlockHash());
-    if (!expected_parent_anchor.has_value() && pindex->pprev->nHeight == 0) {
-        expected_parent_anchor =
-            ComputeGenesisUtxoRoot(m_chainman.GetParams().GenesisBlock());
-    }
-
-    auto verified_parent_utxo = *m_reverse_peel_utxo;
-    lotus::v2::Hash parent_utxo_root{};
-    if (!lotus::v2::VerifyAndPeelReverseBlock(
-            static_cast<uint64_t>(pindex->nHeight), /*parent_mtp=*/0,
-            block_outputs, block_spent_outpoints, spent_coins,
-            verified_parent_utxo, expected_parent_anchor, parent_utxo_root,
-            error)) {
-        return false;
-    }
-
-    // A root match proves the transferred bytes, not ABC script/UTXO validity.
-    // Reconstruct the parent view and run the same consensus transition as
-    // ordinary forward validation, including CTOR, sequence locks and sigchecks.
-    CCoinsView parent_base;
-    CCoinsViewCache parent_view(&parent_base);
-    try {
-        for (const auto &c : verified_parent_utxo.Coins()) {
-            if (c.creation_height >= current_height_u64 ||
-                c.creation_height > uint64_t(std::numeric_limits<int32_t>::max()) ||
-                c.creation_height == 0) {
-                error = "invalid historical coin creation height";
-                return false;
-            }
-            auto out = lotus::v2::LegacyTxOutput(c.output);
-            if (out.scriptPubKey.IsUnspendable()) {
-                error = "unspendable output in historical UTXO set";
-                return false;
-            }
-            parent_view.AddCoin(V2OutpointToOutPoint(c.outpoint),
-                ::Coin(std::move(out), int32_t(c.creation_height), c.coinbase), false);
-        }
-    } catch (const std::exception &e) {
-        error = e.what();
-        return false;
-    }
-    parent_view.SetBestBlock(pindex->pprev->GetBlockHash());
-    BlockValidationState full_state;
-    if (!ConnectBlock(block, full_state, pindex, parent_view,
-            BlockValidationOptions(m_chainman.GetConfig()), nullptr,
-            /*fJustCheck=*/true, /*force_script_checks=*/true)) {
-        error = "historical ConnectBlock failed: " + full_state.ToString();
-        return false;
-    }
-
-    // Construct the ordinary on-disk undo record from the authenticated prior
-    // coins and deterministic intra-block outputs after full validation.
-    CBlockUndo block_undo;
-    block_undo.vtxundo.resize(block.vtx.size() - 1);
-    for (size_t tx_i = 1; tx_i < block.vtx.size(); ++tx_i) {
-        for (const auto &in : block.vtx[tx_i]->vin) {
-            auto created = created_output_map.find(in.prevout);
-            if (created != created_output_map.end()) {
-                block_undo.vtxundo[tx_i - 1].vprevout.emplace_back(
-                    lotus::v2::LegacyTxOutput(created->second.output),
-                    pindex->nHeight, created->second.is_coinbase);
-            } else {
-                const auto *coin = verified_parent_utxo.Find(OutPointToV2Outpoint(in.prevout));
-                assert(coin);
-                block_undo.vtxundo[tx_i - 1].vprevout.emplace_back(
-                    lotus::v2::LegacyTxOutput(coin->output),
-                    int32_t(coin->creation_height), coin->coinbase);
-            }
-        }
-    }
-
-    if (!pindex->nStatus.hasData()) {
-        FlatFilePos block_pos = m_blockman.WriteBlock(block, pindex->nHeight);
-        if (block_pos.IsNull()) { error = "failed writing historical block"; return false; }
-        m_chainman.ReceivedBlockTransactions(block, pindex, block_pos);
-    }
-    if (!pindex->nStatus.hasUndo() && pindex->nHeight > 0) {
-        BlockValidationState undo_state;
-        if (!m_blockman.WriteBlockUndo(block_undo, undo_state, *pindex)) {
-            error = "failed writing historical undo: " + undo_state.ToString();
-            return false;
-        }
-    }
-
-    // Creation provenance is resolved by lower blocks. Do not claim complete
-    // script validation while any transferred input provenance remains pending.
-    if (pending_it != m_pending_undo_coin_checks.end()) m_pending_undo_coin_checks.erase(pending_it);
-    for (const auto &c : prior_spent_v2_coins) m_pending_undo_coin_checks[c.creation_height].push_back(c);
-    *m_reverse_peel_utxo = std::move(verified_parent_utxo);
-    m_reverse_checked_blocks.push_back(pindex);
-    m_blockman.m_dirty_blockindex.insert(pindex);
-
-    lotus::v2::SmtBatchUpdateParallel(m_reverse_peel_smt_root,
-                                      smt_erased_outputs,
-                                      prior_spent_v2_coins);
-    const uint64_t parent_height = static_cast<uint64_t>(pindex->pprev->nHeight);
-    const lotus::v2::MonetaryState parent_monetary =
-        ComputeMonetaryStateFromSmt(m_reverse_peel_smt_root, parent_height);
-    CacheFastSyncBlockState(pindex->pprev->GetBlockHash(),
-                            m_reverse_peel_smt_root, parent_monetary,
-                            parent_utxo_root, parent_height, false);
-
-    m_earliest_verified_block = pindex->pprev;
-    m_earliest_verified_height = pindex->pprev->nHeight;
-    ++m_peeled_blocks_count;
-    // Until input provenance reaches genesis, this remains a provisional
-    // reconstruction. Keep the authenticated pivot as the reorg floor.
-    if (m_earliest_verified_height == 0) UpdateFastSyncPivotBase(nullptr);
-
-    const int max_peel_blocks = GetFastSyncMaxPeelBlocks();
-    if (m_earliest_verified_height == 0) {
-        assert(m_pending_undo_coin_checks.empty());
-        for (auto *verified : m_reverse_checked_blocks) {
-            verified->RaiseValidity(BlockValidity::SCRIPTS);
-            m_blockman.m_dirty_blockindex.insert(verified);
-        }
-        m_reverse_checked_blocks.clear();
-        m_blockman.WriteBlockIndexDB();
-        CoinsDB().ClearFastSyncSnapshot();
-    }
-    if (m_earliest_verified_height == 0 ||
-        (max_peel_blocks > 0 && m_peeled_blocks_count >= max_peel_blocks)) {
-        m_fast_sync_active = false;
-        m_reverse_peel_utxo.reset();
-        m_reverse_peel_smt_root.reset();
-        // Retain unresolved provenance when stopping at a shallow horizon.
-    }
-
-    node::PublishChainTipSnapshot(m_chainman, m_mempool);
-    error.clear();
-    return true;
 }
