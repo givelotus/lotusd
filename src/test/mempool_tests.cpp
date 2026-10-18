@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <txmempool.h>
+#include <test/util/logging.h>
 #include <node/snapshot.h>
 
 #include <chainparams.h>
@@ -1172,6 +1173,31 @@ BOOST_AUTO_TEST_CASE(deferred_overlay_randomized_operations_match_full_rebuild) 
         BOOST_CHECK_EQUAL(actual.GetTxCount(), expected.GetTxCount());
         BOOST_CHECK(actual.GetSubtreeARoot() == expected.GetSubtreeARoot());
     }
+}
+
+BOOST_AUTO_TEST_CASE(contended_overlay_warm_reports_skip_and_reader_flushes) {
+    CTxMemPool &pool = *m_node.mempool;
+    LOCK2(cs_main, pool.cs);
+    TestMemPoolEntryHelper entry;
+    CMutableTransaction tx;
+    tx.vin.emplace_back(TxId{uint256{uint8_t(1)}}, 0);
+    tx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+    auto ref = MakeTransactionRef(tx);
+    pool.addUnchecked(entry.FromTx(ref));
+    bool logged = false;
+    const bool was_enabled = LogInstance().WillLogCategory(BCLog::MEMPOOL);
+    LogInstance().EnableCategory(BCLog::MEMPOOL);
+    {
+        DebugLogHelper capture("Merklix overlay warm deferred: mempool lock busy",
+            [&](const std::string *line) { if (line) logged = true; return false; });
+        std::thread warmer([&] {
+            pool.WarmMerklixOverlayIfNeeded(BlockHash(uint256{uint8_t(1)}), 1, 0);
+        });
+        warmer.join();
+    }
+    if (!was_enabled) LogInstance().DisableCategory(BCLog::MEMPOOL);
+    BOOST_CHECK(logged);
+    BOOST_CHECK_EQUAL(pool.GetMerklixOverlay().GetSpeculativeOverlay().GetTxCount(), 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
