@@ -4,6 +4,8 @@
 
 #include <dbwrapper.h>
 
+#include <leveldb/db.h>
+#include <mdbx.h>
 #include <uint256.h>
 
 #include <test/util/random.h>
@@ -12,6 +14,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <memory>
+
+struct CDBWrapperTestAccess {
+    static MDBX_env *Env(CDBWrapper &db) { return db.m_env; }
+};
 
 // Test if a string consists entirely of null characters
 static bool is_null_key(const std::vector<uint8_t> &key) {
@@ -25,6 +31,39 @@ static bool is_null_key(const std::vector<uint8_t> &key) {
 }
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(dbwrapper_durability_policy) {
+    const auto path = m_args.GetDataDirBase() / "bounded_sync";
+    {
+        CDBWrapper db({.path = path, .cache_bytes = 1 << 20,
+                       .memory_only = false, .wipe_data = true,
+                       .obfuscate = false});
+        MDBX_env *env = CDBWrapperTestAccess::Env(db);
+        unsigned flags = 0;
+        size_t sync_bytes = 0;
+        unsigned sync_period = 0;
+        BOOST_REQUIRE_EQUAL(mdbx_env_get_flags(env, &flags), MDBX_SUCCESS);
+        BOOST_CHECK_EQUAL(flags & MDBX_WRITEMAP, 0U);
+        BOOST_CHECK_NE(flags & MDBX_SAFE_NOSYNC, 0U);
+        BOOST_CHECK_NE(flags & MDBX_NOMETASYNC, 0U);
+        BOOST_REQUIRE_EQUAL(mdbx_env_get_syncbytes(env, &sync_bytes), MDBX_SUCCESS);
+        BOOST_REQUIRE_EQUAL(mdbx_env_get_syncperiod(env, &sync_period), MDBX_SUCCESS);
+        BOOST_CHECK_EQUAL(sync_bytes, 16U << 20);
+        BOOST_CHECK_EQUAL(sync_period, 1U << 16);
+        db.Write(uint8_t{'d'}, uint64_t{123});
+        db.Write(uint8_t{'s'}, uint64_t{456}, true);
+        MDBX_envinfo info{};
+        BOOST_REQUIRE_EQUAL(mdbx_env_info_ex(env, nullptr, &info, sizeof(info)),
+                            MDBX_SUCCESS);
+        BOOST_CHECK_EQUAL(info.mi_unsync_volume, 0U);
+    }
+    CDBWrapper reopened({.path = path, .cache_bytes = 1 << 20,
+                         .memory_only = false, .wipe_data = false,
+                         .obfuscate = false});
+    uint64_t value = 0;
+    BOOST_REQUIRE(reopened.Read(uint8_t{'d'}, value));
+    BOOST_CHECK_EQUAL(value, 123U);
+}
 
 BOOST_AUTO_TEST_CASE(dbwrapper) {
     // Perform tests both obfuscated and non-obfuscated.
@@ -474,4 +513,79 @@ BOOST_AUTO_TEST_CASE(unicodepath) {
     BOOST_CHECK(fs::exists(lockPath));
 }
 
+BOOST_AUTO_TEST_CASE(leveldb_to_mdbx_migration) {
+    fs::path mig_path = m_args.GetDataDirBase() / "dbwrapper_leveldb_migration";
+    fs::create_directories(mig_path);
+
+    const uint8_t k1{'a'};
+    const uint256 v1 = m_rng.rand256();
+    const uint8_t k2{'b'};
+    const uint256 v2 = m_rng.rand256();
+
+    {
+        leveldb::Options ldb_opts;
+        ldb_opts.create_if_missing = true;
+        leveldb::DB *ldb = nullptr;
+        leveldb::Status status =
+            leveldb::DB::Open(ldb_opts, fs::PathToString(mig_path), &ldb);
+        BOOST_REQUIRE(status.ok());
+
+        DataStream ssKey1{};
+        ssKey1.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
+        ssKey1 << k1;
+        DataStream ssVal1{};
+        ssVal1.reserve(DBWRAPPER_PREALLOC_VALUE_SIZE);
+        ssVal1 << v1;
+        BOOST_CHECK(
+            ldb->Put(leveldb::WriteOptions(),
+                     leveldb::Slice(
+                         reinterpret_cast<const char *>(ssKey1.data()),
+                         ssKey1.size()),
+                     leveldb::Slice(
+                         reinterpret_cast<const char *>(ssVal1.data()),
+                         ssVal1.size()))
+                .ok());
+
+        DataStream ssKey2{};
+        ssKey2.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
+        ssKey2 << k2;
+        DataStream ssVal2{};
+        ssVal2.reserve(DBWRAPPER_PREALLOC_VALUE_SIZE);
+        ssVal2 << v2;
+        BOOST_CHECK(
+            ldb->Put(leveldb::WriteOptions(),
+                     leveldb::Slice(
+                         reinterpret_cast<const char *>(ssKey2.data()),
+                         ssKey2.size()),
+                     leveldb::Slice(
+                         reinterpret_cast<const char *>(ssVal2.data()),
+                         ssVal2.size()))
+                .ok());
+
+        delete ldb;
+        BOOST_CHECK(fs::exists(mig_path / "CURRENT"));
+        BOOST_CHECK(!fs::exists(mig_path / "mdbx.dat"));
+    }
+
+    {
+        // Opening with CDBWrapper automatically migrates the LevelDB database
+        // in-place to libmdbx and archives legacy LevelDB files to leveldb.bak/.
+        CDBWrapper mdb({.path = mig_path,
+                        .cache_bytes = 1 << 20,
+                        .memory_only = false,
+                        .wipe_data = false,
+                        .obfuscate = false});
+        BOOST_CHECK(fs::exists(mig_path / "mdbx.dat"));
+        BOOST_CHECK(!fs::exists(mig_path / "CURRENT"));
+        BOOST_CHECK(fs::exists(mig_path / "leveldb.bak" / "CURRENT"));
+
+        uint256 got1, got2;
+        BOOST_CHECK(mdb.Read(k1, got1));
+        BOOST_CHECK_EQUAL(got1, v1);
+        BOOST_CHECK(mdb.Read(k2, got2));
+        BOOST_CHECK_EQUAL(got2, v2);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
+

@@ -112,6 +112,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <set>
 #include <string>
 #include <thread>
@@ -495,6 +496,7 @@ void SetupServerArgs(NodeContext &node) {
     // Hidden Options
     std::vector<std::string> hidden_args = {
         "-dbcrashratio",
+        "-testblockconnectpauseheight",
         "-forcecompactdb",
         "-maxaddrtosend",
         "-parkdeepreorg",
@@ -568,6 +570,22 @@ void SetupServerArgs(NodeContext &node) {
                   " not affected. (default: %u)",
                   DEFAULT_BLOCKSONLY),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-highbandwidthtx",
+        "Push shorttx batch frames immediately to V2 peers on mempool "
+        "ingestion without waiting for reconciliation rounds (default: 1)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-adaptiveblocksize",
+        "Scale max generated and excessive block size elastically with "
+        "EMA block size and mempool backlog up to 1 GB (default: 1)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-gbtwithoutpeers",
+        "Allow getblocktemplate to succeed without connected P2P peers in "
+        "non-regtest networks for standalone benchmark harnesses (default: 0)",
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-coinstatsindex",
                    strprintf("Maintain coinstats index used by the "
                              "gettxoutsetinfo RPC (default: %u)",
@@ -581,6 +599,12 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory",
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-dbbackend=<backend>",
+        "Database storage backend to use for node and Chronik indexes "
+        "('mdbx' only; 'leveldb' mode is disabled and automatically migrated, "
+        "default: 'mdbx')",
+        ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
         "-dbbatchsize",
         strprintf("Maximum database write batch size in bytes (default: %u)",
@@ -1935,6 +1959,14 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // specified in default section of config file, but not overridden
     // on the command line or in this chain's section of the config file.
     ChainType chain = args.GetChainType();
+    if (args.IsArgSet("-testblockconnectpauseheight") &&
+        (chain != ChainType::REGTEST ||
+         args.GetIntArg("-testblockconnectpauseheight", 0) <= 0 ||
+         args.GetIntArg("-testblockconnectpauseheight", 0) >
+             std::numeric_limits<int>::max())) {
+        return InitError(Untranslated(
+            "-testblockconnectpauseheight requires regtest and a positive block height."));
+    }
     bilingual_str errors;
     for (const auto &arg : args.GetUnsuitableSectionOnlyArgs()) {
         errors +=
@@ -1965,6 +1997,20 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         return InitError(
             strprintf(_("Specified blocks directory \"%s\" does not exist."),
                       args.GetArg("-blocksdir", "")));
+    }
+
+    const std::string db_backend = args.GetArg("-dbbackend", "mdbx");
+    if (db_backend == "leveldb") {
+        return InitError(
+            _("LevelDB storage mode (-dbbackend=leveldb) is disabled; Lotus "
+              "requires libmdbx (-dbbackend=mdbx) and automatically migrates "
+              "existing LevelDB databases on startup."));
+    }
+    if (db_backend != "mdbx" && db_backend != "lmdbx") {
+        return InitError(
+            strprintf(_("Unknown -dbbackend value '%s'. Only 'mdbx' is "
+                        "supported."),
+                      db_backend));
     }
 
     // parse and validate enabled filter types

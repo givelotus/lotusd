@@ -1,3 +1,4 @@
+#include <common/args.h>
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Copyright (c) 2017-2020 The Bitcoin developers
@@ -2342,6 +2343,19 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
              Ticks<MillisecondsDouble>(m_chainman.time_forks) /
                  m_chainman.num_blocks_total);
 
+    // Deterministic process-crash coverage pauses inside the real connection,
+    // rather than inferring an in-flight operation from asynchronous logs.
+    // Parameter interaction rejects this hidden option outside regtest.
+    if (!fJustCheck && params.GetChainType() == ChainType::REGTEST &&
+        gArgs.GetIntArg("-testblockconnectpauseheight", -1) == pindex->nHeight) {
+        LogInfo("Pausing block connection at test height %d\n",
+                pindex->nHeight);
+        while (!m_chainman.m_interrupt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        return state.Error("Block connection interrupted during test pause");
+    }
+
     std::vector<int> prevheights;
     Amount nFees = Amount::zero();
     int nInputs = 0;
@@ -2383,6 +2397,21 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         // with checkpointing off.
         return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                              "tx-duplicate", "tried to overwrite transaction");
+    }
+
+    if (block.vtx.size() > 8) {
+        std::vector<COutPoint> block_spent_outpoints;
+        block_spent_outpoints.reserve(block.vtx.size() * 2);
+        for (size_t i = 1; i < block.vtx.size(); ++i) {
+            for (const auto &in : block.vtx[i]->vin) {
+                if (!view.HaveCoinInCache(in.prevout)) {
+                    block_spent_outpoints.push_back(in.prevout);
+                }
+            }
+        }
+        if (!block_spent_outpoints.empty()) {
+            view.PrefetchOutpointsAsync(block_spent_outpoints);
+        }
     }
 
     size_t txIndex = 0;
@@ -2702,13 +2731,11 @@ bool Chainstate::FlushStateToDisk(BlockValidationState &state,
 
                     // First make sure all block and undo data is flushed to
                     // disk.
-                    // TODO: Handle return error, or add detailed comment why
-                    // it is safe to not return an error upon failure.
                     if (!m_blockman.FlushChainstateBlockFile(
                             m_chain.Height())) {
-                        LogPrintLevel(BCLog::VALIDATION, BCLog::Level::Warning,
-                                      "%s: Failed to flush block file.\n",
-                                      __func__);
+                        return FatalError(m_chainman.GetNotifications(), state,
+                                          "Failed to flush block file",
+                                          _("Failed to flush block file"));
                     }
                 }
                 // Then update all block file information (which may refer to
