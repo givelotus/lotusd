@@ -61,7 +61,83 @@ def wordreverse(in_buf):
     return b"".join(out_words)
 
 
+_BLAKE3_IV = [
+    0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+    0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
+]
+_BLAKE3_MSG_PERM = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
+
+
+def _rotr32(x, n):
+    return ((x >> n) | ((x << (32 - n)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+
+
+def _blake3_g(state, a, b, c, d, mx, my):
+    state[a] = (state[a] + state[b] + mx) & 0xFFFFFFFF
+    state[d] = _rotr32(state[d] ^ state[a], 16)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = _rotr32(state[b] ^ state[c], 12)
+    state[a] = (state[a] + state[b] + my) & 0xFFFFFFFF
+    state[d] = _rotr32(state[d] ^ state[a], 8)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = _rotr32(state[b] ^ state[c], 7)
+
+
+def _blake3_compress(cv, block_words, counter, block_len, flags):
+    state = [
+        cv[0], cv[1], cv[2], cv[3],
+        cv[4], cv[5], cv[6], cv[7],
+        _BLAKE3_IV[0], _BLAKE3_IV[1], _BLAKE3_IV[2], _BLAKE3_IV[3],
+        counter & 0xFFFFFFFF, (counter >> 32) & 0xFFFFFFFF, block_len, flags,
+    ]
+    m = list(block_words)
+    for r in range(7):
+        _blake3_g(state, 0, 4, 8, 12, m[0], m[1])
+        _blake3_g(state, 1, 5, 9, 13, m[2], m[3])
+        _blake3_g(state, 2, 6, 10, 14, m[4], m[5])
+        _blake3_g(state, 3, 7, 11, 15, m[6], m[7])
+        _blake3_g(state, 0, 5, 10, 15, m[8], m[9])
+        _blake3_g(state, 1, 6, 11, 12, m[10], m[11])
+        _blake3_g(state, 2, 7, 8, 13, m[12], m[13])
+        _blake3_g(state, 3, 4, 9, 14, m[14], m[15])
+        if r < 6:
+            m = [m[i] for i in _BLAKE3_MSG_PERM]
+    for i in range(8):
+        state[i] ^= state[i + 8]
+        state[i + 8] ^= cv[i]
+    return state[:8]
+
+
+def _blake3_single_chunk(data):
+    blk_len = len(data)
+    padded = data + b"\x00" * (64 - (blk_len % 64 if blk_len % 64 else 64))
+    num_blocks = max(1, (blk_len + 63) // 64)
+    cv = list(_BLAKE3_IV)
+    for b in range(num_blocks):
+        blk = data[b * 64 : (b + 1) * 64]
+        blen = len(blk)
+        pad = blk + b"\x00" * (64 - blen)
+        words = [int.from_bytes(pad[i * 4 : (i + 1) * 4], "little") for i in range(16)]
+        flags = (1 if b == 0 else 0) | (2 if b == num_blocks - 1 else 0) | (8 if b == num_blocks - 1 else 0)
+        cv = _blake3_compress(cv, words, 0, blen, flags)
+    return b"".join(w.to_bytes(4, "little") for w in cv)
+
+
+def lotus_v2_tagged_hash(tag, payload):
+    return _blake3_single_chunk(tag.encode("ascii") + b"\x00" + payload)
+
+
 def calc_hdr_hash(blk_hdr):
+    if len(blk_hdr) == 134:
+        chain_id = b"\x00" * 32
+        body_hash = lotus_v2_tagged_hash(
+            "Lotus/v2/header/body", chain_id + blk_hdr[50:134]
+        )
+        work_hash = lotus_v2_tagged_hash(
+            "Lotus/v2/header/work", blk_hdr[32:50] + body_hash
+        )
+        return lotus_v2_tagged_hash("Lotus/v2/blockid", blk_hdr[0:32] + work_hash)
+
     hash1 = hashlib.sha256()
     hash1.update(blk_hdr)
     hash1_o = hash1.digest()
@@ -82,8 +158,11 @@ def calc_hash_str(blk_hdr):
 
 
 def get_blk_dt(blk_hdr):
-    members = struct.unpack("<I", blk_hdr[68 : 68 + 4])
-    nTime = members[0]
+    if len(blk_hdr) == 134:
+        nTime = int.from_bytes(blk_hdr[36:42], "little")
+    else:
+        members = struct.unpack("<I", blk_hdr[68 : 68 + 4])
+        nTime = members[0]
     dt = datetime.datetime.fromtimestamp(nTime)
     dt_ym = datetime.datetime(dt.year, dt.month, 1)
     return (dt_ym, nTime)
@@ -246,8 +325,8 @@ class BlockDataCopier:
                 return
             inLenLE = inhdr[4:]
             su = struct.unpack("<I", inLenLE)
-            inLen = su[0] - 80  # length without header
-            blk_hdr = self.inF.read(80)
+            inLen = su[0] - 134  # length without header
+            blk_hdr = self.inF.read(134)
             inExtent = BlockExtent(self.inFn, self.inF.tell(), inhdr, blk_hdr, inLen)
 
             self.hash_str = calc_hash_str(blk_hdr)

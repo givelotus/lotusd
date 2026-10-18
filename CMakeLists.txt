@@ -6,10 +6,10 @@ set(CMAKE_USER_MAKE_RULES_OVERRIDE
 	"${CMAKE_SOURCE_DIR}/cmake/modules/OverrideInitFlags.cmake"
 )
 
-project(bitcoin-abc
+project(lotus
 	VERSION 0.34.1
-	DESCRIPTION "Bitcoin ABC is a full node implementation of the eCash protocol."
-	HOMEPAGE_URL "https://www.bitcoinabc.org"
+	DESCRIPTION "Lotus is a full node implementation of the Lotus protocol."
+	HOMEPAGE_URL "https://github.com/givelotus/lotus"
 )
 
 add_custom_target(print-version
@@ -23,8 +23,8 @@ add_custom_target(print-project-name
 )
 
 # Package information
-set(PACKAGE_NAME "Bitcoin ABC")
-set(PACKAGE_BUGREPORT "https://github.com/Bitcoin-ABC/bitcoin-abc/issues")
+set(PACKAGE_NAME "Lotus")
+set(PACKAGE_BUGREPORT "https://github.com/givelotus/lotus/issues")
 
 # Copyright
 set(COPYRIGHT_YEAR 2026)
@@ -155,6 +155,7 @@ if(BUILD_CHRONIK AND BUILD_CHRONIK_PLUGINS AND CHRONIK_IMPLEMENTATION STREQUAL "
 	message(FATAL_ERROR "BUILD_CHRONIK_PLUGINS requires CHRONIK_IMPLEMENTATION=rust: the native Chronik does not support Python plugins")
 endif()
 
+enable_testing()
 add_subdirectory(src)
 if(BUILD_CHRONIK)
 	add_subdirectory(chronik)
