@@ -104,6 +104,10 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 	tx_out.cpp
 	txrequest.cpp
 	util.cpp
+	v2_fast_sync.cpp
+	v2_merklix_sync.cpp
+	v2_sealedheader.cpp
+	v2_vm_and_tx.cpp
 	validation_load_mempool.cpp
 	websocket_codec.cpp
 )
@@ -142,6 +146,7 @@ target_link_libraries(fuzz bitcoinconsensus)
 endif()
 
 add_dependencies(bitcoin-fuzzers fuzz)
+add_custom_target(test-fuzz DEPENDS fuzz)
 
 set_property(GLOBAL APPEND PROPERTY FUZZ_TARGETS fuzz)
 
