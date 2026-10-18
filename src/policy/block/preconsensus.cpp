@@ -18,7 +18,8 @@ bool PreConsensusPolicy::operator()(BlockPolicyValidationState &state) {
     if (!m_blockIndex.pprev) {
         return true;
     }
-    if (!m_avalanche.isPreconsensusActivated(m_blockIndex.pprev)) {
+    if (!m_avalanche.isQuorumEstablished() ||
+        !m_avalanche.isPreconsensusActivated(m_blockIndex.pprev)) {
         return true;
     }
 
@@ -32,14 +33,13 @@ bool PreConsensusPolicy::operator()(BlockPolicyValidationState &state) {
                                  "finalized-batch-missing-coinbase",
                                  "Block is missing coinbase transaction");
         }
-        // Match the complete non-coinbase set of any finalized batch for
-        // this parent. Newer/larger batches do not invalidate an older match.
-        // The eCash header keeps its positional SHA256d transaction Merkle root.
-        const std::vector<CTransactionRef> nonCoinbaseTxs(m_block.vtx.begin() + 1,
-                                                         m_block.vtx.end());
-        uint256 actualSubtree;
+        // Match any finalized batch for this parent, independent of the
+        // latest batch's size. Native headers commit coinbase plus SubtreeA.
+        uint256 blockMerkleRoot;
         try {
-            actualSubtree = avalanche::ComputeV2SubtreeARoot(nonCoinbaseTxs);
+            blockMerkleRoot = m_block.hashMerkleRoot.IsNull()
+                                  ? BlockMerkleRoot(m_block)
+                                  : m_block.hashMerkleRoot;
         } catch (const std::invalid_argument &) {
             return state.Invalid(BlockPolicyValidationResult::POLICY_VIOLATION,
                                  "finalized-batch-mismatch",
@@ -47,7 +47,9 @@ bool PreConsensusPolicy::operator()(BlockPolicyValidationState &state) {
         }
         bool matchedFinalizedBatch = false;
         for (const auto &batch : finalizedBatches) {
-            if (actualSubtree == batch.subtree_a_root) {
+            const uint256 expectedRoot = avalanche::ComputeV2TxRootFromSubtreeA(
+                *m_block.vtx[0], batch.subtree_a_root);
+            if (expectedRoot == blockMerkleRoot) {
                 matchedFinalizedBatch = true;
                 break;
             }

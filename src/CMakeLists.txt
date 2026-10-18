@@ -1126,3 +1126,6 @@ target_sources(server PRIVATE net/v2_protocol_handler.cpp)
 target_sources(server PRIVATE net/txrelay_index.cpp)
 
 target_sources(server PRIVATE avalanche/preconsensus.cpp)
+
+# Native chainstate/transport callers require the native validation implementation.
+target_link_libraries(server lotus_v2_validation)

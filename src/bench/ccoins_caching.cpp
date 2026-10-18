@@ -4,13 +4,10 @@
 
 #include <bench/bench.h>
 #include <coins.h>
-#include <dbwrapper.h>
 #include <policy/policy.h>
-#include <random.h>
 #include <script/signingprovider.h>
 #include <test/util/transaction_utils.h>
 
-#include <cassert>
 #include <vector>
 
 // Microbenchmark for simple accesses to a CCoinsViewCache database. Note from
@@ -52,36 +49,4 @@ static void CCoinsCaching(benchmark::Bench &bench) {
     ECC_Stop();
 }
 
-static void CDBWrapperMdbxRead1000(benchmark::Bench &bench) {
-    FastRandomContext rng{/*fDeterministic=*/true};
-    DBParams params{};
-    params.path = fs::path("bench_mdbx");
-    params.cache_bytes = 16 << 20;
-    params.memory_only = true;
-    CDBWrapper db(params);
-
-    std::vector<uint256> keys(1000);
-    CDBBatch batch(db);
-    for (size_t i = 0; i < keys.size(); ++i) {
-        keys[i] = rng.rand256();
-        batch.Write(keys[i], uint64_t(i + 1));
-    }
-    db.WriteBatch(batch);
-
-    bench.name("CDBWrapperMdbxRead1000")
-        .batch(keys.size())
-        .unit("op")
-        .run([&] {
-            uint64_t sum = 0;
-            for (const uint256 &k : keys) {
-                uint64_t v = 0;
-                const bool ok = db.Read(k, v);
-                assert(ok);
-                sum += v;
-            }
-            ankerl::nanobench::doNotOptimizeAway(sum);
-        });
-}
-
 BENCHMARK(CCoinsCaching);
-BENCHMARK(CDBWrapperMdbxRead1000);

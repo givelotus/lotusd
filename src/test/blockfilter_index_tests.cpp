@@ -89,7 +89,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
             .CreateNewBlock(scriptPubKey);
     CBlock &block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
-    block.SetBlockTime(prev->GetBlockTime() + 1);
+    block.SetBlockTime(prev->nTime + 1);
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);
@@ -97,11 +97,19 @@ CBlock BuildChainTestingSetup::CreateBlock(
         block.vtx.push_back(MakeTransactionRef(tx));
     }
     createCoinbaseAndMerkleRoot(&block, prev, config.GetMaxBlockSize());
+    block.nHeaderVersion = 2;
+    block.nHeight = uint64_t(prev->nHeight + 1);
+    block.hashStateRoot = ComputeV2BlockStateRoot(
+        block, block.hashPrevBlock, block.nHeight,
+        uint64_t(prev->GetMedianTimePast()), false);
+    block.SetSize(::GetSerializeSize(block));
 
     while (!CheckProofOfWork(block.GetHash(), block.nBits,
                              config.GetChainParams().GetConsensus())) {
         ++block.nNonce;
     }
+    RecordV2BlockState(block, block.GetHash(), block.hashPrevBlock,
+                       block.nHeight, uint64_t(prev->GetMedianTimePast()));
 
     return block;
 }
