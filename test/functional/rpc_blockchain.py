@@ -478,7 +478,7 @@ class BlockchainTest(BitcoinTestFramework):
         b1 = solve_and_send_block(
             int(fork_hash, 16), fork_height + 1, fork_block["time"] + 1
         )
-        b2 = solve_and_send_block(b1.hash_int, fork_height + 1, b1.nTime + 1)
+        b2 = solve_and_send_block(b1.hash_int, fork_height + 2, b1.nTime + 1)
 
         node.invalidateblock(b2.hash_hex)
 
@@ -509,7 +509,7 @@ class BlockchainTest(BitcoinTestFramework):
         assert_equal(blockinfo["height"], blockheaderinfo["height"])
         assert_equal(blockinfo["versionHex"], blockheaderinfo["versionHex"])
         assert_equal(blockinfo["version"], blockheaderinfo["version"])
-        assert_equal(blockinfo["size"], 181)
+        assert_equal(blockinfo["size"], len(bytes.fromhex(node.getblock(blockhash, 0))))
         assert_equal(blockinfo["merkleroot"], blockheaderinfo["merkleroot"])
         # Verify transaction data by check the hex values
         for tx in blockinfo["tx"]:

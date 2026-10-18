@@ -27,7 +27,7 @@ class ChronikTokenSlpMintVault(BitcoinTestFramework):
     num_nodes = 1
     extra_args = [["-chronik"]]
 
-    requires = {"chronik"}
+    requires = {"chronik", "chronik_token_index"}
 
     def run_test(self):
         from test_framework.chronik.client import pb

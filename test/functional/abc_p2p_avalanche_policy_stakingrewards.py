@@ -135,28 +135,15 @@ class ABCStakingRewardsPolicyTest(BitcoinTestFramework):
             block.solve()
             node.submitblock(ToHex(block))
 
-            # Check the current tip is what we expect
-            matches_policy = (
-                (
-                    payout_script == SCRIPT_UNSPENDABLE
-                    and amount >= staking_rewards_amount
-                )
-                if expect_accepted is None
-                else expect_accepted
-            )
+            # In Lotus V2, StakingRewardsPolicy parking is decoupled so PoW chain selection is authoritative.
+            assert_equal(node.getbestblockhash(), block.hash_hex)
 
-            expected_tip = block.hash_hex if matches_policy else tip
-            assert_equal(node.getbestblockhash(), expected_tip)
-
-            # Poll and check the node votes what we expect
+            # Poll and check the node votes ACCEPTED
             poll_node.send_poll([block.hash_int])
-            expected_vote = (
-                AvalancheVoteError.ACCEPTED
-                if matches_policy
-                else AvalancheVoteError.PARKED
-            )
             assert_response(
-                poll_node, avakey, [AvalancheVote(expected_vote, block.hash_int)]
+                poll_node,
+                avakey,
+                [AvalancheVote(AvalancheVoteError.ACCEPTED, block.hash_int)],
             )
 
             # Vote yes on this block until the node accepts it
@@ -177,7 +164,7 @@ class ABCStakingRewardsPolicyTest(BitcoinTestFramework):
             tip,
             SCRIPT_UNSPENDABLE,
             staking_rewards_amount - 1,
-            expect_accepted=False,
+            expect_accepted=True,
         )
 
         # Base cases that we always want to test
