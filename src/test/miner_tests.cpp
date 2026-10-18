@@ -955,6 +955,36 @@ BOOST_FIXTURE_TEST_CASE(template_root_is_checked_from_selected_transactions, Tes
     BOOST_CHECK(!block_template->block.m_checked_merkle_root);
 }
 
+// A coinbase output must be the same after a wire round trip as in the
+// miner's memory: legacy inputs spending it are verified against its
+// scriptPubKey, so a script known only to the miner splits the miner from
+// every peer.
+BOOST_FIXTURE_TEST_CASE(coinbase_outputs_survive_wire_round_trip,
+                        TestChain100Setup) {
+    node::BlockAssembler::Options options;
+    options.test_block_validity = false;
+    const CScript payout =
+        GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+    const auto block_template = node::BlockAssembler(
+        node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
+        m_node.mempool.get(), options).CreateNewBlock(payout);
+    BOOST_REQUIRE(block_template);
+    const CTransaction &coinbase = *block_template->block.vtx[0];
+
+    DataStream ss{};
+    ss << coinbase;
+    const CTransaction decoded(deserialize, ss);
+    BOOST_CHECK_EQUAL(decoded.GetId(), coinbase.GetId());
+    BOOST_CHECK_EQUAL(decoded.GetHash(), coinbase.GetHash());
+    BOOST_REQUIRE_EQUAL(decoded.vout.size(), coinbase.vout.size());
+    BOOST_CHECK(coinbase.vout[0].scriptPubKey == payout);
+    for (size_t i = 0; i < coinbase.vout.size(); ++i) {
+        BOOST_CHECK(decoded.vout[i].scriptPubKey ==
+                    coinbase.vout[i].scriptPubKey);
+        BOOST_CHECK(decoded.vout[i] == coinbase.vout[i]);
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_own_root, AvalancheTestChain100Setup) {
     CTxMemPool &pool = *m_node.mempool;
     LOCK2(cs_main, pool.cs);
@@ -994,6 +1024,135 @@ BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_o
     BOOST_REQUIRE(block_template);
     BOOST_CHECK_EQUAL(block_template->block.vtx.size(), 3U);
     BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
+}
+
+BOOST_AUTO_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay) {
+    LOCK2(cs_main, m_node.mempool->cs);
+    m_node.mempool->clear(/*include_finalized_txs=*/true);
+    TestMemPoolEntryHelper entry;
+
+    CBlockIndex *tip = m_node.chainman->ActiveTip();
+    BOOST_REQUIRE(tip != nullptr);
+
+    // Create a funding transaction with 800 spendable outputs in CoinsTip()
+    // and in the tip's V2 block state snapshot.
+    CMutableTransaction fundTx;
+    fundTx.nVersion = 2;
+    fundTx.vin.resize(1);
+    fundTx.vin[0].prevout = COutPoint(TxId{FastRandomContext().rand256()}, 0);
+    fundTx.vin[0].scriptSig = CScript() << int64_t(1) << OP_TRUE;
+    fundTx.vout.resize(800);
+    for (size_t i = 0; i < 800; ++i) {
+        fundTx.vout[i].nValue = 100000 * SATOSHI;
+        fundTx.vout[i].scriptPubKey = CScript() << OP_TRUE;
+    }
+    CTransactionRef fundRef = MakeTransactionRef(std::move(fundTx));
+    AddCoins(m_node.chainman->ActiveChainstate().CoinsTip(), *fundRef, 1);
+
+    CBlock syntheticTipBlock;
+    syntheticTipBlock.nHeaderVersion = lotus::v2::kHeaderVersion;
+    syntheticTipBlock.nHeight = tip->nHeight;
+    syntheticTipBlock.nBits = tip->nBits;
+    syntheticTipBlock.SetBlockTime(tip->GetBlockTime());
+    CMutableTransaction dummyCb;
+    dummyCb.nVersion = 2;
+    dummyCb.vin.resize(1);
+    dummyCb.vin[0].nFlags = 2;
+    dummyCb.vin[0].scriptSig = CScript() << int64_t(tip->nHeight) << OP_0;
+    dummyCb.vout.emplace_back(200 * SATOSHI, CScript() << OP_TRUE);
+    syntheticTipBlock.vtx.push_back(MakeTransactionRef(std::move(dummyCb)));
+    syntheticTipBlock.vtx.push_back(fundRef);
+    RecordV2BlockState(syntheticTipBlock, tip->GetBlockHash(), BlockHash{},
+                       uint64_t(tip->nHeight), 0);
+
+    const uint64_t nextHeight = uint64_t(tip->nHeight + 1);
+    const uint64_t nextMtp = uint64_t(tip->GetMedianTimePast());
+    m_node.mempool->ConnectBlockReset(tip->GetBlockHash(), nextHeight, nextMtp);
+
+    // Add 800 root transactions + 200 child transactions = 1,000 mempool txs
+    std::vector<CTransactionRef> rootTxs;
+    rootTxs.reserve(800);
+    for (uint32_t i = 0; i < 800; ++i) {
+        CMutableTransaction tx;
+        tx.nVersion = 2;
+        tx.vin.resize(1);
+        tx.vin[0].prevout = COutPoint(fundRef->GetId(), i);
+        tx.vin[0].scriptSig =
+            CScript() << int64_t(i + 1) << std::vector<uint8_t>(48, 0x42);
+        tx.vout.emplace_back(90000 * SATOSHI, CScript() << OP_TRUE);
+        CTransactionRef txRef = MakeTransactionRef(std::move(tx));
+        AddUnchecked(entry.Fee(10000 * SATOSHI).FromTx(txRef));
+        rootTxs.push_back(txRef);
+    }
+    for (uint32_t i = 0; i < 200; ++i) {
+        CMutableTransaction child;
+        child.nVersion = 2;
+        child.vin.resize(1);
+        child.vin[0].prevout = COutPoint(rootTxs[i]->GetId(), 0);
+        child.vin[0].scriptSig =
+            CScript() << int64_t(1000 + i) << std::vector<uint8_t>(48, 0x43);
+        child.vout.emplace_back(80000 * SATOSHI, CScript() << OP_TRUE);
+        CTransactionRef childRef = MakeTransactionRef(std::move(child));
+        AddUnchecked(entry.Fee(10000 * SATOSHI).FromTx(childRef));
+    }
+
+    BOOST_REQUIRE_EQUAL(m_node.mempool->size(), 1000U);
+    BOOST_REQUIRE_EQUAL(
+        m_node.mempool->GetMerklixOverlay().GetSpeculativeOverlay().GetTxCount(),
+        1000U);
+
+    BlockFitter::Options fitterOpts;
+    fitterOpts.blockMinFeeRate = blockMinFeeRate;
+    BlockAssembler::Options asmOpts;
+    asmOpts.test_block_validity = false;
+    asmOpts.add_finalized_txs = false;
+
+    const auto t0 = SteadyClock::now();
+    auto pblocktemplate =
+        BlockAssembler{BlockFitter(fitterOpts),
+                       m_node.chainman->ActiveChainstate(),
+                       m_node.mempool.get(), asmOpts}
+            .CreateNewBlock(CScript() << OP_TRUE);
+    const auto t1 = SteadyClock::now();
+    const double create_new_block_ms = Ticks<MillisecondsDouble>(t1 - t0);
+
+    BOOST_REQUIRE(pblocktemplate != nullptr);
+    const CBlock &block = pblocktemplate->block;
+    BOOST_REQUIRE_EQUAL(block.vtx.size(), 1001U);
+
+    // Verify strict CTOR ordering on block.vtx[1..1000]
+    for (size_t i = 2; i < block.vtx.size(); ++i) {
+        BOOST_CHECK(block.vtx[i - 1]->GetId() < block.vtx[i]->GetId());
+    }
+
+    // Time O(1) overlay root extraction vs O(N log N) from-scratch computation
+    const auto &spec =
+        m_node.mempool->GetMerklixOverlay().GetSpeculativeOverlay();
+    const auto t_ov0 = SteadyClock::now();
+    const uint256 ov_merkle =
+        ComputeV2TxRootFromSubtreeA(*block.vtx[0], spec.GetSubtreeARoot());
+    const uint256 ov_state = ComputeV2StateRootFromOverlay(
+        *block.vtx[0], spec, block.nBits, nextHeight, nextMtp, false);
+    const auto t_ov1 = SteadyClock::now();
+    const double overlay_roots_ms = Ticks<MillisecondsDouble>(t_ov1 - t_ov0);
+
+    const auto t_full0 = SteadyClock::now();
+    const uint256 expected_merkle = BlockMerkleRoot(block);
+    const uint256 expected_state = ComputeV2BlockStateRoot(
+        block, tip->GetBlockHash(), nextHeight, nextMtp, false);
+    const auto t_full1 = SteadyClock::now();
+    const double full_roots_ms = Ticks<MillisecondsDouble>(t_full1 - t_full0);
+
+    BOOST_CHECK_EQUAL(block.hashMerkleRoot, expected_merkle);
+    BOOST_CHECK_EQUAL(block.hashStateRoot, expected_state);
+    BOOST_CHECK_EQUAL(ov_merkle, expected_merkle);
+    BOOST_CHECK_EQUAL(ov_state, expected_state);
+
+    BOOST_TEST_MESSAGE(strprintf(
+        "1000-tx CreateNewBlock: %.3f ms | O(1) Overlay Roots: %.4f ms vs "
+        "From-Scratch Roots: %.3f ms (%.1fx speedup)",
+        create_new_block_ms, overlay_roots_ms, full_roots_ms,
+        overlay_roots_ms > 0.0 ? (full_roots_ms / overlay_roots_ms) : 0.0));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
