@@ -1,6 +1,7 @@
 // Copyright (c) 2026 The Lotus developers
 #include "disk_state.h"
 #include "incremental_utxo.h"
+#include "mempool_overlay.h"
 
 #include <crc32c/crc32c.h>
 #include <leveldb/db.h>
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -813,6 +815,103 @@ void CorruptionCases(const std::string &directory) {
     Check(!DiskStateStore::Open(directory, options, Meta(0), store, error) && error.code == DiskStateErrorCode::Corruption,
           "reopen detects missing authenticated root");
 }
+void FinalizedOverlayPreparationCases(const std::string &directory) {
+    // Exercise both sides of the preparation threshold, uneven worker chunks,
+    // and both commit overloads against the original serial mutation API.
+    for (const size_t count : {size_t{31}, size_t{32}, size_t{65}}) {
+        for (const bool connected : {false, true}) {
+            const std::string home = directory + "/" + std::to_string(count) +
+                                     (connected ? "-connected" : "-opaque");
+            DiskStateStore parallel, serial;
+            DiskStateError error;
+            const DiskStateOptions options = Options();
+            Ok(DiskStateStore::Open(home + "/parallel", options, Meta(0), parallel, error), error, "parallel open");
+            Ok(DiskStateStore::Open(home + "/serial", options, Meta(0), serial, error), error, "serial open");
+            for (DiskStateStore *store : {&parallel, &serial}) {
+                DiskStateTransaction tx;
+                Ok(store->Begin(tx, error), error, "prepare seed transaction");
+                for (uint32_t i = 1; i <= 40; ++i)
+                    Ok(tx.Insert(MakeCoin(i), error), error, "prepare seed coin");
+                Ok(tx.Commit(Meta(1), error), error, "prepare seed commit");
+            }
+            MempoolOverlayLayer overlay;
+            std::vector<Outpoint> spent;
+            std::vector<Coin> inserted, coinbase;
+            for (uint32_t i = 1; i <= 8; ++i) {
+                spent.push_back(MakeCoin(i).outpoint);
+                inserted.push_back(MakeCoin(1000 + i));
+            }
+            for (size_t i = 0; i < count - 16; ++i)
+                coinbase.push_back(MakeCoin(2000 + i));
+            Check(overlay.AddTransaction(Id(9000), Id(9001), 1, spent, inserted), "prepare overlay transaction");
+            Header header;
+            header.prev_id = Meta(1).tip;
+            header.version = kHeaderVersion;
+            header.height = 2;
+            DiskStateMetadata next = Meta(2);
+            if (connected) {
+                std::array<uint8_t, HEADER_SIZE> bytes;
+                Check(SerializeHeader(header, bytes) && BlockId(options.identity, header, next.tip), "prepare connected header");
+                next.header.assign(bytes.begin(), bytes.end());
+            }
+            DiskStateTransaction reference;
+            Ok(serial.Begin(reference, error), error, "serial begin");
+            for (const auto &op : overlay.GetNetErasedOutpoints())
+                Ok(reference.Erase(op, error), error, "serial erase");
+            for (const auto &coin : overlay.GetNetInsertedCoins())
+                Ok(reference.Insert(coin, error), error, "serial insert");
+            for (const auto &coin : coinbase)
+                Ok(reference.Insert(coin, error), error, "serial coinbase");
+            if (connected) {
+                Ok(reference.Commit(next, header, error), error, "serial connected commit");
+                Ok(parallel.CommitFinalizedOverlay(overlay, coinbase, next, header, error), error, "parallel connected commit");
+            } else {
+                Ok(reference.Commit(next, error), error, "serial opaque commit");
+                Ok(parallel.CommitFinalizedOverlay(overlay, coinbase, next, error), error, "parallel opaque commit");
+            }
+            reference.Abort();
+            Check(parallel.Root() == serial.Root() && parallel.Metadata() == serial.Metadata(), "prepared root and metadata equal serial");
+            const Hash root = parallel.Root();
+            parallel = {}; serial = {};
+            std::map<std::string, std::string> actual, expected;
+            std::string raw_error;
+            Check(RawDiskStateSnapshot(home + "/parallel", actual, &raw_error), "parallel logical snapshot");
+            Check(RawDiskStateSnapshot(home + "/serial", expected, &raw_error), "serial logical snapshot");
+            Check(actual == expected, "exact prepared coin, packed node, metadata and undo bytes equal serial");
+            Ok(DiskStateStore::Open(home + "/parallel", options, Meta(0), parallel, error), error, "prepared reopen");
+            Check(parallel.Root() == root && parallel.Metadata() == next, "prepared reopen stable");
+
+            Coin invalid = MakeCoin(8000);
+            invalid.output.flags = 2;
+            invalid.output.paths.clear();
+            std::vector<Coin> failing(32, invalid);
+            MempoolOverlayLayer missing;
+            Check(missing.AddTransaction(Id(9010), Id(9011), 1, {MakeCoin(9999).outpoint}, {}), "missing overlay");
+            Check(!parallel.CommitFinalizedOverlay(missing, failing, Meta(3), error) && error.code == DiskStateErrorCode::Missing,
+                  "earlier missing erase precedes parallel invalid leaf");
+            MempoolOverlayLayer empty;
+            Check(!parallel.CommitFinalizedOverlay(empty, failing, Meta(3), error) && error.code == DiskStateErrorCode::InvalidCoin,
+                  "parallel invalid leaf is reported at its serial position");
+            failing.front() = coinbase.front();
+            Check(!parallel.CommitFinalizedOverlay(empty, failing, Meta(3), error) && error.code == DiskStateErrorCode::Duplicate,
+                  "earlier duplicate insert precedes parallel invalid leaf");
+            Check(parallel.Root() == root && parallel.Metadata() == next, "failed prepared staging is atomic");
+
+            // The preparation path must still authenticate the canonical coin
+            // row against its stored tree leaf before erasing it.
+            Coin changed = MakeCoin(10);
+            ++changed.output.value;
+            parallel = {};
+            RawChange(home + "/parallel", Key(changed.outpoint), Encoded(changed));
+            Ok(DiskStateStore::Open(home + "/parallel", options, Meta(0), parallel, error), error, "prepared corrupt row reopen");
+            MempoolOverlayLayer corrupt;
+            Check(corrupt.AddTransaction(Id(9020), Id(9021), 1, {changed.outpoint}, {}), "corrupt row overlay");
+            Check(!parallel.CommitFinalizedOverlay(corrupt, failing, Meta(3), error) && error.code == DiskStateErrorCode::Corruption,
+                  "prepared erase retains coin/tree authentication before invalid leaf");
+            Check(parallel.Root() == root && parallel.Metadata() == next, "corrupt prepared staging is atomic");
+        }
+    }
+}
 } // namespace
 int main(int argc, char **argv) {
 #ifndef _WIN32
@@ -833,6 +932,12 @@ int main(int argc, char **argv) {
         return 0;
     }
 #endif
+    FinalizedOverlayPreparationCases(path + "/finalized-overlay");
+    if (argc == 2 && std::string(argv[1]) == "--overlay-only") {
+        std::filesystem::remove_all(path);
+        std::cout << "V2 finalized overlay preparation cases passed\n";
+        return 0;
+    }
     DurabilityPolicyCases(path + "/durability");
 #ifndef _WIN32
     CrashRecoveryCases(path + "/crash", std::filesystem::absolute(argv[0]).string());
