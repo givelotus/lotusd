@@ -12,3 +12,5 @@ target_compile_options(lotus_v2_mdbx PRIVATE -O3 -Wno-unused-parameter -Wno-sign
 add_library(lotus_v2_header STATIC tagged_hash.cpp)
 target_include_directories(lotus_v2_header PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" ..)
 target_link_libraries(lotus_v2_header PUBLIC crypto)
+
+target_sources(lotus_v2_header PRIVATE set_reconciliation.cpp)
