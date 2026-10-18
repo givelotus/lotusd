@@ -1,17 +1,17 @@
 // Copyright (c) 2026 The Lotus developers
-// Tachyon SnapSync: Fast UTXO Shard Sync protocol, Avalanche state-anchor
-// verification, and bijective reverse block peeling without header changes.
+// Fast UTXO Shard Sync protocol, cryptographic verification, and pivot eligibility.
 #ifndef LOTUS_V2_FAST_SYNC_H
 #define LOTUS_V2_FAST_SYNC_H
 
-#include "commitment.h"
-#include "mempool_overlay.h"
+#include "block_transition.h"
+#include "disk_state.h"
+#include "header.h"
+#include "monetary.h"
 #include "sparse_state.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -66,7 +66,7 @@ struct UtxoShardMessage {
     std::vector<Coin> coins;
 };
 
-// Dual Pivot Authentication Gate and Pivot Safety Cushion.
+// Hole 13 & Hole 14: Dual Pivot Authentication Gate and Pivot Safety Cushion.
 struct FastSyncPivotCandidate {
     uint64_t pivot_height = 0;
     uint64_t best_header_height = 0;
@@ -89,23 +89,20 @@ bool IsValidShardRootEntry(const ShardRootEntry &entry);
 bool FoldShardPair(uint8_t depth, const ShardRootEntry &left,
                    const ShardRootEntry &right, ShardRootEntry &out);
 
-// Folds 256 depth-8 ShardRootEntries from depth d = 7 down to d = 0.
+// Folds 256 depth-8 ShardRootEntries from depth d = 7 down to d = 0 (Hole 11 defense).
 std::optional<Hash> FoldDepth8ShardRoots(
     const std::array<ShardRootEntry, kFastSyncShardCount> &shards,
     std::string *error = nullptr);
 
-// Verifies UtxoRootsMessage against an expected pivot block ID, height, and
-// mandatory Avalanche-finalized / epoch-anchored UtxoRoot (without requiring
-// a state_root field in the 80-byte block header).
-bool VerifyUtxoRootsAgainstAnchor(
-    const Hash &expected_pivot_block_id, uint64_t expected_height,
-    const std::optional<Hash> &expected_utxo_root_anchor,
-    const UtxoRootsMessage &msg, Hash &out_folded_utxo_root,
-    std::string &error);
+// Verifies UtxoRootsMessage against an authenticated pivot header's state_root.
+bool VerifyUtxoRootsAgainstHeader(const Header &pivot_header,
+                                  const ChainId &chain_id,
+                                  const UtxoRootsMessage &msg,
+                                  std::string &error);
 
 // Verifies a UtxoShardMessage (depth k in [8..16], max 4096 leaves, strict prefix
 // membership, strict ascending OutpointKey order, no burn outputs, creation_height <= pivot_height,
-// and boundary-sibling folding up to depth 8) before any disk write.
+// and boundary-sibling folding up to depth 8) before any disk write (Holes 11 & 15 defense).
 bool VerifyAndBuildUtxoShard(const ShardRootEntry &expected_depth8_entry,
                              uint64_t pivot_height,
                              const UtxoShardMessage &shard,
@@ -137,29 +134,15 @@ bool DecodeUtxoShardMessage(const std::vector<uint8_t> &bytes,
                             UtxoShardMessage &out,
                             std::string &error);
 
-// Export 256 depth-8 ShardRootEntries and 56-byte MonetaryState from a UtxoSet.
-bool ExportUtxoRootsForBlock(const UtxoSet &utxo, const Hash &pivot_block_id,
-                             uint64_t pivot_height,
-                             const MonetaryState &monetary,
-                             UtxoRootsMessage &out, std::string &error);
-
-// O(256) export of 256 depth-8 ShardRootEntries directly from a persistent SmtNode root.
-bool ExportUtxoRootsFromSmt(const std::shared_ptr<const SmtNode> &root,
-                            const Hash &pivot_block_id, uint64_t pivot_height,
-                            const MonetaryState &monetary,
-                            UtxoRootsMessage &out, std::string &error);
+// Export 256 depth-8 ShardRootEntries and 56-byte MonetaryState from a UtxoSet or DiskStateStore.
+bool ExportUtxoRoots(const UtxoSet &utxo, const ChainId &chain_id,
+                     const Header &pivot_header, const MonetaryState &monetary,
+                     UtxoRootsMessage &out, std::string &error);
 
 bool ExportUtxoShard(const UtxoSet &utxo, const Hash &pivot_block_id,
                      uint8_t prefix_depth, uint16_t prefix_bits,
                      UtxoShardMessage &out, std::string &error,
                      size_t max_shard_leaves = kMaxUtxoShardLeaves);
-
-// O(k + |shard|) export of a UTXO shard directly from a persistent SmtNode root.
-bool ExportUtxoShardFromSmt(const std::shared_ptr<const SmtNode> &root,
-                            const Hash &pivot_block_id, uint8_t prefix_depth,
-                            uint16_t prefix_bits, UtxoShardMessage &out,
-                            std::string &error,
-                            size_t max_shard_leaves = kMaxUtxoShardLeaves);
 
 // Exports all non-empty shards for a pivot UtxoSet, adaptively splitting any shard
 // exceeding `max_shard_leaves` down to depth k in [8..16].
@@ -169,19 +152,26 @@ bool ExportAdaptiveUtxoShards(const UtxoSet &utxo, const Hash &pivot_block_id,
                               size_t max_shard_leaves = kMaxUtxoShardLeaves);
 
 // Assembles and cryptographically verifies a complete set of UTXO shards against
-// the pivot block ID, height, optional Avalanche UtxoRoot anchor, and UtxoRootsMessage.
+// the pivot header and UtxoRootsMessage, producing the authenticated UtxoSet and MonetaryState.
 bool AssembleAndVerifyFastSyncPivot(
-    const Hash &pivot_block_id, uint64_t pivot_height,
-    const std::optional<Hash> &expected_utxo_root_anchor,
+    const Header &pivot_header, const ChainId &chain_id,
     const UtxoRootsMessage &roots_msg,
     const std::vector<UtxoShardMessage> &shards, UtxoSet &out_utxo,
     MonetaryState &out_monetary, std::string &error);
 
-// ============================================================================
-// Bijective Reverse Block Peeling (getblockundo / blockundo)
-// ============================================================================
+// DiskStateStore helpers for exporting and importing fast-sync pivot state.
+bool ExportDiskUtxoRoots(const DiskStateStore &store, const ChainId &chain_id,
+                         UtxoRootsMessage &out, std::string &error);
 
-inline constexpr size_t kMaxBlockUndoCoins = 500000;
+bool ImportVerifiedFastSyncPivotToDisk(
+    const Header &pivot_header, const ChainId &chain_id,
+    const std::vector<Header> &history, const UtxoRootsMessage &roots_msg,
+    const std::vector<UtxoShardMessage> &shards, DiskStateStore &store,
+    std::string &error);
+
+// ============================================================================
+// Bijective Reverse Block Peeling (Patch 040 & Hole 12 Defense)
+// ============================================================================
 
 struct GetBlockUndoRequest {
     Hash block_id{};
@@ -197,12 +187,6 @@ struct BlockUndoMessage {
     std::vector<Coin> prior_spent_coins;
 };
 
-struct BlockCreatedOutput {
-    Outpoint outpoint{};
-    Output output{};
-    bool is_coinbase = false;
-};
-
 std::vector<uint8_t> EncodeGetBlockUndoRequest(const GetBlockUndoRequest &req);
 bool DecodeGetBlockUndoRequest(const std::vector<uint8_t> &bytes,
                                GetBlockUndoRequest &out,
@@ -215,13 +199,49 @@ bool DecodeBlockUndoMessage(const std::vector<uint8_t> &bytes,
                             BlockUndoMessage &out,
                             std::string &error);
 
-bool VerifyAndPeelReverseBlock(
-    uint64_t block_height, uint64_t parent_mtp,
-    const std::vector<BlockCreatedOutput> &block_outputs,
-    const std::vector<Outpoint> &block_spent_outpoints,
-    const std::vector<Coin> &undo_spent_coins, UtxoSet &peel_utxo,
-    const std::optional<Hash> &expected_parent_utxo_root,
-    Hash &out_parent_utxo_root, std::string &error);
+// Constructs a canonical BlockUndoMessage for block B_h from its pre-block
+// UtxoSet and parent MonetaryState, partitioning I_h = I_h^prior |_| I_h^intra
+// and omitting intra-block spends from prior_spent_coins (Hole 12 defense).
+bool BuildBlockUndoMessage(const std::vector<uint8_t> &block_wire,
+                           const ChainId &chain_id,
+                           const TxProfile &tx_profile,
+                           const MonetaryState &parent_monetary,
+                           const UtxoSet &pre_block_utxo,
+                           BlockUndoMessage &out,
+                           std::string &error);
+
+// Cryptographically peels block B_h backwards from authenticated post-block
+// state (state_at_h, monetary_at_h) to authenticated parent state at height h - 1:
+// 1. Partitions outputs O_h^net = O_h^all \ I_h^intra and inputs I_h = I_h^prior |_| I_h^intra.
+// 2. Verifies O_h^net exists in state_at_h with identical canonical bytes and I_h^prior is absent.
+// 3. Peels Merklix tree backwards (erase O_h^net, insert I_h^prior) and verifies
+//    StateRoot(chain_id, h - 1, UtxoRoot'_{h-1}, parent_monetary) == parent_header.state_root.
+// 4. Executes full forward transaction, signature, VM script, and P05/P06 monetary
+//    validation of B_h against the peeled parent state via StageCompleteBlock.
+bool PeelBlockReverse(const std::vector<uint8_t> &block_wire,
+                      const BlockUndoMessage &undo_msg,
+                      const Header &parent_header,
+                      const std::vector<Header> &history,
+                      const HeaderChainProfile &header_profile,
+                      OrdinaryCandidateProfile ordinary_profile,
+                      const MonetaryProfile &monetary_profile,
+                      const BlockCostProfile &cost_profile,
+                      UtxoSet &state_at_h,
+                      MonetaryState &monetary_at_h,
+                      std::string &error);
+
+// Peels DiskStateStore backwards from height h to height h - 1 after full
+// cryptographic verification via PeelBlockReverse.
+bool PeelDiskBlockReverse(const std::vector<uint8_t> &block_wire,
+                          const BlockUndoMessage &undo_msg,
+                          const Header &parent_header,
+                          const std::vector<Header> &history,
+                          const HeaderChainProfile &header_profile,
+                          OrdinaryCandidateProfile ordinary_profile,
+                          const MonetaryProfile &monetary_profile,
+                          const BlockCostProfile &cost_profile,
+                          DiskStateStore &store,
+                          std::string &error);
 
 } // namespace lotus::v2
 
