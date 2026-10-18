@@ -2,7 +2,7 @@
 #ifndef LOTUS_V2_COMMITMENT_H
 #define LOTUS_V2_COMMITMENT_H
 
-#include "tagged_hash.h"
+#include "header.h"
 
 #include <array>
 #include <cstdint>
@@ -52,7 +52,7 @@ Hash TransactionRootFromSubtreeA(const TxIdentityPair &coinbase_tx,
 Hash BuildTxSubtreeA(std::span<const TxIdentityPair> non_coinbase_transactions);
 
 // Combine a coinbase transaction identity pair with a precomputed SubtreeA root
-// in O(1) (single tagged SHA-256 leaf + root hash).
+// in O(1) (single tagged BLAKE3 leaf + root hash).
 Hash CombineCoinbaseAndSubtreeA(const TxIdentityPair &coinbase_tx,
                                 const Hash &subtree_a_root);
 
