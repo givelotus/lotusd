@@ -8,6 +8,7 @@
 #include <coins.h>
 #include <common/args.h>
 #include <hash.h>
+#include <lotus_v2/signing.h>
 #include <policy/policy.h>
 #include <script/standard.h>
 #include <streams.h>
@@ -19,6 +20,7 @@
 
 #include <limits>
 #include <numeric>
+#include <span>
 #include <unordered_set>
 #include <variant>
 
@@ -141,14 +143,57 @@ bool Proof::verify(const Amount &stakeUtxoDustThreshold,
                              "payout-script-non-standard");
     }
 
+    const StakeCommitment stakeCommitment = getStakeCommitment();
+
+    StakeId prevId = uint256::ZERO;
+    std::unordered_set<COutPoint, SaltedOutpointHasher> utxos;
+    utxos.reserve(stakes.size());
+
+    lotus::v2::BatchSigCollector collector;
+    collector.Reserve(1 + stakes.size());
+
+    bool batch_ready = collector.AddLegacySchnorr(
+        std::span<const uint8_t>{master.data(), master.size()},
+        std::span<const uint8_t>{signature.data(), signature.size()},
+        limitedProofId.begin());
+
+    for (const SignedStake &ss : stakes) {
+        const Stake &s = ss.getStake();
+        if (s.getAmount() < stakeUtxoDustThreshold || s.getId() < prevId ||
+            !utxos.insert(s.getUTXO()).second) {
+            batch_ready = false;
+            break;
+        }
+        prevId = s.getId();
+
+        if (batch_ready) {
+            const CPubKey &pubkey = s.getPubkey();
+            const SchnorrSig &sig = ss.getSignature();
+            const uint256 stakeHash = s.getHash(stakeCommitment);
+            if (!collector.AddLegacySchnorr(
+                    std::span<const uint8_t>{pubkey.data(), pubkey.size()},
+                    std::span<const uint8_t>{sig.data(), sig.size()},
+                    stakeHash.begin())) {
+                batch_ready = false;
+                break;
+            }
+        }
+    }
+
+    if (batch_ready && collector.VerifyAll()) {
+        return true;
+    }
+
+    // Fallback path on invalid proof: evaluate in exact consensus/test order
+    // (master signature first, then per-stake dust -> ordering -> duplicate ->
+    // stake signature) so the first failing condition is reported identically.
     if (!master.VerifySchnorr(limitedProofId, signature)) {
         return state.Invalid(ProofValidationResult::INVALID_PROOF_SIGNATURE,
                              "invalid-proof-signature");
     }
 
-    StakeId prevId = uint256::ZERO;
-    std::unordered_set<COutPoint, SaltedOutpointHasher> utxos;
-    const StakeCommitment stakeCommitment = getStakeCommitment();
+    prevId = uint256::ZERO;
+    utxos.clear();
     for (const SignedStake &ss : stakes) {
         const Stake &s = ss.getStake();
         if (s.getAmount() < stakeUtxoDustThreshold) {
