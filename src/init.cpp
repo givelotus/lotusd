@@ -2174,6 +2174,37 @@ void SetupServerArgs(NodeContext &node) {
                   testnetChainParams->GetConsensus().enableStakingRewards,
                   regtestChainParams->GetConsensus().enableStakingRewards),
         ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-avalanchetreasury",
+        strprintf("Enable the avalanche treasury feature (default: %u, "
+                  "testnet: %u, regtest: %u)",
+                  defaultChainParams->GetConsensus().enableStakingRewards,
+                  testnetChainParams->GetConsensus().enableStakingRewards,
+                  regtestChainParams->GetConsensus().enableStakingRewards),
+        ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-avalanchedefaulttreasury",
+        strprintf("Enable the built-in default node-developer treasury payout "
+                  "slate when no contender has been finalized (default: %u, "
+                  "testnet: %u, regtest: %u)",
+                  defaultChainParams->GetConsensus().enableDefaultTreasury,
+                  testnetChainParams->GetConsensus().enableDefaultTreasury,
+                  regtestChainParams->GetConsensus().enableDefaultTreasury),
+        ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-avalancheusedefaulttreasury",
+        strprintf("Alias for -avalanchedefaulttreasury (default: %u, "
+                  "testnet: %u, regtest: %u)",
+                  defaultChainParams->GetConsensus().enableDefaultTreasury,
+                  testnetChainParams->GetConsensus().enableDefaultTreasury,
+                  regtestChainParams->GetConsensus().enableDefaultTreasury),
+        ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
+    argsman.AddArg(
+        "-avalanchetreasuryaddress=<addr[:weight]>",
+        "Override the built-in default node-developer treasury destinations "
+        "with one or more weighted addresses or hex scriptPubKeys "
+        "(repeatable or comma-separated; default weight: 100)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::AVALANCHE);
     argsman.AddArg("-avalanchestakingpreconsensus",
                    strprintf("Enable the avalanche staking rewards "
                              "preconsensus feature (default: %u)",
