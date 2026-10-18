@@ -559,6 +559,10 @@ std::optional<LockPoints> CalculateLockPointsAtTip(CBlockIndex *tip,
  */
 bool CheckSequenceLocksAtTip(CBlockIndex *tip, const LockPoints &lock_points);
 
+namespace lotus::v2 {
+class BatchSigCollector;
+} // namespace lotus::v2
+
 /**
  * Closure representing one script verification.
  * Note that this stores references to the spending transaction.
@@ -578,6 +582,7 @@ private:
     SignatureCache *m_signature_cache;
     TxSigCheckLimiter *pTxLimitSigChecks;
     CheckInputsLimiter *pBlockLimitSigChecks;
+    lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
 
 public:
     CScriptCheck(const CTxOut &outIn, const CTransaction &txToIn,
@@ -585,12 +590,14 @@ public:
                  uint32_t nFlagsIn, bool cacheIn,
                  const PrecomputedTransactionData &txdataIn,
                  TxSigCheckLimiter *pTxLimitSigChecksIn = nullptr,
-                 CheckInputsLimiter *pBlockLimitSigChecksIn = nullptr)
+                 CheckInputsLimiter *pBlockLimitSigChecksIn = nullptr,
+                 lotus::v2::BatchSigCollector *sigCollectorIn = nullptr)
         : m_tx_out(outIn), ptxTo(&txToIn), nIn(nInIn), nFlags(nFlagsIn),
           cacheStore(cacheIn), txdata(txdataIn),
           m_signature_cache(&signature_cache),
           pTxLimitSigChecks(pTxLimitSigChecksIn),
-          pBlockLimitSigChecks(pBlockLimitSigChecksIn) {}
+          pBlockLimitSigChecks(pBlockLimitSigChecksIn),
+          m_sig_collector(sigCollectorIn) {}
 
     CScriptCheck(const CScriptCheck &) = delete;
     CScriptCheck &operator=(const CScriptCheck &) = delete;

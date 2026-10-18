@@ -8,6 +8,7 @@
 
 #include <key.h>
 #include <key_io.h>
+#include <lotus_v2/signing.h>
 #include <streams.h>
 #include <tinyformat.h>
 #include <util/strencodings.h>
@@ -112,6 +113,53 @@ BOOST_AUTO_TEST_CASE(sig_pubkey_hash_variations) {
         // now we *should* get a hit
         BOOST_CHECK(testChecker.IsCached(sig, pubkey1C, hashMsg));
     }
+}
+
+BOOST_AUTO_TEST_CASE(schnorr_batch_and_tls_sigcache) {
+    DataStream stream{ParseHex(
+        "010000000122739e70fbee987a8be1788395a2f2e6ad18ccb7ff611cd798071539"
+        "dde3c38e000000000151ffffffff010000000000000000016a00000000")};
+    CTransaction dummyTx(deserialize, stream);
+    BOOST_CHECK_EQUAL(dummyTx.GetTotalSize(), GetSerializeSize(dummyTx));
+
+    PrecomputedTransactionData txdata(dummyTx);
+    SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
+    lotus::v2::BatchSigCollector collector;
+    CachingTransactionSignatureChecker batchChecker(
+        &dummyTx, 0, 0 * SATOSHI, true, signature_cache, txdata, &collector);
+
+    CKey key;
+    key.MakeNewKey(true);
+    CPubKey pubkey = key.GetPubKey();
+
+    std::vector<std::vector<uint8_t>> sigs(32);
+    std::vector<uint256> hashes(32);
+    for (int i = 0; i < 32; ++i) {
+        hashes[i] = Hash(strprintf("Schnorr batch msg %d", i));
+        BOOST_CHECK(key.SignSchnorr(hashes[i], sigs[i]));
+        BOOST_CHECK(batchChecker.VerifySignature(sigs[i], pubkey, hashes[i]));
+    }
+    BOOST_CHECK_EQUAL(collector.LegacyItems().size(), 32U);
+    BOOST_CHECK(collector.VerifyAll());
+
+    // Batch insert into signature cache and verify TLS + global cache hits.
+    signature_cache.SetBatch(collector);
+    CachingTransactionSignatureChecker checkCached(
+        &dummyTx, 0, 0 * SATOSHI, false, signature_cache, txdata);
+    TestCachingTransactionSignatureChecker testCached(checkCached);
+    for (int i = 0; i < 32; ++i) {
+        BOOST_CHECK(testCached.IsCached(sigs[i], pubkey, hashes[i]));
+    }
+
+    // Corrupting one signature in a batch must cause VerifyAll() to fail.
+    lotus::v2::BatchSigCollector bad_collector = collector;
+    std::vector<uint8_t> bad_sig = sigs[0];
+    bad_sig[10] ^= 0x01;
+    BOOST_CHECK(bad_collector.AddLegacySchnorr(
+        std::span<const uint8_t>(pubkey.data(), pubkey.size()),
+        std::span<const uint8_t>(bad_sig.data(), bad_sig.size()),
+        hashes[0].begin()));
+    BOOST_CHECK(!bad_collector.VerifyAll());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

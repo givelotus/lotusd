@@ -25,3 +25,6 @@ target_link_libraries(lotus_v2_header PUBLIC Boost::headers)
 target_sources(lotus_v2_header PRIVATE blocksnap.cpp)
 
 target_sources(lotus_v2_header PRIVATE fast_sync.cpp)
+
+target_sources(lotus_v2_header PRIVATE signing.cpp)
+target_link_libraries(lotus_v2_header PUBLIC secp256k1)
