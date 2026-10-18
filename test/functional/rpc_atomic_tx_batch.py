@@ -6,9 +6,13 @@
 import copy
 from decimal import Decimal
 
+from test_framework.key import ECKey
+from test_framework.messages import XEC
+from test_framework.script import CScript
+from test_framework.signature_hash import SIGHASH_ALL, SIGHASH_FORKID, SignatureHashForkId
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
-from test_framework.wallet import MiniWallet
+from test_framework.wallet import MiniWallet, MiniWalletMode
 
 
 class AtomicTxBatchTest(BitcoinTestFramework):
@@ -52,6 +56,46 @@ class AtomicTxBatchTest(BitcoinTestFramework):
         assert_equal(sorted(peer.getrawmempool()), sorted(ids))
         template = node.getblocktemplate()
         assert_equal(sorted(tx["txid"] for tx in template["transactions"]), sorted(ids))
+        self.generate(node, 1)
+        assert_equal(node.getrawmempool(), [])
+        assert_equal(peer.getrawmempool(), [])
+
+        # Exercise the deferred Schnorr path with enough transactions to run
+        # multiple script workers. A bad final signature must publish nothing.
+        signing_wallet = MiniWallet(node, mode=MiniWalletMode.RAW_P2PK)
+        self.generate(signing_wallet, 101)
+        key = ECKey()
+        key.set((1).to_bytes(32, "big"), True)
+        utxo = signing_wallet.get_utxo()
+        signed = []
+        signed_ids = []
+        signed_txs = []
+        sighash_type = SIGHASH_ALL | SIGHASH_FORKID
+        for _ in range(40):
+            transfer = signing_wallet.create_self_transfer(utxo_to_spend=utxo)
+            tx = transfer["tx"]
+            digest = SignatureHashForkId(signing_wallet.get_scriptPubKey(), tx, 0,
+                                         sighash_type, int(utxo["value"] * XEC))
+            signature = key.sign_schnorr(digest) + bytes([sighash_type])
+            tx.vin[0].scriptSig = CScript([signature])
+            signed.append(tx.serialize().hex())
+            signed_ids.append(tx.txid_hex)
+            signed_txs.append(tx)
+            utxo = dict(transfer["new_utxo"], txid=tx.txid_hex)
+        bad_signature = copy.deepcopy(signed_txs[-1])
+        corrupt = bytearray(bad_signature.vin[0].scriptSig)
+        corrupt[10] ^= 1
+        bad_signature.vin[0].scriptSig = bytes(corrupt)
+        rejected = node.submitrawtxbatch(signed[:-1] + [bad_signature.serialize().hex()], 0)
+        assert not rejected["accepted"]
+        assert_equal(node.getrawmempool(), [])
+        assert_equal(peer.getrawmempool(), [])
+        assert node.testrawtxbatch(signed, 0)["allowed"]
+        assert_equal(node.getrawmempool(), [])
+        assert node.submitrawtxbatch(signed, 0)["accepted"]
+        self.sync_mempools()
+        assert_equal(sorted(node.getrawmempool()), sorted(signed_ids))
+        assert_equal(sorted(peer.getrawmempool()), sorted(signed_ids))
         self.generate(node, 1)
         assert_equal(node.getrawmempool(), [])
         assert_equal(peer.getrawmempool(), [])
