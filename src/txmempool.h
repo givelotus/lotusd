@@ -405,9 +405,17 @@ public:
     // addUnchecked must update state for all parents of a given transaction,
     // updating child links as necessary.
     txiter addUnchecked(CTxMemPoolEntryRef entry,
-                        bool search_mempool_parents = true,
-                        std::span<const txiter> batch_parent_iters = {})
+                        bool has_mempool_parents = true,
+                        const std::vector<int32_t> *batch_parent_indices = nullptr,
+                        const std::vector<txiter> *batch_iters = nullptr,
+                        std::span<const txiter> known_parent_iters = {})
         EXCLUSIVE_LOCKS_REQUIRED(cs, cs_main);
+    txiter addUnchecked(CTxMemPoolEntryRef entry, bool search_mempool_parents,
+                        std::span<const txiter> known_parent_iters)
+        EXCLUSIVE_LOCKS_REQUIRED(cs, cs_main) {
+        return addUnchecked(std::move(entry), search_mempool_parents, nullptr,
+                            nullptr, known_parent_iters);
+    }
 
     void removeRecursive(const CTransaction &tx, MemPoolRemovalReason reason)
         EXCLUSIVE_LOCKS_REQUIRED(cs);

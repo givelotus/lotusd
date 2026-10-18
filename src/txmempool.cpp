@@ -173,8 +173,10 @@ void CTxMemPool::AddTransactionsUpdated(unsigned int n) {
 
 CTxMemPool::txiter CTxMemPool::addUnchecked(
     CTxMemPoolEntryRef entry,
-    bool search_mempool_parents,
-    std::span<const txiter> batch_parent_iters) {
+    bool has_mempool_parents,
+    const std::vector<int32_t> *batch_parent_indices,
+    const std::vector<txiter> *batch_iters,
+    std::span<const txiter> known_parent_iters) {
     // get a guaranteed unique id (in case tests re-use the same object)
     entry->SetEntryId(nextEntryId++);
 
@@ -187,6 +189,8 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
         Assume(entry->GetFee() == entry->GetModifiedFee());
         entry->UpdateModifiedFee(feeDelta);
     }
+
+    const bool had_mempool_txs = !mapTx.empty();
 
     // Add to memory pool without checking anything.
     // Used by AcceptToMemoryPool(), which DOES do all the appropriate checks.
@@ -205,24 +209,37 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
 
     const CTransactionRef tx = entry->GetSharedTx();
     const TxId *last_parent_txid = nullptr;
-    for (const CTxIn &in : tx->vin) {
+    for (size_t i = 0; i < tx->vin.size(); ++i) {
+        const CTxIn &in = tx->vin[i];
         if (in.nFlags == 3) {
             continue;
         }
         mapNextTx.insert(std::make_pair(&in.prevout, tx));
-        m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(), in.prevout.GetN());
-        if (search_mempool_parents &&
-            (!last_parent_txid || *last_parent_txid != in.prevout.GetTxId())) {
+        m_utxo_fast_filter.MarkSpentInMempool(in.prevout.GetTxId().begin(),
+                                              in.prevout.GetN());
+        if (has_mempool_parents && had_mempool_txs &&
+            (last_parent_txid == nullptr ||
+             *last_parent_txid != in.prevout.GetTxId())) {
             last_parent_txid = &in.prevout.GetTxId();
-            auto pit = mapTx.find(*last_parent_txid);
-            if (pit != mapTx.end() && pit != newit) {
-                UpdateParent(newit, pit, true);
-                UpdateChild(pit, newit, true);
+            if (batch_parent_indices != nullptr && batch_iters != nullptr &&
+                i < batch_parent_indices->size() &&
+                (*batch_parent_indices)[i] >= 0) {
+                const txiter pit = (*batch_iters)[(*batch_parent_indices)[i]];
+                if (pit != newit) {
+                    UpdateParent(newit, pit, true);
+                    UpdateChild(pit, newit, true);
+                }
+            } else {
+                auto pit = mapTx.find(*last_parent_txid);
+                if (pit != mapTx.end() && pit != newit) {
+                    UpdateParent(newit, pit, true);
+                    UpdateChild(pit, newit, true);
+                }
             }
         }
     }
-    if (!search_mempool_parents) {
-        for (const txiter &pit : batch_parent_iters) {
+    if (!has_mempool_parents) {
+        for (const txiter &pit : known_parent_iters) {
             if (pit != mapTx.end() && pit != newit) {
                 UpdateParent(newit, pit, true);
                 UpdateChild(pit, newit, true);
