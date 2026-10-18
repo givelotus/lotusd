@@ -7,17 +7,18 @@
 use std::{marker::PhantomData, time::Instant};
 
 use abc_rust_error::Result;
-use rocksdb::{compaction_filter::Decision, WriteBatch};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     data::DbOutpoint,
-    db::{Db, CF},
+    db::{Db, MergeOperands, WriteBatch, CF},
     group::{Group, GroupQuery, UtxoData},
     index_tx::IndexTx,
     io::{group_utxos::GroupUtxoError::*, merge::catch_merge_errors},
-    ser::{db_deserialize, db_deserialize_vec, db_serialize, db_serialize_vec},
+    ser::{
+        db_deserialize, db_deserialize_vec, db_serialize_vec, SerError,
+    },
 };
 
 const INSERT: u8 = b'I';
@@ -105,23 +106,21 @@ pub enum GroupUtxoError {
 fn partial_merge_utxos(
     _key: &[u8],
     _existing_value: Option<&[u8]>,
-    _operands: &rocksdb::MergeOperands,
+    _operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    // We don't use partial merge
     None
 }
 
 fn init_merge_utxos<D: for<'a> Deserialize<'a>>(
     _key: &[u8],
     existing_value: Option<&[u8]>,
-    operands: &rocksdb::MergeOperands,
+    operands: &MergeOperands,
 ) -> Result<Vec<UtxoEntry<D>>> {
     let mut entries = match existing_value {
         Some(entries_ser) => db_deserialize_vec::<UtxoEntry<D>>(entries_ser)?,
         None => vec![],
     };
     if operands.into_iter().all(|operand| operand[0] == INSERT) {
-        // If we only have inserts, we can pre-allocate the exact memory we need
         entries.reserve_exact(operands.len());
     }
     Ok(entries)
@@ -167,13 +166,47 @@ fn ser_merge_utxos<D: Serialize>(
     db_serialize_vec::<UtxoEntry<D>>(entries)
 }
 
-// We must use a compaction filter that removes empty entries
-fn compaction_filter_utxos(_level: u32, _key: &[u8], value: &[u8]) -> Decision {
-    if value.is_empty() {
-        Decision::Remove
-    } else {
-        Decision::Keep
+#[inline]
+pub(crate) fn encode_outpoint_prefix(outpoint: &DbOutpoint) -> [u8; 12] {
+    let mut prefix = [0u8; 12];
+    prefix[..8].copy_from_slice(&outpoint.tx_num.to_be_bytes());
+    prefix[8..12].copy_from_slice(&outpoint.out_idx.to_be_bytes());
+    prefix
+}
+
+#[inline]
+pub(crate) fn encode_utxo_dup<D: UtxoData>(entry: &UtxoEntry<D>) -> Vec<u8> {
+    let cap = D::FIXED_DUP_SIZE.unwrap_or(48);
+    let mut buf = Vec::with_capacity(cap);
+    buf.extend_from_slice(&entry.outpoint.tx_num.to_be_bytes());
+    buf.extend_from_slice(&entry.outpoint.out_idx.to_be_bytes());
+    entry.data.ser_dup_data(&mut buf);
+    buf
+}
+
+#[inline]
+fn decode_utxo_dup<D: UtxoData>(bytes: &[u8]) -> Result<UtxoEntry<D>> {
+    if bytes.len() < 12 {
+        return Err(SerError::DeserializeError {
+            type_name: std::any::type_name::<UtxoEntry<D>>(),
+            error: postcard::Error::DeserializeUnexpectedEnd,
+            bytes: bytes.to_vec(),
+        }
+        .into());
     }
+    let tx_num = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    let out_idx = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+    let data = D::deser_dup_data(&bytes[12..]).ok_or_else(|| {
+        SerError::DeserializeError {
+            type_name: std::any::type_name::<D>(),
+            error: postcard::Error::DeserializeUnexpectedEnd,
+            bytes: bytes.to_vec(),
+        }
+    })?;
+    Ok(UtxoEntry {
+        outpoint: DbOutpoint { tx_num, out_idx },
+        data,
+    })
 }
 
 impl<'a> GroupUtxoColumn<'a> {
@@ -280,9 +313,9 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
         batch.delete_range_cf(self.col.cf, [].as_ref(), &[0xff; 16]);
     }
 
-    pub(crate) fn add_cfs(columns: &mut Vec<rocksdb::ColumnFamilyDescriptor>) {
+    pub(crate) fn add_cfs(columns: &mut Vec<crate::db::ColumnFamilyDescriptor>) {
         let cf_name = G::utxo_conf().cf_name;
-        let mut options = rocksdb::Options::default();
+        let mut options = crate::db::Options::default();
         let merge_op_name = format!("{}::merge_op_utxos", cf_name);
         options.set_merge_operator(
             merge_op_name.as_str(),
@@ -293,13 +326,8 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
             ),
             partial_merge_utxos,
         );
-        let compaction_filter_name =
-            format!("{}::compaction_filter_utxos", cf_name);
-        options.set_compaction_filter(
-            &compaction_filter_name,
-            compaction_filter_utxos,
-        );
-        columns.push(rocksdb::ColumnFamilyDescriptor::new(cf_name, options));
+        options.set_dupsort(G::UtxoData::FIXED_DUP_SIZE.is_some());
+        columns.push(crate::db::ColumnFamilyDescriptor::new(cf_name, options));
     }
 
     fn output_utxo(
@@ -338,11 +366,19 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
         member: &G::Member<'_>,
         new_entry: UtxoEntry<G::UtxoData>,
     ) -> Result<()> {
-        batch.merge_cf(
-            self.col.cf,
-            self.group.ser_member(member),
-            [[INSERT].as_ref(), &db_serialize(&new_entry)?].concat(),
-        );
+        if G::UtxoData::FIXED_DUP_SIZE == Some(12) {
+            batch.put_dup12_cf(
+                self.col.cf,
+                self.group.ser_member(member),
+                encode_outpoint_prefix(&new_entry.outpoint),
+            );
+        } else {
+            batch.put_dup_cf(
+                self.col.cf,
+                self.group.ser_member(member),
+                encode_utxo_dup(&new_entry),
+            );
+        }
         Ok(())
     }
 
@@ -352,10 +388,11 @@ impl<'a, G: Group> GroupUtxoWriter<'a, G> {
         member: &G::Member<'_>,
         delete_outpoint: &DbOutpoint,
     ) -> Result<()> {
-        batch.merge_cf(
+        batch.delete_dup_prefix_cf(
             self.col.cf,
             self.group.ser_member(member),
-            [[DELETE].as_ref(), &db_serialize(&delete_outpoint)?].concat(),
+            encode_outpoint_prefix(delete_outpoint),
+            G::UtxoData::FIXED_DUP_SIZE,
         );
         Ok(())
     }
@@ -379,19 +416,12 @@ impl<'a, G: Group> GroupUtxoReader<'a, G> {
         &self,
         member: &[u8],
     ) -> Result<Option<Vec<UtxoEntry<G::UtxoData>>>> {
-        match self.col.db.get(self.col.cf, member)? {
-            Some(entry) => {
-                let entries =
-                    db_deserialize_vec::<UtxoEntry<G::UtxoData>>(&entry)?;
-                if entries.is_empty() {
-                    // Usually compaction catches this and removes such entries,
-                    // but it's run later so have to filter here manually
-                    return Ok(None);
-                }
-                Ok(Some(entries))
-            }
-            None => Ok(None),
-        }
+        self.col.db.get_dups_visit(
+            self.col.cf,
+            member,
+            G::UtxoData::FIXED_DUP_SIZE,
+            decode_utxo_dup::<G::UtxoData>,
+        )
     }
 
     /// Iterate over all group members with a given prefix, starting from some
@@ -401,29 +431,13 @@ impl<'a, G: Group> GroupUtxoReader<'a, G> {
         member_prefix: &'a [u8],
         member_start: &'a [u8],
     ) -> impl Iterator<Item = GroupUtxoIterItem<G>> + 'a {
-        self.col
-            .db
-            .iterator(self.col.cf, member_start, rocksdb::Direction::Forward)
-            .take_while(|entry| -> bool {
-                let Ok((key, _)) = entry else {
-                    return true; // forward errors
-                };
-                key.starts_with(member_prefix)
-            })
-            .filter_map(|entry| {
-                let (key, value) = match entry {
-                    Ok(entry) => entry,
-                    Err(err) => return Some(Err(err)),
-                };
-                if value.is_empty() {
-                    // Filter out empty (compaction hasn't removed this yet)
-                    return None;
-                }
-                match db_deserialize_vec::<UtxoEntry<G::UtxoData>>(&value) {
-                    Ok(utxos) => Some(Ok((key, utxos))),
-                    Err(err) => Some(Err(err)),
-                }
-            })
+        self.col.db.dup_prefix_iterator(
+            self.col.cf,
+            member_prefix,
+            member_start,
+            G::UtxoData::FIXED_DUP_SIZE,
+            decode_utxo_dup::<G::UtxoData>,
+        )
     }
 }
 
@@ -439,7 +453,7 @@ mod tests {
 
     use abc_rust_error::Result;
     use bitcoinsuite_core::tx::Tx;
-    use rocksdb::WriteBatch;
+    use crate::db::WriteBatch;
 
     use crate::{
         data::DbOutpoint,

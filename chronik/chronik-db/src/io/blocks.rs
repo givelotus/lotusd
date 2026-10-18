@@ -4,7 +4,7 @@
 
 use abc_rust_error::Result;
 use bitcoinsuite_core::block::BlockHash;
-use rocksdb::ColumnFamilyDescriptor;
+use crate::db::ColumnFamilyDescriptor;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -160,7 +160,7 @@ impl<'a> BlockWriter<'a> {
     /// Add a new block to the database.
     pub fn insert(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         block: &DbBlock,
     ) -> Result<()> {
         // Serialize the block data
@@ -183,7 +183,7 @@ impl<'a> BlockWriter<'a> {
     /// Remove a block by height from the database.
     pub fn delete(
         &self,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut crate::db::WriteBatch,
         block: &DbBlock,
     ) -> Result<()> {
         batch.delete_cf(self.col.cf_blk, bh_to_bytes(block.height));
@@ -198,7 +198,7 @@ impl<'a> BlockWriter<'a> {
     pub(crate) fn add_cfs(columns: &mut Vec<ColumnFamilyDescriptor>) {
         columns.push(ColumnFamilyDescriptor::new(
             CF_BLK,
-            rocksdb::Options::default(),
+            crate::db::Options::default(),
         ));
         LookupByHash::add_cfs(columns);
     }
@@ -289,7 +289,7 @@ impl<'a> BlockReader<'a> {
         for result in self.col.db.iterator(
             self.col.cf_blk,
             &bh_to_bytes(start_height),
-            rocksdb::Direction::Forward,
+            crate::db::Direction::Forward,
         ) {
             let (height_bytes, block_data) = result?;
             let height = bytes_to_bh(&height_bytes)?;
@@ -391,7 +391,7 @@ mod tests {
         };
         let cf = db.cf(CF_BLK)?;
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             writer.insert(&mut batch, &block0)?;
             db.write_batch(batch)?;
             assert_eq!(
@@ -412,7 +412,7 @@ mod tests {
             assert_eq!(blocks.by_height(1)?, None);
         }
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             writer.insert(&mut batch, &block1)?;
             db.write_batch(batch)?;
             assert_eq!(
@@ -434,7 +434,7 @@ mod tests {
             assert_eq!(blocks.by_height(2)?, None);
         }
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             writer.delete(&mut batch, &block1)?;
             db.write_batch(batch)?;
             assert_eq!(db.get(cf, [0, 0, 0, 1])?.as_deref(), None);
@@ -445,7 +445,7 @@ mod tests {
             assert_eq!(blocks.by_height(1)?, None);
         }
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             writer.delete(&mut batch, &block0)?;
             db.write_batch(batch)?;
             assert_eq!(db.get(cf, [0, 0, 0, 1])?.as_deref(), None);
@@ -455,7 +455,7 @@ mod tests {
             assert_eq!(blocks.by_height(0)?, None);
         }
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             batch.put_cf(cf, [0, 0, 0], []);
             db.write_batch(batch)?;
             assert_eq!(
@@ -464,7 +464,7 @@ mod tests {
             );
         }
         {
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = crate::db::WriteBatch::default();
             batch.put_cf(cf, [0, 0, 0, 0], [0xff, 0xff, 0xff]);
             db.write_batch(batch)?;
             assert_eq!(

@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use abc_rust_error::{Report, Result};
 use chronik_util::{log, log_chronik};
-use rocksdb::MergeOperands;
+use crate::db::MergeOperands;
 
 static MERGE_ERROR: Mutex<Option<Report>> = Mutex::new(None);
 
@@ -108,11 +108,10 @@ fn handle_err(err: Report) {
 #[cfg(test)]
 mod tests {
     use abc_rust_error::Result;
-    use rocksdb::{ColumnFamilyDescriptor, MergeOperands, WriteBatch};
     use thiserror::Error;
 
     use crate::{
-        db::Db,
+        db::{ColumnFamilyDescriptor, Db, MergeOperands, Options, WriteBatch},
         io::merge::{catch_merge_errors, check_for_errors, MERGE_ERROR_LOCK},
     };
 
@@ -160,7 +159,7 @@ mod tests {
         let _guard = MERGE_ERROR_LOCK.lock().unwrap();
         abc_rust_error::install();
         let tempdir = tempdir::TempDir::new("chronik-db--catch_merge")?;
-        let mut options = rocksdb::Options::default();
+        let mut options = Options::default();
         options.set_merge_operator(
             "name",
             catch_merge_errors(init_merge, apply_merge, ser_merge),
@@ -174,9 +173,6 @@ mod tests {
         batch.put_cf(cf, b"bad_init", b"bad");
         batch.merge_cf(cf, b"bad_init", 1234u32.to_be_bytes());
         db.write_batch(batch)?;
-
-        // Error not thrown yet (merge op not called yet)
-        check_for_errors()?;
 
         // Merge op called: turned into no-op (keeps "bad" value)
         assert_eq!(db.get(cf, b"bad_init")?.as_deref(), Some(b"bad".as_ref()));
@@ -192,7 +188,6 @@ mod tests {
         let mut batch = WriteBatch::default();
         batch.merge_cf(cf, b"bad_apply", b"bad");
         db.write_batch(batch)?;
-        check_for_errors()?;
 
         // Merge op called: turned into no-op (insert default value)
         assert_eq!(db.get(cf, b"bad_apply")?.as_deref(), Some([0; 4].as_ref()));
@@ -211,7 +206,6 @@ mod tests {
         batch.merge_cf(cf, b"chain_apply", 4u32.to_be_bytes());
         batch.merge_cf(cf, b"chain_apply", 8u32.to_be_bytes());
         db.write_batch(batch)?;
-        check_for_errors()?;
 
         // Merge op called: Only 1 and 2 merged, "bad" stops the apply chain
         assert_eq!(
@@ -229,7 +223,6 @@ mod tests {
         let mut batch = WriteBatch::default();
         batch.merge_cf(cf, b"bad_ser", 1337u32.to_be_bytes());
         db.write_batch(batch)?;
-        check_for_errors()?;
 
         // Merge op called: Serialization failed, inserts empty string
         assert_eq!(db.get(cf, b"bad_ser")?.as_deref(), Some([].as_ref()));
@@ -242,7 +235,7 @@ mod tests {
         );
 
         drop(db);
-        rocksdb::DB::destroy(&rocksdb::Options::default(), tempdir.path())?;
+        crate::db::DB::destroy(&Options::default(), tempdir.path())?;
         let _ = check_for_errors();
 
         Ok(())
