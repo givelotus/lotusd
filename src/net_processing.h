@@ -16,6 +16,8 @@ struct ProofId;
 class Processor;
 } // namespace avalanche
 
+namespace lotus::v2::net { class V2PeerProtocolHandler; }
+
 class AddrMan;
 class CTxMemPool;
 class ChainstateManager;
@@ -123,6 +125,9 @@ public:
 
     /** Whether this node ignores txs received over p2p. */
     virtual bool IgnoresIncomingTxs() = 0;
+
+    virtual lotus::v2::net::V2PeerProtocolHandler *GetV2ProtocolHandler() = 0;
+    virtual void MarkPeerKnownTx(NodeId peer_id, const TxId &txid) = 0;
 
     /** Relay transaction to all peers. */
     virtual void RelayTransaction(const TxId &txid) = 0;

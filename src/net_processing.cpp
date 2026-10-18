@@ -4,6 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <net_processing.h>
+#include <net/v2_protocol_handler.h>
 
 #include <addrman.h>
 #include <avalanche/compactproofs.h>
@@ -848,6 +849,12 @@ public:
                                  !m_most_recent_block_mutex, !cs_proofrequest,
                                  g_msgproc_mutex);
 
+    lotus::v2::net::V2PeerProtocolHandler *GetV2ProtocolHandler() override {
+        return &m_v2_protocol_handler;
+    }
+    void MarkPeerKnownTx(NodeId peer_id, const TxId &txid) override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler &scheduler) override;
     void CheckForStaleTipAndEvictPeers() override;
@@ -1409,6 +1416,8 @@ private:
     NextInvToInbounds(std::chrono::microseconds now,
                       std::chrono::seconds average_interval)
         EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
+
+    lotus::v2::net::V2PeerProtocolHandler m_v2_protocol_handler;
 
     // All of the following cache a recent block, and are protected by
     // m_most_recent_block_mutex
@@ -2377,6 +2386,7 @@ void PeerManagerImpl::UpdateLastBlockAnnounceTime(NodeId node,
 void PeerManagerImpl::InitializeNode(const Config &config, CNode &node,
                                      ServiceFlags our_services) {
     NodeId nodeid = node.GetId();
+    m_v2_protocol_handler.RemovePeer(nodeid);
     {
         LOCK(cs_main);
         m_node_states.emplace_hint(m_node_states.end(),
@@ -2908,7 +2918,8 @@ PeerManagerImpl::PeerManagerImpl(CConnman &connman, AddrMan &addrman,
       m_fee_filter_rounder{CFeeRate{DEFAULT_MIN_RELAY_TX_FEE_PER_KB}, m_rng},
       m_chainparams(chainman.GetParams()), m_connman(connman),
       m_addrman(addrman), m_banman(banman), m_chainman(chainman),
-      m_mempool(pool), m_avalanche(avalanche), m_opts{opts} {}
+      m_mempool(pool), m_avalanche(avalanche), m_opts{opts},
+      m_v2_protocol_handler{m_chainman, m_mempool, m_connman, *this} {}
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler &scheduler) {
     // Stale tip checking and peer eviction are on two different timers, but we
@@ -3257,6 +3268,13 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
     }
 }
 
+void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
+    if (PeerRef peer = GetPeerRef(peer_id)) {
+        AddKnownTx(*peer, txid);
+    }
+    WITH_LOCK(cs_main, m_txrequest.ForgetInvId(txid));
+}
+
 void PeerManagerImpl::RelayProof(const avalanche::ProofId &proofid) {
     LOCK(m_peer_mutex);
     for (auto &it : m_peer_map) {
@@ -3502,6 +3520,9 @@ void PeerManagerImpl::ProcessGetBlockData(const Config &config, CNode &pfrom,
             }
             // else
             // no response
+        } else if (inv.IsMsgSealedHeader()) {
+            MakeAndPushMessage(pfrom, NetMsgType::SEALEDHEADER,
+                               SealedHeader(*pblock));
         } else if (inv.IsMsgCmpctBlk()) {
             // If a peer is asking for old blocks, we're almost guaranteed they
             // won't have a useful mempool to match against a compact block, and
@@ -5377,6 +5398,11 @@ void PeerManagerImpl::ProcessMessage(
 
     if (msg_type == NetMsgType::SENDADDRV2) {
         peer->m_wants_addrv2 = true;
+        return;
+    }
+
+    if (m_v2_protocol_handler.TryHandleMessage(pfrom, msg_type, vRecv,
+                                               time_received)) {
         return;
     }
 
