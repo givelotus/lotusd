@@ -172,7 +172,7 @@ class ChronikWsScriptTest(BitcoinTestFramework):
         tx3_conflict.nLockTime = 1
 
         # Mine tx, tx2 and tx3_conflict
-        height = 102
+        height = node.getblockcount() + 1
         block = create_block(
             int(tip, 16),
             create_coinbase(height, b"\x03" * 33),

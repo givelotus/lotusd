@@ -62,6 +62,10 @@ pub enum ChronikError {
     /// Unknown net repr
     #[error("Unknown net repr {0}")]
     UnknownNetRepr(u8),
+
+    /// V2Service failed to open
+    #[error("V2Service open failed: {0}")]
+    V2ServiceOpenFailed(String),
 }
 
 use self::ChronikError::*;
@@ -110,9 +114,10 @@ fn try_setup_chronik(
     let bridge = chronik_bridge::ffi::make_bridge(node_context);
     let node = Arc::new(Node { bridge });
     let (pause, pause_notify) = Pause::new_pair(params.is_pause_allowed);
+    let datadir_net: PathBuf = params.datadir_net.into();
     let mut indexer = ChronikIndexer::setup(
         ChronikIndexerParams {
-            datadir_net: params.datadir_net.into(),
+            datadir_net: datadir_net.clone(),
             wipe_db: params.wipe_db,
             enable_token_index: params.enable_token_index,
             enable_lokad_id_index: params.enable_lokad_id_index,
@@ -135,6 +140,47 @@ fn try_setup_chronik(
         // Don't setup Chronik if the user requested shutdown during resync
         return Ok(());
     }
+    let v2_path = datadir_net.join("indexes").join("chronik").join("v2_index");
+    let v2_fresh = if params.wipe_db || !v2_path.join("mdbx.dat").is_file() {
+        if v2_path.exists() {
+            let _ = std::fs::remove_dir_all(&v2_path);
+        }
+        true
+    } else {
+        false
+    };
+    let v2_binding = crate::v2_ffi::get_v2_binding(&node.bridge);
+    let v2_limits = crate::v2_ffi::ServiceLimits {
+        block_bytes: chronik_db::v2_branch::MAX_BATCH_BYTES as u32,
+        transactions: chronik_db::v2_branch::MAX_TRANSACTIONS as u32,
+        changes: chronik_db::v2_branch::MAX_CHANGES as u32,
+        roots: 256,
+        clauses: 16,
+        page_size: 1000,
+        posting_reads: 65536,
+        work: 131072,
+        response_bytes: 1024 * 1024,
+    };
+    let v2_service = match crate::v2::open_service(
+        &v2_path.to_string_lossy(),
+        v2_binding.clone(),
+        v2_fresh,
+        v2_limits.clone(),
+    ) {
+        Ok(svc) => svc,
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&v2_path);
+            crate::v2::open_service(
+                &v2_path.to_string_lossy(),
+                v2_binding,
+                true,
+                v2_limits,
+            )
+            .map_err(V2ServiceOpenFailed)?
+        }
+    };
+    resync_v2_service(&v2_service, node.as_ref());
+    let v2_state = Some(v2_service.http_state());
     let indexer = Arc::new(RwLock::new(indexer));
     let subscription_limiter =
         SubscriptionLimiter::new_ref(params.max_subs, params.max_subs_per_ip);
@@ -171,6 +217,7 @@ fn try_setup_chronik(
                         .subscription_max_plugin_size,
                 },
                 subscription_limiter,
+                v2_state,
             })
         }
     })?;
@@ -233,6 +280,7 @@ fn try_setup_chronik(
     let chronik = Box::new(Chronik {
         node: Arc::clone(&node),
         indexer,
+        v2_service,
         pause,
         runtime: Mutex::new(Some(runtime)),
         in_process: Arc::clone(&in_process),
@@ -245,6 +293,64 @@ fn try_setup_chronik(
     );
     StartChronikValidationInterface(node_context, chronik);
     Ok(())
+}
+
+fn resync_v2_service(v2_service: &crate::v2::V2Service, node: &Node) {
+    let Ok(tip) = node.bridge.get_chain_tip() else {
+        return;
+    };
+    let tip_info = chronik_bridge::ffi::get_block_info(tip);
+    if tip_info.height < 0 {
+        return;
+    }
+    while let Ok(Some(cp)) = v2_service.checkpoint() {
+        if cp.height <= tip_info.height as u64 {
+            if let Ok(bindex) =
+                node.bridge.lookup_block_index_by_height(cp.height as i32)
+            {
+                let info = chronik_bridge::ffi::get_block_info(bindex);
+                if info.hash == cp.block_id {
+                    break;
+                }
+            }
+        }
+        if v2_service.disconnect_block(cp).is_err() {
+            break;
+        }
+    }
+    let start_height = match v2_service.checkpoint() {
+        Ok(Some(cp)) => cp.height as i32 + 1,
+        Ok(None) => 0,
+        Err(_) => return,
+    };
+    for h in start_height..=tip_info.height {
+        if node.bridge.shutdown_requested() {
+            return;
+        }
+        let Ok(bindex) = node.bridge.lookup_block_index_by_height(h) else {
+            break;
+        };
+        let Ok(cblock) = node.bridge.load_block(bindex) else {
+            break;
+        };
+        let Ok(native_block) =
+            crate::v2_ffi::bridge_v2_native_block(&cblock, bindex)
+        else {
+            break;
+        };
+        let res = if h == 0 {
+            v2_service.initialize_genesis(native_block)
+        } else {
+            v2_service.connect_block(native_block)
+        };
+        if let Err(err) = res {
+            log_chronik!("Chronik V2 resync skipped at height {h}: {err}\n");
+            break;
+        }
+    }
+    if let Ok(Some(cp)) = v2_service.checkpoint() {
+        let _ = v2_service.publish_authority(cp);
+    }
 }
 
 fn parse_socket_addr(host: String, default_port: u16) -> Result<SocketAddr> {
@@ -309,6 +415,7 @@ fn decompress_script(script: &[u8]) -> Result<Vec<u8>> {
 pub struct Chronik {
     node: Arc<Node>,
     indexer: Arc<RwLock<ChronikIndexer>>,
+    v2_service: Box<crate::v2::V2Service>,
     pause: Pause,
     /// Tokio runtime driving HTTP and Electrum. Wrapped so
     /// [`Chronik::interrupt`] can shut it down before the node is torn down
@@ -462,17 +569,32 @@ impl Chronik {
 
     fn connect_block(
         &self,
-        block: &ffi::CBlock,
+        cblock: &ffi::CBlock,
         bindex: &ffi::CBlockIndex,
     ) -> Result<()> {
         let block_undo = self.node.bridge.load_block_undo(bindex)?;
         let block =
-            chronik_bridge::ffi::bridge_block(block, &block_undo, bindex)?;
+            chronik_bridge::ffi::bridge_block(cblock, &block_undo, bindex)?;
         let mut indexer = self.indexer.blocking_write();
         let block = indexer.make_chronik_block(block);
         let block_hash = block.db_block.hash.clone();
         let num_txs = block.block_txs.txs.len();
         indexer.handle_block_connected(block)?;
+        if let Ok(native_block) =
+            crate::v2_ffi::bridge_v2_native_block(cblock, bindex)
+        {
+            let anchor = native_block.anchor.clone();
+            let res = if anchor.height == 0 {
+                self.v2_service.initialize_genesis(native_block)
+            } else {
+                self.v2_service.connect_block(native_block)
+            };
+            if res.is_ok() {
+                let _ = self.v2_service.publish_authority(anchor);
+            } else if let Err(err) = res {
+                log_chronik!("Chronik V2 connect_block skipped: {err}\n");
+            }
+        }
         log_chronik!(
             "Chronik: block {block_hash} connected with {num_txs} txs\n"
         );
@@ -481,17 +603,29 @@ impl Chronik {
 
     fn disconnect_block(
         &self,
-        block: &ffi::CBlock,
+        cblock: &ffi::CBlock,
         bindex: &ffi::CBlockIndex,
     ) -> Result<()> {
         let block_undo = self.node.bridge.load_block_undo(bindex)?;
         let block =
-            chronik_bridge::ffi::bridge_block(block, &block_undo, bindex)?;
+            chronik_bridge::ffi::bridge_block(cblock, &block_undo, bindex)?;
         let mut indexer = self.indexer.blocking_write();
         let block = indexer.make_chronik_block(block);
         let block_hash = block.db_block.hash.clone();
         let num_txs = block.block_txs.txs.len();
         indexer.handle_block_disconnected(block)?;
+        let info = chronik_bridge::ffi::get_block_info(bindex);
+        if info.height >= 0 {
+            let expected = crate::v2_ffi::Anchor {
+                block_id: info.hash,
+                height: info.height as u64,
+            };
+            if self.v2_service.disconnect_block(expected).is_ok() {
+                if let Ok(Some(cp)) = self.v2_service.checkpoint() {
+                    let _ = self.v2_service.publish_authority(cp);
+                }
+            }
+        }
         log_chronik!(
             "Chronik: block {block_hash} disconnected with {num_txs} txs\n"
         );
