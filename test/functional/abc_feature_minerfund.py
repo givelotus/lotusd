@@ -49,6 +49,8 @@ class MinerFundTest(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-enableminerfund",
+                # Keep policy parking stable until the explicit unpark checks.
+                "-automaticunparking=0",
             ],
             [],
         ]
@@ -146,7 +148,7 @@ class MinerFundTest(BitcoinTestFramework):
 
     def test_without_avalanche(self):
         self.log.info("Test the behavior when avalanche is completely disabled")
-        self.restart_node(0, extra_args=["-enableminerfund"])
+        self.restart_node(0, extra_args=self.extra_args[0])
         self.restart_node(1, extra_args=["-avalanche=0"])
         self.connect_nodes(0, 1)
 
@@ -176,7 +178,7 @@ class MinerFundTest(BitcoinTestFramework):
 
     def test_parked_chain(self):
         self.log.info("Test parking a competing chain")
-        self.restart_node(0, extra_args=["-enableminerfund"])
+        self.restart_node(0, extra_args=self.extra_args[0])
         node = self.nodes[0]
 
         self.generate(node, 1, sync_fun=self.no_op)

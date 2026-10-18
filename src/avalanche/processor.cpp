@@ -19,6 +19,7 @@
 #include <netmessagemaker.h>
 #include <policy/block/stakingrewards.h>
 #include <scheduler.h>
+#include <txmempool.h>
 #include <util/bitmanip.h>
 #include <util/moneystr.h>
 #include <util/time.h>
@@ -49,6 +50,9 @@ static uint256 GetVoteItemId(const AnyVoteItem &item) {
                           },
                           [](const StakeContenderId &contenderId) {
                               return uint256(contenderId);
+                          },
+                          [](const MempoolBatchVoteItem &batch) {
+                              return batch.GetId();
                           },
                           [](const CTransactionRef &tx) {
                               uint256 id = tx->GetId();
@@ -434,6 +438,9 @@ static bool isNull(const AnyVoteItem &item) {
                           [](const StakeContenderId &contenderId) {
                               return contenderId == uint256::ZERO;
                           },
+                          [](const MempoolBatchVoteItem &batch) {
+                              return batch.isNull();
+                          },
                           [](const auto &item) { return item == nullptr; },
                       },
                       item);
@@ -629,47 +636,59 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         responseItems.insert(std::make_pair(std::move(item), votes[i]));
     }
 
-    auto voteRecordsWriteView = voteRecords.getWriteView();
+    {
+        auto voteRecordsWriteView = voteRecords.getWriteView();
 
-    // Register votes.
-    for (const auto &p : responseItems) {
-        auto item = p.first;
-        const Vote &v = p.second;
+        // Register votes.
+        for (const auto &p : responseItems) {
+            auto item = p.first;
+            const Vote &v = p.second;
 
-        auto it = voteRecordsWriteView->find(item);
-        if (it == voteRecordsWriteView.end()) {
-            // We are not voting on that item anymore.
-            continue;
-        }
-
-        auto &vr = it->second;
-        if (!vr.registerVote(nodeid, v.GetError())) {
-            if (vr.isStale(staleVoteThreshold, staleVoteFactor)) {
-                updates.emplace_back(std::move(item), VoteStatus::Stale);
-
-                // Just drop stale votes. If we see this item again, we'll
-                // do a new vote.
-                voteRecordsWriteView->erase(it);
+            auto it = voteRecordsWriteView->find(item);
+            if (it == voteRecordsWriteView.end()) {
+                // We are not voting on that item anymore.
+                continue;
             }
-            // This vote did not provide any extra information, move on.
-            continue;
-        }
 
-        if (!vr.hasFinalized()) {
-            // This item has not been finalized, so we have nothing more to
-            // do.
+            const bool isBatchItem =
+                std::holds_alternative<const MempoolBatchVoteItem>(item);
+            if (isBatchItem && v.GetError() != 0) {
+                const auto &batchItem =
+                    std::get<const MempoolBatchVoteItem>(item);
+                markMempoolBatchConflict(batchItem.GetId());
+            }
+
+            auto &vr = it->second;
+            const bool voteRegistered = vr.registerVote(nodeid, v.GetError());
+
+            if (!voteRegistered) {
+                if (vr.isStale(staleVoteThreshold, staleVoteFactor)) {
+                    updates.emplace_back(std::move(item), VoteStatus::Stale);
+
+                    // Just drop stale votes. If we see this item again, we'll
+                    // do a new vote.
+                    voteRecordsWriteView->erase(it);
+                }
+                // This vote did not provide any extra information, move on.
+                continue;
+            }
+
+            if (!vr.hasFinalized()) {
+                // This item has not been finalized, so we have nothing more to
+                // do.
+                updates.emplace_back(std::move(item), vr.isAccepted()
+                                                          ? VoteStatus::Accepted
+                                                          : VoteStatus::Rejected);
+                continue;
+            }
+
+            // We just finalized a vote. If it is valid, then let the caller
+            // know. Either way, remove the item from the map.
             updates.emplace_back(std::move(item), vr.isAccepted()
-                                                      ? VoteStatus::Accepted
-                                                      : VoteStatus::Rejected);
-            continue;
+                                                      ? VoteStatus::Finalized
+                                                      : VoteStatus::Invalid);
+            voteRecordsWriteView->erase(it);
         }
-
-        // We just finalized a vote. If it is valid, then let the caller
-        // know. Either way, remove the item from the map.
-        updates.emplace_back(std::move(item), vr.isAccepted()
-                                                  ? VoteStatus::Finalized
-                                                  : VoteStatus::Invalid);
-        voteRecordsWriteView->erase(it);
     }
 
     // FIXME This doesn't belong here as it has nothing to do with vote
@@ -681,6 +700,14 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
         }
 
         const auto &item = update.getVoteItem();
+        if (const auto *batch = std::get_if<const MempoolBatchVoteItem>(&item)) {
+            if (update.getStatus() == VoteStatus::Finalized) {
+                finalizeMempoolBatch(batch->GetId());
+            } else {
+                markMempoolBatchConflict(batch->GetId());
+            }
+            continue;
+        }
 
         if (!std::holds_alternative<const CBlockIndex *>(item)) {
             continue;
@@ -1073,6 +1100,7 @@ void Processor::FinalizeNode(const ::Config &config, const CNode &node) {
     AssertLockNotHeld(cs_main);
 
     const NodeId nodeid = node.GetId();
+    WITH_LOCK(cs_batchPollPeers, batchPollPeers.erase(nodeid));
     WITH_LOCK(cs_peerManager, peerManager->removeNode(nodeid));
     WITH_LOCK(cs_delayedAvahelloNodeIds, delayedAvahelloNodeIds.erase(nodeid));
 }
@@ -1132,6 +1160,17 @@ void Processor::rejectStakeContender(const StakeContenderId &contenderId) {
     peerManager->rejectStakeContender(contenderId);
 }
 
+void Processor::setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services) {
+    LOCK(cs_batchPollPeers);
+    if (services & NODE_MERKLIX_EPOCH) batchPollPeers.insert(nodeid);
+    else batchPollPeers.erase(nodeid);
+}
+
+bool Processor::nodeSupportsMempoolBatch(NodeId nodeid) const {
+    LOCK(cs_batchPollPeers);
+    return batchPollPeers.count(nodeid) != 0;
+}
+
 void Processor::promoteAndPollStakeContenders(const CBlockIndex *pprev) {
     assert(pprev);
 
@@ -1166,6 +1205,284 @@ bool Processor::setContenderStatusForLocalWinners(
     LOCK(cs_peerManager);
     return peerManager->setContenderStatusForLocalWinners(
         pindex, winners, AVALANCHE_CONTENDER_MAX_POLLABLE, pollableContenders);
+}
+
+bool Processor::registerMempoolBatch(const MempoolBatchAnnouncement &batch,
+                                     bool accepted, bool reconcile) {
+    if (!batch.IsValid()) {
+        return false;
+    }
+
+    const uint256 batchId = batch.ComputeBatchId();
+    {
+        LOCK(cs_mempoolBatches);
+        const bool isNew =
+            m_mempoolBatches.find(batchId) == m_mempoolBatches.end();
+        if (isNew && m_mempoolBatches.size() >= MAX_MEMPOOL_BATCH_RECORDS) {
+            // Evict the oldest unfinalized batch record first; fall back to the
+            // oldest record if all tracked records are finalized.
+            auto evictIt = m_mempoolBatchOrder.begin();
+            for (auto it = m_mempoolBatchOrder.begin();
+                 it != m_mempoolBatchOrder.end(); ++it) {
+                auto mapIt = m_mempoolBatches.find(*it);
+                if (mapIt == m_mempoolBatches.end()) {
+                    evictIt = it;
+                    break;
+                }
+                const auto finIt = m_finalizedMempoolBatches.find(
+                    mapIt->second.prev_block_hash);
+                const bool isFin =
+                    finIt != m_finalizedMempoolBatches.end() &&
+                    std::any_of(finIt->second.begin(), finIt->second.end(),
+                                [&](const MempoolBatchAnnouncement &b) {
+                                    return b.ComputeBatchId() == *it;
+                                });
+                if (!isFin) {
+                    evictIt = it;
+                    break;
+                }
+            }
+            if (evictIt != m_mempoolBatchOrder.end()) {
+                const uint256 evictId = *evictIt;
+                m_mempoolBatchOrder.erase(evictIt);
+                m_mempoolBatches.erase(evictId);
+                m_acceptedMempoolBatches.erase(evictId);
+            }
+        }
+
+        auto &epochMap = m_epochBatchBySlot[batch.prev_block_hash];
+        auto slotIt = epochMap.find(batch.epoch_seq);
+        if (slotIt == epochMap.end()) {
+            epochMap.emplace(batch.epoch_seq, batchId);
+        } else if (slotIt->second != batchId) {
+            m_conflictedBatchEpochs[batch.prev_block_hash].insert(
+                batch.epoch_seq);
+            m_conflictedBatchIds.insert(slotIt->second);
+            m_conflictedBatchIds.insert(batchId);
+        }
+        if (m_conflictedBatchEpochs[batch.prev_block_hash].count(
+                batch.epoch_seq) > 0) {
+            m_conflictedBatchIds.insert(batchId);
+        }
+
+        m_mempoolBatches.insert_or_assign(batchId, batch);
+        if (isNew) {
+            m_mempoolBatchOrder.push_back(batchId);
+        }
+        // Preserve existing local acceptance if a peer echoes a batch we
+        // already locally verified/accepted.
+        if (accepted) {
+            m_acceptedMempoolBatches.insert(batchId);
+        }
+    }
+
+    if (reconcile) {
+        const MempoolBatchVoteItem item(batch);
+        if (!isPolled(item)) {
+            return addToReconcile(item);
+        }
+        if (accepted) {
+            auto w = voteRecords.getWriteView();
+            auto it = w->find(item);
+            if (it != w.end() && it->second.getConfidence() == 0) {
+                w->erase(it);
+                w->insert(std::make_pair(item, VoteRecord(true)));
+            }
+        }
+    }
+    return true;
+}
+
+bool Processor::setMempoolBatchAccepted(const uint256 &batchId, bool accepted) {
+    {
+        LOCK(cs_mempoolBatches);
+        if (m_mempoolBatches.find(batchId) == m_mempoolBatches.end()) {
+            return false;
+        }
+        if (accepted) {
+            m_acceptedMempoolBatches.insert(batchId);
+        } else {
+            m_acceptedMempoolBatches.erase(batchId);
+        }
+    }
+
+    const MempoolBatchVoteItem item(batchId);
+    auto w = voteRecords.getWriteView();
+    auto it = w->find(item);
+    if (it != w.end() && it->second.getConfidence() == 0) {
+        w->erase(it);
+        w->insert(std::make_pair(item, VoteRecord(accepted)));
+    }
+    return true;
+}
+
+bool Processor::getMempoolBatch(const uint256 &batchId,
+                                MempoolBatchAnnouncement &outBatch) const {
+    LOCK(cs_mempoolBatches);
+    auto it = m_mempoolBatches.find(batchId);
+    if (it == m_mempoolBatches.end()) {
+        return false;
+    }
+    outBatch = it->second;
+    return true;
+}
+
+bool Processor::isMempoolBatchKnown(const uint256 &batchId) const {
+    LOCK(cs_mempoolBatches);
+    return m_mempoolBatches.find(batchId) != m_mempoolBatches.end();
+}
+
+bool Processor::isMempoolBatchLocallyAccepted(const uint256 &batchId) const {
+    LOCK(cs_mempoolBatches);
+    return m_acceptedMempoolBatches.find(batchId) !=
+           m_acceptedMempoolBatches.end();
+}
+
+bool Processor::isMempoolBatchFinalized(const uint256 &batchId) const {
+    LOCK(cs_mempoolBatches);
+    auto it = m_mempoolBatches.find(batchId);
+    if (it == m_mempoolBatches.end()) {
+        return false;
+    }
+    auto finIt = m_finalizedMempoolBatches.find(it->second.prev_block_hash);
+    if (finIt == m_finalizedMempoolBatches.end()) {
+        return false;
+    }
+    return std::any_of(finIt->second.begin(), finIt->second.end(),
+                       [&](const MempoolBatchAnnouncement &b) {
+                           return b.ComputeBatchId() == batchId;
+                       });
+}
+
+bool Processor::hasMempoolBatchConflict(const uint256 &batchId) const {
+    LOCK(cs_mempoolBatches);
+    if (m_conflictedBatchIds.find(batchId) != m_conflictedBatchIds.end()) {
+        return true;
+    }
+    auto it = m_mempoolBatches.find(batchId);
+    if (it == m_mempoolBatches.end()) {
+        return false;
+    }
+    auto epochIt = m_conflictedBatchEpochs.find(it->second.prev_block_hash);
+    return epochIt != m_conflictedBatchEpochs.end() &&
+           epochIt->second.count(it->second.epoch_seq) > 0;
+}
+
+bool Processor::hasEpochConflict(const BlockHash &prevBlockHash,
+                                 uint32_t epochSeq) const {
+    LOCK(cs_mempoolBatches);
+    auto epochIt = m_conflictedBatchEpochs.find(prevBlockHash);
+    return epochIt != m_conflictedBatchEpochs.end() &&
+           epochIt->second.count(epochSeq) > 0;
+}
+
+void Processor::markMempoolBatchConflict(const uint256 &batchId) {
+    LOCK(cs_mempoolBatches);
+    m_conflictedBatchIds.insert(batchId);
+    auto it = m_mempoolBatches.find(batchId);
+    if (it != m_mempoolBatches.end()) {
+        m_conflictedBatchEpochs[it->second.prev_block_hash].insert(
+            it->second.epoch_seq);
+    }
+}
+
+void Processor::finalizeMempoolBatch(const uint256 &batchId) {
+    MempoolBatchFinalizedCallback cb;
+    MempoolBatchAnnouncement batch;
+    bool newlyFinalized = false;
+
+    {
+        LOCK(cs_mempoolBatches);
+        auto it = m_mempoolBatches.find(batchId);
+        if (it == m_mempoolBatches.end()) {
+            return;
+        }
+        batch = it->second;
+        if (m_mempoolBatchParent &&
+            batch.prev_block_hash != *m_mempoolBatchParent) {
+            return;
+        }
+        m_acceptedMempoolBatches.insert(batchId);
+
+        auto &vec = m_finalizedMempoolBatches[batch.prev_block_hash];
+        const bool alreadyPresent = std::any_of(
+            vec.begin(), vec.end(), [&](const MempoolBatchAnnouncement &b) {
+                return b.ComputeBatchId() == batchId;
+            });
+        if (!alreadyPresent) {
+            vec.push_back(batch);
+            std::sort(vec.begin(), vec.end(),
+                      [](const MempoolBatchAnnouncement &a,
+                         const MempoolBatchAnnouncement &b) {
+                          return a.epoch_seq < b.epoch_seq;
+                      });
+            newlyFinalized = true;
+            cb = m_onMempoolBatchFinalized;
+        }
+    }
+
+    if (newlyFinalized) {
+        if (mempool) {
+            LOCK(mempool->cs);
+            lotus::v2::Hash target_root{};
+            std::memcpy(target_root.data(), batch.subtree_a_root.begin(), 32);
+            auto &overlay_mgr = mempool->GetOverlayManager();
+            lotus::v2::Hash expectedParentBlock{};
+            std::memcpy(expectedParentBlock.data(), batch.prev_block_hash.begin(), 32);
+            bool already_frozen = false;
+            for (const auto &frozen_layer : overlay_mgr.GetFrozenEpochs()) {
+                if (frozen_layer.GetSubtreeARoot() == target_root) {
+                    already_frozen = true;
+                    break;
+                }
+            }
+            if (!already_frozen &&
+                overlay_mgr.GetSpeculativeOverlay().GetParentBlockId() == expectedParentBlock &&
+                overlay_mgr.GetSpeculativeOverlay().GetSubtreeARoot() ==
+                    target_root) {
+                overlay_mgr.FreezeEpochBatch();
+            }
+
+        }
+        const bool currentParent = WITH_LOCK(cs_mempoolBatches,
+            return !m_mempoolBatchParent ||
+                   *m_mempoolBatchParent == batch.prev_block_hash);
+        if (cb && currentParent) {
+            cb(batch);
+        }
+    }
+}
+
+void Processor::rejectMempoolBatch(const uint256 &batchId) {
+    LOCK(cs_mempoolBatches);
+    m_acceptedMempoolBatches.erase(batchId);
+}
+
+std::vector<MempoolBatchAnnouncement>
+Processor::getFinalizedMempoolBatches(const BlockHash &prevBlockHash) const {
+    LOCK(cs_mempoolBatches);
+    auto it = m_finalizedMempoolBatches.find(prevBlockHash);
+    if (it == m_finalizedMempoolBatches.end()) {
+        return {};
+    }
+    return it->second;
+}
+
+bool Processor::getFinalizedBatchForBlock(
+    const BlockHash &prevBlockHash, MempoolBatchAnnouncement &outBatch) const {
+    LOCK(cs_mempoolBatches);
+    auto it = m_finalizedMempoolBatches.find(prevBlockHash);
+    if (it == m_finalizedMempoolBatches.end() || it->second.empty()) {
+        return false;
+    }
+    outBatch = it->second.back();
+    return true;
+}
+
+void Processor::setMempoolBatchFinalizedCallback(
+    MempoolBatchFinalizedCallback cb) {
+    LOCK(cs_mempoolBatches);
+    m_onMempoolBatchFinalized = std::move(cb);
 }
 
 void Processor::updatedBlockTip() {
@@ -1217,6 +1534,33 @@ void Processor::updatedBlockTip() {
 
     const CBlockIndex *activeTip =
         WITH_LOCK(cs_main, return chainman.ActiveTip());
+    if (activeTip) {
+        {
+            LOCK(cs_mempoolBatches);
+            m_mempoolBatchParent = activeTip->GetBlockHash();
+            std::erase_if(m_finalizedMempoolBatches, [&](const auto &entry) {
+                return entry.first != *m_mempoolBatchParent;
+            });
+            std::erase_if(m_mempoolBatches, [&](const auto &entry) {
+                if (entry.second.prev_block_hash == *m_mempoolBatchParent) return false;
+                m_acceptedMempoolBatches.erase(entry.first);
+                m_conflictedBatchIds.erase(entry.first);
+                return true;
+            });
+            std::erase_if(m_mempoolBatchOrder, [&](const auto &id) {
+                return !m_mempoolBatches.contains(id);
+            });
+            std::erase_if(m_conflictedBatchIds, [&](const auto &id) {
+                return !m_mempoolBatches.contains(id);
+            });
+            std::erase_if(m_epochBatchBySlot, [&](const auto &entry) {
+                return entry.first != *m_mempoolBatchParent;
+            });
+            std::erase_if(m_conflictedBatchEpochs, [&](const auto &entry) {
+                return entry.first != *m_mempoolBatchParent;
+            });
+        }
+    }
     if (activeTip && isStakingPreconsensusActivated(activeTip)) {
         promoteAndPollStakeContenders(activeTip);
     }
@@ -1258,7 +1602,24 @@ void Processor::runEventLoop() {
 
             // Make sure there is at least one suitable node to query before
             // gathering invs.
-            nodeid = peerManager->selectNode();
+            // Classify pollable work once. Skip capability-ineligible nodes
+            // within the selected weighted proof without fake queries, slot
+            // reservations, or changes to ordinary poll cooldowns.
+            bool regular = false, batches = false;
+            for (const auto &[item, record] : *voteRecordsReadView) {
+                if (!record.shouldPoll()) continue;
+                if (std::holds_alternative<const MempoolBatchVoteItem>(item)) batches = true;
+                else regular = true;
+            }
+            // No peer is needed when no item can be polled. Passing an
+            // always-false capability predicate to selectNode would falsely
+            // report a peer shortage and keep requesting every peer's address.
+            if (!regular && !batches) {
+                return;
+            }
+            nodeid = peerManager->selectNode([&](NodeId id) {
+                return regular || (batches && nodeSupportsMempoolBatch(id));
+            });
             if (nodeid == NO_NODE) {
                 return;
             }
@@ -1269,7 +1630,8 @@ void Processor::runEventLoop() {
                 return true;
             });
 
-            invs = getInvsForNextPoll(*voteRecordsReadView, max_elements);
+            invs = getInvsForNextPoll(*voteRecordsReadView, max_elements,
+                                      /*forPoll=*/true, nodeSupportsMempoolBatch(nodeid));
             if (invs.empty()) {
                 return;
             }
@@ -1390,7 +1752,7 @@ void Processor::clearInflightRequests(
 
 std::vector<CInv> Processor::getInvsForNextPoll(
     RWCollection<VoteMap>::ReadView &voteRecordsReadView, size_t max_elements,
-    bool forPoll) const {
+    bool forPoll, bool include_mempool_batches) const {
     std::vector<CInv> invs;
 
     auto buildInvFromVoteItem = variant::overloaded{
@@ -1403,6 +1765,7 @@ std::vector<CInv> Processor::getInvsForNextPoll(
         [](const StakeContenderId &contenderId) {
             return CInv(MSG_AVA_STAKE_CONTENDER, contenderId);
         },
+        [](const MempoolBatchVoteItem &batch) { return CInv(MSG_AVA_MEMPOOL_BATCH, batch.GetId()); },
         [](const CTransactionRef &tx) { return CInv(MSG_TX, tx->GetHash()); },
     };
 
@@ -1411,6 +1774,11 @@ std::vector<CInv> Processor::getInvsForNextPoll(
             // Make sure we do not produce more invs than specified by the
             // protocol.
             return invs;
+        }
+
+        if (!include_mempool_batches &&
+            std::holds_alternative<const MempoolBatchVoteItem>(item)) {
+            continue;
         }
 
         const bool shouldPoll =
@@ -1439,6 +1807,14 @@ AnyVoteItem Processor::getVoteItemFromInv(const CInv &inv) const {
 
     if (inv.IsMsgStakeContender()) {
         return StakeContenderId(inv.hash);
+    }
+
+    if (inv.IsMsgMempoolBatch()) {
+        MempoolBatchAnnouncement batch;
+        if (getMempoolBatch(inv.hash, batch)) {
+            return MempoolBatchVoteItem(batch);
+        }
+        return {nullptr};
     }
 
     if (mempool && inv.IsMsgTx()) {
@@ -1509,6 +1885,12 @@ bool Processor::IsWorthPolling::operator()(
     return processor.getStakeContenderStatus(contenderId) != -1;
 }
 
+bool Processor::IsWorthPolling::operator()(
+    const MempoolBatchVoteItem &batch) const {
+    AssertLockNotHeld(processor.cs_mempoolBatches);
+    return processor.isMempoolBatchKnown(batch.GetId());
+}
+
 bool Processor::IsWorthPolling::operator()(const CTransactionRef &tx) const {
     if (!processor.mempool) {
         return false;
@@ -1546,6 +1928,12 @@ bool Processor::GetLocalAcceptance::operator()(
     AssertLockNotHeld(processor.cs_stakingRewards);
 
     return processor.getStakeContenderStatus(contenderId) == 0;
+}
+
+bool Processor::GetLocalAcceptance::operator()(
+    const MempoolBatchVoteItem &batch) const {
+    AssertLockNotHeld(processor.cs_mempoolBatches);
+    return processor.isMempoolBatchLocallyAccepted(batch.GetId());
 }
 
 bool Processor::GetLocalAcceptance::operator()(

@@ -28,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -330,7 +331,7 @@ public:
     bool latchAvaproofsSent(NodeId nodeid);
 
     // Randomly select a node to poll.
-    NodeId selectNode();
+    NodeId selectNode(const std::function<bool(NodeId)> &eligible = {});
 
     /**
      * Returns true if we encountered a lack of node since the last call.

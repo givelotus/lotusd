@@ -43,7 +43,7 @@ struct ChainstateManagerOpts {
     std::optional<int32_t> check_block_index{};
     bool checkpoints_enabled{DEFAULT_CHECKPOINTS_ENABLED};
     bool park_deep_reorg{DEFAULT_PARK_DEEP_REORG};
-    bool automatic_unparking{!AVALANCHE_DEFAULT_ENABLED};
+    bool automatic_unparking{true};
     //! If set, it will override the minimum work we will assume exists on some
     //! valid chain.
     std::optional<arith_uint256> minimum_chain_work{};

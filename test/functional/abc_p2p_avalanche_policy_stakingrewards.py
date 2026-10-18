@@ -44,6 +44,8 @@ class ABCStakingRewardsPolicyTest(BitcoinTestFramework):
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
                 "-avalanchestakingrewards=1",
+                # Policy-parked blocks must stay parked until the explicit vote.
+                "-automaticunparking=0",
             ],
         ]
 

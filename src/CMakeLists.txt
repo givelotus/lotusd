@@ -1017,3 +1017,5 @@ endif()
 target_link_libraries(common lotus_v2_header)
 
 target_sources(server PRIVATE net/v2_protocol_handler.cpp)
+
+target_sources(server PRIVATE avalanche/preconsensus.cpp)
