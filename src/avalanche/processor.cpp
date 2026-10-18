@@ -55,12 +55,12 @@ static uint256 GetVoteItemId(const AnyVoteItem &item) {
                           [](const MempoolBatchVoteItem &batch) {
                               return batch.GetId();
                           },
+                          [](const TreasuryContenderId &contenderId) {
+                              return uint256(contenderId);
+                          },
                           [](const CTransactionRef &tx) {
                               uint256 id = tx->GetId();
                               return id;
-                          },
-                          [](const StateAnchorId &anchorId) {
-                              return uint256(anchorId);
                           },
                       },
                       item);
@@ -442,8 +442,8 @@ static bool isNull(const AnyVoteItem &item) {
                           [](const StakeContenderId &contenderId) {
                               return contenderId == uint256::ZERO;
                           },
-                          [](const StateAnchorId &anchorId) {
-                              return anchorId == uint256::ZERO;
+                          [](const TreasuryContenderId &contenderId) {
+                              return contenderId == uint256::ZERO;
                           },
                           [](const MempoolBatchVoteItem &batch) {
                               return batch.isNull();
@@ -776,12 +776,29 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
     // FIXME This doesn't belong here as it has nothing to do with vote
     // registration.
     for (const auto &update : updates) {
-        if (update.getStatus() != VoteStatus::Finalized &&
-            update.getStatus() != VoteStatus::Invalid) {
+        const auto &item = update.getVoteItem();
+        const VoteStatus status = update.getStatus();
+
+        if (std::holds_alternative<const TreasuryContenderId>(item)) {
+            const auto &contenderId = std::get<const TreasuryContenderId>(item);
+            if (status == VoteStatus::Accepted) {
+                acceptTreasuryContender(contenderId);
+            } else if (status == VoteStatus::Finalized) {
+                finalizeTreasuryContender(contenderId);
+                setRecentlyFinalized(contenderId);
+            } else if (status == VoteStatus::Rejected ||
+                       status == VoteStatus::Invalid) {
+                rejectTreasuryContender(contenderId);
+            }
             continue;
         }
 
-        const auto &item = update.getVoteItem();
+        // Treasury handles provisional decisions above. Other item kinds
+        // update finalized state only after the vote has actually finalized.
+        if (status != VoteStatus::Finalized && status != VoteStatus::Invalid) {
+            continue;
+        }
+
         if (const auto *batch = std::get_if<const MempoolBatchVoteItem>(&item)) {
             if (update.getStatus() == VoteStatus::Finalized) {
                 finalizeMempoolBatch(batch->GetId());
@@ -795,7 +812,7 @@ bool Processor::registerVotes(NodeId nodeid, const Response &response,
             continue;
         }
 
-        if (update.getStatus() == VoteStatus::Invalid) {
+        if (status == VoteStatus::Invalid) {
             // Track invalidated blocks. Other invalidated types are not
             // tracked because they may be rejected for transient reasons
             // (ex: immature proofs or orphaned txs) With blocks this is not
@@ -1239,7 +1256,6 @@ void Processor::FinalizeNode(const ::Config &config, const CNode &node) {
     WITH_LOCK(cs_batchPollPeers, batchPollPeers.erase(nodeid));
     WITH_LOCK(cs_peerManager, peerManager->removeNode(nodeid));
     WITH_LOCK(cs_delayedAvahelloNodeIds, delayedAvahelloNodeIds.erase(nodeid));
-    WITH_LOCK(cs_stateAnchors, nodeStateAnchorSupport.erase(nodeid));
 }
 
 int Processor::getStakeContenderStatus(
@@ -1297,128 +1313,6 @@ void Processor::rejectStakeContender(const StakeContenderId &contenderId) {
     peerManager->rejectStakeContender(contenderId);
 }
 
-StateAnchorId Processor::registerStateAnchor(const BlockHash &blockhash,
-                                             const uint256 &utxo_root,
-                                             bool localAccepted, bool poll) {
-    const StateAnchorId anchorId(blockhash, utxo_root);
-    {
-        LOCK(cs_stateAnchors);
-        if (localAccepted) {
-            localBlockStateRoots[blockhash] = utxo_root;
-        }
-        auto it = stateAnchors.find(anchorId);
-        if (it == stateAnchors.end()) {
-            int status = localAccepted ? 0 : -2;
-            auto localIt = localBlockStateRoots.find(blockhash);
-            if (localIt != localBlockStateRoots.end() &&
-                localIt->second != utxo_root) {
-                status = 1;
-            }
-            stateAnchors.emplace(
-                anchorId, StateAnchorEntry{blockhash, utxo_root, status, false});
-        } else if (localAccepted) {
-            it->second.status = 0;
-        }
-        // Mark any competing state anchors for the same blockhash as rejected (1)
-        if (localAccepted) {
-            for (auto &[id, entry] : stateAnchors) {
-                if (entry.blockhash == blockhash &&
-                    entry.utxo_root != utxo_root && !entry.finalized) {
-                    entry.status = 1;
-                }
-            }
-        }
-    }
-    if (poll) {
-        addToReconcile(anchorId);
-    }
-    return anchorId;
-}
-
-int Processor::getStateAnchorStatus(const StateAnchorId &anchorId) const {
-    LOCK(cs_stateAnchors);
-    auto it = stateAnchors.find(anchorId);
-    if (it == stateAnchors.end()) {
-        return -1;
-    }
-    const auto &entry = it->second;
-    if (entry.finalized) {
-        return 0;
-    }
-    auto finIt = finalizedBlockStateRoots.find(entry.blockhash);
-    if (finIt != finalizedBlockStateRoots.end()) {
-        return finIt->second == entry.utxo_root ? 0 : 1;
-    }
-    auto locIt = localBlockStateRoots.find(entry.blockhash);
-    if (locIt != localBlockStateRoots.end()) {
-        return locIt->second == entry.utxo_root ? 0 : 1;
-    }
-    return entry.status;
-}
-
-void Processor::acceptStateAnchor(const StateAnchorId &anchorId) {
-    LOCK(cs_stateAnchors);
-    auto it = stateAnchors.find(anchorId);
-    if (it != stateAnchors.end()) {
-        it->second.status = 0;
-    }
-}
-
-void Processor::finalizeStateAnchor(const StateAnchorId &anchorId) {
-    AssertLockNotHeld(cs_main);
-    BlockHash blockhash;
-    uint256 utxo_root;
-    {
-        LOCK(cs_stateAnchors);
-        auto it = stateAnchors.find(anchorId);
-        if (it == stateAnchors.end()) {
-            return;
-        }
-        it->second.status = 0;
-        it->second.finalized = true;
-        blockhash = it->second.blockhash;
-        utxo_root = it->second.utxo_root;
-        finalizedBlockStateRoots[blockhash] = utxo_root;
-        localBlockStateRoots[blockhash] = utxo_root;
-        for (auto &[id, entry] : stateAnchors) {
-            if (entry.blockhash == blockhash &&
-                entry.utxo_root != utxo_root) {
-                entry.status = 1;
-                entry.finalized = false;
-            }
-        }
-    }
-}
-
-void Processor::rejectStateAnchor(const StateAnchorId &anchorId) {
-    LOCK(cs_stateAnchors);
-    auto it = stateAnchors.find(anchorId);
-    if (it != stateAnchors.end()) {
-        it->second.status = 1;
-        it->second.finalized = false;
-    }
-}
-
-std::optional<uint256>
-Processor::getFinalizedStateRoot(const BlockHash &blockhash) const {
-    LOCK(cs_stateAnchors);
-    auto it = finalizedBlockStateRoots.find(blockhash);
-    if (it == finalizedBlockStateRoots.end()) {
-        return std::nullopt;
-    }
-    return it->second;
-}
-
-std::optional<uint256>
-Processor::getLocalStateRoot(const BlockHash &blockhash) const {
-    LOCK(cs_stateAnchors);
-    auto it = localBlockStateRoots.find(blockhash);
-    if (it == localBlockStateRoots.end()) {
-        return std::nullopt;
-    }
-    return it->second;
-}
-
 void Processor::setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services) {
     LOCK(cs_batchPollPeers);
     if (services & NODE_MERKLIX_EPOCH) batchPollPeers.insert(nodeid);
@@ -1428,20 +1322,6 @@ void Processor::setNodeMempoolBatchServices(NodeId nodeid, ServiceFlags services
 bool Processor::nodeSupportsMempoolBatch(NodeId nodeid) const {
     LOCK(cs_batchPollPeers);
     return batchPollPeers.count(nodeid) != 0;
-}
-
-void Processor::setNodeSupportsStateAnchor(NodeId nodeid, bool supports) {
-    LOCK(cs_stateAnchors);
-    nodeStateAnchorSupport[nodeid] = supports;
-}
-
-bool Processor::nodeSupportsStateAnchor(NodeId nodeid) const {
-    LOCK(cs_stateAnchors);
-    auto it = nodeStateAnchorSupport.find(nodeid);
-    if (it != nodeStateAnchorSupport.end()) {
-        return it->second;
-    }
-    return false; // Unknown peers must explicitly advertise this extension.
 }
 
 void Processor::promoteAndPollStakeContenders(const CBlockIndex *pprev) {
@@ -2001,6 +1881,138 @@ void Processor::setMempoolBatchFinalizedCallback(
     m_onMempoolBatchFinalized = std::move(cb);
 }
 
+bool Processor::addTreasuryContender(const BlockHash &prevBlockHash,
+                                     const std::vector<CTxOut> &outputs,
+                                     bool isLocalWinner,
+                                     TreasuryContenderId *outContenderId) {
+    TreasuryContenderId cid;
+    {
+        LOCK(cs_treasury);
+        if (!m_treasuryContenderCache.add(prevBlockHash, outputs, &cid)) {
+            if (outContenderId) {
+                *outContenderId = TreasuryContenderId();
+            }
+            return false;
+        }
+        if (outContenderId) {
+            *outContenderId = cid;
+        }
+        if (isLocalWinner) {
+            m_treasuryContenderCache.setLocalWinner(cid);
+        }
+    }
+
+    return addToReconcile(cid);
+}
+
+TreasuryContenderId
+Processor::addTreasuryContender(const BlockHash &prevBlockHash,
+                                const std::vector<CTxOut> &outputs,
+                                Amount totalReward) {
+    TreasuryContenderId cid;
+    {
+        LOCK(cs_treasury);
+        cid = m_treasuryContenderCache.add(prevBlockHash, outputs, totalReward);
+    }
+    addToReconcile(cid);
+    return cid;
+}
+
+TreasuryContenderId Processor::registerDefaultTreasuryContender(
+    const CBlockIndex *pindexPrev, Amount blockSubsidy,
+    TreasuryContenderId *outContenderId) {
+    if (!pindexPrev) {
+        if (outContenderId) {
+            *outContenderId = TreasuryContenderId();
+        }
+        return TreasuryContenderId();
+    }
+    return registerDefaultTreasuryContender(pindexPrev->GetBlockHash(),
+                                            pindexPrev->nHeight, blockSubsidy,
+                                            outContenderId);
+}
+
+TreasuryContenderId Processor::registerDefaultTreasuryContender(
+    const BlockHash &prevBlockHash, int blockHeight, Amount blockSubsidy,
+    TreasuryContenderId *outContenderId) {
+    TreasuryContenderId cid;
+    {
+        LOCK(cs_treasury);
+        cid = m_treasuryContenderCache.registerDefaultTreasuryContender(
+            prevBlockHash, blockHeight, blockSubsidy, outContenderId);
+    }
+    if (!cid.IsNull()) {
+        if (!isPolled(cid)) {
+            addToReconcile(cid);
+        } else {
+            auto w = voteRecords.getWriteView();
+            auto it = w->find(cid);
+            if (it != w.end() && it->second.getConfidence() == 0) {
+                w->erase(it);
+                w->insert(std::make_pair(cid, VoteRecord(true)));
+            }
+        }
+    }
+    return cid;
+}
+
+void Processor::cleanupTreasuryContenders(const int minHeight) {
+    LOCK(cs_treasury);
+    m_treasuryContenderCache.cleanup(minHeight);
+}
+
+void Processor::cleanupTreasuryContenders(const BlockHash &keepBlockHash) {
+    LOCK(cs_treasury);
+    m_treasuryContenderCache.cleanup(keepBlockHash);
+}
+
+int Processor::getTreasuryContenderStatus(
+    const TreasuryContenderId &contenderId) const {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.getVoteStatus(contenderId);
+}
+
+bool Processor::getTreasuryContenderOutputs(
+    const TreasuryContenderId &contenderId,
+    std::vector<CTxOut> &outputs) const {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.getOutputs(contenderId, outputs);
+}
+
+bool Processor::acceptTreasuryContender(
+    const TreasuryContenderId &contenderId) {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.accept(contenderId);
+}
+
+bool Processor::finalizeTreasuryContender(
+    const TreasuryContenderId &contenderId) {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.finalize(contenderId);
+}
+
+bool Processor::rejectTreasuryContender(
+    const TreasuryContenderId &contenderId) {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.reject(contenderId);
+}
+
+bool Processor::getTreasuryRewardWinner(const BlockHash &prevBlockHash,
+                                        std::vector<CTxOut> &outputs) const {
+    LOCK(cs_treasury);
+    return m_treasuryContenderCache.getWinner(prevBlockHash, outputs);
+}
+
+bool Processor::setTreasuryRewardWinner(const BlockHash &prevBlockHash,
+                                        const std::vector<CTxOut> &outputs) {
+    LOCK(cs_treasury);
+    TreasuryContenderId cid;
+    if (!m_treasuryContenderCache.add(prevBlockHash, outputs, &cid)) {
+        return false;
+    }
+    return m_treasuryContenderCache.finalize(cid);
+}
+
 void Processor::updatedBlockTip() {
     const bool registerLocalProof = canShareLocalProof();
     auto registerProofs = [&]() {
@@ -2080,6 +2092,14 @@ void Processor::updatedBlockTip() {
     if (activeTip && isStakingPreconsensusActivated(activeTip)) {
         promoteAndPollStakeContenders(activeTip);
     }
+    if (activeTip && IsTreasuryActivated(chainman.GetConsensus(), activeTip) &&
+        (gArgs.IsArgSet("-avalanchetreasuryaddress") ||
+         gArgs.GetBoolArg("-avalanchedefaulttreasury", false) ||
+         gArgs.GetBoolArg("-avalancheusedefaulttreasury", false))) {
+        const Amount nextBlockSubsidy =
+            GetBlockSubsidy(activeTip->nHeight + 1, chainman.GetConsensus());
+        registerDefaultTreasuryContender(activeTip, nextBlockSubsidy);
+    }
 }
 
 void Processor::transactionAddedToMempool(const CTransactionRef &tx) {
@@ -2123,11 +2143,9 @@ void Processor::runEventLoop() {
             // within the selected weighted proof without fake queries, slot
             // reservations, or changes to ordinary poll cooldowns.
             bool regular = false, batches = false;
-            bool anchors = false;
             for (const auto &[item, record] : *voteRecordsReadView) {
                 if (!record.shouldPoll()) continue;
                 if (std::holds_alternative<const MempoolBatchVoteItem>(item)) batches = true;
-                else if (std::holds_alternative<const StateAnchorId>(item)) anchors = true;
                 else regular = true;
             }
             // No peer is needed when no item can be polled. Passing an
@@ -2137,8 +2155,7 @@ void Processor::runEventLoop() {
                 return;
             }
             nodeid = peerManager->selectNode([&](NodeId id) {
-                return regular || (batches && nodeSupportsMempoolBatch(id)) ||
-                    (anchors && nodeSupportsStateAnchor(id));
+                return regular || (batches && nodeSupportsMempoolBatch(id));
             });
             if (nodeid == NO_NODE) {
                 return;
@@ -2150,10 +2167,8 @@ void Processor::runEventLoop() {
                 return true;
             });
 
-            const bool include_state_anchors = nodeSupportsStateAnchor(nodeid);
             invs = getInvsForNextPoll(*voteRecordsReadView, max_elements,
-                                      /*forPoll=*/true, include_state_anchors,
-                                      nodeSupportsMempoolBatch(nodeid));
+                                      /*forPoll=*/true, nodeSupportsMempoolBatch(nodeid));
             if (invs.empty()) {
                 return;
             }
@@ -2278,7 +2293,7 @@ void Processor::clearInflightRequests(
 
 std::vector<CInv> Processor::getInvsForNextPoll(
     RWCollection<VoteMap>::ReadView &voteRecordsReadView, size_t max_elements,
-    bool forPoll, bool include_state_anchors, bool include_mempool_batches) const {
+    bool forPoll, bool include_mempool_batches) const {
     std::vector<CInv> invs;
 
     auto buildInvFromVoteItem = variant::overloaded{
@@ -2291,9 +2306,11 @@ std::vector<CInv> Processor::getInvsForNextPoll(
         [](const StakeContenderId &contenderId) {
             return CInv(MSG_AVA_STAKE_CONTENDER, contenderId);
         },
-        [](const StateAnchorId &id) { return CInv(MSG_AVA_STATE_ANCHOR, id); },
         [](const MempoolBatchVoteItem &batch) { return CInv(MSG_AVA_MEMPOOL_BATCH, batch.GetId()); },
-        [](const CTransactionRef &tx) { return CInv(MSG_TX, tx->GetHash()); },
+        [](const TreasuryContenderId &contenderId) {
+            return CInv(MSG_AVA_TREASURY_CONTENDER, contenderId);
+        },
+        [](const CTransactionRef &tx) { return CInv(MSG_TX, tx->GetId()); },
     };
 
     for (const auto &[item, voteRecord] : voteRecordsReadView) {
@@ -2301,11 +2318,6 @@ std::vector<CInv> Processor::getInvsForNextPoll(
             // Make sure we do not produce more invs than specified by the
             // protocol.
             return invs;
-        }
-
-        if (!include_state_anchors &&
-            std::holds_alternative<const StateAnchorId>(item)) {
-            continue;
         }
 
         if (!include_mempool_batches &&
@@ -2341,8 +2353,8 @@ AnyVoteItem Processor::getVoteItemFromInv(const CInv &inv) const {
         return StakeContenderId(inv.hash);
     }
 
-    if (inv.IsMsgStateAnchor()) {
-        return StateAnchorId(inv.hash);
+    if (inv.IsMsgTreasuryContender()) {
+        return TreasuryContenderId(inv.hash);
     }
 
     if (inv.IsMsgMempoolBatch()) {
@@ -2427,6 +2439,12 @@ bool Processor::IsWorthPolling::operator()(
     return processor.isMempoolBatchKnown(batch.GetId());
 }
 
+bool Processor::IsWorthPolling::operator()(
+    const TreasuryContenderId &contenderId) const {
+    AssertLockNotHeld(processor.cs_treasury);
+    return processor.getTreasuryContenderStatus(contenderId) != -1;
+}
+
 bool Processor::IsWorthPolling::operator()(const CTransactionRef &tx) const {
     if (!processor.mempool) {
         return false;
@@ -2435,14 +2453,6 @@ bool Processor::IsWorthPolling::operator()(const CTransactionRef &tx) const {
     AssertLockNotHeld(processor.mempool->cs);
     return WITH_LOCK(processor.mempool->cs,
                      return processor.mempool->isWorthPolling(tx));
-}
-
-bool Processor::IsWorthPolling::operator()(
-    const StateAnchorId &anchorId) const {
-    AssertLockNotHeld(processor.cs_stateAnchors);
-    LOCK(processor.cs_stateAnchors);
-    auto it = processor.stateAnchors.find(anchorId);
-    return it != processor.stateAnchors.end() && !it->second.finalized;
 }
 
 bool Processor::isWorthPolling(const AnyVoteItem &item) const {
@@ -2481,6 +2491,12 @@ bool Processor::GetLocalAcceptance::operator()(
 }
 
 bool Processor::GetLocalAcceptance::operator()(
+    const TreasuryContenderId &contenderId) const {
+    AssertLockNotHeld(processor.cs_treasury);
+    return processor.getTreasuryContenderStatus(contenderId) == 0;
+}
+
+bool Processor::GetLocalAcceptance::operator()(
     const CTransactionRef &tx) const {
     if (!processor.mempool) {
         return false;
@@ -2490,12 +2506,6 @@ bool Processor::GetLocalAcceptance::operator()(
 
     return WITH_LOCK(processor.mempool->cs,
                      return processor.mempool->exists(tx->GetId()));
-}
-
-bool Processor::GetLocalAcceptance::operator()(
-    const StateAnchorId &anchorId) const {
-    AssertLockNotHeld(processor.cs_stateAnchors);
-    return processor.getStateAnchorStatus(anchorId) == 0;
 }
 
 bool Processor::isPreconsensusActivated(const CBlockIndex *pprev) const {
