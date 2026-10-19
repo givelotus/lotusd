@@ -87,6 +87,7 @@ class LoggingTest(BitcoinTestFramework):
         self.test_gcp_format()
         self.test_ecs_format()
         self.test_syslog_format()
+        self.test_text_priority()
         self.test_json_aux_only()
 
     def assert_no_absolute_source_paths(self, log_path):
@@ -183,6 +184,24 @@ class LoggingTest(BitcoinTestFramework):
         assert len(records) > 20
         assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
         assert any(record["message"] == "Shutdown: done" for record in records)
+
+    def test_text_priority(self):
+        self.log.info("Test opt-in text priority prefix")
+        self.restart_node(0, [
+            "-logformat=text", "-logtextpriority", "-debuglogfile=priority.log",
+        ])
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        with open(self.relative_log_path("priority.log"), encoding="utf-8") as stream:
+            lines = [line for line in stream if line.strip()]
+        assert len(lines) > 20
+        assert all(line[:3] in ("<3>", "<4>", "<6>", "<7>") for line in lines)
+        assert any(line.startswith("<6>") and "Shutdown: done" in line for line in lines)
+        self.restart_node(0, ["-logformat=text", "-debuglogfile=priority-default.log"])
+        self.stop_node(0)
+        with open(self.relative_log_path("priority-default.log"), encoding="utf-8") as stream:
+            lines = [line for line in stream if line.strip()]
+        assert lines and all(not line.startswith("<") for line in lines)
     def test_json_aux_only(self):
         self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
         path = self.relative_log_path("aux-only.jsonl")

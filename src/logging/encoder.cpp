@@ -337,6 +337,12 @@ void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
     const std::string_view msg{
         line.event ? EventText(line, /*with_fields=*/true) : line.message};
     out.clear();
+    const auto priority{[&] {
+        out += '<';
+        out += char('0' + LogPriority(line.level));
+        out += '>';
+    }};
+    if (opts.text_priority) priority();
     if (line.ratelimited) {
         // To avoid confusion caused by dropped log messages when debugging
         // an issue, lines are prefixed with "[*]" when there are any
@@ -376,6 +382,12 @@ void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
     size_t run{0};
     for (size_t i = 0; i < msg.size(); ++i) {
         const uint8_t ch{uint8_t(msg[i])};
+        if (opts.text_priority && ch == '\n' && i + 1 < msg.size()) {
+            out.append(msg.data() + run, i + 1 - run);
+            priority();
+            run = i + 1;
+            continue;
+        }
         if ((ch >= 32 || ch == '\n') && ch != '\x7f') {
             continue;
         }
