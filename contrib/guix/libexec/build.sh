@@ -232,11 +232,8 @@ cmake -GNinja .. \
     -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DBUILD_WALLET=OFF \
     -DBUILD_CHRONIK=OFF \
-    -DBUILD_QT=OFF \
-    -DENABLE_QRCODE=OFF \
     -DUSE_JEMALLOC=OFF \
     -DENABLE_CLANG_TIDY=OFF \
-    -DENABLE_BIP70=OFF \
     -DUSE_LINKER=
 PROJECT_NAME=$(ninja print-project-name | sed '$!d')
 
@@ -410,26 +407,9 @@ EOF
             ;;
         *darwin*)
             cmake --install . --strip ${V:+--verbose}
-
-            export PYTHONPATH="${BASEPREFIX}/${HOST}/native/lib/python3/dist-packages:${PYTHONPATH}"
-            ninja osx-deploydir
-
-            OSX_VOLNAME="$(cat osx_volname)"
-            mkdir -p unsigned-app-${HOST}
-            cp osx_volname unsigned-app-${HOST}/
-            cp ../contrib/macdeploy/detached-sig-apply.sh unsigned-app-${HOST}
-            cp ../contrib/macdeploy/detached-sig-create.sh unsigned-app-${HOST}
-            mv dist unsigned-app-${HOST}
-            find unsigned-app-${HOST} -print0 | sort --zero-terminated | tar --create --no-recursion --mode='u+rw,go+r-w,a+X' --null --files-from=- | gzip -9n > ${OUTDIR}/${DISTNAME}-osx-unsigned.tar.gz
-
-            ninja osx-zip
-            mv "${OSX_VOLNAME}.zip" ${OUTDIR}/${DISTNAME}-osx-unsigned.zip
-
             ninja install-proof-manager-cli
-
             pushd installed
-            find . -path "*.app*" -type f -executable -exec mv {} ${DISTNAME}/bin/bitcoin-qt \;
-            find ${DISTNAME} -not -path "*.app*" -print0 | sort --zero-terminated | tar --create --no-recursion --mode='u+rw,go+r-w,a+X' --null --files-from=- | gzip -9n > ${OUTDIR}/${DISTNAME}-${HOST}.tar.gz
+            find ${DISTNAME} -print0 | sort --zero-terminated | tar --create --no-recursion --mode='u+rw,go+r-w,a+X' --null --files-from=- | gzip -9n > ${OUTDIR}/${DISTNAME}-${HOST}.tar.gz
             popd
             ;;
     esac

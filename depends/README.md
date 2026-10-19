@@ -57,10 +57,6 @@ For more information, see [SDK Extraction](../contrib/macdeploy/README.md#sdk-ex
 
 #### For linux cross compilation
 
-Common linux dependencies:
-
-    sudo apt-get install bison gperf
-
 For linux 32 bits cross compilation:
 
 First add the i386 architecture to `dpkg`:
@@ -91,8 +87,6 @@ The following can be set when running make: `make FOO=bar`
 - `FALLBACK_DOWNLOAD_PATH`: If a source file can't be fetched, try here before giving up
 - `C_STANDARD`: Set the C standard version used. Defaults to `gnu11`.
 - `CXX_STANDARD`: Set the C++ standard version used. Defaults to `c++20`.
-- `NO_QT`: Don't download/build/cache Qt and its dependencies
-- `NO_QR`: Don't download/build/cache packages needed for enabling qrencode
 - `NO_HTTP2`: Don't download/build/cache nghttp2, needed for HTTP/2 (`-DENABLE_HTTP2=ON`)
 - `NO_WALLET`: Don't download/build/cache libs needed to enable the wallet
 - `NO_BDB`: Don't download/build/cache BerkeleyDB
