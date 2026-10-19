@@ -251,15 +251,15 @@ OutputRecord Public(Record record, const OutPoint &outpoint) {
     return out;
 }
 
-void Reserve(size_t &total, size_t bytes) {
-    if (bytes > MAX_BATCH_BYTES || total + bytes > MAX_BATCH_BYTES) {
+void Reserve(size_t &total, size_t bytes, const Bounds &bounds) {
+    if (bytes > bounds.BatchBytes() || total + bytes > bounds.BatchBytes()) {
         ThrowInvalid("staging capacity");
     }
     total += bytes;
 }
 
-void WriteBatch(V2Env &db, const V2WriteBatch &batch) {
-    if (batch.SizeInBytes() > MAX_BATCH_BYTES) {
+void WriteBatch(V2Env &db, const V2WriteBatch &batch, const Bounds &bounds) {
+    if (batch.SizeInBytes() > bounds.BatchBytes()) {
         ThrowInvalid("serialized batch bound");
     }
     db.Write(batch);
@@ -375,8 +375,8 @@ std::map<Bytes, Bytes> AssetEntries(const CommittedBlock &block,
 }
 
 /** Validates the stored undo of the tip block before applying it. */
-void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
-                  const Undo &undo) {
+void ValidateUndo(const V2Env &db, const Binding &binding, const Bounds &bounds,
+                  const Anchor &anchor, const Undo &undo) {
     if (!undo.parent) {
         ThrowCorrupt();
     }
@@ -384,22 +384,22 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
     if (undo.binding != binding || undo.anchor != anchor ||
         parent.height == UINT64_MAX || parent.height + 1 != anchor.height ||
         (parent.height == 0 && parent.block_id != binding.genesis) ||
-        undo.entries.size() > MAX_BATCH_BYTES / 40) {
+        undo.entries.size() > bounds.BatchBytes() / 40) {
         ThrowCorrupt();
     }
     const auto receipt_bytes = db.Get(PrefixKey('b', anchor.block_id));
-    if (!receipt_bytes || receipt_bytes->size() > MAX_BATCH_BYTES) {
+    if (!receipt_bytes || receipt_bytes->size() > bounds.BatchBytes()) {
         ThrowCorrupt();
     }
     const Receipt receipt = Dec<Receipt>(*receipt_bytes);
     const auto &transactions = receipt.transactions;
     if (receipt.anchor != anchor || receipt.parent != parent ||
-        transactions.size() > MAX_TRANSACTIONS) {
+        transactions.size() > bounds.Transactions()) {
         ThrowCorrupt();
     }
-    auto reserve = [](size_t &total, size_t bytes) {
+    auto reserve = [&bounds](size_t &total, size_t bytes) {
         try {
-            Reserve(total, bytes);
+            Reserve(total, bytes, bounds);
         } catch (const V2Error &) {
             ThrowCorrupt();
         }
@@ -413,11 +413,10 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
             tx.location.tx_index != index) {
             ThrowCorrupt();
         }
-        constexpr size_t per_spend = 6 * MAX_BRANCH_RECORD_BYTES + 1024;
-        if (tx.spends.size() > SIZE_MAX / per_spend) {
+        if (tx.spends.size() > SIZE_MAX / RESERVE_SPEND) {
             ThrowCorrupt();
         }
-        reserve(reservation, 512 + tx.spends.size() * per_spend);
+        reserve(reservation, RESERVE_TX + tx.spends.size() * RESERVE_SPEND);
         if (!expected.insert(PrefixKey('t', tx.location.txid.hash.b)).second) {
             ThrowCorrupt();
         }
@@ -428,8 +427,8 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
         }
         for (size_t i = 0; i < tx.outputs.size(); ++i) {
             const Output output = DecodeOutputOrCorrupt(tx.outputs[i]);
-            reserve(reservation, 6 * MAX_BRANCH_RECORD_BYTES +
-                                     output.branches.size() * 2 * 512);
+            reserve(reservation,
+                    RESERVE_OUTPUT + output.branches.size() * RESERVE_BRANCH);
             if (i > UINT32_MAX) {
                 ThrowCorrupt();
             }
@@ -446,7 +445,7 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
     }
     CommittedBlock restored{anchor, parent, {}, receipt.explorer};
     for (const ReceiptTx &tx : transactions) {
-        if (tx.wire_size == 0 || tx.wire_size > MAX_BATCH_BYTES) {
+        if (tx.wire_size == 0 || tx.wire_size > bounds.BlockBytes()) {
             ThrowCorrupt();
         }
         Bytes wire;
@@ -684,8 +683,10 @@ Bytes PostingPrefix(const Hash32 &root, std::optional<uint8_t> position) {
 
 // ---- V2Db ----
 
-V2Db::V2Db(const std::filesystem::path &path, const Binding &binding)
-    : m_db(std::make_unique<V2Env>(path)), m_binding(binding) {
+V2Db::V2Db(const std::filesystem::path &path, const Binding &binding,
+           const Bounds &bounds)
+    : m_db(std::make_unique<V2Env>(path)), m_binding(binding),
+      m_bounds(bounds) {
     const Bytes identity = Identity(binding);
     const auto existing = m_db->Get(Str("v2-binding"));
     if (existing) {
@@ -699,7 +700,7 @@ V2Db::V2Db(const std::filesystem::path &path, const Binding &binding)
     }
     V2WriteBatch batch;
     batch.Put(StrBytes("v2-binding"), identity);
-    WriteBatch(*m_db, batch);
+    WriteBatch(*m_db, batch, m_bounds);
 }
 
 std::optional<Anchor> V2Db::Checkpoint() const {
@@ -724,13 +725,13 @@ ReadSnapshot V2Db::Snapshot() const {
         ThrowInvalid("uninitialized index");
     }
     const Anchor anchor = codec::Decode<Anchor>(*tip);
-    return ReadSnapshot(std::move(inner), anchor, m_binding);
+    return ReadSnapshot(std::move(inner), anchor, m_binding, m_bounds);
 }
 
 void V2Db::Connect(const CommittedBlock &block) { ConnectImpl(block, false); }
 
 void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
-    if (block.transactions.size() > MAX_TRANSACTIONS) {
+    if (block.transactions.size() > m_bounds.Transactions()) {
         ThrowInvalid("transaction bound");
     }
     if ((!genesis &&
@@ -745,26 +746,26 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     // map nodes, posting keys, undo encoding and batch framing. Reject before
     // allocating receipt/maps rather than constructing a huge rejected batch.
     size_t reserved = 1024;
-    Reserve(reserved, PreflightExplorerBlock(block));
+    Reserve(reserved, PreflightExplorerBlock(block), m_bounds);
     for (const ConfirmedTx &tx : block.transactions) {
-        Reserve(reserved, 512);
+        Reserve(reserved, RESERVE_TX, m_bounds);
         const size_t items = tx.outputs.size() + tx.spends.size() +
                              tx.explorer.inputs.size();
-        if (items > SIZE_MAX / 8192) {
+        if (items > SIZE_MAX / RESERVE_ASSET_ELEMENT) {
             ThrowInvalid("asset staging capacity");
         }
-        Reserve(reserved, items * 8192);
-        constexpr size_t per_spend = 6 * MAX_BRANCH_RECORD_BYTES + 1024;
-        if (tx.spends.size() > SIZE_MAX / per_spend) {
+        Reserve(reserved, items * RESERVE_ASSET_ELEMENT, m_bounds);
+        if (tx.spends.size() > SIZE_MAX / RESERVE_SPEND) {
             ThrowInvalid("staging capacity");
         }
-        Reserve(reserved, tx.spends.size() * per_spend);
+        Reserve(reserved, tx.spends.size() * RESERVE_SPEND, m_bounds);
         for (const Output &output : tx.outputs) {
             if (output.Validate()) {
                 ThrowInvalid("output");
             }
-            Reserve(reserved, 6 * MAX_BRANCH_RECORD_BYTES +
-                                  output.branches.size() * 2 * 512);
+            Reserve(reserved,
+                    RESERVE_OUTPUT + output.branches.size() * RESERVE_BRANCH,
+                    m_bounds);
         }
     }
     size_t changes = 0;
@@ -773,7 +774,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     for (size_t i = 0; i < block.transactions.size(); ++i) {
         const ConfirmedTx &tx = block.transactions[i];
         changes += tx.outputs.size() + tx.spends.size();
-        if (changes > MAX_CHANGES) {
+        if (changes > m_bounds.Changes()) {
             ThrowInvalid("change bound");
         }
         if (tx.location.block_id.b != block.anchor.block_id ||
@@ -801,7 +802,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     const Bytes block_key = PrefixKey('b', block.anchor.block_id);
     if (tip == block.anchor) {
         const auto stored = m_db->Get(block_key);
-        if (!stored || stored->size() > MAX_BATCH_BYTES) {
+        if (!stored || stored->size() > m_bounds.BatchBytes()) {
             ThrowCorrupt();
         }
         Receipt prior = Dec<Receipt>(*stored);
@@ -914,7 +915,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     }
     const Bytes receipt_bytes =
         Enc(Receipt{block.anchor, block.parent, block.explorer, receipt});
-    if (receipt_bytes.size() > MAX_BATCH_BYTES) {
+    if (receipt_bytes.size() > m_bounds.BatchBytes()) {
         ThrowInvalid("receipt bound");
     }
     std::map<Bytes, std::optional<Bytes>> state;
@@ -1022,7 +1023,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     for (const auto &[k, v] : state) {
         size += k.size() + (v ? v->size() : 0);
     }
-    if (size > MAX_BATCH_BYTES) {
+    if (size > m_bounds.BatchBytes()) {
         ThrowInvalid("batch bound");
     }
     std::set<uint32_t> synced_files;
@@ -1044,7 +1045,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     batch.Put(StrBytes("flat_pos"), Enc(plan.next_flat_pos));
     batch.Put(StrBytes("tip"), codec::Encode(block.anchor));
     batch.Delete(StrBytes("disconnected"));
-    WriteBatch(*m_db, batch);
+    WriteBatch(*m_db, batch, m_bounds);
 }
 
 void V2Db::Disconnect(const Anchor &anchor) {
@@ -1062,11 +1063,11 @@ void V2Db::Disconnect(const Anchor &anchor) {
     if (!bytes) {
         ThrowInvalid("missing undo");
     }
-    if (bytes->size() > MAX_BATCH_BYTES) {
+    if (bytes->size() > m_bounds.BatchBytes()) {
         ThrowCorrupt();
     }
     Undo undo = Dec<Undo>(*bytes);
-    ValidateUndo(*m_db, m_binding, anchor, undo);
+    ValidateUndo(*m_db, m_binding, m_bounds, anchor, undo);
     if (!undo.parent) {
         ThrowCorrupt();
     }
@@ -1084,7 +1085,7 @@ void V2Db::Disconnect(const Anchor &anchor) {
     batch.Put(StrBytes("flat_pos"), Enc(undo.prev_flat_pos));
     batch.Put(StrBytes("tip"), codec::Encode(parent));
     batch.Put(StrBytes("disconnected"), codec::Encode(anchor));
-    WriteBatch(*m_db, batch);
+    WriteBatch(*m_db, batch, m_bounds);
     m_db->Flat().TruncateTo(undo.prev_flat_pos.first,
                             undo.prev_flat_pos.second);
 }

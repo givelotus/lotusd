@@ -28,12 +28,29 @@ using Bytes32 = std::array<uint8_t, 32>;
 
 /** Schema cannot share a legacy Chronik database directory. */
 inline constexpr uint32_t SCHEMA_VERSION = 3;
-/** Maximum transactions accepted per committed batch. */
-inline constexpr size_t MAX_TRANSACTIONS = 4096;
-/** Maximum total created and consumed outputs in one batch. */
-inline constexpr size_t MAX_CHANGES = 65536;
-/** Bound on receipt, undo, and total write data respectively. */
-inline constexpr size_t MAX_BATCH_BYTES = 32 * 1024 * 1024;
+/**
+ * Shortest V2 transaction: the native codec rejects anything shorter (a
+ * 16-byte header and at least one input).
+ */
+inline constexpr size_t MIN_TX_WIRE_BYTES = 58;
+/** Shortest V2 transaction header (version, lock, input/output counts). */
+inline constexpr size_t MIN_TX_HEADER_WIRE_BYTES = 16;
+/** Shortest V2 input (a coinbase input without data). */
+inline constexpr size_t MIN_INPUT_WIRE_BYTES = 42;
+/** Shortest V2 spend input (no witnesses). */
+inline constexpr size_t MIN_SPEND_WIRE_BYTES = 43;
+/** Shortest V2 output. */
+inline constexpr size_t MIN_OUTPUT_WIRE_BYTES = 43;
+/** Shortest V2 branch witness. */
+inline constexpr size_t MIN_WITNESS_WIRE_BYTES = 3;
+/**
+ * Staging reserved per wire byte of a block. Every per-element reservation
+ * of a connect (branch.h, explorer.h), charged to the shortest wire encoding
+ * of its element, stays within it (staging_covers_shortest_encodings test).
+ */
+inline constexpr size_t STAGING_PER_WIRE_BYTE = 1024;
+/** Staging reserved once per block (framing, checkpoint, header facts). */
+inline constexpr size_t STAGING_PER_BLOCK = 64 * 1024;
 
 /**
  * v2_branch::Error. what() is the Rust Display text:
@@ -76,6 +93,44 @@ private:
     throw V2Error::Invalid(detail);
 }
 [[noreturn]] inline void ThrowCorrupt() { throw V2Error::Corrupt(); }
+
+/**
+ * Size bounds of the index (v2_branch::Bounds), derived from the consensus
+ * block-size limit (the largest valid block's wire bytes). A block within
+ * that limit always fits them: its transaction count, its created and
+ * consumed outputs and the staging reserved for it are all bounded by its
+ * wire bytes. The memory of one connect is linear in the block's size.
+ */
+class Bounds {
+public:
+    /** Largest supported block-size limit (hosts pass it in 32 bits). */
+    static constexpr uint64_t MAX_BLOCK_BYTES = UINT32_MAX;
+
+    /** Bounds for blocks of at most `max_block_bytes` wire bytes. */
+    explicit Bounds(uint64_t max_block_bytes) {
+        if (max_block_bytes == 0 || max_block_bytes > MAX_BLOCK_BYTES) {
+            ThrowInvalid("block size limit");
+        }
+        m_block_bytes = size_t(max_block_bytes);
+    }
+    /** Consensus block-size limit in wire bytes. */
+    size_t BlockBytes() const { return m_block_bytes; }
+    /** Most transactions a block within the limit can hold. */
+    size_t Transactions() const { return m_block_bytes / MIN_TX_WIRE_BYTES; }
+    /** Most created plus consumed outputs such a block can hold. */
+    size_t Changes() const { return m_block_bytes / MIN_INPUT_WIRE_BYTES; }
+    /**
+     * Bound on the staging reserved for one block within the limit, and on
+     * its receipt, undo and write batch.
+     */
+    size_t BatchBytes() const {
+        return m_block_bytes * STAGING_PER_WIRE_BYTE + STAGING_PER_BLOCK;
+    }
+    bool operator==(const Bounds &) const = default;
+
+private:
+    size_t m_block_bytes;
+};
 
 /** Immutable deployment binding; all bytes are native V2 wire order. */
 struct Binding {
