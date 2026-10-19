@@ -181,6 +181,22 @@ bool NetWhitebindPermissions::TryParse(const std::string &str,
     return true;
 }
 
+bool NetKeyPermissions::TryParse(const std::string &str,
+                                 NetKeyPermissions &output,
+                                 bilingual_str &error) {
+    NetPermissionFlags flags;
+    size_t offset;
+    if (!TryParsePermissionFlags(str, flags,
+                                 /*output_connection_direction=*/nullptr,
+                                 offset, error)) {
+        return false;
+    }
+    output.m_flags = flags;
+    output.m_key = str.substr(offset);
+    error = Untranslated("");
+    return true;
+}
+
 bool NetWhitelistPermissions::TryParse(
     const std::string &str, NetWhitelistPermissions &output,
     ConnectionDirection &output_connection_direction, bilingual_str &error) {
