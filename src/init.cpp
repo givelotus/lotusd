@@ -2326,8 +2326,9 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // Step 3: parameter-to-internal-flags
     if (const std::string format{args.GetArg("-logformat", DEFAULT_LOGFORMAT)};
         !BCLog::ParseLogFormat(format)) {
-        return InitError(strprintf(
-            _("Invalid -logformat '%s' (valid values: text, logfmt, json, json-gcp, json-ecs)"), format));
+        return InitError(
+            strprintf(_("Invalid -logformat '%s' (valid values: %s)"), format,
+                      BCLog::SupportedLogFormats()));
     }
     init::SetLoggingCategories(args);
     init::SetLoggingLevel(args);
