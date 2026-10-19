@@ -547,6 +547,11 @@ Threads
   : Does asynchronous background tasks like dumping wallet contents, dumping
   addrman and running asynchronous validationinterface callbacks.
 
+- Wallet notification worker (`b-walletnotify`)
+  : One thread per loaded wallet. Delivers that wallet's chain notifications
+  (blocks, mempool transactions, chain state flushes) in validation order, so
+  that a busy wallet does not hold up the scheduler thread.
+
 - [TorControlThread (`b-torcontrol`)](https://www.bitcoinabc.org/doc/dev/torcontrol_8cpp.html#a4faed3692d57a0d7bdbecf3b37f72de0)
   : Boost.Asio thread for the Tor control connection.
 
