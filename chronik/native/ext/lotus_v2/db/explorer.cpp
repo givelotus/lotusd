@@ -475,8 +475,11 @@ std::optional<InputMeta> ReadSnapshot::ExplorerInput(const TxId &id,
         const auto creation_tx = ExplorerTx(coin->creation.txid);
         if (!creation_tx || creation_tx->location != coin->creation ||
             coin->outpoint.out_idx >= creation_tx->output_count ||
-            std::make_pair(coin->creation.height, coin->creation.tx_index) >=
-                std::make_pair(tx->location.height, tx->location.tx_index)) {
+            // Created earlier, or elsewhere in the same block (which may be
+            // in canonical, not topological, order).
+            coin->creation.height > tx->location.height ||
+            (coin->creation.height == tx->location.height &&
+             coin->creation.tx_index == tx->location.tx_index)) {
             ThrowCorrupt();
         }
     }

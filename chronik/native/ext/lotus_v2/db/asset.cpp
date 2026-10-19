@@ -162,10 +162,10 @@ PlanAssetTx(const AssetTxView &view, const OldAssetSummaries &old) {
         }
         AssetSummary summary;
         if (const auto &s = it->second) {
+            // In a block in canonical (txid) order, an in-block parent
+            // applied first can sit at a later position.
             if (s->token_id != event.token_id || s->event_count == 0 ||
-                std::make_pair(s->first_seen.height, s->first_seen.tx_index) >
-                    std::make_pair(view.location.height,
-                                   view.location.tx_index)) {
+                s->first_seen.height > view.location.height) {
                 ThrowCorrupt();
             }
             if (s->event_count == UINT64_MAX) {
