@@ -576,6 +576,7 @@ public:
     bool m_log_threadnames = DEFAULT_LOGTHREADNAMES;
     bool m_log_sourcelocations = DEFAULT_LOGSOURCELOCATIONS;
     bool m_always_print_category_level = DEFAULT_LOGLEVELALWAYS;
+    bool m_log_text_priority = false;
     LogFormat m_log_format = LogFormat::TEXT;
 
     fs::path m_file_path;

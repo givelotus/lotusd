@@ -81,3 +81,12 @@ specified NILVALUE, rather than made-up identity or enterprise identifiers.
 The UTF-8 MSG starts with a BOM and contains a generic JSON event, preserving
 all core and typed fields with JSON escaping. One physical line is one record.
 Source: [RFC 5424 sections 6 and 6.4](https://datatracker.ietf.org/doc/html/rfc5424).
+
+`-logtextpriority` is off by default. It prefixes each physical text line
+with the systemd stdout-stream priority marker (`<7>` debug/trace, `<6>` info,
+`<4>` warning, `<3>` error), including subsequent lines of a multiline message.
+This helps journal capture of stdout recognize severity. It does not change
+JSON, logfmt, native journal fields or RFC5424 PRI. Native journald's optional
+readable console output also respects this text-only flag.
+The marker interpretation follows systemd's
+[stdout stream API](https://github.com/systemd/systemd/blob/v257/man/sd_journal_stream_fd.xml).
