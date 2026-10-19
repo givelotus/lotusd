@@ -16,6 +16,7 @@
 #include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/vm.h>
 #include <policy/fees.h>
+#include <primitives/v2_outputs.h>
 #include <rpc/server.h>
 #include <rpc/protocol.h>
 #include <txmempool.h>
@@ -242,13 +243,16 @@ BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainS
     const std::vector<uint8_t> v2_op_true_script{0x4e};
     const lotus::v2::Hash v2_op_true_leaf = lotus::v2::BranchLeaf(v2_op_true_script);
     const Amount cb_val = m_coinbase_txns[0]->vout[0].nValue;
+
     const CMutableTransaction funding = CreateNativeMempoolTransaction(
         m_coinbase_txns[0], 0, cb_val - 2000 * SATOSHI);
     const CTransactionRef funding_tx = MakeTransactionRef(funding);
     // The format rejection must not depend on a legacy signature or admission.
-    CMutableTransaction legacy_mtx = funding;
+    // A legacy transaction has legacy inputs and outputs only.
+    CMutableTransaction legacy_mtx;
     legacy_mtx.nVersion = 2;
-    legacy_mtx.fHasV2Lock = false;
+    legacy_mtx.vin.emplace_back(COutPoint(m_coinbase_txns[1]->GetId(), 0));
+    legacy_mtx.vout.emplace_back(cb_val - 2000 * SATOSHI, CScript() << OP_TRUE);
     const CTransactionRef legacy_tx = MakeTransactionRef(legacy_mtx);
     const std::string legacy_tx_hex = EncodeHexTx(*legacy_tx);
 
@@ -270,9 +274,12 @@ BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainS
     }
 
     // Confirm genuinely admitted native funding before evaluating the candidate.
-    auto block = node::BlockAssembler(
-                     config, m_node.chainman->ActiveChainstate(), m_node.mempool.get())
-                     .CreateNewBlock(CScript(program.begin(), program.end()))->block;
+    auto block =
+        node::BlockAssembler(config, m_node.chainman->ActiveChainstate(),
+                             m_node.mempool.get())
+            .CreateNewBlock(V0LeafOutput(
+                Amount::zero(), CScript(program.begin(), program.end())))
+            ->block;
     BOOST_REQUIRE_EQUAL(block.vtx.size(), 2U);
     BOOST_REQUIRE(block.vtx[1]->GetId() == funding_tx->GetId());
     while (!CheckProofOfWork(block.GetHash(), block.nBits,
@@ -286,7 +293,6 @@ BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainS
 
     CMutableTransaction mtx;
     mtx.nVersion = 7;
-    mtx.fHasV2Lock = true;
     mtx.nV2Lock = 0;
     mtx.nLockTime = 0;
     CTxIn txin(COutPoint(funding_tx->GetId(), 0), CScript(), CTxIn::SEQUENCE_FINAL);
@@ -527,7 +533,6 @@ BOOST_FIXTURE_TEST_CASE(single_rpc_admission_attempt_under_congestion, TestChain
     controller.SetRpcAdmissionRatePerKCu(9000, now);
     CMutableTransaction tx;
     tx.nVersion = 7;
-    tx.fHasV2Lock = true;
     tx.nV2Lock = 0;
     const COutPoint funding(TxId(uint256S("123456")), 0);
     const std::vector<uint8_t> script{0x4e}; // Native VM OP_1.
@@ -574,7 +579,9 @@ BOOST_FIXTURE_TEST_CASE(single_rpc_admission_attempt_under_congestion, TestChain
         BOOST_REQUIRE_EQUAL(controller.GetRpcAdmissionRatePerKCu(now), 9000);
         auto rejected = tx;
         rejected.vin[0].prevout = COutPoint(TxId(uint256S(id)), 0);
-        rejected.vout[0].nValue = 10 * COIN - fee;
+        lotus::v2::Output rejected_output = output;
+        rejected_output.value = uint64_t((10 * COIN - fee) / SATOSHI);
+        rejected.vout[0] = CTxOut::FromV2Output(rejected_output);
         {
             LOCK(cs_main);
             m_node.chainman->ActiveChainstate().CoinsTip().AddCoin(

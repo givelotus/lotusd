@@ -97,7 +97,10 @@ struct TxOutCompression {
     template <typename Stream>
     void Ser(Stream &s, const CTxOut &obj) const {
         AmountCompression{}.Ser(s, obj.nValue);
-        if (!obj.vBranches.empty() && obj.scriptPubKey.size() <= 1) {
+        // A V2 output (it has branches) is stored by its fields, a legacy
+        // output by its script, so the representation survives the round
+        // trip whatever its scriptPubKey holds.
+        if (!obj.IsLegacy()) {
             const unsigned int v2_tag =
                 ScriptCompression::nSpecialScripts + MAX_SCRIPT_SIZE + 1U +
                 static_cast<unsigned int>(obj.nFlags & 0x07U);
@@ -161,9 +164,8 @@ struct TxOutCompression {
             for (auto &p : obj.vPaths) {
                 s >> p;
             }
-            if (obj.nFlags & 0x02U) {
-                obj.scriptPubKey = CScript() << OP_RETURN;
-            }
+            // The scriptPubKey of a V2 output is its V2 wire encoding.
+            obj.scriptPubKey = CTxOut::V2ScriptPubKey(obj.ToV2Output());
             return;
         }
         if (nSize < ScriptCompression::nSpecialScripts) {

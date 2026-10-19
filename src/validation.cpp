@@ -819,23 +819,7 @@ static inline bool ExtractTokenIdAndValueFast(const CTxOut &txout,
             std::max<int64_t>(0, txout.nValue / SATOSHI));
         return true;
     }
-    if (txout.scriptPubKey.size() >= 43) {
-        const uint8_t flags0 = txout.scriptPubKey[0];
-        const bool maybe_token =
-            ((flags0 & 0x01U) != 0 && (flags0 & 0xfcU) == 0) ||
-            (flags0 == 0x6a && txout.scriptPubKey.size() >= 44 &&
-             (txout.scriptPubKey[1] & 0x01U) != 0 &&
-             (txout.scriptPubKey[1] & 0xfcU) == 0);
-        if (!maybe_token) {
-            return false;
-        }
-        const lotus::v2::Output v2out = txout.ToV2Output();
-        if (v2out.HasToken()) {
-            std::memcpy(tok_id.begin(), v2out.token_id.data(), 32);
-            val = v2out.value;
-            return true;
-        }
-    }
+    // A legacy output carries no token.
     return false;
 }
 
@@ -4339,16 +4323,6 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
                 m_tx_out.vBranches[0] == kOpTrueBranchLeaf) {
                 return std::nullopt;
             }
-            if (m_tx_out.scriptPubKey.size() == 45 &&
-                m_tx_out.scriptPubKey[0] == 0x00 &&
-                m_tx_out.scriptPubKey[9] == 0x01 &&
-                m_tx_out.scriptPubKey[42] == 0x01 &&
-                m_tx_out.scriptPubKey[43] == 0x01 &&
-                m_tx_out.scriptPubKey[44] == 0x00 &&
-                std::memcmp(m_tx_out.scriptPubKey.data() + 10,
-                            kOpTrueBranchLeaf.data(), 32) == 0) {
-                return std::nullopt;
-            }
         }
 
         const lotus::v2::VmProfile &kDefaultVmProfile = NodeV2VmProfile();
@@ -4376,10 +4350,6 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             std::memcpy(ids.txhash.data(), ptxTo->GetHash().begin(), 32);
             std::memcpy(ids.outputs_root.data(),
                         ptxTo->GetOutputsHash().begin(), 32);
-            if (ptxTo->nVersion != 7) {
-                ids.txid[0] ^= uint8_t(ptxTo->nVersion & 0xffU);
-                ids.txhash[0] ^= uint8_t(ptxTo->nVersion & 0xffU);
-            }
         };
 
         if (m_resolved_coins) {

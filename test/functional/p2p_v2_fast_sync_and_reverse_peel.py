@@ -29,10 +29,13 @@ from test_framework.util import (
     assert_equal,
     assert_raises_rpc_error,
 )
+from test_framework.xpiaddr import encode
 
 V2_OP_TRUE_SCRIPT = b"\x4e"
-V2_OP_TRUE_DESCRIPTOR = "raw(4e)"
 V2_OP_TRUE_BRANCH_LEAF = lotus_v2_branch_leaf(V2_OP_TRUE_SCRIPT)
+
+
+V2_OP_TRUE_ADDRESS = encode("rxpi", V2_OP_TRUE_BRANCH_LEAF)
 
 
 def make_v2_txout(
@@ -168,10 +171,10 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
             return int(cb_tx["txid"], 16), 0, val_sats
 
         self.log.info("Mine 101 blocks on node0 to mature coinbase outputs")
-        self.generatetodescriptor(
+        self.generatetoaddress(
             node0,
             101,
-            V2_OP_TRUE_DESCRIPTOR,
+            V2_OP_TRUE_ADDRESS,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
 
@@ -189,10 +192,10 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
                 break
         assert tx_3f is not None
         node0.sendrawtransaction(tx_3f.serialize().hex())
-        self.generatetodescriptor(
+        self.generatetoaddress(
             node0,
             1,
-            V2_OP_TRUE_DESCRIPTOR,
+            V2_OP_TRUE_ADDRESS,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 102)
@@ -207,19 +210,19 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
         child_tx = build_v2_op_true_tx(parent_tx.txid_int, 0, [child_val])
         node0.sendrawtransaction(parent_tx.serialize().hex())
         node0.sendrawtransaction(child_tx.serialize().hex())
-        self.generatetodescriptor(
+        self.generatetoaddress(
             node0,
             1,
-            V2_OP_TRUE_DESCRIPTOR,
+            V2_OP_TRUE_ADDRESS,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 103)
 
         self.log.info("Mine pivot block 104 and sync headers/blocks to node1")
-        self.generatetodescriptor(
+        self.generatetoaddress(
             node0,
             1,
-            V2_OP_TRUE_DESCRIPTOR,
+            V2_OP_TRUE_ADDRESS,
             sync_fun=lambda: self.sync_all(self.nodes[0:2]),
         )
         assert_equal(node0.getblockcount(), 104)
@@ -414,7 +417,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
         )
         spend_tx = build_v2_op_true_tx(child_tx.txid_int, 0, [child_val - 5_000])
         node2.sendrawtransaction(spend_tx.serialize().hex())
-        self.generatetodescriptor(node2, 1, V2_OP_TRUE_DESCRIPTOR, sync_fun=self.no_op)
+        self.generatetoaddress(node2, 1, V2_OP_TRUE_ADDRESS, sync_fun=self.no_op)
         assert_equal(node2.getblockcount(), 105)
         hash_105 = node2.getblockhash(105)
         block_105_hex = node2.getblock(hash_105, 0)
@@ -466,8 +469,8 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
         assert_equal(node2.gettxout(spend_tx.txid_hex, 0), live_coin)
         assert_equal(node2.getblockchaininfo()["earliest_verified_height"], 103)
         assert_equal(node2.getblockchaininfo()["fast_sync_active"], True)
-        self.generatetodescriptor(
-            node2, 1, V2_OP_TRUE_DESCRIPTOR, coinbase_version=7, sync_fun=self.no_op
+        self.generatetoaddress(
+            node2, 1, V2_OP_TRUE_ADDRESS, coinbase_version=7, sync_fun=self.no_op
         )
         assert_equal(node2.getblockcount(), 106)
         live_tip = node2.getbestblockhash()

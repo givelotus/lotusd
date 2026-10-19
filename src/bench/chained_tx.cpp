@@ -8,6 +8,7 @@
 #include <consensus/amount.h>
 #include <node/context.h>
 #include <node/miner.h>
+#include <primitives/v2_outputs.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
 #include <txmempool.h>
@@ -256,7 +257,7 @@ benchGenerateNewBlock(const Config &config, node::NodeContext &node,
     }
     assert(mempool.size() == txCount);
 
-    const CScript dummy = CScript() << OP_TRUE;
+    const CTxOut dummy = OpTrueOutput(Amount::zero());
     bench.run([&] {
         auto blocktemplate =
             node::BlockAssembler{config, activeChainState, &mempool}
