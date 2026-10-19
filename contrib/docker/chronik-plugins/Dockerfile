@@ -23,8 +23,7 @@ FROM debian:bookworm-slim
 RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libdb5.3++ \
   libprotobuf32 \
-  libpython3.11 \
-  libzmq5
+  libpython3.11
 
 COPY --from=builder /installed/bin/* /usr/local/bin/
 

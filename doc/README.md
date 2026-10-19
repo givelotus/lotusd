@@ -109,7 +109,6 @@ The Bitcoin ABC repo's [root README](/README.md) contains relevant information o
 - [Reduce Traffic](reduce-traffic.md)
 - [Tor Support](tor.md)
 - [Transaction Relay Policy](policy/README.md)
-- [ZMQ](zmq.md)
 
 License
 ---------------------
