@@ -178,6 +178,17 @@ class HTTPMetricsTest(BitcoinTestFramework):
         assert samples[("lotus_block_connect_seconds_sum", ())] > 0
         # Message handling is timed for 1 message in 16.
         assert self.total(samples, "lotus_p2p_message_handling_seconds_count") > 0
+        assert_equal(samples[("lotus_mempool_transactions", ())], 0)
+        tx = wallet.send_self_transfer(from_node=node)
+        self.wait_until(
+            lambda: self.scrape()[("lotus_mempool_transactions", ())] == 1
+        )
+        assert_equal(
+            self.scrape()[("lotus_mempool_bytes", ())], len(tx["hex"]) // 2)
+        self.generate(node, 1)
+        self.wait_until(
+            lambda: self.scrape()[("lotus_mempool_transactions", ())] == 0
+        )
 
         self.log.info("HTTP and RPC requests")
         node.getblockcount()
