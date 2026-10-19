@@ -3,20 +3,33 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_UTIL_BOUNDED_TASK_QUEUE_H
 #define BITCOIN_UTIL_BOUNDED_TASK_QUEUE_H
+#include <util/threadnames.h>
+
+#include <cassert>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 
-/** Lossless while healthy. Overflow rejects the event and invokes a fatal
- * callback, rather than blocking a shared scheduler or silently losing events.
- * The byte/count reservations include the executing task, not only the FIFO.
+/** Lossless while healthy. The byte/count reservations include the executing
+ * task, not only the FIFO.
+ *
+ * On overflow, Overflow::FAIL (the default) rejects the event and invokes a
+ * fatal callback, rather than blocking a shared scheduler or silently losing
+ * events. Overflow::BLOCK instead makes the producer wait until the worker
+ * frees space; a single task larger than the byte limit is admitted only when
+ * the queue is empty, so it can never wait forever.
  */
 class BoundedTaskQueue {
+public:
+    enum class Overflow { FAIL, BLOCK };
+
+private:
     struct Task {
         size_t bytes;
         std::function<void()> run;
@@ -29,10 +42,15 @@ class BoundedTaskQueue {
     size_t m_bytes{0}, m_count{0};
     uint64_t m_submitted{0}, m_completed{0};
     bool m_stopping{false}, m_failed{false};
+    const Overflow m_overflow;
+    const std::string m_thread_name;
     std::thread m_worker;
     // Stable after construction: Sync/Enqueue may overlap Stop joining m_worker.
     const std::thread::id m_worker_id;
     void Run() {
+        if (!m_thread_name.empty()) {
+            util::ThreadRename(std::string{m_thread_name});
+        }
         for (;;) {
             Task task;
             {
@@ -72,17 +90,37 @@ class BoundedTaskQueue {
 
 public:
     BoundedTaskQueue(size_t byte_limit, size_t count_limit,
-                     std::function<void()> fail)
+                     std::function<void()> fail,
+                     Overflow overflow = Overflow::FAIL,
+                     std::string thread_name = {})
         : m_byte_limit(byte_limit), m_count_limit(count_limit),
-          m_fail(std::move(fail)), m_worker([this] { Run(); }),
+          m_fail(std::move(fail)), m_overflow(overflow),
+          m_thread_name(std::move(thread_name)), m_worker([this] { Run(); }),
           m_worker_id(m_worker.get_id()) {}
     ~BoundedTaskQueue() { Stop(); }
+    /** Returns false when the task was not accepted: the queue is stopping or
+     * has failed, or (FAIL mode only) the task did not fit. In BLOCK mode the
+     * caller waits for space, so it must not be the worker itself. */
     bool Enqueue(size_t bytes, std::function<void()> run) {
         bool notify_failure = false;
         {
-            std::lock_guard<std::mutex> lock(m_mutex);
+            std::unique_lock<std::mutex> lock(m_mutex);
             if (m_stopping) return false;
-            if (bytes > m_byte_limit - m_bytes || m_count >= m_count_limit) {
+            if (m_overflow == Overflow::BLOCK) {
+                // Waiting for space on the worker would wait for itself.
+                assert(std::this_thread::get_id() != m_worker_id);
+                // m_drained is notified after every task and on Stop(). The
+                // condition is written so that it cannot underflow, even when
+                // an oversized task was admitted to an empty queue.
+                m_drained.wait(lock, [&] {
+                    return m_stopping || m_count == 0 ||
+                           (m_count < m_count_limit && bytes <= m_byte_limit &&
+                            m_bytes <= m_byte_limit - bytes);
+                });
+            }
+            if (m_stopping) return false;
+            if (m_overflow == Overflow::FAIL &&
+                (bytes > m_byte_limit - m_bytes || m_count >= m_count_limit)) {
                 m_failed = m_stopping = notify_failure = true;
             } else {
                 try {
@@ -114,6 +152,8 @@ public:
             m_stopping = true;
         }
         m_ready.notify_all();
+        // Wake producers blocked for space: they return false.
+        m_drained.notify_all();
         if (m_worker.joinable()) m_worker.join();
     }
     size_t BytesRetained() const {
