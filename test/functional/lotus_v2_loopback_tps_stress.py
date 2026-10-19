@@ -424,7 +424,7 @@ def main():
             val_sats = int(round(float(cb_tx["vout"][0]["value"]) * 100))
             mature_cb_utxos.append((int(txid_hex, 16), 0, val_sats))
 
-        # Verify that legacy nVersion=2 transactions are rejected by default on RPC
+        # A legacy (nVersion=2) transaction cannot spend a V2 coin.
         legacy_tx = CTransaction()
         legacy_tx.nVersion = 2
         legacy_tx.vin = [
@@ -437,12 +437,12 @@ def main():
         assert (
             not legacy_check["allowed"]
             and legacy_check["results"][0].get("reject-reason")
-            == "bad-txns-non-v7-format"
+            == "bad-txns-legacy-spends-v2-coin"
         ), (
-            f"Expected legacy nVersion=2 tx to be rejected with bad-txns-non-v7-format, got {legacy_check}"
+            f"Expected the legacy spend of a V2 coin to be rejected with bad-txns-legacy-spends-v2-coin, got {legacy_check}"
         )
         print(
-            "[*] Verified pure version=7 coinbases (07000000 prefix) and RPC rejection of legacy nVersion=2 transactions."
+            "[*] Verified pure version=7 coinbases (07000000 prefix) and that a legacy transaction cannot spend a V2 coin."
         )
 
         # 3. Create 6,000 independent V2 OP_TRUE UTXOs (25 fan-out txs x 240 outputs),

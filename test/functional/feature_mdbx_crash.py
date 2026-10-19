@@ -46,10 +46,21 @@ class MdbxCrashTest(BitcoinTestFramework):
         source, target, control = self.nodes
         wallet = MiniWallet(source)
         initial = self.generate(wallet, 110, sync_fun=self.no_op)
-        funding = wallet.send_self_transfer_multi(
-            from_node=source,
-            num_outputs=self.options.transactions * self.options.crash_cycles,
-        )["new_utxos"]
+        # A transaction has at most 256 outputs, so fund in chunks.
+        funding = []
+        needed = self.options.transactions * self.options.crash_cycles
+        while len(funding) < needed:
+            wallet.send_self_transfer_multi(
+                from_node=source,
+                num_outputs=min(250, needed - len(funding) + 1),
+            )
+            # Further funding transactions may spend earlier funding outputs.
+            # Keep only the wallet's currently unspent non-coinbase outputs.
+            funding = [
+                utxo
+                for utxo in wallet.get_utxos(mark_as_spent=False)
+                if not utxo["coinbase"]
+            ]
         initial += self.generate(wallet, 1, sync_fun=self.no_op)
         for blockhash in initial:
             raw_initial = source.getblock(blockhash, False)
