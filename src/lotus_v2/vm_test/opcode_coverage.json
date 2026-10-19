@@ -1284,7 +1284,7 @@
       "byte": "ec",
       "name": "TXTOKENBALANCE",
       "group": "output",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "ed",
