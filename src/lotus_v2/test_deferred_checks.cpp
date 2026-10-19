@@ -313,6 +313,52 @@ void ConsensusKinds() {
         CHECK(run({a, claim(0, {})}, error) == DeferredOutcome::Failed &&
               error == "output-overclaimed");
     }
+    // The per-transaction cap on (claim, matching output) pairs: reaching
+    // it passes, crossing it fails the input that crosses, alone or summed
+    // over inputs.
+    {
+        auto pairs = [&](size_t n, uint16_t mask_size) {
+            DeferredRecords r;
+            std::vector<uint16_t> mask;
+            for (uint16_t j = 0; j < mask_size; ++j) mask.push_back(j);
+            for (size_t i = 0; i < n; ++i)
+                r.Add(kOutputClaimsKind, 0, OutputClaim{0, mask});
+            return r;
+        };
+        auto full = pairs(MAX_TX_CLAIM_PAIRS / 2, 2);
+        full.Merge(authorize(1));
+        CHECK(run({full}, error) == DeferredOutcome::Accepted);
+        auto a = pairs(MAX_TX_CLAIM_PAIRS / 4, 2);
+        a.Merge(authorize(1));
+        auto b = pairs(MAX_TX_CLAIM_PAIRS / 4, 1);
+        CHECK(run({a, b, b}, error) == DeferredOutcome::Accepted);
+        auto over = pairs(MAX_TX_CLAIM_PAIRS / 2, 2);
+        over.Merge(pairs(1, 1));
+        over.Merge(authorize(1));
+        CHECK(run({over}, error) == DeferredOutcome::Failed &&
+              error == "claim-pairs-exceeded");
+        CHECK(run({a, b, b, pairs(1, 1)}, error) == DeferredOutcome::Failed &&
+              error == "claim-pairs-exceeded");
+        // Concurrent inputs share the count: whatever the completion order,
+        // the transaction fails.
+        for (int round = 0; round < 50; ++round) {
+            DeferredTxRun tx(DeferredCheckRegistry::Consensus(),
+                             DeferredTxView{outputs, 4});
+            std::vector<DeferredRecords> per{a, b, b, pairs(1, 1)};
+            std::vector<std::thread> threads;
+            std::atomic<int> failed{0};
+            for (uint32_t i = 0; i < 4; ++i)
+                threads.emplace_back([&, i] {
+                    std::string e;
+                    if (tx.CompleteInput(i, true, std::move(per[i]), e) ==
+                            DeferredOutcome::Failed &&
+                        e == "claim-pairs-exceeded")
+                        ++failed;
+                });
+            for (auto &t : threads) t.join();
+            CHECK(tx.Failed() && failed >= 1 && !tx.Accepted());
+        }
+    }
     // Canonical order of reject reasons: state authorization precedes
     // claims in the registry.
     CHECK(run({claim(1000, {0})}, error) == DeferredOutcome::Failed &&
