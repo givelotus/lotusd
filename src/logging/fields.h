@@ -77,7 +77,9 @@
     X(Wallet, wallet, STRING, "", "")                                          \
     X(Name, name, STRING, "", "")                                              \
     X(Value, value, STRING, "", "")                                            \
-    X(RpcUser, rpc_user, STRING, "", "")
+    X(RpcUser, rpc_user, STRING, "", "") \
+    X(DatabaseVersion, database_version, STRING, "", "")                       \
+    X(ErrorCode, error_code, INT, "", "")
 
 namespace BCLog {
 
