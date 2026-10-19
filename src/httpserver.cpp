@@ -17,6 +17,7 @@
 #include <net_websocket_sock.h>
 #include <net_websocket_tls.h>
 #include <netbase.h>
+#include <node/metrics.h>
 #include <node/ui_interface.h>
 #include <protocol.h>
 #include <proxy_protocol.h>
@@ -1499,6 +1500,46 @@ RelayToPublicFallback(Stream &stream, beast::flat_buffer &buffer,
     co_await (PumpBytes(stream, upstream) || PumpBytes(upstream, stream));
 }
 
+/** Endpoint class of a request, for metrics */
+static node::HTTPEndpoint MetricsEndpoint(std::string_view target) {
+    using E = node::HTTPEndpoint;
+    const std::string_view path{TargetPath(target)};
+    if (path == "/") {
+        return E::RPC;
+    }
+    if (URIHasPathPrefix(path, "/wallet")) {
+        return E::WALLET;
+    }
+    if (URIHasPathPrefix(path, "/rest")) {
+        return E::REST;
+    }
+    if (URIHasPathPrefix(path, CHRONIK_PREFIX)) {
+        return E::CHRONIK;
+    }
+    if (path == LIVEZ_PATH || path == READYZ_PATH || path == HEALTHZ_PATH) {
+        return E::HEALTH;
+    }
+    if (path == "/metrics") {
+        return E::METRICS;
+    }
+    return E::OTHER;
+}
+
+/** Count an answered request and its duration (since its header arrived) */
+static void RecordHTTPMetrics(node::HTTPEndpoint endpoint, unsigned status,
+                              std::chrono::steady_clock::time_point start) {
+    auto *metrics{node::GetNodeMetrics()};
+    if (!metrics) {
+        return;
+    }
+    const size_t ep{size_t(endpoint)};
+    const std::array<size_t, 2> idx{
+        ep, status >= 100 && status < 600 ? status / 100 - 1 : 5};
+    metrics->http_requests.Add(metrics->http_requests.SeriesIndex(idx));
+    metrics->http_request_seconds.RecordDuration(
+        std::chrono::steady_clock::now() - start, ep);
+}
+
 /** Serve HTTP/1.1 keep-alive requests on an established (TLS or plain) stream */
 template <typename Stream>
 static asio::awaitable<void> ServeHTTP(Stream &stream,
@@ -1545,6 +1586,10 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
 
         idle->Touch();
         const auto &header{parser.get()};
+        // Request timing for metrics (one clock read, only when enabled)
+        const auto request_start{node::GetNodeMetrics()
+                                     ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{}};
 
         // Behind trusted proxies, this request's client is found by walking
         // X-Forwarded-For (see -trustedproxy). Everything below uses it:
@@ -1568,6 +1613,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             BeastResponse res{HealthResponse(header)};
             res.keep_alive(header.keep_alive());
             const auto ec{co_await WriteResponse(stream, res)};
+            RecordHTTPMetrics(node::HTTPEndpoint::HEALTH, res.result_int(),
+                              request_start);
             if (ec || !header.keep_alive()) {
                 co_return;
             }
@@ -1613,6 +1660,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         }
 
         BeastRequest req{parser.release()};
+        const node::HTTPEndpoint endpoint{MetricsEndpoint(req.target())};
         const bool keep_alive{req.keep_alive()};
         const unsigned version{req.version()};
         const bool is_head{req.method() == http::verb::head};
@@ -1665,6 +1713,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         idle->busy = false;
         idle->Touch();
         const auto ec{co_await WriteResponse(stream, res)};
+        RecordHTTPMetrics(endpoint, res.result_int(), request_start);
         g_connections.RemoveRequest();
         if (ec || close) {
             co_return;
@@ -1832,6 +1881,9 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                 auto [hs_ec, hs] = co_await tls_stream.async_handshake(
                     asio::as_tuple(asio::use_awaitable));
                 deadline.cancel();
+                if (auto *metrics{node::GetNodeMetrics()}) {
+                    metrics->http_tls_handshakes.Add(hs_ec ? 1 : 0);
+                }
                 if (hs_ec) {
                     LogDebug(BCLog::HTTP,
                              "TLS handshake with %s failed: %s\n",
