@@ -4,6 +4,8 @@
 
 #include <avalanche/treasury.h>
 
+#include <primitives/v2_outputs.h>
+
 #include <avalanche/processor.h>
 #include <blockindex.h>
 #include <cashaddrenc.h>
@@ -739,7 +741,7 @@ bool TreasuryPolicy::operator()(BlockPolicyValidationState &state) {
                 continue;
             }
             const CTxOut &candidate = m_block.vtx[0]->vout[i];
-            if (candidate.scriptPubKey == expected.scriptPubKey) {
+            if (CoinbaseOutputPaysScript(candidate, expected.scriptPubKey)) {
                 if (expected.nValue <= Amount::zero() ||
                     candidate.nValue >= expected.nValue) {
                     used[i] = true;

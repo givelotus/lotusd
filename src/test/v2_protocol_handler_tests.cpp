@@ -22,6 +22,7 @@
 #include <pow/pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <primitives/v2_outputs.h>
 #include <protocol.h>
 #include <script/script.h>
 #include <streams.h>
@@ -669,14 +670,18 @@ BOOST_AUTO_TEST_CASE(adversarial_c1_d1_d2_hardening_gates) {
     std::shared_ptr<CBlock> base_block =
         PrepareBlock(config, m_node, CScript() << OP_TRUE);
     {
+        // A V2 coinbase made oversized by extra zero-value outputs.
         CMutableTransaction oversized_cb(*base_block->vtx[0]);
-        oversized_cb.vout.push_back(CTxOut(
-            0 * SATOSHI,
-            CScript() << OP_RETURN
-                      << std::vector<uint8_t>(
-                             V2PeerProtocolHandler::MAX_SEALEDHEADER_COINBASE_BYTES +
-                                 128,
-                             0xaa)));
+        BOOST_REQUIRE_EQUAL(oversized_cb.nVersion, 7U);
+        for (int64_t i = 0;
+             ::GetSerializeSize(oversized_cb) <=
+             V2PeerProtocolHandler::MAX_SEALEDHEADER_COINBASE_BYTES + 128;
+             ++i) {
+            oversized_cb.vout.push_back(V0LeafOutput(
+                Amount::zero(),
+                CScript() << OP_RETURN << std::vector<uint8_t>(200, 0xaa)
+                          << i));
+        }
         SealedHeader oversized_sealed;
         oversized_sealed.header = base_block->GetBlockHeader();
         oversized_sealed.coinbase_tx =
@@ -2050,7 +2055,7 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
     const CScript funding_program(program.begin(), program.end());
     auto spend = [&](const COutPoint &prevout, Amount value) {
         CMutableTransaction tx;
-        tx.nVersion = 7; tx.fHasV2Lock = true; tx.nV2Lock = 0;
+        tx.nVersion = 7; tx.nV2Lock = 0;
         CTxIn input(prevout);
         input.nFlags = 1; input.nPathIndex = 0;
         lotus::v2::BranchWitness witness; witness.script = program;
