@@ -59,7 +59,7 @@ FUZZ_TARGET(system) {
                         {OptionsCategory::OPTIONS, OptionsCategory::CONNECTION,
                          OptionsCategory::WALLET,
                          OptionsCategory::WALLET_DEBUG_TEST,
-                         OptionsCategory::ZMQ, OptionsCategory::DEBUG_TEST,
+                         OptionsCategory::DEBUG_TEST,
                          OptionsCategory::CHAINPARAMS,
                          OptionsCategory::NODE_RELAY,
                          OptionsCategory::BLOCK_CREATION, OptionsCategory::RPC,
