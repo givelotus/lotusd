@@ -38,7 +38,7 @@ FUZZ_TARGET(script_flags) {
 
             ScriptError serror;
             const bool ret =
-                VerifyScript(tx.vin.at(i).scriptSig, prevout.scriptPubKey,
+                VerifyScript(tx.vin[i].scriptSig, prevout.scriptPubKey,
                              verify_flags, checker, &serror);
             assert(ret == (serror == ScriptError::OK));
 
@@ -55,7 +55,7 @@ FUZZ_TARGET(script_flags) {
 
             ScriptError serror_fuzzed;
             const bool ret_fuzzed =
-                VerifyScript(tx.vin.at(i).scriptSig, prevout.scriptPubKey,
+                VerifyScript(tx.vin[i].scriptSig, prevout.scriptPubKey,
                              verify_flags, checker, &serror_fuzzed);
             assert(ret_fuzzed == (serror_fuzzed == ScriptError::OK));
 

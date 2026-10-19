@@ -13,7 +13,9 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <core_memusage.h>
 #include <key.h>
+#include <lotus_v2/output.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <script/script.h>
@@ -78,6 +80,34 @@ BOOST_AUTO_TEST_CASE(serialized_size_all_constructors) {
         wire << copied;
         const CTransaction decoded{deserialize, wire};
         check(decoded);
+    }
+}
+
+// Slab-backed long scripts borrow from immutable transaction storage. Moving a
+// borrowed script must make an owning copy, including at the V2 bridge boundary.
+BOOST_AUTO_TEST_CASE(slab_script_v2_bridge_and_move) {
+    for (size_t length : {size_t{0}, size_t{1}, size_t{28}, size_t{29},
+                          size_t{31}, size_t{128}, size_t{494}}) {
+        CMutableTransaction mutable_tx;
+        mutable_tx.vin.resize(1);
+        CScript expected;
+        expected.resize(length);
+        std::fill(expected.begin(), expected.end(), OP_TRUE);
+        mutable_tx.vout.emplace_back(123 * SATOSHI, expected);
+        CTransactionRef tx = MakeTransactionRef(std::move(mutable_tx));
+        const CTxOut &original = tx->vout[0];
+        const CTxOut roundtrip = CTxOut::FromV2Output(original.ToV2Output());
+        BOOST_CHECK(roundtrip == original);
+        // The transaction's const view must copy on std::move, rather than
+        // transferring a view whose lifetime would end with its slab owner.
+        const auto *storage = original.scriptPubKey.data();
+        CScript moved{std::move(tx->vout[0].scriptPubKey)};
+        BOOST_CHECK(moved == expected);
+        if (length > 28) BOOST_CHECK(moved.data() != storage);
+        tx.reset();
+        BOOST_CHECK(moved == expected);
+        if (!moved.empty()) moved[0] = OP_FALSE;
+        BOOST_CHECK(roundtrip.scriptPubKey == expected);
     }
 }
 
@@ -1116,6 +1146,161 @@ BOOST_AUTO_TEST_CASE(precomputed_data_concurrent_first_use) {
             BOOST_CHECK(values[t].hashOutputs == fresh.hashOutputs);
         }
     }
+}
+
+static CScript RawScript(const std::vector<uint8_t> &bytes) {
+    return CScript(bytes.begin(), bytes.end());
+}
+
+BOOST_AUTO_TEST_CASE(serialized_storage) {
+    // A CTransaction stores its inputs and outputs in one allocation, followed
+    // by the bytes of the scripts too long for CScript's inline buffer, which
+    // they borrow. Every way of building one must agree with the
+    // std::vector-based CMutableTransaction.
+    FastRandomContext rng{/*fDeterministic=*/true};
+    // Script sizes on both sides of CScript's inline capacity.
+    const size_t script_sizes[] = {0, 1, CScriptBase::STATIC_SIZE,
+                                   CScriptBase::STATIC_SIZE + 1, 107, 600};
+    for (size_t n_in = 0; n_in <= 3; ++n_in) {
+        for (size_t n_out = 0; n_out <= 4; ++n_out) {
+            CMutableTransaction mtx;
+            mtx.nVersion = rng.rand32();
+            mtx.nLockTime = rng.rand32();
+            for (size_t i = 0; i < n_in; ++i) {
+                const auto size = script_sizes[rng.randrange(6)];
+                mtx.vin.emplace_back(TxId{rng.rand256()}, rng.rand32(),
+                                     RawScript(rng.randbytes(size)),
+                                     rng.rand32());
+            }
+            for (size_t i = 0; i < n_out; ++i) {
+                const auto size = script_sizes[rng.randrange(6)];
+                mtx.vout.emplace_back(int64_t(rng.rand32()) * SATOSHI,
+                                      RawScript(rng.randbytes(size)));
+            }
+            DataStream expected{};
+            expected << mtx;
+            const std::string expected_hex = HexStr(expected);
+
+            DataStream ss1{expected};
+            DataStream ss2{expected};
+            CTransactionRef deserialized_ref;
+            ss1 >> deserialized_ref;
+            const CTransaction deserialized{deserialize, ss2};
+            const CTransaction converted{mtx};
+            const CTransactionRef ref = MakeTransactionRef(mtx);
+            for (const CTransaction *tx :
+                 {ref.get(), deserialized_ref.get(), &converted,
+                  &deserialized}) {
+                DataStream actual{};
+                actual << *tx;
+                BOOST_CHECK_EQUAL(HexStr(actual), expected_hex);
+                BOOST_CHECK_EQUAL(tx->GetTotalSize(), expected.size());
+                BOOST_CHECK_EQUAL(::GetSerializeSize(*tx), expected.size());
+                BOOST_CHECK(tx->GetId() == mtx.GetId());
+                BOOST_CHECK(tx->nVersion == mtx.nVersion);
+                BOOST_CHECK(tx->nLockTime == mtx.nLockTime);
+                BOOST_CHECK(CMutableTransaction{*tx}.vin == mtx.vin);
+                BOOST_CHECK(CMutableTransaction{*tx}.vout == mtx.vout);
+                BOOST_CHECK_EQUAL(RecursiveDynamicUsage(*tx),
+                                  tx->GetStorageSize());
+
+                // Long scripts point into the script bytes that follow the
+                // outputs in the transaction's storage, and report no memory
+                // of their own; short ones are stored inline.
+                const auto *storage =
+                    reinterpret_cast<const uint8_t *>(tx->vin.data());
+                const auto *scripts = reinterpret_cast<const uint8_t *>(
+                    tx->vout.data() + tx->vout.size());
+                auto borrows = [&](const CScript &script) {
+                    return script.data() >= scripts &&
+                           script.data() + script.size() <=
+                               storage + tx->GetStorageSize();
+                };
+                for (const CTxIn &in : tx->vin) {
+                    BOOST_CHECK_EQUAL(borrows(in.scriptSig),
+                                      in.scriptSig.size() >
+                                          CScriptBase::STATIC_SIZE);
+                    BOOST_CHECK_EQUAL(RecursiveDynamicUsage(in), 0U);
+                }
+                for (const CTxOut &out : tx->vout) {
+                    BOOST_CHECK_EQUAL(borrows(out.scriptPubKey),
+                                      out.scriptPubKey.size() >
+                                          CScriptBase::STATIC_SIZE);
+                    BOOST_CHECK_EQUAL(RecursiveDynamicUsage(out), 0U);
+                }
+
+                // Copies of inputs and outputs own their scripts.
+                for (const CTxIn &in : tx->vin) {
+                    CTxIn copy{in};
+                    BOOST_CHECK(!borrows(copy.scriptSig));
+                    copy.scriptSig << OP_TRUE;
+                    BOOST_CHECK(copy.scriptSig.size() == in.scriptSig.size() + 1);
+                }
+                for (const CTxOut &out : tx->vout) {
+                    CTxOut copy{out};
+                    BOOST_CHECK(copy == out);
+                    BOOST_CHECK(!borrows(copy.scriptPubKey));
+                }
+            }
+            // Mutating the copies left the shared transaction unchanged.
+            DataStream after{};
+            after << *ref;
+            BOOST_CHECK_EQUAL(HexStr(after), expected_hex);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
+    // Reading a CTransaction must accept and reject exactly the inputs that
+    // CMutableTransaction deserialization does.
+    FastRandomContext rng{/*fDeterministic=*/true};
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId{rng.rand256()}, 7, RawScript(rng.randbytes(107)));
+    mtx.vin.emplace_back(TxId{rng.rand256()}, 1, RawScript(rng.randbytes(3)));
+    mtx.vout.emplace_back(10 * SATOSHI, RawScript(rng.randbytes(25)));
+    mtx.vout.emplace_back(20 * SATOSHI, RawScript(rng.randbytes(40)));
+    DataStream full{};
+    full << mtx;
+    const std::vector<uint8_t> bytes(UCharCast(full.data()),
+                                     UCharCast(full.data()) + full.size());
+
+    auto check = [](const std::vector<uint8_t> &data) {
+        bool mutable_ok = true, ref_ok = true;
+        size_t mutable_left = 0, ref_left = 0;
+        try {
+            SpanReader reader{data};
+            CMutableTransaction m{deserialize, reader};
+            mutable_left = reader.size();
+        } catch (const std::ios_base::failure &) {
+            mutable_ok = false;
+        }
+        try {
+            SpanReader reader{data};
+            CTransactionRef ref;
+            reader >> ref;
+            ref_left = reader.size();
+        } catch (const std::ios_base::failure &) {
+            ref_ok = false;
+        }
+        BOOST_CHECK_EQUAL(mutable_ok, ref_ok);
+        BOOST_CHECK_EQUAL(mutable_left, ref_left);
+    };
+    // Every truncation, and trailing data.
+    for (size_t len = 0; len <= bytes.size(); ++len) {
+        check({bytes.begin(), bytes.begin() + len});
+    }
+    std::vector<uint8_t> trailing{bytes};
+    trailing.push_back(0x42);
+    check(trailing);
+    // A non-canonical input count (0xfd followed by 2 bytes encoding 2).
+    std::vector<uint8_t> non_canonical{bytes.begin(), bytes.begin() + 4};
+    non_canonical.insert(non_canonical.end(), {0xfd, 0x02, 0x00});
+    non_canonical.insert(non_canonical.end(), bytes.begin() + 5, bytes.end());
+    check(non_canonical);
+    // A script length far beyond the remaining data.
+    std::vector<uint8_t> huge_script{bytes.begin(), bytes.begin() + 41};
+    huge_script.insert(huge_script.end(), {0xfe, 0x00, 0x00, 0x00, 0x01});
+    check(huge_script);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
