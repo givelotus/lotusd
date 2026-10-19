@@ -28,13 +28,25 @@ namespace {
 using LokadIdKey = std::array<uint8_t, 4>;
 using ScriptKey = std::pair<int, Bytes>;
 
-enum class SubKind { Blocks, Txs, TxId, Script, TokenId, LokadId, Plugin };
+enum class SubKind {
+    Blocks,
+    Txs,
+    TxId,
+    Script,
+    ExtScript,
+    TokenId,
+    LokadId,
+    Plugin
+};
 
 struct ParsedSub {
     bool is_unsub = false;
     SubKind kind = SubKind::Blocks;
     TxId txid;
     script::ScriptVariant script_variant;
+    /** For ExtScript: the extension's script type, payload = member. */
+    const WsScriptType *ext_type = nullptr;
+    Bytes ext_member;
     token::TokenId token_id;
     LokadIdKey lokad_id{};
     std::string plugin_name;
@@ -98,7 +110,7 @@ ByteView StrBytes(const std::string &s) {
 }
 
 /** sub_client_msg_action for a binary message */
-ParsedSub ParseWsSub(std::span<const uint8_t> data) {
+ParsedSub ParseWsSub(std::span<const uint8_t> data, const SubsHub &hub) {
     proto::WsSub sub;
     DecodeProtobuf(data, sub);
     ParsedSub parsed;
@@ -114,6 +126,16 @@ ParsedSub ParseWsSub(std::span<const uint8_t> data) {
             parsed.txid = ParseBeHash(sub.txid().txid());
             break;
         case proto::WsSub::kScript:
+            // Script types of extensions (e.g. "v2-branch") come first, as
+            // the tier's ws.rs matches them before parse_script_variant.
+            if (const WsScriptType *type = hub.FindWsScriptType(
+                    sub.script().script_type(), sub.script().payload().size())) {
+                parsed.kind = SubKind::ExtScript;
+                parsed.ext_type = type;
+                const ByteView payload = StrBytes(sub.script().payload());
+                parsed.ext_member.assign(payload.begin(), payload.end());
+                break;
+            }
             parsed.kind = SubKind::Script;
             parsed.script_variant = ParseScriptVariant(
                 sub.script().script_type(), StrBytes(sub.script().payload()));
@@ -239,7 +261,7 @@ public:
                 return;
             }
             try {
-                subscribed = HandleSub(ParseWsSub(data));
+                subscribed = HandleSub(ParseWsSub(data, *m_hub));
             } catch (const std::exception &e) {
                 SendError(e.what());
             }
@@ -373,8 +395,15 @@ private:
         if (m_txs && TryRecvOne(*m_txs, TxMsgBytes)) {
             return true;
         }
-        return TryRecvMap(m_txids) || TryRecvMap(m_scripts) ||
-               TryRecvMap(m_token_ids) || TryRecvMap(m_lokad_ids);
+        if (TryRecvMap(m_txids) || TryRecvMap(m_scripts)) {
+            return true;
+        }
+        for (auto &[group, members] : m_ext) {
+            if (TryRecvMap(members)) {
+                return true;
+            }
+        }
+        return TryRecvMap(m_token_ids) || TryRecvMap(m_lokad_ids);
     }
 
     void AcquireSub() {
@@ -491,6 +520,32 @@ private:
                     }
                     break;
                 }
+                case SubKind::ExtScript: {
+                    const WsScriptType &type = *sub.ext_type;
+                    SubsGroup &group = subs->SubsExt(type.group);
+                    auto &members = m_ext[type.group];
+                    const std::string desc =
+                        type.log_name + " " + HexEncode(sub.ext_member);
+                    if (sub.is_unsub) {
+                        LogDebug("WS unsubscribe from " + desc + "\n");
+                        if (members.erase(sub.ext_member) > 0) {
+                            ReleaseOneSub();
+                        }
+                        group.UnsubscribeFromMember(sub.ext_member);
+                    } else if (!members.count(sub.ext_member)) {
+                        LogDebug("WS subscribe to " + desc + "\n");
+                        AcquireSub();
+                        auto it =
+                            members
+                                .emplace(sub.ext_member,
+                                         group.SubscribeToMember(
+                                             sub.ext_member))
+                                .first;
+                        ArmWaker(it->second);
+                        subscribed = true;
+                    }
+                    break;
+                }
                 case SubKind::TokenId: {
                     const ByteView member(sub.token_id.txid.b.data(), 32);
                     if (sub.is_unsub) {
@@ -566,8 +621,12 @@ private:
         }
         // Dropping guards releases subscription limit slots.
         m_sub_guards.clear();
+        bool has_ext_subs = false;
+        for (const auto &[group, members] : m_ext) {
+            has_ext_subs = has_ext_subs || !members.empty();
+        }
         const bool has_member_subs = !m_txids.empty() || !m_scripts.empty() ||
-                                     !m_token_ids.empty() ||
+                                     has_ext_subs || !m_token_ids.empty() ||
                                      !m_lokad_ids.empty();
         if (has_member_subs) {
             auto subs = m_hub->Write();
@@ -585,6 +644,13 @@ private:
                 if (variant) {
                     subs->SubsScript().UnsubscribeFromMember(
                         variant.value().ToScript().view());
+                }
+            }
+            for (auto &[group, members] : m_ext) {
+                for (auto it = members.begin(); it != members.end();) {
+                    const Bytes member = it->first;
+                    it = members.erase(it);
+                    subs->SubsExt(group).UnsubscribeFromMember(member);
                 }
             }
             for (auto it = m_token_ids.begin(); it != m_token_ids.end();) {
@@ -620,6 +686,8 @@ private:
     std::optional<BroadcastReceiver<TxMsg>> m_txs;
     std::map<TxId, BroadcastReceiver<TxMsg>> m_txids;
     std::map<ScriptKey, BroadcastReceiver<TxMsg>> m_scripts;
+    /** Extension group index -> member -> receiver (in group order). */
+    std::map<size_t, std::map<Bytes, BroadcastReceiver<TxMsg>>> m_ext;
     std::map<token::TokenId, BroadcastReceiver<TxMsg>> m_token_ids;
     std::map<LokadIdKey, BroadcastReceiver<TxMsg>> m_lokad_ids;
     /** Guards for active subscriptions attributed to this connection's IP. */

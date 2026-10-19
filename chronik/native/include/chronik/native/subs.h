@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -597,6 +598,21 @@ private:
 };
 
 /**
+ * A WsSub script subscription type served by an extension group instead of
+ * the core script group (Rust: a ws.rs WsSubType added by a tier).
+ */
+struct WsScriptType {
+    /** WsSubScript.script_type, e.g. "v2-branch". */
+    std::string script_type;
+    /** Required payload size; the payload is the group member. */
+    size_t payload_size = 0;
+    /** Index of the extension group (Subs::SubsExt). */
+    size_t group = 0;
+    /** Used in debug logs: "WS subscribe to <log_name> <payload hex>". */
+    std::string log_name;
+};
+
+/**
  * Port of Subs: block, all-tx and per-group subscriptions. Not synchronized;
  * see SubsHub. Python plugin groups are not ported (no plugins), so
  * subs_plugins is always empty and omitted.
@@ -621,6 +637,15 @@ public:
     SubsGroup &SubsScript() { return m_subs_script; }
     SubsGroup &SubsTokenId() { return m_subs_token_id; }
     SubsGroup &SubsLokadId() { return m_subs_lokad_id; }
+
+    /**
+     * Add an extension subscription group (see SubscriptionHub); returns its
+     * index for SubsExt. Extension groups are notified after the script
+     * group and before the token ID group, in the order they were added.
+     */
+    size_t AddExtGroup(std::unique_ptr<SubsGroupKind> kind);
+    SubsGroup &SubsExt(size_t idx) { return *m_subs_ext.at(idx); }
+    size_t NumExtGroups() const { return m_subs_ext.size(); }
 
     /** Send out updates to subscribers for this tx and msg_type. */
     void HandleTxEvent(const Tx &tx, TxMsgType msg_type, const SubsAux &aux = {});
@@ -654,6 +679,7 @@ private:
     SubsGroup m_subs_script;
     SubsGroup m_subs_token_id;
     SubsGroup m_subs_lokad_id;
+    std::vector<std::unique_ptr<SubsGroup>> m_subs_ext;
     WakerList m_pending_wakers;
 };
 
@@ -700,9 +726,48 @@ public:
     /** indexer.subs().write() */
     Guard Write() { return Guard(*this); }
 
+    /** WS script types served by extension groups (see SubscriptionHub). */
+    const std::vector<WsScriptType> &WsScriptTypes() const {
+        return m_ws_script_types;
+    }
+    /**
+     * The extension WS script type for a WsSub script subscription, if one
+     * matches its type name and payload size.
+     */
+    const WsScriptType *FindWsScriptType(const std::string &script_type,
+                                         size_t payload_size) const;
+
 private:
+    friend class SubscriptionHub;
+
     std::mutex m_mutex;
     Subs m_subs;
+    /** Written only during startup registration, then read-only. */
+    std::vector<WsScriptType> m_ws_script_types;
+};
+
+/**
+ * Registration interface handed to Extension::RegisterWsScriptTypes during
+ * indexer startup, before any subscription exists: extensions add their own
+ * subscription groups and the WsSub script types they serve (e.g. Lotus V2's
+ * "v2-branch"). Not to be used after startup.
+ */
+class SubscriptionHub {
+public:
+    explicit SubscriptionHub(SubsHub &hub) : m_hub(hub) {}
+
+    /** Adds a group to the Subs (Subs::AddExtGroup); returns its index. */
+    size_t AddGroup(std::unique_ptr<SubsGroupKind> kind);
+    /**
+     * Serve script subscriptions of `type.script_type` whose payload has
+     * exactly `type.payload_size` bytes with extension group `type.group`;
+     * the payload is the member. Other payload sizes of the same type name
+     * fall through to the core script types.
+     */
+    void AddWsScriptType(WsScriptType type);
+
+private:
+    SubsHub &m_hub;
 };
 
 } // namespace chronik::native
