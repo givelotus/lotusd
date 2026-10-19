@@ -6,13 +6,11 @@ Test Chronik's /tx endpoint.
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
     ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.blocktools import (
-    COINBASE_MATURITY,
     GENESIS_CB_TXID,
     create_block,
     create_coinbase,
@@ -61,13 +59,8 @@ class ChronikTxTest(BitcoinTestFramework):
         # Verify queried genesis tx matches
         assert_equal(chronik.tx(GENESIS_CB_TXID).ok(), genesis_cb_tx())
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
+        cointx, coinvalue = self.mine_mature_coin(node)
 
-        self.generatetoaddress(node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE)
-
-        coinvalue = 5000000000
         send_values = [coinvalue - 10000, 1000, 2000, 3000]
         send_redeem_scripts = [bytes([i + 0x52]) for i in range(len(send_values))]
         send_scripts = [

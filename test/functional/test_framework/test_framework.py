@@ -24,9 +24,10 @@ from enum import Enum
 from typing import AbstractSet, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from . import coverage
-from .address import ADDRESS_ECREG_P2SH_OP_TRUE
+from .address import ADDRESS_ECREG_P2SH_OP_TRUE, ADDRESS_ECREG_UNSPENDABLE
 from .authproxy import JSONRPCException
 from .avatools import get_proof_ids
+from .messages import XEC
 from .p2p import NetworkThread
 from .test_node import TestNode
 from .util import (
@@ -1080,6 +1081,25 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         blocks = generator.generatetodescriptor(*args, invalid_call=False, **kwargs)
         sync_fun() if sync_fun else self.sync_all()
         return blocks
+
+    def mine_mature_coin(self, node, **kwargs) -> Tuple[str, int]:
+        """Mine a block whose coinbase pays to ADDRESS_ECREG_P2SH_OP_TRUE, then
+        COINBASE_MATURITY blocks (to ADDRESS_ECREG_UNSPENDABLE) so that it can
+        be spent, with SCRIPTSIG_OP_TRUE. Returns the coinbase's txid and the
+        value of its output 0, in satoshis. kwargs go to generatetoaddress()
+        (e.g. sync_fun)."""
+        # Not imported at module level: blocktools reads the source tree on
+        # import, and the test runner imports this module before it is known
+        from .blocktools import COINBASE_MATURITY
+
+        blockhash = self.generatetoaddress(
+            node, 1, ADDRESS_ECREG_P2SH_OP_TRUE, **kwargs
+        )[0]
+        coinbase = node.getblock(blockhash, 2)["tx"][0]
+        self.generatetoaddress(
+            node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE, **kwargs
+        )
+        return coinbase["txid"], int(coinbase["vout"][0]["value"] * XEC)
 
     def sync_blocks(self, nodes=None, wait=1, timeout=60):
         """
