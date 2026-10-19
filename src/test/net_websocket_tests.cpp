@@ -721,6 +721,188 @@ BOOST_AUTO_TEST_CASE(tls_spki_fingerprint) {
     BOOST_CHECK(other.server_spki != p.server_spki);
 }
 
+BOOST_AUTO_TEST_CASE(independent_frames_preserve_stream_history) {
+    const auto previous = g_p2p_compress_once_threshold.exchange(65536);
+    struct Restore {
+        size_t old;
+        ~Restore() { g_p2p_compress_once_threshold.store(old); }
+    } restore{previous};
+    WebSocketCodec encoder(Role::SERVER, C::P2P_V2),
+        decoder(Role::CLIENT, C::P2P_V2);
+    const std::vector<uint8_t> small(4096, 0x71), large(100000, 0x71);
+    std::vector<uint8_t> wire, plain, reply;
+    encoder.EncodeMessage(small, wire);
+    const auto first = wire.size();
+    encoder.EncodeMessage(large, wire);
+    BOOST_CHECK_EQUAL(wire[first] & 0x70, 0x20);
+    encoder.EncodeMessage(small, wire);
+    const auto decoded = decoder.Decode(wire, plain, reply);
+    BOOST_REQUIRE(!decoded.error);
+    std::vector<uint8_t> expected;
+    for (const auto *p : {&small, &large, &small}) {
+        const auto begin = expected.size();
+        expected.resize(begin + 4);
+        WriteLE32(expected.data() + begin, p->size());
+        expected.insert(expected.end(), p->begin(), p->end());
+    }
+    BOOST_CHECK(plain == expected);
+    // A brand-new peer can decode the independent middle message alone.
+    WebSocketCodec alone(Role::CLIENT, C::P2P_V2);
+    plain.clear();
+    std::vector<uint8_t> independent;
+    encoder.EncodeMessage(large, independent);
+    BOOST_REQUIRE(!alone.Decode(independent, plain, reply).error);
+    BOOST_CHECK_EQUAL(plain.size(), large.size() + 4);
+}
+
+BOOST_AUTO_TEST_CASE(independent_thresholds_and_control) {
+    const auto previous = g_p2p_compress_once_threshold.load();
+    struct Restore {
+        size_t value;
+        ~Restore() { g_p2p_compress_once_threshold.store(value); }
+    } restore{previous};
+    for (size_t threshold : {16384, 65536, 262144}) {
+        g_p2p_compress_once_threshold.store(threshold);
+        WebSocketCodec codec(Role::SERVER, C::P2P_V2);
+        std::vector<uint8_t> wire;
+        codec.EncodeMessage(std::vector<uint8_t>(threshold - 1, 0x71), wire);
+        BOOST_CHECK_EQUAL(wire[0] & 0x70, 0x40);
+        wire.clear();
+        codec.EncodeMessage(std::vector<uint8_t>(threshold, 0x71), wire);
+        BOOST_CHECK_EQUAL(wire[0] & 0x70, 0x20);
+    }
+    g_p2p_compress_once_threshold.store(0);
+    WebSocketCodec control(Role::SERVER, C::P2P_V2);
+    std::vector<uint8_t> wire;
+    control.EncodeMessage(std::vector<uint8_t>(300000, 0x71), wire);
+    BOOST_CHECK_EQUAL(wire[0] & 0x70, 0x40);
+}
+
+BOOST_AUTO_TEST_CASE(independent_frame_rejects_bad_flags_and_versions) {
+    for (uint8_t flags : {uint8_t(0x60), uint8_t(0x10)}) {
+        WebSocketCodec decoder(Role::CLIENT, C::P2P_V2);
+        std::vector<uint8_t> plain, reply;
+        BOOST_CHECK(
+            decoder
+                .Decode(std::vector<uint8_t>{uint8_t(0x82 | flags), 1, 0},
+                        plain, reply)
+                .error);
+    }
+    for (uint8_t first : {uint8_t(0x22), uint8_t(0xa0), uint8_t(0xa9)}) {
+        WebSocketCodec decoder(Role::CLIENT, C::P2P_V2);
+        std::vector<uint8_t> plain, reply;
+        BOOST_CHECK(
+            decoder.Decode(std::vector<uint8_t>{first, 1, 0}, plain, reply)
+                .error);
+    }
+    const std::vector<uint8_t> payload(70000, 0x83);
+    const auto original = CompressP2PIndependent({}, payload);
+    std::vector<uint8_t> out;
+    auto bad = original;
+    bad[1] ^= 1;
+    BOOST_CHECK_THROW(DecompressP2PIndependent(bad, out, 100000),
+                      std::runtime_error);
+    bad = original;
+    bad.push_back(0);
+    BOOST_CHECK_THROW(DecompressP2PIndependent(bad, out, 100000),
+                      std::runtime_error);
+    bad = original;
+    bad.pop_back();
+    BOOST_CHECK_THROW(DecompressP2PIndependent(bad, out, 100000),
+                      std::runtime_error);
+    BOOST_CHECK_THROW(DecompressP2PIndependent(original, out, 100),
+                      std::runtime_error);
+    // A skippable zstd frame is not an independently compressed P2P payload.
+    bad.assign(13, 0);
+    bad[0] = 1;
+    WriteLE32(bad.data() + 1, P2P_ZSTD_DICT_VERSION);
+    WriteLE32(bad.data() + 5, 0x184d2a50);
+    BOOST_CHECK_THROW(DecompressP2PIndependent(bad, out, 100000),
+                      std::runtime_error);
+    // A complete frame with a declared window above the stream memory limit
+    // must be rejected even when its content size fits the plain-message cap.
+    std::vector<uint8_t> window_payload(2 * 1024 * 1024, 0x24);
+    std::vector<uint8_t> window_frame(
+        5 + ZSTD_compressBound(window_payload.size()));
+    window_frame[0] = 1;
+    WriteLE32(window_frame.data() + 1, P2P_ZSTD_DICT_VERSION);
+    const auto window_size =
+        ZSTD_compress(window_frame.data() + 5, window_frame.size() - 5,
+                      window_payload.data(), window_payload.size(), 3);
+    BOOST_REQUIRE(!ZSTD_isError(window_size));
+    window_frame.resize(5 + window_size);
+    BOOST_CHECK_THROW(
+        DecompressP2PIndependent(window_frame, out, 4 * 1024 * 1024),
+        std::runtime_error);
+    WebSocketCodec legacy(Role::CLIENT, C::ZSTD_DICT);
+    std::vector<uint8_t> reply;
+    BOOST_CHECK(
+        legacy.Decode(std::vector<uint8_t>{0xa2, 1, 0}, out, reply).error);
+}
+
+BOOST_AUTO_TEST_CASE(independent_block_cache_bounds_and_payload_identity) {
+    P2PIndependentFrameCache cache(262144, 2);
+    std::vector<uint8_t> payload{*GetP2PV2MessageId(NetMsgType::BLOCK)};
+    CBlockHeader header;
+    VectorWriter{payload, payload.size(), header};
+    FastRandomContext rng(true);
+    auto random = rng.randbytes<uint8_t>(20000);
+    payload.insert(payload.end(), random.begin(), random.end());
+    const auto held = cache.EncodeNative(payload);
+    BOOST_CHECK(cache.EncodeNative(payload) == held);
+    auto changed = payload;
+    changed.back() ^= 1;
+    const auto second = cache.EncodeNative(changed);
+    BOOST_CHECK(second != held);
+    changed.back() ^= 2;
+    cache.EncodeNative(changed);
+    auto stats = cache.GetStats();
+    BOOST_CHECK_EQUAL(stats.hits, 1);
+    BOOST_CHECK_EQUAL(stats.misses, 3);
+    BOOST_CHECK_EQUAL(stats.compressions, 3);
+    BOOST_CHECK_EQUAL(stats.entries, 2);
+    BOOST_CHECK_EQUAL(stats.evictions, 1);
+    BOOST_CHECK_LE(stats.bytes, 262144);
+    std::vector<uint8_t> decoded;
+    DecompressP2PIndependent(*held, decoded, 65536);
+    BOOST_CHECK(decoded == payload);
+    P2PIndependentFrameCache byte_bounded(held->capacity() + 32, 64);
+    byte_bounded.EncodeNative(payload);
+    byte_bounded.EncodeNative(changed);
+    BOOST_CHECK_EQUAL(byte_bounded.GetStats().entries, 1);
+    BOOST_CHECK_EQUAL(byte_bounded.GetStats().evictions, 1);
+    BOOST_CHECK_LE(byte_bounded.GetStats().bytes, held->capacity() + 32);
+    P2PIndependentFrameCache tiny(16, 2);
+    tiny.EncodeNative(payload);
+    BOOST_CHECK_EQUAL(tiny.GetStats().entries, 0);
+}
+
+BOOST_AUTO_TEST_CASE(independent_block_cache_concurrent_single_compression) {
+    P2PIndependentFrameCache cache(262144, 8);
+    std::vector<uint8_t> payload{*GetP2PV2MessageId(NetMsgType::BLOCK)};
+    CBlockHeader header;
+    VectorWriter{payload, payload.size(), header};
+    payload.resize(100000, 0x57);
+    std::array<std::shared_ptr<const std::vector<uint8_t>>, 8> results;
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+    for (size_t i = 0; i < results.size(); ++i)
+        workers.emplace_back([&, i] {
+            while (!start.load())
+                std::this_thread::yield();
+            results[i] = cache.EncodeNative(payload);
+        });
+    start = true;
+    for (auto &thread : workers)
+        thread.join();
+    const auto stats = cache.GetStats();
+    BOOST_CHECK_EQUAL(stats.compressions, 1);
+    BOOST_CHECK_EQUAL(stats.misses, 1);
+    BOOST_CHECK_EQUAL(stats.hits, 7);
+    for (const auto &result : results)
+        BOOST_CHECK(result == results[0]);
+}
+
 namespace {
 struct RestoreBlockLimit {
     Config &config{const_cast<Config &>(GetConfig())};
@@ -788,6 +970,13 @@ BOOST_AUTO_TEST_CASE(compressed_output_is_bounded_by_plain_limit) {
 }
 
 BOOST_AUTO_TEST_CASE(native_compression_follows_plain_message_budget) {
+    // Preserve the original streaming-cap regression after adding an outgoing
+    // independent-frame policy; the independent form has its own case below.
+    const auto previous_threshold = g_p2p_compress_once_threshold.exchange(0);
+    struct RestoreThreshold {
+        size_t value;
+        ~RestoreThreshold() { g_p2p_compress_once_threshold.store(value); }
+    } restore_threshold{previous_threshold};
     RestoreBlockLimit restore;
     BOOST_REQUIRE(restore.config.SetMaxBlockSize(100000000));
     const std::vector<uint8_t> payload(65 * 1024 * 1024, 0x5a);
@@ -1336,6 +1525,64 @@ BOOST_AUTO_TEST_CASE(independent_frames_follow_unusual_send_patterns) {
                     block.Bytes());
         BOOST_CHECK_EQUAL(p.server->Info()->independent_frames_recv.load(), 1U);
     }
+}
+
+BOOST_AUTO_TEST_CASE(independent_compression_follows_configured_message_budget) {
+    const auto previous_threshold = g_p2p_compress_once_threshold.exchange(65536);
+    struct RestoreThreshold {
+        size_t value;
+        ~RestoreThreshold() { g_p2p_compress_once_threshold.store(value); }
+    } restore_threshold{previous_threshold};
+    RestoreBlockLimit restore;
+    BOOST_REQUIRE(restore.config.SetMaxBlockSize(100000000));
+    WebSocketCodec client{Role::CLIENT, C::P2P_V2};
+    WebSocketCodec server{Role::SERVER, C::P2P_V2};
+    std::vector<uint8_t> wire, plain, reply;
+    const std::vector<uint8_t> large(65 * 1024 * 1024, 0x5a);
+    client.EncodeMessage(large, wire);
+    BOOST_REQUIRE_EQUAL(wire[0] & 0x70, 0x20);
+    BOOST_REQUIRE(!server.Decode(wire, plain, reply).error);
+    BOOST_CHECK_EQUAL(plain.size(), large.size() + 4);
+    BOOST_CHECK(std::equal(large.begin(), large.end(), plain.begin() + 4));
+
+    BOOST_REQUIRE(restore.config.SetMaxBlockSize(32 * 1000000));
+    const uint64_t limit{GetP2PWebSocketMessageSizeLimit()};
+    FastRandomContext rng{true};
+    const auto random = rng.randbytes(limit);
+    wire.clear(); plain.clear(); reply.clear();
+    client.EncodeMessage(random, wire);
+    BOOST_CHECK_GT(wire.size(), random.size());
+    BOOST_REQUIRE(!server.Decode(wire, plain, reply).error);
+    BOOST_CHECK_EQUAL(plain.size(), random.size() + 4);
+    BOOST_CHECK(std::equal(random.begin(), random.end(), plain.begin() + 4));
+
+    wire.clear(); plain.clear(); reply.clear();
+    client.EncodeMessage(std::vector<uint8_t>(limit + 1, 0x00), wire);
+    const auto result = server.Decode(wire, plain, reply);
+    BOOST_REQUIRE(result.error);
+    BOOST_CHECK(result.error->find("content size") != std::string::npos);
+    BOOST_CHECK_LE(plain.size(), 4U);
+}
+
+BOOST_AUTO_TEST_CASE(independent_cache_bounds_allocated_capacity) {
+    constexpr size_t budget = 64 * 1024;
+    P2PIndependentFrameCache cache(budget, 64);
+    std::vector<uint8_t> payload{*GetP2PV2MessageId(NetMsgType::BLOCK)};
+    CBlockHeader header;
+    VectorWriter{payload, payload.size(), header};
+    payload.resize(5 * 1024 * 1024, 0);
+    const auto frame = cache.EncodeNative(payload);
+    const auto stats = cache.GetStats();
+    BOOST_REQUIRE_LT(frame->size(), budget);
+    if (stats.entries) {
+        // The compressed size alone cannot bound the retained allocation.
+        BOOST_CHECK_LE(frame->capacity(), stats.bytes);
+    } else {
+        // shrink_to_fit is nonbinding; a retained large allocation must bypass
+        // the cache even if the compressed logical contents fit the budget.
+        BOOST_CHECK_GT(frame->capacity(), budget);
+    }
+    BOOST_CHECK_LE(stats.bytes, budget);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

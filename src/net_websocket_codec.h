@@ -88,6 +88,7 @@ public:
     uint64_t WireBytesRecv() const { return m_wire_recv; }
     //! Independent frames decoded
     uint64_t IndependentFramesRecv() const { return m_independent_recv; }
+    uint64_t IndependentFramesSent() const { return m_independent_sent; }
 
 private:
     void AppendFrame(uint8_t opcode, Span<const uint8_t> payload,
@@ -112,6 +113,7 @@ private:
     uint64_t m_wire_sent{0};
     uint64_t m_wire_recv{0};
     uint64_t m_independent_recv{0};
+    uint64_t m_independent_sent{0};
     std::vector<uint8_t> m_scratch;
 };
 

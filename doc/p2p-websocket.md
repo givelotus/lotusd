@@ -502,3 +502,49 @@ rpcallowip=10.20.0.0/16            # RPC only via your permissioned balancer
 
 See [`contrib/censorship/`](../contrib/censorship/). Both provide a local
 SOCKS5 proxy for `-proxy`.
+
+## Independent p2p-v2 frames (compress-once)
+
+This extension is V2 only. RSV1 (`0x40`) retains its existing connection-history
+zstd meaning. RSV2 (`0x20`) marks an independent compressed message. RSV2 is
+valid only on an unfragmented binary message (FIN=1/opcode=2); RSV1+RSV2,
+RSV3, reserved bits on control/continuation frames, and fragmented independent
+messages are invalid. Raw messages and RSV1 streams remain accepted. The
+encoder threshold does not disable independent decoding.
+
+An RSV2 payload is `[format byte=1][dictionary version LE32][one zstd frame]`.
+The frame includes its content size and uses only the specified immutable
+P2P dictionary, never connection history. Unknown format/dictionary versions,
+unknown or oversized content lengths, truncated frames, concatenated frames
+and trailing/skippable frames are rejected. Decompressed messages use the
+configured/adaptive block payload limit plus P2P header overhead, matching
+streaming and raw messages. The declared zstd window is also checked against
+the 1 MiB decoder window limit before output allocation. Compressed wire
+bounds allow zstd overhead and the five-byte independent envelope.
+Independent frames neither read nor update the connection's
+streaming compression state; an RSV1 message after an RSV2 message therefore
+continues from the previous RSV1 state.
+
+`-p2pcompressoncethreshold=65536` selects the outgoing threshold; `0` is an
+unmodified streaming-encoder control. Benchmark thresholds are 16384, 65536
+and 262144 bytes. Existing peers without RSV2 support cannot consume this
+extension, so it is a coordinated V2 protocol change and is not suitable for
+the eCash tier.
+
+Only block messages are cached. The cache key includes block-header hash,
+dictionary version and digest, and exact serialized-message digest. The
+extra payload digest prevents two bodies sharing a header from reusing bytes.
+The LRU is bounded by 128 MiB of retained compressed-buffer capacity and 64
+entries; entries larger than the allocation budget bypass storage. Compression
+buffers release unused worst-case capacity when possible; accounting always
+uses allocated vector capacity, even if shrinking is declined. In-flight shared ownership remains
+valid across eviction. First-miss compression is serialized under the cache
+mutex so simultaneous peers cannot redundantly compress the same block.
+Other large messages use the same independent framing without block caching.
+`getnetworkinfo.p2p_compress_once` exposes cache operations and retained bytes.
+Wire counters in getnettotals remain the source of actual compression ratios.
+
+All comparisons must use the same corrected native V2 source, dictionary,
+fixture and binary, interleaving threshold=0 controls. Legacy ABC/80-byte
+block fixtures are not valid native V2 controls. No 500-peer socket-thread
+saturation conclusion is justified when resource guards block that load.

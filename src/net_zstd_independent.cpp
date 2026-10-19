@@ -157,8 +157,8 @@ void DecompressP2PIndependent(Span<const uint8_t> frame,
 }
 
 bool P2PIndependentFrameCache::Key::operator<(const Key &o) const {
-    return std::tie(block_hash, payload_hash, header, dict_version) <
-           std::tie(o.block_hash, o.payload_hash, o.header, o.dict_version);
+    return std::tie(block_hash, payload_hash, header, dict_version, dict_hash) <
+           std::tie(o.block_hash, o.payload_hash, o.header, o.dict_version, o.dict_hash);
 }
 
 P2PIndependentFrameCache::P2PIndependentFrameCache(size_t max_bytes,
@@ -227,10 +227,47 @@ P2PIndependentFrameCache::Encode(Span<const uint8_t> header,
         WITH_LOCK(m_mutex, ++m_stats.encodes);
         return frame;
     }
-    std::copy(header.begin(), header.end(), key.header.begin());
+    key.header.assign(header.begin(), header.end());
     key.dict_version = P2P_INDEPENDENT_DICT_VERSION;
     // Encode accepts arbitrary bytes, not only validated canonical blocks.
     key.payload_hash = Hash(payload);
+    static const uint256 dictionary_hash{Hash(GetP2PZstdDictionaryBytes())};
+    key.dict_hash = dictionary_hash;
+    return EncodeCached(header, payload, key);
+}
+
+P2PIndependentFrameCache::Frame
+P2PIndependentFrameCache::EncodeNative(Span<const uint8_t> payload) {
+    const auto block_id = GetP2PV2MessageId(NetMsgType::BLOCK);
+    if (!block_id || payload.empty() || payload[0] != *block_id) {
+        const auto frame = Fresh({}, payload);
+        WITH_LOCK(m_mutex, ++m_stats.encodes);
+        return frame;
+    }
+    Key key;
+    try {
+        SpanReader reader{payload.subspan(1)};
+        CBlockHeader block_header;
+        reader >> block_header;
+        key.block_hash = block_header.GetHash();
+        const size_t header_end = payload.size() - reader.size();
+        key.header.assign(payload.begin(), payload.begin() + header_end);
+    } catch (const std::exception &) {
+        const auto frame = Fresh({}, payload);
+        WITH_LOCK(m_mutex, ++m_stats.encodes);
+        return frame;
+    }
+    key.payload_hash = Hash(payload);
+    key.dict_version = P2P_INDEPENDENT_DICT_VERSION;
+    static const uint256 dictionary_hash{Hash(GetP2PZstdDictionaryBytes())};
+    key.dict_hash = dictionary_hash;
+    return EncodeCached({}, payload, key);
+}
+
+P2PIndependentFrameCache::Frame
+P2PIndependentFrameCache::EncodeCached(Span<const uint8_t> header,
+                                      Span<const uint8_t> payload,
+                                      const Key &key) {
 
     std::promise<Frame> promise;
     {
@@ -279,6 +316,7 @@ P2PIndependentFrameCache::Encode(Span<const uint8_t> header,
         LOCK(m_mutex);
         m_pending.erase(key);
         ++m_stats.encodes;
+        ++m_stats.compressions;
         const size_t allocated{frame->capacity()};
         if (allocated <= m_max_bytes && m_max_entries) {
             EvictLocked(allocated);
