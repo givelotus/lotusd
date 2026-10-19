@@ -1278,7 +1278,7 @@
       "byte": "eb",
       "name": "ENFORCEOUTPUT",
       "group": "output",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "ec",
