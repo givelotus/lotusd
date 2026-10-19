@@ -338,6 +338,50 @@ void ConsensusKinds() {
     }
 }
 
+void ConservationKinds() {
+    std::string error;
+    // Native: inputs add, outputs subtract, the remainder is the fee.
+    {
+        NativeConservation native;
+        CHECK(native.AddInput(700) && native.AddInput(300));
+        CHECK(native.AddOutput(990));
+        CHECK(native.Check() == ConservationFailure::None &&
+              native.Fee() == 10 && native.Final(error));
+        CHECK(native.AddOutput(11));
+        CHECK(native.Check() == ConservationFailure::NativeInflation &&
+              !native.Final(error) && error == "native-inflation");
+        NativeConservation huge;
+        CHECK(huge.AddInput(~__uint128_t{0}) && !huge.AddInput(1));
+    }
+    Hash32 a{}, b{};
+    a.fill(0xaa);
+    b.fill(0xbb);
+    // Token: balanced transfers pass; a positive delta needs one mint.
+    {
+        TokenConservation token;
+        CHECK(token.AddInput(a, 50) && token.AddOutput(a, 30) &&
+              token.AddOutput(a, 20));
+        CHECK(token.Check() == ConservationFailure::None);
+        CHECK(token.AddOutput(a, 1)); // a: 51 out of 50 in
+        CHECK(token.Check() == ConservationFailure::TokenInflation &&
+              !token.Final(error) && error == "token-inflation");
+        token.AddMint(a);
+        CHECK(token.Check() == ConservationFailure::None);
+        token.AddMint(a); // a second mint of a finds its delta taken
+        CHECK(token.Check() == ConservationFailure::MintWithoutDelta);
+    }
+    {
+        // A mint whose token has no positive delta, and burns (outputs) of
+        // a token below its inputs.
+        TokenConservation token;
+        CHECK(token.AddInput(b, 10) && token.AddOutput(b, 4));
+        CHECK(token.Check() == ConservationFailure::None);
+        token.AddMint(b);
+        CHECK(token.Check() == ConservationFailure::MintWithoutDelta &&
+              !token.Final(error) && error == "mint-without-positive-delta");
+    }
+}
+
 class CountingHook final : public DeferredBlockHook {
 public:
     explicit CountingHook(bool fail) : fail_(fail) {}
@@ -385,6 +429,7 @@ int main() {
         FinalRulesAndFailFast();
         FailedInputsNeverReachPhaseTwo();
         ConsensusKinds();
+        ConservationKinds();
         BlockHook();
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
