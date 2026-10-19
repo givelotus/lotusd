@@ -83,8 +83,8 @@ namespace {
     }
 
     bool ValidProfile(const TxProfile &p, std::string &error) {
-        if (p.max_inputs == 0 || p.max_inputs > 65535 ||
-            p.max_outputs > 65535 || p.max_mints > p.max_inputs ||
+        if (p.max_inputs == 0 || p.max_inputs > MAX_TX_INPUTS ||
+            p.max_outputs > MAX_TX_OUTPUTS || p.max_mints > p.max_inputs ||
             p.max_arguments > 65535 ||
             p.max_argument_bytes > MAX_WITNESS_ARGUMENT_BYTES ||
             p.max_branch_proof_depth > 64) {
@@ -455,13 +455,14 @@ bool ComputeTransactionIdentities(const Transaction &tx,
                                   Hash32 &txhash, std::string &error,
                                   Hash32 *outputs_root_out) {
     if (!ValidProfile(profile, error)) return false;
-    if (tx.inputs.empty() || tx.inputs.size() > profile.max_inputs ||
-        tx.outputs.size() > profile.max_outputs || ((tx.lock & 255) > 2) ||
+    // Counts are bounded by the u16 wire format only, never by the profile's
+    // (consensus) caps: identity is a function of the transaction's content.
+    if (tx.inputs.empty() || tx.inputs.size() > MAX_WIRE_TX_INPUTS ||
+        tx.outputs.size() > MAX_WIRE_TX_OUTPUTS || ((tx.lock & 255) > 2) ||
         ((tx.lock & 255) == 0 && tx.lock != 0)) {
         error = "transaction header";
         return false;
     }
-    size_t mint_count = 0;
     bool has_spend = false;
     bool has_coinbase = false;
     const size_t n_in = tx.inputs.size();
@@ -470,7 +471,6 @@ bool ComputeTransactionIdentities(const Transaction &tx,
             const auto &input = tx.inputs[i];
             has_spend |= input.flags == 1;
             has_coinbase |= input.flags == 2;
-            mint_count += input.flags == 3;
             for (size_t j = 0; j < i; ++j) {
                 if (tx.inputs[j].prev_index == input.prev_index &&
                     tx.inputs[j].prev_txid == input.prev_txid) {
@@ -484,7 +484,6 @@ bool ComputeTransactionIdentities(const Transaction &tx,
         for (const auto &input : tx.inputs) {
             has_spend |= input.flags == 1;
             has_coinbase |= input.flags == 2;
-            mint_count += input.flags == 3;
             if (!outpoints.emplace(input.prev_txid, input.prev_index).second) {
                 error = "repeated outpoint";
                 return false;
@@ -499,7 +498,9 @@ bool ComputeTransactionIdentities(const Transaction &tx,
             error = "coinbase shape";
             return false;
         }
-    } else if (!has_spend || mint_count > profile.max_mints) {
+    } else if (!has_spend) {
+        // The mint count is bounded by the input count; profile.max_mints is
+        // a validation cap and does not affect identity.
         error = "ordinary input mix";
         return false;
     }

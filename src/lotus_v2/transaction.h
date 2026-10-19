@@ -11,6 +11,18 @@
 
 namespace lotus::v2 {
 
+// Consensus caps on a V2 transaction (decision I-6, 2026-10-19). The wire
+// format counts inputs and outputs with u16 (65,535), but consensus accepts
+// at most 256 of each, so `TXINPUTCOUNT ENUMERATE` and `TXOUTPUTCOUNT
+// ENUMERATE` (bound 0..256) always cover the whole transaction. Profiles may
+// only tighten these caps. They are validation rules only: transaction
+// identity (ComputeTransactionIdentities) never depends on them.
+constexpr size_t MAX_TX_INPUTS = 256;
+constexpr size_t MAX_TX_OUTPUTS = 256;
+// Wire-format bounds: the header counts inputs and outputs with u16.
+constexpr size_t MAX_WIRE_TX_INPUTS = 65535;
+constexpr size_t MAX_WIRE_TX_OUTPUTS = 65535;
+
 struct TxProfile {
     size_t max_inputs;
     size_t max_outputs;
@@ -63,8 +75,13 @@ bool CheckCoinbaseContext(const Transaction &tx, const Hash32 &parent_block_id,
                           uint64_t height, std::string &error);
 
 inline constexpr TxProfile DefaultTxProfile{
-    65535, 65535, 65535, 10000, 65535, 8192, 64};
+    MAX_TX_INPUTS, MAX_TX_OUTPUTS, MAX_TX_INPUTS, 10000, 65535, 8192, 64};
 
+// Computes TxId/TxHash from the transaction's content. Input and output counts
+// are bounded only by the wire format (MAX_WIRE_TX_*); the profile's
+// max_inputs, max_outputs and max_mints are ignored, so a transaction over the
+// consensus caps keeps the identity of its bytes and is rejected by validation
+// instead. The profile's witness caps still apply.
 bool ComputeTransactionIdentities(const Transaction &tx,
                                   const TxProfile &profile,
                                   const Hash32 &chain_id, Hash32 &txid,

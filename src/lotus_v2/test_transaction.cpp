@@ -279,7 +279,51 @@ void Corpus(const char *path) {
 }
 } // namespace
 
+// Consensus caps inputs and outputs at 256 each (I-6); profiles may only
+// tighten them, and the u16 wire count does not raise them.
+void CountCaps() {
+    const auto wire = FromHex(
+        "07000000000000000000000001000100"
+        "1111111111111111111111111111111111111111111111111111111111111111"
+        "00000000ffffffff010001014e00010161"
+        "00e80300000000000001a88cef369f758aec3e594eaa4e8d08c9f12ef3f11bea972ec5"
+        "3a416a148f0605010100");
+    Transaction tx;
+    std::string error;
+    CHECK(DecodeTransaction(wire, DefaultTxProfile, tx, error));
+    CHECK(DefaultTxProfile.max_inputs == 256 &&
+          DefaultTxProfile.max_outputs == 256 && MAX_TX_INPUTS == 256 &&
+          MAX_TX_OUTPUTS == 256);
+    tx.outputs.resize(256, tx.outputs[0]);
+    std::vector<uint8_t> encoded;
+    CHECK(EncodeTransaction(tx, DefaultTxProfile, encoded, error));
+    Transaction decoded;
+    CHECK(DecodeTransaction(encoded, DefaultTxProfile, decoded, error));
+    tx.outputs.push_back(tx.outputs[0]);
+    CHECK(!EncodeTransaction(tx, DefaultTxProfile, encoded, error));
+    // The 256-output wire with its u16 count bumped to 257 and one more
+    // output appended is rejected by the count check.
+    tx.outputs.pop_back();
+    CHECK(EncodeTransaction(tx, DefaultTxProfile, encoded, error));
+    // Output count is the u16 at offset 14 (after version and lock).
+    CHECK(encoded[14] == 0x00 && encoded[15] == 0x01);
+    std::vector<uint8_t> over = encoded;
+    over[14] = 0x01;
+    const auto first_output =
+        std::vector<uint8_t>(encoded.end() - 45, encoded.end());
+    over.insert(over.end(), first_output.begin(), first_output.end());
+    CHECK(!DecodeTransaction(over, DefaultTxProfile, decoded, error) &&
+          error == "transaction count");
+    TxProfile loose = DefaultTxProfile;
+    loose.max_inputs = 257;
+    CHECK(!EncodeTransaction(tx, loose, encoded, error) && error == "profile");
+    loose = DefaultTxProfile;
+    loose.max_outputs = 65535;
+    CHECK(!DecodeTransaction(wire, loose, decoded, error) &&
+          error == "profile");
+}
 int main(int argc, char **argv) {
+    CountCaps();
     FixedPayment();
     ArgumentElementBound();
     Mint();

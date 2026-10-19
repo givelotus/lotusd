@@ -39,7 +39,9 @@ Wallet MakeWallet();
 
 /**
  * Spend coinbase m_coinbase_txns[coinbase_index] of the setup into `count`
- * P2PKH outputs of `wallet` and mine it, so the outputs are confirmed.
+ * confirmed P2PKH outputs of `wallet`. A request larger than the consensus
+ * output cap is split across chained transactions, each mined in its own
+ * block. Recorded amounts are the amounts actually published.
  */
 void FundWallet(TestChain100Setup &setup, Wallet &wallet, size_t count,
                 size_t coinbase_index = 0);
