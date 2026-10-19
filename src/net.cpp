@@ -266,7 +266,13 @@ std::optional<CService> GetLocalAddrForPeer(CNode &node) {
             // the peer and leave the port in `addrLocal` as returned by
             // `GetLocalAddress()` above. The peer has no way to observe our
             // listening port when we have initiated the connection.
-            addrLocal.SetIP(node.GetAddrLocal());
+            // The same holds for WebSocket peers: the port they reached is
+            // the HTTP/WebSocket endpoint, not our TCP P2P port. And if the
+            // best local address was a NET_WSS name, its port is that of the
+            // wss:// endpoint, so use our P2P listening port.
+            const uint16_t port{addrLocal.IsWSS() ? GetListenPort()
+                                                  : addrLocal.GetPort()};
+            addrLocal = CService{node.GetAddrLocal(), port};
         }
     }
     if (addrLocal.IsRoutable() || gArgs.GetBoolArg("-addrmantest", false)) {
