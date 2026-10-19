@@ -2135,7 +2135,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package &package,
         return unconfirmed_parent_txids.count(input.prevout.GetTxId()) > 0 ||
                m_view.HaveCoin(input.prevout);
     };
-    if (!std::all_of(child->vin.cbegin(), child->vin.cend(),
+    if (!std::all_of(child->vin.begin(), child->vin.end(),
                      package_or_confirmed)) {
         package_state_quit_early.Invalid(
             PackageValidationResult::PCKG_POLICY,

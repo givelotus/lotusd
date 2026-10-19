@@ -6,6 +6,7 @@
 #define BITCOIN_MINERFUND_H
 
 #include <script/standard.h>
+#include <span.h>
 #include <util/hasher.h>
 
 #include <unordered_set>
@@ -29,7 +30,7 @@ GetMinerFundWhitelist(const Consensus::Params &params);
  * Returns false if there is an invalid miner fund. True otherwise.
  */
 bool CheckMinerFund(const Consensus::Params &params,
-                    const std::vector<CTxOut> &coinbaseTxOut,
+                    Span<const CTxOut> coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev);
 
 #endif // BITCOIN_MINERFUND_H

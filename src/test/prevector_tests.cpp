@@ -287,4 +287,69 @@ BOOST_AUTO_TEST_CASE(PrevectorTestInt) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(prevector_borrow) {
+    using pretype = prevector<8, uint8_t>;
+    std::vector<uint8_t> source(40);
+    for (size_t i = 0; i < source.size(); ++i) {
+        source[i] = uint8_t(i);
+    }
+
+    // Small arrays are copied inline.
+    const pretype small = pretype::Borrow(source.data(), 8);
+    BOOST_CHECK(small.data() != source.data());
+    BOOST_CHECK(std::equal(small.begin(), small.end(), source.begin()));
+    BOOST_CHECK_EQUAL(small.allocated_memory(), 0U);
+
+    // Larger ones view the source and own no memory.
+    const pretype borrowed = pretype::Borrow(source.data(), 40);
+    BOOST_CHECK(borrowed.data() == source.data());
+    BOOST_CHECK_EQUAL(borrowed.size(), 40U);
+    BOOST_CHECK_EQUAL(borrowed.allocated_memory(), 0U);
+    BOOST_CHECK(borrowed == pretype(source.begin(), source.end()));
+
+    // A copy owns its elements.
+    pretype copy{borrowed};
+    BOOST_CHECK(copy.data() != source.data());
+    BOOST_CHECK(copy == borrowed);
+    copy[0] = 0xff;
+    BOOST_CHECK_EQUAL(source[0], 0);
+
+    // So does an assigned-to prevector, whether it was inline or allocated.
+    pretype assigned(pretype::size_type{3}, uint8_t{1});
+    assigned = borrowed;
+    BOOST_CHECK(assigned.data() != source.data());
+    BOOST_CHECK(assigned == borrowed);
+
+    // Growing a borrowed prevector takes a private copy first.
+    pretype grown = pretype::Borrow(source.data(), 40);
+    grown.push_back(40);
+    BOOST_CHECK(grown.data() != source.data());
+    BOOST_CHECK_EQUAL(grown.size(), 41U);
+    BOOST_CHECK_EQUAL(grown[39], 39);
+    BOOST_CHECK_EQUAL(source.size(), 40U);
+    pretype reserved = pretype::Borrow(source.data(), 40);
+    reserved.reserve(100);
+    BOOST_CHECK(reserved.data() != source.data());
+    BOOST_CHECK(reserved == borrowed);
+
+    // Shrinking to fit moves it inline without freeing the source.
+    pretype shrunk = pretype::Borrow(source.data(), 9);
+    BOOST_CHECK(shrunk.data() == source.data());
+    shrunk.pop_back();
+    shrunk.shrink_to_fit();
+    BOOST_CHECK(shrunk.data() != source.data());
+    BOOST_CHECK(std::equal(shrunk.begin(), shrunk.end(), source.begin()));
+
+    // Moving keeps the view; the moved-from prevector is empty.
+    pretype moved_from = pretype::Borrow(source.data(), 40);
+    pretype moved{std::move(moved_from)};
+    BOOST_CHECK(moved.data() == source.data());
+    BOOST_CHECK(moved_from.empty());
+    pretype move_assigned(pretype::size_type{20}, uint8_t{7});
+    move_assigned = std::move(moved);
+    BOOST_CHECK(move_assigned.data() == source.data());
+    // Destroying borrowed prevectors must not free the source; the sanitizer
+    // builds catch a bad free here.
+}
+
 BOOST_AUTO_TEST_SUITE_END()
