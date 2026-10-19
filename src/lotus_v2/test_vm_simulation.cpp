@@ -95,7 +95,7 @@ VmBytes Enforce(const Tpl &t, uint64_t claim, const VmBytes &prefix = {},
     VmBytes script = prefix;
     Push(script, Encode(t));
     Push(script, Num(claim));
-    script.insert(script.end(), {0xeb, 0x79});
+    script.push_back(0xeb); // pushes nothing
     Append(script, extra);
     script.push_back(0x4e);
     return script;

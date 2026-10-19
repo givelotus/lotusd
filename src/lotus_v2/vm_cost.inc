@@ -521,7 +521,6 @@ class SizePass {
                     pop();
                 if (parsed->state_mode == OutputTemplate::STATE_STACK) pop();
                 if (parsed->output_mode == OutputTemplate::OUTPUT_STACK) pop();
-                push(16);
             } else if (op == 0xc3) { // STATEHASH
                 const auto k = LiteralValue(previous);
                 if (!k || *k < 0 || *k > Int(VM_STATEHASH_MAX_ITEMS))
