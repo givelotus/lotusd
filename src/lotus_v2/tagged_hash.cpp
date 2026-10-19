@@ -30,6 +30,7 @@ constexpr std::string_view TagView(HashDomain domain) noexcept {
     case HashDomain::ContractState: return "Lotus/v2/contractstate";
     case HashDomain::SimPlaceholder: return "Lotus/v2/sim/placeholder";
     case HashDomain::VmProfile: return "Lotus/v2/vmprofile";
+    case HashDomain::TxIdFallback: return "Lotus/v2/txid/nonstructural";
     }
     std::abort();
 }

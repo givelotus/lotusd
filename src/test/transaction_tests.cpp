@@ -18,6 +18,7 @@
 #include <key.h>
 #include <lotus_v2/commitment.h>
 #include <lotus_v2/output.h>
+#include <lotus_v2/tagged_hash.h>
 #include <lotus_v2/transaction.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
@@ -46,6 +47,7 @@
 
 #include <atomic>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -1883,7 +1885,7 @@ BOOST_AUTO_TEST_CASE(v2_over_cap_identity_comes_from_bytes) {
                       "bad-txns-v2-too-many-outputs");
 }
 
-// A transaction that is not a well-formed V2 transaction has only the flat
+// A transaction that is not a well-formed V2 transaction has only the
 // fallback identity; validation rejects it explicitly instead of accepting it
 // under that identity. A legacy-version transaction with 65,536 outputs passes
 // every other context-free rule but cannot be counted by the u16 V2 header.
@@ -1914,6 +1916,146 @@ BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_rejected) {
     state = TxValidationState{};
     BOOST_CHECK(!CheckRegularTransaction(empty_tx, state));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-vin-empty");
+}
+
+namespace {
+/** Sets the active V2 chain ID for one scope, then restores the previous. */
+class ScopedTestV2ChainId {
+public:
+    explicit ScopedTestV2ChainId(const lotus::v2::ChainId &chain_id)
+        : m_previous(GetActiveV2ChainId()) {
+        SetActiveV2ChainId(chain_id);
+    }
+    ~ScopedTestV2ChainId() { SetActiveV2ChainId(m_previous); }
+
+private:
+    const lotus::v2::ChainId m_previous;
+};
+
+lotus::v2::Transaction FallbackIdentityBase() {
+    lotus::v2::Transaction tx;
+    for (uint8_t prev : {0x11, 0x22}) {
+        lotus::v2::Input in;
+        in.prev_txid.fill(prev);
+        in.sequence = CTxIn::SEQUENCE_FINAL;
+        in.flags = 1;
+        in.witnesses.push_back({{0x51}, {}, {}});
+        tx.inputs.push_back(in);
+    }
+    lotus::v2::Output out;
+    out.value = 1000;
+    out.branches.push_back(lotus::v2::Hash32{});
+    out.branches[0].fill(0x33);
+    out.paths.push_back({0});
+    tx.outputs.push_back(out);
+    return tx;
+}
+} // namespace
+
+// The fallback name of a transaction that is not a V2 structure commits to
+// every serialized field, so transactions that differ only in fields the
+// structural identity would also commit to (path index, extra witnesses,
+// siblings, arguments, an output that cannot be encoded) get different names,
+// and none equals a structural identity. Each variant below differs from the
+// first only in such a field; the previous flat fallback named them all the
+// same.
+BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_unique) {
+    const lotus::v2::Transaction valid = FallbackIdentityBase();
+    const CTransaction valid_tx(CMutableTransaction::FromV2Transaction(valid));
+    BOOST_REQUIRE(valid_tx.HasStructuralV2Identity());
+
+    // Repeating the first outpoint makes it a non-structural transaction.
+    lotus::v2::Transaction invalid = valid;
+    invalid.inputs[1].prev_txid = invalid.inputs[0].prev_txid;
+
+    std::vector<lotus::v2::Transaction> variants{invalid};
+    variants.push_back(invalid);
+    variants.back().inputs[0].path_index = 1;
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses.push_back({{0x52}, {}, {}});
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses[0].siblings.push_back(
+        lotus::v2::Hash32{});
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses[0].arguments.push_back({0x01});
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses[0].arguments.push_back({0x02});
+    variants.push_back(invalid);
+    variants.back().inputs[1].witnesses[0].arguments.push_back({0x01});
+    // An output without branches cannot be encoded.
+    variants.push_back(invalid);
+    variants.back().outputs.push_back(lotus::v2::Output{});
+    variants.back().outputs.back().value = 5;
+    // Bytes moved across the script/argument boundary.
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses[0].script = {0x51, 0x01};
+    variants.push_back(invalid);
+    variants.back().inputs[0].witnesses[0].arguments.push_back({0x01, 0x01});
+
+    std::set<uint256> names{valid_tx.GetId(), valid_tx.GetHash()};
+    for (const auto &variant : variants) {
+        const CMutableTransaction mtx =
+            CMutableTransaction::FromV2Transaction(variant);
+        const CTransaction tx(mtx);
+        BOOST_CHECK(!tx.HasStructuralV2Identity());
+        BOOST_CHECK(tx.GetId() == mtx.GetId());
+        BOOST_CHECK(tx.GetHash() == mtx.GetHash());
+        BOOST_CHECK(uint256(tx.GetId()) == uint256(tx.GetHash()));
+
+        // The name is the fallback tag over the chain ID and the complete
+        // serialization, never the TxId or TxHash tag.
+        const lotus::v2::ChainId &chain_id = GetActiveV2ChainId();
+        std::vector<uint8_t> preimage(chain_id.begin(), chain_id.end());
+        VectorWriter writer{preimage, preimage.size()};
+        SerializeTransaction(tx, writer);
+        const auto expected = lotus::v2::TaggedHash(
+            lotus::v2::HashDomain::TxIdFallback, preimage);
+        BOOST_CHECK(std::equal(expected.begin(), expected.end(),
+                               tx.GetId().begin()));
+        BOOST_CHECK(names.insert(tx.GetId()).second);
+
+        // Rejected (here by the more specific duplicate-input rule).
+        TxValidationState state;
+        BOOST_CHECK(!CheckRegularTransaction(tx, state));
+    }
+
+    // The name depends on the chain ID.
+    const CMutableTransaction mtx =
+        CMutableTransaction::FromV2Transaction(invalid);
+    const TxId mainnet_name = mtx.GetId();
+    lotus::v2::ChainId other_chain{};
+    other_chain.fill(0x44);
+    {
+        const ScopedTestV2ChainId scoped(other_chain);
+        BOOST_CHECK(mtx.GetId() != mainnet_name);
+    }
+    BOOST_CHECK(mtx.GetId() == mainnet_name);
+}
+
+// Cross-language vector: test_framework.messages.lotus_v2_compute_tx_identities
+// gives the same fallback name for this regtest (zero chain ID) transaction, a
+// version-7 legacy-framed transaction spending one outpoint twice.
+BOOST_AUTO_TEST_CASE(v2_fallback_identity_matches_test_framework) {
+    const ScopedTestV2ChainId scoped(lotus::v2::ChainId{});
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+    mtx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+    const CTransaction tx(mtx);
+    DataStream stream{};
+    stream << tx;
+    BOOST_CHECK_EQUAL(
+        HexStr(stream),
+        "070000800211000000000000000000000000000000000000000000000000000000"
+        "000000000000000000ffffffff1100000000000000000000000000000000000000"
+        "0000000000000000000000000000000000ffffffff01e803000000000000015100"
+        "000000");
+    BOOST_CHECK(!tx.HasStructuralV2Identity());
+    BOOST_CHECK_EQUAL(
+        tx.GetId().GetHex(),
+        "690f32a7d8ea390fa29b15729cec2c3b6d84e10e07e78458adfbd98bf4f77e70");
+    BOOST_CHECK_EQUAL(tx.GetHash().GetHex(), tx.GetId().GetHex());
 }
 
 BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
