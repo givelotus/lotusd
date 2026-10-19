@@ -59,7 +59,6 @@ PACKAGES=(
   libssl-dev
   libtinfo5
   libtool
-  libzmq3-dev
   lld-19
   make
   nasm
@@ -74,7 +73,6 @@ PACKAGES=(
   python3-pip
   python3-setuptools
   python3-yaml
-  python3-zmq
   qemu-user-static
   qttools5-dev
   qttools5-dev-tools
