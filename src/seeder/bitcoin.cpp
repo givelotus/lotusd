@@ -82,9 +82,8 @@ PeerMessagingState CSeederNode::ProcessMessage(std::string strCommand,
 
             // request headers starting after last checkpoint (only if we have
             // checkpoints for this network)
-            if (HasCheckpoint()) {
-                std::vector<BlockHash> locatorHash(
-                    1, Params().Checkpoints().mapCheckpoints.rbegin()->second);
+            if (checkpoint) {
+                std::vector<BlockHash> locatorHash(1, checkpoint->second);
                 MessageWriter::WriteMessage(
                     vSend, NetMsgType::GETHEADERS,
                     CBlockLocator(std::move(locatorHash)), uint256());
@@ -159,9 +158,8 @@ PeerMessagingState CSeederNode::ProcessMessage(std::string strCommand,
             // expect that the first header it will send will be the one just
             // after that checkpoint, as we claim to have the checkpoint as our
             // starting height in the version message.
-            if (HasCheckpoint() && nStartingHeight > GetRequireHeight()) {
-                if (header.hashPrevBlock !=
-                    Params().Checkpoints().mapCheckpoints.rbegin()->second) {
+            if (checkpoint && nStartingHeight > checkpoint->first) {
+                if (header.hashPrevBlock != checkpoint->second) {
                     // This node is synced higher than the last checkpoint
                     // height but does not have the checkpoint block in its
                     // chain. This means it must be on the wrong chain. We treat
@@ -248,7 +246,12 @@ bool CSeederNode::ProcessMessages() {
 }
 
 CSeederNode::CSeederNode(const CService &ip, std::vector<CAddress> *vAddrIn)
-    : vAddr(vAddrIn), you(ip), checkpointVerified(!HasCheckpoint()) {}
+    : vAddr(vAddrIn), you(ip) {
+    if (HasCheckpoint()) {
+        checkpoint = *Params().Checkpoints().mapCheckpoints.rbegin();
+    }
+    checkpointVerified = !checkpoint;
+}
 
 bool CSeederNode::Run() {
     // FIXME: This logic is duplicated with CConnman::ConnectNode for no
@@ -291,7 +294,7 @@ bool CSeederNode::Run() {
         vSend, NetMsgType::VERSION, PROTOCOL_VERSION, nLocalServices, GetTime(),
         your_services, WithParams(CNetAddr::V1, you), my_services,
         WithParams(CNetAddr::V1, CService{}), nLocalNonce, userAgent,
-        GetRequireHeight(), fRelayTxs);
+        checkpoint ? checkpoint->first : 0, fRelayTxs);
     Send();
 
     bool res = true;
