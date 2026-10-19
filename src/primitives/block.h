@@ -26,8 +26,30 @@ public:
 
 typedef std::array<uint8_t, 6> block_time_t;
 
+/** Current thread's scoped construction domain, otherwise the startup-selected
+ * process domain. A reference to a scoped value must not outlive that scope;
+ * callers retaining the domain beyond their call must copy it. */
 const lotus::v2::ChainId &GetActiveV2ChainId();
+/** Select the process-wide domain during startup, before concurrent readers.
+ * Runtime parameter construction must use ScopedV2ChainId, never this setter. */
 void SetActiveV2ChainId(const lotus::v2::ChainId &chain_id);
+
+/** Temporarily override only this thread's chain domain. Own the value rather
+ * than borrowing caller storage; worker threads retain the selected process
+ * domain unless they independently create an explicit scope. Scopes nest LIFO. */
+class ScopedV2ChainId final {
+public:
+    explicit ScopedV2ChainId(const lotus::v2::ChainId &chain_id) noexcept;
+    ~ScopedV2ChainId() noexcept;
+    ScopedV2ChainId(const ScopedV2ChainId &) = delete;
+    ScopedV2ChainId &operator=(const ScopedV2ChainId &) = delete;
+    ScopedV2ChainId(ScopedV2ChainId &&) = delete;
+    ScopedV2ChainId &operator=(ScopedV2ChainId &&) = delete;
+
+private:
+    const lotus::v2::ChainId m_chain_id;
+    const lotus::v2::ChainId *const m_previous;
+};
 
 /**
  * Nodes collect new transactions into a block, hash them into a hash tree, and

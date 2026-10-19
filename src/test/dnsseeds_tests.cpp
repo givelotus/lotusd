@@ -13,9 +13,9 @@
 BOOST_FIXTURE_TEST_SUITE(dnsseeds_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(override_dns_seed) {
-    // No override should always provide some DNS seeds
+    // Lotus V2 mainnet has no DNS seeders yet.
     const auto params = CreateChainParams(*m_node.args, ChainType::MAIN);
-    BOOST_CHECK(GetRandomizedDNSSeeds(*params).size() > 0);
+    BOOST_CHECK(GetRandomizedDNSSeeds(*params).empty());
 
     // Overriding should only return that DNS seed
     gArgs.ForceSetArg("-overridednsseed", "localhost");
