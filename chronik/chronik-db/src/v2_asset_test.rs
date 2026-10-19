@@ -185,6 +185,7 @@ fn read_snapshot(db: &crate::mdbx::MdbxEnv) -> ReadSnapshot<'_> {
             genesis: [2; 32],
             profile: [3; 32],
         },
+        bounds: crate::v2_branch::Bounds::new(32_000_000).unwrap(),
     }
 }
 #[test]
