@@ -6,7 +6,7 @@ use bitcoinsuite_core::lotus_v2::{Hash32, OutPoint, Output, TxId, TxLocation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
-    v2_branch::{Error, ReadSnapshot, MAX_BATCH_BYTES},
+    v2_branch::{Error, ReadSnapshot},
     v2_explorer::{native_serde, ResolvedCreation},
 };
 
@@ -135,7 +135,8 @@ pub fn derive_asset_events(view: AssetTxView<'_>) -> Result<Vec<AssetEvent>> {
 }
 
 /// Conservative reservation for this module's maps, events, summaries and writes.
-/// The batch owner additionally reserves old values, receipts, undo and read keys.
+/// The batch owner reserves more per element (old values, receipts, undo and
+/// read keys) against the index bounds (`v2_branch::Bounds`).
 pub fn preflight_asset_tx(view: AssetTxView<'_>) -> Result<usize> {
     let count = view
         .outputs
@@ -143,13 +144,9 @@ pub fn preflight_asset_tx(view: AssetTxView<'_>) -> Result<usize> {
         .checked_add(view.resolved_spends.len())
         .and_then(|n| n.checked_add(view.mint_token_ids.len()))
         .ok_or(Error::Invalid("asset capacity"))?;
-    let bytes = count
+    count
         .checked_mul(4096)
-        .ok_or(Error::Invalid("asset capacity"))?;
-    if bytes > MAX_BATCH_BYTES {
-        return Err(Error::Invalid("asset capacity"));
-    }
-    Ok(bytes)
+        .ok_or(Error::Invalid("asset capacity"))
 }
 
 /// Exact registry key, with native digest order.
