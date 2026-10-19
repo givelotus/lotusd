@@ -13,6 +13,7 @@
 #include <common/args.h>
 #include <config.h>
 #include <logging.h>
+#include <primitives/transaction.h>
 #include <pubkey.h>
 #include <node/context.h>
 #include <node/metrics.h>
@@ -45,6 +46,11 @@
 namespace chronik {
 
 namespace {
+
+/** Lotus V2 nodes are recognised by their native output fields. */
+template <typename TxOutT>
+constexpr bool IsLotusV2Output = requires(const TxOutT &o) { o.vBranches; };
+constexpr bool kLotusV2Node = IsLotusV2Output<CTxOut>;
 
 /** Registers the storage backends linked into this build (idempotent). */
 void RegisterStoreBackends() {
@@ -251,7 +257,9 @@ bool Start(const ArgsManager &args, const Config &config,
 
     native::HostCapabilities caps;
     caps.avalanche = true;
-    caps.slp_alp_tokens = true;
+    // SLP/ALP token indexing is on for eCash and off on Lotus V2 nodes (user
+    // decision 2026-10-19), which are recognised by their V2 output fields.
+    caps.slp_alp_tokens = !kLotusV2Node;
     caps.allow_pause_on_this_chain = chain_params.IsTestChain();
     caps.witness = false;
     caps.network = NetworkName(chain_params.GetChainType());
