@@ -116,9 +116,10 @@ enum class LogFormat {
     TEXT,
     //! One JSON object per line, for log shippers (see FormatJsonLine)
     JSON,
+    LOGFMT,
 };
 
-/** Parse a -logformat value ("text" or "json") */
+/** Parse a supported -logformat value */
 std::optional<LogFormat> ParseLogFormat(std::string_view str);
 
 /**
