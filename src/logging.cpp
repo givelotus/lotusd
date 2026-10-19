@@ -757,9 +757,10 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
     }
     bool ratelimit{false};
     if (should_ratelimit && m_limiter) {
-        // The quota counts the bytes written: the whole line, in either
-        // format.
-        auto status{m_limiter->Consume(source_loc, str_prefixed)};
+        // The quota counts the message (as passed to the logger, before
+        // any prefix or JSON wrapping), so that a limit means the same in
+        // both formats.
+        auto status{m_limiter->Consume(source_loc, str)};
         if (status == LogRateLimiter::Status::NEWLY_SUPPRESSED) {
             // with should_ratelimit=false, this cannot lead to infinit
             // recursion
