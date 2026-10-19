@@ -31,6 +31,7 @@
 #include <kernel/chain.h>
 #include <kernel/mempool_entry.h>
 #include <logging.h>
+#include <logging/values.h>
 #include <lotus_v2/signing.h>
 #include <merkleblock.h>
 #include <net_block_message_cache.h>
@@ -9681,8 +9682,10 @@ void PeerManagerImpl::ProcessMessage(
             if (auto tx_relay = peer->GetTxRelay()) {
                 tx_relay->m_fee_filter_received = newFeeFilter;
             }
-            LogDebug(BCLog::NET, "received: feefilter of %s from peer=%d\n",
-                     CFeeRate(newFeeFilter).ToString(), pfrom.GetId());
+            LogEvent(BCLog::NET, "peer_fee_filter_received",
+                     "received: feefilter of {fee_rate} from peer={peer_id}")
+                .Field(BCLog::LogField::FeeRate, CFeeRate(newFeeFilter))
+                .Field(BCLog::LogField::PeerId, pfrom.GetId());
         }
         return;
     }
