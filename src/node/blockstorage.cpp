@@ -942,16 +942,15 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo &blockundo,
 bool BlockManager::ReadBlock(CBlock &block, const FlatFilePos &pos) const {
     block.SetNull();
 
-    // Open history file to read
-    AutoFile filein{OpenBlockFile(pos, true)};
-    if (filein.IsNull()) {
-        LogError("ReadBlock: OpenBlockFile failed for %s\n", pos.ToString());
+    // Read the whole block with one read, then deserialize it from memory so
+    // its transactions are built straight from these bytes.
+    std::vector<uint8_t> block_data;
+    if (!ReadRawBlock(block_data, pos)) {
         return false;
     }
 
-    // Read block
     try {
-        filein >> block;
+        SpanReader{block_data} >> block;
     } catch (const std::exception &e) {
         LogError("%s: Deserialize or I/O error - %s at %s\n", __func__,
                  e.what(), pos.ToString());
