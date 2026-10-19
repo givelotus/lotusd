@@ -163,7 +163,7 @@ struct DataRequestParameters {
      * Maximum number of inventories to consider for requesting, per peer. It
      * provides a reasonable DoS limit to per-peer memory usage spent on
      * announcements, while covering peers continuously sending INVs at the
-     * maximum rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for
+     * a high rate (our own default policy is DEFAULT_TXRELAY_RATE_MAX) for
      * several minutes, while not receiving the actual data (from any peer) in
      * response to requests for them.
      */
@@ -273,16 +273,11 @@ static constexpr auto AVG_LOCAL_ADDRESS_BROADCAST_INTERVAL{24h};
 static constexpr auto AVG_ADDRESS_BROADCAST_INTERVAL{30s};
 /** Delay between rotating the peers we relay a particular address to */
 static constexpr auto ROTATE_ADDR_RELAY_DEST_INTERVAL{24h};
-/**
- * Verify that INVENTORY_MAX_RECENT_RELAY is enough to cache everything
- * typically relayed before unconditional relay from the mempool kicks in. This
- * is only a lower bound, and it should be larger to account for higher inv rate
- * to outbound peers, and random variations in the broadcast mechanism.
- */
-static_assert(INVENTORY_MAX_RECENT_RELAY >= INVENTORY_BROADCAST_PER_SECOND *
-                                                UNCONDITIONAL_RELAY_DELAY /
-                                                std::chrono::seconds{1},
-              "INVENTORY_RELAY_MAX too low");
+// INVENTORY_MAX_RECENT_RELAY no longer covers UNCONDITIONAL_RELAY_DELAY at
+// the (configurable) maximum announcement rate: at sustained rates above
+// INVENTORY_MAX_RECENT_RELAY / UNCONDITIONAL_RELAY_DELAY per peer, a
+// getdata arriving long after the announcement may get NOTFOUND. Peers that
+// negotiate short-id announcements fetch through getshorttx instead.
 
 /**
  * Average delay between feefilter broadcasts
@@ -1341,6 +1336,41 @@ private:
      * task then wakes the message handler (see ScheduleRelayTick).
      */
     std::atomic<bool> m_txrelay_wake{false};
+
+    /**
+     * Transactions waiting for the next relay tick. Appending is O(1) per
+     * transaction; the fan-out is picked when the queue is drained.
+     */
+    struct RelayQueueEntry {
+        TxId txid;
+        //! Originated by this node: announce to every relay peer
+        bool local;
+    };
+    Mutex m_relay_queue_mutex;
+    std::vector<RelayQueueEntry> m_relay_queue GUARDED_BY(m_relay_queue_mutex);
+    std::chrono::microseconds m_next_relay_drain GUARDED_BY(g_msgproc_mutex){0};
+    /**
+     * Recently relayed transactions and the peers they were announced to, so
+     * that a child is announced to (at least) its parent's peers.
+     */
+    static constexpr size_t MAX_RELAY_ROUTES{50'000};
+    std::unordered_map<TxId, std::vector<NodeId>, SaltedTxIdHasher>
+        m_relay_routes GUARDED_BY(g_msgproc_mutex);
+    std::deque<TxId> m_relay_routes_order GUARDED_BY(g_msgproc_mutex);
+    /** Per-peer announcements per tick: ceil(-txrelayratemax x tick) */
+    size_t TxRelayTickBudget() const {
+        const double per_tick{
+            double(m_opts.txrelay_rate_max) *
+            std::chrono::duration<double>(m_opts.txrelay_tick).count()};
+        return std::max<size_t>(1, size_t(std::ceil(per_tick)));
+    }
+    /** Drain the relay queue into peers' inventory, once per tick */
+    void MaybeDrainRelayQueue()
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
+                                 !m_relay_queue_mutex);
+    void DrainRelayQueue()
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !m_peer_mutex,
+                                 !m_relay_queue_mutex);
     /** Wake the message handler at each relay tick while inventory waits */
     void ScheduleRelayTick(CScheduler &scheduler);
     /**
@@ -3377,28 +3407,9 @@ void PeerManagerImpl::SendPings() {
 }
 
 void PeerManagerImpl::RelayTransaction(const TxId &txid) {
-    LOCK(m_peer_mutex);
-    for (auto &it : m_peer_map) {
-        Peer &peer = *it.second;
-        auto tx_relay = peer.GetTxRelay();
-        if (!tx_relay) {
-            continue;
-        }
-        LOCK(tx_relay->m_tx_inventory_mutex);
-        // Only queue transactions for announcement once the version handshake
-        // is completed. The time of arrival for these transactions is
-        // otherwise at risk of leaking to a spy, if the spy is able to
-        // distinguish transactions received during the handshake from the rest
-        // in the announcement.
-        if (!tx_relay->m_relay_ready) {
-            continue;
-        }
-
-        if (!tx_relay->m_tx_inventory_known_filter.contains(txid) ||
-            tx_relay->m_avalanche_stalled_txids.count(txid) > 0) {
-            tx_relay->m_tx_inventory_to_send.insert(txid);
-        }
-    }
+    const bool local =
+        WITH_LOCK(m_mempool.cs, return m_mempool.IsUnbroadcastTx(txid));
+    WITH_LOCK(m_relay_queue_mutex, m_relay_queue.push_back({txid, local}));
     m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
 
@@ -3407,27 +3418,189 @@ void PeerManagerImpl::RelayTransactionBatch(
     if (txs.empty()) {
         return;
     }
-    LOCK(m_peer_mutex);
-    for (auto &it : m_peer_map) {
-        Peer &peer = *it.second;
-        auto tx_relay = peer.GetTxRelay();
-        if (!tx_relay) {
-            continue;
+    // Classify only this batch under one coherent mempool view. Allocate the
+    // flags before taking the lock, rather than copying every unbroadcast id.
+    std::vector<bool> local(txs.size(), false);
+    {
+        LOCK(m_mempool.cs);
+        for (size_t i = 0; i < txs.size(); ++i) {
+            if (txs[i]) {
+                local[i] = m_mempool.IsUnbroadcastTx(txs[i]->GetId());
+            }
         }
-        LOCK(tx_relay->m_tx_inventory_mutex);
-        if (!tx_relay->m_relay_ready) {
-            continue;
+    }
+    {
+        LOCK(m_relay_queue_mutex);
+        m_relay_queue.reserve(m_relay_queue.size() + txs.size());
+        for (size_t i = 0; i < txs.size(); ++i) {
+            if (txs[i]) {
+                m_relay_queue.push_back({txs[i]->GetId(), local[i]});
+            }
         }
-        for (const auto &tx : txs) {
-            if (!tx) {
+    }
+    m_txrelay_wake.store(true, std::memory_order_relaxed);
+}
+
+size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
+                     size_t fanout_max) noexcept {
+    fanout_max = std::max(fanout_max, fanout_min);
+    // The epsilon keeps e.g. 0.1 x 30 = 3.0000000000000004 at 3.
+    const double scaled{
+        std::ceil(std::max(0.0, fanout_pct) * double(relay_peers) - 1e-9)};
+    const size_t k{scaled >= double(fanout_max) ? fanout_max : size_t(scaled)};
+    return std::clamp(std::max(fanout_min, k), fanout_min, fanout_max);
+}
+
+void PeerManagerImpl::MaybeDrainRelayQueue() {
+    const auto tick_now{RelayTickNow()};
+    if (tick_now < m_next_relay_drain) {
+        return;
+    }
+    m_next_relay_drain = NextRelayTick(tick_now, m_opts.txrelay_tick);
+    DrainRelayQueue();
+}
+
+void PeerManagerImpl::DrainRelayQueue() {
+    std::vector<RelayQueueEntry> batch;
+    WITH_LOCK(m_relay_queue_mutex, batch.swap(m_relay_queue));
+    if (batch.empty()) {
+        return;
+    }
+
+    // Relay peers (handshake complete, accepting transactions), and for
+    // each whether it lacks each queued transaction: not in its known
+    // filter, or stalled in avalanche for it. One lock per peer per tick.
+    struct Target {
+        NodeId id;
+        Peer::TxRelay *relay;
+        std::vector<bool> lacks;
+        std::vector<uint32_t> picks;
+    };
+    std::vector<PeerRef> peers;
+    std::vector<Target> targets;
+    {
+        LOCK(m_peer_mutex);
+        peers.reserve(m_peer_map.size());
+        targets.reserve(m_peer_map.size());
+        for (const auto &[id, peer] : m_peer_map) {
+            auto *relay = peer->GetTxRelay();
+            if (!relay) {
                 continue;
             }
-            const TxId &txid = tx->GetId();
-            if (!tx_relay->m_tx_inventory_known_filter.contains(txid) ||
-                tx_relay->m_avalanche_stalled_txids.count(txid) > 0) {
-                tx_relay->m_tx_inventory_to_send.insert(txid);
+            LOCK(relay->m_tx_inventory_mutex);
+            if (!relay->m_relay_ready ||
+                !WITH_LOCK(relay->m_bloom_filter_mutex,
+                           return relay->m_relay_txs)) {
+                continue;
+            }
+            Target target{id, relay, std::vector<bool>(batch.size()), {}};
+            for (size_t i = 0; i < batch.size(); ++i) {
+                const TxId &txid = batch[i].txid;
+                target.lacks[i] =
+                    !relay->m_tx_inventory_known_filter.contains(txid) ||
+                    relay->m_avalanche_stalled_txids.count(txid) > 0;
+            }
+            peers.push_back(peer);
+            targets.push_back(std::move(target));
+        }
+    }
+    if (targets.empty()) {
+        return;
+    }
+    std::unordered_map<NodeId, size_t> target_index;
+    target_index.reserve(targets.size());
+    for (size_t t = 0; t < targets.size(); ++t) {
+        target_index.emplace(targets[t].id, t);
+    }
+
+    // The nearest in-mempool parent that was relayed recently, if any.
+    std::vector<const std::vector<NodeId> *> parent_route(batch.size(),
+                                                          nullptr);
+    {
+        LOCK(m_mempool.cs);
+        for (size_t i = 0; i < batch.size(); ++i) {
+            const auto it{m_mempool.GetIter(batch[i].txid)};
+            if (!it) {
+                continue;
+            }
+            for (const auto &parent : (**it)->GetMemPoolParentsConst()) {
+                const auto route{
+                    m_relay_routes.find(parent.get()->GetTx().GetId())};
+                if (route != m_relay_routes.end()) {
+                    parent_route[i] = &route->second;
+                    break;
+                }
             }
         }
+    }
+
+    const size_t fanout{TxRelayFanout(targets.size(), m_opts.txrelay_fanout_min,
+                                      m_opts.txrelay_fanout_pct,
+                                      m_opts.txrelay_fanout_max)};
+    std::vector<size_t> candidates;
+    std::vector<bool> chosen(targets.size());
+    std::vector<std::pair<TxId, std::vector<NodeId>>> new_routes;
+    new_routes.reserve(batch.size());
+    for (size_t i = 0; i < batch.size(); ++i) {
+        candidates.clear();
+        for (size_t t = 0; t < targets.size(); ++t) {
+            if (targets[t].lacks[i]) {
+                candidates.push_back(t);
+            }
+        }
+        std::fill(chosen.begin(), chosen.end(), false);
+        if (batch[i].local || candidates.size() <= fanout) {
+            for (const size_t t : candidates) {
+                chosen[t] = true;
+            }
+        } else {
+            // Uniform sample of `fanout` candidates (partial Fisher-Yates)
+            for (size_t j = 0; j < fanout; ++j) {
+                const size_t pick{
+                    j + size_t(m_rng.randrange(candidates.size() - j))};
+                std::swap(candidates[j], candidates[pick]);
+                chosen[candidates[j]] = true;
+            }
+            // Plus the peers its parent was announced to, so a child does
+            // not reach a peer that never heard of the parent (an orphan).
+            if (parent_route[i]) {
+                for (const NodeId id : *parent_route[i]) {
+                    const auto t{target_index.find(id)};
+                    if (t != target_index.end() &&
+                        targets[t->second].lacks[i]) {
+                        chosen[t->second] = true;
+                    }
+                }
+            }
+        }
+        std::vector<NodeId> route;
+        for (size_t t = 0; t < targets.size(); ++t) {
+            if (chosen[t]) {
+                targets[t].picks.push_back(uint32_t(i));
+                route.push_back(targets[t].id);
+            }
+        }
+        new_routes.emplace_back(batch[i].txid, std::move(route));
+    }
+
+    for (auto &target : targets) {
+        if (target.picks.empty()) {
+            continue;
+        }
+        LOCK(target.relay->m_tx_inventory_mutex);
+        for (const uint32_t i : target.picks) {
+            target.relay->m_tx_inventory_to_send.insert(batch[i].txid);
+        }
+    }
+
+    for (auto &[txid, route] : new_routes) {
+        if (m_relay_routes.insert_or_assign(txid, std::move(route)).second) {
+            m_relay_routes_order.push_back(txid);
+        }
+    }
+    while (m_relay_routes_order.size() > MAX_RELAY_ROUTES) {
+        m_relay_routes.erase(m_relay_routes_order.front());
+        m_relay_routes_order.pop_front();
     }
     m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
@@ -9431,6 +9604,10 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         return true;
     }
 
+    // At each relay tick, the first peer to get here moves the relay queue
+    // into the chosen peers' inventory, so all peers send at this tick.
+    MaybeDrainRelayQueue();
+
     const auto current_time{GetTime<std::chrono::microseconds>()};
     m_v2_protocol_handler.CheckFastSyncTimeouts(pto->GetId(), current_time);
 
@@ -9755,10 +9932,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         {
             LOCK(peer->m_block_inv_mutex);
 
-            vInv.reserve(std::max<size_t>(peer->m_blocks_for_inv_relay.size(),
-                                          INVENTORY_BROADCAST_MAX_PER_MB *
-                                              config.GetMaxBlockSize() /
-                                              1000000));
+            vInv.reserve(peer->m_blocks_for_inv_relay.size());
 
             // Add blocks
             for (const BlockHash &hash : peer->m_blocks_for_inv_relay) {
@@ -9907,17 +10081,14 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 CompareInvMempoolOrder compareInvMempoolOrder(&m_mempool);
                 std::make_heap(vInvTx.begin(), vInvTx.end(),
                                compareInvMempoolOrder);
-                // No reason to drain out at many times the network's
-                // capacity, especially since we have many peers and some
-                // will draw much shorter delays.
-                unsigned int nRelayedTransactions = 0;
+                // Per-peer budget per tick (-txrelayratemax); the rest
+                // stays queued for the next tick.
+                const size_t tick_budget{TxRelayTickBudget()};
+                size_t nRelayedTransactions = 0;
                 std::vector<std::pair<TxId, CTransactionRef>> vRelayTxs;
                 vRelayTxs.reserve(vInvTx.size());
                 LOCK(tx_relay->m_bloom_filter_mutex);
-                while (!vInvTx.empty() &&
-                       nRelayedTransactions < INVENTORY_BROADCAST_MAX_PER_MB *
-                                                  config.GetMaxBlockSize() /
-                                                  1000000) {
+                while (!vInvTx.empty() && nRelayedTransactions < tick_budget) {
                     // Fetch the top element from the heap
                     std::pop_heap(vInvTx.begin(), vInvTx.end(),
                                   compareInvMempoolOrder);
