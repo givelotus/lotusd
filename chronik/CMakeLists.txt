@@ -3,6 +3,21 @@
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# The native implementation never calls Cargo or Corrosion and needs no Rust
+# toolchain. Only one implementation is linked into the node.
+if(CHRONIK_IMPLEMENTATION STREQUAL "native")
+    add_subdirectory(native)
+
+    set(CHRONIK_PROTO_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/chronik-proto/proto/")
+    set(CHRONIK_PROTO_COMPONENT "chronik-proto")
+    install(
+        DIRECTORY "${CHRONIK_PROTO_DIRECTORY}"
+        DESTINATION "proto"
+        COMPONENT "${CHRONIK_PROTO_COMPONENT}"
+    )
+    return()
+endif()
+
 include(RustHelper)
 
 set(CHRONIK_CARGO_FLAGS --locked)
