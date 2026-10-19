@@ -7,7 +7,6 @@
 #ifndef BITCOIN_LOGGING_H
 #define BITCOIN_LOGGING_H
 
-#include <crypto/siphash.h>
 #include <span.h>
 #include <threadsafety.h>
 #include <tinyformat.h>
@@ -40,25 +39,6 @@ static constexpr const char *DEFAULT_LOGFORMAT = "text";
 
 extern bool fLogIPs;
 extern const char *const DEFAULT_DEBUGLOGFILE;
-
-struct SourceLocationEqual {
-    bool operator()(const std::source_location &lhs,
-                    const std::source_location &rhs) const noexcept {
-        return lhs.line() == rhs.line() &&
-               std::string_view(lhs.file_name()) ==
-                   std::string_view(rhs.file_name());
-    }
-};
-
-struct SourceLocationHasher {
-    size_t operator()(const std::source_location &s) const noexcept {
-        // Use CSipHasher(0, 0) as a simple way to get uniform distribution.
-        return size_t(CSipHasher(0, 0)
-                          .Write(s.line())
-                          .Write(MakeUCharSpan(std::string_view{s.file_name()}))
-                          .Finalize());
-    }
-};
 
 struct LogCategory {
     std::string category;
@@ -143,33 +123,48 @@ std::optional<LogFormat> ParseLogFormat(std::string_view str);
  */
 void AppendJsonEscaped(std::string &out, std::string_view str);
 
+class LogRateLimiter;
+
+/**
+ * Rate limiting state of one log call site. Every log macro expansion owns
+ * one (a function-local static, constant-initialized), so checking the
+ * quota is a few relaxed atomic operations on that site's own state: no
+ * lock and no lookup by source location.
+ */
+struct LogSiteLimit {
+    /**
+     * Window, suppression and remaining quota, packed in one word so that
+     * they change together: epoch (bits 25..63), suppressed (bit 24) and
+     * bytes still allowed in that window (bits 0..23).
+     */
+    std::atomic<uint64_t> state{0};
+    //! Bytes of messages suppressed in the window the site is suppressed in
+    std::atomic<uint64_t> dropped{0};
+    //! Epoch in which this site was put on its limiter's suppressed list
+    std::atomic<uint64_t> listed_epoch{0};
+    //! Next suppressed site (list owned by the limiter)
+    LogSiteLimit *next{nullptr};
+    //! Where the site is, for the suppression notices
+    std::source_location loc;
+
+    static constexpr int AVAILABLE_BITS{24};
+    static constexpr uint64_t AVAILABLE_MASK{(uint64_t{1} << AVAILABLE_BITS) -
+                                             1};
+    static constexpr uint64_t SUPPRESSED{uint64_t{1} << AVAILABLE_BITS};
+    static constexpr int EPOCH_SHIFT{AVAILABLE_BITS + 1};
+    //! Bytes still allowed (for tests)
+    uint64_t Available() const { return state.load() & AVAILABLE_MASK; }
+};
+
 //! Fixed window rate limiter for logging.
 class LogRateLimiter {
-public:
-    //! Keeps track of an individual source location and how many available
-    //! bytes are left for logging from it.
-    struct Stats {
-        //! Remaining bytes
-        uint64_t m_available_bytes;
-        //! Number of bytes that were consumed but didn't fit in the available
-        //! bytes.
-        uint64_t m_dropped_bytes{0};
-
-        Stats(uint64_t max_bytes) : m_available_bytes{max_bytes} {}
-        //! Updates internal accounting and returns true if enough
-        //! available_bytes were remaining
-        bool Consume(uint64_t bytes);
-    };
-
 private:
-    mutable StdMutex m_mutex;
-
-    //! Stats for each source location that has attempted to log something.
-    std::unordered_map<std::source_location, Stats, SourceLocationHasher,
-                       SourceLocationEqual>
-        m_source_locations GUARDED_BY(m_mutex);
+    //! Current window. Unique across limiters, so that sites last used by
+    //! another limiter start afresh.
+    std::atomic<uint64_t> m_epoch;
+    //! Sites suppressed in the current window (lock-free stack)
+    std::atomic<LogSiteLimit *> m_suppressed{nullptr};
     //! Whether any log locations are suppressed.
-    //! Cached view on m_source_locations for performance reasons.
     std::atomic<bool> m_suppression_active{false};
     LogRateLimiter(uint64_t max_bytes, std::chrono::seconds reset_window);
 
@@ -188,7 +183,8 @@ public:
     static std::shared_ptr<LogRateLimiter>
     Create(SchedulerFunction &&scheduler_func, uint64_t max_bytes,
            std::chrono::seconds reset_window);
-    //! Maximum number of bytes logged per location per window.
+    //! Maximum number of bytes logged per location per window (at most
+    //! LogSiteLimit::AVAILABLE_MASK, 16 MiB).
     const uint64_t m_max_bytes;
     //! Interval after which the window is reset.
     const std::chrono::seconds m_reset_window;
@@ -201,14 +197,17 @@ public:
         // suppression is still ongoing
         STILL_SUPPRESSED,
     };
-    //! Consumes `source_loc`'s available bytes corresponding to the size of the
-    //! message `str` (without log prefixes or JSON wrapping) and returns its
-    //! status.
-    [[nodiscard]] Status Consume(const std::source_location &source_loc,
-                                 std::string_view str)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
-    //! Resets all usage to zero. Called periodically by the scheduler.
-    void Reset() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /**
+     * Consume `bytes` (the message's length, without log prefixes or JSON
+     * wrapping) of `site`'s quota and return its status. Lock-free.
+     */
+    [[nodiscard]] Status Consume(LogSiteLimit &site,
+                                 const std::source_location &loc,
+                                 uint64_t bytes);
+    //! Starts a new window: logs a notice for each site whose messages were
+    //! dropped, and lifts all suppressions. Called periodically by the
+    //! scheduler.
+    void Reset();
     //! Returns true if any log locations are currently being suppressed.
     bool SuppressionsActive() const { return m_suppression_active; }
 };
@@ -280,7 +279,7 @@ private:
     /** Send a string to the log output (internal) */
     void LogPrintStr_(std::string_view str, std::source_location &&source_loc,
                       BCLog::LogFlags category, BCLog::Level level,
-                      bool should_ratelimit) EXCLUSIVE_LOCKS_REQUIRED(m_cs);
+                      LogSiteLimit *site) EXCLUSIVE_LOCKS_REQUIRED(m_cs);
 
 public:
     bool m_print_to_console = false;
@@ -326,10 +325,13 @@ public:
 
     ~Logger();
 
-    /** Send a string to the log output */
+    /**
+     * Send a string to the log output. With a site, unconditional logging
+     * is rate limited by that call site's quota (see LogSiteLimit).
+     */
     void LogPrintStr(std::string_view str, std::source_location &&source_loc,
                      BCLog::LogFlags category, BCLog::Level level,
-                     bool should_ratelimit);
+                     LogSiteLimit *site);
 
     /** Returns whether logs will be written to any output */
     bool Enabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
@@ -442,9 +444,9 @@ bool GetLogCategory(BCLog::LogFlags &flag, std::string_view str);
 // peer can fill up a user's disk with debug.log entries.
 template <typename... Args>
 static inline void LogPrintf_(std::source_location &&source_loc,
-                              BCLog::LogFlags flag, BCLog::Level level,
-                              bool should_ratelimit, const char *fmt,
-                              const Args &...args) {
+                              BCLog::LogSiteLimit *site, BCLog::LogFlags flag,
+                              BCLog::Level level, bool should_ratelimit,
+                              const char *fmt, const Args &...args) {
     if (LogInstance().Enabled()) {
         std::string log_msg;
         try {
@@ -457,13 +459,23 @@ static inline void LogPrintf_(std::source_location &&source_loc,
                       "\" while formatting log message: " + fmt;
         }
         LogInstance().LogPrintStr(log_msg, std::move(source_loc), flag, level,
-                                  should_ratelimit);
+                                  should_ratelimit ? site : nullptr);
     }
 }
 
+/**
+ * The rate limiting state of the call site this is expanded at: a lambda's
+ * function-local static, unique to each macro expansion.
+ */
+#define LOG_SITE_LIMIT_                                                        \
+    ([]() -> BCLog::LogSiteLimit & {                                           \
+        static constinit BCLog::LogSiteLimit site_limit;                       \
+        return site_limit;                                                     \
+    }())
+
 #define LogPrintLevel_(category, level, should_ratelimit, ...)                 \
-    LogPrintf_(std::source_location::current(), category, level,               \
-               should_ratelimit, __VA_ARGS__)
+    LogPrintf_(std::source_location::current(), &LOG_SITE_LIMIT_, category,    \
+               level, should_ratelimit, __VA_ARGS__)
 
 // Log unconditionally. Uses basic rate limiting to mitigate disk filling
 // attacks.

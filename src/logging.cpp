@@ -87,7 +87,7 @@ bool BCLog::Logger::StartLogging() {
                 "Early logging buffer overflowed, %d log lines discarded.\n",
                 m_buffer_lines_discarded),
             std::source_location::current(), BCLog::ALL, Level::Info,
-            /*should_ratelimit=*/false);
+            /*site=*/nullptr);
     }
     while (!m_msgs_before_open.empty()) {
         const auto &buflog = m_msgs_before_open.front();
@@ -618,9 +618,15 @@ static size_t MemUsage(const BCLog::Logger::BufferedLog &buflog) {
                sizeof(memusage::list_node<BCLog::Logger::BufferedLog>));
 }
 
+//! Source of rate limiting windows (epochs), unique across limiters. Sites
+//! start at epoch 0, which no window uses.
+static std::atomic<uint64_t> g_next_ratelimit_epoch{1};
+
 BCLog::LogRateLimiter::LogRateLimiter(uint64_t max_bytes,
                                       std::chrono::seconds reset_window)
-    : m_max_bytes{max_bytes}, m_reset_window{reset_window} {}
+    : m_epoch{g_next_ratelimit_epoch.fetch_add(1)},
+      m_max_bytes{std::min(max_bytes, LogSiteLimit::AVAILABLE_MASK)},
+      m_reset_window{reset_window} {}
 
 std::shared_ptr<BCLog::LogRateLimiter>
 BCLog::LogRateLimiter::Create(SchedulerFunction &&scheduler_func,
@@ -639,21 +645,45 @@ BCLog::LogRateLimiter::Create(SchedulerFunction &&scheduler_func,
     return limiter;
 }
 
-BCLog::LogRateLimiter::Status
-BCLog::LogRateLimiter::Consume(const std::source_location &source_loc,
-                               std::string_view str) {
-    StdLockGuard scoped_lock(m_mutex);
-    auto &stats{
-        m_source_locations.try_emplace(source_loc, m_max_bytes).first->second};
-    Status status{stats.m_dropped_bytes > 0 ? Status::STILL_SUPPRESSED
-                                            : Status::UNSUPPRESSED};
-
-    if (!stats.Consume(str.size()) && status == Status::UNSUPPRESSED) {
-        status = Status::NEWLY_SUPPRESSED;
-        m_suppression_active = true;
+BCLog::LogRateLimiter::Status BCLog::LogRateLimiter::Consume(
+    LogSiteLimit &site, const std::source_location &loc, uint64_t bytes) {
+    constexpr auto relaxed{std::memory_order_relaxed};
+    using S = LogSiteLimit;
+    const uint64_t epoch{m_epoch.load(std::memory_order_acquire)};
+    uint64_t state{site.state.load(relaxed)};
+    while (true) {
+        // A site not used yet in this window (or by this limiter) starts
+        // with the full quota.
+        const bool fresh{state >> S::EPOCH_SHIFT != epoch};
+        if (!fresh && (state & S::SUPPRESSED)) {
+            site.dropped.fetch_add(bytes, relaxed);
+            return Status::STILL_SUPPRESSED;
+        }
+        const uint64_t available{fresh ? m_max_bytes
+                                       : state & S::AVAILABLE_MASK};
+        const bool fits{bytes <= available};
+        const uint64_t next{(epoch << S::EPOCH_SHIFT) |
+                            (fits ? available - bytes : S::SUPPRESSED)};
+        if (!site.state.compare_exchange_weak(state, next, relaxed)) {
+            continue;
+        }
+        if (fits) {
+            return Status::UNSUPPRESSED;
+        }
+        break;
     }
-
-    return status;
+    // This call suppressed the site for the rest of the window.
+    site.dropped.store(bytes, relaxed);
+    if (site.listed_epoch.exchange(epoch, relaxed) != epoch) {
+        site.loc = loc;
+        LogSiteLimit *head{m_suppressed.load(relaxed)};
+        do {
+            site.next = head;
+        } while (!m_suppressed.compare_exchange_weak(
+            head, &site, std::memory_order_release, relaxed));
+    }
+    m_suppression_active = true;
+    return Status::NEWLY_SUPPRESSED;
 }
 
 void BCLog::Logger::FormatLogStrInPlace(
@@ -679,16 +709,15 @@ void BCLog::Logger::FormatLogStrInPlace(
 void BCLog::Logger::LogPrintStr(std::string_view str,
                                 std::source_location &&source_loc,
                                 BCLog::LogFlags category, BCLog::Level level,
-                                bool should_ratelimit) {
+                                LogSiteLimit *site) {
     StdLockGuard scoped_lock(m_cs);
-    return LogPrintStr_(str, std::move(source_loc), category, level,
-                        should_ratelimit);
+    return LogPrintStr_(str, std::move(source_loc), category, level, site);
 }
 
 void BCLog::Logger::LogPrintStr_(std::string_view str,
                                  std::source_location &&source_loc,
                                  BCLog::LogFlags category, BCLog::Level level,
-                                 bool should_ratelimit) {
+                                 LogSiteLimit *site) {
     const bool starts_new_line = m_started_new_line;
     m_started_new_line = !str.empty() && str[str.size() - 1] == '\n';
 
@@ -756,14 +785,14 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
                             threadname, now, mocktime);
     }
     bool ratelimit{false};
-    if (should_ratelimit && m_limiter) {
+    if (site && m_limiter) {
         // The quota counts the message (as passed to the logger, before
         // any prefix or JSON wrapping), so that a limit means the same in
         // both formats.
-        auto status{m_limiter->Consume(source_loc, str)};
+        auto status{m_limiter->Consume(*site, source_loc, str.size())};
         if (status == LogRateLimiter::Status::NEWLY_SUPPRESSED) {
-            // with should_ratelimit=false, this cannot lead to infinit
-            // recursion
+            // without a site (not rate limited), this cannot lead to
+            // infinite recursion
             // NOLINTNEXTLINE(misc-no-recursion)
             LogPrintStr_(
                 strprintf(
@@ -777,7 +806,7 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
                     source_loc.function_name(), m_limiter->m_max_bytes,
                     Ticks<std::chrono::seconds>(m_limiter->m_reset_window)),
                 std::source_location::current(), LogFlags::ALL, Level::Warning,
-                /*should_ratelimit=*/false);
+                /*site=*/nullptr);
         } else if (status == LogRateLimiter::Status::STILL_SUPPRESSED) {
             ratelimit = true;
         }
@@ -929,35 +958,32 @@ bool BCLog::Logger::DefaultShrinkDebugFile() const {
 }
 
 void BCLog::LogRateLimiter::Reset() {
-    decltype(m_source_locations) source_locations;
-    {
-        StdLockGuard scoped_lock(m_mutex);
-        source_locations.swap(m_source_locations);
-        m_suppression_active = false;
+    // Take the suppressed sites, then start a new window. A site suppressed
+    // in between is noticed in the next window (one notice late).
+    LogSiteLimit *site{
+        m_suppressed.exchange(nullptr, std::memory_order_acquire)};
+    struct Dropped {
+        std::source_location loc;
+        uint64_t bytes;
+    };
+    std::vector<Dropped> dropped;
+    for (; site; site = site->next) {
+        dropped.push_back({site->loc, site->dropped.load()});
     }
-    for (const auto &[source_loc, stats] : source_locations) {
-        if (stats.m_dropped_bytes == 0) {
+    m_suppression_active = false;
+    m_epoch.store(g_next_ratelimit_epoch.fetch_add(1),
+                  std::memory_order_release);
+    for (const auto &[loc, bytes] : dropped) {
+        if (bytes == 0) {
             continue;
         }
         LogPrintLevel_(LogFlags::ALL, Level::Warning,
                        /*should_ratelimit=*/false,
                        "Restarting logging from %s:%d (%s): %d bytes were "
                        "dropped during the last %ss.\n",
-                       source_loc.file_name(), source_loc.line(),
-                       source_loc.function_name(), stats.m_dropped_bytes,
+                       loc.file_name(), loc.line(), loc.function_name(), bytes,
                        Ticks<std::chrono::seconds>(m_reset_window));
     }
-}
-
-bool BCLog::LogRateLimiter::Stats::Consume(uint64_t bytes) {
-    if (bytes > m_available_bytes) {
-        m_dropped_bytes += bytes;
-        m_available_bytes = 0;
-        return false;
-    }
-
-    m_available_bytes -= bytes;
-    return true;
 }
 
 bool BCLog::Logger::SetLogLevel(std::string_view level_str) {
