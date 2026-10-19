@@ -8,6 +8,15 @@ else()
 endif()
 
 # Create build ini file
+# The native Chronik has no Electrum interface; it is only built by the Rust
+# implementation.
+if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
+	set(ENABLE_CHRONIK_NATIVE ON)
+	set(ENABLE_CHRONIK_ELECTRUM OFF)
+else()
+	set(ENABLE_CHRONIK_NATIVE OFF)
+	set(ENABLE_CHRONIK_ELECTRUM ${BUILD_CHRONIK})
+endif()
 configure_file(config.ini.cmake.in config.ini)
 
 ###
