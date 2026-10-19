@@ -1513,10 +1513,6 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         """Checks whether the node was built with HTTP/2 (nghttp2)."""
         return self.config["components"].getboolean("ENABLE_HTTP2", fallback=False)
 
-    def is_zmq_compiled(self):
-        """Checks whether the zmq module was compiled."""
-        return self.config["components"].getboolean("ENABLE_ZMQ")
-
     def is_chronik_electrum_compiled(self):
         """Checks whether Chronik was compiled with its Electrum interface
         (the native implementation has none)."""

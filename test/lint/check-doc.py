@@ -30,16 +30,6 @@ SET_FALSE_POSITIVE_UNKNOWNS = {
     "-regtest",
     "-testnet",
     "-upnp",
-    "-zmqpubhashblock",
-    "-zmqpubhashtx",
-    "-zmqpubrawblock",
-    "-zmqpubrawtx",
-    "-zmqpubhashblockhwm",
-    "-zmqpubhashtxhwm",
-    "-zmqpubrawblockhwm",
-    "-zmqpubrawtxhwm",
-    "-zmqpubsequence",
-    "-zmqpubsequencehwm",
 }
 
 # list false positive undocumented arguments
