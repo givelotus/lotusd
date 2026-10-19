@@ -409,6 +409,7 @@ add_library(util
 	currencyunit.cpp
 	interfaces/handler.cpp
 	logging.cpp
+	logging/encoder.cpp
 	metrics/metrics.cpp
 	random.cpp
 	randomenv.cpp
@@ -907,6 +908,7 @@ if(BUILD_CHAINSTATE)
 		init/common.cpp
 		key.cpp
 		logging.cpp
+		logging/encoder.cpp
 		networks/abc/chainparamsconstants.cpp
 		networks/abc/checkpoints.cpp
 		node/blockfitter.cpp
