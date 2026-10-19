@@ -184,8 +184,41 @@ bool BCLog::Logger::StartLogging() {
     // destroyed, see LogInstance).
     static std::once_flag flush_at_exit;
     std::call_once(flush_at_exit,
-                   [] { std::atexit([] { LogInstance().StopThread(); }); });
+                   [] { std::atexit([] { LogInstance().FinishLogging(); }); });
     return true;
+}
+
+void BCLog::Logger::FinishLogging() {
+    // TLS scratch buffers may already be destroyed on the exiting thread.
+    // Let the still-running consumer render before its own TLS destruction.
+    StopThread(/*summarize=*/true);
+}
+
+void BCLog::Logger::WriteDropSummary() {
+    const uint64_t dropped{DroppedLines()};
+    constexpr LogEventSite site{
+        "logger_shutdown",
+        "Logger shutdown: {dropped_lines} debug/info log lines dropped",
+        LogFlags::ALL, Level::Info};
+    const FieldHeader header{FieldId::DroppedLines, FieldKind::U64, false,
+                             sizeof(dropped), 0};
+    std::array<std::byte, sizeof(header) + sizeof(dropped)> payload;
+    std::memcpy(payload.data(), &header, sizeof(header));
+    std::memcpy(payload.data() + sizeof(header), &dropped, sizeof(dropped));
+    // Direct sink write: neither a full producer ring, severity filtering nor
+    // a source-site quota may hide the counter used by test shutdown checks.
+    WriteLogLine(LogLine{.time = SystemClock::now(),
+                         .mocktime = GetMockTime(),
+                         .level = dropped ? Level::Warning : Level::Info,
+                         .category = LogFlags::ALL,
+                         .thread = "logger",
+                         .loc = std::source_location::current(),
+                         .event = &site,
+                         .fields = FieldList{payload, 1}},
+                 /*to_file=*/true, /*notify_callbacks=*/false);
+    if (m_fileout) fflush(m_fileout);
+    if (m_json_fileout) fflush(m_json_fileout);
+    if (m_print_to_console) fflush(stdout);
 }
 
 void BCLog::Logger::DisconnectTestLogger() {
@@ -225,6 +258,7 @@ void BCLog::Logger::StartThread() {
     {
         std::lock_guard<std::mutex> lock(m_wake_mutex);
         m_stop = false;
+        m_shutdown_summary = false;
     }
     m_thread_running = true;
     m_thread = std::thread{[this] {
@@ -248,13 +282,14 @@ int BCLog::Logger::ForkProcess() {
 }
 #endif
 
-void BCLog::Logger::StopThread() {
+void BCLog::Logger::StopThread(bool summarize) {
     if (!m_thread.joinable()) {
         return;
     }
     {
         std::lock_guard<std::mutex> lock(m_wake_mutex);
         m_stop = true;
+        m_shutdown_summary = summarize;
     }
     m_wake_cv.notify_all();
     m_thread.join();
@@ -262,6 +297,7 @@ void BCLog::Logger::StopThread() {
 }
 
 void BCLog::Logger::ThreadMain() NO_THREAD_SAFETY_ANALYSIS {
+    bool summarize{false};
     while (true) {
         bool busy{false};
         if (!m_paused_for_testing) {
@@ -273,6 +309,7 @@ void BCLog::Logger::ThreadMain() NO_THREAD_SAFETY_ANALYSIS {
         }
         std::unique_lock<std::mutex> lock(m_wake_mutex);
         if (m_stop) {
+            summarize = m_shutdown_summary;
             break;
         }
         m_wake_cv.wait_for(
@@ -283,6 +320,10 @@ void BCLog::Logger::ThreadMain() NO_THREAD_SAFETY_ANALYSIS {
     }
     StdLockGuard consumer_lock(m_consumer_mutex);
     DrainLocked();
+    if (summarize) {
+        StdLockGuard scoped_lock(m_cs);
+        WriteDropSummary();
+    }
 }
 
 void BCLog::Logger::Flush() {
@@ -926,11 +967,12 @@ void BCLog::Logger::ReopenIfRequested() {
     }
 }
 
-void BCLog::Logger::WriteLine(const std::string &line, bool to_file) {
+void BCLog::Logger::WriteLine(const std::string &line, bool to_file,
+                              bool notify_callbacks) {
     if (m_print_to_console) {
         fwrite(line.data(), 1, line.size(), stdout);
     }
-    if (!m_writing_emergency) {
+    if (notify_callbacks && !m_writing_emergency) {
         for (const auto &cb : m_print_callbacks)
             cb(line);
     }
@@ -939,7 +981,8 @@ void BCLog::Logger::WriteLine(const std::string &line, bool to_file) {
     }
 }
 
-void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file) {
+void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file,
+                                 bool notify_callbacks) {
     Encode(line);
     if (m_log_format == LogFormat::JOURNALD) {
         const bool failed{to_file && !m_journal.Send(m_line_buf)};
@@ -962,7 +1005,7 @@ void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file) {
             fflush(stderr);
         }
     }
-    WriteLine(m_line_buf, to_file);
+    WriteLine(m_line_buf, to_file, notify_callbacks);
     if (m_json_fileout && to_file) {
         const LogOptions opts{.timestamps = true,
                               .time_micros = true,
