@@ -10,23 +10,23 @@ to write to an outputfile.
 If no argument is provided, the most recent test directory will be used."""
 
 import argparse
-import heapq
 import itertools
 import os
 import pathlib
-import re
 import sys
 import tempfile
 from collections import defaultdict, namedtuple
 
-# N.B.: don't import any local modules here - this script must remain executable
-# without the parent module installed.
+# N.B.: only import test_framework.timeline, which uses only the standard
+# library, so that this script remains executable without the rest of the
+# framework (e.g. its build configuration).
+from test_framework import timeline
 
 # Should match same symbol in `test_framework.test_framework`.
 TMPDIR_PREFIX = "bitcoin_func_test_"
 
 # Matches on the date format at the start of the log event
-TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?Z")
+TIMESTAMP_PATTERN = timeline.TIMESTAMP_PATTERN
 
 LogEvent = namedtuple("LogEvent", ["timestamp", "source", "event"])
 
@@ -97,29 +97,27 @@ def main():
 def read_logs(tmp_dir):
     """Reads log files.
 
-    Delegates to generator function get_log_events() to provide individual log events
-    for each of the input log files."""
+    The framework's and the nodes' text logs, merged by timestamp (see
+    test_framework/timeline.py). Events with the same timestamp keep the
+    order of their log files."""
+    framework_log = os.path.join(tmp_dir, "test_framework.log")
+    if not os.path.isfile(framework_log):
+        print(
+            f"File {framework_log} could not be opened. Continuing without it.",
+            file=sys.stderr,
+        )
+    return (to_log_event(event) for event in timeline.read_timeline(tmp_dir, False))
 
-    # Find out what the folder is called that holds the debug.log file
-    glob = pathlib.Path(tmp_dir).glob("node0/**/debug.log")
-    path = next(glob, None)
-    if path:
-        # more than one debug.log should never happen
-        assert next(glob, None) is None
-        # extract the chain name
-        chain = re.search(r"node0/(.+?)/debug\.log$", path.as_posix()).group(1)
-    else:
-        # fallback to regtest (should only happen when none exists)
-        chain = "regtest"
 
-    files = [("test", f"{tmp_dir}/test_framework.log")]
-    for i in itertools.count():
-        logfile = f"{tmp_dir}/node{i}/{chain}/debug.log"
-        if not os.path.isfile(logfile):
-            break
-        files.append((f"node{i}", logfile))
-
-    return heapq.merge(*[get_log_events(source, f) for source, f in files])
+def to_log_event(event):
+    """A timeline event as this script prints it: continuation lines are
+    indented to align with the source and timestamp."""
+    lines = event.raw.split("\n")
+    text = "\n".join(
+        [lines[0]]
+        + [f"                                   {line}" for line in lines[1:]]
+    )
+    return LogEvent(timestamp=event.time, source=event.source, event=text.rstrip())
 
 
 def print_node_warnings(tmp_dir, colors):
@@ -169,42 +167,14 @@ def get_log_events(source, logfile):
 
     Log events may be split over multiple lines. We use the timestamp
     regex match as the marker for a new log event."""
-    try:
-        with open(logfile, "r", encoding="utf-8") as infile:
-            event = ""
-            timestamp = ""
-            for line in infile:
-                # skip blank lines
-                if line == "\n":
-                    continue
-                # if this line has a timestamp, it's the start of a new log
-                # event.
-                time_match = TIMESTAMP_PATTERN.match(line)
-                if time_match:
-                    if event:
-                        yield LogEvent(
-                            timestamp=timestamp, source=source, event=event.rstrip()
-                        )
-                    timestamp = time_match.group()
-                    if time_match.group(1) is None:
-                        # timestamp does not have microseconds. Add zeroes.
-                        timestamp_micro = timestamp.replace("Z", ".000000Z")
-                        line = line.replace(timestamp, timestamp_micro)
-                        timestamp = timestamp_micro
-                    event = line
-                # if it doesn't have a timestamp, it's a continuation line of
-                # the previous log.
-                else:
-                    # Add the line. Prefix with space equivalent to the source
-                    # + timestamp so log lines are aligned
-                    event += f"                                   {line}"
-            # Flush the final event
-            yield LogEvent(timestamp=timestamp, source=source, event=event.rstrip())
-    except FileNotFoundError:
+    if not os.path.isfile(logfile):
         print(
             f"File {logfile} could not be opened. Continuing without it.",
             file=sys.stderr,
         )
+        return
+    for event in timeline.text_events(source, logfile):
+        yield to_log_event(event)
 
 
 def print_logs_plain(log_events, colors):
