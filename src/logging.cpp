@@ -122,6 +122,12 @@ bool BCLog::Logger::StartLogging() {
             // the last one.
             FileWriteStr("\n\n\n\n\n", m_fileout);
         }
+        if (!m_json_file_path.empty()) {
+            m_json_fileout = OpenLogFile(m_json_file_path);
+            if (!m_json_fileout) {
+                return false;
+            }
+        }
 
         // Dump buffered messages from before we opened the log.
         if (m_buffer_lines_discarded > 0) {
@@ -132,19 +138,26 @@ bool BCLog::Logger::StartLogging() {
         }
         while (!m_msgs_before_open.empty()) {
             const auto &buflog = m_msgs_before_open.front();
-            Encode(LogLine{.time = buflog.now,
-                           .mocktime = buflog.mocktime,
-                           .level = buflog.level,
-                           .category = buflog.category,
-                           .thread = buflog.threadname,
-                           .loc = buflog.source_loc,
-                           .message = buflog.str});
-            WriteLine(m_line_buf, /*to_file=*/true);
+            if (buflog.record) {
+                WriteRecord(*buflog.record);
+            } else {
+                WriteLogLine(LogLine{.time = buflog.now,
+                                     .mocktime = buflog.mocktime,
+                                     .level = buflog.level,
+                                     .category = buflog.category,
+                                     .thread = buflog.threadname,
+                                     .loc = buflog.source_loc,
+                                     .message = buflog.str},
+                             /*to_file=*/true);
+            }
             m_msgs_before_open.pop_front();
         }
         m_cur_buffer_memusage = 0;
         if (m_fileout) {
             fflush(m_fileout);
+        }
+        if (m_json_fileout) {
+            fflush(m_json_fileout);
         }
         if (m_print_to_console) {
             fflush(stdout);
@@ -171,6 +184,10 @@ void BCLog::Logger::DisconnectTestLogger() {
         fclose(m_fileout);
     }
     m_fileout = nullptr;
+    if (m_json_fileout != nullptr) {
+        fclose(m_json_fileout);
+    }
+    m_json_fileout = nullptr;
     m_print_callbacks.clear();
     m_has_callbacks = false;
     m_max_buffer_memusage = DEFAULT_MAX_LOG_BUFFER;
@@ -736,6 +753,7 @@ void BCLog::Logger::WriteEmergency(LogRecord &rec) NO_THREAD_SAFETY_ANALYSIS {
     m_line_buf.swap(saved);
     // An error may be followed immediately by abort inside the callback.
     if (m_fileout) fflush(m_fileout);
+    if (m_json_fileout) fflush(m_json_fileout);
     if (m_print_to_console) fflush(stdout);
 }
 
@@ -855,11 +873,19 @@ void BCLog::Logger::Enqueue(std::string_view str, std::string *owned,
 }
 
 void BCLog::Logger::ReopenIfRequested() {
-    if (m_reopen_file && m_fileout) {
+    if (m_reopen_file && (m_fileout || m_json_fileout)) {
         m_reopen_file = false;
-        if (FILE * new_fileout{OpenLogFile(m_file_path)}) {
-            fclose(m_fileout);
-            m_fileout = new_fileout;
+        if (m_fileout) {
+            if (FILE * new_fileout{OpenLogFile(m_file_path)}) {
+                fclose(m_fileout);
+                m_fileout = new_fileout;
+            }
+        }
+        if (m_json_fileout) {
+            if (FILE * new_fileout{OpenLogFile(m_json_file_path)}) {
+                fclose(m_json_fileout);
+                m_json_fileout = new_fileout;
+            }
         }
     }
 }
@@ -877,29 +903,294 @@ void BCLog::Logger::WriteLine(const std::string &line, bool to_file) {
     }
 }
 
-void BCLog::Logger::WriteRecord(LogRecord &rec) {
-    std::string *spill{nullptr};
-    std::string_view msg;
-    if (rec.flags & LogRecord::SPILLED) {
-        std::memcpy(&spill, rec.payload, sizeof(spill));
-        msg = *spill;
-    } else {
-        msg = std::string_view{reinterpret_cast<const char *>(rec.payload),
-                               rec.size};
+void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file) {
+    Encode(line);
+    WriteLine(m_line_buf, to_file);
+    if (m_json_fileout && to_file) {
+        const LogOptions opts{.timestamps = true,
+                              .time_micros = true,
+                              .threadnames = true,
+                              .sourcelocations = true};
+        m_json_encoder.Encode(line, opts, m_json_buf);
+        FileWriteStr(m_json_buf, m_json_fileout);
     }
-    Encode(LogLine{
+}
+
+std::string
+BCLog::Logger::SuppressionNotice(const std::source_location &loc) const {
+    const LogRateLimiter *limiter{m_limiter.get()};
+    return strprintf(
+        "Excessive logging detected from %s:%d (%s): >%d bytes logged during "
+        "the last time window of %is. Suppressing logging to disk from this "
+        "source location until time window resets. Console logging "
+        "unaffected. Last log entry.\n",
+        loc.file_name(), loc.line(), loc.function_name(),
+        limiter ? limiter->m_max_bytes : 0,
+        limiter ? Ticks<std::chrono::seconds>(limiter->m_reset_window) : 0);
+}
+
+void BCLog::Logger::WriteRecord(LogRecord &rec) {
+    LogLine line{
         .time = SystemClock::time_point{std::chrono::microseconds{rec.time_us}},
         .mocktime = std::chrono::seconds{rec.mocktime_s},
         .level = rec.level,
         .category = rec.category,
         .thread = rec.thread,
         .loc = rec.loc,
-        .message = msg,
         .continued = (rec.flags & LogRecord::CONTINUED) != 0,
         .ratelimited = (rec.flags & LogRecord::SUPPRESSIONS) != 0,
-    });
+    };
+    if (rec.flags & LogRecord::SUPPRESSION_NOTICE) {
+        // (A plain message's call site logs its notice itself.)
+        const std::string notice{SuppressionNotice(rec.loc)};
+        WriteLogLine(LogLine{.time = line.time,
+                             .mocktime = line.mocktime,
+                             .level = Level::Warning,
+                             .category = LogFlags::ALL,
+                             .thread = line.thread,
+                             .loc = std::source_location::current(),
+                             .message = notice,
+                             .ratelimited = true},
+                     /*to_file=*/true);
+    }
+    const bool to_file{!(rec.flags & LogRecord::NO_FILE)};
+    if (rec.event) {
+        line.event = static_cast<const LogEventSite *>(rec.event);
+        line.fields = FieldList{
+            std::span<const std::byte>{rec.payload, rec.size}, rec.num_fields};
+        line.fields_truncated = (rec.flags & LogRecord::FIELDS_TRUNCATED) != 0;
+        WriteLogLine(line, to_file);
+        ReleaseFields(line.fields);
+        rec.num_fields = 0;
+        return;
+    }
+    std::string *spill{nullptr};
+    if (rec.flags & LogRecord::SPILLED) {
+        std::memcpy(&spill, rec.payload, sizeof(spill));
+        line.message = *spill;
+    } else {
+        line.message = std::string_view{
+            reinterpret_cast<const char *>(rec.payload), rec.size};
+    }
+    WriteLogLine(line, to_file);
     delete spill;
-    WriteLine(m_line_buf, !(rec.flags & LogRecord::NO_FILE));
+}
+
+void BCLog::Logger::RecordDeleter::operator()(LogRecord *rec) const {
+    if (rec->event) {
+        ReleaseFields(
+            FieldList{std::span<const std::byte>{rec->payload, rec->size},
+                      rec->num_fields});
+    }
+    delete rec;
+}
+
+namespace {
+//! Fill what every record carries (producer side)
+void FillRecordHeader(BCLog::LogRecord &rec, const std::source_location &loc,
+                      BCLog::LogFlags category, BCLog::Level level) {
+    rec.time_us =
+        TicksSinceEpoch<std::chrono::microseconds>(SystemClock::now());
+    rec.mocktime_s = count_seconds(GetMockTime());
+    rec.loc = loc;
+    rec.event = nullptr;
+    rec.category = category;
+    rec.level = level;
+    rec.flags = 0;
+    rec.num_fields = 0;
+    rec.size = 0;
+    const std::string &thread{util::ThreadGetInternalName()};
+    const size_t len{std::min(thread.size(), sizeof(rec.thread) - 1)};
+    std::memcpy(rec.thread, thread.data(), len);
+    rec.thread[len] = '\0';
+}
+} // namespace
+
+void BCLog::Logger::BeginEvent(EventBuilder &b) noexcept {
+    if (!Enabled()) {
+        return;
+    }
+    const LogEventSite &site{b.m_site};
+    LogRecord *rec{nullptr};
+    if (m_buffering.load(std::memory_order_acquire)) {
+        // Before logging starts (rare): a heap record, kept until then.
+        try {
+            b.m_buffered.reset(new LogRecord);
+        } catch (const std::bad_alloc &) {
+            return;
+        }
+        rec = b.m_buffered.get();
+    } else {
+        LogRing *ring{ThreadRing()};
+        if (!ring) {
+            return;
+        }
+        rec = ring->Claim();
+        if (!rec) {
+            if (site.level < Level::Warning) {
+                ring->CountDrop();
+                return;
+            }
+            if (t_in_consumer) {
+                b.m_emergency = true;
+                rec = &ring->m_emergency;
+            } else {
+                rec = ClaimSlow(*ring);
+            }
+            if (!rec) {
+                ring->CountDrop();
+                return;
+            }
+        }
+        b.m_ring = ring;
+        // An event is a complete line.
+        if (ring->m_open_line) {
+            ring->m_open_line = false;
+        }
+    }
+    FillRecordHeader(*rec, b.m_source_loc, site.category, site.level);
+    rec->event = &site;
+    b.m_rec = rec;
+}
+
+void BCLog::Logger::EndEvent(EventBuilder &b) noexcept {
+    LogRecord &rec{*b.m_rec};
+    rec.size = uint16_t(b.m_used);
+    LogRateLimiter *limiter{m_limiter_ptr.load(std::memory_order_acquire)};
+    if (b.m_limit && limiter) {
+        // The quota counts the event's encoded size, as messages count
+        // their length.
+        switch (limiter->Consume(*b.m_limit, rec.loc, b.m_used + 1)) {
+            case LogRateLimiter::Status::UNSUPPRESSED:
+                break;
+            case LogRateLimiter::Status::NEWLY_SUPPRESSED:
+                rec.flags |= LogRecord::SUPPRESSION_NOTICE;
+                break;
+            case LogRateLimiter::Status::STILL_SUPPRESSED:
+                rec.flags |= LogRecord::NO_FILE;
+                break;
+        }
+    }
+    if (limiter && limiter->SuppressionsActive()) {
+        rec.flags |= LogRecord::SUPPRESSIONS;
+    }
+    if (b.m_emergency) {
+        WriteEmergency(rec);
+        return;
+    }
+    if (b.m_buffered) {
+        StdLockGuard scoped_lock(m_cs);
+        if (m_buffering) {
+            BufferedLog buf{
+                .now = SystemClock::time_point{std::chrono::microseconds{
+                    rec.time_us}},
+                .mocktime = std::chrono::seconds{rec.mocktime_s},
+                .threadname = rec.thread,
+                .source_loc = rec.loc,
+                .category = rec.category,
+                .level = rec.level,
+                .record = OwnedRecord{b.m_buffered.release()},
+            };
+            m_cur_buffer_memusage += sizeof(LogRecord);
+            m_msgs_before_open.push_back(std::move(buf));
+            return;
+        }
+    }
+    if (b.m_buffered) {
+        // Logging started while this event was being built: write it now.
+        OwnedRecord owned{b.m_buffered.release()};
+        StdLockGuard consumer_lock(m_consumer_mutex);
+        StdLockGuard scoped_lock(m_cs);
+        WriteRecord(*owned);
+        return;
+    }
+    if (b.m_ring->Commit() &&
+        !m_wake_requested.load(std::memory_order_relaxed) &&
+        !m_wake_requested.exchange(true)) {
+        m_wake = true;
+        m_wake_cv.notify_one();
+    }
+    if (rec.level >= Level::Error) {
+        FlushOnConsumer();
+    }
+}
+
+BCLog::EventBuilder::EventBuilder(const LogEventSite &site,
+                                  LogSiteLimit *limit,
+                                  std::source_location loc) noexcept
+    : m_site{site}, m_limit{limit}, m_source_loc{loc} {
+    LogInstance().BeginEvent(*this);
+}
+
+BCLog::EventBuilder::~EventBuilder() {
+    if (m_rec) {
+        LogInstance().EndEvent(*this);
+    }
+}
+
+std::byte *BCLog::EventBuilder::Reserve(FieldId id, FieldKind kind,
+                                        size_t max_size) noexcept {
+    if (!m_rec) {
+        return nullptr;
+    }
+    const size_t start{(m_used + 7) & ~size_t{7}};
+    if (start + sizeof(FieldHeader) + max_size > sizeof(m_rec->payload) ||
+        m_rec->num_fields == 255) {
+        m_rec->flags |= LogRecord::FIELDS_TRUNCATED;
+        return nullptr;
+    }
+    m_pending = reinterpret_cast<FieldHeader *>(m_rec->payload + start);
+    *m_pending = FieldHeader{id, kind, false, 0, 0};
+    m_used = start + sizeof(FieldHeader);
+    return m_rec->payload + m_used;
+}
+
+void BCLog::EventBuilder::Finish(size_t size) noexcept {
+    m_pending->size = uint16_t(size);
+    m_used += size;
+    ++m_rec->num_fields;
+}
+
+BCLog::EventBuilder &BCLog::EventBuilder::Put(FieldId id, FieldKind kind,
+                                              const void *data, size_t size,
+                                              bool truncate) noexcept {
+    if (!m_rec) {
+        return *this;
+    }
+    bool truncated{false};
+    if (truncate) {
+        const size_t start{(m_used + 7) & ~size_t{7}};
+        const size_t room{sizeof(m_rec->payload) > start + sizeof(FieldHeader)
+                              ? sizeof(m_rec->payload) - start -
+                                    sizeof(FieldHeader)
+                              : 0};
+        if (size > room) {
+            size = room;
+            truncated = true;
+            m_rec->flags |= LogRecord::FIELDS_TRUNCATED;
+        }
+    }
+    if (std::byte * out{Reserve(id, kind, size)}) {
+        std::memcpy(out, data, size);
+        m_pending->truncated = truncated;
+        Finish(size);
+    }
+    return *this;
+}
+
+BCLog::EventBuilder &
+BCLog::EventBuilder::PutRef(FieldId id, std::shared_ptr<const void> object,
+                            RefRenderFn render) noexcept {
+    constexpr size_t SIZE{sizeof(std::shared_ptr<const void>) +
+                          sizeof(RefRenderFn)};
+    if (std::byte * out{Reserve(id, FieldKind::REF, SIZE)}) {
+        // (8-byte aligned: Reserve aligns field headers, 8 bytes long)
+        new (out) std::shared_ptr<const void>{std::move(object)};
+        std::memcpy(out + sizeof(std::shared_ptr<const void>), &render,
+                    sizeof(render));
+        Finish(SIZE);
+    }
+    return *this;
 }
 
 bool BCLog::Logger::DrainLocked() {
@@ -978,14 +1269,14 @@ bool BCLog::Logger::DrainLocked() {
                 "Logging could not keep up: %d debug/info log lines were "
                 "dropped (%d in total).\n",
                 dropped - m_dropped_reported, dropped)};
-            Encode(LogLine{.time = now,
-                           .mocktime = GetMockTime(),
-                           .level = Level::Warning,
-                           .category = LogFlags::ALL,
-                           .thread = "logger",
-                           .loc = std::source_location::current(),
-                           .message = msg});
-            WriteLine(m_line_buf, /*to_file=*/true);
+            WriteLogLine(LogLine{.time = now,
+                                 .mocktime = GetMockTime(),
+                                 .level = Level::Warning,
+                                 .category = LogFlags::ALL,
+                                 .thread = "logger",
+                                 .loc = std::source_location::current(),
+                                 .message = msg},
+                         /*to_file=*/true);
             m_dropped_reported = dropped;
             wrote = true;
         }
@@ -997,6 +1288,9 @@ bool BCLog::Logger::DrainLocked() {
     if (wrote) {
         if (m_fileout) {
             fflush(m_fileout);
+        }
+        if (m_json_fileout) {
+            fflush(m_json_fileout);
         }
         if (m_print_to_console) {
             fflush(stdout);
