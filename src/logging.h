@@ -7,6 +7,7 @@
 #ifndef BITCOIN_LOGGING_H
 #define BITCOIN_LOGGING_H
 
+#include <logging/encoder.h>
 #include <span.h>
 #include <threadsafety.h>
 #include <tinyformat.h>
@@ -443,6 +444,12 @@ private:
     std::vector<LogRing *> m_drain_rings GUARDED_BY(m_consumer_mutex);
     //! Dropped lines already reported
     uint64_t m_dropped_reported GUARDED_BY(m_consumer_mutex){0};
+    //! Renders lines in m_log_format (recreated if that changes)
+    std::unique_ptr<LogEncoder> m_encoder GUARDED_BY(m_consumer_mutex);
+    std::optional<LogFormat> m_encoder_format GUARDED_BY(m_consumer_mutex);
+
+    /** Encode a line into m_line_buf in the current format */
+    void Encode(const LogLine &line) EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex);
 
     //! Rings of threads (in use or orphaned), and rings ready for reuse
     mutable StdMutex m_rings_mutex;
@@ -470,17 +477,6 @@ private:
     //! do)
     std::atomic<bool> m_paused_for_testing{false};
 
-    /** Append GetLogPrefix(category, level) to out */
-    void AppendLogPrefix(std::string &out, LogFlags category,
-                         Level level) const;
-
-    /** Render a plain message as a text line (prefixes, escaping) into out */
-    void FormatTextLine(std::string &out, std::string_view msg,
-                        LogFlags category, Level level,
-                        const std::source_location &source_loc,
-                        std::string_view threadname,
-                        SystemClock::time_point now,
-                        std::chrono::seconds mocktime, bool ratelimited) const;
 
     /** Keep a message logged before StartLogging (with m_cs held) */
     void BufferLog(std::string_view str, std::source_location &&source_loc,
@@ -542,32 +538,6 @@ public:
     std::atomic<bool> m_reopen_file{false};
 
     std::string GetLogPrefix(LogFlags category, Level level) const;
-
-    /**
-     * Write one log record as a JSON object followed by a newline into out
-     * (replacing its contents, keeping its capacity). msg is the raw
-     * message; one trailing newline is dropped. Fields, in order:
-     *   time      RFC 3339 UTC with microseconds (omitted with
-     *             -logtimestamps=0)
-     *   level     trace, debug, info, warning or error
-     *   category  debug category; "none" for uncategorized messages
-     *   thread    internal thread name ("unknown" if unnamed)
-     *   message   the message
-     *   mocktime  RFC 3339 mock time, only when mock time is set
-     *   continued true when this record continues a previous record that
-     *             did not end in a newline (only present when true)
-     *   ratelimited true while any source location is rate limited, the
-     *             equivalent of the "[*]" text prefix (only when true)
-     *   source    {file, line, function} with -logsourcelocations; the
-     *             function is its bare name ("CConnman::Stop")
-     */
-    void FormatJsonLine(std::string &out, std::string_view msg,
-                        LogFlags category, Level level,
-                        const std::source_location &source_loc,
-                        std::string_view threadname,
-                        SystemClock::time_point now,
-                        std::chrono::seconds mocktime, bool continued,
-                        bool ratelimited) const;
 
     ~Logger();
 
