@@ -322,6 +322,19 @@ BOOST_AUTO_TEST_CASE(event_field_registry) {
                       "error.message");
 }
 
+BOOST_AUTO_TEST_CASE(logfmt_encoding) {
+    BOOST_CHECK(BCLog::ParseLogFormat("logfmt") == BCLog::LogFormat::LOGFMT);
+    Format(BCLog::LogFormat::LOGFMT);
+    LogEvent(BCLog::NET, "peer_connected", "connected to {addr}")
+        .Field(LogField::PeerId, 42)
+        .Field(LogField::Addr, std::string{"a\"b\nc"});
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 1U);
+    BOOST_CHECK(lines[0].find("peer_id=42") != std::string::npos);
+    BOOST_CHECK(lines[0].find("addr=\"a\\\"b\\nc\"") != std::string::npos);
+    BOOST_CHECK(lines[0].find("level=\"debug\"") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(json_event_name_escaping) {
     Format(BCLog::LogFormat::JSON);
     LogEvent(BCLog::NET, "quote\"slash\\newline\n", "event message");

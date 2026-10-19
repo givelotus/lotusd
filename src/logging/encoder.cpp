@@ -436,10 +436,67 @@ void JsonEncoder::Encode(const LogLine &line, const LogOptions &opts,
     out += "}\n";
 }
 
+void LogfmtEncoder::Encode(const LogLine &line, const LogOptions &opts,
+                           std::string &out) const {
+    std::string_view message{line.event ? EventText(line, false)
+                                        : line.message};
+    if (!message.empty() && message.back() == '\n') message.remove_suffix(1);
+    out.clear();
+    auto field = [&](std::string_view key, std::string_view value) {
+        if (!out.empty()) out += ' ';
+        out += key;
+        out += "=\"";
+        AppendJsonEscaped(out, value);
+        out += '"';
+    };
+    if (opts.timestamps) {
+        std::string time;
+        AppendRfc3339(time, line.time, true);
+        field("time", time);
+    }
+    field("level", LogLevelName(line.level));
+    field("category", LogCategoryName(line.category));
+    field("thread", line.thread.empty() ? "unknown" : line.thread);
+    field("message", message);
+    if (line.mocktime > 0s) {
+        std::string mocktime;
+        AppendRfc3339(mocktime, SystemClock::time_point{line.mocktime}, false);
+        field("mocktime", mocktime);
+    }
+    if (line.event) {
+        field("event", line.event->event);
+        for (const FieldView f : line.fields) {
+            std::string value;
+            f.AppendText(value);
+            if (f.kind == FieldKind::I64 || f.kind == FieldKind::U64 ||
+                f.kind == FieldKind::F64 || f.kind == FieldKind::DURATION_NS ||
+                f.kind == FieldKind::BOOL) {
+                out += ' ';
+                out += f.Info().name;
+                out += '=';
+                out += value;
+            } else {
+                field(f.Info().name, value);
+            }
+        }
+        if (line.fields_truncated) out += " fields_truncated=true";
+    }
+    if (opts.sourcelocations) {
+        field("source_file", SourceFileName(line.loc));
+        out += " source_line=" + std::to_string(line.loc.line());
+        field("source_function", BareFunctionName(line.loc.function_name()));
+    }
+    if (line.continued) out += " continued=true";
+    if (line.ratelimited) out += " ratelimited=true";
+    out += '\n';
+}
+
 std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format) {
     switch (format) {
         case LogFormat::TEXT:
             return std::make_unique<TextEncoder>();
+        case LogFormat::LOGFMT:
+            return std::make_unique<LogfmtEncoder>();
         case LogFormat::JSON:
             return std::make_unique<JsonEncoder>();
     }
