@@ -62,7 +62,7 @@ enum LogFlags : uint32_t {
     MEMPOOL = (1 << 2),
     HTTP = (1 << 3),
     BENCH = (1 << 4),
-    ZMQ = (1 << 5),
+    // 1 << 5 was ZMQ; unused since ZeroMQ was removed.
     WALLETDB = (1 << 6),
     RPC = (1 << 7),
     ESTIMATEFEE = (1 << 8),
