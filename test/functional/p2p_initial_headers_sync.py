@@ -17,9 +17,8 @@ from test_framework.util import assert_equal
 
 
 class HeadersSyncTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def announce_random_block(self, peers):
         new_block_announcement = msg_inv(

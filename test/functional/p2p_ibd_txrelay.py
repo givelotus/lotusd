@@ -32,13 +32,12 @@ NORMAL_FEE_FILTER = Decimal(100) / XEC
 
 
 class P2PIBDTxRelayTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.extra_args = [
-            [f"-minrelaytxfee={NORMAL_FEE_FILTER}"],
-            [f"-minrelaytxfee={NORMAL_FEE_FILTER}"],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    extra_args = [
+        [f"-minrelaytxfee={NORMAL_FEE_FILTER}"],
+        [f"-minrelaytxfee={NORMAL_FEE_FILTER}"],
+    ]
 
     def run_test(self):
         self.log.info("Check that nodes set minfilter to MAX_MONEY while still in IBD")

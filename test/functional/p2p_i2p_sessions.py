@@ -9,13 +9,12 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class I2PSessions(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        # The test assumes that an I2P SAM proxy is not listening here.
-        self.extra_args = [
-            ["-i2psam=127.0.0.1:60000", "-i2pacceptincoming=1"],
-            ["-i2psam=127.0.0.1:60000", "-i2pacceptincoming=0"],
-        ]
+    num_nodes = 2
+    # The test assumes that an I2P SAM proxy is not listening here.
+    extra_args = [
+        ["-i2psam=127.0.0.1:60000", "-i2pacceptincoming=1"],
+        ["-i2psam=127.0.0.1:60000", "-i2pacceptincoming=0"],
+    ]
 
     def run_test(self):
         addr = "zsxwyo6qcn3chqzwxnseusqgsnuw3maqnztkiypyfxtya4snkoka.b32.i2p"

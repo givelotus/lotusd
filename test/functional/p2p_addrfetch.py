@@ -20,9 +20,8 @@ ADDR.port = 18444
 
 
 class P2PAddrFetch(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def assert_getpeerinfo(self, *, peer_ids):
         num_peers = len(peer_ids)
