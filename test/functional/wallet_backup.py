@@ -55,13 +55,7 @@ class WalletBackupTest(BitcoinTestFramework):
 
     requires = {"wallet"}
 
-    def setup_network(self):
-        self.setup_nodes()
-        self.connect_nodes(0, 3)
-        self.connect_nodes(1, 3)
-        self.connect_nodes(2, 3)
-        self.connect_nodes(2, 0)
-        self.sync_all()
+    topology = ((0, 3), (1, 3), (2, 3), (2, 0))
 
     def one_send(self, from_node, to_address):
         if randint(1, 2) == 1:

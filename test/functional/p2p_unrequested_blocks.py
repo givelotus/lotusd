@@ -75,8 +75,7 @@ class AcceptBlockTest(BitcoinTestFramework):
     num_nodes = 2
     extra_args = [["-noparkdeepreorg"], ["-minimumchainwork=0x10"]]
 
-    def setup_network(self):
-        self.setup_nodes()
+    topology = "none"
 
     def check_hash_in_chaintips(self, node, blockhash):
         tips = node.getchaintips()
