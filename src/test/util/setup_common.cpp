@@ -333,7 +333,10 @@ TestChain100Setup::CreateBlock(const std::vector<CMutableTransaction> &txns,
                                const CScript &scriptPubKey,
                                Chainstate &chainstate) {
     const Config &config = GetConfig();
-    CBlock block = BlockAssembler{config, chainstate, nullptr}
+    BlockAssembler::Options options;
+    options.coinbase_version = m_coinbase_version;
+    CBlock block = BlockAssembler{node::BlockFitter(config), chainstate,
+                                  nullptr, options}
                        .CreateNewBlock(scriptPubKey)
                        ->block;
 

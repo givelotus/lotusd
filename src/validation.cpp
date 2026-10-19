@@ -8135,29 +8135,42 @@ static bool ContextualCheckBlock(const CBlock &block,
         }
     }
 
-    // Enforce rule that the coinbase commits to parent block and height
+    // The coinbase version selects the coinbase rule. A V2 coinbase (version
+    // 7) commits to the parent block and height in its input. A legacy
+    // coinbase (version 1 or 2) carries the BIP34 height in its scriptSig and
+    // is valid only where the network allows it (regtest).
     if (nHeight >= 1) {
-        if (block.vtx[0]->vin[0].nFlags == 2 &&
-            !block.vtx[0]->vin[0].prevout.IsNull() && pindexPrev != nullptr) {
+        const CTransaction &coinbase = *block.vtx[0];
+        if (coinbase.nVersion == 7) {
+            if (pindexPrev == nullptr) {
+                return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                     "bad-cb-height", "missing parent block");
+            }
             lotus::v2::Hash32 parent_id{};
             std::memcpy(parent_id.data(),
                         pindexPrev->GetBlockHash().begin(), 32);
             std::string cb_err;
-            if (!lotus::v2::CheckCoinbaseContext(
-                    block.vtx[0]->ToV2Transaction(), parent_id,
-                    uint64_t(nHeight), cb_err)) {
+            if (!lotus::v2::CheckCoinbaseContext(coinbase.ToV2Transaction(),
+                                                 parent_id, uint64_t(nHeight),
+                                                 cb_err)) {
                 return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                      "bad-cb-height", cb_err);
             }
-        } else {
+        } else if ((coinbase.nVersion == 1 || coinbase.nVersion == 2) &&
+                   params.allowLegacyCoinbase) {
             CScript expect = CScript() << nHeight;
-            if (block.vtx[0]->vin[0].scriptSig.size() < expect.size() ||
+            if (coinbase.vin[0].scriptSig.size() < expect.size() ||
                 !std::equal(expect.begin(), expect.end(),
-                            block.vtx[0]->vin[0].scriptSig.begin())) {
+                            coinbase.vin[0].scriptSig.begin())) {
                 return state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
                                      "bad-cb-height",
                                      "block height mismatch in coinbase");
             }
+        } else {
+            return state.Invalid(
+                BlockValidationResult::BLOCK_CONSENSUS, "bad-cb-version",
+                strprintf("coinbase version %u is not allowed on this network",
+                          uint32_t(coinbase.nVersion)));
         }
     }
 

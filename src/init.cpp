@@ -1787,6 +1787,14 @@ void SetupServerArgs(NodeContext &node) {
                    "Use a simplified getblocktemplate output (default: 0)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
+    argsman.AddArg(
+        "-coinbaseversion=<n>",
+        strprintf("Version of the coinbase transactions this node builds: 7 "
+                  "(V2 coinbase), or 1 or 2 (legacy coinbase, allowed only "
+                  "on regtest) (default: %u)",
+                  node::DEFAULT_COINBASE_VERSION),
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::BLOCK_CREATION);
     argsman.AddArg("-blockversion=<n>",
                    "Override block version to test forking scenarios",
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
@@ -2873,6 +2881,20 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         if (!ParseMoney(args.GetArg("-blockmintxfee", ""), n)) {
             return InitError(AmountErrMsg("blockmintxfee",
                                           args.GetArg("-blockmintxfee", "")));
+        }
+    }
+
+    if (args.IsArgSet("-coinbaseversion")) {
+        const int64_t v = args.GetIntArg("-coinbaseversion",
+                                         node::DEFAULT_COINBASE_VERSION);
+        if (v < 0 || v > 7 || !node::IsCoinbaseVersion(uint32_t(v))) {
+            return InitError(Untranslated(
+                "-coinbaseversion must be 1, 2 or 7."));
+        }
+        if (v != 7 && !chainparams.GetConsensus().allowLegacyCoinbase) {
+            return InitError(Untranslated(
+                "-coinbaseversion=1 and -coinbaseversion=2 are allowed only "
+                "on regtest."));
         }
     }
 
