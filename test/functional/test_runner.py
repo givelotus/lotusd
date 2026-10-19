@@ -132,25 +132,10 @@ TEST_PARAMS = {
     #    testName --param1 --param2
     #    testname --param3
     # FIXME: "rpc_psbt.py": [["--descriptors"]],
-    "wallet_address_types.py": [["--descriptors"]],
-    "tool_wallet.py": [["--descriptors"]],
-    "wallet_avoidreuse.py": [["--descriptors"]],
-    "wallet_balance.py": [["--descriptors"]],
     # FIXME: "wallet_basic.py": [["--descriptors"]],
-    "wallet_createwallet.py": [["--usecli"], ["--descriptors"]],
-    "wallet_encryption.py": [["--descriptors"]],
-    "wallet_hd.py": [["--descriptors"]],
-    "wallet_assumeutxo.py": [["--descriptors"]],
-    "wallet_importprunedfunds.py": [["--descriptors"]],
     # FIXME: "wallet_keypool.py": [["--descriptors"]],
-    "wallet_keypool_topup.py": [["--descriptors"]],
-    "wallet_labels.py": [["--descriptors"]],
-    "wallet_listsinceblock.py": [["--descriptors"]],
-    "wallet_listtransactions.py": [["--descriptors"]],
-    "wallet_multiwallet.py": [["--usecli"], ["--descriptors"]],
     "wallet_txn_doublespend.py": [["--mineblock"]],
     "wallet_txn_clone.py": [["--mineblock"]],
-    "wallet_watchonly.py": [["--usecli"]],
 }
 
 # Used to limit the number of tests, when list of tests is not provided on command line
