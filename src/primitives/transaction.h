@@ -773,7 +773,7 @@ public:
     const uint256 &GetOutputsHash() const { return m_outputs_hash; }
     /**
      * False when the transaction is not a well-formed V2 transaction and its
-     * TxId/TxHash are the flat fallback digest; validation rejects such a
+     * TxId/TxHash are the fallback name; validation rejects such a
      * transaction (bad-txns-v2-identity).
      */
     bool HasStructuralV2Identity() const { return m_structural_v2_identity; }
