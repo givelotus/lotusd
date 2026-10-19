@@ -12,6 +12,13 @@
 
 #include <boost/test/unit_test.hpp>
 
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#endif
+
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -413,6 +420,137 @@ BOOST_AUTO_TEST_CASE(ecs_json_schema) {
     BOOST_CHECK(record["level"].isNull());
     BOOST_CHECK(record["peer_id"].isNull());
 }
+
+BOOST_AUTO_TEST_CASE(journal_native_encoding) {
+#ifdef __linux__
+    BOOST_CHECK(BCLog::ParseLogFormat("journald") ==
+                BCLog::LogFormat::JOURNALD);
+#else
+    BOOST_CHECK(!BCLog::ParseLogFormat("journald"));
+#endif
+    BCLog::JournaldEncoder encoder;
+    BCLog::LogLine line{.time = SystemClock::now(),
+                        .level = BCLog::Level::Warning,
+                        .category = BCLog::NET,
+                        .thread = "network",
+                        .loc = std::source_location::current(),
+                        .message = "first\nsecond\n"};
+    std::string encoded;
+    encoder.Encode(line, BCLog::LogOptions{.sourcelocations = true}, encoded);
+    BOOST_CHECK(encoded.starts_with("PRIORITY=4\nMESSAGE\n"));
+    const size_t length_at{encoded.find("MESSAGE\n") + 8};
+    BOOST_REQUIRE(encoded.size() > length_at + 8);
+    // Native multiline framing: uint64 little-endian, then exact bytes.
+    BOOST_CHECK_EQUAL(uint8_t(encoded[length_at]), 12);
+    for (size_t i = 1; i < 8; ++i)
+        BOOST_CHECK_EQUAL(encoded[length_at + i], 0);
+    BOOST_CHECK_EQUAL(encoded.substr(length_at + 8, 13), "first\nsecond\n");
+    BOOST_CHECK(encoded.find("LOTUS_CATEGORY=net\n") != std::string::npos);
+    BOOST_CHECK(encoded.find("CODE_FUNC=logging_event_tests::journal_native_"
+                             "encoding::test_method\n") != std::string::npos);
+    line.message = std::string_view{"nul\0byte", 8};
+    encoder.Encode(line, {}, encoded);
+    BOOST_CHECK(
+        encoded.find(std::string{"MESSAGE\n\x08\0\0\0\0\0\0\0nul\0byte\n",
+                                 25}) != std::string::npos);
+    for (auto [level, priority] : {std::pair{BCLog::Level::Trace, "7"},
+                                   std::pair{BCLog::Level::Debug, "7"},
+                                   std::pair{BCLog::Level::Info, "6"},
+                                   std::pair{BCLog::Level::Error, "3"}}) {
+        line.level = level;
+        encoder.Encode(line, {}, encoded);
+        BOOST_CHECK(
+            encoded.starts_with(std::string{"PRIORITY="} + priority + "\n"));
+    }
+}
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(journal_native_transport) {
+    struct OwnedFd {
+        int fd;
+        ~OwnedFd() {
+            if (fd >= 0) close(fd);
+        }
+    };
+    OwnedFd receiver{socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+    BOOST_REQUIRE(receiver.fd >= 0);
+    const timeval timeout{.tv_sec = 1, .tv_usec = 0};
+    BOOST_REQUIRE_EQUAL(setsockopt(receiver.fd, SOL_SOCKET, SO_RCVTIMEO,
+                                   &timeout, sizeof(timeout)),
+                        0);
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const std::string path{
+        fs::PathToString(m_args.GetDataDirBase() / "journal.sock")};
+    BOOST_REQUIRE(path.size() < sizeof(addr.sun_path));
+    std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
+    BOOST_REQUIRE_EQUAL(
+        bind(receiver.fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)),
+        0);
+    BCLog::JournalSink sink;
+    BOOST_REQUIRE(!sink.Open(path + ".absent"));
+    BOOST_REQUIRE(sink.Open(path));
+    BOOST_CHECK(!sink.Send({}));
+    const std::string small{"MESSAGE=small\n"};
+    BOOST_REQUIRE(sink.Send(small));
+    char data[64]{};
+    BOOST_REQUIRE_EQUAL(recv(receiver.fd, data, sizeof(data), 0),
+                        ssize_t(small.size()));
+    BOOST_CHECK_EQUAL(std::string(data, small.size()), small);
+
+    const std::string large{"MESSAGE=" + std::string(2 * 1024 * 1024, 'x') +
+                            "\n"};
+    BOOST_REQUIRE(sink.Send(large));
+    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
+    iovec iov{.iov_base = data, .iov_len = sizeof(data)};
+    msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+    BOOST_REQUIRE_EQUAL(recvmsg(receiver.fd, &msg, 0), 0);
+    BOOST_CHECK_EQUAL(msg.msg_flags & MSG_CTRUNC, 0);
+    cmsghdr *header{CMSG_FIRSTHDR(&msg)};
+    BOOST_REQUIRE(header);
+    BOOST_REQUIRE_EQUAL(header->cmsg_level, SOL_SOCKET);
+    BOOST_REQUIRE_EQUAL(header->cmsg_type, SCM_RIGHTS);
+    BOOST_REQUIRE_EQUAL(header->cmsg_len, CMSG_LEN(sizeof(int)));
+    int fd{-1};
+    std::memcpy(&fd, CMSG_DATA(header), sizeof(fd));
+    const OwnedFd passed{fd};
+    BOOST_REQUIRE(passed.fd >= 0);
+    const int seals{F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE};
+    BOOST_CHECK_EQUAL(fcntl(passed.fd, F_GET_SEALS), seals);
+    std::string actual(large.size(), '\0');
+    size_t offset{0};
+    while (offset < actual.size()) {
+        const ssize_t n{
+            read(passed.fd, actual.data() + offset, actual.size() - offset)};
+        BOOST_REQUIRE(n > 0);
+        offset += n;
+    }
+    BOOST_CHECK_EQUAL(actual, large);
+    // Replacing the journal socket must not permanently break a connected sink.
+    close(receiver.fd);
+    receiver.fd = -1;
+    fs::remove(path);
+    const OwnedFd replacement{socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+    BOOST_REQUIRE(replacement.fd >= 0);
+    BOOST_REQUIRE_EQUAL(setsockopt(replacement.fd, SOL_SOCKET, SO_RCVTIMEO,
+                                   &timeout, sizeof(timeout)),
+                        0);
+    BOOST_REQUIRE_EQUAL(
+        bind(replacement.fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)),
+        0);
+    BOOST_REQUIRE(sink.Send(small));
+    BOOST_REQUIRE_EQUAL(recv(replacement.fd, data, sizeof(data), 0),
+                        ssize_t(small.size()));
+    BOOST_CHECK_EQUAL(std::string(data, small.size()), small);
+    sink.Close();
+    BOOST_CHECK(!sink.Send(small));
+    fs::remove(path);
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
     Format(BCLog::LogFormat::JSON);

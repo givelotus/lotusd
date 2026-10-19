@@ -203,6 +203,10 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
         "Debug and info log lines dropped because the logging thread could "
         "not keep up (the log says so too).",
         [] { return LogInstance().DroppedLines(); }));
+    registry.Add(std::make_unique<metrics::FunctionCounter>(
+        "lotus_log_journal_failures_total",
+        "Journal sends that failed and fell back to stderr.",
+        [] { return LogInstance().JournalFailures(); }));
     initial_block_download.Set(1);
     registry.AddCollector([this] {
         const double tip{tip_timestamp.Value()};

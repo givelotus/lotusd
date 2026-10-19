@@ -409,6 +409,7 @@ add_library(util
 	currencyunit.cpp
 	interfaces/handler.cpp
 	logging.cpp
+	logging/journal.cpp
 	logging/encoder.cpp
 	logging/event.cpp
 	metrics/metrics.cpp
@@ -909,6 +910,7 @@ if(BUILD_CHAINSTATE)
 		init/common.cpp
 		key.cpp
 		logging.cpp
+		logging/journal.cpp
 		logging/encoder.cpp
 		logging/event.cpp
 		networks/abc/chainparamsconstants.cpp
