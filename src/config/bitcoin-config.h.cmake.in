@@ -55,7 +55,6 @@
 
 #cmakedefine HAVE_FDATASYNC 1
 
-#cmakedefine ENABLE_BIP70 1
 #cmakedefine ENABLE_WALLET 1
 
 /* Define if HTTP/2 (nghttp2) should be compiled in. */
@@ -69,12 +68,6 @@
 
 /* Define if P2P over WebTransport (HTTP/3 / QUIC) should be compiled in. */
 #cmakedefine ENABLE_WEBTRANSPORT 1
-
-/* Define if QR support should be compiled in */
-#cmakedefine USE_QRCODE 1
-
-/* Define if QtDBus support should be enabled */
-#cmakedefine USE_DBUS 1
 
 #cmakedefine HAVE___INT128 1
 

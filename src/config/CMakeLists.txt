@@ -201,16 +201,6 @@ else()
 	set(ENABLE_CHRONIK_NATIVE OFF)
 endif()
 
-# Try to find libqrencode
-# Only used in the wallet GUI
-if(ENABLE_QRCODE AND BUILD_WALLET AND BUILD_QT)
-	set(USE_QRCODE 1 CACHE INTERNAL "QR code is enabled")
-endif()
-
-if(ENABLE_DBUS_NOTIFICATIONS)
-	set(USE_DBUS 1)
-endif()
-
 if(ENABLE_TRACING)
 	check_cxx_source_compiles("
 	#include <sys/sdt.h>

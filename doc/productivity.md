@@ -45,7 +45,7 @@ You can disable features to save on compilation time. A few common flags:
 
 ```sh
 -DBUILD_WALLET=OFF
--DBUILD_QT=OFF
+-DBUILD_CHRONIK=OFF
 ```
 
 See [Options passed to cmake](dependencies.md#options-passed-to-cmake)
