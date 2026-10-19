@@ -6,12 +6,11 @@ Test Chronik POST /script/batch/summary (ScriptBatchSummary protos).
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
     ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
-from test_framework.blocktools import COINBASE_MATURITY, GENESIS_CB_PK
+from test_framework.blocktools import GENESIS_CB_PK
 from test_framework.chronik.alp import alp_genesis, alp_opreturn
 from test_framework.chronik.token_tx import TokenTx
 from test_framework.hash import hash160
@@ -83,11 +82,8 @@ class ChronikScriptBatchSummaryTest(BitcoinTestFramework):
 
         # P2SH (OP_TRUE redeem) plus a P2PKH output that holds an ALP token UTXO
         node.setmocktime(1300000000)
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        cointx = node.getblock(coinblockhash)["tx"][0]
-        self.generatetoaddress(node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE)
+        cointx, coinvalue = self.mine_mature_coin(node)
 
-        coinvalue = 5000000000
         pubkey, token_spk, _token_addr = getnewdestination()
         token_keyhash_hex = hash160(pubkey).hex()
 
