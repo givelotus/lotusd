@@ -44,13 +44,10 @@ DEFAULT_ALLOW = [
     "json.<service_epoch>",
 ]
 
-# Lotus V2 tier, Rust (A) vs native (B): the design C1 section 1 defects.
-# The Rust bridge recomputes the txid of a decoded raw tx from its
-# legacy-shaped fields (lookup_spent_coins), which differs from the real V2
-# txid of native V2 txs; the native host reports the real one.
-V2_ACCEPTED = [
-    "/validate-tx::Tx.txid",
-]
+# Lotus V2 tier, Rust (A) vs native (B): accepted differences. None since
+# both decode raw V2 txs with the node (the design C1 section 1.2 /validate-tx
+# txid defect is fixed in both).
+V2_ACCEPTED: list = []
 
 # Response headers never compared.
 IGNORED_HEADERS = {"date"}
