@@ -725,6 +725,8 @@ std::optional<LockPoints> CalculateLockPointsAtTip(CBlockIndex *tip,
  */
 bool CheckSequenceLocksAtTip(CBlockIndex *tip, const LockPoints &lock_points);
 
+class BaseSignatureChecker;
+
 namespace lotus::v2 {
 class BatchSigCollector;
 class PreparedSigningContext;
@@ -795,8 +797,12 @@ private:
     std::optional<std::pair<ScriptError, std::string>>
     CheckInput(lotus::v2::DeferredRecords &records);
     std::optional<std::pair<ScriptError, std::string>> CheckLegacyBridgeInput(
-        const lotus::v2::PreparedSigningContext &signing,
-        const std::function<std::string()> &make_debug_str) const;
+        const lotus::v2::PreparedSigningContext &signing, const CTxOut &coin,
+        const std::function<std::string()> &make_debug_str);
+    std::optional<std::pair<ScriptError, std::string>>
+    RunLegacyScript(const CScript &scriptSig, const CScript &scriptPubKey,
+                    const BaseSignatureChecker &checker,
+                    const std::function<std::string()> &make_debug_str);
 
 public:
     CScriptCheck(
