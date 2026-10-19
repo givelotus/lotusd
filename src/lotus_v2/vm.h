@@ -4,6 +4,7 @@
 #ifndef LOTUS_V2_VM_H
 #define LOTUS_V2_VM_H
 
+#include "deferred_checks.h"
 #include "signing.h"
 
 #include <array>
@@ -77,36 +78,6 @@ bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
 bool ComputeVmAssetTotals(const Transaction &tx, const ResolvedCoins &resolved,
                           VmAssetTotalsMap &totals, std::string &error);
 
-// Effects recorded by the successful invocations of one transaction (plan
-// I-11). They are order-free: ENFORCEOUTPUT records `(output, claim)` and
-// state authorizations without consuming a shared budget, so invocations
-// can run in any order (or in parallel) and the result depends only on the
-// set of recorded effects. One validation run of one transaction owns one
-// accumulator; it is never stored in a PreparedVmTransaction, which is
-// cached and reused across runs.
-struct VmTransactionEffects {
-    std::vector<std::pair<uint16_t, uint64_t>> claims;
-    std::vector<uint16_t> state_authorized;
-    bool Empty() const { return claims.empty() && state_authorized.empty(); }
-    void Clear() {
-        claims.clear();
-        state_authorized.clear();
-    }
-    void Merge(const VmTransactionEffects &other) {
-        claims.insert(claims.end(), other.claims.begin(), other.claims.end());
-        state_authorized.insert(state_authorized.end(),
-                                other.state_authorized.begin(),
-                                other.state_authorized.end());
-    }
-};
-// Per-transaction post-check, run after every invocation succeeded: the
-// claims on each output j sum to at most outputs[j].value, and every
-// HAS_STATE output was authorized by at least one invocation. Errors are
-// "output-overclaimed" and "state-output-unauthorized".
-bool FinalizeVmTransactionEffects(std::span<const Output> outputs,
-                                  const VmTransactionEffects &effects,
-                                  std::string &error);
-
 struct VmExecutionContext {
     const Transaction &tx;
     const TxProfile &tx_profile;
@@ -117,9 +88,12 @@ struct VmExecutionContext {
     std::optional<PositiveDelta> positive_delta;
     const PreparedVmTransaction *prepared = nullptr;
     BatchSigCollector *batch_sigs = nullptr;
-    // Committed only when the invocation succeeds; failures leave it
-    // unchanged. Null means effect-producing opcodes are Unsupported.
-    VmTransactionEffects *effects = nullptr;
+    // Records for the deferred (two-phase) checks, merged here only when
+    // the invocation succeeds; failures leave it unchanged. Null means
+    // record-producing opcodes are Unsupported. One validation run owns it;
+    // it is never stored in a PreparedVmTransaction, which is cached and
+    // reused across runs.
+    DeferredRecords *effects = nullptr;
 };
 
 struct VmOpcodeCost {
