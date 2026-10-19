@@ -667,6 +667,127 @@ void StateAndActiveIndexOpcodes() {
                 std::to_string(uint64_t(charged.invocation.executed_cost)));
     }
 }
+void TokenBalance() {
+    // TXTOKENBALANCE (ec): Bytes32(asset) -> N(in) N(out). Zero = native.
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    chain[0] = 9;
+    auto amount = [](uint64_t v) {
+        VmBytes out(16);
+        for (size_t i = 0; i < 8; ++i) out[i] = uint8_t(v >> (8 * i));
+        return out;
+    };
+    Hash token_t{};
+    token_t.fill(0x71);
+    Transaction tx;
+    Input native_spend;
+    native_spend.flags = 1;
+    native_spend.prev_txid.fill(0x21);
+    native_spend.sequence = UINT32_MAX;
+    native_spend.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    Input token_spend = native_spend;
+    token_spend.prev_txid.fill(0x22);
+    Input mint;
+    mint.flags = 3;
+    mint.sequence = UINT32_MAX;
+    mint.witnesses = {BranchWitness{Hex("794e"), {}, {}}};
+    mint.prev_txid = BranchLeaf(mint.witnesses[0].script);
+    const Hash token_m = mint.prev_txid;
+    tx.inputs = {native_spend, token_spend, mint};
+    Output native_coin;
+    native_coin.value = 5000;
+    native_coin.branches = {BranchLeaf(Hex("4e"))};
+    native_coin.paths = {{0}};
+    Output token_coin = native_coin;
+    token_coin.flags = 1;
+    token_coin.token_id = token_t;
+    token_coin.value = 30;
+    ResolvedCoins resolved{native_coin, token_coin, std::nullopt};
+    Output pay = native_coin;
+    pay.value = 1000;
+    Output token_out = token_coin;
+    token_out.value = 20;
+    Output token_burn = token_coin;
+    token_burn.flags = 3;
+    token_burn.value = 10;
+    token_burn.paths.clear();
+    Output minted = token_coin;
+    minted.token_id = token_m;
+    minted.value = 7;
+    tx.outputs = {pay, token_out, token_burn, minted};
+
+    // `asset ec <out> EQUALVERIFY <in> EQUALVERIFY TRUE`
+    auto script_for = [&](const VmBytes &asset, uint64_t in, uint64_t out) {
+        VmBytes script{uint8_t(asset.size())};
+        script.insert(script.end(), asset.begin(), asset.end());
+        script.push_back(0xec);
+        for (const uint64_t v : {out, in}) {
+            const VmBytes n = amount(v);
+            script.push_back(16);
+            script.insert(script.end(), n.begin(), n.end());
+            script.push_back(0x92);
+        }
+        script.push_back(0x4e);
+        return script;
+    };
+    PreparedVmTransaction prepared;
+    VmCostProfile cost;
+    cost.max_invocation_cost = 1000000;
+    cost.structural_byte_cost = 1;
+    for (auto &op : cost.opcode) op = {1, 1, 1};
+    auto run = [&](const VmBytes &script, bool use_prepared) {
+        tx.inputs[0].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(script);
+        if (use_prepared) {
+            std::string error;
+            CHECK(prepared.Prepare(tx, tx_profile, chain, resolved, cost,
+                                   error));
+            const auto ctx = prepared.Invocation(0, 0);
+            return EvaluateVmCharged(script, {}, PROFILE, cost,
+                                     uint16_t(tx.inputs.size()),
+                                     uint16_t(tx.outputs.size()), &ctx)
+                .invocation;
+        }
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
+                               std::nullopt};
+        return EvaluateVmWithContext(script, {}, PROFILE, ctx);
+    };
+    const VmBytes native(32, 0);
+    const VmBytes t(token_t.begin(), token_t.end());
+    const VmBytes m(token_m.begin(), token_m.end());
+    const VmBytes absent(32, 0x5a);
+    for (const bool use_prepared : {false, true}) {
+        // Native: spent native coin in, every native output out.
+        CHECK(run(script_for(native, 5000, 1000), use_prepared).status ==
+              VmStatus::Success);
+        // Token: burn outputs count toward the output total.
+        CHECK(run(script_for(t, 30, 30), use_prepared).status ==
+              VmStatus::Success);
+        // Mint: no input side, so out - in is the minted delta.
+        CHECK(run(script_for(m, 0, 7), use_prepared).status ==
+              VmStatus::Success);
+        // Absent asset: 0 0.
+        CHECK(run(script_for(absent, 0, 0), use_prepared).status ==
+              VmStatus::Success);
+        CHECK(run(script_for(t, 30, 31), use_prepared).status ==
+              VmStatus::Invalid);
+        // Asset must be exactly 32 bytes.
+        for (const size_t width : {size_t(31), size_t(33), size_t(0)}) {
+            VmBytes script;
+            if (width == 0)
+                script = Hex("4c00");
+            else {
+                script.push_back(uint8_t(width));
+                script.insert(script.end(), width, 0x71);
+            }
+            script.insert(script.end(), {0xec, 0x4e});
+            const auto result = run(script, use_prepared);
+            CHECK(result.status == VmStatus::Invalid &&
+                  result.error == "token balance asset width");
+        }
+    }
+    Expect("ec", VmStatus::Unsupported, {VmBytes(32)});
+}
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
     auto charge = [&](const std::string &script,
@@ -1485,6 +1606,7 @@ int main() {
     MerkleProofBounds();
     ContextFieldOpcodes();
     StateAndActiveIndexOpcodes();
+    TokenBalance();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();
