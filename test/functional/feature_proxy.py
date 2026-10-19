@@ -117,9 +117,6 @@ class ProxyTest(BitcoinTestFramework):
             self.serv4 = Socks5Server(self.conf4)
             self.serv4.start()
 
-        # We will not try to connect to this.
-        self.i2p_sam = ("127.0.0.1", 7656)
-
         # Note: proxies are not used to connect to local nodes.
         # This is because the proxy to use is based on CService.GetNetwork(),
         # which returns NET_UNROUTABLE for localhost.
@@ -131,8 +128,6 @@ class ProxyTest(BitcoinTestFramework):
                 "-listen",
                 f"-proxy={ip1}:{port1}",
                 f"-onion={ip2}:{port2}",
-                f"-i2psam={self.i2p_sam[0]}:{self.i2p_sam[1]}",
-                "-i2pacceptincoming=0",
                 "-proxyrandomize=0",
             ],
             ["-listen", f"-proxy={ip2}:{port2}", "-proxyrandomize=1"],
@@ -312,9 +307,8 @@ class ProxyTest(BitcoinTestFramework):
         assert_equal(n1["onion"]["proxy"], f"{ip2}:{port2}")
         assert_equal(n1["onion"]["proxy_randomize_credentials"], False)
         assert_equal(n1["onion"]["reachable"], True)
-        assert_equal(n1["i2p"]["proxy"], f"{self.i2p_sam[0]}:{self.i2p_sam[1]}")
-        assert_equal(n1["i2p"]["proxy_randomize_credentials"], False)
-        assert_equal(n1["i2p"]["reachable"], True)
+        # I2P is not supported.
+        assert_equal(n1["i2p"]["reachable"], False)
 
         n2 = networks_dict(nodes_network_info[2])
         assert_equal(NETWORKS, n2.keys())
@@ -398,16 +392,9 @@ class ProxyTest(BitcoinTestFramework):
         msg = "Error: Invalid port specified in -onion: '192.0.0.1:def'"
         self.nodes[1].assert_start_raises_init_error(expected_msg=msg)
 
-        self.log.info(
-            "Test passing invalid -i2psam hostname raises expected init error"
-        )
-        self.nodes[1].extra_args = ["-i2psam=def..def:23456"]
-        msg = "Error: Invalid -i2psam address or hostname: 'def..def:23456'"
-        self.nodes[1].assert_start_raises_init_error(expected_msg=msg)
-
-        self.log.info("Test passing invalid -i2psam port raises expected init error")
-        self.nodes[1].extra_args = ["-i2psam=192.0.0.1:def"]
-        msg = "Error: Invalid port specified in -i2psam: '192.0.0.1:def'"
+        self.log.info("Test that I2P is not supported")
+        self.nodes[1].extra_args = ["-onlynet=i2p"]
+        msg = "Error: I2P is not supported (-onlynet=i2p)"
         self.nodes[1].assert_start_raises_init_error(expected_msg=msg)
 
         self.log.info(

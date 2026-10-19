@@ -15,7 +15,6 @@
 #include <consensus/amount.h>
 #include <crypto/siphash.h>
 #include <hash.h>
-#include <i2p.h>
 #include <kernel/cs_main.h>
 #include <logging.h>
 #include <net_permissions.h>
@@ -453,7 +452,6 @@ public:
 };
 
 struct CNodeOptions {
-    std::unique_ptr<i2p::sam::Session> i2p_sam_session = nullptr;
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     bool prefer_evict = false;
     size_t recv_flood_size{DEFAULT_MAXRECEIVEBUFFER * 1000};
@@ -886,18 +884,6 @@ private:
 
     mapMsgTypeSize mapSendBytesPerMsgType GUARDED_BY(cs_vSend);
     mapMsgTypeSize mapRecvBytesPerMsgType GUARDED_BY(cs_vRecv);
-
-    /**
-     * If an I2P session is created per connection (for outbound transient I2P
-     * connections) then it is stored here so that it can be destroyed when the
-     * socket is closed. I2P sessions involve a data/transport socket (in
-     * `m_sock`) and a control socket (in `m_i2p_sam_session`). For transient
-     * sessions, once the data socket is closed, the control socket is not going
-     * to be used anymore and is just taking up resources. So better close it as
-     * soon as `m_sock` is closed. Otherwise this unique_ptr is empty.
-     */
-    std::unique_ptr<i2p::sam::Session>
-        m_i2p_sam_session GUARDED_BY(m_sock_mutex);
 };
 
 /**
@@ -990,7 +976,6 @@ public:
         bool m_use_addrman_outgoing = true;
         std::vector<std::string> m_specified_outgoing;
         std::vector<std::string> m_added_nodes;
-        bool m_i2p_accept_incoming = true;
         bool whitelist_forcerelay = DEFAULT_WHITELISTFORCERELAY;
         bool whitelist_relay = DEFAULT_WHITELISTRELAY;
         //! P2P WebSocket peers known by their TLS key (canonical pins)
@@ -1083,8 +1068,7 @@ public:
     void SetNetworkActive(bool active);
     void OpenNetworkConnection(const CAddress &addrConnect, bool fCountFailure,
                                CSemaphoreGrant *grantOutbound,
-                               const char *strDest, ConnectionType conn_type)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+                               const char *strDest, ConnectionType conn_type);
     bool CheckIncomingNonce(uint64_t nonce);
 
     bool ForNode(NodeId id, std::function<bool(CNode *pnode)> func);
@@ -1197,8 +1181,7 @@ public:
      *                          - Max total outbound connection capacity filled
      *                          - Max connection capacity for type is filled
      */
-    bool AddConnection(const std::string &address, ConnectionType conn_type)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+    bool AddConnection(const std::string &address, ConnectionType conn_type);
 
     size_t GetNodeCount(ConnectionDirection) const;
     void GetNodeStats(std::vector<CNodeStats> &vstats) const;
@@ -1292,21 +1275,17 @@ private:
     bool InitBinds(const Options &options);
 
     void ThreadOpenAddedConnections()
-        EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex,
-                                 !m_unused_i2p_sessions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     void AddAddrFetch(const std::string &strDest)
         EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
-    void ProcessAddrFetch()
-        EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex,
-                                 !m_unused_i2p_sessions_mutex);
+    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
     void
     ThreadOpenConnections(std::vector<std::string> connect,
                           std::function<void(const CAddress &, ConnectionType)>
                               mockOpenConnection)
         EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex,
-                                 !m_nodes_mutex, !m_unused_i2p_sessions_mutex);
+                                 !m_nodes_mutex);
     void ThreadMessageHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
-    void ThreadI2PAcceptIncoming();
     void AcceptConnection(const ListenSocket &hListenSocket);
 
     /**
@@ -1394,8 +1373,7 @@ private:
 
     bool AttemptToEvictConnection();
     CNode *ConnectNode(CAddress addrConnect, const char *pszDest,
-                       bool fCountFailure, ConnectionType conn_type)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+                       bool fCountFailure, ConnectionType conn_type);
     /**
      * Open an outbound P2P connection over WebSocket to `url` (ws:// or
      * wss://), via the dialer set with SetWebSocketDialer(). `wss_addr` is
@@ -1582,18 +1560,8 @@ private:
 
     /**
      * This is signaled when network activity should cease.
-     * A pointer to it is saved in `m_i2p_sam_session`, so make sure that
-     * the lifetime of `interruptNet` is not shorter than
-     * the lifetime of `m_i2p_sam_session`.
      */
     CThreadInterrupt interruptNet;
-
-    /**
-     * I2P SAM session.
-     * Used to accept incoming and make outgoing I2P connections from a
-     * persistent address.
-     */
-    std::unique_ptr<i2p::sam::Session> m_i2p_sam_session;
 
     /**
      * Wakes SocketHandler() from its wait when it should wait on something
@@ -1643,7 +1611,6 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_pending_mutex);
     /** Join the dial threads that are done (all, with `all`) */
     void ReapDialThreads(bool all) EXCLUSIVE_LOCKS_REQUIRED(!m_pending_mutex);
-    std::thread threadI2PAcceptIncoming;
 
     /**
      * flag for deciding to connect to an extra outbound peer, in excess of
@@ -1663,27 +1630,6 @@ private:
      * an address and port that are designated for incoming Tor connections.
      */
     std::vector<CService> m_onion_binds;
-
-    /**
-     * Mutex protecting m_i2p_sam_sessions.
-     */
-    Mutex m_unused_i2p_sessions_mutex;
-
-    /**
-     * A pool of created I2P SAM transient sessions that should be used instead
-     * of creating new ones in order to reduce the load on the I2P network.
-     * Creating a session in I2P is not cheap, thus if this is not empty, then
-     * pick an entry from it instead of creating a new session. If connecting to
-     * a host fails, then the created session is put to this pool for reuse.
-     */
-    std::queue<std::unique_ptr<i2p::sam::Session>>
-        m_unused_i2p_sessions GUARDED_BY(m_unused_i2p_sessions_mutex);
-
-    /**
-     * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
-     * unexpectedly use too much memory.
-     */
-    static constexpr size_t MAX_UNUSED_I2P_SESSIONS_SIZE{10};
 
     /**
      * flag for adding 'forcerelay' permission to whitelisted inbound

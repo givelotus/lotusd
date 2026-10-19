@@ -217,7 +217,6 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		hasher_tests.cpp
 		headers_sync_chainwork_tests.cpp
 		httpserver_tests.cpp
-		i2p_tests.cpp
 		interfaces_tests.cpp
 		intmath_tests.cpp
 		inv_tests.cpp

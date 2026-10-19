@@ -1483,19 +1483,6 @@ void SetupServerArgs(NodeContext &node) {
                   "-proxy"),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
 #endif
-    argsman.AddArg("-i2psam=<ip:port>",
-                   "I2P SAM proxy to reach I2P peers and accept I2P "
-                   "connections (default: none)",
-                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
-    argsman.AddArg(
-        "-i2pacceptincoming",
-        "If set and -i2psam is also set then incoming I2P connections are "
-        "accepted via the SAM proxy. If this is not set but -i2psam is set "
-        "then only outgoing connections will be made to the I2P network. "
-        "Ignored if -i2psam is not set. Listening for incoming I2P connections "
-        "is done through the SAM proxy, not by binding to a local address and "
-        "port (default: 1)",
-        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
 
     argsman.AddArg(
         "-onlynet=<net>",
@@ -1532,8 +1519,7 @@ void SetupServerArgs(NodeContext &node) {
                    strprintf("Listen for connections on <port>. Nodes not "
                              "using the default ports (default: %u, "
                              "testnet: %u, regtest: %u) are unlikely to get "
-                             "incoming connections.  Not relevant for I2P (see "
-                             "doc/i2p.md).",
+                             "incoming connections.",
                              defaultChainParams->GetDefaultPort(),
                              testnetChainParams->GetDefaultPort(),
                              regtestChainParams->GetDefaultPort()),
@@ -2564,11 +2550,6 @@ void InitParameterInteraction(ArgsManager &args) {
             .Field(BCLog::LogField::ConfigOption, BCLog::LogStatic("-listenonion"))
             .Field(BCLog::LogField::ConfigEnabled, false);
         }
-        if (args.SoftSetBoolArg("-i2pacceptincoming", false)) {
-            LogPrintf("%s: parameter interaction: -listen=0 -> setting "
-                      "-i2pacceptincoming=0\n",
-                      __func__);
-        }
     }
 
     if (!args.GetBoolArg("-p2prawlisten", DEFAULT_P2P_RAW_LISTEN)) {
@@ -3019,10 +3000,6 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
             return InitError(_("Running a staking node behind a proxy is not "
                                "supported. Please disable -proxy."));
         }
-        if (args.IsArgSet("-i2psam")) {
-            return InitError(_("Running a staking node behind I2P is not "
-                               "supported. Please disable -i2psam."));
-        }
         if (args.IsArgSet("-onlynet")) {
             return InitError(
                 _("Restricting the outbound network is not supported when "
@@ -3309,7 +3286,6 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     for ([[maybe_unused]] const auto &[arg, supports_unix_socket] :
          std::vector<std::pair<std::string, bool>>{
              // arg name            UNIX socket support
-             {"-i2psam", false},
              {"-onion", true},
              {"-proxy", true},
              {"-rpcbind", false},
@@ -3387,6 +3363,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             if (net == NET_UNROUTABLE) {
                 return InitError(strprintf(
                     _("Unknown network specified in -onlynet: '%s'"), snet));
+            }
+            if (net == NET_I2P) {
+                return InitError(_("I2P is not supported (-onlynet=i2p)"));
             }
             nets.insert(net);
         }
@@ -4216,21 +4195,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
     }
 
-    const std::string &i2psam_arg = args.GetArg("-i2psam", "");
-    if (!i2psam_arg.empty()) {
-        const std::optional<CService> addr{
-            Lookup(i2psam_arg, 7656, fNameLookup)};
-        if (!addr.has_value() || !addr->IsValid()) {
-            return InitError(strprintf(
-                _("Invalid -i2psam address or hostname: '%s'"), i2psam_arg));
-        }
-        SetProxy(NET_I2P, Proxy{addr.value()});
-    } else {
-        SetReachable(NET_I2P, false);
-    }
-
-    connOptions.m_i2p_accept_incoming =
-        args.GetBoolArg("-i2pacceptincoming", true);
+    // I2P is not supported: its addresses are neither dialed nor stored and
+    // relayed (only reachable networks are).
+    SetReachable(NET_I2P, false);
 
     {
         // Compress-once block frames for zstd WebSocket peers.
