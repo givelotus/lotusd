@@ -290,10 +290,13 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
             // proxies route by name, as every browser sends it.
             SSL_set_tlsext_host_name(ssl.get(), url.host.c_str());
         } else {
-            LogPrintf("Dialing %s: TLS to an IP address carries no server "
-                      "name, which is unusual for web traffic; prefer a host "
-                      "name to blend in\n",
-                      url.authority);
+            // The norm for peers known by address; a host name blends in
+            // better where traffic is inspected.
+            LogDebug(BCLog::NET,
+                     "Dialing %s: TLS to an IP address carries no server "
+                     "name, which is unusual for web traffic; prefer a host "
+                     "name to blend in\n",
+                     url.authority);
         }
         SSL_set_connect_state(ssl.get());
         while (true) {
