@@ -3131,6 +3131,39 @@ VmChargedResult EvaluateVmCharged(std::span<const uint8_t> script,
                        context, &cost_profile, &cost, batch_sigs);
     return {std::move(invocation), cost, cost, cost != 0};
 }
+VmOpcodeClass ClassifyVmOpcode(uint8_t op) {
+    if (op == VM_EXT2_PREFIX) return VmOpcodeClass::Ext2Prefix;
+    if (op == OP_EMITLOG) return VmOpcodeClass::SimulationOnly;
+    return Assigned(op) ? VmOpcodeClass::Assigned : VmOpcodeClass::Success;
+}
+bool IsVmExt2Assigned(uint8_t selector) { return AssignedExt(selector); }
+Hash VmProfileDigest(const VmProfile &vm, const VmCostProfile &cost) {
+    std::vector<uint8_t> out;
+    auto le = [&](__uint128_t v, size_t width) {
+        for (size_t i = 0; i < width; ++i) out.push_back(uint8_t(v >> (8 * i)));
+    };
+    for (size_t v : {vm.max_script_bytes, vm.max_arguments,
+                     vm.max_element_bytes, vm.max_stack_items,
+                     vm.max_altstack_items, vm.max_vm_bytes, vm.max_ast_depth,
+                     vm.max_steps})
+        le(v, 8);
+    le(cost.max_invocation_cost, 16);
+    le(cost.structural_byte_cost, 8);
+    for (const auto *table : {&cost.opcode, &cost.ext_opcode})
+        for (const auto &op : *table) {
+            le(op.base, 8);
+            le(op.per_operand_byte, 8);
+            le(op.per_result_byte, 8);
+            le(op.per_scanned_output, 8);
+        }
+    le(cost.field_sizes.size(), 8);
+    for (const auto &[op, sizes] : cost.field_sizes) {
+        le(op, 1);
+        le(sizes.size(), 8);
+        for (size_t size : sizes) le(size, 8);
+    }
+    return TaggedHash(HashDomain::VmProfile, out);
+}
 namespace detail {
     VmResult EvaluateVmSimulationInvocation(
         std::span<const uint8_t> script, const std::vector<VmBytes> &arguments,

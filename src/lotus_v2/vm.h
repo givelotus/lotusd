@@ -145,6 +145,25 @@ struct VmCostProfile {
 // Same schedule checks used by charged execution; useful for rejecting a local
 // configuration before opening chainstate. Does not execute a program.
 bool ValidateVmCostProfile(const VmProfile &, const VmCostProfile &, std::string &);
+
+// SHA-256 of the P03 opcode registry snapshot (opcodes.json) this VM
+// allocates, as recorded in vm_test/opcode_coverage.json.
+inline constexpr const char *VM_OPCODE_REGISTRY_SHA256 =
+    "aa337a17b51d89876bd7fee9b586e2e6a8f6ac5f96f0eacc9a2f8d967715b014";
+// On-chain meaning of a single opcode byte in the current allocation.
+enum class VmOpcodeClass {
+    Success,        // unassigned: OP_SUCCESS_N
+    Assigned,       // executed by the VM
+    SimulationOnly, // EMITLOG: rejected at scan time on-chain
+    Ext2Prefix,     // 0xff: introduces a two-byte opcode
+};
+VmOpcodeClass ClassifyVmOpcode(uint8_t op);
+// Whether `ff selector` is assigned (otherwise it is OP_SUCCESS_EXT).
+bool IsVmExt2Assigned(uint8_t selector);
+// Commitment to a VM profile and cost schedule (every field, little-endian,
+// tagged "Lotus/v2/vmprofile"). Reported to compilers as the target profile
+// digest; never part of consensus.
+Hash VmProfileDigest(const VmProfile &, const VmCostProfile &);
 // Owns an immutable transaction/coin/cost snapshot, prepared once before all
 // invocations. Contexts must refer to this snapshot's exact objects; a cache
 // from another transaction or mutable caller objects is never trusted.

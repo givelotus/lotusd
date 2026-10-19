@@ -36,6 +36,8 @@ enum class HashDomain {
     ContractState,
     // Simulation-only placeholder branch roots (vm_simulation.h).
     SimPlaceholder,
+    // Non-consensus VM profile commitment (VmProfileDigest).
+    VmProfile,
 };
 
 // Hardware-accelerated BIP-340 style tagged SHA-256:
