@@ -10,8 +10,8 @@ import ssl
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
-    chronik_sub_to_blocks,
     chronik_port,
+    chronik_sub_to_blocks,
     p2p_port,
     rpc_port,
 )

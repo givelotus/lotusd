@@ -121,9 +121,13 @@ class HTTPPublicFallbackTest(BitcoinTestFramework):
     def upgrade(self, target, auth=None):
         key = base64.b64encode(os.urandom(16)).decode()
         lines = [
-            f"GET {target} HTTP/1.1", "Host: example.org", "Upgrade: websocket",
-            "Connection: Upgrade", f"Sec-WebSocket-Key: {key}",
-            "Sec-WebSocket-Version: 13", "Sec-WebSocket-Protocol: p2p-zstd-v1",
+            f"GET {target} HTTP/1.1",
+            "Host: example.org",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+            "Sec-WebSocket-Protocol: p2p-zstd-v1",
         ]
         if auth:
             lines.append(f"Authorization: Bearer {auth}")
@@ -154,7 +158,9 @@ class HTTPPublicFallbackTest(BitcoinTestFramework):
             request = (
                 b"POST /upload?x=1 HTTP/1.1\r\nHost: example.org\r\n"
                 b"X-Custom-CASE: kept\r\nContent-Length: "
-                + str(len(body)).encode() + b"\r\n\r\n" + body
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
             )
             assert_equal(self.raw(request, tls), RESPONSE)
             head, got = self.site.requests[0]
@@ -181,7 +187,8 @@ class HTTPPublicFallbackTest(BitcoinTestFramework):
         self.log.info("An invalid -publicfallback is a startup error")
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
-            ["-publicfallback=nohostport"], "Unable to start HTTP server",
+            ["-publicfallback=nohostport"],
+            "Unable to start HTTP server",
             match=ErrorMatch.PARTIAL_REGEX,
         )
 

@@ -22,29 +22,32 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent if SCRIPT_DIR.name == "functional" else SCRIPT_DIR
 sys.path.insert(0, str(REPO_ROOT / "test" / "functional"))
 
-from test_framework.address import ADDRESS_ECREG_P2SH_OP_TRUE, SCRIPTSIG_OP_TRUE
-from test_framework.hash import hash160
-from test_framework.key import ECKey
-from test_framework.messages import (
+from test_framework.address import (  # noqa: E402
+    ADDRESS_ECREG_P2SH_OP_TRUE,
+    SCRIPTSIG_OP_TRUE,
+)
+from test_framework.hash import hash160  # noqa: E402
+from test_framework.key import ECKey  # noqa: E402
+from test_framework.messages import (  # noqa: E402
     COutPoint,
     CTransaction,
     CTxIn,
     CTxOut,
     ToHex,
 )
-from test_framework.script import (
+from test_framework.script import (  # noqa: E402
     OP_CHECKSIG,
     OP_DUP,
     OP_EQUALVERIFY,
     OP_HASH160,
     CScript,
 )
-from test_framework.signature_hash import (
+from test_framework.signature_hash import (  # noqa: E402
     SIGHASH_ALL,
     SIGHASH_FORKID,
     SignatureHashForkId,
 )
-from test_framework.txtools import pad_tx
+from test_framework.txtools import pad_tx  # noqa: E402
 
 
 def find_lotusd_bin() -> Path:
@@ -198,9 +201,7 @@ def build_p2sh_op_true_tx(
 ) -> CTransaction:
     tx = CTransaction()
     tx.nVersion = 2
-    tx.vin = [
-        CTxIn(COutPoint(prev_txid_int, prev_vout), SCRIPTSIG_OP_TRUE, 0xFFFFFFFE)
-    ]
+    tx.vin = [CTxIn(COutPoint(prev_txid_int, prev_vout), SCRIPTSIG_OP_TRUE, 0xFFFFFFFE)]
     tx.vout = [CTxOut(value_sats, CScript(spk_bytes))]
     pad_tx(tx)
     return tx
@@ -229,9 +230,7 @@ def build_signed_p2pkh_tx(
 
 
 def main():
-    base_dir = Path(
-        tempfile.mkdtemp(prefix="lotus-v2-stress-run-", dir="/private/tmp")
-    )
+    base_dir = Path(tempfile.mkdtemp(prefix="lotus-v2-stress-run-", dir="/private/tmp"))
     procs = []
     clients = []
 
@@ -278,15 +277,9 @@ def main():
         print("[*] All 3 lotusd regtest nodes started and responding to RPC.")
 
         # Connect Node 0 <-> Node 1 <-> Node 2
-        clients[0].call(
-            "addnode", [f"127.0.0.1:{NODES_CFG[1]['p2p_port']}", "onetry"]
-        )
-        clients[0].call(
-            "addnode", [f"127.0.0.1:{NODES_CFG[2]['p2p_port']}", "onetry"]
-        )
-        clients[1].call(
-            "addnode", [f"127.0.0.1:{NODES_CFG[2]['p2p_port']}", "onetry"]
-        )
+        clients[0].call("addnode", [f"127.0.0.1:{NODES_CFG[1]['p2p_port']}", "onetry"])
+        clients[0].call("addnode", [f"127.0.0.1:{NODES_CFG[2]['p2p_port']}", "onetry"])
+        clients[1].call("addnode", [f"127.0.0.1:{NODES_CFG[2]['p2p_port']}", "onetry"])
 
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
@@ -616,9 +609,7 @@ def main():
         # =====================================================================
         # BENCHMARK C: Concurrent Lock-Free Read RPCs
         # =====================================================================
-        print(
-            "\n=== Running Benchmark C: Concurrent Lock-Free Read RPCs ==="
-        )
+        print("\n=== Running Benchmark C: Concurrent Lock-Free Read RPCs ===")
         sample_mp_txids = clients[0].call("getrawmempool", [False])
         sample_txid = sample_mp_txids[0]
         best_hash = clients[0].call("getbestblockhash")
@@ -724,12 +715,9 @@ def main():
             "\n=== Running Benchmark D: O(1) Block Assembly & SealedBlock Relay (6,000-tx Block) ==="
         )
         gbt_lats_ms = []
-        last_gbt = None
         for _ in range(50):
             t0 = time.perf_counter()
-            last_gbt = clients[0].call(
-                "getblocktemplate", [{"mode": "compact_template"}]
-            )
+            clients[0].call("getblocktemplate", [{"mode": "compact_template"}])
             t1 = time.perf_counter()
             gbt_lats_ms.append((t1 - t0) * 1000.0)
         gbt_lats_ms.sort()

@@ -134,7 +134,9 @@ class NetTest(BitcoinTestFramework):
                 # Node 1 received node 0's block before the relay clock tick;
                 # node 0 received node 1's later block after that tick.
                 expected_time = (
-                    first_block_time if node == 1 and field == "last_block" else time_now
+                    first_block_time
+                    if node == 1 and field == "last_block"
+                    else time_now
                 )
                 assert_equal(peer_info[node][peer][field], expected_time)
         # check both sides of bidirectional connection between nodes

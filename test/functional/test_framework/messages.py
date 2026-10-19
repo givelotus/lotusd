@@ -2290,7 +2290,9 @@ class msg_avaproofsreq:
 class TestFrameworkMessages(unittest.TestCase):
     def test_ecash_batch_sha256_identifier_and_wire_round_trip(self):
         batch = msg_avabatch(
-            prev_block_hash=int("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", 16),
+            prev_block_hash=int(
+                "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", 16
+            ),
             epoch_seq=42,
             parent_batch_id=int("11" * 32, 16),
             subtree_a_root=int("deadbeef" * 8, 16),

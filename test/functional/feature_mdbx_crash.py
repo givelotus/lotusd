@@ -5,10 +5,11 @@
 
 This is process-crash coverage. It does not simulate power loss or torn sectors.
 """
+
 import json
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -19,7 +20,15 @@ class MdbxCrashTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 3
         self.setup_clean_chain = True
-        self.extra_args = [["-avalanche=0", "-acceptnonstdtxn=1", "-dbcache=64", "-dbbatchsize=200000", "-debug=bench"]] * 3
+        self.extra_args = [
+            [
+                "-avalanche=0",
+                "-acceptnonstdtxn=1",
+                "-dbcache=64",
+                "-dbbatchsize=200000",
+                "-debug=bench",
+            ]
+        ] * 3
         self.rpc_timeout = 240
         self.supports_cli = False
 
@@ -47,8 +56,10 @@ class MdbxCrashTest(BitcoinTestFramework):
             assert_equal(target.submitblock(raw_initial), None)
             assert_equal(control.submitblock(raw_initial), None)
         assert target.verifychain(4, 0)
-        assert_equal(target.gettxoutsetinfo()["hash_serialized"],
-                     source.gettxoutsetinfo()["hash_serialized"])
+        assert_equal(
+            target.gettxoutsetinfo()["hash_serialized"],
+            source.gettxoutsetinfo()["hash_serialized"],
+        )
         control.gettxoutsetinfo()
         results = []
         for cycle in range(self.options.crash_cycles):
@@ -56,10 +67,17 @@ class MdbxCrashTest(BitcoinTestFramework):
             txs = []
             for _ in range(self.options.transactions):
                 txs.append(wallet.create_self_transfer(utxo_to_spend=funding.pop()))
-            submitted = source.rpc.batch([
-                {"jsonrpc": "2.0", "id": i, "method": "sendrawtransaction",
-                 "params": [tx["hex"], 0]} for i, tx in enumerate(txs)
-            ])
+            submitted = source.rpc.batch(
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": i,
+                        "method": "sendrawtransaction",
+                        "params": [tx["hex"], 0],
+                    }
+                    for i, tx in enumerate(txs)
+                ]
+            )
             assert_equal(len(submitted), len(txs))
             assert all(item.get("error") is None for item in submitted), submitted
             # A partially accepted batch would invalidate the heavy-connect claim.

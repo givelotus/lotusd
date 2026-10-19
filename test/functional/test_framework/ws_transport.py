@@ -75,7 +75,7 @@ class WebSocketLayer:
             if len(self.buf) > 16384:
                 raise ValueError("WebSocket handshake too long")
             return False, b""
-        head, self.buf = self.buf[:end].decode("latin-1"), self.buf[end + 4:]
+        head, self.buf = self.buf[:end].decode("latin-1"), self.buf[end + 4 :]
         lines = head.split("\r\n")
         headers = {}
         for line in lines[1:]:
@@ -152,12 +152,12 @@ class WebSocketLayer:
             if masked:
                 if len(self.buf) < pos + 4:
                     break
-                mask = self.buf[pos:pos + 4]
+                mask = self.buf[pos : pos + 4]
                 pos += 4
             if len(self.buf) < pos + n:
                 break
-            payload = self.buf[pos:pos + n]
-            self.buf = self.buf[pos + n:]
+            payload = self.buf[pos : pos + n]
+            self.buf = self.buf[pos + n :]
             if mask:
                 payload = apply_mask(mask, payload)
             if opcode in (OP_BINARY, OP_CONTINUATION):

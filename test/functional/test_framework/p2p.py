@@ -37,10 +37,10 @@ from test_framework.messages import (
     CBlockHeader,
     msg_addr,
     msg_addrv2,
+    msg_avabatch,
     msg_avahello,
     msg_avapoll,
     msg_avaproof,
-    msg_avabatch,
     msg_avaproofs,
     msg_avaproofsreq,
     msg_block,
@@ -76,12 +76,12 @@ from test_framework.messages import (
     msg_version,
     sha256,
 )
-from test_framework.ws_transport import P2P_WS_PATH, WebSocketLayer
 from test_framework.util import (
     MAX_NODES,
     p2p_port,
     wait_until_helper_internal,
 )
+from test_framework.ws_transport import P2P_WS_PATH, WebSocketLayer
 
 logger = logging.getLogger("TestFramework.p2p")
 
@@ -240,7 +240,9 @@ class P2PConnection(asyncio.Protocol):
         if P2P_TRANSPORT == "websocket":
             # We dialed the node (client) or the node dialed us (server).
             self.ws = WebSocketLayer(
-                client=self.dstport != 0, host=self.dstaddr, port=self.dstport,
+                client=self.dstport != 0,
+                host=self.dstaddr,
+                port=self.dstport,
                 path=self.ws_path,
             )
             if self.ws.client:
