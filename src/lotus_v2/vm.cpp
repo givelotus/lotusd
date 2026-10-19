@@ -2146,9 +2146,18 @@ namespace {
                             coin.paths[Index(path, coin.paths.size())]));
                         break;
                     }
-                    case 0xdc:
-                        Push(OutputBytes(CoinAt(Numeric(Pop()))));
+                    case 0xdc: {
+                        // The coin's wire: a legacy coin has its
+                        // LegacyCoinWire (EncodeCoinOutput).
+                        VmBytes encoded;
+                        std::string error;
+                        if (!EncodeCoinOutput(CoinAt(Numeric(Pop())), encoded,
+                                              error))
+                            throw VmFailure("coin encoding unavailable",
+                                            VmStatus::OperationalError);
+                        Push(std::move(encoded));
                         break;
+                    }
                     case 0xdd: {
                         auto root = Pop();
                         const auto &coin = CoinAt(Numeric(Pop()));
@@ -2727,7 +2736,7 @@ bool PreparedVmTransaction::TryGetFieldSizeAt(uint8_t op, size_t idx,
             out_size = 0;
             return true;
         }
-        return OutputSerializedSize(*coins_[idx], out_size, err);
+        return ComputeCoinOutputSerializedSize(*coins_[idx], out_size, err);
     }
     if (op == 0xe6) {
         bool found = false;
@@ -2832,7 +2841,7 @@ SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
                     if (i >= coins_.size() || !coins_[i]) continue;
                     const Output &coin = *coins_[i];
                     size_t sz = 0;
-                    if (!OutputSerializedSize(coin, sz, sz_err)) {
+                    if (!ComputeCoinOutputSerializedSize(coin, sz, sz_err)) {
                         throw VmFailure("field-size output encoding",
                                         VmStatus::OperationalError);
                     }
