@@ -76,7 +76,8 @@
     X(Path, path, STRING, "file.path", "file.path")                            \
     X(Wallet, wallet, STRING, "", "")                                          \
     X(Name, name, STRING, "", "")                                              \
-    X(Value, value, STRING, "", "")
+    X(Value, value, STRING, "", "")                                            \
+    X(RpcUser, rpc_user, STRING, "", "")
 
 namespace BCLog {
 
