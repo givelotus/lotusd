@@ -721,6 +721,10 @@ void CNode::copyStats(CNodeStats &stats) {
 void CNode::pauseRecv(bool pause) {
     bool wasPaused = fPauseRecv.exchange(pause);
     if (wasPaused && !pause) {
+        if (m_socket_wakeup) {
+            // Wait for this socket being readable again.
+            m_socket_wakeup->Wake();
+        }
         // We were paused and are now unpaused, so update the last receive time
         // to prevent us from being disconnected for inactivity.
         const auto time = GetTime<std::chrono::microseconds>();
@@ -1504,7 +1508,7 @@ void CConnman::CreateNodeFromAcceptedSocket(
 
     {
         LOCK(m_nodes_mutex);
-        m_nodes.push_back(pnode);
+        AddNodeLocked(pnode);
     }
 
     // We received a new connection, harvest entropy from the time (and our peer
@@ -1748,6 +1752,10 @@ void CConnman::SocketHandler() {
         // select(2)). If none are ready, wait for a short while and return
         // empty sets.
         events_per_sock = GenerateWaitSockets(snap.Nodes());
+        if (m_socket_wakeup) {
+            events_per_sock.emplace(m_socket_wakeup->WaitSock(),
+                                    Sock::Events{Sock::RECV});
+        }
 
         // Sockets holding already decoded data are ready to receive whatever
         // the OS socket says, so don't block in that case.
@@ -1771,6 +1779,12 @@ void CConnman::SocketHandler() {
                     entry.second.occurred |= Sock::RECV;
                 }
             }
+        }
+
+        if (m_socket_wakeup) {
+            // Before the next GenerateWaitSockets(): a wakeup for anything
+            // after this point wakes the next wait.
+            m_socket_wakeup->Drain();
         }
 
         // Service (send/receive) each of the already connected nodes.
@@ -1920,6 +1934,13 @@ void CConnman::SocketHandlerListening(
             AcceptConnection(listen_socket);
         }
     }
+}
+
+void CConnman::AddNodeLocked(CNode *pnode) {
+    pnode->m_socket_wakeup = m_socket_wakeup.get();
+    m_nodes.push_back(pnode);
+    // Wait on its socket now, not after the current wait times out.
+    WakeSocketHandler();
 }
 
 void CConnman::ThreadSocketHandler() {
@@ -2676,7 +2697,7 @@ void CConnman::OpenNetworkConnection(const CAddress &addrConnect,
                     interface->InitializeNode(*config, *pnode, nLocalServices);
                 }
                 LOCK(m_nodes_mutex);
-                m_nodes.push_back(pnode);
+                AddNodeLocked(pnode);
             } else if (pnode) {
                 // Shutting down: never handed to the message processors, so
                 // there is nothing to finalize.
@@ -3080,6 +3101,14 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
     //
     assert(m_msgproc.size() > 0);
     InterruptSocks5(false);
+    if (!m_socket_wakeup) {
+        m_socket_wakeup = SockWakeup::Make();
+        if (!m_socket_wakeup) {
+            LogPrintf("Warning: cannot create the network thread's wakeup "
+                      "socket; new connections may wait up to %d ms\n",
+                      SELECT_TIMEOUT_MILLISECONDS);
+        }
+    }
     interruptNet.reset();
     flagInterruptMsgProc = false;
 
@@ -3674,9 +3703,16 @@ void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
         }
 
         // If write queue empty, attempt "optimistic write"
-        bool data_left;
+        bool data_left{!optimisticSend};
         if (optimisticSend) {
             std::tie(nBytesSent, data_left) = SocketSendData(*pnode);
+            // Data left behind (in the queue, or buffered by the socket
+            // itself): wait for the socket to be writable now.
+            if (data_left || WITH_LOCK(pnode->m_sock_mutex,
+                                       return pnode->m_sock &&
+                                              pnode->m_sock->PendingEvents())) {
+                WakeSocketHandler();
+            }
         }
     }
     if (nBytesSent) {
