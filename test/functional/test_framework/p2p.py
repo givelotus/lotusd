@@ -21,6 +21,7 @@ P2PTxInvStore: A p2p interface class that inherits from P2PDataStore, and keeps
 
 import asyncio
 import logging
+import os
 import struct
 import sys
 import threading
@@ -75,6 +76,7 @@ from test_framework.messages import (
     msg_version,
     sha256,
 )
+from test_framework.ws_transport import P2P_WS_PATH, WebSocketLayer
 from test_framework.util import (
     MAX_NODES,
     p2p_port,
@@ -82,6 +84,10 @@ from test_framework.util import (
 )
 
 logger = logging.getLogger("TestFramework.p2p")
+
+# How P2PConnection reaches nodes: "tcp" (the raw P2P protocol) or
+# "websocket" (P2P over WebSocket at /p2p/ws on the node's P2P port).
+P2P_TRANSPORT = os.environ.get("TEST_P2P_TRANSPORT", "tcp")
 
 # The minimum P2P version that this test framework supports
 MIN_P2P_VERSION_SUPPORTED = 60001
@@ -179,6 +185,8 @@ class P2PConnection(asyncio.Protocol):
         # Should only call methods on this from the NetworkThread, c.f.
         # call_soon_threadsafe
         self._transport = None
+        # Over WebSocket: the path dialed (a node's -p2pwebsocketpath)
+        self.ws_path = P2P_WS_PATH
 
     @property
     def is_connected(self):
@@ -194,6 +202,9 @@ class P2PConnection(asyncio.Protocol):
         self.on_connection_send_msg_is_raw = False
         self.recvbuf = b""
         self.magic_bytes = NET_MAGIC_BYTES[net]
+        # P2P over WebSocket (see P2P_TRANSPORT), set up per connection.
+        self.ws = None
+        self.ws_pending = []
 
     def peer_connect(self, dstaddr, dstport, *, net, timeout_factor):
         self.peer_connect_helper(dstaddr, dstport, net, timeout_factor)
@@ -226,6 +237,19 @@ class P2PConnection(asyncio.Protocol):
         assert not self._transport
         logger.debug(f"Connected & Listening: {self.dstaddr}:{self.dstport}")
         self._transport = transport
+        if P2P_TRANSPORT == "websocket":
+            # We dialed the node (client) or the node dialed us (server).
+            self.ws = WebSocketLayer(
+                client=self.dstport != 0, host=self.dstaddr, port=self.dstport,
+                path=self.ws_path,
+            )
+            if self.ws.client:
+                transport.write(self.ws.request())
+            # The P2P side opens once the upgrade is done (_ws_opened).
+            return
+        self._p2p_open()
+
+    def _p2p_open(self):
         if self.on_connection_send_msg:
             if self.on_connection_send_msg_is_raw:
                 self.send_raw_message(self.on_connection_send_msg)
@@ -251,6 +275,8 @@ class P2PConnection(asyncio.Protocol):
 
     def data_received(self, t):
         """asyncio callback when data is read from the socket."""
+        if self.ws is not None:
+            t = self._ws_received(t)
         with p2p_lock:
             if len(t) > 0:
                 self.recvbuf += t
@@ -260,6 +286,26 @@ class P2PConnection(asyncio.Protocol):
             if msg is None:
                 break
             self.on_message(msg)
+
+    def _ws_received(self, data):
+        """Handle WebSocket bytes; return the P2P payload bytes they carried."""
+        if not self.ws.open:
+            done, reply = self.ws.feed_handshake(data)
+            if reply:
+                self._transport.write(reply)
+            if not done:
+                return b""
+            data, self.ws.buf = self.ws.buf, b""
+            self._p2p_open()
+            for raw in self.ws_pending:
+                self._transport.write(self.ws.encode(raw))
+            self.ws_pending = []
+        payload, reply = self.ws.decode(data)
+        if reply:
+            self._transport.write(reply)
+        if self.ws.closed:
+            self._transport.close()
+        return payload
 
     def _on_data(self):
         """Try to read P2P messages from the recv buffer.
@@ -337,6 +383,12 @@ class P2PConnection(asyncio.Protocol):
             if not self._transport:
                 return
             if self._transport.is_closing():
+                return
+            if self.ws is not None:
+                if not self.ws.open:
+                    self.ws_pending.append(raw_message_bytes)
+                    return
+                self._transport.write(self.ws.encode(raw_message_bytes))
                 return
             self._transport.write(raw_message_bytes)
 
@@ -804,7 +856,10 @@ class NetworkThread(threading.Thread):
             cls.listeners[(addr, port)] = listener
 
         cls.protos[(addr, port)] = proto
-        callback(addr, port)
+        # The callback typically asks the node to connect to us. Over
+        # WebSocket the node completes the upgrade before that RPC returns,
+        # so run it off the event loop, which must keep serving us meanwhile.
+        await cls.network_event_loop.run_in_executor(None, callback, addr, port)
 
 
 class P2PDataStore(P2PInterface):
