@@ -118,6 +118,9 @@ include("${CHRONIK_NATIVE_ROOT}/proto/proto.cmake")
 include("${CHRONIK_NATIVE_ROOT}/transport/transport.cmake")
 include("${CHRONIK_NATIVE_ROOT}/core/service/service.cmake")
 
+# ---- Lotus V2 tier extension (ext/lotus_v2/lotus_v2.cmake) ----
+include("${CHRONIK_NATIVE_ROOT}/ext/lotus_v2/lotus_v2.cmake")
+
 # ---- Host adapter (node build only) ----
 if(NOT CHRONIK_NATIVE_STANDALONE)
     add_library(chronik_native_host_abc STATIC
