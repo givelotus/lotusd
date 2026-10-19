@@ -242,6 +242,14 @@ if(ENABLE_PROFILING MATCHES "gprof")
 	add_linker_flags(-pg)
 endif()
 
+# Source locations in logs (__FILE__, std::source_location) are relative to
+# the source tree ("src/net.cpp"), not the build machine's absolute path.
+# Only macros are remapped: debug information keeps absolute paths.
+add_compiler_flags(
+	"-fmacro-prefix-map=${CMAKE_BINARY_DIR}/="
+	"-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/="
+)
+
 # Enable warning
 add_c_compiler_flags(-Wnested-externs -Wstrict-prototypes)
 add_compiler_flags(
