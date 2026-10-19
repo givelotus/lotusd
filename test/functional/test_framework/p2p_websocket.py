@@ -105,6 +105,9 @@ class P2PWebSocketClient:
                     obj.deserialize(BytesIO(payload))
                     return msgtype, obj
             data = self.ws.recv()
+            if isinstance(data, str) or not data:
+                # websocket-client returns a Close frame as an empty string.
+                raise ConnectionError("WebSocket closed by the node")
             if self.decompressor:
                 data = self.decompressor.decompress(data)
             self.recvbuf += data
