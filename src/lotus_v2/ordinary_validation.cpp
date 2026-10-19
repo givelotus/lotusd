@@ -286,6 +286,7 @@ void PutCachedOrdinaryResolved(
     uint64_t wire_size, const IdentityDigests &identities,
     const Hash &resolved_coins_digest, const Hash *precomputed_profile_digest,
     const OrdinaryCandidateEffects &effects) {
+    if (effects.produced_records) return;
     const Hash profile_digest = precomputed_profile_digest != nullptr
                                     ? *precomputed_profile_digest
                                     : OrdinaryValidationProfileDigest(profile);
@@ -443,6 +444,7 @@ CandidateCheckResult VerifyOrdinaryUncached(
         effects.native_fee = native_fee;
         effects.token_output_burn_floor = token_floor;
         effects.invocation_cost = invocation_cost;
+        effects.produced_records = deferred.ProducedRecords();
         if (batch_sigs != nullptr) {
             batch_sigs->Merge(std::move(tx_staged_sigs));
         } else {
