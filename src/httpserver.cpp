@@ -578,6 +578,8 @@ struct HTTPConnectionInfo {
     CService local;
     bool is_tls{false};
     std::string client_cert_fingerprint_hex;
+    //! base64url SHA-256 of the client certificate's public key, if any
+    std::string client_cert_spki;
 };
 
 /**
@@ -1170,6 +1172,7 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
     info->tls = conn.is_tls;
     info->compression = compression;
     info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
+    info->peer_spki = conn.client_cert_spki;
     const CService peer{P2PWebSocketPeerAddress(req, conn)};
 
     if (!use_bridge) {
@@ -1480,6 +1483,14 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                     conn.is_tls = true;
                     conn.client_cert_fingerprint_hex =
                         ClientCertFingerprint(tls_stream.native_handle());
+                    if (X509 *cert{
+                            tls::PeerCertificate(tls_stream.native_handle())}) {
+                        const auto spki{tls::SpkiSha256(cert)};
+                        X509_free(cert);
+                        if (!spki.empty()) {
+                            conn.client_cert_spki = EncodeSpkiPin(spki);
+                        }
+                    }
                     co_await ServeHTTP(tls_stream, buffer, conn);
                     tls_stream.shutdown(ec);
                     sock.shutdown(tcp::socket::shutdown_send, ec);
