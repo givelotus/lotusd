@@ -49,8 +49,14 @@ ssize_t TlsByteLayer::Translate(int ret, Sock::Event *wait) {
 
 ssize_t TlsByteLayer::Read(SOCKET fd, uint8_t *buf, size_t len) {
     ERR_clear_error();
-    const int n{SSL_read(m_ssl.get(), buf, int(std::min<size_t>(len, INT_MAX)))};
-    return Translate(n, nullptr);
+    const int n{
+        SSL_read(m_ssl.get(), buf, int(std::min<size_t>(len, INT_MAX)))};
+    Sock::Event wait{Sock::RECV};
+    const ssize_t r{Translate(n, &wait)};
+    // A read can need to write first (e.g. the reply to a TLS 1.3
+    // KeyUpdate that asks for one, when the send buffer is full).
+    m_read_waits_for = r < 0 && errno == EAGAIN ? wait : Sock::RECV;
+    return r;
 }
 
 ssize_t TlsByteLayer::Write(SOCKET fd, const uint8_t *buf, size_t len) {
