@@ -42,22 +42,21 @@ def assert_net_servicesnames(servicesflag, servicenames):
 
 
 class NetTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-minrelaytxfee=10",
-            ],
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-minrelaytxfee=5",
-            ],
-        ]
-        self.supports_cli = False
-        self.noban_tx_relay = True
+    num_nodes = 2
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-minrelaytxfee=10",
+        ],
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-minrelaytxfee=5",
+        ],
+    ]
+    supports_cli = False
+    noban_tx_relay = True
 
     def run_test(self):
         # By default, the test framework sets up an addnode connection from

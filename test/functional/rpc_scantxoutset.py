@@ -16,8 +16,7 @@ def descriptors(out):
 
 
 class ScantxoutsetTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def sendtodestination(self, destination, amount):
         # interpret strings as addresses, assume scriptPubKey otherwise
