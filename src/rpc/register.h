@@ -25,6 +25,7 @@ void RegisterMiningRPCCommands(CRPCTable &tableRPC);
 void RegisterRawTransactionRPCCommands(CRPCTable &tableRPC);
 void RegisterABCRPCCommands(CRPCTable &tableRPC);
 void RegisterAvalancheRPCCommands(CRPCTable &tableRPC);
+void RegisterV2VmRPCCommands(CRPCTable &tableRPC);
 
 static inline void RegisterAllCoreRPCCommands(CRPCTable &t) {
     RegisterBlockchainRPCCommands(t);
@@ -37,6 +38,7 @@ static inline void RegisterAllCoreRPCCommands(CRPCTable &t) {
     RegisterRawTransactionRPCCommands(t);
     RegisterABCRPCCommands(t);
     RegisterAvalancheRPCCommands(t);
+    RegisterV2VmRPCCommands(t);
 }
 
 /**
