@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unittest
 from enum import Enum
 from typing import List
 
@@ -61,6 +62,20 @@ class SkipTest(Exception):
 
     def __init__(self, message):
         self.message = message
+
+
+def node_extra_args(num_nodes, extra_args=None, *, noban_tx_relay=False):
+    """Per-node argument lists for add_nodes().
+
+    Always returns new lists, one per node, so that nodes never share a list
+    with each other or with the caller (e.g. the test's self.extra_args).
+    With noban_tx_relay, peers are whitelisted to speed up tx relay and
+    mempool sync (don't use it when testing tx relay or timing).
+    """
+    if extra_args is None:
+        extra_args = [[] for _ in range(num_nodes)]
+    extra = ["-whitelist=noban,in,out@127.0.0.1"] if noban_tx_relay else []
+    return [list(args) + extra for args in extra_args]
 
 
 class BitcoinTestMetaClass(type):
@@ -518,7 +533,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     def setup_nodes(self):
         """Override this method to customize test node setup"""
-        extra_args = [[]] * self.num_nodes
+        extra_args = None
         if hasattr(self, "extra_args"):
             extra_args = self.extra_args
         self.add_nodes(self.num_nodes, extra_args)
@@ -575,17 +590,20 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
         Should only be called once after the nodes have been specified in
         set_test_params()."""
-        if self.bind_to_localhost_only:
-            extra_confs = [["bind=127.0.0.1"]] * num_nodes
-        else:
-            extra_confs = [[]] * num_nodes
-        if extra_args is None:
-            extra_args = [[]] * num_nodes
-        # Whitelist peers to speed up tx relay / mempool sync.
-        # Don't use it if testing tx relay or timing.
-        if self.noban_tx_relay:
-            for i in range(len(extra_args)):
-                extra_args[i] = extra_args[i] + ["-whitelist=noban,in,out@127.0.0.1"]
+        extra_confs = [
+            ["bind=127.0.0.1"] if self.bind_to_localhost_only else []
+            for _ in range(num_nodes)
+        ]
+        caller_extra_args = extra_args
+        extra_args = node_extra_args(
+            num_nodes, extra_args, noban_tx_relay=self.noban_tx_relay
+        )
+        if self.noban_tx_relay and caller_extra_args is not None:
+            # Tests rely on the whitelist being in the lists they passed (e.g.
+            # self.extra_args, reused when restarting a node): store it there,
+            # as new lists so that nodes still don't share one.
+            for i, args in enumerate(extra_args):
+                caller_extra_args[i] = list(args)
         if binary is None:
             binary = [self.options.bitcoind] * num_nodes
         assert_equal(len(extra_confs), num_nodes)
@@ -1156,3 +1174,26 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     def has_blockfile(self, node, filenum: str):
         blocksdir = os.path.join(node.datadir, self.chain, "blocks", "")
         return os.path.isfile(os.path.join(blocksdir, f"blk{filenum}.dat"))
+
+
+class TestNodeExtraArgs(unittest.TestCase):
+    def test_default_lists_are_distinct(self):
+        args = node_extra_args(3)
+        self.assertEqual(args, [[], [], []])
+        args[0].append("-x")
+        self.assertEqual(args[1:], [[], []])
+
+    def test_caller_lists_unchanged(self):
+        # (add_nodes() writes the noban whitelist back to the test's lists;
+        # node_extra_args() itself never modifies them.)
+        caller = [["-a"], ["-b"]]
+        args = node_extra_args(2, caller, noban_tx_relay=True)
+        self.assertEqual(caller, [["-a"], ["-b"]])
+        self.assertEqual(
+            args,
+            [
+                ["-a", "-whitelist=noban,in,out@127.0.0.1"],
+                ["-b", "-whitelist=noban,in,out@127.0.0.1"],
+            ],
+        )
+        self.assertIsNot(args[0], caller[0])
