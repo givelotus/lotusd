@@ -117,6 +117,7 @@ enum class LogFormat {
     //! One JSON object per line, for log shippers (see FormatJsonLine)
     JSON,
     LOGFMT,
+    JSON_GCP,
 };
 
 /** Parse a supported -logformat value */
