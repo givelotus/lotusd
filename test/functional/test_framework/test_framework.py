@@ -21,7 +21,7 @@ import time
 import traceback
 import unittest
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import coverage
 from .address import ADDRESS_ECREG_P2SH_OP_TRUE
@@ -85,14 +85,13 @@ def node_extra_args(num_nodes, extra_args=None, *, noban_tx_relay=False):
 class BitcoinTestMetaClass(type):
     """Metaclass for BitcoinTestFramework.
 
-    Ensures that every subclass of `BitcoinTestFramework` provides
-    `set_test_params` and `run_test` (itself or through a base class other
-    than `BitcoinTestFramework`), and that none overrides `__init__`, `main` or
-    `setup`. A class that is only meant to be subclassed sets
-    ``abstract = True`` in its own body and may leave `run_test` and
-    `set_test_params` to its subclasses. Violations raise ``TypeError``."""
+    Ensures that every subclass of `BitcoinTestFramework` provides `run_test`
+    (itself or through a base class other than `BitcoinTestFramework`), and
+    that none overrides `__init__`, `main` or `setup`. A class that is only
+    meant to be subclassed sets ``abstract = True`` in its own body and may
+    leave `run_test` to its subclasses. Violations raise ``TypeError``."""
 
-    REQUIRED = ("run_test", "set_test_params")
+    REQUIRED = ("run_test",)
     FORBIDDEN = ("__init__", "main", "setup")
 
     def __new__(cls, clsname, bases, dct):
@@ -144,6 +143,28 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     # with --variant=all; the test runner runs them all.
     variants: Dict[str, Dict[str, Any]] = {"default": {}}
 
+    # Test parameters. A test sets them as class attributes, or in
+    # set_test_params() when they depend on something computed at runtime.
+    # num_nodes has no default: every test sets it.
+    chain: str = "regtest"
+    setup_clean_chain: bool = False
+    noban_tx_relay: bool = False
+    # Wait for up to 60 seconds for the RPC server to respond (multiplied by
+    # --timeout-factor)
+    rpc_timeout: int = 60
+    supports_cli: bool = True
+    bind_to_localhost_only: bool = True
+    default_wallet_name: str = ""
+    wallet_data_filename: str = "wallet.dat"
+    # Optional list of wallet names to create and import keys to. If unset,
+    # default is len(nodes) * [default_wallet_name]. If wallet names are None,
+    # wallet creation is skipped. If list is truncated, wallet creation is
+    # skipped and keys are not imported.
+    wallet_names: Optional[List[Optional[str]]] = None
+    # Disable ThreadOpenConnections by default, so that adding entries to
+    # addrman will not result in automatic connections to them.
+    disable_autoconnect: bool = True
+
     def __init__(self, argv=None):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method
 
@@ -157,34 +178,20 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.success = TestStatus.FAILED
         self.log = logging.getLogger("TestFramework")
         self._argv = list(sys.argv[1:] if argv is None else argv)
-        self.chain: str = "regtest"
-        self.setup_clean_chain: bool = False
-        self.noban_tx_relay: bool = False
         self.nodes: List[TestNode] = []
         # Wall-clock phases of this test (see --phasedir)
         self._phases = []
         self._node_timings = []
         self._waits = []
         self.network_thread = None
-        # Wait for up to 60 seconds for the RPC server to respond
-        self.rpc_timeout = 60
-        self.supports_cli = True
-        self.bind_to_localhost_only = True
         self.parse_args(argv)
-        self.default_wallet_name = ""
-        self.wallet_data_filename = "wallet.dat"
-        # Optional list of wallet names that can be set in set_test_params to
-        # create and import keys to. If unset, default is len(nodes) *
-        # [default_wallet_name]. If wallet names are None, wallet creation is
-        # skipped. If list is truncated, wallet creation is skipped and keys
-        # are not imported.
-        self.wallet_names = None
         # By default the wallet is not required. Set to true by skip_if_no_wallet().
         # When False, we ignore wallet_names regardless of what it is.
         self._requires_wallet = False
-        # Disable ThreadOpenConnections by default, so that adding entries to
-        # addrman will not result in automatic connections to them.
-        self.disable_autoconnect = True
+        # A class-level extra_args is shared by every instance: give this one
+        # its own lists (the framework and some tests modify them).
+        if "extra_args" not in vars(self) and hasattr(type(self), "extra_args"):
+            self.extra_args = [list(args) for args in type(self).extra_args]
         self.set_test_params()
         assert self.wallet_names is None or len(self.wallet_names) <= self.num_nodes
         if self.options.timeout_factor == 0:
@@ -663,8 +670,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     # Methods to override in subclass test scripts.
     def set_test_params(self):
-        """Tests must override this method to change default values for number of nodes, topology, etc"""
-        raise NotImplementedError
+        """Override this method to set test parameters that are only known at
+        runtime (e.g. derived from self.options). Fixed parameters are better
+        set as class attributes."""
+        pass
 
     def add_options(self, parser):
         """Override this method to add command-line options to the test"""
@@ -1596,3 +1605,29 @@ class TestVariants(unittest.TestCase):
         code = Case(argv=self.argv() + ["--variant=all"]).main(exit_process=False)
         self.assertEqual(code, TEST_EXIT_PASSED)
         self.assertEqual(self.runs, ["default", "seeded"])
+
+
+class TestClassParameters(unittest.TestCase):
+    def test_class_attributes(self):
+        class Declarative(BitcoinTestFramework):
+            num_nodes = 2
+            setup_clean_chain = True
+            extra_args = [["-a"], ["-b"]]
+
+            def run_test(self):
+                pass
+
+        workdir = tempfile.mkdtemp(prefix="test_class_params_unit_")
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        configfile = os.path.join(workdir, "config.ini")
+        with open(configfile, "w", encoding="utf8") as f:
+            f.write("[environment]\n[components]\n")
+        test = Declarative(argv=[f"--configfile={configfile}"])
+        self.assertEqual(test.num_nodes, 2)
+        self.assertTrue(test.setup_clean_chain)
+        self.assertEqual(test.chain, "regtest")
+        # Each instance gets its own extra_args lists
+        test.extra_args[0].append("-c")
+        self.assertEqual(Declarative.extra_args, [["-a"], ["-b"]])
+        other = Declarative(argv=[f"--configfile={configfile}"])
+        self.assertEqual(other.extra_args, [["-a"], ["-b"]])
