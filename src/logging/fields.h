@@ -80,7 +80,8 @@
     X(RpcUser, rpc_user, STRING, "", "") \
     X(DatabaseVersion, database_version, STRING, "", "")                       \
     X(ErrorCode, error_code, INT, "", "") \
-    X(FeeRate, fee_rate, STRING, "", "")
+    X(FeeRate, fee_rate, STRING, "", "") \
+    X(ElapsedMs, elapsed_ms, FLOAT, "", "")
 
 namespace BCLog {
 
