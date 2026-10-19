@@ -16,7 +16,6 @@
 #include <rpc/mining.h>
 #include <rpc/protocol.h>
 #include <rpc/request.h>
-#include <support/events.h>
 #include <tinyformat.h>
 #include <util/chaintype.h>
 #include <util/exception.h>
@@ -24,9 +23,13 @@
 #include <util/string.h>
 #include <util/time.h>
 #include <util/translation.h>
+#include <util/url.h>
 
-#include <event2/buffer.h>
-#include <event2/keyvalq_struct.h>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
 
 #include <compat/stdin.h>
 #include <univalue.h>
@@ -165,14 +168,6 @@ static void SetupCliArgs(ArgsManager &argsman) {
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 }
 
-/** libevent event log callback */
-static void libevent_log_cb(int severity, const char *msg) {
-    // Ignore everything other than errors
-    if (severity >= EVENT_LOG_ERR) {
-        throw std::runtime_error(strprintf("libevent error: %s", msg));
-    }
-}
-
 //////////////////////////////////////////////////////////////////////////////
 //
 // Start
@@ -252,7 +247,7 @@ static int AppInitRPC(int argc, char *argv[]) {
     return CONTINUE_EXECUTION;
 }
 
-/** Reply structure for request_done to fill in */
+/** Result of an HTTP request: the status, or 0 and an error code. */
 struct HTTPReply {
     HTTPReply() = default;
 
@@ -261,53 +256,240 @@ struct HTTPReply {
     std::string body;
 };
 
+/**
+ * Transport error codes. The values and strings are those the client printed
+ * when it used libevent, and are kept so the messages do not change.
+ */
+enum HTTPRequestError {
+    HTTP_REQ_TIMEOUT = 0,
+    HTTP_REQ_EOF = 1,
+    HTTP_REQ_INVALID_HEADER = 2,
+    HTTP_REQ_BUFFER_ERROR = 3,
+    HTTP_REQ_REQUEST_CANCEL = 4,
+    HTTP_REQ_DATA_TOO_LONG = 5,
+};
+
 static std::string http_errorstring(int code) {
     switch (code) {
-        case EVREQ_HTTP_TIMEOUT:
+        case HTTP_REQ_TIMEOUT:
             return "timeout reached";
-        case EVREQ_HTTP_EOF:
+        case HTTP_REQ_EOF:
             return "EOF reached";
-        case EVREQ_HTTP_INVALID_HEADER:
+        case HTTP_REQ_INVALID_HEADER:
             return "error while reading header, or invalid header";
-        case EVREQ_HTTP_BUFFER_ERROR:
+        case HTTP_REQ_BUFFER_ERROR:
             return "error encountered while reading or writing";
-        case EVREQ_HTTP_REQUEST_CANCEL:
+        case HTTP_REQ_REQUEST_CANCEL:
             return "request was canceled";
-        case EVREQ_HTTP_DATA_TOO_LONG:
+        case HTTP_REQ_DATA_TOO_LONG:
             return "response body is larger than allowed";
         default:
             return "unknown";
     }
 }
 
-static void http_request_done(struct evhttp_request *req, void *ctx) {
-    HTTPReply *reply = static_cast<HTTPReply *>(ctx);
+namespace {
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+using tcp = asio::ip::tcp;
 
-    if (req == nullptr) {
-        /**
-         * If req is nullptr, it means an error occurred while connecting: the
-         * error code will have been passed to http_error_cb.
-         */
-        reply->status = 0;
-        return;
+/** Map an error after the connection was made to a transport error code. */
+int HTTPRequestErrorFromCode(const beast::error_code &ec) {
+    if (ec == beast::error::timeout) {
+        return HTTP_REQ_TIMEOUT;
     }
-
-    reply->status = evhttp_request_get_response_code(req);
-
-    struct evbuffer *buf = evhttp_request_get_input_buffer(req);
-    if (buf) {
-        size_t size = evbuffer_get_length(buf);
-        const char *data = (const char *)evbuffer_pullup(buf, size);
-        if (data) {
-            reply->body = std::string(data, size);
-        }
-        evbuffer_drain(buf, size);
+    if (ec == http::error::end_of_stream || ec == http::error::partial_message ||
+        ec == asio::error::eof || ec == asio::error::connection_reset ||
+        ec == asio::error::connection_aborted) {
+        return HTTP_REQ_EOF;
     }
+    if (ec == http::error::body_limit) {
+        return HTTP_REQ_DATA_TOO_LONG;
+    }
+    if (&ec.category() ==
+        &http::make_error_code(http::error::bad_version).category()) {
+        return HTTP_REQ_INVALID_HEADER;
+    }
+    return HTTP_REQ_BUFFER_ERROR;
 }
 
-static void http_error_cb(enum evhttp_request_error err, void *ctx) {
-    HTTPReply *reply = static_cast<HTTPReply *>(ctx);
-    reply->error = err;
+/**
+ * One POST request over a new connection. The timeout, when positive, limits
+ * each step (resolve and connect, the write, every read) rather than the whole
+ * request, so a slow but active server is not cut off.
+ */
+class HTTPPostOperation {
+public:
+    HTTPPostOperation(asio::io_context &io, int timeout_secs, HTTPReply &reply)
+        : m_resolver(io), m_stream(io), m_timeout_secs(timeout_secs),
+          m_reply(reply) {
+        // Unlimited body, as the libevent client allowed.
+        m_parser.body_limit(boost::none);
+        m_parser.header_limit(1 << 20);
+        // Parse the body in the same call as the header that precedes it.
+        m_parser.eager(true);
+    }
+
+    void Start(const std::string &host, uint16_t port,
+               http::request<http::string_body> request) {
+        m_request = std::move(request);
+        ArmTimer();
+        m_resolver.async_resolve(
+            host, std::to_string(port),
+            [this](const beast::error_code &ec,
+                   const tcp::resolver::results_type &results) {
+                OnResolve(ec, results);
+            });
+    }
+
+private:
+    void ArmTimer() {
+        if (m_timeout_secs > 0) {
+            m_stream.expires_after(std::chrono::seconds(m_timeout_secs));
+        } else {
+            m_stream.expires_never();
+        }
+    }
+
+    void OnResolve(const beast::error_code &ec,
+                   const tcp::resolver::results_type &results) {
+        if (ec) {
+            // Like a failed connection: no error code is reported.
+            return;
+        }
+        m_stream.async_connect(
+            results, [this](const beast::error_code &connect_ec,
+                            const tcp::endpoint &) { OnConnect(connect_ec); });
+    }
+
+    void OnConnect(const beast::error_code &ec) {
+        if (ec) {
+            // libevent reported a failed connection without an error code.
+            return;
+        }
+        ArmTimer();
+        http::async_write(m_stream, m_request,
+                          [this](const beast::error_code &write_ec,
+                                 std::size_t) { OnWrite(write_ec); });
+    }
+
+    void OnWrite(const beast::error_code &ec) {
+        if (ec) {
+            Fail(ec);
+            return;
+        }
+        Read();
+    }
+
+    void Read() {
+        // Read the socket directly and feed the parser, so the timer is
+        // re-armed for every read: http::async_read_some keeps reading until
+        // a complete header has arrived.
+        ArmTimer();
+        m_stream.async_read_some(
+            m_buffer.prepare(READ_CHUNK_SIZE),
+            [this](const beast::error_code &ec, std::size_t bytes) {
+                OnRead(ec, bytes);
+            });
+    }
+
+    void OnRead(const beast::error_code &ec, std::size_t bytes) {
+        if (ec == asio::error::eof) {
+            if (!m_parser.got_some()) {
+                Fail(http::error::end_of_stream);
+                return;
+            }
+            // A body delimited by the end of the connection is complete.
+            beast::error_code eof_ec;
+            m_parser.put_eof(eof_ec);
+            if (eof_ec) {
+                Fail(eof_ec);
+                return;
+            }
+            Finish();
+            return;
+        }
+        if (ec) {
+            Fail(ec);
+            return;
+        }
+        m_buffer.commit(bytes);
+        while (m_buffer.size() > 0 && !m_parser.is_done()) {
+            beast::error_code parse_ec;
+            const std::size_t used = m_parser.put(m_buffer.data(), parse_ec);
+            m_buffer.consume(used);
+            if (parse_ec == http::error::need_more) {
+                break;
+            }
+            if (parse_ec) {
+                Fail(parse_ec);
+                return;
+            }
+            if (used == 0) {
+                break;
+            }
+        }
+        if (m_parser.is_done()) {
+            Finish();
+            return;
+        }
+        Read();
+    }
+
+    void Finish() {
+        http::response<http::string_body> response = m_parser.release();
+        m_reply.status = response.result_int();
+        m_reply.body = std::move(response.body());
+        Close();
+    }
+
+    void Fail(const beast::error_code &ec) {
+        m_reply.status = 0;
+        m_reply.error = HTTPRequestErrorFromCode(ec);
+        Close();
+    }
+
+    void Close() {
+        beast::error_code ignored;
+        m_stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+        m_stream.close();
+    }
+
+    static constexpr std::size_t READ_CHUNK_SIZE = 64 * 1024;
+
+    tcp::resolver m_resolver;
+    beast::tcp_stream m_stream;
+    beast::flat_buffer m_buffer;
+    http::request<http::string_body> m_request;
+    http::response_parser<http::string_body> m_parser;
+    const int m_timeout_secs;
+    HTTPReply &m_reply;
+};
+} // namespace
+
+/**
+ * Send a JSON-RPC request body to host:port and wait for the reply. A failed
+ * request returns status 0, with error -1 when no connection could be made.
+ */
+static HTTPReply HTTPPost(const std::string &host, uint16_t port,
+                          const std::string &target,
+                          const std::string &auth_header, std::string body,
+                          int timeout_secs) {
+    http::request<http::string_body> request{http::verb::post, target, 11};
+    request.set(http::field::host, host);
+    request.set(http::field::connection, "close");
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::authorization, auth_header);
+    request.body() = std::move(body);
+    request.prepare_payload();
+
+    HTTPReply reply;
+    asio::io_context io;
+    HTTPPostOperation operation(io, timeout_secs, reply);
+    operation.Start(host, port, std::move(request));
+    io.run();
+    return reply;
 }
 
 /**
@@ -719,38 +901,6 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string &strMethod,
     SplitHostPort(gArgs.GetArg("-rpcconnect", DEFAULT_RPCCONNECT), port, host);
     port = static_cast<uint16_t>(gArgs.GetIntArg("-rpcport", port));
 
-    // Obtain event base
-    raii_event_base base = obtain_event_base();
-
-    // Synchronously look up hostname
-    raii_evhttp_connection evcon =
-        obtain_evhttp_connection_base(base.get(), host, port);
-
-    // Set connection timeout
-    {
-        const int timeout =
-            gArgs.GetIntArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT);
-        if (timeout > 0) {
-            evhttp_connection_set_timeout(evcon.get(), timeout);
-        } else {
-            // Indefinite request timeouts are not possible in libevent-http,
-            // so we set the timeout to a very long time period instead.
-
-            // Average length of year in Gregorian calendar
-            constexpr int YEAR_IN_SECONDS = 31556952;
-            evhttp_connection_set_timeout(evcon.get(), 5 * YEAR_IN_SECONDS);
-        }
-    }
-
-    HTTPReply response;
-    raii_evhttp_request req =
-        obtain_evhttp_request(http_request_done, (void *)&response);
-    if (req == nullptr) {
-        throw std::runtime_error("create http request failed");
-    }
-
-    evhttp_request_set_error_cb(req.get(), http_error_cb);
-
     // Get credentials
     std::string strRPCUserColonPass;
     bool failedToGetAuthCookie = false;
@@ -765,44 +915,21 @@ static UniValue CallRPC(BaseRequestHandler *rh, const std::string &strMethod,
                               gArgs.GetArg("-rpcpassword", "");
     }
 
-    struct evkeyvalq *output_headers =
-        evhttp_request_get_output_headers(req.get());
-    assert(output_headers);
-    evhttp_add_header(output_headers, "Host", host.c_str());
-    evhttp_add_header(output_headers, "Connection", "close");
-    evhttp_add_header(output_headers, "Content-Type", "application/json");
-    evhttp_add_header(
-        output_headers, "Authorization",
-        (std::string("Basic ") + EncodeBase64(strRPCUserColonPass)).c_str());
-
     // Attach request data
     std::string strRequest = rh->PrepareRequest(strMethod, args).write() + "\n";
-    struct evbuffer *output_buffer =
-        evhttp_request_get_output_buffer(req.get());
-    assert(output_buffer);
-    evbuffer_add(output_buffer, strRequest.data(), strRequest.size());
 
     // check if we should use a special wallet endpoint
     std::string endpoint = "/";
     if (rpcwallet) {
-        char *encodedURI =
-            evhttp_uriencode(rpcwallet->data(), rpcwallet->size(), false);
-        if (encodedURI) {
-            endpoint = "/wallet/" + std::string(encodedURI);
-            free(encodedURI);
-        } else {
-            throw CConnectionFailed("uri-encode failed");
-        }
-    }
-    int r = evhttp_make_request(evcon.get(), req.get(), EVHTTP_REQ_POST,
-                                endpoint.c_str());
-    // ownership moved to evcon in above call
-    req.release();
-    if (r != 0) {
-        throw CConnectionFailed("send http request failed");
+        endpoint = "/wallet/" + urlEncode(*rpcwallet);
     }
 
-    event_base_dispatch(base.get());
+    const int timeout =
+        gArgs.GetIntArg("-rpcclienttimeout", DEFAULT_HTTP_CLIENT_TIMEOUT);
+    const HTTPReply response =
+        HTTPPost(host, port, endpoint,
+                 std::string("Basic ") + EncodeBase64(strRPCUserColonPass),
+                 std::move(strRequest), timeout);
 
     if (response.status == 0) {
         std::string responseErrorMessage;
@@ -1135,7 +1262,6 @@ int main(int argc, char *argv[]) {
         tfm::format(std::cerr, "Error: Initializing networking failed\n");
         return EXIT_FAILURE;
     }
-    event_set_log_callback(&libevent_log_cb);
 
     try {
         int ret = AppInitRPC(argc, argv);
