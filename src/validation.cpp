@@ -56,6 +56,7 @@
 #include <reverse_iterator.h>
 #include <rpc/async_waiter.h>
 #include <script/script.h>
+#include <script/bridge_checker.h>
 #include <script/scriptcache.h>
 #include <script/sigcache.h>
 #include <tinyformat.h>
@@ -4169,7 +4170,8 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     return result;
 }
 
-// A v7 input spending a legacy P2PKH coin (the legacy bridge). CheckTxInputs
+// A v7 input spending a legacy P2PKH or P2SH coin (the legacy bridge).
+// P2PKH: CheckTxInputs
 // has checked the witness shape ([sig, compressed pubkey], no script) and
 // that the pubkey hashes to the coin's key hash. The signature is a V2
 // BIP340 signature by the pubkey's x-only key over the V2 signing message of
@@ -4177,9 +4179,24 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
 // leaf (LegacyBridgeLeaf), in the mode its encoding names.
 std::optional<std::pair<ScriptError, std::string>>
 CScriptCheck::CheckLegacyBridgeInput(
-    const lotus::v2::PreparedSigningContext &signing,
-    const std::function<std::string()> &make_debug_str) const {
+    const lotus::v2::PreparedSigningContext &signing, const CTxOut &coin,
+    const std::function<std::string()> &make_debug_str) {
     const auto &witness = ptxTo->vin[nIn].vWitnesses[0];
+    if (coin.scriptPubKey.IsPayToScriptHash()) {
+        // P2SH: the unchanged legacy interpreter runs the coin's script with
+        // the scriptSig a legacy spend would have, under the same flags;
+        // only the signature messages are V2 ones.
+        const CachingTransactionSignatureChecker verifier(
+            ptxTo, nIn, coin.nValue, cacheStore, *m_signature_cache,
+            txdata,
+            ((nFlags & SCRIPT_VERIFY_NULLFAIL) != 0) ? m_sig_collector
+                                                     : nullptr);
+        const LegacyBridgeSignatureChecker checker(*ptxTo, nIn, signing,
+                                                   verifier);
+        return RunLegacyScript(
+            LegacyBridgeScriptSig(witness.arguments, witness.script),
+            coin.scriptPubKey, checker, make_debug_str);
+    }
     if (witness.arguments.size() != 2 ||
         witness.arguments[1].size() != CPubKey::COMPRESSED_SIZE) {
         return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
@@ -4219,7 +4236,6 @@ CScriptCheck::CheckLegacyBridgeInput(
 std::optional<std::pair<ScriptError, std::string>>
 CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
-    ScriptError error{ScriptError::UNKNOWN};
     auto make_debug_str = [&]() {
         return strprintf("input %i of %s, spending %s:%i", nIn,
                          ptxTo->GetId().ToString(),
@@ -4332,6 +4348,7 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
             const lotus::v2::Output &v2out = *resolved[nIn];
             if (v2out.legacy_script) {
                 return CheckLegacyBridgeInput(prepared_vm.Signing(),
+                                              CTxOut::FromV2Output(v2out),
                                               make_debug_str);
             }
             if (ptxTo->vin[nIn].nPathIndex >= v2out.paths.size()) {
@@ -4405,13 +4422,23 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
         }
         return std::nullopt;
     }
-    if (!VerifyScript(scriptSig, m_tx_out.scriptPubKey, nFlags,
-                      CachingTransactionSignatureChecker(
-                          ptxTo, nIn, m_tx_out.nValue, cacheStore,
-                          *m_signature_cache, txdata,
-                          ((nFlags & SCRIPT_VERIFY_NULLFAIL) != 0)
-                              ? m_sig_collector
-                              : nullptr),
+    const CachingTransactionSignatureChecker checker(
+        ptxTo, nIn, m_tx_out.nValue, cacheStore, *m_signature_cache, txdata,
+        ((nFlags & SCRIPT_VERIFY_NULLFAIL) != 0) ? m_sig_collector : nullptr);
+    return RunLegacyScript(scriptSig, m_tx_out.scriptPubKey, checker,
+                           make_debug_str);
+}
+
+// The legacy interpreter run of an input: a legacy input, or a v7 input
+// spending a legacy P2SH coin (with the bridge's scriptSig and checker).
+// Its sigchecks count toward the transaction and block limits alike.
+std::optional<std::pair<ScriptError, std::string>>
+CScriptCheck::RunLegacyScript(
+    const CScript &scriptSig, const CScript &scriptPubKey,
+    const BaseSignatureChecker &checker,
+    const std::function<std::string()> &make_debug_str) {
+    ScriptError error{ScriptError::UNKNOWN};
+    if (!VerifyScript(scriptSig, scriptPubKey, nFlags, checker,
                       metrics, &error)) {
         return std::make_pair(error, make_debug_str());
     }
