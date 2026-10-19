@@ -39,6 +39,7 @@ class TestSpec:
     class_name: str
     num_nodes: Optional[int] = None
     setup_clean_chain: Optional[bool] = None
+    variants: List[str] = dataclasses.field(default_factory=lambda: ["default"])
     error: Optional[str] = None
 
     def to_json(self):
@@ -98,6 +99,7 @@ def discover_file(tests_dir, file) -> List[TestSpec]:
             class_name=cls.__name__,
             num_nodes=static_int(cls, "num_nodes"),
             setup_clean_chain=static_bool(cls, "setup_clean_chain"),
+            variants=list(cls.variants),
         )
         for cls in sorted(classes, key=lambda c: c.__name__)
     ]
@@ -159,6 +161,7 @@ class Concrete(Base):
 from plain_test import PlainTest
 class Derived(PlainTest):
     num_nodes = 1
+    variants = {"one": {}, "two": {"usecli": True}}
 """,
         "broken_test.py": "import a_module_that_does_not_exist\n",
         "helper_only.py": "X = 1\n",
@@ -177,6 +180,10 @@ class Derived(PlainTest):
         }
         self.assertEqual(specs[("plain_test.py", "PlainTest")].num_nodes, 3)
         self.assertIn(("mixin_test.py", "MixinTest"), specs)
+        self.assertEqual(specs[("mixin_test.py", "MixinTest")].variants, ["default"])
+        self.assertEqual(
+            specs[("imports_other_test.py", "Derived")].variants, ["one", "two"]
+        )
         # The abstract base is skipped, its subclass found
         self.assertNotIn(("abstract_test.py", "Base"), specs)
         concrete = specs[("abstract_test.py", "Concrete")]
