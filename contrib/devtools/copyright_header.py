@@ -17,7 +17,6 @@ import sys
 
 EXCLUDE = [
     # auto generated:
-    "src/qt/bitcoinstrings.cpp",
     "src/chainparamsseeds.h",
     # other external copyrights:
     "src/reverse_iterator.h",

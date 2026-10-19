@@ -146,8 +146,6 @@ static bool AppInit(NodeContext &node, int argc, char *argv[]) {
 
     util::ThreadSetInternalName("init");
 
-    // If Qt is used, parameters/lotusd.conf are parsed in qt/bitcoin.cpp's
-    // main()
     SetupServerArgs(node);
     ArgsManager &args = *Assert(node.args);
     std::string error;
