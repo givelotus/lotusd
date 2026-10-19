@@ -117,3 +117,9 @@ set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY ADDITIONAL_CLEAN_FI
 	BitcoinABC_Bench.csv
 	BitcoinABC_Bench.json
 )
+
+# Standalone transport load tool, not part of the microbenchmark runner.
+if(UNIX)
+	add_executable(p2p-load p2p_load.cpp)
+	target_link_libraries(p2p-load server)
+endif()
