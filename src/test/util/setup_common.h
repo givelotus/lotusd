@@ -150,6 +150,14 @@ struct TestChain100Setup : public TestingSetup {
     void mineBlocks(int num_blocks);
 
     /**
+     * Mine a block whose V2 (version 7) coinbase pays exactly the given V2
+     * outputs, then COINBASE_MATURITY blocks so that they can be spent.
+     * A legacy transaction cannot create V2 outputs, so this is how a test
+     * gets V2 coins. The outputs may pay less than the block reward.
+     */
+    CTransactionRef MineV2Coinbase(const std::vector<CTxOut> &outputs);
+
+    /**
      * Create a transaction and submit to the mempool.
      *
      * @param input_transaction  The transaction to spend
