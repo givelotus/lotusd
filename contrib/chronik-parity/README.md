@@ -268,7 +268,9 @@ line by line.
   (`v2-branch`, one `taproot` alias, `v2-asset`), plus a `v2-all` set
   session, entries in the mixed session and payload-size error cases.
 - **V2 dumps.** Use `chronik-native-lotus-v2-dump`, which also dumps the six
-  V2 group tables of the legacy env.
+  V2 group tables of the legacy env and, when present, the V2 service's
+  `v2_index` env (`v2_index:<table>` lines with raw subdatabase keys and
+  values, plus size and SHA-256 of each flat `v2_tx_*.dat` segment).
 - **Two kinds of WebSocket nondeterminism are inherent to Chronik:**
   1. A session merges its subscriptions with `tokio::select!` and
      `select_all`, and drops consecutive identical messages. The interleaving
