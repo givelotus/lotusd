@@ -107,10 +107,9 @@ class P2PBloomFilter(P2PInterface):
 
 
 class FilterTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [["-peerbloomfilters"]]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [["-peerbloomfilters"]]
 
     def generatetoscriptpubkey(self, scriptpubkey):
         """Helper to generate a single block to the given scriptPubKey."""

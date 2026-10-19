@@ -128,15 +128,14 @@ def skip(context):
 
 
 class InventoryDownloadTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-            ]
-        ] * self.num_nodes
+    num_nodes = 2
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+        ]
+    ] * num_nodes
 
     def test_data_requests(self, context):
         self.log.info("Test that we request data from all our peers, eventually")

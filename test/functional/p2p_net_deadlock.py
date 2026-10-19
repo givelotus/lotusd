@@ -19,8 +19,7 @@ from test_framework.wallet import MiniWallet
 
 
 class NetDeadlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
+    num_nodes = 2
 
     def run_test(self):
         node0 = self.nodes[0]

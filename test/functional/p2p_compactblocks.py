@@ -133,11 +133,10 @@ class TestP2PConn(P2PInterface):
 
 
 class CompactBlocksTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [["-acceptnonstdtxn=1"]]
-        self.utxos = []
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-acceptnonstdtxn=1"]]
+    utxos = []
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -11,9 +11,8 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class BlockSyncTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 3
+    setup_clean_chain = True
+    num_nodes = 3
 
     def setup_network(self):
         self.setup_nodes()

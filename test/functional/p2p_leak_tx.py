@@ -21,21 +21,20 @@ class P2PNode(P2PDataStore):
 
 
 class P2PLeakTxTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avacooldown=0",
-                # Keep the manual reorg parked until its explicit restoration.
-                "-automaticunparking=0",
-                "-avaproofstakeutxoconfirmations=1",
-                # Low enough for coinbase transactions to be staked in valid proofs
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-            ],
-        ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avacooldown=0",
+            # Keep the manual reorg parked until its explicit restoration.
+            "-automaticunparking=0",
+            "-avaproofstakeutxoconfirmations=1",
+            # Low enough for coinbase transactions to be staked in valid proofs
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+        ],
+    ]
 
     def run_test(self):
         # The block and tx generating node

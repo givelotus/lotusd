@@ -22,14 +22,13 @@ from test_framework.util import assert_equal
 
 
 class InvalidTxRequestTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-acceptnonstdtxn=1",
-            ]
+    num_nodes = 1
+    extra_args = [
+        [
+            "-acceptnonstdtxn=1",
         ]
-        self.setup_clean_chain = True
+    ]
+    setup_clean_chain = True
 
     def bootstrap_p2p(self, *, num_connections=1):
         """Add a P2P connection to the node.

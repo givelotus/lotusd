@@ -43,20 +43,19 @@ class TestP2PConn(P2PInterface):
 
 
 class FeeFilterTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        # We lower the various required feerates for this test
-        # to catch a corner-case where feefilter used to slightly undercut
-        # mempool and wallet feerate calculation based on GetFee
-        # rounding down 3 places, leading to stranded transactions.
-        # See issue #16499
-        self.extra_args = [
-            [
-                "-minrelaytxfee=1",
-                "-mintxfee=1",
-            ]
-        ] * self.num_nodes
+    num_nodes = 2
+    noban_tx_relay = True
+    # We lower the various required feerates for this test
+    # to catch a corner-case where feefilter used to slightly undercut
+    # mempool and wallet feerate calculation based on GetFee
+    # rounding down 3 places, leading to stranded transactions.
+    # See issue #16499
+    extra_args = [
+        [
+            "-minrelaytxfee=1",
+            "-mintxfee=1",
+        ]
+    ] * num_nodes
 
     def run_test(self):
         self.test_feefilter_forcerelay()

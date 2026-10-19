@@ -37,9 +37,8 @@ class P2PStaller(P2PDataStore):
 
 
 class P2PIBDStallingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def run_test(self):
         NUM_BLOCKS = 1025
