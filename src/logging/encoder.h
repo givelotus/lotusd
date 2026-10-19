@@ -101,6 +101,13 @@ public:
                 std::string &out) const override;
 };
 
+/** Native journal fields; binary framing preserves multiline values. */
+class JournaldEncoder final : public LogEncoder {
+public:
+    void Encode(const LogLine &line, const LogOptions &opts,
+                std::string &out) const override;
+};
+
 std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format);
 
 // Building blocks shared by encoders

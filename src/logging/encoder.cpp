@@ -568,8 +568,65 @@ void LogfmtEncoder::Encode(const LogLine &line, const LogOptions &opts,
     out += '\n';
 }
 
+void JournaldEncoder::Encode(const LogLine &line, const LogOptions &opts,
+                             std::string &out) const {
+    auto message{line.event ? EventText(line, false) : line.message};
+    if (!message.empty() && message.back() == '\n') message.remove_suffix(1);
+    out.clear();
+    const auto field{[&](std::string_view key, std::string_view value) {
+        out += key;
+        if (value.find('\n') == std::string_view::npos &&
+            value.find('\0') == std::string_view::npos) {
+            out += '=';
+        } else {
+            out += '\n';
+            const uint64_t size{value.size()};
+            for (unsigned i = 0; i < 8; ++i)
+                out += char(size >> (i * 8));
+        }
+        out += value;
+        out += '\n';
+    }};
+    const char *priority{line.level == Level::Error     ? "3"
+                         : line.level == Level::Warning ? "4"
+                         : line.level == Level::Info    ? "6"
+                                                        : "7"};
+    field("PRIORITY", priority);
+    field("MESSAGE", message);
+    field("LOTUS_CATEGORY", LogCategoryName(line.category));
+    field("LOTUS_LEVEL", LogLevelName(line.level));
+    field("LOTUS_THREAD", line.thread.empty() ? "unknown" : line.thread);
+    if (opts.timestamps) {
+        std::string time;
+        AppendRfc3339(time, line.time, true);
+        field("LOTUS_TIME", time);
+    }
+    if (opts.sourcelocations) {
+        field("CODE_FILE", SourceFileName(line.loc));
+        field("CODE_LINE", std::to_string(line.loc.line()));
+        field("CODE_FUNC", BareFunctionName(line.loc.function_name()));
+    }
+    if (line.mocktime > 0s)
+        field("LOTUS_MOCKTIME", std::to_string(line.mocktime.count()));
+    if (line.event) {
+        field("LOTUS_EVENT", line.event->event);
+        for (const FieldView f : line.fields) {
+            std::string key{"LOTUS_"}, value;
+            for (char c : f.Info().name)
+                key += c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : c;
+            f.AppendText(value);
+            field(key, value);
+        }
+    }
+    if (line.continued) field("LOTUS_CONTINUED", "1");
+    if (line.ratelimited) field("LOTUS_RATELIMITED", "1");
+    if (line.fields_truncated) field("LOTUS_FIELDS_TRUNCATED", "1");
+}
+
 std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format) {
     switch (format) {
+        case LogFormat::JOURNALD:
+            return std::make_unique<JournaldEncoder>();
         case LogFormat::TEXT:
             return std::make_unique<TextEncoder>();
         case LogFormat::JSON_ECS:

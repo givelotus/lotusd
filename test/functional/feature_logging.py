@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import socket
+import sys
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
@@ -180,7 +181,8 @@ class LoggingTest(BitcoinTestFramework):
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
             ["-logformat=xml"],
-            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp, json-ecs)",
+            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp, json-ecs"
+            + (", journald" if sys.platform == "linux" else "") + ")",
         )
         json_log_path = self.relative_log_path("json.log")
         self.start_node(
