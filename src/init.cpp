@@ -2739,6 +2739,12 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
                               section.m_file, section.m_line, section.m_name);
     }
 
+    if (chainparams.IsPlaceholderGenesis()) {
+        warnings += Untranslated(
+            "This network uses a placeholder Lotus V2 genesis block. Its "
+            "chain will be discarded when Lotus V2 launches.\n");
+    }
+
     if (!warnings.empty()) {
         InitWarning(warnings);
     }
