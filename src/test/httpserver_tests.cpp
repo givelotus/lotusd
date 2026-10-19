@@ -2,14 +2,30 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <http_tls_stream.h>
 #include <httpserver.h>
+#include <tls_util.h>
 #include <test/util/setup_common.h>
 
 #include <netaddress.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
+#include <boost/beast/core/buffers_suffix.hpp>
+
+#include <array>
+
+#include <openssl/ssl.h>
 #include <zstd.h>
+
+#include <thread>
 
 BOOST_FIXTURE_TEST_SUITE(httpserver_tests, BasicTestingSetup)
 
@@ -120,4 +136,109 @@ BOOST_AUTO_TEST_CASE(test_zstd_request_body) {
     BOOST_REQUIRE(bad);
     BOOST_CHECK_EQUAL(bad->ReadBody(), "");
 }
+BOOST_AUTO_TEST_CASE(ossl_stream_reads_gathers_and_retries) {
+    namespace asio = boost::asio;
+    using tcp = asio::ip::tcp;
+    const auto pem{tls::GenerateSelfSigned("t", {"localhost"}, {},
+                                           std::chrono::hours{1})};
+    BOOST_REQUIRE(pem);
+    auto server_ctx{tls::NewContext(/*server=*/true)};
+    auto client_ctx{tls::NewContext(/*server=*/false)};
+    BOOST_REQUIRE(
+        tls::UseCertificatePem(server_ctx.get(), pem->cert_pem, pem->key_pem));
+
+    asio::io_context io;
+    tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
+    tcp::socket client{io};
+    client.connect(acceptor.local_endpoint());
+    boost::beast::tcp_stream server{acceptor.accept()};
+    server.socket().non_blocking(true);
+    // Small kernel buffers so writes fill them quickly.
+    server.socket().set_option(asio::socket_base::send_buffer_size(16384));
+
+    // Blocking OpenSSL client on its own thread.
+    tls::SslPtr cssl{SSL_new(client_ctx.get())};
+    SSL_set_fd(cssl.get(), int(client.native_handle()));
+    std::string received;
+    const std::string request(100, 'q');
+    const size_t expected{3 * 1024 * 1024 + 11};
+    std::thread client_thread{[&] {
+        BOOST_REQUIRE_EQUAL(SSL_connect(cssl.get()), 1);
+        BOOST_REQUIRE_EQUAL(SSL_write(cssl.get(), request.data(), 100), 100);
+        char buf[65536];
+        while (received.size() < expected) {
+            const int n{SSL_read(cssl.get(), buf, sizeof(buf))};
+            BOOST_REQUIRE(n > 0);
+            received.append(buf, n);
+        }
+        // The server's close_notify reads as an orderly end.
+        BOOST_CHECK_LE(SSL_read(cssl.get(), buf, sizeof(buf)), 0);
+        BOOST_CHECK_EQUAL(SSL_get_error(cssl.get(), 0), SSL_ERROR_ZERO_RETURN);
+    }};
+
+    tls::SslPtr sssl{SSL_new(server_ctx.get())};
+    SSL_set_fd(sssl.get(), int(server.socket().native_handle()));
+    OsslStream stream{server, std::move(sssl)};
+    const std::string head{"head:"}, body(3 * 1024 * 1024 + 6, 'b');
+    auto result{asio::co_spawn(
+        io,
+        [&]() -> asio::awaitable<bool> {
+            auto [hec, h] = co_await stream.async_handshake(
+                asio::as_tuple(asio::use_awaitable));
+            if (hec) {
+                co_return false;
+            }
+            std::string got(100, '\0');
+            size_t off{0};
+            while (off < got.size()) {
+                auto [ec, n] = co_await stream.async_read_some(
+                    asio::buffer(got.data() + off, got.size() - off),
+                    asio::as_tuple(asio::use_awaitable));
+                if (ec) {
+                    co_return false;
+                }
+                off += n;
+            }
+            if (got != request) {
+                co_return false;
+            }
+            // Non-blocking writes of a two-buffer sequence until the socket
+            // is full; the rest asynchronously from the same position
+            // (which must repeat the exact retried length).
+            const std::array<asio::const_buffer, 2> seq{asio::buffer(head),
+                                                        asio::buffer(body)};
+            size_t sent{0};
+            bool blocked{false};
+            const size_t total{head.size() + body.size()};
+            while (sent < total) {
+                auto rest{boost::beast::buffers_suffix<decltype(seq)>{seq}};
+                rest.consume(sent);
+                boost::system::error_code ec;
+                const size_t n{stream.write_some(rest, ec)};
+                if (ec == asio::error::would_block) {
+                    blocked = true;
+                    auto [aec, an] = co_await stream.async_write_some(
+                        rest, asio::as_tuple(asio::use_awaitable));
+                    if (aec) {
+                        co_return false;
+                    }
+                    sent += an;
+                } else if (ec) {
+                    co_return false;
+                } else {
+                    sent += n;
+                }
+            }
+            boost::system::error_code ec;
+            stream.shutdown(ec);
+            co_return blocked;
+        },
+        asio::use_future)};
+    io.run();
+    client_thread.join();
+    BOOST_CHECK(result.get());
+    BOOST_CHECK_EQUAL(received.size(), expected);
+    BOOST_CHECK(received == head + body);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
