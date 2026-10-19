@@ -164,11 +164,7 @@ class UTXOCacheTracepointTest(BitcoinTestFramework):
     num_nodes = 1
     extra_args = [["-txindex"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_platform_not_linux()
-        self.skip_if_no_bitcoind_tracepoints()
-        self.skip_if_no_python_bcc()
-        self.skip_if_no_bpf_permissions()
+    requires = {"linux", "usdt", "bcc", "bpf_permissions"}
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])

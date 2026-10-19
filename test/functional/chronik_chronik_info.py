@@ -14,9 +14,7 @@ class ChronikChronikInfoTest(BitcoinTestFramework):
     num_nodes = 1
     extra_args = [["-chronik"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
-        self.skip_if_no_cli()
+    requires = {"chronik", "cli"}
 
     def run_test(self):
         node = self.nodes[0]

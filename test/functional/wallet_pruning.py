@@ -23,8 +23,7 @@ class WalletPruningTest(BitcoinTestFramework):
         ["-prune=550"],
     ]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def mine_large_blocks(self, node, n):
         # Get the block parameters for the first block

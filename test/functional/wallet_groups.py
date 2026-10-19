@@ -28,8 +28,7 @@ class WalletGroupTest(BitcoinTestFramework):
     rpc_timeout = 480
     supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         # Mine some coins

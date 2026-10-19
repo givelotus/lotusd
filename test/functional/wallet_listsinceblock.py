@@ -24,8 +24,7 @@ class ListSinceBlockTest(BitcoinTestFramework):
     extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], [], []]
     noban_tx_relay = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         # All nodes are in IBD from genesis, so they'll need the miner (node2) to be an outbound connection, or have

@@ -26,8 +26,7 @@ class ImportWithLabel(BitcoinTestFramework):
     num_nodes = 2
     setup_clean_chain = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         """Main test logic"""

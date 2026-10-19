@@ -14,8 +14,7 @@ from test_framework.util import assert_array_result
 class CoinbaseCategoryTest(BitcoinTestFramework):
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def assert_category(self, category, address, txid, skip):
         assert_array_result(
