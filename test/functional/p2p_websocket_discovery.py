@@ -77,7 +77,11 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         assert_equal(auto["addr"], f"localhost:{p2p_port(PUBLIC_PORT_INDEX)}")
 
         self.log.info("Non-default modes node to node, and ws:// on the RPC port")
-        expected = {2: ("wss", "p2p-zstd"), 3: ("wss", "none"), 4: ("ws", "p2p-zstd-v1")}
+        expected = {
+            2: ("wss", "p2p-zstd"),
+            3: ("wss", "none"),
+            4: ("ws", "p2p-zstd-v1"),
+        }
         for n, (transport, compression) in expected.items():
             self.wait_until(lambda n=n: len(self.ws_peers(n)) == 1)
             peer = self.ws_peers(n)[0]

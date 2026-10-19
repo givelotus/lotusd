@@ -109,10 +109,14 @@ class PackageRelayTest(BitcoinTestFramework):
         )
         assert_greater_than(
             min(minfees),
-            low_fee_parent_2outs["fee"] * 1000 / low_fee_parent_2outs["tx"].billable_size(),
+            low_fee_parent_2outs["fee"]
+            * 1000
+            / low_fee_parent_2outs["tx"].billable_size(),
         )
         assert_greater_than(
-            (low_fee_parent_2outs["fee"] + high_fee_child_2outs["fee"]) * 1000 / package_vsize,
+            (low_fee_parent_2outs["fee"] + high_fee_child_2outs["fee"])
+            * 1000
+            / package_vsize,
             max(minfees),
         )
         return (
