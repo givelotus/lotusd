@@ -3,10 +3,13 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test debug logging."""
 
+import json
 import os
+import socket
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
+from test_framework.util import assert_equal
 
 
 class LoggingTest(BitcoinTestFramework):
@@ -75,6 +78,85 @@ class LoggingTest(BitcoinTestFramework):
 
         # just sanity check no crash here
         self.restart_node(0, [f"-debuglogfile={os.devnull}"])
+
+        self.test_json_format()
+
+    def test_json_format(self):
+        self.log.info("Test -logformat=json")
+        self.stop_node(0)
+        self.nodes[0].assert_start_raises_init_error(
+            ["-logformat=xml"],
+            "Error: Invalid -logformat 'xml' (valid values: text, json)",
+        )
+        json_log_path = self.relative_log_path("json.log")
+        self.start_node(
+            0,
+            [
+                "-logformat=json",
+                "-debuglogfile=json.log",
+                "-debug=net",
+                "-logsourcelocations",
+            ],
+        )
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        records = []
+        with open(json_log_path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    # Every line is one JSON object
+                    records.append(json.loads(line))
+        assert len(records) > 20
+        for r in records:
+            assert set(r) >= {
+                "ts",
+                "level",
+                "category",
+                "thread",
+                "file",
+                "line",
+                "func",
+                "msg",
+            }, r
+            assert r["level"] in ("trace", "debug", "info", "warning", "error")
+            assert isinstance(r["line"], int)
+            assert not r["msg"].endswith("\n")
+        msgs = [r["msg"] for r in records]
+        # Lines logged before the log file was opened are buffered and
+        # written in the selected format too.
+        assert any(m.startswith("Bitcoin ABC version") for m in msgs)
+        assert any("UpdateTip: new best=" in m and "height=1 " in m for m in msgs)
+        assert any(r["category"] == "net" and r["level"] == "debug" for r in records)
+        assert any(r["thread"] == "init" for r in records)
+        assert any(
+            r["category"] == "none" and r["level"] == "info" for r in records
+        )
+
+        self.log.info("Init errors are logged at error level")
+        # An error after the log file is open: the P2P port is taken.
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        self.nodes[0].assert_start_raises_init_error(
+            [
+                "-logformat=json",
+                "-debuglogfile=err.log",
+                "-listen=1",
+                f"-bind=127.0.0.1:{port}",
+            ],
+            match=ErrorMatch.PARTIAL_REGEX,
+            expected_msg="Error: Unable to bind to 127.0.0.1:",
+        )
+        busy.close()
+        with open(self.relative_log_path("err.log"), encoding="utf-8") as f:
+            errors = [
+                r
+                for r in map(json.loads, filter(str.strip, f))
+                if r["msg"].startswith("Error: Unable to bind")
+            ]
+        assert_equal(len(errors), 1)
+        assert_equal(errors[0]["level"], "error")
 
 
 if __name__ == "__main__":

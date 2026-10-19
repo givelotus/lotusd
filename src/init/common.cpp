@@ -99,6 +99,16 @@ void AddLoggingArgs(ArgsManager &argsman) {
         strprintf("Always prepend a category and level (default: %u)",
                   DEFAULT_LOGLEVELALWAYS),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg(
+        "-logformat=<format>",
+        strprintf(
+            "Format of log lines: text or json (default: %s). json writes one "
+            "JSON object per line with the fields ts (RFC 3339, microseconds; "
+            "omitted with -logtimestamps=0), level, category, thread, file, "
+            "line, func (with -logsourcelocations) and msg; -logthreadnames, "
+            "-logtimemicros and -loglevelalways do not apply to it",
+            DEFAULT_LOGFORMAT),
+        ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-logratelimit",
                    strprintf("Apply rate limiting to unconditional logging to "
                              "mitigate disk-filling attacks (default: %u)",
@@ -138,6 +148,11 @@ void SetLoggingOptions(const ArgsManager &args) {
         args.GetBoolArg("-logsourcelocations", DEFAULT_LOGSOURCELOCATIONS);
     LogInstance().m_always_print_category_level =
         args.GetBoolArg("-loglevelalways", DEFAULT_LOGLEVELALWAYS);
+
+    // An invalid value is an init error (AppInitParameterInteraction).
+    LogInstance().m_log_format =
+        BCLog::ParseLogFormat(args.GetArg("-logformat", DEFAULT_LOGFORMAT))
+            .value_or(BCLog::LogFormat::TEXT);
 
     fLogIPs = args.GetBoolArg("-logips", DEFAULT_LOGIPS);
 }
