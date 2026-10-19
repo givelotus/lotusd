@@ -3,8 +3,9 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 """
-Test enforcement of strict tx version. Before Wellington, it is a relay-only
-rule and after, tx versions must be either 1 or 2 by consensus.
+Test enforcement of strict tx version. A transaction has version 1 or 2
+(legacy) or 7 (V2); any other version has no serialization, so a transaction
+or block carrying one does not decode (bad-txns-version).
 """
 
 from typing import Optional
@@ -15,13 +16,15 @@ from test_framework.blocktools import (
     create_coinbase,
     create_tx_with_script,
 )
-from test_framework.messages import CBlock, FromHex
+from test_framework.messages import CBlock, FromHex, msg_block, msg_tx
 from test_framework.p2p import P2PDataStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_greater_than_or_equal
 
-OK_VERSIONS = [1, 2, 7]
+# The legacy versions. A version 7 transaction cannot spend these legacy
+# coins without the bridge, which other tests cover.
+OK_VERSIONS = [1, 2]
 BAD_VERSIONS = [
     0x80000000,
     0x80000001,
@@ -31,6 +34,9 @@ BAD_VERSIONS = [
     3,
     0x100,
     0x7FFFFFFF,
+    # The former wrapped forms of version 7 in the legacy grammar.
+    0x80000007,
+    0xC0000007,
 ]
 
 START_TIME = 1_900_000_000
@@ -82,30 +88,36 @@ class TxVersionTest(BitcoinTestFramework):
                 spendable_tx = spendable_txs.pop(0)
                 tx = self.make_tx(spendable_tx, nVersion=bad_version)
                 bad_version_txs.append(tx)
-                peer.send_txs_and_test(
-                    [tx], node, success=False, reject_reason="was not accepted: version"
-                )
+                with node.assert_debug_log(
+                    ["ProcessMessages(tx", "Exception 'bad-txns-version"]
+                ):
+                    peer.send_and_ping(msg_tx(tx))
+                assert tx.txid_hex not in node.getrawmempool()
             return bad_version_txs
 
         self.log.info("These are always OK for the mempool")
         test_mempool_accepts_ok_versions()
 
-        self.log.info("Bad versions always rejected from mempool")
+        self.log.info("Bad versions do not decode")
         bad_version_txs = test_mempool_rejects_bad_versions()
 
         self.log.info("We CANNOT mine blocks with txs with bad versions")
+        tip = node.getbestblockhash()
         for bad_tx in bad_version_txs:
             block = self.make_block(blocks[-1], txs=[bad_tx])
-            peer.send_blocks_and_test(
-                [block], node, success=False, reject_reason="bad-txns-version"
-            )
+            self.send_undecodable_block(peer, node, block, tip)
 
         self.log.info("We CANNOT mine blocks with a coinbase with a bad version")
         for bad_version in BAD_VERSIONS:
             block = self.make_block(blocks[-1], coinbase_version=bad_version)
-            peer.send_blocks_and_test(
-                [block], node, success=False, reject_reason="bad-txns-version"
-            )
+            self.send_undecodable_block(peer, node, block, tip)
+
+    def send_undecodable_block(self, peer, node, block, tip):
+        with node.assert_debug_log(
+            ["ProcessMessages(block", "Exception 'bad-txns-version"]
+        ):
+            peer.send_and_ping(msg_block(block))
+        assert node.getbestblockhash() == tip
 
     def make_tx(self, spend_tx, nVersion):
         value = spend_tx.vout[0].nValue - 1000

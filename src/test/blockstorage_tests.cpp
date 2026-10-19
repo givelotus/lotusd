@@ -91,7 +91,6 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     mineBlocks(100);
     CMutableTransaction tx;
     tx.nVersion = 7;
-    tx.fHasV2Lock = true;
     tx.nV2Lock = 0;
     CTxIn input(prevout);
     input.nFlags = 1;

@@ -12,6 +12,7 @@
 #include <undo.h>
 #include <kernel/coinstats.h>
 #include <node/utxo_snapshot.h>
+#include <primitives/v2_outputs.h>
 
 #include <boost/test/unit_test.hpp>
 #include <filesystem>
@@ -240,8 +241,10 @@ BOOST_AUTO_TEST_CASE(chainstate_and_spent_undo_preserve_authenticated_lifetime) 
                  << BlockHash{uint256{86}} << uint64_t{1};
     BOOST_CHECK_THROW(old_snapshot >> read_metadata, std::ios_base::failure);
 
-    CTxOut raw_program{10000 * SATOSHI, CScript() << OP_TRUE};
-    AdaptLegacyOutputToV7(raw_program);
+    // A V2 output whose scriptPubKey holds a raw program instead of its V2
+    // encoding (as the removed AdaptLegacyOutputToV7 produced).
+    CTxOut raw_program = V0LeafOutput(10000 * SATOSHI, CScript() << OP_TRUE);
+    raw_program.scriptPubKey = CScript() << OP_TRUE;
     const ::Coin raw_view{raw_program, 100, false, 1000, 132507};
     const ::Coin canonical_view{CTxOut::FromV2Output(raw_program.ToV2Output()),
                                 100, false, 1000, 132507};
