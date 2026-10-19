@@ -2097,6 +2097,9 @@ namespace {
                         Push(Number(RequiresBranch(coin, root)));
                         break;
                     }
+                    case 0xde: // UTXOFLAGS
+                        Push(Number(CoinAt(Numeric(Pop())).flags));
+                        break;
                     case 0xe0:
                         Push(Number(OutputAt(Numeric(Pop())).flags));
                         break;
@@ -2155,6 +2158,21 @@ namespace {
                         Push(Number(ContinuesBranch(output, root)));
                         break;
                     }
+                    case 0xee: { // UTXOSTATEROOT: zeros without HAS_STATE
+                        const auto &coin = CoinAt(Numeric(Pop()));
+                        Push(coin.HasState() ? VmBytes(coin.state_root.begin(),
+                                                       coin.state_root.end())
+                                             : VmBytes(32));
+                        break;
+                    }
+                    case 0xef: { // OUTPUTSTATEROOT: zeros without HAS_STATE
+                        const auto &output = OutputAt(Numeric(Pop()));
+                        Push(output.HasState()
+                                 ? VmBytes(output.state_root.begin(),
+                                           output.state_root.end())
+                                 : VmBytes(32));
+                        break;
+                    }
                     case 0xf0:
                         Context();
                         Push(VmBytes(active_script.begin(), active_script.end()));
@@ -2200,6 +2218,25 @@ namespace {
                             time_kind != (kind == 2) ||
                             (sequence & 65535) < uint32_t(bound))
                             throw VmFailure("relative lock unsatisfied");
+                        break;
+                    }
+                    case 0xf5: { // ACTIVEBRANCHINDEX: -1 for a mint
+                        const auto &ctx = Context();
+                        const auto &input = ctx.tx.inputs[ctx.input_index];
+                        if (input.flags == 3) {
+                            Push(Number(-1));
+                            break;
+                        }
+                        const auto &coin = CoinAt(Int(ctx.input_index));
+                        Push(Number(
+                            coin.paths[input.path_index][ctx.witness_index]));
+                        break;
+                    }
+                    case 0xf6: { // ACTIVEWITNESSINDEX: 0 for a mint
+                        const auto &ctx = Context();
+                        Push(Number(ctx.tx.inputs[ctx.input_index].flags == 3
+                                        ? 0
+                                        : ctx.witness_index));
                         break;
                     }
                     default:
