@@ -110,6 +110,9 @@ TransactionError BroadcastTransaction(const NodeContext &node,
         // Wait until Validation Interface clients have been notified of the
         // transaction entering the mempool.
         promise.get_future().wait();
+        // Subscribers that deliver on their own worker (the wallet, Chronik)
+        // received the event from the main queue; wait for them too.
+        node.validation_signals->SyncSecondaryQueues();
     }
 
     if (relay) {
