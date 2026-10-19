@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 namespace lotus::v2 {
 
@@ -32,11 +33,17 @@ enum class HashDomain {
     Utxo,
     State,
     PreconsensusBatch,
+    ContractState,
 };
 
 // Hardware-accelerated BIP-340 style tagged SHA-256:
 // SHA256(SHA256(tag) || SHA256(tag) || payload).
 Hash TaggedHash(HashDomain domain, std::span<const uint8_t> payload);
+
+// STATEHASH digest over item_1..item_k (item_1 first, i.e. deepest on the
+// stack): TaggedHash(ContractState, CS(k) || for each item CS(len) || item),
+// with shortest-form CompactSize. Streams the preimage without building it.
+Hash ContractStateHash(std::span<const std::vector<uint8_t>> items);
 
 } // namespace lotus::v2
 #endif
