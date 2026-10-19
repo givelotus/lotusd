@@ -100,10 +100,13 @@ struct TxOutCompression {
         if (!obj.vBranches.empty() && obj.scriptPubKey.size() <= 1) {
             const unsigned int v2_tag =
                 ScriptCompression::nSpecialScripts + MAX_SCRIPT_SIZE + 1U +
-                static_cast<unsigned int>(obj.nFlags & 0x03U);
+                static_cast<unsigned int>(obj.nFlags & 0x07U);
             s << VARINT(v2_tag);
             if (obj.nFlags & 0x01U) {
                 s << obj.tokenId;
+            }
+            if (obj.nFlags & 0x04U) {
+                s << obj.stateRoot;
             }
             WriteCompactSize(s, obj.vBranches.size());
             for (const auto &b : obj.vBranches) {
@@ -126,10 +129,18 @@ struct TxOutCompression {
         s >> VARINT(nSize);
         constexpr unsigned int kV2TagBase =
             ScriptCompression::nSpecialScripts + MAX_SCRIPT_SIZE + 1U;
-        if (nSize >= kV2TagBase && nSize < kV2TagBase + 4U) {
+        // Tags kV2TagBase..+7 carry the three V2 flag bits (token, burn,
+        // state); burn+state is never valid.
+        if (nSize >= kV2TagBase && nSize < kV2TagBase + 8U) {
             obj.nFlags = static_cast<uint8_t>(nSize - kV2TagBase);
+            if ((obj.nFlags & 0x06U) == 0x06U) {
+                throw std::ios_base::failure("invalid V2 compressed flags");
+            }
             if (obj.nFlags & 0x01U) {
                 s >> obj.tokenId;
+            }
+            if (obj.nFlags & 0x04U) {
+                s >> obj.stateRoot;
             }
             const uint64_t branch_count = ReadCompactSize(s);
             if (branch_count == 0 ||
