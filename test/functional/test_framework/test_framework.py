@@ -83,25 +83,41 @@ def node_extra_args(num_nodes, extra_args=None, *, noban_tx_relay=False):
 class BitcoinTestMetaClass(type):
     """Metaclass for BitcoinTestFramework.
 
-    Ensures that any attempt to register a subclass of `BitcoinTestFramework`
-    adheres to a standard whereby the subclass overrides `set_test_params` and
-    `run_test` but DOES NOT override either `__init__` or `main`. If any of
-    those standards are violated, a ``TypeError`` is raised."""
+    Ensures that every subclass of `BitcoinTestFramework` provides
+    `set_test_params` and `run_test` (itself or through a base class other
+    than `BitcoinTestFramework`), and that none overrides `__init__`, `main` or
+    `setup`. A class that is only meant to be subclassed sets
+    ``abstract = True`` in its own body and may leave `run_test` and
+    `set_test_params` to its subclasses. Violations raise ``TypeError``."""
+
+    REQUIRED = ("run_test", "set_test_params")
+    FORBIDDEN = ("__init__", "main", "setup")
 
     def __new__(cls, clsname, bases, dct):
-        if not clsname == "BitcoinTestFramework":
-            if not ("run_test" in dct and "set_test_params" in dct):
+        new_cls = super().__new__(cls, clsname, bases, dct)
+        framework = next(
+            (c for c in new_cls.__mro__ if c.__name__ == "BitcoinTestFramework"),
+            None,
+        )
+        if framework is None or new_cls is framework:
+            return new_cls
+        overridden = [name for name in cls.FORBIDDEN if name in dct]
+        if overridden:
+            raise TypeError(
+                f"BitcoinTestFramework subclasses may not override {overridden}"
+            )
+        if not dct.get("abstract", False):
+            missing = [
+                name
+                for name in cls.REQUIRED
+                if getattr(new_cls, name) is getattr(framework, name)
+            ]
+            if missing:
                 raise TypeError(
-                    "BitcoinTestFramework subclasses must override "
-                    "'run_test' and 'set_test_params'"
+                    f"BitcoinTestFramework subclass {clsname} must override {missing}"
+                    " (or set abstract = True)"
                 )
-            if "__init__" in dct or "main" in dct:
-                raise TypeError(
-                    "BitcoinTestFramework subclasses may not override "
-                    "'__init__' or 'main'"
-                )
-
-        return super().__new__(cls, clsname, bases, dct)
+        return new_cls
 
 
 class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
@@ -1264,3 +1280,60 @@ class TestNodeExtraArgs(unittest.TestCase):
             ],
         )
         self.assertIsNot(args[0], caller[0])
+
+
+class TestMetaClass(unittest.TestCase):
+    def test_subclass_inherits_run_test(self):
+        class Base(BitcoinTestFramework):
+            def set_test_params(self):
+                pass
+
+            def run_test(self):
+                pass
+
+        class Variant(Base):
+            num_nodes = 2
+
+        self.assertTrue(issubclass(Variant, Base))
+
+    def test_abstract_base(self):
+        class Abstract(BitcoinTestFramework):
+            abstract = True
+
+        class Concrete(Abstract):
+            def set_test_params(self):
+                pass
+
+            def run_test(self):
+                pass
+
+        self.assertTrue(issubclass(Concrete, Abstract))
+
+    def test_missing_run_test(self):
+        with self.assertRaises(TypeError):
+
+            class Missing(BitcoinTestFramework):
+                def set_test_params(self):
+                    pass
+
+    def test_abstract_not_inherited(self):
+        class Abstract(BitcoinTestFramework):
+            abstract = True
+
+        with self.assertRaises(TypeError):
+
+            class StillMissing(Abstract):
+                pass
+
+    def test_forbidden_overrides(self):
+        for name in ("__init__", "main", "setup"):
+            with self.assertRaises(TypeError):
+                type(
+                    "Bad",
+                    (BitcoinTestFramework,),
+                    {
+                        name: lambda self: None,
+                        "run_test": lambda self: None,
+                        "set_test_params": lambda self: None,
+                    },
+                )
