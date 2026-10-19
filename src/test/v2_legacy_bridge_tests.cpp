@@ -9,6 +9,7 @@
 #include <coins.h>
 #include <config.h>
 #include <consensus/validation.h>
+#include <crypto/sha256.h>
 #include <key.h>
 #include <lotus_v2/commitment.h>
 #include <lotus_v2/signing.h>
@@ -16,6 +17,8 @@
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <primitives/v2_outputs.h>
+#include <script/bridge_checker.h>
+#include <script/interpreter.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
 #include <script/standard.h>
@@ -26,6 +29,8 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <regex>
 
 namespace {
 /** V2 OP_CHECKSIG. */
@@ -139,6 +144,68 @@ struct BridgeSetup : public TestChain100Setup {
         return ok ? "valid" : state.GetRejectReason();
     }
 
+    /**
+     * The block verdict with transaction ids masked, so that the verdicts of
+     * two transactions spending the same coin compare.
+     */
+    std::string Verdict(const std::vector<CMutableTransaction> &txs) {
+        const CBlock block =
+            CreateBlock(txs, CScript() << OP_TRUE,
+                        m_node.chainman->ActiveChainstate());
+        LOCK(cs_main);
+        BlockValidationState state;
+        const bool ok = TestBlockValidity(
+            state, GetConfig().GetChainParams(),
+            m_node.chainman->ActiveChainstate(), block,
+            m_node.chainman->ActiveTip(), GetAdjustedTime,
+            BlockValidationOptions(GetConfig()).withCheckPoW(false));
+        if (ok) return "valid";
+        return std::regex_replace(
+            state.GetRejectReason() + " " + state.GetDebugMessage(),
+            std::regex("[0-9a-f]{64}"), "<id>");
+    }
+
+    /** A P2SH coin paying redeem. */
+    std::pair<COutPoint, CTxOut> FundP2SH(const CScript &redeem,
+                                          Amount value = 10 * COIN) {
+        return FundLegacy(GetScriptForDestination(ScriptHash(redeem)), value);
+    }
+
+    /** A v7 bridge spend of a P2SH coin with these arguments. */
+    CMutableTransaction SpendP2SH(const COutPoint &prevout,
+                                  const CTxOut &coin, const CScript &redeem,
+                                  std::vector<std::vector<uint8_t>> args) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 7;
+        CTxIn in(prevout, CScript(), CTxIn::SEQUENCE_FINAL);
+        in.nFlags = 1;
+        lotus::v2::BranchWitness w;
+        w.script.assign(redeem.begin(), redeem.end());
+        w.arguments = std::move(args);
+        in.vWitnesses = {w};
+        mtx.vin.push_back(in);
+        mtx.vout.push_back(OpTrueOutput(coin.nValue - 10000 * SATOSHI));
+        return mtx;
+    }
+
+    /** The version 2 legacy spend of the same coin with the same pushes. */
+    CMutableTransaction LegacyP2SH(const COutPoint &prevout,
+                                   const CTxOut &coin, const CScript &redeem,
+                                   const std::vector<std::vector<uint8_t>> &args) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin.emplace_back(
+            prevout,
+            LegacyBridgeScriptSig(
+                args, std::vector<uint8_t>(redeem.begin(), redeem.end())),
+            uint32_t{CTxIn::SEQUENCE_FINAL});
+        // Padded past the minimum transaction size.
+        mtx.vout.emplace_back(coin.nValue - 10000 * SATOSHI,
+                              CScript() << OP_RETURN
+                                        << std::vector<uint8_t>(80, 0));
+        return mtx;
+    }
+
     std::string MempoolReason(const CMutableTransaction &mtx) {
         LOCK(cs_main);
         const MempoolAcceptResult result = m_node.chainman->ProcessTransaction(
@@ -154,7 +221,8 @@ const std::string kScriptFailure =
 
 bool IsScriptFailure(const std::string &reason) {
     return reason.rfind("blk-bad-inputs", 0) == 0 ||
-           reason.rfind(kScriptFailure, 0) == 0;
+           reason.rfind(kScriptFailure, 0) == 0 ||
+           reason.rfind("non-mandatory-script-verify-flag", 0) == 0;
 }
 } // namespace
 
@@ -296,15 +364,17 @@ BOOST_AUTO_TEST_CASE(p2pkh_bridge_rejects_uncompressed_key) {
     BOOST_CHECK_EQUAL(BlockReason({mtx}), "bad-txns-v2-legacy-coin-witness");
 }
 
-// A5: only P2PKH coins are bridge-spendable (P2SH comes with T1-07); other
-// legacy scripts are refused.
+// A5: only P2PKH and P2SH coins are bridge-spendable; other legacy scripts
+// are refused.
 BOOST_AUTO_TEST_CASE(bridge_rejects_non_template_coins) {
     const CPubKey pub = key.GetPubKey();
     for (const CScript &script :
          {CScript() << ToByteVector(pub) << OP_CHECKSIG,
           CScript() << OP_TRUE,
           CScript() << OP_1 << ToByteVector(pub) << OP_1 << OP_CHECKMULTISIG,
-          GetScriptForDestination(PKHash(pub)) << OP_NOP}) {
+          GetScriptForDestination(PKHash(pub)) << OP_NOP,
+          GetScriptForDestination(ScriptHash(CScript() << OP_TRUE))
+              << OP_NOP}) {
         const auto [prevout, coin] = FundLegacy(script);
         CMutableTransaction mtx = Spend(prevout, coin, pub);
         SignBridge(mtx, 0, {coin}, key, 0);
@@ -389,6 +459,229 @@ BOOST_AUTO_TEST_CASE(bridge_signatures_batch_in_blocks) {
         broken.vin[bad].vWitnesses[0].arguments[0][5] ^= 1;
         BOOST_CHECK(IsScriptFailure(BlockReason({broken})));
     }
+}
+
+namespace {
+/** A legacy signature (ECDSA or 64-byte Schnorr) over msg, plus hashtype. */
+std::vector<uint8_t> LegacySig(const CKey &key, const lotus::v2::Hash &msg,
+                               uint8_t hashtype, bool schnorr) {
+    uint256 hash;
+    std::memcpy(hash.begin(), msg.data(), 32);
+    std::vector<uint8_t> sig;
+    BOOST_REQUIRE(schnorr ? key.SignSchnorr(hash, sig)
+                          : key.SignECDSA(hash, sig));
+    sig.push_back(hashtype);
+    return sig;
+}
+
+uint8_t ModeOf(uint8_t hashtype) {
+    return *LegacyBridgeSigningMode(hashtype);
+}
+} // namespace
+
+// 2-of-3 multisig behind P2SH, signed with ECDSA (legacy multisig, null
+// dummy) and Schnorr (checkbits dummy) in each hashtype the bridge maps.
+BOOST_AUTO_TEST_CASE(p2sh_bridge_multisig_valid) {
+    const CKey k1 = CKey::MakeCompressedKey(), k2 = CKey::MakeCompressedKey(),
+               k3 = CKey::MakeCompressedKey();
+    const CScript redeem = CScript()
+                           << OP_2 << ToByteVector(k1.GetPubKey())
+                           << ToByteVector(k2.GetPubKey())
+                           << ToByteVector(k3.GetPubKey()) << OP_3
+                           << OP_CHECKMULTISIG;
+    for (const bool schnorr : {false, true}) {
+        for (const uint8_t hashtype : {0x41, 0xC1, 0xC3}) {
+            const auto [prevout, coin] = FundP2SH(redeem);
+            // Signed with placeholder arguments: the message does not
+            // depend on them.
+            CMutableTransaction mtx = SpendP2SH(prevout, coin, redeem, {});
+            const lotus::v2::Hash msg =
+                Message(mtx, 0, {coin}, ModeOf(hashtype));
+            // Keys 1 and 3 sign; the Schnorr dummy is the checkbits 0b101.
+            mtx.vin[0].vWitnesses[0].arguments = {
+                schnorr ? std::vector<uint8_t>{0x05} : std::vector<uint8_t>{},
+                LegacySig(k1, msg, hashtype, schnorr),
+                LegacySig(k3, msg, hashtype, schnorr)};
+            BOOST_CHECK_EQUAL(BlockReason({mtx}), "valid");
+            BOOST_CHECK_EQUAL(MempoolReason(mtx), "valid");
+        }
+    }
+}
+
+// Hashtypes outside the three the bridge maps, a wrong key, and a legacy
+// sighash signature (the message a v1/v2 spend would sign) all fail.
+BOOST_AUTO_TEST_CASE(p2sh_bridge_bad_signatures) {
+    const CScript redeem = CScript() << ToByteVector(key.GetPubKey())
+                                     << OP_CHECKSIG;
+    const auto [prevout, coin] = FundP2SH(redeem);
+    const CMutableTransaction base = SpendP2SH(prevout, coin, redeem, {});
+    const lotus::v2::Hash msg0 = Message(base, 0, {coin}, 0);
+
+    for (const uint8_t hashtype : {0x01, 0x42, 0x43, 0x81, 0x40}) {
+        CMutableTransaction mtx = base;
+        mtx.vin[0].vWitnesses[0].arguments = {
+            LegacySig(key, msg0, hashtype, false)};
+        BOOST_CHECK(IsScriptFailure(BlockReason({mtx})));
+    }
+    CMutableTransaction good = base;
+    good.vin[0].vWitnesses[0].arguments = {LegacySig(key, msg0, 0x41, false)};
+    BOOST_CHECK_EQUAL(BlockReason({good}), "valid");
+
+    CMutableTransaction wrong_key = base;
+    wrong_key.vin[0].vWitnesses[0].arguments = {
+        LegacySig(other, msg0, 0x41, false)};
+    BOOST_CHECK(IsScriptFailure(BlockReason({wrong_key})));
+
+    // The legacy signature hash of the same transaction and input.
+    CMutableTransaction legacy_sighash = base;
+    const uint256 sighash =
+        SignatureHash(redeem, CTransaction(base), 0,
+                      SigHashType().withForkId(), coin.nValue);
+    std::vector<uint8_t> sig;
+    BOOST_REQUIRE(key.SignECDSA(sighash, sig));
+    sig.push_back(0x41);
+    legacy_sighash.vin[0].vWitnesses[0].arguments = {sig};
+    BOOST_CHECK(IsScriptFailure(BlockReason({legacy_sighash})));
+
+    // A signature for the P2SH bridge does not verify in a mode it was not
+    // made for.
+    CMutableTransaction relabelled = base;
+    relabelled.vin[0].vWitnesses[0].arguments = {
+        LegacySig(key, msg0, 0xC1, false)};
+    BOOST_CHECK(IsScriptFailure(BlockReason({relabelled})));
+}
+
+// A7: the redeem script must hash to the coin's script hash.
+BOOST_AUTO_TEST_CASE(p2sh_bridge_wrong_redeem_hash) {
+    const CScript redeem = CScript() << OP_TRUE;
+    const auto [prevout, coin] = FundP2SH(redeem);
+    const CMutableTransaction mtx =
+        SpendP2SH(prevout, coin, CScript() << OP_2, {});
+    BOOST_CHECK_EQUAL(BlockReason({mtx}), "bad-txns-v2-legacy-p2sh-hash");
+    // Shape rules apply to P2SH as to P2PKH.
+    CMutableTransaction siblings = SpendP2SH(prevout, coin, redeem, {});
+    siblings.vin[0].vWitnesses[0].siblings.emplace_back();
+    BOOST_CHECK_EQUAL(BlockReason({siblings}),
+                      "bad-txns-v2-legacy-coin-witness");
+    BOOST_CHECK_EQUAL(BlockReason({SpendP2SH(prevout, coin, redeem, {})}),
+                      "valid");
+}
+
+// The same-result property (§2.4): without signatures, the v2 legacy spend
+// and the v7 bridge spend of one P2SH coin, with the same pushes, give the
+// same verdict, because both run the unchanged legacy interpreter under the
+// same flags on the same scriptSig.
+BOOST_AUTO_TEST_CASE(p2sh_bridge_same_result_as_legacy_spend) {
+    const std::vector<uint8_t> preimage{1, 2, 3, 4};
+    std::vector<uint8_t> image(32);
+    CSHA256().Write(preimage.data(), preimage.size()).Finalize(image.data());
+    const std::vector<uint8_t> msg{7, 7, 7};
+    std::vector<uint8_t> msg_hash(32);
+    CSHA256().Write(msg.data(), msg.size()).Finalize(msg_hash.data());
+    std::vector<uint8_t> data_sig;
+    BOOST_REQUIRE(key.SignECDSA(uint256(msg_hash), data_sig));
+    std::vector<uint8_t> bad_data_sig = data_sig;
+    bad_data_sig[10] ^= 1;
+    const std::vector<uint8_t> pub = ToByteVector(key.GetPubKey());
+
+    // CHECKDATASIG 11 times on a short scriptSig, above the input sigchecks
+    // density (INPUT_SIGCHECKS, a standard flag: valid in a block, refused
+    // by the mempool on both paths).
+    CScript many_cds;
+    for (int i = 0; i < 10; ++i) many_cds << OP_3DUP << OP_CHECKDATASIGVERIFY;
+    many_cds << OP_CHECKDATASIG;
+
+    struct Case {
+        CScript redeem;
+        std::vector<std::vector<uint8_t>> args;
+        bool valid;
+    };
+    const std::vector<Case> cases{
+        {CScript() << OP_TRUE, {}, true},
+        {CScript() << OP_FALSE, {}, false},
+        {CScript() << OP_RETURN, {}, false},
+        {CScript() << OP_SHA256 << image << OP_EQUAL, {preimage}, true},
+        {CScript() << OP_SHA256 << image << OP_EQUAL, {{9}}, false},
+        // CLEANSTACK: an extra argument.
+        {CScript() << OP_TRUE, {{5}}, false},
+        {CScript() << OP_DROP << OP_TRUE, {{0x81}}, true},
+        {CScript() << pub << OP_CHECKDATASIG, {data_sig, msg}, true},
+        {CScript() << pub << OP_CHECKDATASIG, {bad_data_sig, msg}, false},
+        {CScript() << OP_CHECKDATASIG, {{}, msg, pub}, false},
+        {many_cds, {data_sig, msg, pub}, true},
+        // A redeem script with a non-push opcode count above the limit.
+        {[] {
+             CScript s;
+             for (int i = 0; i < MAX_OPS_PER_SCRIPT + 1; ++i) s << OP_NOP;
+             return s << OP_TRUE;
+         }(),
+         {},
+         false},
+        // A 521-byte argument exceeds the legacy push limit.
+        {CScript() << OP_DROP << OP_TRUE,
+         {std::vector<uint8_t>(MAX_SCRIPT_ELEMENT_SIZE + 1, 1)},
+         false},
+    };
+    for (const Case &c : cases) {
+        const auto [prevout, coin] = FundP2SH(c.redeem);
+        if (&c == &cases[10]) {
+            BOOST_CHECK(MempoolReason(LegacyP2SH(prevout, coin, c.redeem,
+                                                 c.args))
+                            .find("Input SigChecks limit exceeded") !=
+                        std::string::npos);
+        }
+        const std::string legacy =
+            Verdict({LegacyP2SH(prevout, coin, c.redeem, c.args)});
+        const std::string bridge =
+            Verdict({SpendP2SH(prevout, coin, c.redeem, c.args)});
+        BOOST_CHECK_EQUAL(legacy, bridge);
+        // The mempool applies the standard flags on top, on both paths.
+        BOOST_CHECK_EQUAL(
+            MempoolReason(LegacyP2SH(prevout, coin, c.redeem, c.args)),
+            MempoolReason(SpendP2SH(prevout, coin, c.redeem, c.args)));
+        BOOST_CHECK_MESSAGE((legacy == "valid") == c.valid,
+                            "case " << (&c - cases.data()) << ": " << legacy);
+    }
+}
+
+// CLTV and CSV read the V2 lock and the input sequence in a bridge spend,
+// with the legacy comparisons.
+BOOST_AUTO_TEST_CASE(p2sh_bridge_locks) {
+    const int height = WITH_LOCK(cs_main, return m_node.chainman->ActiveHeight());
+    const CScript cltv = CScript() << (height - 5) << OP_CHECKLOCKTIMEVERIFY
+                                   << OP_DROP << OP_TRUE;
+    const CScript csv = CScript() << 3 << OP_CHECKSEQUENCEVERIFY << OP_DROP
+                                  << OP_TRUE;
+    const auto [cltv_out, cltv_coin] = FundP2SH(cltv);
+    const auto [csv_out, csv_coin] = FundP2SH(csv);
+    mineBlocks(3);
+
+    auto with_lock = [&](uint64_t lock, uint32_t sequence) {
+        CMutableTransaction mtx = SpendP2SH(cltv_out, cltv_coin, cltv, {});
+        mtx.nV2Lock = lock;
+        mtx.nLockTime = uint32_t(lock >> 8);
+        mtx.vin[0].nSequence = sequence;
+        return mtx;
+    };
+    // Height lock at or above the script's height, input not final.
+    BOOST_CHECK_EQUAL(BlockReason({with_lock((uint64_t(height - 5) << 8) | 1, 0)}),
+                      "valid");
+    BOOST_CHECK_EQUAL(BlockReason({with_lock((uint64_t(height) << 8) | 1, 0)}),
+                      "valid");
+    // Below the script's height; a time lock; a final sequence.
+    BOOST_CHECK(IsScriptFailure(
+        BlockReason({with_lock((uint64_t(height - 6) << 8) | 1, 0)})));
+    BOOST_CHECK(IsScriptFailure(BlockReason({with_lock((uint64_t(1000) << 8) | 2, 0)})));
+    BOOST_CHECK(IsScriptFailure(BlockReason(
+        {with_lock((uint64_t(height) << 8) | 1, CTxIn::SEQUENCE_FINAL)})));
+
+    auto with_sequence = [&](uint32_t sequence) {
+        CMutableTransaction mtx = SpendP2SH(csv_out, csv_coin, csv, {});
+        mtx.vin[0].nSequence = sequence;
+        return mtx;
+    };
+    BOOST_CHECK_EQUAL(BlockReason({with_sequence(3)}), "valid");
+    BOOST_CHECK(IsScriptFailure(BlockReason({with_sequence(2)})));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
