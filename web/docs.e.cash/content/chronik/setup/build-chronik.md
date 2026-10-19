@@ -16,7 +16,7 @@ Chronik is written in Rust. Install it from [rustup.rs](https://rustup.rs/).
 
 ```bash
 sudo apt update
-sudo apt install bsdmainutils build-essential cmake libssl-dev libevent-dev lld ninja-build python3 libjemalloc-dev libboost-dev libprotobuf-dev protobuf-compiler
+sudo apt install bsdmainutils build-essential cmake libssl-dev lld ninja-build python3 libjemalloc-dev libboost-dev libprotobuf-dev protobuf-compiler
 ```
 
 ### Full build
