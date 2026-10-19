@@ -19,11 +19,10 @@ from test_framework.wallet_util import bytes_to_wif
 class ListSinceBlockTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.setup_clean_chain = True
-        self.extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], [], []]
-        self.noban_tx_relay = True
+    num_nodes = 4
+    setup_clean_chain = True
+    extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], [], []]
+    noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

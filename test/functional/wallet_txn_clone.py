@@ -13,10 +13,9 @@ from test_framework.util import assert_equal
 class TxnMallTest(BitcoinTestFramework):
     variants = {"default": {}, "mineblock": {"mine_block": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 3
-        self.extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], []]
-        self.supports_cli = False
+    num_nodes = 3
+    extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], []]
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

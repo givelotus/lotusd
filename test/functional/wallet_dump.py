@@ -92,10 +92,9 @@ def read_dump(file_name, addrs, script_addrs, hd_master_addr_old):
 
 
 class WalletDumpTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [["-keypool=90"]]
-        self.rpc_timeout = 120
+    num_nodes = 1
+    extra_args = [["-keypool=90"]]
+    rpc_timeout = 120
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -10,12 +10,11 @@ from test_framework.wallet import MiniWallet
 
 
 class MerkleBlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [],
-            ["-txindex"],
-        ]
+    num_nodes = 2
+    extra_args = [
+        [],
+        ["-txindex"],
+    ]
 
     def run_test(self):
         miniwallet = MiniWallet(self.nodes[0])

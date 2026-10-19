@@ -25,9 +25,8 @@ def rpccall(node, user, method):
 
 
 class RPCWhitelistTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.supports_cli = False
+    num_nodes = 1
+    supports_cli = False
 
     def setup_chain(self):
         super().setup_chain()

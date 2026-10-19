@@ -30,11 +30,10 @@ class RPCBindTest(BitcoinTestFramework):
         "nonloopback": {"run_nonloopback": True},
     }
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.bind_to_localhost_only = False
-        self.num_nodes = 1
-        self.supports_cli = False
+    setup_clean_chain = True
+    bind_to_localhost_only = False
+    num_nodes = 1
+    supports_cli = False
 
     def setup_network(self):
         self.add_nodes(self.num_nodes, None)

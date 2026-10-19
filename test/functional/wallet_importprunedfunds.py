@@ -16,9 +16,8 @@ from test_framework.wallet_util import bytes_to_wif
 class ImportPrunedFundsTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
+    setup_clean_chain = True
+    num_nodes = 2
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

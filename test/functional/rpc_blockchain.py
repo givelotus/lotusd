@@ -58,10 +58,9 @@ TIME_RANGE_END = TIME_GENESIS_BLOCK + HEIGHT * TIME_RANGE_STEP
 
 
 class BlockchainTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    supports_cli = False
 
     def run_test(self):
         self.mine_chain()
