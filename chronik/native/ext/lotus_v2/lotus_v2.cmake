@@ -41,3 +41,13 @@ target_compile_definitions(test_chronik_native PRIVATE
     # The Rust V2 test vectors, shared with bitcoinsuite-core.
     CHRONIK_NATIVE_LOTUS_V2_FIXTURES_DIR="${CHRONIK_NATIVE_REPO_ROOT}/chronik/bitcoinsuite-core/src/lotus_v2/fixtures"
 )
+
+# DB dump of a V2 node's legacy env for the parity tooling.
+if(CHRONIK_NATIVE_MDBX)
+    add_executable(chronik-native-lotus-v2-dump
+        "${CHRONIK_NATIVE_LOTUS_V2_ROOT}/tools/lotus_v2_dump.cpp")
+    target_include_directories(chronik-native-lotus-v2-dump
+        PRIVATE "${CHRONIK_NATIVE_ROOT}")
+    target_link_libraries(chronik-native-lotus-v2-dump
+        chronik_native_lotus_v2 chronik_native_store_mdbx chronik_native_core)
+endif()
