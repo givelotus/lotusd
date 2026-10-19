@@ -705,36 +705,39 @@ BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
 }
 
 BOOST_FIXTURE_TEST_CASE(logging_json_rate_limit, LogSetup) {
-    LogInstance().m_log_format = BCLog::LogFormat::JSON;
-    ScopedScheduler scheduler{};
-    LogInstance().SetRateLimiting(scheduler.GetLimiter(1000, 1h));
-
-    for (int i = 0; i < 20; ++i) {
-        LogInfo("%s\n", std::string(100, 'x'));
-    }
-    flush_debug_log();
-    const auto records{ReadJsonLogLines()};
-    BOOST_TEST_INFO_SCOPE(util::Join(ReadDebugLogLines(), "\n"));
-    // JSON lines are counted against the quota with their metadata, so
-    // fewer than ten 100-byte messages fit in 1000 bytes.
-    size_t plain{0}, flagged{0}, warnings{0};
-    for (const UniValue &r : records) {
-        const bool rl{r.exists("ratelimited") && r["ratelimited"].get_bool()};
-        if (r["level"].get_str() == "warning") {
-            ++warnings;
-            BOOST_CHECK(rl);
-            BOOST_CHECK(
-                r["msg"].get_str().starts_with("Excessive logging detected"));
-        } else if (rl) {
-            ++flagged;
-        } else {
-            ++plain;
+    // The quota counts messages, not lines: the same number of messages
+    // fit in text and JSON format, whatever the metadata adds.
+    for (const auto format : {BCLog::LogFormat::TEXT, BCLog::LogFormat::JSON}) {
+        LogInstance().m_log_format = format;
+        LogInstance().m_log_timestamps = true;
+        LogInstance().m_log_sourcelocations = true;
+        ScopedScheduler scheduler{};
+        LogInstance().SetRateLimiting(scheduler.GetLimiter(1000, 1h));
+        std::ofstream{LogInstance().m_file_path, std::ios::trunc};
+        for (int i = 0; i < 20; ++i) {
+            // 100 bytes with the newline
+            LogInfo("%s\n", std::string(99, 'x'));
+        }
+        flush_debug_log();
+        LogInstance().SetRateLimiting(nullptr);
+        size_t messages{0}, warnings{0};
+        for (const std::string &line : ReadDebugLogLines()) {
+            if (line.find("Excessive logging detected") != std::string::npos) {
+                ++warnings;
+            } else if (line.find(std::string(99, 'x')) != std::string::npos) {
+                ++messages;
+            }
+        }
+        BOOST_TEST_INFO_SCOPE("format " << int(format));
+        BOOST_CHECK_EQUAL(warnings, 1U);
+        // Ten fit in the quota; the eleventh starts the suppression and is
+        // still written (as in text mode).
+        BOOST_CHECK_EQUAL(messages, 11U);
+        if (format == BCLog::LogFormat::JSON) {
+            const auto records{ReadJsonLogLines()};
+            BOOST_CHECK(records.back()["ratelimited"].get_bool());
         }
     }
-    BOOST_CHECK_EQUAL(warnings, 1U);
-    BOOST_CHECK(plain > 0 && plain < 10);
-    // The line that started the suppression
-    BOOST_CHECK_EQUAL(flagged, 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
