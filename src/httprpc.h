@@ -7,6 +7,7 @@
 
 #include <httpserver.h>
 #include <rpc/server.h>
+#include <walletpwa/http.h>
 
 #include <any>
 
@@ -42,6 +43,13 @@ public:
             request, std::move(executor));
     }
 };
+
+/**
+ * Check "user:password" against -rpcuser/-rpcpassword, the cookie and
+ * -rpcauth, as Basic auth on RPC does. Sets authUser to the user part.
+ */
+bool CheckRPCCredentials(const std::string &user_colon_pass,
+                         std::string &authUser);
 
 /**
  * Start HTTP RPC subsystem.

@@ -222,6 +222,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		radix_tests.cpp
 		random_tests.cpp
 		rest_tests.cpp
+		walletpwa_tests.cpp
 		rcu_tests.cpp
 		result_tests.cpp
 		reverselock_tests.cpp
