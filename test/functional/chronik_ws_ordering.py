@@ -6,13 +6,11 @@ Test Chronik whether WS are emitted in deterministic order.
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
     ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.avatools import AvaP2PInterface, can_find_inv_in_poll
-from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
 from test_framework.script import OP_CHECKSIG, CScript
@@ -49,13 +47,8 @@ class ChronikWsOrdering(BitcoinTestFramework):
         node.add_p2p_connection(P2PDataStore())
         chronik = node.get_chronik_client()
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointxid = coinblock["tx"][0]
+        cointxid, coinvalue = self.mine_mature_coin(node)
 
-        self.generatetoaddress(node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE)
-
-        coinvalue = 5000000000
         balance = coinvalue
         current_txid = cointxid
 
