@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 
 using namespace lotus::v2;
@@ -123,11 +124,12 @@ void RegistryAllocation() {
     Expect("fe6c", VmStatus::AutomaticSuccess); // success scanned first
     Expect("ff006c", VmStatus::AutomaticSuccess);
     Expect("016c794e", VmStatus::Success);     // push payload is data
-    // Newly registered bytes are assigned: never success, Unsupported until
-    // their semantics are implemented.
+    // Newly registered bytes are assigned: never success. Without an
+    // authenticated context (or before their semantics land) they are
+    // Unsupported; one index operand is supplied for the readers.
     for (uint8_t b : {0xc3, 0xde, 0xdf, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf5,
                       0xf6})
-        CHECK(EvaluateVm(VmBytes{b, 0x4e}, {}, PROFILE).status ==
+        CHECK(EvaluateVm(VmBytes{b, 0x4e}, {Number(0)}, PROFILE).status ==
               VmStatus::Unsupported);
     // Cost profiles need a base for every executable assigned byte, but not
     // for EMITLOG or the EXT2 prefix.
@@ -514,6 +516,156 @@ VmCostProfile IllustrativeCost() {
     for (auto &op : schedule.opcode)
         op = {1, 1, 1};
     return schedule;
+}
+void StateAndActiveIndexOpcodes() {
+    // UTXOFLAGS (de), UTXOSTATEROOT (ee), OUTPUTSTATEROOT (ef),
+    // ACTIVEBRANCHINDEX (f5) and ACTIVEWITNESSINDEX (f6).
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    Transaction tx;
+    Input spend;
+    spend.flags = 1;
+    spend.prev_txid.fill(0x31);
+    spend.sequence = UINT32_MAX;
+    // Path 0 selects branches 0 and 2; the second witness runs branch 2.
+    spend.witnesses = {BranchWitness{Hex("4e"), {}, {}},
+                       BranchWitness{Hex("4e"), {}, {}}};
+    tx.inputs.push_back(spend);
+    Output coin;
+    coin.value = 5000;
+    coin.branches.resize(3);
+    coin.branches[1].fill(0x77);
+    coin.paths = {{0, 2}, {1}};
+    ResolvedCoins resolved{coin};
+    Output plain;
+    plain.value = 1000;
+    plain.branches = {Hash{}};
+    plain.branches[0].fill(0x44);
+    plain.paths = {{0}};
+    Output stateful = plain;
+    stateful.flags = 4;
+    stateful.state_root.fill(0xab);
+    tx.outputs = {plain, stateful};
+    Input mint;
+    mint.flags = 3;
+    mint.sequence = UINT32_MAX;
+    mint.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    tx.inputs.push_back(mint);
+    resolved.push_back(std::nullopt);
+
+    // Every witness must authenticate against its branch for the context.
+    auto sync = [&] {
+        resolved[0]->branches[0] = BranchLeaf(tx.inputs[0].witnesses[0].script);
+        resolved[0]->branches[2] = BranchLeaf(tx.inputs[0].witnesses[1].script);
+        tx.inputs[1].prev_txid = BranchLeaf(tx.inputs[1].witnesses[0].script);
+    };
+    auto run = [&](size_t input, size_t witness, VmBytes script,
+                   std::vector<VmBytes> args) {
+        auto &w = tx.inputs[input].witnesses[witness];
+        w.script = script;
+        w.arguments = args;
+        sync();
+        PositiveDelta delta{};
+        delta[0] = 1;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, input,
+                               witness, input == 1 ? std::optional(delta)
+                                                   : std::nullopt};
+        return EvaluateVmWithContext(w.script, w.arguments, PROFILE, ctx);
+    };
+    // Runs `op(args) expected EQUALVERIFY TRUE`.
+    auto expect = [&](size_t input, size_t witness, uint8_t op,
+                      std::vector<VmBytes> args, const VmBytes &expected) {
+        VmBytes script;
+        if (input == 1) script.push_back(0x79); // DROP the mint delta
+        script.push_back(op);
+        script.push_back(uint8_t(expected.size()));
+        script.insert(script.end(), expected.begin(), expected.end());
+        script.push_back(0x92); // EQUALVERIFY
+        script.push_back(0x4e);
+        const auto result = run(input, witness, script, args);
+        if (result.status != VmStatus::Success)
+            throw std::runtime_error("state opcode " + std::to_string(op) +
+                                     ": " + result.error);
+    };
+    const VmBytes minus_one(16, 0xff);
+    const VmBytes zeros(32, 0);
+    const VmBytes root(32, 0xab);
+
+    // A coin without HAS_STATE: flags 0, zero root.
+    expect(0, 0, 0xde, {Number(0)}, Number(0));
+    expect(0, 0, 0xee, {Number(0)}, zeros);
+    // With HAS_STATE (and a token) the flags and root are visible.
+    resolved[0]->flags = 5;
+    resolved[0]->token_id.fill(0x09);
+    resolved[0]->state_root.fill(0xab);
+    expect(0, 0, 0xde, {Number(0)}, Number(5));
+    expect(0, 0, 0xee, {Number(0)}, root);
+    // Outputs: zeros without HAS_STATE, the root with it.
+    expect(0, 0, 0xef, {Number(0)}, zeros);
+    expect(0, 0, 0xef, {Number(1)}, root);
+    expect(0, 0, 0xe0, {Number(1)}, Number(4)); // OUTPUTFLAGS shows 0x04
+    // Active branch index is paths[path_index][witness_index].
+    expect(0, 0, 0xf5, {}, Number(0));
+    expect(0, 1, 0xf5, {}, Number(2));
+    expect(0, 0, 0xf6, {}, Number(0));
+    expect(0, 1, 0xf6, {}, Number(1));
+    // Mint: no branch (-1), witness 0; UTXO reads at the mint fail.
+    expect(1, 0, 0xf5, {}, minus_one);
+    expect(1, 0, 0xf6, {}, Number(0));
+    expect(0, 0, 0xf5, {}, Number(0));
+    CHECK(run(0, 0, Hex("de4e"), {Number(1)}).error ==
+          "UTXO read at nonspend input");
+    CHECK(run(0, 0, Hex("ee4e"), {Number(1)}).error ==
+          "UTXO read at nonspend input");
+    CHECK(run(1, 0, Hex("de4e"), {Number(1)}).error ==
+          "UTXO read at nonspend input");
+    // Index bounds.
+    CHECK(run(0, 0, Hex("de4e"), {Number(2)}).error ==
+          "introspection index out of range");
+    CHECK(run(0, 0, Hex("ee4e"), {Number(2)}).error ==
+          "introspection index out of range");
+    CHECK(run(0, 0, Hex("ef4e"), {Number(2)}).error ==
+          "introspection index out of range");
+    // Without an authenticated context: Unsupported.
+    Expect("f5", VmStatus::Unsupported);
+    Expect("f6", VmStatus::Unsupported);
+    Expect("ef", VmStatus::Unsupported, {Number(0)});
+    Expect("de", VmStatus::Unsupported, {Number(0)});
+    // Static size pass: results are 16 (de/f5/f6) and 32 (ee/ef) bytes, so
+    // the charged cost equals the measured cost.
+    VmCostProfile cost;
+    cost.max_invocation_cost = 1000000;
+    cost.structural_byte_cost = 1;
+    for (auto &op : cost.opcode) op = {1, 1, 1};
+    for (const auto &[input, script, args] :
+         std::vector<std::tuple<size_t, VmBytes, std::vector<VmBytes>>>{
+             {0, Hex("de79ee79ef794e"), {Number(0), Number(0), Number(0)}},
+             {0, Hex("f579f6794e"), {}},
+             {1, Hex("79f579f6794e"), {}}}) {
+        auto &w = tx.inputs[input].witnesses[0];
+        w.script = script;
+        w.arguments = args;
+        sync();
+        PositiveDelta delta{};
+        delta[0] = 1;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, input, 0,
+                               input == 1 ? std::optional(delta)
+                                          : std::nullopt};
+        const auto charged =
+            EvaluateVmCharged(script, args, PROFILE, cost,
+                              uint16_t(tx.inputs.size()),
+                              uint16_t(tx.outputs.size()), &ctx);
+        if (charged.invocation.status != VmStatus::Success)
+            throw std::runtime_error("charged state opcodes: " +
+                                     charged.invocation.error);
+        // Exact abstract sizes: static accounting equals the executed cost.
+        if (!charged.charged ||
+            charged.accounting_cost != charged.invocation.executed_cost)
+            throw std::runtime_error(
+                "state opcode static cost " +
+                std::to_string(uint64_t(charged.accounting_cost)) + " vs " +
+                std::to_string(uint64_t(charged.invocation.executed_cost)));
+    }
 }
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
@@ -1332,6 +1484,7 @@ int main() {
     BigIntAndZeroPadding();
     MerkleProofBounds();
     ContextFieldOpcodes();
+    StateAndActiveIndexOpcodes();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();
