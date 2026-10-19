@@ -120,8 +120,8 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info("  - snapshot file with mismatching chain disk magic")
         invalid_magics = [
             # magic, name, real
-            [0xF9BEB4D9, "main", True],
-            [0x0B110907, "test", True],
+            [0xDAC6DDE4, "main", True],
+            [0xF39FF496, "test", True],
             [0x00000000, "", False],
             [0xFFFFFFFF, "", False],
         ]
