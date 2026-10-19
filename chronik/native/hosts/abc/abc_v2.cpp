@@ -5,6 +5,7 @@
 #include <hosts/abc/abc_v2.h>
 
 #include <ext/lotus_v2/db/model.h>
+#include <ext/lotus_v2/http/v2_http.h>
 #include <ext/lotus_v2/service/service.h>
 
 #include <blockindex.h>
@@ -259,7 +260,7 @@ void AbcV2ServiceExtension::Open(const std::filesystem::path &indexes_dir,
     // env's backend.
     const std::filesystem::path path = indexes_dir / "chronik" / "v2_index";
     // An env is opened once per process: release any previous service first.
-    m_service.reset();
+    SetService(nullptr);
     std::error_code ec;
     const bool fresh = wipe || !std::filesystem::is_regular_file(
                                    path / "mdbx.dat", ec);
@@ -273,13 +274,13 @@ void AbcV2ServiceExtension::Open(const std::filesystem::path &indexes_dir,
         m_host.Sha256(data, out);
     };
     try {
-        m_service = lotus_v2::V2Service::Open(path.string(), binding, fresh,
-                                              V2Limits(), sha256);
+        SetService(lotus_v2::V2Service::Open(path.string(), binding, fresh,
+                                             V2Limits(), sha256));
     } catch (const std::exception &) {
         std::filesystem::remove_all(path, ec);
         try {
-            m_service = lotus_v2::V2Service::Open(path.string(), binding, true,
-                                                  V2Limits(), sha256);
+            SetService(lotus_v2::V2Service::Open(path.string(), binding,
+                                                 true, V2Limits(), sha256));
         } catch (const std::exception &e) {
             throw ChronikError(std::string("V2Service open failed: ") +
                                e.what());
@@ -411,6 +412,33 @@ void AbcV2ServiceExtension::Disconnect(const Block &block, WriteTxn *) {
     }
 }
 
-void AbcV2ServiceExtension::Close() { m_service.reset(); }
+void AbcV2ServiceExtension::Close() { SetService(nullptr); }
+
+std::shared_ptr<lotus_v2::V2Service> AbcV2ServiceExtension::Service() const {
+    std::lock_guard<std::mutex> lock(m_service_mutex);
+    return m_service;
+}
+
+void AbcV2ServiceExtension::SetService(
+    std::shared_ptr<lotus_v2::V2Service> service) {
+    std::lock_guard<std::mutex> lock(m_service_mutex);
+    m_service = std::move(service);
+}
+
+void AbcV2ServiceExtension::RegisterRoutes(Router &router) {
+    // Each request takes the current service: while it is closed every route
+    // answers index_unavailable.
+    lotus_v2::http::RegisterV2Routes(
+        router, [this]() -> std::optional<lotus_v2::http::V2HttpState> {
+            std::shared_ptr<lotus_v2::V2Service> service = Service();
+            if (!service) {
+                return std::nullopt;
+            }
+            return lotus_v2::http::MakeV2HttpState(
+                *service, [this](ByteView data, uint8_t out[32]) {
+                    m_host.Sha256(data, out);
+                });
+        });
+}
 
 } // namespace chronik::native::abc
