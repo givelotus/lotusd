@@ -12,23 +12,11 @@
 #include <string>
 #include <string_view>
 
-/** A ws:// or wss:// P2P peer URL */
-struct ParsedWebSocketURL {
-    bool tls{false};
-    std::string host;
-    uint16_t port{0};
-    //! Value of the Host header: host:port, with [] around IPv6 literals
-    std::string authority;
-    //! Request target, "/p2p/ws" if the URL has no path
-    std::string target;
-};
-
-/** Parse ws://host[:port][/path] (default port 80) or wss:// (443) */
-std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url);
+#include <net_websocket.h>
 
 //! What outbound P2P WebSockets offer, in order of preference
 static const char *const DEFAULT_P2P_WEBSOCKET_OFFER =
-    "p2p-zstd-v1,p2p-zstd,permessage-deflate";
+    "p2p-zstd-v1,p2p-zstd";
 
 /**
  * Start the outbound P2P WebSocket dialer (its own I/O thread) and register

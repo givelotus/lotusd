@@ -64,6 +64,11 @@ public:
                   std::shared_ptr<WebSocketTransportInfo> info,
                   std::unique_ptr<WebSocketByteLayer> layer,
                   std::vector<uint8_t> initial_wire_bytes = {});
+    /** Take over the descriptor of `sock` */
+    WebSocketSock(Sock &&sock, WebSocketCodec::Role role,
+                  std::shared_ptr<WebSocketTransportInfo> info,
+                  std::unique_ptr<WebSocketByteLayer> layer,
+                  std::vector<uint8_t> initial_wire_bytes = {});
     ~WebSocketSock() override;
 
     ssize_t Send(const void *data, size_t len, int flags) const override;
