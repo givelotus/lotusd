@@ -457,7 +457,7 @@ class SizePass {
             } else if ((op >= 0xb8 && op <= 0xba) ||
                        (op >= 0xbe && op <= 0xc2) || op == 0xce || op == 0xcf ||
                        op == 0xd2 || op == 0xd7 || op == 0xd9 || op == 0xe2 ||
-                       op == 0xe4 || op == 0xf2) {
+                       op == 0xe4 || op == 0xee || op == 0xef || op == 0xf2) {
                 size_t arity = 1;
                 if (op == 0xbf || op == 0xd9 || op == 0xe4) arity = 2;
                 if (op == 0xc0) arity = 3;
@@ -522,9 +522,11 @@ class SizePass {
                        op == 0xd3 || op == 0xd4 || op == 0xd5 || op == 0xd6 ||
                        op == 0xd8 || op == 0xda || op == 0xe0 || op == 0xe1 ||
                        op == 0xe3 || op == 0xe5 || op == 0xe8 || op == 0xe9 ||
-                       op == 0xea || op == 0xf1) {
+                       op == 0xea || op == 0xf1 || op == 0xde || op == 0xf5 ||
+                       op == 0xf6) {
                 if (op == 0xd1 || op == 0xd3 || op == 0xd4 || op == 0xd5 ||
-                    op == 0xd6 || op == 0xd8 || op == 0xda || op == 0xe0 ||
+                    op == 0xd6 || op == 0xd8 || op == 0xda || op == 0xde ||
+                    op == 0xe0 ||
                     op == 0xe1 || op == 0xe3 || op == 0xe5)
                     pop();
                 if (op == 0xe8 || op == 0xe9 || op == 0xea) {
