@@ -23,6 +23,15 @@ static bool CheckTransactionCommon(const CTransaction &tx,
                              "bad-txns-vout-empty");
     }
 
+    if (tx.nVersion == 7 && tx.vin.size() > MAX_V2_TX_INPUTS) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-v2-too-many-inputs");
+    }
+    if (tx.nVersion == 7 && tx.vout.size() > MAX_V2_TX_OUTPUTS) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-v2-too-many-outputs");
+    }
+
     // Size limit
     if (::GetSerializeSize(tx) > MAX_TX_SIZE) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
@@ -55,7 +64,8 @@ static bool CheckTransactionCommon(const CTransaction &tx,
     return true;
 }
 
-bool CheckCoinbase(const CTransaction &tx, TxValidationState &state) {
+static bool CheckCoinbaseRules(const CTransaction &tx,
+                               TxValidationState &state) {
     if (!tx.IsCoinBase()) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-cb-missing",
                              "first tx is not coinbase");
@@ -83,7 +93,8 @@ bool CheckCoinbase(const CTransaction &tx, TxValidationState &state) {
     return true;
 }
 
-bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
+static bool CheckRegularTransactionRules(const CTransaction &tx,
+                                        TxValidationState &state) {
     if (tx.IsCoinBase()) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-tx-coinbase");
@@ -143,4 +154,28 @@ bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
     }
 
     return true;
+}
+
+// A transaction whose content is not a well-formed V2 transaction has only the
+// flat fallback TxId/TxHash (see ComputeV2TxIdentities). Checked after every
+// other rule so the more specific reject reason wins; this catches what those
+// rules do not, such as a legacy-version transaction with more than 65,535
+// outputs (which the u16 V2 header cannot count).
+static bool CheckStructuralIdentity(const CTransaction &tx,
+                                    TxValidationState &state) {
+    if (!tx.HasStructuralV2Identity()) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-v2-identity",
+                             "not a well-formed V2 transaction");
+    }
+    return true;
+}
+
+bool CheckCoinbase(const CTransaction &tx, TxValidationState &state) {
+    return CheckCoinbaseRules(tx, state) && CheckStructuralIdentity(tx, state);
+}
+
+bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
+    return CheckRegularTransactionRules(tx, state) &&
+           CheckStructuralIdentity(tx, state);
 }
