@@ -61,6 +61,7 @@ add_executable(bitcoin-bench
 	mempool_overlay_batch.cpp
 	mempool_stress.cpp
 	merkle_root.cpp
+	metrics.cpp
 	nanobench.cpp
 	pool.cpp
 	peer_eviction.cpp

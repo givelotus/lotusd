@@ -409,6 +409,7 @@ add_library(util
 	currencyunit.cpp
 	interfaces/handler.cpp
 	logging.cpp
+	metrics/metrics.cpp
 	random.cpp
 	randomenv.cpp
 	rcu.cpp

@@ -1,0 +1,224 @@
+// Copyright (c) 2026 The Lotus developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include <metrics/metrics.h>
+
+#include <test/util/setup_common.h>
+
+#include <boost/test/unit_test.hpp>
+
+#include <cmath>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+using namespace metrics;
+
+BOOST_FIXTURE_TEST_SUITE(metrics_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(escaping) {
+    std::string out;
+    AppendLabelValue(out, "a\\b\"c\nd");
+    BOOST_CHECK_EQUAL(out, R"(a\\b\"c\nd)");
+    out.clear();
+    AppendHelp(out, "a\\b\"c\nd");
+    BOOST_CHECK_EQUAL(out, R"(a\\b"c\nd)");
+    out.clear();
+    AppendValue(out, 0.005);
+    out += ' ';
+    AppendValue(out, 1e21);
+    out += ' ';
+    AppendValue(out, INFINITY);
+    out += ' ';
+    AppendValue(out, -INFINITY);
+    out += ' ';
+    AppendValue(out, NAN);
+    out += ' ';
+    AppendValue(out, 3);
+    BOOST_CHECK_EQUAL(out, "0.005 1e+21 +Inf -Inf NaN 3");
+}
+
+BOOST_AUTO_TEST_CASE(render_exposition_format) {
+    Registry reg;
+    auto &c{reg.Add(std::make_unique<Counter>(
+        "test_bytes_total", "Bytes \\ by \"type\"\nand dir.",
+        std::vector<LabelDim>{{"dir", {"in", "out"}},
+                              {"type", {"a\"b", "c"}}}))};
+    auto &g{reg.Add(std::make_unique<Gauge>("test_height", "Height."))};
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "test_seconds", "Durations.", std::vector<double>{0.001, 0.01, 1}, 1e9,
+        std::vector<LabelDim>{{"method", {"x", "y"}}}))};
+
+    const std::array<size_t, 2> out_c{1, 1};
+    c.Add(c.SeriesIndex(out_c), 7);
+    c.Add(0, 2);
+    c.Add(0);
+    g.Set(42.5);
+    h.Record(1'000'000, 1);     // 0.001s: le="0.001" (inclusive)
+    h.Record(5'000'000, 1);     // 0.005s
+    h.Record(2'000'000'000, 1); // 2s: +Inf
+    h.Record(0, 0);
+
+    const std::string expected{
+        "# HELP test_bytes_total Bytes \\\\ by \"type\"\\nand dir.\n"
+        "# TYPE test_bytes_total counter\n"
+        "test_bytes_total{dir=\"in\",type=\"a\\\"b\"} 3\n"
+        "test_bytes_total{dir=\"in\",type=\"c\"} 0\n"
+        "test_bytes_total{dir=\"out\",type=\"a\\\"b\"} 0\n"
+        "test_bytes_total{dir=\"out\",type=\"c\"} 7\n"
+        "# HELP test_height Height.\n"
+        "# TYPE test_height gauge\n"
+        "test_height 42.5\n"
+        "# HELP test_seconds Durations.\n"
+        "# TYPE test_seconds histogram\n"
+        "test_seconds_bucket{method=\"x\",le=\"0.001\"} 1\n"
+        "test_seconds_bucket{method=\"x\",le=\"0.01\"} 1\n"
+        "test_seconds_bucket{method=\"x\",le=\"1\"} 1\n"
+        "test_seconds_bucket{method=\"x\",le=\"+Inf\"} 1\n"
+        "test_seconds_sum{method=\"x\"} 0\n"
+        "test_seconds_count{method=\"x\"} 1\n"
+        "test_seconds_bucket{method=\"y\",le=\"0.001\"} 1\n"
+        "test_seconds_bucket{method=\"y\",le=\"0.01\"} 2\n"
+        "test_seconds_bucket{method=\"y\",le=\"1\"} 2\n"
+        "test_seconds_bucket{method=\"y\",le=\"+Inf\"} 3\n"
+        "test_seconds_sum{method=\"y\"} 2.006\n"
+        "test_seconds_count{method=\"y\"} 3\n"
+        "# HELP lotus_metrics_dropped_samples_total Event samples dropped "
+        "because a recording thread's buffer was full.\n"
+        "# TYPE lotus_metrics_dropped_samples_total counter\n"
+        "lotus_metrics_dropped_samples_total 0\n"};
+    BOOST_CHECK_EQUAL(reg.Render(), expected);
+}
+
+BOOST_AUTO_TEST_CASE(unlabelled_histogram) {
+    Registry reg;
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "h_bytes", "Sizes.", std::vector<double>{10, 100}, 1))};
+    h.Record(10);
+    h.Record(11);
+    const std::string r{reg.Render()};
+    BOOST_CHECK(r.find("h_bytes_bucket{le=\"10\"} 1\n"
+                       "h_bytes_bucket{le=\"100\"} 2\n"
+                       "h_bytes_bucket{le=\"+Inf\"} 2\n"
+                       "h_bytes_sum 21\n"
+                       "h_bytes_count 2\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(counter_shards_from_many_threads) {
+    Registry reg;
+    auto &c{reg.Add(std::make_unique<Counter>(
+        "c_total", "C.", std::vector<LabelDim>{{"k", {"a", "b", "c"}}}))};
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "e_seconds", "E.", std::vector<double>{1}, 1))};
+    reg.Start(std::chrono::milliseconds{1});
+    constexpr int THREADS{24}, PER_THREAD{20000};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([&] {
+            for (int i = 0; i < PER_THREAD; ++i) {
+                c.Add(2);
+                if (i % 20 == 0) {
+                    h.Record(0);
+                }
+            }
+        });
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+    reg.Stop();
+    BOOST_CHECK_EQUAL(c.Value(2), uint64_t{THREADS} * PER_THREAD);
+    BOOST_CHECK_EQUAL(c.Value(0), 0U);
+    // Every sample is either counted or counted as dropped, and the exited
+    // threads' rings were retired.
+    const std::string r{reg.Render()};
+    const uint64_t dropped{reg.DroppedSamples()};
+    const uint64_t total{uint64_t{THREADS} * PER_THREAD / 20};
+    BOOST_CHECK(r.find("e_seconds_count " + std::to_string(total - dropped) +
+                       "\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ring_drops_when_full) {
+    EventRing ring;
+    for (size_t i = 0; i < EventRing::CAPACITY; ++i) {
+        BOOST_CHECK(ring.Push({0, 0, i}));
+    }
+    BOOST_CHECK(!ring.Push({0, 0, 1}));
+    BOOST_CHECK(!ring.Push({0, 0, 1}));
+    BOOST_CHECK_EQUAL(ring.Dropped(), 2U);
+    uint64_t expect{0};
+    BOOST_CHECK_EQUAL(ring.Drain([&](const Sample &s) {
+        BOOST_CHECK_EQUAL(s.value, expect++);
+    }),
+                      EventRing::CAPACITY);
+    BOOST_CHECK(ring.Empty());
+    BOOST_CHECK(ring.Push({0, 0, 9}));
+
+    // Without a drain thread, a registry's ring fills and drops too.
+    Registry reg;
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "x", "X.", std::vector<double>{1}, 1))};
+    for (size_t i = 0; i < EventRing::CAPACITY + 5; ++i) {
+        h.Record(1);
+    }
+    BOOST_CHECK_EQUAL(reg.DroppedSamples(), 5U);
+    BOOST_CHECK(reg.Render().find("lotus_metrics_dropped_samples_total 5\n") !=
+                std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(render_cache) {
+    Registry reg;
+    auto &g{reg.Add(std::make_unique<Gauge>("g", "G."))};
+    g.Set(1);
+    const std::string first{reg.Render(std::chrono::hours{1})};
+    g.Set(2);
+    BOOST_CHECK_EQUAL(reg.Render(std::chrono::hours{1}), first);
+    BOOST_CHECK(reg.Render().find("\ng 2\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(hidden_empty_series_and_collectors) {
+    Registry reg;
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+                        "rpc_seconds", "R.", std::vector<double>{1}, 1,
+                        std::vector<LabelDim>{{"method", {"a", "b", "c"}}}))
+                .HideEmptySeries()};
+    auto &g{reg.Add(std::make_unique<Gauge>("age", "A."))};
+    int collected{0};
+    reg.AddCollector([&] { g.Set(++collected); });
+    h.Record(1, 1);
+    const std::string r{reg.Render()};
+    BOOST_CHECK(r.find("method=\"a\"") == std::string::npos);
+    BOOST_CHECK(r.find("method=\"c\"") == std::string::npos);
+    BOOST_CHECK(r.find("rpc_seconds_count{method=\"b\"} 1\n") !=
+                std::string::npos);
+    // The HELP/TYPE lines are there even before any series has data.
+    BOOST_CHECK(r.find("# TYPE rpc_seconds histogram\n") != std::string::npos);
+    BOOST_CHECK(r.find("\nage 1\n") != std::string::npos);
+    BOOST_CHECK(reg.Render().find("\nage 2\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(rings_prepared_and_reused) {
+    Registry reg;
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "x", "X.", std::vector<double>{1}, 1))};
+    reg.Start(std::chrono::milliseconds{1}, /*rings=*/2);
+    BOOST_CHECK_EQUAL(reg.NumRings(), 2U);
+    // Short-lived threads one after the other: each gets a ring at start
+    // (as util::ThreadRename does), and exited threads' rings are reused.
+    SetThreadRegistry(&reg);
+    for (int i = 0; i < 10; ++i) {
+        std::thread{[&] {
+            PrepareThisThread();
+            h.Record(1);
+        }}.join();
+        reg.Drain();
+    }
+    SetThreadRegistry(nullptr);
+    reg.Stop();
+    BOOST_CHECK_LE(reg.NumRings(), 2U);
+    BOOST_CHECK(reg.Render().find("\nx_count 10\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
