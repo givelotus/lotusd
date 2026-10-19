@@ -63,6 +63,9 @@ endforeach()
 # Libraries the unit tests link in addition to the core (backends, protobuf).
 # Backend/transport source lists below append to it.
 
+# ---- Storage backends (each its own library; see store/store.cmake) ----
+include("${CHRONIK_NATIVE_ROOT}/store/store.cmake")
+
 # ---- Core library ----
 add_library(chronik_native_core STATIC ${CHRONIK_NATIVE_CORE_SOURCES})
 target_include_directories(chronik_native_core
