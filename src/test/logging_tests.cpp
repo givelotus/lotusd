@@ -693,6 +693,26 @@ BOOST_AUTO_TEST_CASE(logging_json_escape) {
     BOOST_CHECK_EQUAL(v[0].get_str(), "q\"\\\n\x01 \xe8\xb2\x93");
 }
 
+BOOST_AUTO_TEST_CASE(logging_bare_function_name) {
+    using BCLog::BareFunctionName;
+    BOOST_CHECK_EQUAL(BareFunctionName("void CConnman::DumpAddresses()"),
+                      "CConnman::DumpAddresses");
+    BOOST_CHECK_EQUAL(
+        BareFunctionName("bool CConnman::Bind(const CService &, unsigned "
+                         "int, NetPermissionFlags) const"),
+        "CConnman::Bind");
+    BOOST_CHECK_EQUAL(BareFunctionName("int main(int, char **)"), "main");
+    BOOST_CHECK_EQUAL(
+        BareFunctionName("std::vector<std::pair<int, int>> ns::Foo<A, "
+                         "B>::Get(std::map<int, int>)"),
+        "ns::Foo<A, B>::Get");
+    BOOST_CHECK_EQUAL(
+        BareFunctionName("auto (anonymous namespace)::Worker::operator()() "
+                         "const"),
+        "(anonymous namespace)::Worker::operator()");
+    BOOST_CHECK_EQUAL(BareFunctionName("no_parens"), "no_parens");
+}
+
 BOOST_AUTO_TEST_CASE(logging_parse_format) {
     BOOST_CHECK(BCLog::ParseLogFormat("text") == BCLog::LogFormat::TEXT);
     BOOST_CHECK(BCLog::ParseLogFormat("json") == BCLog::LogFormat::JSON);
@@ -751,10 +771,10 @@ BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
     BOOST_REQUIRE_EQUAL(records.size(), 7U);
 
     const UniValue &r0{records[0]};
-    const std::vector<std::string> keys{"ts",   "level", "category", "thread",
-                                        "file", "line",  "msg"};
+    const std::vector<std::string> keys{"time", "level", "category", "thread",
+                                        "message"};
     BOOST_CHECK(r0.getKeys() == keys);
-    const std::string &ts{r0["ts"].get_str()};
+    const std::string &ts{r0["time"].get_str()};
     // 2026-10-19T12:34:56.123456Z
     BOOST_CHECK_EQUAL(ts.size(), 27U);
     BOOST_CHECK_EQUAL(ts[10], 'T');
@@ -762,29 +782,31 @@ BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
     BOOST_CHECK_EQUAL(ts.back(), 'Z');
     BOOST_CHECK_EQUAL(r0["level"].get_str(), "debug");
     BOOST_CHECK_EQUAL(r0["category"].get_str(), "net");
-    BOOST_CHECK_EQUAL(r0["file"].get_str(),
-                      RemovePrefix(loc.file_name(), "./"));
-    BOOST_CHECK_EQUAL(r0["line"].getInt<int>(), int(loc.line()));
-    BOOST_CHECK_EQUAL(r0["msg"].get_str(), "hello \"world\"");
+    BOOST_CHECK_EQUAL(r0["message"].get_str(), "hello \"world\"");
 
     BOOST_CHECK_EQUAL(records[1]["level"].get_str(), "info");
     BOOST_CHECK_EQUAL(records[1]["category"].get_str(), "none");
-    BOOST_CHECK_EQUAL(records[1]["msg"].get_str(), "two\nlines");
+    BOOST_CHECK_EQUAL(records[1]["message"].get_str(), "two\nlines");
 
     BOOST_CHECK_EQUAL(records[2]["level"].get_str(), "warning");
-    BOOST_CHECK_EQUAL(records[2]["msg"].get_str(),
+    BOOST_CHECK_EQUAL(records[2]["message"].get_str(),
                       "bad byte \xef\xbf\xbd and tab\t");
 
-    BOOST_CHECK_EQUAL(records[3]["msg"].get_str(), "partial ");
+    BOOST_CHECK_EQUAL(records[3]["message"].get_str(), "partial ");
     BOOST_CHECK(!records[3].exists("continued"));
-    BOOST_CHECK_EQUAL(records[4]["msg"].get_str(), "rest");
+    BOOST_CHECK_EQUAL(records[4]["message"].get_str(), "rest");
     BOOST_CHECK(records[4]["continued"].get_bool());
 
-    BOOST_CHECK(records[5]["func"].get_str().find("logging_json_format") !=
-                std::string::npos);
-    BOOST_CHECK_EQUAL(records[5]["msg"].get_str(), "with function");
+    // With -logsourcelocations: the source location, function by name
+    const UniValue &source{records[5]["source"]};
+    BOOST_CHECK_EQUAL(source["file"].get_str(), "src/test/logging_tests.cpp");
+    BOOST_CHECK(source["line"].getInt<int>() > int(loc.line()));
+    BOOST_CHECK_EQUAL(source["function"].get_str(),
+                      "logging_tests::logging_json_format::test_method");
+    BOOST_CHECK(!records[4].exists("source"));
+    BOOST_CHECK_EQUAL(records[5]["message"].get_str(), "with function");
 
-    BOOST_CHECK(!records[6].exists("ts"));
+    BOOST_CHECK(!records[6].exists("time"));
     BOOST_CHECK_EQUAL(records[6]["mocktime"].get_str(), "2023-11-14T22:13:20Z");
     BOOST_CHECK_EQUAL(records[6]["level"].get_str(), "error");
 }

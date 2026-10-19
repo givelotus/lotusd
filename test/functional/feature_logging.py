@@ -125,19 +125,24 @@ class LoggingTest(BitcoinTestFramework):
         assert len(records) > 20
         for r in records:
             assert set(r) >= {
-                "ts",
+                "time",
                 "level",
                 "category",
                 "thread",
-                "file",
-                "line",
-                "func",
-                "msg",
+                "message",
+                "source",
             }, r
+            assert set(r["source"]) == {"file", "line", "function"}, r
             assert r["level"] in ("trace", "debug", "info", "warning", "error")
-            assert isinstance(r["line"], int)
-            assert not r["msg"].endswith("\n")
-        msgs = [r["msg"] for r in records]
+            assert isinstance(r["source"]["line"], int)
+            # The bare name: no return type, no parameters
+            function = r["source"]["function"]
+            assert not function.startswith(("void ", "bool ", "static ")), r
+            assert function.endswith("operator()") or not function.endswith(
+                ")"
+            ), r
+            assert not r["message"].endswith("\n")
+        msgs = [r["message"] for r in records]
         # Lines logged before the log file was opened are buffered and
         # written in the selected format too.
         assert any(m.startswith("Bitcoin ABC version") for m in msgs)
@@ -146,8 +151,8 @@ class LoggingTest(BitcoinTestFramework):
         assert any(r["thread"] == "init" for r in records)
         # Source files are relative to the source tree (compile-time
         # -fmacro-prefix-map), like "src/init.cpp".
-        assert any(r["file"] == "src/init.cpp" for r in records)
-        assert all(not os.path.isabs(r["file"]) for r in records)
+        assert any(r["source"]["file"] == "src/init.cpp" for r in records)
+        assert all(not os.path.isabs(r["source"]["file"]) for r in records)
         self.assert_no_absolute_source_paths(json_log_path)
         assert any(
             r["category"] == "none" and r["level"] == "info" for r in records
@@ -174,7 +179,7 @@ class LoggingTest(BitcoinTestFramework):
             errors = [
                 r
                 for r in map(json.loads, filter(str.strip, f))
-                if r["msg"].startswith("Error: Unable to bind")
+                if r["message"].startswith("Error: Unable to bind")
             ]
         assert_equal(len(errors), 1)
         assert_equal(errors[0]["level"], "error")
