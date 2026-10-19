@@ -127,8 +127,10 @@ class P2PWebSocketTokenTest(BitcoinTestFramework):
         node0 = self.nodes[0]
         self.stop_node(0)
         for args, error in (
-            (["-p2pwebsockettoken=x", "-externaldomain=example.org"],
-             "-externaldomain cannot be combined"),
+            (
+                ["-p2pwebsockettoken=x", "-externaldomain=example.org"],
+                "-externaldomain cannot be combined",
+            ),
             (["-p2pwebsocketpath=/"], "Unable to start HTTP server"),
             (["-p2pwebsocketpath=relative"], "Unable to start HTTP server"),
             (["-p2pwebsockettoken=bad token"], "Unable to start HTTP server"),

@@ -12,7 +12,12 @@ import ssl
 import time
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, assert_raises_rpc_error, p2p_port, rpc_port
+from test_framework.util import (
+    assert_equal,
+    assert_raises_rpc_error,
+    p2p_port,
+    rpc_port,
+)
 from test_framework.wallet import MiniWallet
 
 PUBLIC_PORT_INDEX = 41
@@ -65,7 +70,8 @@ def parse(text):
                 rest = tuple(p for p in labels if p[0] != "le")
                 le = dict(labels)["le"]
                 series.setdefault(rest, []).append(
-                    (float("inf") if le == "+Inf" else float(le), v))
+                    (float("inf") if le == "+Inf" else float(le), v)
+                )
         for rest, buckets in series.items():
             counts = [v for _, v in sorted(buckets)]
             assert counts == sorted(counts), f"{name} not cumulative"
@@ -137,25 +143,41 @@ class HTTPMetricsTest(BitcoinTestFramework):
 
         self.log.info("Peers: node1 over WebSocket, node1 over TCP")
         self.wait_until(
-            lambda: self.total(
-                self.scrape(), "lotus_peers", direction="inbound",
-                transport="websocket") == 1
+            lambda: (
+                self.total(
+                    self.scrape(),
+                    "lotus_peers",
+                    direction="inbound",
+                    transport="websocket",
+                )
+                == 1
+            )
         )
         self.connect_nodes(0, 1)
         self.wait_until(
-            lambda: self.total(
-                self.scrape(), "lotus_peers", direction="outbound",
-                transport="tcp") == 1
+            lambda: (
+                self.total(
+                    self.scrape(), "lotus_peers", direction="outbound", transport="tcp"
+                )
+                == 1
+            )
         )
         samples = self.scrape()
         assert_equal(self.total(samples, "lotus_p2p_websocket_peers"), 1)
+        assert_equal(self.total(samples, "lotus_p2p_websocket_peers", tls="false"), 1)
         assert_equal(
-            self.total(samples, "lotus_p2p_websocket_peers", tls="false"), 1)
-        assert_equal(
-            self.total(samples, "lotus_p2p_connections_total",
-                       direction="inbound", transport="websocket"), 1)
-        for name in ("lotus_p2p_received_messages_total",
-                     "lotus_p2p_sent_messages_total"):
+            self.total(
+                samples,
+                "lotus_p2p_connections_total",
+                direction="inbound",
+                transport="websocket",
+            ),
+            1,
+        )
+        for name in (
+            "lotus_p2p_received_messages_total",
+            "lotus_p2p_sent_messages_total",
+        ):
             assert self.total(samples, name, type="version") >= 2, name
         assert self.total(samples, "lotus_p2p_sent_bytes_total") > 0
         assert ("lotus_p2p_received_bytes_total", (("type", "other"),)) in samples
@@ -164,8 +186,10 @@ class HTTPMetricsTest(BitcoinTestFramework):
         wallet = MiniWallet(node)
         self.generate(wallet, 101)
         self.wait_until(
-            lambda: self.scrape()[("lotus_block_connect_seconds_count", ())]
-            == connected + 101
+            lambda: (
+                self.scrape()[("lotus_block_connect_seconds_count", ())]
+                == connected + 101
+            )
         )
         self.wait_until(
             lambda: self.scrape()[("lotus_initial_block_download", ())] == 0
@@ -183,15 +207,10 @@ class HTTPMetricsTest(BitcoinTestFramework):
         assert self.total(samples, "lotus_p2p_message_handling_seconds_count") > 0
         assert_equal(samples[("lotus_mempool_transactions", ())], 0)
         tx = wallet.send_self_transfer(from_node=node)
-        self.wait_until(
-            lambda: self.scrape()[("lotus_mempool_transactions", ())] == 1
-        )
-        assert_equal(
-            self.scrape()[("lotus_mempool_bytes", ())], len(tx["hex"]) // 2)
+        self.wait_until(lambda: self.scrape()[("lotus_mempool_transactions", ())] == 1)
+        assert_equal(self.scrape()[("lotus_mempool_bytes", ())], len(tx["hex"]) // 2)
         self.generate(node, 1)
-        self.wait_until(
-            lambda: self.scrape()[("lotus_mempool_transactions", ())] == 0
-        )
+        self.wait_until(lambda: self.scrape()[("lotus_mempool_transactions", ())] == 0)
 
         self.log.info("HTTP and RPC requests")
         # Baselines exclude completed setup RPCs and the one-second scrape cache.
@@ -199,8 +218,7 @@ class HTTPMetricsTest(BitcoinTestFramework):
         before_rpc = self.scrape()
         height = node.getblockcount()  # Native async actor.
         node.getrpcinfo()  # Async dispatcher wrapping a synchronous actor.
-        assert_raises_rpc_error(
-            -8, "Block height out of range", node.getblockhash, -1)
+        assert_raises_rpc_error(-8, "Block height out of range", node.getblockhash, -1)
         node.waitforblockheight(height + 1, 100)  # Actual coroutine suspension.
         self.request(rpc_port(0), path="/livez")
         with socket.create_connection(("127.0.0.1", rpc_port(0))) as raw:
@@ -211,29 +229,55 @@ class HTTPMetricsTest(BitcoinTestFramework):
                 pass
         time.sleep(1.1)  # past the rendering cache
         samples = self.scrape()
-        assert self.total(samples, "lotus_http_requests_total",
-                          endpoint="rpc", code="2xx") > 0
-        assert self.total(samples, "lotus_http_requests_total",
-                          endpoint="health", code="2xx") >= 1
-        assert self.total(samples, "lotus_http_requests_total",
-                          endpoint="metrics", code="2xx") >= 1
-        assert self.total(samples, "lotus_http_request_duration_seconds_count",
-                          endpoint="rpc") > 0
+        assert (
+            self.total(samples, "lotus_http_requests_total", endpoint="rpc", code="2xx")
+            > 0
+        )
+        assert (
+            self.total(
+                samples, "lotus_http_requests_total", endpoint="health", code="2xx"
+            )
+            >= 1
+        )
+        assert (
+            self.total(
+                samples, "lotus_http_requests_total", endpoint="metrics", code="2xx"
+            )
+            >= 1
+        )
+        assert (
+            self.total(
+                samples, "lotus_http_request_duration_seconds_count", endpoint="rpc"
+            )
+            > 0
+        )
         assert_equal(
-            self.total(samples, "lotus_http_tls_handshakes_total", result="ok"), 1)
-        for method in ("getblockcount", "getrpcinfo", "getblockhash",
-                       "waitforblockheight"):
+            self.total(samples, "lotus_http_tls_handshakes_total", result="ok"), 1
+        )
+        for method in (
+            "getblockcount",
+            "getrpcinfo",
+            "getblockhash",
+            "waitforblockheight",
+        ):
             name = "lotus_rpc_request_duration_seconds_count"
-            assert_equal(self.total(samples, name, method=method),
-                         self.total(before_rpc, name, method=method) + 1)
+            assert_equal(
+                self.total(samples, name, method=method),
+                self.total(before_rpc, name, method=method) + 1,
+            )
         # The timer covers the await lifetime, not only initial dispatch.
         name = "lotus_rpc_request_duration_seconds_sum"
-        assert (self.total(samples, name, method="waitforblockheight") -
-                self.total(before_rpc, name, method="waitforblockheight")) >= 0.075
+        assert (
+            self.total(samples, name, method="waitforblockheight")
+            - self.total(before_rpc, name, method="waitforblockheight")
+        ) >= 0.075
         # Only methods that were called have series.
         assert_equal(
-            self.total(samples, "lotus_rpc_request_duration_seconds_count",
-                       method="stop"), 0)
+            self.total(
+                samples, "lotus_rpc_request_duration_seconds_count", method="stop"
+            ),
+            0,
+        )
         assert not any(
             n.startswith("lotus_rpc_request") and ("method", "stop") in ls
             for n, ls in samples
@@ -245,16 +289,16 @@ class HTTPMetricsTest(BitcoinTestFramework):
         res, _ = self.request(rpc_port(0), method="POST")
         assert_equal(res.status, 405)
 
-        self.log.info("A client outside -rpcallowip is refused (resolved "
-                      "through the trusted proxy's X-Forwarded-For)")
+        self.log.info(
+            "A client outside -rpcallowip is refused (resolved "
+            "through the trusted proxy's X-Forwarded-For)"
+        )
         res, body = self.request(
             rpc_port(0), headers={"X-Forwarded-For": "203.0.113.5"}
         )
         assert_equal(res.status, 403)
         assert "lotus_" not in body
-        res, _ = self.request(
-            rpc_port(0), headers={"X-Forwarded-For": "127.0.0.1"}
-        )
+        res, _ = self.request(rpc_port(0), headers={"X-Forwarded-For": "127.0.0.1"})
         assert_equal(res.status, 200)
 
         self.log.info("Public listeners never serve metrics")

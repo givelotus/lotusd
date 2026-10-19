@@ -68,7 +68,9 @@ class P2PWebSocketPeerKeysTest(BitcoinTestFramework):
         other = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
 
         self.log.info("A listed key gets its permissions")
-        self.restart_node(0, self.server_args(f"-p2pwebsocketpeer=noban,mempool@{spki}"))
+        self.restart_node(
+            0, self.server_args(f"-p2pwebsocketpeer=noban,mempool@{spki}")
+        )
         peer = self.connect()
         assert_equal(peer["websocket"]["pinned"], True)
         assert_equal(sorted(peer["permissions"]), ["download", "mempool", "noban"])
@@ -85,7 +87,8 @@ class P2PWebSocketPeerKeysTest(BitcoinTestFramework):
 
         self.log.info("-p2pwebsocketrequirecert drops unlisted WebSocket peers")
         self.restart_node(
-            0, self.server_args(f"-p2pwebsocketpeer={other}", "-p2pwebsocketrequirecert")
+            0,
+            self.server_args(f"-p2pwebsocketpeer={other}", "-p2pwebsocketrequirecert"),
         )
         self.dropped("wss", "its key is not listed in -p2pwebsocketpeer")
         self.dropped("ws", "no client certificate")

@@ -126,9 +126,7 @@ class P2PWebSocketTLSTest(BitcoinTestFramework):
             self.log.info("zstandard not installed: skipping decompression")
         else:
             block = json.loads(
-                zstandard.ZstdDecompressor().decompress(
-                    data, max_output_size=1 << 26
-                )
+                zstandard.ZstdDecompressor().decompress(data, max_output_size=1 << 26)
             )
             assert_equal(block["result"]["hash"], tip)
 

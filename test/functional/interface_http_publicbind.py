@@ -45,8 +45,9 @@ class HTTPPublicBindTest(BitcoinTestFramework):
         for i in range(1, self.num_nodes):
             self.start_node(i)
 
-    def request(self, port, method, path, body=None, *, tls=False, auth=True,
-                headers=None):
+    def request(
+        self, port, method, path, body=None, *, tls=False, auth=True, headers=None
+    ):
         url = urllib.parse.urlparse(self.nodes[0].url)
         h = dict(headers or {})
         if auth:

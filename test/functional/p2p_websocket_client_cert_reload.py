@@ -3,6 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Outbound wss dials reload client keys, retaining old sessions and bad-file fallback."""
+
 import base64
 import hashlib
 import os
@@ -32,15 +33,45 @@ class ClientCertificateReloadTest(BitcoinTestFramework):
 
     def issue(self, path):
         cert, key = path / "rotated.pem", path / "rotated.key"
-        subprocess.run([self.openssl, "req", "-new", "-x509", "-newkey", "ec",
-                        "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
-                        "-subj", "/CN=rotated.example", "-keyout", str(key), "-out", str(cert)],
-                       check=True, capture_output=True)
-        pubkey = subprocess.run([self.openssl, "x509", "-pubkey", "-noout", "-in", str(cert)],
-                                check=True, capture_output=True).stdout
-        der = subprocess.run([self.openssl, "pkey", "-pubin", "-outform", "DER"],
-                             input=pubkey, check=True, capture_output=True).stdout
-        return cert.read_bytes(), key.read_bytes(), base64.urlsafe_b64encode(hashlib.sha256(der).digest()).decode().rstrip("=")
+        subprocess.run(
+            [
+                self.openssl,
+                "req",
+                "-new",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=rotated.example",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        pubkey = subprocess.run(
+            [self.openssl, "x509", "-pubkey", "-noout", "-in", str(cert)],
+            check=True,
+            capture_output=True,
+        ).stdout
+        der = subprocess.run(
+            [self.openssl, "pkey", "-pubin", "-outform", "DER"],
+            input=pubkey,
+            check=True,
+            capture_output=True,
+        ).stdout
+        return (
+            cert.read_bytes(),
+            key.read_bytes(),
+            base64.urlsafe_b64encode(hashlib.sha256(der).digest()).decode().rstrip("="),
+        )
 
     def peers(self, n):
         return [p for p in self.nodes[n].getpeerinfo() if p["transport"] == "wss"]
@@ -77,7 +108,12 @@ class ClientCertificateReloadTest(BitcoinTestFramework):
         assert_equal(self.peers(0)[0]["websocket"]["peer_spki"], old)
         received_ping = self.peers(0)[0].get("bytesrecv_per_msg", {}).get("ping", 0)
         self.nodes[1].ping()
-        self.wait_until(lambda: self.peers(0)[0].get("bytesrecv_per_msg", {}).get("ping", 0) > received_ping)
+        self.wait_until(
+            lambda: (
+                self.peers(0)[0].get("bytesrecv_per_msg", {}).get("ping", 0)
+                > received_ping
+            )
+        )
         self.disconnect_second()
 
         self.log.info("A mismatched certificate/key retains the last good identity")
