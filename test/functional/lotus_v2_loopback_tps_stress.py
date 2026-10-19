@@ -41,6 +41,7 @@ from test_framework.messages import (  # noqa: E402
     ser_uint256,
 )
 from test_framework.script import CScript  # noqa: E402
+from test_framework.v7tx import v2_txout as make_v2_txout  # noqa: E402
 
 V2_OP_TRUE_SCRIPT = b"\x4e"
 V2_OP_TRUE_DESCRIPTOR = "raw(4e)"
@@ -48,19 +49,6 @@ V2_OP_TRUE_BRANCH_LEAF = lotus_v2_branch_leaf(V2_OP_TRUE_SCRIPT)
 
 _BIP340_CHALLENGE_TAG_HASH = hashlib.sha256(b"BIP0340/challenge").digest()
 _BIP340_CHALLENGE_PREFIX = _BIP340_CHALLENGE_TAG_HASH + _BIP340_CHALLENGE_TAG_HASH
-
-
-def make_v2_txout(value_sats: int, branch_leaf: bytes) -> CTxOut:
-    txout = CTxOut()
-    txout.nFlags = 0
-    txout.nValue = value_sats
-    txout.tokenId = b"\x00" * 32
-    txout.vBranches = [branch_leaf]
-    txout.vPaths = [[0]]
-    txout.scriptPubKey = _lotus_v2_encode_output(
-        (0, value_sats, b"\x00" * 32, [branch_leaf], [[0]])
-    )
-    return txout
 
 
 def prepare_bip340_signer(secret_int: int = 42):
