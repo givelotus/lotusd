@@ -483,6 +483,14 @@ class SizePass {
                 pop();
                 pop();
                 push(16);
+            } else if (op == 0xdf) { // INPUTWITNESSARG
+                pop();
+                pop();
+                pop();
+                // The widest argument in the prepared transaction, else the
+                // element cap.
+                push(prepared ? std::min(limit, prepared->MaxFieldBound(op))
+                              : limit);
             } else if (op == 0xec) { // TXTOKENBALANCE
                 pop();
                 push(16);

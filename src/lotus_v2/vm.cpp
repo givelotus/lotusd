@@ -2098,6 +2098,23 @@ namespace {
                         Push(Number(RequiresBranch(coin, root)));
                         break;
                     }
+                    case 0xdf: { // INPUTWITNESSARG: i w a -> bytes
+                        const Int a = Numeric(Pop());
+                        const Int w = Numeric(Pop());
+                        const auto &input = InputAt(Numeric(Pop()));
+                        // Any input's arguments are readable (plan I-12).
+                        // A spend has one witness per path slot; a mint has
+                        // exactly witness 0; a coinbase has none.
+                        if (input.flags == 2)
+                            throw VmFailure("witness argument at coinbase input");
+                        if (input.flags == 3 && w != 0)
+                            throw VmFailure("introspection index out of range");
+                        const auto &witness =
+                            input.witnesses[Index(w, input.witnesses.size())];
+                        Push(witness.arguments[Index(
+                            a, witness.arguments.size())]);
+                        break;
+                    }
                     case 0xde: // UTXOFLAGS
                         Push(Number(CoinAt(Numeric(Pop())).flags));
                         break;
@@ -2498,6 +2515,13 @@ SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
                     field_maxima_[op] = maximum;
                 }
             }
+            // INPUTWITNESSARG (df) can return any witness argument.
+            size_t max_argument = 0;
+            for (const Input &input : tx_.inputs)
+                for (const BranchWitness &witness : input.witnesses)
+                    for (const VmBytes &argument : witness.arguments)
+                        max_argument = std::max(max_argument, argument.size());
+            field_maxima_[0xdf] = max_argument;
         } catch (const VmFailure &failure) {
             error = failure.what();
             return failure.status == VmStatus::Unsupported

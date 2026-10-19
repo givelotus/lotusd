@@ -126,11 +126,12 @@ void RegistryAllocation() {
     Expect("016c794e", VmStatus::Success);     // push payload is data
     // Newly registered bytes are assigned: never success. Without an
     // authenticated context (or before their semantics land) they are
-    // Unsupported; one index operand is supplied for the readers.
+    // Unsupported; three index operands are supplied for the readers.
     for (uint8_t b : {0xc3, 0xde, 0xdf, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf5,
                       0xf6})
-        CHECK(EvaluateVm(VmBytes{b, 0x4e}, {Number(0)}, PROFILE).status ==
-              VmStatus::Unsupported);
+        CHECK(EvaluateVm(VmBytes{b, 0x4e}, {Number(0), Number(0), Number(0)},
+                         PROFILE)
+                  .status == VmStatus::Unsupported);
     // Cost profiles need a base for every executable assigned byte, but not
     // for EMITLOG or the EXT2 prefix.
     VmCostProfile schedule;
@@ -743,7 +744,7 @@ void TokenBalance() {
             CHECK(prepared.Prepare(tx, tx_profile, chain, resolved, cost,
                                    error));
             const auto ctx = prepared.Invocation(0, 0);
-            return EvaluateVmCharged(script, {}, PROFILE, cost,
+            return EvaluateVmCharged(script, {}, PROFILE, prepared.Cost(),
                                      uint16_t(tx.inputs.size()),
                                      uint16_t(tx.outputs.size()), &ctx)
                 .invocation;
@@ -787,6 +788,108 @@ void TokenBalance() {
         }
     }
     Expect("ec", VmStatus::Unsupported, {VmBytes(32)});
+}
+void InputWitnessArg() {
+    // INPUTWITNESSARG (df): i w a -> bytes, for any input (plan I-12).
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    Transaction tx;
+    Input spend;
+    spend.flags = 1;
+    spend.prev_txid.fill(0x41);
+    spend.sequence = UINT32_MAX;
+    spend.witnesses = {BranchWitness{Hex("4e"), {}, {}},
+                       BranchWitness{Hex("4e"), {}, {Hex("b1"), Hex("b2b2")}}};
+    Input mint;
+    mint.flags = 3;
+    mint.sequence = UINT32_MAX;
+    mint.witnesses = {BranchWitness{Hex("79794e"), {}, {Hex("aa")}}};
+    mint.prev_txid = BranchLeaf(mint.witnesses[0].script);
+    tx.inputs = {spend, mint};
+    Output coin;
+    coin.value = 900;
+    coin.branches.resize(2);
+    coin.paths = {{0, 1}};
+    ResolvedCoins resolved{coin, std::nullopt};
+    resolved[0]->branches[1] = BranchLeaf(spend.witnesses[1].script);
+    Output pay;
+    pay.value = 100;
+    pay.branches = {Hash{}};
+    pay.branches[0].fill(0x45);
+    pay.paths = {{0}};
+    Output minted = pay;
+    minted.flags = 1;
+    minted.token_id = mint.prev_txid;
+    minted.value = 1;
+    tx.outputs = {pay, minted};
+
+    VmCostProfile cost;
+    cost.max_invocation_cost = 1000000;
+    cost.structural_byte_cost = 1;
+    for (auto &op : cost.opcode) op = {1, 1, 1};
+    PreparedVmTransaction prepared;
+    // Witness 0 arguments are {X, i, w, a}; df reads input i witness w
+    // argument a and compares it with `expected`, leaving X to drop.
+    auto run = [&](uint8_t i, uint8_t w, uint8_t a, const VmBytes &expected,
+                   bool use_prepared = false) {
+        VmBytes script{0xdf, uint8_t(expected.size())};
+        script.insert(script.end(), expected.begin(), expected.end());
+        script.insert(script.end(), {0x92, 0x79, 0x4e});
+        auto &witness = tx.inputs[0].witnesses[0];
+        witness.script = script;
+        witness.arguments = {Hex("c0ffee"), Number(i), Number(w), Number(a)};
+        resolved[0]->branches[0] = BranchLeaf(script);
+        if (use_prepared) {
+            std::string error;
+            CHECK(prepared.Prepare(tx, tx_profile, chain, resolved, cost,
+                                   error));
+            const auto ctx = prepared.Invocation(0, 0);
+            return EvaluateVmCharged(script, witness.arguments, PROFILE,
+                                     prepared.Cost(), 2, 2, &ctx);
+        }
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
+                               std::nullopt};
+        return EvaluateVmCharged(script, witness.arguments, PROFILE, cost, 2,
+                                 2, &ctx);
+    };
+    auto ok = [&](uint8_t i, uint8_t w, uint8_t a, const VmBytes &expected) {
+        for (const bool use_prepared : {false, true}) {
+            const auto result = run(i, w, a, expected, use_prepared);
+            if (result.invocation.status != VmStatus::Success)
+                throw std::runtime_error("INPUTWITNESSARG " +
+                                         result.invocation.error);
+        }
+    };
+    auto fails = [&](uint8_t i, uint8_t w, uint8_t a) {
+        const auto result = run(i, w, a, Hex("00"));
+        CHECK(result.invocation.status == VmStatus::Invalid);
+        return result.invocation.error;
+    };
+    ok(0, 0, 0, Hex("c0ffee"));         // own invocation's first argument
+    ok(0, 0, 3, Number(3));             // own top argument (a itself)
+    ok(0, 1, 0, Hex("b1"));             // sibling witness of the same input
+    ok(0, 1, 1, Hex("b2b2"));
+    ok(1, 0, 0, Hex("aa"));             // another input's (mint) argument
+    CHECK(fails(0, 0, 4) == "introspection index out of range");
+    CHECK(fails(0, 2, 0) == "introspection index out of range");
+    CHECK(fails(1, 1, 0) == "introspection index out of range"); // mint w==0
+    CHECK(fails(2, 0, 0) == "introspection index out of range");
+    CHECK(run(0, 0, 0, Hex("c0ffef")).invocation.status ==
+          VmStatus::Invalid); // the value really is compared
+    // The size pass bounds the result by the widest argument in the
+    // prepared transaction (16 bytes), not the element cap.
+    const auto loose = run(0, 0, 0, Hex("c0ffee"));
+    const auto tight = run(0, 0, 0, Hex("c0ffee"), true);
+    if (!loose.charged || !tight.charged ||
+        // Charged once as df's result and once as EQUALVERIFY's operand.
+        tight.accounting_cost + 2 * (PROFILE.max_element_bytes - 16) !=
+            loose.accounting_cost)
+        throw std::runtime_error(
+            "INPUTWITNESSARG static bound " +
+            std::to_string(uint64_t(tight.accounting_cost)) + " " +
+            std::to_string(uint64_t(loose.accounting_cost)));
+    CHECK(tight.invocation.executed_cost <= tight.accounting_cost);
+    Expect("df", VmStatus::Unsupported, {Number(0), Number(0), Number(0)});
 }
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
@@ -1607,6 +1710,7 @@ int main() {
     ContextFieldOpcodes();
     StateAndActiveIndexOpcodes();
     TokenBalance();
+    InputWitnessArg();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();
