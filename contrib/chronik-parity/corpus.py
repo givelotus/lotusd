@@ -695,6 +695,14 @@ def build_ws_plans(record: Dict[str, Any], label: str) -> List[Tuple[str, List, 
     if record.get("scripthash_index") and record["scripts"]:
         sh = bytes.fromhex(hex_be_sha256(bytes.fromhex(record["scripts"][0][2])))
         groups.append(("script", ("scripthash", sh), "scripthash"))
+    v2_branches = [bytes.fromhex(b) for b in record.get("v2_branches", [])]
+    v2_assets = [bytes.fromhex(a) for a in record.get("v2_assets", [])]
+    groups += [("script", ("v2-branch", b), f"v2-branch:{b.hex()[:16]}")
+               for b in v2_branches[:8]]
+    groups += [("script", ("taproot", b), f"taproot:{b.hex()[:16]}")
+               for b in v2_branches[:1]]
+    groups += [("script", ("v2-asset", a), f"v2-asset:{a.hex()[:16]}")
+               for a in v2_assets[:4]]
     mempool = record.get("mempool", [])
     for txid in (mempool[:10] + record["txids"][-5:]):
         groups.append(("txid", txid, f"txid:{txid[:16]}"))
@@ -706,6 +714,11 @@ def build_ws_plans(record: Dict[str, Any], label: str) -> List[Tuple[str, List, 
     if token_ids:
         plans.append((f"{label}/tokens-all",
                       [("bin", ws_sub(token_id=t)) for t in token_ids], "set"))
+    if v2_branches or v2_assets:
+        v2_all = [("bin", ws_sub(script=("v2-branch", b))) for b in v2_branches]
+        v2_all += [("bin", ws_sub(script=("taproot", b))) for b in v2_branches[:2]]
+        v2_all += [("bin", ws_sub(script=("v2-asset", a))) for a in v2_assets]
+        plans.append((f"{label}/v2-all", v2_all, "set"))
     plans.append((f"{label}/lokad-all",
                   [("bin", ws_sub(lokad_id=bytes.fromhex(lk))) for lk in lokads], "set"))
     # Everything at once, with duplicate subs, sub+unsub.
@@ -716,6 +729,9 @@ def build_ws_plans(record: Dict[str, Any], label: str) -> List[Tuple[str, List, 
     mixed += [("bin", ws_sub(script=scripts[0], is_unsub=True))] if scripts else []
     mixed += [("bin", ws_sub(token_id=t)) for t in token_ids[:3]]
     mixed += [("bin", ws_sub(lokad_id=bytes.fromhex(lk))) for lk in lokads[:3]]
+    mixed += [("bin", ws_sub(script=("v2-branch", b))) for b in v2_branches[:3]]
+    mixed += ([("bin", ws_sub(script=("taproot", v2_branches[0]), is_unsub=True))]
+              if v2_branches else [])
     plans.append((f"{label}/mixed", mixed, "set"))
     # Error replies are produced in order of the client messages; the final
     # blocks sub is the only live subscription.
@@ -730,6 +746,15 @@ def build_ws_plans(record: Dict[str, Any], label: str) -> List[Tuple[str, List, 
         ("bin", ws_sub(token_id="00" * 31)),
         ("bin", ws_sub(lokad_id=b"\x00\x01\x02")),
         ("bin", ws_sub(txid="zz")),
+    ]
+    if v2_branches:
+        # Other payload sizes fall through to the script-type parser.
+        errors += [
+            ("bin", ws_sub(script=("v2-branch", b"\x11" * 31))),
+            ("bin", ws_sub(script=("v2-asset", b"\x11" * 33))),
+            ("bin", ws_sub(script=("taproot", b"\x11" * 33))),
+        ]
+    errors += [
         ("bin", ws_sub(blocks=True, is_unsub=True)),
         ("bin", b""),
         ("bin", ws_sub(blocks=True)),
