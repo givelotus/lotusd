@@ -185,7 +185,12 @@ class InvalidTxRequestTest(BitcoinTestFramework):
             )
             pad_tx(orphan_tx_pool[i])
 
-        with node.assert_debug_log(["orphanage overflow, removed 1 tx"]):
+        with node.assert_debug_log(
+            [
+                "orphanage overflow, removed 1 tx",
+                {"event": "relay_orphan_overflow", "count": 1},
+            ]
+        ):
             node.p2ps[0].send_txs_and_test(orphan_tx_pool, node, success=False)
 
         self.log.info("Test orphan with rejected parents")
