@@ -224,7 +224,8 @@ class SizePass {
     uint16_t output_count;
     size_t limit;
     VmCostUnits ScanCost(VmOpcode op) const {
-        return op == 0xeb ? CostMul(schedule.opcode[0xeb].per_scanned_output,
+        // A flat charge per transaction output, identical to the meter.
+        return op == 0xeb ? CostMul(schedule.opcode[0xeb].per_tx_output,
                                     output_count, schedule)
                           : 0;
     }
