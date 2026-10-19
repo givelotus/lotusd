@@ -15,6 +15,8 @@ from test_framework.util import (
 
 
 class WalletEncryptionTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1

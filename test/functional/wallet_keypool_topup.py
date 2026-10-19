@@ -19,6 +19,8 @@ from test_framework.util import assert_equal
 
 
 class KeypoolRestoreTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2

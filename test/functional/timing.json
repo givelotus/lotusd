@@ -1028,7 +1028,7 @@
   "time": 7
  },
  {
-  "name": "tool_wallet.py --descriptors",
+  "name": "tool_wallet.py[descriptors]",
   "time": 4
  },
  {
@@ -1040,7 +1040,7 @@
   "time": 24
  },
  {
-  "name": "wallet_address_types.py --descriptors",
+  "name": "wallet_address_types.py[descriptors]",
   "time": 24
  },
  {
@@ -1048,7 +1048,7 @@
   "time": 9
  },
  {
-  "name": "wallet_assumeutxo.py --descriptors",
+  "name": "wallet_assumeutxo.py[descriptors]",
   "time": 16
  },
  {
@@ -1056,7 +1056,7 @@
   "time": 17
  },
  {
-  "name": "wallet_avoidreuse.py --descriptors",
+  "name": "wallet_avoidreuse.py[descriptors]",
   "time": 33
  },
  {
@@ -1068,7 +1068,7 @@
   "time": 9
  },
  {
-  "name": "wallet_balance.py --descriptors",
+  "name": "wallet_balance.py[descriptors]",
   "time": 9
  },
  {
@@ -1088,12 +1088,12 @@
   "time": 9
  },
  {
-  "name": "wallet_createwallet.py --descriptors",
-  "time": 11
+  "name": "wallet_createwallet.py[cli]",
+  "time": 9
  },
  {
-  "name": "wallet_createwallet.py --usecli",
-  "time": 9
+  "name": "wallet_createwallet.py[descriptors]",
+  "time": 11
  },
  {
   "name": "wallet_descriptor.py",
@@ -1112,7 +1112,7 @@
   "time": 6
  },
  {
-  "name": "wallet_encryption.py --descriptors",
+  "name": "wallet_encryption.py[descriptors]",
   "time": 7
  },
  {
@@ -1124,7 +1124,7 @@
   "time": 17
  },
  {
-  "name": "wallet_hd.py --descriptors",
+  "name": "wallet_hd.py[descriptors]",
   "time": 18
  },
  {
@@ -1148,7 +1148,7 @@
   "time": 4
  },
  {
-  "name": "wallet_importprunedfunds.py --descriptors",
+  "name": "wallet_importprunedfunds.py[descriptors]",
   "time": 11
  },
  {
@@ -1160,7 +1160,7 @@
   "time": 16
  },
  {
-  "name": "wallet_keypool_topup.py --descriptors",
+  "name": "wallet_keypool_topup.py[descriptors]",
   "time": 23
  },
  {
@@ -1168,7 +1168,7 @@
   "time": 10
  },
  {
-  "name": "wallet_labels.py --descriptors",
+  "name": "wallet_labels.py[descriptors]",
   "time": 11
  },
  {
@@ -1180,7 +1180,7 @@
   "time": 9
  },
  {
-  "name": "wallet_listsinceblock.py --descriptors",
+  "name": "wallet_listsinceblock.py[descriptors]",
   "time": 18
  },
  {
@@ -1188,7 +1188,7 @@
   "time": 7
  },
  {
-  "name": "wallet_listtransactions.py --descriptors",
+  "name": "wallet_listtransactions.py[descriptors]",
   "time": 9
  },
  {
@@ -1196,12 +1196,12 @@
   "time": 32
  },
  {
-  "name": "wallet_multiwallet.py --descriptors",
-  "time": 34
+  "name": "wallet_multiwallet.py[cli]",
+  "time": 33
  },
  {
-  "name": "wallet_multiwallet.py --usecli",
-  "time": 33
+  "name": "wallet_multiwallet.py[descriptors]",
+  "time": 34
  },
  {
   "name": "wallet_pruning.py",
@@ -1248,7 +1248,7 @@
   "time": 3
  },
  {
-  "name": "wallet_watchonly.py --usecli",
+  "name": "wallet_watchonly.py[cli]",
   "time": 3
  }
 ]
