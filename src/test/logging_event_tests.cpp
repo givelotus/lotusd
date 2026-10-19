@@ -172,6 +172,54 @@ BOOST_AUTO_TEST_CASE(float_message_precision_preserves_raw_fields) {
     BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:.2f}");
 }
 
+BOOST_AUTO_TEST_CASE(validation_state_snapshot_preserves_canonical_text) {
+    const auto verify = [](auto state) {
+        using State = decltype(state);
+        const std::string expected{state.ToString()};
+        std::array<std::byte, 512> bytes;
+        const auto size{BCLog::LogValue<State>::Size(state)};
+        BOOST_REQUIRE(size <= bytes.size());
+        BOOST_CHECK_EQUAL(BCLog::LogValue<State>::Pack(
+                              state, std::span{bytes}.first(size)), size);
+        state.Error("changed after packing");
+        std::string rendered;
+        BCLog::LogValue<State>::Render(std::span{bytes}.first(size), rendered);
+        BOOST_CHECK_EQUAL(rendered, expected);
+    };
+    TxValidationState tx;
+    verify(tx);
+    tx.Invalid(TxValidationResult::TX_CONSENSUS,
+               std::string("why\0reason", 10), "debug\nline");
+    verify(tx);
+    tx.Error("runtime error");
+    verify(tx);
+    BlockValidationState block;
+    verify(block);
+    block.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "", "debug only");
+    verify(block);
+    block.Error("runtime error");
+    verify(block);
+
+    BlockValidationState error;
+    error.Error("runtime error");
+    verify(error);
+
+    Format(BCLog::LogFormat::JSON);
+    LogInfoEvent(BCLog::ALL, "validation_state_fixture", "{reason}")
+        .Field(LogField::Reason, tx);
+    BOOST_CHECK_EQUAL(Json()["reason"].get_str(), tx.ToString());
+    tx.Invalid(TxValidationResult::TX_CONSENSUS, std::string(5000, 'x'));
+    BOOST_CHECK_EQUAL(BCLog::LogValue<TxValidationState>::Size(tx), 5003);
+    LogInfoEvent(BCLog::ALL, "validation_state_large_fixture", "{reason}")
+        .Field(LogField::Reason, tx);
+    const auto record{Json()};
+    BOOST_CHECK(record["fields_truncated"].get_bool());
+    BOOST_CHECK(record["reason"].isNull());
+    tx.Invalid(TxValidationResult::TX_CONSENSUS, std::string(70000, 'x'));
+    BOOST_CHECK_EQUAL(BCLog::LogValue<TxValidationState>::Size(tx),
+                      BCLog::LogValue<TxValidationState>::MAX_SIZE);
+}
+
 BOOST_AUTO_TEST_CASE(event_text_and_json) {
     const CService addr{LookupNumeric("203.0.113.7", 10605)};
     for (const auto format : {BCLog::LogFormat::TEXT, BCLog::LogFormat::JSON}) {
