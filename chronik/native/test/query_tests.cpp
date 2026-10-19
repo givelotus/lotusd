@@ -11,7 +11,6 @@
 #include <chronik/native/http.h>
 #include <chronik/native/indexer.h>
 #include <chronik/native/indexer_impl.h>
-#include <chronik/native/mdbx_store.h>
 #include <chronik/native/proto.h>
 #include <chronik/native/routes.h>
 #include <chronik/native/token_index.h>
@@ -20,6 +19,7 @@
 
 #include <test/fake_host.h>
 #include <test/index_test_util.h>
+#include <test/test_backend.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -243,7 +243,7 @@ struct Env {
     explicit Env(const std::string &name, bool scripthash = false,
                  bool tokens = false)
         : dir(name) {
-        RegisterMdbxStore();
+        nt::RegisterTestStores();
         std::filesystem::create_directories(dir.path);
         fake.Caps().slp_alp_tokens = tokens;
         fake.Extend(fake.MakeBlock(-1, {}));
@@ -262,6 +262,7 @@ struct Env {
             {TxOutput{3800, th::P2pkh(1)}}));
         IndexerParams params;
         params.datadir_net = dir.path;
+        params.backend = nt::TestBackend();
         params.token_index = tokens;
         params.lokad_id_index = true;
         params.scripthash_index = scripthash;
