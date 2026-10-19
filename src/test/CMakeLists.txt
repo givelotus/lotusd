@@ -40,6 +40,7 @@ gen_json_header(JSON_HEADERS
 	data/sighash.json
 	data/tx_invalid.json
 	data/tx_valid.json
+	data/v2_legacy_bridge.json
 )
 
 include(TestSuite)

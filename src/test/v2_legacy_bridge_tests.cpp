@@ -25,12 +25,19 @@
 #include <timedata.h>
 #include <validation.h>
 
+#include <core_io.h>
+#include <test/data/v2_legacy_bridge.json.h>
 #include <test/util/mining.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <cstdlib>
+#include <fstream>
 #include <regex>
+#include <univalue.h>
+#include <util/strencodings.h>
+#include <util/string.h>
 
 namespace {
 /** V2 OP_CHECKSIG. */
@@ -682,6 +689,182 @@ BOOST_AUTO_TEST_CASE(p2sh_bridge_locks) {
     };
     BOOST_CHECK_EQUAL(BlockReason({with_sequence(3)}), "valid");
     BOOST_CHECK(IsScriptFailure(BlockReason({with_sequence(2)})));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// Signing-message vectors shared with the Python test framework
+// (test_framework/v7tx.py): each gives a version 7 transaction, its spent
+// coins, an input, a mode and the V2 signing message of witness 0. Setting
+// LOTUS_V2_BRIDGE_VECTORS_OUT writes the vectors built here to that path.
+namespace {
+struct BridgeVector {
+    std::string comment;
+    CMutableTransaction tx;
+    std::vector<CTxOut> coins;
+    size_t input;
+    uint8_t mode;
+};
+
+CKey VectorKey(uint8_t n) {
+    std::array<uint8_t, 32> secret{};
+    secret[31] = n;
+    CKey key;
+    key.Set(secret.begin(), secret.end(), true);
+    return key;
+}
+
+std::vector<BridgeVector> BuildBridgeVectors() {
+    const CKey k1 = VectorKey(1), k2 = VectorKey(2), k3 = VectorKey(3);
+    const CScript p2pkh = GetScriptForDestination(PKHash(k1.GetPubKey()));
+    const CScript redeem = CScript() << OP_2 << ToByteVector(k2.GetPubKey())
+                                     << ToByteVector(k3.GetPubKey()) << OP_2
+                                     << OP_CHECKMULTISIG;
+    const CScript p2sh = GetScriptForDestination(ScriptHash(redeem));
+    const COutPoint a(TxId(uint256S("01" + std::string(62, '0'))), 0);
+    const COutPoint b(TxId(uint256S("02" + std::string(62, '0'))), 3);
+
+    std::vector<BridgeVector> vectors;
+
+    CMutableTransaction one;
+    one.nVersion = 7;
+    one.vin.push_back(BridgeInput(a, k1.GetPubKey()));
+    one.vout.push_back(OpTrueOutput(9 * COIN));
+    for (uint8_t mode : {0, 1, 2}) {
+        vectors.push_back({"P2PKH bridge, mode " + util::ToString(int(mode)), one,
+                           {CTxOut(10 * COIN, p2pkh)}, 0, mode});
+    }
+
+    CMutableTransaction multisig;
+    multisig.nVersion = 7;
+    multisig.nV2Lock = (uint64_t{1234} << 8) | 1;
+    multisig.nLockTime = 1234;
+    CTxIn in(b, CScript(), 5);
+    in.nFlags = 1;
+    lotus::v2::BranchWitness w;
+    w.script.assign(redeem.begin(), redeem.end());
+    w.arguments = {{}, std::vector<uint8_t>(72, 0), std::vector<uint8_t>(72, 0)};
+    in.vWitnesses = {w};
+    multisig.vin.push_back(in);
+    multisig.vout.push_back(OpTrueOutput(4 * COIN));
+    multisig.vout.push_back(OpTrueOutput(1 * COIN));
+    for (uint8_t mode : {0, 1, 2}) {
+        vectors.push_back({"P2SH 2-of-2 bridge with height and relative locks, mode " +
+                               util::ToString(int(mode)),
+                           multisig, {CTxOut(5 * COIN, p2sh)}, 0, mode});
+    }
+
+    CMutableTransaction mixed;
+    mixed.nVersion = 7;
+    mixed.vin.push_back(BridgeInput(a, k1.GetPubKey()));
+    CTxIn native(b, CScript(), CTxIn::SEQUENCE_FINAL);
+    native.nFlags = 1;
+    lotus::v2::BranchWitness op_true;
+    op_true.script = {V2_OP_TRUE};
+    native.vWitnesses = {op_true};
+    mixed.vin.push_back(native);
+    mixed.vout.push_back(OpTrueOutput(12 * COIN));
+    for (uint8_t mode : {0, 1}) {
+        vectors.push_back({"P2PKH bridge input beside a V2 coin, mode " +
+                               util::ToString(int(mode)),
+                           mixed,
+                           {CTxOut(10 * COIN, p2pkh), OpTrueOutput(3 * COIN)},
+                           0, mode});
+    }
+    vectors.push_back({"V2 input beside a P2PKH bridge input, mode 1", mixed,
+                       {CTxOut(10 * COIN, p2pkh), OpTrueOutput(3 * COIN)}, 1,
+                       1});
+    return vectors;
+}
+
+lotus::v2::Hash VectorMessage(const CMutableTransaction &mtx,
+                              const std::vector<CTxOut> &coins, size_t input,
+                              uint8_t mode, const lotus::v2::ChainId &chain) {
+    lotus::v2::Hash message{};
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        lotus::v2::SigningMessage(CTransaction(mtx).ToV2Transaction(),
+                                  lotus::v2::DefaultTxProfile, chain,
+                                  Resolve(coins), input, 0, mode,
+                                  std::nullopt, message, error),
+        error);
+    return message;
+}
+
+UniValue CoinJSON(const CTxOut &out) {
+    UniValue coin(UniValue::VOBJ);
+    coin.pushKV("value", out.nValue / SATOSHI);
+    if (out.IsLegacy()) {
+        coin.pushKV("script", HexStr(out.scriptPubKey));
+    } else {
+        std::vector<uint8_t> wire;
+        std::string error;
+        BOOST_REQUIRE(lotus::v2::EncodeOutput(out.ToV2Output(), wire, error));
+        coin.pushKV("v2output", HexStr(wire));
+    }
+    return coin;
+}
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(v2_legacy_bridge_vector_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(signing_message_vectors) {
+    const lotus::v2::ChainId chain{};
+    if (const char *out = std::getenv("LOTUS_V2_BRIDGE_VECTORS_OUT")) {
+        UniValue all(UniValue::VARR);
+        for (const BridgeVector &v : BuildBridgeVectors()) {
+            UniValue entry(UniValue::VOBJ);
+            entry.pushKV("comment", v.comment);
+            entry.pushKV("chain_id", HexStr(chain));
+            entry.pushKV("tx", EncodeHexTx(CTransaction(v.tx)));
+            UniValue coins(UniValue::VARR);
+            for (const CTxOut &c : v.coins) {
+                coins.push_back(CoinJSON(c));
+            }
+            entry.pushKV("coins", coins);
+            entry.pushKV("input", uint64_t(v.input));
+            entry.pushKV("mode", int(v.mode));
+            entry.pushKV("message",
+                         HexStr(VectorMessage(v.tx, v.coins, v.input, v.mode,
+                                              chain)));
+            all.push_back(entry);
+        }
+        std::ofstream(out) << all.write(2) << "\n";
+    }
+
+    UniValue vectors;
+    BOOST_REQUIRE(vectors.read(json_tests::v2_legacy_bridge) &&
+                  vectors.isArray());
+    const std::vector<BridgeVector> built = BuildBridgeVectors();
+    BOOST_REQUIRE_EQUAL(vectors.size(), built.size());
+    for (size_t i = 0; i < vectors.size(); ++i) {
+        const UniValue &v = vectors[i];
+        const std::string comment = v["comment"].get_str();
+        CMutableTransaction mtx;
+        BOOST_REQUIRE_MESSAGE(DecodeHexTx(mtx, v["tx"].get_str()), comment);
+        BOOST_CHECK_EQUAL(EncodeHexTx(CTransaction(mtx)),
+                          EncodeHexTx(CTransaction(built[i].tx)));
+        std::vector<CTxOut> coins;
+        for (const UniValue &c : v["coins"].getValues()) {
+            const Amount value = c["value"].getInt<int64_t>() * SATOSHI;
+            if (c.exists("script")) {
+                const std::vector<uint8_t> script = ParseHex(c["script"].get_str());
+                coins.emplace_back(value, CScript(script.begin(), script.end()));
+            } else {
+                lotus::v2::Output out;
+                std::string error;
+                BOOST_REQUIRE(lotus::v2::DecodeOutput(
+                    ParseHex(c["v2output"].get_str()), out, error));
+                coins.push_back(CTxOut::FromV2Output(out));
+                BOOST_CHECK_EQUAL(coins.back().nValue, value);
+            }
+        }
+        const lotus::v2::Hash message =
+            VectorMessage(mtx, coins, v["input"].getInt<int>(),
+                          v["mode"].getInt<int>(), chain);
+        BOOST_CHECK_MESSAGE(HexStr(message) == v["message"].get_str(),
+                            comment);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
