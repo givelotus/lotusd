@@ -1215,7 +1215,7 @@ void EnforceOutput() {
     cost.max_invocation_cost = 100000000;
     cost.structural_byte_cost = 1;
     for (auto &op : cost.opcode) op = {1, 1, 1};
-    cost.opcode[0xeb].per_scanned_output = 5;
+    cost.opcode[0xeb].per_tx_output = 5;
 
     struct Run {
         VmChargedResult charged;
@@ -1576,7 +1576,7 @@ void EnforceOutput() {
         CHECK(r.charged.charged &&
               r.charged.accounting_cost == r.charged.invocation.executed_cost);
         VmCostProfile no_scan = cost;
-        no_scan.opcode[0xeb].per_scanned_output = 0;
+        no_scan.opcode[0xeb].per_tx_output = 0;
         const auto script = script_for(any, 0);
         VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
                                std::nullopt};
@@ -1584,6 +1584,23 @@ void EnforceOutput() {
         ctx.effects = &effects;
         const auto cheaper = EvaluateVmCharged(script, {}, vm, no_scan, 2, 4, &ctx);
         CHECK(cheaper.accounting_cost + 5 * 4 == r.charged.accounting_cost);
+        // The charge is flat per transaction output: a template pinned to
+        // one output pays the same, and the meter equals the static charge.
+        TemplateSpec one = any;
+        one.output_mode = 1;
+        one.output_index = 1;
+        const auto pinned = run(0, script_for(one, 0));
+        CHECK(pinned.charged.invocation.status == VmStatus::Success);
+        CHECK(pinned.charged.accounting_cost ==
+              pinned.charged.invocation.executed_cost);
+        const auto pinned_free = [&] {
+            const auto s = script_for(one, 0);
+            DeferredRecords e;
+            ctx.effects = &e;
+            return EvaluateVmCharged(s, {}, vm, no_scan, 2, 4, &ctx);
+        }();
+        CHECK(pinned_free.accounting_cost + 5 * 4 ==
+              pinned.charged.accounting_cost);
         VmBytes dynamic = Hex("eb 4e");
         const auto d = run(0, dynamic, {good, Number(0)});
         CHECK(d.charged.invocation.status == VmStatus::Success &&

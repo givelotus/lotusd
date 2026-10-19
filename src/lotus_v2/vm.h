@@ -100,8 +100,11 @@ struct VmOpcodeCost {
     uint64_t base = 0;
     uint64_t per_operand_byte = 0;
     uint64_t per_result_byte = 0;
-    // ENFORCEOUTPUT (eb) only: charged once per transaction output scanned.
-    uint64_t per_scanned_output = 0;
+    // ENFORCEOUTPUT (eb) only: a flat charge per output of the transaction,
+    // whatever the template matches. It pays for the template scan and for
+    // the claim's edges in the phase-2 assignment (at most one per output).
+    // The static and the metered charge are the same.
+    uint64_t per_tx_output = 0;
 };
 struct VmCostProfile {
     VmCostUnits max_invocation_cost = 0;
