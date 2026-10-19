@@ -120,6 +120,8 @@ struct HTTPRequestImpl {
     BeastResponse beast_res;
     CService peer_address;
     bool is_tls{false};
+    //! Whether the TCP peer is a -trustedproxy (X-Forwarded-Proto believed)
+    bool tcp_peer_trusted{false};
     std::string client_cert_fingerprint_hex;
     uint64_t max_body_size{0};
     //! Delivers the finished response to the connection that owns the
@@ -627,6 +629,8 @@ struct HTTPConnectionInfo {
     CService peer;
     CService local;
     bool is_tls{false};
+    //! Whether the original TCP peer is a -trustedproxy
+    bool tcp_peer_trusted{false};
     std::string client_cert_fingerprint_hex;
     //! base64url SHA-256 of the client certificate's public key, if any
     std::string client_cert_spki;
@@ -654,6 +658,7 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
     impl->beast_req = std::move(beast_req);
     impl->peer_address = conn.peer;
     impl->is_tls = conn.is_tls;
+    impl->tcp_peer_trusted = conn.tcp_peer_trusted;
     impl->client_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
     impl->max_body_size = g_max_body_size;
     impl->send_reply_fn = [slot, executor](BeastResponse &&res) {
@@ -1836,7 +1841,8 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
         // real client address. It is read exactly, so that what follows (TLS
         // or HTTP) is still classified from the socket.
         bool plain_prefetched{false};
-        if (IsTrustedProxy(conn.peer)) {
+        conn.tcp_peer_trusted = IsTrustedProxy(conn.peer);
+        if (conn.tcp_peer_trusted) {
             const auto proxied{
                 co_await ReadProxyHeader(sock, buffer, plain_prefetched)};
             if (!proxied) {
@@ -2623,6 +2629,32 @@ HTTPRequest::RequestMethod HTTPRequest::GetRequestMethod() const {
 
 bool HTTPRequest::IsTLS() const {
     return m_impl && m_impl->is_tls;
+}
+
+std::string HTTPRequest::GetScheme() const {
+    if (!m_impl) {
+        return "http";
+    }
+    if (m_impl->is_tls) {
+        return "https";
+    }
+    if (m_impl->tcp_peer_trusted) {
+        // The right-most value is the one the nearest proxy added.
+        const auto [first, last] =
+            m_impl->beast_req.equal_range("X-Forwarded-Proto");
+        std::string_view proto;
+        for (auto f = first; f != last; ++f) {
+            proto = f->value();
+        }
+        if (const size_t comma{proto.rfind(',')};
+            comma != std::string_view::npos) {
+            proto = proto.substr(comma + 1);
+        }
+        if (beast::iequals(util::TrimStringView(proto), "https")) {
+            return "https";
+        }
+    }
+    return "http";
 }
 
 std::string HTTPRequest::GetClientCertFingerprint() const {
