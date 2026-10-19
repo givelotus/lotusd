@@ -100,6 +100,9 @@ else()
     )
 endif()
 
+# ---- Protobuf messages (chronik.proto) ----
+include("${CHRONIK_NATIVE_ROOT}/proto/proto.cmake")
+
 # ---- Host adapter (node build only) ----
 if(NOT CHRONIK_NATIVE_STANDALONE)
     add_library(chronik_native_host_abc STATIC
