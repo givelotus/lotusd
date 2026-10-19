@@ -256,8 +256,19 @@ line by line.
   Allow patterns match the indexed path or the path without indices.
 - **Accepted differences:**
   - `ChronikInfo.version` (`FormatFullVersion()` of the host build).
-  - The §1 defects (V2 spent-coin txid, per-IP key) are not exercised here.
-    Add them with `--allow` once their field paths are known.
+  - On the V2 tier (`compare.V2_ACCEPTED`): `/validate-tx::Tx.txid`, the
+    §1.2 defect. The Rust bridge recomputes the txid of a decoded raw tx from
+    its legacy-shaped fields, which for native V2 txs is one constant value;
+    the native host reports the real V2 txid.
+  - The per-IP key defect (§1.3) is not exercised here.
+  - A pattern `ROUTE::PATH` (e.g. `/validate-tx::Tx.txid`) only applies to
+    responses of that route.
+- **V2 subscriptions.** On the V2 tier the record also lists the branch roots
+  and asset IDs of the native output frames; each gets a strict WS session
+  (`v2-branch`, one `taproot` alias, `v2-asset`), plus a `v2-all` set
+  session, entries in the mixed session and payload-size error cases.
+- **V2 dumps.** Use `chronik-native-lotus-v2-dump`, which also dumps the six
+  V2 group tables of the legacy env.
 - **Two kinds of WebSocket nondeterminism are inherent to Chronik:**
   1. A session merges its subscriptions with `tokio::select!` and
      `select_all`, and drops consecutive identical messages. The interleaving
@@ -288,6 +299,7 @@ All runs below use `build/ecash-rust` or `build/v2-rust` for both A and B
 | V2, `--no-tokens`, separate miner | 120 | 17,322 identical | 66 identical | – | 0 differences |
 | V2, `--no-tokens`, separate miner | 400 | ~40k identical per checkpoint through h402 | 66 identical per checkpoint | – | 0 differences through h402; final phase hung on node A (see Known issues) |
 | V2, `--miner a` | 110 | 270 differences | 5 differences | – | coinbase script asymmetry (see Known issues) |
+| V2 Rust (A) vs native (B), `--no-tokens`, separate miner, V2 dump tool | 120 | 17,322: 17,263 identical, 59 parsed-equal (accepted: version, `/validate-tx` txid) | 81 identical (1,978 msgs) | 4 equal | 0 unexpected differences |
 | Negative control: B with `-chroniklokadidindex=0` | 110 | 196 `/lokad-id` differences and 1 WS difference | | | detected, exit 1 |
 
 ## Known issues
