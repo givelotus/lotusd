@@ -63,6 +63,19 @@ struct VmResult {
 
 class PreparedVmTransaction;
 
+// Per-asset transaction totals. The zero key is the native asset; any other
+// key is a token id. Spent coins count as inputs (mints contribute nothing);
+// every output, including burns, counts as an output.
+struct VmAssetTotals {
+    __uint128_t inputs = 0;
+    __uint128_t outputs = 0;
+};
+using VmAssetTotalsMap = std::map<Hash32, VmAssetTotals>;
+bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
+                     bool input, std::string &error);
+bool ComputeVmAssetTotals(const Transaction &tx, const ResolvedCoins &resolved,
+                          VmAssetTotalsMap &totals, std::string &error);
+
 struct VmExecutionContext {
     const Transaction &tx;
     const TxProfile &tx_profile;
@@ -140,6 +153,7 @@ public:
     bool TryGetFieldSizeAt(uint8_t op, size_t idx, size_t &out_size) const;
     size_t MaxFieldBound() const { return max_field_bound_; }
     size_t MintCount() const { return mint_count_; }
+    const VmAssetTotalsMap &AssetTotals() const { return asset_totals_; }
     const PreparedSigningContext &Signing() const { return signing_; }
     bool Owns(const VmExecutionContext &context) const {
         return ready_ && &context.tx == &tx_ && &context.tx_profile == &profile_ &&
@@ -155,6 +169,7 @@ private:
     std::array<size_t, 256> field_maxima_{};
     size_t max_field_bound_ = 0;
     size_t mint_count_ = 0;
+    VmAssetTotalsMap asset_totals_;
     bool ready_ = false;
 };
 
