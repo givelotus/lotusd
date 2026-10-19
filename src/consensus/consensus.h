@@ -6,6 +6,7 @@
 #ifndef BITCOIN_CONSENSUS_CONSENSUS_H
 #define BITCOIN_CONSENSUS_CONSENSUS_H
 
+#include <cstddef>
 #include <cstdint>
 
 /** 1MB */
@@ -47,5 +48,10 @@ static constexpr unsigned int LOCKTIME_VERIFY_SEQUENCE = (1 << 0);
 inline uint64_t GetMaxBlockSigChecksCount(uint64_t maxBlockSize) {
     return maxBlockSize / BLOCK_MAXBYTES_MAXSIGCHECKS_RATIO;
 }
+
+/** Lotus V2 (nVersion 7) transactions have at most 256 inputs and 256
+ * outputs (lotus::v2::MAX_TX_INPUTS / MAX_TX_OUTPUTS). */
+static constexpr size_t MAX_V2_TX_INPUTS = 256;
+static constexpr size_t MAX_V2_TX_OUTPUTS = 256;
 
 #endif // BITCOIN_CONSENSUS_CONSENSUS_H
