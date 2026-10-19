@@ -5,6 +5,7 @@
 #ifndef BITCOIN_LOGGING_VALUES_H
 #define BITCOIN_LOGGING_VALUES_H
 
+#include <consensus/validation.h>
 #include <feerate.h>
 #include <logging/event.h>
 #include <netaddress.h>
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 
 /**
@@ -93,6 +95,52 @@ template <> struct LogValue<CFeeRate> {
         out += rate.ToString();
     }
 };
+
+/** Snapshot validation diagnostics without formatting or owning-string copies. */
+template <typename State> struct ValidationStateLogValue {
+    // A saturated size forces omission from the fixed record with
+    // fields_truncated, never a partial state or overflow.
+    static constexpr size_t MAX_SIZE{std::numeric_limits<uint16_t>::max()};
+    static size_t Size(const State &state) {
+        if (state.IsValid()) return 1;
+        return std::min(MAX_SIZE, size_t{3} +
+            std::min(MAX_SIZE, state.GetRejectReasonView().size()) +
+            std::min(MAX_SIZE, state.GetDebugMessageView().size()));
+    }
+    static size_t Pack(const State &state, std::span<std::byte> out) {
+        out[0] = std::byte(state.IsValid());
+        if (state.IsValid()) return 1;
+        const auto reason{state.GetRejectReasonView()};
+        const auto debug{state.GetDebugMessageView()};
+        assert(out.size() == Size(state) && out.size() < MAX_SIZE);
+        const uint16_t reason_size{uint16_t(reason.size())};
+        std::memcpy(out.data() + 1, &reason_size, sizeof(reason_size));
+        std::memcpy(out.data() + 3, reason.data(), reason.size());
+        std::memcpy(out.data() + 3 + reason.size(), debug.data(), debug.size());
+        return out.size();
+    }
+    static void Render(std::span<const std::byte> in, std::string &out) {
+        if (in[0] != std::byte{0}) {
+            out += "Valid";
+            return;
+        }
+        uint16_t size;
+        std::memcpy(&size, in.data() + 1, sizeof(size));
+        in = in.subspan(3);
+        assert(size <= in.size());
+        out.append(reinterpret_cast<const char *>(in.data()), size);
+        if (size < in.size()) {
+            out += ", ";
+            out.append(reinterpret_cast<const char *>(in.data() + size),
+                       in.size() - size);
+        }
+    }
+};
+template <>
+struct LogValue<TxValidationState> : ValidationStateLogValue<TxValidationState> {};
+template <>
+struct LogValue<BlockValidationState>
+    : ValidationStateLogValue<BlockValidationState> {};
 
 /** Transactions, by reference: rendered as their txid */
 template <> struct LogRef<CTransaction> {

@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <string>
+#include <string_view>
 
 /**
  * A "reason" why a transaction was invalid, suitable for determining whether
@@ -122,6 +123,9 @@ public:
     Result GetResult() const { return m_result; }
     std::string GetRejectReason() const { return m_reject_reason; }
     std::string GetDebugMessage() const { return m_debug_message; }
+    // Non-owning views for immediate bounded diagnostic snapshots.
+    std::string_view GetRejectReasonView() const { return m_reject_reason; }
+    std::string_view GetDebugMessageView() const { return m_debug_message; }
     std::string ToString() const {
         if (IsValid()) {
             return "Valid";
