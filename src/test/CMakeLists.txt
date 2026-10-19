@@ -198,6 +198,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		mempool_overlay_tests.cpp
 		mempool_tests.cpp
 		merkle_tests.cpp
+		metrics_tests.cpp
 		merkleblock_tests.cpp
 		miner_tests.cpp
 		minerfund_tests.cpp
