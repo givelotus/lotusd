@@ -10,6 +10,7 @@
 #include <logging.h>
 #include <lotus_v2/block_wire.h>
 #include <lotus_v2/chronik_explorer.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/header.h>
 #include <lotus_v2/output.h>
 #include <lotus_v2/tagged_hash.h>
@@ -34,6 +35,7 @@
 
 #include <tinyformat.h>
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -293,6 +295,16 @@ Binding get_v2_binding(const chronik_bridge::ChronikBridge &) {
         .genesis = genesis_id,
         .profile = profile_id,
     };
+}
+
+uint32_t get_v2_max_block_bytes(const chronik_bridge::ChronikBridge &) {
+    // GetMaxBlockSize() is the configured limit, raised by the adaptive limit
+    // up to its ceiling: the larger of the two bounds every valid block.
+    const uint64_t limit =
+        std::max(GetConfig().GetMaxBlockSize(),
+                 lotus::v2::DEFAULT_ADAPTIVE_MAX_BLOCK_CEILING);
+    return uint32_t(
+        std::min<uint64_t>(limit, std::numeric_limits<uint32_t>::max()));
 }
 
 NativeBlock bridge_v2_native_block(const CBlock &block,
