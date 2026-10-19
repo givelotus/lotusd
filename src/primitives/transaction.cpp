@@ -5,6 +5,7 @@
 
 #include <primitives/transaction.h>
 #include <consensus/amount.h>
+#include <consensus/consensus.h>
 #include <crypto/hex_base.h>
 #include <hash.h>
 #include <lotus_v2/tagged_hash.h>
@@ -359,7 +360,15 @@ lotus::v2::Transaction CTransaction::ToV2Transaction() const {
     return v2tx;
 }
 
-static void ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
+static_assert(lotus::v2::MAX_TX_INPUTS == MAX_V2_TX_INPUTS &&
+              lotus::v2::MAX_TX_OUTPUTS == MAX_V2_TX_OUTPUTS);
+
+// Returns true when the identity is the structural V2 TxId/TxHash. Returns
+// false, after filling a flat fallback digest, when the transaction is not a
+// well-formed V2 transaction (ComputeTransactionIdentities fails on its
+// content). The fallback only names such a transaction (logs, reject caches);
+// validation rejects it with bad-txns-v2-identity, so it is never accepted.
+static bool ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
                                   uint32_t nVersion,
                                   lotus::v2::Hash32 &txid_out,
                                   lotus::v2::Hash32 &txhash_out,
@@ -372,7 +381,7 @@ static void ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
             txid_out[0] ^= uint8_t(nVersion & 0xffU);
             txhash_out[0] ^= uint8_t(nVersion & 0xffU);
         }
-        return;
+        return true;
     }
     if (outputs_root_out) {
         *outputs_root_out = lotus::v2::Hash32{};
@@ -421,6 +430,7 @@ static void ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
     txid_out = lotus::v2::TaggedHash(lotus::v2::HashDomain::TxId, core_bytes);
     txhash_out =
         lotus::v2::TaggedHash(lotus::v2::HashDomain::TxHash, full_bytes);
+    return false;
 }
 
 TxId CMutableTransaction::GetId() const {
@@ -575,8 +585,8 @@ void CTransaction::InitHashes() {
         }
     }
     lotus::v2::Hash32 txid{}, txhash{}, outputs_root{};
-    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash,
-                          &outputs_root);
+    m_structural_v2_identity = ComputeV2TxIdentities(
+        ToV2Transaction(), nVersion, txid, txhash, &outputs_root);
     std::memcpy(hash.begin(), txid.data(), 32);
     std::memcpy(m_witness_hash.begin(), txhash.data(), 32);
     std::memcpy(m_outputs_hash.begin(), outputs_root.data(), 32);
