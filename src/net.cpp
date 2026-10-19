@@ -1533,15 +1533,17 @@ Sock::EventsPerSock CConnman::GenerateWaitSockets(Span<CNode *const> nodes) {
                             inbound_candidates <= 3);
         bool select_send =
             WITH_LOCK(pnode->cs_vSend, return !pnode->vSendMsg.empty());
-        if (!select_recv && !select_send) {
-            continue;
-        }
 
         LOCK(pnode->m_sock_mutex);
         if (pnode->m_sock) {
-            Sock::Event event =
-                (select_send ? Sock::SEND : 0) | (select_recv ? Sock::RECV : 0);
-            events_per_sock.emplace(pnode->m_sock, Sock::Events{event});
+            // Data the socket implementation buffered itself must make
+            // progress even when CConnman has nothing queued.
+            const Sock::Event pending{pnode->m_sock->PendingEvents()};
+            Sock::Event event = (select_send ? Sock::SEND : 0) |
+                                (select_recv ? Sock::RECV : 0) | pending;
+            if (event != 0) {
+                events_per_sock.emplace(pnode->m_sock, Sock::Events{event});
+            }
         }
     }
 
@@ -1562,10 +1564,29 @@ void CConnman::SocketHandler() {
         // select(2)). If none are ready, wait for a short while and return
         // empty sets.
         events_per_sock = GenerateWaitSockets(snap.Nodes());
+
+        // Sockets holding already decoded data are ready to receive whatever
+        // the OS socket says, so don't block in that case.
+        const auto has_buffered = [](const auto &entry) {
+            return (entry.second.requested & Sock::RECV) &&
+                   entry.first->HasBufferedRecv();
+        };
+        const bool buffered{std::any_of(events_per_sock.begin(),
+                                        events_per_sock.end(), has_buffered)};
         if (events_per_sock.empty() ||
-            !events_per_sock.begin()->first->WaitMany(timeout,
-                                                      events_per_sock)) {
-            interruptNet.sleep_for(timeout);
+            !events_per_sock.begin()->first->WaitMany(
+                buffered ? std::chrono::milliseconds{0} : timeout,
+                events_per_sock)) {
+            if (!buffered) {
+                interruptNet.sleep_for(timeout);
+            }
+        }
+        if (buffered) {
+            for (auto &entry : events_per_sock) {
+                if (has_buffered(entry)) {
+                    entry.second.occurred |= Sock::RECV;
+                }
+            }
         }
 
         // Service (send/receive) each of the already connected nodes.
@@ -1605,6 +1626,16 @@ void CConnman::SocketHandlerConnected(
                 recvSet = it->second.occurred & Sock::RECV;
                 sendSet = it->second.occurred & Sock::SEND;
                 errorSet = it->second.occurred & Sock::ERR;
+                // Flush data the socket implementation buffered itself.
+                if ((it->second.occurred & pnode->m_sock->PendingEvents()) &&
+                    !pnode->m_sock->FlushPending()) {
+                    errorSet = true;
+                }
+            }
+            // The OS socket being readable was only requested on behalf of
+            // FlushPending(): don't read past fPauseRecv.
+            if (pnode->fPauseRecv && !errorSet) {
+                recvSet = false;
             }
         }
 
