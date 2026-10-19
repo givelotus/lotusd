@@ -103,6 +103,7 @@ impl V2ThreeBranchOutput {
             flags,
             value: self.value,
             token_id,
+            state_root: Hash32::default(),
             branches,
             paths,
         }

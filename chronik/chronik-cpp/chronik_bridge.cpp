@@ -51,7 +51,7 @@ rust::Vec<uint8_t> BridgeTxOutputScript(const TxOutT &output) {
                       output.vPaths;
                   }) {
         if (output.scriptPubKey.size() <= 1 && !output.vBranches.empty()) {
-            uint8_t flags = output.nFlags & 0x03;
+            uint8_t flags = output.nFlags & 0x07;
             const bool has_token = !output.tokenId.IsNull() || (flags & 1) != 0;
             if (has_token) {
                 flags |= 1;
@@ -67,6 +67,15 @@ rust::Vec<uint8_t> BridgeTxOutputScript(const TxOutT &output) {
             if (has_token) {
                 out.insert(out.end(), output.tokenId.begin(),
                            output.tokenId.end());
+            }
+            if constexpr (requires { output.stateRoot; }) {
+                if (flags & 0x04) {
+                    out.insert(out.end(), output.stateRoot.begin(),
+                               output.stateRoot.end());
+                }
+            } else {
+                flags &= 0x03;
+                out[0] = flags;
             }
             out.push_back(static_cast<uint8_t>(output.vBranches.size()));
             for (const auto &branch : output.vBranches) {

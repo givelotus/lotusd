@@ -46,7 +46,7 @@ impl SpentCoin {
         self.flags & 2 != 0
     }
     fn valid(&self) -> bool {
-        self.flags & !3 == 0
+        self.flags & !7 == 0
             && self.has_token() == (self.token_id != Hash32::default())
     }
 }
