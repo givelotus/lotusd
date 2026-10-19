@@ -198,6 +198,8 @@ static RPCHelpMan getpeerinfo() {
                          {RPCResult::Type::STR, "peer_spki", /*optional=*/true,
                           "base64url SHA-256 of the peer's TLS public key, "
                           "usable as a pin (-p2pwebsocketpin, #spki=)"},
+                         {RPCResult::Type::STR, "alpn", /*optional=*/true,
+                          "TLS ALPN protocol agreed with the peer, if any"},
                          {RPCResult::Type::BOOL, "pinned",
                           "Whether the peer's key matched a configured pin "
                           "(outbound) or -p2pwebsocketpeer entry (inbound)"},
@@ -384,6 +386,9 @@ static RPCHelpMan getpeerinfo() {
                     if (!ws->peer_cert_fingerprint_hex.empty()) {
                         wsobj.pushKV("peer_cert_fingerprint",
                                      ws->peer_cert_fingerprint_hex);
+                    }
+                    if (!ws->alpn.empty()) {
+                        wsobj.pushKV("alpn", ws->alpn);
                     }
                     if (!ws->peer_spki.empty()) {
                         wsobj.pushKV("peer_spki", ws->peer_spki);

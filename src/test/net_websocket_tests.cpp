@@ -428,6 +428,30 @@ BOOST_AUTO_TEST_CASE(tls_orderly_close) {
     BOOST_CHECK_EQUAL(n, 0);
 }
 
+BOOST_AUTO_TEST_CASE(tls_client_profile) {
+    // Cipher suites in browser order: AES-128-GCM first (OpenSSL's default
+    // puts AES-256 first), forward-secret ECDHE before static RSA.
+    auto ctx{tls::NewContext(/*server=*/false)};
+    BOOST_REQUIRE(ctx);
+    tls::SslPtr ssl{SSL_new(ctx.get())};
+    BOOST_REQUIRE(ssl);
+    std::vector<std::string> names;
+    STACK_OF(SSL_CIPHER) *ciphers{SSL_get_ciphers(ssl.get())};
+    for (int i = 0; i < sk_SSL_CIPHER_num(ciphers); ++i) {
+        names.emplace_back(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(ciphers, i)));
+    }
+    BOOST_REQUIRE_GE(names.size(), 4U);
+    BOOST_CHECK_EQUAL(names[0], "TLS_AES_128_GCM_SHA256");
+    BOOST_CHECK_EQUAL(names[1], "TLS_AES_256_GCM_SHA384");
+    BOOST_CHECK_EQUAL(names[2], "TLS_CHACHA20_POLY1305_SHA256");
+    BOOST_CHECK_EQUAL(names[3], "ECDHE-ECDSA-AES128-GCM-SHA256");
+
+    // ALPN agreed between our client and server.
+    TlsPair p{C::NONE};
+    BOOST_CHECK_EQUAL(tls::NegotiatedAlpn(p.client_ssl), "http/1.1");
+    BOOST_CHECK_EQUAL(tls::NegotiatedAlpn(p.server_ssl), "http/1.1");
+}
+
 BOOST_AUTO_TEST_CASE(tls_spki_fingerprint) {
     TlsPair p{C::NONE};
     BOOST_CHECK_EQUAL(p.server_spki.size(), 32U);
