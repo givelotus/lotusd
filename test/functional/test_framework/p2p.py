@@ -99,6 +99,20 @@ logger = logging.getLogger("TestFramework.p2p")
 # "websocket" (P2P over WebSocket at /p2p/ws on the node's P2P port).
 # Lotus v2 nodes have no raw TCP P2P.
 P2P_TRANSPORT = os.environ.get("TEST_P2P_TRANSPORT", "websocket")
+# Bytes a node counts per message on top of the payload (getpeerinfo's
+# bytes*_per_msg): the v1 header, or p2p-v2's length and id.
+P2P_MSG_OVERHEAD = 4 + 1 if P2P_TRANSPORT == "websocket" else 24
+
+
+def p2p_msg_overhead(msgtype):
+    """P2P_MSG_OVERHEAD for any message type: p2p-v2 sends types without an
+    id as 0, a length and the name."""
+    from .ws_transport import P2P_V2_IDS
+
+    if P2P_TRANSPORT != "websocket" or msgtype in P2P_V2_IDS:
+        return P2P_MSG_OVERHEAD
+    return 4 + 2 + len(msgtype)
+
 
 # The minimum P2P version that this test framework supports
 MIN_P2P_VERSION_SUPPORTED = 60001
@@ -265,6 +279,8 @@ class P2PConnection(asyncio.Protocol):
                 host=self.dstaddr,
                 port=self.dstport,
                 path=self.ws_path,
+                # Lotus v2 nodes speak p2p-v2 only.
+                v2_magic=self.magic_bytes,
             )
             if self.ws.client:
                 transport.write(self.ws.request())

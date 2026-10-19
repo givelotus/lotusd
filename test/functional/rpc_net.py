@@ -11,6 +11,7 @@ from decimal import Decimal
 from itertools import product
 
 import test_framework.messages
+from test_framework import p2p
 from test_framework.avatools import create_coinbase_stakes
 from test_framework.key import ECKey
 from test_framework.messages import NODE_NETWORK
@@ -24,6 +25,8 @@ from test_framework.util import (
 )
 from test_framework.wallet import MiniWallet
 from test_framework.wallet_util import bytes_to_wif
+
+PING_SIZE = 8 + p2p.P2P_MSG_OVERHEAD
 
 
 def assert_net_servicesnames(servicesflag, servicenames):
@@ -182,22 +185,22 @@ class NetTest(BitcoinTestFramework):
     def test_getnettotals(self):
         self.log.info("Test getnettotals")
         # Test getnettotals and getpeerinfo by doing a ping. The bytes
-        # sent/received should increase by at least the size of one ping (32
-        # bytes) and one pong (32 bytes).
+        # sent/received should increase by at least the size of one ping and
+        # one pong (an 8-byte nonce plus the transport's per-message bytes).
         net_totals_before = self.nodes[0].getnettotals()
         peer_info_before = self.nodes[0].getpeerinfo()
         self.nodes[0].ping()
         self.wait_until(
             lambda: (
                 self.nodes[0].getnettotals()["totalbytessent"]
-                >= net_totals_before["totalbytessent"] + 32 * 2
+                >= net_totals_before["totalbytessent"] + PING_SIZE * 2
             ),
             timeout=10,
         )
         self.wait_until(
             lambda: (
                 self.nodes[0].getnettotals()["totalbytesrecv"]
-                >= net_totals_before["totalbytesrecv"] + 32 * 2
+                >= net_totals_before["totalbytesrecv"] + PING_SIZE * 2
             ),
             timeout=10,
         )
@@ -214,14 +217,14 @@ class NetTest(BitcoinTestFramework):
             self.wait_until(
                 lambda: (
                     peer_after()["bytesrecv_per_msg"].get("pong", 0)
-                    >= peer_before["bytesrecv_per_msg"].get("pong", 0) + 32
+                    >= peer_before["bytesrecv_per_msg"].get("pong", 0) + PING_SIZE
                 ),
                 timeout=10,
             )
             self.wait_until(
                 lambda: (
                     peer_after()["bytessent_per_msg"].get("ping", 0)
-                    >= peer_before["bytessent_per_msg"].get("ping", 0) + 32
+                    >= peer_before["bytessent_per_msg"].get("ping", 0) + PING_SIZE
                 ),
                 timeout=10,
             )
