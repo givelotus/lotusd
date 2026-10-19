@@ -756,6 +756,12 @@ public:
     TxId GetId() const { return TxId(hash); }
     TxHash GetHash() const { return TxHash(m_witness_hash); }
     const uint256 &GetOutputsHash() const { return m_outputs_hash; }
+    /**
+     * False when the transaction is not a well-formed V2 transaction and its
+     * TxId/TxHash are the flat fallback digest; validation rejects such a
+     * transaction (bad-txns-v2-identity).
+     */
+    bool HasStructuralV2Identity() const { return m_structural_v2_identity; }
     lotus::v2::Transaction ToV2Transaction() const;
 
     /** Bytes used by the inputs, outputs and long scripts. */
@@ -819,6 +825,7 @@ private:
     uint256 m_witness_hash;
     uint256 m_outputs_hash;
     uint32_t m_serialize_size{0};
+    bool m_structural_v2_identity{true};
     const uint32_t m_long_script_bytes;
     const bool m_owns_storage;
     uint256 ComputeHash() const;
