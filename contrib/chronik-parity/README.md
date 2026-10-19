@@ -271,6 +271,15 @@ line by line.
   V2 group tables of the legacy env and, when present, the V2 service's
   `v2_index` env (`v2_index:<table>` lines with raw subdatabase keys and
   values, plus size and SHA-256 of each flat `v2_tx_*.dat` segment).
+- **V2 service routes.** V2 records set `"v2": true`; the corpus then adds
+  `/v2/status`, `/v2/utxos/:txid/:out_idx`, `POST /v2/branches/{utxos,outputs}`
+  and every `/v2/explorer/v1` route (IDs in both byte orders, limit and
+  malformed-input cases). Responses are JSON and compared leaf by leaf.
+  Every response carries the per-process random service epoch (also inside
+  `snapshot_token` and the hex-encoded cursors), so each side's epoch is
+  zeroed before comparing; a response that then matches byte for byte is
+  reported as `json.<service_epoch>` (accepted). Cursors are not followed
+  across nodes. A Rust-vs-Rust run shows only that difference.
 - **Two kinds of WebSocket nondeterminism are inherent to Chronik:**
   1. A session merges its subscriptions with `tokio::select!` and
      `select_all`, and drops consecutive identical messages. The interleaving
