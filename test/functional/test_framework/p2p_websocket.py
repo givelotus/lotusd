@@ -156,7 +156,9 @@ class P2PWebSocketClient:
         else:
             sock = ws.as_byte_stream()
         self.sock = sock
-        v2 = (subprotocols is not None and P2P_V2_PROTOCOL in subprotocols) or (ws is not None and ws.getsubprotocol() == P2P_V2_PROTOCOL)
+        v2 = (subprotocols is not None and P2P_V2_PROTOCOL in subprotocols) or (
+            ws is not None and ws.getsubprotocol() == P2P_V2_PROTOCOL
+        )
         self.layer = WebSocketLayer(
             client=True,
             host=parsed.hostname,
@@ -222,6 +224,28 @@ class P2PWebSocketClient:
     def send_raw(self, raw):
         self.sock.sendall(self.layer.encode(raw))
         self.payload_bytes_sent += len(raw)
+
+    @property
+    def independent_frames_recv(self):
+        return getattr(self.layer, "independent_frames_recv", 0)
+
+    def send_independent(self, raw):
+        """Send one complete native message without touching stream history."""
+        import zstandard
+
+        from .ws_transport import OP_BINARY, P2P_ZSTD_DICT_VERSION, RSV2, P2PV2Converter
+
+        converter = P2PV2Converter(self.magic)
+        bodies = converter.to_wire(raw)
+        assert len(bodies) == 1 and not converter.pending
+        dictionary = zstandard.ZstdCompressionDict(
+            p2p_zstd_dict(), dict_type=zstandard.DICT_TYPE_RAWCONTENT
+        )
+        compressed = zstandard.ZstdCompressor(
+            level=1, dict_data=dictionary, write_content_size=True
+        ).compress(bodies[0])
+        body = bytes([1]) + struct.pack("<I", P2P_ZSTD_DICT_VERSION) + compressed
+        self.sock.sendall(self.layer._frame(OP_BINARY, body, rsv=RSV2))
 
     def send_message(self, message):
         self.send_raw(self.build_message(message))

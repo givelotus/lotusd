@@ -87,17 +87,15 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
         raw_block = bytes.fromhex(node.getblock(blockhash, 0))
         assert len(raw_block) > 100000, len(raw_block)
 
-        self.log.info("Peers: p2p-zstd-v1 (two), p2p-zstd, none and raw TCP")
-        dict_a = self.connect(["p2p-zstd-v1", "p2p-zstd"])
-        dict_b = self.connect(["p2p-zstd-v1"])
-        zstd = self.connect(["p2p-zstd"])
-        uncompressed = self.connect(None)
-        assert_equal(dict_a.subprotocol, "p2p-zstd-v1")
-        assert_equal(dict_b.subprotocol, "p2p-zstd-v1")
-        assert_equal(zstd.subprotocol, "p2p-zstd")
-        assert_equal(uncompressed.subprotocol, None)
+        self.log.info("Four explicit native p2p-v2 peers and one framework WS peer")
+        dict_a = self.connect(["p2p-v2"])
+        dict_b = self.connect(["p2p-v2"])
+        zstd = self.connect(["p2p-v2"])
+        uncompressed = self.connect(["p2p-v2"])
+        for peer in [dict_a, dict_b, zstd, uncompressed]:
+            assert_equal(peer.subprotocol, "p2p-v2")
         tcp = node.add_p2p_connection(BlockCollector())
-        self.wait_until(lambda: len(self.ws_peers(0)) == 4)
+        self.wait_until(lambda: len(self.ws_peers(0)) == 5)
         before = self.scrape()
 
         ws_peers = [dict_a, dict_b, zstd, uncompressed]
@@ -120,17 +118,17 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
         tcp.wait_until(lambda: blockhash in tcp.blocks)
         assert_equal(tcp.blocks[blockhash], raw_block.hex())
 
-        self.log.info("zstd peers got it as an independent frame")
+        self.log.info("All native peers got an independent frame")
         assert_equal(dict_a.independent_frames_recv, 1)
         assert_equal(dict_b.independent_frames_recv, 1)
         assert_equal(zstd.independent_frames_recv, 1)
-        assert_equal(uncompressed.independent_frames_recv, 0)
+        assert_equal(uncompressed.independent_frames_recv, 1)
         sent = sorted(
             p["websocket"]["independent_frames_sent"] for p in self.ws_peers(0)
         )
-        assert_equal(sent, [0, 1, 1, 1])
+        assert_equal(sent, [1, 1, 1, 1, 1])
 
-        self.log.info("The block was compressed once for the three zstd peers")
+        self.log.info("The block was compressed once for five native peers")
         after = self.scrape()
 
         def delta(name):
@@ -138,10 +136,10 @@ class P2PWebSocketCompressOnceTest(BitcoinTestFramework):
 
         assert_equal(delta("fullnode_p2p_compress_once_encodes_total"), 1)
         assert_equal(delta("fullnode_p2p_compress_once_cache_misses_total"), 1)
-        assert_equal(delta("fullnode_p2p_compress_once_cache_hits_total"), 2)
+        assert_equal(delta("fullnode_p2p_compress_once_cache_hits_total"), 4)
         assert_equal(
             delta('fullnode_p2p_websocket_independent_frames_total{direction="sent"}'),
-            3,
+            5,
         )
         assert_equal(after["fullnode_p2p_compress_once_cache_entries"], 1)
         assert after["fullnode_p2p_compress_once_cache_bytes"] > 0
