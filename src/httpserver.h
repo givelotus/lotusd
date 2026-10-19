@@ -65,9 +65,6 @@ void InterruptHTTPServer();
 /** Stop HTTP server */
 void StopHTTPServer();
 
-/** Change logging level for libevent (still used by torcontrol). */
-void UpdateHTTPServerLogging(bool enable);
-
 /** Handler for requests to a certain HTTP path */
 typedef std::function<bool(Config &config, HTTPRequest *req,
                            const std::string &)>

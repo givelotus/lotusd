@@ -37,10 +37,6 @@
 
 #include <univalue.h>
 
-// libevent is no longer used by the HTTP server, but torcontrol still uses it
-// and its logging is configured from here.
-#include <event2/event.h>
-
 #include <openssl/crypto.h>
 
 #include <boost/asio/as_tuple.hpp>
@@ -2072,26 +2068,6 @@ static bool HTTPBindAddresses() {
     return true;
 }
 
-/** libevent event log callback */
-static void libevent_log_cb(int severity, const char *msg) {
-    BCLog::Level level;
-    switch (severity) {
-        case EVENT_LOG_DEBUG:
-            level = BCLog::Level::Debug;
-            break;
-        case EVENT_LOG_MSG:
-            level = BCLog::Level::Info;
-            break;
-        case EVENT_LOG_WARN:
-            level = BCLog::Level::Warning;
-            break;
-        default: // EVENT_LOG_ERR and others are mapped to error
-            level = BCLog::Level::Error;
-            break;
-    }
-    LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
-}
-
 /** A random name shaped like an ordinary host name */
 static std::string RandomHostName() {
     static constexpr const char *TLDS[]{"com", "net", "org", "io", "dev"};
@@ -2270,11 +2246,6 @@ bool InitHTTPServer(Config &config) {
         return false;
     }
 
-    // Redirect libevent's logging to our own log
-    event_set_log_callback(&libevent_log_cb);
-    // Update libevent's log handling.
-    UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT));
-
     if (!InitTLS()) {
         return false;
     }
@@ -2375,14 +2346,6 @@ bool InitHTTPServer(Config &config) {
 
     g_work_queue = std::make_unique<HTTPCoroutinePool>(workQueueDepth);
     return true;
-}
-
-void UpdateHTTPServerLogging(bool enable) {
-    if (enable) {
-        event_enable_debug_logging(EVENT_DBG_ALL);
-    } else {
-        event_enable_debug_logging(EVENT_DBG_NONE);
-    }
 }
 
 static std::vector<std::thread> g_thread_http_io;

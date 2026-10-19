@@ -7,8 +7,6 @@
 
 #include <test/util/setup_common.h>
 
-#include <event2/util.h>
-
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/test/unit_test.hpp>
@@ -242,22 +240,6 @@ BOOST_AUTO_TEST_CASE(util_ParseTorControlAddress) {
                             "input: " << input);
         if (parsed && expected) {
             BOOST_CHECK_EQUAL(parsed->ToStringAddrPort(), *expected);
-        }
-
-        // The accepted forms are those of libevent's parser.
-        struct sockaddr_storage storage {};
-        int len = sizeof(storage);
-        const bool libevent_ok =
-            evutil_parse_sockaddr_port(input.c_str(),
-                                       reinterpret_cast<sockaddr *>(&storage),
-                                       &len) == 0;
-        BOOST_CHECK_MESSAGE(libevent_ok == expected.has_value(),
-                            "libevent input: " << input);
-        if (libevent_ok && expected) {
-            CService service;
-            BOOST_CHECK(service.SetSockAddr(
-                reinterpret_cast<const sockaddr *>(&storage), len));
-            BOOST_CHECK_EQUAL(service.ToStringAddrPort(), *expected);
         }
     }
 }

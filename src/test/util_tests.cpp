@@ -36,8 +36,6 @@
 
 #include <univalue.h>
 
-#include <event2/http.h>
-
 #include <boost/test/unit_test.hpp>
 
 #include <array>
@@ -3321,10 +3319,6 @@ BOOST_AUTO_TEST_CASE(url_decode) {
     };
     for (const auto &[input, expected] : vectors) {
         BOOST_CHECK_EQUAL(urlDecode(input), expected);
-        char *decoded = evhttp_uridecode(input.c_str(), false, nullptr);
-        BOOST_REQUIRE(decoded);
-        BOOST_CHECK_EQUAL(std::string(decoded), expected);
-        free(decoded);
     }
 }
 
@@ -3341,10 +3335,6 @@ BOOST_AUTO_TEST_CASE(url_encode) {
     };
     for (const auto &[input, expected] : vectors) {
         BOOST_CHECK_EQUAL(urlEncode(input), expected);
-        char *encoded = evhttp_uriencode(input.data(), input.size(), false);
-        BOOST_REQUIRE(encoded);
-        BOOST_CHECK_EQUAL(std::string(encoded), expected);
-        free(encoded);
     }
 }
 
