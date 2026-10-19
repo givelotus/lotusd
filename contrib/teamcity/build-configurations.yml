@@ -409,13 +409,6 @@ builds:
         cmake_flags:
             - '-DBUILD_CHRONIK=ON'
             - '-DBUILD_CHAINSTATE=ON'
-            # The ZMQ functional test will fail with qemu (due to a qemu limitation),
-            # so disable it to avoid the failure.
-            # Extracted from stderr:
-            #   Unknown host QEMU_IFLA type: 50
-            #   Unknown host QEMU_IFLA type: 51
-            #   Unknown QEMU_IFLA_BRPORT type 33
-            - '-DBUILD_ZMQ=OFF'
             # This is an horrible hack to workaround a qemu bug:
             # https://bugs.launchpad.net/qemu/+bug/1748612
             # Qemu emits a message for unsupported features called by the guest.
@@ -616,17 +609,6 @@ builds:
         templates:
             - diff-node
         timeout: 1200
-
-    build-without-zmq:
-        Werror: true
-        cmake_flags:
-            - '-DBUILD_ZMQ=OFF'
-        targets:
-            - - all
-              - install
-            - - check
-              - check-functional
-        timeout: 1800
 
     check-buildbot:
         runOnDiffRegex:
