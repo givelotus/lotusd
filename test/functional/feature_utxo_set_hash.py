@@ -14,8 +14,7 @@ class UTXOSetHashTest(BitcoinTestFramework):
     num_nodes = 1
     setup_clean_chain = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def test_deterministic_hash_results(self):
         self.log.info("Test deterministic UTXO set hash results")

@@ -34,8 +34,7 @@ class TestBitcoinCli(BitcoinTestFramework):
     setup_clean_chain = True
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_cli()
+    requires = {"cli"}
 
     def run_test(self):
         """Main test logic"""

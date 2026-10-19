@@ -53,8 +53,7 @@ class RawTransactionsTest(BitcoinTestFramework):
     noban_tx_relay = True
     supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def setup_network(self):
         super().setup_network()

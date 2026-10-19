@@ -13,8 +13,7 @@ class CreateWalletWatchonlyTest(BitcoinTestFramework):
 
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         node = self.nodes[0]

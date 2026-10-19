@@ -13,8 +13,7 @@ class WalletDescriptorTest(BitcoinTestFramework):
     num_nodes = 1
     extra_args = [["-keypool=100"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         # Make a descriptor wallet

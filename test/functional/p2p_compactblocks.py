@@ -138,8 +138,7 @@ class CompactBlocksTest(BitcoinTestFramework):
     extra_args = [["-acceptnonstdtxn=1"]]
     utxos = []
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def build_block_on_tip(self, node):
         block = create_block(tmpl=node.getblocktemplate())

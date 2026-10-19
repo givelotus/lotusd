@@ -25,8 +25,7 @@ FINAL_HEIGHT = 399
 class AssumeutxoTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def set_test_params(self):
         """Use the pregenerated, deterministic chain up to height 199."""

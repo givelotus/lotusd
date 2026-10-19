@@ -30,8 +30,7 @@ class ImportMultiTest(BitcoinTestFramework):
     num_nodes = 2
     setup_clean_chain = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def setup_network(self, split=False):
         self.setup_nodes()

@@ -35,8 +35,7 @@ class ChronikTxRemovalOrder(BitcoinTestFramework):
     extra_args = [["-chronik", "-automaticunparking=0"]]
     rpc_timeout = 240
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
+    requires = {"chronik"}
 
     def run_test(self):
         node = self.nodes[0]

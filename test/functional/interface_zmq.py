@@ -97,9 +97,7 @@ class ZMQTest(BitcoinTestFramework):
     num_nodes = 2
     noban_tx_relay = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_py3_zmq()
-        self.skip_if_no_bitcoind_zmq()
+    requires = {"py3_zmq", "zmq"}
 
     def run_test(self):
         self.ctx = zmq.Context()
