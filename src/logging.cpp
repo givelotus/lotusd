@@ -12,7 +12,10 @@
 #include <util/threadnames.h>
 #include <util/time.h>
 
+#include <algorithm>
 #include <array>
+#include <charconv>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -24,6 +27,8 @@ using util::RemovePrefixView;
 bool fLogIPs = DEFAULT_LOGIPS;
 const char *const DEFAULT_DEBUGLOGFILE = "debug.log";
 constexpr auto MAX_USER_SETABLE_SEVERITY_LEVEL{BCLog::Level::Info};
+//! Largest JSON line buffer kept for reuse between log lines
+static constexpr size_t MAX_RETAINED_LINE_BUFFER{64 * 1024};
 
 BCLog::Logger &LogInstance() {
     /**
@@ -44,6 +49,10 @@ BCLog::Logger &LogInstance() {
     static BCLog::Logger *g_logger{new BCLog::Logger()};
     return *g_logger;
 }
+
+namespace BCLog {
+std::string LogEscapeMessage(std::string_view str);
+} // namespace BCLog
 
 static int FileWriteStr(std::string_view str, FILE *fp) {
     return fwrite(str.data(), 1, str.size(), fp);
@@ -82,9 +91,19 @@ bool BCLog::Logger::StartLogging() {
     }
     while (!m_msgs_before_open.empty()) {
         const auto &buflog = m_msgs_before_open.front();
-        std::string s{buflog.str};
-        FormatLogStrInPlace(s, buflog.category, buflog.level, buflog.source_loc,
-                            buflog.threadname, buflog.now, buflog.mocktime);
+        std::string s;
+        if (m_log_format == LogFormat::JSON) {
+            s.swap(m_line_buf);
+            FormatJsonLine(s, buflog.str, buflog.category, buflog.level,
+                           buflog.source_loc, buflog.threadname, buflog.now,
+                           buflog.mocktime, /*continued=*/false,
+                           /*ratelimited=*/false);
+        } else {
+            s = LogEscapeMessage(buflog.str);
+            FormatLogStrInPlace(s, buflog.category, buflog.level,
+                                buflog.source_loc, buflog.threadname,
+                                buflog.now, buflog.mocktime);
+        }
         m_msgs_before_open.pop_front();
 
         if (m_print_to_file) {
@@ -95,6 +114,9 @@ bool BCLog::Logger::StartLogging() {
         }
         for (const auto &cb : m_print_callbacks) {
             cb(s);
+        }
+        if (m_log_format == LogFormat::JSON) {
+            m_line_buf.swap(s);
         }
     }
     m_cur_buffer_memusage = 0;
@@ -218,6 +240,40 @@ std::string BCLog::Logger::LogLevelToStr(BCLog::Level level) {
     assert(false);
 }
 
+/**
+ * Name of a category for the JSON format, without copying it.
+ * Uncategorized messages (NONE, or the ALL mask) are "none".
+ */
+static std::string_view LogCategoryName(BCLog::LogFlags category) {
+    if (category == BCLog::NONE || category == BCLog::ALL) {
+        return "none";
+    }
+    auto it = LOG_CATEGORIES_BY_FLAG.find(category);
+    return it == LOG_CATEGORIES_BY_FLAG.end() ? std::string_view{"unknown"}
+                                              : std::string_view{it->second};
+}
+
+/** The "file" field of a JSON record (the source file of the log call) */
+static std::string_view JsonSourceFile(const std::source_location &loc) {
+    return RemovePrefixView(loc.file_name(), "./");
+}
+
+static std::string_view LogLevelName(BCLog::Level level) {
+    switch (level) {
+        case BCLog::Level::Trace:
+            return "trace";
+        case BCLog::Level::Debug:
+            return "debug";
+        case BCLog::Level::Info:
+            return "info";
+        case BCLog::Level::Warning:
+            return "warning";
+        case BCLog::Level::Error:
+            return "error";
+    }
+    assert(false);
+}
+
 std::string LogCategoryToStr(BCLog::LogFlags category) {
     auto it = LOG_CATEGORIES_BY_FLAG.find(category);
     assert(it != LOG_CATEGORIES_BY_FLAG.end());
@@ -318,6 +374,209 @@ std::string LogEscapeMessage(std::string_view str) {
 }
 } // namespace BCLog
 
+std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
+    if (str == "text") {
+        return LogFormat::TEXT;
+    }
+    if (str == "json") {
+        return LogFormat::JSON;
+    }
+    return std::nullopt;
+}
+
+namespace {
+//! Characters needing no JSON escaping: printable ASCII but '"', '\\', DEL.
+constexpr std::array<bool, 256> JSON_PLAIN{[] {
+    std::array<bool, 256> plain{};
+    for (int c = 0x20; c < 0x7f; ++c) {
+        plain[c] = c != '"' && c != '\\';
+    }
+    return plain;
+}()};
+
+/**
+ * Length of the valid UTF-8 sequence starting at s[0] (a byte >= 0x80), or
+ * 0 if it is not one (overlong, surrogate, beyond U+10FFFF or truncated).
+ */
+size_t Utf8SequenceLength(std::string_view s) {
+    const auto b{[&](size_t i) { return uint8_t(s[i]); }};
+    const uint8_t c{b(0)};
+    size_t len;
+    uint8_t lo{0x80}, hi{0xbf};
+    if (c >= 0xc2 && c <= 0xdf) {
+        len = 2;
+    } else if (c >= 0xe0 && c <= 0xef) {
+        len = 3;
+        if (c == 0xe0) {
+            lo = 0xa0;
+        } else if (c == 0xed) {
+            hi = 0x9f;
+        }
+    } else if (c >= 0xf0 && c <= 0xf4) {
+        len = 4;
+        if (c == 0xf0) {
+            lo = 0x90;
+        } else if (c == 0xf4) {
+            hi = 0x8f;
+        }
+    } else {
+        return 0;
+    }
+    if (s.size() < len || b(1) < lo || b(1) > hi) {
+        return 0;
+    }
+    for (size_t i = 2; i < len; ++i) {
+        if (b(i) < 0x80 || b(i) > 0xbf) {
+            return 0;
+        }
+    }
+    return len;
+}
+
+void AppendDigits(std::string &out, uint32_t value, int width) {
+    char buf[10];
+    for (int i = width - 1; i >= 0; --i) {
+        buf[i] = char('0' + value % 10);
+        value /= 10;
+    }
+    out.append(buf, width);
+}
+
+/** RFC 3339 UTC time, e.g. 2026-10-19T12:34:56.123456Z */
+void AppendRfc3339(std::string &out, SystemClock::time_point tp,
+                   bool with_micros) {
+    const auto secs{std::chrono::floor<std::chrono::seconds>(tp)};
+    const auto days{std::chrono::floor<std::chrono::days>(secs)};
+    const std::chrono::year_month_day ymd{days};
+    const std::chrono::hh_mm_ss hms{secs - days};
+    AppendDigits(out, uint32_t(std::clamp(int{ymd.year()}, 0, 9999)), 4);
+    out += '-';
+    AppendDigits(out, unsigned{ymd.month()}, 2);
+    out += '-';
+    AppendDigits(out, unsigned{ymd.day()}, 2);
+    out += 'T';
+    AppendDigits(out, uint32_t(hms.hours().count()), 2);
+    out += ':';
+    AppendDigits(out, uint32_t(hms.minutes().count()), 2);
+    out += ':';
+    AppendDigits(out, uint32_t(hms.seconds().count()), 2);
+    if (with_micros) {
+        out += '.';
+        AppendDigits(
+            out,
+            uint32_t(
+                std::chrono::duration_cast<std::chrono::microseconds>(tp - secs)
+                    .count()),
+            6);
+    }
+    out += 'Z';
+}
+} // namespace
+
+void BCLog::AppendJsonEscaped(std::string &out, std::string_view str) {
+    static constexpr char HEX[]{"0123456789abcdef"};
+    size_t i{0};
+    while (i < str.size()) {
+        // Copy runs of plain characters at once.
+        size_t run{i};
+        while (run < str.size() && JSON_PLAIN[uint8_t(str[run])]) {
+            ++run;
+        }
+        out.append(str.data() + i, run - i);
+        i = run;
+        if (i == str.size()) {
+            break;
+        }
+        const uint8_t c{uint8_t(str[i])};
+        if (c >= 0x80) {
+            const size_t len{Utf8SequenceLength(str.substr(i))};
+            if (len) {
+                out.append(str.data() + i, len);
+                i += len;
+            } else {
+                // U+FFFD REPLACEMENT CHARACTER for each invalid byte
+                out.append("\xef\xbf\xbd");
+                ++i;
+            }
+            continue;
+        }
+        switch (c) {
+            case '"':
+                out.append("\\\"");
+                break;
+            case '\\':
+                out.append("\\\\");
+                break;
+            case '\n':
+                out.append("\\n");
+                break;
+            case '\r':
+                out.append("\\r");
+                break;
+            case '\t':
+                out.append("\\t");
+                break;
+            default: {
+                const char esc[6]{'\\', 'u',         '0',
+                                  '0',  HEX[c >> 4], HEX[c & 0xf]};
+                out.append(esc, sizeof(esc));
+            }
+        }
+        ++i;
+    }
+}
+
+void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
+                                   LogFlags category, Level level,
+                                   const std::source_location &source_loc,
+                                   std::string_view threadname,
+                                   SystemClock::time_point now,
+                                   std::chrono::seconds mocktime,
+                                   bool continued, bool ratelimited) const {
+    out.clear();
+    out += '{';
+    if (m_log_timestamps) {
+        out += "\"ts\":\"";
+        AppendRfc3339(out, now, /*with_micros=*/true);
+        out += "\",";
+    }
+    if (mocktime > 0s) {
+        out += "\"mocktime\":\"";
+        AppendRfc3339(out, SystemClock::time_point{mocktime},
+                      /*with_micros=*/false);
+        out += "\",";
+    }
+    out += "\"level\":\"";
+    out += LogLevelName(level);
+    out += "\",\"category\":\"";
+    out += LogCategoryName(category);
+    out += "\",\"thread\":\"";
+    AppendJsonEscaped(out, threadname.empty() ? "unknown" : threadname);
+    out += "\",\"file\":\"";
+    AppendJsonEscaped(out, JsonSourceFile(source_loc));
+    out += "\",\"line\":";
+    char num[16];
+    const auto res{std::to_chars(num, num + sizeof(num), source_loc.line())};
+    out.append(num, res.ptr);
+    if (m_log_sourcelocations) {
+        out += ",\"func\":\"";
+        AppendJsonEscaped(out, source_loc.function_name());
+        out += '"';
+    }
+    if (continued) {
+        out += ",\"continued\":true";
+    }
+    if (ratelimited) {
+        out += ",\"ratelimited\":true";
+    }
+    out += ",\"msg\":\"";
+    if (!msg.empty() && msg.back() == '\n') {
+        msg.remove_suffix(1);
+    }
+    AppendJsonEscaped(out, msg);
+    out += "\"}\n";
+}
+
 std::string BCLog::Logger::GetLogPrefix(BCLog::LogFlags category,
                                         BCLog::Level level) const {
     if (category == LogFlags::NONE) {
@@ -382,7 +641,7 @@ BCLog::LogRateLimiter::Create(SchedulerFunction &&scheduler_func,
 
 BCLog::LogRateLimiter::Status
 BCLog::LogRateLimiter::Consume(const std::source_location &source_loc,
-                               const std::string &str) {
+                               std::string_view str) {
     StdLockGuard scoped_lock(m_mutex);
     auto &stats{
         m_source_locations.try_emplace(source_loc, m_max_bytes).first->second};
@@ -430,20 +689,17 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
                                  std::source_location &&source_loc,
                                  BCLog::LogFlags category, BCLog::Level level,
                                  bool should_ratelimit) {
-    std::string str_prefixed = LogEscapeMessage(str);
-
     const bool starts_new_line = m_started_new_line;
     m_started_new_line = !str.empty() && str[str.size() - 1] == '\n';
 
     if (m_buffering) {
+        // Messages are kept raw and escaped for the selected format when the
+        // buffer is flushed.
         if (!starts_new_line) {
             if (!m_msgs_before_open.empty()) {
-                m_msgs_before_open.back().str += str_prefixed;
-                m_cur_buffer_memusage += str_prefixed.size();
+                m_msgs_before_open.back().str += str;
+                m_cur_buffer_memusage += str.size();
                 return;
-            } else {
-                // unlikely edge case; add a marker that something was trimmed
-                str_prefixed.insert(0, "[...] ");
             }
         }
 
@@ -451,7 +707,9 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
             BufferedLog buf{
                 .now = SystemClock::now(),
                 .mocktime = GetMockTime(),
-                .str = str_prefixed,
+                // unlikely edge case; add a marker that something was trimmed
+                .str = starts_new_line ? std::string{str}
+                                       : "[...] " + std::string{str},
                 .threadname = util::ThreadGetInternalName(),
                 .source_loc = std::move(source_loc),
                 .category = category,
@@ -474,11 +732,33 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
         return;
     }
 
-    FormatLogStrInPlace(str_prefixed, category, level, source_loc,
-                        util::ThreadGetInternalName(), SystemClock::now(),
-                        GetMockTime());
+    const bool json{m_log_format == LogFormat::JSON};
+    const SystemClock::time_point now{SystemClock::now()};
+    const std::chrono::seconds mocktime{GetMockTime()};
+    const std::string &threadname{util::ThreadGetInternalName()};
+    // The line written. In JSON mode it takes over the reusable buffer
+    // (a nested call below, for the rate limiting notice, then finds it
+    // empty and uses its own).
+    std::string str_prefixed;
+    bool json_ratelimited{false};
+    const auto format_json{[&] {
+        FormatJsonLine(str_prefixed, str, category, level, source_loc,
+                       threadname, now, mocktime, !starts_new_line,
+                       json_ratelimited);
+    }};
+    if (json) {
+        str_prefixed.swap(m_line_buf);
+        json_ratelimited = m_limiter && m_limiter->SuppressionsActive();
+        format_json();
+    } else {
+        str_prefixed = LogEscapeMessage(str);
+        FormatLogStrInPlace(str_prefixed, category, level, source_loc,
+                            threadname, now, mocktime);
+    }
     bool ratelimit{false};
     if (should_ratelimit && m_limiter) {
+        // The quota counts the bytes written: the whole line, in either
+        // format.
         auto status{m_limiter->Consume(source_loc, str_prefixed)};
         if (status == LogRateLimiter::Status::NEWLY_SUPPRESSED) {
             // with should_ratelimit=false, this cannot lead to infinit
@@ -506,7 +786,13 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
     // issue, we prefix log lines with "[*]" when there are any suppressed
     // source locations.
     if (m_limiter && m_limiter->SuppressionsActive()) {
-        str_prefixed.insert(0, "[*] ");
+        if (!json) {
+            str_prefixed.insert(0, "[*] ");
+        } else if (!json_ratelimited) {
+            // Suppression started with this very line: rare, format again.
+            json_ratelimited = true;
+            format_json();
+        }
     }
 
     if (m_print_to_console) {
@@ -532,6 +818,13 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
             }
         }
         FileWriteStr(str_prefixed, m_fileout);
+    }
+
+    // Give the buffer back for the next line, unless an unusually long
+    // message made it large: that memory is not kept around.
+    if (json && str_prefixed.capacity() <= MAX_RETAINED_LINE_BUFFER &&
+        str_prefixed.capacity() >= m_line_buf.capacity()) {
+        m_line_buf.swap(str_prefixed);
     }
 }
 
