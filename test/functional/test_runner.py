@@ -330,6 +330,14 @@ def main():
         help="stop execution after the first test failure",
     )
     parser.add_argument(
+        "--phase-report",
+        action="store_true",
+        help=(
+            "Record each test's phase timings (cache copy, node start/stop, test"
+            " body, cleanup) and print a summary at the end"
+        ),
+    )
+    parser.add_argument(
         "--junitoutput",
         "-J",
         help=(
@@ -376,6 +384,10 @@ def main():
     )
 
     os.makedirs(tmpdir)
+    phase_dir = None
+    if args.phase_report:
+        phase_dir = os.path.join(tmpdir, "phases")
+        passon_args.append(f"--phasedir={phase_dir}")
 
     logging.debug(f"Temporary test directory at {tmpdir}")
 
@@ -493,6 +505,7 @@ def main():
         combined_logs_len=args.combinedlogslen,
         build_timings=build_timings,
         failfast=args.failfast,
+        phase_dir=phase_dir,
     )
 
 
@@ -509,6 +522,7 @@ def run_tests(
     combined_logs_len=0,
     build_timings=None,
     failfast=False,
+    phase_dir=None,
 ):
     args = args or []
 
@@ -584,6 +598,9 @@ def run_tests(
 
     if junitoutput is not None:
         save_results_as_junit(test_results, junitoutput, runtime, test_suite_name)
+
+    if phase_dir is not None:
+        print_phase_report(phase_dir, os.path.join(tmpdir, "phase-report.json"))
 
     if build_timings is not None:
         build_timings.save_timings(test_results)
@@ -750,6 +767,101 @@ def execute_test_processes(
         job_queue.put(None)
 
     return test_results
+
+
+PHASES = ("chain_init", "network_setup", "body", "final_stop", "cleanup")
+
+
+def print_phase_report(phase_dir, report_path):
+    """Summarize the per-test timings written with --phasedir."""
+    records = []
+    if os.path.isdir(phase_dir):
+        for name in sorted(os.listdir(phase_dir)):
+            with open(os.path.join(phase_dir, name), encoding="utf8") as f:
+                records.append(json.load(f))
+    if not records:
+        print("No phase timings were recorded.")
+        return
+
+    def phase(record, name):
+        return sum(p["duration"] for p in record["phases"] if p["name"] == name)
+
+    def node(record, name):
+        durations = [t["duration"] for t in record["node_timings"] if t["name"] == name]
+        return sum(durations), len(durations)
+
+    totals = {name: sum(phase(r, name) for r in records) for name in PHASES}
+    starts = [node(r, "node_start") for r in records]
+    stops = [node(r, "node_stop") for r in records]
+    start_total, start_count = sum(s for s, _ in starts), sum(n for _, n in starts)
+    stop_total, stop_count = sum(s for s, _ in stops), sum(n for _, n in stops)
+    grand_total = sum(totals.values())
+
+    lines = [bold("\nPhase timings (accumulated over all tests)")]
+    for name in PHASES:
+        share = 100 * totals[name] / grand_total if grand_total else 0
+        lines.append(f"  {name:<14} {totals[name]:>9.1f} s  {share:5.1f}%")
+    lines.append(
+        f"  node starts    {start_total:>9.1f} s  ({start_count} starts, "
+        f"mean {start_total / max(start_count, 1) * 1000:.0f} ms)"
+    )
+    lines.append(
+        f"  node stops     {stop_total:>9.1f} s  ({stop_count} stops, "
+        f"mean {stop_total / max(stop_count, 1) * 1000:.0f} ms)"
+    )
+    waits = {}
+    for r in records:
+        for w in r.get("waits", []):
+            total, count = waits.get(w["name"], (0.0, 0))
+            waits[w["name"]] = (total + w["duration"], count + 1)
+    for name, (total, count) in sorted(waits.items()):
+        share = 100 * total / totals["body"] if totals["body"] else 0
+        lines.append(
+            f"  {name:<14} {total:>9.1f} s  ({count} calls, mean "
+            f"{total / count * 1000:.0f} ms, {share:.1f}% of body)"
+        )
+
+    def overhead(record):
+        return sum(phase(record, n) for n in PHASES if n != "body")
+
+    def label(record):
+        return " ".join(
+            [record["test"]]
+            + [
+                a
+                for a in record["argv"]
+                if not a.startswith(
+                    (
+                        "--tmpdir",
+                        "--portseed",
+                        "--cachedir",
+                        "--configfile",
+                        "--phasedir",
+                    )
+                )
+            ]
+        )
+
+    lines.append(bold("Top 20 tests by setup/teardown time"))
+    for r in sorted(records, key=overhead, reverse=True)[:20]:
+        lines.append(f"  {overhead(r):>7.1f} s  {label(r)}")
+    lines.append(bold("Top 20 tests by body time"))
+    for r in sorted(records, key=lambda r: phase(r, "body"), reverse=True)[:20]:
+        lines.append(f"  {phase(r, 'body'):>7.1f} s  {label(r)}")
+    print("\n".join(lines))
+
+    with open(report_path, "w", encoding="utf8") as f:
+        json.dump(
+            {
+                "totals": totals,
+                "node_start": {"total": start_total, "count": start_count},
+                "node_stop": {"total": stop_total, "count": stop_count},
+                "waits": {k: {"total": t, "count": c} for k, (t, c) in waits.items()},
+                "tests": records,
+            },
+            f,
+        )
+    print(f"Phase report written to {report_path}")
 
 
 def print_results(test_results, tests_dir, max_len_name, runtime, combined_logs_len):

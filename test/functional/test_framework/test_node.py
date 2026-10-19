@@ -130,6 +130,10 @@ class TestNode:
         self.cwd = cwd
         self.descriptors = descriptors
         self.has_explicit_bind = False
+        # Start and stop durations, for the test framework's phase timing.
+        self.timings = []
+        self._start_time = None
+        self._stop_time = None
         if extra_conf is not None:
             append_config(datadir, extra_conf)
             # Remember if there is bind=... in the config file.
@@ -305,6 +309,12 @@ class TestNode:
     def clear_default_args(self):
         self.default_args.clear()
 
+    def _record_timing(self, name, start):
+        """Record how long a start or stop took (see --phasedir)."""
+        self.timings.append(
+            {"name": name, "node": self.index, "duration": time.time() - start}
+        )
+
     def extend_default_args(self, args):
         self.default_args.extend(args)
 
@@ -398,6 +408,7 @@ class TestNode:
         p_args = [self.binary] + self.default_args + extra_args
         if self.emulator is not None:
             p_args = [self.emulator] + p_args
+        self._start_time = time.time()
         self.process = subprocess.Popen(
             p_args, env=subp_env, stdout=stdout, stderr=stderr, cwd=cwd, **kwargs
         )
@@ -454,6 +465,7 @@ class TestNode:
                     # overhead is trivial, and the added guarantees are worth
                     # the minimal performance cost.
                 self.log.debug("RPC successfully started")
+                self._record_timing("node_start", self._start_time)
                 if self.use_cli:
                     return
                 self.rpc = rpc
@@ -576,6 +588,7 @@ class TestNode:
         if not self.running:
             return
         self.log.debug("Stopping node")
+        self._stop_time = time.time()
         try:
             self.stop(wait=wait)
         except http.client.CannotSendRequest:
@@ -624,6 +637,9 @@ class TestNode:
         self.process = None
         self.rpc_connected = False
         self.rpc = None
+        if self._stop_time is not None:
+            self._record_timing("node_stop", self._stop_time)
+            self._stop_time = None
         self.log.debug("Node stopped")
         return True
 
