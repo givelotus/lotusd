@@ -30,7 +30,8 @@ struct Fixture : RouterFixture {
     Bytes wire;
 
     explicit Fixture(size_t count = 2, bool burn = false) {
-        auto db = std::make_shared<SharedV2Db>(dir.path, TestBinding());
+        auto db =
+            std::make_shared<SharedV2Db>(dir.path, TestBinding(), TestBounds());
         ExplorerBlockFacts header;
         for (int i = 0; i < 8; ++i) {
             header.header_wire[54 + i] = uint8_t(uint64_t(134) >> (8 * i));

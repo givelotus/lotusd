@@ -24,6 +24,18 @@ namespace chronik::native::lotus_v2 {
 inline constexpr size_t WIRE_CHUNK_BYTES = 32768;
 /** Maximum serialized individual explorer metadata record. */
 inline constexpr size_t MAX_EXPLORER_RECORD_BYTES = 16 * 1024;
+/** Explorer staging reserved once per block. */
+inline constexpr size_t RESERVE_EXPLORER_BLOCK = 4096;
+/** Explorer staging reserved per wire byte (entries, flat-file staging). */
+inline constexpr size_t RESERVE_EXPLORER_PER_WIRE_BYTE = 6;
+/** Explorer staging reserved per transaction. */
+inline constexpr size_t RESERVE_EXPLORER_TX = 4096;
+/** Explorer staging reserved per input. */
+inline constexpr size_t RESERVE_EXPLORER_INPUT = 8192;
+/** Explorer staging reserved per branch witness. */
+inline constexpr size_t RESERVE_EXPLORER_WITNESS = 2048;
+/** Explorer staging reserved per started wire chunk. */
+inline constexpr size_t RESERVE_EXPLORER_CHUNK = 1024;
 
 /** Bounded record encoder: Invalid("explorer record bound") if too large. */
 template <typename T> Bytes EncodeRecord(const T &value) {
@@ -49,7 +61,10 @@ Bytes TxHashKey(const TxHash &id);
 Bytes InputKey(const TxId &id, uint32_t index);
 Bytes WitnessKey(const TxId &id, uint32_t input, uint32_t index);
 
-/** Conservative reservation before any planner allocation. */
+/**
+ * Conservative reservation before any planner allocation. The block's owner
+ * checks it against the index bounds.
+ */
 size_t PreflightExplorerBlock(const CommittedBlock &block);
 /** Validate a bounded stored input descriptor (shape only); else Corrupt. */
 void ValidateInputMeta(const InputMeta &input, uint64_t wire_size);

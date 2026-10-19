@@ -43,7 +43,8 @@ void AssetAddUnits(U128 &total, uint64_t value) {
 size_t PreflightAssetTx(const AssetTxView &view) {
     const size_t count = view.outputs.size() + view.resolved_spends.size() +
                          view.mint_token_ids.size();
-    if (count > MAX_BATCH_BYTES / 4096) {
+    // The owner reserves more per element against the index bounds.
+    if (count > SIZE_MAX / 4096) {
         ThrowInvalid("asset capacity");
     }
     return count * 4096;
