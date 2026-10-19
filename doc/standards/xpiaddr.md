@@ -110,6 +110,36 @@ retains the familiar address/message/signature workflow; it does not alter
 native BIP340 transaction signatures or accept arbitrary MAST policies as
 single-key statements.
 
+## Native coinbase payout policy
+
+A version-7 coinbase must pay a genuine native output. Mining RPCs accept
+native type-0/type-1 addresses, or an explicitly typed native program/output
+where that RPC defines such an input. They must reject legacy cashaddr,
+Base58 destinations and legacy-script descriptors as native payout requests.
+An explicitly requested legacy version-2 coinbase remains a separate option
+only where the active consensus rules permit it.
+
+There is no automatic translation based on whether the node happens to own
+the key. A legacy P2PKH address contains HASH160 of a SEC-encoded public key;
+a payer or miner cannot derive BLAKE3 of the x-only public key from that
+hash alone. Native script bytes execute with the native VM opcode table,
+not the legacy Bitcoin Script table. Hashing raw legacy P2PKH bytecode into
+a native branch therefore does not create the type-1 program above.
+
+Already committed branch roots cannot be reinterpreted to authorize a
+replacement program. Rescan, restart, address relabeling or a wallet ownership
+lookup cannot repair native payouts committed to the wrong script bytes.
+In particular, raw legacy P2PKH bytecode is unsatisfiable under the current
+native VM's stack/opcode rules; new typed-address support does not recover
+those outputs. Any proposed historical reinterpretation would need an
+explicit consensus decision, not a wallet workaround.
+
+A genuine native payout policy for miner-fund, staking-reward and treasury
+recipients has not yet been specified. Record that as an unresolved integration
+and launch requirement. Implementations must fail closed when a required
+native payment cannot be constructed; they must not invent a recipient,
+silently translate legacy hashes, or disable the existing payment rules.
+
 ## Specification and implementation tracking
 
 This monorepo document is the design-decision home on branch `lotus-v2`.

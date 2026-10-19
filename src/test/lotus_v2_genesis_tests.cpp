@@ -43,6 +43,14 @@ static void CheckPlaceholderGenesis(ChainType type) {
 
     // The second transaction spends Bitcoin's genesis coinbase output.
     BOOST_REQUIRE_EQUAL(genesis.vtx.size(), 2U);
+    // A V2 coinbase and a legacy version 1 transaction: a transaction is
+    // either all legacy or all V2.
+    BOOST_CHECK_EQUAL(genesis.vtx[0]->nVersion, 7);
+    BOOST_CHECK(genesis.vtx[0]->IsCoinBase());
+    BOOST_CHECK_EQUAL(genesis.vtx[1]->nVersion, 1);
+    BOOST_CHECK(genesis.vtx[1]->vin[0].IsLegacy());
+    BOOST_CHECK(genesis.vtx[1]->vout[0].IsLegacy());
+    BOOST_CHECK(genesis.vtx[1]->GetId() == TxId(genesis.vtx[1]->GetHash()));
     const CTxIn &in = genesis.vtx[1]->vin[0];
     BOOST_CHECK_EQUAL(in.prevout.GetTxId().ToString(),
                       "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7a"

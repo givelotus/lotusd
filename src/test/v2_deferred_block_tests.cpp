@@ -114,7 +114,6 @@ CTxIn V2In(const COutPoint &prevout, const Bytes &script) {
 CMutableTransaction V2Tx(std::vector<CTxIn> ins, std::vector<CTxOut> outs) {
     CMutableTransaction mtx;
     mtx.nVersion = 7;
-    mtx.fHasV2Lock = true;
     mtx.nV2Lock = 0;
     mtx.nLockTime = 0;
     mtx.vin = std::move(ins);
@@ -143,27 +142,12 @@ struct Scenarios : TestChain100Setup {
             {"true1", kOpTrue},
             {"fail1", kFail},
         };
-        CMutableTransaction fund;
-        fund.nVersion = 2;
-        fund.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetId(), 0));
-        const Amount total = m_coinbase_txns[0]->vout[0].nValue;
+        // A V2 coinbase pays the V2 coins.
+        std::vector<CTxOut> outputs;
         for (const auto &[_, script] : wanted) {
-            fund.vout.push_back(V2Leaf(kCoin, script));
+            outputs.push_back(V2Leaf(kCoin, script));
         }
-        fund.vout.push_back(V2Leaf(uint64_t(total / SATOSHI) -
-                                       kCoin * wanted.size() - 50'000,
-                                   kOpTrue));
-        FillableSigningProvider keystore;
-        keystore.AddKey(coinbaseKey);
-        SignatureData sigdata;
-        BOOST_REQUIRE(ProduceSignature(
-            keystore,
-            MutableTransactionSignatureCreator(&fund, 0, total,
-                                               SigHashType().withForkId()),
-            coinbase_spk, sigdata));
-        UpdateInput(fund.vin[0], sigdata);
-        CreateAndProcessBlock({fund}, coinbase_spk);
-        const TxId fund_id = fund.GetId();
+        const TxId fund_id = MineV2Coinbase(outputs)->GetId();
         {
             LOCK(cs_main);
             BOOST_REQUIRE(m_node.chainman->ActiveChainstate().CoinsTip().HaveCoin(

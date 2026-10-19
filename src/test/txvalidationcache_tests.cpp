@@ -52,7 +52,6 @@ struct NativeValidationCacheSetup : TestChain100Setup {
         using namespace lotus::v2;
         CMutableTransaction tx;
         tx.nVersion = 7;
-        tx.fHasV2Lock = true;
         ResolvedCoins resolved;
         for (const auto &[parent, index] : previous) {
             CTxIn input(COutPoint(parent->GetId(), index));
