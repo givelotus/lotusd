@@ -10,11 +10,10 @@ from test_framework.util import assert_equal, chronik_sub_to_blocks
 
 
 class ChronikWsPingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [["-chronik"]]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-chronik"]]
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

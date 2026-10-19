@@ -106,17 +106,16 @@ class PreviousSpendableOutput(object):
 
 
 class MempoolCoherenceOnActivationsTest(BitcoinTestFramework, BlockTestMixin):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                EXTRA_ARG,
-                "-acceptnonstdtxn=1",
-                "-automaticunparking=1",
-            ]
+    num_nodes = 1
+    setup_clean_chain = True
+    noban_tx_relay = True
+    extra_args = [
+        [
+            EXTRA_ARG,
+            "-acceptnonstdtxn=1",
+            "-automaticunparking=1",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

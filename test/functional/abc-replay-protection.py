@@ -38,16 +38,15 @@ class PreviousSpendableOutput(object):
 
 
 class ReplayProtectionTest(BitcoinTestFramework, BlockTestMixin):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                f"-replayprotectionactivationtime={REPLAY_PROTECTION_START_TIME}",
-                "-acceptnonstdtxn=1",
-            ]
+    num_nodes = 1
+    setup_clean_chain = True
+    noban_tx_relay = True
+    extra_args = [
+        [
+            f"-replayprotectionactivationtime={REPLAY_PROTECTION_START_TIME}",
+            "-acceptnonstdtxn=1",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

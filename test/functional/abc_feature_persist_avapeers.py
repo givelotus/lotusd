@@ -21,20 +21,19 @@ QUORUM_NODE_COUNT = 8
 
 
 class AvalanchePersistAvapeers(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-avalanchestakingrewards=1",
-                "-avalanchestakingpreconsensus=0",
-            ]
+    num_nodes = 1
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-avalanchestakingrewards=1",
+            "-avalanchestakingpreconsensus=0",
         ]
-        self.noban_tx_relay = True
+    ]
+    noban_tx_relay = True
 
     def run_test(self):
         node = self.nodes[0]
