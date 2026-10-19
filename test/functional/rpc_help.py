@@ -122,9 +122,6 @@ class HelpRpcTest(BitcoinTestFramework):
         if self.is_wallet_compiled():
             components.append("Wallet")
 
-        if self.is_zmq_compiled():
-            components.append("Zmq")
-
         assert_equal(titles, components)
 
     def dump_help(self):
