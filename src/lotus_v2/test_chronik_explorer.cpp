@@ -107,7 +107,7 @@ ChronikBlock Convert(std::vector<Transaction> txs, const TxProfile &profile,
 } // namespace
 int main() {
     try {
-        const TxProfile profile{65535, 65535, 65535, 65536, 65535, 8192, 64};
+        const TxProfile profile{256, 256, 256, 65536, 65535, 8192, 64};
         const ChainId chain = H(0x55);
         Header h;
         h.bits = 0x207fffff;
