@@ -41,6 +41,8 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletBackupTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 4
     setup_clean_chain = True
     noban_tx_relay = True

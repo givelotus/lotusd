@@ -103,6 +103,13 @@ def validate_declarations(cls):
     unknown = set(requires) - set(REQUIREMENTS)
     if unknown:
         raise ValueError(f"{name}.requires: unknown {sorted(unknown)}")
+    extended = cls.extended
+    if not isinstance(extended, bool):
+        if isinstance(extended, str) or not all(isinstance(v, str) for v in extended):
+            raise TypeError(f"{name}.extended must be a bool or a set of variants")
+        unknown = set(extended) - set(variants)
+        if unknown:
+            raise ValueError(f"{name}.extended: unknown variants {sorted(unknown)}")
     topology = cls.topology
     if isinstance(topology, str):
         if topology not in ("chain", "none"):
@@ -207,6 +214,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     # What the test needs, from REQUIREMENTS (e.g. {"wallet", "chronik"});
     # the test is skipped when something is missing.
     requires: AbstractSet[str] = frozenset()
+    # A long test that test_runner.py runs only with --extended, or when it is
+    # named on the command line: True, or the names of the extended variants.
+    extended: Union[bool, AbstractSet[str]] = False
 
     def __init__(self, argv=None):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method
@@ -1778,7 +1788,9 @@ class TestDeclarations(unittest.TestCase):
             requires={"wallet"},
             variants={"default": {}, "cli": {"usecli": True}},
             topology=((0, 1),),
+            extended={"cli"},
         )
+        self.define(extended=True)
 
     def test_invalid(self):
         for attributes in (
@@ -1789,6 +1801,8 @@ class TestDeclarations(unittest.TestCase):
             {"variants": {"default": ["usecli"]}},
             {"topology": "star"},
             {"topology": ((0, 1, 2),)},
+            {"extended": "default"},
+            {"extended": {"no_such_variant"}},
         ):
             with self.assertRaises((TypeError, ValueError), msg=str(attributes)):
                 self.define(**attributes)
