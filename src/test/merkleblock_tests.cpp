@@ -30,10 +30,12 @@ BOOST_AUTO_TEST_CASE(merkleblock_construct_from_txids_found) {
     std::set<TxId> txids;
 
     // Last txn in block.
-    TxId txid1(uint256S("0x27fbcc889495538e02d451319c18d5d3543419125fa16e8ee56949bed3be67e3"));
+    // Lotus V2 transaction ids commit to the active chain id, so take them
+    // from the block instead of hard-coding them.
+    const TxId txid1 = block.vtx.back()->GetId();
 
     // Second txn in block.
-    TxId txid2(uint256S("0xe580c0745af200f5a82548f4d7074c05fca53e62cd41c5fd4cc84b685c27b6d0"));
+    const TxId txid2 = block.vtx[1]->GetId();
 
     txids.insert(txid1);
     txids.insert(txid2);

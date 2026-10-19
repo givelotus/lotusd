@@ -109,7 +109,7 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
 
         # Recipe: censored client using only the bridge, through a proxy.
         # (Without the test framework's bind= and connect=0 defaults.)
-        conf = os.path.join(self.nodes[1].datadir, "bitcoin.conf")
+        conf = os.path.join(self.nodes[1].datadir, "lotusd.conf")
         with open(conf, encoding="utf8") as f:
             lines = [line for line in f if not line.startswith(("bind=", "connect="))]
         with open(conf, "w", encoding="utf8") as f:

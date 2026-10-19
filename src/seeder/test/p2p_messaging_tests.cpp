@@ -41,6 +41,12 @@ public:
 
     DataStream getSendBuffer() { return vSend; }
 
+    void setCheckpoint(int height, const BlockHash &hash) {
+        checkpoint = std::make_pair(height, hash);
+        checkpointVerified = false;
+    }
+
+
     void setStartingHeight(int starting_height) {
         nStartingHeight = starting_height;
     };
@@ -63,13 +69,51 @@ struct SeederTestingSetup {
     std::unique_ptr<CSeederNodeTest> testNode;
 };
 
-struct MainNetSeederTestingSetup : public SeederTestingSetup {
-    MainNetSeederTestingSetup() : SeederTestingSetup(ChainType::MAIN) {}
+struct EmptyCheckpointSeederTestingSetup : public SeederTestingSetup {
+    EmptyCheckpointSeederTestingSetup() : SeederTestingSetup(ChainType::MAIN) {}
+};
+
+struct SyntheticCheckpointSeederTestingSetup : public SeederTestingSetup {
+    const int checkpointHeight{100};
+    const BlockHash checkpointHash{*BlockHash::FromHex(
+        "0000000000000000000000000000000000000000000000000000000000000001")};
+
+    SyntheticCheckpointSeederTestingSetup() : SeederTestingSetup(ChainType::MAIN) {
+        testNode->setCheckpoint(checkpointHeight, checkpointHash);
+    }
 };
 
 BOOST_FIXTURE_TEST_SUITE(p2p_messaging_tests, SeederTestingSetup)
 
 static const int SEEDER_INIT_VERSION = 0;
+
+BOOST_FIXTURE_TEST_CASE(no_checkpoint, EmptyCheckpointSeederTestingSetup) {
+    BOOST_CHECK(Params().Checkpoints().mapCheckpoints.empty());
+    BOOST_CHECK_EQUAL(GetRequireHeight(), 0);
+    BOOST_CHECK(!HasCheckpoint());
+    BOOST_CHECK(testNode->IsCheckpointVerified());
+
+    // Inspect the VERACK reply without imposing a checkpoint requirement.
+    CSeederNodeTest node(vAddr[0], &vAddr);
+    DataStream verack{};
+    node.TestProcessMessage(NetMsgType::VERACK, verack,
+                            PeerMessagingState::AwaitingMessages);
+    auto reply = node.getSendBuffer();
+    CMessageHeader header;
+    reply >> header;
+    BOOST_CHECK_EQUAL(header.GetMessageType(), NetMsgType::GETADDR);
+    BOOST_CHECK(reply.empty());
+
+    // Unsolicited headers do not impose an invented checkpoint requirement.
+    node.setStartingHeight(100);
+    DataStream headers{};
+    WriteCompactSize(headers, 1);
+    headers << CBlockHeader{};
+    node.TestProcessMessage(NetMsgType::HEADERS, headers,
+                            PeerMessagingState::AwaitingMessages);
+    BOOST_CHECK_EQUAL(node.GetBan(), 0);
+    BOOST_CHECK(node.IsCheckpointVerified());
+}
 
 BOOST_AUTO_TEST_CASE(process_version_msg) {
     DataStream versionMessage{};
@@ -116,7 +160,7 @@ BOOST_AUTO_TEST_CASE(process_version_msg_oversized_subver) {
     BOOST_CHECK(testNode->GetClientSubVersion().empty());
 }
 
-BOOST_FIXTURE_TEST_CASE(process_verack_msg, MainNetSeederTestingSetup) {
+BOOST_FIXTURE_TEST_CASE(process_verack_msg, SyntheticCheckpointSeederTestingSetup) {
     DataStream verackMessage{};
     testNode->TestProcessMessage(NetMsgType::VERACK, verackMessage,
                                  PeerMessagingState::AwaitingMessages);
@@ -136,8 +180,7 @@ BOOST_FIXTURE_TEST_CASE(process_verack_msg, MainNetSeederTestingSetup) {
     CBlockLocator locator;
     uint256 hashStop;
     sendBuffer >> locator >> hashStop;
-    std::vector<BlockHash> expectedLocator = {
-        Params().Checkpoints().mapCheckpoints.rbegin()->second};
+    std::vector<BlockHash> expectedLocator = {checkpointHash};
     BOOST_CHECK(locator.vHave == expectedLocator);
     BOOST_CHECK(hashStop == uint256());
 }
@@ -149,14 +192,12 @@ static DataStream CreateAddrMessage(std::vector<CAddress> sendAddrs,
     return payload;
 }
 
-BOOST_FIXTURE_TEST_CASE(process_addr_msg, MainNetSeederTestingSetup) {
+BOOST_FIXTURE_TEST_CASE(process_addr_msg, SyntheticCheckpointSeederTestingSetup) {
     // First, must send headers to satisfy the criteria that both ADDR/ADDRV2
     // *and* HEADERS must arrive before TestNode can advance to the Finished
     // state
-    BlockHash recentCheckpoint =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->second;
-    int recentCheckpointHeight =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->first;
+    BlockHash recentCheckpoint = checkpointHash;
+    int recentCheckpointHeight = checkpointHeight;
     auto header = CBlockHeader{};
     header.hashPrevBlock = recentCheckpoint;
     testNode->setStartingHeight(recentCheckpointHeight + 1);
@@ -236,11 +277,9 @@ BOOST_AUTO_TEST_CASE(empty_headers) {
     BOOST_CHECK_EQUAL(testNode->GetBan(), 0);
 }
 
-BOOST_FIXTURE_TEST_CASE(good_checkpoint, MainNetSeederTestingSetup) {
-    BlockHash recentCheckpoint =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->second;
-    int recentCheckpointHeight =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->first;
+BOOST_FIXTURE_TEST_CASE(good_checkpoint, SyntheticCheckpointSeederTestingSetup) {
+    BlockHash recentCheckpoint = checkpointHash;
+    int recentCheckpointHeight = checkpointHeight;
 
     // Process a HEADERS message with a first header that immediately follows
     // our most recent checkpoint, check that it is accepted.
@@ -260,11 +299,9 @@ BOOST_FIXTURE_TEST_CASE(good_checkpoint, MainNetSeederTestingSetup) {
     BOOST_CHECK(testNode->IsCheckpointVerified());
 }
 
-BOOST_FIXTURE_TEST_CASE(bad_checkpoint, MainNetSeederTestingSetup) {
-    BlockHash recentCheckpoint =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->second;
-    int recentCheckpointHeight =
-        ::Params().Checkpoints().mapCheckpoints.rbegin()->first;
+BOOST_FIXTURE_TEST_CASE(bad_checkpoint, SyntheticCheckpointSeederTestingSetup) {
+    BlockHash recentCheckpoint = checkpointHash;
+    int recentCheckpointHeight = checkpointHeight;
     auto header = CBlockHeader{};
 
     // We just ignore HEADERS messages sent by nodes with a chaintip before our

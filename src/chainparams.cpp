@@ -50,4 +50,5 @@ std::unique_ptr<const CChainParams> CreateChainParams(const ArgsManager &args,
 void SelectParams(const ChainType chain) {
     SelectBaseParams(chain);
     globalChainParams = CreateChainParams(gArgs, chain);
+    SetActiveV2ChainId(globalChainParams->V2ChainId());
 }

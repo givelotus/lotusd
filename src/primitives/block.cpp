@@ -31,7 +31,10 @@
 #include <unordered_set>
 
 namespace {
+// Startup-selected process domain, immutable while node worker threads run.
 lotus::v2::ChainId g_active_v2_chain_id{};
+// Explicit temporary construction scopes affect only their calling thread.
+thread_local const lotus::v2::ChainId *g_scoped_v2_chain_id{nullptr};
 std::mutex g_v2_utxo_mutex;
 std::mutex g_v2_state_io_mutex;
 std::string g_v2_state_persist_dir;
@@ -856,8 +859,18 @@ void CollectSmtCoins(const std::shared_ptr<const SmtNode> &node,
 }
 } // namespace
 
+ScopedV2ChainId::ScopedV2ChainId(const lotus::v2::ChainId &chain_id) noexcept
+    : m_chain_id(chain_id), m_previous(g_scoped_v2_chain_id) {
+    g_scoped_v2_chain_id = &m_chain_id;
+}
+
+ScopedV2ChainId::~ScopedV2ChainId() noexcept {
+    assert(g_scoped_v2_chain_id == &m_chain_id);
+    g_scoped_v2_chain_id = m_previous;
+}
+
 const lotus::v2::ChainId &GetActiveV2ChainId() {
-    return g_active_v2_chain_id;
+    return g_scoped_v2_chain_id ? *g_scoped_v2_chain_id : g_active_v2_chain_id;
 }
 
 void SetActiveV2ChainId(const lotus::v2::ChainId &chain_id) {
