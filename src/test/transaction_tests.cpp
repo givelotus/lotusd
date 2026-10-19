@@ -1148,6 +1148,23 @@ BOOST_AUTO_TEST_CASE(precomputed_data_concurrent_first_use) {
     }
 }
 
+/** A stream that only supports reading, so its bytes are never contiguous. */
+class SequentialReader {
+    SpanReader m_reader;
+
+public:
+    explicit SequentialReader(Span<const uint8_t> data) : m_reader(data) {}
+    void read(Span<std::byte> dst) { m_reader.read(dst); }
+    size_t size() const { return m_reader.size(); }
+    template <typename T> SequentialReader &operator>>(T &&obj) {
+        ::Unserialize(*this, obj);
+        return *this;
+    }
+};
+static_assert(ContiguousReadStream<SpanReader>);
+static_assert(ContiguousReadStream<DataStream>);
+static_assert(!ContiguousReadStream<SequentialReader>);
+
 static CScript RawScript(const std::vector<uint8_t> &bytes) {
     return CScript(bytes.begin(), bytes.end());
 }
@@ -1265,8 +1282,8 @@ BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
                                      UCharCast(full.data()) + full.size());
 
     auto check = [](const std::vector<uint8_t> &data) {
-        bool mutable_ok = true, ref_ok = true;
-        size_t mutable_left = 0, ref_left = 0;
+        bool mutable_ok = true;
+        size_t mutable_left = 0;
         try {
             SpanReader reader{data};
             CMutableTransaction m{deserialize, reader};
@@ -1274,16 +1291,29 @@ BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
         } catch (const std::ios_base::failure &) {
             mutable_ok = false;
         }
-        try {
-            SpanReader reader{data};
-            CTransactionRef ref;
-            reader >> ref;
-            ref_left = reader.size();
-        } catch (const std::ios_base::failure &) {
-            ref_ok = false;
-        }
-        BOOST_CHECK_EQUAL(mutable_ok, ref_ok);
-        BOOST_CHECK_EQUAL(mutable_left, ref_left);
+        // Scanned in place (SpanReader, DataStream) and copied through the
+        // scratch buffer (any other stream).
+        auto read_ref = [&](auto &stream) {
+            bool ok = true;
+            size_t left = 0;
+            try {
+                CTransactionRef ref;
+                stream >> ref;
+                left = stream.size();
+            } catch (const std::ios_base::failure &) {
+                ok = false;
+            }
+            BOOST_CHECK_EQUAL(mutable_ok, ok);
+            if (ok) {
+                BOOST_CHECK_EQUAL(mutable_left, left);
+            }
+        };
+        SpanReader span_reader{data};
+        DataStream data_stream{data};
+        SequentialReader sequential_reader{data};
+        read_ref(span_reader);
+        read_ref(data_stream);
+        read_ref(sequential_reader);
     };
     // Every truncation, and trailing data.
     for (size_t len = 0; len <= bytes.size(); ++len) {
@@ -1301,6 +1331,50 @@ BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
     std::vector<uint8_t> huge_script{bytes.begin(), bytes.begin() + 41};
     huge_script.insert(huge_script.end(), {0xfe, 0x00, 0x00, 0x00, 0x01});
     check(huge_script);
+}
+
+BOOST_AUTO_TEST_CASE(contiguous_streams_are_read_in_place) {
+    // Bytes of a contiguous stream go straight into the transaction storage;
+    // only other streams pass through the per-thread scratch buffer.
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(TxId{uint256::ONE}, 0,
+                         RawScript(std::vector<uint8_t>(107, 1)));
+    mtx.vout.emplace_back(SATOSHI, RawScript(std::vector<uint8_t>(25, 2)));
+    DataStream serialized{};
+    serialized << mtx << uint8_t{0x42};
+    const std::vector<uint8_t> bytes(UCharCast(serialized.data()),
+                                     UCharCast(serialized.data()) +
+                                         serialized.size());
+
+    std::vector<uint8_t> &scratch = TransactionScratchBuffer();
+    const std::vector<uint8_t> sentinel(8, 0xee);
+    auto check = [&](auto &stream, bool in_place) {
+        scratch = sentinel;
+        CTransactionRef ref;
+        stream >> ref;
+        BOOST_CHECK(ref->GetId() == mtx.GetId());
+        // Exactly the transaction was consumed.
+        BOOST_CHECK_EQUAL(stream.size(), 1U);
+        BOOST_CHECK_EQUAL(scratch == sentinel, in_place);
+        // The long script was copied out of the stream's bytes.
+        const uint8_t *script = ref->vin[0].scriptSig.data();
+        BOOST_CHECK(script < bytes.data() ||
+                    script >= bytes.data() + bytes.size());
+    };
+    SpanReader span_reader{bytes};
+    DataStream data_stream{bytes};
+    SequentialReader sequential_reader{bytes};
+    check(span_reader, /*in_place=*/true);
+    check(data_stream, /*in_place=*/true);
+    check(sequential_reader, /*in_place=*/false);
+
+    // The deserializing constructor takes the same path.
+    SpanReader reader{bytes};
+    scratch = sentinel;
+    const CTransaction tx{deserialize, reader};
+    BOOST_CHECK(tx.GetId() == mtx.GetId());
+    BOOST_CHECK_EQUAL(reader.size(), 1U);
+    BOOST_CHECK(scratch == sentinel);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
