@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "source_commit": "0d01962fb2ca07dbd6cd336c5e3a77940947c64f",
+  "source_tree": "36d903a79a2098e4ff6557180c39fd275a6506ce",
+  "corpus_sha256": "bb5dad4d858c89b28e4085ce0b3c9157233c4cc5cb803e4e17b203cac18a8c19",
+  "uncompressed_sha256": "8f2b45020dc36f5b297fd1bf02cab479135c83c707f4fc498aaa266a73991d6a",
+  "binary": "/private/tmp/lane-n1-build/src/lotusd",
+  "binary_sha256": "09a3c8753d259f20774d591fc08eadd7f2b65ffb42ad2d769ee70e708a727614",
+  "capture_script_sha256": "10961584321ac3b27f4c473bcfc2f3ee725c3f0f5952630257a8af4839fa34bb",
+  "groups": {
+    "0": {
+      "counts": {
+        "version": 2,
+        "verack": 2,
+        "getaddr": 2,
+        "sendaddrv2": 1,
+        "sendcmpct": 2,
+        "ping": 93,
+        "pong": 93,
+        "getheaders": 2,
+        "feefilter": 1,
+        "addr": 1,
+        "headers": 1,
+        "getdata": 42,
+        "block": 38,
+        "tx": 80,
+        "inv": 4,
+        "cmpctblock": 4
+      },
+      "signing_script": "20ed3bace23c5e17652e174c835fb72bf53ee306b3406a26890221b4cef7500f88bb",
+      "headers": 30
+    },
+    "1": {
+      "counts": {
+        "version": 2,
+        "verack": 2,
+        "getaddr": 2,
+        "sendaddrv2": 1,
+        "sendcmpct": 2,
+        "ping": 93,
+        "pong": 93,
+        "getheaders": 2,
+        "feefilter": 1,
+        "addr": 1,
+        "headers": 1,
+        "getdata": 42,
+        "block": 38,
+        "tx": 80,
+        "inv": 4,
+        "cmpctblock": 4
+      },
+      "signing_script": "20311091dd9860e8e20ee13473c1155f5f69635e394704eaa74009452246cfa9b3bb",
+      "headers": 30
+    },
+    "2": {
+      "counts": {
+        "version": 2,
+        "verack": 2,
+        "getaddr": 2,
+        "sendaddrv2": 1,
+        "sendcmpct": 2,
+        "ping": 93,
+        "pong": 93,
+        "getheaders": 2,
+        "feefilter": 1,
+        "addr": 1,
+        "headers": 1,
+        "getdata": 42,
+        "block": 38,
+        "tx": 80,
+        "inv": 4,
+        "cmpctblock": 4
+      },
+      "signing_script": "203049f7ffc71d744bd9bed6f42dc6a28974e3a1b9d30671f800e5d46389103c7ebb",
+      "headers": 30
+    },
+    "3": {
+      "counts": {
+        "version": 2,
+        "verack": 2,
+        "getaddr": 2,
+        "sendaddrv2": 1,
+        "sendcmpct": 2,
+        "ping": 93,
+        "pong": 93,
+        "getheaders": 2,
+        "feefilter": 1,
+        "addr": 1,
+        "headers": 1,
+        "getdata": 42,
+        "block": 38,
+        "tx": 80,
+        "inv": 4,
+        "cmpctblock": 4
+      },
+      "signing_script": "2034c1fd04d301be89b31c0442d3e6ac24883928b45a9340781867d4232ec2dbdfbb",
+      "headers": 30
+    }
+  },
+  "capture_dictionary_version": 1,
+  "tx_version": 7,
+  "header_bytes": 134,
+  "training_groups": [
+    0,
+    1,
+    2
+  ],
+  "held_out_group": 3,
+  "heldout_transaction_body_overlap": 0,
+  "heldout_header_overlap": 0,
+  "distinct_signing_keys": 4,
+  "machine": "arm64",
+  "os": "macOS-26.6-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M5 Max",
+  "production_data_used": false,
+  "mainnet_shaped_replay_run": false,
+  "all_requests_real_p2pv2": true
+}
