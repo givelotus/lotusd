@@ -250,13 +250,34 @@ struct StateAuthorization {
 };
 
 // ENFORCEOUTPUT claims. Record: OutputClaim, the claimed amount and the
-// outputs its template matched.
+// outputs its template matched (never empty: an ENFORCEOUTPUT that matches
+// nothing fails its invocation). Final rule ("output-overclaimed"): the
+// claims are feasible, i.e. the claimed amounts can be assigned to outputs
+// their templates match without any output receiving more than its value.
+// It is decided by one maximum-flow computation per transaction (source ->
+// claims -> matching outputs -> sink, capacities the claim amounts and the
+// output values): feasible iff the maximum flow equals the total claimed.
+// Every transaction takes this one code path; there is no special case for
+// claims with a single match. A flow may split one claim's amount across
+// several outputs it matches.
 extern const DeferredKindKey kOutputClaimsKind;
 struct OutputClaim {
     uint64_t amount = 0;
     std::vector<uint16_t> matches;
     bool operator==(const OutputClaim &) const = default;
 };
+
+// The maximum flow from claims to outputs (capacities: claim amounts and
+// `output_values`). With `assigned`, also the flow into each output. Match
+// indexes must be below output_values.size(). Uses 128-bit totals; every
+// edge capacity fits 64 bits.
+__uint128_t MaxClaimFlow(std::span<const OutputClaim> claims,
+                         std::span<const uint64_t> output_values,
+                         std::vector<__uint128_t> *assigned = nullptr);
+// Whether MaxClaimFlow equals the total claimed.
+bool OutputClaimsFeasible(std::span<const OutputClaim> claims,
+                          std::span<const uint64_t> output_values,
+                          std::vector<__uint128_t> *assigned = nullptr);
 
 // Claims in canonical order (input, then witness, then staging order).
 std::vector<OutputClaim> CollectOutputClaims(const DeferredTxRun &run);

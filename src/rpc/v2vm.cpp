@@ -29,6 +29,8 @@
 
 #include <univalue.h>
 
+#include <algorithm>
+
 #include <string>
 #include <vector>
 
@@ -142,8 +144,12 @@ UniValue EffectsJson(const lotus::v2::DeferredRecords &effects) {
     UniValue claims(UniValue::VARR);
     for (const auto &record : lotus::v2::OutputClaimsOf(effects)) {
         UniValue claim(UniValue::VOBJ);
-        claim.pushKV("output", record.matches.front());
         claim.pushKV("amount", record.amount);
+        UniValue matches(UniValue::VARR);
+        for (const auto output : record.matches) {
+            matches.push_back(output);
+        }
+        claim.pushKV("matches", matches);
         claims.push_back(claim);
     }
     UniValue authorized(UniValue::VARR);
@@ -169,24 +175,30 @@ UniValue PostCheckJson(const std::vector<lotus::v2::Output> &outputs,
     if (ok) {
         error.clear();
     }
-    UniValue claimed(UniValue::VARR);
-    std::vector<__uint128_t> sums(outputs.size());
+    // One maximum-flow assignment of the claims (claims whose masks name
+    // a missing output are left out, as the check rejects them anyway).
+    std::vector<lotus::v2::OutputClaim> claims;
     for (const auto &records : per_input) {
-        for (const auto &claim : lotus::v2::OutputClaimsOf(records)) {
-            if (claim.matches.front() < sums.size()) {
-                sums[claim.matches.front()] += claim.amount;
+        for (auto &claim : lotus::v2::OutputClaimsOf(records)) {
+            if (std::all_of(claim.matches.begin(), claim.matches.end(),
+                            [&](uint16_t j) { return j < outputs.size(); })) {
+                claims.push_back(std::move(claim));
             }
         }
     }
+    std::vector<uint64_t> values;
+    for (const auto &output : outputs) {
+        values.push_back(output.value);
+    }
+    std::vector<__uint128_t> sums;
+    lotus::v2::MaxClaimFlow(claims, values, &sums);
+    UniValue claimed(UniValue::VARR);
     for (size_t j = 0; j < outputs.size(); ++j) {
         UniValue entry(UniValue::VOBJ);
         entry.pushKV("output", uint64_t(j));
         entry.pushKV("value", outputs[j].value);
         entry.pushKV("claimed", CostValue(sums[j]));
-        entry.pushKV("unclaimed",
-                     sums[j] <= outputs[j].value
-                         ? UniValue(uint64_t(outputs[j].value - sums[j]))
-                         : UniValue(0));
+        entry.pushKV("unclaimed", uint64_t(outputs[j].value - sums[j]));
         claimed.push_back(entry);
     }
     UniValue out(UniValue::VOBJ);
@@ -199,21 +211,23 @@ UniValue PostCheckJson(const std::vector<lotus::v2::Output> &outputs,
 const RPCResult POST_CHECK_RESULT{
     RPCResult::Type::OBJ,
     "post_check",
-    "The per-transaction ENFORCEOUTPUT/state post-check",
+    "The per-transaction deferred checks (state authorization, then "
+    "ENFORCEOUTPUT claims assigned by maximum flow)",
     {
         {RPCResult::Type::BOOL, "ok", "Whether it passes"},
         {RPCResult::Type::STR, "error", "The failure, or empty"},
         {RPCResult::Type::ARR,
          "outputs",
-         "Claims per output",
+         "The claims assigned to each output by one maximum flow",
          {{RPCResult::Type::OBJ,
            "",
            "",
            {{RPCResult::Type::NUM, "output", "Output index"},
             {RPCResult::Type::NUM, "value", "Output value"},
-            {RPCResult::Type::NUM, "claimed", "Sum of claims"},
-            {RPCResult::Type::NUM, "unclaimed",
-             "value - claimed, or 0 when over-claimed"}}}}},
+            {RPCResult::Type::NUM, "claimed",
+             "Claims assigned to this output (one maximum flow; other "
+             "assignments may exist)"},
+            {RPCResult::Type::NUM, "unclaimed", "value - claimed"}}}}},
     }};
 
 RPCHelpMan getv2vmprofile() {
@@ -405,7 +419,9 @@ RPCHelpMan testv2transaction() {
                      "The cost of the executed path (informational)"},
                     {RPCResult::Type::OBJ,
                      "effects",
-                     "ENFORCEOUTPUT claims and state authorizations",
+                     "ENFORCEOUTPUT claims ({amount, matches}: the claimed "
+                     "amount and every output its template matched) and "
+                     "state authorizations",
                      {{RPCResult::Type::ELISION, "", ""}}}}}}},
                 POST_CHECK_RESULT,
             }},
