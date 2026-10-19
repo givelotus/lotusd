@@ -1046,20 +1046,6 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
 
     /**
-     * Attempts to open a connection. Currently only used from tests.
-     *
-     * @param[in]   address     Address of node to try connecting to
-     * @param[in]   conn_type   ConnectionType::OUTBOUND,
-     *                          ConnectionType::BLOCK_RELAY,
-     *                          ConnectionType::ADDR_FETCH, or
-     *                          ConnectionType::FEELER
-     * @return      bool        Returns false if there are no available
-     *                          slots for this connection:
-     *                          - conn_type not a supported ConnectionType
-     *                          - Max total outbound connection capacity filled
-     *                          - Max connection capacity for type is filled
-     */
-    /**
      * Accept an inbound peer that connected over WebSocket (/p2p/ws).
      * Subject to the same limits, bans and eviction as TCP inbound peers.
      *
@@ -1073,6 +1059,20 @@ public:
                              const CAddress &addr, const CAddress &addr_bind,
                              std::shared_ptr<WebSocketTransportInfo> info);
 
+    /**
+     * Attempts to open a connection. Currently only used from tests.
+     *
+     * @param[in]   address     Address of node to try connecting to
+     * @param[in]   conn_type   ConnectionType::OUTBOUND,
+     *                          ConnectionType::BLOCK_RELAY,
+     *                          ConnectionType::ADDR_FETCH, or
+     *                          ConnectionType::FEELER
+     * @return      bool        Returns false if there are no available
+     *                          slots for this connection:
+     *                          - conn_type not a supported ConnectionType
+     *                          - Max total outbound connection capacity filled
+     *                          - Max connection capacity for type is filled
+     */
     bool AddConnection(const std::string &address, ConnectionType conn_type)
         EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
 
