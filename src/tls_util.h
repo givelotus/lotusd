@@ -31,7 +31,9 @@ using SslPtr = std::unique_ptr<SSL, SslDeleter>;
  * A new TLS 1.2+ context for non-blocking use on sockets owned by the
  * caller: partial writes and moving write buffers are allowed (as
  * WebSocketSock requires), and kernel TLS is enabled where OpenSSL and the
- * kernel support it.
+ * kernel support it. Servers select ALPN http/1.1 when offered; clients
+ * offer it, with cipher suites, groups and signature algorithms ordered like
+ * a mainstream browser.
  */
 SslCtxPtr NewContext(bool server);
 
@@ -88,6 +90,9 @@ std::string CertSha256Hex(X509 *cert);
 
 /** The peer's certificate, or nullptr (caller frees with X509_free) */
 X509 *PeerCertificate(const SSL *ssl);
+
+/** The ALPN protocol agreed on the session ("" if none) */
+std::string NegotiatedAlpn(const SSL *ssl);
 
 /** OpenSSL's queued error strings, for logging */
 std::string ErrorString();
