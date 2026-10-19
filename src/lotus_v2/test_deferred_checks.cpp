@@ -301,6 +301,18 @@ void ConsensusKinds() {
         CHECK(run({a, claim(0, {7})}, error) == DeferredOutcome::Failed &&
               error == "output-overclaimed");
     }
+    // The kind assigns by maximum flow: output 0 is full, the second
+    // claim also matches the (authorized, stateful) output 1.
+    {
+        auto a = claim(100, {0});
+        a.Merge(authorize(1));
+        CHECK(run({a, claim(50, {0, 1})}, error) == DeferredOutcome::Accepted);
+        CHECK(run({a, claim(51, {0, 1})}, error) == DeferredOutcome::Failed &&
+              error == "output-overclaimed");
+        // An empty match mask is rejected inline.
+        CHECK(run({a, claim(0, {})}, error) == DeferredOutcome::Failed &&
+              error == "output-overclaimed");
+    }
     // Canonical order of reject reasons: state authorization precedes
     // claims in the registry.
     CHECK(run({claim(1000, {0})}, error) == DeferredOutcome::Failed &&
@@ -335,6 +347,83 @@ void ConsensusKinds() {
                            DeferredTxView{outputs, 0});
         CHECK(none.FinishWithoutInputs(error) == DeferredOutcome::Failed &&
               error == "state-output-unauthorized");
+    }
+}
+
+// Gale/Hall condition: the claims are feasible iff every subset S of claims
+// asks for at most the total value of the outputs matched by S.
+bool BruteForceFeasible(const std::vector<OutputClaim> &claims,
+                        const std::vector<uint64_t> &values) {
+    for (uint32_t subset = 1; subset < (1u << claims.size()); ++subset) {
+        __uint128_t asked = 0, room = 0;
+        std::vector<uint8_t> neighbours(values.size());
+        for (size_t c = 0; c < claims.size(); ++c) {
+            if (!((subset >> c) & 1)) continue;
+            asked += claims[c].amount;
+            for (uint16_t j : claims[c].matches) neighbours[j] = 1;
+        }
+        for (size_t j = 0; j < values.size(); ++j)
+            if (neighbours[j]) room += values[j];
+        if (asked > room) return false;
+    }
+    return true;
+}
+
+void MaxFlowFeasibility() {
+    using Claims = std::vector<OutputClaim>;
+    using Values = std::vector<uint64_t>;
+    auto feasible = [](const Claims &claims, const Values &values) {
+        return OutputClaimsFeasible(claims, values);
+    };
+    // A greedy first-match assignment fails (A takes output 0, then B has
+    // nowhere to go), but A -> 1, B -> 0 exists.
+    CHECK(feasible({{10, {0, 1}}, {10, {0}}}, {10, 10}));
+    // Output 0 is exhausted by the first claim; the second claim also
+    // matches output 1, which has room.
+    CHECK(feasible({{5, {0}}, {10, {0, 1}}}, {5, 20}));
+    // Over-claims: in total, and locally (both claims only fit output 0,
+    // whatever output 1 holds).
+    CHECK(!feasible({{10, {0, 1}}, {11, {0, 1}}}, {10, 10}));
+    CHECK(!feasible({{6, {0}}, {6, {0}}}, {10, 1000}));
+    // Overlapping match sets around a cycle: each pair of claims shares an
+    // output. Exactly enough room is feasible; one unit less is not.
+    CHECK(feasible({{8, {0, 1}}, {8, {1, 2}}, {8, {0, 2}}}, {8, 8, 8}));
+    CHECK(!feasible({{8, {0, 1}}, {8, {1, 2}}, {8, {0, 2}}}, {8, 8, 7}));
+    // A Hall violation hidden among overlapping sets: claims 1 and 2 only
+    // reach output 1.
+    CHECK(!feasible({{1, {0, 1}}, {3, {1}}, {3, {1}}}, {100, 5}));
+    // A flow may split one claim across the outputs it matches.
+    CHECK(feasible({{10, {0, 1}}}, {5, 5}));
+    // Zero claims are always feasible (they still had to match).
+    CHECK(feasible({{0, {0}}, {0, {0}}}, {0}));
+    // 128-bit totals: two maximal claims over two maximal outputs, and one
+    // more unit overflows nothing but is infeasible.
+    CHECK(feasible({{UINT64_MAX, {0, 1}}, {UINT64_MAX, {0, 1}}},
+                   {UINT64_MAX, UINT64_MAX}));
+    CHECK(!feasible({{UINT64_MAX, {0, 1}}, {UINT64_MAX, {0, 1}}, {1, {1}}},
+                    {UINT64_MAX, UINT64_MAX}));
+    // The flow into each output is a valid assignment.
+    {
+        std::vector<__uint128_t> assigned;
+        CHECK(OutputClaimsFeasible(Claims{{10, {0, 1}}, {10, {0}}}, Values{10, 15},
+                                   &assigned));
+        CHECK(assigned.size() == 2 && assigned[0] == 10 && assigned[1] == 10);
+    }
+    // Randomized: the maximum flow agrees with the subset condition.
+    std::mt19937 rng(11);
+    for (int round = 0; round < 3000; ++round) {
+        const size_t outputs = 1 + rng() % 5, n = 1 + rng() % 7;
+        Values values(outputs);
+        for (auto &v : values) v = rng() % 12;
+        Claims claims(n);
+        for (auto &claim : claims) {
+            claim.amount = rng() % 9;
+            for (size_t j = 0; j < outputs; ++j)
+                if (rng() % 2) claim.matches.push_back(uint16_t(j));
+            if (claim.matches.empty())
+                claim.matches.push_back(uint16_t(rng() % outputs));
+        }
+        CHECK(feasible(claims, values) == BruteForceFeasible(claims, values));
     }
 }
 
@@ -429,6 +518,7 @@ int main() {
         FinalRulesAndFailFast();
         FailedInputsNeverReachPhaseTwo();
         ConsensusKinds();
+        MaxFlowFeasibility();
         ConservationKinds();
         BlockHook();
     } catch (const std::exception &error) {
