@@ -374,20 +374,24 @@ void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
 }
 
 namespace {
-    enum class JsonSchema { GENERIC, GCP };
+    enum class JsonSchema { GENERIC, GCP, ECS };
 
     void EncodeJson(const LogLine &line, const LogOptions &opts,
                     std::string &out, JsonSchema schema) {
         std::string_view msg{line.event ? EventText(line, /*with_fields=*/false)
                                         : line.message};
+        const bool ecs{schema == JsonSchema::ECS};
         out.clear();
         out += '{';
-        if (opts.timestamps) {
-            out += "\"time\":\"";
+        // ECS requires an event timestamp, even when text timestamps are off.
+        if (opts.timestamps || ecs) {
+            out += ecs ? "\"@timestamp\":\"" : "\"time\":\"";
             AppendRfc3339(out, line.time, /*with_micros=*/true);
             out += "\",";
         }
-        out += schema == JsonSchema::GCP ? "\"severity\":\"" : "\"level\":\"";
+        out += schema == JsonSchema::GCP ? "\"severity\":\""
+               : ecs                     ? "\"log.level\":\""
+                                         : "\"level\":\"";
         if (schema == JsonSchema::GCP) {
             switch (line.level) {
                 case Level::Trace:
@@ -407,9 +411,9 @@ namespace {
         } else {
             out += LogLevelName(line.level);
         }
-        out += "\",\"category\":\"";
+        out += ecs ? "\",\"log.logger\":\"" : "\",\"category\":\"";
         out += LogCategoryName(line.category);
-        out += "\",\"thread\":\"";
+        out += ecs ? "\",\"process.thread.name\":\"" : "\",\"thread\":\"";
         AppendJsonEscaped(out, line.thread.empty() ? "unknown" : line.thread);
         out += "\",\"message\":\"";
         if (!msg.empty() && msg.back() == '\n') {
@@ -417,33 +421,60 @@ namespace {
         }
         AppendJsonEscaped(out, msg);
         out += '"';
+        if (ecs) out += ",\"ecs.version\":\"8.11.0\"";
         if (line.event) {
-            out += ",\"event\":\"";
+            out += ecs ? ",\"event.action\":\"" : ",\"event\":\"";
             AppendJsonEscaped(out, line.event->event);
             out += '"';
             for (const FieldView f : line.fields) {
                 out += ",\"";
-                out += f.Info().name;
+                if (ecs && !f.Info().ecs.empty()) {
+                    out += f.Info().ecs;
+                } else {
+                    if (ecs) out += "lotus.";
+                    out += f.Info().name;
+                }
                 out += "\":";
-                AppendJsonValue(out, f);
+                if (ecs && f.kind == FieldKind::DURATION_NS) {
+                    // ECS event.duration is an integer number of nanoseconds.
+                    char number[32];
+                    const auto result{std::to_chars(
+                        number, number + sizeof(number), f.DurationNs())};
+                    out.append(number, result.ptr);
+                } else {
+                    AppendJsonValue(out, f);
+                }
             }
             if (line.fields_truncated) {
-                out += ",\"fields_truncated\":true";
+                out += ecs ? ",\"lotus.fields_truncated\":true"
+                           : ",\"fields_truncated\":true";
             }
         }
         if (line.mocktime > 0s) {
-            out += ",\"mocktime\":\"";
+            out += ecs ? ",\"lotus.mocktime\":\"" : ",\"mocktime\":\"";
             AppendRfc3339(out, SystemClock::time_point{line.mocktime},
                           /*with_micros=*/false);
             out += '"';
         }
         if (line.continued) {
-            out += ",\"continued\":true";
+            out += ecs ? ",\"lotus.continued\":true" : ",\"continued\":true";
         }
         if (line.ratelimited) {
-            out += ",\"ratelimited\":true";
+            out +=
+                ecs ? ",\"lotus.ratelimited\":true" : ",\"ratelimited\":true";
         }
-        if (opts.sourcelocations) {
+        if (opts.sourcelocations && ecs) {
+            out += ",\"log.origin.file.name\":\"";
+            AppendJsonEscaped(out, SourceFileName(line.loc));
+            out += "\",\"log.origin.file.line\":";
+            char number[16];
+            const auto result{std::to_chars(number, number + sizeof(number),
+                                            line.loc.line())};
+            out.append(number, result.ptr);
+            out += ",\"log.origin.function\":\"";
+            AppendJsonEscaped(out, BareFunctionName(line.loc.function_name()));
+            out += '"';
+        } else if (opts.sourcelocations) {
             out +=
                 schema == JsonSchema::GCP
                     ? ",\"logging.googleapis.com/sourceLocation\":{\"file\":\""
@@ -475,6 +506,11 @@ void JsonEncoder::Encode(const LogLine &line, const LogOptions &opts,
 void JsonGcpEncoder::Encode(const LogLine &line, const LogOptions &opts,
                             std::string &out) const {
     EncodeJson(line, opts, out, JsonSchema::GCP);
+}
+
+void JsonEcsEncoder::Encode(const LogLine &line, const LogOptions &opts,
+                            std::string &out) const {
+    EncodeJson(line, opts, out, JsonSchema::ECS);
 }
 
 void LogfmtEncoder::Encode(const LogLine &line, const LogOptions &opts,
@@ -536,6 +572,8 @@ std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format) {
     switch (format) {
         case LogFormat::TEXT:
             return std::make_unique<TextEncoder>();
+        case LogFormat::JSON_ECS:
+            return std::make_unique<JsonEcsEncoder>();
         case LogFormat::JSON_GCP:
             return std::make_unique<JsonGcpEncoder>();
         case LogFormat::LOGFMT:
