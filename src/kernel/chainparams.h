@@ -148,6 +148,8 @@ public:
     const std::string &CashAddrPrefix() const { return cashaddrPrefix; }
     const std::vector<SeedSpec6> &FixedSeeds() const { return vFixedSeeds; }
     const CCheckpointData &Checkpoints() const { return checkpointData; }
+    //! Lotus V2 chain id committed by block ids, state roots and PoW.
+    const lotus::v2::ChainId &V2ChainId() const { return m_v2_chain_id; }
 
     std::optional<AssumeutxoData> AssumeutxoForHeight(int height) const {
         return FindFirst(m_assumeutxo_data,
@@ -195,6 +197,7 @@ protected:
     bool m_is_test_chain;
     bool m_is_mockable_chain;
     CCheckpointData checkpointData;
+    lotus::v2::ChainId m_v2_chain_id{};
     std::vector<AssumeutxoData> m_assumeutxo_data;
     ChainTxData chainTxData;
 

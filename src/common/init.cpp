@@ -34,7 +34,7 @@ std::optional<ConfigError> InitConfig(ArgsManager &args,
         // possible for the config file to cause another configuration to be
         // used, though. Specifying a conf= option in the config file causes a
         // parse error, and specifying a datadir= location containing another
-        // bitcoin.conf file just ignores the other file.)
+        // lotusd.conf file just ignores the other file.)
         const fs::path orig_datadir_path{args.GetDataDirBase()};
         const fs::path orig_config_path = args.GetConfigFilePath();
 
@@ -70,7 +70,7 @@ std::optional<ConfigError> InitConfig(ArgsManager &args,
             fs::create_directories(net_path / "wallets");
         }
 
-        // Show an error or warning if there is a bitcoin.conf file in the
+        // Show an error or warning if there is a lotusd.conf file in the
         // datadir that is being ignored.
         const fs::path base_config_path = base_path / BITCOIN_CONF_FILENAME;
         if (fs::exists(base_config_path) &&
