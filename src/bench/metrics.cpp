@@ -4,6 +4,7 @@
 
 #include <bench/bench.h>
 #include <metrics/metrics.h>
+#include <node/metrics.h>
 
 #include <atomic>
 #include <chrono>
@@ -150,6 +151,30 @@ static void MetricsSteadyClockPair(benchmark::Bench &bench) {
     });
 }
 
+//! Disabled metrics at a recording site: one load and a branch
+static void MetricsDisabledSite(benchmark::Bench &bench) {
+    bench.run([&] {
+        if (auto *m{node::GetNodeMetrics()}) {
+            m->p2p_received_bytes.Add(1, 100);
+        }
+    });
+}
+
+//! Rendering the node's full registry (some series populated)
+static void MetricsRenderNode(benchmark::Bench &bench) {
+    node::NodeMetrics m{{"getblockcount", "getblock", "sendrawtransaction"}};
+    for (size_t i = 0; i < 50; ++i) {
+        m.p2p_received_bytes.Add(i % 30, 1000);
+        m.block_connect_seconds.Record(i * 1'000'000);
+        m.p2p_message_handling_seconds.Record(i * 1000, i % 30);
+        m.rpc_request_seconds.Record(i * 1000, i % 3);
+        m.http_request_seconds.Record(i * 1000, i % 7);
+    }
+    bench.run([&] {
+        ankerl::nanobench::doNotOptimizeAway(m.registry.Render().size());
+    });
+}
+
 BENCHMARK(MetricsSteadyClockNow);
 BENCHMARK(MetricsCounterAdd);
 BENCHMARK(MetricsCounterAddContended);
@@ -160,3 +185,5 @@ BENCHMARK(MetricsEventRecordDropping);
 BENCHMARK(MetricsEventRecordDuration);
 BENCHMARK(MetricsEventRecordDurationBatched);
 BENCHMARK(MetricsSteadyClockPair);
+BENCHMARK(MetricsDisabledSite);
+BENCHMARK(MetricsRenderNode);

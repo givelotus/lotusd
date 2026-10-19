@@ -87,6 +87,8 @@ struct NodeMetrics {
     metrics::Counter &http_tls_handshakes;
     metrics::EventHistogram &rpc_request_seconds;
 
+    metrics::Gauge &process_start_time;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -113,8 +115,8 @@ inline NodeMetrics *GetNodeMetrics() noexcept {
 }
 
 /**
- * Create the metrics (once), start the drain thread.
- * rpc_methods: every registered RPC command.
+ * Create the metrics (once), start the drain thread and give new threads
+ * their rings. rpc_methods: every registered RPC command.
  */
 NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods);
 /** Stop the drain thread (recording still works, into full rings) */

@@ -4,6 +4,7 @@
 
 #include <httpmetrics.h>
 
+#include <common/system.h>
 #include <httpserver.h>
 #include <logging.h>
 #include <node/metrics.h>
@@ -32,7 +33,8 @@ static bool HTTPReqMetrics(Config &, HTTPRequest *req, const std::string &) {
 }
 
 void StartHTTPMetrics() {
-    node::StartNodeMetrics(tableRPC.listCommands());
+    node::NodeMetrics &m{node::StartNodeMetrics(tableRPC.listCommands())};
+    m.process_start_time.Set(double(GetStartupTime()));
     RegisterHTTPHandler("/metrics", true, HTTPReqMetrics);
     LogPrintf("Serving metrics at /metrics on the RPC listeners\n");
 }
