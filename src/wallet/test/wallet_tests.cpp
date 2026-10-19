@@ -6,6 +6,7 @@
 #include <chainparams.h>
 #include <config.h>
 #include <interfaces/chain.h>
+#include <logging.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <wallet/fees.h>
 #include <util/time.h>
@@ -860,6 +861,8 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
     // Reload wallet and make sure new transactions are detected despite events
     // being blocked
     wallet = TestLoadWallet(context);
+    // (The logger thread writes lines: write the queued ones first.)
+    LogInstance().Flush();
     BOOST_CHECK(rescan_completed);
     BOOST_CHECK_EQUAL(addtx_count, 2);
     {
@@ -872,6 +875,7 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
     // transactionAddedToMempool events are processed
     promise.set_value();
     m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    LogInstance().Flush();
     BOOST_CHECK_EQUAL(addtx_count, 4);
 
     TestUnloadWallet(std::move(wallet));
@@ -882,9 +886,11 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
     // lock during the sync is a little artificial but is needed to avoid a
     // deadlock during the sync and simulates a new block notification happening
     // as soon as possible.
+    LogInstance().Flush();
     addtx_count = 0;
     auto handler = HandleLoadWallet(
         context, [&](std::unique_ptr<interfaces::Wallet> wallet_param) {
+            LogInstance().Flush();
             BOOST_CHECK(rescan_completed);
             m_coinbase_txns.push_back(
                 CreateAndProcessBlock(
@@ -905,6 +911,7 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
             m_node.validation_signals->SyncWithValidationInterfaceQueue();
         });
     wallet = TestLoadWallet(context);
+    LogInstance().Flush();
     BOOST_CHECK_EQUAL(addtx_count, 4);
     {
         LOCK(wallet->cs_wallet);

@@ -633,13 +633,17 @@ class TestNode:
             raise AssertionError("Expected debug messages is empty")
         if unexpected_msgs is None:
             unexpected_msgs = []
-        time_end = time.time() + timeout * self.timeout_factor
+        if getattr(self, "rpc_connected", False):
+            self.rpc.logging()  # Flush older queued records before this boundary.
         prev_size = self.debug_log_size(
             encoding="utf-8"
         )  # Must use same encoding that is used to read() below
 
         yield
 
+        # The action can take arbitrarily long; give the asynchronous logger
+        # its full wait budget after the action has completed.
+        time_end = time.time() + timeout * self.timeout_factor
         missing = []
         while True:
             found = True
@@ -687,12 +691,14 @@ class TestNode:
         If a chatty_callable is provided, it is repeated at every iteration.
         """
         assert chatty_callable is None or interval is not None
-        time_end = time.time() + timeout * self.timeout_factor
         # Must use same mode that is used to read() below
+        if getattr(self, "rpc_connected", False):
+            self.rpc.logging()  # Flush older queued records before this boundary.
         prev_size = self.debug_log_size(mode="rb")
 
         yield
 
+        time_end = time.time() + timeout * self.timeout_factor
         missing: List[bytes] = []
         while True:
             found = True

@@ -24,6 +24,8 @@ DebugLogHelper::DebugLogHelper(std::string message, MatchFn match)
 }
 
 DebugLogHelper::~DebugLogHelper() {
+    // Lines are written by the logger thread: write the queued ones now.
+    LogInstance().Flush();
     noui_reconnect();
     LogInstance().DeleteCallback(m_print_connection);
     if (!m_found && m_match(nullptr)) {

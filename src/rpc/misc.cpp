@@ -652,6 +652,7 @@ static RPCHelpMan logging() {
         "status that are currently being debug logged or not.\n"
         "When called with arguments, adds or removes categories from debug "
         "logging and return the lists above.\n"
+        "Pending log output is flushed before reading or changing categories.\n"
         "The arguments are evaluated in order \"include\", \"exclude\".\n"
         "If an item is both included and excluded, it will thus end up being "
         "excluded.\n"
@@ -694,6 +695,9 @@ static RPCHelpMan logging() {
             HelpExampleRpc("logging", "[\"all\"], [\"libevent\"]")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
+            // Runtime configuration and test log boundaries must not race
+            // records queued by a previous RPC on another producer ring.
+            LogInstance().Flush();
             uint32_t original_log_categories = LogInstance().GetCategoryMask();
             if (request.params[0].isArray()) {
                 EnableOrDisableLogCategories(request.params[0], true);
