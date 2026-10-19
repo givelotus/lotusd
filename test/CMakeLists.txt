@@ -133,6 +133,30 @@ add_custom_target(check-rpcauth
 
 add_dependencies(check check-rpcauth)
 
+# Maintainer source archives can omit test/lint, as upstream packages do.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lint/lint-log-events.py")
+	add_custom_target(check-log-events
+	    COMMAND "${Python_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/test/lint/lint-log-events.py" --self-test
+	    COMMAND "${Python_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/test/lint/lint-log-events.py"
+	    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+	    COMMENT "Checking structured event keys and required context"
+	    VERBATIM
+	)
+	add_dependencies(check check-log-events)
+	add_dependencies(check-all check-log-events)
+	if(NOT CMAKE_CROSSCOMPILING AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+	    add_custom_target(check-log-field-keys
+	        COMMAND "${CMAKE_COMMAND}" -E env "CXX=${CMAKE_CXX_COMPILER}"
+	                "${Python_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/test/lint/lint-log-field-keys.py"
+	        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+	        COMMENT "Checking compile-time log field key contracts"
+	        VERBATIM
+	    )
+	    add_dependencies(check check-log-field-keys)
+	    add_dependencies(check-all check-log-field-keys)
+	endif()
+endif()
+
 include(PackageHelper)
 exclude_from_source_package(
 	# Subdirectories

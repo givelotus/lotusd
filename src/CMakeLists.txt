@@ -410,6 +410,7 @@ add_library(util
 	interfaces/handler.cpp
 	logging.cpp
 	logging/encoder.cpp
+	logging/event.cpp
 	metrics/metrics.cpp
 	random.cpp
 	randomenv.cpp
@@ -909,6 +910,7 @@ if(BUILD_CHAINSTATE)
 		key.cpp
 		logging.cpp
 		logging/encoder.cpp
+		logging/event.cpp
 		networks/abc/chainparamsconstants.cpp
 		networks/abc/checkpoints.cpp
 		node/blockfitter.cpp
