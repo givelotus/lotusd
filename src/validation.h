@@ -60,6 +60,13 @@ class CChainParams;
 class Chainstate;
 class ChainstateManager;
 class CScriptCheck;
+
+/**
+ * The node's V2 VM limits and cost schedule, used for every V2 invocation
+ * in validation and reported by getv2vmprofile.
+ */
+const lotus::v2::VmProfile &NodeV2VmProfile();
+const lotus::v2::VmCostProfile &NodeV2VmCost();
 class CTxMemPool;
 class CTxUndo;
 class DisconnectedBlockTransactions;
