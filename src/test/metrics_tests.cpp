@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <config/bitcoin-config.h>
 #include <metrics/metrics.h>
 #include <node/metrics.h>
 #include <protocol.h>
@@ -88,10 +89,10 @@ BOOST_AUTO_TEST_CASE(render_exposition_format) {
         "test_seconds_bucket{method=\"y\",le=\"+Inf\"} 3\n"
         "test_seconds_sum{method=\"y\"} 2.006\n"
         "test_seconds_count{method=\"y\"} 3\n"
-        "# HELP lotus_metrics_dropped_samples_total Event samples dropped "
+        "# HELP metrics_dropped_samples_total Event samples dropped "
         "because a recording thread's buffer was full.\n"
-        "# TYPE lotus_metrics_dropped_samples_total counter\n"
-        "lotus_metrics_dropped_samples_total 0\n"};
+        "# TYPE metrics_dropped_samples_total counter\n"
+        "metrics_dropped_samples_total 0\n"};
     BOOST_CHECK_EQUAL(reg.Render(), expected);
 }
 
@@ -167,7 +168,7 @@ BOOST_AUTO_TEST_CASE(ring_drops_when_full) {
         h.Record(1);
     }
     BOOST_CHECK_EQUAL(reg.DroppedSamples(), 5U);
-    BOOST_CHECK(reg.Render().find("lotus_metrics_dropped_samples_total 5\n") !=
+    BOOST_CHECK(reg.Render().find("metrics_dropped_samples_total 5\n") !=
                 std::string::npos);
 }
 
@@ -234,6 +235,112 @@ BOOST_AUTO_TEST_CASE(msg_type_index) {
     }
     BOOST_CHECK_EQUAL(seen.size(), getAllNetMessageTypes().size());
     BOOST_CHECK_EQUAL(node::MetricMsgTypeIndex("*other*"), other);
+}
+
+BOOST_AUTO_TEST_CASE(label_and_metric_names) {
+    BOOST_CHECK(IsValidLabelName("region"));
+    BOOST_CHECK(IsValidLabelName("_x9"));
+    BOOST_CHECK(!IsValidLabelName(""));
+    BOOST_CHECK(!IsValidLabelName("9x"));
+    BOOST_CHECK(!IsValidLabelName("a-b"));
+    BOOST_CHECK(!IsValidLabelName("a:b"));
+    BOOST_CHECK(!IsValidLabelName("__name__"));
+    BOOST_CHECK(IsValidMetricName("a:b_total"));
+    BOOST_CHECK(!IsValidMetricName("1a"));
+    BOOST_CHECK(!IsValidMetricName("a-b"));
+}
+
+BOOST_AUTO_TEST_CASE(constant_labels) {
+    Registry reg{"ns_"};
+    auto &c{reg.Add(std::make_unique<Counter>(
+        "ns_c_total", "C.", std::vector<LabelDim>{{"dir", {"in", "out"}}}))};
+    auto &g{reg.Add(std::make_unique<Gauge>("ns_g", "G."))};
+    auto &h{reg.Add(std::make_unique<EventHistogram>(
+        "ns_h_seconds", "H.", std::vector<double>{1}, 1))};
+    // Refused: invalid, reserved, a metric's own label, repeated
+    BOOST_CHECK(reg.SetConstLabels({{"a-b", "x"}}));
+    BOOST_CHECK(reg.SetConstLabels({{"le", "x"}}));
+    BOOST_CHECK(reg.SetConstLabels({{"__x", "x"}}));
+    BOOST_CHECK(reg.SetConstLabels({{"dir", "x"}}));
+    BOOST_CHECK(reg.SetConstLabels({{"a", "x"}, {"a", "y"}}));
+    BOOST_REQUIRE(!reg.SetConstLabels({{"client", "d"}, {"q", "a\"b"}}));
+    c.Add(1, 2);
+    g.Set(3);
+    h.Record(1);
+    const std::string r{reg.Render()};
+    BOOST_CHECK(r.find("\nns_c_total{client=\"d\",q=\"a\\\"b\",dir=\"in\"} "
+                       "0\n") != std::string::npos);
+    BOOST_CHECK(r.find("\nns_c_total{client=\"d\",q=\"a\\\"b\",dir=\"out\"} "
+                       "2\n") != std::string::npos);
+    BOOST_CHECK(r.find("\nns_g{client=\"d\",q=\"a\\\"b\"} 3\n") !=
+                std::string::npos);
+    BOOST_CHECK(r.find("\nns_h_seconds_bucket{client=\"d\",q=\"a\\\"b\",le="
+                       "\"1\"} 1\n") != std::string::npos);
+    BOOST_CHECK(r.find("\nns_h_seconds_count{client=\"d\",q=\"a\\\"b\"} 1\n") !=
+                std::string::npos);
+    // The registry's own metric takes its prefix and the labels too
+    BOOST_CHECK(r.find("\nns_metrics_dropped_samples_total{client=\"d\",q="
+                       "\"a\\\"b\"} 0\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(node_metric_names_and_labels) {
+    BOOST_CHECK_EQUAL(node::MetricName("x_total"),
+                      std::string{METRICS_NAMESPACE} + "x_total");
+    BOOST_CHECK_EQUAL(node::MetricsNetworkLabel(ChainType::MAIN),
+                      std::string{FULLNODE_CHAIN} + "-mainnet");
+    BOOST_CHECK_EQUAL(node::MetricsNetworkLabel(ChainType::TESTNET),
+                      std::string{FULLNODE_CHAIN} + "-testnet");
+    BOOST_CHECK_EQUAL(node::MetricsNetworkLabel(ChainType::REGTEST),
+                      std::string{FULLNODE_CHAIN} + "-regtest");
+    BOOST_CHECK_EQUAL(node::MetricsClientLabel(), FULLNODE_CLIENT);
+
+    // Every node metric is namespaced (or a standard process_* metric),
+    // and none uses a reserved label.
+    node::NodeMetrics m{{"getblockcount"}};
+    BOOST_REQUIRE(
+        !m.registry.SetConstLabels({{"client", "c"}, {"network", "n"}}));
+    const std::string r{m.registry.Render()};
+    size_t families{0};
+    for (size_t pos{0}; (pos = r.find("# TYPE ", pos)) != std::string::npos;
+         ++pos) {
+        const std::string name{
+            r.substr(pos + 7, r.find(' ', pos + 7) - pos - 7)};
+        BOOST_CHECK_MESSAGE(name.starts_with(METRICS_NAMESPACE) ||
+                                name.starts_with("process_"),
+                            name);
+        ++families;
+    }
+    BOOST_CHECK(families >= 23);
+    BOOST_CHECK(r.find("lotus_") == std::string::npos);
+    BOOST_CHECK(r.find(node::MetricName("build_info") +
+                       "{client=\"c\",network=\"n\",version=\"") !=
+                std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(parse_metrics_labels) {
+    const auto ok{node::ParseMetricsLabels({"region=eu-west", "dc=a=b"})};
+    BOOST_REQUIRE(ok);
+    BOOST_CHECK_EQUAL(ok->size(), 2U);
+    BOOST_CHECK_EQUAL((*ok)[0].first, "region");
+    BOOST_CHECK_EQUAL((*ok)[0].second, "eu-west");
+    BOOST_CHECK_EQUAL((*ok)[1].first, "dc");
+    BOOST_CHECK_EQUAL((*ok)[1].second, "a=b");
+    BOOST_CHECK(node::ParseMetricsLabels({}));
+    for (const std::string &bad : std::vector<std::string>{
+             "noequals", "=x", "9a=x", "a-b=x", "__a=x", "le=x", "quantile=x",
+             "client=x", "network=x", "a=", "a=x\ny",
+             std::string("a=") +
+                 std::string(METRICS_LABEL_VALUE_MAX + 1, 'v')}) {
+        BOOST_CHECK_MESSAGE(!node::ParseMetricsLabels({bad}), bad);
+    }
+    BOOST_CHECK(!node::ParseMetricsLabels({"a=x", "a=y"}));
+    std::vector<std::string> many;
+    for (size_t i = 0; i <= METRICS_LABELS_MAX; ++i) {
+        many.push_back("l" + std::to_string(i) + "=v");
+    }
+    BOOST_CHECK(!node::ParseMetricsLabels(many));
+    many.pop_back();
+    BOOST_CHECK(node::ParseMetricsLabels(many));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
