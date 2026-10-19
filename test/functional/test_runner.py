@@ -103,6 +103,7 @@ TEST_FRAMEWORK_MODULES = [
     "txtools",
     "util",
     "worker",
+    "xpiaddr",
 ]
 
 NON_TESTS = {

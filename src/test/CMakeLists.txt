@@ -33,6 +33,7 @@ gen_json_header(JSON_HEADERS
 	data/blockfilters.json
 	data/key_io_valid.json
 	data/key_io_invalid.json
+	data/lotus_v2_address.json
 	data/intcode_valid.json
 	data/intcode_invalid.json
 	data/script_tests.json
@@ -186,6 +187,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		chainstate_write_tests.cpp
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
+		lotus_v2_address_tests.cpp
 		lotus_v2_genesis_tests.cpp
 		checkqueue_tests.cpp
 		coins_tests.cpp
