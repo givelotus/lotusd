@@ -14,7 +14,7 @@ import re
 import ssl
 from io import BytesIO
 
-from .messages import msg_verack, msg_version, sha256
+from .messages import msg_sendaddrv2, msg_verack, msg_version, sha256
 from .p2p import MESSAGEMAP, NET_MAGIC_BYTES
 
 
@@ -30,14 +30,25 @@ def load_p2p_zstd_dict(srcdir):
 
 class P2PWebSocketClient:
     def __init__(
-        self, url, *, subprotocols=None, srcdir=None, net="regtest", timeout=30
+        self,
+        url,
+        *,
+        subprotocols=None,
+        srcdir=None,
+        net="regtest",
+        timeout=30,
+        header=None,
     ):
         import websocket
         import zstandard
 
         sslopt = {"cert_reqs": ssl.CERT_NONE} if url.startswith("wss") else None
         self.ws = websocket.create_connection(
-            url, subprotocols=subprotocols, sslopt=sslopt, timeout=timeout
+            url,
+            subprotocols=subprotocols,
+            sslopt=sslopt,
+            timeout=timeout,
+            header=header,
         )
         self.subprotocol = self.ws.getsubprotocol()
         self.magic = NET_MAGIC_BYTES[net]
@@ -119,15 +130,23 @@ class P2PWebSocketClient:
             if t == msgtype:
                 return msg
 
-    def handshake(self, version=70016):
+    def handshake(self, version=70016, *, addr_recv=None, sendaddrv2=False):
+        """P2P handshake. `addr_recv` (ip, port) is the node's address as we
+        claim to see it; with `sendaddrv2` we ask for ADDRv2 (BIP155)."""
         ver = msg_version()
         ver.nVersion = version
         ver.strSubVer = "/p2p_websocket.py/"
         ver.relay = 1
+        if addr_recv is not None:
+            ver.addrTo.ip, ver.addrTo.port = addr_recv
         self.send_message(ver)
         their_version = self.wait_for(b"version")
         self.wait_for(b"verack")
         self.send_message(msg_verack())
+        if sendaddrv2:
+            # This node accepts it after the handshake (BIP155 places it
+            # before verack, which it treats as misbehaving).
+            self.send_message(msg_sendaddrv2())
         return their_version
 
     def close(self):

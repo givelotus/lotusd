@@ -130,6 +130,7 @@ static const uint64_t RANDOMIZER_ID_ADDRCACHE = 0x1cf2e4ddd306dda9ULL;
 //
 bool fDiscover = true;
 bool fListen = true;
+bool g_listen_plain_p2p = true;
 GlobalMutex g_maplocalhost_mutex;
 std::map<CNetAddr, LocalServiceInfo>
     mapLocalHost GUARDED_BY(g_maplocalhost_mutex);
@@ -185,6 +186,10 @@ bool GetLocal(CService &addr, const CNetAddr *paddrPeer) {
     {
         LOCK(g_maplocalhost_mutex);
         for (const auto &entry : mapLocalHost) {
+            if (!g_listen_plain_p2p && !entry.first.IsWSS()) {
+                // Not reachable: we accept no plain P2P connections.
+                continue;
+            }
             int nScore = entry.second.nScore;
             int nReachability = entry.first.GetReachabilityFrom(paddrPeer);
             if (nReachability > nBestReachability ||
@@ -242,13 +247,19 @@ static int GetnScore(const CService &addr) {
 // Is our peer's addrLocal potentially useful as an external IP source?
 bool IsPeerAddrLocalGood(CNode *pnode) {
     CService addrLocal = pnode->GetAddrLocal();
-    return fDiscover && pnode->addr.IsRoutable() && addrLocal.IsRoutable() &&
+    // The peer saw an IP address, which is only of use to peers if they can
+    // reach us there with plain P2P.
+    return g_listen_plain_p2p && fDiscover && pnode->addr.IsRoutable() &&
+           addrLocal.IsRoutable() &&
            IsReachable(addrLocal.GetNetwork());
 }
 
 std::optional<CService> GetLocalAddrForPeer(CNode &node) {
     CService addrLocal{GetLocalAddress(node.addr)};
-    if (gArgs.GetBoolArg("-addrmantest", false)) {
+    // -addrmantest advertises a loopback plain P2P address.
+    const bool addrmantest{g_listen_plain_p2p &&
+                           gArgs.GetBoolArg("-addrmantest", false)};
+    if (addrmantest) {
         // use IPv4 loopback during addrmantest
         addrLocal = CService(LookupNumeric("127.0.0.1", GetListenPort()));
     }
@@ -277,7 +288,7 @@ std::optional<CService> GetLocalAddrForPeer(CNode &node) {
             addrLocal = CService{node.GetAddrLocal(), port};
         }
     }
-    if (addrLocal.IsRoutable() || gArgs.GetBoolArg("-addrmantest", false)) {
+    if (addrLocal.IsRoutable() || addrmantest) {
         LogDebug(BCLog::NET, "Advertising address %s to peer=%d\n",
                  addrLocal.ToStringAddrPort(), node.GetId());
         return addrLocal;
@@ -293,6 +304,15 @@ bool AddLocal(const CService &addr, int nScore) {
     }
 
     if (!fDiscover && nScore < LOCAL_MANUAL) {
+        return false;
+    }
+
+    if (!g_listen_plain_p2p && !addr.IsWSS()) {
+        // Peers could not use it: we accept no plain P2P connections.
+        LogDebug(BCLog::NET,
+                 "AddLocal(%s,%i) ignored: plain P2P is not accepted "
+                 "(-p2prawlisten=0)\n",
+                 addr.ToStringAddrPort(), nScore);
         return false;
     }
 
@@ -318,6 +338,50 @@ bool AddLocal(const CService &addr, int nScore) {
 
 bool AddLocal(const CNetAddr &addr, int nScore) {
     return AddLocal(CService(addr, GetListenPort()), nScore);
+}
+
+bool GetP2PWebSocketListen(const ArgsManager &args) {
+    return args.GetBoolArg("-p2pwslisten", DEFAULT_P2P_WEBSOCKET);
+}
+
+std::optional<bilingual_str>
+CheckP2PListenArgs(const ArgsManager &args,
+                   std::vector<bilingual_str> &warnings) {
+    if (!args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
+        // Nothing is accepted on any transport.
+        return std::nullopt;
+    }
+    const bool plain{args.GetBoolArg("-p2prawlisten", DEFAULT_P2P_RAW_LISTEN)};
+    const bool ws{GetP2PWebSocketListen(args)};
+    if (plain) {
+        return std::nullopt;
+    }
+    if (!args.GetArgs("-bind").empty() || !args.GetArgs("-whitebind").empty()) {
+        return _("-bind and -whitebind open plain P2P listeners, so they "
+                 "cannot be used with -p2prawlisten=0");
+    }
+    if (!args.GetArgs("-externalip").empty()) {
+        return _("-externalip advertises an address for plain P2P, so it "
+                 "cannot be used with -p2prawlisten=0 (use -externaldomain "
+                 "to advertise a WebSocket endpoint)");
+    }
+    // Parameter interaction turned these off unless they were set
+    // explicitly.
+    if (args.GetBoolArg("-listenonion", false)) {
+        return _("-listenonion creates a Tor onion service for plain P2P, so "
+                 "it cannot be used with -p2prawlisten=0");
+    }
+    if (args.IsArgSet("-i2psam") &&
+        args.GetBoolArg("-i2pacceptincoming", false)) {
+        return _("-i2pacceptincoming accepts plain P2P over I2P, so it "
+                 "cannot be used with -p2prawlisten=0");
+    }
+    if (!ws) {
+        warnings.push_back(
+            _("-p2prawlisten=0 and -p2pwslisten=0: no inbound P2P "
+              "connections will be accepted, as with -listen=0"));
+    }
+    return std::nullopt;
 }
 
 void RemoveLocal(const CService &addr) {
@@ -496,6 +560,40 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
                 LogPrintf("Failed to open new connection, already connected\n");
                 return nullptr;
             }
+        }
+    }
+
+    // -onlynet with wss (e.g. -onlynet=wss for a WebSocket-only node) also
+    // binds manual plain P2P connections (-addnode, -connect, addnode RPC):
+    // with only wss, no plain P2P connection is ever made. Without wss in
+    // -onlynet, manual connections ignore -onlynet as before.
+    if (IsReachable(NET_WSS)) {
+        bool reachable{true};
+        if (addrConnect.IsValid()) {
+            // By the address family: local and private addresses (network
+            // "unroutable", never limited by -onlynet) are plain P2P too.
+            reachable = addrConnect.IsIPv4()   ? IsReachable(NET_IPV4)
+                        : addrConnect.IsIPv6() ? IsReachable(NET_IPV6)
+                                               : IsReachable(addrConnect);
+        } else if (pszDest) {
+            // A name for the proxy to resolve.
+            std::string host;
+            uint16_t port{0};
+            SplitHostPort(pszDest, port, host);
+            reachable = host.ends_with(".onion")
+                            ? IsReachable(NET_ONION)
+                            : IsReachable(NET_IPV4) || IsReachable(NET_IPV6);
+        }
+        if (!reachable) {
+            LogPrintf("Not connecting to %s: plain P2P to network %s is not "
+                      "allowed by -onlynet\n",
+                      pszDest ? pszDest : addrConnect.ToStringAddrPort(),
+                      !addrConnect.IsValid() ? "ipv4/ipv6"
+                      : addrConnect.IsIPv4() ? "ipv4"
+                      : addrConnect.IsIPv6()
+                          ? "ipv6"
+                          : GetNetworkName(addrConnect.GetNetwork()));
+            return nullptr;
         }
     }
 
@@ -3052,7 +3150,8 @@ bool CConnman::InitBinds(const Options &options) {
 bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
     Init(connOptions);
 
-    if (fListen && !InitBinds(connOptions)) {
+    // With -p2prawlisten=0 there is no plain P2P listening socket at all.
+    if (fListen && g_listen_plain_p2p && !InitBinds(connOptions)) {
         if (m_client_interface) {
             m_client_interface->ThreadSafeMessageBox(
                 _("Failed to listen on any port. Use -listen=0 if you want "
