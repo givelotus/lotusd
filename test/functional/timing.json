@@ -860,15 +860,15 @@
   "time": 6
  },
  {
-  "name": "rpc_bind.py --ipv4",
+  "name": "rpc_bind.py[ipv4]",
   "time": 3
  },
  {
-  "name": "rpc_bind.py --ipv6",
+  "name": "rpc_bind.py[ipv6]",
   "time": 4
  },
  {
-  "name": "rpc_bind.py --nonloopback",
+  "name": "rpc_bind.py[nonloopback]",
   "time": 3
  },
  {
@@ -880,7 +880,7 @@
   "time": 6
  },
  {
-  "name": "rpc_createmultisig.py --descriptors",
+  "name": "rpc_createmultisig.py[descriptors]",
   "time": 13
  },
  {
@@ -896,7 +896,7 @@
   "time": 1
  },
  {
-  "name": "rpc_deriveaddresses.py --usecli",
+  "name": "rpc_deriveaddresses.py[cli]",
   "time": 1
  },
  {
@@ -912,7 +912,7 @@
   "time": 37
  },
  {
-  "name": "rpc_fundrawtransaction.py --descriptors",
+  "name": "rpc_fundrawtransaction.py[descriptors]",
   "time": 49
  },
  {
@@ -984,7 +984,7 @@
   "time": 14
  },
  {
-  "name": "rpc_rawtransaction.py --descriptors",
+  "name": "rpc_rawtransaction.py[descriptors]",
   "time": 11
  },
  {
@@ -1004,7 +1004,7 @@
   "time": 4
  },
  {
-  "name": "rpc_signrawtransaction.py --descriptors",
+  "name": "rpc_signrawtransaction.py[descriptors]",
   "time": 11
  },
  {
