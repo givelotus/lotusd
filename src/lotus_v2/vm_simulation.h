@@ -98,7 +98,11 @@ struct SimulationResult {
     std::vector<SimEvent> events;
     std::vector<SimDraft> drafts;
     std::vector<SimSigningRequest> signing_requests;
-    VmTransactionEffects effects;
+    // Deferred-check records of every successful invocation, in consensus
+    // order.
+    DeferredRecords effects;
+    // The same records grouped by input, as the deferred checks see them.
+    std::vector<DeferredRecords> input_effects;
     // TXID, SIGHASH, output introspection and counts observed by scripts
     // may differ from the final transaction's: drafts were appended or a
     // mint delta was supplied provisionally.

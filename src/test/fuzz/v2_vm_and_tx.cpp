@@ -278,7 +278,7 @@ FUZZ_TARGET(v2_vm_and_tx) {
             // evaluator: no draft is appended and the effects agree.
             {
                 const lotus::v2::ResolvedCoins resolved{spent_coin.output};
-                lotus::v2::VmTransactionEffects effects;
+                lotus::v2::DeferredRecords effects;
                 lotus::v2::VmExecutionContext context{
                     tx, tx_profile, chain_id, resolved, 0, 0, std::nullopt};
                 context.effects = &effects;
@@ -300,16 +300,21 @@ FUZZ_TARGET(v2_vm_and_tx) {
                        tx.outputs.size() + sim.drafts.size());
                 std::string post_error;
                 Assert(sim.post_check_ok ==
-                       lotus::v2::FinalizeVmTransactionEffects(
-                           sim.tx.outputs, sim.effects, post_error));
+                       (lotus::v2::RunDeferredChecks(
+                            lotus::v2::DeferredCheckRegistry::Consensus(),
+                            lotus::v2::DeferredTxView{sim.tx.outputs,
+                                                      sim.tx.inputs.size()},
+                            sim.input_effects, post_error) ==
+                        lotus::v2::DeferredOutcome::Accepted));
                 if (consensus.status == lotus::v2::VmStatus::Success &&
                     options.signatures == lotus::v2::SimSignatures::Verify) {
                     Assert(sim.invocations[0].status ==
                            lotus::v2::VmStatus::Success);
                     Assert(sim.drafts.empty() && !sim.provisional);
-                    Assert(sim.effects.claims == effects.claims);
-                    Assert(sim.effects.state_authorized ==
-                           effects.state_authorized);
+                    Assert(lotus::v2::OutputClaimsOf(sim.effects) ==
+                           lotus::v2::OutputClaimsOf(effects));
+                    Assert(lotus::v2::StateAuthorizationsOf(sim.effects) ==
+                           lotus::v2::StateAuthorizationsOf(effects));
                 }
             }
 
