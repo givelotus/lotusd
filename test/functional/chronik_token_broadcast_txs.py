@@ -6,12 +6,9 @@ Test Chronik broadcasts a batch of txs correctly.
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
-    ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
-from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.chronik.alp import alp_genesis, alp_opreturn, alp_send
 from test_framework.chronik.token_tx import TokenTx
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
@@ -39,13 +36,7 @@ class ChronikTokenBroadcastTxs(BitcoinTestFramework):
         node = self.nodes[0]
         chronik = node.get_chronik_client()
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
-
-        self.generatetoaddress(node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE)
-
-        coinvalue = 5000000000
+        cointx, coinvalue = self.mine_mature_coin(node)
 
         txs = []
 

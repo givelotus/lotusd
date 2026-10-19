@@ -7,13 +7,10 @@ import os
 import time
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
-    ADDRESS_ECREG_UNSPENDABLE,
     SCRIPT_UNSPENDABLE,
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.avatools import can_find_inv_in_poll, get_ava_p2p_interface
-from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.chronik.slp import slp_genesis
 from test_framework.messages import (
     AvalancheTxVoteError,
@@ -136,12 +133,8 @@ class AvatestPlugin(Plugin):
 
         from test_framework.chronik.client import pb
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        coinbase_txid = coinblock["tx"][0]
-        tip = self.generatetoaddress(
-            node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE
-        )[-1]
+        coinbase_txid, _ = self.mine_mature_coin(node)
+        tip = node.getbestblockhash()
 
         def has_finalized_tip(tip_expected):
             hash_tip_final = int(tip_expected, 16)

@@ -5,13 +5,10 @@
 import time
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
-    ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.blocktools import (
-    COINBASE_MATURITY,
     create_block,
     create_coinbase,
     make_conform_to_ctor,
@@ -45,13 +42,8 @@ class ChronikPauseTest(BitcoinTestFramework):
         peer = node.add_p2p_connection(P2PDataStore())
 
         self.log.info("Generate coin + mature for testing")
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
-        coinvalue = 5000000000
-        tip = self.generatetoaddress(
-            node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE
-        )[-1]
+        cointx, coinvalue = self.mine_mature_coin(node)
+        tip = node.getbestblockhash()
 
         tx = CTransaction()
         tx.vin = [CTxIn(COutPoint(int(cointx, 16), 0), SCRIPTSIG_OP_TRUE)]

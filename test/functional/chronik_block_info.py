@@ -6,12 +6,11 @@ Test if the `BlockInfo` fields are set correctly in Chronik.
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
     ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
-from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
 from test_framework.script import OP_RETURN, CScript
@@ -34,15 +33,9 @@ class ChronikBlockInfoTest(BitcoinTestFramework):
 
         peer = node.add_p2p_connection(P2PDataStore())
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
+        cointx, coinvalue = self.mine_mature_coin(node)
+        prev_hash = node.getbestblockhash()
 
-        prev_hash = self.generatetoaddress(
-            node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE
-        )[-1]
-
-        coinvalue = 5000000000
         tx = CTransaction()
         tx.vin = [
             CTxIn(outpoint=COutPoint(int(cointx, 16), 0), scriptSig=SCRIPTSIG_OP_TRUE)
