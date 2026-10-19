@@ -6,6 +6,8 @@
 #include <core_io.h>
 #include <protocol.h>
 #include <streams.h>
+#include <script/sign.h>
+#include <script/signingprovider.h>
 #include <script/standard.h>
 #include <common/args.h>
 #include <consensus/consensus.h>
@@ -237,22 +239,59 @@ BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainS
                           16'000'000ULL);
     }
 
-    // 2. Verify testrawtxbatch rejects legacy non-v7 transactions by default,
-    // and reports required_cu, required_fee_sats, and recommended_sdk_fee_sats
+    // 2. Verify testrawtxbatch accepts a legacy transaction spending a legacy
+    // coin, and reports required_cu, required_fee_sats, and recommended_sdk_fee_sats
     // on pure version=7 transactions while enforcing Tier 1 RPC fee hysteresis.
     const std::vector<uint8_t> v2_op_true_script{0x4e};
     const lotus::v2::Hash v2_op_true_leaf = lotus::v2::BranchLeaf(v2_op_true_script);
     const Amount cb_val = m_coinbase_txns[0]->vout[0].nValue;
+    // This fixture mines V2 coinbases only. The legacy payment spends a legacy
+    // coin: a legacy (version 2) coinbase paying a P2PKH key, matured before
+    // the native funding enters the mempool.
+    CKey legacy_key;
+    legacy_key.MakeNewKey(true);
+    const CScript legacy_spk =
+        GetScriptForDestination(PKHash(legacy_key.GetPubKey()));
+    CTransactionRef legacy_coinbase;
+    for (int i = 0; i <= COINBASE_MATURITY; ++i) {
+        node::BlockAssembler::Options options;
+        options.coinbase_version = i == 0 ? 2 : 7;
+        auto block =
+            node::BlockAssembler{node::BlockFitter(config),
+                                 m_node.chainman->ActiveChainstate(), nullptr,
+                                 options}
+                .CreateNewBlock(i == 0 ? CTxOut(Amount::zero(), legacy_spk)
+                                       : V0LeafOutput(Amount::zero(),
+                                                      CScript(program.begin(),
+                                                              program.end())))
+                ->block;
+        while (!CheckProofOfWork(block.GetHash(), block.nBits,
+                                 config.GetChainParams().GetConsensus())) {
+            ++block.nNonce;
+        }
+        BOOST_REQUIRE(m_node.chainman->ProcessNewBlock(
+            std::make_shared<const CBlock>(block), true, true, nullptr));
+        if (i == 0) legacy_coinbase = block.vtx[0];
+        SetMockTime(GetTime() + 1);
+    }
+    BOOST_REQUIRE(legacy_coinbase->vout[0].IsLegacy());
 
     const CMutableTransaction funding = CreateNativeMempoolTransaction(
         m_coinbase_txns[0], 0, cb_val - 2000 * SATOSHI);
     const CTransactionRef funding_tx = MakeTransactionRef(funding);
-    // The format rejection must not depend on a legacy signature or admission.
-    // A legacy transaction has legacy inputs and outputs only.
     CMutableTransaction legacy_mtx;
     legacy_mtx.nVersion = 2;
-    legacy_mtx.vin.emplace_back(COutPoint(m_coinbase_txns[1]->GetId(), 0));
-    legacy_mtx.vout.emplace_back(cb_val - 2000 * SATOSHI, CScript() << OP_TRUE);
+    legacy_mtx.vin.emplace_back(COutPoint(legacy_coinbase->GetId(), 0));
+    legacy_mtx.vout.emplace_back(
+        legacy_coinbase->vout[0].nValue - 2000 * SATOSHI,
+        GetScriptForDestination(PKHash(legacy_key.GetPubKey())));
+    {
+        FillableSigningProvider keystore;
+        BOOST_REQUIRE(keystore.AddKey(legacy_key));
+        BOOST_REQUIRE(SignSignature(keystore, legacy_spk, legacy_mtx, 0,
+                                    legacy_coinbase->vout[0].nValue,
+                                    SigHashType().withForkId()));
+    }
     const CTransactionRef legacy_tx = MakeTransactionRef(legacy_mtx);
     const std::string legacy_tx_hex = EncodeHexTx(*legacy_tx);
 
@@ -266,11 +305,9 @@ BOOST_FIXTURE_TEST_CASE(GetFeeRateInfoAndTestRawTxBatchRpc, NativeSnapshotChainS
         req.params.push_back(std::move(arr));
 
         UniValue res = tableRPC.execute(config, req);
-        BOOST_CHECK(!res.find_value("allowed").get_bool());
+        BOOST_CHECK_MESSAGE(res.find_value("allowed").get_bool(), res.write());
         const UniValue &tx_res = res.find_value("results").get_array()[0];
-        BOOST_CHECK(!tx_res.find_value("allowed").get_bool());
-        BOOST_CHECK_EQUAL(tx_res.find_value("reject-reason").get_str(),
-                          "bad-txns-non-v7-format");
+        BOOST_CHECK(tx_res.find_value("allowed").get_bool());
     }
 
     // Confirm genuinely admitted native funding before evaluating the candidate.

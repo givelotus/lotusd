@@ -9,6 +9,10 @@
 #include <consensus/validation.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
+#include <script/sign.h>
+#include <script/signingprovider.h>
+#include <script/standard.h>
+#include <streams.h>
 #include <validation.h>
 
 #include <test/util/setup_common.h>
@@ -103,6 +107,51 @@ BOOST_FIXTURE_TEST_CASE(spent_input_differential, BasicTestingSetup) {
         if (!actual && all_available) {
             BOOST_CHECK_EQUAL(fused.GetRejectReason(), reference.GetRejectReason());
         }
+    }
+}
+
+// Legacy versions 1 and 2 enter the mempool; version 3 does not decode.
+BOOST_FIXTURE_TEST_CASE(tx_mempool_accepts_legacy_versions, TestChain100Setup) {
+    const CScript p2pkh = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+    // A version 1 spend of a mature coinbase, then a version 2 spend of it.
+    CTransactionRef input = m_coinbase_txns[0];
+    for (const int32_t version : {1, 2}) {
+        CMutableTransaction mtx;
+        mtx.nVersion = version;
+        mtx.vin.emplace_back(COutPoint(input->GetId(), 0));
+        mtx.vout.emplace_back(input->vout[0].nValue - 10 * COIN, p2pkh);
+        FillableSigningProvider keystore;
+        keystore.AddKey(coinbaseKey);
+        std::map<COutPoint, Coin> coins;
+        coins.emplace(mtx.vin[0].prevout, Coin(input->vout[0], 0, input->IsCoinBase()));
+        std::map<int, std::string> errors;
+        BOOST_REQUIRE(SignTransaction(mtx, &keystore, coins,
+                                      SigHashType().withForkId(), errors));
+        LOCK(cs_main);
+        const size_t before = m_node.mempool->size();
+        const MempoolAcceptResult result =
+            m_node.chainman->ProcessTransaction(MakeTransactionRef(mtx));
+        BOOST_CHECK_MESSAGE(result.m_result_type ==
+                                MempoolAcceptResult::ResultType::VALID,
+                            result.m_state.GetRejectReason());
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), before + 1);
+        input = MakeTransactionRef(mtx);
+    }
+
+    CMutableTransaction mtx = CreateValidMempoolTransaction(
+        m_coinbase_txns[1], 0, 0, coinbaseKey, p2pkh, 10 * COIN,
+        /*submit=*/false);
+    DataStream stream{};
+    stream << CTransaction(mtx);
+    // The version is the first four bytes, little endian.
+    stream[0] = std::byte{3};
+    CMutableTransaction decoded;
+    try {
+        stream >> decoded;
+        BOOST_ERROR("version 3 decoded");
+    } catch (const std::ios_base::failure &e) {
+        BOOST_CHECK(std::string(e.what()).find("bad-txns-version") !=
+                    std::string::npos);
     }
 }
 
