@@ -420,6 +420,151 @@ BOOST_AUTO_TEST_CASE(intra_block_spend_and_snapshot_isolation) {
     BOOST_CHECK(!db.Snapshot().GetOutput(Op(22, 0)));
 }
 
+// Hosts may confirm blocks in canonical (txid) order, where a child precedes
+// the in-block parent whose output it spends.
+BOOST_AUTO_TEST_CASE(canonical_order_block_spends_later_parents) {
+    auto tx = [](const Anchor &anchor, uint32_t index, uint8_t txid,
+                 std::vector<Output> outputs,
+                 const std::vector<OutPoint> &spent) {
+        std::vector<SpentInput> spends;
+        for (size_t i = 0; i < spent.size(); ++i) {
+            spends.push_back(SpentInput{spent[i], uint32_t(i)});
+        }
+        ExplorerTxFacts explorer = FixtureFacts(spends, outputs);
+        return ConfirmedTx{TxLocation{H(anchor.block_id), anchor.height, index,
+                                      TxId{Fill(txid)},
+                                      TxHash{Fill(uint8_t(txid ^ 0xff))}},
+                           std::move(outputs), std::move(spends),
+                           std::move(explorer)};
+    };
+    Output token = TestOutput(5, false);
+    token.flags = 1;
+    token.token_id = Fill(77);
+    Output minted = token;
+    minted.token_id = Fill(78);
+    // 0x20 -> 0x30 -> 0x40 -> 0x21, carrying a token; 0x31 mints a second
+    // token that 0x22 spends. Canonical order is 0x21, 0x22, 0x30, 0x31,
+    // 0x40; the topological order is 0x30, 0x31, 0x22, 0x40, 0x21.
+    struct Spec {
+        uint8_t txid;
+        Output output;
+        std::optional<OutPoint> spend;
+    };
+    const Anchor anchor{B32(11), 2};
+    auto second_block = [&](const CommittedBlock &first, bool canonical) {
+        std::vector<Spec> specs{{0x30, token, Op(0x20, 0)},
+                                {0x31, minted, std::nullopt},
+                                {0x22, minted, Op(0x31, 0)},
+                                {0x40, token, Op(0x30, 0)},
+                                {0x21, token, Op(0x40, 0)}};
+        if (canonical) {
+            std::sort(specs.begin(), specs.end(),
+                      [](const Spec &a, const Spec &b) {
+                          return a.txid < b.txid;
+                      });
+        }
+        CommittedBlock block{anchor, first.anchor, {},
+                             FixtureHeader(anchor, first.anchor)};
+        for (size_t i = 0; i < specs.size(); ++i) {
+            std::vector<OutPoint> spent;
+            if (specs[i].spend) {
+                spent.push_back(*specs[i].spend);
+            }
+            block.transactions.push_back(
+                tx(anchor, uint32_t(i), specs[i].txid, {specs[i].output},
+                   spent));
+        }
+        return block;
+    };
+    V2TempDir topo_dir("v2-topo");
+    V2TempDir dir("v2-ctor");
+    V2Db topo(topo_dir.path, TestBinding());
+    V2Db db(dir.path, TestBinding());
+    CommittedBlock second;
+    for (V2Db *d : {&topo, &db}) {
+        d->InitializeGenesis(FixtureGenesis({}));
+        const Anchor genesis = *d->Checkpoint();
+        const CommittedBlock first = TestBlock(genesis, 10, 0x20, {token}, {});
+        d->Connect(first);
+        second = second_block(first, d == &db);
+        d->Connect(second);
+        d->Connect(second); // exact replay is a no-op
+    }
+    BOOST_CHECK(second.transactions[0].location.txid == TxId{Fill(0x21)});
+    {
+        const ReadSnapshot view = db.Snapshot();
+        for (const auto &[parent, child] :
+             std::vector<std::pair<uint8_t, uint8_t>>{
+                 {0x20, 0x30}, {0x30, 0x40}, {0x40, 0x21}, {0x31, 0x22}}) {
+            const auto record = view.GetOutput(Op(parent, 0));
+            BOOST_REQUIRE(record && record->spend);
+            BOOST_CHECK(record->spend->transaction.txid == TxId{Fill(child)});
+        }
+        BOOST_CHECK(!view.GetOutput(Op(0x21, 0))->spend);
+        const auto input = view.ExplorerInput(TxId{Fill(0x21)}, 0);
+        BOOST_REQUIRE(input && input->resolved_creation);
+        BOOST_CHECK(input->resolved_creation->outpoint == Op(0x40, 0));
+        const ReadSnapshot topo_view = topo.Snapshot();
+        for (uint8_t token_id : {77, 78}) {
+            const auto summary = view.GetAssetSummary(Fill(token_id));
+            const auto expected = topo_view.GetAssetSummary(Fill(token_id));
+            BOOST_REQUIRE(summary && expected);
+            BOOST_CHECK_EQUAL(summary->event_count, expected->event_count);
+            BOOST_CHECK_EQUAL(summary->output_count, expected->output_count);
+        }
+        // The mint stays the first seen location, after its spender.
+        const auto minted_summary = view.GetAssetSummary(Fill(78));
+        BOOST_CHECK(minted_summary->first_seen.txid == TxId{Fill(0x31)});
+        BOOST_CHECK_EQUAL(minted_summary->first_seen.tx_index, 3u);
+        const auto minted_input = view.ExplorerInput(TxId{Fill(0x22)}, 0);
+        BOOST_REQUIRE(minted_input && minted_input->resolved_creation);
+        BOOST_CHECK(minted_input->resolved_creation->outpoint == Op(0x31, 0));
+    }
+    db.Disconnect(second.anchor);
+    {
+        const ReadSnapshot view = db.Snapshot();
+        BOOST_CHECK(!view.GetOutput(Op(0x20, 0))->spend);
+        for (uint8_t txid : {0x21, 0x22, 0x30, 0x31, 0x40}) {
+            BOOST_CHECK(!view.GetOutput(Op(txid, 0)));
+        }
+    }
+    db.Connect(second);
+
+    // A dependency cycle cannot be resolved.
+    const Anchor cycle_anchor{B32(12), 3};
+    const CommittedBlock cycle{
+        cycle_anchor,
+        second.anchor,
+        {tx(cycle_anchor, 0, 0x50, {TestOutput(6, false)}, {Op(0x51, 0)}),
+         tx(cycle_anchor, 1, 0x51, {TestOutput(6, false)}, {Op(0x50, 0)})},
+        FixtureHeader(cycle_anchor, second.anchor)};
+    BOOST_CHECK(ThrowsInvalid([&] { db.Connect(cycle); }, "missing coin"));
+    BOOST_CHECK(db.Checkpoint() == second.anchor);
+}
+
+BOOST_AUTO_TEST_CASE(processing_order_places_parents_first) {
+    auto tx = [](uint8_t txid, std::vector<uint8_t> parents) {
+        ConfirmedTx out;
+        out.location.txid = TxId{Fill(txid)};
+        for (uint8_t parent : parents) {
+            out.spends.push_back(
+                SpentInput{Op(parent, 0), uint32_t(out.spends.size())});
+        }
+        return out;
+    };
+    // Topological blocks keep their order.
+    BOOST_CHECK(ProcessingOrder({tx(1, {}), tx(2, {1}), tx(3, {1, 2})}) ==
+                (std::vector<size_t>{0, 1, 2}));
+    // Children move after parents; ties keep block order.
+    BOOST_CHECK(ProcessingOrder({tx(1, {4}), tx(2, {9}), tx(3, {}),
+                                 tx(4, {3, 3})}) ==
+                (std::vector<size_t>{1, 2, 3, 0}));
+    // Cycles keep block order at the end.
+    BOOST_CHECK(ProcessingOrder({tx(1, {2}), tx(2, {1}), tx(3, {})}) ==
+                (std::vector<size_t>{2, 0, 1}));
+    BOOST_CHECK(ProcessingOrder({}).empty());
+}
+
 // crash_tests::durable_checkpoint_without_clean_shutdown: the Rust test
 // re-executes itself; here a fork()ed child commits then _exit(77)s,
 // bypassing destructors, so durability must come from the synced commit.
