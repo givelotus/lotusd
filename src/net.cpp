@@ -26,6 +26,7 @@
 #include <netaddress.h>
 #include <netbase.h>
 #include <node/eviction.h>
+#include <node/metrics.h>
 #include <node/ui_interface.h>
 #include <protocol.h>
 #include <random.h>
@@ -34,8 +35,8 @@
 #include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/thread.h>
-#include <util/threadnames.h>
 #include <util/threadinterrupt.h>
+#include <util/threadnames.h>
 #include <util/trace.h>
 #include <util/translation.h>
 
@@ -780,6 +781,11 @@ bool CNode::ReceiveMsgBytes(const Config &config, Span<const uint8_t> msg_bytes,
 
             assert(i != mapRecvBytesPerMsgType.end());
             i->second += msg.m_raw_message_size;
+            if (auto *metrics{node::GetNodeMetrics()}) {
+                const size_t type{node::MetricMsgTypeIndex(i->first)};
+                metrics->p2p_received_bytes.Add(type, msg.m_raw_message_size);
+                metrics->p2p_received_messages.Add(type);
+            }
 
             // push the message to the process queue,
             vRecvMsg.push_back(std::move(msg));
@@ -3607,11 +3613,44 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
     }
     mapRecvBytesPerMsgType[NET_MESSAGE_TYPE_OTHER] = 0;
 
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        static_assert(NET_MAX == 8, "update node::metric_labels::Networks()");
+        const bool inbound{IsInboundConn()};
+        const bool websocket{m_websocket_info != nullptr};
+        const size_t peer{metrics->PeerSeries(
+            inbound, websocket, size_t(ConnectedThroughNetwork()))};
+        metrics->peers.Add(1, peer);
+        const std::array<size_t, 2> conn{inbound ? 0U : 1U,
+                                         websocket ? 1U : 0U};
+        metrics->p2p_connections.Add(
+            metrics->p2p_connections.SeriesIndex(conn));
+        std::optional<size_t> ws;
+        if (websocket) {
+            const std::array<size_t, 2> idx{
+                std::min<size_t>(size_t(m_websocket_info->compression), 3),
+                m_websocket_info->tls ? 1U : 0U};
+            ws = metrics->websocket_peers.SeriesIndex(idx);
+            metrics->websocket_peers.Add(1, *ws);
+        }
+        m_metrics_series.emplace(peer, ws);
+    }
+
     if (fLogIPs) {
         LogDebug(BCLog::NET, "Added connection to %s peer=%d\n", m_addr_name,
                  id);
     } else {
         LogDebug(BCLog::NET, "Added connection peer=%d\n", id);
+    }
+}
+
+CNode::~CNode() {
+    if (m_metrics_series) {
+        // Counted at construction, so the metrics exist (never freed).
+        auto &metrics{*Assert(node::GetNodeMetrics())};
+        metrics.peers.Add(-1, m_metrics_series->first);
+        if (m_metrics_series->second) {
+            metrics.websocket_peers.Add(-1, *m_metrics_series->second);
+        }
     }
 }
 
@@ -3692,6 +3731,11 @@ void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
 
         // log total amount of bytes per message type
         pnode->AccountForSentBytes(msg.m_type, nTotalSize);
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            const size_t type{node::MetricMsgTypeIndex(msg.m_type)};
+            metrics->p2p_sent_bytes.Add(type, nTotalSize);
+            metrics->p2p_sent_messages.Add(type);
+        }
         pnode->nSendSize += nTotalSize;
 
         if (pnode->nSendSize > nSendBufferMaxSize) {

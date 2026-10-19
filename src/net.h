@@ -482,6 +482,9 @@ public:
      * then one end of a local socketpair bridged to the WebSocket.
      */
     const std::shared_ptr<WebSocketTransportInfo> m_websocket_info;
+    //! Series of the peer gauges this node was counted in (metrics on at
+    //! construction), so that its destruction removes exactly that.
+    std::optional<std::pair<size_t, std::optional<size_t>>> m_metrics_series;
 
     /** Move all messages from the received queue to the processing queue. */
     void MarkReceivedMsgsForProcessing()
@@ -695,6 +698,7 @@ public:
           uint64_t nLocalExtraEntropyIn, const CAddress &addrBindIn,
           const std::string &addrNameIn, ConnectionType conn_type_in,
           bool inbound_onion, CNodeOptions &&node_opts = {});
+    ~CNode();
     CNode(const CNode &) = delete;
     CNode &operator=(const CNode &) = delete;
 
