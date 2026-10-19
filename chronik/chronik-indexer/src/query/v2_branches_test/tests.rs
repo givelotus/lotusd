@@ -56,6 +56,7 @@ fn source() -> Source {
                     flags: if i % 7 == 0 { 2 } else { 0 },
                     value: i as u64,
                     token_id: Hash32::default(),
+                    state_root: Hash32::default(),
                     branches: vec![root(i % 3), root(8 + i % 2)],
                     paths: if i % 7 == 0 { vec![] } else { vec![vec![0, 1]] },
                 };
