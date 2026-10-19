@@ -1,0 +1,12 @@
+# Tor as a local SOCKS5 proxy for lotusd (-proxy=127.0.0.1:9050).
+SocksPort 127.0.0.1:9050
+
+# Where Tor itself is blocked, use bridges with a pluggable transport.
+# Get current bridge lines from https://bridges.torproject.org/ (or by email)
+# and install the transport binaries (snowflake-client, lyrebird/obfs4proxy).
+UseBridges 1
+ClientTransportPlugin snowflake exec /usr/bin/snowflake-client
+ClientTransportPlugin obfs4,webtunnel exec /usr/bin/lyrebird
+# Bridge snowflake ...
+# Bridge obfs4 ...
+# Bridge webtunnel ...

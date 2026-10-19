@@ -1,0 +1,25 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [{ "id": "CLIENT_UUID", "flow": "xtls-rprx-vision" }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "dest": "www.example.com:443",
+          "serverNames": ["www.example.com"],
+          "privateKey": "SERVER_REALITY_PRIVATE_KEY",
+          "shortIds": ["SHORT_ID"]
+        }
+      }
+    }
+  ],
+  "outbounds": [{ "protocol": "freedom" }]
+}
