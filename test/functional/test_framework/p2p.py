@@ -97,7 +97,8 @@ logger = logging.getLogger("TestFramework.p2p")
 
 # How P2PConnection reaches nodes: "tcp" (the raw P2P protocol) or
 # "websocket" (P2P over WebSocket at /p2p/ws on the node's P2P port).
-P2P_TRANSPORT = os.environ.get("TEST_P2P_TRANSPORT", "tcp")
+# Lotus v2 nodes have no raw TCP P2P.
+P2P_TRANSPORT = os.environ.get("TEST_P2P_TRANSPORT", "websocket")
 
 # The minimum P2P version that this test framework supports
 MIN_P2P_VERSION_SUPPORTED = 60001

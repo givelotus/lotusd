@@ -50,6 +50,7 @@ static const bool DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT = true;
 struct event_base;
 struct HTTPRequestImpl;
 struct WebSocketTransportInfo;
+struct bilingual_str;
 class CAddress;
 class Sock;
 
@@ -60,8 +61,20 @@ class HTTPRequest;
 /**
  * Initialize HTTP server.
  * Call this before RegisterHTTPHandler or EventBase().
+ * @param serve_rpc Bind the RPC listeners (-rpcbind/-rpcport). Without
+ *     them the server carries P2P WebSocket (and public endpoints) only, for
+ *     a listening node run without -server.
  */
-bool InitHTTPServer(Config &config);
+bool InitHTTPServer(Config &config, bool serve_rpc = true);
+
+/**
+ * Open a P2P listener at `addr`: P2P over WebSocket (and the other public
+ * endpoints) for anyone, with TLS detected per connection. If an RPC
+ * listener is bound to the same address and port, it is shared: one port
+ * then serves P2P to anyone and RPC to -rpcallowip clients. Call after
+ * StartHTTPServer.
+ */
+bool ShareHTTPP2PListener(const CService &addr);
 
 /**
  * Start HTTP server.

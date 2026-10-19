@@ -275,7 +275,7 @@ private:
 // Use TestingSetup or a daughter class so that m_node.addrman is non-null
 BOOST_FIXTURE_TEST_SUITE(net_tests, RegTestingSetup)
 
-BOOST_AUTO_TEST_CASE(webtransport_discovery_preserves_raw_fallback) {
+BOOST_AUTO_TEST_CASE(webtransport_discovery_does_not_open_raw_tcp) {
     const auto old_socket_factory{CreateSock};
     const auto old_dialer{GetWebTransportDialer()};
     const bool old_ipv4{IsReachable(NET_IPV4)};
@@ -289,8 +289,8 @@ BOOST_AUTO_TEST_CASE(webtransport_discovery_preserves_raw_fallback) {
     }};
     SetReachable(NET_IPV4, true);
     unsigned udp_attempts{0}, tcp_attempts{0};
-    // No real network I/O: intercept the registered UDP dialer and TCP
-    // socket factory. A service bit cannot turn a raw TCP port into HTTP.
+    // No real network I/O: intercept the UDP dialer and the TCP socket
+    // factory. Lotus v2 does not open a raw TCP socket after UDP fails.
     CreateSock = [&](int, int type, int) -> std::unique_ptr<Sock> {
         BOOST_CHECK_EQUAL(type, SOCK_STREAM);
         ++tcp_attempts;
@@ -314,24 +314,24 @@ BOOST_AUTO_TEST_CASE(webtransport_discovery_preserves_raw_fallback) {
     BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
                                      ConnectionType::OUTBOUND_FULL_RELAY));
     BOOST_CHECK_EQUAL(udp_attempts, 1U);
-    BOOST_CHECK_EQUAL(tcp_attempts, 1U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 0U);
     BOOST_CHECK_EQUAL(connman.WebTransportNegativeCacheSize(), 1U);
     BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
                                      ConnectionType::OUTBOUND_FULL_RELAY));
     BOOST_CHECK_EQUAL(udp_attempts, 1U);
-    BOOST_CHECK_EQUAL(tcp_attempts, 2U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 0U);
     options.m_wt_dial_policy = WebTransportDialPolicy::ONLY;
     connman.Init(options);
     BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
                                      ConnectionType::OUTBOUND_FULL_RELAY));
     BOOST_CHECK_EQUAL(udp_attempts, 2U);
-    BOOST_CHECK_EQUAL(tcp_attempts, 2U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 0U);
     options.m_wt_dial_policy = WebTransportDialPolicy::OFF;
     connman.Init(options);
     BOOST_CHECK(!connman.ConnectNode(addr, nullptr, false,
                                      ConnectionType::OUTBOUND_FULL_RELAY));
     BOOST_CHECK_EQUAL(udp_attempts, 2U);
-    BOOST_CHECK_EQUAL(tcp_attempts, 3U);
+    BOOST_CHECK_EQUAL(tcp_attempts, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(cnode_listen_port) {
@@ -502,6 +502,15 @@ BOOST_AUTO_TEST_CASE(LimitedAndReachable_CNetAddr) {
 }
 
 BOOST_AUTO_TEST_CASE(LocalAddress_BasicLifecycle) {
+    // Lotus V2 leaves plain P2P off. This case still checks that a plain
+    // address can be learned and removed while that switch is on.
+    const bool old_plain{g_listen_plain_p2p};
+    g_listen_plain_p2p = true;
+    struct RestorePlain {
+        bool old;
+        ~RestorePlain() { g_listen_plain_p2p = old; }
+    } restore_plain{old_plain};
+
     // 2.1.1.1:1000
     CService addr =
         CService(UtilBuildAddress(0x002, 0x001, 0x001, 0x001), 1000);
@@ -1029,6 +1038,14 @@ BOOST_AUTO_TEST_CASE(ipv4_peer_with_ipv6_addrMe_test) {
 }
 
 BOOST_AUTO_TEST_CASE(get_local_addr_for_peer_port) {
+    // Plain-address selection applies only while plain P2P listening is on.
+    const bool old_plain{g_listen_plain_p2p};
+    g_listen_plain_p2p = true;
+    struct RestorePlain {
+        bool old;
+        ~RestorePlain() { g_listen_plain_p2p = old; }
+    } restore_plain{old_plain};
+
     // Test that GetLocalAddrForPeer() properly selects the address to
     // self-advertise:
     //
@@ -1174,11 +1191,10 @@ BOOST_AUTO_TEST_CASE(plain_p2p_off_advertises_no_plain_address) {
     }
     RemoveLocal(wss);
 
-    // Back to the default: plain addresses are learned again.
-    g_listen_plain_p2p = true;
-    BOOST_CHECK(AddLocal(plain, LOCAL_MANUAL));
-    BOOST_CHECK(IsLocal(plain));
-    RemoveLocal(plain);
+    // Lotus V2's default is plain P2P off. Leave that default in place.
+    g_listen_plain_p2p = false;
+    BOOST_CHECK(!AddLocal(plain, LOCAL_MANUAL));
+    BOOST_CHECK(!IsLocal(plain));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_listen_args) {
@@ -1216,32 +1232,33 @@ BOOST_AUTO_TEST_CASE(p2p_listen_args) {
                                 "\"" + error + "\" lacks \"" + needle + "\"");
         }};
 
-    // Defaults: both transports, as before these options existed.
+    // Defaults: WebSocket listening is on. Raw P2P is rejected.
     BOOST_CHECK(ok({}));
-    BOOST_CHECK(ok({{"-p2prawlisten", "1"}}));
+    fails({{"-p2prawlisten", "1"}}, "raw P2P");
 
-    BOOST_CHECK(!ok({{"-p2pwslisten", "0"}}));
+    fails({{"-p2pwslisten", "0"}}, "-p2pwslisten=0 needs -listen=0");
     BOOST_CHECK(ok({{"-p2pwslisten", "1"}}));
 
-    // WebSocket only.
+    // WebSocket only is the ordinary listening mode.
     BOOST_CHECK(ok({{"-p2prawlisten", "0"}}));
-    // Neither transport: allowed, with a warning, unless not listening.
-    ok({{"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 1);
+    // Neither transport while still listening is refused up front.
+    fails({{"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}},
+          "-p2pwslisten=0 needs -listen=0");
     ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 0);
 
     // The P2P port's listeners serve WebSocket too.
     BOOST_CHECK(ok({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234"}}));
     BOOST_CHECK(
         ok({{"-p2prawlisten", "0"}, {"-whitebind", "noban@127.0.0.1:1234"}}));
-    // ... unless nothing would use them.
+    // Listening with WebSocket off is refused before bind is considered.
     fails({{"-p2prawlisten", "0"},
            {"-p2pwslisten", "0"},
            {"-bind", "127.0.0.1:1234"}},
-          "-bind");
+          "-p2pwslisten=0 needs -listen=0");
     fails({{"-p2prawlisten", "0"},
            {"-p2pwslisten", "0"},
            {"-whitebind", "noban@127.0.0.1:1234"}},
-          "-whitebind");
+          "-p2pwslisten=0 needs -listen=0");
     // Options that need raw P2P are refused, not ignored.
     fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234=onion"}},
           "=onion");
@@ -1269,13 +1286,13 @@ BOOST_AUTO_TEST_CASE(p2p_listen_args) {
            {"-p2pwslisten", "0"},
            {"-proxy", "127.0.0.1:9050"},
            {"-bind", "127.0.0.1:1234"}},
-          "-bind");
-    // WebSocket peers need the HTTP server.
+          "-p2pwslisten=0 needs -listen=0");
+    // -server=0 does not add a warning once raw P2P is already off.
     {
         const auto [error, warnings,
                     ws]{check({{"-p2prawlisten", "0"}, {"-server", "0"}})};
         BOOST_CHECK_EQUAL(error, "");
-        BOOST_CHECK_EQUAL(warnings, 1U);
+        BOOST_CHECK_EQUAL(warnings, 0U);
     }
     // Not listening: -p2prawlisten=0 changes nothing.
     ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-externalip", "1.2.3.4"}});
@@ -1571,6 +1588,15 @@ BOOST_AUTO_TEST_CASE(net_group_limit) {
 }
 
 BOOST_AUTO_TEST_CASE(initial_advertise_from_version_message) {
+    // The advertised address is a plain P2P endpoint, which Lotus V2 learns
+    // only while plain listening is enabled.
+    const bool old_plain{g_listen_plain_p2p};
+    g_listen_plain_p2p = true;
+    struct RestorePlain {
+        bool old;
+        ~RestorePlain() { g_listen_plain_p2p = old; }
+    } restore_plain{old_plain};
+
     LOCK(NetEventsInterface::g_msgproc_mutex);
 
     // Tests the following scenario:

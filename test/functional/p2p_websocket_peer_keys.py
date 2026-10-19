@@ -92,9 +92,8 @@ class P2PWebSocketPeerKeysTest(BitcoinTestFramework):
         )
         self.dropped("wss", "its key is not listed in -p2pwebsocketpeer")
         self.dropped("ws", "no client certificate")
-        self.log.info("...plain TCP peers are not affected")
-        self.connect_nodes(1, 0)
-        self.disconnect_nodes(1, 0)
+        # (Lotus v2 has no plain TCP peers: every peer needs a listed key,
+        # hence wss://.)
 
         self.log.info("...and listed ones are accepted")
         self.restart_node(

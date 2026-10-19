@@ -117,7 +117,9 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
         )
         # Nodes advertise themselves only once out of initial block download.
         self.generate(self.nodes[0], 1, sync_fun=self.no_op)
-        peer = self.nodes[0].add_p2p_connection(AddrReceiver())
+        receiver = AddrReceiver()
+        receiver.ws_path = "/lotus/ws"  # P2P over WebSocket (Lotus v2)
+        peer = self.nodes[0].add_p2p_connection(receiver)
         self.nodes[0].setmocktime(int(time.time()) + 24 * 60 * 60)
         peer.wait_until(lambda: any(a.net == CAddress.NET_WSS for a in peer.received))
         self.nodes[0].setmocktime(0)
