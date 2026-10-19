@@ -2170,7 +2170,7 @@ BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
 BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
     // A V2 spend of an OP_TRUE branch. No script can authorize state until
     // ENFORCEOUTPUT, so the per-transaction post-check rejects any HAS_STATE
-    // output, inline and when the caller asks for deferred checks.
+    // output, inline and in the deferred check of its last input.
     const std::vector<uint8_t> op_true{0x4e};
     lotus::v2::Output coin_out;
     coin_out.value = 5000;
@@ -2215,13 +2215,25 @@ BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
                 tx, state, coins, 0, false, false, tx.GetPrecomputedData(),
                 cache, sigchecks, limiter, nullptr,
                 deferred ? &checks : nullptr);
-            BOOST_CHECK_EQUAL(ok, !with_state);
-            if (with_state) {
-                BOOST_CHECK_EQUAL(state.GetRejectReason(),
-                                  "state-output-unauthorized");
+            if (!deferred) {
+                BOOST_CHECK_EQUAL(ok, !with_state);
+                if (with_state) {
+                    BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                                      "state-output-unauthorized");
+                }
+                BOOST_CHECK(checks.empty());
+                continue;
             }
-            // A V2 transaction is checked as one unit and never deferred.
-            BOOST_CHECK(checks.empty());
+            // Deferred: one check per input, and the check completing the
+            // last input runs the transaction's final rules.
+            BOOST_CHECK(ok);
+            BOOST_REQUIRE_EQUAL(checks.size(), tx.vin.size());
+            const auto result = checks[0]();
+            BOOST_CHECK_EQUAL(result.has_value(), with_state);
+            if (result) {
+                BOOST_CHECK(result->second.find("state-output-unauthorized") !=
+                            std::string::npos);
+            }
         }
     }
 }
