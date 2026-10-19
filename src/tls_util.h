@@ -49,18 +49,36 @@ struct SelfSigned {
 };
 
 /**
- * Generate a self-signed EC P-256 certificate (CA:FALSE) with the given
- * subject CN, DNS and IP subject alternative names and validity.
+ * Generate a self-signed certificate (CA:FALSE) with the given subject CN,
+ * DNS and IP subject alternative names and validity, for a new EC P-256 key
+ * or, if `key_pem` is set, for that existing key (renewals keep the public
+ * key, and with it any SPKI pins).
  */
 std::optional<SelfSigned>
 GenerateSelfSigned(const std::string &common_name,
                    const std::vector<std::string> &dns_names,
                    const std::vector<std::string> &ip_addresses,
-                   std::chrono::seconds validity);
+                   std::chrono::seconds validity,
+                   const std::string &key_pem = {});
 
 /** Write a key (mode 0600) and certificate as PEM files */
 bool WritePemFiles(const SelfSigned &pem, const fs::path &cert_path,
                    const fs::path &key_path);
+
+/** Replace a file's contents atomically (write a sibling, then rename) */
+bool ReplaceFile(const fs::path &path, const std::string &contents);
+
+/** Read a whole (small) file, or std::nullopt */
+std::optional<std::string> ReadFile(const fs::path &path);
+
+struct CertificateInfo {
+    std::string common_name;
+    //! Seconds until notAfter (negative once expired)
+    int64_t seconds_left{0};
+};
+
+/** Subject CN and expiry of the first certificate in a PEM file */
+std::optional<CertificateInfo> ReadCertificateInfo(const fs::path &path);
 
 /** SHA-256 of a certificate's DER SubjectPublicKeyInfo (empty on error) */
 std::vector<unsigned char> SpkiSha256(X509 *cert);
