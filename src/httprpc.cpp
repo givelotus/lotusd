@@ -333,8 +333,9 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
         }
         jreq.authUser = std::move(*user);
     } else if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
-        LogPrintf("ThreadRPCServer incorrect password attempt from %s\n",
-                  jreq.peerAddr);
+        LogInfoEvent(BCLog::ALL, "rpc_authentication_failed",
+                     "ThreadRPCServer incorrect password attempt from {addr}")
+            .Field(BCLog::LogField::Addr, jreq.peerAddr);
 
         /**
          * Deter brute-forcing.
@@ -362,8 +363,9 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
         std::string strReply;
         bool user_has_whitelist = g_rpc_whitelist.count(jreq.authUser);
         if (!user_has_whitelist && g_rpc_whitelist_default) {
-            LogPrintf("RPC User %s not allowed to call any methods\n",
-                      jreq.authUser);
+            LogInfoEvent(BCLog::ALL, "rpc_access_denied",
+                         "RPC User {rpc_user} not allowed to call any methods")
+                .Field(BCLog::LogField::RpcUser, jreq.authUser);
             req->WriteReply(HTTP_FORBIDDEN);
             return false;
 
@@ -372,8 +374,11 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
             jreq.parse(valRequest);
             if (user_has_whitelist &&
                 !g_rpc_whitelist[jreq.authUser].count(jreq.strMethod)) {
-                LogPrintf("RPC User %s not allowed to call method %s\n",
-                          jreq.authUser, jreq.strMethod);
+                LogInfoEvent(BCLog::ALL, "rpc_method_access_denied",
+                             "RPC User {rpc_user} not allowed to call method "
+                             "{original_method}")
+                    .Field(BCLog::LogField::RpcUser, jreq.authUser)
+                    .Field(BCLog::LogField::OriginalMethod, jreq.strMethod);
                 req->WriteReply(HTTP_FORBIDDEN);
                 return false;
             }
@@ -396,9 +401,12 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
                         std::string strMethod =
                             request.find_value("method").get_str();
                         if (!g_rpc_whitelist[jreq.authUser].count(strMethod)) {
-                            LogPrintf(
-                                "RPC User %s not allowed to call method %s\n",
-                                jreq.authUser, strMethod);
+                            LogInfoEvent(BCLog::ALL, "rpc_method_access_denied",
+                                         "RPC User {rpc_user} not allowed to "
+                                         "call method {original_method}")
+                                .Field(BCLog::LogField::RpcUser, jreq.authUser)
+                                .Field(BCLog::LogField::OriginalMethod,
+                                       strMethod);
                             req->WriteReply(HTTP_FORBIDDEN);
                             return false;
                         }
@@ -450,8 +458,9 @@ HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
         }
         jreq.authUser = std::move(*user);
     } else if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
-        LogPrintf("ThreadRPCServer incorrect password attempt from %s\n",
-                  jreq.peerAddr);
+        LogInfoEvent(BCLog::ALL, "rpc_authentication_failed",
+                     "ThreadRPCServer incorrect password attempt from {addr}")
+            .Field(BCLog::LogField::Addr, jreq.peerAddr);
 
         boost::asio::steady_timer delay_timer(
             executor, std::chrono::milliseconds{RPC_AUTH_BRUTE_FORCE_DELAY});
@@ -475,16 +484,20 @@ HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
         std::string strReply;
         bool user_has_whitelist = g_rpc_whitelist.count(jreq.authUser);
         if (!user_has_whitelist && g_rpc_whitelist_default) {
-            LogPrintf("RPC User %s not allowed to call any methods\n",
-                      jreq.authUser);
+            LogInfoEvent(BCLog::ALL, "rpc_access_denied",
+                         "RPC User {rpc_user} not allowed to call any methods")
+                .Field(BCLog::LogField::RpcUser, jreq.authUser);
             req->WriteReply(HTTP_FORBIDDEN);
             co_return false;
         } else if (valRequest.isObject()) {
             jreq.parse(valRequest);
             if (user_has_whitelist &&
                 !g_rpc_whitelist[jreq.authUser].count(jreq.strMethod)) {
-                LogPrintf("RPC User %s not allowed to call method %s\n",
-                          jreq.authUser, jreq.strMethod);
+                LogInfoEvent(BCLog::ALL, "rpc_method_access_denied",
+                             "RPC User {rpc_user} not allowed to call method "
+                             "{original_method}")
+                    .Field(BCLog::LogField::RpcUser, jreq.authUser)
+                    .Field(BCLog::LogField::OriginalMethod, jreq.strMethod);
                 req->WriteReply(HTTP_FORBIDDEN);
                 co_return false;
             }
@@ -504,9 +517,12 @@ HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
                         std::string strMethod =
                             request.find_value("method").get_str();
                         if (!g_rpc_whitelist[jreq.authUser].count(strMethod)) {
-                            LogPrintf(
-                                "RPC User %s not allowed to call method %s\n",
-                                jreq.authUser, strMethod);
+                            LogInfoEvent(BCLog::ALL, "rpc_method_access_denied",
+                                         "RPC User {rpc_user} not allowed to "
+                                         "call method {original_method}")
+                                .Field(BCLog::LogField::RpcUser, jreq.authUser)
+                                .Field(BCLog::LogField::OriginalMethod,
+                                       strMethod);
                             req->WriteReply(HTTP_FORBIDDEN);
                             co_return false;
                         }
@@ -534,15 +550,17 @@ HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
 
 static bool InitRPCAuthentication() {
     if (gArgs.GetArg("-rpcpassword", "") == "") {
-        LogPrintf("Using random cookie authentication.\n");
+        LogInfoEvent(BCLog::ALL, "rpc_cookie_auth_enabled",
+                     "Using random cookie authentication.");
         if (!GenerateAuthCookie(&strRPCUserColonPass)) {
             return false;
         }
     } else {
-        LogPrintf("Config options rpcuser and rpcpassword will soon be "
-                  "deprecated. Locally-run instances may remove rpcuser to use "
-                  "cookie-based auth, or may be replaced with rpcauth. Please "
-                  "see share/rpcauth for rpcauth auth generation.\n");
+        LogInfoEvent(BCLog::ALL, "rpc_password_options_deprecated",
+                     "Config options rpcuser and rpcpassword will soon be "
+                     "deprecated. Locally-run instances may remove rpcuser to "
+                     "use cookie-based auth, or may be replaced with rpcauth. "
+                     "Please see share/rpcauth for rpcauth auth generation.");
         strRPCUserColonPass = gArgs.GetArg("-rpcuser", "") + ":" +
                               gArgs.GetArg("-rpcpassword", "");
     }
@@ -550,7 +568,8 @@ static bool InitRPCAuthentication() {
     strRPCCORSDomain = gArgs.GetArg("-rpccorsdomain", "");
 
     if (gArgs.GetArg("-rpcauth", "") != "") {
-        LogPrintf("Using rpcauth authentication.\n");
+        LogInfoEvent(BCLog::ALL, "rpc_rpcauth_enabled",
+                     "Using rpcauth authentication.");
         for (const std::string &rpcauth : gArgs.GetArgs("-rpcauth")) {
             std::vector<std::string> fields{SplitString(rpcauth, ':')};
             const std::vector<std::string> salt_hmac{
@@ -560,7 +579,8 @@ static bool InitRPCAuthentication() {
                 fields.insert(fields.end(), salt_hmac.begin(), salt_hmac.end());
                 g_rpcauth.push_back(fields);
             } else {
-                LogPrintf("Invalid -rpcauth argument.\n");
+                LogInfoEvent(BCLog::ALL, "rpc_rpcauth_invalid",
+                             "Invalid -rpcauth argument.");
                 return false;
             }
         }
@@ -596,7 +616,7 @@ static bool InitRPCAuthentication() {
 }
 
 bool StartHTTPRPC(HTTPRPCRequestProcessor &httpRPCRequestProcessor) {
-    LogDebug(BCLog::RPC, "Starting HTTP RPC server\n");
+    LogEvent(BCLog::RPC, "rpc_http_started", "Starting HTTP RPC server");
     if (!InitRPCAuthentication()) {
         return false;
     }
@@ -624,11 +644,12 @@ bool StartHTTPRPC(HTTPRPCRequestProcessor &httpRPCRequestProcessor) {
 }
 
 void InterruptHTTPRPC() {
-    LogDebug(BCLog::RPC, "Interrupting HTTP RPC server\n");
+    LogEvent(BCLog::RPC, "rpc_http_interrupting",
+             "Interrupting HTTP RPC server");
 }
 
 void StopHTTPRPC() {
-    LogDebug(BCLog::RPC, "Stopping HTTP RPC server\n");
+    LogEvent(BCLog::RPC, "rpc_http_stopping", "Stopping HTTP RPC server");
     UnregisterHTTPHandler("/", true);
     if (g_wallet_init_interface.HasWalletSupport()) {
         UnregisterHTTPHandler("/wallet/", false);

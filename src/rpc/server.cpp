@@ -388,7 +388,7 @@ bool CRPCTable::removeCommand(const std::string &name,
 }
 
 void StartRPC() {
-    LogDebug(BCLog::RPC, "Starting RPC\n");
+    LogEvent(BCLog::RPC, "rpc_server_started", "Starting RPC");
     WITH_LOCK(g_rpc_shutdown_mutex,
               g_rpc_shutdown_state = std::make_shared<RPCShutdownState>());
     g_rpc_running = true;
@@ -401,7 +401,7 @@ void InterruptRPC() {
     // This function could be called twice if the GUI has been started with
     // -server=1.
     std::call_once(shutdown->interrupt, []() {
-        LogDebug(BCLog::RPC, "Interrupting RPC\n");
+        LogEvent(BCLog::RPC, "rpc_server_interrupting", "Interrupting RPC");
         // Interrupt e.g. running longpolls
         g_rpc_running = false;
         GetRPCBlockChangeWaiter().NotifyAll();
@@ -415,7 +415,7 @@ void StopRPC() {
     // -server=1.
     assert(!g_rpc_running);
     std::call_once(shutdown->stop, []() {
-        LogDebug(BCLog::RPC, "Stopping RPC\n");
+        LogEvent(BCLog::RPC, "rpc_server_stopping", "Stopping RPC");
         WITH_LOCK(g_deadline_timers_mutex, deadlineTimers.clear());
         DeleteAuthCookie();
         g_rpcSignals.Stopped();
