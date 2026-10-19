@@ -121,23 +121,6 @@ EXTRA_PRIVILEGES_TESTS = [
     "feature_bind_port_discover.py",
 ]
 
-TEST_PARAMS = {
-    # Some test can be run with additional parameters.
-    # When a test is listed here, then it will be run without parameter as well
-    # as with additional parameters listed here.
-    # This:
-    #    example "testName" : [["--param1", "--param2"] , ["--param3"]]
-    # will run the test 3 times:
-    #    testName
-    #    testName --param1 --param2
-    #    testname --param3
-    # FIXME: "rpc_psbt.py": [["--descriptors"]],
-    # FIXME: "wallet_basic.py": [["--descriptors"]],
-    # FIXME: "wallet_keypool.py": [["--descriptors"]],
-    "wallet_txn_doublespend.py": [["--mineblock"]],
-    "wallet_txn_clone.py": [["--mineblock"]],
-}
-
 # Used to limit the number of tests, when list of tests is not provided on command line
 # When --extended is specified, we run all tests, otherwise
 # we only run a test if its execution time in seconds does not exceed
@@ -478,31 +461,29 @@ def main():
 
     # Build list of tests
     all_tests, all_setup_scripts = get_all_scripts_from_disk(tests_dir, NON_TESTS)
-
-    # Check all tests with parameters actually exist
-    for test in TEST_PARAMS:
-        if test not in all_tests:
-            print(
-                f"ERROR: Test with parameter {test} does not exist, check it has "
-                "not been renamed or deleted"
-            )
-            sys.exit(1)
+    # Tests named with "[<variant>]": file -> the set of variants to run (None: all)
+    only_variants = {}
 
     if tests:
         # Individual tests or setup scripts have been specified. Run specified
         # tests/setup scripts that exist in the all_tests/all_setup_scripts
-        # list. Accept the name with or without .py extension.
-        individual_tests = [
-            re.sub(r"\.py$", "", test) + ".py"
-            for test in tests
-            if not test.endswith("*")
-        ]
+        # list. Accept the name with or without .py extension, and with a
+        # variant: "<file>[<variant>]" runs only that variant of the test.
         test_list = []
-        for test in individual_tests:
-            if test in (all_tests | all_setup_scripts):
-                test_list.append(test)
-            else:
-                print(f"{bold('WARNING!')} Test '{test}' not found in full test list.")
+        for test in tests:
+            if test.endswith("*"):
+                continue
+            file, variant, _ = parse_job_name(test)
+            file = re.sub(r"\.py$", "", file) + ".py"
+            if file not in (all_tests | all_setup_scripts):
+                print(f"{bold('WARNING!')} Test '{file}' not found in full test list.")
+                continue
+            if file not in test_list:
+                test_list.append(file)
+            if variant is None:
+                only_variants[file] = None
+            elif only_variants.get(file, ()) is not None:
+                only_variants.setdefault(file, set()).add(variant)
 
         # Allow for wildcard at the end of the name, so a single input can
         # match multiple tests
@@ -542,8 +523,17 @@ def main():
     src_timings = Timings(os.path.join(src_dir, "test", "functional", "timing.json"))
 
     discovered = discover_tests(tests_dir, src_dir, test_list)
+    for file, variants in only_variants.items():
+        known = (discovered or {}).get(file, {}).get("variants", [])
+        unknown = sorted((variants or set()) - set(known))
+        if unknown:
+            print(
+                f"{bold('ERROR!')} {file} has no variant {', '.join(unknown)}"
+                f" (variants: {', '.join(known) or 'none'})"
+            )
+            sys.exit(1)
     test_list = args.repeat * get_tests_to_run(
-        test_list, TEST_PARAMS, cutoff, src_timings, discovered
+        test_list, cutoff, src_timings, discovered, only_variants
     )
 
     if not test_list:
@@ -1207,11 +1197,14 @@ def check_script_prefixes(all_scripts):
         )
 
 
-def get_tests_to_run(test_list, test_params, cutoff, src_timings, discovered=None):
+def get_tests_to_run(
+    test_list, cutoff, src_timings, discovered=None, only_variants=None
+):
     """
     Returns only test that will not run longer that cutoff.
     Long running tests are returned first to favor running tests in parallel
     Timings from build directory override those from src directory
+    A test's variants all run, unless only_variants[test] names some of them.
     """
 
     def get_test_time(test):
@@ -1220,20 +1213,17 @@ def get_tests_to_run(test_list, test_params, cutoff, src_timings, discovered=Non
             (x["time"] for x in src_timings.existing_timings if x["name"] == test), 0
         )
 
-    # Some tests must also be run with additional parameters. Add them to the
-    # list.
+    # Run each test's variants: the first (default) one as "<file>", the
+    # others as "<file>[<variant>]".
     tests_with_params = []
     for test_name in test_list:
-        # always execute a test without parameters (its first variant)
-        tests_with_params.append(test_name)
-        # and its other variants, as "<file>[<variant>]"
         variants = (discovered or {}).get(test_name, {}).get("variants", [])
-        tests_with_params.extend(f"{test_name}[{v}]" for v in variants[1:])
-        params = test_params.get(test_name)
-        if params is not None:
-            tests_with_params.extend(
-                [test_name + " " + " ".join(parameter) for parameter in params]
-            )
+        wanted = (only_variants or {}).get(test_name)
+        if wanted is None or (variants and variants[0] in wanted):
+            tests_with_params.append(test_name)
+        tests_with_params.extend(
+            f"{test_name}[{v}]" for v in variants[1:] if wanted is None or v in wanted
+        )
 
     result = [test for test in tests_with_params if get_test_time(test) <= cutoff]
     result.sort(key=lambda x: (-get_test_time(x), x))

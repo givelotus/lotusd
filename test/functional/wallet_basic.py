@@ -19,6 +19,8 @@ from test_framework.wallet_util import test_address
 
 
 class WalletTest(BitcoinTestFramework):
+    # FIXME: a "descriptors" variant (--descriptors) fails.
+
     def set_test_params(self):
         self.num_nodes = 4
         self.noban_tx_relay = True

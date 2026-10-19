@@ -11,6 +11,8 @@ from test_framework.util import assert_equal
 
 
 class TxnMallTest(BitcoinTestFramework):
+    variants = {"default": {}, "mineblock": {"mine_block": True}}
+
     def set_test_params(self):
         self.num_nodes = 3
         self.extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], []]
