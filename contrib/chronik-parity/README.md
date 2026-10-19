@@ -151,7 +151,12 @@ Framework ports are kept in [20000, 25000).
 - **Canonical-order spends.** Every few rounds a block (`generateblock`)
   holds a chain of 2–4 txs in which each child's txid sorts before its
   parent's, so in the block's canonical order a tx spends a coin created
-  later in the same block.
+  later in the same block. On the V2 tier these are v7 spends, which the V2
+  index service once stopped at ("missing coin").
+- **V2 service readiness.** On the V2 tier every sync also requires
+  `/v2/status` on both nodes to be `ready` with its snapshot at the tip:
+  both implementations stopping at the same block would otherwise compare
+  equal.
 - **Reorgs.** Each run includes four:
   - R1: `invalidateblock` on all nodes, then a longer fork and
     `reconsiderblock`.
@@ -256,11 +261,11 @@ line by line.
   Allow patterns match the indexed path or the path without indices.
 - **Accepted differences:**
   - `ChronikInfo.version` (`FormatFullVersion()` of the host build).
-  - On the V2 tier (`compare.V2_ACCEPTED`): `/validate-tx::Tx.txid`, the
-    §1.2 defect. The Rust bridge recomputes the txid of a decoded raw tx from
-    its legacy-shaped fields, which for native V2 txs is one constant value;
-    the native host reports the real V2 txid.
-  - The per-IP key defect (§1.3) is not exercised here.
+  - On the V2 tier, `compare.V2_ACCEPTED` is empty: the former
+    `/validate-tx::Tx.txid` entry (the §1.2 defect, a constant txid for every
+    V2 tx from the Rust bridge) is fixed in both implementations.
+  - The per-IP key defect (§1.3) is not exercised here; it is covered by
+    `test/functional/chronik_rpc_port_proxy.py`.
   - A pattern `ROUTE::PATH` (e.g. `/validate-tx::Tx.txid`) only applies to
     responses of that route.
 - **V2 subscriptions.** On the V2 tier the record also lists the branch roots
@@ -311,6 +316,9 @@ All runs below use `build/ecash-rust` or `build/v2-rust` for both A and B
 | V2, `--no-tokens`, separate miner | 400 | ~40k identical per checkpoint through h402 | 66 identical per checkpoint | – | 0 differences through h402; final phase hung on node A (see Known issues) |
 | V2, `--miner a` | 110 | 270 differences | 5 differences | – | coinbase script asymmetry (see Known issues) |
 | V2 Rust (A) vs native (B), `--no-tokens`, separate miner, V2 dump tool | 120 | 17,322: 17,263 identical, 59 parsed-equal (accepted: version, `/validate-tx` txid) | 81 identical (1,978 msgs) | 4 equal | 0 unexpected differences |
+| eCash Rust (A) vs native (B), separate miner, native dump tool, with canonical-order spend blocks | 160 | 17,892: 17,887 identical, 5 parsed-equal (version) | 139 identical (4,597 msgs) | 5 equal | 0 unexpected differences (5 canonical-order chains, 17 token steps) |
+| V2 Rust (A) vs native (B), `--no-tokens`, separate miner, V2 dump tool, `/v2/status` ready at every sync | 160 | 75,597: 71,340 identical, 4,257 parsed-equal (version, service epoch); `POST /validate-tx` 158 identical | 148 identical (3,021 msgs) | 5 equal | 0 unexpected differences (7 canonical-order v7 chains) |
+| Same, `--seed 11` | 300 | 197,266: 189,905 identical, 7,361 parsed-equal (version, service epoch) | 349 identical (6,436 msgs) | 8 equal | 0 unexpected differences (20 canonical-order v7 chains, 15 conflicts) |
 | Negative control: B with `-chroniklokadidindex=0` | 110 | 196 `/lokad-id` differences and 1 WS difference | | | detected, exit 1 |
 
 ## Known issues
