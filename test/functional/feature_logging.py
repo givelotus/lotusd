@@ -81,6 +81,7 @@ class LoggingTest(BitcoinTestFramework):
 
         self.test_text_source_locations()
         self.test_json_format()
+        self.test_json_aux_only()
 
     def assert_no_absolute_source_paths(self, log_path):
         src = os.path.join(self.config["environment"]["SRCDIR"], "src") + os.sep
@@ -97,6 +98,20 @@ class LoggingTest(BitcoinTestFramework):
         with open(log_path, encoding="utf-8") as f:
             assert any("[src/init.cpp:" in line for line in f)
 
+    def test_json_aux_only(self):
+        self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
+        path = self.relative_log_path("aux-only.jsonl")
+        self.restart_node(0, [
+            "-nodebuglogfile", "-printtoconsole=0", f"-debuglogjsonfile={path}",
+        ])
+        height = self.nodes[0].getblockcount() + 1
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        with open(path, encoding="utf-8") as stream:
+            records = [json.loads(line) for line in stream if line.strip()]
+        assert any("UpdateTip: new best=" in record["message"] and
+                   f"height={height} " in record["message"] for record in records)
+        assert any(record["message"] == "Shutdown: done" for record in records)
     def test_json_format(self):
         self.log.info("Test -logformat=json")
         self.stop_node(0)

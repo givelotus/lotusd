@@ -18,3 +18,22 @@ maintained:
 Usage: `git-subtree-check.sh DIR (COMMIT)`
 
 `COMMIT` may be omitted, in which case `HEAD` is used.
+
+Structured logging
+==================
+`lint-log-events.py` checks production structured calls for canonical registry
+keys, duplicate fields, missing template values and required scope context.
+Peer events (`peer_*`) carry `PeerId`, RPC calls (`rpc_call_*`) carry `Method`,
+mempool transactions (`mempool_tx_*`) carry `TxId`, and block connections
+(`block_connect_*`) carry `BlockHash`. Global listener/server events use names
+that do not imply an individual peer or call. Test/benchmark fixtures are
+excluded so deliberate malformed-input serializer tests remain possible.
+Run `lint-log-events.py --self-test` for its parser/negative cases.
+
+`lint-log-field-keys.py` invokes the native C++ compiler to verify valid keys
+compile, while runtime ids, mismatched field types and out-of-range ids fail.
+Free-form string keys are also rejected by C++ compile assertions in the
+logging event unit suite. `ninja check-log-events check-log-field-keys` runs
+these checks, and native `check`/`check-all` include them when these maintainer scripts
+are present (upstream release source packages omit test/lint). Cross builds run
+the source lint; compiler contract checks require a configured native compiler.

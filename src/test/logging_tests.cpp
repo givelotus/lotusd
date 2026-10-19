@@ -984,7 +984,7 @@ BOOST_FIXTURE_TEST_CASE(logging_async_reopen_under_load, LogSetup) {
 
 BOOST_FIXTURE_TEST_CASE(logging_producer_wake_does_not_lock, LogSetup) {
     LogInstance().EnableCategory(BCLog::NET);
-    {
+    for (const bool structured : {false, true}) {
         LogInstance().PauseForTesting(true);
         LogInstance().Flush();
         std::promise<void> done;
@@ -995,7 +995,11 @@ BOOST_FIXTURE_TEST_CASE(logging_producer_wake_does_not_lock, LogSetup) {
         std::thread producer{[&] {
             util::ThreadRename("wake-test");
             for (size_t i = 0; i < BCLog::LogRing::CAPACITY / 2; ++i) {
-                LogDebug(BCLog::NET, "wake probe\n");
+                if (structured) {
+                    LogEvent(BCLog::NET, "wake_probe", "wake probe");
+                } else {
+                    LogDebug(BCLog::NET, "wake probe\n");
+                }
             }
             done.set_value();
         }};
@@ -1006,7 +1010,9 @@ BOOST_FIXTURE_TEST_CASE(logging_producer_wake_does_not_lock, LogSetup) {
         producer.join();
         LogInstance().PauseForTesting(false);
         LogInstance().Flush();
-        BOOST_CHECK_MESSAGE(ready, "plain producer blocked on wake mutex");
+        BOOST_CHECK_MESSAGE(
+            ready, (structured ? "structured producer blocked on wake mutex"
+                               : "plain producer blocked on wake mutex"));
     }
 }
 
@@ -1027,9 +1033,16 @@ BOOST_FIXTURE_TEST_CASE(logging_callback_severe_overflow, LogSetup) {
         // Callback runs on the consuming thread. Its own ring cannot drain
         // until this callback returns, so this deterministically fills it.
         for (size_t i = 0; i < count; ++i) {
-            LogWarning("callback warning %u\n", i);
+            if (i & 1) {
+                LogWarningEvent(BCLog::NET, "callback_warning",
+                                "callback warning {count}")
+                    .Field(BCLog::LogField::Count, uint64_t{i});
+            } else {
+                LogWarning("callback warning %u\n", i);
+            }
         }
         LogError("callback plain error\n");
+        LogErrorEvent(BCLog::NET, "callback_error", "callback typed error");
         callback_line_intact = line == original;
     })};
     LogPrintf("callback seed\n");
@@ -1040,12 +1053,13 @@ BOOST_FIXTURE_TEST_CASE(logging_callback_severe_overflow, LogSetup) {
     size_t warnings{0}, errors{0};
     for (const auto &line : ReadDebugLogLines()) {
         warnings += line.find("callback warning ") != std::string::npos;
-        errors += line.find("callback plain error") != std::string::npos;
+        errors += line.find("callback plain error") != std::string::npos ||
+                  line.find("callback typed error") != std::string::npos;
     }
     BOOST_REQUIRE(triggered);
     BOOST_CHECK(callback_line_intact);
     BOOST_CHECK_EQUAL(warnings, count);
-    BOOST_CHECK_EQUAL(errors, 1U);
+    BOOST_CHECK_EQUAL(errors, 2U);
     BOOST_CHECK_EQUAL(LogInstance().DroppedLines() - before, 0U);
 }
 

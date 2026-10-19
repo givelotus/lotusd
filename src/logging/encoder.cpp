@@ -12,6 +12,7 @@
 #include <cassert>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 
 using util::RemovePrefixView;
 using namespace std::chrono_literals;
@@ -254,9 +255,72 @@ void BCLog::AppendLogPrefix(std::string &out, LogFlags category, Level level,
 
 namespace BCLog {
 
+namespace {
+    //! Scratch space of the logger thread (encoders run there only)
+    thread_local std::string t_scratch;
+
+    /** A structured event's message and the text of the fields it lacks */
+    std::string_view EventText(const LogLine &line, bool with_fields) {
+        std::string &text{t_scratch};
+        text.clear();
+        uint64_t used{0};
+        AppendEventMessage(text, *line.event, line.fields, &used);
+        if (with_fields) {
+            size_t i{0};
+            std::string value;
+            for (const FieldView f : line.fields) {
+                if (i >= 64 || !(used >> i & 1)) {
+                    text += ' ';
+                    text += f.Info().name;
+                    text += '=';
+                    value.clear();
+                    f.AppendText(value);
+                    AppendQuotedText(text, value);
+                }
+                ++i;
+            }
+            if (line.fields_truncated) {
+                text += " [fields truncated]";
+            }
+        }
+        text += '\n';
+        return text;
+    }
+
+    /** Append a field's value as a JSON value of its type */
+    void AppendJsonValue(std::string &out, const FieldView &f) {
+        switch (f.kind) {
+            case FieldKind::I64:
+            case FieldKind::U64:
+            case FieldKind::DURATION_NS:
+                f.AppendText(out);
+                return;
+            case FieldKind::F64:
+                // JSON has no NaN or infinity literals; retain the key as null.
+                if (std::isfinite(f.F64())) {
+                    f.AppendText(out);
+                } else {
+                    out += "null";
+                }
+                return;
+            case FieldKind::BOOL:
+                out += f.Bool() ? "true" : "false";
+                return;
+            default: {
+                std::string text;
+                f.AppendText(text);
+                out += '"';
+                AppendJsonEscaped(out, text);
+                out += '"';
+            }
+        }
+    }
+} // namespace
+
 void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
                          std::string &out) const {
-    const std::string_view msg{line.message};
+    const std::string_view msg{
+        line.event ? EventText(line, /*with_fields=*/true) : line.message};
     out.clear();
     if (line.ratelimited) {
         // To avoid confusion caused by dropped log messages when debugging
@@ -311,7 +375,8 @@ void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
 
 void JsonEncoder::Encode(const LogLine &line, const LogOptions &opts,
                          std::string &out) const {
-    std::string_view msg{line.message};
+    std::string_view msg{line.event ? EventText(line, /*with_fields=*/false)
+                                    : line.message};
     out.clear();
     out += '{';
     if (opts.timestamps) {
@@ -331,6 +396,20 @@ void JsonEncoder::Encode(const LogLine &line, const LogOptions &opts,
     }
     AppendJsonEscaped(out, msg);
     out += '"';
+    if (line.event) {
+        out += ",\"event\":\"";
+        AppendJsonEscaped(out, line.event->event);
+        out += '"';
+        for (const FieldView f : line.fields) {
+            out += ",\"";
+            out += f.Info().name;
+            out += "\":";
+            AppendJsonValue(out, f);
+        }
+        if (line.fields_truncated) {
+            out += ",\"fields_truncated\":true";
+        }
+    }
     if (line.mocktime > 0s) {
         out += ",\"mocktime\":\"";
         AppendRfc3339(out, SystemClock::time_point{line.mocktime},
