@@ -1206,7 +1206,7 @@
       "byte": "df",
       "name": "INPUTWITNESSARG",
       "group": "input",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "e0",
