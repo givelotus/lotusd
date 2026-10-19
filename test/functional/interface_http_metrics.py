@@ -13,6 +13,7 @@ import time
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, p2p_port, rpc_port
+from test_framework.wallet import MiniWallet
 
 PUBLIC_PORT_INDEX = 41
 NAME = r"[a-zA-Z_:][a-zA-Z0-9_:]*"
@@ -124,7 +125,12 @@ class HTTPMetricsTest(BitcoinTestFramework):
         node = self.nodes[0]
         self.log.info("The exposition is well formed")
         samples = self.scrape()
+        # The genesis block was connected at startup.
+        connected = samples[("lotus_block_connect_seconds_count", ())]
+        assert_equal(connected, 1)
         assert_equal(samples[("lotus_metrics_dropped_samples_total", ())], 0)
+        assert_equal(samples[("lotus_chain_tip_height", ())], 0)
+        assert_equal(samples[("lotus_initial_block_download", ())], 1)
 
         self.log.info("Peers: node1 over WebSocket, node1 over TCP")
         self.wait_until(
@@ -151,6 +157,25 @@ class HTTPMetricsTest(BitcoinTestFramework):
         assert self.total(samples, "lotus_p2p_sent_bytes_total") > 0
         assert ("lotus_p2p_received_bytes_total", (("type", "other"),)) in samples
 
+        self.log.info("Chain and mempool values change")
+        wallet = MiniWallet(node)
+        self.generate(wallet, 101)
+        self.wait_until(
+            lambda: self.scrape()[("lotus_block_connect_seconds_count", ())]
+            == connected + 101
+        )
+        self.wait_until(
+            lambda: self.scrape()[("lotus_initial_block_download", ())] == 0
+        )
+        samples = self.scrape()
+        assert_equal(samples[("lotus_chain_tip_height", ())], 101)
+        tip_time = node.getblockheader(node.getbestblockhash())["time"]
+        assert_equal(samples[("lotus_chain_tip_timestamp_seconds", ())], tip_time)
+        # Computed at scrape time; negative if the tip's timestamp is ahead
+        # of the clock (quickly mined regtest blocks).
+        age = samples[("lotus_chain_tip_age_seconds", ())]
+        assert abs(age - (time.time() - tip_time)) < 30, age
+        assert samples[("lotus_block_connect_seconds_sum", ())] > 0
 
         self.log.info("HTTP and RPC requests")
         node.getblockcount()
