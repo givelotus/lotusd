@@ -7,8 +7,9 @@
 A raw-socket HTTP server in this process records the exact request bytes the
 CLI sends and answers with scripted responses: chunked and close-delimited
 bodies, error statuses, slow and silent servers, and refused connections. The
-expected values were recorded with the original libevent client, so any
-transport replacement must reproduce them.
+expected values were recorded with the original libevent client and the
+current client reproduces them, except that a host name now falls back to its
+other resolved addresses.
 """
 
 import base64
@@ -155,11 +156,13 @@ class CliHttpClientTest(BitcoinTestFramework):
         server.close()
         return server, result
 
-    def assert_connect_failed(self, rc, err, port, detail, host="127.0.0.1"):
+    def assert_connect_failed(self, rc, err, port, detail):
         assert_equal(rc, 1)
         # The daemon name in the hint depends on the build's branding.
         pattern = (
-            re.escape(f"error: Could not connect to the server {host}:{port}{detail}")
+            re.escape(
+                f"error: Could not connect to the server 127.0.0.1:{port}{detail}"
+            )
             + r"\n\nMake sure the \S+ server is running and that you are"
             r" connecting to the correct RPC port\.\n"
         )
@@ -345,20 +348,17 @@ class CliHttpClientTest(BitcoinTestFramework):
             rc, err, server.port, ' (error code 1 - "EOF reached")'
         )
 
-        self.log.info("-rpcconnect with a host name uses only the first address")
-        # The server listens on IPv4 only. libevent connects to the first
-        # resolved address of "localhost" (::1 on this host) and gives up.
+        self.log.info("-rpcconnect with a host name tries every address")
+        # The server listens on IPv4 only. libevent connected to the first
+        # resolved address of "localhost" (::1 on some hosts) and gave up; the
+        # client now tries each resolved address in turn.
         server, (rc, out, err, _) = self.serve(
             reply_with(response(200, "OK", OK_BODY)),
             "getblockcount",
             connect="localhost",
         )
-        if server.request is None:
-            assert_equal(out, "")
-            self.assert_connect_failed(rc, err, server.port, "", host="localhost")
-        else:
-            assert_equal((rc, out, err), (0, "5\n", ""))
-            assert_equal(server.request.split(b"\r\n")[1], b"Host: localhost")
+        assert_equal((rc, out, err), (0, "5\n", ""))
+        assert_equal(server.request.split(b"\r\n")[1], b"Host: localhost")
 
 
 if __name__ == "__main__":
