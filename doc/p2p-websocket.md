@@ -15,7 +15,8 @@ This is useful to:
   [Privacy and censorship](#privacy-and-censorship)).
 
 Raw P2P ("raw" means plain P2P, the ordinary non-WebSocket protocol) is
-unchanged, and the two can be used together or separately.
+unchanged in the shared eCash engine, and the two can be used together or separately.
+Lotus v2 uses only WebSocket; its differences are listed below.
 
 ## Listening: which transports, on which port
 
@@ -110,7 +111,32 @@ PROXY v2 header. Headers from untrusted addresses are never believed.
 Behind a layer-4 balancer sending PROXY v2, only its TLV counts, since the
 HTTP then comes from the client itself.
 
+### Lotus v2: WebSocket only
+
+Lotus v2 nodes have no raw TCP P2P. The P2P port (`-port`, `-bind`,
+`-whitebind`, onion binds) is an HTTP/WebSocket listener with TLS detected per
+connection, serving `/p2p/ws` (and the other public endpoints) to anyone:
+
+- Peers known by address are dialed as `wss://<address>:<port>/p2p/ws`, or
+  `ws://` for onion and private addresses (Tor encrypts already; a private
+  network is the operator's). DNS seeds, address gossip and `-addnode` /
+  `-connect` addresses keep their usual form.
+- `/p2p/ws` is public on every listener, the RPC port included. If `-rpcbind`
+  and `-bind` name the same address and port, one listener serves both: P2P
+  to anyone, RPC to `-rpcallowip` clients. That is one port for P2P, RPC,
+  Chronik behind a load balancer. Health checks are not served on the P2P port.
+- A listening node without `-server` still runs the HTTP server, with no RPC
+  listeners. `-p2pwslisten=0` requires `-listen=0`; `-p2prawlisten` defaults to 0 and cannot be enabled.
+- `-p2pwebsocketrequirecert` applies to every inbound peer, since all are
+  WebSocket peers; peers on `ws://` (onion, private addresses) present no
+  certificate and are dropped.
+- I2P is not supported.
+
 ## Serving
+
+The table describes the shared eCash engine. Lotus v2 keeps raw P2P disabled,
+serves public P2P and Chronik on its listeners, and starts HTTP for listening
+even without `-server`, as described above.
 
 | Option | Effect |
 |---|---|
