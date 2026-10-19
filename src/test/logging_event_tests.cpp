@@ -629,6 +629,32 @@ BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
     BOOST_CHECK_EQUAL(record["peer_port"].getInt<int>(), 10605);
 }
 
+BOOST_AUTO_TEST_CASE(fee_rate_value_is_snapshot_and_preserves_text) {
+    Format(BCLog::LogFormat::JSON);
+    const std::array<int64_t, 8> amounts{
+        std::numeric_limits<int64_t>::min(), -100000001, -1, 0,
+        1, 100000000, 100000001, std::numeric_limits<int64_t>::max()};
+    for (const int64_t amount : amounts) {
+        CFeeRate rate{amount * SATOSHI};
+        const auto expected{rate.ToString()};
+        std::array<std::byte, BCLog::LogValue<CFeeRate>::MAX_SIZE> packed;
+        const auto size{BCLog::LogValue<CFeeRate>::Pack(rate, packed)};
+        rate = CFeeRate{};
+        std::string rendered;
+        BCLog::LogValue<CFeeRate>::Render(std::span{packed}.first(size),
+                                        rendered);
+        BOOST_CHECK_EQUAL(rendered, expected);
+    }
+    CFeeRate rate{12345 * SATOSHI};
+    const auto expected{rate.ToString()};
+    LogInfoEvent(BCLog::ALL, "fee_rate_snapshot", "rate={fee_rate}")
+        .Field(LogField::FeeRate, rate);
+    rate = CFeeRate{};
+    const auto record{Json()};
+    BOOST_CHECK_EQUAL(record["fee_rate"].get_str(), expected);
+    BOOST_CHECK_EQUAL(record["message"].get_str(), "rate=" + expected);
+}
+
 BOOST_AUTO_TEST_CASE(wss_packed_address_keeps_full_payload) {
     CNetAddr address;
     BOOST_REQUIRE(

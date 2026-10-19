@@ -5,12 +5,14 @@
 #ifndef BITCOIN_LOGGING_VALUES_H
 #define BITCOIN_LOGGING_VALUES_H
 
+#include <feerate.h>
 #include <logging/event.h>
 #include <netaddress.h>
 #include <primitives/transaction.h>
 
 #include <algorithm>
 #include <cstring>
+#include <type_traits>
 
 /**
  * How node types are logged as structured field values (see
@@ -69,6 +71,26 @@ template <> struct LogValue<CService> {
         std::memcpy(&port, in.data(), 2);
         out += CService{LogValue<CNetAddr>::Unpack(in.subspan(2)), port}
                    .ToStringAddrPort();
+    }
+};
+
+/** Fee rates: copy their single Amount value; format on the consumer. */
+template <> struct LogValue<CFeeRate> {
+    // This is an in-process value snapshot, not a new wire serialization.
+    // Avoid GetFeePerK(): it performs arithmetic which can overflow for rates
+    // outside the monetary range even though ToString itself accepts them.
+    static_assert(std::is_trivially_copyable_v<CFeeRate>);
+    static_assert(std::has_unique_object_representations_v<CFeeRate>);
+    static_assert(sizeof(CFeeRate) == sizeof(Amount));
+    static constexpr size_t MAX_SIZE{sizeof(CFeeRate)};
+    static size_t Pack(const CFeeRate &rate, std::span<std::byte> out) {
+        std::memcpy(out.data(), &rate, sizeof(rate));
+        return sizeof(rate);
+    }
+    static void Render(std::span<const std::byte> in, std::string &out) {
+        CFeeRate rate;
+        std::memcpy(&rate, in.data(), sizeof(rate));
+        out += rate.ToString();
     }
 };
 
