@@ -95,14 +95,22 @@ def run_job(job, conn):
         exit_code = test.main(exit_process=False)
     except BaseException as e:
         # The test could not even be set up (import error, bad arguments...)
-        traceback.print_exc()
+        sys.stdout.flush()
         sys.stderr.flush()
         result = result_from_output(job, FAILED, None, start)
-        result.failure = {
-            "type": type(e).__name__,
-            "message": str(e),
-            "traceback": traceback.format_exc(),
-        }
+        if isinstance(e, SystemExit):
+            # e.g. argparse, which already explained the error on stderr
+            result.failure = {
+                "type": "SystemExit",
+                "message": f"the test exited with code {e.code} before running",
+                "traceback": "",
+            }
+        else:
+            result.failure = {
+                "type": type(e).__name__,
+                "message": str(e),
+                "traceback": traceback.format_exc(),
+            }
         conn.send(result.to_dict())
         os._exit(1)
     sys.stdout.flush()

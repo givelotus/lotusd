@@ -33,7 +33,8 @@ from collections import deque
 from queue import Empty, Queue
 from typing import Set, Tuple
 
-from test_framework import worker
+from test_framework import reporting, worker
+from test_framework.results import FAILED, PASSED, SKIPPED, JobResult
 from test_framework.util import MAX_NODES, PORT_RANGE
 
 # Formatting. Default colors to empty strings.
@@ -87,6 +88,7 @@ TEST_FRAMEWORK_MODULES = [
     "blocktools",
     "discovery",
     "merkle",
+    "reporting",
     "messages",
     "muhash",
     "results",
@@ -414,6 +416,17 @@ def main():
         ),
     )
     parser.add_argument(
+        "--jsonl-file",
+        help=(
+            "Write one JSON object per test start, test result and the final"
+            " summary to this file (see README-runner-output.md)"
+        ),
+    )
+    parser.add_argument(
+        "--json-summary",
+        help="Write the run's summary (counts, times, failed tests) as JSON",
+    )
+    parser.add_argument(
         "--junitoutput",
         "-J",
         help=(
@@ -591,6 +604,8 @@ def main():
         phase_dir=phase_dir,
         discovered=discovered,
         test_timeout=test_timeout(args.test_timeout, passon_args),
+        jsonl_file=args.jsonl_file,
+        json_summary=args.json_summary,
     )
 
 
@@ -610,6 +625,8 @@ def run_tests(
     phase_dir=None,
     discovered=None,
     test_timeout=None,
+    jsonl_file=None,
+    json_summary=None,
 ):
     args = args or []
 
@@ -673,6 +690,8 @@ def run_tests(
             sys.stdout.buffer.write(e.output)
             raise
 
+    jsonl = reporting.open_jsonl(jsonl_file)
+
     # Run Tests
     start_time = time.time()
     test_results = execute_test_processes(
@@ -685,11 +704,28 @@ def run_tests(
         failfast,
         discovered,
         test_timeout,
+        jsonl,
     )
     runtime = time.time() - start_time
 
     max_len_name = len(max(test_list, key=len))
     print_results(test_results, tests_dir, max_len_name, runtime, combined_logs_len)
+    job_results = [job_result_of(r) for r in test_results]
+    print(reporting.summary(job_results, tests_dir))
+    run_summary = {
+        "wall_time": runtime,
+        "accumulated_time": sum(r.duration for r in job_results),
+        "counts": {
+            status: len([r for r in job_results if r.status == status])
+            for status in sorted({r.status for r in job_results})
+        },
+        "failed": [r.name for r in job_results if not r.was_successful],
+    }
+    if jsonl is not None:
+        jsonl.write("summary", **run_summary)
+    if json_summary is not None:
+        with open(json_summary, "w", encoding="utf8") as f:
+            json.dump(dict(run_summary, schema=1), f, indent=1, sort_keys=True)
 
     if junitoutput is not None:
         save_results_as_junit(test_results, junitoutput, runtime, test_suite_name)
@@ -733,16 +769,25 @@ def execute_test_processes(
     failfast=False,
     discovered=None,
     test_timeout=None,
+    jsonl=None,
 ):
     update_queue = Queue()
     job_queue = Queue()
     failfast_event = threading.Event()
     test_results = []
-    poll_timeout = 10  # seconds
+    poll_timeout = 1  # seconds, between status line updates
 
     ##
     # Define some helper functions we will need for threading.
     ##
+
+    status_line = reporting.StatusLine(sys.stdout, len(test_list))
+    if on_ci() or running_setup_script(test_list):
+        status_line.enabled = False
+
+    def show_status(running_jobs):
+        failed = len([r for r in test_results if not r.was_successful])
+        status_line.show(len(test_results), failed, [j[1] for j in running_jobs])
 
     def handle_message(message, running_jobs):
         """
@@ -750,7 +795,11 @@ def execute_test_processes(
         """
         if isinstance(message, TestCase):
             running_jobs.append((message.test_num, message.test_case))
-            print(f"{bold(message.test_case)} started")
+            if not status_line.enabled:
+                print(f"{bold(message.test_case)} started")
+            if jsonl is not None:
+                jsonl.write("start", name=message.test_case)
+            show_status(running_jobs)
             return
 
         if isinstance(message, TestResult):
@@ -758,23 +807,16 @@ def execute_test_processes(
 
             running_jobs.remove((test_result.num, test_result.name))
             test_results.append(test_result)
+            result = job_result_of(test_result)
 
-            if test_result.status == "Passed":
-                print(
-                    f"{bold(test_result.name)} passed, "
-                    f"Duration: {TimeResolution.seconds(test_result.time)} s"
-                )
-            elif test_result.status == "Skipped":
-                print(f"{bold(test_result.name)} skipped")
-            else:
-                print(
-                    f"{bold(test_result.name)} failed, "
-                    f"Duration: {TimeResolution.seconds(test_result.time)} s\n"
-                )
-                print(bold("stdout:"))
-                print(test_result.stdout)
-                print(bold("stderr:"))
-                print(test_result.stderr)
+            status_line.clear()
+            print(reporting.finish_line(result))
+            if jsonl is not None:
+                jsonl.write("finish", result=result.to_dict())
+            if not test_result.was_successful:
+                print()
+                print(reporting.failure_block(result, tests_dir))
+                print()
 
                 # Write a symlink to the failed test directory for easy inspection
                 lastfailurepath = os.path.join(build_dir, "lastfailure")
@@ -792,6 +834,7 @@ def execute_test_processes(
                 if failfast:
                     logging.debug("Early exiting after test failure")
                     failfast_event.set()
+            show_status(running_jobs)
             return
 
         assert False, "we should not be here"
@@ -801,10 +844,7 @@ def execute_test_processes(
         handle_update_messages waits for messages to be sent from handle_test_cases via the
         update_queue.  It serializes the results so we can print nice status update messages.
         """
-        printed_status = False
         running_jobs = []
-
-        is_running_setup_script = running_setup_script(test_list)
 
         while True:
             message = None
@@ -812,21 +852,10 @@ def execute_test_processes(
                 message = update_queue.get(True, poll_timeout)
                 if message is None:
                     break
-
-                # We printed a status message, need to kick to the next line
-                # before printing more.
-                if printed_status:
-                    print()
-                    printed_status = False
-
                 handle_message(message, running_jobs)
                 update_queue.task_done()
             except Empty:
-                if not on_ci() and not is_running_setup_script:
-                    jobs = ", ".join([j[1] for j in running_jobs])
-                    print(f"Running jobs: {jobs}", end="\r")
-                    sys.stdout.flush()
-                    printed_status = True
+                show_status(running_jobs)
 
     def handle_test_cases(slot):
         """
@@ -893,6 +922,38 @@ def execute_test_processes(
         job_queue.put(None)
 
     return test_results
+
+
+def job_result_of(test_result):
+    """The JobResult of a TestResult: the worker's, or one built from the
+    output of a test run as a plain subprocess."""
+    result = getattr(test_result, "job_result", None)
+    if result is not None:
+        return result
+    status = {"Passed": PASSED, "Skipped": SKIPPED}.get(test_result.status, FAILED)
+    result = JobResult(
+        name=test_result.name,
+        file=test_result.name.split()[0],
+        status=status,
+        duration=test_result.time,
+        tmpdir=test_result.testdir,
+        framework_log=(
+            os.path.join(test_result.testdir, "test_framework.log")
+            if test_result.testdir
+            else ""
+        ),
+        stdout_tail=reporting_tail(test_result.stdout),
+        stderr_tail=reporting_tail(test_result.stderr),
+        stderr_nonempty=test_result.stderr != "",
+    )
+    if status == FAILED:
+        result.failure = {"type": "exit", "message": "the test failed", "traceback": ""}
+    test_result.job_result = result
+    return result
+
+
+def reporting_tail(text):
+    return "\n".join((text or "").splitlines()[-200:])
 
 
 PHASES = ("chain_init", "network_setup", "body", "final_stop", "cleanup")
@@ -1294,11 +1355,32 @@ def save_results_as_junit(test_results, file_name, time, test_suite_name):
                 "time": str(TimeResolution.milliseconds(test_result.time)),
             },
         )
+        result = job_result_of(test_result)
         if test_result.status == "Skipped":
-            ET.SubElement(e_test_case, "skipped")
+            ET.SubElement(e_test_case, "skipped", {"message": result.skip_reason or ""})
         elif test_result.status == "Failed":
-            ET.SubElement(e_test_case, "failure")
+            failure = result.failure or {}
+            e_failure = ET.SubElement(
+                e_test_case,
+                "failure",
+                {
+                    "type": failure.get("type", result.status),
+                    "message": failure.get("message", ""),
+                },
+            )
+            e_failure.text = failure.get("traceback", "")
         # no special element for passed tests
+        if result.phases:
+            e_properties = ET.SubElement(e_test_case, "properties")
+            for phase in result.phases:
+                ET.SubElement(
+                    e_properties,
+                    "property",
+                    {
+                        "name": f"phase.{phase['name']}",
+                        "value": f"{phase['duration']:.3f}",
+                    },
+                )
 
         ET.SubElement(e_test_case, "system-out").text = test_result.stdout
         ET.SubElement(e_test_case, "system-err").text = test_result.stderr
