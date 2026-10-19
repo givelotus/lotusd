@@ -609,6 +609,9 @@ if(BUILD_LIBBITCOINCONSENSUS)
 	)
 endif()
 
+# The wallet PWA's files and browser sessions (pure part)
+add_subdirectory(walletpwa)
+
 # Bitcoin server facilities
 add_library(server
 	addrdb.cpp
@@ -731,6 +734,9 @@ add_library(server
 	validation.cpp
 	validationinterface.cpp
 	versionbits.cpp
+	walletpwa/http.cpp
+	walletpwa/launch.cpp
+	walletpwa/rpc.cpp
 )
 
 target_include_directories(server PRIVATE leveldb/helpers/memenv)
@@ -739,6 +745,7 @@ target_link_libraries(server
 	bitcoinconsensus
 	lotus_v2_mdbx
 	leveldb
+	walletpwa
 )
 
 # The Boost.Beast HTTP/WebSocket server detects TLS on the RPC port and
