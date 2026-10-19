@@ -18,6 +18,7 @@
 #include <util/string.h>
 #include <util/threadinterrupt.h>
 
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
@@ -40,6 +41,8 @@ struct DialerState {
     tls::SslCtxPtr client_ctx;
     //! Sec-WebSocket-Protocol value offered ("" offers none)
     std::string protocols;
+    //! -p2pwebsocketpin: required public key hash per (lowercase) host
+    std::map<std::string, std::vector<unsigned char>> pins;
 };
 
 GlobalMutex g_dialer_mutex;
@@ -166,6 +169,19 @@ std::optional<WebSocketDialResult>
 Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
           const ParsedWebSocketURL &url, CThreadInterrupt &interrupt) {
     const auto deadline{Clock::now() + HANDSHAKE_TIMEOUT};
+    // A pin in the URL wins over one configured for the host.
+    std::optional<std::vector<unsigned char>> pin{url.spki_pin};
+    if (!pin) {
+        if (const auto it{state.pins.find(ToLower(url.host))};
+            it != state.pins.end()) {
+            pin = it->second;
+        }
+    }
+    if (pin && !url.tls) {
+        LogPrintf("Not connecting to %s: a key pin needs wss://\n",
+                  url.authority);
+        return std::nullopt;
+    }
     auto sock{std::make_unique<HandshakeSock>(std::move(*tcp))};
     tcp.reset();
     if (!sock->SetNonBlocking()) {
@@ -207,7 +223,19 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
         }
         X509 *peer{tls::PeerCertificate(ssl.get())};
         info->peer_cert_fingerprint_hex = tls::CertSha256Hex(peer);
+        const std::vector<unsigned char> spki{tls::SpkiSha256(peer)};
         X509_free(peer);
+        info->peer_spki = spki.empty() ? "" : EncodeSpkiPin(spki);
+        if (pin) {
+            if (spki.size() != pin->size() ||
+                CRYPTO_memcmp(spki.data(), pin->data(), spki.size()) != 0) {
+                LogPrintf("Not connecting to %s: its key %s does not match "
+                          "the pinned key %s\n",
+                          url.authority, info->peer_spki, EncodeSpkiPin(*pin));
+                return std::nullopt;
+            }
+            info->pinned = true;
+        }
         info->tls = true;
         layer = std::make_unique<TlsByteLayer>(std::move(ssl));
     } else {
@@ -286,8 +314,23 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
 
 bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
                              const std::optional<fs::path> &client_key,
-                             const std::string &offer) {
+                             const std::string &offer,
+                             const std::vector<std::string> &pins) {
     auto state{std::make_shared<DialerState>()};
+    for (const std::string &entry : pins) {
+        // A host never contains '=', so the first one separates the pin.
+        const size_t eq{entry.find('=')};
+        const auto pin{eq == std::string::npos
+                           ? std::nullopt
+                           : DecodeSpkiPin(std::string_view{entry}.substr(eq + 1))};
+        if (!pin || eq == 0) {
+            LogPrintf("Error: invalid -p2pwebsocketpin=%s (expected "
+                      "<host>=<base64url SHA-256 of the public key>)\n",
+                      entry);
+            return false;
+        }
+        state->pins[ToLower(entry.substr(0, eq))] = *pin;
+    }
     state->client_ctx = tls::NewContext(/*server=*/false);
     if (!state->client_ctx) {
         return false;

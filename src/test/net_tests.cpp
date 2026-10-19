@@ -1870,6 +1870,22 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
          {"http://a.com", "wss://", "wss://:443", "ws://a.com:99999", "a.com"}) {
         BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
     }
+    // A key pin in the fragment
+    const std::vector<unsigned char> key(32, 0xab);
+    const std::string pin{EncodeSpkiPin(key)};
+    BOOST_CHECK_EQUAL(pin.size(), 43U); // unpadded base64url
+    BOOST_CHECK(pin.find_first_of("+/=") == std::string::npos);
+    url = ParseWebSocketURL("wss://host/p2p/ws#spki=" + pin);
+    BOOST_REQUIRE(url);
+    BOOST_CHECK(url->spki_pin == key);
+    BOOST_CHECK_EQUAL(url->target, "/p2p/ws");
+    // Standard base64 with padding is accepted as well
+    BOOST_CHECK(DecodeSpkiPin(EncodeBase64(key)) == key);
+    for (const char *bad : {"wss://host/p2p/ws#spki=", "wss://host/p2p/ws#spki=AAAA",
+                            "wss://host/p2p/ws#other=x"}) {
+        BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
+    }
+
     BOOST_CHECK(IsWebSocketURL("wss://a"));
     BOOST_CHECK(IsWebSocketURL("ws://a"));
     BOOST_CHECK(!IsWebSocketURL("1.2.3.4:8333"));
