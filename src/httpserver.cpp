@@ -12,6 +12,7 @@
 #include <crypto/sha256.h>
 #include <http_tls_stream.h>
 #include <logging.h>
+#include <net.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
 #include <net_websocket_sock.h>
@@ -2290,8 +2291,7 @@ bool InitHTTPServer(Config &config) {
         LogPrintf("Serving Chronik on the RPC port at %s\n", CHRONIK_PREFIX);
     }
 
-    g_p2p_websocket_enabled =
-        gArgs.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET);
+    g_p2p_websocket_enabled = GetP2PWebSocketListen(gArgs);
     g_trusted_proxies.clear();
     for (const std::string &entry : gArgs.GetArgs("-trustedproxy")) {
         CSubNet subnet;
