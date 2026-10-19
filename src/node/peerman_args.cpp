@@ -2,6 +2,7 @@
 
 #include <common/args.h>
 #include <net_processing.h>
+#include <util/time.h>
 
 #include <algorithm>
 #include <limits>
@@ -35,6 +36,12 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
     if (auto value{argsman.GetIntArg("-blockmessagecache")}) {
         options.block_message_cache_bytes =
             size_t(std::clamp<int64_t>(*value, 0, 65536)) << 20;
+    }
+
+    if (auto value{argsman.GetIntArg("-txrelaytick")}) {
+        options.txrelay_tick = std::chrono::milliseconds{
+            std::clamp<int64_t>(*value, count_milliseconds(MIN_TXRELAY_TICK),
+                                count_milliseconds(MAX_TXRELAY_TICK))};
     }
 
     if (auto value{argsman.GetIntArg("-avacooldown")}) {
