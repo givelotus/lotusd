@@ -8,6 +8,7 @@
 #define BITCOIN_LOGGING_H
 
 #include <logging/encoder.h>
+#include <logging/journal.h>
 #include <span.h>
 #include <threadsafety.h>
 #include <tinyformat.h>
@@ -119,10 +120,13 @@ enum class LogFormat {
     LOGFMT,
     JSON_GCP,
     JSON_ECS,
+    JOURNALD,
 };
 
 /** Parse a supported -logformat value */
 std::optional<LogFormat> ParseLogFormat(std::string_view str);
+/** Formats available on this platform (help and validation). */
+const char *SupportedLogFormats();
 
 /**
  * Append str to out as the contents of a JSON string (without the quotes).
@@ -472,6 +476,9 @@ private:
     //! The secondary JSON log file (-debuglogjsonfile)
     FILE *m_json_fileout GUARDED_BY(m_consumer_mutex) = nullptr;
     JsonEncoder m_json_encoder;
+    JournalSink m_journal GUARDED_BY(m_consumer_mutex);
+    std::string m_startup_error GUARDED_BY(m_consumer_mutex);
+    std::atomic<uint64_t> m_journal_failures{0};
     std::string m_json_buf GUARDED_BY(m_consumer_mutex);
 
     friend class EventBuilder;
@@ -600,6 +607,7 @@ public:
         return m_buffering.load(std::memory_order_relaxed) ||
                m_print_to_console || m_print_to_file ||
                !m_json_file_path.empty() ||
+               m_log_format == LogFormat::JOURNALD ||
                m_has_callbacks.load(std::memory_order_relaxed);
     }
 
@@ -658,6 +666,13 @@ public:
     /** Start logging (and flush all buffered messages) */
     bool StartLogging()
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs, !m_consumer_mutex, !m_wake_mutex);
+    /** Error from the most recent StartLogging attempt. */
+    std::string StartupError() EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex) {
+        StdLockGuard lock(m_consumer_mutex);
+        return m_startup_error;
+    }
+    /** Journal send failures; these records are explicitly sent to stderr. */
+    uint64_t JournalFailures() const { return m_journal_failures.load(); }
     /** Only for testing */
     void DisconnectTestLogger()
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs, !m_consumer_mutex, !m_rings_mutex,
