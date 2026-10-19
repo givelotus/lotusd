@@ -76,6 +76,10 @@ BOOST_AUTO_TEST_CASE(dump_plain_and_dup_tables) {
 }
 
 BOOST_AUTO_TEST_CASE(dump_long_keys_are_physical) {
+    if (test::TestBackend() != StoreBackend::Mdbx) {
+        // Only MDBX hashes long keys (LevelDB stores them as they are).
+        return;
+    }
     TestDb db("dump_long_keys");
     const TableId history = db->Table(schema::kScriptHistory);
     const Bytes long_key(8000, 0x42);

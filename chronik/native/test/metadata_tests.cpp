@@ -10,10 +10,8 @@
 #include <chronik/native/metadata.h>
 #include <chronik/native/schema.h>
 #include <chronik/native/store.h>
-#if CHRONIK_NATIVE_HAVE_MDBX
-#include <chronik/native/mdbx_store.h>
-#endif
 
+#include <test/test_backend.h>
 #include <test/test_sha256.h>
 
 #include <boost/test/unit_test.hpp>
@@ -56,13 +54,13 @@ struct Fixture {
     std::unique_ptr<KvStore> store;
     Fixture() { Open(); }
     void Open() {
-        RegisterMdbxStore();
+        test::RegisterTestStores();
         store.reset();
         StoreOptions opts;
         opts.sha256 = [](ByteView d, uint8_t out[32]) {
             test::TestSha256(d, out);
         };
-        store = OpenStore(StoreBackend::Mdbx, dir.path, schema::EcashTables(),
+        store = OpenStore(test::TestBackend(), dir.path, schema::EcashTables(),
                           opts);
     }
     TableId T(std::string_view name) const { return store->Table(name); }

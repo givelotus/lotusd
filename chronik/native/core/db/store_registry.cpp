@@ -48,6 +48,25 @@ std::string_view StoreBackendName(StoreBackend backend) {
     return "unknown";
 }
 
+std::optional<StoreBackend> ParseStoreBackend(std::string_view name) {
+    for (StoreBackend b : {StoreBackend::Mdbx, StoreBackend::LevelDb}) {
+        if (StoreBackendName(b) == name) {
+            return b;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string_view StoreIndexDirName(StoreBackend backend) {
+    switch (backend) {
+        case StoreBackend::Mdbx:
+            return "chronik";
+        case StoreBackend::LevelDb:
+            return "chronik-leveldb";
+    }
+    return "chronik";
+}
+
 void RegisterStoreBackend(StoreBackend backend, StoreOpenFn open,
                           StoreDestroyFn destroy) {
     std::lock_guard<std::mutex> lock(RegistryMutex());

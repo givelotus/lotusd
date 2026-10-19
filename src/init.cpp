@@ -850,6 +850,15 @@ void SetupServerArgs(NodeContext &node) {
                    "seconds spent) into a <datadir>/perf folder. (default: 0)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
 #if ENABLE_CHRONIK_NATIVE
+    argsman.AddArg("-chronikdbbackend=<backend>",
+                   "Storage backend of the native Chronik index: mdbx "
+                   "(indexes/chronik, shared with Rust Chronik) or leveldb "
+                   "(indexes/chronik-leveldb, if built with "
+                   "CHRONIK_NATIVE_LEVELDB). Switching needs no reindex of "
+                   "the other directory, but the new one is built from "
+                   "scratch (default: mdbx, or leveldb in LevelDB-only builds)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::CHRONIK);
     argsman.AddArg("-chronikqueryworkers=<n>",
                    "Threads answering Chronik HTTP/WebSocket queries, 0 for "
                    "min(8, cores / 2) (native Chronik only; default: 0)",

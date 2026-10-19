@@ -5,11 +5,11 @@
 #ifndef CHRONIK_NATIVE_TEST_INDEX_TEST_UTIL_H
 #define CHRONIK_NATIVE_TEST_INDEX_TEST_UTIL_H
 
-#include <chronik/native/mdbx_store.h>
 #include <chronik/native/schema.h>
 #include <chronik/native/store.h>
 #include <chronik/native/types.h>
 
+#include <test/test_backend.h>
 #include <test/test_sha256.h>
 
 #include <atomic>
@@ -57,7 +57,7 @@ struct TestDb {
     explicit TestDb(const std::string &name,
                     const std::vector<TableSpec> &extra = {})
         : dir(name) {
-        RegisterMdbxStore();
+        RegisterTestStores();
         schema::Schema schema;
         for (const TableSpec &spec : extra) {
             schema.Add(spec);
@@ -67,7 +67,7 @@ struct TestDb {
         opts.sha256 = [](ByteView data, uint8_t out[32]) {
             TestSha256(data, out);
         };
-        store = OpenStore(StoreBackend::Mdbx, dir.path, tables, opts);
+        store = OpenStore(TestBackend(), dir.path, tables, opts);
     }
     ~TestDb() { store.reset(); }
 
