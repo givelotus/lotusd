@@ -82,6 +82,40 @@ def node_extra_args(num_nodes, extra_args=None, *, noban_tx_relay=False):
     return [list(args) + extra for args in extra_args]
 
 
+def validate_declarations(cls):
+    """Check a test class's declared metadata when the class is defined, so
+    that a mistake fails on import rather than in the middle of a run."""
+    name = cls.__name__
+    variants = cls.variants
+    if not (
+        isinstance(variants, dict)
+        and variants
+        and all(isinstance(k, str) and isinstance(v, dict) for k, v in variants.items())
+    ):
+        raise TypeError(
+            f"{name}.variants must be a non-empty {{name: {{option: value}}}}"
+        )
+    if "all" in variants:
+        raise ValueError(f"{name}.variants: 'all' is reserved")
+    requires = cls.requires
+    if isinstance(requires, str) or not all(isinstance(r, str) for r in requires):
+        raise TypeError(f"{name}.requires must be a set of names")
+    unknown = set(requires) - set(REQUIREMENTS)
+    if unknown:
+        raise ValueError(f"{name}.requires: unknown {sorted(unknown)}")
+    topology = cls.topology
+    if isinstance(topology, str):
+        if topology not in ("chain", "none"):
+            raise ValueError(f"{name}.topology: unknown '{topology}'")
+    elif not all(
+        isinstance(pair, (tuple, list))
+        and len(pair) == 2
+        and all(isinstance(i, int) for i in pair)
+        for pair in topology
+    ):
+        raise TypeError(f"{name}.topology must be 'chain', 'none' or (from, to) pairs")
+
+
 class BitcoinTestMetaClass(type):
     """Metaclass for BitcoinTestFramework.
 
@@ -107,6 +141,7 @@ class BitcoinTestMetaClass(type):
             raise TypeError(
                 f"BitcoinTestFramework subclasses may not override {overridden}"
             )
+        validate_declarations(new_cls)
         if not dct.get("abstract", False):
             missing = [
                 name
@@ -1731,3 +1766,29 @@ class TestTopology(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.connections("star")
+
+
+class TestDeclarations(unittest.TestCase):
+    def define(self, **attributes):
+        attributes.setdefault("run_test", lambda self: None)
+        return type("Declared", (BitcoinTestFramework,), attributes)
+
+    def test_valid(self):
+        self.define(
+            requires={"wallet"},
+            variants={"default": {}, "cli": {"usecli": True}},
+            topology=((0, 1),),
+        )
+
+    def test_invalid(self):
+        for attributes in (
+            {"requires": {"no_such_thing"}},
+            {"requires": "wallet"},
+            {"variants": {}},
+            {"variants": {"default": {}, "all": {}}},
+            {"variants": {"default": ["usecli"]}},
+            {"topology": "star"},
+            {"topology": ((0, 1, 2),)},
+        ):
+            with self.assertRaises((TypeError, ValueError), msg=str(attributes)):
+                self.define(**attributes)
