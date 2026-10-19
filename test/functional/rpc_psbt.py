@@ -19,6 +19,8 @@ from test_framework.util import (
 
 
 class PSBTTest(BitcoinTestFramework):
+    # FIXME: a "descriptors" variant (--descriptors) fails.
+
     def set_test_params(self):
         self.num_nodes = 3
         self.supports_cli = False
