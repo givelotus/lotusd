@@ -183,7 +183,12 @@ class P2PPermissionsTests(BitcoinTestFramework):
             " is already in the mempool"
         )
         self.connect_nodes(1, 0)
-        with self.nodes[1].assert_debug_log([f"Force relaying tx {txid} from peer=0"]):
+        with self.nodes[1].assert_debug_log(
+            [
+                f"Force relaying tx {txid} from peer=0",
+                {"event": "relay_transaction_forced", "txid": txid, "peer_id": 0},
+            ]
+        ):
             p2p_rebroadcast_wallet.send_txs_and_test([tx], self.nodes[1])
             self.wait_until(lambda: txid in self.nodes[0].getrawmempool())
 
