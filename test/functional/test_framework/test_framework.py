@@ -5,6 +5,8 @@
 
 import argparse
 import configparser
+import contextlib
+import json
 import logging
 import os
 import pdb
@@ -124,6 +126,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.setup_clean_chain: bool = False
         self.noban_tx_relay: bool = False
         self.nodes: List[TestNode] = []
+        # Wall-clock phases of this test (see --phasedir)
+        self._phases = []
+        self._node_timings = []
+        self._waits = []
         self.network_thread = None
         # Wait for up to 60 seconds for the RPC server to respond
         self.rpc_timeout = 60
@@ -164,10 +170,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
         try:
             self.setup()
-            if self.options.test_methods:
-                self.run_test_methods()
-            else:
-                self._run_test_internal()
+            with self._phase("body"):
+                if self.options.test_methods:
+                    self.run_test_methods()
+                else:
+                    self._run_test_internal()
         except SkipTest as e:
             self.log.warning(f"Test Skipped: {e.message}")
             self.success = TestStatus.SKIPPED
@@ -241,6 +248,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 "The seed to use for assigning port numbers (default: current"
                 " process id)"
             ),
+        )
+        parser.add_argument(
+            "--phasedir",
+            dest="phasedir",
+            help="Write the test's phase and node start/stop timings into this directory",
         )
         parser.add_argument(
             "--coveragedir",
@@ -405,8 +417,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 raise SkipTest("--usecli specified but test does not support using CLI")
             self.skip_if_no_cli()
         self.skip_test_if_missing_module()
-        self.setup_chain()
-        self.setup_network()
+        with self._phase("chain_init"):
+            self.setup_chain()
+        with self._phase("network_setup"):
+            self.setup_network()
 
         self.success = TestStatus.PASSED
 
@@ -425,7 +439,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         else:
             self.log.info("Stopping nodes")
             if self.nodes:
-                self.stop_nodes()
+                with self._phase("final_stop"):
+                    self.stop_nodes()
 
         should_clean_up = (
             not self.options.nocleanup
@@ -484,10 +499,48 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             h.flush()
             rpc_logger.removeHandler(h)
         if cleanup_tree_on_exit:
-            shutil.rmtree(self.options.tmpdir)
+            with self._phase("cleanup"):
+                shutil.rmtree(self.options.tmpdir)
 
+        self._write_phases(exit_code)
         self.nodes.clear()
         return exit_code
+
+    @contextlib.contextmanager
+    def _timed_wait(self, name):
+        """Record time spent waiting for nodes to sync (see --phasedir)."""
+        start = time.time()
+        try:
+            yield
+        finally:
+            self._waits.append({"name": name, "duration": time.time() - start})
+
+    @contextlib.contextmanager
+    def _phase(self, name):
+        """Record the wall-clock duration of a phase of the test."""
+        start = time.time()
+        try:
+            yield
+        finally:
+            self._phases.append({"name": name, "duration": time.time() - start})
+
+    def _write_phases(self, exit_code):
+        """With --phasedir, write this test's phase and node timings as JSON."""
+        if not self.options.phasedir:
+            return
+        name = os.path.basename(sys.argv[0])
+        record = {
+            "test": name,
+            "argv": sys.argv[1:],
+            "exit_code": exit_code,
+            "phases": self._phases,
+            "node_timings": self._node_timings,
+            "waits": self._waits,
+        }
+        os.makedirs(self.options.phasedir, exist_ok=True)
+        path = os.path.join(self.options.phasedir, f"{name}.{os.getpid()}.json")
+        with open(path, "w", encoding="utf8") as f:
+            json.dump(record, f)
 
     # Methods to override in subclass test scripts.
     def set_test_params(self):
@@ -636,6 +689,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 )
             )
 
+            self.nodes[i].timings = self._node_timings
             if self.options.mengeractivation:
                 self.nodes[i].extend_default_args(
                     [f"-mengeractivationtime={TIMESTAMP_IN_THE_PAST}"]
@@ -839,6 +893,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         one node already synced to the latest, stable tip, otherwise there's a
         chance it might return before all nodes are stably synced.
         """
+        with self._timed_wait("sync_blocks"):
+            return self._sync_blocks_impl(nodes, wait, timeout)
+
+    def _sync_blocks_impl(self, nodes, wait, timeout):
         rpc_connections = nodes or self.nodes
         timeout = int(timeout * self.options.timeout_factor)
         stop_time = time.time() + timeout
@@ -857,6 +915,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         Wait until everybody has the same transactions in their memory
         pools
         """
+        with self._timed_wait("sync_mempools"):
+            return self._sync_mempools_impl(nodes, wait, timeout, flush_scheduler)
+
+    def _sync_mempools_impl(self, nodes, wait, timeout, flush_scheduler):
         rpc_connections = nodes or self.nodes
         timeout = int(timeout * self.options.timeout_factor)
         stop_time = time.time() + timeout
@@ -878,6 +940,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         Wait until everybody has the same proofs in their proof pools.
         If the nodes have avalanche disabled they are skipped.
         """
+        with self._timed_wait("sync_proofs"):
+            return self._sync_proofs_impl(nodes, wait, timeout)
+
+    def _sync_proofs_impl(self, nodes, wait, timeout):
         rpc_connections = []
         for candidate in nodes or self.nodes:
             if candidate.getinfo()["avalanche"]:
@@ -1009,6 +1075,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     [f"-mengeractivationtime={TIMESTAMP_IN_THE_PAST}"]
                 )
 
+            self.nodes[CACHE_NODE_ID].timings = self._node_timings
             self.start_node(CACHE_NODE_ID)
             cache_node = self.nodes[CACHE_NODE_ID]
 
