@@ -1416,13 +1416,6 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 self.disable_autoconnect,
             )
 
-    def skip_if_no_py3_zmq(self):
-        """Attempt to import the zmq package and skip the test if the import fails."""
-        try:
-            import zmq  # noqa
-        except ImportError:
-            raise SkipTest("python3-zmq module not available.")
-
     def skip_if_no_python_bcc(self):
         """Attempt to import the bcc package and skip the tests if the import fails."""
         try:
@@ -1448,11 +1441,6 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         """Skip the running test if we are not on a Linux platform"""
         if platform.system() != "Linux":
             raise SkipTest("not on a Linux system")
-
-    def skip_if_no_bitcoind_zmq(self):
-        """Skip the running test if bitcoind has not been compiled with zmq support."""
-        if not self.is_zmq_compiled():
-            raise SkipTest("bitcoind has not been built with zmq enabled.")
 
     def skip_if_no_wallet(self):
         """Skip the running test if wallet has not been compiled."""
@@ -1551,8 +1539,6 @@ REQUIREMENTS = {
     "wallet": BitcoinTestFramework.skip_if_no_wallet,
     "wallet_tool": BitcoinTestFramework.skip_if_no_wallet_tool,
     "cli": BitcoinTestFramework.skip_if_no_cli,
-    "zmq": BitcoinTestFramework.skip_if_no_bitcoind_zmq,
-    "py3_zmq": BitcoinTestFramework.skip_if_no_py3_zmq,
     "chronik": BitcoinTestFramework.skip_if_no_chronik,
     "chronik_token_index": BitcoinTestFramework.skip_if_no_chronik_token_index,
     "chronik_electrum": BitcoinTestFramework.skip_if_no_chronik_electrum,
