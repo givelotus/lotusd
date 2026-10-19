@@ -26,7 +26,10 @@ static void ErrorLogCallback(void *arg, int code, const char *msg) {
     // function whenever that function is invoked."
     // Assert that this is the case:
     assert(arg == nullptr);
-    LogPrintf("SQLite Error. Code: %d. Message: %s\n", code, msg);
+    LogInfoEvent(BCLog::ALL, "sqlite_error",
+                 "SQLite Error. Code: {error_code}. Message: {error}")
+        .Field(BCLog::LogField::ErrorCode, code)
+        .Field(BCLog::LogField::Error, msg);
 }
 
 SQLiteDatabase::SQLiteDatabase(const fs::path &dir_path,
@@ -35,8 +38,12 @@ SQLiteDatabase::SQLiteDatabase(const fs::path &dir_path,
       m_file_path(fs::PathToString(file_path)) {
     {
         LOCK(g_sqlite_mutex);
-        LogPrintf("Using SQLite Version %s\n", SQLiteDatabaseVersion());
-        LogPrintf("Using wallet %s\n", m_dir_path);
+        LogInfoEvent(BCLog::ALL, "sqlite_version",
+                     "Using SQLite Version {database_version}")
+            .Field(BCLog::LogField::DatabaseVersion, sqlite3_libversion());
+        LogInfoEvent(BCLog::ALL, "sqlite_wallet_directory",
+                     "Using wallet {wallet}")
+            .Field(BCLog::LogField::Wallet, m_dir_path);
 
         if (++g_sqlite_count == 1) {
             // Setup logging
@@ -126,8 +133,9 @@ void SQLiteDatabase::Cleanup() noexcept {
     if (--g_sqlite_count == 0) {
         int ret = sqlite3_shutdown();
         if (ret != SQLITE_OK) {
-            LogPrintf("SQLiteDatabase: Failed to shutdown SQLite: %s\n",
-                      sqlite3_errstr(ret));
+            LogInfoEvent(BCLog::ALL, "sqlite_shutdown_failed",
+                         "SQLiteDatabase: Failed to shutdown SQLite: {error}")
+                .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
         }
     }
 }
@@ -297,15 +305,20 @@ bool SQLiteDatabase::Backup(const std::string &dest) const {
     }
     sqlite3_backup *backup = sqlite3_backup_init(db_copy, "main", m_db, "main");
     if (!backup) {
-        LogPrintf("%s: Unable to begin backup: %s\n", __func__,
-                  sqlite3_errmsg(m_db));
+        LogInfoEvent(BCLog::ALL, "sqlite_backup_begin_failed",
+                     "{name}: Unable to begin backup: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errmsg(m_db));
         sqlite3_close(db_copy);
         return false;
     }
     // Specifying -1 will copy all of the pages
     res = sqlite3_backup_step(backup, -1);
     if (res != SQLITE_DONE) {
-        LogPrintf("%s: Unable to backup: %s\n", __func__, sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_backup_failed",
+                     "{name}: Unable to backup: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         sqlite3_backup_finish(backup);
         sqlite3_close(db_copy);
         return false;
@@ -342,44 +355,51 @@ void SQLiteBatch::Close() {
     // transaction in progress
     if (m_database.m_db && sqlite3_get_autocommit(m_database.m_db) == 0) {
         if (TxnAbort()) {
-            LogPrintf("SQLiteBatch: Batch closed unexpectedly without the "
-                      "transaction being explicitly committed or aborted\n");
+            LogInfoEvent(BCLog::ALL, "sqlite_batch_closed_uncommitted",
+                         "SQLiteBatch: Batch closed unexpectedly without the "
+                         "transaction being explicitly committed or aborted");
         } else {
-            LogPrintf(
-                "SQLiteBatch: Batch closed and failed to abort transaction\n");
+            LogInfoEvent(
+                BCLog::ALL, "sqlite_batch_abort_failed",
+                "SQLiteBatch: Batch closed and failed to abort transaction");
         }
     }
 
     // Free all of the prepared statements
     int ret = sqlite3_finalize(m_read_stmt);
     if (ret != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Batch closed but could not finalize read "
-                  "statement: %s\n",
-                  sqlite3_errstr(ret));
+        LogInfoEvent(BCLog::ALL, "sqlite_read_finalize_failed",
+                     "SQLiteBatch: Batch closed but could not finalize read "
+                     "statement: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
     }
     ret = sqlite3_finalize(m_insert_stmt);
     if (ret != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Batch closed but could not finalize insert "
-                  "statement: %s\n",
-                  sqlite3_errstr(ret));
+        LogInfoEvent(BCLog::ALL, "sqlite_insert_finalize_failed",
+                     "SQLiteBatch: Batch closed but could not finalize insert "
+                     "statement: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
     }
     ret = sqlite3_finalize(m_overwrite_stmt);
     if (ret != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Batch closed but could not finalize overwrite "
-                  "statement: %s\n",
-                  sqlite3_errstr(ret));
+        LogInfoEvent(BCLog::ALL, "sqlite_overwrite_finalize_failed",
+                     "SQLiteBatch: Batch closed but could not finalize "
+                     "overwrite statement: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
     }
     ret = sqlite3_finalize(m_delete_stmt);
     if (ret != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Batch closed but could not finalize delete "
-                  "statement: %s\n",
-                  sqlite3_errstr(ret));
+        LogInfoEvent(BCLog::ALL, "sqlite_delete_finalize_failed",
+                     "SQLiteBatch: Batch closed but could not finalize delete "
+                     "statement: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
     }
     ret = sqlite3_finalize(m_cursor_stmt);
     if (ret != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Batch closed but could not finalize cursor "
-                  "statement: %s\n",
-                  sqlite3_errstr(ret));
+        LogInfoEvent(BCLog::ALL, "sqlite_cursor_finalize_failed",
+                     "SQLiteBatch: Batch closed but could not finalize cursor "
+                     "statement: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(ret));
     }
     m_read_stmt = nullptr;
     m_insert_stmt = nullptr;
