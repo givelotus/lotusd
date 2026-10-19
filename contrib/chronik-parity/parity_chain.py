@@ -1277,6 +1277,8 @@ class ParityChain(BitcoinTestFramework):
             # Lotus V2: branch roots / asset IDs of the native output frames,
             # for the "v2-branch"/"taproot"/"v2-asset" WS subscriptions.
             "v2_branches": sorted(v2_branches),
+            # Lotus V2: query the V2 service's /v2 and /v2/explorer/v1 routes.
+            "v2": bool(self.v2),
             "v2_assets": sorted(v2_assets),
             "validate_txs": self.make_validate_txs(),
             "raw_txs_sample": sample,
