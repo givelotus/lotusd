@@ -55,7 +55,8 @@ void PutLocation(V2Env &db, const TxLocation &loc) {
 }
 
 ReadSnapshot MakeReadSnapshot(const V2Env &db) {
-    return ReadSnapshot(db.Snapshot(), Anchor{B32(9), 7}, TestBinding());
+    return ReadSnapshot(db.Snapshot(), Anchor{B32(9), 7}, TestBinding(),
+                        TestBounds());
 }
 
 } // namespace

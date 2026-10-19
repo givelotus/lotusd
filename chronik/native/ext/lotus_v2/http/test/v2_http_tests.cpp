@@ -54,7 +54,8 @@ ExplorerTxFacts Facts(const std::vector<OutPoint> &spends) {
 struct Fixture : RouterFixture {
     V2TempDir dir{"http"};
     Fixture() {
-        auto db = std::make_shared<SharedV2Db>(dir.path, TestBinding());
+        auto db =
+            std::make_shared<SharedV2Db>(dir.path, TestBinding(), TestBounds());
         db->db.InitializeGenesis(CommittedBlock{
             kParent,
             kParent,

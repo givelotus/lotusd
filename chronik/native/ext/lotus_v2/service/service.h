@@ -42,9 +42,9 @@ public:
 
 /** The DB owner: readers hold `mutex` for the whole snapshot use. */
 struct SharedV2Db {
-    explicit SharedV2Db(const std::filesystem::path &path,
-                        const Binding &binding)
-        : db(path, binding) {}
+    SharedV2Db(const std::filesystem::path &path, const Binding &binding,
+               const Bounds &bounds)
+        : db(path, binding, bounds) {}
     std::mutex mutex;
     V2Db db;
 };
@@ -107,6 +107,7 @@ private:
 
     std::shared_ptr<SharedV2Db> m_db;
     ffi::ServiceLimits m_limits;
+    Bounds m_bounds{1};
     Bytes32 m_genesis{};
     std::shared_ptr<Authority> m_authority;
     std::array<uint8_t, 16> m_service_epoch{};
