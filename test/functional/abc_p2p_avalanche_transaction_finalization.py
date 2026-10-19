@@ -29,6 +29,8 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheTransactionFinalizationTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 1
     noban_tx_relay = True
     extra_args = [

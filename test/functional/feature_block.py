@@ -61,6 +61,8 @@ DUPLICATE_COINBASE_SCRIPT_SIG = b"\x01\x78"
 
 
 class FullBlockTest(BitcoinTestFramework, BlockTestMixin):
+    extended = True
+
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True

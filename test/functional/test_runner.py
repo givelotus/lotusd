@@ -112,8 +112,8 @@ NON_TESTS = {
 
 EXTRA_PRIVILEGES_TESTS = [
     # These tests can only run with extra privileges.
-    # They need to be excluded from the timing file because they are not
-    # designed to run in the same context as the other tests.
+    # Their durations are not recorded because they are not designed to run
+    # in the same context as the other tests.
     "interface_usdt_net.py",
     "interface_usdt_utxocache.py",
     "interface_usdt_validation.py",
@@ -121,11 +121,6 @@ EXTRA_PRIVILEGES_TESTS = [
     "feature_bind_port_discover.py",
 ]
 
-# Used to limit the number of tests, when list of tests is not provided on command line
-# When --extended is specified, we run all tests, otherwise
-# we only run a test if its execution time in seconds does not exceed
-# EXTENDED_CUTOFF
-DEFAULT_EXTENDED_CUTOFF = 40
 DEFAULT_TEST_TIMEOUT = 20 * 60
 DEFAULT_JOBS = os.cpu_count() or 1
 
@@ -317,13 +312,10 @@ def main():
     parser.add_argument(
         "--extended",
         action="store_true",
-        help="run the extended test suite in addition to the basic tests",
-    )
-    parser.add_argument(
-        "--cutoff",
-        type=int,
-        default=DEFAULT_EXTENDED_CUTOFF,
-        help="set the cutoff runtime for what tests get run",
+        help=(
+            "also run the extended tests (those that declare `extended`); tests"
+            " named on the command line always run"
+        ),
     )
     parser.add_argument(
         "--help", "-h", "-?", action="store_true", help="print help text and exit"
@@ -491,12 +483,11 @@ def main():
             if test.endswith("*"):
                 test_list.extend([t for t in all_tests if t.startswith(test[:-1])])
 
-        # do not cut off explicitly specified tests
-        cutoff = sys.maxsize
+        # Tests named explicitly run even if they are extended
+        run_extended = True
     else:
-        # Run base tests only
         test_list = all_tests
-        cutoff = sys.maxsize if args.extended else args.cutoff
+        run_extended = args.extended
 
     # Remove the test cases that the user has explicitly asked to exclude.
     if args.exclude:
@@ -513,14 +504,9 @@ def main():
                     "test list."
                 )
 
-    # Update timings from build_dir only if separate build directory is used.
-    # We do not want to pollute source directory.
-    build_timings = None
-    if src_dir != build_dir:
-        build_timings = Timings(os.path.join(build_dir, "timing.json"))
-
-    # Always use timings from src_dir if present
-    src_timings = Timings(os.path.join(src_dir, "test", "functional", "timing.json"))
+    # Durations of earlier runs in this build directory, to start the longest
+    # tests first
+    durations = Timings(os.path.join(build_dir, "test", "durations.json"))
 
     discovered = discover_tests(tests_dir, src_dir, test_list)
     for file, variants in only_variants.items():
@@ -533,7 +519,7 @@ def main():
             )
             sys.exit(1)
     test_list = args.repeat * get_tests_to_run(
-        test_list, cutoff, src_timings, discovered, only_variants
+        test_list, durations, discovered, only_variants, run_extended
     )
 
     if not test_list:
@@ -569,7 +555,7 @@ def main():
         enable_coverage=args.coverage,
         args=passon_args,
         combined_logs_len=args.combinedlogslen,
-        build_timings=build_timings,
+        durations=durations,
         failfast=args.failfast,
         phase_dir=phase_dir,
         discovered=discovered,
@@ -590,7 +576,7 @@ def run_tests(
     enable_coverage=False,
     args=None,
     combined_logs_len=0,
-    build_timings=None,
+    durations=None,
     failfast=False,
     phase_dir=None,
     discovered=None,
@@ -703,8 +689,8 @@ def run_tests(
     if phase_dir is not None:
         print_phase_report(phase_dir, os.path.join(tmpdir, "phase-report.json"))
 
-    if build_timings is not None:
-        build_timings.save_timings(test_results)
+    if durations is not None:
+        durations.save_timings(test_results)
 
     if coverage:
         coverage_passed = coverage.report_rpc_coverage()
@@ -1198,36 +1184,34 @@ def check_script_prefixes(all_scripts):
 
 
 def get_tests_to_run(
-    test_list, cutoff, src_timings, discovered=None, only_variants=None
+    test_list, durations, discovered=None, only_variants=None, run_extended=False
 ):
     """
-    Returns only test that will not run longer that cutoff.
-    Long running tests are returned first to favor running tests in parallel
-    Timings from build directory override those from src directory
-    A test's variants all run, unless only_variants[test] names some of them.
+    Returns the test jobs to run: every variant of each test, unless
+    only_variants[test] names some, and without the extended ones unless
+    run_extended. The longest tests (from earlier runs' durations, else the
+    extended ones) come first, to make the best use of parallel jobs.
     """
-
-    def get_test_time(test):
-        # Return 0 if test is unknown to always run it
-        return next(
-            (x["time"] for x in src_timings.existing_timings if x["name"] == test), 0
-        )
+    known = {x["name"]: x["time"] for x in durations.existing_timings}
 
     # Run each test's variants: the first (default) one as "<file>", the
     # others as "<file>[<variant>]".
-    tests_with_params = []
+    jobs = []
     for test_name in test_list:
-        variants = (discovered or {}).get(test_name, {}).get("variants", [])
+        spec = (discovered or {}).get(test_name, {})
+        variants = spec.get("variants", [])
+        extended = spec.get("extended", [])
         wanted = (only_variants or {}).get(test_name)
-        if wanted is None or (variants and variants[0] in wanted):
-            tests_with_params.append(test_name)
-        tests_with_params.extend(
-            f"{test_name}[{v}]" for v in variants[1:] if wanted is None or v in wanted
-        )
+        for i, variant in enumerate(variants or [None]):
+            if wanted is not None and variant not in wanted:
+                continue
+            if variant in extended and not run_extended:
+                continue
+            name = test_name if i == 0 else f"{test_name}[{variant}]"
+            jobs.append((name, variant in extended))
 
-    result = [test for test in tests_with_params if get_test_time(test) <= cutoff]
-    result.sort(key=lambda x: (-get_test_time(x), x))
-    return result
+    jobs.sort(key=lambda job: (-known.get(job[0], 0), not job[1], job[0]))
+    return [name for name, _ in jobs]
 
 
 class RPCCoverage:

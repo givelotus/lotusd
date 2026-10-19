@@ -15,6 +15,8 @@ from test_framework.util import assert_equal
 
 
 class MempoolUpdateFromBlockTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 1
     ancestor_descendant_count = 60
 
