@@ -1136,25 +1136,48 @@ std::string WebSocketURLForAddress(const CService &addr) {
     return strprintf("wss://%s%s", addr.ToStringAddrPort(), addr.GetWSSPath());
 }
 
+std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url) {
+    ParsedWebSocketURL out;
+    if (url.substr(0, 6) == "wss://") {
+        out.tls = true;
+        url.remove_prefix(6);
+    } else if (url.substr(0, 5) == "ws://") {
+        url.remove_prefix(5);
+    } else {
+        return std::nullopt;
+    }
+    const size_t slash{url.find('/')};
+    const std::string authority{url.substr(0, slash)};
+    out.target = slash == std::string_view::npos
+                     ? std::string{P2P_WEBSOCKET_PATH}
+                     : std::string{url.substr(slash)};
+    uint16_t port{static_cast<uint16_t>(out.tls ? 443 : 80)};
+    std::string host;
+    if (authority.empty() || !SplitHostPort(authority, port, host) ||
+        host.empty()) {
+        return std::nullopt;
+    }
+    out.host = host;
+    out.port = port;
+    const bool ipv6{host.find(':') != std::string::npos};
+    out.authority = strprintf(ipv6 ? "[%s]:%u" : "%s:%u", host, port);
+    return out;
+}
+
 CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                                       const CAddress *wss_addr,
                                       bool fCountFailure,
                                       ConnectionType conn_type) {
-    // The WebSocket dialer connects directly. Until it can tunnel through
-    // the configured proxy, refuse rather than leak our address and DNS
-    // lookups to a connection the user expects to be proxied.
-    Proxy proxy;
-    if (HaveNameProxy() || GetProxy(NET_IPV4, proxy) ||
-        GetProxy(NET_IPV6, proxy)) {
-        LogPrintf("Not connecting to %s: WebSocket peers cannot be reached "
-                  "through -proxy yet\n",
-                  url);
+    const auto parsed{ParseWebSocketURL(url)};
+    if (!parsed) {
+        LogPrintf("Not connecting to %s: invalid WebSocket peer URL\n", url);
         return nullptr;
     }
-    if (!IsReachable(NET_WSS)) {
-        LogPrintf("Not connecting to %s: network wss is not reachable "
+    const bool onion{parsed->host.ends_with(".onion")};
+    if (!IsReachable(onion ? NET_ONION : NET_WSS)) {
+        LogPrintf("Not connecting to %s: network %s is not reachable "
                   "(-onlynet)\n",
-                  url);
+                  url, onion ? "onion" : "wss");
         return nullptr;
     }
     const WebSocketDialer dialer{GetWebSocketDialer()};
@@ -1165,24 +1188,74 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
     }
     LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
                   "trying WebSocket connection %s\n", url);
-    std::optional<WebSocketDialResult> dialed{dialer(url)};
-    if (wss_addr) {
+
+    // Open the TCP connection exactly as for TCP peers: through the proxy
+    // (which resolves the name: no local DNS lookup) when one applies,
+    // never falling back to a direct connection.
+    std::unique_ptr<Sock> sock;
+    bool proxy_failed{false};
+    std::optional<CService> direct;
+    Proxy proxy;
+    if (onion) {
+        if (!GetProxy(NET_ONION, proxy)) {
+            LogPrintf("Not connecting to %s: no -onion proxy\n", url);
+            return nullptr;
+        }
+        sock = ConnectThroughProxy(proxy, parsed->host, parsed->port,
+                                   proxy_failed);
+    } else if (GetNameProxy(proxy)) {
+        sock = ConnectThroughProxy(proxy, parsed->host, parsed->port,
+                                   proxy_failed);
+    } else {
+        // Try each address the name resolves to (e.g. localhost may give
+        // ::1 first while the peer only listens on 127.0.0.1).
+        const std::vector<CService> resolved{
+            Lookup(parsed->host, parsed->port, fNameLookup, 8)};
+        if (resolved.empty()) {
+            LogDebug(BCLog::NET, "Cannot resolve %s\n", parsed->host);
+            return nullptr;
+        }
+        for (const CService &candidate : resolved) {
+            if (!candidate.IsValid()) {
+                continue;
+            }
+            if (GetProxy(candidate.GetNetwork(), proxy)) {
+                sock = ConnectThroughProxy(proxy, candidate.ToStringAddr(),
+                                           candidate.GetPort(), proxy_failed);
+            } else {
+                sock = ConnectDirectly(candidate,
+                                       conn_type == ConnectionType::MANUAL);
+            }
+            if (sock || proxy_failed) {
+                direct = candidate;
+                break;
+            }
+        }
+    }
+    if (wss_addr && !proxy_failed) {
         addrman.Attempt(*wss_addr, fCountFailure);
     }
+    if (!sock) {
+        return nullptr;
+    }
+    const CAddress addr_bind{GetBindAddress(*sock)};
+    std::optional<WebSocketDialResult> dialed{
+        dialer(std::move(sock), *parsed, interruptNet)};
     if (!dialed) {
         return nullptr;
     }
 
-    // The peer is known by its NET_WSS address if it came from addrman, or
-    // by the IP it resolved to for a -addnode/-connect URL.
+    // The peer is known by its NET_WSS address if it came from addrman, by
+    // the address it resolved to, or (through a proxy) only by its URL.
     const CAddress addrConnect{wss_addr ? *wss_addr
-                                        : CAddress{dialed->remote, NODE_NONE}};
+                               : direct ? CAddress{*direct, NODE_NONE}
+                                        : CAddress{}};
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     std::vector<NetWhitelistPermissions> whitelist_permissions =
         conn_type == ConnectionType::MANUAL
             ? vWhitelistedRangeOutgoing
             : std::vector<NetWhitelistPermissions>{};
-    AddWhitelistPermissionFlags(permission_flags, dialed->remote,
+    AddWhitelistPermissionFlags(permission_flags, addrConnect,
                                 whitelist_permissions);
 
     NodeId id = GetNewNodeId();
@@ -1195,8 +1268,8 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
             .Finalize();
     CNode *pnode = new CNode(
         id, std::move(dialed->sock), addrConnect,
-        CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy,
-        CAddress{dialed->local, NODE_NONE}, wss_addr ? "" : url, conn_type,
+        CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy, addr_bind,
+        wss_addr ? "" : url, conn_type,
         /* inbound_onion */ false,
         CNodeOptions{
             .permission_flags = permission_flags,
