@@ -86,6 +86,7 @@ class LoggingTest(BitcoinTestFramework):
         self.test_logfmt_format()
         self.test_gcp_format()
         self.test_ecs_format()
+        self.test_syslog_format()
         self.test_json_aux_only()
 
     def assert_no_absolute_source_paths(self, log_path):
@@ -162,6 +163,26 @@ class LoggingTest(BitcoinTestFramework):
             assert isinstance(record["log.origin.file.line"], int)
             assert "source" not in record
         assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+
+    def test_syslog_format(self):
+        self.log.info("Test RFC 5424 file output")
+        self.restart_node(0, [
+            "-logformat=syslog", "-debuglogfile=syslog.log", "-logsourcelocations",
+        ])
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        records = []
+        with open(self.relative_log_path("syslog.log"), encoding="utf-8") as stream:
+            for line in filter(str.strip, stream):
+                header, payload = line.split("\ufeff", 1)
+                fields = header.split()
+                assert fields[0] in ("<27>1", "<28>1", "<30>1", "<31>1")
+                assert len(fields) == 7
+                assert fields[2:] == ["-"] * 5
+                records.append(json.loads(payload))
+        assert len(records) > 20
+        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+        assert any(record["message"] == "Shutdown: done" for record in records)
     def test_json_aux_only(self):
         self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
         path = self.relative_log_path("aux-only.jsonl")
@@ -181,7 +202,7 @@ class LoggingTest(BitcoinTestFramework):
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
             ["-logformat=xml"],
-            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp, json-ecs"
+            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp, json-ecs, syslog"
             + (", journald" if sys.platform == "linux" else "") + ")",
         )
         json_log_path = self.relative_log_path("json.log")

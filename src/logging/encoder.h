@@ -108,6 +108,16 @@ public:
                 std::string &out) const override;
 };
 
+/** RFC 5424 record, with UTF-8 JSON as MSG and daemon facility. */
+class SyslogEncoder final : public LogEncoder {
+public:
+    void Encode(const LogLine &line, const LogOptions &opts,
+                std::string &out) const override;
+};
+
+/** Syslog/journal severity (0..7), with trace mapped to debug. */
+unsigned LogPriority(Level level);
+
 std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format);
 
 // Building blocks shared by encoders

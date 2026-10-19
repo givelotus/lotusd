@@ -522,6 +522,7 @@ std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
     if (str == "json-gcp") {
         return LogFormat::JSON_GCP;
     }
+    if (str == "syslog") return LogFormat::SYSLOG;
     if (str == "logfmt") {
         return LogFormat::LOGFMT;
     }
@@ -533,9 +534,9 @@ std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
 
 const char *BCLog::SupportedLogFormats() {
 #ifdef __linux__
-    return "text, logfmt, json, json-gcp, json-ecs, journald";
+    return "text, logfmt, json, json-gcp, json-ecs, syslog, journald";
 #else
-    return "text, logfmt, json, json-gcp, json-ecs";
+    return "text, logfmt, json, json-gcp, json-ecs, syslog";
 #endif
 }
 
