@@ -96,6 +96,16 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
         except (websocket.WebSocketConnectionClosedException, ConnectionError):
             pass
 
+        self.log.info("The socketpair bridge (debug option) still works")
+        self.restart_node(0, ["-p2pwebsocketbridge=1"])
+        peer = self.connect("wss", ["p2p-zstd-v1"])
+        peer.handshake()
+        peer.send_message(msg_ping(nonce=7))
+        assert_equal(peer.wait_for(b"pong").nonce, 7)
+        self.wait_until(lambda: len(self.ws_peers()) == 1)
+        peer.close()
+        self.wait_until(lambda: len(self.ws_peers()) == 0)
+
         self.log.info("Without -p2pwebsocket, /p2p/ws is not served")
         self.restart_node(0, ["-p2pwebsocket=0"])
         conn = http.client.HTTPConnection("127.0.0.1", rpc_port(0))

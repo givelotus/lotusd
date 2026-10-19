@@ -12,6 +12,8 @@
 #include <logging.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
+#include <net_websocket_sock.h>
+#include <net_websocket_tls.h>
 #include <netbase.h>
 #include <protocol.h>
 #include <node/ui_interface.h>
@@ -336,6 +338,8 @@ static bool g_chronik_enabled{false};
 static bool g_p2p_websocket_enabled{false};
 //! Use X-Forwarded-For of /p2p/ws upgrades coming from loopback
 static bool g_p2p_websocket_trust_forwarded_for{false};
+//! Debug: bridge every /p2p/ws peer through a socketpair (-p2pwebsocketbridge)
+static bool g_p2p_websocket_force_bridge{false};
 static Mutex g_p2p_websocket_mutex;
 //! Receiver of /p2p/ws peers (CConnman), set once the node is ready
 static P2PWebSocketAcceptor
@@ -1112,13 +1116,9 @@ static CService P2PWebSocketPeerAddress(const BeastRequest &req,
 /** Accept a /p2p/ws upgrade and bridge it into CConnman */
 template <typename Stream>
 static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
+                                                beast::flat_buffer &buffer,
                                                 const BeastRequest &req,
                                                 const HTTPConnectionInfo &conn) {
-#ifndef HAVE_P2P_WEBSOCKET_BRIDGE
-    BeastResponse res{MakeSimpleResponse(HTTP_NOT_FOUND, req.version())};
-    res.keep_alive(false);
-    co_await WriteResponse(stream, res);
-#else
     P2PWebSocketAcceptor acceptor{
         WITH_LOCK(g_p2p_websocket_mutex, return g_p2p_websocket_acceptor)};
     if (!acceptor) {
@@ -1136,6 +1136,15 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
         std::string_view::npos};
     auto [selected, compression] =
         p2pws::NegotiateP2PCompression(offered_protocols, deflate_offered);
+#ifndef HAVE_P2P_WEBSOCKET_BRIDGE
+    // permessage-deflate needs the socketpair bridge: decline it here.
+    if (compression == P2PWebSocketCompression::PERMESSAGE_DEFLATE) {
+        compression = P2PWebSocketCompression::NONE;
+    }
+#endif
+    const bool use_bridge{
+        compression == P2PWebSocketCompression::PERMESSAGE_DEFLATE ||
+        g_p2p_websocket_force_bridge};
 
     beast::get_lowest_layer(stream).expires_never();
     websocket::stream<Stream &> ws{stream};
@@ -1157,17 +1166,57 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
                  conn.peer.ToStringAddrPort(), aec.message());
         co_return;
     }
+    auto info{std::make_shared<WebSocketTransportInfo>()};
+    info->tls = conn.is_tls;
+    info->compression = compression;
+    info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
+    const CService peer{P2PWebSocketPeerAddress(req, conn)};
 
+    if (!use_bridge) {
+        // Hand the connection to CConnman: the TCP socket (and our TLS
+        // session), plus any bytes the client already sent after the
+        // upgrade request. From here on P2P data never touches the HTTP
+        // server's threads.
+        const auto leftover{buffer.cdata()};
+        std::vector<uint8_t> initial(
+            static_cast<const uint8_t *>(leftover.data()),
+            static_cast<const uint8_t *>(leftover.data()) + leftover.size());
+        buffer.consume(buffer.size());
+        std::unique_ptr<WebSocketByteLayer> layer;
+        if constexpr (std::is_same_v<Stream, OsslStream>) {
+            layer = std::make_unique<TlsByteLayer>(stream.ReleaseSsl());
+        } else {
+            layer = std::make_unique<PlainByteLayer>();
+        }
+        boost::system::error_code ec;
+        tcp::socket socket{
+            beast::get_lowest_layer(stream).release_socket()};
+        const auto fd{socket.release(ec)};
+        if (ec) {
+            co_return;
+        }
+        // CConnman owns the socket now: don't shut it down with the server.
+        g_connections.RemoveConnection(conn.connection_id);
+        LogDebug(BCLog::NET, "P2P WebSocket peer %s connected (%s, %s)\n",
+                 peer.ToStringAddrPort(), conn.is_tls ? "wss" : "ws",
+                 P2PWebSocketCompressionName(compression));
+        acceptor(std::make_unique<WebSocketSock>(
+                     SOCKET(fd), WebSocketCodec::Role::SERVER, info,
+                     std::move(layer), std::move(initial)),
+                 CAddress{peer, NODE_NONE}, CAddress{conn.local, NODE_NONE},
+                 info);
+        co_return;
+    }
+
+#ifdef HAVE_P2P_WEBSOCKET_BRIDGE
+    // permessage-deflate (generic clients) or -p2pwebsocketbridge: bridge
+    // through a socketpair, with Beast doing the WebSocket framing.
     const auto pair{p2pws::CreateBridgeSocketPair()};
     if (!pair) {
         LogPrintf("P2P WebSocket: socketpair failed: %s\n",
                   NetworkErrorString(WSAGetLastError()));
         co_return;
     }
-    auto info{std::make_shared<WebSocketTransportInfo>()};
-    info->tls = conn.is_tls;
-    info->compression = compression;
-    info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
     p2pws::LocalSocket local{co_await asio::this_coro::executor};
     boost::system::error_code ec;
     local.assign(asio::local::stream_protocol{}, pair->second, ec);
@@ -1177,8 +1226,7 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
         ::close(pair->second);
         co_return;
     }
-    const CService peer{P2PWebSocketPeerAddress(req, conn)};
-    LogDebug(BCLog::NET, "P2P WebSocket peer %s connected (%s, %s)\n",
+    LogDebug(BCLog::NET, "P2P WebSocket peer %s connected (%s, %s, bridged)\n",
              peer.ToStringAddrPort(), conn.is_tls ? "wss" : "ws",
              P2PWebSocketCompressionName(compression));
     acceptor(std::make_unique<Sock>(static_cast<SOCKET>(pair->first)),
@@ -1195,11 +1243,12 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
  */
 template <typename Stream>
 static asio::awaitable<bool>
-TryHandleWebSocketUpgrade(Stream &stream, const BeastRequest &req,
+TryHandleWebSocketUpgrade(Stream &stream, beast::flat_buffer &buffer,
+                          const BeastRequest &req,
                           const HTTPConnectionInfo &conn) {
     const std::string_view target{req.target()};
     if (g_p2p_websocket_enabled && URIHasPathPrefix(target, P2P_WEBSOCKET_PATH)) {
-        co_await AcceptP2PWebSocket(stream, req, conn);
+        co_await AcceptP2PWebSocket(stream, buffer, req, conn);
         co_return true;
     }
     if (g_chronik_enabled &&
@@ -1309,7 +1358,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         idle->busy = true;
         if (endpoint_allowed && websocket::is_upgrade(req) &&
             !g_reject_requests.load() &&
-            co_await TryHandleWebSocketUpgrade(stream, req, conn)) {
+            co_await TryHandleWebSocketUpgrade(stream, buffer, req, conn)) {
             co_return;
         }
 
@@ -1692,6 +1741,8 @@ bool InitHTTPServer(Config &config) {
         gArgs.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET);
     g_p2p_websocket_trust_forwarded_for =
         gArgs.GetBoolArg("-p2pwebsockettrustforwardedfor", false);
+    g_p2p_websocket_force_bridge =
+        gArgs.GetBoolArg("-p2pwebsocketbridge", false);
     if (g_p2p_websocket_enabled) {
         RegisterPublicHTTPPrefix(P2P_WEBSOCKET_PATH);
     }
