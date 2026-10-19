@@ -3,11 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
 
+#include <torcontrol.h>
+
 #include <test/util/setup_common.h>
+
+#include <event2/util.h>
 
 #include <boost/test/unit_test.hpp>
 
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -192,6 +197,67 @@ BOOST_AUTO_TEST_CASE(util_ParseTorReplyMapping) {
     CheckParseTorReplyMapping("MORE  ARGS", {});
     CheckParseTorReplyMapping("EVEN more=ARGS", {});
     CheckParseTorReplyMapping("EVEN+more ARGS", {});
+}
+
+BOOST_AUTO_TEST_CASE(util_ParseTorControlAddress) {
+    // Expected results: the address and port as CService prints them, or
+    // nullopt when the address is rejected.
+    const std::vector<std::pair<std::string, std::optional<std::string>>>
+        vectors{
+            {"127.0.0.1:9051", "127.0.0.1:9051"},
+            {"127.0.0.1", "127.0.0.1:0"},
+            {"127.0.0.1:65535", "127.0.0.1:65535"},
+            {"127.0.0.1:+80", "127.0.0.1:80"},
+            {"127.0.0.1: 80", "127.0.0.1:80"},
+            {"127.0.0.1:80abc", "127.0.0.1:80"},
+            {"[::1]:9051", "[::1]:9051"},
+            {"[::1]", "[::1]:0"},
+            {"[::1]9051", "[::1]:0"},
+            {"::1", "[::1]:0"},
+            {"1:2:3:4:5:6:7:8", "[1:2:3:4:5:6:7:8]:0"},
+            {"[2001:db8::1]:1", "[2001:db8::1]:1"},
+            {"localhost:9051", std::nullopt},
+            {"localhost", std::nullopt},
+            {"tor.example.com:9051", std::nullopt},
+            {"127.0.0.1:0", std::nullopt},
+            {"127.0.0.1:65536", std::nullopt},
+            {"127.0.0.1:-1", std::nullopt},
+            {"127.0.0.1:", std::nullopt},
+            {"127.0.0.1:x", std::nullopt},
+            {"127.1", std::nullopt},
+            {"256.1.1.1", std::nullopt},
+            {"1.2.3.4.5", std::nullopt},
+            {"", std::nullopt},
+            {":9051", std::nullopt},
+            {"[::1", std::nullopt},
+            {"[::1]:0", std::nullopt},
+            {"[127.0.0.1]:80", std::nullopt},
+            {"::1:9051:x", std::nullopt},
+        };
+    for (const auto &[input, expected] : vectors) {
+        const std::optional<CService> parsed{ParseTorControlAddress(input)};
+        BOOST_CHECK_MESSAGE(parsed.has_value() == expected.has_value(),
+                            "input: " << input);
+        if (parsed && expected) {
+            BOOST_CHECK_EQUAL(parsed->ToStringAddrPort(), *expected);
+        }
+
+        // The accepted forms are those of libevent's parser.
+        struct sockaddr_storage storage {};
+        int len = sizeof(storage);
+        const bool libevent_ok =
+            evutil_parse_sockaddr_port(input.c_str(),
+                                       reinterpret_cast<sockaddr *>(&storage),
+                                       &len) == 0;
+        BOOST_CHECK_MESSAGE(libevent_ok == expected.has_value(),
+                            "libevent input: " << input);
+        if (libevent_ok && expected) {
+            CService service;
+            BOOST_CHECK(service.SetSockAddr(
+                reinterpret_cast<const sockaddr *>(&storage), len));
+            BOOST_CHECK_EQUAL(service.ToStringAddrPort(), *expected);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

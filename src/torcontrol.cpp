@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -276,6 +277,90 @@ bool TorControlConnection::Command(const std::string &cmd,
 }
 
 /****** General parsing utilities ********/
+
+std::optional<CService> ParseTorControlAddress(const std::string &address) {
+    std::string addr_part;
+    std::optional<std::string> port_part;
+    bool is_ipv6;
+    const size_t colon = address.find(':');
+    if (!address.empty() && address[0] == '[') {
+        const size_t close = address.find(']');
+        if (close == std::string::npos) {
+            return std::nullopt;
+        }
+        addr_part = address.substr(1, close - 1);
+        if (close + 1 < address.size() && address[close + 1] == ':') {
+            port_part = address.substr(close + 2);
+        }
+        is_ipv6 = true;
+    } else if (colon != std::string::npos &&
+               address.find(':', colon + 1) != std::string::npos) {
+        // More than one ':' and no brackets: a bare IPv6 address, no port.
+        addr_part = address;
+        is_ipv6 = true;
+    } else if (colon != std::string::npos) {
+        addr_part = address.substr(0, colon);
+        port_part = address.substr(colon + 1);
+        is_ipv6 = false;
+    } else {
+        addr_part = address;
+        is_ipv6 = false;
+    }
+
+    uint16_t port = 0;
+    if (port_part) {
+        // atoi() semantics: leading white space and sign, trailing garbage
+        // ignored.
+        const int64_t value = LocaleIndependentAtoi<int64_t>(*port_part);
+        if (value <= 0 || value > 65535) {
+            return std::nullopt;
+        }
+        port = static_cast<uint16_t>(value);
+    }
+    if (addr_part.find('\0') != std::string::npos) {
+        return std::nullopt;
+    }
+
+    if (is_ipv6) {
+        struct sockaddr_in6 sin6 {};
+        sin6.sin6_family = AF_INET6;
+        sin6.sin6_port = htons(port);
+        std::string ip = addr_part;
+        const size_t percent = ip.find('%');
+        if (percent != std::string::npos) {
+            // Scoped address: interface name or numeric index.
+            const std::string scope = ip.substr(percent + 1);
+            ip = ip.substr(0, percent);
+#ifndef WIN32
+            unsigned int index = if_nametoindex(scope.c_str());
+#else
+            unsigned int index = 0;
+#endif
+            if (index == 0) {
+                char *end = nullptr;
+                const unsigned long numeric =
+                    std::strtoul(scope.c_str(), &end, 10);
+                if (scope.empty() || *end != '\0' ||
+                    numeric > std::numeric_limits<uint32_t>::max()) {
+                    return std::nullopt;
+                }
+                index = static_cast<unsigned int>(numeric);
+            }
+            sin6.sin6_scope_id = index;
+        }
+        if (inet_pton(AF_INET6, ip.c_str(), &sin6.sin6_addr) != 1) {
+            return std::nullopt;
+        }
+        return CService(sin6);
+    }
+    struct sockaddr_in sin {};
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(port);
+    if (inet_pton(AF_INET, addr_part.c_str(), &sin.sin_addr) != 1) {
+        return std::nullopt;
+    }
+    return CService(sin);
+}
 
 /* Split reply line in the form 'AUTH METHODS=...' into a type
  * 'AUTH' and arguments 'METHODS=...'.
