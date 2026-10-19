@@ -11,8 +11,9 @@ in test/functional/README-runner-output.md.
 
 import dataclasses
 import json
+import re
 import unittest
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
 
@@ -25,6 +26,16 @@ STATUSES = (PASSED, FAILED, SKIPPED, TIMEOUT, CRASHED)
 
 # Lines of captured output kept in a result (the full output stays on disk)
 TAIL_LINES = 200
+
+
+def parse_job_name(name: str) -> Tuple[str, Optional[str], List[str]]:
+    """Split a job name, "<file>[<variant>] <args...>", into the file, the
+    variant (None for the default) and the extra arguments."""
+    head, *args = name.split()
+    match = re.fullmatch(r"(.+?)\[(.+)\]", head)
+    if match:
+        return match.group(1), match.group(2), args
+    return head, None, args
 
 
 def tail(text: str, lines: int = TAIL_LINES) -> str:
@@ -100,3 +111,11 @@ class TestJobResult(unittest.TestCase):
     def test_tail(self):
         text = "\n".join(str(i) for i in range(500))
         self.assertEqual(tail(text, 3), "497\n498\n499")
+
+    def test_parse_job_name(self):
+        self.assertEqual(parse_job_name("a.py"), ("a.py", None, []))
+        self.assertEqual(parse_job_name("a.py --x"), ("a.py", None, ["--x"]))
+        self.assertEqual(parse_job_name("a.py[cli]"), ("a.py", "cli", []))
+        self.assertEqual(
+            parse_job_name("a-b.py[ipv4] --y"), ("a-b.py", "ipv4", ["--y"])
+        )
