@@ -1664,6 +1664,14 @@ void SetupServerArgs(NodeContext &node) {
         "or put behind a reverse proxy. Can be specified multiple times.",
         ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
         OptionsCategory::RPC);
+    argsman.AddArg(
+        "-publicfallback=<host>:<port>",
+        "On -publicbind listeners, hand every request the node does not "
+        "serve (anything but an accepted P2P WebSocket upgrade or Chronik) "
+        "to this plain-HTTP web server, which then answers the rest of that "
+        "connection byte for byte, so the endpoint looks like an ordinary "
+        "web site to visitors and probes. Without it, such requests get 404.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg("-rpciothreads=<n>",
                    strprintf("Number of threads performing HTTP/WebSocket "
                              "socket I/O and TLS (default: %d)",
