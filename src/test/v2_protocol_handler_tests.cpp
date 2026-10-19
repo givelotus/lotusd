@@ -50,6 +50,15 @@ using namespace lotus::v2::net;
 
 namespace {
 
+/** Mock the transaction relay tick clock for the duration of a test */
+struct MockRelayTick {
+    explicit MockRelayTick(std::chrono::milliseconds t) { Set(t); }
+    ~MockRelayTick() { MockableSteadyClock::ClearMockTime(); }
+    void Set(std::chrono::milliseconds t) {
+        MockableSteadyClock::SetMockTime(t);
+    }
+};
+
 CService MakeTestIp(uint32_t i) {
     struct in_addr s;
     s.s_addr = i;
@@ -1467,6 +1476,7 @@ BOOST_AUTO_TEST_CASE(ecash_rejects_v2_commitment_in_legacy_header) {
 
 BOOST_AUTO_TEST_CASE(outbound_inv_queue_suppression_window) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockRelayTick tick{std::chrono::milliseconds{7'000'001}};
 
     const Config &config = m_node.chainman->GetConfig();
     auto connman = std::make_unique<ConnmanTestMsg>(config, 0x3559, 0x3559,
@@ -1533,9 +1543,10 @@ BOOST_AUTO_TEST_CASE(outbound_inv_queue_suppression_window) {
                                 std::chrono::seconds{base_time}, interrupt);
     }
 
-    // Advance mocktime past the outbound broadcast interval so the queue
-    // flushes.
+    // Advance to the next relay tick so the queue flushes; an INV received
+    // before then still suppresses the announcement.
     SetMockTime(base_time + 5);
+    tick.Set(std::chrono::milliseconds{7'000'010});
     BOOST_CHECK(peerman->SendMessages(config, &peer_node));
 
     // Inspect sent INV messages: tx_unsuppressed must be announced, while
@@ -1579,10 +1590,11 @@ BOOST_AUTO_TEST_CASE(outbound_inv_queue_suppression_window) {
     peerman->FinalizeNode(config, peer_node);
 }
 
-// Focused control for READY0035: same frozen clocks, actual SendMessages,
+// READY0035 permission matrix retained under the new fixed-tick policy.
+// Same frozen clocks, actual SendMessages,
 // permissions and serialized INV/SHORTTX output; transaction admission is
 // deliberately outside this relay-scheduling component test.
-BOOST_AUTO_TEST_CASE(noban_normal_trickle_with_frozen_clock) {
+BOOST_AUTO_TEST_CASE(permissions_follow_fixed_relay_tick) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const Config &config = m_node.chainman->GetConfig();
     for (unsigned scenario = 0; scenario < 8; ++scenario) {
@@ -1601,6 +1613,7 @@ BOOST_AUTO_TEST_CASE(noban_normal_trickle_with_frozen_clock) {
         opts.nSendBufferMaxSize = 1024 * 1024;
         connman->Init(opts);
         SetMockTime(1'700'000'000);
+        MockRelayTick tick{std::chrono::milliseconds{8'000'001}};
         CAddress addr(MakeTestIp(0xa0b0c080 + scenario), NODE_NONE);
         CNodeOptions node_opts;
         if (noban) node_opts.permission_flags = NetPermissionFlags::NoBan;
@@ -1654,19 +1667,21 @@ BOOST_AUTO_TEST_CASE(noban_normal_trickle_with_frozen_clock) {
             return count;
         };
         BOOST_REQUIRE(peerman->SendMessages(config, &node));
-        BOOST_CHECK_EQUAL(count_announced(), noban ? 1 : 0);
-        // Advancing the normal clock still serves ordinary peers; previously
-        // sent NoBan inventory must not be duplicated.
+        BOOST_CHECK_EQUAL(count_announced(), 0U);
+        // Advancing the relay tick serves every permission class exactly once.
         SetMockTime(1'700'000'060);
+        tick.Set(std::chrono::milliseconds{8'000'010});
         BOOST_REQUIRE(peerman->SendMessages(config, &node));
-        BOOST_CHECK_EQUAL(count_announced(), noban ? 0 : 1);
+        BOOST_CHECK_EQUAL(count_announced(), 1U);
         peerman->FinalizeNode(config, node);
         WITH_LOCK(m_node.mempool->cs, m_node.mempool->clear());
     }
     SetMockTime(0);
 }
 
-BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
+BOOST_AUTO_TEST_CASE(single_tx_relays_wait_for_the_relay_tick) {
+    // Transactions relayed one at a time, local or not, are announced at
+    // the next relay tick; a high-bandwidth peer gets the burst pushed.
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const Config &config = m_node.chainman->GetConfig();
     for (unsigned scenario = 0; scenario < 4; ++scenario) {
@@ -1684,6 +1699,7 @@ BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
         opts.nSendBufferMaxSize = 1024 * 1024;
         connman->Init(opts);
         SetMockTime(1'700'000'000);
+        MockRelayTick tick{std::chrono::milliseconds{6'000'001}};
         CAddress addr(MakeTestIp(0xa0b0c040 + scenario), NODE_NONE);
         CNode node(400 + scenario, nullptr, addr, 0, 0, 0, CAddress(), "",
                    ConnectionType::OUTBOUND_FULL_RELAY, false);
@@ -1710,8 +1726,10 @@ BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
             peerman->RelayTransaction(tx->GetId());
         // The fast path must retain known-inventory suppression as well.
         peerman->MarkPeerKnownTx(node.GetId(), txs.back()->GetId());
+        tick.Set(std::chrono::milliseconds{6'000'010});
         BOOST_CHECK(peerman->SendMessages(config, &node));
         size_t announced = 0;
+        size_t pushed = 0;
         V1TransportDeserializer deserializer(config, node.GetId());
         {
             LOCK(node.cs_vSend);
@@ -1732,13 +1750,15 @@ BOOST_AUTO_TEST_CASE(single_tx_local_and_low_bandwidth_keep_normal_trickle) {
                         ShortTxResponse response;
                         msg.m_recv >> response;
                         announced += response.txs.size();
+                        pushed += response.txs.size();
                         for (const auto &tx : response.txs)
                             BOOST_CHECK(tx->GetId() != txs.back()->GetId());
                     }
                 }
             }
         }
-        BOOST_CHECK_EQUAL(announced, high_bandwidth && !local ? 16 : 0);
+        BOOST_CHECK_EQUAL(announced, 16U);
+        BOOST_CHECK_EQUAL(pushed, high_bandwidth ? 16U : 0U);
         peerman->FinalizeNode(config, node);
     }
     SetMockTime(0);
@@ -1839,7 +1859,9 @@ BOOST_AUTO_TEST_CASE(invalid_last_member_does_not_double_burst_admission_work) {
     peerman->FinalizeNode(config, node);    SetMockTime(0);
 }
 
-BOOST_AUTO_TEST_CASE(local_and_low_bandwidth_bursts_keep_normal_trickle) {
+BOOST_AUTO_TEST_CASE(bursts_wait_for_the_relay_tick) {
+    // Since Nucleation relay every transaction, local or relayed, waits for
+    // the fixed relay tick; high-bandwidth peers then get the burst pushed.
     LOCK(NetEventsInterface::g_msgproc_mutex);
     const Config &config = m_node.chainman->GetConfig();
     for (unsigned scenario = 0; scenario < 4; ++scenario) {
@@ -1857,6 +1879,7 @@ BOOST_AUTO_TEST_CASE(local_and_low_bandwidth_bursts_keep_normal_trickle) {
         opts.nSendBufferMaxSize = 1024 * 1024;
         connman->Init(opts);
         SetMockTime(1'700'000'000);
+        MockRelayTick tick{std::chrono::milliseconds{5'000'001}};
         CAddress addr(MakeTestIp(0xa0b0c040 + scenario), NODE_NONE);
         CNode node(400 + scenario, nullptr, addr, 0, 0, 0, CAddress(), "",
                    ConnectionType::OUTBOUND_FULL_RELAY, false);
@@ -1882,8 +1905,11 @@ BOOST_AUTO_TEST_CASE(local_and_low_bandwidth_bursts_keep_normal_trickle) {
         peerman->RelayTransactionBatch(txs);
         // The fast path must retain known-inventory suppression as well.
         peerman->MarkPeerKnownTx(node.GetId(), txs.back()->GetId());
+        // (Nothing is sent before the tick; see txrelay_tests.)
+        tick.Set(std::chrono::milliseconds{5'000'010});
         BOOST_CHECK(peerman->SendMessages(config, &node));
         size_t announced = 0;
+        size_t pushed = 0;
         V1TransportDeserializer deserializer(config, node.GetId());
         {
             LOCK(node.cs_vSend);
@@ -1904,13 +1930,15 @@ BOOST_AUTO_TEST_CASE(local_and_low_bandwidth_bursts_keep_normal_trickle) {
                         ShortTxResponse response;
                         msg.m_recv >> response;
                         announced += response.txs.size();
+                        pushed += response.txs.size();
                         for (const auto &tx : response.txs)
                             BOOST_CHECK(tx->GetId() != txs.back()->GetId());
                     }
                 }
             }
         }
-        BOOST_CHECK_EQUAL(announced, high_bandwidth && !local ? 16 : 0);
+        BOOST_CHECK_EQUAL(announced, 16U);
+        BOOST_CHECK_EQUAL(pushed, high_bandwidth ? 16U : 0U);
         peerman->FinalizeNode(config, node);
     }
     SetMockTime(0);
@@ -2523,6 +2551,7 @@ BOOST_AUTO_TEST_CASE(tachyon_avalanche_snapsync_reverse_peel_and_opt_out) {
 
 BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
     LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockRelayTick tick{std::chrono::milliseconds{9'000'001}};
 
     const Config &config = m_node.chainman->GetConfig();
     auto connman = std::make_unique<ConnmanTestMsg>(config, 0x3560, 0x3560,
@@ -2725,12 +2754,13 @@ BOOST_AUTO_TEST_CASE(shorttx_batch_admission_fallback_and_proactive_push) {
 
     // 2. Verify outgoing relay:
     //    - peer_from (originator) receives neither SHORTTX nor INV
-    //    - peer_to (normal low-bandwidth peer) receives INV (and NEVER unsolicited SHORTTX)
+    //    - peer_to (normal low-bandwidth peer) receives INV (and NEVER
+    //    unsolicited SHORTTX)
     //    - peer_hb (opted-in High-Bandwidth peer) receives preemptive SHORTTX!
+    // Every peer announces at the next relay tick.
+    tick.Set(std::chrono::milliseconds{9'000'100});
     BOOST_CHECK(peerman->SendMessages(config, &peer_from));
     BOOST_CHECK(peerman->SendMessages(config, &peer_hb));
-    // Ordinary peers keep the upstream randomized trickle; this assertion
-    // checks eventual INV relay, while the HB peer above sends immediately.
     SetMockTime(base_time + 60);
     BOOST_CHECK(peerman->SendMessages(config, &peer_to));
 
