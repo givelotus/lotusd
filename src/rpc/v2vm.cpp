@@ -276,7 +276,7 @@ RPCHelpMan getv2vmprofile() {
                       {RPCResult::Type::NUM, "base", ""},
                       {RPCResult::Type::NUM, "per_operand_byte", ""},
                       {RPCResult::Type::NUM, "per_result_byte", ""},
-                      {RPCResult::Type::NUM, "per_scanned_output", ""}}}}}}},
+                      {RPCResult::Type::NUM, "per_tx_output", ""}}}}}}},
                 {RPCResult::Type::STR_HEX, "profile_digest",
                  "Commitment to vm_profile and cost_profile"},
                 {RPCResult::Type::OBJ_DYN,
@@ -332,7 +332,7 @@ RPCHelpMan getv2vmprofile() {
             for (unsigned op = 0; op < 256; ++op) {
                 const auto &c = cost.opcode[op];
                 if (!c.base && !c.per_operand_byte && !c.per_result_byte &&
-                    !c.per_scanned_output) {
+                    !c.per_tx_output) {
                     continue;
                 }
                 UniValue entry(UniValue::VOBJ);
@@ -340,7 +340,7 @@ RPCHelpMan getv2vmprofile() {
                 entry.pushKV("base", c.base);
                 entry.pushKV("per_operand_byte", c.per_operand_byte);
                 entry.pushKV("per_result_byte", c.per_result_byte);
-                entry.pushKV("per_scanned_output", c.per_scanned_output);
+                entry.pushKV("per_tx_output", c.per_tx_output);
                 costed.push_back(entry);
             }
             UniValue cost_json(UniValue::VOBJ);
@@ -364,6 +364,8 @@ RPCHelpMan getv2vmprofile() {
                           uint64_t(lotus::v2::MAX_OUTPUT_PATHS));
             limits.pushKV("max_output_bytes",
                           uint64_t(lotus::v2::MAX_OUTPUT_BYTES));
+            limits.pushKV("max_tx_claim_pairs",
+                          uint64_t(lotus::v2::MAX_TX_CLAIM_PAIRS));
             UniValue result(UniValue::VOBJ);
             result.pushKV("registry_sha256",
                           lotus::v2::VM_OPCODE_REGISTRY_SHA256);
