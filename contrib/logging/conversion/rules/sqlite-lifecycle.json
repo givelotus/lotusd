@@ -1,0 +1,243 @@
+{
+  "schema": 1,
+  "batch": "sqlite-lifecycle",
+  "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched.",
+  "files": [
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append reviewed DatabaseVersion STRING and ErrorCode INT keys without changing existing field IDs or formatting.",
+          "old": "#define BCLOG_FIELDS(X)                                                        \\\n    /* Id, generic name, type, ECS name, OTel name */                          \\\n    X(PeerId, peer_id, INT, \"\", \"\")                                            \\\n    X(Addr, addr, STRING, \"\", \"\")                                              \\\n    X(PeerAddress, peer_address, STRING, \"\", \"network.peer.address\")           \\\n    X(PeerPort, peer_port, INT, \"\", \"network.peer.port\")                       \\\n    X(Network, network, STRING, \"\", \"\")                                        \\\n    X(Direction, direction, STRING, \"network.direction\", \"\")                   \\\n    X(Transport, transport, STRING, \"\", \"\")                                    \\\n    X(ConnType, conn_type, STRING, \"\", \"\")                                     \\\n    X(UserAgent, user_agent, STRING, \"\", \"\")                                   \\\n    X(HttpUserAgent, http_user_agent, STRING, \"user_agent.original\",           \\\n      \"user_agent.original\")                                                   \\\n    X(Version, version, INT, \"\", \"\")                                           \\\n    X(Services, services, STRING, \"\", \"\")                                      \\\n    X(MsgType, msg_type, STRING, \"\", \"\")                                       \\\n    X(BlockHash, block_hash, HASH, \"\", \"\")                                     \\\n    X(Height, height, INT, \"\", \"\")                                             \\\n    X(TxId, txid, HASH, \"\", \"\")                                                \\\n    X(Bytes, bytes, UINT, \"\", \"\")                                              \\\n    X(DroppedLines, dropped_lines, UINT, \"\", \"\")                               \\\n    X(Count, count, UINT, \"\", \"\")                                              \\\n    X(AmountSats, amount_sats, INT, \"\", \"\")                                    \\\n    X(Method, method, STRING, \"\", \"rpc.method\")                                \\\n    X(OriginalMethod, original_method, STRING, \"\", \"rpc.method_original\")      \\\n    X(Error, error, STRING, \"error.message\", \"\")                               \\\n    X(Reason, reason, STRING, \"event.reason\", \"\")                              \\\n    X(DurationUs, duration_us, DURATION, \"event.duration\", \"\")                 \\\n    X(Path, path, STRING, \"file.path\", \"file.path\")                            \\\n    X(Wallet, wallet, STRING, \"\", \"\")                                          \\\n    X(Name, name, STRING, \"\", \"\")                                              \\\n    X(Value, value, STRING, \"\", \"\")                                            \\\n    X(RpcUser, rpc_user, STRING, \"\", \"\")\n\n",
+          "new": "#define BCLOG_FIELDS(X)                                                        \\\n    /* Id, generic name, type, ECS name, OTel name */                          \\\n    X(PeerId, peer_id, INT, \"\", \"\")                                            \\\n    X(Addr, addr, STRING, \"\", \"\")                                              \\\n    X(PeerAddress, peer_address, STRING, \"\", \"network.peer.address\")           \\\n    X(PeerPort, peer_port, INT, \"\", \"network.peer.port\")                       \\\n    X(Network, network, STRING, \"\", \"\")                                        \\\n    X(Direction, direction, STRING, \"network.direction\", \"\")                   \\\n    X(Transport, transport, STRING, \"\", \"\")                                    \\\n    X(ConnType, conn_type, STRING, \"\", \"\")                                     \\\n    X(UserAgent, user_agent, STRING, \"\", \"\")                                   \\\n    X(HttpUserAgent, http_user_agent, STRING, \"user_agent.original\",           \\\n      \"user_agent.original\")                                                   \\\n    X(Version, version, INT, \"\", \"\")                                           \\\n    X(Services, services, STRING, \"\", \"\")                                      \\\n    X(MsgType, msg_type, STRING, \"\", \"\")                                       \\\n    X(BlockHash, block_hash, HASH, \"\", \"\")                                     \\\n    X(Height, height, INT, \"\", \"\")                                             \\\n    X(TxId, txid, HASH, \"\", \"\")                                                \\\n    X(Bytes, bytes, UINT, \"\", \"\")                                              \\\n    X(DroppedLines, dropped_lines, UINT, \"\", \"\")                               \\\n    X(Count, count, UINT, \"\", \"\")                                              \\\n    X(AmountSats, amount_sats, INT, \"\", \"\")                                    \\\n    X(Method, method, STRING, \"\", \"rpc.method\")                                \\\n    X(OriginalMethod, original_method, STRING, \"\", \"rpc.method_original\")      \\\n    X(Error, error, STRING, \"error.message\", \"\")                               \\\n    X(Reason, reason, STRING, \"event.reason\", \"\")                              \\\n    X(DurationUs, duration_us, DURATION, \"event.duration\", \"\")                 \\\n    X(Path, path, STRING, \"file.path\", \"file.path\")                            \\\n    X(Wallet, wallet, STRING, \"\", \"\")                                          \\\n    X(Name, name, STRING, \"\", \"\")                                              \\\n    X(Value, value, STRING, \"\", \"\")                                            \\\n    X(RpcUser, rpc_user, STRING, \"\", \"\") \\\n    X(DatabaseVersion, database_version, STRING, \"\", \"\")                       \\\n    X(ErrorCode, error_code, INT, \"\", \"\")\n\n"
+        }
+      ]
+    },
+    {
+      "path": "src/wallet/sqlite.cpp",
+      "rules": [
+        {
+          "id": "sqlite-lifecycle-sqlite-1",
+          "old": "LogPrintf(\"SQLite Error. Code: %d. Message: %s\\n\", code, msg)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_error\",\n                 \"SQLite Error. Code: {error_code}. Message: {error}\")\n        .Field(BCLog::LogField::ErrorCode, code)\n        .Field(BCLog::LogField::Error, msg)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLite Error. Code: %d. Message: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "code",
+              "msg"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-2",
+          "old": "LogPrintf(\"Using SQLite Version %s\\n\", SQLiteDatabaseVersion())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_version\",\n                     \"Using SQLite Version {database_version}\")\n            .Field(BCLog::LogField::DatabaseVersion, sqlite3_libversion())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using SQLite Version %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "SQLiteDatabaseVersion()"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-3",
+          "old": "LogPrintf(\"Using wallet %s\\n\", m_dir_path)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_wallet_directory\",\n                     \"Using wallet {wallet}\")\n            .Field(BCLog::LogField::Wallet, m_dir_path)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using wallet %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "m_dir_path"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-4",
+          "old": "LogPrintf(\"SQLiteDatabase: Failed to shutdown SQLite: %s\\n\",\n                      sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_shutdown_failed\",\n                         \"SQLiteDatabase: Failed to shutdown SQLite: {error}\")\n                .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteDatabase: Failed to shutdown SQLite: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-5",
+          "old": "LogPrintf(\"%s: Unable to begin backup: %s\\n\", __func__,\n                  sqlite3_errmsg(m_db))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_backup_begin_failed\",\n                     \"{name}: Unable to begin backup: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errmsg(m_db))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to begin backup: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errmsg(m_db)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-6",
+          "old": "LogPrintf(\"%s: Unable to backup: %s\\n\", __func__, sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_backup_failed\",\n                     \"{name}: Unable to backup: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to backup: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-7",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed unexpectedly without the \"\n                      \"transaction being explicitly committed or aborted\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_batch_closed_uncommitted\",\n                         \"SQLiteBatch: Batch closed unexpectedly without the \"\n                         \"transaction being explicitly committed or aborted\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed unexpectedly without the transaction being explicitly committed or aborted\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-8",
+          "old": "LogPrintf(\n                \"SQLiteBatch: Batch closed and failed to abort transaction\\n\")",
+          "replacement": "LogInfoEvent(\n                BCLog::ALL, \"sqlite_batch_abort_failed\",\n                \"SQLiteBatch: Batch closed and failed to abort transaction\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed and failed to abort transaction\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-9",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed but could not finalize read \"\n                  \"statement: %s\\n\",\n                  sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_read_finalize_failed\",\n                     \"SQLiteBatch: Batch closed but could not finalize read \"\n                     \"statement: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed but could not finalize read statement: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-10",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed but could not finalize insert \"\n                  \"statement: %s\\n\",\n                  sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_insert_finalize_failed\",\n                     \"SQLiteBatch: Batch closed but could not finalize insert \"\n                     \"statement: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed but could not finalize insert statement: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-11",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed but could not finalize overwrite \"\n                  \"statement: %s\\n\",\n                  sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_overwrite_finalize_failed\",\n                     \"SQLiteBatch: Batch closed but could not finalize \"\n                     \"overwrite statement: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed but could not finalize overwrite statement: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-12",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed but could not finalize delete \"\n                  \"statement: %s\\n\",\n                  sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_delete_finalize_failed\",\n                     \"SQLiteBatch: Batch closed but could not finalize delete \"\n                     \"statement: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed but could not finalize delete statement: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-lifecycle-sqlite-13",
+          "old": "LogPrintf(\"SQLiteBatch: Batch closed but could not finalize cursor \"\n                  \"statement: %s\\n\",\n                  sqlite3_errstr(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_cursor_finalize_failed\",\n                     \"SQLiteBatch: Batch closed but could not finalize cursor \"\n                     \"statement: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Batch closed but could not finalize cursor statement: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(ret)"
+            ]
+          },
+          "review_note": "Convert thirteen SQLite connection, backup and close diagnostics. Add custom typed database_version and error_code fields, without unrelated standard-schema roles. Copy SQLite-owned error text immediately into the record; format the message on the consumer. Preserve original levels and wording. Wallet notification callbacks are untouched."
+        }
+      ],
+      "support_adjustments": []
+    }
+  ]
+}
