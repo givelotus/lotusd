@@ -745,6 +745,9 @@ private:
     CheckInputsLimiter *pBlockLimitSigChecks;
     std::shared_ptr<const V2ResolvedCoins> m_resolved_coins;
     lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
+    // Transaction-scoped V2 VM effects, owned by the caller that finalizes
+    // the transaction after all of its inputs are checked.
+    lotus::v2::VmTransactionEffects *m_v2_effects{nullptr};
 
 public:
     CScriptCheck(
@@ -769,6 +772,10 @@ public:
     CScriptCheck &operator=(CScriptCheck &&) = default;
 
     std::optional<std::pair<ScriptError, std::string>> operator()();
+
+    void SetV2Effects(lotus::v2::VmTransactionEffects *effects) {
+        m_v2_effects = effects;
+    }
 
     ScriptExecutionMetrics GetScriptExecutionMetrics() const { return metrics; }
 };

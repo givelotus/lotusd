@@ -1019,6 +1019,76 @@ void StateHashAndVerify() {
           "STATEVERIFY coin lacks state");
     Expect("ed", VmStatus::Unsupported, {VmBytes(32)});
 }
+void TransactionEffects() {
+    // Order-free effects (plan I-11) and the per-transaction post-check.
+    Output plain;
+    plain.value = 100;
+    plain.branches = {Hash{}};
+    plain.branches[0].fill(0x61);
+    plain.paths = {{0}};
+    Output stateful = plain;
+    stateful.flags = 4;
+    stateful.state_root.fill(0x62);
+    const std::vector<Output> outputs{plain, stateful};
+    std::string error;
+    VmTransactionEffects effects;
+    CHECK(!FinalizeVmTransactionEffects(outputs, effects, error) &&
+          error == "state-output-unauthorized");
+    effects.state_authorized = {1};
+    CHECK(FinalizeVmTransactionEffects(outputs, effects, error));
+    // Claims on one output sum across invocations, in any order.
+    VmTransactionEffects a, b;
+    a.claims = {{0, 60}};
+    b.claims = {{0, 40}, {1, 100}};
+    for (const bool ab : {true, false}) {
+        VmTransactionEffects merged = effects;
+        merged.Merge(ab ? a : b);
+        merged.Merge(ab ? b : a);
+        CHECK(FinalizeVmTransactionEffects(outputs, merged, error));
+        merged.claims.push_back({0, 1});
+        CHECK(!FinalizeVmTransactionEffects(outputs, merged, error) &&
+              error == "output-overclaimed");
+    }
+    // Claims cannot overflow the comparison.
+    VmTransactionEffects huge = effects;
+    huge.claims = {{0, UINT64_MAX}, {0, UINT64_MAX}};
+    CHECK(!FinalizeVmTransactionEffects(outputs, huge, error));
+    // Out-of-range indexes are rejected rather than ignored.
+    VmTransactionEffects stray = effects;
+    stray.claims = {{2, 0}};
+    CHECK(!FinalizeVmTransactionEffects(outputs, stray, error));
+    stray = effects;
+    stray.state_authorized.push_back(2);
+    CHECK(!FinalizeVmTransactionEffects(outputs, stray, error));
+
+    // An invocation commits nothing on failure and nothing when no
+    // effect-producing opcode runs; the accumulator lives in the context,
+    // never in the (reusable) prepared transaction.
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    Transaction tx;
+    Input spend;
+    spend.flags = 1;
+    spend.prev_txid.fill(0x63);
+    spend.sequence = UINT32_MAX;
+    spend.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    tx.inputs = {spend};
+    tx.outputs = outputs;
+    Output coin = plain;
+    coin.value = 500;
+    ResolvedCoins resolved{coin};
+    for (const auto &script : {Hex("4e"), Hex("4d")}) {
+        tx.inputs[0].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(script);
+        VmTransactionEffects accumulator = effects;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
+                               std::nullopt};
+        ctx.effects = &accumulator;
+        EvaluateVmWithContext(script, {}, PROFILE, ctx);
+        CHECK(accumulator.claims == effects.claims &&
+              accumulator.state_authorized == effects.state_authorized);
+    }
+}
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
     auto charge = [&](const std::string &script,
@@ -1840,6 +1910,7 @@ int main() {
     TokenBalance();
     InputWitnessArg();
     StateHashAndVerify();
+    TransactionEffects();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();

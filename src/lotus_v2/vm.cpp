@@ -1140,6 +1140,8 @@ namespace {
         std::span<const uint8_t> active_script;
         std::optional<Hash> cached_txid;
         std::optional<VmAssetTotalsMap> local_asset_totals;
+        // Effects of this invocation, committed by the caller on success.
+        VmTransactionEffects staged_effects;
         size_t mint_count;
         std::vector<VmBytes> stack;
         std::vector<VmBytes> alternate;
@@ -2381,6 +2383,9 @@ namespace {
             return stack;
         }
         VmCostUnits ExecutedCost() const { return executed_cost; }
+        const VmTransactionEffects &StagedEffects() const {
+            return staged_effects;
+        }
     };
 } // namespace
 bool ValidateVmCostProfile(const VmProfile &vm, const VmCostProfile &cost, std::string &error) {
@@ -2456,6 +2461,39 @@ bool PreparedVmTransaction::TryGetFieldSizeAt(uint8_t op, size_t idx,
         return true;
     }
     return false;
+}
+
+bool FinalizeVmTransactionEffects(std::span<const Output> outputs,
+                                  const VmTransactionEffects &effects,
+                                  std::string &error) {
+    std::vector<__uint128_t> claimed(outputs.size());
+    std::vector<uint8_t> authorized(outputs.size());
+    for (const auto &[j, claim] : effects.claims) {
+        if (j >= outputs.size()) {
+            error = "output-overclaimed";
+            return false;
+        }
+        claimed[j] += claim;
+    }
+    for (uint16_t j : effects.state_authorized) {
+        if (j >= outputs.size()) {
+            error = "state-output-unauthorized";
+            return false;
+        }
+        authorized[j] = 1;
+    }
+    for (size_t j = 0; j < outputs.size(); ++j) {
+        if (claimed[j] > outputs[j].value) {
+            error = "output-overclaimed";
+            return false;
+        }
+        if (outputs[j].HasState() && !authorized[j]) {
+            error = "state-output-unauthorized";
+            return false;
+        }
+    }
+    error.clear();
+    return true;
 }
 
 bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
@@ -2743,6 +2781,8 @@ VmResult EvaluateVmImpl(std::span<const uint8_t> script,
             if (target_sigs) {
                 target_sigs->Merge(std::move(staged_sigs));
             }
+            if (context && context->effects)
+                context->effects->Merge(machine.StagedEffects());
             const VmCostUnits executed =
                 RawAdd(exec_structural, machine.ExecutedCost());
             return {VmStatus::Success, {}, std::move(final_stack), executed};
