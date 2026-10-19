@@ -31,9 +31,9 @@
 #include <currencyunit.h>
 #include <flatfile.h>
 #include <hash.h>
+#include <httpmetrics.h>
 #include <httprpc.h>
 #include <httpserver.h>
-#include <net_websocket_dialer.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
 #include <index/txindex.h>
@@ -47,6 +47,7 @@
 #include <net.h>
 #include <net_permissions.h>
 #include <net_processing.h>
+#include <net_websocket_dialer.h>
 #include <netbase.h>
 #include <node/blockmanager_args.h>
 #include <node/blockstorage.h>
@@ -56,6 +57,7 @@
 #include <node/context.h>
 #include <node/kernel_notifications.h>
 #include <node/mempool_persist_args.h>
+#include <node/metrics.h>
 #include <node/miner.h>
 #include <node/peerman_args.h>
 #include <node/ui_interface.h>
@@ -271,6 +273,9 @@ void Shutdown(NodeContext &node) {
     StopREST();
     StopRPC();
     StopHTTPServer();
+    // After the HTTP server: no scrape is in progress. Recording continues
+    // harmlessly into the (still allocated) metrics until exit.
+    StopHTTPMetrics();
 
 #if ENABLE_CHRONIK
     // Chronik serves its own HTTP and Electrum interfaces, whose handlers reach
@@ -1683,6 +1688,14 @@ void SetupServerArgs(NodeContext &node) {
         "they reveal a node to probes)",
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
+        "-metrics",
+        strprintf(
+            "Serve operator metrics in the Prometheus text format at /metrics "
+            "on the RPC listeners, to -rpcallowip clients only and without "
+            "authentication (default: %u)",
+            DEFAULT_METRICS),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
         "-publicfallback=<host>:<port>",
         "On -publicbind listeners, hand every request the node does not "
         "serve (anything but an accepted P2P WebSocket upgrade or Chronik) "
@@ -1936,6 +1949,9 @@ static bool AppInitServers(Config &config,
     }
     if (args.GetBoolArg("-rest", DEFAULT_REST_ENABLE)) {
         StartREST(&node);
+    }
+    if (args.GetBoolArg("-metrics", DEFAULT_METRICS)) {
+        StartHTTPMetrics();
     }
 
     StartHTTPServer();
