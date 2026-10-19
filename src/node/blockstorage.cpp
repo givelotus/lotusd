@@ -393,7 +393,8 @@ bool BlockManager::LoadBlockIndexDB(
     }
 
     // Check presence of blk files
-    LogPrintf("Checking all blk files are present...\n");
+    LogInfoEvent(BCLog::ALL, "block_files_checking",
+                 "Checking all blk files are present...");
     std::set<int> setBlkDataFiles;
     for (const auto &[_, block_index] : m_block_index) {
         if (block_index.nStatus.hasData()) {
@@ -421,8 +422,9 @@ bool BlockManager::LoadBlockIndexDB(
     // Check whether we have ever pruned block & undo files
     m_block_tree_db->ReadFlag("prunedblockfiles", m_have_pruned);
     if (m_have_pruned) {
-        LogPrintf(
-            "LoadBlockIndexDB(): Block files have previously been pruned\n");
+        LogInfoEvent(
+            BCLog::ALL, "block_files_previously_pruned",
+            "LoadBlockIndexDB(): Block files have previously been pruned");
     }
 
     // Check whether we need to continue reindexing
@@ -519,8 +521,9 @@ void BlockManager::CleanupBlockRevFiles() const {
     // Glob all blk?????.dat and rev?????.dat files from the blocks directory.
     // Remove the rev files immediately and insert the blk file paths into an
     // ordered map keyed by block file index.
-    LogPrintf("Removing unusable blk?????.dat and rev?????.dat files for "
-              "-reindex with -prune\n");
+    LogInfoEvent(BCLog::ALL, "block_files_prune_reindex_cleaning",
+                 "Removing unusable blk?????.dat and rev?????.dat files for "
+                 "-reindex with -prune");
     for (const auto &file : fs::directory_iterator{m_opts.blocks_dir}) {
         const std::string path = fs::PathToString(file.path().filename());
         if (fs::is_regular_file(file) && path.length() == 12 &&
@@ -918,13 +921,15 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo &blockundo,
             static_cast<unsigned int>(undo_stream.size())};
         if (!FindUndoPos(state, block.nFile, pos,
                          blockundo_size + UNDO_DATA_DISK_OVERHEAD)) {
-            LogError("FindUndoPos failed\n");
+            LogErrorEvent(BCLog::ALL, "undo_position_failed",
+                          "FindUndoPos failed");
             return false;
         }
         // Open history file to append
         AutoFile fileout{OpenUndoFile(pos)};
         if (fileout.IsNull()) {
-            LogError("OpenUndoFile failed\n");
+            LogErrorEvent(BCLog::ALL, "undo_file_open_failed",
+                          "OpenUndoFile failed");
             return FatalError(m_opts.notifications, state,
                               "Failed to write undo data");
         }
@@ -1120,12 +1125,14 @@ FlatFilePos BlockManager::WriteBlock(const CBlock &block, int nHeight) {
         FindNextBlockPos(block_size + BLOCK_SERIALIZATION_HEADER_SIZE, nHeight,
                          block.GetBlockTime())};
     if (pos.IsNull()) {
-        LogError("FindNextBlockPos failed\n");
+        LogErrorEvent(BCLog::ALL, "block_position_failed",
+                      "FindNextBlockPos failed");
         return FlatFilePos();
     }
     AutoFile fileout{OpenBlockFile(pos)};
     if (fileout.IsNull()) {
-        LogError("OpenBlockFile failed\n");
+        LogErrorEvent(BCLog::ALL, "block_file_open_failed",
+                      "OpenBlockFile failed");
         m_opts.notifications.fatalError("Failed to write block");
         return FlatFilePos();
     }
@@ -1193,7 +1200,8 @@ void ImportBlocks(ChainstateManager &chainman,
                 ::cs_main,
                 chainman.m_blockman.m_block_tree_db->WriteReindexing(false));
             chainman.m_blockman.m_blockfiles_indexed = true;
-            LogPrintf("Reindexing finished\n");
+            LogInfoEvent(BCLog::ALL, "block_reindex_finished",
+                         "Reindexing finished");
             // To avoid ending up in a situation without genesis block, re-try
             // initializing (no-op if reindexing worked):
             chainman.ActiveChainstate().LoadGenesisBlock();
