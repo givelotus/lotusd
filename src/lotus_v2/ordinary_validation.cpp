@@ -17,10 +17,7 @@ using Wide = __uint128_t;
 constexpr Wide MAX_WIDE = ~Wide{0};
 constexpr size_t MAX_ORDINARY_VALIDATION_CACHE_ENTRIES = 8192;
 
-struct Totals {
-    Wide inputs{};
-    Wide outputs{};
-};
+using Totals = VmAssetTotals;
 
 bool Add(Wide &sum, Wide value) {
     if (sum > MAX_WIDE - value) return false;
@@ -38,18 +35,6 @@ bool AtLeastAfter(uint64_t now, uint64_t start, uint64_t delay) {
     return start <= UINT64_MAX - delay && now >= start + delay;
 }
 
-bool AddAsset(std::map<Hash32, Totals> &tokens, Wide &native,
-              const Output &output, std::string &error, bool input) {
-    Wide &sum = output.HasToken()
-                    ? (input ? tokens[output.token_id].inputs
-                             : tokens[output.token_id].outputs)
-                    : native;
-    if (!Add(sum, output.value)) {
-        error = "asset sum overflow";
-        return false;
-    }
-    return true;
-}
 
 struct OrdinaryCacheKey {
     ChainId chain_id{};
@@ -322,10 +307,10 @@ CandidateCheckResult VerifyOrdinaryUncached(
     std::string &error, BatchSigCollector *batch_sigs) {
     try {
         ValidatedOrdinaryCache::Instance().RecordMiss();
-        Wide native_inputs = 0, native_outputs = 0;
-        std::map<Hash32, Totals> tokens;
+        // Same per-asset totals TXTOKENBALANCE reads (zero key = native).
+        VmAssetTotalsMap tokens;
         for (const Coin &coin : spent) {
-            if (!AddAsset(tokens, native_inputs, coin.output, error, true))
+            if (!AddVmAssetTotal(tokens, coin.output, true, error))
                 return CandidateCheckResult::Invalid;
         }
         size_t token_output_count = 0;
@@ -337,9 +322,13 @@ CandidateCheckResult VerifyOrdinaryUncached(
                 error = "state-output-unauthorized";
                 return CandidateCheckResult::Invalid;
             }
-            if (!AddAsset(tokens, native_outputs, output, error, false))
+            if (!AddVmAssetTotal(tokens, output, false, error))
                 return CandidateCheckResult::Invalid;
         }
+        const Totals native = tokens[Hash32{}];
+        tokens.erase(Hash32{});
+        const Wide native_inputs = native.inputs;
+        const Wide native_outputs = native.outputs;
         if (native_inputs < native_outputs) {
             error = "native inflation";
             return CandidateCheckResult::Invalid;
