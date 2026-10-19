@@ -535,7 +535,7 @@ Threads
   : Parallel script validation threads for transactions in blocks.
 
 - [ThreadHTTP (`b-http`)](https://www.bitcoinabc.org/doc/dev/httpserver_8cpp.html#abb9f6ea8819672bd9a62d3695070709c)
-  : Libevent thread to listen for RPC and REST connections.
+  : Boost.Asio threads to listen for RPC and REST connections.
 
 - [HTTP worker threads(`b-httpworker.x`)](https://www.bitcoinabc.org/doc/dev/httpserver_8cpp.html#aa6a7bc27265043bc0193220c5ae3a55f)
   : Threads to service RPC and REST requests.
@@ -548,7 +548,7 @@ Threads
   addrman and running asynchronous validationinterface callbacks.
 
 - [TorControlThread (`b-torcontrol`)](https://www.bitcoinabc.org/doc/dev/torcontrol_8cpp.html#a4faed3692d57a0d7bdbecf3b37f72de0)
-  : Libevent thread for tor connections.
+  : Boost.Asio thread for the Tor control connection.
 
 - Net threads:
 
