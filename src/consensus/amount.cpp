@@ -12,6 +12,8 @@
 
 #include <tinyformat.h>
 
+#include <atomic>
+
 using namespace std::string_view_literals;
 
 static constexpr Currency BCHA{COIN, SATOSHI, 8, "BCHA"sv};
@@ -22,7 +24,18 @@ static_assert(BCHA.baseunit > 1 * SATOSHI,
 static_assert(XEC.baseunit > 1 * SATOSHI,
               "XEC base unit must be greater than 1 satoshi");
 
+//! -1 until SetECash() is called, then 0 (BCHA) or 1 (XEC)
+static std::atomic<int> g_ecash{-1};
+
+void Currency::SetECash(bool ecash) {
+    g_ecash.store(ecash ? 1 : 0, std::memory_order_relaxed);
+}
+
 const Currency &Currency::get() {
+    const int ecash{g_ecash.load(std::memory_order_relaxed)};
+    if (ecash >= 0) {
+        return ecash ? XEC : BCHA;
+    }
     return gArgs.GetBoolArg("-ecash", DEFAULT_ECASH) ? XEC : BCHA;
 }
 
