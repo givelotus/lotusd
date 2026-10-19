@@ -36,8 +36,8 @@ cases = [
     ("7d", (b"a"*3, b"b"*100, number(0)), 0, 0, False),
     ("4e69796a4e", (), 0, 0, False),
     ("4e697a6a", (), 0, 0, False),
-    ("c969794e6b6a", (), 1, 0, False),
-    ("c9694e6b6a", (), 1, 0, False),
+    ("c969794e4e6b6a", (), 1, 0, False),
+    ("c9694e4e6b6a", (), 1, 0, False),
     ("c969ca69796a796a", (), 3, 4, False),
     ("00e7", (), 0, 0, True),
     ("e7", (number(0),), 0, 0, True),
@@ -108,8 +108,8 @@ for _ in range(256):
     if rng.getrandbits(1): script += bytes((0x61,0x4e,0x63,0x00,0x64))
     cases.append((script.hex(), (), 0, 0, False))
 
-arms = ("79", "4e", "b8", "4e7a", "4c00", "4e6b")
-bodies = ("79", "7a", "4e6b", "794e6b", "00614e6b637964", "ca69796a79")
+arms = ("79", "4e", "b8", "4e7a", "4c00", "4e4e6b")
+bodies = ("79", "7a", "4e4e6b", "794e4e6b", "00614e4e6b637964", "ca69796a79")
 for _ in range(200):
     if rng.getrandbits(1):
         then_arm, else_arm = rng.choice(arms), rng.choice(arms)

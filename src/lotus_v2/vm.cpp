@@ -1348,9 +1348,15 @@ namespace {
                     case 0x66:
                         throw VmFailure("RETURN");
                     case 0x6b: {
-                        Int depth = Numeric(Pop());
+                        // Boolean(cond) N(depth) BREAK: both operands are
+                        // always popped and the depth is validated before
+                        // the condition is acted on. N(1) exits `depth`
+                        // loops; N(0) continues.
+                        const Int depth = Numeric(Pop());
+                        const VmBytes cond_bytes = Pop();
                         if (depth < 1 || depth > active_loops)
                             throw VmFailure("BREAK depth");
+                        if (!Boolean(cond_bytes)) break;
                         tracking_step = false;
                         Charge(OpCost(op, step_operands, step_results,
                                       cost_profile, false));
