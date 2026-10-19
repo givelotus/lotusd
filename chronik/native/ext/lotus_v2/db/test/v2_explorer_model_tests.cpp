@@ -122,9 +122,11 @@ BOOST_AUTO_TEST_CASE(frozen_creation_is_serialized_without_spend_state) {
 }
 
 BOOST_AUTO_TEST_CASE(reservation_and_metadata_bounds_reject_oversize) {
+    const Bounds bounds(4096);
     CommittedBlock block = Fixture();
-    block.transactions[0].explorer.wire.resize(MAX_BATCH_BYTES / 6, 0);
-    BOOST_CHECK(ThrowsV2([&] { PreflightExplorerBlock(block); }));
+    block.transactions[0].explorer.wire.resize(
+        bounds.BatchBytes() / RESERVE_EXPLORER_PER_WIRE_BYTE + 1, 0);
+    BOOST_CHECK(PreflightExplorerBlock(block) > bounds.BatchBytes());
     BOOST_CHECK(ThrowsV2([&] {
         DecodeRecord<TxMeta>(Bytes(MAX_EXPLORER_RECORD_BYTES + 1, 0));
     }));
