@@ -12,6 +12,11 @@ the official 1.8.1 release provided Linux x86_64 assets only. The available
 ast-grep Python wheel correctly parsed the representative nested-template
 argument fixture. No claim that Comby could not implement these rules is made.
 
+Reviewed mappings support plain decimal integer length modifiers and explicit
+FLOAT `f`/`g` precision 0..18. A floating placeholder must preserve the original
+printf precision exactly. Other width/sign/type formatting remains rejected;
+this capability does not infer a field type or domain from its label.
+
 The checked-in JSON rules are reviewed semantic mappings, not inferred schemas.
 They specify exact input ASTs, expected counts, event expressions, and review
 notes. Whitespace may differ in input; argument tokens may not. Missing,
