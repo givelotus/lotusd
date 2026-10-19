@@ -1430,6 +1430,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if not self.is_chronik_plugins_compiled():
             raise SkipTest("Chronik indexer plugins have not been compiled.")
 
+    def skip_if_no_chronik_electrum(self):
+        """Skip the running test if Chronik was compiled without Electrum."""
+        if not self.is_chronik_electrum_compiled():
+            raise SkipTest("Chronik Electrum interface has not been compiled.")
+
     def is_cli_compiled(self):
         """Checks whether bitcoin-cli was compiled."""
         return self.config["components"].getboolean("ENABLE_CLI")
@@ -1454,6 +1459,13 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         """Checks whether the zmq module was compiled."""
         return self.config["components"].getboolean("ENABLE_ZMQ")
 
+    def is_chronik_electrum_compiled(self):
+        """Checks whether Chronik was compiled with its Electrum interface
+        (the native implementation has none)."""
+        return self.config["components"].getboolean(
+            "ENABLE_CHRONIK_ELECTRUM", fallback=True
+        )
+
     def is_usdt_compiled(self):
         """Checks whether the USDT tracepoints were compiled."""
         return self.config["components"].getboolean("ENABLE_USDT_TRACEPOINTS")
@@ -1472,6 +1484,7 @@ REQUIREMENTS = {
     "zmq": BitcoinTestFramework.skip_if_no_bitcoind_zmq,
     "py3_zmq": BitcoinTestFramework.skip_if_no_py3_zmq,
     "chronik": BitcoinTestFramework.skip_if_no_chronik,
+    "chronik_electrum": BitcoinTestFramework.skip_if_no_chronik_electrum,
     "chronik_plugins": BitcoinTestFramework.skip_if_no_chronik_plugins,
     "linux": BitcoinTestFramework.skip_if_platform_not_linux,
     "usdt": BitcoinTestFramework.skip_if_no_bitcoind_tracepoints,
