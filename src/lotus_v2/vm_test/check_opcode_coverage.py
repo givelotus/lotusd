@@ -45,7 +45,9 @@ control = {0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x69, 0x6a, 0x6b}
 assert {int(e["byte"], 16) for e in entries if e["status"] == "push"} == push
 assert {int(e["byte"], 16) for e in entries if e["status"] == "control"} == control
 assert cases == {int(e["byte"], 16) for e in entries
-                 if e["status"] == "implemented"} | {0x60, 0x65, 0x66, 0x6b}
+                 if e["status"] == "implemented"} | {0x60, 0x65, 0x66, 0x6b,
+                                                     # EMITLOG: simulation only
+                                                     0x6c}
 assert 'throw VmFailure("assigned opcode not implemented",\n                                        true)' in source
 
 if len(sys.argv) >= 3:
