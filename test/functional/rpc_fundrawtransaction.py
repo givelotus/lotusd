@@ -25,6 +25,8 @@ def get_unspent(listunspent, amount):
 
 
 class RawTransactionsTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 4
         self.setup_clean_chain = True

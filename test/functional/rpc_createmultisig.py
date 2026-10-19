@@ -18,6 +18,8 @@ from test_framework.wallet_util import bytes_to_wif
 
 
 class RpcCreateMultiSigTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 3

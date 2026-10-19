@@ -46,6 +46,8 @@ class multidict(dict):
 
 # Create one-input, one-output, no-fee transaction:
 class RawTransactionsTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 3
         self.extra_args = [["-txindex"], ["-txindex"], ["-txindex"]]

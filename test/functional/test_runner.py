@@ -131,12 +131,6 @@ TEST_PARAMS = {
     #    testName
     #    testName --param1 --param2
     #    testname --param3
-    "rpc_bind.py": [["--ipv4"], ["--ipv6"], ["--nonloopback"]],
-    "rpc_createmultisig.py": [["--descriptors"]],
-    "rpc_deriveaddresses.py": [["--usecli"]],
-    "rpc_fundrawtransaction.py": [["--descriptors"]],
-    "rpc_rawtransaction.py": [["--descriptors"]],
-    "rpc_signrawtransaction.py": [["--descriptors"]],
     # FIXME: "rpc_psbt.py": [["--descriptors"]],
     "wallet_address_types.py": [["--descriptors"]],
     "tool_wallet.py": [["--descriptors"]],
