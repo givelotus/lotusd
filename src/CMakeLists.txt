@@ -423,6 +423,7 @@ add_library(util
 	util/signalinterrupt.cpp
 	util/string.cpp
 	util/sock.cpp
+	util/sockwakeup.cpp
 	util/strencodings.cpp
 	util/string.cpp
 	util/syserror.cpp
