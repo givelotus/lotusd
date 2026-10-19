@@ -380,9 +380,10 @@ CandidateCheckResult VerifyOrdinaryUncached(
         VmCostUnits invocation_cost = 0;
         BatchSigCollector tx_staged_sigs;
         // Invocations run input-ascending, then witness-ascending, mints at
-        // their position. Effects are order-free (plan I-11), so the order
-        // only fixes which error is reported first.
-        VmTransactionEffects tx_effects;
+        // their position. Deferred check kinds are order-free (plan I-11),
+        // so the order only fixes which error is reported first.
+        DeferredTxRun deferred(DeferredCheckRegistry::Consensus(),
+                               DeferredTxView{tx.outputs, tx.inputs.size()});
         BatchSigCollector *collector_ptr =
             batch_sigs != nullptr ? &tx_staged_sigs : nullptr;
         for (size_t i = 0; i < tx.inputs.size(); ++i) {
@@ -396,11 +397,12 @@ CandidateCheckResult VerifyOrdinaryUncached(
                     encoded[b] = uint8_t(amount >> (8 * b));
                 delta = encoded;
             }
+            DeferredRecords input_records;
             for (size_t j = 0; j < input.witnesses.size(); ++j) {
                 const BranchWitness &witness = input.witnesses[j];
                 auto context =
                     prepared_vm.Invocation(i, j, delta, collector_ptr);
-                context.effects = &tx_effects;
+                context.effects = &input_records;
                 const VmChargedResult vm = EvaluateVmCharged(
                     witness.script, witness.arguments, profile.vm,
                     prepared_vm.Cost(), uint16_t(tx.inputs.size()),
@@ -423,8 +425,13 @@ CandidateCheckResult VerifyOrdinaryUncached(
                     return CandidateCheckResult::Invalid;
                 }
             }
+            if (deferred.CompleteInput(uint32_t(i), true,
+                                       std::move(input_records), error) ==
+                DeferredOutcome::Failed)
+                return CandidateCheckResult::Invalid;
         }
-        if (!FinalizeVmTransactionEffects(tx.outputs, tx_effects, error))
+        if (tx.inputs.empty() &&
+            deferred.FinishWithoutInputs(error) == DeferredOutcome::Failed)
             return CandidateCheckResult::Invalid;
         effects.txid = identities.txid;
         effects.txhash = identities.txhash;
