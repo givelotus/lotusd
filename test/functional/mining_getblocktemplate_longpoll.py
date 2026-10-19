@@ -36,22 +36,21 @@ class LongpollThread(threading.Thread):
 
 
 class GetBlockTemplateLPTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.supports_cli = False
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                # Keep the explicitly voted parking state stable for longpoll checks.
-                "-automaticunparking=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-            ],
-            [],
-        ]
+    num_nodes = 2
+    supports_cli = False
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            # Keep the explicitly voted parking state stable for longpoll checks.
+            "-automaticunparking=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+        ],
+        [],
+    ]
 
     def run_test(self):
         self.log.info(

@@ -12,10 +12,9 @@ from test_framework.util import assert_equal
 
 
 class SettingsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.wallet_names = []
+    setup_clean_chain = True
+    num_nodes = 1
+    wallet_names = []
 
     def run_test(self):
         (node,) = self.nodes

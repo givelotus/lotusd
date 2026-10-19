@@ -16,9 +16,8 @@ DEFAULT_MAX_TIP_AGE = 24 * 60 * 60
 
 
 class MaxTipAgeTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
+    setup_clean_chain = True
+    num_nodes = 2
 
     def test_maxtipage(self, maxtipage, set_parameter=True, test_deltas=True):
         node_miner = self.nodes[0]

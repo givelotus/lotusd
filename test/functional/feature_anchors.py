@@ -14,9 +14,8 @@ BLOCK_RELAY_CONNECTIONS = 2
 
 
 class AnchorsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.disable_autoconnect = False
+    num_nodes = 1
+    disable_autoconnect = False
 
     def run_test(self):
         node_anchors_path = os.path.join(

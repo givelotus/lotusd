@@ -20,8 +20,7 @@ class SymlinkTest(BitcoinTestFramework):
         if sys.platform == "win32":
             raise SkipTest("Symlinks test skipped on Windows")
 
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         self.stop_node(0)

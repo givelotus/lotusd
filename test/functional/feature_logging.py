@@ -15,9 +15,8 @@ from test_framework.util import assert_equal
 
 
 class LoggingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
+    num_nodes = 1
+    setup_clean_chain = True
 
     def relative_log_path(self, name):
         return os.path.join(self.nodes[0].datadir, self.chain, name)

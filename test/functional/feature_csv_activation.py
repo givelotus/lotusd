@@ -88,10 +88,9 @@ def get_csv_status(node):
 
 
 class BIP68_112_113Test(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
+    num_nodes = 1
+    setup_clean_chain = True
+    noban_tx_relay = True
 
     def create_self_transfer_from_utxo(self, input_tx):
         utxo = self.miniwallet.get_utxo(txid=input_tx.txid_hex, mark_as_spent=False)
