@@ -27,7 +27,7 @@ class ConfArgsTest(BitcoinTestFramework):
 
         inc_conf_file_path = os.path.join(self.nodes[0].datadir, "include.conf")
         with open(
-            os.path.join(self.nodes[0].datadir, "bitcoin.conf"), "a", encoding="utf-8"
+            os.path.join(self.nodes[0].datadir, "lotusd.conf"), "a", encoding="utf-8"
         ) as conf:
             conf.write(f"includeconf={inc_conf_file_path}\n")
 
@@ -120,7 +120,7 @@ class ConfArgsTest(BitcoinTestFramework):
 
         inc_conf_file2_path = os.path.join(self.nodes[0].datadir, "include2.conf")
         with open(
-            os.path.join(self.nodes[0].datadir, "bitcoin.conf"), "a", encoding="utf-8"
+            os.path.join(self.nodes[0].datadir, "lotusd.conf"), "a", encoding="utf-8"
         ) as conf:
             conf.write(f"includeconf={inc_conf_file2_path}\n")
 
@@ -325,7 +325,7 @@ class ConfArgsTest(BitcoinTestFramework):
 
     def test_ignored_conf(self):
         self.log.info(
-            "Test error is triggered when the datadir in use contains a bitcoin.conf file that would be ignored "
+            "Test error is triggered when the datadir in use contains a lotusd.conf file that would be ignored "
             "because a conflicting -conf file argument is passed."
         )
         node = self.nodes[0]
@@ -336,7 +336,7 @@ class ConfArgsTest(BitcoinTestFramework):
         node.assert_start_raises_init_error(
             [f"-conf={temp_conf.name}"],
             re.escape(
-                f'Error: Data directory "{node.datadir}" contains a "bitcoin.conf" file which is ignored, because a '
+                f'Error: Data directory "{node.datadir}" contains a "lotusd.conf" file which is ignored, because a '
                 f'different configuration file "{temp_conf.name}" from command line argument "-conf={temp_conf.name}" '
                 f"is being used instead."
             )
@@ -345,9 +345,9 @@ class ConfArgsTest(BitcoinTestFramework):
         )
 
         # Test that passing a redundant -conf command line argument pointing to
-        # the same bitcoin.conf that would be loaded anyway does not trigger an
+        # the same lotusd.conf that would be loaded anyway does not trigger an
         # error.
-        self.start_node(0, [f"-conf={node.datadir}/bitcoin.conf"])
+        self.start_node(0, [f"-conf={node.datadir}/lotusd.conf"])
         self.stop_node(0)
 
     def test_ignored_default_conf(self):
@@ -357,8 +357,8 @@ class ConfArgsTest(BitcoinTestFramework):
             return
 
         self.log.info(
-            "Test error is triggered when bitcoin.conf in the default data directory sets another datadir "
-            "and it contains a different bitcoin.conf file that would be ignored"
+            "Test error is triggered when lotusd.conf in the default data directory sets another datadir "
+            "and it contains a different lotusd.conf file that would be ignored"
         )
 
         # Create a temporary directory that will be treated as the default data
@@ -368,12 +368,12 @@ class ConfArgsTest(BitcoinTestFramework):
         )
         default_datadir.mkdir(parents=True)
 
-        # Write a bitcoin.conf file in the default data directory containing a
+        # Write a lotusd.conf file in the default data directory containing a
         # datadir= line pointing at the node datadir. This will trigger a
         # startup error because the node datadir contains a different
-        # bitcoin.conf that would be ignored.
+        # lotusd.conf that would be ignored.
         node = self.nodes[0]
-        (default_datadir / "bitcoin.conf").write_text(f"datadir={node.datadir}\n")
+        (default_datadir / "lotusd.conf").write_text(f"datadir={node.datadir}\n")
 
         # Drop the node -datadir= argument during this test, because if it is
         # specified it would take precedence over the datadir setting in the
@@ -385,8 +385,8 @@ class ConfArgsTest(BitcoinTestFramework):
         node.assert_start_raises_init_error(
             [],
             re.escape(
-                f'Error: Data directory "{node.datadir}" contains a "bitcoin.conf" file which is ignored, because a '
-                f'different configuration file "{default_datadir}/bitcoin.conf" from data directory "{default_datadir}" '
+                f'Error: Data directory "{node.datadir}" contains a "lotusd.conf" file which is ignored, because a '
+                f'different configuration file "{default_datadir}/lotusd.conf" from data directory "{default_datadir}" '
                 f"is being used instead."
             )
             + r"[\s\S]*",
@@ -421,7 +421,7 @@ class ConfArgsTest(BitcoinTestFramework):
         )
 
         # Check that using non-existent datadir in conf file fails
-        conf_file = os.path.join(default_data_dir, "bitcoin.conf")
+        conf_file = os.path.join(default_data_dir, "lotusd.conf")
 
         # datadir needs to be set before [chain] section
         conf_file_contents = open(conf_file, encoding="utf8").read()
