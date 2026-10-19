@@ -372,8 +372,8 @@ NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime,
         *sock, "natpmp", request, num_tries, timeout_per_try,
         [&](const Span<const uint8_t> response) -> bool {
             if (response.size() < NATPMP_GETEXTERNAL_RESPONSE_SIZE) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "natpmp: Response too small\n");
+                LogWarningEvent(BCLog::NET, "natpmp_response_too_small",
+                                "natpmp: Response too small");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -381,8 +381,8 @@ NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime,
             if (response[NATPMP_HDR_VERSION_OFS] != NATPMP_VERSION ||
                 response[NATPMP_HDR_OP_OFS] !=
                     (NATPMP_RESPONSE | NATPMP_OP_GETEXTERNAL)) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "natpmp: Response to wrong command\n");
+                LogWarningEvent(BCLog::NET, "natpmp_command_unexpected",
+                                "natpmp: Response to wrong command");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -425,16 +425,16 @@ NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime,
         *sock, "natpmp", request, num_tries, timeout_per_try,
         [&](const Span<const uint8_t> response) -> bool {
             if (response.size() < NATPMP_MAP_RESPONSE_SIZE) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "natpmp: Response too small\n");
+                LogWarningEvent(BCLog::NET, "natpmp_response_too_small",
+                                "natpmp: Response too small");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
             }
             if (response[0] != NATPMP_VERSION ||
                 response[1] != (NATPMP_RESPONSE | NATPMP_OP_MAP_TCP)) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "natpmp: Response to wrong command\n");
+                LogWarningEvent(BCLog::NET, "natpmp_command_unexpected",
+                                "natpmp: Response to wrong command");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -442,8 +442,8 @@ NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime,
             uint16_t internal_port = ReadBE16(
                 response.data() + NATPMP_MAP_RESPONSE_INTERNAL_PORT_OFS);
             if (internal_port != port) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "natpmp: Response port doesn't match request\n");
+                LogWarningEvent(BCLog::NET, "natpmp_response_port_mismatch",
+                                "natpmp: Response port doesn't match request");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -617,16 +617,16 @@ PCPRequestPortMap(const PCPMappingNonce &nonce, const CNetAddr &gateway,
                 return true;
             }
             if (response.size() < (PCP_HDR_SIZE + PCP_MAP_SIZE)) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "pcp: Response too small\n");
+                LogWarningEvent(BCLog::NET, "pcp_response_too_small",
+                                "pcp: Response too small");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
             }
             if (response[PCP_HDR_VERSION_OFS] != PCP_VERSION ||
                 response[PCP_HDR_OP_OFS] != (PCP_RESPONSE | PCP_OP_MAP)) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "pcp: Response to wrong command\n");
+                LogWarningEvent(BCLog::NET, "pcp_command_unexpected",
+                                "pcp: Response to wrong command");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -637,8 +637,8 @@ PCPRequestPortMap(const PCPMappingNonce &nonce, const CNetAddr &gateway,
                     response.subspan(PCP_HDR_SIZE + PCP_MAP_NONCE_OFS,
                                      PCP_MAP_NONCE_SIZE),
                     nonce)) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Warning,
-                              "pcp: Mapping nonce mismatch\n");
+                LogWarningEvent(BCLog::NET, "pcp_mapping_nonce_mismatch",
+                                "pcp: Mapping nonce mismatch");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
@@ -647,9 +647,9 @@ PCPRequestPortMap(const PCPMappingNonce &nonce, const CNetAddr &gateway,
             uint16_t internal_port =
                 ReadBE16(response.data() + PCP_HDR_SIZE + 16);
             if (protocol != PCP_PROTOCOL_TCP || internal_port != port) {
-                LogPrintLevel(
-                    BCLog::NET, BCLog::Level::Warning,
-                    "pcp: Response protocol or port doesn't match request\n");
+                LogWarningEvent(
+                    BCLog::NET, "pcp_response_mapping_mismatch",
+                    "pcp: Response protocol or port doesn't match request");
                 // Wasn't response to what we expected, try receiving next
                 // packet.
                 return false;
