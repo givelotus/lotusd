@@ -21,6 +21,8 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <feerate.h>
+#include <logging.h>
+#include <logging/values.h>
 #include <minerfund.h>
 #include <policy/block/stakingrewards.h>
 #include <policy/policy.h>
@@ -322,10 +324,11 @@ void BlockAssembler::AddToBlock(const CTxMemPoolEntryRef &entry) {
                       entry->GetFee());
 
     if (fPrintPriority) {
-        LogPrintf(
-            "fee rate %s txid %s\n",
-            CFeeRate(entry->GetModifiedFee(), entry->GetTxSize()).ToString(),
-            entry->GetTx().GetId().ToString());
+        LogInfoEvent(BCLog::ALL, "mining_transaction_fee_rate",
+                     "fee rate {fee_rate} txid {txid}")
+            .Field(BCLog::LogField::FeeRate,
+                   CFeeRate(entry->GetModifiedFee(), entry->GetTxSize()))
+            .Field(BCLog::LogField::TxId, entry->GetTx().GetId());
     }
 }
 

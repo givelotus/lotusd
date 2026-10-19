@@ -14,6 +14,7 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <logging.h>
+#include <logging/values.h>
 #include <lotus_v2/fee_hysteresis.h>
 #include <node/metrics.h>
 #include <node/snapshot.h>
@@ -1353,9 +1354,10 @@ void CTxMemPool::TrimToSize(size_t sizelimit,
     }
 
     if (maxFeeRateRemoved > CFeeRate(Amount::zero())) {
-        LogDebug(BCLog::MEMPOOL,
-                 "Removed %u txn, rolling minimum fee bumped to %s\n",
-                 nTxnRemoved, maxFeeRateRemoved.ToString());
+        LogEvent(BCLog::MEMPOOL, "mempool_minimum_fee_raised",
+                 "Removed {count} txn, rolling minimum fee bumped to {fee_rate}")
+            .Field(BCLog::LogField::Count, nTxnRemoved)
+            .Field(BCLog::LogField::FeeRate, maxFeeRateRemoved);
     }
 
     if (finalizedTxsSkipped > 0) {
