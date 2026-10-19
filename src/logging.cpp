@@ -502,6 +502,9 @@ std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
     if (str == "json") {
         return LogFormat::JSON;
     }
+    if (str == "json-ecs") {
+        return LogFormat::JSON_ECS;
+    }
     if (str == "json-gcp") {
         return LogFormat::JSON_GCP;
     }
