@@ -35,6 +35,7 @@
 #endif
 #include <chronik/native/service.h>
 #include <chronik/native/token_io/token_index.h>
+#include <ext/lotus_v2/groups/groups.h>
 #include <hosts/abc/abc_host.h>
 #include <hosts/abc/abc_http.h>
 #include <hosts/abc/abc_subscriber.h>
@@ -51,6 +52,19 @@ namespace {
 template <typename TxOutT>
 constexpr bool IsLotusV2Output = requires(const TxOutT &o) { o.vBranches; };
 constexpr bool kLotusV2Node = IsLotusV2Output<CTxOut>;
+
+/**
+ * Extensions of the node's tier: on Lotus V2, the V2 branch/asset groups of
+ * the legacy index and their WS subscriptions.
+ */
+std::vector<std::unique_ptr<native::Extension>> MakeTierExtensions() {
+    std::vector<std::unique_ptr<native::Extension>> exts;
+    if constexpr (kLotusV2Node) {
+        exts.push_back(
+            std::make_unique<native::lotus_v2::LegacyGroupsExtension>());
+    }
+    return exts;
+}
 
 /** Registers the storage backends linked into this build (idempotent). */
 void RegisterStoreBackends() {
@@ -269,7 +283,8 @@ bool Start(const ArgsManager &args, const Config &config,
     g_host = std::make_unique<native::abc::AbcHost>(node, std::move(caps));
     try {
         std::unique_ptr<native::Service> service =
-            native::Service::Start(*g_host, std::move(*params));
+            native::Service::Start(*g_host, std::move(*params),
+                                   MakeTierExtensions());
         if (!service) {
             // Shutdown was requested during resync
             return true;

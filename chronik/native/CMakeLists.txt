@@ -143,6 +143,8 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
         chronik_native_core
         chronik_native_host_common
         chronik_native_service
+        # Lotus V2 tier extension (V2 groups, V2 service).
+        chronik_native_lotus_v2
         util
     )
     # Storage backends: only the selected ones are linked.
