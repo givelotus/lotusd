@@ -9,19 +9,21 @@
 #include <ext/lotus_v2/service/service.h>
 
 #include <blockindex.h>
-#include <node/blockstorage.h>
-#include <node/context.h>
-#include <sync.h>
-#include <validation.h>
 #include <chainparams.h>
+#include <config.h>
 #include <lotus_v2/chronik_explorer.h>
+#include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/header.h>
 #include <lotus_v2/output.h>
 #include <lotus_v2/tagged_hash.h>
 #include <lotus_v2/transaction.h>
+#include <node/blockstorage.h>
+#include <node/context.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <sync.h>
 #include <tinyformat.h>
+#include <validation.h>
 
 #include <algorithm>
 #include <cstring>
@@ -227,20 +229,34 @@ ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
 
 namespace {
 
-/** bridge.rs v2_limits */
-ffi::ServiceLimits V2Limits() {
-    return ffi::ServiceLimits{
-        .block_bytes = uint32_t(lotus_v2::MAX_BATCH_BYTES),
-        .transactions = uint32_t(lotus_v2::MAX_TRANSACTIONS),
-        .changes = uint32_t(lotus_v2::MAX_CHANGES),
-        .roots = 256,
-        .clauses = 16,
-        .page_size = 1000,
-        .posting_reads = 65536,
-        .work = 131072,
-        .response_bytes = 1024 * 1024,
-    };
-}
+    /**
+     * The consensus block-size limit (chronik.cpp get_v2_max_block_bytes): the
+     * configured limit, at least the adaptive ceiling, within 32 bits.
+     */
+    uint32_t V2MaxBlockBytes() {
+        const uint64_t limit =
+            std::max(GetConfig().GetMaxBlockSize(),
+                     lotus::v2::DEFAULT_ADAPTIVE_MAX_BLOCK_CEILING);
+        return uint32_t(
+            std::min<uint64_t>(limit, std::numeric_limits<uint32_t>::max()));
+    }
+
+    /** bridge.rs v2_limits: index bounds follow the block-size limit. */
+    ffi::ServiceLimits V2Limits() {
+        const uint32_t block_bytes = V2MaxBlockBytes();
+        const lotus_v2::Bounds bounds(block_bytes);
+        return ffi::ServiceLimits{
+            .block_bytes = block_bytes,
+            .transactions = uint32_t(bounds.Transactions()),
+            .changes = uint32_t(bounds.Changes()),
+            .roots = 256,
+            .clauses = 16,
+            .page_size = 1000,
+            .posting_reads = 65536,
+            .work = 131072,
+            .response_bytes = 1024 * 1024,
+        };
+    }
 
 } // namespace
 

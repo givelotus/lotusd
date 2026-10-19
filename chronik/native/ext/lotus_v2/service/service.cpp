@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <random>
 
 #include <sys/stat.h>
@@ -78,15 +79,22 @@ V2Service::Open(const std::string &path, const ffi::Binding &binding,
     if (path.empty() || path.size() > 4096) {
         Fail("path bound");
     }
-    if (limits.transactions == 0 || limits.transactions > MAX_TRANSACTIONS ||
-        limits.changes == 0 || limits.changes > MAX_CHANGES ||
-        limits.block_bytes == 0 || limits.block_bytes > MAX_BATCH_BYTES ||
-        limits.roots == 0 || limits.roots > 256 || limits.clauses == 0 ||
-        limits.clauses > 16 || limits.page_size == 0 ||
-        limits.page_size > 1000 || limits.posting_reads == 0 ||
-        limits.posting_reads > 65536 || limits.work == 0 ||
-        limits.work > 131072 || limits.response_bytes < 512 ||
-        limits.response_bytes > 1024 * 1024) {
+    // block_bytes is the consensus block-size limit; the index bounds and
+    // the largest transaction and change counts follow from it.
+    std::optional<Bounds> bounds;
+    try {
+        bounds.emplace(limits.block_bytes);
+    } catch (const V2Error &) {
+        Fail("service limits");
+    }
+    if (limits.transactions == 0 ||
+        limits.transactions > bounds->Transactions() || limits.changes == 0 ||
+        limits.changes > bounds->Changes() || limits.roots == 0 ||
+        limits.roots > 256 || limits.clauses == 0 || limits.clauses > 16 ||
+        limits.page_size == 0 || limits.page_size > 1000 ||
+        limits.posting_reads == 0 || limits.posting_reads > 65536 ||
+        limits.work == 0 || limits.work > 131072 ||
+        limits.response_bytes < 512 || limits.response_bytes > 1024 * 1024) {
         Fail("service limits");
     }
     std::unique_ptr<V2Service> service(new V2Service());
@@ -114,9 +122,11 @@ V2Service::Open(const std::string &path, const ffi::Binding &binding,
     }
     service->m_db = Db([&] {
         return std::make_shared<SharedV2Db>(
-            dir, Binding{binding.chain_id, binding.genesis, binding.profile});
+            dir, Binding{binding.chain_id, binding.genesis, binding.profile},
+            *bounds);
     });
     service->m_limits = limits;
+    service->m_bounds = *bounds;
     service->m_genesis = binding.genesis;
     service->m_authority = std::make_shared<Authority>();
     service->m_index_error = std::make_shared<std::atomic<bool>>(false);
@@ -158,13 +168,20 @@ CommittedBlock V2Service::Block(const ffi::NativeBlock &block) const {
     if (block.transactions.size() > m_limits.transactions) {
         Fail("transaction bound");
     }
-    const size_t cap = m_limits.block_bytes;
+    // The block's wire bytes are within the consensus size limit; the facts
+    // copied for them are within the index bounds it implies.
+    const size_t cap = m_bounds.BatchBytes();
+    size_t wire = block.header_wire.size();
     size_t bytes = 218;
     size_t changes = 0;
-    if (bytes > cap) {
+    if (wire > m_bounds.BlockBytes() || bytes > cap) {
         Fail("block bytes bound");
     }
     for (const ffi::NativeTx &tx : block.transactions) {
+        wire += tx.wire.size();
+        if (wire > m_bounds.BlockBytes()) {
+            Fail("block bytes bound");
+        }
         size_t descriptor_bytes = 0;
         for (const ffi::NativeFullInput &i : tx.full_inputs) {
             descriptor_bytes += i.witnesses.size() * 80 + 128;

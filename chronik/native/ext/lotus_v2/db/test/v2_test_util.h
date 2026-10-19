@@ -84,6 +84,10 @@ inline bool ThrowsCorrupt(const std::function<void()> &f) {
 }
 
 inline Binding TestBinding() { return Binding{B32(1), B32(2), B32(3)}; }
+/** Bounds of a 32 MB block-size limit, as the Rust tests' bounds(). */
+inline Bounds TestBounds() {
+    return Bounds(32'000'000);
+}
 
 inline ExplorerBlockFacts FixtureHeader(const Anchor &anchor,
                                         const Anchor &parent) {
