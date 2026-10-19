@@ -104,6 +104,7 @@ TEST_FRAMEWORK_MODULES = [
     "util",
     "worker",
     "xpiaddr",
+    "ws_transport",
 ]
 
 NON_TESTS = {
