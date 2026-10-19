@@ -212,8 +212,8 @@ class SizePass {
     const VmCostProfile &schedule;
     const PreparedVmTransaction *prepared;
     size_t script_length;
-    [[maybe_unused]] uint16_t input_count;
-    [[maybe_unused]] uint16_t output_count;
+    uint16_t input_count;
+    uint16_t output_count;
     size_t limit;
     VmCostUnits Worst(VmOpcode op) const {
         VmCostUnits cost = WorstOpCost(op, limit, schedule);
@@ -647,10 +647,7 @@ class SizePass {
                     for (auto &exit_state : body.exits)
                         if (exit_state) exit_state = UnknownSizes();
                 }
-                const auto lit = LiteralValue(previous);
-                const size_t bound = (lit && *lit >= 0 && *lit <= 256)
-                                         ? static_cast<size_t>(*lit)
-                                         : 256;
+                const size_t bound = LoopBound(previous);
                 const std::array<size_t, 1> loop_operand{16};
                 part = OpCost(op, loop_operand, {}, schedule);
                 VmCostUnits iter = CostAdd(OpCost(0x6a, {}, {}, schedule),
@@ -713,6 +710,20 @@ class SizePass {
             out.worst = RawAdd(out.worst, worst);
         }
         return out;
+    }
+
+    // Static iteration bound of ENUMERATE. `TXINPUTCOUNT ENUMERATE` and
+    // `TXOUTPUTCOUNT ENUMERATE` (the count opcode immediately before, in the
+    // same sequence) are bounded by min(256, count), keeping the precision of
+    // the retired fused loop headers (I-7). Otherwise a literal bound is
+    // used, and failing that the maximum 256.
+    size_t LoopBound(const Instruction *previous) const {
+        if (previous && previous->op == 0xc9)
+            return std::min<size_t>(256, input_count);
+        if (previous && previous->op == 0xca)
+            return std::min<size_t>(256, output_count);
+        const auto lit = LiteralValue(previous);
+        return lit && *lit >= 0 && *lit <= 256 ? size_t(*lit) : 256;
     }
 
 public:
