@@ -6,7 +6,6 @@
 
 # race (TODO fix)
 race:WalletBatch::WriteHDChain
-race:CZMQAbstractPublishNotifier::SendMessage
 race:BerkeleyBatch
 race:BerkeleyDatabase
 race:bitcoin-qt
@@ -45,7 +44,6 @@ race:std::__1::ios_base::flags
 # reproducible. Make sure to include a link to a full trace.
 
 # https://github.com/bitcoin/bitcoin/issues/20618
-race:CZMQAbstractPublishNotifier::SendZmqMessage
 
 # Reverselock tests is triggering lock-order-inversion errors when run as part
 # of test_bitcoin.

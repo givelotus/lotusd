@@ -201,9 +201,6 @@ else()
 	set(ENABLE_CHRONIK_NATIVE OFF)
 endif()
 
-# Activate ZeroMQ
-set(ENABLE_ZMQ ${BUILD_ZMQ})
-
 # Try to find libqrencode
 # Only used in the wallet GUI
 if(ENABLE_QRCODE AND BUILD_WALLET AND BUILD_QT)
