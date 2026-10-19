@@ -849,6 +849,13 @@ void SetupServerArgs(NodeContext &node) {
                    "Output some performance statistics (e.g. num cache hits, "
                    "seconds spent) into a <datadir>/perf folder. (default: 0)",
                    ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
+#if ENABLE_CHRONIK_NATIVE
+    argsman.AddArg("-chronikqueryworkers=<n>",
+                   "Threads answering Chronik HTTP/WebSocket queries, 0 for "
+                   "min(8, cores / 2) (native Chronik only; default: 0)",
+                   ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+                   OptionsCategory::CHRONIK);
+#endif
     argsman.AddArg("-chronikscripthashindex",
                    "Enable the scripthash index for the Chronik indexer "
                    "(default: 1 if chronikelectrumbind is set, 0 otherwise) ",
