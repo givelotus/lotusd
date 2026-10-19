@@ -18,26 +18,25 @@ MAX_REQUEST_BODY_SIZE = 2_000_000
 
 
 class ChronikBroadcastTx(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-chronik",
-                "-enableminerfund",
-                # Disable staking preconsensus to avoid too many votes
-                "-avalanchestakingpreconsensus=0",
-                # Use a high thresold to avoid stalling transactions
-                "-avastalevotethreshold=100000",
-            ],
-        ]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-chronik",
+            "-enableminerfund",
+            # Disable staking preconsensus to avoid too many votes
+            "-avalanchestakingpreconsensus=0",
+            # Use a high thresold to avoid stalling transactions
+            "-avastalevotethreshold=100000",
+        ],
+    ]
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

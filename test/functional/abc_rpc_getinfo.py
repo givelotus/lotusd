@@ -9,10 +9,9 @@ from test_framework.util import assert_equal, get_cli_version
 
 
 class GetInfoRPCTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.extra_args = [["-avalanche=0"]]
+    num_nodes = 1
+    setup_clean_chain = True
+    extra_args = [["-avalanche=0"]]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_cli()

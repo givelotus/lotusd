@@ -51,29 +51,28 @@ class PreviousSpendableOutput(object):
 
 
 class SegwitRecoveryTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
-        self.tip_height = 0
-        # We have 2 nodes:
-        # 1) node_nonstd (nodes[0]) accepts non-standard txns. It does not
-        #    accept Segwit recovery transactions, since it is included in
-        #    standard flags, and transactions that violate these flags are
-        #    never accepted into the mempool.
-        # 2) node_std (nodes[1]) doesn't accept non-standard txns and
-        #    doesn't have us whitelisted. It's used to test for bans, as we
-        #    connect directly to it via mininode and send a segwit spending
-        #    txn. This transaction is non-standard. We check that sending
-        #    this transaction doesn't result in a ban.
-        # Nodes are connected to each other, so node_std receives blocks and
-        # transactions that node_nonstd has accepted. Since we are checking
-        # that segwit spending txn are not resulting in bans, node_nonstd
-        # doesn't get banned when forwarding this kind of transactions to
-        # node_std.
-        self.extra_args = [
-            ["-whitelist=noban@127.0.0.1", "-acceptnonstdtxn"],
-            ["-acceptnonstdtxn=0"],
-        ]
+    num_nodes = 2
+    setup_clean_chain = True
+    tip_height = 0
+    # We have 2 nodes:
+    # 1) node_nonstd (nodes[0]) accepts non-standard txns. It does not
+    #    accept Segwit recovery transactions, since it is included in
+    #    standard flags, and transactions that violate these flags are
+    #    never accepted into the mempool.
+    # 2) node_std (nodes[1]) doesn't accept non-standard txns and
+    #    doesn't have us whitelisted. It's used to test for bans, as we
+    #    connect directly to it via mininode and send a segwit spending
+    #    txn. This transaction is non-standard. We check that sending
+    #    this transaction doesn't result in a ban.
+    # Nodes are connected to each other, so node_std receives blocks and
+    # transactions that node_nonstd has accepted. Since we are checking
+    # that segwit spending txn are not resulting in bans, node_nonstd
+    # doesn't get banned when forwarding this kind of transactions to
+    # node_std.
+    extra_args = [
+        ["-whitelist=noban@127.0.0.1", "-acceptnonstdtxn"],
+        ["-acceptnonstdtxn=0"],
+    ]
 
     def make_block(self, base_block: Optional[CBlock]) -> CBlock:
         """

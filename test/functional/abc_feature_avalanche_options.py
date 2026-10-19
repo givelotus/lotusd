@@ -11,10 +11,9 @@ from test_framework.wallet_util import bytes_to_wif
 
 
 class AvalancheOptionsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [[]]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [[]]
 
     def run_test(self):
         node = self.nodes[0]

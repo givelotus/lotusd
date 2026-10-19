@@ -44,8 +44,7 @@ class BadVersionP2PInterface(P2PInterface):
 
 
 class InvalidMessageTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
+    num_nodes = 2
 
     def run_test(self):
         # Try to connect to a node using an invalid checksum on version message.

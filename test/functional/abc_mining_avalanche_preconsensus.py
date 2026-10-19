@@ -16,35 +16,34 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheMiningPreconsensusTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avacooldown=0",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                # Each node only connects to 50% of the avalanche peers
-                "-avaminquorumconnectedstakeratio=0.5",
-                # Preconsensus disabled
-                "-avalanchepreconsensus=0",
-            ],
-            [
-                "-avacooldown=0",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-avaminquorumconnectedstakeratio=0.5",
-                # This is disabled by default on the test framework
-                "-avalanchepreconsensusmining=1",
-                # Disable staking reward preconsensus to speedup the test and
-                # avoid bloating the polling space
-                "-avalanchestakingpreconsensus=0",
-            ],
-        ]
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avacooldown=0",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            # Each node only connects to 50% of the avalanche peers
+            "-avaminquorumconnectedstakeratio=0.5",
+            # Preconsensus disabled
+            "-avalanchepreconsensus=0",
+        ],
+        [
+            "-avacooldown=0",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-avaminquorumconnectedstakeratio=0.5",
+            # This is disabled by default on the test framework
+            "-avalanchepreconsensusmining=1",
+            # Disable staking reward preconsensus to speedup the test and
+            # avoid bloating the polling space
+            "-avalanchestakingpreconsensus=0",
+        ],
+    ]
 
     def run_test(self):
         node_non_preconsensus = self.nodes[0]
