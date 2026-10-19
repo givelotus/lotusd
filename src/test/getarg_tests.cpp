@@ -433,9 +433,12 @@ BOOST_AUTO_TEST_CASE(logargs) {
     const auto dontlog = std::make_pair("-dontlog", ArgsManager::ALLOW_ANY |
                                                         ArgsManager::SENSITIVE);
     SetupArgs(local_args, {okaylog_bool, okaylog_negbool, okaylog, dontlog});
-    ResetArgs(
-        local_args,
-        "-okaylog-bool -nookaylog-negbool -okaylog=public -dontlog=private");
+    // The sensitive value must not also occur in diagnostic source paths
+    // (for example /private/tmp on macOS).
+    const std::string sensitive_value = "logargs-sensitive-canary-83b91e0c";
+    ResetArgs(local_args,
+              "-okaylog-bool -nookaylog-negbool -okaylog=public -dontlog=" +
+                  sensitive_value);
 
     // Everything logged to debug.log will also append to str
     std::string str;
@@ -454,7 +457,20 @@ BOOST_AUTO_TEST_CASE(logargs) {
     BOOST_CHECK(str.find("Command-line arg: okaylog=\"public\"") !=
                 std::string::npos);
     BOOST_CHECK(str.find("dontlog=****") != std::string::npos);
-    BOOST_CHECK(str.find("private") == std::string::npos);
+    BOOST_CHECK(str.find(sensitive_value) == std::string::npos);
+
+    // Exercise the same whole-log predicate against harmless source metadata
+    // and against leaked values, including a leak after a redacted line.
+    const std::string redacted =
+        "[/private/tmp/args.cpp:846] Command-line arg: dontlog=****\n";
+    BOOST_CHECK(redacted.find(sensitive_value) == std::string::npos);
+    BOOST_CHECK((redacted + "Command-line arg: dontlog=\"" + sensitive_value +
+                 "\"\n")
+                    .find(sensitive_value) != std::string::npos);
+    BOOST_CHECK(("[/private/tmp/args.cpp:846] Command-line arg: dontlog=\"" +
+                 std::string{sensitive_value} + "\"\n")
+                    .find(sensitive_value) != std::string::npos);
+
 }
 
 BOOST_AUTO_TEST_SUITE_END()
