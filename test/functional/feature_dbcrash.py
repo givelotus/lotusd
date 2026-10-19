@@ -38,6 +38,8 @@ from test_framework.wallet import MiniWallet, getnewdestination
 
 
 class ChainstateWriteCrashTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 4
     rpc_timeout = 480
     supports_cli = False
