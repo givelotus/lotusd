@@ -74,6 +74,12 @@ struct Params {
      * compute the state root. -strictstateroot turns it off.
      */
     bool allowNullStateRoot{false};
+    /**
+     * Accept a legacy coinbase (version 1 or 2, BIP34 height in scriptSig)
+     * after genesis. Regtest only: the inherited test suite mines and spends
+     * legacy coinbases. Elsewhere every coinbase after genesis is version 7.
+     */
+    bool allowLegacyCoinbase{false};
     bool fPowNoRetargeting;
     int64_t nDAAHalfLife;
     int64_t nPowTargetSpacing;
