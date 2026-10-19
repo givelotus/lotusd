@@ -55,6 +55,40 @@ void FramingAndSuccess() {
         Expect(bad, VmStatus::Invalid);
     Expect("bd", VmStatus::Invalid); // CHECKDATASIG underflows; not success
 }
+// EXT2 (`ff xx`) framing: every pair is OP_SUCCESS_EXT at genesis, a lone
+// trailing prefix is malformed framing, and the selector is never a push.
+void Ext2Framing() {
+    for (const auto &success :
+         {"ff00", "ff4c", "ffff", "ff4e", "4eff00", "0061ff0064", "66ff4c",
+          "fe ff", "ff004cfd"}) {
+        std::string hex(success);
+        hex.erase(std::remove(hex.begin(), hex.end(), ' '), hex.end());
+        Expect(hex, VmStatus::AutomaticSuccess);
+    }
+    for (unsigned selector = 0; selector < 256; ++selector) {
+        VmBytes script{0xff, uint8_t(selector)};
+        CHECK(EvaluateVm(script, {}, PROFILE).status ==
+              VmStatus::AutomaticSuccess);
+    }
+    for (const auto &bad : {"ff", "4eff", "66ff", "0061ff"})
+        Expect(bad, VmStatus::Invalid);
+    CHECK(EvaluateVm(Hex("ff"), {}, PROFILE).error == "truncated EXT2");
+    // A push payload byte ff is data, not an EXT2 prefix.
+    Expect("01ff794e", VmStatus::Success);
+    Expect("01ff", VmStatus::Invalid);
+    // A malformed push before the prefix still rejects.
+    Expect("4cfdff00", VmStatus::Invalid);
+    // Structural charge only, like a single-byte success opcode.
+    VmCostProfile schedule;
+    schedule.max_invocation_cost = 1000;
+    schedule.structural_byte_cost = 1;
+    for (auto &op : schedule.opcode) op = {1, 1, 1};
+    const auto charged =
+        EvaluateVmCharged(Hex("ff4c00"), {}, PROFILE, schedule);
+    CHECK(charged.charged && charged.accounting_cost == 3 &&
+          charged.invocation.status == VmStatus::AutomaticSuccess);
+    CHECK(VmExt2(0x12) == 0xff12 && IsVmExt2(VmExt2(0)) && !IsVmExt2(0xff));
+}
 void ControlAndArithmetic() {
     for (const auto &valid :
          {"4d4e9e00a6", "00696a4e", "4e69614e6b646a4e", "677967794f6b6a666a4e",
@@ -1115,6 +1149,7 @@ void BigIntAndZeroPadding() {
 } // namespace
 int main() {
     FramingAndSuccess();
+    Ext2Framing();
     ControlAndArithmetic();
     StackOpcodes();
     ByteOpcodes();
