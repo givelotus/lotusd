@@ -8,6 +8,8 @@
 
 #include <util/threadnames.h>
 
+#include <metrics/metrics.h>
+
 #if (defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
 #include <pthread.h>
 #include <pthread_np.h>
@@ -48,6 +50,9 @@ static void SetInternalName(std::string name) {
 void util::ThreadRename(std::string &&name) {
     SetThreadName(("b-" + name).c_str());
     SetInternalName(std::move(name));
+    // Every node thread starts here: give it its metrics ring now, so that
+    // recording never allocates on a hot path.
+    metrics::PrepareThisThread();
 }
 
 void util::ThreadSetInternalName(std::string &&name) {
