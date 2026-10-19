@@ -6,6 +6,8 @@
 #define BITCOIN_NET_ZSTD_INDEPENDENT_H
 
 #include <span.h>
+#include <crypto/sha256.h>
+#include <net_zstd_dict.h>
 #include <sync.h>
 #include <uint256.h>
 
@@ -34,7 +36,7 @@
 //! Format byte of an independent frame
 static constexpr uint8_t P2P_INDEPENDENT_FORMAT{1};
 //! Version of P2P_ZSTD_DICT_V1 as carried in independent frames
-static constexpr uint32_t P2P_INDEPENDENT_DICT_VERSION{1};
+static constexpr uint32_t P2P_INDEPENDENT_DICT_VERSION{P2P_ZSTD_DICT_VERSION};
 //! Format byte + dictionary version
 static constexpr size_t P2P_INDEPENDENT_ENVELOPE{5};
 
@@ -88,6 +90,8 @@ public:
         uint64_t evictions{0};
         //! Compressions done (cache misses plus uncacheable messages)
         uint64_t encodes{0};
+        //! Successfully compressed cacheable block messages (native RPC)
+        uint64_t compressions{0};
         size_t bytes{0};
         size_t entries{0};
     };
@@ -103,6 +107,10 @@ public:
     Frame Encode(Span<const uint8_t> header, Span<const uint8_t> payload)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Native id+body framing, sharing this same cache and miss serialization. */
+    Frame EncodeNative(Span<const uint8_t> payload)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Change the byte budget, evicting as needed */
     void SetMaxBytes(size_t max_bytes) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
@@ -112,7 +120,8 @@ private:
     struct Key {
         uint256 block_hash;
         uint256 payload_hash;
-        std::array<uint8_t, 24> header;
+        std::vector<uint8_t> header;
+        uint256 dict_hash;
         uint32_t dict_version;
         bool operator<(const Key &o) const;
     };
@@ -122,6 +131,8 @@ private:
     };
 
     Frame Fresh(Span<const uint8_t> header, Span<const uint8_t> payload);
+    Frame EncodeCached(Span<const uint8_t> header, Span<const uint8_t> payload,
+                       const Key &key) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     void EvictLocked(size_t incoming) EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     void PublishLocked() EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 
@@ -140,5 +151,17 @@ private:
 
 /** The node's cache, shared by all WebSocket peers */
 P2PIndependentFrameCache &GetP2PIndependentFrameCache();
+
+
+// Workload/corpus digest retained from the native tooling. Cache identity uses
+// full double-SHA256 below, not this independent SHA256 reporting digest.
+inline std::array<uint8_t, 32> P2PFrameDigest(Span<const uint8_t> bytes) {
+    std::array<uint8_t, 32> result;
+    CSHA256{}.Write(bytes.data(), bytes.size()).Finalize(result.data());
+    return result;
+}
+inline void CheckIndependentZstd(size_t result) {
+    if (ZSTD_isError(result)) throw std::runtime_error(ZSTD_getErrorName(result));
+}
 
 #endif // BITCOIN_NET_ZSTD_INDEPENDENT_H
