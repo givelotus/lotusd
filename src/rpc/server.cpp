@@ -9,6 +9,7 @@
 #include <common/args.h>
 #include <config.h>
 #include <logging.h>
+#include <node/metrics.h>
 #include <rpc/async_waiter.h>
 #include <rpc/util.h>
 #include <shutdown.h>
@@ -675,6 +676,23 @@ ExecuteCommandsAsync(const Config &config,
     co_return false;
 }
 
+namespace {
+// The coroutine frame retains this scope across suspension and exception exits.
+struct RPCMetricsTimer {
+    node::NodeMetrics *metrics{node::GetNodeMetrics()};
+    const std::string &method;
+    SteadyClock::time_point start{metrics ? SteadyClock::now()
+                                          : SteadyClock::time_point{}};
+    ~RPCMetricsTimer() {
+        if (metrics) {
+            metrics->rpc_request_seconds.RecordDuration(
+                SteadyClock::now() - start,
+                metrics->RPCMethodIndex(method));
+        }
+    }
+};
+} // namespace
+
 UniValue CRPCTable::execute(const Config &config,
                             const JSONRPCRequest &request) const {
     // Return immediately if in warmup
@@ -684,6 +702,8 @@ UniValue CRPCTable::execute(const Config &config,
             throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
         }
     }
+
+    RPCMetricsTimer record_duration{.method = request.strMethod};
 
     // Find method
     auto it = mapCommands.find(request.strMethod);
@@ -705,6 +725,8 @@ CRPCTable::executeAsync(const Config &config, const JSONRPCRequest &request,
             throw JSONRPCError(RPC_IN_WARMUP, rpcWarmupStatus);
         }
     }
+
+    RPCMetricsTimer record_duration{.method = request.strMethod};
 
     auto it = mapCommands.find(request.strMethod);
     if (it != mapCommands.end()) {
