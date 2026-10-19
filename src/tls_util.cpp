@@ -115,23 +115,41 @@ bool UseCertificateFiles(SSL_CTX *ctx, const fs::path &cert_chain,
            SSL_CTX_check_private_key(ctx) == 1;
 }
 
-std::optional<SelfSigned>
-GenerateSelfSigned(const std::string &common_name,
-                   const std::vector<std::string> &dns_names,
-                   const std::vector<std::string> &ip_addresses,
-                   std::chrono::seconds validity) {
+namespace {
+EVP_PKEY *NewP256Key() {
     std::unique_ptr<EVP_PKEY_CTX, EVPPKeyCtxDeleter> pctx{
         EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr)};
-    EVP_PKEY *raw_key{nullptr};
+    EVP_PKEY *key{nullptr};
     if (!pctx || EVP_PKEY_keygen_init(pctx.get()) != 1 ||
         EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx.get(),
                                                NID_X9_62_prime256v1) != 1 ||
         EVP_PKEY_CTX_set_ec_param_enc(pctx.get(), OPENSSL_EC_NAMED_CURVE) !=
             1 ||
-        EVP_PKEY_keygen(pctx.get(), &raw_key) != 1) {
+        EVP_PKEY_keygen(pctx.get(), &key) != 1) {
+        return nullptr;
+    }
+    return key;
+}
+
+EVP_PKEY *ReadPrivateKey(const std::string &pem) {
+    std::unique_ptr<BIO, BIODeleter> bio{
+        BIO_new_mem_buf(pem.data(), int(pem.size()))};
+    return bio ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)
+               : nullptr;
+}
+} // namespace
+
+std::optional<SelfSigned>
+GenerateSelfSigned(const std::string &common_name,
+                   const std::vector<std::string> &dns_names,
+                   const std::vector<std::string> &ip_addresses,
+                   std::chrono::seconds validity,
+                   const std::string &key_pem) {
+    std::unique_ptr<EVP_PKEY, EVPPKeyDeleter> key{
+        key_pem.empty() ? NewP256Key() : ReadPrivateKey(key_pem)};
+    if (!key) {
         return std::nullopt;
     }
-    std::unique_ptr<EVP_PKEY, EVPPKeyDeleter> key{raw_key};
 
     std::unique_ptr<X509, X509Deleter> cert{X509_new()};
     std::unique_ptr<BIGNUM, BNDeleter> serial{BN_new()};
@@ -204,6 +222,67 @@ bool WritePemFiles(const SelfSigned &pem, const fs::path &cert_path,
                               cert_file) == pem.cert_pem.size()};
     const bool cert_closed{fclose(cert_file) == 0};
     return cert_ok && cert_closed;
+}
+
+bool ReplaceFile(const fs::path &path, const std::string &contents) {
+    fs::path tmp{path};
+    tmp += ".new";
+    FILE *file{fsbridge::fopen(tmp, "wb")};
+    if (!file) {
+        return false;
+    }
+    const bool ok{fwrite(contents.data(), 1, contents.size(), file) ==
+                  contents.size()};
+    if (fclose(file) != 0 || !ok) {
+        return false;
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);
+    return !ec;
+}
+
+std::optional<std::string> ReadFile(const fs::path &path) {
+    FILE *file{fsbridge::fopen(path, "rb")};
+    if (!file) {
+        return std::nullopt;
+    }
+    std::string out;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), file)) > 0) {
+        out.append(buf, n);
+    }
+    const bool ok{ferror(file) == 0};
+    fclose(file);
+    return ok ? std::optional{out} : std::nullopt;
+}
+
+std::optional<CertificateInfo> ReadCertificateInfo(const fs::path &path) {
+    const auto pem{ReadFile(path)};
+    if (!pem) {
+        return std::nullopt;
+    }
+    std::unique_ptr<BIO, BIODeleter> bio{
+        BIO_new_mem_buf(pem->data(), int(pem->size()))};
+    std::unique_ptr<X509, X509Deleter> cert{
+        bio ? PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr)
+            : nullptr};
+    if (!cert) {
+        return std::nullopt;
+    }
+    CertificateInfo info;
+    char cn[256];
+    if (X509_NAME_get_text_by_NID(X509_get_subject_name(cert.get()),
+                                  NID_commonName, cn, sizeof(cn)) > 0) {
+        info.common_name = cn;
+    }
+    int days{0}, seconds{0};
+    if (ASN1_TIME_diff(&days, &seconds, /*from=now*/ nullptr,
+                       X509_get0_notAfter(cert.get())) != 1) {
+        return std::nullopt;
+    }
+    info.seconds_left = int64_t{days} * 86400 + seconds;
+    return info;
 }
 
 std::vector<unsigned char> SpkiSha256(X509 *cert) {
