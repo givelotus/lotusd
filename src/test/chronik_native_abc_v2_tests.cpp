@@ -16,6 +16,7 @@
 #include <chainparams.h>
 #include <lotus_v2/header.h>
 #include <node/blockstorage.h>
+#include <primitives/v2_outputs.h>
 #include <validation.h>
 
 #include <test/util/setup_common.h>
@@ -207,10 +208,16 @@ BOOST_FIXTURE_TEST_CASE(test_v2_decode_raw_tx, TestChain100Setup) {
     std::vector<uint256> txids;
     for (const int64_t sats : {1000, 2000}) {
         CMutableTransaction mtx;
+        mtx.nVersion = 7;
+        mtx.nV2Lock = 0;
         mtx.vin = {CTxIn(COutPoint(m_coinbase_txns[0]->GetId(), 1),
                          CScript(), 0xffffffff)};
-        mtx.vout = {CTxOut(sats * SATOSHI, CScript() << OP_TRUE)};
-        AdaptLegacyTxToV7(mtx);
+        mtx.vin[0].nFlags = 1;
+        mtx.vin[0].nPathIndex = 0;
+        lotus::v2::BranchWitness witness;
+        witness.script = {V2_OP_TRUE};
+        mtx.vin[0].vWitnesses = {witness};
+        mtx.vout = {V0LeafOutput(sats * SATOSHI, CScript() << OP_TRUE)};
         const CTransaction tx(mtx);
         BOOST_REQUIRE_EQUAL(tx.nVersion, 7);
         DataStream ss{};

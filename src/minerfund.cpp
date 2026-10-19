@@ -4,6 +4,8 @@
 
 #include <minerfund.h>
 
+#include <primitives/v2_outputs.h>
+
 #include <blockindex.h>
 #include <chainparams.h>
 #include <common/args.h>
@@ -67,23 +69,9 @@ bool CheckMinerFund(const Consensus::Params &params,
             continue;
         }
 
-        CTxDestination address;
-        if (ExtractDestination(o.scriptPubKey, address)) {
-            if (whitelist.find(address) != whitelist.end()) {
+        for (const auto &dest : whitelist) {
+            if (CoinbaseOutputPaysScript(o, GetScriptForDestination(dest))) {
                 return true;
-            }
-            continue;
-        }
-
-        if (!o.vBranches.empty()) {
-            for (const auto &dest : whitelist) {
-                const lotus::v2::Output expected =
-                    CTxOut(o.nValue, GetScriptForDestination(dest)).ToV2Output();
-                if (o.nFlags == expected.flags &&
-                    o.vBranches == expected.branches &&
-                    o.vPaths == expected.paths) {
-                    return true;
-                }
             }
         }
     }

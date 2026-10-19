@@ -22,7 +22,10 @@ struct NativeSnapshotChainSetup : TestingSetup {
         SetMockTime(1598887952);
         const auto &config = GetConfig();
         const auto &consensus = config.GetChainParams().GetConsensus();
-        const CScript destination(program.begin(), program.end());
+        lotus::v2::Output payout;
+        payout.branches = {lotus::v2::BranchLeaf(program)};
+        payout.paths = {{0}};
+        const auto destination = CTxOut::FromV2Output(payout);
         for (int height = 1; height <= COINBASE_MATURITY; ++height) {
             auto block = node::BlockAssembler(
                              config, m_node.chainman->ActiveChainstate(), nullptr)
@@ -47,7 +50,6 @@ struct NativeSnapshotChainSetup : TestingSetup {
         const std::vector<uint8_t> &destination = {}) {
         CMutableTransaction tx;
         tx.nVersion = 7;
-        tx.fHasV2Lock = true;
         tx.nV2Lock = 0;
         CTxIn input(COutPoint(previous->GetId(), index));
         input.nFlags = 1;
