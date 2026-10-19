@@ -34,6 +34,7 @@
 #include <util/sock.h>
 #include <util/strencodings.h>
 #include <util/thread.h>
+#include <util/threadnames.h>
 #include <util/threadinterrupt.h>
 #include <util/trace.h>
 #include <util/translation.h>
@@ -2241,6 +2242,24 @@ void CConnman::ThreadOpenConnections(
         std::set<std::vector<uint8_t>> setConnected;
 
         {
+            // Connections being established count as made (see
+            // PendingOutbound), so their slots, types and groups are not
+            // dialed twice.
+            LOCK(m_pending_mutex);
+            for (const PendingOutbound &p : m_pending_outbound) {
+                if (p.conn_type == ConnectionType::AVALANCHE_OUTBOUND) {
+                    nOutboundAvalanche++;
+                } else if (p.conn_type == ConnectionType::OUTBOUND_FULL_RELAY) {
+                    nOutboundFullRelay++;
+                } else if (p.conn_type == ConnectionType::BLOCK_RELAY) {
+                    nOutboundBlockRelay++;
+                }
+                if (p.conn_type != ConnectionType::MANUAL && p.addr.IsValid()) {
+                    setConnected.insert(p.addr.GetGroup(addrman.GetAsmap()));
+                }
+            }
+        }
+        {
             LOCK(m_nodes_mutex);
             for (const CNode *pnode : m_nodes) {
                 if (pnode->IsAvalancheOutboundConnection()) {
@@ -2623,22 +2642,84 @@ void CConnman::OpenNetworkConnection(const CAddress &addrConnect,
         return;
     }
 
-    CNode *pnode = ConnectNode(addrConnect, pszDest, fCountFailure, conn_type);
-
-    if (!pnode) {
+    const std::string dest{pszDest ? pszDest : ""};
+    if (IsPendingOutbound(addrConnect, dest)) {
         return;
     }
+
+    // Dial on a thread of its own: TCP, TLS and the WebSocket upgrade can
+    // take a while, and must not stall the threads opening other
+    // connections. The attempt keeps the outbound slot until it finishes.
+    auto grant{std::make_unique<CSemaphoreGrant>()};
     if (grantOutbound) {
-        grantOutbound->MoveTo(pnode->grantOutbound);
+        grantOutbound->MoveTo(*grant);
     }
+    auto done{std::make_shared<std::atomic<bool>>(false)};
+    ReapDialThreads(/*all=*/false);
+    LOCK(m_pending_mutex);
+    const uint64_t id{m_next_pending_id++};
+    m_pending_outbound.push_back({id, addrConnect, dest, conn_type});
+    m_dial_threads.push_back(DialThread{
+        std::thread{[this, id, addrConnect, dest, fCountFailure, conn_type,
+                     grant = std::move(grant), done]() mutable {
+            util::ThreadRename("p2pdial");
+            CNode *pnode{ConnectNode(addrConnect,
+                                     dest.empty() ? nullptr : dest.c_str(),
+                                     fCountFailure, conn_type)};
+            if (pnode && !interruptNet) {
+                grant->MoveTo(pnode->grantOutbound);
+                for (auto interface : m_msgproc) {
+                    interface->InitializeNode(*config, *pnode, nLocalServices);
+                }
+                LOCK(m_nodes_mutex);
+                m_nodes.push_back(pnode);
+            } else if (pnode) {
+                // Shutting down: never handed to the message processors, so
+                // there is nothing to finalize.
+                pnode->CloseSocketDisconnect();
+                delete pnode;
+            }
+            // Only now that the node is in m_nodes (or failed) does the
+            // attempt stop counting as one, so nothing dials it twice.
+            {
+                LOCK(m_pending_mutex);
+                m_pending_outbound.remove_if(
+                    [id](const PendingOutbound &p) { return p.id == id; });
+            }
+            *done = true;
+        }},
+        done});
+}
 
-    for (auto interface : m_msgproc) {
-        interface->InitializeNode(*config, *pnode, nLocalServices);
-    }
+bool CConnman::IsPendingOutbound(const CAddress &addr,
+                                 const std::string &name) const {
+    LOCK(m_pending_mutex);
+    return std::any_of(m_pending_outbound.begin(), m_pending_outbound.end(),
+                       [&](const PendingOutbound &p) {
+                           return name.empty()
+                                      ? p.addr.IsValid() &&
+                                            static_cast<CService>(p.addr) ==
+                                                static_cast<CService>(addr)
+                                      : p.name == name;
+                       });
+}
 
+void CConnman::ReapDialThreads(bool all) {
+    std::list<DialThread> finished;
     {
-        LOCK(m_nodes_mutex);
-        m_nodes.push_back(pnode);
+        LOCK(m_pending_mutex);
+        for (auto it = m_dial_threads.begin(); it != m_dial_threads.end();) {
+            if (all || *it->done) {
+                finished.splice(finished.end(), m_dial_threads, it++);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto &dial : finished) {
+        if (dial.thread.joinable()) {
+            dial.thread.join();
+        }
     }
 }
 
@@ -3095,6 +3176,9 @@ void CConnman::Interrupt() {
 }
 
 void CConnman::StopThreads() {
+    // Dials in progress end on interruptNet; their nodes are added before
+    // StopNodes() cleans up, or deleted.
+    ReapDialThreads(/*all=*/true);
     if (threadI2PAcceptIncoming.joinable()) {
         threadI2PAcceptIncoming.join();
     }
