@@ -53,7 +53,7 @@ enum class HTTPEndpoint : size_t {
 
 /** The node's metrics. Exists only with -metrics (see GetNodeMetrics). */
 struct NodeMetrics {
-    NodeMetrics();
+    explicit NodeMetrics(std::vector<std::string> rpc_methods);
     metrics::Registry registry;
 
     // P2P traffic, by message type (index: MetricMsgTypeIndex)
@@ -85,9 +85,17 @@ struct NodeMetrics {
     metrics::Counter &http_requests;
     metrics::EventHistogram &http_request_seconds;
     metrics::Counter &http_tls_handshakes;
+    metrics::EventHistogram &rpc_request_seconds;
+
+    /** Label index of an RPC method ("other" if not in the set) */
+    size_t RPCMethodIndex(std::string_view method) const noexcept;
 
     size_t PeerSeries(bool inbound, bool websocket,
                       size_t network) const noexcept;
+
+private:
+    //! Sorted, then "other"
+    const std::vector<std::string> m_rpc_methods;
 };
 
 namespace detail {
@@ -104,8 +112,11 @@ inline NodeMetrics *GetNodeMetrics() noexcept {
     return detail::g_node_metrics.load(std::memory_order_acquire);
 }
 
-/** Create the metrics (once) and start the drain thread */
-NodeMetrics &StartNodeMetrics();
+/**
+ * Create the metrics (once), start the drain thread.
+ * rpc_methods: every registered RPC command.
+ */
+NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods);
 /** Stop the drain thread (recording still works, into full rings) */
 void StopNodeMetrics();
 
