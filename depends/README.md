@@ -93,7 +93,6 @@ The following can be set when running make: `make FOO=bar`
 - `CXX_STANDARD`: Set the C++ standard version used. Defaults to `c++20`.
 - `NO_QT`: Don't download/build/cache Qt and its dependencies
 - `NO_QR`: Don't download/build/cache packages needed for enabling qrencode
-- `NO_ZMQ`: Don't download/build/cache packages needed for enabling ZeroMQ
 - `NO_HTTP2`: Don't download/build/cache nghttp2, needed for HTTP/2 (`-DENABLE_HTTP2=ON`)
 - `NO_WALLET`: Don't download/build/cache libs needed to enable the wallet
 - `NO_BDB`: Don't download/build/cache BerkeleyDB

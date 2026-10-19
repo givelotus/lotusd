@@ -38,7 +38,6 @@ NO_OPENSSL ?=
 NO_WEBTRANSPORT ?=
 NO_QR ?=
 NO_WALLET ?=
-NO_ZMQ ?=
 NO_HTTP2 ?=
 NO_JEMALLOC ?=
 BUILD_CPYTHON ?=
@@ -145,7 +144,6 @@ qt_packages_$(NO_QT) = $(qt_packages) $(qt_$(host_os)_packages) $(qt_$(host_arch
 sqlite_packages_$(NO_SQLITE) = $(sqlite_packages)
 wallet_packages_$(NO_WALLET) = $(sqlite_packages_)
 
-zmq_packages_$(NO_ZMQ) = $(zmq_packages)
 
 http2_packages_$(NO_HTTP2) = $(http2_packages)
 
@@ -169,10 +167,6 @@ endif
 
 ifneq ($(openssl_packages_),)
 packages += $(openssl_packages)
-endif
-
-ifneq ($(zmq_packages_),)
-packages += $(zmq_packages)
 endif
 
 ifneq ($(http2_packages_),)
