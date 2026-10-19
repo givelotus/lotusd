@@ -48,6 +48,21 @@ std::string_view BCLog::LogLevelName(Level level) {
     assert(false);
 }
 
+unsigned BCLog::LogPriority(Level level) {
+    switch (level) {
+        case Level::Trace:
+        case Level::Debug:
+            return 7;
+        case Level::Info:
+            return 6;
+        case Level::Warning:
+            return 4;
+        case Level::Error:
+            return 3;
+    }
+    assert(false);
+}
+
 namespace BCLog {
 namespace {
     //! Characters needing no JSON escaping: printable ASCII but '"', '\\', DEL.
@@ -587,11 +602,7 @@ void JournaldEncoder::Encode(const LogLine &line, const LogOptions &opts,
         out += value;
         out += '\n';
     }};
-    const char *priority{line.level == Level::Error     ? "3"
-                         : line.level == Level::Warning ? "4"
-                         : line.level == Level::Info    ? "6"
-                                                        : "7"};
-    field("PRIORITY", priority);
+    field("PRIORITY", std::to_string(LogPriority(line.level)));
     field("MESSAGE", message);
     field("LOTUS_CATEGORY", LogCategoryName(line.category));
     field("LOTUS_LEVEL", LogLevelName(line.level));
@@ -623,8 +634,29 @@ void JournaldEncoder::Encode(const LogLine &line, const LogOptions &opts,
     if (line.fields_truncated) field("LOTUS_FIELDS_TRUNCATED", "1");
 }
 
+void SyslogEncoder::Encode(const LogLine &line, const LogOptions &opts,
+                           std::string &out) const {
+    // RFC 5424: PRI VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG.
+    // Facility 3 is daemon. Do not invent host/process identity or an SD-ID.
+    out = "<" + std::to_string(3 * 8 + LogPriority(line.level)) + ">1 ";
+    if (opts.timestamps)
+        AppendRfc3339(out, line.time, true);
+    else
+        out += '-';
+    out += " - - - - - ";
+    // MSG-UTF8 requires BOM. JsonEncoder ensures valid UTF-8, even for
+    // malformed original bytes, and escapes embedded newlines into one physical
+    // record.
+    out += "\xef\xbb\xbf";
+    thread_local std::string body;
+    JsonEncoder{}.Encode(line, opts, body);
+    out += body;
+}
+
 std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format) {
     switch (format) {
+        case LogFormat::SYSLOG:
+            return std::make_unique<SyslogEncoder>();
         case LogFormat::JOURNALD:
             return std::make_unique<JournaldEncoder>();
         case LogFormat::TEXT:
