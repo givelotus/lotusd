@@ -17,7 +17,6 @@ exclude_from_source_package(
 	"testgen/"
 	# FIXME Can be packaged once it gets updated to work with Bitcoin ABC
 	"verifybinaries/"
-	"zmq/"
 
 	# Files
 	"bitcoin-qt.pro"

@@ -42,7 +42,6 @@ Optional dependencies:
  protobuf    | Payments in GUI  | Data interchange format used for payment protocol (only needed when BIP70 enabled)
  libqrencode | QR codes in GUI  | Optional for generating QR codes (only needed when GUI enabled)
  univalue    | Utility          | JSON parsing and encoding (bundled version will be used unless --with-system-univalue passed to configure)
- libzmq3     | ZMQ notification | Optional, allows generating ZMQ notifications (requires ZMQ version >= 4.1.5)
  systemtap   | Tracing (USDT)   | Optional, statically defined tracepoints
 
 For the versions used, see [dependencies.md](dependencies.md)
@@ -105,10 +104,6 @@ BerkeleyDB 5.3 or later and SQLite 3.7 or later are required for the wallet. The
 
 See the section "Disable-wallet mode" to build Bitcoin ABC without wallet.
 
-ZMQ dependencies (provides ZMQ API, can be disabled by passing `-DBUILD_ZMQ=OFF` on the cmake command line):
-
-    sudo apt-get install libzmq3-dev
-
 jemalloc dependencies (provides the jemalloc library, can be disabled by passing `-DUSE_JEMALLOC=OFF` on the cmake command line):
 
     sudo apt-get install libjemalloc-dev
@@ -144,10 +139,6 @@ Dependency Build Instructions: Fedora
 Build requirements:
 
     sudo dnf install boost-devel cmake gcc-c++ libdb-cxx-devel libdb-devel ninja-build openssl-devel python3
-
-ZMQ dependencies (can be disabled by passing `-DBUILD_ZMQ=OFF` on the cmake command line):
-
-    sudo dnf install zeromq-devel
 
 User-Space, Statically Defined Tracing (USDT) dependencies (provides the tracepoint library, can be disabled by passing `-DENABLE_TRACING=OFF` on the cmake command line):
 
@@ -238,7 +229,7 @@ non-wallet distribution of the latest changes on Arch Linux:
     cd bitcoin-abc/
     mkdir build
     cd build
-    cmake -GNinja .. -DBUILD_WALLET=OFF -DBUILD_QT=OFF -DBUILD_ZMQ=OFF -DUSE_JEMALLOC=OFF
+    cmake -GNinja .. -DBUILD_WALLET=OFF -DBUILD_QT=OFF -DUSE_JEMALLOC=OFF
     ninja
 
 AArch64 Cross-compilation
