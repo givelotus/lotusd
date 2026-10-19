@@ -188,9 +188,10 @@ void log_print(const rust::Str logging_function, const rust::Str source_file,
     // limiting applies a single hourly quota to rate-limited Chronik logs.
     // Pass should_ratelimit=false for high-volume expected paths (e.g. IBD /
     // reindex progress).
+    static constinit BCLog::LogSiteLimit site_limit;
     LogInstance().LogPrintStr(std::string(msg), std::source_location::current(),
                               BCLog::LogFlags::NONE, BCLog::Level::Info,
-                              should_ratelimit);
+                              should_ratelimit ? &site_limit : nullptr);
 }
 
 void log_print_chronik(const rust::Str logging_function,
