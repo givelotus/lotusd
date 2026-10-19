@@ -122,9 +122,11 @@ void BerkeleyEnvironment::Close() {
 
     int ret = dbenv->close(0);
     if (ret != 0) {
-        LogPrintf("BerkeleyEnvironment::Close: Error %d closing database "
-                  "environment: %s\n",
-                  ret, DbEnv::strerror(ret));
+        LogInfoEvent(BCLog::ALL, "wallet_bdb_close_failed",
+                     "BerkeleyEnvironment::Close: Error {error_code} closing "
+                     "database environment: {error}")
+            .Field(BCLog::LogField::ErrorCode, ret)
+            .Field(BCLog::LogField::Error, DbEnv::strerror(ret));
     }
     if (!fMockDb) {
         DbEnv(uint32_t(0)).remove(strPath.c_str(), 0);
@@ -200,14 +202,18 @@ bool BerkeleyEnvironment::Open(bilingual_str &err) {
                         DB_INIT_TXN | DB_THREAD | DB_RECOVER | nEnvFlags,
                     S_IRUSR | S_IWUSR);
     if (ret != 0) {
-        LogPrintf("BerkeleyEnvironment::Open: Error %d opening database "
-                  "environment: %s\n",
-                  ret, DbEnv::strerror(ret));
+        LogInfoEvent(BCLog::ALL, "wallet_bdb_open_failed",
+                     "BerkeleyEnvironment::Open: Error {error_code} opening "
+                     "database environment: {error}")
+            .Field(BCLog::LogField::ErrorCode, ret)
+            .Field(BCLog::LogField::Error, DbEnv::strerror(ret));
         int ret2 = dbenv->close(0);
         if (ret2 != 0) {
-            LogPrintf("BerkeleyEnvironment::Open: Error %d closing failed "
-                      "database environment: %s\n",
-                      ret2, DbEnv::strerror(ret2));
+            LogInfoEvent(BCLog::ALL, "wallet_bdb_failed_open_close_failed",
+                         "BerkeleyEnvironment::Open: Error {error_code} "
+                         "closing failed database environment: {error}")
+                .Field(BCLog::LogField::ErrorCode, ret2)
+                .Field(BCLog::LogField::Error, DbEnv::strerror(ret2));
         }
         Reset();
         err = strprintf(_("Error initializing wallet database environment %s!"),
@@ -231,7 +237,8 @@ bool BerkeleyEnvironment::Open(bilingual_str &err) {
 BerkeleyEnvironment::BerkeleyEnvironment() {
     Reset();
 
-    LogDebug(BCLog::WALLETDB, "BerkeleyEnvironment::MakeMock\n");
+    LogEvent(BCLog::WALLETDB, "wallet_bdb_mock_created",
+             "BerkeleyEnvironment::MakeMock");
 
     dbenv->set_cachesize(1, 0, 1);
     dbenv->set_lg_bsize(10485760 * 4);
@@ -291,7 +298,10 @@ bool BerkeleyDatabase::Verify(bilingual_str &errorStr) {
     fs::path walletDir = env->Directory();
     fs::path file_path = walletDir / strFile;
 
-    LogPrintf("Using BerkeleyDB version %s\n", BerkeleyDatabaseVersion());
+    LogInfoEvent(BCLog::ALL, "wallet_bdb_version",
+                 "Using BerkeleyDB version {database_version}")
+        .Field(BCLog::LogField::DatabaseVersion,
+               DbEnv::version(nullptr, nullptr, nullptr));
     LogPrintf("Using wallet %s\n", fs::PathToString(file_path));
 
     if (!env->Open(errorStr)) {
@@ -499,7 +509,9 @@ bool BerkeleyDatabase::Rewrite(const char *pszSkip) {
                 m_refcount = -1;
 
                 bool fSuccess = true;
-                LogPrintf("BerkeleyBatch::Rewrite: Rewriting %s...\n", strFile);
+                LogInfoEvent(BCLog::ALL, "wallet_bdb_rewrite_started",
+                             "BerkeleyBatch::Rewrite: Rewriting {name}...")
+                    .Field(BCLog::LogField::Name, strFile);
                 std::string strFileRes = strFile + ".rewrite";
                 { // surround usage of db with extra {}
                     BerkeleyBatch db(*this, true);
@@ -513,9 +525,11 @@ bool BerkeleyDatabase::Rewrite(const char *pszSkip) {
                                             DB_CREATE, // Flags
                                             0);
                     if (ret > 0) {
-                        LogPrintf("BerkeleyBatch::Rewrite: Can't create "
-                                  "database file %s\n",
-                                  strFileRes);
+                        LogInfoEvent(BCLog::ALL,
+                                     "wallet_bdb_rewrite_create_failed",
+                                     "BerkeleyBatch::Rewrite: Can't create "
+                                     "database file {name}")
+                            .Field(BCLog::LogField::Name, strFileRes);
                         fSuccess = false;
                     }
 
@@ -577,9 +591,10 @@ bool BerkeleyDatabase::Rewrite(const char *pszSkip) {
                     }
                 }
                 if (!fSuccess) {
-                    LogPrintf("BerkeleyBatch::Rewrite: Failed to rewrite "
-                              "database file %s\n",
-                              strFileRes);
+                    LogInfoEvent(BCLog::ALL, "wallet_bdb_rewrite_failed",
+                                 "BerkeleyBatch::Rewrite: Failed to rewrite "
+                                 "database file {name}")
+                        .Field(BCLog::LogField::Name, strFileRes);
                 }
                 return fSuccess;
             }
@@ -613,17 +628,19 @@ void BerkeleyEnvironment::Flush(bool fShutdown) {
             if (nRefCount == 0) {
                 // Move log data to the dat file
                 CloseDb(strFile);
-                LogDebug(BCLog::WALLETDB,
-                         "BerkeleyEnvironment::Flush: %s checkpoint\n",
-                         strFile);
+                LogEvent(BCLog::WALLETDB, "wallet_bdb_checkpoint",
+                         "BerkeleyEnvironment::Flush: {name} checkpoint")
+                    .Field(BCLog::LogField::Name, strFile);
                 dbenv->txn_checkpoint(0, 0, 0);
-                LogDebug(BCLog::WALLETDB,
-                         "BerkeleyEnvironment::Flush: %s detach\n", strFile);
+                LogEvent(BCLog::WALLETDB, "wallet_bdb_detach",
+                         "BerkeleyEnvironment::Flush: {name} detach")
+                    .Field(BCLog::LogField::Name, strFile);
                 if (!fMockDb) {
                     dbenv->lsn_reset(strFile.c_str(), 0);
                 }
-                LogDebug(BCLog::WALLETDB,
-                         "BerkeleyEnvironment::Flush: %s closed\n", strFile);
+                LogEvent(BCLog::WALLETDB, "wallet_bdb_closed",
+                         "BerkeleyEnvironment::Flush: {name} closed")
+                    .Field(BCLog::LogField::Name, strFile);
                 nRefCount = -1;
             } else {
                 no_dbs_accessed = false;
@@ -666,7 +683,8 @@ bool BerkeleyDatabase::PeriodicFlush() {
         return false;
     }
 
-    LogDebug(BCLog::WALLETDB, "Flushing %s\n", strFile);
+    LogEvent(BCLog::WALLETDB, "wallet_bdb_flushing", "Flushing {name}")
+        .Field(BCLog::LogField::Name, strFile);
     int64_t nStart = GetTimeMillis();
 
     // Flush wallet file so it's self contained
