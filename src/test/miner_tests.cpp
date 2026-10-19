@@ -15,9 +15,11 @@
 #include <consensus/merkle.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
+#include <minerfund.h>
 #include <node/blockfitter.h>
 #include <pow/pow.h>
 #include <policy/policy.h>
+#include <primitives/v2_outputs.h>
 #include <script/standard.h>
 #include <timedata.h>
 #include <txmempool.h>
@@ -33,6 +35,7 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <stdexcept>
 
 #include <memory>
 
@@ -127,6 +130,8 @@ BlockAssembler MinerTestingSetup::AssemblerForTest(const CChainParams &params) {
     fitter_options.blockMinFeeRate = blockMinFeeRate;
     BlockAssembler::Options assembler_options;
     assembler_options.add_finalized_txs = m_preconsensus;
+    // Legacy coinbases: these tests spend them with legacy transactions.
+    assembler_options.coinbase_version = 2;
     return BlockAssembler{
         BlockFitter(fitter_options), m_node.chainman->ActiveChainstate(),
         m_node.mempool.get(), assembler_options, m_node.avalanche.get()};
@@ -249,7 +254,7 @@ static void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
 
     std::unique_ptr<CBlockTemplate> pblocktemplate =
         BlockAssembler{config, chainman.ActiveChainstate(), &mempool}
-            .CreateNewBlock(scriptPubKey);
+            .CreateNewBlock(V0LeafOutput(Amount::zero(), scriptPubKey));
 
     CBlock *pblock = &pblocktemplate->block;
 
@@ -260,7 +265,7 @@ static void TestCoinbaseMessageEB(uint64_t eb, std::string cbmsg,
 
     unsigned int nHeight = active_chain_tip->nHeight + 1;
     std::vector<uint8_t> vec(cbmsg.begin(), cbmsg.end());
-    BOOST_CHECK(pblock->vtx[0]->vin[0].scriptSig ==
+    BOOST_CHECK(node::GetCoinbaseScript(*pblock->vtx[0]) ==
                 (CScript() << nHeight << vec));
 }
 
@@ -944,12 +949,49 @@ BOOST_FIXTURE_TEST_CASE(speculative_overlay_does_not_validate_unchecked_scripts,
     BOOST_CHECK_EQUAL(m_node.chainman->ActiveHeight(), 100);
 }
 
+BOOST_FIXTURE_TEST_CASE(native_coinbase_requires_explicit_output_policies,
+                        TestChain100Setup) {
+    node::BlockAssembler::Options options;
+    options.coinbase_version = 7;
+    const CScript legacy =
+        GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+    auto assembler = [&] {
+        return node::BlockAssembler(node::BlockFitter(GetConfig()),
+                                    m_node.chainman->ActiveChainstate(),
+                                    m_node.mempool.get(), options);
+    };
+    BOOST_CHECK_THROW(assembler().CreateNewBlock(legacy),
+                      std::invalid_argument);
+    const auto block = assembler().CreateNewBlock(OpTrueOutput(Amount::zero()));
+    BOOST_REQUIRE(block);
+    BOOST_CHECK(!block->block.vtx[0]->vout[0].IsLegacy());
+
+    CMutableTransaction coinbase = node::CreateCoinbaseShell(
+        7, m_node.chainman->ActiveTip()->GetBlockHash(),
+        m_node.chainman->ActiveTip()->nHeight + 1);
+    coinbase.vout = {OpTrueOutput(10 * SATOSHI)};
+    const auto original = coinbase.vout;
+    // Covers a legacy miner/staker/treasury payout mixed into a native
+    // coinbase.
+    BOOST_CHECK_THROW(
+        node::SetCoinbaseOutputs(
+            coinbase, {OpTrueOutput(5 * SATOSHI), CTxOut(5 * SATOSHI, legacy)}),
+        std::invalid_argument);
+    BOOST_CHECK(coinbase.vout == original);
+    options.coinbase_version = 2;
+    const auto old = assembler().CreateNewBlock(legacy);
+    BOOST_REQUIRE(old);
+    BOOST_CHECK(old->block.vtx[0]->vout[0].IsLegacy());
+}
+
 BOOST_FIXTURE_TEST_CASE(template_root_is_checked_from_selected_transactions, TestChain100Setup) {
     node::BlockAssembler::Options options;
     options.test_block_validity = false;
-    const auto block_template = node::BlockAssembler(
-        node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
-        m_node.mempool.get(), options).CreateNewBlock(CScript() << OP_TRUE);
+    const auto block_template =
+        node::BlockAssembler(node::BlockFitter(GetConfig()),
+                             m_node.chainman->ActiveChainstate(),
+                             m_node.mempool.get(), options)
+            .CreateNewBlock(OpTrueOutput(Amount::zero()));
     BOOST_REQUIRE(block_template);
     BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
     BOOST_CHECK(!block_template->block.m_checked_merkle_root);
@@ -967,9 +1009,13 @@ BOOST_FIXTURE_TEST_CASE(coinbase_outputs_survive_wire_round_trip,
         options.coinbase_version = version;
         const CScript payout =
             GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
-        const auto block_template = node::BlockAssembler(
-            node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
-            m_node.mempool.get(), options).CreateNewBlock(payout);
+        const auto block_template =
+            node::BlockAssembler(node::BlockFitter(GetConfig()),
+                                 m_node.chainman->ActiveChainstate(),
+                                 m_node.mempool.get(), options)
+                .CreateNewBlock(version == 7
+                                    ? V0LeafOutput(Amount::zero(), payout)
+                                    : CTxOut(Amount::zero(), payout));
         BOOST_REQUIRE(block_template);
         const CTransaction &coinbase = *block_template->block.vtx[0];
         BOOST_CHECK_EQUAL(uint32_t(coinbase.nVersion), version);
@@ -980,7 +1026,10 @@ BOOST_FIXTURE_TEST_CASE(coinbase_outputs_survive_wire_round_trip,
         BOOST_CHECK_EQUAL(decoded.GetId(), coinbase.GetId());
         BOOST_CHECK_EQUAL(decoded.GetHash(), coinbase.GetHash());
         BOOST_REQUIRE_EQUAL(decoded.vout.size(), coinbase.vout.size());
-        BOOST_CHECK(coinbase.vout[0].scriptPubKey == payout);
+        // A legacy coinbase pays the script itself, a V2 coinbase the V0-leaf
+        // V2 output over it.
+        BOOST_CHECK(CoinbaseOutputPaysScript(coinbase.vout[0], payout));
+        BOOST_CHECK_EQUAL(coinbase.vout[0].IsLegacy(), version != 7);
         for (size_t i = 0; i < coinbase.vout.size(); ++i) {
             BOOST_CHECK(decoded.vout[i].scriptPubKey ==
                         coinbase.vout[i].scriptPubKey);
@@ -1030,11 +1079,25 @@ std::string ValidateWithCoinbaseVersion(node::NodeContext &node,
         PrepareBlock(GetConfig(), node, CScript() << OP_TRUE);
     LOCK(cs_main);
     CBlockIndex *tip = node.chainman->ActiveTip();
-    CMutableTransaction coinbase{*block->vtx[0]};
-    const CMutableTransaction shell = node::CreateCoinbaseShell(
+    // The same payees: the block pays OP_TRUE and the miner fund.
+    std::vector<CScript> payees{CScript() << OP_TRUE};
+    for (const CTxDestination &dest :
+         GetMinerFundWhitelist(node.chainman->GetConsensus())) {
+        payees.push_back(GetScriptForDestination(dest));
+    }
+    std::vector<CTxOut> outputs;
+    for (const CTxOut &out : block->vtx[0]->vout) {
+        const auto payee =
+            std::find_if(payees.begin(), payees.end(), [&](const CScript &s) {
+                return CoinbaseOutputPaysScript(out, s);
+            });
+        BOOST_REQUIRE(payee != payees.end());
+        outputs.push_back(version == 7 ? V0LeafOutput(out.nValue, *payee)
+                                       : CTxOut(out.nValue, *payee));
+    }
+    CMutableTransaction coinbase = node::CreateCoinbaseShell(
         version, tip->GetBlockHash(), tip->nHeight + 1);
-    coinbase.nVersion = shell.nVersion;
-    coinbase.vin = shell.vin;
+    node::SetCoinbaseOutputs(coinbase, outputs);
     node::PadCoinbaseToMinSize(coinbase);
     block->vtx[0] = MakeTransactionRef(coinbase);
     block->hashMerkleRoot = BlockMerkleRoot(*block);
@@ -1067,14 +1130,15 @@ BOOST_FIXTURE_TEST_CASE(legacy_coinbase_rejected_off_regtest,
                       std::runtime_error);
 }
 
-// Version 3 is not a transaction version at all; the transaction rule rejects
-// it before the coinbase rule is reached.
+// Version 3 is not a transaction version at all: such a coinbase has no
+// serialization (bad-txns-version), so no block can contain it.
 BOOST_FIXTURE_TEST_CASE(coinbase_version_other_than_1_2_7_rejected,
                         TestChain100Setup) {
     BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 2), "valid");
     BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 7), "valid");
-    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 3),
-                      "bad-txns-version");
+    BOOST_CHECK_EXCEPTION(ValidateWithCoinbaseVersion(m_node, 3),
+                          std::ios_base::failure,
+                          HasReason("bad-txns-version"));
 }
 
 BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_own_root, AvalancheTestChain100Setup) {
@@ -1110,9 +1174,11 @@ BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_o
     node::BlockAssembler::Options options;
     options.add_finalized_txs = true;
     options.test_block_validity = false;
-    const auto block_template = node::BlockAssembler(
-        node::BlockFitter(config), m_node.chainman->ActiveChainstate(),
-        &pool, options, m_node.avalanche.get()).CreateNewBlock(CScript() << OP_TRUE);
+    const auto block_template =
+        node::BlockAssembler(node::BlockFitter(config),
+                             m_node.chainman->ActiveChainstate(), &pool,
+                             options, m_node.avalanche.get())
+            .CreateNewBlock(OpTrueOutput(Amount::zero()));
     BOOST_REQUIRE(block_template);
     BOOST_CHECK_EQUAL(block_template->block.vtx.size(), 3U);
     BOOST_CHECK(block_template->block.hashMerkleRoot == BlockMerkleRoot(block_template->block));
@@ -1151,7 +1217,6 @@ BOOST_FIXTURE_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay, TestChain100Setup)
     CMutableTransaction dummyCb;
     dummyCb.nVersion = 2;
     dummyCb.vin.resize(1);
-    dummyCb.vin[0].nFlags = 2;
     dummyCb.vin[0].scriptSig = CScript() << int64_t(tip->nHeight) << OP_0;
     dummyCb.vout.emplace_back(200 * SATOSHI, CScript() << OP_TRUE);
     syntheticTipBlock.vtx.push_back(MakeTransactionRef(std::move(dummyCb)));
@@ -1206,11 +1271,10 @@ BOOST_FIXTURE_TEST_CASE(CreateNewBlock_1000tx_MerklixOverlay, TestChain100Setup)
     asmOpts.add_finalized_txs = false;
 
     const auto t0 = SteadyClock::now();
-    auto pblocktemplate =
-        BlockAssembler{BlockFitter(fitterOpts),
-                       m_node.chainman->ActiveChainstate(),
-                       m_node.mempool.get(), asmOpts}
-            .CreateNewBlock(CScript() << OP_TRUE);
+    auto pblocktemplate = BlockAssembler{BlockFitter(fitterOpts),
+                                         m_node.chainman->ActiveChainstate(),
+                                         m_node.mempool.get(), asmOpts}
+                              .CreateNewBlock(OpTrueOutput(Amount::zero()));
     const auto t1 = SteadyClock::now();
     const double create_new_block_ms = Ticks<MillisecondsDouble>(t1 - t0);
 

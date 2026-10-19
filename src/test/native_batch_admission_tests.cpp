@@ -36,7 +36,6 @@ BOOST_AUTO_TEST_CASE(capacity_rejection_preserves_existing_native_transactions) 
             chainstate.CoinsTip().AddCoin(prevout, Coin(funding, 100, false), false);
             CMutableTransaction tx;
             tx.nVersion = 7;
-            tx.fHasV2Lock = true;
             tx.nV2Lock = 0;
             CTxIn input(prevout);
             input.nFlags = 1;

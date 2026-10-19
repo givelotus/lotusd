@@ -5,6 +5,8 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <config.h>
+#include <core_io.h>
+#include <primitives/v2_outputs.h>
 #include <interfaces/chain.h>
 #include <logging.h>
 #include <lotus_v2/fee_hysteresis.h>
@@ -102,6 +104,60 @@ static void AddKey(CWallet &wallet, const CKey &key) {
     auto spk_man = wallet.GetOrCreateLegacyScriptPubKeyMan();
     LOCK2(wallet.cs_wallet, spk_man->cs_KeyStore);
     spk_man->AddKeyPubKey(key, key.GetPubKey());
+}
+
+BOOST_AUTO_TEST_CASE(native_wallet_ownership_keeps_canonical_transaction) {
+    CKey key;
+    key.MakeNewKey(true);
+    AddKey(m_wallet, key);
+    const CScript script = GetScriptForRawPubKey(key.GetPubKey());
+    CMutableTransaction native;
+    native.nVersion = 7;
+    native.vin.emplace_back(COutPoint(TxId{uint256::ONE}, 0));
+    native.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    native.vin[0].vWitnesses = {witness};
+    native.vout = {V0LeafOutput(1000 * SATOSHI, script)};
+    const auto tx = MakeTransactionRef(std::move(native));
+    const auto wire = EncodeHexTx(*tx);
+    const auto id = tx->GetId();
+    const auto hash = tx->GetHash();
+
+    // A raw legacy script leaf is not an authorized native ownership policy.
+    // The callback must not insert an unrelated native transaction as ours.
+    m_wallet.transactionAddedToMempool(tx, 0);
+    LOCK(m_wallet.cs_wallet);
+    BOOST_CHECK(m_wallet.mapWallet.find(id) == m_wallet.mapWallet.end());
+    BOOST_CHECK_EQUAL(m_wallet.IsMine(tx->vout[0]), ISMINE_NO);
+    BOOST_CHECK(m_wallet.GetScriptForOutput(tx->vout[0]) == tx->vout[0].scriptPubKey);
+    BOOST_CHECK(OutputGetCredit(m_wallet, tx->vout[0], ISMINE_ALL) == Amount::zero());
+    const CTxOut legacy(1000 * SATOSHI, script);
+    BOOST_CHECK(m_wallet.IsMine(legacy) & ISMINE_SPENDABLE);
+    BOOST_CHECK(OutputGetCredit(m_wallet, legacy, ISMINE_ALL) == 1000 * SATOSHI);
+
+    // Explicit bookkeeping may store an unowned transaction. The next callback
+    // must retain its immutable wire bytes, identifiers and output commitment.
+    BOOST_REQUIRE(m_wallet.AddToWallet(
+        tx, {CWalletTx::Status::UNCONFIRMED, 0, BlockHash(), 0}, nullptr, false));
+    m_wallet.transactionAddedToMempool(tx, 1);
+    const auto found = m_wallet.mapWallet.find(id);
+    BOOST_REQUIRE(found != m_wallet.mapWallet.end());
+    BOOST_CHECK(found->second.tx == tx);
+    BOOST_CHECK_EQUAL(EncodeHexTx(*found->second.tx), wire);
+    BOOST_CHECK_EQUAL(found->second.tx->GetId(), id);
+    BOOST_CHECK_EQUAL(found->second.tx->GetHash(), hash);
+    BOOST_CHECK(found->second.tx->vout[0] == tx->vout[0]);
+    BOOST_CHECK(!found->second.tx->vout[0].IsLegacy());
+    BOOST_CHECK(found->second.InMempool());
+    BOOST_CHECK_EQUAL(m_wallet.IsMine(tx->vout[0]), ISMINE_NO);
+    BOOST_CHECK(OutputGetCredit(m_wallet, tx->vout[0], ISMINE_ALL) == Amount::zero());
+
+    CKey unrelated;
+    unrelated.MakeNewKey(true);
+    const auto unknown = V0LeafOutput(
+        1000 * SATOSHI, GetScriptForRawPubKey(unrelated.GetPubKey()));
+    BOOST_CHECK_EQUAL(m_wallet.IsMine(unknown), ISMINE_NO);
 }
 
 BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup) {
