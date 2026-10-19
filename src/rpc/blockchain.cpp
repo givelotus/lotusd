@@ -1036,9 +1036,9 @@ static RPCHelpMan pruneblockchain() {
                     RPC_INVALID_PARAMETER,
                     "Blockchain is shorter than the attempted prune height.");
             } else if (height > chainHeight - MIN_BLOCKS_TO_KEEP) {
-                LogDebug(BCLog::RPC,
-                         "Attempt to prune blocks close to the tip. "
-                         "Retaining the minimum number of blocks.\n");
+                LogEvent(BCLog::RPC, "rpc_pruning_tip_limit",
+                         "Attempt to prune blocks close to the tip. Retaining "
+                         "the minimum number of blocks.");
                 height = chainHeight - MIN_BLOCKS_TO_KEEP;
             }
 
@@ -3024,9 +3024,9 @@ static RPCHelpMan dumptxoutset() {
                 // activated as the new tip and we would not get to
                 // new_tip_index.
                 if (target_index != chainstate->m_chain.Tip()) {
-                    LogPrintLevel(BCLog::RPC, BCLog::Level::Warning,
-                                  "Failed to roll back to requested height, "
-                                  "reverting to tip.\n");
+                    LogWarningEvent(BCLog::RPC, "rpc_rollback_reverted",
+                                    "Failed to roll back to requested height, "
+                                    "reverting to tip.");
                     throw JSONRPCError(
                         RPC_MISC_ERROR,
                         "Could not roll back to requested height.");
