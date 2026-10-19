@@ -19,8 +19,7 @@ class SignRawTransactionsTest(BitcoinTestFramework):
     setup_clean_chain = True
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def successful_signing_test(self):
         """Creates and signs a valid raw transaction with one input.

@@ -77,11 +77,7 @@ int trace_outbound_message(struct pt_regs *ctx) {{
 class NetTracepointTest(BitcoinTestFramework):
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_platform_not_linux()
-        self.skip_if_no_bitcoind_tracepoints()
-        self.skip_if_no_python_bcc()
-        self.skip_if_no_bpf_permissions()
+    requires = {"linux", "usdt", "bcc", "bpf_permissions"}
 
     def run_test(self):
         # Tests the net:inbound_message and net:outbound_message tracepoints

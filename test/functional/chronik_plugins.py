@@ -29,8 +29,7 @@ class ChronikPlugins(BitcoinTestFramework):
     num_nodes = 1
     extra_args = [["-chronik"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik_plugins()
+    requires = {"chronik_plugins"}
 
     def run_test(self):
         from test_framework.chronik.client import pb

@@ -59,8 +59,7 @@ class MultiWalletTest(BitcoinTestFramework):
     rpc_timeout = 120
     extra_args = [["-nowallet"], []]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def add_options(self, parser):
         parser.add_argument(

@@ -27,8 +27,7 @@ class ChronikScriptBatchSummaryTest(BitcoinTestFramework):
     extra_args = [["-chronik"]]
     rpc_timeout = 240
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
+    requires = {"chronik"}
 
     def run_test(self):
         from test_framework.chronik.client import pb
