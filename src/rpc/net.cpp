@@ -13,6 +13,7 @@
 #include <net_permissions.h>
 #include <net_processing.h>
 #include <net_types.h> // For banmap_t
+#include <net_zstd_independent.h>
 #include <net_webtransport.h>
 #include <netbase.h>
 #include <node/context.h>
@@ -958,8 +959,10 @@ static RPCHelpMan getnettotals() {
                              ws_totals.payload_bytes_sent.load());
             websocket.pushKV("payload_bytes_recv",
                              ws_totals.payload_bytes_recv.load());
-            websocket.pushKV("wire_bytes_sent", ws_totals.wire_bytes_sent.load());
-            websocket.pushKV("wire_bytes_recv", ws_totals.wire_bytes_recv.load());
+            websocket.pushKV("wire_bytes_sent",
+                             ws_totals.wire_bytes_sent.load());
+            websocket.pushKV("wire_bytes_recv",
+                             ws_totals.wire_bytes_recv.load());
             obj.pushKV("websocket", std::move(websocket));
             return obj;
         },
@@ -1000,6 +1003,23 @@ static RPCHelpMan getnetworkinfo() {
             "",
             "",
             {
+                {RPCResult::Type::OBJ,
+                 "p2p_compress_once",
+                 "Independent p2p-v2 compression/cache counters",
+                 {
+                     {RPCResult::Type::NUM, "threshold_bytes",
+                      "Outgoing threshold (0 disables)"},
+                     {RPCResult::Type::NUM, "dictionary_version",
+                      "Dictionary version"},
+                     {RPCResult::Type::NUM, "hits", "Block cache hits"},
+                     {RPCResult::Type::NUM, "misses", "Block cache misses"},
+                     {RPCResult::Type::NUM, "compressions",
+                      "Block compression operations"},
+                     {RPCResult::Type::NUM, "evictions", "Cache evictions"},
+                     {RPCResult::Type::NUM, "bytes",
+                      "Retained compressed buffer allocation bytes"},
+                     {RPCResult::Type::NUM, "entries", "Retained blocks"},
+                 }},
                 {RPCResult::Type::NUM, "version", "the server version"},
                 {RPCResult::Type::STR, "subversion",
                  "the server subversion string"},
@@ -1069,6 +1089,18 @@ static RPCHelpMan getnetworkinfo() {
             const JSONRPCRequest &request) -> UniValue {
             LOCK(cs_main);
             UniValue obj(UniValue::VOBJ);
+            const auto compression = GetP2PIndependentFrameCache().GetStats();
+            UniValue cache(UniValue::VOBJ);
+            cache.pushKV("threshold_bytes",
+                         uint64_t(g_p2p_compress_once_threshold.load()));
+            cache.pushKV("dictionary_version", uint64_t(P2P_ZSTD_DICT_VERSION));
+            cache.pushKV("hits", compression.hits);
+            cache.pushKV("misses", compression.misses);
+            cache.pushKV("compressions", compression.compressions);
+            cache.pushKV("evictions", compression.evictions);
+            cache.pushKV("bytes", uint64_t(compression.bytes));
+            cache.pushKV("entries", uint64_t(compression.entries));
+            obj.pushKV("p2p_compress_once", cache);
             obj.pushKV("version", CLIENT_VERSION);
             obj.pushKV("subversion", userAgent(config));
             obj.pushKV("protocolversion", PROTOCOL_VERSION);

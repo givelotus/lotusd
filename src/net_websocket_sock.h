@@ -137,6 +137,7 @@ private:
     mutable uint64_t m_wire_recv_reported GUARDED_BY(m_mutex){0};
     mutable uint64_t m_wire_sent_reported GUARDED_BY(m_mutex){0};
     mutable uint64_t m_independent_recv_reported GUARDED_BY(m_mutex){0};
+    mutable uint64_t m_independent_sent_reported GUARDED_BY(m_mutex){0};
 
     //! Outgoing P2P message framing, tracked with independent frames only.
     //! Header of the current message, bytes of it seen so far.
