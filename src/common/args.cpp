@@ -832,6 +832,25 @@ ArgsManager::GetSettingsList(const std::string &arg) const {
                                  !UseDefaultSection(arg));
 }
 
+/**
+ * Hide URL upgrade tokens ("?token=..." / "&token=...", e.g. in a
+ * -connect=wss://... peer URL) in logged values.
+ */
+static std::string RedactURLTokens(std::string value) {
+    for (size_t pos{value.find("token=")}; pos != std::string::npos;
+         pos = value.find("token=", pos + 1)) {
+        if (pos == 0 || (value[pos - 1] != '?' && value[pos - 1] != '&')) {
+            continue;
+        }
+        const size_t start{pos + 6};
+        const size_t end{value.find_first_of("&#", start)};
+        value.replace(start,
+                      (end == std::string::npos ? value.size() : end) - start,
+                      "***");
+    }
+    return value;
+}
+
 void ArgsManager::logArgsPrefix(
     const std::string &prefix, const std::string &section,
     const std::map<std::string, std::vector<util::SettingsValue>> &args) const {
@@ -840,8 +859,9 @@ void ArgsManager::logArgsPrefix(
         for (const auto &value : arg.second) {
             std::optional<unsigned int> flags = GetArgFlags('-' + arg.first);
             if (flags) {
-                std::string value_str =
-                    (*flags & SENSITIVE) ? "****" : value.write();
+                std::string value_str = (*flags & SENSITIVE)
+                                            ? "****"
+                                            : RedactURLTokens(value.write());
                 LogPrintf("%s %s%s=%s\n", prefix, section_str, arg.first,
                           value_str);
             }
