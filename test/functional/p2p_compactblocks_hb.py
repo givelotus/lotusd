@@ -10,9 +10,8 @@ from test_framework.util import assert_equal
 class CompactBlocksConnectionTest(BitcoinTestFramework):
     """Test class for verifying selection of HB peer connections."""
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 6
+    setup_clean_chain = True
+    num_nodes = 6
 
     def peer_info(self, from_node, to_node):
         """Query from_node for its getpeerinfo about to_node."""

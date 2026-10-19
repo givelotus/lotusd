@@ -29,15 +29,14 @@ class P2PFeelerReceiver(P2PInterface):
 
 
 class P2PAddConnections(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-avaproofstakeutxoconfirmations=1",
-                f"-maxavalancheoutbound={MAX_AVALANCHE_OUTBOUND_CONNECTIONS}",
-            ],
-            [],
-        ]
+    num_nodes = 2
+    extra_args = [
+        [
+            "-avaproofstakeutxoconfirmations=1",
+            f"-maxavalancheoutbound={MAX_AVALANCHE_OUTBOUND_CONNECTIONS}",
+        ],
+        [],
+    ]
 
     def setup_network(self):
         self.setup_nodes()

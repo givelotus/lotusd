@@ -25,12 +25,11 @@ class NodeNoPong(P2PInterface):
 
 
 class PingPongTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        # Set the peer connection timeout low. It does not matter for this
-        # test, as long as it is less than TIMEOUT_INTERVAL.
-        self.extra_args = [["-peertimeout=1"]]
+    setup_clean_chain = True
+    num_nodes = 1
+    # Set the peer connection timeout low. It does not matter for this
+    # test, as long as it is less than TIMEOUT_INTERVAL.
+    extra_args = [["-peertimeout=1"]]
 
     def check_peer_info(self, *, pingtime, minping, pingwait):
         stats = self.nodes[0].getpeerinfo()[0]
