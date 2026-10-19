@@ -11,8 +11,6 @@ function check_help_version {
   try {
     .\bitcoind.exe -version
     .\bitcoind.exe -help
-    .\bitcoin-qt.exe -version
-    .\bitcoin-qt.exe -help
     .\bitcoin-cli.exe -version
     .\bitcoin-cli.exe -help
     .\bitcoin-tx.exe -help
@@ -20,9 +18,6 @@ function check_help_version {
   }
   catch {
     Write-Error $_
-  }
-  finally {
-    Stop-Process -name bitcoin-qt -Force -ErrorAction SilentlyContinue
   }
 }
 
@@ -76,8 +71,6 @@ check_bitcoind
 
 Write-Host "--- Running bitcoin unit tests ---"
 .\test_bitcoin.exe
-Write-Host "--- Running bitcoin-qt unit tests ---"
-.\test_bitcoin-qt.exe -platform windows
 Write-Host "--- Running pow unit tests ---"
 .\test-pow.exe
 Write-Host "--- Running avalanche unit tests ---"

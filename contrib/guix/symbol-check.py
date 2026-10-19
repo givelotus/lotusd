@@ -31,14 +31,6 @@ import lief
 # - libc version 2.34 (https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/Packages/)
 #
 # See https://gcc.gnu.org/onlinedocs/libstdc++/manual/abi.html for more info.
-#
-# bitcoin-qt
-#
-# Ubuntu 22.04 is currently the baseline for ELF_ALLOWED_LIBRARIES:
-#
-# libfontconfig version 2.13.1 (https://packages.ubuntu.com/jammy/libfontconfig1)
-#
-# libfreetype version 2.11.1 (https://packages.ubuntu.com/jammy/libfreetype6)
 
 MAX_VERSIONS = {
     "GCC": (8, 3, 0),
@@ -49,7 +41,6 @@ MAX_VERSIONS = {
         lief.ELF.ARCH.AARCH64: (2, 31),
     },
     "LIBATOMIC": (1, 0),
-    "V": (0, 5, 0),  # xkb (bitcoin-qt only)
 }
 # See here for a description of _IO_stdin_used:
 # https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=634261#109
@@ -99,7 +90,7 @@ ELF_INTERPRETER_NAMES = {
 
 # Allowed NEEDED libraries
 ELF_ALLOWED_LIBRARIES = {
-    # bitcoind and bitcoin-qt
+    # lotusd
     "libgcc_s.so.1",  # GCC base support
     "libc.so.6",  # C library
     "libpthread.so.0",  # threading
@@ -111,52 +102,25 @@ ELF_ALLOWED_LIBRARIES = {
     "ld-linux.so.2",  # 32-bit dynamic linker
     "ld-linux-aarch64.so.1",  # 64-bit ARM dynamic linker
     "ld-linux-armhf.so.3",  # 32-bit ARM dynamic linker
-    # bitcoin-qt only
-    "libxcb.so.1",  # part of X11
-    "libxkbcommon.so.0",  # keyboard keymapping
-    "libxkbcommon-x11.so.0",  # keyboard keymapping
-    "libfontconfig.so.1",  # font support
-    "libfreetype.so.6",  # font parsing
-    "libdl.so.2",  # programming interface to dynamic linker
+    # Also used outside the former GUI (for example by the Rust standard
+    # library); kept until a release build shows they are unneeded.
     "libdl.so.2",  # programming interface to dynamic linker
     "librt.so.1",  # Posix realtime extensions library
-    "libxcb-icccm.so.4",
-    "libxcb-image.so.0",
-    "libxcb-shm.so.0",
-    "libxcb-keysyms.so.1",
-    "libxcb-randr.so.0",
-    "libxcb-render-util.so.0",
-    "libxcb-render.so.0",
-    "libxcb-shape.so.0",
-    "libxcb-sync.so.1",
-    "libxcb-xfixes.so.0",
-    "libxcb-xinerama.so.0",
-    "libxcb-xkb.so.1",
 }
 
 MACHO_ALLOWED_LIBRARIES = {
-    # bitcoind and bitcoin-qt
+    # lotusd
     "libc++.1.dylib",  # C++ Standard Library
     "libSystem.B.dylib",  # libc, libm, libpthread, libinfo
-    # bitcoin-qt only
-    "AppKit",  # user interface
-    "ApplicationServices",  # common application tasks.
-    "Carbon",  # deprecated c back-compat API
-    "ColorSync",
+    # Non-GUI system frameworks that dependencies may link; kept until a
+    # release build shows they are unneeded.
     "CFNetwork",  # network services and changes in network configurations
     "CoreFoundation",  # low level func, data types
-    "CoreGraphics",  # 2D rendering
     "CoreServices",  # operating system services
-    "CoreText",  # interface for laying out text and handling fonts.
-    "CoreVideo",  # video processing
     "Foundation",  # base layer functionality for apps/frameworks
-    "ImageIO",  # read and write image file formats.
     "IOKit",  # user-space access to hardware devices and drivers.
-    "IOSurface",  # cross process image/drawing buffers
     "libobjc.A.dylib",  # Objective-C runtime library
-    "Metal",  # 3D graphics
     "Security",  # access control and authentication
-    "QuartzCore",  # animation
     "SystemConfiguration",  # access network configuration settings
     "GSS",
 }
@@ -174,20 +138,15 @@ PE_ALLOWED_LIBRARIES = {
     "api-ms-win-core-synch-l1-2-0.dll",  # synchronization primitives
     "ntdll.dll",  # user-mode face of the Windows kernel
     "RPCRT4.dll",  # RPC API
-    # bitcoin-qt only
-    "dwmapi.dll",  # desktop window manager
+    # Also used outside the former GUI (OpenSSL, Rust, system libraries);
+    # kept until a release build shows they are unneeded.
     "CRYPT32.dll",  # openssl
-    "GDI32.dll",  # graphics device interface
-    "IMM32.dll",  # input method editor
     "NETAPI32.dll",
     "ole32.dll",  # component object model
     "OLEAUT32.dll",  # OLE Automation API
     "SHLWAPI.dll",  # light weight shell API
     "USERENV.dll",
-    "UxTheme.dll",
     "VERSION.dll",  # version checking
-    "WINMM.dll",  # WinMM audio API
-    "WTSAPI32.dll",
     # Chronik
     "combase.dll",  # COM objects library
 }

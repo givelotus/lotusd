@@ -18,8 +18,7 @@ Bitcoin ABC Release Process
 
 3. Verify tests passed
     - Run `arc lint --everything` and check there is no linter error
-    - Ensure that bitcoind and bitcoin-qt run with no issue on all supported platforms.
-      Manually test bitcoin-qt by sending some transactions and navigating through the menus.
+    - Ensure that bitcoind runs with no issue on all supported platforms.
 
 4. Add git tag for release
     a. Create the tag: `git tag vM.m.r` (M = major version, m = minor version, r = revision)
@@ -27,7 +26,7 @@ Bitcoin ABC Release Process
 
 5. Increment version number for the next release in:
     - `CMakeLists.txt`
-    - `contrib/aur/bitcoin-abc/PKGBUILD` and `contrib/aur/bitcoin-abc-qt/PKGBUILD`
+    - `contrib/aur/bitcoin-abc/PKGBUILD`
     - `contrib/seeds/makeseeds.py` (only after a new major release)
 
 ## Release
