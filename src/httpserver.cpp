@@ -19,6 +19,7 @@
 #include <netbase.h>
 #include <node/ui_interface.h>
 #include <protocol.h>
+#include <proxy_protocol.h>
 #include <random.h>
 #include <rpc/protocol.h> // For HTTP status codes
 #include <shutdown.h>
@@ -32,6 +33,8 @@
 #include <util/string.h>
 #include <util/threadnames.h>
 #include <util/translation.h>
+
+#include <univalue.h>
 
 // libevent is no longer used by the HTTP server, but torcontrol still uses it
 // and its logging is configured from here.
@@ -49,6 +52,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/v6_only.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/read.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -375,8 +379,18 @@ static bool g_p2p_websocket_enabled{false};
 static std::string g_p2p_websocket_path{P2P_WEBSOCKET_PATH};
 //! SHA-256 of the accepted upgrade tokens; none: no token needed
 static std::vector<uint256> g_p2p_websocket_token_hashes;
-//! Use X-Forwarded-For of /p2p/ws upgrades coming from loopback
-static bool g_p2p_websocket_trust_forwarded_for{false};
+//! Proxies whose PROXY headers and X-Forwarded-For are believed
+static std::vector<CSubNet> g_trusted_proxies;
+
+//! Whether /livez, /readyz and /healthz are served (-httphealth)
+static bool g_health_enabled{true};
+static GlobalMutex g_readiness_mutex;
+static HTTPReadinessCheck g_readiness_check GUARDED_BY(g_readiness_mutex);
+
+static bool IsTrustedProxy(const CNetAddr &addr) {
+    return std::any_of(g_trusted_proxies.begin(), g_trusted_proxies.end(),
+                       [&](const CSubNet &s) { return s.Match(addr); });
+}
 //! Debug: bridge every /p2p/ws peer through a socketpair (-p2pwebsocketbridge)
 static bool g_p2p_websocket_force_bridge{false};
 static GlobalMutex g_p2p_websocket_mutex;
@@ -1137,23 +1151,12 @@ static asio::awaitable<bool> InProcessChronikWebSocket(
 }
 
 /**
- * Address the P2P layer should see for a /p2p/ws peer: the TCP peer, or the
- * last X-Forwarded-For hop if trusted and the TCP peer is a local proxy.
+ * Address the P2P layer should see for a /p2p/ws peer: the client, already
+ * resolved through trusted proxies (PROXY header, X-Forwarded-For).
  */
-static CService P2PWebSocketPeerAddress(const BeastRequest &req,
+static CService P2PWebSocketPeerAddress(const BeastRequest &,
                                         const HTTPConnectionInfo &conn) {
-    if (!g_p2p_websocket_trust_forwarded_for || !conn.peer.IsLocal()) {
-        return conn.peer;
-    }
-    auto xff = req.find("X-Forwarded-For");
-    if (xff == req.end()) {
-        return conn.peer;
-    }
-    std::string_view hops{xff->value()};
-    std::string_view last{hops.substr(hops.rfind(',') + 1)};
-    const CService forwarded{
-        LookupNumeric(std::string{util::TrimStringView(last)}, 0)};
-    return forwarded.IsValid() ? forwarded : conn.peer;
+    return conn.peer;
 }
 
 /** Accept a /p2p/ws upgrade and bridge it into CConnman */
@@ -1357,6 +1360,55 @@ TryHandleWebSocketUpgrade(Stream &stream, beast::flat_buffer &buffer,
     co_return false;
 }
 
+//! Health endpoints, for load balancer and orchestrator checks
+static constexpr std::string_view LIVEZ_PATH{"/livez"};
+static constexpr std::string_view READYZ_PATH{"/readyz"};
+static constexpr std::string_view HEALTHZ_PATH{"/healthz"};
+
+static std::string_view TargetPath(std::string_view target) {
+    return target.substr(0, target.find('?'));
+}
+
+/** Whether a request (header) is a health check this server answers */
+static bool IsHealthRequest(const BeastRequest &header, bool body_done) {
+    if (!g_health_enabled || !body_done ||
+        (header.method() != http::verb::get &&
+         header.method() != http::verb::head)) {
+        return false;
+    }
+    const std::string_view path{TargetPath(header.target())};
+    return path == LIVEZ_PATH || path == READYZ_PATH || path == HEALTHZ_PATH;
+}
+
+/**
+ * /livez: the server is running. /readyz (and /healthz, its alias for
+ * tools expecting that name): the node is ready for traffic, i.e. out of
+ * initial block download with peers; else 503 and the reason.
+ */
+static BeastResponse HealthResponse(const BeastRequest &header) {
+    std::string reason;
+    if (TargetPath(header.target()) != LIVEZ_PATH) {
+        LOCK(g_readiness_mutex);
+        reason = g_readiness_check ? g_readiness_check() : "starting";
+    }
+    UniValue body{UniValue::VOBJ};
+    body.pushKV("status", reason.empty() ? "ok" : "unavailable");
+    if (!reason.empty()) {
+        body.pushKV("reason", reason);
+    }
+    BeastResponse res{reason.empty() ? http::status::ok
+                                     : http::status::service_unavailable,
+                      header.version()};
+    res.set(http::field::content_type, "application/json");
+    res.set(http::field::cache_control, "no-store");
+    res.body() = body.write() + "\n";
+    res.prepare_payload();
+    if (header.method() == http::verb::head) {
+        res.body().clear();
+    }
+    return res;
+}
+
 /** Copy bytes from `from` to `to` until either side fails or closes */
 template <typename From, typename To>
 static asio::awaitable<void> PumpBytes(From &from, To &to) {
@@ -1493,11 +1545,39 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
 
         idle->Touch();
         const auto &header{parser.get()};
+
+        // Behind trusted proxies, this request's client is found by walking
+        // X-Forwarded-For (see -trustedproxy). Everything below uses it:
+        // -rpcallowip, the P2P peer address, logs and forwarded headers.
+        std::optional<HTTPConnectionInfo> forwarded;
+        if (IsTrustedProxy(conn.peer)) {
+            std::vector<std::string_view> xff;
+            const auto [first, last] = header.equal_range("X-Forwarded-For");
+            for (auto f = first; f != last; ++f) {
+                xff.push_back(f->value());
+            }
+            if (!xff.empty()) {
+                forwarded.emplace(conn);
+                forwarded->peer = proxy_protocol::ResolveForwardedClient(
+                    conn.peer, xff, IsTrustedProxy);
+            }
+        }
+        const HTTPConnectionInfo &client{forwarded ? *forwarded : conn};
+
+        if (IsHealthRequest(header, parser.is_done())) {
+            BeastResponse res{HealthResponse(header)};
+            res.keep_alive(header.keep_alive());
+            const auto ec{co_await WriteResponse(stream, res)};
+            if (ec || !header.keep_alive()) {
+                co_return;
+            }
+            continue;
+        }
         if (conn.public_only && g_public_fallback.enabled &&
             !g_reject_requests.load() && !ServedPublicly(header)) {
             // Not ours: the fallback site answers (body and all).
             idle->busy = true;
-            co_await RelayToPublicFallback(stream, buffer, header, conn);
+            co_await RelayToPublicFallback(stream, buffer, header, client);
             co_return;
         }
         if (auto expect{header.find(http::field::expect)};
@@ -1543,14 +1623,14 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         const bool endpoint_allowed{conn.public_only
                                         ? IsPublicPath(req.target()) ||
                                               IsP2PWebSocketRequest(req)
-                                        : ClientAllowed(conn.peer)};
+                                        : ClientAllowed(client.peer)};
 
         // Handlers may take arbitrarily long (e.g. long polling), as may
         // WebSocket sessions.
         idle->busy = true;
         if (endpoint_allowed && websocket::is_upgrade(req) &&
             !g_reject_requests.load() &&
-            co_await TryHandleWebSocketUpgrade(stream, buffer, req, conn)) {
+            co_await TryHandleWebSocketUpgrade(stream, buffer, req, client)) {
             co_return;
         }
 
@@ -1561,14 +1641,14 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             g_connections.AddRequest();
             if (auto handlers{GetChronikInProcess()}) {
                 res = co_await InProcessChronikHTTP(std::move(handlers), req,
-                                                    conn);
+                                                    client);
             } else {
                 // Before Chronik started or after it was interrupted
                 res = MakeSimpleResponse(503, version,
                                          "Chronik is not running");
             }
         } else {
-            res = co_await DispatchRequest(std::move(req), conn);
+            res = co_await DispatchRequest(std::move(req), client);
         }
 
         bool close{!keep_alive || g_reject_requests.load()};
@@ -1597,6 +1677,75 @@ static std::string ClientCertFingerprint(SSL *ssl) {
     std::string hex{tls::CertSha256Hex(cert)};
     X509_free(cert);
     return hex;
+}
+
+/**
+ * Read a PROXY protocol (v1 or v2) header from a trusted proxy, if the
+ * connection starts with one. Returns the header (an empty source if there
+ * was none, or for LOCAL/UNKNOWN), or std::nullopt for a malformed one.
+ * Only header bytes are consumed, except when a v1 check reads the first
+ * bytes of a plain HTTP request: those go to `buffer`, and `plain` is set.
+ */
+static asio::awaitable<std::optional<proxy_protocol::Header>>
+ReadProxyHeader(tcp::socket &sock, beast::flat_buffer &buffer, bool &plain) {
+    using proxy_protocol::Header;
+    auto [wait_ec] = co_await sock.async_wait(
+        tcp::socket::wait_read, asio::as_tuple(asio::use_awaitable));
+    uint8_t first{0};
+    if (wait_ec || ::recv(sock.native_handle(),
+                          reinterpret_cast<char *>(&first), 1, MSG_PEEK) != 1) {
+        co_return Header{};
+    }
+    if (first == proxy_protocol::V2_SIGNATURE[0]) {
+        std::vector<uint8_t> header(proxy_protocol::V2_FIXED_SIZE);
+        auto [ec, n] = co_await asio::async_read(
+            sock, asio::buffer(header), asio::as_tuple(asio::use_awaitable));
+        const auto len{ec ? std::nullopt
+                          : proxy_protocol::V2PayloadSize(header)};
+        if (!len) {
+            co_return std::nullopt;
+        }
+        header.resize(proxy_protocol::V2_FIXED_SIZE + *len);
+        auto [pec, pn] = co_await asio::async_read(
+            sock,
+            asio::buffer(header.data() + proxy_protocol::V2_FIXED_SIZE, *len),
+            asio::as_tuple(asio::use_awaitable));
+        if (pec) {
+            co_return std::nullopt;
+        }
+        co_return proxy_protocol::ParseV2(header);
+    }
+    if (first != 'P') {
+        // TLS, or an HTTP method not starting with P: no PROXY header.
+        co_return Header{};
+    }
+    // "PROXY " or an HTTP method such as POST/PUT/PATCH: read 6 bytes to tell.
+    std::string line(6, '\0');
+    auto [ec, n] = co_await asio::async_read(
+        sock, asio::buffer(line), asio::as_tuple(asio::use_awaitable));
+    if (ec) {
+        co_return std::nullopt;
+    }
+    if (line != "PROXY ") {
+        // Plain HTTP: hand the bytes to the parser.
+        buffer.commit(
+            asio::buffer_copy(buffer.prepare(line.size()), asio::buffer(line)));
+        plain = true;
+        co_return Header{};
+    }
+    while (!line.ends_with("\r\n")) {
+        if (line.size() >= proxy_protocol::V1_MAX_LINE) {
+            co_return std::nullopt;
+        }
+        char c;
+        auto [rec, rn] = co_await asio::async_read(
+            sock, asio::buffer(&c, 1), asio::as_tuple(asio::use_awaitable));
+        if (rec) {
+            co_return std::nullopt;
+        }
+        line.push_back(c);
+    }
+    co_return proxy_protocol::ParseV1(line);
 }
 
 /** Connection coroutine: detect TLS, then serve HTTP on the resulting stream */
@@ -1638,18 +1787,38 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
             }
         });
 
+        // A trusted proxy may start with a PROXY protocol header carrying the
+        // real client address. It is read exactly, so that what follows (TLS
+        // or HTTP) is still classified from the socket.
+        bool plain_prefetched{false};
+        if (IsTrustedProxy(conn.peer)) {
+            const auto proxied{
+                co_await ReadProxyHeader(sock, buffer, plain_prefetched)};
+            if (!proxied) {
+                LogDebug(BCLog::HTTP, "Bad PROXY header from %s\n",
+                         conn.peer.ToStringAddrPort());
+                co_return;
+            }
+            if (proxied->source) {
+                conn.peer = *proxied->source;
+            }
+        }
+
         // Classify the connection by its first byte, without consuming it:
         // 0x16 starts a TLS handshake record.
-        auto [wait_ec] = co_await sock.async_wait(
-            tcp::socket::wait_read, asio::as_tuple(asio::use_awaitable));
         uint8_t first{0};
-        const ssize_t peeked{
-            wait_ec ? -1
-                    : ::recv(sock.native_handle(),
-                             reinterpret_cast<char *>(&first), 1, MSG_PEEK)};
+        ssize_t peeked{1};
+        if (!plain_prefetched) {
+            auto [wait_ec] = co_await sock.async_wait(
+                tcp::socket::wait_read, asio::as_tuple(asio::use_awaitable));
+            peeked =
+                wait_ec ? -1
+                        : ::recv(sock.native_handle(),
+                                 reinterpret_cast<char *>(&first), 1, MSG_PEEK);
+        }
         if (peeked <= 0) {
             // Client went away (or timed out) before sending anything.
-        } else if (first != 0x16) {
+        } else if (plain_prefetched || first != 0x16) {
             deadline.cancel();
             co_await ServeHTTP(stream, buffer, conn);
             sock.shutdown(tcp::socket::shutdown_send, ec);
@@ -2070,8 +2239,28 @@ bool InitHTTPServer(Config &config) {
 
     g_p2p_websocket_enabled =
         gArgs.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET);
-    g_p2p_websocket_trust_forwarded_for =
-        gArgs.GetBoolArg("-p2pwebsockettrustforwardedfor", false);
+    g_trusted_proxies.clear();
+    for (const std::string &entry : gArgs.GetArgs("-trustedproxy")) {
+        CSubNet subnet;
+        if (!LookupSubNet(entry, subnet) || !subnet.IsValid()) {
+            LogPrintf("Error: invalid -trustedproxy '%s' (an address or "
+                      "subnet, e.g. 10.0.0.0/8)\n",
+                      entry);
+            return false;
+        }
+        g_trusted_proxies.push_back(subnet);
+    }
+    if (gArgs.GetBoolArg("-p2pwebsockettrustforwardedfor", false)) {
+        // Older shorthand: a reverse proxy on this host.
+        g_trusted_proxies.push_back(
+            CSubNet{LookupHost("127.0.0.1", false).value(), 8});
+        g_trusted_proxies.push_back(CSubNet{LookupHost("::1", false).value()});
+    }
+    // Health endpoints reveal a node to probes, so they are off by default
+    // for a bridge (a token or a fallback site).
+    g_health_enabled =
+        gArgs.GetBoolArg("-httphealth", !gArgs.IsArgSet("-p2pwebsockettoken") &&
+                                            !gArgs.IsArgSet("-publicfallback"));
     g_p2p_websocket_force_bridge =
         gArgs.GetBoolArg("-p2pwebsocketbridge", false);
     g_p2p_websocket_path =
@@ -2182,6 +2371,7 @@ void InterruptHTTPServer() {
 void StopHTTPServer() {
     LogDebug(BCLog::HTTP, "Stopping HTTP server\n");
     SetP2PWebSocketAcceptor(nullptr);
+    SetHTTPReadinessCheck(nullptr);
     if (g_work_queue) {
         LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
         g_work_queue->WaitExit();
@@ -2560,6 +2750,11 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
     LogDebug(BCLog::HTTP, "Registering HTTP handler for %s (exactmatch %d)\n",
              prefix, exactMatch);
     pathHandlers.push_back(HTTPPathHandler(prefix, exactMatch, handler));
+}
+
+void SetHTTPReadinessCheck(HTTPReadinessCheck check) {
+    LOCK(g_readiness_mutex);
+    g_readiness_check = std::move(check);
 }
 
 void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor) {

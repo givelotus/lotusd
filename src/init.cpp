@@ -1123,9 +1123,8 @@ void SetupServerArgs(NodeContext &node) {
         OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwebsockettrustforwardedfor",
-        "For P2P WebSocket peers connecting from localhost (a reverse "
-        "proxy), take their address from the last X-Forwarded-For hop "
-        "(default: 0)",
+        "Shorthand for -trustedproxy=127.0.0.0/8 -trustedproxy=::1 (a reverse "
+        "proxy on this host) (default: 0)",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-listenonion",
@@ -1664,6 +1663,25 @@ void SetupServerArgs(NodeContext &node) {
         "or put behind a reverse proxy. Can be specified multiple times.",
         ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
         OptionsCategory::RPC);
+    argsman.AddArg(
+        "-trustedproxy=<ip|subnet>",
+        "Treat connections from these load balancers or reverse proxies as "
+        "carrying their client's address: a PROXY protocol (v1 or v2) header "
+        "at the start of the connection, and X-Forwarded-For on each HTTP "
+        "request, walked from the right while hops are trusted. The address "
+        "found is used for -rpcallowip, P2P WebSocket peers and logs. "
+        "Nothing from other peers is believed. Can be specified multiple "
+        "times.",
+        ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
+        OptionsCategory::RPC);
+    argsman.AddArg(
+        "-httphealth",
+        "Serve /livez (the server runs), /readyz and /healthz (the node is out "
+        "of initial block download and has peers; 503 with the reason "
+        "otherwise) on every HTTP listener, for load balancer health checks "
+        "(default: 1, but 0 with -p2pwebsockettoken or -publicfallback, since "
+        "they reveal a node to probes)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
         "-publicfallback=<host>:<port>",
         "On -publicbind listeners, hand every request the node does not "
@@ -3611,6 +3629,16 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                                              std::move(info));
             });
     }
+    SetHTTPReadinessCheck([&chainman = *node.chainman,
+                           connman = node.connman.get()]() -> std::string {
+        if (chainman.IsInitialBlockDownload()) {
+            return "initial block download";
+        }
+        if (connman->GetNodeCount(ConnectionDirection::Both) == 0) {
+            return "no peers";
+        }
+        return {};
+    });
 
     // Step 13: finished
 
