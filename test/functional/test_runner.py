@@ -102,6 +102,7 @@ TEST_FRAMEWORK_MODULES = [
     "timeline",
     "txtools",
     "util",
+    "v7tx",
     "worker",
     "xpiaddr",
     "ws_transport",
