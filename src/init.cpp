@@ -1076,12 +1076,28 @@ void SetupServerArgs(NodeContext &node) {
         "Accept connections from outside (default: 1 if no -proxy or -connect)",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
-        "-p2pwebsocket",
-        strprintf("Accept P2P connections over WebSocket at %s (ws:// or "
-                  "wss://, auto-detected), in addition to the normal P2P "
-                  "port: on -publicbind listeners for anyone, and on the RPC "
-                  "port for -rpcallowip clients. Requires -listen and "
-                  "-server (default: %d)",
+        "-p2prawlisten",
+        strprintf(
+            "When listening, accept raw P2P connections (\"raw\" means plain "
+            "P2P: the ordinary, non-WebSocket protocol). With 0 "
+            "the node opens no plain P2P listening socket, refuses -bind, "
+            "-whitebind, -externalip, -listenonion and -i2pacceptincoming, "
+            "and advertises no address but -externaldomain. Outbound "
+            "connections are unchanged: add -onlynet=wss to dial WebSocket "
+            "peers only. -listen stays the master switch: -listen=0 accepts "
+            "nothing on any transport; with -listen=1, -p2prawlisten and "
+            "-p2pwslisten select the transports (both 0: nothing, with a "
+            "warning) (default: %d)",
+            DEFAULT_P2P_RAW_LISTEN),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwslisten",
+        strprintf("When listening, accept P2P connections over WebSocket at "
+                  "%s (ws:// or wss://, auto-detected): on -publicbind "
+                  "listeners for anyone, and on the RPC port for "
+                  "-rpcallowip clients, so nothing is public until "
+                  "-publicbind is set. Requires -server. -listen=0 accepts "
+                  "nothing on any transport (default: %d)",
                   P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
@@ -1217,7 +1233,10 @@ void SetupServerArgs(NodeContext &node) {
             Join(GetNetworkNames(), ", ") +
             "). Incoming connections are not affected by this option. This "
             "option can be specified multiple times to allow multiple "
-            "networks.",
+            "networks. When wss is among them (e.g. -onlynet=wss for a "
+            "WebSocket-only node), manual connections (-addnode, -connect) "
+            "follow it too: raw P2P is then only dialed to the networks "
+            "listed, local and private addresses included.",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-peerbloomfilters",
                    strprintf("Support filtering of blocks and transaction with "
@@ -2119,6 +2138,20 @@ void InitParameterInteraction(ArgsManager &args) {
         }
     }
 
+    if (!args.GetBoolArg("-p2prawlisten", DEFAULT_P2P_RAW_LISTEN)) {
+        // No plain P2P listener: nothing to map, discover or publish as a
+        // Tor/I2P service. Explicit settings are refused later
+        // (CheckP2PListenArgs) rather than silently ignored.
+        for (const char *arg : {"-natpmp", "-discover", "-listenonion",
+                                "-i2pacceptincoming"}) {
+            if (args.SoftSetBoolArg(arg, false)) {
+                LogPrintf("%s: parameter interaction: -p2prawlisten=0 -> "
+                          "setting %s=0\n",
+                          __func__, arg);
+            }
+        }
+    }
+
     if (args.IsArgSet("-externalip")) {
         // if an explicit public IP is specified, do not try to find others
         if (args.SoftSetBoolArg("-discover", false)) {
@@ -2357,6 +2390,15 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     if (nUserBind != 0 && !args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
         return InitError(Untranslated(
             "Cannot set -bind or -whitebind together with -listen=0"));
+    }
+    {
+        std::vector<bilingual_str> listen_warnings;
+        if (const auto error{CheckP2PListenArgs(args, listen_warnings)}) {
+            return InitError(*error);
+        }
+        for (const auto &warning : listen_warnings) {
+            InitWarning(warning);
+        }
     }
 
     // Make sure enough file descriptors are available
@@ -2741,6 +2783,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     // need to reindex later.
 
     fListen = args.GetBoolArg("-listen", DEFAULT_LISTEN);
+    g_listen_plain_p2p =
+        args.GetBoolArg("-p2prawlisten", DEFAULT_P2P_RAW_LISTEN);
     fDiscover = args.GetBoolArg("-discover", true);
 
     {
@@ -3607,7 +3651,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         StartTorControl(onion_service_target);
     }
 
-    if (connOptions.bind_on_any) {
+    if (connOptions.bind_on_any && g_listen_plain_p2p) {
         // Only add all IP addresses of the machine if we would be listening on
         // any address - 0.0.0.0 (IPv4) and :: (IPv6).
         Discover();
@@ -3735,7 +3779,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         AddLocal(CService{domain, port}, LOCAL_MANUAL);
     }
 
-    if (fListen && args.GetBoolArg("-p2pwebsocket", DEFAULT_P2P_WEBSOCKET)) {
+    if (fListen && GetP2PWebSocketListen(args)) {
         // Inbound P2P peers arriving over WebSocket on the HTTP server.
         SetP2PWebSocketAcceptor(
             [connman = node.connman.get()](
