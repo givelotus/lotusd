@@ -39,3 +39,16 @@ Category, thread and typed event fields stay in the JSON payload. Sources:
 and [LogEntrySourceLocation](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogEntrySourceLocation).
 Cloud behavior is checked against the specification; no cloud ingestion or
 account deployment is part of the local tests.
+
+`-logformat=json-ecs` writes ECS 8.11 fields using dotted JSON keys:
+`@timestamp`, `log.level`, `log.logger`, `process.thread.name`, `message`,
+`log.origin.file.name/line`, `log.origin.function`, `ecs.version`, and
+`event.action`. ECS requires `@timestamp`, so this format retains it even with
+`-logtimestamps=0`. Typed fields use their registry's ECS names, with all custom
+fields under `lotus.*`. `DurationUs` becomes integer nanoseconds in
+`event.duration`; generic JSON/logfmt retain microseconds. A peer endpoint stays
+`lotus.addr`: it is not necessarily the sender described by `source.address`.
+See [ECS log fields](https://www.elastic.co/guide/en/ecs/8.11/ecs-log.html),
+[event fields](https://www.elastic.co/guide/en/ecs/8.11/ecs-event.html), and
+[source roles](https://www.elastic.co/guide/en/ecs/8.11/ecs-source.html).
+An actual Elasticsearch/collector deployment is not claimed by local tests.
