@@ -418,8 +418,10 @@ bool SQLiteBatch::ReadKey(DataStream &&key, DataStream &value) {
     int res = sqlite3_bind_blob(m_read_stmt, 1, key.data(), key.size(),
                                 SQLITE_STATIC);
     if (res != SQLITE_OK) {
-        LogPrintf("%s: Unable to bind statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_statement_bind_failed",
+                     "{name}: Unable to bind statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         sqlite3_clear_bindings(m_read_stmt);
         sqlite3_reset(m_read_stmt);
         return false;
@@ -428,8 +430,10 @@ bool SQLiteBatch::ReadKey(DataStream &&key, DataStream &value) {
     if (res != SQLITE_ROW) {
         if (res != SQLITE_DONE) {
             // SQLITE_DONE means "not found", don't log an error in that case.
-            LogPrintf("%s: Unable to execute statement: %s\n", __func__,
-                      sqlite3_errstr(res));
+            LogInfoEvent(BCLog::ALL, "sqlite_statement_execute_failed",
+                         "{name}: Unable to execute statement: {error}")
+                .Field(BCLog::LogField::Name, __func__)
+                .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         }
         sqlite3_clear_bindings(m_read_stmt);
         sqlite3_reset(m_read_stmt);
@@ -463,16 +467,20 @@ bool SQLiteBatch::WriteKey(DataStream &&key, DataStream &&value,
     // Insert index 1 is key, 2 is value
     int res = sqlite3_bind_blob(stmt, 1, key.data(), key.size(), SQLITE_STATIC);
     if (res != SQLITE_OK) {
-        LogPrintf("%s: Unable to bind key to statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_key_bind_failed",
+                     "{name}: Unable to bind key to statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         sqlite3_clear_bindings(stmt);
         sqlite3_reset(stmt);
         return false;
     }
     res = sqlite3_bind_blob(stmt, 2, value.data(), value.size(), SQLITE_STATIC);
     if (res != SQLITE_OK) {
-        LogPrintf("%s: Unable to bind value to statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_value_bind_failed",
+                     "{name}: Unable to bind value to statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         sqlite3_clear_bindings(stmt);
         sqlite3_reset(stmt);
         return false;
@@ -483,8 +491,10 @@ bool SQLiteBatch::WriteKey(DataStream &&key, DataStream &&value,
     sqlite3_clear_bindings(stmt);
     sqlite3_reset(stmt);
     if (res != SQLITE_DONE) {
-        LogPrintf("%s: Unable to execute statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_statement_execute_failed",
+                     "{name}: Unable to execute statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
     }
     return res == SQLITE_DONE;
 }
@@ -499,8 +509,10 @@ bool SQLiteBatch::EraseKey(DataStream &&key) {
     int res = sqlite3_bind_blob(m_delete_stmt, 1, key.data(), key.size(),
                                 SQLITE_STATIC);
     if (res != SQLITE_OK) {
-        LogPrintf("%s: Unable to bind statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_statement_bind_failed",
+                     "{name}: Unable to bind statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         sqlite3_clear_bindings(m_delete_stmt);
         sqlite3_reset(m_delete_stmt);
         return false;
@@ -511,8 +523,10 @@ bool SQLiteBatch::EraseKey(DataStream &&key) {
     sqlite3_clear_bindings(m_delete_stmt);
     sqlite3_reset(m_delete_stmt);
     if (res != SQLITE_DONE) {
-        LogPrintf("%s: Unable to execute statement: %s\n", __func__,
-                  sqlite3_errstr(res));
+        LogInfoEvent(BCLog::ALL, "sqlite_statement_execute_failed",
+                     "{name}: Unable to execute statement: {error}")
+            .Field(BCLog::LogField::Name, __func__)
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
     }
     return res == SQLITE_DONE;
 }
@@ -562,9 +576,10 @@ bool SQLiteBatch::ReadAtCursor(DataStream &key, DataStream &value,
         return true;
     }
     if (res != SQLITE_ROW) {
-        LogPrintf(
-            "SQLiteBatch::ReadAtCursor: Unable to execute cursor step: %s\n",
-            sqlite3_errstr(res));
+        LogInfoEvent(
+            BCLog::ALL, "sqlite_cursor_step_failed",
+            "SQLiteBatch::ReadAtCursor: Unable to execute cursor step: {error}")
+            .Field(BCLog::LogField::Error, sqlite3_errstr(res));
         return false;
     }
 
@@ -590,7 +605,8 @@ bool SQLiteBatch::TxnBegin() {
     int res = sqlite3_exec(m_database.m_db, "BEGIN TRANSACTION", nullptr,
                            nullptr, nullptr);
     if (res != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Failed to begin the transaction\n");
+        LogInfoEvent(BCLog::ALL, "sqlite_transaction_begin_failed",
+                     "SQLiteBatch: Failed to begin the transaction");
     }
     return res == SQLITE_OK;
 }
@@ -602,7 +618,8 @@ bool SQLiteBatch::TxnCommit() {
     int res = sqlite3_exec(m_database.m_db, "COMMIT TRANSACTION", nullptr,
                            nullptr, nullptr);
     if (res != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Failed to commit the transaction\n");
+        LogInfoEvent(BCLog::ALL, "sqlite_transaction_commit_failed",
+                     "SQLiteBatch: Failed to commit the transaction");
     }
     return res == SQLITE_OK;
 }
@@ -614,7 +631,8 @@ bool SQLiteBatch::TxnAbort() {
     int res = sqlite3_exec(m_database.m_db, "ROLLBACK TRANSACTION", nullptr,
                            nullptr, nullptr);
     if (res != SQLITE_OK) {
-        LogPrintf("SQLiteBatch: Failed to abort the transaction\n");
+        LogInfoEvent(BCLog::ALL, "sqlite_transaction_abort_failed",
+                     "SQLiteBatch: Failed to abort the transaction");
     }
     return res == SQLITE_OK;
 }
