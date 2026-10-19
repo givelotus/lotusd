@@ -152,6 +152,11 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
         target_link_libraries(chronik_native_host_abc chronik_native_store_mdbx)
         target_compile_definitions(chronik_native_host_abc
             PRIVATE CHRONIK_NATIVE_HAVE_MDBX=1)
+        # Lotus V2 service (v2_index is an MDBX env): node block conversion
+        # and the service's chain lifecycle.
+        target_sources(chronik_native_host_abc PRIVATE hosts/abc/abc_v2.cpp)
+        target_compile_definitions(chronik_native_host_abc
+            PUBLIC CHRONIK_NATIVE_HAVE_LOTUS_V2_SERVICE=1)
     endif()
     if(CHRONIK_NATIVE_LEVELDB)
         target_link_libraries(chronik_native_host_abc chronik_native_store_leveldb)
