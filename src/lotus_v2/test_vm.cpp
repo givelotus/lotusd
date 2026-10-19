@@ -611,6 +611,64 @@ void ChargedAccounting() {
     CHECK(!rejected_profile.charged &&
           rejected_profile.invocation.error == "invalid explicit VM profile");
 }
+// `TXINPUTCOUNT|TXOUTPUTCOUNT ENUMERATE` is the only input/output loop. Its
+// static bound is min(256, count), so it charges exactly what a literal bound
+// of the same count charges (the old fused 67/68 charge plus the count push
+// and ENUMERATE's operand).
+void EnumerateIdiom() {
+    auto schedule = IllustrativeCost();
+    auto charge = [&](const std::string &script, uint16_t inputs,
+                      uint16_t outputs = 0) {
+        return EvaluateVmCharged(Hex(script), {}, PROFILE, schedule, inputs,
+                                 outputs);
+    };
+    auto literal = [](unsigned n) {
+        VmBytes push(16);
+        push[0] = uint8_t(n);
+        push[1] = uint8_t(n >> 8);
+        std::string hex = "10";
+        const char *digits = "0123456789abcdef";
+        for (auto b : push) {
+            hex.push_back(digits[b >> 4]);
+            hex.push_back(digits[b & 15]);
+        }
+        return hex;
+    };
+    for (unsigned count : {0u, 1u, 2u, 255u, 256u}) {
+        const auto idiom = charge("c969794e796a4e", uint16_t(count));
+        CHECK(idiom.charged && idiom.invocation.status == VmStatus::Success);
+        // A one-byte constant costs what TXINPUTCOUNT costs.
+        if (count <= 16) {
+            VmBytes script = Hex("69794e796a4e");
+            script.insert(script.begin(), uint8_t(count ? 0x4d + count : 0));
+            const auto constant =
+                EvaluateVmCharged(script, {}, PROFILE, schedule, 0, 0);
+            CHECK(constant.accounting_cost == idiom.accounting_cost);
+        }
+        // A 16-byte literal push differs only by its 16 extra script bytes.
+        const auto pushed = charge(literal(count) + "69794e796a4e", 0);
+        CHECK(pushed.accounting_cost == idiom.accounting_cost + 16);
+        // Executed cost equals the static bound for this straight body.
+        CHECK(idiom.invocation.executed_cost == idiom.accounting_cost);
+    }
+    CHECK(charge("c969794e796a4e", 1).accounting_cost == 76 + 34);
+    // The static bound saturates at 256; at runtime 257 is out of range.
+    const auto over = charge("c969794e796a4e", 257);
+    CHECK(over.charged &&
+          over.accounting_cost == charge("c969794e796a4e", 256).accounting_cost &&
+          over.invocation.status == VmStatus::Invalid &&
+          over.invocation.error == "loop bound");
+    // Output idiom and nesting: both bounds come from the transaction.
+    const auto nested = charge("c969ca69796a796a4e", 3, 4);
+    const auto nested_constant = charge("5069 5169 796a796a4e", 0, 0);
+    CHECK(nested.invocation.status == VmStatus::Success &&
+          nested.accounting_cost == nested_constant.accounting_cost);
+    // Only the instruction immediately before ENUMERATE counts.
+    const auto separated = charge("c960 69794e796a4e", 1);
+    CHECK(separated.accounting_cost > charge("c969794e796a4e", 256).accounting_cost);
+    // Three nested loops never decode, whatever their bounds.
+    Expect("c969c969c9696a6a6a4e", VmStatus::Invalid, {}, PROFILE, 1);
+}
 void AuthenticatedPayment() {
     const auto wire =
         Hex("07000000000000000000000001000100"
@@ -1222,6 +1280,7 @@ int main() {
     ContextFieldOpcodes();
     HashAndBounds();
     ChargedAccounting();
+    EnumerateIdiom();
     AuthenticatedPayment();
     AuthenticatedFieldSizeHints();
     PreparedTransactionOwnership();
