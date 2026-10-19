@@ -12,11 +12,9 @@
 //! chronik/native/test/golden_db_values_tests.cpp decodes every case with the
 //! native codecs, re-encodes it and requires byte equality.
 //!
-//! The fixtures describe the eCash-tier storage layout. This crate's working
-//! tree carries Lotus V2 additions that change `UtxoDataOutput`'s duplicate
-//! encoding (postcard `(i64, Bytes)` instead of `sats LE8 || script`), so run
-//! the exporter against the eCash-tier chronik-db (a copy of the eCash-tier
-//! checkout with this file placed in `chronik/chronik-db/tests/`):
+//! The fixtures describe the eCash-tier storage layout, which the Lotus V2
+//! tier keeps (including `UtxoDataOutput`'s `sats LE8 || script` duplicate
+//! entries), so the exporter gives the same bytes on either tier:
 //!
 //!   CHRONIK_NATIVE_FIXTURES_DIR=<repo>/chronik/native/test/fixtures \
 //!   cargo test --locked -p chronik-db --test export_native_db_values

@@ -136,3 +136,11 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
     endif()
     target_link_libraries(server chronik_native_host_abc)
 endif()
+
+# ---- Tools ----
+if(CHRONIK_NATIVE_MDBX)
+    # DB dump for the parity tooling (contrib/chronik-parity).
+    add_executable(chronik-native-dump tools/chronik_native_dump.cpp)
+    target_include_directories(chronik-native-dump PRIVATE "${CHRONIK_NATIVE_ROOT}")
+    target_link_libraries(chronik-native-dump chronik_native_store_mdbx chronik_native_core)
+endif()
