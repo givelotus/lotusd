@@ -1140,6 +1140,23 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                                       const CAddress *wss_addr,
                                       bool fCountFailure,
                                       ConnectionType conn_type) {
+    // The WebSocket dialer connects directly. Until it can tunnel through
+    // the configured proxy, refuse rather than leak our address and DNS
+    // lookups to a connection the user expects to be proxied.
+    Proxy proxy;
+    if (HaveNameProxy() || GetProxy(NET_IPV4, proxy) ||
+        GetProxy(NET_IPV6, proxy)) {
+        LogPrintf("Not connecting to %s: WebSocket peers cannot be reached "
+                  "through -proxy yet\n",
+                  url);
+        return nullptr;
+    }
+    if (!IsReachable(NET_WSS)) {
+        LogPrintf("Not connecting to %s: network wss is not reachable "
+                  "(-onlynet)\n",
+                  url);
+        return nullptr;
+    }
     const WebSocketDialer dialer{GetWebSocketDialer()};
     if (!dialer) {
         LogPrintf("Cannot connect to %s: P2P over WebSocket is unavailable\n",
