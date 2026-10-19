@@ -11,11 +11,10 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.chain = "testnet3"  # Use testnet chain because it has an early checkpoint
-        self.num_nodes = 2
-        self.extra_args = [["-minimumchainwork=0x0"], ["-minimumchainwork=0x0"]]
+    setup_clean_chain = True
+    chain = "testnet3"  # Use testnet chain because it has an early checkpoint
+    num_nodes = 2
+    extra_args = [["-minimumchainwork=0x0"], ["-minimumchainwork=0x0"]]
 
     def add_options(self, parser):
         parser.add_argument(

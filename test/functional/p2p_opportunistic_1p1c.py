@@ -45,16 +45,15 @@ def cleanup(func):
 
 
 class PackageRelayTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-acceptnonstdtxn=1",
-                "-maxmempool=5",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [
+        [
+            "-acceptnonstdtxn=1",
+            "-maxmempool=5",
         ]
-        self.supports_cli = False
+    ]
+    supports_cli = False
 
     def create_tx_below_mempoolminfee(self, wallet):
         """Create a 1-input 1sat/vB transaction using a confirmed UTXO.

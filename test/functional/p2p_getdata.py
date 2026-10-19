@@ -20,8 +20,7 @@ class P2PStoreBlock(P2PInterface):
 
 
 class GetdataTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         p2p_block_store = self.nodes[0].add_p2p_connection(P2PStoreBlock())
