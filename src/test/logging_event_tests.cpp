@@ -144,6 +144,34 @@ BOOST_AUTO_TEST_CASE(nonfinite_float_fields_produce_valid_json) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(float_message_precision_preserves_raw_fields) {
+    Format(BCLog::LogFormat::JSON);
+    for (const double value : {0.0, -0.0, 1.23456789, 1e-10,
+                               std::numeric_limits<double>::max(),
+                               std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity(),
+                               -std::numeric_limits<double>::infinity()}) {
+        LogInfoEvent(BCLog::ALL, "precision", "{elapsed_ms:.0f}/{elapsed_ms:.1f}/{elapsed_ms:.2f}/{elapsed_ms:.3f}/{elapsed_ms:f}/{elapsed_ms:g}/{elapsed_ms:.18f}/{elapsed_ms:.18g}")
+            .Field(LogField::ElapsedMs, value);
+        const auto record{Json()};
+        BOOST_CHECK_EQUAL(record["message"].get_str(),
+                          strprintf("%.0f/%.1f/%.2f/%.3f/%f/%g/%.18f/%.18g", value,
+                                    value, value, value, value, value, value, value));
+        if (std::isfinite(value)) {
+            BOOST_CHECK_EQUAL(record["elapsed_ms"].get_real(), value);
+        } else {
+            BOOST_CHECK(record["elapsed_ms"].isNull());
+        }
+    }
+    LogInfoEvent(BCLog::ALL, "invalid_precision", "{elapsed_ms:.19f}/{elapsed_ms:08.2f}/{elapsed_ms:.2x}")
+        .Field(LogField::ElapsedMs, 1.25);
+    BOOST_CHECK_EQUAL(Json()["message"].get_str(),
+                      "{elapsed_ms:.19f}/{elapsed_ms:08.2f}/{elapsed_ms:.2x}");
+    LogInfoEvent(BCLog::ALL, "invalid_float_type", "{count:.2f}")
+        .Field(LogField::Count, 1);
+    BOOST_CHECK_EQUAL(Json()["message"].get_str(), "{count:.2f}");
+}
+
 BOOST_AUTO_TEST_CASE(event_text_and_json) {
     const CService addr{LookupNumeric("203.0.113.7", 10605)};
     for (const auto format : {BCLog::LogFormat::TEXT, BCLog::LogFormat::JSON}) {
