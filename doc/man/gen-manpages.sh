@@ -50,7 +50,7 @@ read -r -a VERSION <<< "$(${BITCOIND} --version | awk -F'[ -]' 'NR == 1 { print 
 
 # Create a footer file with copyright content.
 # This gets autodetected fine for bitcoind if --version-string is not set,
-# but has different outcomes for bitcoin-qt and bitcoin-cli.
+# but has different outcomes for bitcoin-cli.
 FOOTER="$(basename ${BIN})_footer.h2m"
 cleanup() {
   rm -f "${FOOTER}"

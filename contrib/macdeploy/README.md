@@ -1,12 +1,7 @@
-# MacOS Deployment
+# macOS SDK
 
-The `macdeployqtplus.py` script should not be run manually. Instead, after building as usual:
-
-```bash
-ninja osx-zip
-```
-
-When complete, it will have produced `Bitcoin-ABC.zip`.
+The files here extract the macOS SDK that depends uses to cross-compile for
+macOS. There is no GUI application bundle to deploy.
 
 ## SDK Extraction
 
@@ -53,9 +48,9 @@ path to `Xcode.app` (extracted in the previous stage) as the first argument.
 The generated archive should be: `Xcode-15.0-15A240d-extracted-SDK-with-libcxx-headers.tar.gz`.
 The `sha256sum` should be `c0c2e7bb92c1fee0c4e9f3a485e4530786732d6c6dd9e9f418c282aa6892f55d`.
 
-## Deterministic macOS App Notes
+## Deterministic macOS Build Notes
 
-macOS Applications are created in Linux using a recent LLVM.
+macOS binaries are created in Linux using a recent LLVM.
 
 Apple uses `clang` extensively for development and has upstreamed the necessary
 functionality so that a vanilla clang can take advantage. It supports the use of `-F`,
@@ -69,16 +64,3 @@ The GUIX process build 2 sets of files: Linux tools, then Apple binaries which a
 created using these tools. The build process has been designed to avoid including the
 SDK's files in GUIX's outputs. All interim tarballs are fully deterministic and may be freely
 redistributed.
-
-As of OS X 10.9 Mavericks, using an Apple-blessed key to sign binaries is a requirement in
-order to satisfy the new Gatekeeper requirements. Because this private key cannot be
-shared, we'll have to be a bit creative in order for the build process to remain somewhat
-deterministic. Here's how it works:
-
-- Builders use GUIX to create an unsigned release. This outputs an unsigned ZIP which
-  users may choose to bless and run. It also outputs an unsigned app structure in the form
-  of a tarball.
-- The Apple keyholder uses this unsigned app to create a detached signature, using the
-  script that is also included there. Detached signatures are available from this [repository](https://github.com/bitcoin-core/bitcoin-detached-sigs).
-- Builders feed the unsigned app + detached signature back into GUIX. It uses the
-  pre-built tools to recombine the pieces into a deterministic ZIP.

@@ -6,22 +6,20 @@ The built-in one is located in `/Applications/Utilities/Terminal.app`.
 Preparation
 -----------
 
-1.  Install Xcode from the app store if you don't have it already (it's a dependency for qt5)
-
-2.  Install the macOS command line tools:
+1.  Install the macOS command line tools:
 
 `xcode-select --install`
 
 When the popup appears, click `Install`.
 
-3.  Install [Homebrew](https://brew.sh).
+2.  Install [Homebrew](https://brew.sh).
 
 Dependencies
 ----------------------
 
 Install dependencies:
 
-    brew install berkeley-db boost cmake jemalloc ninja openssl protobuf python qrencode qt@5 sqlite
+    brew install berkeley-db boost cmake jemalloc ninja openssl protobuf python sqlite
     pip install pytest zip
 
 See [dependencies.md](dependencies.md) for a complete overview.
@@ -38,9 +36,7 @@ Before you start building, please make sure that your compiler supports C++20.
 
 2.  Build Bitcoin ABC:
 
-    Configure and build the headless Bitcoin ABC binaries as well as the GUI.
-
-    You can disable the GUI build by passing `-DBUILD_QT=OFF` to cmake.
+    Configure and build the headless Bitcoin ABC binaries.
 
     It is recommended to create a build directory to build out-of-tree.
 
@@ -89,11 +85,6 @@ Other commands:
     ./src/bitcoind -daemon # Starts the bitcoin daemon.
     ./src/bitcoin-cli --help # Outputs a list of command-line options.
     ./src/bitcoin-cli help # Outputs a list of RPC commands when the daemon is running.
-
-Notes
------
-
-* Building with downloaded Qt binaries is not officially supported. See the notes in [#7714](https://github.com/bitcoin/bitcoin/issues/7714)
 
 ### Memory allocator
 

@@ -10,7 +10,7 @@ set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 include(Deprecation)
-foreach(FEATURE WALLET CLI TX QT SEEDER CHAINSTATE IGUANA)
+foreach(FEATURE WALLET CLI TX SEEDER CHAINSTATE IGUANA)
 	deprecate_build_flag("BUILD_BITCOIN_${FEATURE}" "BUILD_${FEATURE}")
 endforeach()
 
@@ -20,16 +20,13 @@ if(BUILD_ZMQ)
 endif()
 option(BUILD_CLI "Build lotus-cli" ON)
 option(BUILD_TX "Build bitcoin-tx" ON)
-option(BUILD_QT "Build bitcoin-qt" ON)
 option(BUILD_SEEDER "Build bitcoin-seeder" ON)
 option(BUILD_LIBBITCOINCONSENSUS "Build the bitcoinconsenus shared library" ON)
 option(BUILD_CHAINSTATE "Build bitcoin-chainstate" OFF)
 option(BUILD_IGUANA "Activate the Iguana debugger" ON)
-option(ENABLE_BIP70 "Enable BIP70 (payment protocol) support in GUI" ON)
 option(ENABLE_HARDENING "Harden the executables" ON)
 option(ENABLE_REDUCE_EXPORTS "Reduce the amount of exported symbols" OFF)
 option(ENABLE_STATIC_LIBSTDCXX "Statically link libstdc++" OFF)
-option(ENABLE_QRCODE "Enable QR code display" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy checks for Bitcoin ABC" OFF)
 option(ENABLE_PROFILING "Select the profiling tool to use" OFF)
 option(ENABLE_TRACING "Enable eBPF user static defined tracepoints" OFF)
@@ -63,11 +60,6 @@ endif()
 
 option(USE_JEMALLOC "Use jemalloc as an allocation library" ${USE_JEMALLOC_DEFAULT})
 
-if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-	set(DEFAULT_ENABLE_DBUS_NOTIFICATIONS ON)
-endif()
-option(ENABLE_DBUS_NOTIFICATIONS "Enable DBus desktop notifications. Linux only." ${DEFAULT_ENABLE_DBUS_NOTIFICATIONS})
-
 # If ccache is available, then use it.
 find_program(CCACHE ccache)
 if(CCACHE)
@@ -81,12 +73,9 @@ include(NativeExecutable)
 native_add_cmake_flags(
 	"-DBUILD_WALLET=OFF"
 	"-DBUILD_CHRONIK=OFF"
-	"-DBUILD_QT=OFF"
 	"-DENABLE_HTTP2=OFF"
-	"-DENABLE_QRCODE=OFF"
 	"-DUSE_JEMALLOC=OFF"
 	"-DENABLE_CLANG_TIDY=OFF"
-	"-DENABLE_BIP70=OFF"
 	"-DUSE_LINKER="
 )
 
@@ -1103,11 +1092,6 @@ add_to_security_check(lotusd)
 
 install_target(lotusd)
 install_manpages(lotusd)
-
-# Bitcoin-qt
-if(BUILD_QT)
-	add_subdirectory(qt)
-endif()
 
 if(BUILD_IGUANA)
 	add_subdirectory(iguana)
