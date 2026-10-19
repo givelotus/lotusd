@@ -12,7 +12,7 @@ import ssl
 import time
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, p2p_port, rpc_port
+from test_framework.util import assert_equal, assert_raises_rpc_error, p2p_port, rpc_port
 from test_framework.wallet import MiniWallet
 
 PUBLIC_PORT_INDEX = 41
@@ -191,7 +191,14 @@ class HTTPMetricsTest(BitcoinTestFramework):
         )
 
         self.log.info("HTTP and RPC requests")
-        node.getblockcount()
+        # Baselines exclude completed setup RPCs and the one-second scrape cache.
+        time.sleep(1.1)
+        before_rpc = self.scrape()
+        height = node.getblockcount()  # Native async actor.
+        node.getrpcinfo()  # Async dispatcher wrapping a synchronous actor.
+        assert_raises_rpc_error(
+            -8, "Block height out of range", node.getblockhash, -1)
+        node.waitforblockheight(height + 1, 100)  # Actual coroutine suspension.
         self.request(rpc_port(0), path="/livez")
         with socket.create_connection(("127.0.0.1", rpc_port(0))) as raw:
             ctx = ssl.create_default_context()
@@ -211,6 +218,23 @@ class HTTPMetricsTest(BitcoinTestFramework):
                           endpoint="rpc") > 0
         assert_equal(
             self.total(samples, "lotus_http_tls_handshakes_total", result="ok"), 1)
+        for method in ("getblockcount", "getrpcinfo", "getblockhash",
+                       "waitforblockheight"):
+            name = "lotus_rpc_request_duration_seconds_count"
+            assert_equal(self.total(samples, name, method=method),
+                         self.total(before_rpc, name, method=method) + 1)
+        # The timer covers the await lifetime, not only initial dispatch.
+        name = "lotus_rpc_request_duration_seconds_sum"
+        assert (self.total(samples, name, method="waitforblockheight") -
+                self.total(before_rpc, name, method="waitforblockheight")) >= 0.075
+        # Only methods that were called have series.
+        assert_equal(
+            self.total(samples, "lotus_rpc_request_duration_seconds_count",
+                       method="stop"), 0)
+        assert not any(
+            n.startswith("lotus_rpc_request") and ("method", "stop") in ls
+            for n, ls in samples
+        )
 
         self.log.info("HEAD has the headers but no body; POST is refused")
         res, body = self.request(rpc_port(0), method="HEAD")
