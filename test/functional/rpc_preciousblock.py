@@ -41,8 +41,7 @@ class PreciousTest(BitcoinTestFramework):
     ]
     supports_cli = False
 
-    def setup_network(self):
-        self.setup_nodes()
+    topology = "none"
 
     def run_test(self):
         self.log.info("Ensure submitblock can in principle reorg to a competing chain")

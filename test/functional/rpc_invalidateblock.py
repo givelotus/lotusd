@@ -14,8 +14,7 @@ class InvalidateTest(BitcoinTestFramework):
     num_nodes = 3
     extra_args = [["-noparkdeepreorg"], [], []]
 
-    def setup_network(self):
-        self.setup_nodes()
+    topology = "none"
 
     def run_test(self):
         self.log.info(
