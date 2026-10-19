@@ -93,9 +93,14 @@ public:
         const size_t start{out.size()};
         size_t written{0};
         while (true) {
-            if (out.size() - start - written < ZSTD_CStreamOutSize()) {
-                out.resize(start + written + ZSTD_CStreamOutSize() +
-                           ZSTD_compressBound(input.size - input.pos));
+            // Room for the rest of the input plus the flush, growing only if
+            // zstd reports more pending. Sized to the message, not to
+            // ZSTD_CStreamOutSize(): resizing zero-fills, and 128 KiB of it
+            // per small message dominated the cost.
+            const size_t want{ZSTD_compressBound(input.size - input.pos) +
+                              FLUSH_SLACK};
+            if (out.size() - start - written < want) {
+                out.resize(start + written + want);
             }
             ZSTD_outBuffer output{out.data() + start, out.size() - start,
                                   written};
@@ -141,6 +146,9 @@ public:
     }
 
 private:
+    //! Extra output room for the block headers of a flush
+    static constexpr size_t FLUSH_SLACK = 32;
+
     static size_t Check(size_t ret) {
         if (ZSTD_isError(ret)) {
             throw std::runtime_error(ZSTD_getErrorName(ret));
