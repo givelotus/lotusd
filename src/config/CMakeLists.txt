@@ -254,5 +254,15 @@ check_cxx_source_compiles("
 	}
 " HAVE_SOCKADDR_UN)
 
+# Operator metrics (doc/metrics.md): the client label on every series, and
+# the chain part of the network label ("<chain>-mainnet" etc.). Each tier
+# sets its own here; -DFULLNODE_CLIENT=... overrides.
+if(NOT DEFINED FULLNODE_CLIENT)
+	set(FULLNODE_CLIENT "ecashd")
+endif()
+if(NOT DEFINED FULLNODE_CHAIN)
+	set(FULLNODE_CHAIN "ecash")
+endif()
+
 # Generate the config
 configure_file(bitcoin-config.h.cmake.in bitcoin-config.h ESCAPE_QUOTES)

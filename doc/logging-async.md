@@ -8,7 +8,7 @@ progress. Startup buffering and long strings passed through legacy formatting
 have different allocation costs from the warmed structured producer path.
 
 When a ring is full, debug/info records are discarded and counted. The logger
-reports the count and `/metrics` exposes `lotus_log_dropped_lines_total`.
+reports the count and `/metrics` exposes `fullnode_log_dropped_lines_total`.
 Warnings/errors use backpressure rather than being discarded because of a
 full ring. With an active worker, producers wait for the consumer rather than
 rendering or acquiring its mutex. This is not a configurable blocking mode.
