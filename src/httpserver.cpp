@@ -19,6 +19,7 @@
 #include <rpc/protocol.h> // For HTTP status codes
 #include <shutdown.h>
 #include <sync.h>
+#include <http_tls_stream.h>
 #include <tls_util.h>
 #include <util/check.h>
 #include <util/fs.h>
@@ -42,15 +43,12 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/v6_only.hpp>
 #include <boost/asio/post.hpp>
-#include <boost/asio/ssl.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-#include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
-#include <boost/beast/websocket/ssl.hpp>
 
 #include <openssl/bn.h>
 #include <openssl/evp.h>
@@ -93,7 +91,6 @@
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
-namespace ssl = asio::ssl;
 namespace websocket = beast::websocket;
 using tcp = asio::ip::tcp;
 using namespace boost::asio::experimental::awaitable_operators;
@@ -313,7 +310,7 @@ struct HTTPListener {
 };
 static std::vector<HTTPListener> g_acceptors;
 //! TLS context for connections detected as TLS, if TLS is enabled
-static std::unique_ptr<ssl::context> g_ssl_ctx;
+static tls::SslCtxPtr g_ssl_ctx;
 //! The configuration handlers are invoked with
 static Config *g_config{nullptr};
 //! Maximum accepted request body size
@@ -685,8 +682,8 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
 }
 
 /**
- * Write a response. On plain TCP, first write directly while the socket
- * accepts data: a reply that fits in the socket buffer (most of them) then
+ * Write a response. On plain TCP and TLS, first write directly while the
+ * socket accepts data: a reply that fits in the socket buffer (most of them) then
  * costs one writev and no trip through the I/O scheduler. Whatever does not
  * fit is written asynchronously, continuing the same serializer.
  */
@@ -694,12 +691,19 @@ template <typename Stream>
 static asio::awaitable<boost::system::error_code>
 WriteResponse(Stream &stream, BeastResponse &res) {
     http::serializer<false, http::string_body> sr{res};
-    if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
-        auto &socket{stream.socket()};
+    if constexpr (std::is_same_v<Stream, beast::tcp_stream> ||
+                  std::is_same_v<Stream, OsslStream>) {
         boost::system::error_code ec;
-        socket.non_blocking(true, ec);
-        while (!ec && !sr.is_done()) {
-            http::write_some(socket, sr, ec);
+        const auto try_write = [&](auto &sync_stream) {
+            while (!ec && !sr.is_done()) {
+                http::write_some(sync_stream, sr, ec);
+            }
+        };
+        if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
+            stream.socket().non_blocking(true, ec);
+            try_write(stream.socket());
+        } else {
+            try_write(stream);
         }
         if (ec != asio::error::would_block) {
             co_return ec;
@@ -1241,8 +1245,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             if (hdr_ec == http::error::end_of_stream ||
                 hdr_ec == asio::error::eof || hdr_ec == beast::error::timeout ||
                 hdr_ec == asio::error::operation_aborted ||
-                hdr_ec == asio::error::connection_reset ||
-                hdr_ec == ssl::error::stream_truncated) {
+                hdr_ec == asio::error::connection_reset) {
                 co_return;
             }
             // Malformed or oversized request line/headers (libevent also
@@ -1380,37 +1383,58 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
     try {
         beast::tcp_stream stream{std::move(socket)};
         beast::flat_buffer buffer;
-        stream.expires_after(g_server_timeout);
-        auto [detect_ec, is_tls] = co_await beast::async_detect_ssl(
-            stream, buffer, asio::as_tuple(asio::use_awaitable));
-        if (detect_ec) {
-            // Client went away before sending anything.
-        } else if (!is_tls) {
+        auto &sock{stream.socket()};
+        boost::system::error_code ec;
+        sock.non_blocking(true, ec);
+
+        // Until the TLS handshake (if any) is done, a deadline shuts the
+        // socket down, which completes any pending wait with an error.
+        asio::steady_timer deadline{sock.get_executor(), g_server_timeout};
+        deadline.async_wait([fd = sock.native_handle()](
+                                const boost::system::error_code &wec) {
+            if (!wec) {
+                ::shutdown(fd, SHUT_RDWR);
+            }
+        });
+
+        // Classify the connection by its first byte, without consuming it:
+        // 0x16 starts a TLS handshake record.
+        auto [wait_ec] = co_await sock.async_wait(
+            tcp::socket::wait_read, asio::as_tuple(asio::use_awaitable));
+        uint8_t first{0};
+        const ssize_t peeked{
+            wait_ec ? -1
+                    : ::recv(sock.native_handle(),
+                             reinterpret_cast<char *>(&first), 1, MSG_PEEK)};
+        if (peeked <= 0) {
+            // Client went away (or timed out) before sending anything.
+        } else if (first != 0x16) {
+            deadline.cancel();
             co_await ServeHTTP(stream, buffer, conn);
-            boost::system::error_code ec;
-            stream.socket().shutdown(tcp::socket::shutdown_send, ec);
+            sock.shutdown(tcp::socket::shutdown_send, ec);
         } else if (!g_ssl_ctx) {
             LogDebug(BCLog::HTTP,
                      "TLS connection from %s rejected: TLS is disabled\n",
                      conn.peer.ToStringAddrPort());
         } else {
-            beast::ssl_stream<beast::tcp_stream> tls_stream{std::move(stream),
-                                                            *g_ssl_ctx};
-            auto [hs_ec, used] = co_await tls_stream.async_handshake(
-                ssl::stream_base::server, buffer.data(),
-                asio::as_tuple(asio::use_awaitable));
-            if (hs_ec) {
-                LogDebug(BCLog::HTTP, "TLS handshake with %s failed: %s\n",
-                         conn.peer.ToStringAddrPort(), hs_ec.message());
-            } else {
-                buffer.consume(used);
-                conn.is_tls = true;
-                conn.client_cert_fingerprint_hex =
-                    ClientCertFingerprint(tls_stream.native_handle());
-                co_await ServeHTTP(tls_stream, buffer, conn);
-                tls_stream.next_layer().expires_after(std::chrono::seconds{5});
-                co_await tls_stream.async_shutdown(
+            tls::SslPtr ssl{SSL_new(g_ssl_ctx.get())};
+            if (ssl && SSL_set_fd(ssl.get(), int(sock.native_handle())) == 1) {
+                OsslStream tls_stream{stream, std::move(ssl)};
+                auto [hs_ec, hs] = co_await tls_stream.async_handshake(
                     asio::as_tuple(asio::use_awaitable));
+                deadline.cancel();
+                if (hs_ec) {
+                    LogDebug(BCLog::HTTP,
+                             "TLS handshake with %s failed: %s\n",
+                             conn.peer.ToStringAddrPort(), tls::ErrorString());
+                } else {
+                    conn.is_tls = true;
+                    conn.client_cert_fingerprint_hex =
+                        ClientCertFingerprint(tls_stream.native_handle());
+                    co_await ServeHTTP(tls_stream, buffer, conn);
+                    tls_stream.shutdown(ec);
+                    sock.shutdown(tcp::socket::shutdown_send, ec);
+                }
             }
         }
     } catch (const std::exception &e) {
@@ -1621,27 +1645,18 @@ static bool InitTLS() {
         return true;
     }
 
-    auto ctx{std::make_unique<ssl::context>(ssl::context::tls_server)};
-    try {
-        ctx->set_options(ssl::context::default_workarounds |
-                         ssl::context::no_sslv2 | ssl::context::no_sslv3 |
-                         ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1 |
-                         ssl::context::single_dh_use);
-        ctx->use_certificate_chain_file(fs::PathToString(cert_path));
-        ctx->use_private_key_file(fs::PathToString(key_path),
-                                  ssl::context::pem);
-    } catch (const boost::system::system_error &e) {
+    auto ctx{tls::NewContext(/*server=*/true)};
+    if (!ctx || !tls::UseCertificateFiles(ctx.get(), cert_path, key_path)) {
         LogPrintf("Error: unable to load TLS certificate %s / key %s: %s\n",
                   fs::PathToString(cert_path), fs::PathToString(key_path),
-                  e.what());
+                  tls::ErrorString());
         return false;
     }
     if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL)) {
         // Ask for a client certificate, accept any (including self-signed
         // node certificates); the fingerprint is exposed per request.
-        ctx->set_verify_mode(ssl::verify_peer);
-        ctx->set_verify_callback(
-            [](bool, ssl::verify_context &) { return true; });
+        SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER,
+                           [](int, X509_STORE_CTX *) { return 1; });
     }
     g_ssl_ctx = std::move(ctx);
     LogPrintf("TLS enabled on the RPC port using %s\n",
