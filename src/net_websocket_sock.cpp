@@ -48,8 +48,15 @@ WebSocketSock::WebSocketSock(SOCKET fd, WebSocketCodec::Role role,
                              std::shared_ptr<WebSocketTransportInfo> info,
                              std::unique_ptr<WebSocketByteLayer> layer,
                              std::vector<uint8_t> initial_wire_bytes)
-    : Sock{fd}, m_info{std::move(info)}, m_layer{std::move(layer)},
-      m_codec{role, m_info->compression},
+    : WebSocketSock(Sock{fd}, role, std::move(info), std::move(layer),
+                    std::move(initial_wire_bytes)) {}
+
+WebSocketSock::WebSocketSock(Sock &&sock, WebSocketCodec::Role role,
+                             std::shared_ptr<WebSocketTransportInfo> info,
+                             std::unique_ptr<WebSocketByteLayer> layer,
+                             std::vector<uint8_t> initial_wire_bytes)
+    : Sock{std::move(sock)}, m_info{std::move(info)},
+      m_layer{std::move(layer)}, m_codec{role, m_info->compression},
       m_rx_wire{std::move(initial_wire_bytes)} {
     // Never block a CConnman thread: MSG_DONTWAIT may be unavailable (it is
     // then defined as 0 by compat.h), so make the socket itself
