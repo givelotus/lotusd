@@ -756,6 +756,38 @@ class ParityChain(BitcoinTestFramework):
                 return
             self.tick(1)
 
+    def act_ctor_chain(self, length=3):
+        """Mine a block with a chain of txs whose children sort before their
+        parents in the block's canonical (txid) order, so the indexers apply
+        spends of coins created later in the same block."""
+        coin = self.take(1_000_000, kinds=["p2sh_true"], confirmed=True)
+        if coin is None or self.a.gettxout(coin.txid, coin.n, False) is None:
+            return
+        first = coin
+        spk = self.w.spks["p2sh_true"]
+        txs = []
+        parent_txid = None
+        for _ in range(length):
+            for attempt in range(64):
+                out_value = coin.value - 20_000 - attempt
+                tx = self.build([coin], [CTxOut(out_value, CScript(spk))],
+                                change_kind=None)
+                txid = self.txid_of(tx)
+                if parent_txid is None or txid < parent_txid:
+                    break
+            else:
+                break
+            txs.append((txid, tx))
+            parent_txid = txid
+            coin = Coin(txid, 0, out_value, "p2sh_true", spk)
+        if len(txs) < 2:
+            return
+        self.spend([first])
+        # Canonical order: each child before its parent
+        self.mine_with([tx for _, tx in sorted(txs, key=lambda t: t[0])])
+        self.add_outputs(parent_txid, txs[-1][1])
+        self.stats["ctor_chains"] += 1
+
     def act_consolidate(self):
         small = [c for c in self.coins if c.value >= 5000]
         if len(small) < 3:
@@ -1395,7 +1427,8 @@ class ParityChain(BitcoinTestFramework):
         self.ws = None
         self.ws_label = None
         self.stats = {k: 0 for k in ("txs_sent", "txs_rejected", "unexpected_accept",
-                                     "conflicts", "reorgs", "token_steps")}
+                                     "conflicts", "reorgs", "token_steps",
+                                     "ctor_chains")}
         self.can_sign = not self.v2
         self.cb_kinds = ["p2sh_true", "p2sh_true", "p2pkh", "bare_true", "p2pk",
                          "p2sh_lokad", "other_drop", "p2pk65"]
@@ -1465,6 +1498,8 @@ class ParityChain(BitcoinTestFramework):
                 self.act_opreturns()
             if rnd % 3 == 0:
                 self.act_consolidate()
+            if rnd % 4 == 1:
+                self.act_ctor_chain(self.rng.randint(2, 4))
             for _ in range(token_steps_per_round if rnd % token_every == 0 else 0):
                 self.token_step()
                 if self.need_mine:
