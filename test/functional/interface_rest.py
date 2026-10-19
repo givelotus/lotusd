@@ -41,12 +41,11 @@ def filter_output_indices_by_value(vouts, value):
 
 
 class RESTTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.extra_args = [["-rest", "-blockfilterindex=1"], []]
-        self.noban_tx_relay = True
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 2
+    extra_args = [["-rest", "-blockfilterindex=1"], []]
+    noban_tx_relay = True
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

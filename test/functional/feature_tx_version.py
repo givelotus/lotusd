@@ -38,15 +38,14 @@ START_TIME = 1_900_000_000
 
 
 class TxVersionTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.extra_args = [
-            [
-                "-acceptnonstdtxn=0",
-                "-whitelist=127.0.0.1",
-            ]
+    num_nodes = 1
+    setup_clean_chain = True
+    extra_args = [
+        [
+            "-acceptnonstdtxn=0",
+            "-whitelist=127.0.0.1",
         ]
+    ]
 
     def run_test(self):
         self.block_heights = {}

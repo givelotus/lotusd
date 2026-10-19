@@ -20,18 +20,17 @@ from test_framework.wallet import DEFAULT_FEE, MiniWallet
 
 
 class MempoolLimitTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-acceptnonstdtxn=1",
-                "-maxmempool=5",
-                "-spendzeroconfchange=0",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-acceptnonstdtxn=1",
+            "-maxmempool=5",
+            "-spendzeroconfchange=0",
         ]
-        self.supports_cli = False
+    ]
+    supports_cli = False
 
     def test_mid_package_eviction(self):
         node = self.nodes[0]

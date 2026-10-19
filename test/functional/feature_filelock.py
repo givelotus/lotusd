@@ -10,9 +10,8 @@ from test_framework.test_node import ErrorMatch
 
 
 class FilelockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
+    setup_clean_chain = True
+    num_nodes = 2
 
     def setup_network(self):
         self.add_nodes(self.num_nodes, extra_args=None)
