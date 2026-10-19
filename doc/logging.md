@@ -71,3 +71,13 @@ values use the length-prefixed binary representation. Oversize entries use
 one sealed memfd via SCM_RIGHTS. Journal transport failures cannot indefinitely
 block the logger: socket sends have a 100ms timeout and stderr fallback.
 Source: [native journal protocol](https://systemd.io/JOURNAL_NATIVE_PROTOCOL/).
+
+`-logformat=syslog` writes RFC 5424 records to the usual file/console sinks;
+it does not open a remote network connection. It uses daemon facility 3 and
+the same severity mapping as journald. The header version is 1, with an
+RFC 3339 timestamp (or NILVALUE when timestamps are disabled). Unknown host,
+application, process, message-id and structured-data are represented by the
+specified NILVALUE, rather than made-up identity or enterprise identifiers.
+The UTF-8 MSG starts with a BOM and contains a generic JSON event, preserving
+all core and typed fields with JSON escaping. One physical line is one record.
+Source: [RFC 5424 sections 6 and 6.4](https://datatracker.ietf.org/doc/html/rfc5424).
