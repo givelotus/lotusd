@@ -11,6 +11,7 @@
 #include <key_io.h>
 #include <net.h>
 #include <node/blockfitter.h>
+#include <node/miner.h>
 #include <node/context.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
@@ -96,24 +97,19 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
     }
 
     const int nHeight = pindexPrev->nHeight + 1;
+    // Rebuild the coinbase input for its own version, keeping its outputs.
     CMutableTransaction tx_coinbase{*pblock->vtx.at(0)};
-    tx_coinbase.vin.at(0).prevout =
-        COutPoint(TxId(pindexPrev->GetBlockHash()), static_cast<uint32_t>(nHeight));
-    tx_coinbase.vin.at(0).nFlags = 2;
-    tx_coinbase.vin.at(0).scriptSig =
-        CScript{} << nHeight
-                  << getExcessiveBlockSizeSig(nExcessiveBlockSize);
-
-    // Make sure the coinbase is big enough.
-    uint64_t coinbaseSize = ::GetSerializeSize(tx_coinbase);
-    if (coinbaseSize < MIN_TX_SIZE) {
-        tx_coinbase.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
+    CMutableTransaction shell = node::CreateCoinbaseShell(
+        tx_coinbase.nVersion, pindexPrev->GetBlockHash(), nHeight);
+    shell.vin[0].scriptSig = CScript{}
+                             << nHeight
+                             << getExcessiveBlockSizeSig(nExcessiveBlockSize);
+    if (shell.vin[0].nFlags == 2) {
+        shell.vin[0].vCoinbaseData.assign(shell.vin[0].scriptSig.begin(),
+                                          shell.vin[0].scriptSig.end());
     }
-    tx_coinbase.vin[0].fHasCoinbaseData = true;
-    tx_coinbase.vin[0].vCoinbaseData.assign(
-        tx_coinbase.vin[0].scriptSig.begin(),
-        tx_coinbase.vin[0].scriptSig.end());
+    tx_coinbase.vin = shell.vin;
+    node::PadCoinbaseToMinSize(tx_coinbase);
 
     assert(tx_coinbase.vin[0].scriptSig.size() <= MAX_COINBASE_SCRIPTSIG_SIZE);
     assert(::GetSerializeSize(tx_coinbase) >= MIN_TX_SIZE);
