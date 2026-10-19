@@ -126,6 +126,30 @@ class HTTPMetricsTest(BitcoinTestFramework):
         samples = self.scrape()
         assert_equal(samples[("lotus_metrics_dropped_samples_total", ())], 0)
 
+        self.log.info("Peers: node1 over WebSocket, node1 over TCP")
+        self.wait_until(
+            lambda: self.total(
+                self.scrape(), "lotus_peers", direction="inbound",
+                transport="websocket") == 1
+        )
+        self.connect_nodes(0, 1)
+        self.wait_until(
+            lambda: self.total(
+                self.scrape(), "lotus_peers", direction="outbound",
+                transport="tcp") == 1
+        )
+        samples = self.scrape()
+        assert_equal(self.total(samples, "lotus_p2p_websocket_peers"), 1)
+        assert_equal(
+            self.total(samples, "lotus_p2p_websocket_peers", tls="false"), 1)
+        assert_equal(
+            self.total(samples, "lotus_p2p_connections_total",
+                       direction="inbound", transport="websocket"), 1)
+        for name in ("lotus_p2p_received_messages_total",
+                     "lotus_p2p_sent_messages_total"):
+            assert self.total(samples, name, type="version") >= 2, name
+        assert self.total(samples, "lotus_p2p_sent_bytes_total") > 0
+        assert ("lotus_p2p_received_bytes_total", (("type", "other"),)) in samples
 
 
         self.log.info("HTTP and RPC requests")
