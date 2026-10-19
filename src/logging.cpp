@@ -525,8 +525,8 @@ void BCLog::Logger::LogPrintStr_(std::string_view str,
             m_reopen_file = false;
             FILE *new_fileout = fsbridge::fopen(m_file_path, "a");
             if (new_fileout) {
-                // unbuffered.
-                setbuf(m_fileout, nullptr);
+                // unbuffered, like the file opened by StartLogging
+                setbuf(new_fileout, nullptr);
                 fclose(m_fileout);
                 m_fileout = new_fileout;
             }
