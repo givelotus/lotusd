@@ -139,6 +139,13 @@ struct TestChain100Setup : public TestingSetup {
     CBlock CreateBlock(const std::vector<CMutableTransaction> &txns,
                        const CScript &scriptPubKey, Chainstate &chainstate);
 
+    /**
+     * Version of the coinbases CreateBlock builds. Legacy (2) by default, so
+     * that the inherited tests can spend them with legacy transactions; a V2
+     * test sets 7 before mining the blocks it spends.
+     */
+    uint32_t m_coinbase_version{2};
+
     //! Mine a series of new blocks on the active chain.
     void mineBlocks(int num_blocks);
 
