@@ -36,7 +36,6 @@ CTransactionRef MakeCoinbaseTx(uint32_t height, Amount subsidy = 200 * SATOSHI) 
     cb.nVersion = 2;
     cb.vin.resize(1);
     cb.vin[0].prevout = COutPoint();
-    cb.vin[0].nFlags = 2;
     cb.vin[0].scriptSig = CScript() << height << OP_0;
     cb.vout.resize(1);
     cb.vout[0].nValue = subsidy;
@@ -228,7 +227,6 @@ BOOST_AUTO_TEST_CASE(mempool_overlay_layer_matches_full_block_state_root) {
     base_cb.nVersion = 2;
     base_cb.vin.resize(1);
     base_cb.vin[0].prevout = COutPoint();
-    base_cb.vin[0].nFlags = 2;
     base_cb.vin[0].scriptSig = CScript() << 1 << OP_0;
     base_cb.vout.resize(60);
     for (size_t i = 0; i < 60; ++i) {
@@ -1139,7 +1137,6 @@ BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, Testing
     base_cb.nVersion = 2;
     base_cb.vin.resize(1);
     base_cb.vin[0].prevout = COutPoint();
-    base_cb.vin[0].nFlags = 2;
     base_cb.vin[0].scriptSig = CScript() << 1 << OP_0;
     base_cb.vout.resize(300);
     for (size_t i = 0; i < 300; ++i) {
@@ -1345,15 +1342,16 @@ BOOST_FIXTURE_TEST_CASE(phase2_hotspots_coalesced_batch_and_schnorr_msm, Testing
     BOOST_CHECK(!bad_collector.VerifyAll());
 }
 
-BOOST_AUTO_TEST_CASE(smt_node_pure_v7_and_legacy_adapter) {
+BOOST_AUTO_TEST_CASE(smt_node_pure_v7) {
     // Verify SmtNode and OverlayTxEntry no longer carry dual-state script_pubkey vectors
     static_assert(sizeof(lotus::v2::SmtNode) <= 128,
                   "SmtNode must remain compact without dual-state script_pubkey");
 
     const CTransactionRef legacy_cb = MakeCoinbaseTx(42, 500 * SATOSHI);
-    const CTransaction v7_cb = AdaptLegacyTxToV7(*legacy_cb);
+    // The V2 form of a legacy coinbase, built explicitly.
+    const CTransaction v7_cb(
+        CMutableTransaction::FromV2Transaction(legacy_cb->ToV2Transaction()));
     BOOST_CHECK_EQUAL(v7_cb.nVersion, 7U);
-    BOOST_CHECK(v7_cb.fHasV2Lock);
     BOOST_CHECK_EQUAL(v7_cb.nV2Lock, 0U);
     BOOST_CHECK(v7_cb.IsCoinBase());
     BOOST_REQUIRE_EQUAL(v7_cb.vin.size(), 1U);
@@ -1382,10 +1380,9 @@ BOOST_AUTO_TEST_CASE(smt_node_pure_v7_and_legacy_adapter) {
     const COutPoint prevout(v7_cb.GetId(), 0);
     const CTransactionRef legacy_spend =
         MakeSpendTx(prevout, 12345, 200 * SATOSHI, 2);
-    CMutableTransaction mtx_spend(*legacy_spend);
-    AdaptLegacyTxToV7(mtx_spend);
+    CMutableTransaction mtx_spend =
+        CMutableTransaction::FromV2Transaction(legacy_spend->ToV2Transaction());
     BOOST_CHECK_EQUAL(mtx_spend.nVersion, 7U);
-    BOOST_CHECK(mtx_spend.fHasV2Lock);
     BOOST_CHECK_EQUAL(mtx_spend.nV2Lock, (uint64_t(12345) << 8) | 1ULL);
     BOOST_CHECK_EQUAL(mtx_spend.vin[0].nFlags, 1U);
     BOOST_CHECK(!mtx_spend.vin[0].vWitnesses.empty());

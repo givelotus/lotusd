@@ -961,11 +961,13 @@ BOOST_AUTO_TEST_CASE(setAvalancheFinalized_ContextualCheckTransactionFailures) {
         checkTx(bad_tx, good_tx, "bad-txns-undersize");
     }
 
-    // Transaction version is 3
+    // A transaction of version 3 does not exist: it has no serialization, so
+    // it never reaches the mempool.
     {
         CMutableTransaction bad_tx{good_tx};
         bad_tx.nVersion = 3;
-        checkTx(bad_tx, good_tx, "bad-txns-version");
+        BOOST_CHECK_EXCEPTION(CTransaction{bad_tx}, std::ios_base::failure,
+                              HasReason("bad-txns-version"));
     }
 }
 

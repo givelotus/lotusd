@@ -9,10 +9,13 @@
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
+#include <lotus_v2/address.h>
 #include <minerfund.h>
+#include <node/miner.h>
 #include <node/snapshot.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
+#include <primitives/v2_outputs.h>
 #include <rpc/blockchain.h>
 #include <rpc/server.h>
 #include <script/standard.h>
@@ -44,7 +47,9 @@ struct NativeSnapshotRcuSetup : NativeSnapshotChainSetup {
         auto block = node::BlockAssembler(
                          config, m_node.chainman->ActiveChainstate(),
                          m_node.mempool.get())
-                         .CreateNewBlock(CScript(program.begin(), program.end()))->block;
+                         .CreateNewBlock(V0LeafOutput(
+                             Amount::zero(),
+                             CScript(program.begin(), program.end())))->block;
         while (!CheckProofOfWork(block.GetHash(), block.nBits,
                                  config.GetChainParams().GetConsensus())) {
             ++block.nNonce;
@@ -469,37 +474,22 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
 
     const Consensus::Params &consensusParams =
         config.GetChainParams().GetConsensus();
-    CMutableTransaction coinbaseTx;
-    coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout =
-        COutPoint(TxId(cached_tmpl->prev_block_hash),
-                  static_cast<uint32_t>(cached_tmpl->next_height));
-    coinbaseTx.vin[0].nFlags = 2;
-    coinbaseTx.vout.resize(1);
-    coinbaseTx.vout[0].scriptPubKey = CScript() << OP_TRUE;
-    coinbaseTx.vout[0].nValue = cached_tmpl->block_reward;
-    coinbaseTx.vin[0].scriptSig =
-        CScript() << cached_tmpl->next_height << OP_0;
-    coinbaseTx.vin[0].fHasCoinbaseData = true;
-    coinbaseTx.vin[0].vCoinbaseData.assign(coinbaseTx.vin[0].scriptSig.begin(),
-                                           coinbaseTx.vin[0].scriptSig.end());
+    CMutableTransaction coinbaseTx = node::CreateCoinbaseShell(
+        node::DEFAULT_COINBASE_VERSION, cached_tmpl->prev_block_hash,
+        cached_tmpl->next_height);
+    std::vector<CTxOut> coinbase_outputs{
+        OpTrueOutput(cached_tmpl->block_reward)};
     const auto minerFundWhitelist = GetMinerFundWhitelist(consensusParams);
     if (!minerFundWhitelist.empty()) {
         const Amount minerFundAmount = GetMinerFundAmount(
             consensusParams, cached_tmpl->block_reward, nullptr);
-        coinbaseTx.vout[0].nValue -= minerFundAmount;
-        coinbaseTx.vout.emplace_back(
+        coinbase_outputs[0].nValue -= minerFundAmount;
+        coinbase_outputs.emplace_back(
             minerFundAmount,
             GetScriptForDestination(*minerFundWhitelist.begin()));
     }
-    uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
-    if (coinbaseSize < MIN_TX_SIZE) {
-        coinbaseTx.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
-        coinbaseTx.vin[0].vCoinbaseData.assign(
-            coinbaseTx.vin[0].scriptSig.begin(),
-            coinbaseTx.vin[0].scriptSig.end());
-    }
+    node::SetCoinbaseOutputs(coinbaseTx, coinbase_outputs);
+    node::PadCoinbaseToMinSize(coinbaseTx);
 
     CBlockHeader header;
     header.nHeaderVersion =
@@ -548,8 +538,11 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_o1_and_submitsealedheader) {
     // coinbasetxhex / v2target / chainid + submitsealedblock directly.
     CKey address_key;
     address_key.MakeNewKey(true);
-    const std::string miner_addr =
-        EncodeDestination(PKHash(address_key.GetPubKey()), config);
+    const auto address_pubkey = address_key.GetPubKey();
+    const std::string miner_addr = lotus::v2::EncodeKeyHashAddress(
+        lotus::v2::AddressNetwork::REGTEST,
+        lotus::v2::NativeKeyHash(
+            std::span<const uint8_t, 32>(address_pubkey.data() + 1, 32)));
     JSONRPCRequest gbt2_req;
     gbt2_req.context = &m_node;
     gbt2_req.strMethod = "getblocktemplate";
@@ -659,7 +652,6 @@ BOOST_AUTO_TEST_CASE(testrawtxbatch_and_submitrawtxbatch_all_or_nothing) {
     auto make_v7_tx = [&](const COutPoint &prevout, Amount out_val) {
         CMutableTransaction mtx;
         mtx.nVersion = 7;
-        mtx.fHasV2Lock = true;
         mtx.nV2Lock = 0;
         mtx.nLockTime = 0;
         CTxIn txin(prevout, CScript(), CTxIn::SEQUENCE_FINAL);

@@ -66,14 +66,14 @@ BOOST_AUTO_TEST_CASE(sanity) {
 BOOST_FIXTURE_TEST_CASE(ban_fork_prior_to_and_at_checkpoints, RegTestingSetup) {
     const CCheckpointData test_checkpoints = {
         .mapCheckpoints = {{2, *BlockHash::FromHex(
-                                   "77d41bf0338150d1a01cfe7e6148a6d413d76c6"
-                                   "cbcaf128a773a6693815739b8")}},
+                                   "7c4bff5b6456fec88b2fb14e5663259d62eef23"
+                                   "44408097e037a2d24e7db7e01")}},
     };
     const CBlockIndex *pindex = nullptr;
 
     CBlockHeader headerG = Assert(m_node.chainman)->GetParams().GenesisBlock();
     BOOST_CHECK(headerG.GetHash() ==
-                uint256S("720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561c99b7e50723e4"));
+                uint256S("5297d8c90656af6365bd4c2280f100b13b6fee2e9d909cd29eb509fa3feb7605"));
 
     {
         BlockValidationState state;
@@ -89,8 +89,8 @@ BOOST_FIXTURE_TEST_CASE(ban_fork_prior_to_and_at_checkpoints, RegTestingSetup) {
     headerA.SetBlockTime(headerG.GetBlockTime() + 120);
     headerA.nHeight = 1;
     headerA.nNonce = 10000;
-    BOOST_CHECK(headerA.GetHash() ==
-                uint256S("3d1c1248e8bb735664cf223d0cf1ebd398e0854ef215cbdcb89b745a2a7d4fb0"));
+    BOOST_CHECK_EQUAL(headerA.GetHash().GetHex(),
+                      "7ed294fadecbb5d13432dfb33b9dd744f0f4adac414c1d75932ffb66d45f7a7b");
 
     headerAA.nHeaderVersion = 2;
     headerAA.hashPrevBlock = headerA.GetHash();
@@ -98,8 +98,8 @@ BOOST_FIXTURE_TEST_CASE(ban_fork_prior_to_and_at_checkpoints, RegTestingSetup) {
     headerAA.SetBlockTime(headerA.GetBlockTime() + 120);
     headerAA.nHeight = 2;
     headerAA.nNonce = 10000;
-    BOOST_CHECK(headerAA.GetHash() ==
-                uint256S("77d41bf0338150d1a01cfe7e6148a6d413d76c6cbcaf128a773a6693815739b8"));
+    BOOST_CHECK_EQUAL(headerAA.GetHash().GetHex(),
+                      "7c4bff5b6456fec88b2fb14e5663259d62eef2344408097e037a2d24e7db7e01");
 
     headerB.nHeaderVersion = 2;
     headerB.hashPrevBlock = headerG.GetHash();
@@ -107,17 +107,17 @@ BOOST_FIXTURE_TEST_CASE(ban_fork_prior_to_and_at_checkpoints, RegTestingSetup) {
     headerB.SetBlockTime(headerG.GetBlockTime() + 1);
     headerB.nHeight = 1;
     headerB.nNonce = 20001;
-    BOOST_CHECK(headerB.GetHash() ==
-                uint256S("7db2a4ce92ad8d70ddfbd8422430be84fc558543c1c95695089b9868ef7bc981"));
+    BOOST_CHECK_EQUAL(headerB.GetHash().GetHex(),
+                      "527f7ebd88a93c5b4f777a0b1ffd04cef4a895e20a99f32a09b50ff443dbbcf7");
 
     headerAB.nHeaderVersion = 2;
     headerAB.hashPrevBlock = headerA.GetHash();
     headerAB.nBits = headerA.nBits;
     headerAB.SetBlockTime(headerG.GetBlockTime() + 2);
     headerAB.nHeight = 2;
-    headerAB.nNonce = 20002;
-    BOOST_CHECK(headerAB.GetHash() ==
-                uint256S("688395c3bffed1925d633004bca2944518b59a8e1d5a3d82ba034f4eb3f104c1"));
+    headerAB.nNonce = 20004;
+    BOOST_CHECK_EQUAL(headerAB.GetHash().GetHex(),
+                      "1ec857de7c8e02563b38f1338e621a3304c2ef418f5451e1e1aa26f5727e7682");
 
     // Headers A and AA should be accepted
     {

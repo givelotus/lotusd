@@ -533,7 +533,6 @@ NativeBenchmarkSpend(const CTransaction &previous, uint32_t index,
     const auto program = NativeBenchmarkProgram();
     CMutableTransaction tx;
     tx.nVersion = 7;
-    tx.fHasV2Lock = true;
     tx.nV2Lock = 0;
     CTxIn input(COutPoint(previous.GetId(), index));
     input.nFlags = 1;
@@ -918,18 +917,33 @@ BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
     constexpr size_t kValTxCount = 2000;
     const auto program = NativeBenchmarkProgram();
     const CScript coinbase_spk(program.begin(), program.end());
-    const CBlock funding = CreateAndProcessBlock({}, coinbase_spk);
-    BOOST_REQUIRE_EQUAL(m_node.chainman->ActiveTip()->GetBlockHash(),
-                        funding.GetHash());
-    this->mineBlocks(100);
+    // A transaction has at most MAX_V2_TX_OUTPUTS outputs, so kFanouts native
+    // transactions share the kValTxCount outputs. Their inputs come from a V2
+    // coinbase (a legacy transaction cannot create V2 outputs).
+    constexpr size_t kFanouts = 8;
+    constexpr size_t kOutsPerFanout = kValTxCount / kFanouts;
+    static_assert(kOutsPerFanout <= MAX_V2_TX_OUTPUTS);
+    const Amount fanout_in =
+        m_coinbase_txns[0]->vout[0].nValue / int64_t(kFanouts);
+    lotus::v2::Output funding_output;
+    funding_output.value = fanout_in / SATOSHI;
+    funding_output.branches = {lotus::v2::BranchLeaf(program)};
+    funding_output.paths = {{0}};
+    const CTransactionRef funding = MineV2Coinbase(std::vector<CTxOut>(
+        kFanouts, CTxOut::FromV2Output(funding_output)));
 
-    const Amount total_in = funding.vtx[0]->vout[0].nValue;
-    const Amount per_out = (total_in - 100000 * SATOSHI) / int64_t(kValTxCount);
-    const CMutableTransaction fanout_mtx = NativeBenchmarkSpend(
-        *funding.vtx[0], 0, std::vector<Amount>(kValTxCount, per_out));
-    CTransactionRef fanout_tx = MakeTransactionRef(fanout_mtx);
-    const CBlock fanout_block =
-        CreateAndProcessBlock({fanout_mtx}, coinbase_spk);
+    const Amount per_out =
+        (fanout_in - 100000 * SATOSHI) / int64_t(kOutsPerFanout);
+    std::vector<CMutableTransaction> fanout_mtxs;
+    std::vector<CTransactionRef> fanout_txs;
+    for (size_t f = 0; f < kFanouts; ++f) {
+        fanout_mtxs.push_back(NativeBenchmarkSpend(
+            *funding, uint32_t(f),
+            std::vector<Amount>(kOutsPerFanout, per_out)));
+        fanout_txs.push_back(MakeTransactionRef(fanout_mtxs.back()));
+    }
+    m_coinbase_version = 7;
+    const CBlock fanout_block = CreateAndProcessBlock(fanout_mtxs, coinbase_spk);
     BOOST_REQUIRE_EQUAL(m_node.chainman->ActiveTip()->GetBlockHash(),
                         fanout_block.GetHash());
 
@@ -938,7 +952,8 @@ BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
     signed_mtxs.reserve(kValTxCount);
     signed_txs.reserve(kValTxCount);
     for (size_t i = 0; i < kValTxCount; ++i) {
-        auto tx = NativeBenchmarkSpend(*fanout_tx, uint32_t(i),
+        auto tx = NativeBenchmarkSpend(*fanout_txs[i / kOutsPerFanout],
+                                       uint32_t(i % kOutsPerFanout),
                                        {per_out - 1000 * SATOSHI});
         signed_txs.push_back(MakeTransactionRef(tx));
         signed_mtxs.push_back(std::move(tx));
@@ -977,7 +992,8 @@ BOOST_FIXTURE_TEST_CASE(v2_kernel_throughput_benchmark, TestChain100Setup) {
         txdata_vec.emplace_back(*tx);
     auto verify_signature = [&](size_t i) {
         CScriptCheck check(
-            fanout_tx->vout[i], *signed_txs[i],
+            fanout_txs[i / kOutsPerFanout]->vout[i % kOutsPerFanout],
+            *signed_txs[i],
             m_node.chainman->m_validation_cache.m_signature_cache, 0, 0, false,
             txdata_vec[i]);
         return !check().has_value();
@@ -1199,6 +1215,9 @@ BOOST_FIXTURE_TEST_CASE(v2_parallel_utxo_dependency_validation,
                         TestChain100Setup) {
     const auto program = NativeBenchmarkProgram();
     const CScript coinbase_spk(program.begin(), program.end());
+    // Native funding needs a V2 coinbase; a legacy coinbase pays the program
+    // as a legacy script, which a version 7 input cannot spend.
+    m_coinbase_version = 7;
     const CBlock funding = CreateAndProcessBlock({}, coinbase_spk);
     BOOST_REQUIRE_EQUAL(m_node.chainman->ActiveTip()->GetBlockHash(),
                         funding.GetHash());
@@ -1287,6 +1306,9 @@ BOOST_FIXTURE_TEST_CASE(v2_native_v7_chained_schnorr_batch_and_block,
     using namespace lotus::v2;
     const auto program = NativeBenchmarkProgram();
     const CScript coinbase_spk(program.begin(), program.end());
+    // Native funding needs a V2 coinbase; a legacy coinbase pays the program
+    // as a legacy script, which a version 7 input cannot spend.
+    m_coinbase_version = 7;
     const CBlock funding = CreateAndProcessBlock({}, coinbase_spk);
     BOOST_REQUIRE_EQUAL(m_node.chainman->ActiveTip()->GetBlockHash(),
                         funding.GetHash());
@@ -1342,7 +1364,6 @@ BOOST_FIXTURE_TEST_CASE(v2_native_v7_chained_schnorr_batch_and_block,
         for (size_t d = 0; d < kChainDepth; ++d) {
             CMutableTransaction mtx;
             mtx.nVersion = 7;
-            mtx.fHasV2Lock = true;
             mtx.nV2Lock = 0;
             mtx.nLockTime = 0;
 
@@ -1446,59 +1467,6 @@ BOOST_FIXTURE_TEST_CASE(v2_native_v7_chained_schnorr_batch_and_block,
                           connected.GetHash());
         BOOST_CHECK_EQUAL(m_node.mempool->size(), 0U);
     }
-}
-
-BOOST_AUTO_TEST_CASE(legacy_to_v7_adapter_roundtrip) {
-    // 1. AdaptLegacyOutputToV7 on standard output, OP_RETURN burn output, and empty scriptPubKey
-    CTxOut spend_out(1234 * SATOSHI, CScript() << OP_TRUE);
-    AdaptLegacyOutputToV7(spend_out);
-    BOOST_CHECK_EQUAL(spend_out.nFlags, 0U);
-    BOOST_CHECK_EQUAL(spend_out.vBranches.size(), 1U);
-    BOOST_CHECK_EQUAL(spend_out.vPaths.size(), 1U);
-
-    CTxOut burn_out(0 * SATOSHI, CScript() << OP_RETURN << std::vector<uint8_t>{1, 2, 3});
-    AdaptLegacyOutputToV7(burn_out);
-    BOOST_CHECK_EQUAL(burn_out.nFlags, 2U);
-    BOOST_CHECK_EQUAL(burn_out.vBranches.size(), 1U);
-    BOOST_CHECK(burn_out.vPaths.empty());
-
-    CTxOut empty_spk_out(500 * SATOSHI, CScript());
-    AdaptLegacyOutputToV7(empty_spk_out);
-    BOOST_CHECK_EQUAL(empty_spk_out.nFlags, 0U);
-    BOOST_CHECK_EQUAL(empty_spk_out.vBranches.size(), 1U);
-    BOOST_CHECK(!empty_spk_out.scriptPubKey.empty());
-
-    // 2. AdaptLegacyInputToV7 on spend input with non-standard sequence and coinbase input
-    TxId dummy_txid = TxId(uint256::ONE);
-    CTxIn spend_in(COutPoint(dummy_txid, 2), CScript() << OP_1, 0x80000001U);
-    AdaptLegacyInputToV7(spend_in);
-    BOOST_CHECK_EQUAL(spend_in.nFlags, 1U);
-    BOOST_CHECK_EQUAL(spend_in.nSequence, uint32_t(CTxIn::SEQUENCE_FINAL));
-    BOOST_REQUIRE_EQUAL(spend_in.vWitnesses.size(), 1U);
-    BOOST_CHECK(!spend_in.vWitnesses[0].script.empty());
-
-    // 3. Full transaction with MTP locktime (>= 500,000,000)
-    CMutableTransaction mtx;
-    mtx.nVersion = 2;
-    mtx.nLockTime = 1700000000U;
-    mtx.vin.push_back(spend_in);
-    mtx.vout.push_back(spend_out);
-    mtx.vout.push_back(burn_out);
-
-    const CTransaction adapted = AdaptLegacyTxToV7(CTransaction(mtx));
-    BOOST_CHECK_EQUAL(adapted.nVersion, 7U);
-    BOOST_CHECK(adapted.fHasV2Lock);
-    BOOST_CHECK_EQUAL(adapted.nV2Lock, (uint64_t(1700000000U) << 8) | 2ULL);
-
-    DataStream ss{};
-    ss << adapted;
-    const size_t expected_size = ss.size();
-    CTransaction deserialized(deserialize, ss);
-    BOOST_CHECK_EQUAL(deserialized.nVersion, 7U);
-    BOOST_CHECK_EQUAL(deserialized.GetId(), adapted.GetId());
-    BOOST_CHECK_EQUAL(deserialized.GetHash(), adapted.GetHash());
-    BOOST_CHECK_EQUAL(deserialized.GetTotalSize(), expected_size);
-    BOOST_CHECK_EQUAL(GetSerializeSize(deserialized), expected_size);
 }
 
 BOOST_AUTO_TEST_CASE(c17a_fee_backed_utxo_expiry_and_cleaning_crew) {

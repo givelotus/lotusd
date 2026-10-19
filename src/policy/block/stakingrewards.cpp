@@ -4,6 +4,8 @@
 
 #include <policy/block/stakingrewards.h>
 
+#include <primitives/v2_outputs.h>
+
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
 #include <blockindex.h>
@@ -41,7 +43,10 @@ bool StakingRewardsPolicy::operator()(BlockPolicyValidationState &state) {
             continue;
         }
 
-        auto it = std::find(winners.begin(), winners.end(), o.scriptPubKey);
+        auto it = std::find_if(
+            winners.begin(), winners.end(), [&](const CScript &winner) {
+                return CoinbaseOutputPaysScript(o, winner);
+            });
         if (it != winners.end()) {
             if (it != winners.begin()) {
                 LogDebug(BCLog::AVALANCHE,

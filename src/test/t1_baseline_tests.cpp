@@ -87,7 +87,11 @@ BOOST_AUTO_TEST_CASE(regtest_genesis) {
     BOOST_TEST_MESSAGE("regtest genesis " << genesis.GetHash().GetHex()
                                           << " merkle "
                                           << genesis.hashMerkleRoot.GetHex());
-    BOOST_CHECK_EQUAL(genesis.GetHash().GetHex(), "078419172a86430dea899ecec3abd6c4ad8b56fbadc617aacd5b71d1a9038cb6");
+    // T1-02: the coinbase is serialized in the v7 grammar instead of the
+    // wrapped form. Its TxId, TxHash and so the merkle root are unchanged,
+    // but the header commits to the block size, which changes; before it was
+    // 078419172a86430dea899ecec3abd6c4ad8b56fbadc617aacd5b71d1a9038cb6.
+    BOOST_CHECK_EQUAL(genesis.GetHash().GetHex(), "b1b2fce8cc5c3e90a848097de3f169a39ea8ea226aebbd711b0aec2327d4b9b5");
     BOOST_CHECK_EQUAL(genesis.hashMerkleRoot.GetHex(), "ab7a9a3a45e6decf448edff44e2904ba8531902e11e5bc8a7bf8833661220aca");
 }
 

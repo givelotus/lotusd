@@ -135,19 +135,20 @@ public:
     static CTxIn FromV2Input(const lotus::v2::Input &in);
     static CTxIn FromV2Input(lotus::v2::Input &&in);
 
+    /**
+     * A legacy input (of a version 1 or 2 transaction) has only prevout,
+     * scriptSig and nSequence. A V2 input (of a version 7 transaction) has
+     * nFlags 1 (spend), 2 (coinbase) or 3 (mint) and no scriptSig. The
+     * serializer refuses any other combination.
+     */
+    bool IsLegacy() const { return nFlags == 0; }
+
     friend bool operator==(const CTxIn &a, const CTxIn &b) {
-        if (a.nFlags != 0 && a.nFlags == b.nFlags) {
-            return (a.prevout == b.prevout && a.nSequence == b.nSequence &&
-                    a.nPathIndex == b.nPathIndex &&
-                    a.vWitnesses == b.vWitnesses &&
-                    a.fHasCoinbaseData == b.fHasCoinbaseData &&
-                    a.vCoinbaseData == b.vCoinbaseData);
-        }
-        return (a.prevout == b.prevout && a.scriptSig == b.scriptSig &&
-                a.nSequence == b.nSequence && a.nFlags == b.nFlags &&
-                a.nPathIndex == b.nPathIndex && a.vWitnesses == b.vWitnesses &&
-                a.fHasCoinbaseData == b.fHasCoinbaseData &&
-                a.vCoinbaseData == b.vCoinbaseData);
+        return a.prevout == b.prevout && a.scriptSig == b.scriptSig &&
+               a.nSequence == b.nSequence && a.nFlags == b.nFlags &&
+               a.nPathIndex == b.nPathIndex && a.vWitnesses == b.vWitnesses &&
+               a.fHasCoinbaseData == b.fHasCoinbaseData &&
+               a.vCoinbaseData == b.vCoinbaseData;
     }
 
     friend bool operator!=(const CTxIn &a, const CTxIn &b) { return !(a == b); }
@@ -195,26 +196,30 @@ public:
     static CTxOut FromV2Output(const lotus::v2::Output &out);
     static CTxOut FromV2Output(lotus::v2::Output &&out);
 
+    /**
+     * A legacy output (of a version 1 or 2 transaction) has only nValue and
+     * scriptPubKey. A V2 output (of a version 7 transaction) has at least one
+     * branch; its scriptPubKey is not part of the output but its V2 wire
+     * encoding (V2ScriptPubKey), kept for display and indexing.
+     */
+    bool IsLegacy() const { return vBranches.empty(); }
+
+    /**
+     * The scriptPubKey a V2 output carries: its V2 wire encoding (0x6a
+     * prefixed for a burn output).
+     */
+    static CScript V2ScriptPubKey(const lotus::v2::Output &out);
+
     friend bool operator==(const CTxOut &a, const CTxOut &b) {
-        if (a.nValue != b.nValue) {
+        if (a.nValue != b.nValue || a.IsLegacy() != b.IsLegacy()) {
             return false;
         }
-        if (a.scriptPubKey == b.scriptPubKey) {
-            if (a.vBranches.empty() != b.vBranches.empty()) {
-                return true;
-            }
-            return (a.nFlags == b.nFlags && a.tokenId == b.tokenId &&
-                    a.stateRoot == b.stateRoot && a.vBranches == b.vBranches && a.vPaths == b.vPaths);
+        if (a.IsLegacy()) {
+            return a.scriptPubKey == b.scriptPubKey;
         }
-        if (!a.vBranches.empty() || !b.vBranches.empty()) {
-            const lotus::v2::Output va = a.ToV2Output();
-            const lotus::v2::Output vb = b.ToV2Output();
-            return va.flags == vb.flags && va.value == vb.value &&
-                   va.token_id == vb.token_id &&
-                   va.state_root == vb.state_root && va.branches == vb.branches &&
-                   va.paths == vb.paths;
-        }
-        return false;
+        return a.nFlags == b.nFlags && a.tokenId == b.tokenId &&
+               a.stateRoot == b.stateRoot && a.vBranches == b.vBranches &&
+               a.vPaths == b.vPaths;
     }
 
     friend bool operator!=(const CTxOut &a, const CTxOut &b) {
@@ -227,7 +232,25 @@ public:
 class CMutableTransaction;
 
 /**
- * Lotus V2 v7 transaction serialization (and fallback for legacy versions).
+ * Throw std::ios_base::failure unless every input and output of a version 1
+ * or 2 transaction is legacy and it has no V2 lock.
+ */
+void CheckLegacyTransactionFields(const CMutableTransaction &tx);
+
+/**
+ * Throw std::ios_base::failure unless a version 7 transaction is made of V2
+ * inputs and outputs only: every input has nFlags 1, 2 or 3 and an empty
+ * scriptSig, every output has a branch and a scriptPubKey that is either
+ * empty or its V2 wire encoding, and nLockTime is the legacy view of nV2Lock.
+ * A version 7 transaction holding a legacy script is therefore never
+ * serialized, so no script can silently drop out of it.
+ */
+void CheckV7TransactionFields(const CMutableTransaction &tx);
+
+/**
+ * Transaction serialization. The version selects the grammar: 1 or 2 is the
+ * legacy (eCash) grammar, 7 the V2 grammar. Any other version does not
+ * decode (bad-txns-version).
  */
 template <typename Stream, typename TxType>
 inline void UnserializeTransaction(TxType &tx, Stream &s) {
@@ -235,8 +258,16 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
     s >> raw_version;
     tx.vin.clear();
     tx.vout.clear();
-    tx.fHasV2Lock = false;
     tx.nV2Lock = 0;
+    if (raw_version == 1 || raw_version == 2) {
+        // Legacy grammar: (vin[prevout, scriptSig, nSequence],
+        // vout[nValue, scriptPubKey], nLockTime), as in eCash.
+        tx.nVersion = raw_version;
+        s >> tx.vin;
+        s >> tx.vout;
+        s >> tx.nLockTime;
+        return;
+    }
     if (raw_version == 7) {
         tx.nVersion = 7;
         uint64_t lock = 0;
@@ -249,7 +280,6 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
         if (in_count == 0) {
             throw std::ios_base::failure("invalid V2 transaction: empty inputs");
         }
-        tx.fHasV2Lock = true;
         tx.nV2Lock = lock;
         tx.nLockTime = static_cast<uint32_t>(lock >> 8);
         tx.vin.reserve(in_count);
@@ -447,83 +477,42 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
         }
         return;
     }
-    const bool is_v2_wrapped =
-        ((raw_version & 0xc0000000U) != 0) && ((raw_version & 0x3fffffffU) == 7);
-    const bool is_v2_cb = is_v2_wrapped && ((raw_version & 0x40000000U) != 0);
-    tx.nVersion = is_v2_wrapped ? 7U : raw_version;
-    s >> tx.vin;
-    s >> tx.vout;
-    s >> tx.nLockTime;
-    if (is_v2_cb && !tx.vin.empty()) {
-        tx.vin[0].nFlags = 2;
-        tx.vin[0].fHasCoinbaseData = !tx.vin[0].scriptSig.empty();
-        tx.vin[0].vCoinbaseData.assign(tx.vin[0].scriptSig.begin(),
-                                       tx.vin[0].scriptSig.end());
-    }
+    throw std::ios_base::failure("bad-txns-version");
 }
 
 template <typename Stream, typename TxType>
 inline void SerializeTransaction(const TxType &tx, Stream &s) {
-    const bool is_pure_v2 =
-        (tx.nVersion == 7) && !tx.vin.empty() && !tx.vout.empty() &&
-        std::all_of(tx.vin.begin(), tx.vin.end(),
-                    [](const auto &in) { return in.nFlags != 0; }) &&
-        std::all_of(tx.vout.begin(), tx.vout.end(),
-                    [](const auto &out) { return !out.vBranches.empty(); });
-    if (is_pure_v2) {
+    if (tx.nVersion == 1 || tx.nVersion == 2) {
+        if constexpr (std::is_same_v<TxType, CMutableTransaction>) {
+            CheckLegacyTransactionFields(tx);
+        }
+        s << tx.nVersion;
+        WriteCompactSize(s, tx.vin.size());
+        for (const auto &in : tx.vin) s << in;
+        WriteCompactSize(s, tx.vout.size());
+        for (const auto &out : tx.vout) s << out;
+        s << tx.nLockTime;
+        return;
+    }
+    if (tx.nVersion != 7) {
+        throw std::ios_base::failure("bad-txns-version");
+    }
+    if constexpr (std::is_same_v<TxType, CMutableTransaction>) {
+        CheckV7TransactionFields(tx);
+    }
+    {
         const uint32_t version = 7;
-        const bool is_cb =
-            (tx.vin.size() == 1 &&
-             (tx.vin[0].prevout.IsNull() || tx.vin[0].nFlags == 2));
-        const uint64_t lock =
-            tx.fHasV2Lock
-                ? tx.nV2Lock
-                : ((is_cb || tx.nLockTime == 0)
-                       ? 0ULL
-                       : ((uint64_t(tx.nLockTime) << 8) |
-                          (tx.nLockTime < 500000000U ? 1ULL : 2ULL)));
+        const uint64_t lock = tx.nV2Lock;
         const uint16_t in_count = static_cast<uint16_t>(tx.vin.size());
         const uint16_t out_count = static_cast<uint16_t>(tx.vout.size());
         s << version << lock << in_count << out_count;
         for (const auto &txin : tx.vin) {
-            if ((txin.nFlags == 1 && !txin.vWitnesses.empty()) ||
-                (txin.nFlags == 2 &&
-                 (txin.fHasCoinbaseData || txin.scriptSig.empty())) ||
-                txin.nFlags == 3) {
-                s.write(AsBytes(Span{txin.prevout.GetTxId().begin(), 32}));
-                const uint32_t prev_index = txin.prevout.GetN();
-                uint32_t seq = txin.nSequence;
-                if (txin.nFlags == 2) {
-                    seq = CTxIn::SEQUENCE_FINAL;
-                } else if (txin.nFlags == 1 && seq != CTxIn::SEQUENCE_FINAL &&
-                           (seq & ~0x40ffffU)) {
-                    seq = CTxIn::SEQUENCE_FINAL;
-                }
-                s << prev_index << seq << txin.nFlags;
-                if (txin.nFlags == 1) {
-                    WriteCompactSize(s, txin.nPathIndex);
-                    WriteCompactSize(s, txin.vWitnesses.size());
-                    for (const auto &w : txin.vWitnesses) {
-                        s << w.script;
-                        WriteCompactSize(s, w.siblings.size());
-                        for (const auto &sib : w.siblings) {
-                            s.write(AsBytes(Span{sib.data(), 32}));
-                        }
-                        WriteCompactSize(s, w.arguments.size());
-                        for (const auto &arg : w.arguments) {
-                            s << arg;
-                        }
-                    }
-                } else if (txin.nFlags == 2) {
-                    WriteCompactSize(s, txin.fHasCoinbaseData ? 1 : 0);
-                    if (txin.fHasCoinbaseData) {
-                        s << txin.vCoinbaseData;
-                    }
-                } else if (txin.nFlags == 3) {
-                    const lotus::v2::BranchWitness empty_w{};
-                    const auto &w = txin.vWitnesses.empty()
-                                        ? empty_w
-                                        : txin.vWitnesses[0];
+            s.write(AsBytes(Span{txin.prevout.GetTxId().begin(), 32}));
+            s << txin.prevout.GetN() << txin.nSequence << txin.nFlags;
+            if (txin.nFlags == 1) {
+                WriteCompactSize(s, txin.nPathIndex);
+                WriteCompactSize(s, txin.vWitnesses.size());
+                for (const auto &w : txin.vWitnesses) {
                     s << w.script;
                     WriteCompactSize(s, w.siblings.size());
                     for (const auto &sib : w.siblings) {
@@ -534,34 +523,13 @@ inline void SerializeTransaction(const TxType &tx, Stream &s) {
                         s << arg;
                     }
                 }
-                continue;
-            }
-            const lotus::v2::Input in = txin.ToV2Input();
-            s.write(AsBytes(Span{in.prev_txid.data(), 32}));
-            s << in.prev_index << in.sequence << in.flags;
-            if (in.flags == 1) {
-                WriteCompactSize(s, in.path_index);
-                WriteCompactSize(s, in.witnesses.size());
-                for (const auto &w : in.witnesses) {
-                    s << w.script;
-                    WriteCompactSize(s, w.siblings.size());
-                    for (const auto &sib : w.siblings) {
-                        s.write(AsBytes(Span{sib.data(), 32}));
-                    }
-                    WriteCompactSize(s, w.arguments.size());
-                    for (const auto &arg : w.arguments) {
-                        s << arg;
-                    }
+            } else if (txin.nFlags == 2) {
+                WriteCompactSize(s, txin.fHasCoinbaseData ? 1 : 0);
+                if (txin.fHasCoinbaseData) {
+                    s << txin.vCoinbaseData;
                 }
-            } else if (in.flags == 2) {
-                WriteCompactSize(s, in.has_coinbase_data ? 1 : 0);
-                if (in.has_coinbase_data) {
-                    s << in.coinbase_data;
-                }
-            } else if (in.flags == 3) {
-                const lotus::v2::BranchWitness empty_w{};
-                const auto &w =
-                    in.witnesses.empty() ? empty_w : in.witnesses[0];
+            } else {
+                const auto &w = txin.vWitnesses[0];
                 s << w.script;
                 WriteCompactSize(s, w.siblings.size());
                 for (const auto &sib : w.siblings) {
@@ -595,20 +563,7 @@ inline void SerializeTransaction(const TxType &tx, Stream &s) {
                 }
             }
         }
-        return;
     }
-    const bool is_v2_cb =
-        (tx.nVersion == 7 && !tx.vin.empty() && tx.vin[0].nFlags == 2);
-    const uint32_t raw_version =
-        (tx.nVersion == 7)
-            ? (7U | 0x80000000U | (is_v2_cb ? 0x40000000U : 0U))
-            : tx.nVersion;
-    s << raw_version;
-    WriteCompactSize(s, tx.vin.size());
-    for (const auto &in : tx.vin) s << in;
-    WriteCompactSize(s, tx.vout.size());
-    for (const auto &out : tx.vout) s << out;
-    s << tx.nLockTime;
 }
 
 /**
@@ -711,8 +666,9 @@ auto ReadTransactionWith(Stream &s, Build &&build);
  */
 class CTransaction {
 public:
-    // Default transaction version.
-    static constexpr uint32_t CURRENT_VERSION{7};
+    // Default transaction version: a legacy transaction, as in eCash. A
+    // version 7 transaction is built explicitly.
+    static constexpr uint32_t CURRENT_VERSION{2};
 
     // Consensus: Valid min/max for nVersion, enforced as a consensus rule after
     // Wellington.
@@ -723,8 +679,10 @@ public:
     const Span<const CTxIn> vin;
     const Span<const CTxOut> vout;
     const uint32_t nVersion;
+    // Version 1 or 2: the lock time. Version 7: the legacy view of nV2Lock
+    // (its value, truncated to 32 bits), for display only.
     const uint32_t nLockTime;
-    const bool fHasV2Lock{false};
+    // Version 7 only: the V2 lock (value << 8 | kind).
     const uint64_t nV2Lock{0};
 
     /** Bytes needed to hold the inputs, outputs and long scripts of wire. */
@@ -772,11 +730,11 @@ public:
     TxHash GetHash() const { return TxHash(m_witness_hash); }
     const uint256 &GetOutputsHash() const { return m_outputs_hash; }
     /**
-     * False when the transaction is not a well-formed V2 transaction and its
-     * TxId/TxHash are the fallback name; validation rejects such a
-     * transaction (bad-txns-v2-identity).
+     * The V2 transaction of a version 7 transaction. For a version 1 or 2
+     * transaction this is a projection that maps each legacy script to a V0
+     * leaf; it is not the transaction and is used only by the Chronik index
+     * until it indexes legacy transactions by their own form.
      */
-    bool HasStructuralV2Identity() const { return m_structural_v2_identity; }
     lotus::v2::Transaction ToV2Transaction() const;
 
     /** Bytes used by the inputs, outputs and long scripts. */
@@ -804,7 +762,8 @@ public:
     unsigned int GetTotalSize() const { return m_serialize_size; }
 
     bool IsCoinBase() const {
-        return (vin.size() == 1 && (vin[0].prevout.IsNull() || vin[0].nFlags == 2));
+        return (vin.size() == 1 &&
+                (nVersion == 7 ? vin[0].nFlags == 2 : vin[0].prevout.IsNull()));
     }
 
     friend bool operator==(const CTransaction &a, const CTransaction &b) {
@@ -827,7 +786,6 @@ private:
         uint32_t long_script_bytes;
         uint32_t nVersion;
         uint32_t nLockTime;
-        bool fHasV2Lock;
         uint64_t nV2Lock;
         bool owned;
     };
@@ -840,7 +798,6 @@ private:
     uint256 m_witness_hash;
     uint256 m_outputs_hash;
     uint32_t m_serialize_size{0};
-    bool m_structural_v2_identity{true};
     const uint32_t m_long_script_bytes;
     const bool m_owns_storage;
     uint256 ComputeHash() const;
@@ -875,8 +832,10 @@ public:
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
     uint32_t nVersion;
+    // Version 1 or 2: the lock time. Version 7: must be the legacy view of
+    // nV2Lock (uint32_t(nV2Lock >> 8)).
     uint32_t nLockTime;
-    bool fHasV2Lock{false};
+    // Version 7 only: the V2 lock (value << 8 | kind).
     uint64_t nV2Lock{0};
 
     CMutableTransaction();
@@ -1049,9 +1008,5 @@ TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf,
         if (IsLongScript(out.scriptPubKey.size())) wire.long_script_bytes += out.scriptPubKey.size();
     return wire;
 }
-void AdaptLegacyOutputToV7(CTxOut &txout);
-void AdaptLegacyInputToV7(CTxIn &txin);
-void AdaptLegacyTxToV7(CMutableTransaction &mtx);
-CTransaction AdaptLegacyTxToV7(const CTransaction &tx);
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H

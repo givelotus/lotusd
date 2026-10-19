@@ -543,18 +543,11 @@ class CTransaction:
                 )
                 self.vout.append(txout)
             return
-        is_v2_wrapped = ((raw_version & 0xC0000000) != 0) and (
-            (raw_version & 0x3FFFFFFF) == 7
-        )
-        is_v2_cb = is_v2_wrapped and ((raw_version & 0x40000000) != 0)
-        self.nVersion = 7 if is_v2_wrapped else raw_version
+        # Legacy grammar (version 1 or 2; the node refuses other versions).
+        self.nVersion = raw_version
         self.vin = deser_vector(f, CTxIn)
         self.vout = deser_vector(f, CTxOut)
         self.nLockTime = int.from_bytes(f.read(4), "little")
-        if is_v2_cb and self.vin:
-            self.vin[0].nFlags = 2
-            self.vin[0].fHasCoinbaseData = len(self.vin[0].scriptSig) > 0
-            self.vin[0].vCoinbaseData = bytes(self.vin[0].scriptSig)
 
     def billable_size(self):
         """
@@ -564,14 +557,7 @@ class CTransaction:
 
     def serialize(self) -> bytes:
         nver = self.nVersion & 0xFFFFFFFF
-        is_pure_v2 = (
-            nver == 7
-            and len(self.vin) > 0
-            and len(self.vout) > 0
-            and all(getattr(txin, "nFlags", 0) != 0 for txin in self.vin)
-            and all(bool(getattr(txout, "vBranches", None)) for txout in self.vout)
-        )
-        if is_pure_v2:
+        if nver == 7:
             is_cb = len(self.vin) == 1 and (
                 (self.vin[0].prevout.txid == 0 and self.vin[0].prevout.n == 0xFFFFFFFF)
                 or getattr(self.vin[0], "nFlags", 0) == 2
@@ -637,14 +623,9 @@ class CTransaction:
                 res += _lotus_v2_encode_output(_lotus_v2_to_output(txout))
             return bytes(res)
 
-        is_v2_cb = (
-            nver == 7 and len(self.vin) > 0 and getattr(self.vin[0], "nFlags", 0) == 2
-        )
-        raw_version = (
-            (7 | 0x80000000 | (0x40000000 if is_v2_cb else 0)) if nver == 7 else nver
-        )
+        # Legacy grammar, as in eCash.
         return (
-            raw_version.to_bytes(4, "little")
+            nver.to_bytes(4, "little")
             + ser_vector(self.vin)
             + ser_vector(self.vout)
             + (self.nLockTime & 0xFFFFFFFF).to_bytes(4, "little")
@@ -963,6 +944,11 @@ def _lotus_v2_encode_output(out_tuple: tuple) -> bytes:
 
 
 def lotus_v2_compute_tx_identities(tx) -> tuple:
+    # A legacy (version 1 or 2) transaction is named by the SHA256d of its
+    # serialization, both TxId and TxHash, as in eCash.
+    if (tx.nVersion & 0xFFFFFFFF) != 7:
+        h = hash256(tx.serialize())
+        return (h, h)
     is_cb = len(tx.vin) == 1 and (
         (tx.vin[0].prevout.txid == 0 and tx.vin[0].prevout.n == 0xFFFFFFFF)
         or getattr(tx.vin[0], "nFlags", 0) == 2
@@ -1092,7 +1078,6 @@ def lotus_v2_compute_tx_identities(tx) -> tuple:
         if len(ow) > 2186 or _lotus_v2_decode_output_bytes(ow) is None:
             valid_v2 = False
 
-    nver = tx.nVersion & 0xFFFFFFFF
     if valid_v2:
         core_leaves = []
         full_leaves = []
@@ -1184,14 +1169,11 @@ def lotus_v2_compute_tx_identities(tx) -> tuple:
                 "Lotus/v2/txhash", b"\x00" * 32 + hdr_core + full_in_root + out_root
             )
         )
-        if nver != 7:
-            txid_b[0] ^= nver & 0xFF
-            txhash_b[0] ^= nver & 0xFF
         return (bytes(txid_b), bytes(txhash_b))
 
-    # Not a well-formed V2 structure: the node names it by its own domain
-    # tag over the chain ID and the complete serialized transaction, with
-    # TxId == TxHash (see ComputeV2TxIdentities).
+    # Not a well-formed V2 structure. The node refuses such a transaction (it
+    # does not decode), so this name exists only on the Python side, for tests
+    # that build one to send.
     fallback = lotus_v2_tagged_hash(
         "Lotus/v2/txid/nonstructural", b"\x00" * 32 + tx.serialize()
     )

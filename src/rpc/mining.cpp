@@ -57,10 +57,13 @@
 #include <cstdint>
 #include <cstring>
 
+#include <lotus_v2/address.h>
+#include <primitives/v2_outputs.h>
+
 using node::BlockAssembler;
 using node::BlockFitter;
-using node::IsCoinbaseVersion;
 using node::CBlockTemplate;
+using node::IsCoinbaseVersion;
 using node::NodeContext;
 using node::UpdateTime;
 using util::ToString;
@@ -227,10 +230,42 @@ MiningRpcOptions(const UniValue &coinbase_version,
     return options;
 }
 
+// A native address describes a native output policy. A legacy address only
+// describes a legacy script and cannot be translated without its public key.
+static CTxOut CoinbaseDestination(const std::string &address,
+                                  const CChainParams &params,
+                                  uint32_t coinbase_version) {
+    if (coinbase_version != 7) {
+        const auto destination = DecodeDestination(address, params);
+        if (!IsValidDestination(destination)) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                               "Error: Invalid legacy address");
+        }
+        return CTxOut(Amount::zero(), GetScriptForDestination(destination));
+    }
+    std::string error;
+    const auto native = lotus::v2::DecodeAddress(address, error);
+    const auto network = params.GetChainTypeString() == "main"
+                             ? lotus::v2::AddressNetwork::MAINNET
+                         : params.GetChainTypeString() == "regtest"
+                             ? lotus::v2::AddressNetwork::REGTEST
+                             : lotus::v2::AddressNetwork::TESTNET;
+    if (!native || native->network != network) {
+        throw JSONRPCError(
+            RPC_INVALID_ADDRESS_OR_KEY,
+            "Native coinbase requires a native address for this network; "
+            "legacy address payouts are unsupported");
+    }
+    lotus::v2::Output output;
+    output.branches = {native->BranchRoot()};
+    output.paths = {{0}};
+    return CTxOut::FromV2Output(output);
+}
+
 static UniValue generateBlocks(ChainstateManager &chainman,
                                const CTxMemPool &mempool,
                                avalanche::Processor *const avalanche,
-                               const CScript &coinbase_script, int nGenerate,
+                               const CTxOut &coinbase_output, int nGenerate,
                                uint64_t nMaxTries,
                                const BlockAssembler::Options &options) {
     UniValue blockHashes(UniValue::VARR);
@@ -239,7 +274,7 @@ static UniValue generateBlocks(ChainstateManager &chainman,
             BlockAssembler{BlockFitter(chainman.GetConfig()),
                            chainman.ActiveChainstate(), &mempool, options,
                            avalanche}
-                .CreateNewBlock(coinbase_script));
+                .CreateNewBlock(coinbase_output));
 
         if (!pblocktemplate.get()) {
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Couldn't create new block");
@@ -306,8 +341,8 @@ static bool getScriptFromDescriptor(const std::string &descriptor,
 static RPCHelpMan generatetodescriptor() {
     return RPCHelpMan{
         "generatetodescriptor",
-        "Mine blocks immediately to a specified descriptor (before the RPC "
-        "call returns)\n",
+        "Mine blocks immediately to a specified legacy descriptor. Native "
+        "coinbases require generatetoaddress with a native address.\n",
         {
             {"num_blocks", RPCArg::Type::NUM, RPCArg::Optional::NO,
              "How many blocks are generated immediately."},
@@ -342,10 +377,17 @@ static RPCHelpMan generatetodescriptor() {
             const CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
 
-            return generateBlocks(
-                chainman, mempool, node.avalanche.get(), coinbase_script,
-                num_blocks, max_tries,
-                MiningRpcOptions(request.params[3], chainman.GetConsensus()));
+            const auto options =
+                MiningRpcOptions(request.params[3], chainman.GetConsensus());
+            if (options.coinbase_version == 7) {
+                throw JSONRPCError(
+                    RPC_INVALID_ADDRESS_OR_KEY,
+                    "Legacy descriptors are unsupported for native coinbases; "
+                    "use generatetoaddress with a native address");
+            }
+            return generateBlocks(chainman, mempool, node.avalanche.get(),
+                                  CTxOut(Amount::zero(), coinbase_script),
+                                  num_blocks, max_tries, options);
         },
     };
 }
@@ -368,7 +410,8 @@ static RPCHelpMan generatetoaddress() {
     return RPCHelpMan{
         "generatetoaddress",
         "Mine blocks immediately to a specified address before the "
-        "RPC call returns)\n",
+        "RPC call returns. Version 7 requires a native address; legacy "
+        "addresses require a permitted legacy coinbase version.\n",
         {
             {"nblocks", RPCArg::Type::NUM, RPCArg::Optional::NO,
              "How many blocks are generated immediately."},
@@ -398,23 +441,18 @@ static RPCHelpMan generatetoaddress() {
                                          ? DEFAULT_MAX_TRIES
                                          : request.params[2].getInt<int64_t>()};
 
-            CTxDestination destination = DecodeDestination(
-                request.params[1].get_str(), config.GetChainParams());
-            if (!IsValidDestination(destination)) {
-                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                   "Error: Invalid address");
-            }
-
             NodeContext &node = EnsureAnyNodeContext(request.context);
             const CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
 
-            CScript coinbase_script = GetScriptForDestination(destination);
+            const auto options =
+                MiningRpcOptions(request.params[3], chainman.GetConsensus());
+            const CTxOut payout = CoinbaseDestination(
+                request.params[1].get_str(), config.GetChainParams(),
+                options.coinbase_version);
 
-            return generateBlocks(
-                chainman, mempool, node.avalanche.get(), coinbase_script,
-                num_blocks, max_tries,
-                MiningRpcOptions(request.params[3], chainman.GetConsensus()));
+            return generateBlocks(chainman, mempool, node.avalanche.get(),
+                                  payout, num_blocks, max_tries, options);
         },
     };
 }
@@ -426,8 +464,8 @@ static RPCHelpMan generateblock() {
         "specified address or descriptor (before the RPC call returns)\n",
         {
             {"output", RPCArg::Type::STR, RPCArg::Optional::NO,
-             "The address or descriptor to send the newly generated bitcoin "
-             "to."},
+             "The payout address: native for version 7, legacy address or "
+             "descriptor for a permitted legacy coinbase version."},
             {
                 "transactions",
                 RPCArg::Type::ARR,
@@ -460,25 +498,29 @@ static RPCHelpMan generateblock() {
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
             const auto address_or_descriptor = request.params[0].get_str();
-            CScript coinbase_script;
-            std::string error;
-
-            const CChainParams &chainparams = config.GetChainParams();
-
-            if (!getScriptFromDescriptor(address_or_descriptor, coinbase_script,
-                                         error)) {
-                const auto destination =
-                    DecodeDestination(address_or_descriptor, chainparams);
-                if (!IsValidDestination(destination)) {
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                       "Error: Invalid address or descriptor");
-                }
-
-                coinbase_script = GetScriptForDestination(destination);
-            }
-
             NodeContext &node = EnsureAnyNodeContext(request.context);
             const CTxMemPool &mempool = EnsureMemPool(node);
+
+            ChainstateManager &chainman = EnsureChainman(node);
+            const CChainParams &chainparams = config.GetChainParams();
+            const auto options =
+                MiningRpcOptions(request.params[2], chainman.GetConsensus());
+            CTxOut coinbase_output;
+            if (options.coinbase_version == 7) {
+                coinbase_output = CoinbaseDestination(
+                    address_or_descriptor, config.GetChainParams(), 7);
+            } else {
+                CScript script;
+                std::string error;
+                if (getScriptFromDescriptor(address_or_descriptor, script,
+                                            error)) {
+                    coinbase_output = CTxOut(Amount::zero(), script);
+                } else {
+                    coinbase_output = CoinbaseDestination(
+                        address_or_descriptor, config.GetChainParams(),
+                        options.coinbase_version);
+                }
+            }
 
             std::vector<CTransactionRef> txs;
             const auto raw_txs_or_txids = request.params[1].get_array();
@@ -507,17 +549,14 @@ static RPCHelpMan generateblock() {
 
             CBlock block;
 
-            ChainstateManager &chainman = EnsureChainman(node);
             {
                 LOCK(cs_main);
 
                 std::unique_ptr<CBlockTemplate> blocktemplate(
                     BlockAssembler{BlockFitter(config),
                                    chainman.ActiveChainstate(), nullptr,
-                                   MiningRpcOptions(request.params[2],
-                                                    chainman.GetConsensus()),
-                                   node.avalanche.get()}
-                        .CreateNewBlock(coinbase_script));
+                                   options, node.avalanche.get()}
+                        .CreateNewBlock(coinbase_output));
                 if (!blocktemplate) {
                     throw JSONRPCError(RPC_INTERNAL_ERROR,
                                        "Couldn't create new block");
@@ -913,7 +952,8 @@ static RPCHelpMan getblocktemplate() {
                   "\"proposal\" (see BIP 23), or omitted"},
                  {"mineraddress", RPCArg::Type::STR, /* treat as named arg */
                   RPCArg::Optional::OMITTED,
-                  "Optional Lotus address for the coinbase miner payout output"},
+                  "Optional Lotus address for the coinbase miner payout "
+                  "output"},
                  {"coinbase_version", RPCArg::Type::NUM,
                   /* treat as named arg */
                   RPCArg::DefaultHint{"-coinbaseversion"},
@@ -951,31 +991,37 @@ static RPCHelpMan getblocktemplate() {
                     {RPCResult::Type::STR, "previousblockhash",
                      "The hash of current highest block"},
                     {RPCResult::Type::NUM, "templateid", /* optional */ true,
-                     "The template identifier for submitsealedblock / submitsealedheader"},
+                     "The template identifier for submitsealedblock / "
+                     "submitsealedheader"},
                     {RPCResult::Type::STR_HEX, "subtreearoot",
                      /* optional */ true,
                      "The BLAKE3 Merkle root of non-coinbase transactions"},
                     {RPCResult::Type::STR_HEX, "merkleroot",
                      /* optional */ true,
-                     "The block transaction Merkle root for the template coinbase"},
+                     "The block transaction Merkle root for the template "
+                     "coinbase"},
                     {RPCResult::Type::STR_HEX, "stateroot",
                      /* optional */ true,
                      "The block state root for the template coinbase"},
                     {RPCResult::Type::STR_HEX, "headerhex",
                      /* optional */ true,
-                     "The 134-byte serialized V2 candidate block header (nonce=0)"},
+                     "The 134-byte serialized V2 candidate block header "
+                     "(nonce=0)"},
                     {RPCResult::Type::STR_HEX, "coinbasetxhex",
                      /* optional */ true,
-                     "The serialized coinbase transaction (vtx[0]) matching headerhex"},
+                     "The serialized coinbase transaction (vtx[0]) matching "
+                     "headerhex"},
                     {RPCResult::Type::STR_HEX, "chainid",
                      /* optional */ true,
                      "The 32-byte Lotus V2 ChainId in consensus byte order"},
                     {RPCResult::Type::STR_HEX, "v2target",
                      /* optional */ true,
-                     "The 32-byte difficulty target in consensus little-endian byte order"},
+                     "The 32-byte difficulty target in consensus little-endian "
+                     "byte order"},
                     {RPCResult::Type::NUM, "blocksize",
                      /* optional */ true,
-                     "The exact serialized block size in bytes for the template coinbase"},
+                     "The exact serialized block size in bytes for the "
+                     "template coinbase"},
                     {RPCResult::Type::ARR,
                      "transactions",
                      /* optional */ true,
@@ -1183,7 +1229,7 @@ static RPCHelpMan getblocktemplate() {
             std::string strMode = "template";
             UniValue lpval = NullUniValue;
             std::set<std::string> setClientRules;
-            CScript coinbase_script = CScript() << OP_TRUE;
+            CTxOut coinbase_output;
             bool has_custom_miner_address = false;
             BlockAssembler::Options gbt_options =
                 MiningRpcOptions(NullUniValue, chainman.GetConsensus());
@@ -1207,13 +1253,9 @@ static RPCHelpMan getblocktemplate() {
                 const UniValue &mineraddr_val =
                     oparam.find_value("mineraddress");
                 if (mineraddr_val.isStr()) {
-                    const CTxDestination dest = DecodeDestination(
-                        mineraddr_val.get_str(), chainparams);
-                    if (!IsValidDestination(dest)) {
-                        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                           "Error: Invalid mineraddress");
-                    }
-                    coinbase_script = GetScriptForDestination(dest);
+                    coinbase_output = CoinbaseDestination(
+                        mineraddr_val.get_str(), chainparams,
+                        gbt_options.coinbase_version);
                     has_custom_miner_address = true;
                 } else if (!mineraddr_val.isNull()) {
                     throw JSONRPCError(RPC_INVALID_PARAMETER,
@@ -1268,6 +1310,12 @@ static RPCHelpMan getblocktemplate() {
 
             if (strMode != "template" && strMode != "compact_template") {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
+            }
+            if (!has_custom_miner_address) {
+                coinbase_output =
+                    gbt_options.coinbase_version == 7
+                        ? OpTrueOutput(Amount::zero())
+                        : CTxOut(Amount::zero(), CScript() << OP_TRUE);
             }
             const bool compact_template = (strMode == "compact_template");
 
@@ -1442,7 +1490,7 @@ static RPCHelpMan getblocktemplate() {
                     gbt_options.coinbase_version, tmpl.prev_block_hash,
                     int(tmpl.next_height));
                 coinbaseTx.vout.resize(1);
-                coinbaseTx.vout[0].scriptPubKey = coinbase_script;
+                coinbaseTx.vout[0] = coinbase_output;
                 coinbaseTx.vout[0].nValue = coinbasevalue;
 
                 const auto minerFundWhitelist =
@@ -1482,6 +1530,8 @@ static RPCHelpMan getblocktemplate() {
                     }
                 }
 
+                node::SetCoinbaseOutputs(coinbaseTx,
+                                         std::vector<CTxOut>(coinbaseTx.vout));
                 node::PadCoinbaseToMinSize(coinbaseTx);
                 const uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
                 const CTransaction coinbaseConst(coinbaseTx);
@@ -1538,7 +1588,9 @@ static RPCHelpMan getblocktemplate() {
                         auto &chainstate = chainman.ActiveChainstate();
                         auto *tip = chainstate.m_chain.Tip();
                         if (!tip || tip->GetBlockHash() != tmpl.prev_block_hash) {
-                            throw JSONRPCError(RPC_VERIFY_ERROR, "Template parent changed during assembly; retry");
+                            throw JSONRPCError(RPC_VERIFY_ERROR,
+                                               "Template parent changed during "
+                                               "assembly; retry");
                         }
                         BlockValidationState state;
                         if (!TestBlockValidity(state, chainparams, chainstate, candidate,
@@ -1736,7 +1788,7 @@ static RPCHelpMan getblocktemplate() {
                 pblocktemplate =
                     BlockAssembler{BlockFitter(config), active_chainstate,
                                    &mempool, gbt_options, node.avalanche.get()}
-                        .CreateNewBlock(coinbase_script);
+                        .CreateNewBlock(coinbase_output);
                 if (!pblocktemplate) {
                     throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
                 }
@@ -2332,13 +2384,6 @@ static RPCHelpMan getrawunsolvedblock() {
                     HelpExampleCli("getnewaddress", "")},
         [&](const RPCHelpMan &self, const Config &config,
             const JSONRPCRequest &request) -> UniValue {
-            CTxDestination destination = DecodeDestination(
-                request.params[0].get_str(), config.GetChainParams());
-            if (!IsValidDestination(destination)) {
-                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                                   "Error: Invalid address");
-            }
-
             const CChainParams &chainparams = config.GetChainParams();
             const bool isTestnet = chainparams.IsTestChain();
 
@@ -2364,11 +2409,15 @@ static RPCHelpMan getrawunsolvedblock() {
 
             CBlockIndex *pindexPrevNew = active_chain.Tip();
 
-            CScript coinbase_script = GetScriptForDestination(destination);
+            const auto options =
+                MiningRpcOptions(NullUniValue, chainman.GetConsensus());
+            const CTxOut coinbase_output =
+                CoinbaseDestination(request.params[0].get_str(), chainparams,
+                                    options.coinbase_version);
             std::unique_ptr<CBlockTemplate> pblocktemplate =
-                BlockAssembler{config, active_chainstate, &mempool,
-                               node.avalanche.get()}
-                    .CreateNewBlock(coinbase_script);
+                BlockAssembler{BlockFitter(config), active_chainstate, &mempool,
+                               options, node.avalanche.get()}
+                    .CreateNewBlock(coinbase_output);
             if (!pblocktemplate) {
                 throw JSONRPCError(RPC_OUT_OF_MEMORY, "Out of memory");
             }

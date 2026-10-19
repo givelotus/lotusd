@@ -97,7 +97,8 @@ struct SigHashTest : BasicTestingSetup {
     }
 
     void RandomTransaction(CMutableTransaction &tx, bool fSingle) {
-        tx.nVersion = m_rng.rand32();
+        // A legacy transaction has version 1 or 2.
+        tx.nVersion = m_rng.randbool() ? 1 : 2;
         tx.vin.clear();
         tx.vout.clear();
         tx.nLockTime = (m_rng.randbool()) ? m_rng.rand32() : 0;
@@ -232,7 +233,7 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
         std::string sigHashRegHex, sigHashOldHex, sigHashRepHex;
         int nIn;
         SigHashType sigHashType;
-        CTransactionRef tx;
+        CMutableTransaction tx;
         CScript scriptCode = CScript();
 
         try {
@@ -245,12 +246,19 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
             sigHashOldHex = test[5].get_str();
             sigHashRepHex = test[6].get_str();
 
+            // The vectors are upstream's, with random versions. A legacy
+            // transaction now has version 1 or 2, so read the legacy grammar
+            // field by field: the signature hash covers the version as data.
             DataStream stream{ParseHex(raw_tx)};
-            stream >> tx;
+            stream >> tx.nVersion >> tx.vin >> tx.vout >> tx.nLockTime;
+            BOOST_REQUIRE(stream.empty());
 
-            TxValidationState state;
-            BOOST_CHECK_MESSAGE(CheckRegularTransaction(*tx, state), strTest);
-            BOOST_CHECK(state.IsValid());
+            if (tx.nVersion == 1 || tx.nVersion == 2) {
+                TxValidationState state;
+                BOOST_CHECK_MESSAGE(
+                    CheckRegularTransaction(CTransaction(tx), state), strTest);
+                BOOST_CHECK(state.IsValid());
+            }
 
             std::vector<uint8_t> raw = ParseHex(raw_script);
             scriptCode.insert(scriptCode.end(), raw.begin(), raw.end());
@@ -260,15 +268,15 @@ BOOST_AUTO_TEST_CASE(sighash_from_data) {
         }
 
         uint256 shreg =
-            SignatureHash(scriptCode, *tx, nIn, sigHashType, Amount::zero());
+            SignatureHash(scriptCode, tx, nIn, sigHashType, Amount::zero());
         BOOST_CHECK_MESSAGE(shreg.GetHex() == sigHashRegHex, strTest);
 
-        uint256 shold = SignatureHash(scriptCode, *tx, nIn, sigHashType,
+        uint256 shold = SignatureHash(scriptCode, tx, nIn, sigHashType,
                                       Amount::zero(), nullptr, 0);
         BOOST_CHECK_MESSAGE(shold.GetHex() == sigHashOldHex, strTest);
 
         uint256 shrep = SignatureHash(
-            scriptCode, *tx, nIn, sigHashType, Amount::zero(), nullptr,
+            scriptCode, tx, nIn, sigHashType, Amount::zero(), nullptr,
             SCRIPT_ENABLE_SIGHASH_FORKID | SCRIPT_ENABLE_REPLAY_PROTECTION);
         BOOST_CHECK_MESSAGE(shrep.GetHex() == sigHashRepHex, strTest);
     }
