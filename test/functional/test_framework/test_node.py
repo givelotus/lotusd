@@ -15,10 +15,12 @@ import platform
 import pprint
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import unittest
 import urllib.parse
 from enum import Enum
 from pathlib import Path
@@ -33,6 +35,7 @@ from .messages import XEC, CTransaction, FromHex
 from .p2p import P2P_SUBVERSION
 from .util import (
     EncodeDecimal,
+    PortSeed,
     append_config,
     assert_equal,
     delete_cookie_file,
@@ -137,7 +140,7 @@ class TestNode:
         # default args using the provided facilities.
         # Note that common args are set in the config file (see
         # initialize_datadir)
-        self.extra_args = extra_args
+        self.extra_args = list(extra_args) if extra_args is not None else None
         # Configuration for logging is set as command-line args rather than in the bitcoin.conf file.
         # This means that starting a bitcoind using the temp dir to debug a failed test won't
         # spam debug.log.
@@ -318,12 +321,32 @@ class TestNode:
                 if rm_arg != def_arg and not def_arg.startswith(rm_arg + "=")
             ]
 
+    def start_args(self, extra_args=None):
+        """The extra arguments start() passes to bitcoind, as a new list.
+
+        Neither `extra_args` nor self.extra_args is modified, so restarts don't
+        accumulate arguments and lists shared with the test stay unchanged.
+        """
+        args = list(self.extra_args if extra_args is None else extra_args)
+        # If listening and no -bind is given, then bitcoind would bind P2P ports on
+        # 0.0.0.0:P and 127.0.0.1:18445 (for incoming Tor connections), where P is
+        # a unique port chosen by the test framework and configured as port=P in
+        # bitcoin.conf. To avoid collisions on 127.0.0.1:18445, change it to
+        # 127.0.0.1:tor_port().
+        will_listen = all(e != "-nolisten" and e != "-listen=0" for e in args)
+        has_explicit_bind = self.has_explicit_bind or any(
+            e.startswith("-bind=") for e in args
+        )
+        if will_listen and not has_explicit_bind:
+            args.append(f"-bind=0.0.0.0:{p2p_port(self.index)}")
+            args.append(f"-bind=127.0.0.1:{tor_port(self.index)}=onion")
+        return args
+
     def start(
         self, extra_args=None, *, cwd=None, stdout=None, stderr=None, env=None, **kwargs
     ):
         """Start the node."""
-        if extra_args is None:
-            extra_args = self.extra_args
+        extra_args = self.start_args(extra_args)
 
         # Preserve caller args across restarts. The generic JSON sidecar keeps
         # machine-readable records even when a test exercises a different primary
@@ -349,19 +372,6 @@ class TestNode:
             if self.debug_log_json_path.exists()
             else 0
         )
-
-        # If listening and no -bind is given, then bitcoind would bind P2P ports on
-        # 0.0.0.0:P and 127.0.0.1:18445 (for incoming Tor connections), where P is
-        # a unique port chosen by the test framework and configured as port=P in
-        # bitcoin.conf. To avoid collisions on 127.0.0.1:18445, change it to
-        # 127.0.0.1:tor_port().
-        will_listen = all(e != "-nolisten" and e != "-listen=0" for e in extra_args)
-        has_explicit_bind = self.has_explicit_bind or any(
-            e.startswith("-bind=") for e in extra_args
-        )
-        if will_listen and not has_explicit_bind:
-            extra_args.append(f"-bind=0.0.0.0:{p2p_port(self.index)}")
-            extra_args.append(f"-bind=127.0.0.1:{tor_port(self.index)}=onion")
 
         # Add a new stdout and stderr file each time bitcoind is started
         if stderr is None:
@@ -1363,3 +1373,68 @@ class RPCOverloadWrapper:
         for res in import_res:
             if not res["success"]:
                 raise JSONRPCException(res["error"])
+
+
+class TestNodeStartArgs(unittest.TestCase):
+    """start_args() never modifies the stored or the caller's argument lists."""
+
+    def make_node(self, index, extra_args, extra_conf):
+        datadir = tempfile.mkdtemp(prefix="test_node_unit_")
+        self.addCleanup(shutil.rmtree, datadir)
+        return TestNode(
+            index,
+            datadir,
+            chain="regtest",
+            host=None,
+            rpc_port=0,
+            p2p_port=0,
+            chronik_port=0,
+            chronik_electrum_port=0,
+            timewait=60,
+            timeout_factor=1,
+            bitcoind=sys.executable,
+            bitcoin_cli=sys.executable,
+            coverage_dir=None,
+            cwd=datadir,
+            extra_conf=extra_conf,
+            extra_args=extra_args,
+        )
+
+    def setUp(self):
+        PortSeed.n = 1
+
+    def test_shared_list_not_mutated(self):
+        # Two nodes given the same list object (as [[]] * n used to do).
+        shared = []
+        nodes = [self.make_node(i, shared, extra_conf=[]) for i in range(2)]
+        args = [node.start_args() for node in nodes]
+        self.assertEqual(shared, [])
+        for i, node_args in enumerate(args):
+            binds = [a for a in node_args if a.startswith("-bind=")]
+            self.assertEqual(
+                binds,
+                [
+                    f"-bind=0.0.0.0:{p2p_port(i)}",
+                    f"-bind=127.0.0.1:{tor_port(i)}=onion",
+                ],
+            )
+
+    def test_restarts_do_not_accumulate(self):
+        node = self.make_node(0, ["-foo"], extra_conf=[])
+        first = node.start_args()
+        for _ in range(3):
+            self.assertEqual(node.start_args(), first)
+        self.assertEqual(node.extra_args, ["-foo"])
+
+    def test_explicit_bind_in_conf(self):
+        node = self.make_node(0, [], extra_conf=["bind=127.0.0.1"])
+        self.assertEqual(node.start_args(), [])
+
+    def test_caller_list_copied(self):
+        caller = ["-foo"]
+        node = self.make_node(0, caller, extra_conf=[])
+        caller.append("-bar")
+        self.assertEqual(node.extra_args, ["-foo"])
+        override = ["-baz", "-nolisten"]
+        self.assertEqual(node.start_args(override), ["-baz", "-nolisten"])
+        self.assertEqual(override, ["-baz", "-nolisten"])
