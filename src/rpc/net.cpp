@@ -199,7 +199,8 @@ static RPCHelpMan getpeerinfo() {
                           "base64url SHA-256 of the peer's TLS public key, "
                           "usable as a pin (-p2pwebsocketpin, #spki=)"},
                          {RPCResult::Type::BOOL, "pinned",
-                          "Whether the peer's key matched a configured pin"},
+                          "Whether the peer's key matched a configured pin "
+                          "(outbound) or -p2pwebsocketpeer entry (inbound)"},
                      }},
                     {RPCResult::Type::NUM, "startingheight",
                      "The starting height (block) of the peer"},

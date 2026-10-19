@@ -92,6 +92,18 @@ public:
     CService m_service;
 };
 
+/**
+ * Permissions for P2P WebSocket peers identified by their TLS public key:
+ * "[perm1,perm2@]<key>" (see -p2pwebsocketpeer). The key is kept as written;
+ * the caller validates it.
+ */
+class NetKeyPermissions : public NetPermissions {
+public:
+    static bool TryParse(const std::string &str, NetKeyPermissions &output,
+                         bilingual_str &error);
+    std::string m_key;
+};
+
 class NetWhitelistPermissions : public NetPermissions {
 public:
     static bool TryParse(const std::string &str,
