@@ -7,6 +7,7 @@
 #include <node/miner.h>
 
 #include <node/metrics.h>
+#include <primitives/v2_outputs.h>
 
 #include <avalanche/avalanche.h>
 #include <avalanche/processor.h>
@@ -37,6 +38,7 @@
 
 #include <algorithm>
 #include <queue>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace node {
@@ -74,16 +76,65 @@ CMutableTransaction CreateCoinbaseShell(uint32_t version,
     CMutableTransaction coinbase;
     coinbase.nVersion = version;
     coinbase.vin.resize(1);
-    coinbase.vin[0].scriptSig = CScript() << nHeight << OP_0;
     if (version == 7) {
-        coinbase.vin[0].prevout =
+        CTxIn &in = coinbase.vin[0];
+        in.prevout =
             COutPoint(TxId(prev_block), static_cast<uint32_t>(nHeight));
-        coinbase.vin[0].nFlags = 2;
-        coinbase.vin[0].fHasCoinbaseData = true;
-        coinbase.vin[0].vCoinbaseData.assign(
-            coinbase.vin[0].scriptSig.begin(), coinbase.vin[0].scriptSig.end());
+        in.nFlags = 2;
     }
+    SetCoinbaseScript(coinbase, CScript() << nHeight << OP_0);
     return coinbase;
+}
+
+void SetCoinbaseOutputs(CMutableTransaction &coinbase,
+                        const std::vector<CTxOut> &outputs) {
+    std::vector<CTxOut> canonical;
+    canonical.reserve(outputs.size());
+    for (const CTxOut &out : outputs) {
+        if (coinbase.nVersion == 7) {
+            if (out.IsLegacy()) {
+                throw std::invalid_argument(
+                    "Native coinbase requires explicit native outputs; "
+                    "legacy payout configuration is unsupported");
+            }
+            // Reward splitting changes amounts. Rebuild canonical native wire
+            // bytes from the explicit policy, never from a legacy script.
+            canonical.push_back(CTxOut::FromV2Output(out.ToV2Output()));
+        } else {
+            if (!out.IsLegacy()) {
+                throw std::invalid_argument(
+                    "Legacy coinbase cannot contain a native payout");
+            }
+            canonical.push_back(out);
+        }
+    }
+    coinbase.vout = std::move(canonical);
+}
+
+template <typename Tx> static CScript CoinbaseScriptOf(const Tx &coinbase) {
+    const CTxIn &in = coinbase.vin[0];
+    if (coinbase.nVersion == 7) {
+        return CScript(in.vCoinbaseData.begin(), in.vCoinbaseData.end());
+    }
+    return in.scriptSig;
+}
+
+CScript GetCoinbaseScript(const CTransaction &coinbase) {
+    return CoinbaseScriptOf(coinbase);
+}
+
+CScript GetCoinbaseScript(const CMutableTransaction &coinbase) {
+    return CoinbaseScriptOf(coinbase);
+}
+
+void SetCoinbaseScript(CMutableTransaction &coinbase, const CScript &script) {
+    CTxIn &in = coinbase.vin.at(0);
+    if (coinbase.nVersion == 7) {
+        in.fHasCoinbaseData = !script.empty();
+        in.vCoinbaseData.assign(script.begin(), script.end());
+    } else {
+        in.scriptSig = script;
+    }
 }
 
 void PadCoinbaseToMinSize(CMutableTransaction &coinbase) {
@@ -91,11 +142,8 @@ void PadCoinbaseToMinSize(CMutableTransaction &coinbase) {
     if (size >= MIN_TX_SIZE) {
         return;
     }
-    CTxIn &in = coinbase.vin[0];
-    in.scriptSig << std::vector<uint8_t>(MIN_TX_SIZE - size - 1);
-    if (in.nFlags == 2) {
-        in.vCoinbaseData.assign(in.scriptSig.begin(), in.scriptSig.end());
-    }
+    const std::vector<uint8_t> padding(MIN_TX_SIZE - size - 1);
+    SetCoinbaseScript(coinbase, GetCoinbaseScript(coinbase) << padding);
 }
 
 static BlockAssembler::Options ConfiguredOptions() {
@@ -133,6 +181,20 @@ std::optional<int64_t> BlockAssembler::m_last_block_size{std::nullopt};
 
 std::unique_ptr<CBlockTemplate>
 BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
+    if (coinbase_version == 7) {
+        throw std::invalid_argument(
+            "Native coinbase requires an explicit native payout; "
+            "legacy script destinations are unsupported");
+    }
+    return CreateNewBlock(CTxOut(Amount::zero(), scriptPubKeyIn));
+}
+
+std::unique_ptr<CBlockTemplate>
+BlockAssembler::CreateNewBlock(const CTxOut &payout) {
+    if ((coinbase_version == 7) == payout.IsLegacy()) {
+        throw std::invalid_argument(
+            "Coinbase payout kind does not match its transaction version");
+    }
     const auto time_start{SteadyClock::now()};
 
     blockFitter.resetBlock();
@@ -272,7 +334,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     CMutableTransaction coinbaseTx = CreateCoinbaseShell(
         coinbase_version, pindexPrev->GetBlockHash(), nHeight);
     coinbaseTx.vout.resize(1);
-    coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
+    coinbaseTx.vout[0] = payout;
     coinbaseTx.vout[0].nValue = blockFitter.nFees + blockSubsidy;
 
     const Amount blockReward = coinbaseTx.vout[0].nValue;
@@ -319,6 +381,8 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
             }
         }
     }
+
+    SetCoinbaseOutputs(coinbaseTx, std::vector<CTxOut>(coinbaseTx.vout));
 
     // Make sure the coinbase is big enough.
     PadCoinbaseToMinSize(coinbaseTx);

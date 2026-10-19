@@ -23,32 +23,15 @@ static bool CheckTransactionCommon(const CTransaction &tx,
                              "bad-txns-vout-empty");
     }
 
-    if (tx.nVersion == 7 && tx.vin.size() > MAX_V2_TX_INPUTS) {
+    // The V2 input and output caps apply to every transaction version, so
+    // block cost and memory bounds are the same for legacy transactions.
+    if (tx.vin.size() > MAX_V2_TX_INPUTS) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-v2-too-many-inputs");
     }
-    if (tx.nVersion == 7 && tx.vout.size() > MAX_V2_TX_OUTPUTS) {
+    if (tx.vout.size() > MAX_V2_TX_OUTPUTS) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-v2-too-many-outputs");
-    }
-
-    // Only a V2 script can authorize a HAS_STATE output (ENFORCEOUTPUT and
-    // the per-transaction post-check), so a transaction of another version
-    // must not create one through the legacy output bridge.
-    if (tx.nVersion != 7) {
-        for (const auto &txout : tx.vout) {
-            const bool maybe_state =
-                !txout.vBranches.empty()
-                    ? (txout.nFlags & lotus::v2::OUTPUT_FLAG_HAS_STATE) != 0
-                    : txout.scriptPubKey.size() >= 43 &&
-                          (txout.scriptPubKey[0] &
-                           lotus::v2::OUTPUT_FLAG_HAS_STATE) != 0 &&
-                          (txout.scriptPubKey[0] & 0xf8) == 0;
-            if (maybe_state && txout.ToV2Output().HasState()) {
-                return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                     "bad-txns-legacy-state-output");
-            }
-        }
     }
 
     // Size limit
@@ -106,9 +89,8 @@ static bool CheckCoinbaseRules(const CTransaction &tx,
         }
     }
 
-    if (tx.vin[0].nFlags == 2) {
-        if (tx.vin[0].vCoinbaseData.size() > 8192 ||
-            tx.vin[0].scriptSig.size() > 8192) {
+    if (tx.nVersion == 7) {
+        if (tx.vin[0].vCoinbaseData.size() > 8192) {
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                  "bad-cb-length");
         }
@@ -186,26 +168,10 @@ static bool CheckRegularTransactionRules(const CTransaction &tx,
     return true;
 }
 
-// A transaction whose content is not a well-formed V2 transaction has only the
-// fallback TxId/TxHash name (see ComputeV2TxIdentities). Checked after every
-// other rule so the more specific reject reason wins; this catches what those
-// rules do not, such as a legacy-version transaction with more than 65,535
-// outputs (which the u16 V2 header cannot count).
-static bool CheckStructuralIdentity(const CTransaction &tx,
-                                    TxValidationState &state) {
-    if (!tx.HasStructuralV2Identity()) {
-        return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                             "bad-txns-v2-identity",
-                             "not a well-formed V2 transaction");
-    }
-    return true;
-}
-
 bool CheckCoinbase(const CTransaction &tx, TxValidationState &state) {
-    return CheckCoinbaseRules(tx, state) && CheckStructuralIdentity(tx, state);
+    return CheckCoinbaseRules(tx, state);
 }
 
 bool CheckRegularTransaction(const CTransaction &tx, TxValidationState &state) {
-    return CheckRegularTransactionRules(tx, state) &&
-           CheckStructuralIdentity(tx, state);
+    return CheckRegularTransactionRules(tx, state);
 }
