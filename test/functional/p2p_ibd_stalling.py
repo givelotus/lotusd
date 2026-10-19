@@ -15,7 +15,7 @@ from test_framework.messages import (
     msg_block,
     msg_headers,
 )
-from test_framework.p2p import P2PDataStore
+from test_framework.p2p import P2PDataStore, p2p_msg_overhead
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
@@ -82,9 +82,16 @@ class P2PIBDStallingTest(BitcoinTestFramework):
 
         # Need to wait until 1023 blocks are received - the magic total bytes number is
         # a workaround in lack of an rpc returning the number of downloaded (but not
-        # connected) blocks. 259 bytes x 1023 blocks
+        # connected) blocks. Native block payload plus transport framing.
         self.wait_until(
-            lambda: self.total_bytes_recv_for_blocks() == 264957, timeout=240
+            lambda: (
+                self.total_bytes_recv_for_blocks()
+                == sum(
+                    len(b.serialize()) + p2p_msg_overhead(b"block")
+                    for b in blocks[:1023]
+                )
+            ),
+            timeout=240,
         )
 
         self.all_sync_send_with_ping(peers)

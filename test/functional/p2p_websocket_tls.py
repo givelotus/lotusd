@@ -2,7 +2,7 @@
 # Copyright (c) 2026 The Bitcoin developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""End-to-end hybrid TCP + WebSocket (wss://, p2p-zstd-v1) P2P test.
+"""End-to-end WebSocket (wss://, p2p-v2) P2P test.
 
 - node0 serves JSON-RPC (http/https/zstd) and /p2p/ws on its RPC port and
   advertises -externaldomain=localhost:<rpcport>.
@@ -85,13 +85,13 @@ class P2PWebSocketTLSTest(BitcoinTestFramework):
     def run_test(self):
         node0, node1, node2 = self.nodes
 
-        self.log.info("node1 reaches node0 over wss:// with p2p-zstd-v1")
+        self.log.info("node1 reaches node0 over wss:// with p2p-v2")
         self.wait_until(lambda: len(self.ws_peers(1)) == 1)
         out = self.ws_peers(1)[0]
         assert_equal(out["transport"], "wss")
         assert_equal(out["inbound"], False)
         assert_equal(out["addr"], f"wss://localhost:{rpc_port(0)}/p2p/ws")
-        assert_equal(out["websocket"]["compression"], "p2p-zstd-v1")
+        assert_equal(out["websocket"]["compression"], "p2p-v2")
         assert_equal(out["websocket"]["tls"], True)
         self.wait_until(lambda: len(self.ws_peers(0)) == 1)
         inbound = self.ws_peers(0)[0]
