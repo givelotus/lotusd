@@ -93,7 +93,7 @@
                 "(^build-aux/m4/)",
                 "(^depends/)",
                 "(^doc/release-notes/)",
-                "(^src/(crc32c|qt/locale|secp256k1|leveldb)/)",
+                "(^src/(crc32c|secp256k1|leveldb)/)",
                 "(^test/lint/dictionary/)",
                 "(^web/e.cash/public/animations/)",
                 "(pnpm-lock.yaml)",
@@ -200,13 +200,6 @@
         "lint-logs": {
             "type": "lint-logs",
             "include": "(^(src|chronik)/.*\\.(h|cpp|rs)$)"
-        },
-        "lint-qt": {
-            "type": "lint-qt",
-            "include": "(^src/qt/.*\\.(h|cpp)$)",
-            "exclude": [
-                "(^src/qt/(locale|forms|res)/)"
-            ]
         },
         "lint-doxygen": {
             "type": "lint-doxygen",
