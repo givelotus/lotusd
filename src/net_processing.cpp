@@ -5520,8 +5520,9 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid,
     if (m_mempool.withOrphanage([&txid](TxOrphanage &orphanage) {
             return orphanage.EraseTx(txid);
         }) > 0) {
-        LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s\n",
-                 txid.ToString());
+        LogEvent(BCLog::TXPACKAGES, "relay_orphan_removed",
+            "   removed orphan tx {txid}")
+        .Field(BCLog::LogField::TxId, txid);
     }
 }
 
@@ -5592,21 +5593,25 @@ bool PeerManagerImpl::PrepareTxAdmission(CNode &pfrom,
     if (AlreadyHaveTx(txid, /*include_reconsiderable=*/true)) {
         if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
             if (!m_mempool.exists(tx.GetId())) {
-                LogPrintf("Not relaying non-mempool transaction %s from "
-                          "forcerelay peer=%d\n",
-                          tx.GetId().ToString(), pfrom.GetId());
+                LogInfoEvent(BCLog::ALL, "relay_forced_nonmempool_rejected",
+                             "Not relaying non-mempool transaction {txid} from"
+                             " forcerelay peer={peer_id}")
+                    .Field(BCLog::LogField::TxId, tx.GetId())
+                    .Field(BCLog::LogField::PeerId, pfrom.GetId());
             } else {
-                LogPrintf("Force relaying tx %s from peer=%d\n",
-                          tx.GetId().ToString(), pfrom.GetId());
+                LogInfoEvent(BCLog::ALL, "relay_transaction_forced",
+                             "Force relaying tx {txid} from peer={peer_id}")
+                    .Field(BCLog::LogField::TxId, tx.GetId())
+                    .Field(BCLog::LogField::PeerId, pfrom.GetId());
                 RelayTransaction(tx.GetId());
             }
         }
 
         if (m_recent_rejects_package_reconsiderable.contains(txid)) {
-            LogDebug(BCLog::TXPACKAGES,
-                     "found tx %s in reconsiderable rejects, looking for "
-                     "child in orphanage\n",
-                     txid.ToString());
+            LogEvent(BCLog::TXPACKAGES, "relay_orphan_reconsiderable_parent",
+                     "found tx {txid} in reconsiderable rejects, looking "
+                     "for child in orphanage")
+                .Field(BCLog::LogField::TxId, txid);
             if (auto package_to_validate{Find1P1CPackage(ptx, pfrom.GetId())}) {
                 const auto package_result{
                     ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool,
@@ -5688,15 +5693,16 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
                             return orphanage.LimitTxs(m_opts.max_orphan_txs,
                                                       m_rng);
                         }) > 0) {
-                LogDebug(BCLog::TXPACKAGES,
-                         "orphanage overflow, removed %u tx\n", nEvicted);
+                LogEvent(BCLog::TXPACKAGES, "relay_orphan_overflow",
+                         "orphanage overflow, removed {count} tx")
+                    .Field(BCLog::LogField::Count, nEvicted);
             }
 
             m_txrequest.ForgetInvId(tx.GetId());
         } else {
-            LogDebug(BCLog::MEMPOOL,
-                     "not keeping orphan with rejected parents %s\n",
-                     tx.GetId().ToString());
+            LogEvent(BCLog::MEMPOOL, "relay_orphan_rejected_parents",
+                     "not keeping orphan with rejected parents {txid}")
+                .Field(BCLog::LogField::TxId, tx.GetId());
             m_recent_rejects.insert(tx.GetId());
             m_txrequest.ForgetInvId(tx.GetId());
         }
@@ -5706,10 +5712,10 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
                          /*maybe_add_extra_compact_tx=*/true);
     }
     if (state.GetResult() == TxValidationResult::TX_PACKAGE_RECONSIDERABLE) {
-        LogDebug(BCLog::TXPACKAGES,
-                 "tx %s failed but reconsiderable, looking for child in "
-                 "orphanage\n",
-                 txid.ToString());
+        LogEvent(BCLog::TXPACKAGES, "relay_orphan_reconsiderable_failure",
+                 "tx {txid} failed but reconsiderable, looking for child "
+                 "in orphanage")
+            .Field(BCLog::LogField::TxId, txid);
         if (auto package_to_validate{Find1P1CPackage(ptx, pfrom.GetId())}) {
             const auto package_result{
                 ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool,
@@ -5737,8 +5743,9 @@ void PeerManagerImpl::FinishTxAdmission(CNode &pfrom, Peer &peer,
             });
 
         if (nEvicted > 0) {
-            LogDebug(BCLog::TXPACKAGES,
-                     "conflicting pool overflow, removed %u tx\n", nEvicted);
+            LogEvent(BCLog::TXPACKAGES, "relay_conflicting_pool_overflow",
+                     "conflicting pool overflow, removed {count} tx")
+                .Field(BCLog::LogField::Count, nEvicted);
         }
     }
 }
@@ -5965,8 +5972,9 @@ bool PeerManagerImpl::ProcessOrphanTx(const Config &config, Peer &peer) {
         const TxId &orphanTxId = porphanTx->GetId();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogDebug(BCLog::TXPACKAGES, "   accepted orphan tx %s\n",
-                     orphanTxId.ToString());
+            LogEvent(BCLog::TXPACKAGES, "relay_orphan_accepted",
+                "   accepted orphan tx {txid}")
+            .Field(BCLog::LogField::TxId, orphanTxId);
             ProcessValidTx(peer.m_id, porphanTx);
             return true;
         }
@@ -7225,10 +7233,11 @@ void PeerManagerImpl::ProcessMessage(
 
                 AddKnownTx(*peer, txid);
                 if (reject_tx_invs) {
-                    LogDebug(BCLog::NET,
-                             "transaction (%s) inv sent in violation of "
-                             "protocol, disconnecting peer=%d\n",
-                             txid.ToString(), pfrom.GetId());
+                    LogEvent(BCLog::NET, "relay_transaction_inv_violation",
+                        "transaction ({txid}) inv sent in violation of "
+                        "protocol, disconnecting peer={peer_id}")
+                    .Field(BCLog::LogField::TxId, txid)
+                    .Field(BCLog::LogField::PeerId, pfrom.GetId());
                     pfrom.fDisconnect = true;
                     return;
                 } else if (!fAlreadyHave &&
@@ -7581,9 +7590,9 @@ void PeerManagerImpl::ProcessMessage(
 
     if (msg_type == NetMsgType::TX) {
         if (RejectIncomingTxs(pfrom)) {
-            LogDebug(BCLog::NET,
-                     "transaction sent in violation of protocol peer=%d\n",
-                     pfrom.GetId());
+            LogEvent(BCLog::NET, "relay_transaction_message_violation",
+                "transaction sent in violation of protocol peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, pfrom.GetId());
             pfrom.fDisconnect = true;
             return;
         }
@@ -11475,8 +11484,10 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
         auto requestable =
             m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
         for (const auto &entry : expired) {
-            LogDebug(BCLog::NET, "timeout of inflight tx %s from peer=%d\n",
-                     entry.second.ToString(), entry.first);
+            LogEvent(BCLog::NET, "relay_transaction_timeout",
+                "timeout of inflight tx {txid} from peer={peer_id}")
+            .Field(BCLog::LogField::TxId, entry.second)
+            .Field(BCLog::LogField::PeerId, entry.first);
         }
         // Transactions announced by short id are fetched with getshorttx,
         // one request per epoch.
