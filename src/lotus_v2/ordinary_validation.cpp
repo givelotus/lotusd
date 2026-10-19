@@ -17,7 +17,6 @@ using Wide = __uint128_t;
 constexpr Wide MAX_WIDE = ~Wide{0};
 constexpr size_t MAX_ORDINARY_VALIDATION_CACHE_ENTRIES = 8192;
 
-using Totals = VmAssetTotals;
 
 bool Add(Wide &sum, Wide value) {
     if (sum > MAX_WIDE - value) return false;
@@ -308,27 +307,39 @@ CandidateCheckResult VerifyOrdinaryUncached(
     std::string &error, BatchSigCollector *batch_sigs) {
     try {
         ValidatedOrdinaryCache::Instance().RecordMiss();
-        // Same per-asset totals TXTOKENBALANCE reads (zero key = native).
-        VmAssetTotalsMap tokens;
+        // Structural deferred kinds: native and token conservation take
+        // their contributions from the spent coins and the outputs, before
+        // any script runs. The asset key is the one TXTOKENBALANCE reads: a
+        // zero token id is native.
+        NativeConservation native_conservation;
+        TokenConservation token_conservation;
+        auto contribute = [&](const Output &output, bool input) {
+            const bool ok =
+                output.HasToken() && output.token_id != Hash32{}
+                    ? (input ? token_conservation.AddInput(output.token_id,
+                                                           output.value)
+                             : token_conservation.AddOutput(output.token_id,
+                                                            output.value))
+                    : (input ? native_conservation.AddInput(output.value)
+                             : native_conservation.AddOutput(output.value));
+            if (!ok) error = "asset sum overflow";
+            return ok;
+        };
         for (const Coin &coin : spent) {
-            if (!AddVmAssetTotal(tokens, coin.output, true, error))
+            if (!contribute(coin.output, true))
                 return CandidateCheckResult::Invalid;
         }
         size_t token_output_count = 0;
         for (const Output &output : tx.outputs) {
             token_output_count += output.HasToken();
-            if (!AddVmAssetTotal(tokens, output, false, error))
+            if (!contribute(output, false))
                 return CandidateCheckResult::Invalid;
         }
-        const Totals native = tokens[Hash32{}];
-        tokens.erase(Hash32{});
-        const Wide native_inputs = native.inputs;
-        const Wide native_outputs = native.outputs;
-        if (native_inputs < native_outputs) {
+        if (native_conservation.Check() != ConservationFailure::None) {
             error = "native inflation";
             return CandidateCheckResult::Invalid;
         }
-        const Wide native_fee = native_inputs - native_outputs;
+        const Wide native_fee = native_conservation.Fee();
         Wide token_floor;
         if (!Multiply(Wide{2} * profile.dust_limit, token_output_count,
                       token_floor)) {
@@ -347,26 +358,19 @@ CandidateCheckResult VerifyOrdinaryUncached(
             return CandidateCheckResult::Invalid;
         }
 
-        std::map<Hash32, PositiveDelta> positive_deltas;
-        for (const auto &[token_id, totals] : tokens) {
-            if (totals.outputs <= totals.inputs) continue;
-            const Wide delta = totals.outputs - totals.inputs;
-            PositiveDelta encoded{};
-            for (size_t b = 0; b < encoded.size(); ++b)
-                encoded[b] = uint8_t(delta >> (8 * b));
-            positive_deltas.emplace(token_id, encoded);
-        }
-        for (const Input &input : tx.inputs) {
-            if (input.flags != 3) continue;
-            if (positive_deltas.erase(input.prev_txid) != 1) {
-                error = "mint without matching positive token delta";
-                return CandidateCheckResult::Invalid;
-            }
-        }
-        if (!positive_deltas.empty()) {
+        for (const Input &input : tx.inputs)
+            if (input.flags == 3) token_conservation.AddMint(input.prev_txid);
+        switch (token_conservation.Check()) {
+        case ConservationFailure::None:
+            break;
+        case ConservationFailure::MintWithoutDelta:
+            error = "mint without matching positive token delta";
+            return CandidateCheckResult::Invalid;
+        default:
             error = "positive token delta lacks mint input";
             return CandidateCheckResult::Invalid;
         }
+        const auto &tokens = token_conservation.PerToken();
 
         PreparedVmTransaction prepared_vm;
         const auto preparation =
@@ -390,7 +394,7 @@ CandidateCheckResult VerifyOrdinaryUncached(
             const Input &input = tx.inputs[i];
             std::optional<PositiveDelta> delta;
             if (input.flags == 3) {
-                const Totals &totals = tokens.at(input.prev_txid);
+                const auto &totals = tokens.at(input.prev_txid);
                 const Wide amount = totals.outputs - totals.inputs;
                 PositiveDelta encoded{};
                 for (size_t b = 0; b < encoded.size(); ++b)
