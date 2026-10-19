@@ -62,7 +62,6 @@ struct TxPackageTest : TestChain100Setup {
         using namespace lotus::v2;
         CMutableTransaction tx;
         tx.nVersion = 7;
-        tx.fHasV2Lock = true;
         tx.nV2Lock = 0;
         CTxIn input(COutPoint(previous->GetId(), index));
         input.nFlags = 1;
@@ -182,11 +181,11 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
 
     // It's easy to see that txids are sorted in lexicographical order:
     TxId txid_1{TxIdFromString(
-        "0x59e014b214e0ceecbad0ce97bd3732bc27855cb1b4e2dba0f0bf97d9ffb66875")};
+        "0x679c453b9f260ba4b74cd5168615f39b4bb2508e44982c4e93e49e44bb274339")};
     TxId txid_2{TxIdFromString(
-        "0x6904ef25af9cd4f72586edccd9a8ee0df2e45467c6a48c3988dd138a79191b2b")};
+        "0xb4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b")};
     TxId txid_3{TxIdFromString(
-        "0x712c24540d26dfaabe2fa3c9a6cd568efe067062385aeaf872d3b6333393ef05")};
+        "0xfc073689bfb493026d6a618ab07f9f008bd90e1748663c2728211675fb9e234c")};
     BOOST_CHECK_EQUAL(ptx_1->GetId(), txid_1);
     BOOST_CHECK_EQUAL(ptx_2->GetId(), txid_2);
     BOOST_CHECK_EQUAL(ptx_3->GetId(), txid_3);
@@ -736,7 +735,6 @@ BOOST_AUTO_TEST_CASE(package_mix) {
 
     CMutableTransaction mtx_mixed_child;
     mtx_mixed_child.nVersion = 7;
-    mtx_mixed_child.fHasV2Lock = true;
     mtx_mixed_child.vin.push_back(
         anyone_can_spend_input(COutPoint(ptx_parent1->GetId(), 0)));
     mtx_mixed_child.vin.push_back(

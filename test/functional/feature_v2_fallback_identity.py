@@ -2,18 +2,18 @@
 # Copyright (c) 2026 The Lotus developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test the name of a transaction that is not a well-formed V2 structure.
+"""Test that a version 7 transaction without a V2 structure does not exist.
 
-Such a transaction is named by the fallback tag over the chain ID and its
-complete serialization. The node and the test framework must agree on that
-name, and transactions differing in any serialized field must get different
-names, so rejecting one cannot poison a reject-cache entry for another.
+Such a transaction has no structural identity, so the node refuses to decode
+it (bad-txns-v2-identity): it is never named, and so it can never poison a
+reject-cache entry for another transaction. (Before T1 it was named by a
+fallback hash of its complete serialization.)
 """
 
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.script import OP_TRUE, CScript
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal
+from test_framework.util import assert_raises_rpc_error
 
 
 def duplicate_input_tx(script_sig: bytes) -> CTransaction:
@@ -35,20 +35,18 @@ class V2FallbackIdentityTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        names = set()
         for script_sig in (b"", b"\x51", b"\x51\x51", b"\x52"):
-            tx = duplicate_input_tx(script_sig)
-            result = node.testmempoolaccept([tx.serialize().hex()])[0]
-            self.log.info(f"scriptSig {script_sig.hex() or '-'}: {result}")
-            assert_equal(result["allowed"], False)
-            # Node and framework name it identically.
-            assert_equal(result["txid"], tx.txid_hex)
-            names.add(result["txid"])
-            # It never decodes into the structural identity of the node.
-            assert_equal(
-                node.decoderawtransaction(tx.serialize().hex())["txid"], tx.txid_hex
+            raw = duplicate_input_tx(script_sig).serialize().hex()
+            self.log.info(f"witness script {script_sig.hex() or '-'} is refused")
+            assert_raises_rpc_error(
+                -22, "TX decode failed", node.testmempoolaccept, [raw]
             )
-        assert_equal(len(names), 4)
+            assert_raises_rpc_error(
+                -22, "TX decode failed", node.decoderawtransaction, raw
+            )
+            assert_raises_rpc_error(
+                -22, "TX decode failed", node.sendrawtransaction, raw
+            )
 
 
 if __name__ == "__main__":

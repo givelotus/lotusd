@@ -1179,7 +1179,7 @@ CScript CWallet::GetScriptForOutput(const CTxOut &out) const {
     AssertLockHeld(cs_wallet);
     // Resolve only a known plain native branch for wallet ownership/address
     // queries. The transaction and its canonical output bytes stay immutable.
-    if (out.nFlags != 0 || out.vBranches.size() != 1 ||
+    if (out.IsLegacy() || out.nFlags != 0 || out.vBranches.size() != 1 ||
         out.vPaths.size() != 1 || out.vPaths[0].size() != 1 ||
         out.vPaths[0][0] != 0) {
         return out.scriptPubKey;

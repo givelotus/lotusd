@@ -23,11 +23,10 @@
 
 static bool IsFinalTx(const CTransaction &tx, int nBlockHeight,
                       int64_t nBlockTime) {
-    // A transaction in the v7 wire format carries the V2 lock, whose value
-    // is 56 bits wide and whose kind byte (not a 500M threshold) says height
-    // or time; its nLockTime is only a truncated display copy. (The wrapped
-    // legacy-grammar form has a legacy nLockTime and no V2 lock.)
-    if (tx.nVersion == 7 && tx.fHasV2Lock) {
+    // A version 7 transaction carries the V2 lock, whose value is 56 bits
+    // wide and whose kind byte (not a 500M threshold) says height or time;
+    // its nLockTime is only a truncated display copy.
+    if (tx.nVersion == 7) {
         return lotus::v2::AbsoluteLockSatisfied(
             tx.nV2Lock, uint64_t(std::max(nBlockHeight, 0)),
             uint64_t(std::max<int64_t>(nBlockTime, 0)));
@@ -70,8 +69,7 @@ bool ContextualCheckTransaction(const Consensus::Params &params,
     }
 
     // Restrict version to 1, 2, and V2 (7)
-    if (tx.nVersion != 1 && tx.nVersion != 2 &&
-        tx.nVersion != CTransaction::CURRENT_VERSION) {
+    if (tx.nVersion != 1 && tx.nVersion != 2 && tx.nVersion != 7) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-version");
     }
@@ -218,23 +216,7 @@ static inline bool ExtractTokenIdAndValue(const CTxOut &txout, uint256 &tok_id,
             std::max<int64_t>(0, txout.nValue / SATOSHI));
         return true;
     }
-    if (txout.scriptPubKey.size() >= 43) {
-        const uint8_t flags0 = txout.scriptPubKey[0];
-        const bool maybe_token =
-            ((flags0 & 0x01U) != 0 && (flags0 & 0xfcU) == 0) ||
-            (flags0 == 0x6a && txout.scriptPubKey.size() >= 44 &&
-             (txout.scriptPubKey[1] & 0x01U) != 0 &&
-             (txout.scriptPubKey[1] & 0xfcU) == 0);
-        if (!maybe_token) {
-            return false;
-        }
-        const lotus::v2::Output v2out = txout.ToV2Output();
-        if (v2out.HasToken()) {
-            std::memcpy(tok_id.begin(), v2out.token_id.data(), 32);
-            val = v2out.value;
-            return true;
-        }
-    }
+    // A legacy output carries no token.
     return false;
 }
 
