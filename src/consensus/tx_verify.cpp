@@ -262,6 +262,19 @@ bool FinishTxConservation(const CTransaction &tx,
     return true;
 }
 
+// A2: a legacy (version 1 or 2) transaction spends only coins created by
+// legacy transactions. A V2 coin's scriptPubKey is its V2 wire encoding,
+// which the legacy interpreter must never run as a legacy script; a version 7
+// input spends a legacy coin only through the bridge (CScriptCheck).
+static bool CheckSpentCoinKind(const CTransaction &tx, const Coin &coin,
+                               TxValidationState &state) {
+    if (tx.nVersion != 7 && !coin.IsLegacy()) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "bad-txns-legacy-spends-v2-coin");
+    }
+    return true;
+}
+
 bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
                    const CCoinsViewCache &inputs, int nSpendHeight,
                    Amount &txfee) {
@@ -300,6 +313,10 @@ bool CheckTxInputs(const CTransaction &tx, TxValidationState &state,
                 strprintf("tried to spend expired coin at height %d (expired at %llu)",
                           nSpendHeight,
                           static_cast<unsigned long long>(coin.GetExpirationHeight())));
+        }
+
+        if (!CheckSpentCoinKind(tx, coin, state)) {
+            return false;
         }
 
         const CTxOut &prev_txout = coin.GetTxOut();
@@ -378,6 +395,10 @@ bool CheckTxInputsFromSpentCoins(const CTransaction &tx,
                 strprintf("tried to spend expired coin at height %d (expired at %llu)",
                           nSpendHeight,
                           static_cast<unsigned long long>(coin.GetExpirationHeight())));
+        }
+
+        if (!CheckSpentCoinKind(tx, coin, state)) {
+            return false;
         }
 
         const CTxOut &prev_txout = coin.GetTxOut();
