@@ -192,9 +192,10 @@ BOOST_AUTO_TEST_CASE(VmEnumerateConstantBoundAndExecutedCost) {
     BOOST_CHECK_LT(static_cast<uint64_t>(enum_dyn.invocation.executed_cost),
                    static_cast<uint64_t>(enum_dyn.accounting_cost));
 
-    // Early BREAK inside <5> ENUMERATE DROP <1> BREAK ENDENUMERATE <1>:
-    // static accounting_cost charges all 5 iterations, while executed_cost charges only 1.
-    const auto enum_break = eval_script("5269794e6b6a4e");
+    // Early BREAK inside <5> ENUMERATE DROP <1> <1> BREAK ENDENUMERATE <1>
+    // (condition true, depth 1): static accounting_cost charges all 5
+    // iterations, while executed_cost charges only 1.
+    const auto enum_break = eval_script("5269794e4e6b6a4e");
     BOOST_CHECK(enum_break.charged);
     BOOST_CHECK_EQUAL(static_cast<int>(enum_break.invocation.status),
                       static_cast<int>(lotus::v2::VmStatus::Success));
