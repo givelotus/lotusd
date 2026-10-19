@@ -15,6 +15,7 @@
 #include <interfaces/node.h>
 #include <interfaces/wallet.h>
 #include <kernel/mempool_entry.h>
+#include <logging.h>
 #include <mapport.h>
 #include <net.h>
 #include <net_processing.h>
@@ -36,8 +37,10 @@
 #include <sync.h>
 #include <txmempool.h>
 #include <uint256.h>
+#include <util/bounded_task_queue.h>
 #include <util/check.h>
 #include <util/translation.h>
+#include <util/validation_queue_memory.h>
 #include <validation.h>
 #include <validationinterface.h>
 #include <warnings.h>
@@ -50,7 +53,9 @@
 
 #include <boost/signals2/signal.hpp>
 
+#include <atomic>
 #include <memory>
+#include <optional>
 #include <utility>
 
 class HTTPRPCRequestProcessor;
@@ -438,55 +443,139 @@ namespace {
 
     class NotificationsProxy : public CValidationInterface {
     public:
-        explicit NotificationsProxy(
-            std::shared_ptr<Chain::Notifications> notifications)
-            : m_notifications(std::move(notifications)) {}
-        virtual ~NotificationsProxy() = default;
+        NotificationsProxy(std::shared_ptr<Chain::Notifications> notifications,
+                           Chain::NotificationDelivery delivery)
+            : m_notifications(std::move(notifications)) {
+            if (delivery == Chain::NotificationDelivery::DEDICATED_WORKER) {
+                m_queue.emplace(
+                    MAX_QUEUE_BYTES, MAX_QUEUE_SIZE,
+                    [this] { OnWorkerFailure(); },
+                    BoundedTaskQueue::Overflow::BLOCK, "walletnotify");
+            }
+        }
+        virtual ~NotificationsProxy() { StopWorker(); }
+        using CValidationInterface::TransactionAddedToMempool;
         void TransactionAddedToMempool(const CTransactionRef &tx,
                                        std::shared_ptr<const std::vector<Coin>>,
                                        uint64_t mempool_sequence) override {
-            m_notifications->transactionAddedToMempool(tx, mempool_sequence);
+            // Spent coins are not forwarded: Notifications does not take them.
+            Dispatch(validation_queue::TxBytes(tx),
+                     [this, tx, mempool_sequence] {
+                         m_notifications->transactionAddedToMempool(
+                             tx, mempool_sequence);
+                     });
         }
         void TransactionRemovedFromMempool(const CTransactionRef &tx,
                                            MemPoolRemovalReason reason,
                                            uint64_t mempool_sequence) override {
-            m_notifications->transactionRemovedFromMempool(tx, reason,
-                                                           mempool_sequence);
+            Dispatch(validation_queue::TxBytes(tx),
+                     [this, tx, reason, mempool_sequence] {
+                         m_notifications->transactionRemovedFromMempool(
+                             tx, reason, mempool_sequence);
+                     });
         }
         void BlockConnected(ChainstateRole role,
                             const std::shared_ptr<const CBlock> &block,
                             const CBlockIndex *index) override {
-            m_notifications->blockConnected(role, *block, index->nHeight);
+            // Never keep the CBlockIndex: copy what the callback needs.
+            const int height = index->nHeight;
+            Dispatch(validation_queue::BlockBytes(block),
+                     [this, role, block, height] {
+                         m_notifications->blockConnected(role, *block, height);
+                     });
         }
         void BlockDisconnected(const std::shared_ptr<const CBlock> &block,
                                const CBlockIndex *index) override {
-            m_notifications->blockDisconnected(*block, index->nHeight);
+            const int height = index->nHeight;
+            Dispatch(validation_queue::BlockBytes(block),
+                     [this, block, height] {
+                         m_notifications->blockDisconnected(*block, height);
+                     });
         }
         void UpdatedBlockTip(const CBlockIndex *index,
                              const CBlockIndex *fork_index,
                              bool is_ibd) override {
-            m_notifications->updatedBlockTip();
+            Dispatch(0, [this] { m_notifications->updatedBlockTip(); });
         }
         void ChainStateFlushed(ChainstateRole role,
                                const CBlockLocator &locator) override {
-            m_notifications->chainStateFlushed(role, locator);
+            Dispatch(32 * locator.vHave.size(), [this, role, locator] {
+                m_notifications->chainStateFlushed(role, locator);
+            });
+        }
+        void SyncTransactionQueue() override {
+            if (m_queue) {
+                m_queue->Sync();
+            }
+        }
+        //! Run every accepted callback, then join the worker. Later events are
+        //! dropped. The caller must not hold a lock the callbacks take.
+        void StopWorker() {
+            if (m_queue) {
+                m_queue->Stop();
+            }
         }
         std::shared_ptr<Chain::Notifications> m_notifications;
+
+    private:
+        static constexpr size_t MAX_QUEUE_SIZE = 65536;
+        static constexpr size_t MAX_QUEUE_BYTES = 64 * 1024 * 1024;
+        static constexpr size_t TASK_OVERHEAD = 256;
+
+        //! Set on the first callback exception; queued callbacks after it are
+        //! discarded, so that a later chainStateFlushed cannot persist a best
+        //! block the subscriber failed to apply.
+        std::atomic<bool> m_failed{false};
+        std::optional<BoundedTaskQueue> m_queue;
+
+        void OnWorkerFailure() {
+            m_failed = true;
+            LogPrintf("FATAL: wallet notification worker failed; shutting "
+                      "down. The wallet rescans from its last flushed best "
+                      "block on restart.\n");
+            StartShutdown();
+        }
+
+        template <typename F> void Dispatch(size_t bytes, F &&f) {
+            if (!m_queue) {
+                f();
+                return;
+            }
+            // Blocks while the queue is full. Returns false (and drops the
+            // event) once the worker is stopping or has failed.
+            m_queue->Enqueue(TASK_OVERHEAD + bytes,
+                             [this, f = std::forward<F>(f)]() mutable {
+                                 if (!m_failed.load()) {
+                                     try {
+                                         f();
+                                     } catch (const std::exception &e) {
+                                         LogPrintf("Wallet notification callback exception: %s\n", e.what());
+                                         throw;
+                                     } catch (...) {
+                                         LogPrintf("Wallet notification callback exception: unknown exception\n");
+                                         throw;
+                                     }
+                                 }
+                             });
+        }
     };
 
     class NotificationsHandlerImpl : public Handler {
     public:
-        explicit NotificationsHandlerImpl(
+        NotificationsHandlerImpl(
             ValidationSignals &signals,
-            std::shared_ptr<Chain::Notifications> notifications)
+            std::shared_ptr<Chain::Notifications> notifications,
+            Chain::NotificationDelivery delivery)
             : m_signals{signals}, m_proxy{std::make_shared<NotificationsProxy>(
-                                      std::move(notifications))} {
+                                      std::move(notifications), delivery)} {
             m_signals.RegisterSharedValidationInterface(m_proxy);
         }
         ~NotificationsHandlerImpl() override { disconnect(); }
         void disconnect() override {
             if (m_proxy) {
                 m_signals.UnregisterSharedValidationInterface(m_proxy);
+                // Drain and join a dedicated worker before releasing it.
+                m_proxy->StopWorker();
                 m_proxy.reset();
             }
         }
@@ -757,10 +846,11 @@ namespace {
                           bool resume_possible) override {
             ::uiInterface.ShowProgress(title, progress, resume_possible);
         }
-        std::unique_ptr<Handler> handleNotifications(
-            std::shared_ptr<Notifications> notifications) override {
+        std::unique_ptr<Handler>
+        handleNotifications(std::shared_ptr<Notifications> notifications,
+                            NotificationDelivery delivery) override {
             return std::make_unique<NotificationsHandlerImpl>(
-                validation_signals(), std::move(notifications));
+                validation_signals(), std::move(notifications), delivery);
         }
         void
         waitForNotificationsIfTipChanged(const BlockHash &old_tip) override {
