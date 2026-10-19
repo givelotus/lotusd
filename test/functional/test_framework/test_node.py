@@ -61,6 +61,21 @@ class ErrorMatch(Enum):
     PARTIAL_REGEX = 3
 
 
+# Mainnet and testnet start with a placeholder V2 genesis and warn about it on
+# stderr every time. Tests that check stderr compare what follows it.
+PLACEHOLDER_GENESIS_WARNING = (
+    "Warning: This network uses a placeholder Lotus V2 genesis block. Its "
+    "chain will be discarded when Lotus V2 launches."
+)
+
+
+def strip_placeholder_genesis_warning(stderr):
+    lines = [
+        line for line in stderr.splitlines() if line != PLACEHOLDER_GENESIS_WARNING
+    ]
+    return "\n".join(lines).strip()
+
+
 class TestNode:
     """A class for representing a bitcoind node under test.
 
@@ -624,7 +639,7 @@ class TestNode:
         )
         # Check that stderr is as expected
         self.stderr.seek(0)
-        stderr = self.stderr.read().decode("utf-8").strip()
+        stderr = strip_placeholder_genesis_warning(self.stderr.read().decode("utf-8"))
         if stderr != expected_stderr:
             raise AssertionError(f"Unexpected stderr {stderr} != {expected_stderr}")
 
@@ -979,7 +994,9 @@ class TestNode:
                 # Check stderr for expected message
                 if expected_msg is not None:
                     log_stderr.seek(0)
-                    stderr = log_stderr.read().decode("utf-8").strip()
+                    stderr = strip_placeholder_genesis_warning(
+                        log_stderr.read().decode("utf-8")
+                    )
                     if match == ErrorMatch.PARTIAL_REGEX:
                         if re.search(expected_msg, stderr, flags=re.MULTILINE) is None:
                             self._raise_assertion_error(
