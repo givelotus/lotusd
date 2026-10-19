@@ -174,6 +174,31 @@ std::string HashStr(const Hash32 &h) {
 
 Bytes Payload20(uint8_t id) { return Bytes(20, id); }
 
+/** Extension group of the tests: 32-byte output scripts, member = script. */
+class Hash32OutputsKind final : public SubsGroupKind {
+public:
+    Bytes SerMember(ByteView member) const override {
+        return Bytes(member.begin(), member.end());
+    }
+    void TxMembers(const Tx &tx, const SubsAux &,
+                   std::vector<SubsMember> &out) const override {
+        for (const TxOutput &output : tx.outputs) {
+            if (output.script.size() == 32) {
+                out.push_back(SubsMember{output.script, std::nullopt});
+            }
+        }
+    }
+};
+
+/** Registers "hash32" and its alias "h32" (32-byte payloads) on `hub`. */
+void RegisterHash32(SubsHub &hub) {
+    SubscriptionHub registrar(hub);
+    const size_t group =
+        registrar.AddGroup(std::make_unique<Hash32OutputsKind>());
+    registrar.AddWsScriptType({"hash32", 32, group, "hash32"});
+    registrar.AddWsScriptType({"h32", 32, group, "hash32"});
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ws_handler_tests)
@@ -539,6 +564,79 @@ BOOST_AUTO_TEST_CASE(debug_logs) {
         "WS unsubscribe from blocks\n",
     };
     BOOST_CHECK(env.logs == expected);
+}
+
+BOOST_AUTO_TEST_CASE(extension_script_types) {
+    WsEnv env;
+    RegisterHash32(*env.hub);
+    BOOST_CHECK_EQUAL(env.hub->WsScriptTypes().size(), 2u);
+    const Bytes member(32, 0x44);
+    const Tx tx = MakeTx(7, member);
+    env.Send(SubScript("hash32", member));
+    // Same group and member under the alias: no second subscription
+    env.Send(SubScript("h32", member));
+    BOOST_CHECK(env.session->Take().empty());
+    BOOST_CHECK_EQUAL(env.ClientCount(), 1u);
+    BOOST_CHECK(env.logs.back() == "WS subscribe to hash32 " +
+                                       std::string(64, '4') + "\n");
+    // Block tx events are not short-circuited with only extension subs
+    auto msgs = env.Publish([&](Subs &subs) {
+        subs.HandleBlockTxEvents(std::vector<Tx>{tx}, TxMsgType::Confirmed());
+    });
+    BOOST_REQUIRE_EQUAL(msgs.size(), 1u);
+    BOOST_CHECK(msgs[0].tx().txid() == HashStr(tx.txid));
+    msgs = env.Publish([&](Subs &subs) {
+        subs.HandleTxEvent(MakeTx(8, Bytes(32, 0x45)), TxMsgType::Confirmed());
+    });
+    BOOST_CHECK(msgs.empty());
+
+    // Other payload sizes fall through to the core script types
+    env.Send(SubScript("hash32", Bytes(20, 0x44)));
+    msgs = env.session->Take();
+    BOOST_REQUIRE_EQUAL(msgs.size(), 1u);
+    BOOST_CHECK(msgs[0].has_error());
+
+    // Unsubscribing through the alias releases the subscription
+    env.Send(SubScript("h32", member, true));
+    BOOST_CHECK_EQUAL(env.ClientCount(), 0u);
+    BOOST_CHECK(!env.hub->Write()->SubsExt(0).HasChannel(member));
+    msgs = env.Publish(
+        [&](Subs &subs) { subs.HandleTxEvent(tx, TxMsgType::Confirmed()); });
+    BOOST_CHECK(msgs.empty());
+}
+
+BOOST_AUTO_TEST_CASE(extension_groups_order_and_cleanup) {
+    WsEnv env;
+    RegisterHash32(*env.hub);
+    const Bytes member(32, 0x55);
+    const Tx ext_tx = MakeTx(1, member);
+    const Tx script_tx = MakeTx(2, th::P2pkh(0x11));
+    const Tx lokad_tx = MakeTx(3, th::LokadOpReturn({'A', 'B', 'C', 'D'}));
+    env.Send(SubLokad({'A', 'B', 'C', 'D'}));
+    env.Send(SubScript("hash32", member));
+    env.Send(SubScript("p2pkh", Payload20(0x11)));
+    auto msgs = env.Publish([&](Subs &subs) {
+        subs.HandleTxEvent(lokad_tx, TxMsgType::Confirmed());
+        subs.HandleTxEvent(ext_tx, TxMsgType::Confirmed());
+        subs.HandleTxEvent(script_tx, TxMsgType::Confirmed());
+    });
+    // scripts, then extension groups, then LOKAD IDs (ws.rs select order)
+    BOOST_REQUIRE_EQUAL(msgs.size(), 3u);
+    BOOST_CHECK(msgs[0].tx().txid() == HashStr(script_tx.txid));
+    BOOST_CHECK(msgs[1].tx().txid() == HashStr(ext_tx.txid));
+    BOOST_CHECK(msgs[2].tx().txid() == HashStr(lokad_tx.txid));
+
+    env.handler->OnClosed();
+    BOOST_CHECK_EQUAL(env.limiter->Total(), 0u);
+    BOOST_CHECK(env.hub->Write()->SubsExt(0).IsEmpty());
+}
+
+BOOST_AUTO_TEST_CASE(extension_script_type_needs_group) {
+    SubsHub hub(TestSha());
+    SubscriptionHub registrar(hub);
+    BOOST_CHECK_THROW(registrar.AddWsScriptType({"x", 32, 0, "x"}),
+                      std::invalid_argument);
+    BOOST_CHECK(hub.WsScriptTypes().empty());
 }
 
 BOOST_AUTO_TEST_CASE(optional_connection_observer_balances_close_and_destruction) {
