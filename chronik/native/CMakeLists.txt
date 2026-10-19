@@ -100,22 +100,22 @@ else()
     )
 endif()
 
-# ---- Protobuf messages (chronik.proto) ----
+# ---- Protobuf messages (chronik.proto) and HTTP/WS transports ----
 include("${CHRONIK_NATIVE_ROOT}/proto/proto.cmake")
-
-# ---- HTTP/WS transports (query pool, standalone Beast listener) ----
 include("${CHRONIK_NATIVE_ROOT}/transport/transport.cmake")
 
 # ---- Host adapter (node build only) ----
 if(NOT CHRONIK_NATIVE_STANDALONE)
     add_library(chronik_native_host_abc STATIC
         hosts/abc/abc_entry.cpp
+        # chronik::native::Host for the node (ChronikBridge port).
+        hosts/abc/abc_host.cpp
     )
     target_include_directories(chronik_native_host_abc
         PUBLIC
             # Provides <chronik-cpp/chronik.h>, the entry points init.cpp uses.
             "${CHRONIK_NATIVE_REPO_ROOT}/chronik"
-        PRIVATE
+            # Provides <hosts/abc/abc_host.h> to the node's unit tests.
             "${CHRONIK_NATIVE_ROOT}"
     )
     target_link_libraries(chronik_native_host_abc

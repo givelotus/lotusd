@@ -105,7 +105,7 @@ struct TxInput {
     /** scriptSig, or host-defined (V2: coinbase data / witness[0].script). */
     Bytes script;
     uint32_t sequence{};
-    /** Spent coin; nullopt for coinbase (or unresolved, for decoded txs). */
+    /** Spent coin; Coin{} for coinbase (as Rust), nullopt if unresolved (decoded txs). */
     std::optional<Coin> coin;
     bool operator==(const TxInput &) const = default;
 };
