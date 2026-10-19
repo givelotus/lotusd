@@ -22,6 +22,7 @@
 #include <lotus_v2/transaction.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
+#include <primitives/v2_outputs.h>
 #include <script/script.h>
 #include <script/script_error.h>
 #include <script/sigcache.h>
@@ -710,24 +711,14 @@ BOOST_AUTO_TEST_CASE(test_IsStandard) {
     BOOST_CHECK(IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY, g_bare_multi,
                              g_dust, reason));
 
-    // Disallowed nVersion
-    t.nVersion = std::numeric_limits<uint32_t>::max();
-    reason.clear();
-    BOOST_CHECK(!IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY,
-                              g_bare_multi, g_dust, reason));
-    BOOST_CHECK_EQUAL(reason, "version");
-
-    t.nVersion = 0;
-    reason.clear();
-    BOOST_CHECK(!IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY,
-                              g_bare_multi, g_dust, reason));
-    BOOST_CHECK_EQUAL(reason, "version");
-
-    t.nVersion = 3;
-    reason.clear();
-    BOOST_CHECK(!IsStandardTx(CTransaction{t}, MAX_OP_RETURN_RELAY,
-                              g_bare_multi, g_dust, reason));
-    BOOST_CHECK_EQUAL(reason, "version");
+    // Disallowed nVersion: a transaction of any version other than 1, 2 or 7
+    // has no serialization, so it is never built (bad-txns-version).
+    for (const uint32_t version :
+         {std::numeric_limits<uint32_t>::max(), 0U, 3U}) {
+        t.nVersion = version;
+        BOOST_CHECK_EXCEPTION(CTransaction{t}, std::ios_base::failure,
+                              HasReason("bad-txns-version"));
+    }
 
     // Allowed nVersion
     t.nVersion = 1;
@@ -1211,7 +1202,8 @@ BOOST_AUTO_TEST_CASE(serialized_storage) {
     for (size_t n_in = 0; n_in <= 3; ++n_in) {
         for (size_t n_out = 0; n_out <= 4; ++n_out) {
             CMutableTransaction mtx;
-            mtx.nVersion = rng.rand32();
+            // A legacy transaction: version 1 or 2.
+            mtx.nVersion = 1 + rng.randbool();
             mtx.nLockTime = rng.rand32();
             for (size_t i = 0; i < n_in; ++i) {
                 const auto size = script_sizes[rng.randrange(6)];
@@ -1363,8 +1355,11 @@ BOOST_AUTO_TEST_CASE(serialized_storage_rejects_like_mutable) {
     check(huge_script);
 }
 
-// Immutable pure-native outputs must expose exactly the script representation
-// reconstructed from their wire fields. Legacy-wrapped scripts remain literal.
+// Immutable version 7 outputs expose exactly the script representation
+// reconstructed from their wire fields, locally and on a peer. A version 7
+// output whose scriptPubKey is not its V2 encoding has no serialization (T1:
+// the legacy-wrapped compatibility wire, which kept such scripts literal, is
+// gone).
 BOOST_AUTO_TEST_CASE(native_pure_output_local_and_peer_legacy_spend_agree) {
     CKey key;
     const std::array<uint8_t, 32> secret{1};
@@ -1374,16 +1369,22 @@ BOOST_AUTO_TEST_CASE(native_pure_output_local_and_peer_legacy_spend_agree) {
     const CScript p2pkh = GetScriptForDestination(PKHash(key.GetPubKey()));
     CMutableTransaction funding;
     funding.nVersion = 7;
-    funding.fHasV2Lock = true;
     funding.vin.resize(1);
     funding.vin[0].nFlags = 2;
     funding.vin[0].prevout = COutPoint();
     funding.vin[0].fHasCoinbaseData = true;
     funding.vin[0].vCoinbaseData = {1};
-    funding.vin[0].scriptSig = CScript() << OP_TRUE;
-    funding.vout.emplace_back(1000 * SATOSHI, p2pkh);
-    AdaptLegacyOutputToV7(funding.vout[0]);
-    BOOST_REQUIRE(funding.vout[0].scriptPubKey == p2pkh);
+    // The V0-leaf output over p2pkh, with the raw script as its scriptPubKey,
+    // is refused.
+    funding.vout.push_back(V0LeafOutput(1000 * SATOSHI, p2pkh));
+    funding.vout[0].scriptPubKey = p2pkh;
+    {
+        DataStream refused;
+        BOOST_CHECK_THROW(refused << funding, std::ios_base::failure);
+        BOOST_CHECK_THROW(CTransaction{funding}, std::ios_base::failure);
+    }
+    funding.vout[0] = V0LeafOutput(1000 * SATOSHI, p2pkh);
+    BOOST_REQUIRE(funding.vout[0].scriptPubKey != p2pkh);
     DataStream bytes;
     bytes << funding;
     BOOST_REQUIRE_EQUAL(HexStr(bytes).substr(0, 8), "07000000");
@@ -1391,6 +1392,7 @@ BOOST_AUTO_TEST_CASE(native_pure_output_local_and_peer_legacy_spend_agree) {
     const CTransaction local{funding};
     const CTransaction peer{deserialize, bytes};
     BOOST_CHECK(local.vout[0].scriptPubKey == peer.vout[0].scriptPubKey);
+    BOOST_CHECK(local.vout[0].scriptPubKey == funding.vout[0].scriptPubKey);
     BOOST_CHECK_EQUAL(local.GetStorageSize(), peer.GetStorageSize());
     BOOST_CHECK(local.GetId() == peer.GetId());
     BOOST_CHECK(local.GetHash() == peer.GetHash());
@@ -1399,8 +1401,10 @@ BOOST_AUTO_TEST_CASE(native_pure_output_local_and_peer_legacy_spend_agree) {
     local_wire << local;
     BOOST_CHECK_EQUAL(HexStr(local_wire), expected_wire);
 
+    // A legacy signature over p2pkh does not satisfy the V2 output's script,
+    // locally or on the peer.
     CMutableTransaction spend;
-    spend.nVersion = 7; // flags0 selects the legacy-wrapped compatibility wire.
+    spend.nVersion = 2;
     spend.vin.emplace_back(local.GetId(), 0);
     spend.vout.emplace_back(999 * SATOSHI, CScript() << OP_TRUE);
     BOOST_REQUIRE(SignSignature(keys, p2pkh, spend, 0, 1000 * SATOSHI,
@@ -1429,7 +1433,6 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
         for (uint8_t flags : {uint8_t{0}, uint8_t{1}, uint8_t{2}, uint8_t{3}}) {
             CMutableTransaction tx;
             tx.nVersion = 7;
-            tx.fHasV2Lock = true;
             tx.vin.emplace_back(TxId(uint256::ONE), 0);
             tx.vin[0].nFlags = 1;
             lotus::v2::BranchWitness witness;
@@ -1444,8 +1447,8 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
             native.branches = {a, b};
             if (!(flags & 2)) native.paths = {{0}, {0, 1}, {1}};
             const CTxOut canonical = CTxOut::FromV2Output(native);
-            // One ordinary output exercises the allocation-free canonical fast
-            // path; the second spans burn/token/multibranch codecs and raw sizes.
+            // One ordinary output exercises the 45-byte canonical form; the
+            // second spans burn/token/multibranch codecs and raw sizes.
             lotus::v2::Output ordinary;
             ordinary.value = 42;
             ordinary.branches = {a};
@@ -1455,6 +1458,14 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
             tx.vout.back().scriptPubKey.resize(raw_size);
             std::fill(tx.vout.back().scriptPubKey.begin(),
                       tx.vout.back().scriptPubKey.end(), OP_TRUE);
+            if (raw_size != 0) {
+                // A scriptPubKey other than the V2 encoding is refused.
+                DataStream refused;
+                BOOST_CHECK_THROW(refused << tx, std::ios_base::failure);
+                BOOST_CHECK_THROW(CTransaction{tx}, std::ios_base::failure);
+                continue;
+            }
+            // An empty scriptPubKey takes the V2 encoding.
             DataStream serialized;
             serialized << tx;
             const std::vector<uint8_t> bytes(UCharCast(serialized.data()),
@@ -1467,7 +1478,6 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
             BOOST_CHECK_EQUAL(owned.GetStorageSize(), decoded.GetStorageSize());
             BOOST_CHECK(owned.GetId() == decoded.GetId());
             BOOST_CHECK(owned.GetHash() == decoded.GetHash());
-            if (owned.vout[1].scriptPubKey != canonical.scriptPubKey) continue;
             auto check = [&](const CTransaction &constructed) {
                 BOOST_REQUIRE_EQUAL(constructed.vout.size(), 2U);
                 for (size_t i = 0; i < constructed.vout.size(); ++i) {
@@ -1514,33 +1524,18 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
             external_shared.reset();
             BOOST_CHECK(retained == canonical.scriptPubKey);
 
-            // Logical version7 alone must never trigger native normalization.
+            // A version 7 transaction with a legacy input has no serialization
+            // (formerly the legacy-wrapped compatibility wire).
             tx.vin[0].nFlags = 0;
             tx.vin[0].vWitnesses.clear();
             DataStream legacy_bytes;
-            legacy_bytes << tx;
-            const std::string legacy_wire = HexStr(legacy_bytes);
-            BOOST_REQUIRE_EQUAL(legacy_wire.substr(0, 8), "07000080");
-            const CTransaction wrapped{tx};
-            BOOST_CHECK(wrapped.vout[1].scriptPubKey == tx.vout[1].scriptPubKey);
-            BOOST_CHECK_EQUAL(wrapped.vout[1].nValue, tx.vout[1].nValue);
-            BOOST_CHECK_EQUAL(wrapped.vout[1].nFlags, tx.vout[1].nFlags);
-            BOOST_CHECK(wrapped.vout[1].tokenId == tx.vout[1].tokenId);
-            BOOST_CHECK(wrapped.vout[1].vBranches == tx.vout[1].vBranches);
-            BOOST_CHECK(wrapped.vout[1].vPaths == tx.vout[1].vPaths);
-            DataStream reserialized;
-            reserialized << wrapped;
-            BOOST_CHECK_EQUAL(HexStr(reserialized), legacy_wire);
-            const CTransaction wrapper_decoded{deserialize, legacy_bytes};
-            BOOST_CHECK(wrapper_decoded.vout[1].scriptPubKey == tx.vout[1].scriptPubKey);
-            BOOST_CHECK_EQUAL(wrapper_decoded.vout[1].nValue, tx.vout[1].nValue);
+            BOOST_CHECK_THROW(legacy_bytes << tx, std::ios_base::failure);
+            BOOST_CHECK_THROW(CTransaction{tx}, std::ios_base::failure);
         }
     }
-    // Invalid models still reach the existing validation checks with their
-    // original fields; failed encoding must not undercount the slab tail.
+    // An output model with no V2 encoding has no serialization either.
     CMutableTransaction invalid;
     invalid.nVersion = 7;
-    invalid.fHasV2Lock = true;
     invalid.vin.emplace_back(TxId(uint256::ONE), 0);
     invalid.vin[0].nFlags = 1;
     lotus::v2::BranchWitness witness;
@@ -1553,13 +1548,7 @@ BOOST_AUTO_TEST_CASE(native_pure_output_layout_paths_and_wrapped_control) {
     a[0] = 1; b[0] = 2;
     invalid.vout[0].vBranches = {a, b};
     invalid.vout[0].vPaths = {{0}};
-    const CTransaction invalid_owned{invalid};
-    BOOST_CHECK(invalid_owned.vout[0].scriptPubKey == invalid.vout[0].scriptPubKey);
-    BOOST_CHECK_EQUAL(invalid_owned.vout[0].nFlags, 4);
-    BOOST_CHECK_EQUAL(invalid_owned.ToV2Transaction().outputs[0].flags, 4);
-    DataStream invalid_wire;
-    invalid_wire << invalid_owned;
-    BOOST_CHECK_THROW((CTransaction{deserialize, invalid_wire}), std::ios_base::failure);
+    BOOST_CHECK_THROW(CTransaction{invalid}, std::ios_base::failure);
 }
 
 BOOST_AUTO_TEST_CASE(native_wire_slab_preserves_extensions_and_identities) {
@@ -1580,7 +1569,6 @@ BOOST_AUTO_TEST_CASE(native_wire_slab_preserves_extensions_and_identities) {
         BOOST_CHECK(after->GetOutputsHash() == before->GetOutputsHash());
         BOOST_CHECK_EQUAL(after->GetTotalSize(), expected.size());
         BOOST_CHECK_EQUAL(after->nV2Lock, tx.nV2Lock);
-        BOOST_CHECK_EQUAL(after->fHasV2Lock, tx.fHasV2Lock);
         BOOST_REQUIRE_EQUAL(after->vin.size(), tx.vin.size());
         BOOST_REQUIRE_EQUAL(after->vout.size(), tx.vout.size());
         for (size_t i = 0; i < tx.vin.size(); ++i) BOOST_CHECK(after->vin[i] == tx.vin[i]);
@@ -1589,11 +1577,76 @@ BOOST_AUTO_TEST_CASE(native_wire_slab_preserves_extensions_and_identities) {
         DataStream reserialized;
         reserialized << copied;
         BOOST_CHECK_EQUAL(HexStr(reserialized), HexStr(expected));
+
+        // Memory and noncontiguous readers must agree with the authoritative
+        // mutable parser, including rejection of every truncated prefix.
+        const std::vector<uint8_t> bytes(UCharCast(expected.data()),
+                                        UCharCast(expected.data()) + expected.size());
+        auto check_bytes = [&](const std::vector<uint8_t> &candidate) {
+            bool accepted = false;
+            CMutableTransaction reference;
+            CTransactionRef oracle;
+            try {
+                SpanReader reader{candidate};
+                reader >> reference;
+                // Exercise the unchanged source-null wire placement as the
+                // old-path oracle. Serializing a mutable object is stronger
+                // than decoding wire (e.g. out-of-range native amounts), so
+                // constructing the oracle from reference would reject some
+                // parsed mutations before the consensus amount checks run.
+                oracle = MakeTransactionRef(ScanTransactionWire(candidate));
+                accepted = true;
+            } catch (const std::ios_base::failure &) {
+            }
+            auto check_reader = [&](auto &reader) {
+                CTransactionRef result;
+                if (!accepted) {
+                    BOOST_CHECK_THROW(reader >> result, std::ios_base::failure);
+                    return;
+                }
+                BOOST_REQUIRE_NO_THROW(reader >> result);
+                BOOST_CHECK(result->GetId() == oracle->GetId());
+                BOOST_CHECK(result->GetHash() == oracle->GetHash());
+                BOOST_CHECK_EQUAL(result->GetTotalSize(), oracle->GetTotalSize());
+                DataStream final_bytes;
+                final_bytes << result;
+                DataStream oracle_bytes;
+                oracle_bytes << oracle;
+                BOOST_CHECK_EQUAL(HexStr(final_bytes), HexStr(oracle_bytes));
+            };
+            SpanReader memory{candidate};
+            SequentialReader sequential{candidate};
+            check_reader(memory);
+            check_reader(sequential);
+        };
+        for (size_t size = 0; size < bytes.size(); ++size) {
+            check_bytes(std::vector<uint8_t>(bytes.begin(), bytes.begin() + size));
+        }
+        // Mutations cover framing, native flags/counts, witness and path data.
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            auto mutated = bytes;
+            mutated[i] ^= 0xff;
+            check_bytes(mutated);
+        }
+        SequentialReader sequential{bytes};
+        CTransactionRef disk;
+        sequential >> disk;
+        // Neither the parser's temporary vectors nor the serialized scratch
+        // storage can own anything referenced by the final immutable object.
+        TransactionScratchBuffer().assign(bytes.size(), 0xee);
+        DataStream retained_bytes;
+        retained_bytes << disk;
+        BOOST_CHECK_EQUAL(HexStr(retained_bytes), HexStr(expected));
         return after;
     };
+    CMutableTransaction legacy;
+    legacy.vin.emplace_back(TxId{uint256::ONE}, 0,
+                            RawScript(std::vector<uint8_t>(107, 1)));
+    legacy.vout.emplace_back(SATOSHI, RawScript(std::vector<uint8_t>(253, 2)));
+    roundtrip(legacy);
+
     CMutableTransaction spend;
     spend.nVersion = 7;
-    spend.fHasV2Lock = true;
     spend.nLockTime = 123;
     spend.nV2Lock = (uint64_t(123) << 8) | 1;
     spend.vin.emplace_back(COutPoint(TxId(uint256S("11")), 3));
@@ -1623,13 +1676,11 @@ BOOST_AUTO_TEST_CASE(native_wire_slab_preserves_extensions_and_identities) {
 
     CMutableTransaction coinbase;
     coinbase.nVersion = 7;
-    coinbase.fHasV2Lock = true;
     coinbase.vin.resize(1);
     coinbase.vin[0].prevout = COutPoint();
     coinbase.vin[0].nFlags = 2;
     coinbase.vin[0].fHasCoinbaseData = true;
     coinbase.vin[0].vCoinbaseData.assign(40, 0x42);
-    coinbase.vin[0].scriptSig = CScript(coinbase.vin[0].vCoinbaseData.begin(), coinbase.vin[0].vCoinbaseData.end());
     output.flags = 0; output.token_id = {};
     coinbase.vout.push_back(CTxOut::FromV2Output(output));
     roundtrip(coinbase);
@@ -1689,7 +1740,6 @@ BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_doubl
     for (const bool coinbase : {false, true}) {
         CMutableTransaction mutable_tx;
         mutable_tx.nVersion = 7;
-        mutable_tx.fHasV2Lock = true;
         mutable_tx.vin.resize(coinbase ? 1 : 2);
         for (auto &input : mutable_tx.vin) {
             input.nFlags = coinbase ? 2 : 1;
@@ -1763,7 +1813,6 @@ BOOST_AUTO_TEST_CASE(v2_input_output_count_caps) {
     auto make = [&](size_t inputs, size_t outputs) {
         CMutableTransaction tx;
         tx.nVersion = 7;
-        tx.fHasV2Lock = true;
         for (size_t i = 0; i < inputs; ++i) {
             tx.vin.emplace_back(COutPoint(TxId(uint256S("11")), uint32_t(i)));
             tx.vin.back().nFlags = 1;
@@ -1799,7 +1848,6 @@ BOOST_AUTO_TEST_CASE(v2_over_cap_identity_comes_from_bytes) {
     output.paths = {{0}};
     CMutableTransaction mtx;
     mtx.nVersion = 7;
-    mtx.fHasV2Lock = true;
     mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
     mtx.vin.back().nFlags = 1;
     mtx.vin.back().nSequence = CTxIn::SEQUENCE_FINAL;
@@ -1885,34 +1933,36 @@ BOOST_AUTO_TEST_CASE(v2_over_cap_identity_comes_from_bytes) {
                       "bad-txns-v2-too-many-outputs");
 }
 
-// A transaction that is not a well-formed V2 transaction has only the
-// fallback identity; validation rejects it explicitly instead of accepting it
-// under that identity. A legacy-version transaction with 65,536 outputs passes
-// every other context-free rule but cannot be counted by the u16 V2 header.
-BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_rejected) {
+static uint256 Sha256dOf(const CMutableTransaction &mtx) {
+    HashWriter hasher{};
+    hasher << mtx;
+    return hasher.GetHash();
+}
+
+// A legacy transaction is named by its SHA256d and is subject to the same
+// input and output caps as a version 7 transaction.
+BOOST_AUTO_TEST_CASE(legacy_transaction_identity_and_caps) {
     CMutableTransaction mtx;
     mtx.nVersion = 1;
     mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
-    mtx.vout.assign(65535, CTxOut(Amount::zero(), CScript()));
+    mtx.vout.assign(MAX_V2_TX_OUTPUTS, CTxOut(Amount::zero(), CScript()));
     {
         const CTransaction tx(mtx);
-        BOOST_CHECK(tx.HasStructuralV2Identity());
+        BOOST_CHECK(uint256(tx.GetId()) == Sha256dOf(mtx));
+        BOOST_CHECK(uint256(tx.GetHash()) == Sha256dOf(mtx));
         TxValidationState state;
         BOOST_CHECK(CheckRegularTransaction(tx, state));
     }
     mtx.vout.emplace_back(Amount::zero(), CScript());
     const CTransaction tx(mtx);
-    BOOST_CHECK(!tx.HasStructuralV2Identity());
+    BOOST_CHECK(uint256(tx.GetId()) == Sha256dOf(mtx));
     TxValidationState state;
     BOOST_CHECK(!CheckRegularTransaction(tx, state));
-    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-v2-identity");
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-v2-too-many-outputs");
 
-    // More specific reasons still win: an empty-input transaction also has
-    // the fallback identity but is rejected as bad-txns-vin-empty.
     CMutableTransaction empty;
     empty.vout.emplace_back(Amount::zero(), CScript());
     const CTransaction empty_tx(empty);
-    BOOST_CHECK(!empty_tx.HasStructuralV2Identity());
     state = TxValidationState{};
     BOOST_CHECK(!CheckRegularTransaction(empty_tx, state));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-vin-empty");
@@ -1952,110 +2002,157 @@ lotus::v2::Transaction FallbackIdentityBase() {
 }
 } // namespace
 
-// The fallback name of a transaction that is not a V2 structure commits to
-// every serialized field, so transactions that differ only in fields the
-// structural identity would also commit to (path index, extra witnesses,
-// siblings, arguments, an output that cannot be encoded) get different names,
-// and none equals a structural identity. Each variant below differs from the
-// first only in such a field; the previous flat fallback named them all the
-// same.
-BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_unique) {
+// A version 7 transaction whose content has no structural V2 identity is not
+// a transaction: building it, or decoding its bytes, fails. (There is no
+// fallback name.)
+BOOST_AUTO_TEST_CASE(v7_without_structural_identity_does_not_construct) {
     const lotus::v2::Transaction valid = FallbackIdentityBase();
     const CTransaction valid_tx(CMutableTransaction::FromV2Transaction(valid));
-    BOOST_REQUIRE(valid_tx.HasStructuralV2Identity());
 
     // Repeating the first outpoint makes it a non-structural transaction.
     lotus::v2::Transaction invalid = valid;
     invalid.inputs[1].prev_txid = invalid.inputs[0].prev_txid;
-
     std::vector<lotus::v2::Transaction> variants{invalid};
     variants.push_back(invalid);
     variants.back().inputs[0].path_index = 1;
     variants.push_back(invalid);
     variants.back().inputs[0].witnesses.push_back({{0x52}, {}, {}});
-    variants.push_back(invalid);
-    variants.back().inputs[0].witnesses[0].siblings.push_back(
-        lotus::v2::Hash32{});
-    variants.push_back(invalid);
-    variants.back().inputs[0].witnesses[0].arguments.push_back({0x01});
-    variants.push_back(invalid);
-    variants.back().inputs[0].witnesses[0].arguments.push_back({0x02});
-    variants.push_back(invalid);
-    variants.back().inputs[1].witnesses[0].arguments.push_back({0x01});
-    // An output without branches cannot be encoded.
-    variants.push_back(invalid);
-    variants.back().outputs.push_back(lotus::v2::Output{});
-    variants.back().outputs.back().value = 5;
-    // Bytes moved across the script/argument boundary.
-    variants.push_back(invalid);
-    variants.back().inputs[0].witnesses[0].script = {0x51, 0x01};
-    variants.push_back(invalid);
-    variants.back().inputs[0].witnesses[0].arguments.push_back({0x01, 0x01});
-
-    std::set<uint256> names{valid_tx.GetId(), valid_tx.GetHash()};
+    // No inputs at all.
+    variants.push_back(valid);
+    variants.back().inputs.clear();
     for (const auto &variant : variants) {
         const CMutableTransaction mtx =
             CMutableTransaction::FromV2Transaction(variant);
-        const CTransaction tx(mtx);
-        BOOST_CHECK(!tx.HasStructuralV2Identity());
-        BOOST_CHECK(tx.GetId() == mtx.GetId());
-        BOOST_CHECK(tx.GetHash() == mtx.GetHash());
-        BOOST_CHECK(uint256(tx.GetId()) == uint256(tx.GetHash()));
-
-        // The name is the fallback tag over the chain ID and the complete
-        // serialization, never the TxId or TxHash tag.
-        const lotus::v2::ChainId &chain_id = GetActiveV2ChainId();
-        std::vector<uint8_t> preimage(chain_id.begin(), chain_id.end());
-        VectorWriter writer{preimage, preimage.size()};
-        SerializeTransaction(tx, writer);
-        const auto expected = lotus::v2::TaggedHash(
-            lotus::v2::HashDomain::TxIdFallback, preimage);
-        BOOST_CHECK(std::equal(expected.begin(), expected.end(),
-                               tx.GetId().begin()));
-        BOOST_CHECK(names.insert(tx.GetId()).second);
-
-        // Rejected (here by the more specific duplicate-input rule).
-        TxValidationState state;
-        BOOST_CHECK(!CheckRegularTransaction(tx, state));
+        BOOST_CHECK_THROW(CTransaction{mtx}, std::ios_base::failure);
+        BOOST_CHECK_THROW(MakeTransactionRef(mtx), std::ios_base::failure);
+        BOOST_CHECK_THROW(mtx.GetId(), std::ios_base::failure);
     }
-
-    // The name depends on the chain ID.
-    const CMutableTransaction mtx =
-        CMutableTransaction::FromV2Transaction(invalid);
-    const TxId mainnet_name = mtx.GetId();
-    lotus::v2::ChainId other_chain{};
-    other_chain.fill(0x44);
+    // The decoder rejects the bytes of the repeated-outpoint variant.
     {
-        const ScopedTestV2ChainId scoped(other_chain);
-        BOOST_CHECK(mtx.GetId() != mainnet_name);
+        const CMutableTransaction mtx =
+            CMutableTransaction::FromV2Transaction(invalid);
+        DataStream ss{};
+        ss << mtx;
+        BOOST_CHECK_THROW(CTransaction(deserialize, ss),
+                          std::ios_base::failure);
     }
-    BOOST_CHECK(mtx.GetId() == mainnet_name);
 }
 
-// Cross-language vector: test_framework.messages.lotus_v2_compute_tx_identities
-// gives the same fallback name for this regtest (zero chain ID) transaction, a
-// version-7 legacy-framed transaction spending one outpoint twice.
-BOOST_AUTO_TEST_CASE(v2_fallback_identity_matches_test_framework) {
-    const ScopedTestV2ChainId scoped(lotus::v2::ChainId{});
-    CMutableTransaction mtx;
-    mtx.nVersion = 7;
-    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
-    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
-    mtx.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
-    const CTransaction tx(mtx);
-    DataStream stream{};
-    stream << tx;
-    BOOST_CHECK_EQUAL(
-        HexStr(stream),
-        "070000800211000000000000000000000000000000000000000000000000000000"
-        "000000000000000000ffffffff1100000000000000000000000000000000000000"
-        "0000000000000000000000000000000000ffffffff01e803000000000000015100"
-        "000000");
-    BOOST_CHECK(!tx.HasStructuralV2Identity());
-    BOOST_CHECK_EQUAL(
-        tx.GetId().GetHex(),
-        "690f32a7d8ea390fa29b15729cec2c3b6d84e10e07e78458adfbd98bf4f77e70");
-    BOOST_CHECK_EQUAL(tx.GetHash().GetHex(), tx.GetId().GetHex());
+// The version selects the grammar; any version other than 1, 2 or 7 (including
+// the removed wrapped forms 0x80000007 and 0xC0000007) does not decode.
+BOOST_AUTO_TEST_CASE(transaction_version_selects_grammar) {
+    CMutableTransaction legacy;
+    legacy.vin.emplace_back(COutPoint(TxId(uint256S("11")), 3),
+                            CScript() << OP_1);
+    legacy.vout.emplace_back(1234 * SATOSHI, CScript() << OP_2);
+    BOOST_CHECK_EQUAL(legacy.nVersion, 2U);
+    for (const uint32_t version : {1U, 2U}) {
+        legacy.nVersion = version;
+        DataStream ss{};
+        ss << legacy;
+        const std::string hex = HexStr(ss);
+        CTransaction decoded(deserialize, ss);
+        BOOST_CHECK_EQUAL(decoded.nVersion, version);
+        BOOST_CHECK(uint256(decoded.GetId()) == Sha256dOf(legacy));
+        BOOST_CHECK(uint256(decoded.GetHash()) == Sha256dOf(legacy));
+        BOOST_CHECK(decoded.vin[0] == legacy.vin[0]);
+        BOOST_CHECK(decoded.vout[0] == legacy.vout[0]);
+        // The legacy grammar: the version, then the eCash vin/vout/nLockTime.
+        BOOST_CHECK_EQUAL(hex.substr(0, 8),
+                          version == 1 ? "01000000" : "02000000");
+    }
+    for (const uint32_t version :
+         {0U, 3U, 4U, 5U, 6U, 8U, 0x80000007U, 0xC0000007U}) {
+        DataStream ss{};
+        legacy.nVersion = 2;
+        ss << legacy;
+        // Overwrite the version with the raw one.
+        std::vector<uint8_t> bytes(UCharCast(ss.data()),
+                                   UCharCast(ss.data()) + ss.size());
+        for (size_t i = 0; i < 4; ++i) bytes[i] = uint8_t(version >> (8 * i));
+        DataStream raw{bytes};
+        try {
+            CMutableTransaction decoded(deserialize, raw);
+            BOOST_ERROR("version " << version << " decoded");
+        } catch (const std::ios_base::failure &e) {
+            BOOST_CHECK(std::string(e.what()).find("bad-txns-version") !=
+                        std::string::npos);
+        }
+        legacy.nVersion = version;
+        DataStream out{};
+        BOOST_CHECK_THROW(out << legacy, std::ios_base::failure);
+    }
+}
+
+// A transaction holds either legacy or V2 inputs and outputs, as its version
+// says; the serializer refuses any mixture, so nothing silently drops out.
+BOOST_AUTO_TEST_CASE(transaction_refuses_mixed_legacy_and_v2_fields) {
+    const lotus::v2::Transaction v2 = FallbackIdentityBase();
+    const CMutableTransaction v7 = CMutableTransaction::FromV2Transaction(v2);
+    BOOST_CHECK_NO_THROW(CTransaction{v7});
+
+    auto refuses = [](const CMutableTransaction &mtx) {
+        DataStream ss{};
+        BOOST_CHECK_THROW(ss << mtx, std::ios_base::failure);
+        BOOST_CHECK_THROW(CTransaction{mtx}, std::ios_base::failure);
+    };
+    // A version 7 output with a branch and a non-wire script: its script
+    // would silently drop out of the serialization.
+    {
+        CMutableTransaction mtx = v7;
+        mtx.vout[0].scriptPubKey = CScript() << OP_DUP << OP_HASH160;
+        refuses(mtx);
+    }
+    // A version 7 output without a branch (a legacy output).
+    {
+        CMutableTransaction mtx = v7;
+        mtx.vout[0] = CTxOut(1000 * SATOSHI, CScript() << OP_TRUE);
+        refuses(mtx);
+    }
+    // A version 7 input with a scriptSig, or a legacy input.
+    {
+        CMutableTransaction mtx = v7;
+        mtx.vin[0].scriptSig = CScript() << OP_1;
+        refuses(mtx);
+        mtx = v7;
+        mtx.vin[0] = CTxIn(mtx.vin[0].prevout);
+        refuses(mtx);
+    }
+    // A version 7 nLockTime that is not the legacy view of its V2 lock.
+    {
+        CMutableTransaction mtx = v7;
+        mtx.nLockTime = 5;
+        refuses(mtx);
+    }
+    // A legacy transaction with a V2 input, a V2 output or a V2 lock.
+    {
+        CMutableTransaction legacy;
+        legacy.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+        legacy.vout.emplace_back(1000 * SATOSHI, CScript() << OP_TRUE);
+        BOOST_CHECK_NO_THROW(CTransaction{legacy});
+        CMutableTransaction mtx = legacy;
+        mtx.vin[0] = v7.vin[0];
+        refuses(mtx);
+        mtx = legacy;
+        mtx.vout[0] = v7.vout[0];
+        refuses(mtx);
+        mtx = legacy;
+        mtx.nV2Lock = (uint64_t{10} << 8) | 1;
+        refuses(mtx);
+    }
+    // A version 7 output built without its scriptPubKey gets its V2 encoding,
+    // exactly as the same output decoded from the wire.
+    {
+        CMutableTransaction mtx = v7;
+        mtx.vout[0].scriptPubKey.clear();
+        const CTransaction tx(mtx);
+        DataStream ss{};
+        ss << tx;
+        const CTransaction decoded(deserialize, ss);
+        BOOST_CHECK(tx.vout[0].scriptPubKey == decoded.vout[0].scriptPubKey);
+        BOOST_CHECK(tx.vout[0].scriptPubKey ==
+                    CTxOut::V2ScriptPubKey(v2.outputs[0]));
+    }
 }
 
 BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
@@ -2077,7 +2174,6 @@ BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
     auto make = [&](const lotus::v2::Output &out) {
         CMutableTransaction tx;
         tx.nVersion = 7;
-        tx.fHasV2Lock = true;
         tx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
         tx.vin.back().nFlags = 1;
         tx.vin.back().nSequence = CTxIn::SEQUENCE_FINAL;
@@ -2138,7 +2234,6 @@ BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
     {
         CMutableTransaction cb;
         cb.nVersion = 7;
-        cb.fHasV2Lock = true;
         cb.vin.emplace_back(COutPoint(TxId(uint256S("22")), 5));
         cb.vin[0].nFlags = 2;
         cb.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
@@ -2184,7 +2279,6 @@ BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
     auto make = [&](bool with_state) {
         CMutableTransaction mtx;
         mtx.nVersion = 7;
-        mtx.fHasV2Lock = true;
         mtx.vin.emplace_back(previous);
         mtx.vin[0].nFlags = 1;
         mtx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
@@ -2239,8 +2333,10 @@ BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
 }
 
 BOOST_AUTO_TEST_CASE(v2_legacy_state_output) {
-    // A non-V2 transaction runs no V2 script, so it cannot create a
-    // HAS_STATE output through the legacy scriptPubKey bridge.
+    // A legacy transaction runs no V2 script and cannot create a V2 output:
+    // a script that happens to be the wire encoding of a HAS_STATE output
+    // stays a legacy output holding those bytes. (Before T1 such a script
+    // was mapped to the V2 output and refused, bad-txns-legacy-state-output.)
     lotus::v2::Output stateful;
     stateful.flags = lotus::v2::OUTPUT_FLAG_HAS_STATE;
     stateful.value = 1000;
@@ -2250,30 +2346,20 @@ BOOST_AUTO_TEST_CASE(v2_legacy_state_output) {
     std::vector<uint8_t> wire;
     std::string error;
     BOOST_REQUIRE(lotus::v2::EncodeOutput(stateful, wire, error));
-    auto make = [&](int32_t version, CScript script) {
-        CMutableTransaction mtx;
-        mtx.nVersion = version;
-        mtx.vin.emplace_back(COutPoint{TxId{uint256S("bb")}, 0});
-        mtx.vout.emplace_back(1000 * SATOSHI, script);
-        return CTransaction{mtx};
-    };
+    CMutableTransaction mtx;
+    mtx.nVersion = 2;
+    mtx.vin.emplace_back(COutPoint{TxId{uint256S("bb")}, 0});
+    mtx.vout.emplace_back(1000 * SATOSHI, CScript(wire.begin(), wire.end()));
+    const CTransaction tx{mtx};
     TxValidationState state;
-    BOOST_CHECK(!CheckRegularTransaction(
-        make(2, CScript(wire.begin(), wire.end())), state));
-    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-legacy-state-output");
-    // The same output without the state flag, and ordinary scripts whose
-    // first byte has bit 2 set, are unaffected.
-    stateful.flags = 0;
-    stateful.state_root = {};
-    BOOST_REQUIRE(lotus::v2::EncodeOutput(stateful, wire, error));
-    TxValidationState plain;
-    BOOST_CHECK(CheckRegularTransaction(
-        make(2, CScript(wire.begin(), wire.end())), plain));
-    TxValidationState p2pkh;
-    BOOST_CHECK(CheckRegularTransaction(
-        make(2, CScript() << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 7)
-                          << OP_EQUALVERIFY << OP_CHECKSIG),
-        p2pkh));
+    BOOST_CHECK(CheckRegularTransaction(tx, state));
+    BOOST_CHECK(tx.vout[0].IsLegacy());
+    BOOST_CHECK(tx.vout[0].stateRoot.IsNull());
+    const lotus::v2::Output projected = tx.vout[0].ToV2Output();
+    BOOST_CHECK(!projected.HasState());
+    BOOST_REQUIRE(projected.legacy_script.has_value());
+    BOOST_CHECK(*projected.legacy_script ==
+                std::vector<uint8_t>(wire.begin(), wire.end()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

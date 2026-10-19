@@ -38,6 +38,7 @@
 #include <lotus_v2/fee_hysteresis.h>
 #include <lotus_v2/output.h>
 #include <lotus_v2/transaction.h>
+#include <primitives/v2_outputs.h>
 #include <node/blockstorage.h>
 #include <node/transaction.h>
 #include <pubkey.h>
@@ -1344,18 +1345,36 @@ BOOST_FIXTURE_TEST_CASE(test_compression, BasicTestingSetup) {
     CheckRoundtrip(CScript() << OP_EQUAL << OP_VERIFY, false);
 }
 
-// Lotus V2 native outputs are indexed as the synthetic native output frame,
-// which must equal the node's own EncodeOutput of the same fields (the Rust
-// bridge's BridgeTxOutputScript builds the same bytes).
+// Lotus V2 native outputs are indexed by their V2 encoding (the scriptPubKey
+// a version 7 output carries, CTxOut::V2ScriptPubKey): the node's own
+// EncodeOutput of the same fields, or `0x6a || frame` for a burn. Legacy
+// outputs, which only a legacy (version 1 or 2) transaction carries, keep
+// their script.
 BOOST_AUTO_TEST_CASE(test_v2_native_output_frames) {
     auto fill = [](uint8_t b) {
         lotus::v2::Hash32 h;
         h.fill(b);
         return h;
     };
+    // A version 7 transaction paying `out` (a spend: a coinbase pays no
+    // token output); its V2 outputs get their V2 encoding as scriptPubKey at
+    // construction.
     auto frame = [](const CTxOut &out) {
         CMutableTransaction mtx;
+        mtx.nVersion = 7;
         mtx.vin = {CTxIn(TxId(uint256::ONE), 0)};
+        mtx.vin[0].nFlags = 1;
+        lotus::v2::BranchWitness witness;
+        witness.script = {V2_OP_TRUE};
+        mtx.vin[0].vWitnesses = {witness};
+        mtx.vout = {out};
+        return cn::abc::ConvertTx(/*is_coinbase=*/true, CTransaction(mtx), {})
+            .outputs.at(0);
+    };
+    auto legacyFrame = [](const CTxOut &out) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 2;
+        mtx.vin = {CTxIn(COutPoint(), CScript() << OP_0 << OP_0)};
         mtx.vout = {out};
         return cn::abc::ConvertTx(/*is_coinbase=*/true, CTransaction(mtx), {})
             .outputs.at(0);
@@ -1367,11 +1386,12 @@ BOOST_AUTO_TEST_CASE(test_v2_native_output_frames) {
         return HexStr(bytes);
     };
 
-    // Token output with three branches and implied single-branch paths.
+    // Token output with three branches, one path per branch.
     CTxOut token(1234 * SATOSHI, CScript());
     token.nFlags = 1;
     std::memset(token.tokenId.begin(), 0xaa, 32);
     token.vBranches = {fill(0x11), fill(0x22), fill(0x33)};
+    token.vPaths = {{0}, {1}, {2}};
     lotus::v2::Output expected;
     expected.flags = 1;
     expected.value = 1234;
@@ -1383,8 +1403,8 @@ BOOST_AUTO_TEST_CASE(test_v2_native_output_frames) {
     BOOST_CHECK_EQUAL(HexStr(tokenOut.script), encode(expected));
     BOOST_CHECK_EQUAL(tokenOut.sats, 1234);
 
-    // Native output with explicit paths and a one-byte script field.
-    CTxOut native(5 * SATOSHI, CScript() << OP_1);
+    // Native output with explicit paths.
+    CTxOut native(5 * SATOSHI, CScript());
     native.vBranches = {fill(0x01), fill(0x02)};
     native.vPaths = {{0, 1}, {1}};
     expected = {};
@@ -1393,51 +1413,61 @@ BOOST_AUTO_TEST_CASE(test_v2_native_output_frames) {
     expected.paths = native.vPaths;
     BOOST_CHECK_EQUAL(HexStr(frame(native).script), encode(expected));
 
-    // Burns carry their public roots but no paths.
+    // Burns carry their public roots but no paths, behind OP_RETURN.
     CTxOut burn(7 * SATOSHI, CScript());
     burn.nFlags = 2;
     burn.vBranches = {fill(0x05)};
-    burn.vPaths = {{0}};
     expected = {};
     expected.flags = 2;
     expected.value = 7;
     expected.branches = burn.vBranches;
-    BOOST_CHECK_EQUAL(HexStr(frame(burn).script), encode(expected));
+    BOOST_CHECK_EQUAL(HexStr(frame(burn).script), "6a" + encode(expected));
 
-    // Legacy outputs keep their script, also with V2 fields absent.
+    // Legacy outputs keep their script, also an empty one.
     const CScript p2pkh = CScript() << OP_DUP << OP_HASH160
                                     << std::vector<uint8_t>(20, 3)
                                     << OP_EQUALVERIFY << OP_CHECKSIG;
-    BOOST_CHECK_EQUAL(HexStr(frame(CTxOut(SATOSHI, p2pkh)).script),
+    BOOST_CHECK_EQUAL(HexStr(legacyFrame(CTxOut(SATOSHI, p2pkh)).script),
                       HexStr(p2pkh));
     CTxOut empty(SATOSHI, CScript());
-    BOOST_CHECK(frame(empty).script.empty());
+    BOOST_CHECK(legacyFrame(empty).script.empty());
 }
 
-// V2 inputs with an empty scriptSig show their coinbase data or first branch
-// witness script; mint inputs spend no coin and are not indexed.
+// V2 inputs show their coinbase data or first branch witness script; mint
+// inputs spend no coin and are not indexed. Legacy inputs show their
+// scriptSig.
 BOOST_AUTO_TEST_CASE(test_v2_input_scripts_and_mints) {
     CMutableTransaction coinbase;
+    coinbase.nVersion = 7;
     coinbase.vin = {CTxIn()};
     coinbase.vin[0].nFlags = 2;
     coinbase.vin[0].fHasCoinbaseData = true;
     coinbase.vin[0].vCoinbaseData = {0x51, 0x52, 0x53};
-    coinbase.vout = {CTxOut(SATOSHI, CScript() << OP_1)};
+    coinbase.vout = {V0LeafOutput(SATOSHI, CScript() << OP_1)};
     const cn::Tx cbTx =
         cn::abc::ConvertTx(/*is_coinbase=*/true, CTransaction(coinbase), {});
     BOOST_REQUIRE_EQUAL(cbTx.inputs.size(), 1u);
     BOOST_CHECK_EQUAL(HexStr(cbTx.inputs[0].script), "515253");
 
     CMutableTransaction tx;
-    tx.vin = {CTxIn(TxId(uint256::ONE), 0), CTxIn(TxId(uint256::ONE), 1),
+    tx.nVersion = 7;
+    // A mint input names a pseudo-outpoint with index 0.
+    tx.vin = {CTxIn(TxId(uint256::ONE), 0),
+              CTxIn(TxId(uint256S("02")), 0),
               CTxIn(TxId(uint256::ONE), 2)};
-    tx.vin[0].nFlags = 1;
     lotus::v2::BranchWitness witness;
     witness.script = {0xac, 0x51};
+    tx.vin[0].nFlags = 1;
     tx.vin[0].vWitnesses = {witness};
+    lotus::v2::BranchWitness mintWitness;
+    mintWitness.script = {V2_OP_TRUE};
     tx.vin[1].nFlags = 3; // mint
-    tx.vin[2].scriptSig = CScript() << OP_2;
-    tx.vout = {CTxOut(SATOSHI, CScript() << OP_1)};
+    tx.vin[1].vWitnesses = {mintWitness};
+    lotus::v2::BranchWitness opTwo;
+    opTwo.script = {0x52};
+    tx.vin[2].nFlags = 1;
+    tx.vin[2].vWitnesses = {opTwo};
+    tx.vout = {V0LeafOutput(SATOSHI, CScript() << OP_1)};
     const std::vector<::Coin> coins = {
         ::Coin(CTxOut(10 * SATOSHI, CScript() << OP_3), 5, false),
         ::Coin(),
@@ -1450,10 +1480,23 @@ BOOST_AUTO_TEST_CASE(test_v2_input_scripts_and_mints) {
     BOOST_CHECK_EQUAL(out.inputs[0].prev_out.out_idx, 0u);
     BOOST_CHECK_EQUAL(out.inputs[0].coin->output.sats, 10);
     // The mint input is skipped; spent coins stay indexed by vin index.
-    BOOST_CHECK_EQUAL(HexStr(out.inputs[1].script), HexStr(CScript() << OP_2));
+    BOOST_CHECK_EQUAL(HexStr(out.inputs[1].script), "52");
     BOOST_CHECK_EQUAL(out.inputs[1].prev_out.out_idx, 2u);
     BOOST_CHECK_EQUAL(out.inputs[1].coin->output.sats, 20);
     BOOST_CHECK(out.inputs[1].coin->is_coinbase);
+
+    // A legacy transaction's input shows its scriptSig.
+    CMutableTransaction legacy;
+    legacy.nVersion = 2;
+    legacy.vin = {CTxIn(TxId(uint256::ONE), 3, CScript() << OP_2)};
+    legacy.vout = {CTxOut(SATOSHI, CScript() << OP_1)};
+    const cn::Tx legacyOut = cn::abc::ConvertTx(
+        /*is_coinbase=*/false, CTransaction(legacy),
+        {::Coin(CTxOut(30 * SATOSHI, CScript() << OP_5), 7, false)});
+    BOOST_REQUIRE_EQUAL(legacyOut.inputs.size(), 1u);
+    BOOST_CHECK_EQUAL(HexStr(legacyOut.inputs[0].script),
+                      HexStr(CScript() << OP_2));
+    BOOST_CHECK_EQUAL(legacyOut.inputs[0].coin->output.sats, 30);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

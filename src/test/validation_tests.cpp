@@ -241,15 +241,17 @@ BOOST_AUTO_TEST_CASE(block_malleation) {
     }
 
     {
-        // Test 64-byte non-coinbase transaction mutation detection
+        // Test 64-byte non-coinbase transaction mutation detection. A legacy
+        // transaction has version 1 or 2, so upstream's random versions
+        // (ff204bd0, 8ae53c92, cdaf22d0) are replaced; the rest is upstream's.
         CMutableTransaction tx1;
-        BOOST_CHECK(DecodeHexTx(tx1, "ff204bd0000000000000"));
+        BOOST_CHECK(DecodeHexTx(tx1, "01000000000000000000"));
         CMutableTransaction tx2;
-        BOOST_CHECK(DecodeHexTx(tx2, "8ae53c92000000000000"));
+        BOOST_CHECK(DecodeHexTx(tx2, "02000000000000000000"));
         CMutableTransaction tx3;
         BOOST_CHECK(DecodeHexTx(
             tx3,
-            "cdaf22d00002c6a7f848f8ae4d30054e61dcf3303d6fe01d282163341f06feecc1"
+            "010000000002c6a7f848f8ae4d30054e61dcf3303d6fe01d282163341f06feecc1"
             "0032b3160fcab87bdfe3ecfb769206ef2d991b92f8a268e423a6ef4d485f06"));
         {
             // Verify that tx3 is 64 bytes in size.
