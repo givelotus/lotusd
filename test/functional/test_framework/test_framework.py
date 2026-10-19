@@ -20,7 +20,7 @@ import time
 import traceback
 import unittest
 from enum import Enum
-from typing import List
+from typing import Any, Dict, List
 
 from . import coverage
 from .address import ADDRESS_ECREG_P2SH_OP_TRUE
@@ -137,6 +137,12 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     This class also contains various public and private helper methods."""
 
+    # Named variants of the test, {name: {option: value}}, where each option is
+    # the destination of a command-line option (framework or add_options).
+    # The first variant is the default. Run one with --variant=NAME, every one
+    # with --variant=all; the test runner runs them all.
+    variants: Dict[str, Dict[str, Any]] = {"default": {}}
+
     def __init__(self, argv=None):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method
 
@@ -145,6 +151,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         # Outcome details, filled in by main() (see also self.success)
         self.skip_reason = None
         self.failure = None
+        self._argv = list(sys.argv[1:] if argv is None else argv)
         self.chain: str = "regtest"
         self.setup_clean_chain: bool = False
         self.noban_tx_relay: bool = False
@@ -194,6 +201,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             "Test must set self.num_nodes in set_test_params()"
         )
 
+        if self.options.variant == "all":
+            exit_code = self._run_all_variants()
+            if exit_process:
+                sys.exit(exit_code)
+            return exit_code
         try:
             self.setup()
             with self._phase("body"):
@@ -379,14 +391,72 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             ),
         )
 
+        parser.add_argument(
+            "--variant",
+            help=(
+                "Run this variant of the test (see --list-variants), or every"
+                " variant with --variant=all. Default: the first one"
+            ),
+        )
+        parser.add_argument(
+            "--list-variants",
+            action="store_true",
+            help="Print the names of the test's variants and exit",
+        )
+
         self.add_options(parser)
         self.options = parser.parse_args(argv)
+        self._apply_variant(parser)
 
         config = configparser.ConfigParser()
-        config.read_file(open(self.options.configfile, encoding="utf-8"))
+        with open(self.options.configfile, encoding="utf-8") as f:
+            config.read_file(f)
         self.config = config
 
         PortSeed.n = self.options.port_seed
+
+    def _apply_variant(self, parser):
+        """Set the options of the selected variant. Options given explicitly
+        on the command line keep their value."""
+        variants = type(self).variants
+        if self.options.list_variants:
+            print("\n".join(variants))
+            sys.exit(0)
+        name = self.options.variant or next(iter(variants))
+        self.options.variant = name
+        if name == "all":
+            return
+        if name not in variants:
+            parser.error(
+                f"unknown variant '{name}' (variants: {', '.join(variants)}, all)"
+            )
+        dests = {action.dest for action in parser._actions}
+        for option, value in variants[name].items():
+            if option not in dests:
+                raise ValueError(
+                    f"variant '{name}' sets '{option}', which is not an option"
+                )
+            if getattr(self.options, option) == parser.get_default(option):
+                setattr(self.options, option, value)
+
+    def _run_all_variants(self):
+        """Run every variant in turn, each in a new instance (and its own
+        directory under --tmpdir, if given). Returns the worst exit code."""
+        base_argv = [
+            a for a in self._argv if not a.startswith(("--variant", "--tmpdir"))
+        ]
+        codes = []
+        for name in type(self).variants:
+            argv = base_argv + [f"--variant={name}"]
+            if self.options.tmpdir:
+                argv.append(f"--tmpdir={os.path.join(self.options.tmpdir, name)}")
+            codes.append(type(self)(argv=argv).main(exit_process=False))
+        failed = [c for c in codes if c not in (TEST_EXIT_PASSED, TEST_EXIT_SKIPPED)]
+        if failed:
+            return failed[0]
+        if all(c == TEST_EXIT_SKIPPED for c in codes):
+            return TEST_EXIT_SKIPPED
+        return TEST_EXIT_PASSED
 
     def setup(self):
         """Call this method to start up the test framework object with options set."""
@@ -568,6 +638,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         if not self.options.phasedir:
             return
         name = os.path.basename(sys.argv[0])
+        if self.options.variant != next(iter(type(self).variants)):
+            name += f"[{self.options.variant}]"
         record = {
             "test": name,
             "argv": sys.argv[1:],
@@ -1423,3 +1495,79 @@ class TestProgrammaticRun(unittest.TestCase):
         self.assertEqual(test.failure["type"], "AssertionError")
         self.assertEqual(test.failure["message"], "boom")
         self.assertIn("raise AssertionError", test.failure["traceback"])
+
+
+class TestVariants(unittest.TestCase):
+    """Variant selection, with node-less tests run in-process."""
+
+    runs: List[str] = []
+
+    def make_case(self):
+        runs = self.runs
+
+        class Case(BitcoinTestFramework):
+            variants = {
+                "default": {},
+                "cli": {"usecli": True},
+                "seeded": {"randomseed": 7},
+            }
+
+            def set_test_params(self):
+                self.num_nodes = 0
+                self.setup_clean_chain = True
+                self.supports_cli = False
+
+            def setup_network(self):
+                pass
+
+            def run_test(self):
+                runs.append(self.options.variant)
+
+        return Case
+
+    def argv(self):
+        workdir = tempfile.mkdtemp(prefix="test_variants_unit_")
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        configfile = os.path.join(workdir, "config.ini")
+        with open(configfile, "w", encoding="utf8") as f:
+            f.write(
+                "[environment]\nBUILDDIR=" + workdir + "\nEXEEXT=\nEMULATOR=\n"
+                "PACKAGE_BUGREPORT=\n[components]\n"
+            )
+        for name in ("TestFramework", "asyncio"):
+            logger = logging.getLogger(name)
+            self.addCleanup(setattr, logger, "propagate", logger.propagate)
+            logger.propagate = False
+        return [
+            f"--configfile={configfile}",
+            f"--tmpdir={os.path.join(workdir, 'tmp')}",
+            "--loglevel=CRITICAL",
+        ]
+
+    def test_selection(self):
+        Case = self.make_case()
+        argv = self.argv()
+        self.assertEqual(Case(argv=argv).options.variant, "default")
+        self.assertFalse(Case(argv=argv).options.usecli)
+        self.assertTrue(Case(argv=argv + ["--variant=cli"]).options.usecli)
+        seeded = Case(argv=argv + ["--variant=seeded"])
+        self.assertEqual(seeded.options.randomseed, 7)
+        # Explicit options win over the variant's
+        explicit = Case(argv=argv + ["--variant=seeded", "--randomseed=9"])
+        self.assertEqual(explicit.options.randomseed, 9)
+        with self.assertRaises(SystemExit):
+            Case(argv=argv + ["--variant=nope"])
+
+    def test_unknown_option(self):
+        Case = self.make_case()
+        Case.variants = {"default": {}, "bad": {"no_such_option": 1}}
+        with self.assertRaises(ValueError):
+            Case(argv=self.argv() + ["--variant=bad"])
+
+    def test_all(self):
+        self.runs.clear()
+        Case = self.make_case()
+        # The cli variant skips (supports_cli is False): not a failure
+        code = Case(argv=self.argv() + ["--variant=all"]).main(exit_process=False)
+        self.assertEqual(code, TEST_EXIT_PASSED)
+        self.assertEqual(self.runs, ["default", "seeded"])

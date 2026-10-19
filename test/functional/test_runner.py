@@ -34,7 +34,7 @@ from queue import Empty, Queue
 from typing import Set, Tuple
 
 from test_framework import reporting, worker
-from test_framework.results import FAILED, PASSED, SKIPPED, JobResult
+from test_framework.results import FAILED, PASSED, SKIPPED, JobResult, parse_job_name
 from test_framework.util import MAX_NODES, PORT_RANGE
 
 # Formatting. Default colors to empty strings.
@@ -215,13 +215,14 @@ class TestCase:
             return TestResult(self.test_num, self.test_case, "", "Skipped", 0, "", "")
 
         portseed_arg = [f"--portseed={slot}"]
-        test_argv = self.test_case.split()
-        testname = re.sub(".py$", "", test_argv[0])
+        file, variant, args = parse_job_name(self.test_case)
+        test_argv = [file] + ([f"--variant={variant}"] if variant else []) + args
+        testname = re.sub(".py$", "", file)
         testdir = os.path.join(f"{self.tmpdir}", f"{testname}_{self.test_num}")
         tmpdir_arg = [f"--tmpdir={testdir}"]
         argv = test_argv[1:] + self.flags + portseed_arg + tmpdir_arg
         if self.spec is not None and not running_setup_script([testname]):
-            return self.run_in_worker(test_argv[0], argv, testdir)
+            return self.run_in_worker(file, argv, testdir, variant)
 
         log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
         log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
@@ -256,10 +257,11 @@ class TestCase:
             stderr,
         )
 
-    def run_in_worker(self, file, argv, testdir):
+    def run_in_worker(self, file, argv, testdir, variant=None):
         job = {
             "name": self.test_case,
             "file": file,
+            "variant": variant or "",
             "class_name": self.spec["class_name"],
             "tests_dir": self.tests_dir,
             "argv": argv,
@@ -560,8 +562,9 @@ def main():
     # Always use timings from src_dir if present
     src_timings = Timings(os.path.join(src_dir, "test", "functional", "timing.json"))
 
+    discovered = discover_tests(tests_dir, src_dir, test_list)
     test_list = args.repeat * get_tests_to_run(
-        test_list, TEST_PARAMS, cutoff, src_timings
+        test_list, TEST_PARAMS, cutoff, src_timings, discovered
     )
 
     if not test_list:
@@ -582,8 +585,6 @@ def main():
         sys.exit(0)
 
     check_script_prefixes(all_tests)
-
-    discovered = discover_tests(tests_dir, src_dir, test_list)
 
     if not args.keepcache:
         shutil.rmtree(os.path.join(build_dir, "test", "cache"), ignore_errors=True)
@@ -892,7 +893,7 @@ def execute_test_processes(
     # Push all our test cases into the job queue. A test file that could not
     # be imported, or defines no test, fails without being started.
     for i, t in enumerate(test_list):
-        error = (discovered or {}).get(t.split()[0], {}).get("error")
+        error = (discovered or {}).get(parse_job_name(t)[0], {}).get("error")
         if error is not None:
             update_queue.put(TestCase(i, t, tests_dir, tmpdir, failfast_event, flags))
             update_queue.put(TestResult(i, t, "", "Failed", 0, "", error))
@@ -905,7 +906,7 @@ def execute_test_processes(
                 tmpdir,
                 failfast_event,
                 flags,
-                spec=(discovered or {}).get(t.split()[0]),
+                spec=(discovered or {}).get(parse_job_name(t)[0]),
                 timeout=test_timeout,
             )
         )
@@ -933,7 +934,7 @@ def job_result_of(test_result):
     status = {"Passed": PASSED, "Skipped": SKIPPED}.get(test_result.status, FAILED)
     result = JobResult(
         name=test_result.name,
-        file=test_result.name.split()[0],
+        file=parse_job_name(test_result.name)[0],
         status=status,
         duration=test_result.time,
         tmpdir=test_result.testdir,
@@ -1150,7 +1151,11 @@ def discover_tests(tests_dir, src_dir, test_list):
     have side effects) and return {file: spec} from test_framework.discovery.
     A file with several test classes maps to its first class."""
     files = sorted(
-        {t.split()[0] for t in test_list if not t.startswith(SETUP_SCRIPTS_SUBDIR)}
+        {
+            parse_job_name(t)[0]
+            for t in test_list
+            if not t.startswith(SETUP_SCRIPTS_SUBDIR)
+        }
     )
     if not files:
         return {}
@@ -1223,7 +1228,7 @@ def check_script_prefixes(all_scripts):
         )
 
 
-def get_tests_to_run(test_list, test_params, cutoff, src_timings):
+def get_tests_to_run(test_list, test_params, cutoff, src_timings, discovered=None):
     """
     Returns only test that will not run longer that cutoff.
     Long running tests are returned first to favor running tests in parallel
@@ -1240,8 +1245,11 @@ def get_tests_to_run(test_list, test_params, cutoff, src_timings):
     # list.
     tests_with_params = []
     for test_name in test_list:
-        # always execute a test without parameters
+        # always execute a test without parameters (its first variant)
         tests_with_params.append(test_name)
+        # and its other variants, as "<file>[<variant>]"
+        variants = (discovered or {}).get(test_name, {}).get("variants", [])
+        tests_with_params.extend(f"{test_name}[{v}]" for v in variants[1:])
         params = test_params.get(test_name)
         if params is not None:
             tests_with_params.extend(
