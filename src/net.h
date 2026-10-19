@@ -893,6 +893,10 @@ public:
         bool m_i2p_accept_incoming = true;
         bool whitelist_forcerelay = DEFAULT_WHITELISTFORCERELAY;
         bool whitelist_relay = DEFAULT_WHITELISTRELAY;
+        //! P2P WebSocket peers known by their TLS key (canonical pins)
+        std::vector<NetKeyPermissions> vWhitelistedKeys;
+        //! Drop inbound P2P WebSocket peers whose key is not listed above
+        bool m_websocket_require_known_key{false};
     };
 
     void Init(const Options &connOptions)
@@ -935,6 +939,9 @@ public:
         m_onion_binds = connOptions.onion_binds;
         whitelist_forcerelay = connOptions.whitelist_forcerelay;
         whitelist_relay = connOptions.whitelist_relay;
+        vWhitelistedKeys = connOptions.vWhitelistedKeys;
+        m_websocket_require_known_key =
+            connOptions.m_websocket_require_known_key;
     }
 
     CConnman(const Config &configIn, uint64_t seed0, uint64_t seed1,
@@ -1287,6 +1294,9 @@ private:
     std::vector<NetWhitelistPermissions> vWhitelistedRangeIncoming;
     // Whitelisted ranges for outgoing connections.
     std::vector<NetWhitelistPermissions> vWhitelistedRangeOutgoing;
+    // P2P WebSocket peers known by their TLS public key (-p2pwebsocketpeer)
+    std::vector<NetKeyPermissions> vWhitelistedKeys;
+    bool m_websocket_require_known_key{false};
 
     unsigned int nSendBufferMaxSize{0};
     unsigned int nReceiveFloodSize{0};

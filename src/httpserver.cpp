@@ -1712,7 +1712,8 @@ static bool InitTLS() {
                   tls::ErrorString());
         return false;
     }
-    if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL)) {
+    if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL) ||
+        gArgs.IsArgSet("-p2pwebsocketpeer")) {
         // Ask for a client certificate, accept any (including self-signed
         // node certificates); the fingerprint is exposed per request.
         SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER,
