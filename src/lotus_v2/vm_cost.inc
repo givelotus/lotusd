@@ -665,11 +665,19 @@ class SizePass {
                 previous = nullptr;
             } else {
                 if (op == 0x6b) {
+                    // Pops N(depth) then Boolean(cond). A true condition
+                    // exits (recorded per depth below); a false one falls
+                    // through, so the sequence continues after BREAK.
                     SizeState after = starting;
-                    if (after.known && !after.main.empty())
+                    size_t depth_bound = limit, cond_bound = limit;
+                    if (after.known && after.main.size() >= 2) {
+                        depth_bound = after.main.back();
                         after.main.pop_back();
-                    else
+                        cond_bound = after.main.back();
+                        after.main.pop_back();
+                    } else {
                         after = UnknownSizes();
+                    }
                     const auto literal = LiteralValue(previous);
                     const bool only_one =
                         literal && *literal == 1 && !entries.empty();
@@ -682,10 +690,10 @@ class SizePass {
                         out.exits[depth] =
                             MergeSizes(out.exits[depth], exit_state);
                     }
-                    const std::array<size_t, 1> operand{starting.known ? 16
-                                                                       : limit};
-                    part = OpCost(op, operand, {}, schedule);
-                    out.state = std::nullopt;
+                    const std::array<size_t, 2> operands{depth_bound,
+                                                         cond_bound};
+                    part = OpCost(op, operands, {}, schedule);
+                    if (out.state) out.state = after;
                 } else if (op == 0x65) {
                     SizeState after = starting;
                     const size_t bound = after.known && !after.main.empty()
