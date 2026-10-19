@@ -12,6 +12,12 @@ from test_framework.wallet_util import bytes_to_wif, generate_wif_key
 
 
 class CreateWalletTest(BitcoinTestFramework):
+    variants = {
+        "default": {},
+        "cli": {"usecli": True},
+        "descriptors": {"descriptors": True},
+    }
+
     def set_test_params(self):
         self.num_nodes = 1
 

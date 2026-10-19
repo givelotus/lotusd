@@ -48,6 +48,12 @@ def test_load_unload(node, name, timeout=60.0):
 
 
 class MultiWalletTest(BitcoinTestFramework):
+    variants = {
+        "default": {},
+        "cli": {"usecli": True},
+        "descriptors": {"descriptors": True},
+    }
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2
