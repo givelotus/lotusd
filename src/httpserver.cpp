@@ -834,9 +834,9 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
 
 /**
  * Write a response. On plain TCP and TLS, first write directly while the
- * socket accepts data: a reply that fits in the socket buffer (most of them) then
- * costs one writev and no trip through the I/O scheduler. Whatever does not
- * fit is written asynchronously, continuing the same serializer.
+ * socket accepts data: a reply that fits in the socket buffer (most of them)
+ * then costs one writev and no trip through the I/O scheduler. Whatever does
+ * not fit is written asynchronously, continuing the same serializer.
  */
 template <typename Stream>
 static asio::awaitable<boost::system::error_code>
@@ -1252,16 +1252,14 @@ static CService P2PWebSocketPeerAddress(const BeastRequest &,
 
 /** Accept a /p2p/ws upgrade and bridge it into CConnman */
 template <typename Stream>
-static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
-                                                beast::flat_buffer &buffer,
-                                                const BeastRequest &req,
-                                                const HTTPConnectionInfo &conn) {
+static asio::awaitable<void>
+AcceptP2PWebSocket(Stream &stream, beast::flat_buffer &buffer,
+                   const BeastRequest &req, const HTTPConnectionInfo &conn) {
     P2PWebSocketAcceptor acceptor{
         WITH_LOCK(g_p2p_websocket_mutex, return g_p2p_websocket_acceptor)};
     if (!acceptor) {
-        BeastResponse res{MakeSimpleResponse(HTTP_SERVICE_UNAVAILABLE,
-                                             req.version(),
-                                             "P2P is not ready")};
+        BeastResponse res{MakeSimpleResponse(
+            HTTP_SERVICE_UNAVAILABLE, req.version(), "P2P is not ready")};
         res.keep_alive(false);
         co_await WriteResponse(stream, res);
         co_return;
@@ -1273,15 +1271,24 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
         std::string_view::npos};
     auto [selected, compression] =
         p2pws::NegotiateP2PCompression(offered_protocols, deflate_offered);
+    // Lotus v2 peers speak only p2p-v2.
+    if (compression != P2PWebSocketCompression::P2P_V2) {
+        BeastResponse res{
+            MakeSimpleResponse(HTTP_BAD_REQUEST, req.version(),
+                               strprintf("Sec-WebSocket-Protocol %s required",
+                                         P2P_WS_PROTOCOL_V2))};
+        res.keep_alive(false);
+        co_await WriteResponse(stream, res);
+        co_return;
+    }
 #ifndef HAVE_P2P_WEBSOCKET_BRIDGE
     // permessage-deflate needs the socketpair bridge: decline it here.
     if (compression == P2PWebSocketCompression::PERMESSAGE_DEFLATE) {
         compression = P2PWebSocketCompression::NONE;
     }
 #endif
-    const bool use_bridge{
-        compression == P2PWebSocketCompression::PERMESSAGE_DEFLATE ||
-        g_p2p_websocket_force_bridge};
+    // (The socketpair bridge carries v1 framing: never used for p2p-v2.)
+    const bool use_bridge{false};
 
     beast::get_lowest_layer(stream).expires_never();
     websocket::stream<Stream &> ws{stream};
@@ -1332,8 +1339,7 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
             layer = std::make_unique<PlainByteLayer>();
         }
         boost::system::error_code ec;
-        tcp::socket socket{
-            beast::get_lowest_layer(stream).release_socket()};
+        tcp::socket socket{beast::get_lowest_layer(stream).release_socket()};
         const auto fd{socket.release(ec)};
         if (ec) {
             co_return;
@@ -1375,8 +1381,7 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
              peer.ToStringAddrPort(), conn.is_tls ? "wss" : "ws",
              P2PWebSocketCompressionName(compression));
     acceptor(std::make_unique<Sock>(static_cast<SOCKET>(pair->first)),
-             CAddress{peer, NODE_NONE},
-             CAddress{conn.local, NODE_NONE}, info);
+             CAddress{peer, NODE_NONE}, CAddress{conn.local, NODE_NONE}, info);
     co_await p2pws::RunP2PWebSocketBridge(ws, std::move(local), info,
                                           /*is_client=*/false);
 #endif
@@ -2227,6 +2232,10 @@ AcceptP2PWebSocketH2(std::shared_ptr<H2Tunnel> tunnel, const BeastRequest &req,
     // not use: only the zstd protocols or plain messages.
     auto [selected, compression] = p2pws::NegotiateP2PCompression(
         req[http::field::sec_websocket_protocol], /*deflate_offered=*/false);
+    if (compression != P2PWebSocketCompression::P2P_V2) {
+        tunnel->Refuse(http::status::bad_request);
+        co_return;
+    }
     // CConnman polls a socket: it gets one end of a socketpair, and
     // WebSocketSock does the framing there exactly as for HTTP/1.1 peers.
     // This connection pumps the WebSocket bytes between the other end and
@@ -2860,8 +2869,8 @@ HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
         boost::system::error_code ec;
         const auto remote{socket.remote_endpoint(ec)};
         if (!ec) {
-            conn.peer = LookupNumeric(remote.address().to_string(),
-                                      remote.port());
+            conn.peer =
+                LookupNumeric(remote.address().to_string(), remote.port());
         }
         const auto local{socket.local_endpoint(ec)};
         if (!ec) {
@@ -3005,16 +3014,15 @@ HandleConnection(tcp::socket socket, bool public_only, bool p2p_port = false) {
                     metrics->http_tls_handshakes.Add(hs_ec ? 1 : 0);
                 }
                 if (hs_ec) {
-                    LogDebug(BCLog::HTTP,
-                             "TLS handshake with %s failed: %s\n",
+                    LogDebug(BCLog::HTTP, "TLS handshake with %s failed: %s\n",
                              conn.peer.ToStringAddrPort(), tls::ErrorString());
                 } else {
                     conn.is_tls = true;
                     conn.alpn = tls::NegotiatedAlpn(tls_stream.native_handle());
                     conn.client_cert_fingerprint_hex =
                         ClientCertFingerprint(tls_stream.native_handle());
-                    if (X509 *cert{
-                            tls::PeerCertificate(tls_stream.native_handle())}) {
+                    if (X509 * cert{tls::PeerCertificate(
+                                   tls_stream.native_handle())}) {
                         const auto spki{tls::SpkiSha256(cert)};
                         X509_free(cert);
                         if (!spki.empty()) {
@@ -3232,8 +3240,8 @@ static std::string RandomHostName() {
  * else the name already in use, else a random one. Never a string that
  * identifies the software (older versions used "bitcoind node").
  */
-static std::string GeneratedCertificateName(
-    const std::optional<tls::CertificateInfo> &current) {
+static std::string
+GeneratedCertificateName(const std::optional<tls::CertificateInfo> &current) {
     for (const auto &domain : gArgs.GetArgs("-externaldomain")) {
         uint16_t port;
         std::string host;
@@ -3263,9 +3271,8 @@ static bool EnsureGeneratedCertificate(const TlsFiles &files) {
         info->seconds_left > renew_before) {
         return true;
     }
-    const auto pem{tls::GenerateSelfSigned(name, {name}, {},
-                                           GENERATED_CERT_VALIDITY,
-                                           key_pem.value_or(""))};
+    const auto pem{tls::GenerateSelfSigned(
+        name, {name}, {}, GENERATED_CERT_VALIDITY, key_pem.value_or(""))};
     if (!pem) {
         return false;
     }
@@ -3758,8 +3765,7 @@ void HTTPEvent::trigger(struct timeval *tv) {
     }
 }
 
-HTTPRequest::HTTPRequest(std::unique_ptr<HTTPRequestImpl> impl,
-                         bool _replySent)
+HTTPRequest::HTTPRequest(std::unique_ptr<HTTPRequestImpl> impl, bool _replySent)
     : m_impl(std::move(impl)), replySent(_replySent) {}
 HTTPRequest::~HTTPRequest() {
     if (!replySent) {
@@ -3785,8 +3791,8 @@ HTTPRequest::GetHeader(const std::string &hdr) const {
 /** Decompress a zstd body, refusing output larger than max_size */
 static std::optional<std::string> ZstdDecompressBounded(const std::string &in,
                                                         uint64_t max_size) {
-    std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{
-        ZSTD_createDCtx(), &ZSTD_freeDCtx};
+    std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{ZSTD_createDCtx(),
+                                                              &ZSTD_freeDCtx};
     if (!dctx) {
         return std::nullopt;
     }
@@ -3934,7 +3940,8 @@ HTTPRequest::GetQueryParameter(const std::string &key) const {
     return GetQueryParameterFromUri(uri.c_str(), key);
 }
 
-std::unique_ptr<HTTPRequest> ParseHTTPRequestForTesting(const std::string &raw) {
+std::unique_ptr<HTTPRequest>
+ParseHTTPRequestForTesting(const std::string &raw) {
     http::request_parser<http::string_body> parser;
     parser.header_limit(MAX_HEADERS_SIZE);
     parser.body_limit(MIN_SUPPORTED_BODY_SIZE);
@@ -4006,8 +4013,8 @@ std::string DecodeQueryValue(std::string_view in) {
             out.push_back(' ');
         } else if (c == '%' && i + 2 < in.size() && IsHexChar(in[i + 1]) &&
                    IsHexChar(in[i + 2])) {
-            out.push_back(
-                static_cast<char>(HexValue(in[i + 1]) * 16 + HexValue(in[i + 2])));
+            out.push_back(static_cast<char>(HexValue(in[i + 1]) * 16 +
+                                            HexValue(in[i + 2])));
             i += 2;
         } else {
             out.push_back(c);

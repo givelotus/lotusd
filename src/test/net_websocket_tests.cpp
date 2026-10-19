@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <crypto/common.h>
 #include <config.h>
 #include <hash.h>
 #include <net_websocket_codec.h>
@@ -73,8 +74,7 @@ struct Pair {
 };
 
 /** Receive exactly `want` bytes, pumping the sender's pending writes */
-std::vector<uint8_t> ReceiveAll(const Sock &from, const Sock &to,
-                                size_t want) {
+std::vector<uint8_t> ReceiveAll(const Sock &from, const Sock &to, size_t want) {
     std::vector<uint8_t> got;
     uint8_t buf[0x10000];
     const auto deadline{std::chrono::steady_clock::now() +
@@ -107,8 +107,8 @@ void WriteRaw(int fd, const std::vector<uint8_t> &data) {
 }
 
 /** Unmasked (server-to-client style) or masked frame, built by hand */
-std::vector<uint8_t> Frame(uint8_t first_byte, const std::vector<uint8_t> &payload,
-                           bool masked) {
+std::vector<uint8_t> Frame(uint8_t first_byte,
+                           const std::vector<uint8_t> &payload, bool masked) {
     std::vector<uint8_t> f{first_byte};
     const uint8_t m = masked ? 0x80 : 0;
     if (payload.size() <= 125) {
@@ -267,6 +267,78 @@ BOOST_AUTO_TEST_CASE(roundtrip_all_modes_and_sizes) {
 }
 
 #ifdef MSG_MORE
+namespace {
+/** A p2p-v2 message as CConnman writes it: [LE32 length][id][payload] */
+std::vector<uint8_t> V2Local(uint8_t id, const std::vector<uint8_t> &payload) {
+    std::vector<uint8_t> out(4);
+    WriteLE32(out.data(), uint32_t(1 + payload.size()));
+    out.push_back(id);
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(p2p_v2_messages_roundtrip) {
+    // Each CConnman message becomes one WebSocket message, whatever the
+    // Send() calls: a message split mid-header arrives intact, small ones
+    // go raw and large ones compressed (repetitive data shrinks).
+    Pair p{C::P2P_V2};
+    FastRandomContext rng{/*fDeterministic=*/true};
+    std::vector<uint8_t> all;
+    for (const size_t size : {0, 8, 62, 63, 64, 5000, 3000000}) {
+        std::vector<uint8_t> payload(size, 0x5a);
+        if (size == 8) {
+            payload = rng.randbytes<uint8_t>(8);
+        }
+        const auto msg{V2Local(uint8_t(16), payload)};
+        const size_t cut{std::min<size_t>(3, msg.size())};
+        BOOST_CHECK_EQUAL(p.client->Send(msg.data(), cut, 0), ssize_t(cut));
+        BOOST_CHECK_EQUAL(p.client->Send(msg.data() + cut, msg.size() - cut, 0),
+                          ssize_t(msg.size() - cut));
+        BOOST_CHECK(ReceiveAll(*p.client, *p.server, msg.size()) == msg);
+        all.insert(all.end(), msg.begin(), msg.end());
+    }
+    // Several messages in one Send() come out as the same stream.
+    BOOST_CHECK_EQUAL(p.server->Send(all.data(), all.size(), 0),
+                      ssize_t(all.size()));
+    BOOST_CHECK(ReceiveAll(*p.server, *p.client, all.size()) == all);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_v2_compression_flag) {
+    using Codec = WebSocketCodec;
+    Codec server{Codec::Role::SERVER, C::P2P_V2};
+    Codec client{Codec::Role::CLIENT, C::P2P_V2};
+    std::vector<uint8_t> wire, plain, reply;
+    // Small: raw (RSV1 clear); large: compressed (RSV1 set).
+    const std::vector<uint8_t> small(Codec::V2_COMPRESS_MIN - 1, 0x11);
+    const std::vector<uint8_t> large(10000, 0x22);
+    server.EncodeMessage(small, wire);
+    BOOST_CHECK_EQUAL(wire[0] & 0x40, 0);
+    const size_t first{wire.size()};
+    server.EncodeMessage(large, wire);
+    BOOST_CHECK_EQUAL(wire[first] & 0x40, 0x40);
+    BOOST_CHECK_LT(wire.size() - first, large.size());
+    const auto result{client.Decode(wire, plain, reply)};
+    BOOST_REQUIRE(!result.error);
+    BOOST_CHECK_EQUAL(result.consumed, wire.size());
+    std::vector<uint8_t> expected(4);
+    WriteLE32(expected.data(), small.size());
+    expected.insert(expected.end(), small.begin(), small.end());
+    expected.resize(expected.size() + 4);
+    WriteLE32(expected.data() + expected.size() - 4, large.size());
+    expected.insert(expected.end(), large.begin(), large.end());
+    BOOST_CHECK(plain == expected);
+
+    // RSV1 is refused outside p2p-v2, and on a continuation frame.
+    Codec v1{Codec::Role::CLIENT, C::ZSTD_DICT};
+    std::vector<uint8_t> bad{uint8_t(0x80 | 0x40 | 0x2), 1, 0};
+    plain.clear();
+    BOOST_CHECK(v1.Decode(bad, plain, reply).error);
+    Codec c2{Codec::Role::CLIENT, C::P2P_V2};
+    std::vector<uint8_t> frag{0x02, 1, 0x01, uint8_t(0x80 | 0x40 | 0x0), 1, 0};
+    BOOST_CHECK(c2.Decode(frag, plain, reply).error);
+}
+
 BOOST_AUTO_TEST_CASE(msg_more_coalesces_into_one_frame) {
     Pair p{C::NONE};
     const std::vector<uint8_t> a(100, 1), b(200, 2);
@@ -334,15 +406,15 @@ BOOST_AUTO_TEST_CASE(close_from_departed_peer_is_orderly) {
 
 BOOST_AUTO_TEST_CASE(protocol_violations_drop_the_connection) {
     const std::vector<std::vector<uint8_t>> bad{
-        Frame(0x81, {'t'}, true),          // text frame
-        Frame(0x82, {'x'}, false),         // unmasked client frame
-        Frame(0xC2, {'x'}, true),          // RSV1 (extension) set
-        Frame(0x80, {'x'}, true),          // continuation without start
-        Frame(0x09, {'x'}, true),          // fragmented control frame
-        Frame(0x83, {'x'}, true),          // reserved opcode
+        Frame(0x81, {'t'}, true),  // text frame
+        Frame(0x82, {'x'}, false), // unmasked client frame
+        Frame(0xC2, {'x'}, true),  // RSV1 (extension) set
+        Frame(0x80, {'x'}, true),  // continuation without start
+        Frame(0x09, {'x'}, true),  // fragmented control frame
+        Frame(0x83, {'x'}, true),  // reserved opcode
         // 64-bit length beyond the limit, rejected before buffering
-        {0x82, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-         0x11, 0x22, 0x33, 0x44},
+        {0x82, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22,
+         0x33, 0x44},
     };
     for (const auto &frame : bad) {
         RawPeer peer;
@@ -424,7 +496,8 @@ struct TlsPair {
         for (int fd : sv) {
             fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
         }
-        tls::SslPtr c{SSL_new(client_ctx.get())}, srv{SSL_new(server_ctx.get())};
+        tls::SslPtr c{SSL_new(client_ctx.get())},
+            srv{SSL_new(server_ctx.get())};
         SSL_set_fd(c.get(), sv[0]);
         SSL_set_fd(srv.get(), sv[1]);
         SSL_set_connect_state(c.get());
@@ -593,9 +666,10 @@ BOOST_AUTO_TEST_CASE(tls_client_profile) {
     tls::SslPtr ssl{SSL_new(ctx.get())};
     BOOST_REQUIRE(ssl);
     std::vector<std::string> names;
-    STACK_OF(SSL_CIPHER) *ciphers{SSL_get_ciphers(ssl.get())};
+    STACK_OF(SSL_CIPHER) * ciphers{SSL_get_ciphers(ssl.get())};
     for (int i = 0; i < sk_SSL_CIPHER_num(ciphers); ++i) {
-        names.emplace_back(SSL_CIPHER_get_name(sk_SSL_CIPHER_value(ciphers, i)));
+        names.emplace_back(
+            SSL_CIPHER_get_name(sk_SSL_CIPHER_value(ciphers, i)));
     }
     BOOST_REQUIRE_GE(names.size(), 4U);
     BOOST_CHECK_EQUAL(names[0], "TLS_AES_128_GCM_SHA256");
@@ -694,6 +768,39 @@ BOOST_AUTO_TEST_CASE(compressed_output_is_bounded_by_plain_limit) {
     BOOST_REQUIRE(result.error);
     BOOST_CHECK(result.error->find("decompressed message too large") != std::string::npos);
     BOOST_CHECK_LE(plain.size(), limit);
+}
+
+BOOST_AUTO_TEST_CASE(native_compression_follows_plain_message_budget) {
+    RestoreBlockLimit restore;
+    BOOST_REQUIRE(restore.config.SetMaxBlockSize(100000000));
+    const std::vector<uint8_t> payload(65 * 1024 * 1024, 0x5a);
+    WebSocketCodec client{Role::CLIENT, C::P2P_V2};
+    WebSocketCodec server{Role::SERVER, C::P2P_V2};
+    std::vector<uint8_t> wire, plain, reply;
+    client.EncodeMessage(payload, wire);
+    BOOST_REQUIRE(!server.Decode(wire, plain, reply).error);
+    BOOST_REQUIRE_EQUAL(plain.size(), payload.size() + 4);
+    BOOST_CHECK_EQUAL(ReadLE32(plain.data()), payload.size());
+    BOOST_CHECK(std::equal(payload.begin(), payload.end(), plain.begin() + 4));
+
+    BOOST_REQUIRE(restore.config.SetMaxBlockSize(32 * 1000000));
+    WebSocketCodec raw_server{Role::SERVER, C::P2P_V2};
+    std::vector<uint8_t> raw_plain, raw_reply;
+    const auto raw_result{raw_server.Decode(
+        ClientFrameHeader(GetP2PWebSocketMessageSizeLimit() + 1),
+        raw_plain, raw_reply)};
+    BOOST_REQUIRE(raw_result.error);
+    BOOST_CHECK_EQUAL(*raw_result.error, "message too large");
+    BOOST_CHECK(raw_plain.empty());
+    WebSocketCodec large_client{Role::CLIENT, C::P2P_V2};
+    WebSocketCodec small_server{Role::SERVER, C::P2P_V2};
+    wire.clear(); plain.clear(); reply.clear();
+    const uint64_t limit{GetP2PWebSocketMessageSizeLimit()};
+    large_client.EncodeMessage(std::vector<uint8_t>(limit + 1, 0x00), wire);
+    const auto result{small_server.Decode(wire, plain, reply)};
+    BOOST_REQUIRE(result.error);
+    BOOST_CHECK(result.error->find("decompressed message too large") != std::string::npos);
+    BOOST_CHECK_LE(plain.size(), limit + 4);
 }
 
 BOOST_AUTO_TEST_CASE(incompressible_stream_wire_overhead_is_allowed) {
