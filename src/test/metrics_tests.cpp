@@ -3,6 +3,8 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <metrics/metrics.h>
+#include <node/metrics.h>
+#include <protocol.h>
 
 #include <test/util/setup_common.h>
 
@@ -10,6 +12,7 @@
 
 #include <cmath>
 #include <memory>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -219,6 +222,18 @@ BOOST_AUTO_TEST_CASE(rings_prepared_and_reused) {
     reg.Stop();
     BOOST_CHECK_LE(reg.NumRings(), 2U);
     BOOST_CHECK(reg.Render().find("\nx_count 10\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(msg_type_index) {
+    const size_t other{node::MetricMsgTypeIndex("no-such-type")};
+    std::set<size_t> seen;
+    for (const std::string &type : getAllNetMessageTypes()) {
+        const size_t i{node::MetricMsgTypeIndex(type)};
+        BOOST_CHECK(i < other);
+        seen.insert(i);
+    }
+    BOOST_CHECK_EQUAL(seen.size(), getAllNetMessageTypes().size());
+    BOOST_CHECK_EQUAL(node::MetricMsgTypeIndex("*other*"), other);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
