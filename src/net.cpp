@@ -1136,8 +1136,40 @@ std::string WebSocketURLForAddress(const CService &addr) {
     return strprintf("wss://%s%s", addr.ToStringAddrPort(), addr.GetWSSPath());
 }
 
+std::string EncodeSpkiPin(Span<const unsigned char> sha256) {
+    std::string out{EncodeBase64(sha256)};
+    std::replace(out.begin(), out.end(), '+', '-');
+    std::replace(out.begin(), out.end(), '/', '_');
+    out.erase(std::find(out.begin(), out.end(), '='), out.end());
+    return out;
+}
+
+std::optional<std::vector<unsigned char>> DecodeSpkiPin(std::string_view pin) {
+    std::string b64{pin};
+    std::replace(b64.begin(), b64.end(), '-', '+');
+    std::replace(b64.begin(), b64.end(), '_', '/');
+    b64.erase(std::find(b64.begin(), b64.end(), '='), b64.end());
+    b64.append((4 - b64.size() % 4) % 4, '=');
+    auto decoded{DecodeBase64(b64)};
+    if (!decoded || decoded->size() != 32) {
+        return std::nullopt;
+    }
+    return std::vector<unsigned char>(decoded->begin(), decoded->end());
+}
+
 std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url) {
     ParsedWebSocketURL out;
+    if (const size_t hash{url.find('#')}; hash != std::string_view::npos) {
+        const std::string_view fragment{url.substr(hash + 1)};
+        url = url.substr(0, hash);
+        if (fragment.substr(0, 5) != "spki=") {
+            return std::nullopt;
+        }
+        out.spki_pin = DecodeSpkiPin(fragment.substr(5));
+        if (!out.spki_pin) {
+            return std::nullopt;
+        }
+    }
     if (url.substr(0, 6) == "wss://") {
         out.tls = true;
         url.remove_prefix(6);
