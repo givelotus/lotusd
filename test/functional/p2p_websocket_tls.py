@@ -50,7 +50,12 @@ class P2PWebSocketTLSTest(BitcoinTestFramework):
         port0 = rpc_port(0)
         self.extra_args[0] = [f"-externaldomain=localhost:{port0}"]
         self.extra_args[1] = [f"-addnode=wss://localhost:{port0}/p2p/ws"]
-        self.setup_nodes()
+        # Start node0 first so its listeners are up before the others dial
+        # it with -addnode (a failed attempt is only retried much later).
+        self.add_nodes(self.num_nodes, self.extra_args)
+        self.start_node(0)
+        for i in range(1, self.num_nodes):
+            self.start_node(i)
         # node2 <-> node0 over plain TCP P2P
         self.connect_nodes(2, 0)
 

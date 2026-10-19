@@ -305,7 +305,12 @@ struct HTTPPathHandler {
 //! never destroyed once created so that late HTTPEvent destructors are safe.
 static std::unique_ptr<asio::io_context> g_io;
 //! Listening sockets, each bound to its own strand
-static std::vector<std::unique_ptr<tcp::acceptor>> g_acceptors;
+struct HTTPListener {
+    std::unique_ptr<tcp::acceptor> acceptor;
+    //! A -publicbind listener: serves only public paths, to anyone
+    bool public_only{false};
+};
+static std::vector<HTTPListener> g_acceptors;
 //! TLS context for connections detected as TLS, if TLS is enabled
 static std::unique_ptr<ssl::context> g_ssl_ctx;
 //! The configuration handlers are invoked with
@@ -322,7 +327,8 @@ static std::vector<CSubNet> rpc_allow_subnets;
 static std::unique_ptr<HTTPCoroutinePool> g_work_queue{nullptr};
 //! Handlers for (sub)paths
 static std::vector<HTTPPathHandler> pathHandlers;
-//! URI prefixes exempt from the -rpcallowip ACL (they do no RPC auth either)
+//! URI prefixes served on -publicbind listeners (P2P WebSocket, Chronik).
+//! Everything else is only served on the RPC listeners, to -rpcallowip.
 static std::vector<std::string> g_public_prefixes;
 
 //! Whether /chronik is served (-chronik and -chronikpubliconrpcport)
@@ -565,6 +571,7 @@ struct ReplySlot {
 /** Per-connection facts shared by every request on it */
 struct HTTPConnectionInfo {
     uint64_t connection_id{0};
+    bool public_only{false};
     CService peer;
     CService local;
     bool is_tls{false};
@@ -601,8 +608,16 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
     };
     auto hreq{std::make_unique<HTTPRequest>(std::move(impl))};
 
-    // Early address-based allow check
-    if (!IsPublicPath(hreq->GetURI()) && !ClientAllowed(hreq->GetPeer())) {
+    if (conn.public_only) {
+        // Public listeners only serve the WebSocket and Chronik endpoints,
+        // which are handled before dispatch: never RPC, wallet or REST.
+        LogDebug(BCLog::HTTP,
+                 "Request for %s on a public listener from %s rejected\n",
+                 SanitizeString(hreq->GetURI(), SAFE_CHARS_URI).substr(0, 100),
+                 hreq->GetPeer().ToStringAddrPort());
+        hreq->WriteReply(HTTP_NOT_FOUND);
+    } else if (!ClientAllowed(hreq->GetPeer())) {
+        // Early address-based allow check
         LogDebug(BCLog::HTTP,
                  "HTTP request from %s rejected: Client network is not allowed "
                  "RPC access\n",
@@ -1278,16 +1293,25 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         const unsigned version{req.version()};
         const bool is_head{req.method() == http::verb::head};
 
+        // WebSocket and Chronik endpoints: on public listeners for anyone,
+        // on RPC listeners only for -rpcallowip clients. Other requests go
+        // to DispatchRequest, which applies the same rules.
+        const bool endpoint_allowed{conn.public_only
+                                        ? IsPublicPath(req.target())
+                                        : ClientAllowed(conn.peer)};
+
         // Handlers may take arbitrarily long (e.g. long polling), as may
         // WebSocket sessions.
         idle->busy = true;
-        if (websocket::is_upgrade(req) && !g_reject_requests.load() &&
+        if (endpoint_allowed && websocket::is_upgrade(req) &&
+            !g_reject_requests.load() &&
             co_await TryHandleWebSocketUpgrade(stream, req, conn)) {
             co_return;
         }
 
         BeastResponse res;
-        if (g_chronik_enabled && !g_reject_requests.load() &&
+        if (endpoint_allowed && g_chronik_enabled &&
+            !g_reject_requests.load() &&
             URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
             g_connections.AddRequest();
             if (auto handlers{GetChronikInProcess()}) {
@@ -1343,8 +1367,10 @@ static std::string ClientCertFingerprint(SSL *ssl) {
 }
 
 /** Connection coroutine: detect TLS, then serve HTTP on the resulting stream */
-static asio::awaitable<void> HandleConnection(tcp::socket socket) {
+static asio::awaitable<void> HandleConnection(tcp::socket socket,
+                                              bool public_only) {
     HTTPConnectionInfo conn;
+    conn.public_only = public_only;
     {
         boost::system::error_code ec;
         const auto remote{socket.remote_endpoint(ec)};
@@ -1405,7 +1431,8 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket) {
     g_connections.RemoveConnection(conn_id);
 }
 
-static asio::awaitable<void> AcceptLoop(tcp::acceptor &acceptor) {
+static asio::awaitable<void> AcceptLoop(tcp::acceptor &acceptor,
+                                        bool public_only) {
     while (acceptor.is_open()) {
         auto [ec, socket] = co_await acceptor.async_accept(
             asio::make_strand(*g_io), asio::as_tuple(asio::use_awaitable));
@@ -1421,13 +1448,15 @@ static asio::awaitable<void> AcceptLoop(tcp::acceptor &acceptor) {
             continue;
         }
         auto executor{socket.get_executor()};
-        asio::co_spawn(executor, HandleConnection(std::move(socket)),
+        asio::co_spawn(executor,
+                       HandleConnection(std::move(socket), public_only),
                        asio::detached);
     }
 }
 
 /** Bind one listening socket. Returns false on failure. */
-static bool BindEndpoint(const std::string &host, uint16_t port) {
+static bool BindEndpoint(const std::string &host, uint16_t port,
+                         bool public_only) {
     std::vector<tcp::endpoint> candidates;
     boost::system::error_code ec;
     if (host.empty()) {
@@ -1466,7 +1495,7 @@ static bool BindEndpoint(const std::string &host, uint16_t port) {
         if (ec) {
             continue;
         }
-        g_acceptors.push_back(std::move(acceptor));
+        g_acceptors.push_back({std::move(acceptor), public_only});
         return true;
     }
     return false;
@@ -1508,7 +1537,7 @@ static bool HTTPBindAddresses() {
          i != endpoints.end(); ++i) {
         LogDebug(BCLog::HTTP, "Binding RPC on address %s port %i\n", i->first,
                  i->second);
-        if (BindEndpoint(i->first, i->second)) {
+        if (BindEndpoint(i->first, i->second, /*public_only=*/false)) {
             const std::optional<CNetAddr> addr{LookupHost(i->first, false)};
             if (i->first.empty() || (addr.has_value() && addr->IsBindAny())) {
                 LogPrintf("WARNING: the RPC server is not safe to expose to "
@@ -1519,7 +1548,29 @@ static bool HTTPBindAddresses() {
                       i->second);
         }
     }
-    return !g_acceptors.empty();
+    if (g_acceptors.empty()) {
+        return false;
+    }
+
+    // Public listeners: only /p2p/ws and /chronik, for anyone.
+    for (const std::string &strBind : gArgs.GetArgs("-publicbind")) {
+        uint16_t port{0};
+        std::string host;
+        if (!SplitHostPort(strBind, port, host) || port == 0) {
+            LogPrintf("Error: -publicbind=%s needs an explicit port\n",
+                      strBind);
+            return false;
+        }
+        if (!BindEndpoint(host, port, /*public_only=*/true)) {
+            LogPrintf("Binding public HTTP endpoints on %s failed.\n",
+                      strBind);
+            return false;
+        }
+        LogPrintf("Serving %s on public listener %s (RPC, wallet and REST "
+                  "are not served there)\n",
+                  util::Join(g_public_prefixes, ", "), strBind);
+    }
+    return true;
 }
 
 /** libevent event log callback */
@@ -1775,8 +1826,10 @@ void StartHTTPServer() {
             rpcThreads, ioThreads);
     if (g_work_queue) g_work_queue->Start(rpcThreads);
     g_io_work.emplace(asio::make_work_guard(*g_io));
-    for (auto &acceptor : g_acceptors) {
-        asio::co_spawn(acceptor->get_executor(), AcceptLoop(*acceptor), asio::detached);
+    for (auto &listener : g_acceptors) {
+        asio::co_spawn(listener.acceptor->get_executor(),
+                       AcceptLoop(*listener.acceptor, listener.public_only),
+                       asio::detached);
     }
     for (int i = 0; i < ioThreads; ++i) {
         g_thread_http_io.emplace_back([i] {
@@ -1803,10 +1856,10 @@ void StopHTTPServer() {
         g_work_queue->WaitExit();
     }
     // Stop accepting connections.
-    for (auto &acceptor : g_acceptors) {
-        asio::post(acceptor->get_executor(), [&acceptor] {
+    for (auto &listener : g_acceptors) {
+        asio::post(listener.acceptor->get_executor(), [&listener] {
             boost::system::error_code ec;
-            acceptor->close(ec);
+            listener.acceptor->close(ec);
         });
     }
     if (!g_thread_http_io.empty()) {
@@ -2180,7 +2233,7 @@ void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor) {
 }
 
 void RegisterPublicHTTPPrefix(const std::string &prefix) {
-    LogDebug(BCLog::HTTP, "Exempting %s from the RPC IP allow list\n", prefix);
+    LogDebug(BCLog::HTTP, "Registering public HTTP prefix %s\n", prefix);
     g_public_prefixes.push_back(prefix);
 }
 
