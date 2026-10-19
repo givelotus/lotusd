@@ -169,6 +169,31 @@ LOKAD_ALP = b"SLP2"
 LOKAD_IDS = [b"PRTY", b"TEST", b"LKD1", b"LKD2", b"INPT"]
 
 
+def v2_frame_members(spk: bytes):
+    """(branch roots, asset ID or None) of a native V2 output frame (or
+    0x6a || frame) used as an output script, else None. Lenient: only the
+    framing up to the branches is checked; both sides are queried alike."""
+    for raw in (spk, spk[1:] if spk[:1] == b"\x6a" and len(spk) >= 44 else None):
+        if raw is None or len(raw) < 11 or raw[0] & 0xFC:
+            continue
+        pos = 9
+        token = None
+        if raw[0] & 1:
+            token = raw[pos:pos + 32]
+            pos += 32
+        if pos >= len(raw):
+            continue
+        n = raw[pos]
+        pos += 1
+        if n == 0 or n > 16 or pos + 32 * n >= len(raw):
+            continue
+        branches = [raw[pos + 32 * i:pos + 32 * (i + 1)] for i in range(n)]
+        if raw[0] & 2:
+            continue  # burns are not indexed
+        return branches, (token if token and any(token) else None)
+    return None
+
+
 def classify_script(spk: bytes):
     """Chronik script type/payload of an output script."""
     if len(spk) == 25 and spk[:3] == b"\x76\xa9\x14" and spk[23:] == b"\x88\xac":
@@ -1222,6 +1247,14 @@ class ParityChain(BitcoinTestFramework):
             stype, payload = classify_script(bytes.fromhex(spk_hex))
             script_rows[(stype, payload.hex())] = spk_hex
         rows = sorted([[s, p, spk] for (s, p), spk in script_rows.items()])
+        v2_branches, v2_assets = set(), set()
+        if self.v2:
+            for spk_hex in scripts:
+                members = v2_frame_members(bytes.fromhex(spk_hex))
+                if members is not None:
+                    v2_branches.update(b.hex() for b in members[0])
+                    if members[1] is not None:
+                        v2_assets.add(members[1].hex())
         # deterministic raw tx sample: some mempool, some confirmed
         sample = []
         for txid in sorted(mempool)[:10]:
@@ -1241,6 +1274,10 @@ class ParityChain(BitcoinTestFramework):
             "scripts": rows,
             "token_ids": sorted(set(t for t in self.token_ids if t)) if self.tokens else [],
             "lokad_ids": lokads,
+            # Lotus V2: branch roots / asset IDs of the native output frames,
+            # for the "v2-branch"/"taproot"/"v2-asset" WS subscriptions.
+            "v2_branches": sorted(v2_branches),
+            "v2_assets": sorted(v2_assets),
             "validate_txs": self.make_validate_txs(),
             "raw_txs_sample": sample,
             "tokens_enabled": self.tokens,
@@ -1403,7 +1440,10 @@ class ParityChain(BitcoinTestFramework):
         assert o.blocks >= 110, "--blocks must be >= 110"
         self.rng = random.Random(o.seed)
         self.w = Wallet()
-        self.report = compare.Report(compare.DEFAULT_ALLOW + o.allow)
+        allow = compare.DEFAULT_ALLOW + o.allow
+        if self.v2:
+            allow += compare.V2_ACCEPTED
+        self.report = compare.Report(allow)
         self.notes = self.report.notes
         os.makedirs(os.path.join(o.tmpdir, "records"), exist_ok=True)
         self.save_dir = os.path.join(o.tmpdir, "responses") if o.save_responses else None

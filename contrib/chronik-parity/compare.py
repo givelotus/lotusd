@@ -41,6 +41,14 @@ DEFAULT_ALLOW = [
     "ChronikInfo.version",
 ]
 
+# Lotus V2 tier, Rust (A) vs native (B): the design C1 section 1 defects.
+# The Rust bridge recomputes the txid of a decoded raw tx from its
+# legacy-shaped fields (lookup_spent_coins), which differs from the real V2
+# txid of native V2 txs; the native host reports the real one.
+V2_ACCEPTED = [
+    "/validate-tx::Tx.txid",
+]
+
 # Response headers never compared.
 IGNORED_HEADERS = {"date"}
 
@@ -86,9 +94,15 @@ def _strip_idx(path: str) -> str:
     return re.sub(r"\[\d+\]", "", path)
 
 
-def is_allowed(path: str, allow: List[str]) -> bool:
+def is_allowed(path: str, allow: List[str], route: Optional[str] = None) -> bool:
+    """Whether a difference at `path` is accepted. A pattern "ROUTE::PATH"
+    only applies to responses of that route (e.g. "/validate-tx::Tx.txid")."""
     stripped = _strip_idx(path)
     for pattern in allow:
+        if "::" in pattern:
+            route_pattern, pattern = pattern.split("::", 1)
+            if route is None or not fnmatch.fnmatchcase(route, route_pattern):
+                continue
         if fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(
             stripped, pattern
         ):
@@ -269,8 +283,9 @@ def compare_http(req, ra, rb, allow: List[str]) -> Dict[str, Any]:
                     "b": _short(bb),
                 }
             )
-    unexpected = [d for d in diffs if not is_allowed(d["path"], allow)]
-    accepted = [d for d in diffs if is_allowed(d["path"], allow)]
+    route = req["route"]
+    unexpected = [d for d in diffs if not is_allowed(d["path"], allow, route)]
+    accepted = [d for d in diffs if is_allowed(d["path"], allow, route)]
     if not diffs:
         result["verdict"] = "identical"
     elif not unexpected:
