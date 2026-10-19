@@ -9,6 +9,7 @@ with each sub-protocol and completes the P2P handshake.
 """
 
 import http.client
+import os
 
 from test_framework.messages import msg_ping
 from test_framework.test_framework import BitcoinTestFramework, SkipTest
@@ -110,8 +111,21 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
         peer.close()
         self.wait_until(lambda: len(self.ws_peers()) == 0)
 
-        self.log.info("Without -p2pwslisten, /p2p/ws is not served")
-        self.restart_node(0, ["-p2pwslisten=0"])
+        self.log.info("Without -p2pwebsocket, /p2p/ws is not served")
+        # (Lotus v2: peers only connect over WebSocket, so a listening node
+        # needs it.)
+        self.stop_node(0)
+        self.nodes[0].assert_start_raises_init_error(
+            ["-p2pwslisten=0"],
+            "Error: -p2pwslisten=0 needs -listen=0: peers can only connect "
+            "over WebSocket",
+        )
+        conf = os.path.join(self.nodes[0].datadir, "lotusd.conf")
+        with open(conf, encoding="utf8") as f:
+            lines = [line for line in f if not line.startswith("bind=")]
+        with open(conf, "w", encoding="utf8") as f:
+            f.writelines(lines)
+        self.start_node(0, ["-p2pwslisten=0", "-listen=0"])
         conn = http.client.HTTPConnection("127.0.0.1", rpc_port(0))
         conn.request(
             "GET",
