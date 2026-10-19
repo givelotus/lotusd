@@ -162,6 +162,17 @@ Hash BranchLeaf(std::span<const uint8_t> script) {
     input.insert(input.end(), bytes.begin(), bytes.end());
     return TaggedHash(HashDomain::Branch, input);
 }
+Hash LegacyBridgeLeaf(std::span<const uint8_t> coin_script,
+                      std::span<const uint8_t> witness_script) {
+    const auto coin = EncodeBytes(coin_script);
+    const auto witness = EncodeBytes(witness_script);
+    std::vector<uint8_t> input;
+    input.reserve(1 + coin.size() + witness.size());
+    input.push_back(3);
+    input.insert(input.end(), coin.begin(), coin.end());
+    input.insert(input.end(), witness.begin(), witness.end());
+    return TaggedHash(HashDomain::Branch, input);
+}
 Hash BranchNode(const Hash &a, const Hash &b) {
     std::array<uint8_t, 65> input{};
     const Hash &low = LessLittleEndian(a, b) ? a : b;

@@ -18,6 +18,13 @@ Hash OutputLeaf(std::span<const uint8_t> serialized_output);
 Hash CoinEntryLeaf(std::span<const uint8_t> serialized_resolved_output);
 Hash BranchLeaf(std::span<const uint8_t> script);
 Hash BranchNode(const Hash &a, const Hash &b);
+// The selector leaf of a v7 input spending a legacy coin (the legacy bridge):
+// TaggedHash(Branch, 0x03 || CS(|coin_script|) || coin_script
+//                         || CS(|witness_script|) || witness_script).
+// Prefix 0x03 differs from leaf 0x00 and node 0x01, so no V2 branch leaf
+// equals it; it commits to the coin's template and to the redeem script.
+Hash LegacyBridgeLeaf(std::span<const uint8_t> coin_script,
+                      std::span<const uint8_t> witness_script);
 Hash BranchProofRoot(const Hash &leaf, std::span<const Hash> bottom_up_siblings);
 
 Hash IndexedNode(uint16_t layer, const Hash &left, const Hash &right);
