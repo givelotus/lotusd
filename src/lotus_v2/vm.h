@@ -16,6 +16,15 @@
 
 namespace lotus::v2 {
 using VmBytes = std::vector<uint8_t>;
+// Internal 16-bit opcode representation. A single wire byte b is 0x00bb; the
+// EXT2 escape `ff xx` is 0xff00 | xx. 0x00ff itself is never an executable
+// instruction: on the wire it always introduces a selector byte.
+using VmOpcode = uint16_t;
+constexpr uint8_t VM_EXT2_PREFIX = 0xff;
+constexpr VmOpcode VmExt2(uint8_t selector) {
+    return VmOpcode(0xff00 | selector);
+}
+constexpr bool IsVmExt2(VmOpcode op) { return op >= 0xff00; }
 // P05's immutable per-item bound; caller profiles may only tighten it.
 constexpr size_t VM_HARD_ELEMENT_BYTES = 8192;
 constexpr size_t VM_MIN_NUMERIC_BYTES = 16;
@@ -75,6 +84,9 @@ struct VmCostProfile {
     VmCostUnits max_invocation_cost = 0;
     uint64_t structural_byte_cost = 0;
     std::array<VmOpcodeCost, 256> opcode{};
+    // Costs for two-byte `ff xx` opcodes, indexed by the selector byte. No
+    // two-byte opcode is assigned yet, so every entry is currently unused.
+    std::array<VmOpcodeCost, 256> ext_opcode{};
     // P05 field-size hints for db/dc/e6/e7. With an execution context, an
     // absent vector is the serialized authenticated field; a caller vector
     // may only be larger. Without a context, an absent vector uses
