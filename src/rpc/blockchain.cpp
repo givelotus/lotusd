@@ -1353,6 +1353,8 @@ RPCHelpMan gettxout() {
                           "array of eCash addresses",
                           {{RPCResult::Type::STR, "address", "eCash address"}}},
                      }},
+                    {RPCResult::Type::STR_HEX, "stateRoot", /*optional=*/true,
+                     "V2 HAS_STATE output state root (only if present)"},
                     {RPCResult::Type::BOOL, "coinbase", "Coinbase or not"},
                 }},
         },
@@ -1430,6 +1432,10 @@ RPCHelpMan gettxout() {
                 UniValue o(UniValue::VOBJ);
                 ScriptPubKeyToUniv(snap_coin->GetTxOut().scriptPubKey, o, true);
                 ret.pushKV("scriptPubKey", std::move(o));
+                if (const auto v2out = snap_coin->GetTxOut().ToV2Output();
+                    v2out.HasState()) {
+                    ret.pushKV("stateRoot", HexStr(v2out.state_root));
+                }
                 ret.pushKV("coinbase", snap_coin->IsCoinBase());
                 return ret;
             }
@@ -1468,6 +1474,10 @@ RPCHelpMan gettxout() {
             UniValue o(UniValue::VOBJ);
             ScriptPubKeyToUniv(coin->GetTxOut().scriptPubKey, o, true);
             ret.pushKV("scriptPubKey", std::move(o));
+            if (const auto v2out = coin->GetTxOut().ToV2Output();
+                v2out.HasState()) {
+                ret.pushKV("stateRoot", HexStr(v2out.state_root));
+            }
             ret.pushKV("coinbase", coin->IsCoinBase());
 
             return ret;

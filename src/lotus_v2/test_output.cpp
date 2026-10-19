@@ -113,7 +113,7 @@ void FixedVectors() {
     invalid[42] = 2;
     Reject(invalid); // too many paths for bytes
 
-    // Maximum 812-byte output: 16 branches; 15 unique 15-index subsets plus
+    // Maximum 844-byte output (token + state root): 16 branches; 15 unique 15-index subsets plus
     // the full 16-index path produce 16 lexicographically ordered paths.
     Output largest;
     largest.flags = 1;
@@ -138,7 +138,11 @@ void FixedVectors() {
     std::vector<uint8_t> encoded;
     std::string error;
     CHECK(EncodeOutput(largest, encoded, error));
-    CHECK(encoded.size() == MAX_OUTPUT_BYTES);
+    CHECK(encoded.size() == 812); // largest stateless output
+    largest.flags = 5;
+    largest.state_root[31] = 9;
+    CHECK(EncodeOutput(largest, encoded, error));
+    CHECK(encoded.size() == MAX_OUTPUT_BYTES && MAX_OUTPUT_BYTES == 844);
     Accept(encoded);
     auto over = encoded;
     over.push_back(0);
@@ -151,6 +155,79 @@ void FixedVectors() {
     largest.paths[0][1] = 2;
     largest.paths.push_back({0});
     CHECK(!EncodeOutput(largest, encoded, error));
+}
+
+void StateRoot() {
+    // HAS_STATE (0x04): the 32-byte state root follows the token id.
+    const auto native = FromHex("00e80300000000000001a88cef369f758aec3e594eaa4e"
+                                "8d08c9f12ef3f11bea972ec53a416a148f0605010100");
+    Hash32 root{};
+    root[0] = 0x5a;
+    root[31] = 0x01;
+    auto stateful = native;
+    stateful[0] = 4;
+    stateful.insert(stateful.begin() + 9, root.begin(), root.end());
+    Accept(stateful);
+    Output parsed;
+    std::string error;
+    CHECK(DecodeOutput(stateful, parsed, error));
+    CHECK(parsed.HasState() && !parsed.HasToken() && parsed.state_root == root);
+    for (size_t n = 0; n < stateful.size(); ++n)
+        Reject({stateful.begin(), stateful.begin() + n});
+
+    // Token + state (0x05): flags | value | token | state root | ...
+    Hash32 token{};
+    token[0] = 1;
+    auto both = stateful;
+    both[0] = 5;
+    both.insert(both.begin() + 9, token.begin(), token.end());
+    Accept(both);
+    CHECK(DecodeOutput(both, parsed, error));
+    CHECK(parsed.token_id == token && parsed.state_root == root);
+
+    // A zero state root is ambiguous with "no state" and is invalid.
+    auto zero = native;
+    zero[0] = 4;
+    zero.insert(zero.begin() + 9, 32, 0);
+    Reject(zero);
+    // Burn outputs never carry state: 0x06 and 0x07 are invalid.
+    const auto burn = FromHex("02f40100000000000001a88cef369f758aec3e594eaa4e8d"
+                              "08c9f12ef3f11bea972ec53a416a148f060500");
+    auto state_burn = burn;
+    state_burn[0] = 6;
+    state_burn.insert(state_burn.begin() + 9, root.begin(), root.end());
+    Reject(state_burn);
+    auto token_state_burn = state_burn;
+    token_state_burn[0] = 7;
+    token_state_burn.insert(token_state_burn.begin() + 9, token.begin(),
+                            token.end());
+    Reject(token_state_burn);
+    for (unsigned flag = 8; flag < 256; flag <<= 1) {
+        auto high = stateful;
+        high[0] = uint8_t(4 | flag);
+        Reject(high);
+    }
+    // 0xf8 alone (and every high bit) is rejected.
+    auto f8 = native;
+    f8[0] = 0xf8;
+    Reject(f8);
+
+    // Encoder rejects a state root without the flag and a flag without root.
+    Output model;
+    CHECK(DecodeOutput(native, model, error));
+    model.state_root = root;
+    std::vector<uint8_t> out;
+    CHECK(!EncodeOutput(model, out, error));
+    model.state_root = Hash32{};
+    model.flags = 4;
+    CHECK(!EncodeOutput(model, out, error));
+    model.state_root = root;
+    CHECK(EncodeOutput(model, out, error) && out == stateful);
+    // Distinct state roots give distinct output bytes.
+    Output other = model;
+    other.state_root[5] ^= 1;
+    std::vector<uint8_t> other_out;
+    CHECK(EncodeOutput(other, other_out, error) && other_out != out);
 }
 
 void Corpus(const char *path) {
@@ -169,6 +246,7 @@ void Corpus(const char *path) {
 
 int main(int argc, char **argv) {
     FixedVectors();
+    StateRoot();
     if (argc > 1) Corpus(argv[1]);
     std::cout
         << "Lotus V2 output codec: native vectors and rejection cases pass\n";
