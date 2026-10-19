@@ -396,6 +396,10 @@ class ParityChain(BitcoinTestFramework):
                        help="save every raw response pair under <tmpdir>/responses")
         g.add_argument("--pb2-dir", help="directory containing chronik_pb2.py")
         g.add_argument("--seed", type=int, default=7, help="scenario RNG seed")
+        g.add_argument("--large-block-spends", type=int, default=0,
+                       help="also mine one block spending this many outputs "
+                       "(1500 exceeds the former fixed 32 MiB V2 staging "
+                       "bound; 0 = off)")
         g.add_argument("--keep-going", action="store_true",
                        help="do not abort at the first checkpoint with differences")
 
@@ -812,6 +816,28 @@ class ParityChain(BitcoinTestFramework):
         self.mine_with([tx for _, tx in sorted(txs, key=lambda t: t[0])])
         self.add_outputs(parent_txid, txs[-1][1])
         self.stats["ctor_chains"] += 1
+
+    def act_large_block(self, spends):
+        """Fan one coin out to `spends` outputs, then mine a block whose
+        single transaction spends all of them: a valid block larger than the
+        indexes' former fixed staging bound."""
+        each = 20_000
+        coin = self.take(spends * each + 5_000_000, kinds=["p2sh_true"])
+        assert coin is not None, "no coin for the large block"
+        spk = self.w.spks["p2sh_true"]
+        fan = self.build([coin], [CTxOut(each, CScript(spk))] * spends)
+        fan_txid = self.send(fan, [coin])
+        assert fan_txid is not None, "large-block fan-out rejected"
+        self.mine(1)
+        coins = [c for c in self.coins if c.txid == fan_txid and c.value == each]
+        assert len(coins) == spends, f"{len(coins)} fan-out coins"
+        sweep = self.build(coins, [CTxOut(each, CScript(spk))])
+        self.spend(coins)
+        self.mine_with([sweep])
+        txid = self.txid_of(sweep)
+        self.add_outputs(txid, sweep)
+        self.log.info(f"large block: 1 tx spending {spends} outputs, "
+                      f"{len(sweep.serialize())} tx bytes")
 
     def act_consolidate(self):
         small = [c for c in self.coins if c.value >= 5000]
@@ -1535,6 +1561,10 @@ class ParityChain(BitcoinTestFramework):
                 self.notes.append("signed P2PKH/P2PK spends rejected by node; outputs only")
             self.cb_kinds = [k for k in self.cb_kinds if k not in Wallet.SIGNED] + ["p2pkh"]
         self.log.info(f"can_sign={self.can_sign}")
+
+        if o.large_block_spends:
+            self.act_large_block(o.large_block_spends)
+            self.maybe_checkpoint()
 
         start = self.a.getblockcount()
         span = o.blocks - start
