@@ -62,6 +62,7 @@
     X(Height, height, INT, "", "")                                             \
     X(TxId, txid, HASH, "", "")                                                \
     X(Bytes, bytes, UINT, "", "")                                              \
+    X(DroppedLines, dropped_lines, UINT, "", "")                               \
     X(Count, count, UINT, "", "")                                              \
     X(AmountSats, amount_sats, INT, "", "")                                    \
     X(Method, method, STRING, "", "rpc.method")                                \

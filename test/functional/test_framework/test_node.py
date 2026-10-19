@@ -28,6 +28,7 @@ from .address import ADDRESS_ECREG_UNSPENDABLE
 from .authproxy import JSONRPCException
 from .descriptors import descsum_create
 from .jsonrpctools import ChronikElectrumClient
+from .log_messages import assert_no_drops, has_message, read_records
 from .messages import XEC, CTransaction, FromHex
 from .p2p import P2P_SUBVERSION
 from .util import (
@@ -107,6 +108,8 @@ class TestNode:
         self.stdout_dir = os.path.join(self.datadir, "stdout")
         self.stderr_dir = os.path.join(self.datadir, "stderr")
         self.chain = chain
+        self.debug_log_json_path = self.chain_path / "debug-framework.jsonl"
+        self.debug_log_json_start = 0
         self.host = host
         self.rpc_port = rpc_port
         self.p2p_port = p2p_port
@@ -321,6 +324,31 @@ class TestNode:
         """Start the node."""
         if extra_args is None:
             extra_args = self.extra_args
+
+        # Preserve caller args across restarts. The generic JSON sidecar keeps
+        # machine-readable records even when a test exercises a different primary
+        # presentation format; existing substring assertions retain debug.log.
+        extra_args = list(extra_args or [])
+        supplied = next(
+            (
+                arg.split("=", 1)[1]
+                for arg in reversed(self.default_args + extra_args)
+                if arg.startswith("-debuglogjsonfile=")
+            ),
+            None,
+        )
+        self.debug_log_json_path = (
+            Path(supplied) if supplied else self.chain_path / "debug-framework.jsonl"
+        )
+        if not self.debug_log_json_path.is_absolute():
+            self.debug_log_json_path = self.chain_path / self.debug_log_json_path
+        if supplied is None:
+            extra_args.append(f"-debuglogjsonfile={self.debug_log_json_path}")
+        self.debug_log_json_start = (
+            self.debug_log_json_path.stat().st_size
+            if self.debug_log_json_path.exists()
+            else 0
+        )
 
         # If listening and no -bind is given, then bitcoind would bind P2P ports on
         # 0.0.0.0:P and 127.0.0.1:18445 (for incoming Tor connections), where P is
@@ -575,6 +603,10 @@ class TestNode:
         if stderr != expected_stderr:
             raise AssertionError(f"Unexpected stderr {stderr} != {expected_stderr}")
 
+        assert_no_drops(
+            read_records(self.debug_log_json_path, self.debug_log_json_start),
+            require_summary=return_code == 0 and self.rpc_connected,
+        )
         self.stdout.close()
         self.stderr.close()
 
@@ -613,9 +645,12 @@ class TestNode:
         return self.chain_path / "debug.log"
 
     def debug_log_size(self, **kwargs) -> int:
-        with open(self.debug_log_path, **kwargs) as dl:
-            dl.seek(0, 2)
-            return dl.tell()
+        try:
+            with open(self.debug_log_path, **kwargs) as dl:
+                dl.seek(0, 2)
+                return dl.tell()
+        except FileNotFoundError:
+            return 0
 
     @contextlib.contextmanager
     def assert_debug_log(self, expected_msgs, unexpected_msgs=None, timeout=2):
@@ -639,6 +674,12 @@ class TestNode:
             encoding="utf-8"
         )  # Must use same encoding that is used to read() below
 
+        field_match = any(
+            isinstance(m, dict) for m in [*expected_msgs, *unexpected_msgs]
+        )
+        json_path = self.debug_log_json_path if field_match else None
+        json_start = json_path.stat().st_size if json_path and json_path.exists() else 0
+
         yield
 
         # The action can take arbitrarily long; give the asynchronous logger
@@ -648,18 +689,35 @@ class TestNode:
         while True:
             found = True
             missing = []
-            with open(self.debug_log_path, encoding="utf-8", errors="replace") as dl:
-                dl.seek(prev_size)
-                log = dl.read()
+            try:
+                with open(
+                    self.debug_log_path, encoding="utf-8", errors="replace"
+                ) as dl:
+                    dl.seek(prev_size)
+                    log = dl.read()
+            except FileNotFoundError:
+                log = ""
+            records = (
+                read_records(
+                    self.debug_log_json_path,
+                    json_start if self.debug_log_json_path == json_path else 0,
+                )
+                if field_match
+                else []
+            )
             print_log = " - " + "\n - ".join(log.splitlines())
+            if field_match:
+                print_log += "\nStructured JSON records:\n" + json.dumps(
+                    records, indent=2
+                )
             for unexpected_msg in unexpected_msgs:
-                if re.search(re.escape(unexpected_msg), log, flags=re.MULTILINE):
+                if has_message(unexpected_msg, log, records):
                     self._raise_assertion_error(
                         f'Unexpected message "{unexpected_msg}" partially matches '
                         f"log:\n\n{print_log}\n\n"
                     )
             for expected_msg in expected_msgs:
-                if re.search(re.escape(expected_msg), log, flags=re.MULTILINE) is None:
+                if not has_message(expected_msg, log, records):
                     missing.append(expected_msg)
                     found = False
             if found:
@@ -681,7 +739,7 @@ class TestNode:
     @contextlib.contextmanager
     def wait_for_debug_log(
         self,
-        expected_msgs: List[bytes],
+        expected_msgs: List[bytes | dict],
         timeout=60,
         interval: Optional[float] = 0.05,
         chatty_callable=None,
@@ -695,6 +753,9 @@ class TestNode:
         if getattr(self, "rpc_connected", False):
             self.rpc.logging()  # Flush older queued records before this boundary.
         prev_size = self.debug_log_size(mode="rb")
+        field_match = any(isinstance(m, dict) for m in expected_msgs)
+        json_path = self.debug_log_json_path if field_match else None
+        json_start = json_path.stat().st_size if json_path and json_path.exists() else 0
 
         yield
 
@@ -709,12 +770,23 @@ class TestNode:
                 # interested in the debug log content here.
                 chatty_callable()
 
-            with open(self.debug_log_path, "rb") as dl:
-                dl.seek(prev_size)
-                log = dl.read()
+            try:
+                with open(self.debug_log_path, "rb") as dl:
+                    dl.seek(prev_size)
+                    log = dl.read()
+            except FileNotFoundError:
+                log = b""
 
+            records = (
+                read_records(
+                    self.debug_log_json_path,
+                    json_start if self.debug_log_json_path == json_path else 0,
+                )
+                if field_match
+                else []
+            )
             for expected_msg in expected_msgs:
-                if expected_msg not in log:
+                if not has_message(expected_msg, log, records):
                     missing.append(expected_msg)
                     found = False
 
@@ -725,6 +797,10 @@ class TestNode:
                 print_log = " - " + "\n - ".join(
                     [f"\n - {line.decode()}" for line in log.splitlines()]
                 )
+                if field_match:
+                    print_log += "\nStructured JSON records:\n" + json.dumps(
+                        records, indent=2
+                    )
                 break
             if interval is not None:
                 time.sleep(interval)
