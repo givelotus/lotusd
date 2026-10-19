@@ -52,11 +52,22 @@ class WalletPruningTest(BitcoinTestFramework):
             # Simulate 10 minutes of work time per block
             # Important for matching a timestamp with a block +- some window
             self.nTime += 600
-            for n in self.nodes:
-                if n.running:
-                    # Update node's time to accept future blocks
-                    n.setmocktime(self.nTime)
+            # Move the nodes' clocks only every hour of blocks (they accept
+            # blocks up to 2 hours ahead), and only once the other nodes have
+            # every block: a node times out a block download by its own clock,
+            # so moving it while a block is in flight can make the pruning
+            # node drop its only peer on a busy machine.
+            if height % 6 == 0:
+                self.set_running_nodes_time()
+        self.set_running_nodes_time()
         self.sync_all()
+
+    def set_running_nodes_time(self):
+        running = [n for n in self.nodes if n.running]
+        self.sync_blocks(running, wait=0.1)
+        for n in running:
+            # Update node's time to accept future blocks
+            n.setmocktime(self.nTime)
 
     def test_wallet_import_pruned(self, wallet_name):
         self.log.info(
