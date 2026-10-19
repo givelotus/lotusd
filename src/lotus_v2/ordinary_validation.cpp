@@ -316,12 +316,6 @@ CandidateCheckResult VerifyOrdinaryUncached(
         size_t token_output_count = 0;
         for (const Output &output : tx.outputs) {
             token_output_count += output.HasToken();
-            // Interim: until transaction-scoped VM effects exist, no script
-            // can authorize state, so every HAS_STATE output is rejected.
-            if (output.HasState()) {
-                error = "state-output-unauthorized";
-                return CandidateCheckResult::Invalid;
-            }
             if (!AddVmAssetTotal(tokens, output, false, error))
                 return CandidateCheckResult::Invalid;
         }
@@ -384,6 +378,10 @@ CandidateCheckResult VerifyOrdinaryUncached(
                        : CandidateCheckResult::Inconclusive;
         VmCostUnits invocation_cost = 0;
         BatchSigCollector tx_staged_sigs;
+        // Invocations run input-ascending, then witness-ascending, mints at
+        // their position. Effects are order-free (plan I-11), so the order
+        // only fixes which error is reported first.
+        VmTransactionEffects tx_effects;
         BatchSigCollector *collector_ptr =
             batch_sigs != nullptr ? &tx_staged_sigs : nullptr;
         for (size_t i = 0; i < tx.inputs.size(); ++i) {
@@ -399,8 +397,9 @@ CandidateCheckResult VerifyOrdinaryUncached(
             }
             for (size_t j = 0; j < input.witnesses.size(); ++j) {
                 const BranchWitness &witness = input.witnesses[j];
-                const auto context =
+                auto context =
                     prepared_vm.Invocation(i, j, delta, collector_ptr);
+                context.effects = &tx_effects;
                 const VmChargedResult vm = EvaluateVmCharged(
                     witness.script, witness.arguments, profile.vm,
                     prepared_vm.Cost(), uint16_t(tx.inputs.size()),
@@ -424,6 +423,8 @@ CandidateCheckResult VerifyOrdinaryUncached(
                 }
             }
         }
+        if (!FinalizeVmTransactionEffects(tx.outputs, tx_effects, error))
+            return CandidateCheckResult::Invalid;
         effects.txid = identities.txid;
         effects.txhash = identities.txhash;
         effects.serialized_bytes = wire_size;
