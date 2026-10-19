@@ -40,6 +40,11 @@ struct ConnmanTestMsg : public CConnman {
                    int32_t version, bool relay_txs)
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex);
 
+    Sock::EventsPerSock GenerateWaitSocketsForTest(Span<CNode *const> nodes) {
+        return GenerateWaitSockets(nodes);
+    }
+    void SocketHandlerForTest() { SocketHandler(); }
+
     void ProcessMessagesOnce(CNode &node)
         EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) {
         for (auto interface : m_msgproc) {
