@@ -177,6 +177,11 @@ public:
     virtual void Connect(const Block &block, WriteTxn *same_env_txn) = 0;
     virtual void Disconnect(const Block &block, WriteTxn *same_env_txn) = 0;
     virtual void RegisterRoutes(Router & /*router*/) {}
+    /**
+     * Called once at indexer startup, before any subscription: add the
+     * extension's subscription groups and the WsSub script types they serve
+     * (subs.h SubscriptionHub).
+     */
     virtual void RegisterWsScriptTypes(SubscriptionHub & /*hub*/) {}
     virtual void Close() {}
 };
