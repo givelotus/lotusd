@@ -4,6 +4,8 @@
 
 #include <rust/cxx.h>
 
+#include <cstdint>
+
 #ifndef BITCOIN_CHRONIK_CPP_CHRONIK_VALIDATIONINTERFACE_H
 #define BITCOIN_CHRONIK_CPP_CHRONIK_VALIDATIONINTERFACE_H
 
@@ -24,6 +26,8 @@ struct Binding;
 struct NativeBlock;
 
 Binding get_v2_binding(const chronik_bridge::ChronikBridge &bridge);
+/** Consensus block-size limit (largest valid block, in wire bytes). */
+uint32_t get_v2_max_block_bytes(const chronik_bridge::ChronikBridge &bridge);
 NativeBlock bridge_v2_native_block(const CBlock &block,
                                    const CBlockIndex &bindex);
 } // namespace chronik_v2

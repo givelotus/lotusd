@@ -21,12 +21,78 @@ use std::{
 
 /// Schema cannot share a legacy Chronik database directory.
 pub const SCHEMA_VERSION: u32 = 3;
-/// Maximum transactions accepted per committed batch.
-pub const MAX_TRANSACTIONS: usize = 4096;
-/// Maximum total created and consumed outputs in one batch.
-pub const MAX_CHANGES: usize = 65536;
-/// Bound on receipt, undo, and total write data respectively.
-pub const MAX_BATCH_BYTES: usize = 32 * 1024 * 1024;
+/// Shortest V2 transaction: the native codec rejects anything shorter (a
+/// 16-byte header and at least one input).
+pub const MIN_TX_WIRE_BYTES: usize = 58;
+/// Shortest V2 transaction header (version, lock, input and output counts).
+pub const MIN_TX_HEADER_WIRE_BYTES: usize = 16;
+/// Shortest V2 input (a coinbase input without data).
+pub const MIN_INPUT_WIRE_BYTES: usize = 42;
+/// Shortest V2 spend input (no witnesses).
+pub const MIN_SPEND_WIRE_BYTES: usize = 43;
+/// Shortest V2 output.
+pub const MIN_OUTPUT_WIRE_BYTES: usize = 43;
+/// Shortest V2 branch witness.
+pub const MIN_WITNESS_WIRE_BYTES: usize = 3;
+/// Staging reserved per wire byte of a block. Every per-element reservation
+/// of a connect (below and in `v2_explorer`), charged to the shortest wire
+/// encoding of its element, stays within it; see the
+/// `staging_covers_shortest_encodings` test.
+pub const STAGING_PER_WIRE_BYTE: usize = 1024;
+/// Staging reserved once per block (framing, checkpoint, header facts).
+pub const STAGING_PER_BLOCK: usize = 64 * 1024;
+/// Branch staging reserved per transaction.
+pub(crate) const RESERVE_TX: usize = 512;
+/// Asset staging reserved per output, spend and input.
+pub(crate) const RESERVE_ASSET_ELEMENT: usize = 8192;
+/// Branch staging reserved per spend: old/new records, undo and keys.
+pub(crate) const RESERVE_SPEND: usize = 6 * MAX_RECORD_BYTES + 1024;
+/// Branch staging reserved per output, plus `RESERVE_BRANCH` per branch.
+pub(crate) const RESERVE_OUTPUT: usize = 6 * MAX_RECORD_BYTES;
+/// Posting staging reserved per output branch (two postings).
+pub(crate) const RESERVE_BRANCH: usize = 2 * 512;
+
+/// Size bounds of the index, derived from the consensus block-size limit
+/// (the largest valid block's wire bytes). A block within that limit always
+/// fits them: its transaction count, its created and consumed outputs and
+/// the staging reserved for it are all bounded by its wire bytes. The memory
+/// of one connect is linear in the block's size, as it is for the node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bounds {
+    block_bytes: usize,
+}
+impl Bounds {
+    /// Largest supported block-size limit (hosts pass it in 32 bits).
+    pub const MAX_BLOCK_BYTES: u64 = u32::MAX as u64;
+    /// Bounds for blocks of at most `max_block_bytes` wire bytes.
+    pub fn new(max_block_bytes: u64) -> Result<Self> {
+        if max_block_bytes == 0 || max_block_bytes > Self::MAX_BLOCK_BYTES {
+            return Err(Error::Invalid("block size limit"));
+        }
+        Ok(Bounds {
+            block_bytes: max_block_bytes as usize,
+        })
+    }
+    /// Consensus block-size limit in wire bytes.
+    pub fn block_bytes(&self) -> usize {
+        self.block_bytes
+    }
+    /// Most transactions a block within the limit can hold.
+    pub fn transactions(&self) -> usize {
+        self.block_bytes / MIN_TX_WIRE_BYTES
+    }
+    /// Most created plus consumed outputs a block within the limit can hold.
+    pub fn changes(&self) -> usize {
+        self.block_bytes / MIN_INPUT_WIRE_BYTES
+    }
+    /// Bound on the staging reserved for one block within the limit, and on
+    /// its receipt, undo and write batch.
+    pub fn batch_bytes(&self) -> usize {
+        self.block_bytes
+            .saturating_mul(STAGING_PER_WIRE_BYTE)
+            .saturating_add(STAGING_PER_BLOCK)
+    }
+}
 
 /// Immutable deployment binding; all bytes are native V2 wire order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,10 +264,16 @@ struct Undo {
 pub struct V2Db {
     pub(crate) db: MdbxEnv,
     binding: Binding,
+    bounds: Bounds,
 }
 impl V2Db {
     /// Open or create a dedicated V2 directory; reject foreign/legacy schema.
-    pub fn open(path: impl AsRef<Path>, binding: Binding) -> Result<Self> {
+    /// `bounds` come from the consensus block-size limit.
+    pub fn open(
+        path: impl AsRef<Path>,
+        binding: Binding,
+        bounds: Bounds,
+    ) -> Result<Self> {
         let db = MdbxEnv::open(path)?;
         let identity = encode(&(SCHEMA_VERSION, binding))?;
         match db.get(b"v2-binding")? {
@@ -214,15 +286,23 @@ impl V2Db {
                 }
                 let mut batch = MdbxWriteBatch::default();
                 batch.put(b"v2-binding", identity);
-                write(&db, batch)?;
+                write(&db, batch, bounds)?;
             }
             _ => {}
         }
-        Ok(Self { db, binding })
+        Ok(Self {
+            db,
+            binding,
+            bounds,
+        })
     }
     /// Immutable deployment binding.
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+    /// Size bounds from the consensus block-size limit.
+    pub fn bounds(&self) -> Bounds {
+        self.bounds
     }
     /// Last fully indexed block; a new database has no checkpoint.
     pub fn checkpoint(&self) -> Result<Option<Anchor>> {
@@ -249,6 +329,7 @@ impl V2Db {
             inner,
             anchor,
             binding: self.binding,
+            bounds: self.bounds,
         })
     }
     /// Atomically index one committed child block. Exact tip replay is a no-op;
@@ -261,7 +342,8 @@ impl V2Db {
         block: &CommittedBlock,
         genesis: bool,
     ) -> Result<()> {
-        if block.transactions.len() > MAX_TRANSACTIONS {
+        let bounds = self.bounds;
+        if block.transactions.len() > bounds.transactions() {
             return Err(Error::Invalid("transaction bound"));
         }
         if (!genesis
@@ -281,30 +363,34 @@ impl V2Db {
         reserve(
             &mut reserved,
             crate::v2_explorer::preflight_explorer_block(block)?,
+            bounds,
         )?;
         for tx in &block.transactions {
-            reserve(&mut reserved, 512)?;
+            reserve(&mut reserved, RESERVE_TX, bounds)?;
             reserve(
                 &mut reserved,
                 tx.outputs
                     .len()
                     .checked_add(tx.spends.len())
                     .and_then(|n| n.checked_add(tx.explorer.inputs.len()))
-                    .and_then(|n| n.checked_mul(8192))
+                    .and_then(|n| n.checked_mul(RESERVE_ASSET_ELEMENT))
                     .ok_or(Error::Invalid("asset staging capacity"))?,
+                bounds,
             )?;
             reserve(
                 &mut reserved,
                 tx.spends
                     .len()
-                    .checked_mul(6 * MAX_RECORD_BYTES + 1024)
+                    .checked_mul(RESERVE_SPEND)
                     .ok_or(Error::Invalid("staging capacity"))?,
+                bounds,
             )?;
             for output in &tx.outputs {
                 output.validate().map_err(|_| Error::Invalid("output"))?;
                 reserve(
                     &mut reserved,
-                    6 * MAX_RECORD_BYTES + output.branches.len() * 2 * 512,
+                    RESERVE_OUTPUT + output.branches.len() * RESERVE_BRANCH,
+                    bounds,
                 )?;
             }
         }
@@ -316,7 +402,7 @@ impl V2Db {
                 .checked_add(tx.outputs.len())
                 .and_then(|n| n.checked_add(tx.spends.len()))
                 .ok_or(Error::Invalid("change bound"))?;
-            if changes > MAX_CHANGES {
+            if changes > bounds.changes() {
                 return Err(Error::Invalid("change bound"));
             }
             if tx.location.block_id.0 != block.anchor.block_id
@@ -357,7 +443,7 @@ impl V2Db {
         let block_key = key(b'b', &block.anchor.block_id);
         if tip == Some(block.anchor) {
             let stored = self.db.get(&block_key)?.ok_or(Error::Corrupt)?;
-            if stored.len() > MAX_BATCH_BYTES {
+            if stored.len() > bounds.batch_bytes() {
                 return Err(Error::Corrupt);
             }
             let (_, _, _, prior): (
@@ -514,7 +600,7 @@ impl V2Db {
         }
         let receipt =
             encode(&(block.anchor, block.parent, &block.explorer, receipt))?;
-        if receipt.len() > MAX_BATCH_BYTES {
+        if receipt.len() > bounds.batch_bytes() {
             return Err(Error::Invalid("receipt bound"));
         }
         let mut state: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
@@ -625,7 +711,7 @@ impl V2Db {
                 .iter()
                 .map(|(k, v)| k.len() + v.as_ref().map_or(0, Vec::len))
                 .sum::<usize>();
-        if size > MAX_BATCH_BYTES {
+        if size > bounds.batch_bytes() {
             return Err(Error::Invalid("batch bound"));
         }
         let mut synced_files = BTreeSet::new();
@@ -647,7 +733,7 @@ impl V2Db {
         batch.put(b"flat_pos", encode(&next_flat_pos)?);
         batch.put(b"tip", encode(&block.anchor)?);
         batch.delete(b"disconnected");
-        write(&self.db, batch)
+        write(&self.db, batch, bounds)
     }
     /// Atomically undo the current block, including outputs spent in that block.
     /// Repeating the immediately completed disconnect is idempotent.
@@ -668,11 +754,11 @@ impl V2Db {
             .db
             .get(key(b'u', &anchor.block_id))?
             .ok_or(Error::Invalid("missing undo"))?;
-        if bytes.len() > MAX_BATCH_BYTES {
+        if bytes.len() > self.bounds.batch_bytes() {
             return Err(Error::Corrupt);
         }
         let undo: Undo = decode(&bytes)?;
-        validate_undo(&self.db, self.binding, anchor, &undo)?;
+        validate_undo(&self.db, self.binding, self.bounds, anchor, &undo)?;
         let parent = undo.parent.ok_or(Error::Corrupt)?;
         let mut batch = MdbxWriteBatch::default();
         for (k, v) in undo.entries {
@@ -686,7 +772,7 @@ impl V2Db {
         batch.put(b"flat_pos", encode(&undo.prev_flat_pos)?);
         batch.put(b"tip", encode(&parent)?);
         batch.put(b"disconnected", encode(&anchor)?);
-        write(&self.db, batch)?;
+        write(&self.db, batch, self.bounds)?;
         self.db
             .flat()
             .truncate_to(undo.prev_flat_pos.0, undo.prev_flat_pos.1)?;
@@ -705,11 +791,11 @@ fn decode_record(bytes: &[u8]) -> Result<Record> {
     Output::decode(&record.output).map_err(|_| Error::Corrupt)?;
     Ok(record)
 }
-fn reserve(total: &mut usize, bytes: usize) -> Result<()> {
+fn reserve(total: &mut usize, bytes: usize, bounds: Bounds) -> Result<()> {
     *total = total
         .checked_add(bytes)
         .ok_or(Error::Invalid("staging capacity"))?;
-    if *total > MAX_BATCH_BYTES {
+    if *total > bounds.batch_bytes() {
         return Err(Error::Invalid("staging capacity"));
     }
     Ok(())
@@ -717,6 +803,7 @@ fn reserve(total: &mut usize, bytes: usize) -> Result<()> {
 fn validate_undo(
     db: &MdbxEnv,
     binding: Binding,
+    bounds: Bounds,
     anchor: Anchor,
     undo: &Undo,
 ) -> Result<()> {
@@ -725,12 +812,12 @@ fn validate_undo(
         || undo.anchor != anchor
         || parent.height.checked_add(1) != Some(anchor.height)
         || (parent.height == 0 && parent.block_id != binding.genesis)
-        || undo.entries.len() > MAX_BATCH_BYTES / 40
+        || undo.entries.len() > bounds.batch_bytes() / 40
     {
         return Err(Error::Corrupt);
     }
     let receipt = db.get(key(b'b', &anchor.block_id))?.ok_or(Error::Corrupt)?;
-    if receipt.len() > MAX_BATCH_BYTES {
+    if receipt.len() > bounds.batch_bytes() {
         return Err(Error::Corrupt);
     }
     let (recorded_anchor, recorded_parent, explorer, transactions): (
@@ -741,7 +828,7 @@ fn validate_undo(
     ) = decode(&receipt)?;
     if recorded_anchor != anchor
         || recorded_parent != parent
-        || transactions.len() > MAX_TRANSACTIONS
+        || transactions.len() > bounds.transactions()
     {
         return Err(Error::Corrupt);
     }
@@ -756,11 +843,12 @@ fn validate_undo(
         }
         reserve(
             &mut reservation,
-            512 + tx
-                .spends
-                .len()
-                .checked_mul(6 * MAX_RECORD_BYTES + 1024)
-                .ok_or(Error::Corrupt)?,
+            RESERVE_TX
+                + tx.spends
+                    .len()
+                    .checked_mul(RESERVE_SPEND)
+                    .ok_or(Error::Corrupt)?,
+            bounds,
         )
         .map_err(|_| Error::Corrupt)?;
         if !expected.insert(key(b't', &tx.location.txid)) {
@@ -779,7 +867,8 @@ fn validate_undo(
             let output = Output::decode(wire).map_err(|_| Error::Corrupt)?;
             reserve(
                 &mut reservation,
-                6 * MAX_RECORD_BYTES + output.branches.len() * 2 * 512,
+                RESERVE_OUTPUT + output.branches.len() * RESERVE_BRANCH,
+                bounds,
             )
             .map_err(|_| Error::Corrupt)?;
             let op = OutPoint {
@@ -805,7 +894,7 @@ fn validate_undo(
             .map(|tx| {
                 let wire_len =
                     usize::try_from(tx.wire_size).map_err(|_| Error::Corrupt)?;
-                if wire_len == 0 || wire_len > MAX_BATCH_BYTES {
+                if wire_len == 0 || wire_len > bounds.block_bytes() {
                     return Err(Error::Corrupt);
                 }
                 let wire = db
@@ -845,6 +934,7 @@ fn validate_undo(
     reserve(
         &mut reservation,
         crate::v2_explorer::preflight_explorer_block(&restored_block)?,
+        bounds,
     )
     .map_err(|_| Error::Corrupt)?;
     let order = processing_order(&restored_block.transactions);
@@ -1132,8 +1222,8 @@ fn asset_entries(
     }
     Ok(entries)
 }
-fn write(db: &MdbxEnv, batch: MdbxWriteBatch) -> Result<()> {
-    if batch.size_in_bytes() > MAX_BATCH_BYTES {
+fn write(db: &MdbxEnv, batch: MdbxWriteBatch, bounds: Bounds) -> Result<()> {
+    if batch.size_in_bytes() > bounds.batch_bytes() {
         return Err(Error::Invalid("serialized batch bound"));
     }
     db.write(batch)?;
@@ -1153,6 +1243,8 @@ pub struct ReadSnapshot<'a> {
     pub anchor: Anchor,
     /// Immutable schema deployment binding.
     pub binding: Binding,
+    /// Size bounds from the consensus block-size limit.
+    pub bounds: Bounds,
 }
 impl ReadSnapshot<'_> {
     /// Canonical transaction location owned by the original location index.
@@ -1378,6 +1470,10 @@ mod tests {
             profile: [3; 32],
         }
     }
+    /// The consensus default block-size limit.
+    fn bounds() -> Bounds {
+        Bounds::new(32_000_000).unwrap()
+    }
     fn output(root: u8, burn: bool) -> Output {
         Output {
             flags: if burn { 2 } else { 0 },
@@ -1435,7 +1531,7 @@ mod tests {
     fn schema3_complete_facts_atomic_replay_and_tamper() {
         use crate::{v2_asset as a, v2_explorer as e};
         let dir = tempdir::TempDir::new("v2-schema3").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.checkpoint().unwrap().unwrap();
         let mut token = output(5, false);
@@ -1649,14 +1745,14 @@ mod tests {
             .unwrap();
         drop(raw);
         assert!(matches!(
-            V2Db::open(dir.path(), binding()),
+            V2Db::open(dir.path(), binding(), bounds()),
             Err(Error::Invalid("binding/schema mismatch"))
         ));
     }
     #[test]
     fn restart_inverse_burns_and_replay() {
         let dir = tempdir::TempDir::new("v2-index").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let first = block(
@@ -1701,7 +1797,7 @@ mod tests {
         // Existing read snapshots remain coherent across disconnect.
         drop(anchored);
         drop(db);
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         assert_eq!(db.snapshot().unwrap().anchor, second.anchor);
         db.connect(&second).unwrap();
         db.disconnect(second.anchor).unwrap();
@@ -1728,7 +1824,8 @@ mod tests {
                 Binding {
                     profile: [4; 32],
                     ..binding()
-                }
+                },
+                bounds(),
             ),
             Err(Error::Invalid("binding/schema mismatch"))
         ));
@@ -1736,7 +1833,7 @@ mod tests {
     #[test]
     fn explicit_genesis_history_and_coins() {
         let dir = tempdir::TempDir::new("v2-genesis").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         assert_eq!(db.checkpoint().unwrap(), None);
         assert!(db.snapshot().is_err());
         let genesis = Anchor {
@@ -1775,7 +1872,7 @@ mod tests {
         assert!(db.disconnect(genesis).is_err());
         drop(db);
         assert_eq!(
-            V2Db::open(dir.path(), binding())
+            V2Db::open(dir.path(), binding(), bounds())
                 .unwrap()
                 .checkpoint()
                 .unwrap(),
@@ -1785,7 +1882,7 @@ mod tests {
     #[test]
     fn early_capacity_and_corrupt_storage_fail_closed() {
         let dir = tempdir::TempDir::new("v2-capacity").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.checkpoint().unwrap().unwrap();
         let wide = Output {
@@ -1793,11 +1890,23 @@ mod tests {
             paths: vec![vec![0]],
             ..output(5, false)
         };
+        // 2000 sixteen-branch outputs need more than a 32 KB block.
+        let small_dir = tempdir::TempDir::new("v2-capacity-small").unwrap();
+        let mut small = V2Db::open(
+            small_dir.path(),
+            binding(),
+            Bounds::new(32_768).unwrap(),
+        )
+        .unwrap();
+        small.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let oversized = block(genesis, 10, 20, vec![wide; 2000], vec![]);
         assert!(matches!(
-            db.connect(&oversized),
+            small.connect(&oversized),
             Err(Error::Invalid("staging capacity"))
         ));
+        assert_eq!(small.checkpoint().unwrap(), Some(genesis));
+        db.connect(&oversized).unwrap();
+        db.disconnect(oversized.anchor).unwrap();
         assert_eq!(db.checkpoint().unwrap(), Some(genesis));
         let first = block(genesis, 10, 20, vec![output(5, false)], vec![]);
         db.connect(&first).unwrap();
@@ -1829,7 +1938,7 @@ mod tests {
     #[test]
     fn complete_token_policy_and_sixteen_positions() {
         let dir = tempdir::TempDir::new("v2-policy").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let policy = Output {
@@ -1861,7 +1970,7 @@ mod tests {
     #[test]
     fn invalid_transitions_leave_checkpoint_unchanged() {
         let dir = tempdir::TempDir::new("v2-invalid").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let first = block(
@@ -1896,10 +2005,21 @@ mod tests {
         assert!(db.connect(&replay).is_err());
         let duplicate = block(first.anchor, 11, 20, vec![], vec![]);
         assert!(db.connect(&duplicate).is_err());
-        let mut overflow = block(first.anchor, 11, 22, vec![], vec![]);
-        overflow.transactions =
-            vec![overflow.transactions[0].clone(); MAX_TRANSACTIONS + 1];
-        assert!(db.connect(&overflow).is_err());
+        // More transactions than a block within the size limit can hold.
+        let small_dir = tempdir::TempDir::new("v2-small").unwrap();
+        let small_bounds = Bounds::new(4 * MIN_TX_WIRE_BYTES as u64).unwrap();
+        let mut small =
+            V2Db::open(small_dir.path(), binding(), small_bounds).unwrap();
+        small.initialize_genesis(fixture_genesis(vec![])).unwrap();
+        let mut overflow = block(genesis, 11, 22, vec![], vec![]);
+        overflow.transactions = vec![
+            overflow.transactions[0].clone();
+            small_bounds.transactions() + 1
+        ];
+        assert!(matches!(
+            small.connect(&overflow),
+            Err(Error::Invalid("transaction bound"))
+        ));
         assert!(db
             .snapshot()
             .unwrap()
@@ -1909,7 +2029,7 @@ mod tests {
     #[test]
     fn intra_block_spend_and_snapshot_isolation() {
         let dir = tempdir::TempDir::new("v2-intra").unwrap();
-        let mut db = V2Db::open(dir.path(), binding()).unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
         db.initialize_genesis(fixture_genesis(vec![])).unwrap();
         let genesis = db.snapshot().unwrap().anchor;
         let mut first = block(genesis, 10, 20, vec![output(5, false)], vec![]);
@@ -1950,6 +2070,132 @@ mod tests {
         db.disconnect(first.anchor).unwrap();
         assert!(db.snapshot().unwrap().output(op(20, 0)).unwrap().is_none());
         assert!(db.snapshot().unwrap().output(op(22, 0)).unwrap().is_none());
+    }
+    /// The staging reserved for any element, charged to its shortest wire
+    /// encoding, stays within STAGING_PER_WIRE_BYTE: a block within the
+    /// consensus size limit always fits `Bounds::batch_bytes`.
+    #[test]
+    fn staging_covers_shortest_encodings() {
+        use crate::v2_explorer as e;
+        // Charged to every wire byte: explorer entries and started chunks.
+        let per_byte = e::RESERVE_PER_WIRE_BYTE
+            + e::RESERVE_CHUNK.div_ceil(e::WIRE_CHUNK_BYTES);
+        let budget = STAGING_PER_WIRE_BYTE - per_byte;
+        let tx = RESERVE_TX + e::RESERVE_TX + e::RESERVE_CHUNK;
+        assert!(tx <= budget * MIN_TX_HEADER_WIRE_BYTES);
+        // A spend is an input, a spend and an asset element twice.
+        let spend =
+            2 * RESERVE_ASSET_ELEMENT + RESERVE_SPEND + e::RESERVE_INPUT;
+        assert!(spend <= budget * MIN_SPEND_WIRE_BYTES);
+        let input = RESERVE_ASSET_ELEMENT + e::RESERVE_INPUT;
+        assert!(input <= budget * MIN_INPUT_WIRE_BYTES);
+        assert!(e::RESERVE_WITNESS <= budget * MIN_WITNESS_WIRE_BYTES);
+        // The shortest output has one branch; each further one is 32 bytes.
+        let output = RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT + RESERVE_BRANCH;
+        assert!(output <= budget * MIN_OUTPUT_WIRE_BYTES);
+        assert!(RESERVE_BRANCH <= budget * 32);
+        assert!(1024 + e::RESERVE_BLOCK <= STAGING_PER_BLOCK);
+        let bounds = Bounds::new(32_000_000).unwrap();
+        assert_eq!(bounds.transactions(), 32_000_000 / MIN_TX_WIRE_BYTES);
+        assert_eq!(bounds.changes(), 32_000_000 / MIN_INPUT_WIRE_BYTES);
+        assert!(Bounds::new(0).is_err());
+        assert!(Bounds::new(Bounds::MAX_BLOCK_BYTES + 1).is_err());
+    }
+    /// A block over the former fixed bounds (4096 transactions, 32 MiB of
+    /// staging) but within the consensus size limit is indexed and undone.
+    #[test]
+    fn block_over_former_fixed_bounds_is_indexed() {
+        const TXS: u32 = 4100;
+        let dir = tempdir::TempDir::new("v2-large").unwrap();
+        let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
+        db.initialize_genesis(fixture_genesis(vec![])).unwrap();
+        let genesis = db.checkpoint().unwrap().unwrap();
+        let fan = block(
+            genesis,
+            10,
+            20,
+            vec![output(5, false); TXS as usize],
+            vec![],
+        );
+        db.connect(&fan).unwrap();
+        let anchor = Anchor {
+            block_id: [11; 32],
+            height: 2,
+        };
+        // Each spends one fan output to one output: the shortest
+        // encodings, as in a real block of this many transactions.
+        let wire_len = MIN_TX_HEADER_WIRE_BYTES
+            + MIN_SPEND_WIRE_BYTES
+            + MIN_WITNESS_WIRE_BYTES
+            + MIN_OUTPUT_WIRE_BYTES;
+        let txid = |i: u32| {
+            let mut id = [0x60; 32];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            TxId(Hash32(id))
+        };
+        let transactions: Vec<_> = (0..TXS)
+            .map(|i| {
+                let spends = vec![SpentInput {
+                    outpoint: op(20, i),
+                    input_index: 0,
+                }];
+                let outputs = vec![output(6, false)];
+                let mut explorer = fixture_facts(&spends, &outputs);
+                explorer.wire = vec![0; wire_len];
+                ConfirmedTx {
+                    location: TxLocation {
+                        block_id: Hash32(anchor.block_id),
+                        height: anchor.height,
+                        tx_index: i,
+                        txid: txid(i),
+                        txhash: TxHash(Hash32({
+                            let mut h = [0x61; 32];
+                            h[..4].copy_from_slice(&i.to_be_bytes());
+                            h
+                        })),
+                    },
+                    outputs,
+                    spends,
+                    explorer,
+                }
+            })
+            .collect();
+        let large = CommittedBlock {
+            anchor,
+            parent: fan.anchor,
+            explorer: fixture_header(anchor, fan.anchor),
+            transactions,
+        };
+        // Over the former bounds by count and by reserved staging.
+        assert!(large.transactions.len() > 4096);
+        assert!(
+            crate::v2_explorer::preflight_explorer_block(&large).unwrap()
+                > 32 * 1024 * 1024
+        );
+        assert!(TXS as usize * wire_len <= bounds().block_bytes());
+        db.connect(&large).unwrap();
+        assert_eq!(db.checkpoint().unwrap(), Some(anchor));
+        let snapshot = db.snapshot().unwrap();
+        for i in [0, TXS / 2, TXS - 1] {
+            let spent = snapshot.output(op(20, i)).unwrap().unwrap();
+            assert_eq!(spent.spend.unwrap().transaction.txid, txid(i));
+            let created = OutPoint {
+                txid: txid(i),
+                out_idx: 0,
+            };
+            assert!(snapshot.utxo(created).unwrap().is_some());
+        }
+        drop(snapshot);
+        db.disconnect(anchor).unwrap();
+        assert_eq!(db.checkpoint().unwrap(), Some(fan.anchor));
+        assert!(db
+            .snapshot()
+            .unwrap()
+            .output(op(20, TXS - 1))
+            .unwrap()
+            .unwrap()
+            .spend
+            .is_none());
     }
     /// Hosts may confirm blocks in canonical (txid) order, where a child
     /// precedes the in-block parent whose output it spends.
@@ -1992,7 +2238,7 @@ mod tests {
         // 0x40, 0x21.
         let connect = |canonical: bool| {
             let dir = tempdir::TempDir::new("v2-ctor").unwrap();
-            let mut db = V2Db::open(dir.path(), binding()).unwrap();
+            let mut db = V2Db::open(dir.path(), binding(), bounds()).unwrap();
             db.initialize_genesis(fixture_genesis(vec![])).unwrap();
             let genesis = db.checkpoint().unwrap().unwrap();
             let first = block(genesis, 10, 0x20, vec![token.clone()], vec![]);
@@ -2141,7 +2387,9 @@ mod crash_tests {
             transactions: vec![],
         };
         if let Some(path) = std::env::var_os(ENV) {
-            let mut db = V2Db::open(path, binding).unwrap();
+            let mut db =
+                V2Db::open(path, binding, Bounds::new(32_000_000).unwrap())
+                    .unwrap();
             db.initialize_genesis(fixture_genesis(vec![])).unwrap();
             db.connect(&block).unwrap();
             // Bypass Rust destructors: durability must come from the synced WAL.
@@ -2159,7 +2407,9 @@ mod crash_tests {
         .status()
         .unwrap();
         assert_eq!(status.code(), Some(77));
-        let mut db = V2Db::open(dir.path(), binding).unwrap();
+        let mut db =
+            V2Db::open(dir.path(), binding, Bounds::new(32_000_000).unwrap())
+                .unwrap();
         assert_eq!(db.snapshot().unwrap().anchor, block.anchor);
         db.connect(&block).unwrap();
         db.disconnect(block.anchor).unwrap();
