@@ -19,18 +19,17 @@ from test_framework.wallet import MiniWallet, getnewdestination
 
 
 class CoinStatsIndexTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.supports_cli = False
-        self.extra_args = [
-            [
-                "-noparkdeepreorg",
-            ],
-            [
-                "-coinstatsindex",
-            ],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    supports_cli = False
+    extra_args = [
+        [
+            "-noparkdeepreorg",
+        ],
+        [
+            "-coinstatsindex",
+        ],
+    ]
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])

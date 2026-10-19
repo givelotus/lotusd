@@ -41,14 +41,13 @@ def expected_messages(filename):
 
 
 class AsmapTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                # Do addrman checks on all operations.
-                "-checkaddrman=1"
-            ]
+    num_nodes = 1
+    extra_args = [
+        [
+            # Do addrman checks on all operations.
+            "-checkaddrman=1"
         ]
+    ]
 
     def fill_addrman(self, node_id):
         """Add 1 tried address to the addrman, followed by 1 new address."""

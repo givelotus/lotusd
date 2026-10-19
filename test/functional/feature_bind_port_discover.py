@@ -25,16 +25,15 @@ BIND_PORT = 31001
 
 
 class BindPortDiscoverTest(BitcoinTestFramework):
-    def set_test_params(self):
-        # Avoid any -bind= on the command line. Force the framework to avoid adding -bind=127.0.0.1.
-        self.setup_clean_chain = True
-        self.bind_to_localhost_only = False
-        self.extra_args = [
-            # bind on any
-            ["-discover", f"-port={BIND_PORT}"],
-            ["-discover", f"-bind={ADDR1}:{BIND_PORT}"],
-        ]
-        self.num_nodes = len(self.extra_args)
+    # Avoid any -bind= on the command line. Force the framework to avoid adding -bind=127.0.0.1.
+    setup_clean_chain = True
+    bind_to_localhost_only = False
+    extra_args = [
+        # bind on any
+        ["-discover", f"-port={BIND_PORT}"],
+        ["-discover", f"-bind={ADDR1}:{BIND_PORT}"],
+    ]
+    num_nodes = len(extra_args)
 
     def add_options(self, parser):
         parser.add_argument(

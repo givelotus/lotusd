@@ -18,9 +18,8 @@ class InitStressTest(BitcoinTestFramework):
     impair subsequent starts.
     """
 
-    def set_test_params(self):
-        self.setup_clean_chain = False
-        self.num_nodes = 1
+    setup_clean_chain = False
+    num_nodes = 1
 
     def run_test(self):
         """

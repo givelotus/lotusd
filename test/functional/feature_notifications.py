@@ -27,10 +27,9 @@ def notify_outputname(walletname, txid):
 
 
 class NotificationsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
+    num_nodes = 2
+    setup_clean_chain = True
+    noban_tx_relay = True
 
     def setup_network(self):
         self.wallet = "".join(

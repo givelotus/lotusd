@@ -66,16 +66,15 @@ def cltv_lock_to_height(fundtx, height=-1):
 
 
 class BIP65Test(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-acceptnonstdtxn=1",  # cltv_invalidate is nonstandard
-            ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-acceptnonstdtxn=1",  # cltv_invalidate is nonstandard
         ]
-        self.setup_clean_chain = True
-        self.rpc_timeout = 480
+    ]
+    setup_clean_chain = True
+    rpc_timeout = 480
 
     def run_test(self):
         peer = self.nodes[0].add_p2p_connection(P2PInterface())
