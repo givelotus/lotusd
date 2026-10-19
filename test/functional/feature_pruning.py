@@ -74,6 +74,8 @@ def calc_usage(blockdir):
 
 
 class PruneTest(BitcoinTestFramework):
+    extended = True
+
     setup_clean_chain = True
     num_nodes = 6
     supports_cli = False

@@ -16,6 +16,8 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheMiningPreconsensusTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 2
     noban_tx_relay = True
     extra_args = [

@@ -13,6 +13,8 @@ from test_framework.wallet import MiniWallet
 
 
 class P2PBlocksOnly(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 1
     extra_args = [["-blocksonly"]]
 

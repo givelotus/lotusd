@@ -27,6 +27,8 @@ def get_unspent(listunspent, amount):
 class RawTransactionsTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
+    extended = {"descriptors"}
+
     num_nodes = 4
     setup_clean_chain = True
     # This test isn't testing tx relay. Set whitelist on the peers for

@@ -31,6 +31,8 @@ GETAVAPROOFS_INTERVAL = 60
 
 
 class AvalancheRemoteProofsTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 2
     noban_tx_relay = True
     extra_args = [
