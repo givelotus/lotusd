@@ -31,12 +31,16 @@ pub struct OutPoint {
 /// spendability; burns also carry public roots.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Output {
-    /// Bit 0: token; bit 1: burn. All other bits must be zero.
+    /// Bit 0: token; bit 1: burn; bit 2: state. All other bits must be zero.
     pub flags: u8,
     /// Unsigned native/token quantity, including the full u64 range.
     pub value: u64,
     /// Nonzero exactly when the token flag is set; otherwise all zero.
     pub token_id: Hash32,
+    /// Nonzero exactly when the state flag is set; otherwise all zero. A
+    /// contract-defined commitment authorized by the creating transaction's
+    /// scripts (ENFORCEOUTPUT); never set on burns.
+    pub state_root: Hash32,
     /// Complete ordered, distinct public authorization roots.
     pub branches: Vec<Hash32>,
     /// Lexicographically ordered paths of strictly increasing branch indices.
@@ -44,7 +48,7 @@ pub struct Output {
 }
 
 /// Hard native framing bound, independent of stricter deployment profiles.
-pub const MAX_OUTPUT_BYTES: usize = 812;
+pub const MAX_OUTPUT_BYTES: usize = 844;
 /// Maximum branches and paths in the native output grammar.
 pub const MAX_OUTPUT_BRANCHES: usize = 16;
 
@@ -64,12 +68,26 @@ impl Output {
     pub fn is_burn(&self) -> bool {
         self.flags & 2 != 0
     }
+    /// Whether the output carries a 32-byte state root.
+    pub fn has_state(&self) -> bool {
+        self.flags & 4 != 0
+    }
 
     /// Check native output structure only, without coin or script validation.
     pub fn validate(&self) -> Result<()> {
         let fail = |category| Err(OutputError(category));
-        if self.flags & 0xfc != 0 {
+        if self.flags & 0xf8 != 0 {
             return fail("flags");
+        }
+        if self.has_state() {
+            if self.is_burn() {
+                return fail("burn state");
+            }
+            if self.state_root == Hash32::default() {
+                return fail("zero state root");
+            }
+        } else if self.state_root != Hash32::default() {
+            return fail("stateless root field");
         }
         if self.has_token() {
             if self.token_id == Hash32::default() {
@@ -118,6 +136,9 @@ impl Output {
         if self.has_token() {
             bytes.extend(self.token_id.0);
         }
+        if self.has_state() {
+            bytes.extend(self.state_root.0);
+        }
         // All CompactSize fields are bounded below 253, hence one byte.
         bytes.push(self.branches.len() as u8);
         for root in &self.branches {
@@ -142,7 +163,7 @@ impl Output {
         }
         let mut r = Reader(bytes);
         let flags = r.byte("truncated flags")?;
-        if flags & 0xfc != 0 {
+        if flags & 0xf8 != 0 {
             return Err(OutputError("flags"));
         }
         let value = u64::from_le_bytes(
@@ -150,6 +171,11 @@ impl Output {
         );
         let token_id = if flags & 1 != 0 {
             r.hash("truncated token")?
+        } else {
+            Hash32::default()
+        };
+        let state_root = if flags & 4 != 0 {
+            r.hash("truncated state root")?
         } else {
             Hash32::default()
         };
@@ -184,6 +210,7 @@ impl Output {
             flags,
             value,
             token_id,
+            state_root,
             branches,
             paths,
         };
@@ -315,6 +342,7 @@ mod tests {
             assert_eq!(output.encode().unwrap(), bytes, "{name}");
             assert_eq!(output.is_burn(), name.contains("burn"));
             assert_eq!(output.has_token(), name.contains("token"));
+            assert!(!output.has_state());
             if name == "token" {
                 assert_eq!(output.value, u64::MAX);
             }
@@ -338,6 +366,7 @@ mod tests {
             token_id: Hash32([1; 32]),
             branches: (0..16).map(|i| Hash32([i; 32])).collect(),
             paths: (0..16).map(|i| vec![i]).collect(),
+            ..Output::default()
         };
         assert_eq!(Output::decode(&output.encode().unwrap()).unwrap(), output);
         output.paths = vec![(0..16).collect()];
@@ -352,7 +381,7 @@ mod tests {
         output.branches[1] = output.branches[0];
         assert_eq!(output.validate(), Err(OutputError("duplicate branch")));
         assert_eq!(
-            Output::decode(&vec![0; 813]),
+            Output::decode(&vec![0; 845]),
             Err(OutputError("output bytes"))
         );
     }
@@ -362,7 +391,8 @@ mod tests {
         let base = Output::decode(&hex::decode(&fixtures()["native"]).unwrap())
             .unwrap();
         for (flags, token_id, expected) in [
-            (4, Hash32::default(), "flags"),
+            (8, Hash32::default(), "flags"),
+            (4, Hash32::default(), "zero state root"),
             (1, Hash32::default(), "zero token"),
             (0, Hash32([1; 32]), "native token field"),
             (2, Hash32::default(), "burn paths"),
@@ -411,7 +441,7 @@ mod tests {
     fn malformed_native_frames() {
         let bytes = hex::decode(&fixtures()["native"]).unwrap();
         for (offset, value, error) in [
-            (0, 4, "flags"),
+            (0, 8, "flags"),
             (9, 17, "branch count"),
             (9, 0, "path count"),
             (44, 1, "path index"),
@@ -427,5 +457,50 @@ mod tests {
         let mut burn = bytes;
         burn[0] = 2;
         assert_eq!(Output::decode(&burn), Err(OutputError("burn paths")));
+    }
+
+    #[test]
+    fn state_root_outputs() {
+        // Matches the C++ wire order: flags, value, token, state, branches.
+        let base = Output::decode(&hex::decode(&fixtures()["native"]).unwrap())
+            .unwrap();
+        let stateful = Output {
+            flags: 4,
+            state_root: Hash32([9; 32]),
+            ..base.clone()
+        };
+        let bytes = stateful.encode().unwrap();
+        assert_eq!(bytes.len(), base.encode().unwrap().len() + 32);
+        assert_eq!(&bytes[9..41], &[9; 32]);
+        assert_eq!(Output::decode(&bytes).unwrap(), stateful);
+        for end in 0..bytes.len() {
+            assert!(Output::decode(&bytes[..end]).is_err());
+        }
+        let token = Output {
+            flags: 5,
+            token_id: Hash32([1; 32]),
+            ..stateful.clone()
+        };
+        let bytes = token.encode().unwrap();
+        assert_eq!(&bytes[9..41], &[1; 32]);
+        assert_eq!(&bytes[41..73], &[9; 32]);
+        assert_eq!(Output::decode(&bytes).unwrap(), token);
+        assert_eq!(
+            Output {
+                flags: 0,
+                ..stateful.clone()
+            }
+            .validate(),
+            Err(OutputError("stateless root field"))
+        );
+        assert_eq!(
+            Output {
+                flags: 6,
+                paths: vec![],
+                ..stateful
+            }
+            .validate(),
+            Err(OutputError("burn state"))
+        );
     }
 }

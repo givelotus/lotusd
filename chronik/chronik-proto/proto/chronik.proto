@@ -195,6 +195,9 @@ message TxOutput {
     Token token = 5;
     // Data attached to this output by plugins
     map<string, PluginEntry> plugins = 6;
+    // Lotus V2: the 32-byte state root of a HAS_STATE output (native wire
+    // order), empty for every other output.
+    bytes state_root = 7;
 }
 
 // Data about a block which a Tx is in.
