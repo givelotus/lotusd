@@ -76,6 +76,17 @@ static bool CheckCoinbaseRules(const CTransaction &tx,
         return false;
     }
 
+    // A coinbase runs no script, so it can never authorize a HAS_STATE
+    // output.
+    if (tx.nVersion == 7) {
+        for (const auto &txout : tx.vout) {
+            if (txout.ToV2Output().HasState()) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-cb-state-output");
+            }
+        }
+    }
+
     if (tx.vin[0].nFlags == 2) {
         if (tx.vin[0].vCoinbaseData.size() > 8192 ||
             tx.vin[0].scriptSig.size() > 8192) {

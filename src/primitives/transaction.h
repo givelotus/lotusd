@@ -167,6 +167,8 @@ public:
     // Lotus V2 output fields
     uint8_t nFlags{0};
     uint256 tokenId{};
+    // Nonzero iff nFlags has HAS_STATE (0x04).
+    uint256 stateRoot{};
     std::vector<lotus::v2::Hash32> vBranches{};
     std::vector<std::vector<uint8_t>> vPaths{};
 
@@ -182,6 +184,7 @@ public:
         scriptPubKey.clear();
         nFlags = 0;
         tokenId.SetNull();
+        stateRoot.SetNull();
         vBranches.clear();
         vPaths.clear();
     }
@@ -201,13 +204,14 @@ public:
                 return true;
             }
             return (a.nFlags == b.nFlags && a.tokenId == b.tokenId &&
-                    a.vBranches == b.vBranches && a.vPaths == b.vPaths);
+                    a.stateRoot == b.stateRoot && a.vBranches == b.vBranches && a.vPaths == b.vPaths);
         }
         if (!a.vBranches.empty() || !b.vBranches.empty()) {
             const lotus::v2::Output va = a.ToV2Output();
             const lotus::v2::Output vb = b.ToV2Output();
             return va.flags == vb.flags && va.value == vb.value &&
-                   va.token_id == vb.token_id && va.branches == vb.branches &&
+                   va.token_id == vb.token_id &&
+                   va.state_root == vb.state_root && va.branches == vb.branches &&
                    va.paths == vb.paths;
         }
         return false;
@@ -389,7 +393,7 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
         for (uint16_t i = 0; i < out_count; ++i) {
             lotus::v2::Output out;
             s >> out.flags >> out.value;
-            if (out.flags & 0xfc) {
+            if ((out.flags & 0xf8) || (out.HasState() && out.IsBurn())) {
                 throw std::ios_base::failure("invalid V2 output flags");
             }
             if (out.HasToken()) {
@@ -398,6 +402,14 @@ inline void UnserializeTransaction(TxType &tx, Stream &s) {
                         "invalid V2 transaction framing: coinbase shape");
                 }
                 s.read(AsWritableBytes(Span{out.token_id.data(), 32}));
+            }
+            if (out.HasState()) {
+                // Coinbase runs no script, so it can never authorize state.
+                if (has_coinbase) {
+                    throw std::ios_base::failure(
+                        "invalid V2 transaction framing: coinbase shape");
+                }
+                s.read(AsWritableBytes(Span{out.state_root.data(), 32}));
             }
             const uint64_t branch_count = ReadCompactSize(s);
             if (branch_count == 0 ||
@@ -567,6 +579,9 @@ inline void SerializeTransaction(const TxType &tx, Stream &s) {
             s << txout.nFlags << val;
             if ((txout.nFlags & 1) != 0) {
                 s.write(AsBytes(Span{txout.tokenId.begin(), 32}));
+            }
+            if ((txout.nFlags & 4) != 0) {
+                s.write(AsBytes(Span{txout.stateRoot.begin(), 32}));
             }
             WriteCompactSize(s, txout.vBranches.size());
             for (const auto &b : txout.vBranches) {
