@@ -447,8 +447,25 @@ void ProfileCountCaps() {
     p.transaction.max_outputs = 257;
     CHECK(!ValidateOrdinaryProfile(p, error));
 }
+void InterimStateOutputReject() {
+    // Until transaction-scoped VM effects exist, no script can authorize a
+    // HAS_STATE output, so any such output is rejected.
+    Fixture fixture;
+    const auto profile = Profile();
+    auto tx = fixture.tx;
+    tx.outputs[0].flags = 4;
+    tx.outputs[0].state_root[0] = 0x33;
+    OrdinaryCandidateEffects effects;
+    std::string error;
+    CHECK(!CheckOrdinaryCandidate(tx, profile, fixture.chain, fixture.view,
+                                  effects, error));
+    CHECK(error == "state-output-unauthorized");
+    RejectWithoutMutation(tx, profile, fixture.view, fixture.chain);
+}
+
 int main() {
     ProfileCountCaps();
+    InterimStateOutputReject();
     LookupBoundary();
     ValidMintAndAccounting();
     InvalidAccountingAndCoverage();

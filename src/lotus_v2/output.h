@@ -17,12 +17,20 @@ using Hash32 = std::array<uint8_t, 32>;
 // caller.
 constexpr size_t MAX_OUTPUT_BRANCHES = 16;
 constexpr size_t MAX_OUTPUT_PATHS = 16;
-constexpr size_t MAX_OUTPUT_BYTES = 812;
+// 812 bytes for the largest stateless output plus a 32-byte state root.
+constexpr size_t MAX_OUTPUT_BYTES = 844;
+
+constexpr uint8_t OUTPUT_FLAG_HAS_TOKEN = 0x01;
+constexpr uint8_t OUTPUT_FLAG_IS_BURN = 0x02;
+constexpr uint8_t OUTPUT_FLAG_HAS_STATE = 0x04;
 
 struct Output {
     uint8_t flags = 0;
     uint64_t value = 0;
     Hash32 token_id{};
+    // Present on the wire iff HAS_STATE; must then be nonzero. A burn output
+    // cannot carry state.
+    Hash32 state_root{};
     std::vector<Hash32> branches;
     std::vector<std::vector<uint8_t>> paths;
     // State transfer only; EncodeOutput rejects this legacy representation.
@@ -30,6 +38,7 @@ struct Output {
 
     bool HasToken() const { return (flags & 1) != 0; }
     bool IsBurn() const { return (flags & 2) != 0; }
+    bool HasState() const { return (flags & 4) != 0; }
     bool operator==(const Output &) const = default;
 };
 

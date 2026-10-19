@@ -331,6 +331,12 @@ CandidateCheckResult VerifyOrdinaryUncached(
         size_t token_output_count = 0;
         for (const Output &output : tx.outputs) {
             token_output_count += output.HasToken();
+            // Interim: until transaction-scoped VM effects exist, no script
+            // can authorize state, so every HAS_STATE output is rejected.
+            if (output.HasState()) {
+                error = "state-output-unauthorized";
+                return CandidateCheckResult::Invalid;
+            }
             if (!AddAsset(tokens, native_outputs, output, error, false))
                 return CandidateCheckResult::Invalid;
         }

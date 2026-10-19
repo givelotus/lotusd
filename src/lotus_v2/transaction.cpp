@@ -281,8 +281,10 @@ namespace {
         const size_t begin = r.Offset();
         uint64_t flags, count, length;
         const uint8_t *unused;
-        if (!r.Integer(1, flags) || flags > 3 ||
-            !r.Take(8 + ((flags & 1) ? 32 : 0), unused)) {
+        if (!r.Integer(1, flags) || (flags & 0xf8) ||
+            !r.Take(8 + ((flags & OUTPUT_FLAG_HAS_TOKEN) ? 32 : 0) +
+                        ((flags & OUTPUT_FLAG_HAS_STATE) ? 32 : 0),
+                    unused)) {
             error = "output prefix";
             return false;
         }
@@ -365,7 +367,11 @@ bool EncodeTransaction(const Transaction &tx, const TxProfile &profile,
         if (tx.inputs.size() != 1 || tx.inputs[0].flags != 2 || tx.lock != 0 ||
             tx.outputs.empty() ||
             std::any_of(tx.outputs.begin(), tx.outputs.end(),
-                        [](const Output &o) { return o.HasToken(); })) {
+                        [](const Output &o) {
+                            // Coinbase runs no script: it can neither
+                            // mint tokens nor authorize state.
+                            return o.HasToken() || o.HasState();
+                        })) {
             error = "coinbase shape";
             return false;
         }

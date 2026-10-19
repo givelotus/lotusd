@@ -146,6 +146,7 @@ lotus::v2::Output CTxOut::ToV2Output() const {
         out.flags = nFlags;
         out.value = val;
         std::memcpy(out.token_id.data(), tokenId.begin(), 32);
+        std::memcpy(out.state_root.data(), stateRoot.begin(), 32);
         out.branches = vBranches;
         out.paths = vPaths;
         return out;
@@ -221,6 +222,7 @@ CTxOut CTxOut::FromV2Output(const lotus::v2::Output &o) {
     out.nValue = static_cast<int64_t>(o.value) * SATOSHI;
     out.nFlags = o.flags;
     std::memcpy(out.tokenId.begin(), o.token_id.data(), 32);
+    std::memcpy(out.stateRoot.begin(), o.state_root.data(), 32);
     PopulateV2ScriptPubKeyWire(o, out.scriptPubKey);
     out.vBranches = o.branches;
     out.vPaths = o.paths;
@@ -232,6 +234,7 @@ CTxOut CTxOut::FromV2Output(lotus::v2::Output &&o) {
     out.nValue = static_cast<int64_t>(o.value) * SATOSHI;
     out.nFlags = o.flags;
     std::memcpy(out.tokenId.begin(), o.token_id.data(), 32);
+    std::memcpy(out.stateRoot.begin(), o.state_root.data(), 32);
     PopulateV2ScriptPubKeyWire(o, out.scriptPubKey);
     out.vBranches = std::move(o.branches);
     out.vPaths = std::move(o.paths);
@@ -242,6 +245,7 @@ void AdaptLegacyOutputToV7(CTxOut &txout) {
     const lotus::v2::Output out = txout.ToV2Output();
     txout.nFlags = out.flags;
     std::memcpy(txout.tokenId.begin(), out.token_id.data(), 32);
+    std::memcpy(txout.stateRoot.begin(), out.state_root.data(), 32);
     txout.vBranches = out.branches;
     txout.vPaths = out.paths;
     if (txout.scriptPubKey.empty()) {
