@@ -244,6 +244,14 @@ public:
      */
     void SyncWithValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main);
 
+    /**
+     * Wait for the work that subscribers have already moved from the main
+     * queue to their own worker queues (SyncTransactionQueue()). Callers that
+     * have already drained the main queue use it to also cover subscribers
+     * that do not run on the scheduler thread.
+     */
+    void SyncSecondaryQueues() LOCKS_EXCLUDED(cs_main);
+
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *,
                          bool fInitialDownload);
     void TransactionAddedToMempool(const CTransactionRef &,
