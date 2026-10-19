@@ -4,6 +4,7 @@
 #include "field_size.h"
 #include "output_template.h"
 #include "tagged_hash.h"
+#include "vm_simulation.h"
 #include "vendor/blake3/blake3.h"
 
 #include <openssl/bn.h>
@@ -106,7 +107,8 @@ namespace {
     // of a success byte. When no success is present, it also gives full
     // instruction boundaries to the structural decoder.
     bool Scan(std::span<const uint8_t> script, const VmProfile &profile,
-              std::vector<Instruction> &instructions, bool genesis = false) {
+              std::vector<Instruction> &instructions, bool genesis = false,
+              bool simulation = false) {
         size_t pos = 0;
         while (pos < script.size()) {
             uint8_t op = script[pos++];
@@ -123,7 +125,8 @@ namespace {
             // EMITLOG is simulation-only and permanently invalid on-chain. It
             // rejects as soon as the scan reaches it, so a later success byte,
             // a skipped arm or an earlier RETURN cannot hide it.
-            if (op == OP_EMITLOG)
+            // Only the simulation evaluator executes it.
+            if (op == OP_EMITLOG && !simulation)
                 throw VmFailure("EMITLOG is invalid on-chain");
             if (!(genesis ? GenesisAssigned(op) : Assigned(op))) return true;
             size_t len = 0;
@@ -1138,6 +1141,8 @@ namespace {
         const VmExecutionContext *context;
         const PreparedSigningContext *prepared_signing;
         BatchSigCollector *batch_sigs;
+        // Set only by the simulation evaluator (vm_simulation.h).
+        detail::VmSimulationHooks *const simulation;
         std::span<const uint8_t> active_script;
         std::optional<Hash> cached_txid;
         std::optional<VmAssetTotalsMap> local_asset_totals;
@@ -1859,6 +1864,16 @@ namespace {
                             throw VmFailure("CHECKDATASIG algorithm");
                         if (message.size() != 32)
                             throw VmFailure("CHECKDATASIG message width");
+                        if (simulation && simulation->AssumeSignatures() &&
+                            !signature.empty()) {
+                            Hash digest;
+                            std::copy(message.begin(), message.end(),
+                                      digest.begin());
+                            simulation->SigningRequest(true, uint8_t(algorithm),
+                                                       key, digest);
+                            Push(Number(1));
+                            break;
+                        }
                         const bool valid =
                             algorithm == 0
                                 ? VerifyDataBip340(key, signature, message,
@@ -1994,6 +2009,18 @@ namespace {
                                             error))
                             throw VmFailure("CHECKSIG message unavailable",
                                             VmStatus::OperationalError);
+                        if (simulation && simulation->AssumeSignatures()) {
+                            secp256k1_xonly_pubkey parsed;
+                            if (key.size() != 32 ||
+                                !secp256k1_xonly_pubkey_parse(
+                                    secp256k1_context_static, &parsed,
+                                    key.data()))
+                                throw VmFailure("CHECKSIG wire encoding");
+                            simulation->SigningRequest(false, mode, key,
+                                                       message);
+                            if (op == 0xbb) Push(Number(1));
+                            break;
+                        }
                         if (batch_sigs) {
                             if (!batch_sigs->Add(key, signature, message))
                                 throw VmFailure("CHECKSIG wire encoding");
@@ -2206,6 +2233,19 @@ namespace {
                         Push(Number(ContinuesBranch(output, root)));
                         break;
                     }
+                    case 0x6c: { // EMITLOG (simulation only)
+                        if (!simulation)
+                            throw VmFailure("EMITLOG is invalid on-chain");
+                        const Int k = Numeric(Pop());
+                        if (k < 0 || k > Int(VM_EMITLOG_MAX_ITEMS))
+                            throw VmFailure("EMITLOG item count");
+                        Require(size_t(k));
+                        std::vector<VmBytes> items(static_cast<size_t>(k));
+                        for (size_t n = items.size(); n-- > 0;)
+                            items[n] = Pop();
+                        simulation->EmitLog(uint32_t(i), std::move(items));
+                        break;
+                    }
                     case 0xeb: { // ENFORCEOUTPUT
                         const Int claim = Numeric(Pop());
                         const VmBytes template_bytes = Pop();
@@ -2226,8 +2266,11 @@ namespace {
                             t.paths_mode == OutputTemplate::PATHS_INHERIT)
                             throw VmFailure("template inherit in mint");
                         uint64_t expected_value = t.value;
+                        std::vector<VmBytes> popped; // reported by simulation
                         if (t.value_mode == OutputTemplate::VALUE_FROM_STACK) {
-                            const Int value = Numeric(Pop());
+                            VmBytes raw = Pop();
+                            const Int value = Numeric(raw);
+                            popped.push_back(std::move(raw));
                             if (value < 0 || value > Int(UINT64_MAX))
                                 throw VmFailure("ENFORCEOUTPUT value range");
                             expected_value = uint64_t(value);
@@ -2246,6 +2289,7 @@ namespace {
                             Hash32 pinned;
                             std::copy(root.begin(), root.end(), pinned.begin());
                             pins.emplace_back(slot, pinned);
+                            popped.push_back(root);
                         }
                         Hash32 expected_state = t.state_root;
                         if (t.state_mode == OutputTemplate::STATE_STACK) {
@@ -2256,6 +2300,7 @@ namespace {
                                       expected_state.begin());
                             if (expected_state == Hash32{})
                                 throw VmFailure("ENFORCEOUTPUT zero state");
+                            popped.push_back(root);
                         }
                         const auto &outputs = ctx.tx.outputs;
                         size_t first = 0, last = outputs.size();
@@ -2267,7 +2312,9 @@ namespace {
                             last = first + 1;
                         } else if (t.output_mode ==
                                    OutputTemplate::OUTPUT_STACK) {
-                            first = Index(Numeric(Pop()), outputs.size());
+                            VmBytes raw = Pop();
+                            first = Index(Numeric(raw), outputs.size());
+                            popped.push_back(std::move(raw));
                             last = first + 1;
                         }
                         const Output *coin =
@@ -2359,6 +2406,82 @@ namespace {
                                 found = j;
                                 break;
                             }
+                        if (found == last && simulation &&
+                            t.output_mode == OutputTemplate::OUTPUT_FIRST) {
+                            // Constructive matching: a draft built from the
+                            // template, with placeholders for free slots.
+                            Output draft;
+                            std::vector<uint8_t> placeholders;
+                            draft.value =
+                                t.value_mode == OutputTemplate::OMIT
+                                    ? uint64_t(claim)
+                                    : expected_value;
+                            if (t.token_mode == OutputTemplate::TOKEN_SELF ||
+                                (t.token_mode == OutputTemplate::TOKEN_EXACT &&
+                                 t.token_id != Hash32{})) {
+                                draft.flags |= OUTPUT_FLAG_HAS_TOKEN;
+                                draft.token_id =
+                                    t.token_mode == OutputTemplate::TOKEN_SELF
+                                        ? self_root
+                                        : t.token_id;
+                            }
+                            const bool inherit =
+                                t.paths_mode == OutputTemplate::PATHS_INHERIT;
+                            size_t count = t.branch_count;
+                            if (inherit) count = coin->branches.size();
+                            if (!count) {
+                                count = 1;
+                                for (const auto &pin : pins)
+                                    count = std::max(count, pin.first + 1);
+                            }
+                            draft.branches.resize(count);
+                            for (size_t slot = 0; slot < count; ++slot) {
+                                const auto pin = std::find_if(
+                                    pins.begin(), pins.end(),
+                                    [&](const auto &p) {
+                                        return p.first == slot;
+                                    });
+                                if (pin != pins.end()) {
+                                    draft.branches[slot] = pin->second;
+                                } else if (inherit && !t.wildcard) {
+                                    draft.branches[slot] = coin->branches[slot];
+                                } else {
+                                    const std::array<uint8_t, 3> id{
+                                        uint8_t(outputs.size()),
+                                        uint8_t(outputs.size() >> 8),
+                                        uint8_t(slot)};
+                                    draft.branches[slot] = TaggedHash(
+                                        HashDomain::SimPlaceholder, id);
+                                    placeholders.push_back(uint8_t(slot));
+                                }
+                            }
+                            if (t.burn) {
+                                draft.flags |= OUTPUT_FLAG_IS_BURN;
+                            } else if (t.paths_mode ==
+                                       OutputTemplate::PATHS_EXPLICIT) {
+                                draft.paths = t.paths;
+                            } else if (inherit) {
+                                draft.paths = coin->paths;
+                            } else {
+                                draft.paths.emplace_back();
+                                for (size_t slot = 0; slot < count; ++slot)
+                                    draft.paths.back().push_back(
+                                        uint8_t(slot));
+                            }
+                            if (t.state_mode != OutputTemplate::STATE_NONE) {
+                                draft.flags |= OUTPUT_FLAG_HAS_STATE;
+                                draft.state_root = expected_state;
+                            }
+                            if (!matches(draft))
+                                throw VmFailure(
+                                    "ENFORCEOUTPUT draft cannot match template");
+                            found = simulation->AppendDraft(
+                                std::move(draft), template_bytes,
+                                std::move(popped), uint64_t(claim),
+                                std::move(placeholders));
+                            output_count = uint16_t(outputs.size());
+                            last = found + 1; // the draft is the match
+                        }
                         if (found == last)
                             throw VmFailure("ENFORCEOUTPUT no matching output");
                         // Order-free effects (I-11): record, never consume.
@@ -2514,11 +2637,13 @@ namespace {
                 const std::vector<VmBytes> &arguments,
                 const VmExecutionContext *context,
                 const PreparedSigningContext *prepared_signing,
-                BatchSigCollector *batch_sigs)
+                BatchSigCollector *batch_sigs,
+                detail::VmSimulationHooks *simulation)
             : code(code), profile(profile), cost_profile(cost_profile),
               input_count(input_count), output_count(output_count),
               context(context), prepared_signing(prepared_signing),
-              batch_sigs(batch_sigs), active_script(script),
+              batch_sigs(batch_sigs), simulation(simulation),
+              active_script(script),
               mint_count(context && context->prepared ? context->prepared->MintCount() :
                          context ? std::count_if(
                                        context->tx.inputs.begin(),
@@ -2796,7 +2921,8 @@ VmResult EvaluateVmImpl(std::span<const uint8_t> script,
                         const VmExecutionContext *context,
                         const VmCostProfile *cost_profile,
                         VmCostUnits *charged_cost,
-                        BatchSigCollector *batch_sigs) {
+                        BatchSigCollector *batch_sigs,
+                        detail::VmSimulationHooks *simulation = nullptr) {
     try {
         if (!profile.max_script_bytes || !profile.max_element_bytes ||
             profile.max_element_bytes > VM_HARD_ELEMENT_BYTES ||
@@ -2905,7 +3031,7 @@ VmResult EvaluateVmImpl(std::span<const uint8_t> script,
         code.reserve(8);
         const VmCostUnits exec_structural =
             RawMul(script.size(), exec_cost_profile.structural_byte_cost);
-        if (Scan(script, profile, code)) {
+        if (Scan(script, profile, code, false, simulation != nullptr)) {
             if (cost_profile) {
                 const auto cost =
                     CostMul(script.size(), cost_profile->structural_byte_cost,
@@ -2940,7 +3066,7 @@ VmResult EvaluateVmImpl(std::span<const uint8_t> script,
         BatchSigCollector staged_sigs;
         Machine machine(code, script, profile, exec_cost_profile, input_count,
                         output_count, arguments, context, prepared_signing,
-                        target_sigs ? &staged_sigs : nullptr);
+                        target_sigs ? &staged_sigs : nullptr, simulation);
         try {
             auto final_stack = machine.Run();
             if (target_sigs) {
@@ -3005,5 +3131,18 @@ VmChargedResult EvaluateVmCharged(std::span<const uint8_t> script,
                        context, &cost_profile, &cost, batch_sigs);
     return {std::move(invocation), cost, cost, cost != 0};
 }
+namespace detail {
+    VmResult EvaluateVmSimulationInvocation(
+        std::span<const uint8_t> script, const std::vector<VmBytes> &arguments,
+        const VmProfile &profile, const VmExecutionContext &context,
+        VmSimulationHooks &hooks) {
+        if (context.tx.inputs.size() > UINT16_MAX ||
+            context.tx.outputs.size() > UINT16_MAX)
+            return {VmStatus::Invalid, "transaction count width", {}};
+        return EvaluateVmImpl(script, arguments, profile,
+                              uint16_t(context.tx.inputs.size()),
+                              uint16_t(context.tx.outputs.size()), &context,
+                              nullptr, nullptr, nullptr, &hooks);
+    }
+} // namespace detail
 } // namespace lotus::v2
-
