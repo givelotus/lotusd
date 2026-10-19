@@ -80,6 +80,13 @@ public:
                 std::string &out) const override;
 };
 
+/** Google Cloud agent JSON with recognized severity/source location keys. */
+class JsonGcpEncoder final : public LogEncoder {
+public:
+    void Encode(const LogLine &line, const LogOptions &opts,
+                std::string &out) const override;
+};
+
 /** Logfmt with JSON-compatible quoted string values (one physical line). */
 class LogfmtEncoder final : public LogEncoder {
 public:
