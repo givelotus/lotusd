@@ -108,7 +108,8 @@ gen_asmap_headers(ASMAP_HEADERS
 	data/asmap.raw
 )
 
-if(BUILD_CHRONIK)
+# The bridge tests exercise the Rust implementation's C++ bridge.
+if(BUILD_CHRONIK AND NOT CHRONIK_IMPLEMENTATION STREQUAL "native")
 	set(BITCOIN_CHRONIK_TESTS
 		../../chronik/test/bridgecompression_tests.cpp
 		../../chronik/test/bridgeprimitives_tests.cpp
