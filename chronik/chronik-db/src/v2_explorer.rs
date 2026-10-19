@@ -2,9 +2,7 @@
 //! append-only flat segment files (`(file_num, data_pos, wire_size)` pointers).
 //! Only the V2 DB owner commits these entries, together with its receipt,
 //! checkpoint and undo.
-use crate::v2_branch::{
-    Anchor, CommittedBlock, Error, ReadSnapshot, MAX_BATCH_BYTES,
-};
+use crate::v2_branch::{Anchor, CommittedBlock, Error, ReadSnapshot};
 use bitcoinsuite_core::lotus_v2::{
     Hash32, OutPoint, Output, TxHash, TxId, TxLocation,
 };
@@ -17,6 +15,18 @@ pub const WIRE_CHUNK_BYTES: usize = 32768;
 pub const HEADER_BYTES: usize = 134;
 /// Maximum serialized individual metadata record.
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// Explorer staging reserved once per block.
+pub(crate) const RESERVE_BLOCK: usize = 4096;
+/// Explorer staging reserved per wire byte (entries and flat-file staging).
+pub(crate) const RESERVE_PER_WIRE_BYTE: usize = 6;
+/// Explorer staging reserved per transaction.
+pub(crate) const RESERVE_TX: usize = 4096;
+/// Explorer staging reserved per input.
+pub(crate) const RESERVE_INPUT: usize = 8192;
+/// Explorer staging reserved per branch witness.
+pub(crate) const RESERVE_WITNESS: usize = 2048;
+/// Explorer staging reserved per started wire chunk.
+pub(crate) const RESERVE_CHUNK: usize = 1024;
 
 /// Serde adapters preserve native digest order and typed identities.
 pub mod native_serde {
@@ -351,38 +361,38 @@ pub fn witness_key(id: TxId, input: u32, index: u32) -> Vec<u8> {
 fn add_size(total: &mut usize, amount: usize) -> Result<()> {
     *total = total
         .checked_add(amount)
-        .filter(|n| *n <= MAX_BATCH_BYTES)
         .ok_or(Error::Invalid("explorer batch bound"))?;
     Ok(())
 }
 /// Conservative reservation before any planner allocation. Accounts for entries,
-/// flat-file write staging, vector objects and fixed per-record overhead.
+/// flat-file write staging, vector objects and fixed per-record overhead. The
+/// block's owner checks it against the index bounds (`v2_branch::Bounds`).
 pub fn preflight_explorer_block(block: &CommittedBlock) -> Result<usize> {
-    let mut size = 4096;
+    let mut size = RESERVE_BLOCK;
     for tx in &block.transactions {
         add_size(
             &mut size,
             tx.explorer
                 .wire
                 .len()
-                .checked_mul(6)
+                .checked_mul(RESERVE_PER_WIRE_BYTE)
                 .ok_or(Error::Invalid("wire bound"))?,
         )?;
-        add_size(&mut size, 4096)?;
+        add_size(&mut size, RESERVE_TX)?;
         for input in &tx.explorer.inputs {
-            add_size(&mut size, 8192)?;
+            add_size(&mut size, RESERVE_INPUT)?;
             add_size(
                 &mut size,
                 input
                     .witnesses
                     .len()
-                    .checked_mul(2048)
+                    .checked_mul(RESERVE_WITNESS)
                     .ok_or(Error::Invalid("witness bound"))?,
             )?;
         }
         add_size(
             &mut size,
-            (tx.explorer.wire.len() / WIRE_CHUNK_BYTES + 1) * 1024,
+            (tx.explorer.wire.len() / WIRE_CHUNK_BYTES + 1) * RESERVE_CHUNK,
         )?;
     }
     Ok(size)
@@ -684,7 +694,7 @@ impl ReadSnapshot<'_> {
         if meta.input_count > 65535
             || meta.output_count > 65535
             || meta.wire_size == 0
-            || meta.wire_size > MAX_BATCH_BYTES as u64
+            || meta.wire_size > self.bounds.block_bytes() as u64
         {
             return Err(Error::Corrupt);
         }
