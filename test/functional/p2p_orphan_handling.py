@@ -200,7 +200,10 @@ class OrphanHandlingTest(BitcoinTestFramework):
         # inputs. Its parent should not be requested because its txid has been
         # added to the rejection filter.
         with node.assert_debug_log(
-            [f"not keeping orphan with rejected parents {child['txid']}"]
+            [
+                f"not keeping orphan with rejected parents {child['txid']}",
+                {"event": "relay_orphan_rejected_parents", "txid": child["txid"]},
+            ]
         ):
             self.relay_transaction(peer2, child["tx"])
         assert child["txid"] not in node.getrawmempool()
