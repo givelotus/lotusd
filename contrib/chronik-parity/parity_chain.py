@@ -1194,8 +1194,28 @@ class ParityChain(BitcoinTestFramework):
                     raise AssertionError(f"chronik not synced: {t} vs {(tip, height)}, "
                                          f"mempool {n_mem} vs {len(ma)}")
                 time.sleep(0.05)
+            if self.v2:
+                self.wait_v2_ready(ep, tip, height, deadline)
             ep.close()
         return ma
+
+    def wait_v2_ready(self, ep, tip, height, deadline):
+        """The V2 index service must be ready at the tip: both implementations
+        stopping at the same block (e.g. on a V2 index error) would otherwise
+        compare equal."""
+        while True:
+            resp = ep.request({"method": "GET", "path": "/v2/status", "headers": {}})
+            status = None
+            if resp.get("status") == 200:
+                status = json.loads(resp["body_bytes"])
+                snap = status.get("snapshot", {})
+                if (status.get("ready") and snap.get("height") == str(height)
+                        and snap.get("tip") in (tip, bytes.fromhex(tip)[::-1].hex())):
+                    return
+            if time.time() > deadline:
+                raise AssertionError(f"V2 index service not ready at {height} "
+                                     f"{tip}: {resp.get('status')} {status}")
+            time.sleep(0.05)
 
     def collect_record(self, mempool):
         a = self.a
