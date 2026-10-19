@@ -5,6 +5,18 @@ Bitcoin ABC version 0.34.1 is now available from:
   <https://download.bitcoinabc.org/0.34.1/>
 
 This release includes the following features and fixes:
+- Wallets receive chain notifications (blocks, mempool transactions and chain
+  state flushes) on a per-wallet worker thread instead of the validation
+  scheduler thread, in the same order as before. A wallet that is busy, for
+  example during a long rescan, no longer delays notifications to the rest of
+  the node until its bounded queue fills. RPCs that wait for wallet
+  notifications (`sendrawtransaction`, `submitpackage` and wallet RPCs that
+  sync to the chain) also wait for this worker.
+- `unloadwallet` now waits until the wallet has processed the notifications
+  already queued for it.
+- An error while a wallet processes a chain notification now shuts the node
+  down cleanly instead of aborting it. The wallet rescans from its last flushed
+  best block on restart.
 - Add new format string placeholders for `walletnotify`:
   - `%b` - the hash of the block containting the transaction (`unconfirmed` if a mempool transaction)
   - `%h` - the height of the block containing the transaction (`-1` if a mempool transaction)
