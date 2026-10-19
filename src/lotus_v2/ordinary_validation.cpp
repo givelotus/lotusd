@@ -253,7 +253,8 @@ bool CheckOrdinaryLocks(const Transaction &tx, const std::vector<Coin> &spent,
 bool ValidateOrdinaryProfile(const OrdinaryCandidateProfile &profile,
                              std::string &error) {
     const auto &p = profile.transaction;
-    if (!p.max_inputs || p.max_inputs > 65535 || p.max_outputs > 65535 ||
+    if (!p.max_inputs || p.max_inputs > MAX_TX_INPUTS ||
+        p.max_outputs > MAX_TX_OUTPUTS ||
         p.max_mints > p.max_inputs || p.max_arguments > 65535 ||
         p.max_argument_bytes > VM_HARD_ELEMENT_BYTES ||
         p.max_branch_proof_depth > 64 || !profile.candidate_height ||

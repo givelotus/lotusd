@@ -435,7 +435,20 @@ void LookupBoundary() {
 
 } // namespace
 
+// Ordinary profiles may tighten, never loosen, the 256 input/output caps.
+void ProfileCountCaps() {
+    std::string error;
+    auto p = Profile();
+    p.transaction.max_inputs = p.transaction.max_outputs = 256;
+    CHECK(ValidateOrdinaryProfile(p, error));
+    p.transaction.max_inputs = 257;
+    CHECK(!ValidateOrdinaryProfile(p, error));
+    p.transaction.max_inputs = 256;
+    p.transaction.max_outputs = 257;
+    CHECK(!ValidateOrdinaryProfile(p, error));
+}
 int main() {
+    ProfileCountCaps();
     LookupBoundary();
     ValidMintAndAccounting();
     InvalidAccountingAndCoverage();
