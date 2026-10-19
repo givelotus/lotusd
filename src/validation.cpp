@@ -2977,7 +2977,8 @@ bool ChainstateManager::IsInitialBlockDownload() const {
     if (chain.Tip()->Time() < Now<NodeSeconds>() - m_options.max_tip_age) {
         return true;
     }
-    LogPrintf("Leaving InitialBlockDownload (latching to false)\n");
+    LogInfoEvent(BCLog::ALL, "initial_download_finished",
+                 "Leaving InitialBlockDownload (latching to false)");
     m_cached_finished_ibd.store(true, std::memory_order_relaxed);
     if (auto *metrics{node::GetNodeMetrics()}) {
         metrics->initial_block_download.Set(0);
@@ -3373,7 +3374,8 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock &block,
     AssertLockHeld(::cs_main);
     CBlockUndo blockUndo;
     if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {
-        LogError("DisconnectBlock(): failure reading undo data\n");
+        LogErrorEvent(BCLog::ALL, "disconnect_undo_read_failed",
+                      "DisconnectBlock(): failure reading undo data");
         return DisconnectResult::FAILED;
     }
 
@@ -3386,7 +3388,8 @@ DisconnectResult ApplyBlockUndo(CBlockUndo &&blockUndo, const CBlock &block,
     bool fClean = true;
 
     if (blockUndo.vtxundo.size() + 1 != block.vtx.size()) {
-        LogError("DisconnectBlock(): block and undo data inconsistent\n");
+        LogErrorEvent(BCLog::ALL, "disconnect_block_undo_inconsistent",
+                      "DisconnectBlock(): block and undo data inconsistent");
         return DisconnectResult::FAILED;
     }
 
@@ -3395,8 +3398,9 @@ DisconnectResult ApplyBlockUndo(CBlockUndo &&blockUndo, const CBlock &block,
         const CTransaction &tx = *(block.vtx[i]);
         CTxUndo &txundo = blockUndo.vtxundo[i - 1];
         if (txundo.vprevout.size() != tx.vin.size()) {
-            LogError(
-                "DisconnectBlock(): transaction and undo data inconsistent\n");
+            LogErrorEvent(
+                BCLog::ALL, "disconnect_transaction_undo_inconsistent",
+                "DisconnectBlock(): transaction and undo data inconsistent");
             return DisconnectResult::FAILED;
         }
 
@@ -4548,7 +4552,8 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
     std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
     CBlock &block = *pblock;
     if (!m_blockman.ReadBlock(block, *pindexDelete)) {
-        LogError("DisconnectTip(): Failed to read block\n");
+        LogErrorEvent(BCLog::ALL, "disconnect_tip_read_failed",
+                      "DisconnectTip(): Failed to read block");
         return false;
     }
 
@@ -4597,8 +4602,8 @@ bool Chainstate::DisconnectTip(BlockValidationState &state,
         if (pindexDelete->pprev != nullptr &&
             GetNextBlockScriptFlags(pindexDelete, m_chainman) !=
                 GetNextBlockScriptFlags(pindexDelete->pprev, m_chainman)) {
-            LogDebug(BCLog::MEMPOOL,
-                     "Disconnecting mempool due to rewind of upgrade block\n");
+            LogEvent(BCLog::MEMPOOL, "mempool_upgrade_rewind",
+                     "Disconnecting mempool due to rewind of upgrade block");
             if (disconnectpool) {
                 disconnectpool->importMempool(*m_mempool);
             }
@@ -4814,9 +4819,9 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         if (pindexNew->pprev != nullptr &&
             GetNextBlockScriptFlags(pindexNew, m_chainman) !=
                 GetNextBlockScriptFlags(pindexNew->pprev, m_chainman)) {
-            LogDebug(
-                BCLog::MEMPOOL,
-                "Disconnecting mempool due to acceptance of upgrade block\n");
+            LogEvent(
+                BCLog::MEMPOOL, "mempool_upgrade_accepted",
+                "Disconnecting mempool due to acceptance of upgrade block");
             disconnectpool.importMempool(*m_mempool);
         }
         {
@@ -5232,9 +5237,9 @@ bool Chainstate::ActivateBestChainStep(
             // even if disconnectpool is empty. The disconnectpool may also be
             // non-empty if the mempool was imported due to new validation rules
             // being in effect.
-            LogDebug(BCLog::MEMPOOL,
-                     "Updating mempool due to reorganization or "
-                     "rules upgrade/downgrade\n");
+            LogEvent(BCLog::MEMPOOL, "mempool_reorg_update",
+                     "Updating mempool due to reorganization or rules "
+                     "upgrade/downgrade");
             disconnectpool.updateMempoolForReorg(*this, true, *m_mempool);
         }
 
@@ -7153,7 +7158,8 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
     int reportDone = 0;
     bool skipped_no_block_data{false};
     bool skipped_l3_checks{false};
-    LogPrintf("Verification progress: 0%%\n");
+    LogInfoEvent(BCLog::ALL, "chain_verification_started",
+                 "Verification progress: 0%");
 
     const bool is_snapshot_cs{chainstate.m_from_snapshot_blockhash};
 
@@ -7267,8 +7273,9 @@ VerifyDBResult CVerifyDB::VerifyDB(Chainstate &chainstate,
         return VerifyDBResult::CORRUPTED_BLOCK_DB;
     }
     if (skipped_l3_checks) {
-        LogPrintf("Skipped verification of level >=3 (insufficient database "
-                  "cache size). Consider increasing -dbcache.\n");
+        LogInfoEvent(BCLog::ALL, "chain_verification_cache_limited",
+                     "Skipped verification of level >=3 (insufficient database "
+                     "cache size). Consider increasing -dbcache.");
     }
 
     // store block count as we move pindex at check level >= 4
@@ -7368,12 +7375,13 @@ bool Chainstate::ReplayBlocks() {
         return true;
     }
     if (hashHeads.size() != 2) {
-        LogError("ReplayBlocks(): unknown inconsistent state\n");
+        LogErrorEvent(BCLog::ALL, "replay_state_unknown",
+                      "ReplayBlocks(): unknown inconsistent state");
         return false;
     }
 
     m_chainman.GetNotifications().progress(_("Replaying blocks…"), 0, false);
-    LogPrintf("Replaying blocks\n");
+    LogInfoEvent(BCLog::ALL, "chain_replay_started", "Replaying blocks");
 
     // Old tip during the interrupted flush.
     const CBlockIndex *pindexOld = nullptr;
@@ -7383,7 +7391,9 @@ bool Chainstate::ReplayBlocks() {
     const CBlockIndex *pindexFork = nullptr;
 
     if (m_blockman.m_block_index.count(hashHeads[0]) == 0) {
-        LogError("ReplayBlocks(): reorganization to unknown block requested\n");
+        LogErrorEvent(
+            BCLog::ALL, "replay_target_unknown",
+            "ReplayBlocks(): reorganization to unknown block requested");
         return false;
     }
 
@@ -7392,8 +7402,9 @@ bool Chainstate::ReplayBlocks() {
     if (!hashHeads[1].IsNull()) {
         // The old tip is allowed to be 0, indicating it's the first flush.
         if (m_blockman.m_block_index.count(hashHeads[1]) == 0) {
-            LogError("ReplayBlocks(): reorganization from unknown block "
-                     "requested\n");
+            LogErrorEvent(
+                BCLog::ALL, "replay_source_unknown",
+                "ReplayBlocks(): reorganization from unknown block requested");
             return false;
         }
 
@@ -7545,7 +7556,8 @@ bool ChainstateManager::LoadRecentHeadersTime(const fs::path &filePath) {
     FILE *filestr = fsbridge::fopen(filePath, "rb");
     AutoFile file{filestr};
     if (file.IsNull()) {
-        LogPrintf("Failed to open header times from disk, skipping.\n");
+        LogInfoEvent(BCLog::ALL, "header_times_read_failed",
+                     "Failed to open header times from disk, skipping.");
         return false;
     }
 
@@ -7554,7 +7566,8 @@ bool ChainstateManager::LoadRecentHeadersTime(const fs::path &filePath) {
         file >> version;
 
         if (version != HEADERS_TIME_VERSION) {
-            LogPrintf("Unsupported header times file version, skipping.\n");
+            LogInfoEvent(BCLog::ALL, "header_times_version_unsupported",
+                         "Unsupported header times file version, skipping.");
             return false;
         }
 
@@ -8771,8 +8784,9 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
     // staging a snapshot that isn't actually usable.
     if (WITH_LOCK(::cs_main, return !CBlockIndexWorkComparator()(
                                  ActiveTip(), snapshot_start_block))) {
-        LogPrintf("[snapshot] activation failed - work does not exceed active "
-                  "chainstate\n");
+        LogInfoEvent(BCLog::ALL, "snapshot_activation_insufficient_work",
+                     "[snapshot] activation failed - work does not exceed "
+                     "active chainstate");
         return false;
     }
 
@@ -8791,8 +8805,9 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
             coins_per_txid = ReadCompactSize(coins_file);
 
             if (coins_per_txid > coins_left) {
-                LogPrintf("[snapshot] mismatch in coins count in snapshot "
-                          "metadata and actual snapshot data\n");
+                LogInfoEvent(BCLog::ALL, "snapshot_coins_count_mismatch",
+                             "[snapshot] mismatch in coins count in snapshot "
+                             "metadata and actual snapshot data");
                 return false;
             }
 
@@ -8914,7 +8929,8 @@ bool ChainstateManager::PopulateAndValidateSnapshot(
         return false;
     }
     if (!maybe_stats.has_value()) {
-        LogPrintf("[snapshot] failed to generate coins stats\n");
+        LogInfoEvent(BCLog::ALL, "snapshot_coins_stats_failed",
+                     "[snapshot] failed to generate coins stats");
         return false;
     }
 
@@ -9018,8 +9034,9 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
             snapshot_base_height, PACKAGE_BUGREPORT);
 
         LogPrintf("[snapshot] !!! %s\n", user_error.original);
-        LogPrintf("[snapshot] deleting snapshot, reverting to validated chain, "
-                  "and stopping node\n");
+        LogInfoEvent(BCLog::ALL, "snapshot_validation_reverting",
+                     "[snapshot] deleting snapshot, reverting to validated "
+                     "chain, and stopping node");
 
         m_active_chainstate = m_ibd_chainstate.get();
         InvalidateChainstateRpcSnapshot(*this);
@@ -9070,9 +9087,9 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
 
     const AssumeutxoData &au_data = *maybe_au_data;
     std::optional<CCoinsStats> maybe_ibd_stats;
-    LogPrintf(
-        "[snapshot] computing UTXO stats for background chainstate to validate "
-        "snapshot - this could take a few minutes\n");
+    LogInfoEvent(BCLog::ALL, "snapshot_background_stats_started",
+                 "[snapshot] computing UTXO stats for background chainstate to "
+                 "validate snapshot - this could take a few minutes");
     try {
         maybe_ibd_stats =
             ComputeUTXOStats(CoinStatsHashType::HASH_SERIALIZED, &ibd_coins_db,
@@ -9084,8 +9101,9 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation() {
     }
 
     if (!maybe_ibd_stats) {
-        LogPrintf(
-            "[snapshot] failed to generate stats for validation coins db\n");
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_validation_stats_failed",
+            "[snapshot] failed to generate stats for validation coins db");
         // While this isn't a problem with the snapshot per se, this condition
         // prevents us from validating the snapshot, so we should shut down and
         // let the user handle the issue manually.
@@ -9148,8 +9166,9 @@ void ChainstateManager::MaybeRebalanceCaches() {
     } else if (snapshot_usable && !ibd_usable) {
         // If background validation has completed and snapshot is our active
         // chain...
-        LogPrintf(
-            "[snapshot] allocating all cache to the snapshot chainstate\n");
+        LogInfoEvent(
+            BCLog::ALL, "snapshot_cache_allocated",
+            "[snapshot] allocating all cache to the snapshot chainstate");
         // Allocate everything to the snapshot chainstate.
         m_snapshot_chainstate->ResizeCoinsCaches(m_total_coinstip_cache,
                                                  m_total_coinsdb_cache);
@@ -9402,8 +9421,9 @@ bool ChainstateManager::ValidatedSnapshotCleanup() {
     // is in-memory, in which case we can't do on-disk cleanup. You'd better be
     // in a unittest!
     if (!ibd_chainstate_path_maybe || !snapshot_chainstate_path_maybe) {
-        LogPrintf("[snapshot] snapshot chainstate cleanup cannot happen with "
-                  "in-memory chainstates. You are testing, right?\n");
+        LogInfoEvent(BCLog::ALL, "snapshot_cleanup_in_memory",
+                     "[snapshot] snapshot chainstate cleanup cannot happen "
+                     "with in-memory chainstates. You are testing, right?");
         return false;
     }
 
