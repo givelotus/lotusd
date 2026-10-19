@@ -728,7 +728,9 @@ void CNode::CloseSocketDisconnect() {
     fDisconnect = true;
     LOCK(m_sock_mutex);
     if (m_sock) {
-        LogDebug(BCLog::NET, "disconnecting peer=%d\n", id);
+        LogEvent(BCLog::NET, "peer_disconnecting",
+                 "disconnecting peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, id);
         m_sock.reset();
     }
     m_i2p_sam_session.reset();
@@ -933,8 +935,9 @@ int V1TransportDeserializer::readHeader(const Config &config,
     try {
         hdrbuf >> hdr;
     } catch (const std::exception &) {
-        LogDebug(BCLog::NET, "Header error: Unable to deserialize, peer=%d\n",
-                 m_node_id);
+        LogEvent(BCLog::NET, "peer_header_decode_failed",
+                 "Header error: Unable to deserialize, peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, m_node_id);
         return -1;
     }
 
@@ -950,10 +953,13 @@ int V1TransportDeserializer::readHeader(const Config &config,
 
     // Reject oversized messages
     if (hdr.IsOversized(config)) {
-        LogDebug(BCLog::NET,
-                 "Header error: Size too large (%s, %u bytes), peer=%d\n",
-                 SanitizeString(hdr.GetMessageType()), hdr.nMessageSize,
-                 m_node_id);
+        LogEvent(BCLog::NET, "peer_message_oversized",
+                 "Header error: Size too large ({msg_type}, {bytes} bytes), "
+                 "peer={peer_id}")
+            .Field(BCLog::LogField::MsgType,
+                   SanitizeString(hdr.GetMessageType()))
+            .Field(BCLog::LogField::Bytes, hdr.nMessageSize)
+            .Field(BCLog::LogField::PeerId, m_node_id);
         return -1;
     }
 
@@ -1021,10 +1027,13 @@ V1TransportDeserializer::GetMessage(const std::chrono::microseconds time,
             HexStr(hdr.pchChecksum), m_node_id);
         reject_message = true;
     } else if (!hdr.IsMessageTypeValid()) {
-        LogDebug(BCLog::NET,
-                 "Header error: Invalid message type (%s, %u bytes), peer=%d\n",
-                 SanitizeString(hdr.GetMessageType()), msg.m_message_size,
-                 m_node_id);
+        LogEvent(BCLog::NET, "peer_message_type_invalid",
+                 "Header error: Invalid message type ({msg_type}, {bytes} "
+                 "bytes), peer={peer_id}")
+            .Field(BCLog::LogField::MsgType,
+                   SanitizeString(hdr.GetMessageType()))
+            .Field(BCLog::LogField::Bytes, msg.m_message_size)
+            .Field(BCLog::LogField::PeerId, m_node_id);
         reject_message = true;
     }
 
@@ -2010,8 +2019,9 @@ bool CConnman::InactivityCheck(const CNode &node) const {
     }
 
     if (!node.fSuccessfullyConnected) {
-        LogDebug(BCLog::NET, "version handshake timeout peer=%d\n",
-                 node.GetId());
+        LogEvent(BCLog::NET, "peer_handshake_timeout",
+                 "version handshake timeout peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, node.GetId());
         return true;
     }
 
@@ -2213,8 +2223,9 @@ void CConnman::SocketHandlerConnected(
             } else if (nBytes == 0) {
                 // socket closed gracefully
                 if (!pnode->fDisconnect) {
-                    LogDebug(BCLog::NET, "socket closed for peer=%d\n",
-                             pnode->GetId());
+                    LogEvent(BCLog::NET, "peer_socket_closed",
+                             "socket closed for peer={peer_id}")
+                        .Field(BCLog::LogField::PeerId, pnode->GetId());
                 }
                 pnode->CloseSocketDisconnect();
             } else if (nBytes < 0) {
@@ -3777,8 +3788,9 @@ bool CConnman::DisconnectNode(NodeId id) {
     LOCK(m_nodes_mutex);
     for (CNode *pnode : m_nodes) {
         if (id == pnode->GetId()) {
-            LogDebug(BCLog::NET, "disconnect by id peer=%d; disconnecting\n",
-                     pnode->GetId());
+            LogEvent(BCLog::NET, "peer_disconnect_requested",
+                     "disconnect by id peer={peer_id}; disconnecting")
+                .Field(BCLog::LogField::PeerId, pnode->GetId());
             pnode->fDisconnect = true;
             return true;
         }
@@ -3957,10 +3969,14 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
     }
 
     if (fLogIPs) {
-        LogDebug(BCLog::NET, "Added connection to %s peer=%d\n", m_addr_name,
-                 id);
+        LogEvent(BCLog::NET, "peer_connection_added",
+                 "Added connection to {addr} peer={peer_id}")
+            .Field(BCLog::LogField::Addr, m_addr_name)
+            .Field(BCLog::LogField::PeerId, id);
     } else {
-        LogDebug(BCLog::NET, "Added connection peer=%d\n", id);
+        LogEvent(BCLog::NET, "peer_connection_added",
+                 "Added connection peer={peer_id}")
+            .Field(BCLog::LogField::PeerId, id);
     }
 }
 
@@ -4029,8 +4045,11 @@ bool CConnman::NodeFullyConnected(const CNode *pnode) {
 
 void CConnman::PushMessage(CNode *pnode, CSerializedNetMsg &&msg) {
     size_t nMessageSize = msg.data.size();
-    LogDebug(BCLog::NETDEBUG, "sending %s (%d bytes) peer=%d\n", msg.m_type,
-             nMessageSize, pnode->GetId());
+    LogEvent(BCLog::NETDEBUG, "peer_message_sent",
+             "sending {msg_type} ({bytes} bytes) peer={peer_id}")
+        .Field(BCLog::LogField::MsgType, msg.m_type)
+        .Field(BCLog::LogField::Bytes, nMessageSize)
+        .Field(BCLog::LogField::PeerId, pnode->GetId());
     if (gArgs.GetBoolArg("-capturemessages", false)) {
         CaptureMessage(pnode->addr, msg.m_type, msg.data,
                        /*is_incoming=*/false);
