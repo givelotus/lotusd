@@ -40,7 +40,8 @@ static const CFeeRate DEFAULT_MAX_RAW_TX_FEE_RATE{COIN / 10};
  * over the CValidationInterface) or asynchronous (will submit and not wait for
  * notification), depending on the value of wait_callback. wait_callback MUST
  * NOT be set while cs_main, cs_mempool or cs_wallet are held to avoid
- * deadlock.
+ * deadlock: the wait covers subscribers' worker queues (the wallet notification
+ * worker needs cs_wallet).
  *
  * @param[in]  node reference to node context
  * @param[in]  tx the transaction to broadcast
@@ -49,8 +50,8 @@ static const CFeeRate DEFAULT_MAX_RAW_TX_FEE_RATE{COIN / 10};
  * @param[in]  max_tx_fee reject txs with fees higher than this (if 0, accept
  * any fee)
  * @param[in]  relay flag if both mempool insertion and p2p relay are requested
- * @param[in]  wait_callback wait until callbacks have been processed to avoid
- * stale result due to a sequentially RPC.
+ * @param[in]  wait_callback wait until callbacks, and their secondary worker
+ * queues, have been processed to avoid stale result due to a sequentially RPC.
  * @return error
  */
 [[nodiscard]] TransactionError

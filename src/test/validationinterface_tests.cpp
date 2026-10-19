@@ -4,8 +4,10 @@
 
 #include <avalanche/processor.h>
 #include <consensus/validation.h>
+#include <node/transaction.h>
 #include <primitives/block.h>
 #include <scheduler.h>
+#include <script/standard.h>
 #include <util/check.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -970,6 +972,53 @@ BOOST_AUTO_TEST_CASE(bounded_worker_block_policy_names_its_thread) {
     queue.Sync();
     BOOST_CHECK_EQUAL(name, "walletnotify");
     queue.Stop();
+}
+
+/** Forwards mempool additions to its own worker queue, which a test holds. */
+struct MempoolSecondaryQueueSubscriber final : public CValidationInterface {
+    std::promise<void> release_indexing;
+    std::shared_future<void> release{release_indexing.get_future().share()};
+    std::atomic<bool> indexed{false};
+    BoundedTaskQueue queue{1 << 20, 1024, [] {}};
+
+    using CValidationInterface::TransactionAddedToMempool;
+    void TransactionAddedToMempool(const CTransactionRef &,
+                                   std::shared_ptr<const std::vector<Coin>>,
+                                   uint64_t) override {
+        queue.Enqueue(1, [this] {
+            release.wait();
+            indexed = true;
+        });
+    }
+    void SyncTransactionQueue() override { queue.Sync(); }
+};
+
+BOOST_FIXTURE_TEST_CASE(broadcast_wait_fences_secondary_queue,
+                        TestChain100Setup) {
+    using namespace std::chrono_literals;
+    auto subscriber = std::make_shared<MempoolSecondaryQueueSubscriber>();
+    m_node.validation_signals->RegisterSharedValidationInterface(subscriber);
+    const auto spend = MakeTransactionRef(CreateValidMempoolTransaction(
+        m_coinbase_txns[0], 0, 1, coinbaseKey,
+        GetScriptForRawPubKey(coinbaseKey.GetPubKey()),
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI,
+        /*submit=*/false));
+    auto broadcast = std::async(std::launch::async, [&] {
+        std::string err;
+        return node::BroadcastTransaction(m_node, spend, err, Amount::zero(),
+                                          /*relay=*/false,
+                                          /*wait_callback=*/true);
+    });
+    // The main queue drains at once; the held worker queue does not.
+    const bool waited =
+        broadcast.wait_for(100ms) == std::future_status::timeout;
+    subscriber->release_indexing.set_value();
+    BOOST_CHECK(waited);
+    BOOST_REQUIRE(broadcast.wait_for(60s) == std::future_status::ready);
+    BOOST_CHECK(broadcast.get() == node::TransactionError::OK);
+    // Returned only after the worker had applied the event.
+    BOOST_CHECK(subscriber->indexed);
+    m_node.validation_signals->UnregisterSharedValidationInterface(subscriber);
 }
 
 BOOST_AUTO_TEST_CASE(queued_payload_charges_retained_shared_ownership) {
