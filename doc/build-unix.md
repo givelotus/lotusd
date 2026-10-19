@@ -17,8 +17,6 @@ ninja
 ninja install # optional
 ```
 
-This will build bitcoin-qt as well.
-
 Dependencies
 ---------------------
 
@@ -38,9 +36,7 @@ Optional dependencies:
  libdb       | Berkeley DB      | Wallet storage (only needed when wallet enabled)
  libsqlite3  | SQLite 3         | Wallet storage (only needed when wallet enabled)
  jemalloc    | Memory allocator | Library to enhance the memory allocation and improve performances
- qt          | GUI              | GUI toolkit (only needed when GUI enabled)
- protobuf    | Payments in GUI  | Data interchange format used for payment protocol (only needed when BIP70 enabled)
- libqrencode | QR codes in GUI  | Optional for generating QR codes (only needed when GUI enabled)
+ protobuf    | Chronik          | Data interchange format (only needed when Chronik enabled)
  univalue    | Utility          | JSON parsing and encoding (bundled version will be used unless --with-system-univalue passed to configure)
  systemtap   | Tracing (USDT)   | Optional, statically defined tracepoints
 
@@ -112,27 +108,12 @@ User-Space, Statically Defined Tracing (USDT) dependencies (provides the tracepo
 
     sudo apt install systemtap-sdt-dev
 
-Dependencies for the GUI: Ubuntu & Debian
------------------------------------------
-
-If you want to build bitcoin-qt, make sure that the required packages for Qt development
-are installed. Qt 5 is necessary to build the GUI.
-To build without GUI pass `-DBUILD_QT=OFF` on the cmake command line.
-
-To build with Qt 5 you need the following:
-
-    sudo apt-get install libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools libprotobuf-dev protobuf-compiler
-
 To build with chronik and chronik plugins (`-DBUILD_CHRONIK=ON -DBUILD_CHRONIK_PLUGINS=ON`) you need the following:
 
     sudo apt-get install protobuf-compiler libprotobuf-dev clang libclang-dev python3-dev
     # Install rust
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s
     source ~/.cargo/env
-
-libqrencode dependencies (can be disabled by passing `-DENABLE_QRCODE=OFF` on the cmake command line):
-
-    sudo apt-get install libqrencode-dev
 
 Dependency Build Instructions: Fedora
 -------------------------------------
@@ -143,14 +124,6 @@ Build requirements:
 User-Space, Statically Defined Tracing (USDT) dependencies (provides the tracepoint library, can be disabled by passing `-DENABLE_TRACING=OFF` on the cmake command line):
 
     sudo dnf install systemtap
-
-To build with Qt 5 you need the following:
-
-    sudo dnf install qt5-qttools-devel qt5-qtbase-devel protobuf-devel
-
-libqrencode dependencies (can be disabled by passing `-DENABLE_QRCODE=OFF`):
-
-    sudo dnf install qrencode-devel
 
 SQLite can be installed with:
 
@@ -229,7 +202,7 @@ non-wallet distribution of the latest changes on Arch Linux:
     cd bitcoin-abc/
     mkdir build
     cd build
-    cmake -GNinja .. -DBUILD_WALLET=OFF -DBUILD_QT=OFF -DUSE_JEMALLOC=OFF
+    cmake -GNinja .. -DBUILD_WALLET=OFF -DUSE_JEMALLOC=OFF
     ninja
 
 AArch64 Cross-compilation

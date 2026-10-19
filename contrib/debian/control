@@ -12,16 +12,12 @@ Build-Depends: cmake (>= 3.16),
  libjemalloc-dev,
  libboost-dev,
  libprotobuf-dev,
- libqrencode-dev,
  libssl-dev,
  libsqlite3-dev,
  lld,
  ninja-build,
  protobuf-compiler,
- python3.10 | python3 (>= 3.10),
- qttools5-dev,
- qttools5-dev-tools,
- xvfb
+ python3.10 | python3 (>= 3.10)
 Standards-Version: 3.9.2
 Homepage: https://bitcoinabc.org/
 Vcs-Git: ssh://vcs@reviews.bitcoinabc.org:2221/source/bitcoin-abc.git
@@ -39,18 +35,6 @@ Description: peer-to-peer network based digital currency - daemon
  .
  This package provides the daemon, bitcoind, and the CLI tool
  bitcoin-cli to interact with the daemon.
-
-Package: bitcoin-qt
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: peer-to-peer network based digital currency - Qt GUI
- Bitcoin is an experimental new digital currency that enables instant
- payments to anyone, anywhere in the world. Bitcoin uses peer-to-peer
- technology to operate with no central authority: managing transactions
- and issuing money are carried out collectively by the network. Bitcoin ABC
- is the name of the open source software which enables the use of this currency.
- .
- This package provides Bitcoin-Qt, a GUI for Bitcoin based on Qt.
 
 Package: bitcoin-tx
 Architecture: any
