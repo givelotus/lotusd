@@ -2025,4 +2025,63 @@ BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
+    // A V2 spend of an OP_TRUE branch. No script can authorize state until
+    // ENFORCEOUTPUT, so the per-transaction post-check rejects any HAS_STATE
+    // output, inline and when the caller asks for deferred checks.
+    const std::vector<uint8_t> op_true{0x4e};
+    lotus::v2::Output coin_out;
+    coin_out.value = 5000;
+    coin_out.branches = {lotus::v2::BranchLeaf(op_true)};
+    coin_out.paths = {{0}};
+    const COutPoint previous{TxId{uint256S("aa")}, 0};
+    CCoinsView base;
+    CCoinsViewCache coins{&base};
+    coins.AddCoin(previous, Coin{CTxOut::FromV2Output(coin_out), 1, false},
+                  false);
+    auto make = [&](bool with_state) {
+        CMutableTransaction mtx;
+        mtx.nVersion = 7;
+        mtx.fHasV2Lock = true;
+        mtx.vin.emplace_back(previous);
+        mtx.vin[0].nFlags = 1;
+        mtx.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+        lotus::v2::BranchWitness witness;
+        witness.script = op_true;
+        mtx.vin[0].vWitnesses = {witness};
+        lotus::v2::Output pay = coin_out;
+        pay.value = 1000;
+        mtx.vout.push_back(CTxOut::FromV2Output(pay));
+        if (with_state) {
+            lotus::v2::Output stateful = pay;
+            stateful.flags = lotus::v2::OUTPUT_FLAG_HAS_STATE;
+            stateful.state_root[0] = 1;
+            mtx.vout.push_back(CTxOut::FromV2Output(stateful));
+        }
+        return CTransaction{mtx};
+    };
+    ValidationCache cache{1 << 20, 1 << 20};
+    LOCK(cs_main);
+    for (bool deferred : {false, true}) {
+        for (bool with_state : {false, true}) {
+            const CTransaction tx = make(with_state);
+            TxValidationState state;
+            TxSigCheckLimiter limiter;
+            int sigchecks = 0;
+            std::vector<CScriptCheck> checks;
+            const bool ok = CheckInputScripts(
+                tx, state, coins, 0, false, false, tx.GetPrecomputedData(),
+                cache, sigchecks, limiter, nullptr,
+                deferred ? &checks : nullptr);
+            BOOST_CHECK_EQUAL(ok, !with_state);
+            if (with_state) {
+                BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                                  "state-output-unauthorized");
+            }
+            // A V2 transaction is checked as one unit and never deferred.
+            BOOST_CHECK(checks.empty());
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
