@@ -1157,6 +1157,57 @@ std::optional<std::vector<unsigned char>> DecodeSpkiPin(std::string_view pin) {
     return std::vector<unsigned char>(decoded->begin(), decoded->end());
 }
 
+bool IsValidWebSocketToken(std::string_view token) {
+    return !token.empty() && token.size() <= 256 &&
+           std::all_of(token.begin(), token.end(), [](char c) {
+               return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                      c == '.' || c == '~';
+           });
+}
+
+/**
+ * Remove "token=<t>" from the query of a request target. Returns <t> ("" if
+ * absent), or std::nullopt if it is not a valid token.
+ */
+static std::optional<std::string> TakeWebSocketToken(std::string &target) {
+    const size_t q{target.find('?')};
+    if (q == std::string::npos) {
+        return std::string{};
+    }
+    std::string token;
+    std::vector<std::string> kept;
+    for (const auto &param : util::SplitString(target.substr(q + 1), '&')) {
+        if (param.starts_with("token=")) {
+            token = param.substr(6);
+            if (!IsValidWebSocketToken(token)) {
+                return std::nullopt;
+            }
+        } else if (!param.empty()) {
+            kept.push_back(param);
+        }
+    }
+    target = target.substr(0, q) +
+             (kept.empty() ? std::string{} : "?" + util::Join(kept, "&"));
+    return token;
+}
+
+std::string RedactWebSocketURL(std::string_view url) {
+    std::string out{url};
+    for (size_t pos{out.find("token=")}; pos != std::string::npos;
+         pos = out.find("token=", pos + 1)) {
+        if (pos == 0 || (out[pos - 1] != '?' && out[pos - 1] != '&')) {
+            continue;
+        }
+        const size_t start{pos + 6};
+        const size_t end{out.find_first_of("&#", start)};
+        out.replace(start,
+                    (end == std::string::npos ? out.size() : end) - start,
+                    "***");
+    }
+    return out;
+}
+
 std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url) {
     ParsedWebSocketURL out;
     if (const size_t hash{url.find('#')}; hash != std::string_view::npos) {
@@ -1183,6 +1234,11 @@ std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url) {
     out.target = slash == std::string_view::npos
                      ? std::string{P2P_WEBSOCKET_PATH}
                      : std::string{url.substr(slash)};
+    const auto token{TakeWebSocketToken(out.target)};
+    if (!token) {
+        return std::nullopt;
+    }
+    out.token = *token;
     uint16_t port{static_cast<uint16_t>(out.tls ? 443 : 80)};
     std::string host;
     if (authority.empty() || !SplitHostPort(authority, port, host) ||
@@ -1202,24 +1258,25 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                                       ConnectionType conn_type) {
     const auto parsed{ParseWebSocketURL(url)};
     if (!parsed) {
-        LogPrintf("Not connecting to %s: invalid WebSocket peer URL\n", url);
+        LogPrintf("Not connecting to %s: invalid WebSocket peer URL\n",
+                  RedactWebSocketURL(url));
         return nullptr;
     }
     const bool onion{parsed->host.ends_with(".onion")};
     if (!IsReachable(onion ? NET_ONION : NET_WSS)) {
         LogPrintf("Not connecting to %s: network %s is not reachable "
                   "(-onlynet)\n",
-                  url, onion ? "onion" : "wss");
+                  RedactWebSocketURL(url), onion ? "onion" : "wss");
         return nullptr;
     }
     const WebSocketDialer dialer{GetWebSocketDialer()};
     if (!dialer) {
         LogPrintf("Cannot connect to %s: P2P over WebSocket is unavailable\n",
-                  url);
+                  RedactWebSocketURL(url));
         return nullptr;
     }
     LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
-                  "trying WebSocket connection %s\n", url);
+                  "trying WebSocket connection %s\n", RedactWebSocketURL(url));
 
     // Open the TCP connection exactly as for TCP peers: through the proxy
     // (which resolves the name: no local DNS lookup) when one applies,
@@ -1230,7 +1287,8 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
     Proxy proxy;
     if (onion) {
         if (!GetProxy(NET_ONION, proxy)) {
-            LogPrintf("Not connecting to %s: no -onion proxy\n", url);
+            LogPrintf("Not connecting to %s: no -onion proxy\n",
+                      RedactWebSocketURL(url));
             return nullptr;
         }
         sock = ConnectThroughProxy(proxy, parsed->host, parsed->port,
