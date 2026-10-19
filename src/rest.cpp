@@ -259,7 +259,7 @@ static bool rest_headers(Config &config, const std::any &context,
 
             std::string binaryHeader = ssHeader.str();
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, binaryHeader);
+            req->WriteReply(HTTP_OK, std::move(binaryHeader));
             return true;
         }
 
@@ -271,7 +271,7 @@ static bool rest_headers(Config &config, const std::any &context,
 
             std::string strHex = HexStr(ssHeader) + "\n";
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
         case RESTResponseFormat::JSON: {
@@ -281,7 +281,7 @@ static bool rest_headers(Config &config, const std::any &context,
             }
             std::string strJSON = jsonHeaders.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -337,7 +337,7 @@ static bool rest_block(const Config &config, const std::any &context,
             ssBlock << block;
             std::string binaryBlock = ssBlock.str();
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, binaryBlock);
+            req->WriteReply(HTTP_OK, std::move(binaryBlock));
             return true;
         }
 
@@ -346,7 +346,7 @@ static bool rest_block(const Config &config, const std::any &context,
             ssBlock << block;
             std::string strHex = HexStr(ssBlock) + "\n";
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
 
@@ -355,7 +355,7 @@ static bool rest_block(const Config &config, const std::any &context,
                                             *pblockindex, tx_verbosity);
             std::string strJSON = objBlock.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
 
@@ -493,7 +493,7 @@ static bool rest_filter_header(Config &config, const std::any &context,
 
             std::string binaryHeader = ssHeader.str();
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, binaryHeader);
+            req->WriteReply(HTTP_OK, std::move(binaryHeader));
             return true;
         }
         case RESTResponseFormat::HEX: {
@@ -504,7 +504,7 @@ static bool rest_filter_header(Config &config, const std::any &context,
 
             std::string strHex = HexStr(ssHeader) + "\n";
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
         case RESTResponseFormat::JSON: {
@@ -515,7 +515,7 @@ static bool rest_filter_header(Config &config, const std::any &context,
 
             std::string strJSON = jsonHeaders.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -602,7 +602,7 @@ static bool rest_block_filter(Config &config, const std::any &context,
 
             std::string binaryResp = ssResp.str();
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, binaryResp);
+            req->WriteReply(HTTP_OK, std::move(binaryResp));
             return true;
         }
         case RESTResponseFormat::HEX: {
@@ -611,7 +611,7 @@ static bool rest_block_filter(Config &config, const std::any &context,
 
             std::string strHex = HexStr(ssResp) + "\n";
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
         case RESTResponseFormat::JSON: {
@@ -619,7 +619,7 @@ static bool rest_block_filter(Config &config, const std::any &context,
             ret.pushKV("filter", HexStr(filter.GetEncodedFilter()));
             std::string strJSON = ret.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -648,7 +648,7 @@ static bool rest_chaininfo(Config &config, const std::any &context,
                 getblockchaininfo().HandleRequest(config, jsonRequest);
             std::string strJSON = chainInfoObject.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -678,7 +678,7 @@ static bool rest_mempool_info(Config &config, const std::any &context,
 
             std::string strJSON = mempoolInfoObject.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -710,7 +710,7 @@ static bool rest_mempool_contents(Config &config, const std::any &context,
 
             std::string strJSON = mempoolObject.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
@@ -756,7 +756,7 @@ static bool rest_tx(Config &config, const std::any &context, HTTPRequest *req,
 
             std::string binaryTx = ssTx.str();
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, binaryTx);
+            req->WriteReply(HTTP_OK, std::move(binaryTx));
             return true;
         }
 
@@ -766,7 +766,7 @@ static bool rest_tx(Config &config, const std::any &context, HTTPRequest *req,
 
             std::string strHex = HexStr(ssTx) + "\n";
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
 
@@ -775,7 +775,7 @@ static bool rest_tx(Config &config, const std::any &context, HTTPRequest *req,
             TxToUniv(*tx, hashBlock, objTx);
             std::string strJSON = objTx.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
 
@@ -965,7 +965,7 @@ static bool rest_getutxos(Config &config, const std::any &context,
             std::string ssGetUTXOResponseString = ssGetUTXOResponse.str();
 
             req->WriteHeader("Content-Type", "application/octet-stream");
-            req->WriteReply(HTTP_OK, ssGetUTXOResponseString);
+            req->WriteReply(HTTP_OK, std::move(ssGetUTXOResponseString));
             return true;
         }
 
@@ -975,7 +975,7 @@ static bool rest_getutxos(Config &config, const std::any &context,
             std::string strHex = HexStr(ssGetUTXOResponse) + "\n";
 
             req->WriteHeader("Content-Type", "text/plain");
-            req->WriteReply(HTTP_OK, strHex);
+            req->WriteReply(HTTP_OK, std::move(strHex));
             return true;
         }
 
@@ -1005,7 +1005,7 @@ static bool rest_getutxos(Config &config, const std::any &context,
             // return json string
             std::string strJSON = objGetUTXOResponse.write() + "\n";
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_OK, strJSON);
+            req->WriteReply(HTTP_OK, std::move(strJSON));
             return true;
         }
         default: {
