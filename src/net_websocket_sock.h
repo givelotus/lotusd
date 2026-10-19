@@ -29,6 +29,9 @@ public:
     virtual bool HasBuffered() const { return false; }
     //! OS socket events a blocked Write() is waiting for
     virtual Sock::Event WriteWaitsFor() const { return Sock::SEND; }
+    //! OS socket events the last blocked Read() is waiting for (TLS: a read
+    //! can need to write first, e.g. to answer a KeyUpdate)
+    virtual Sock::Event ReadWaitsFor() const { return Sock::RECV; }
     //! Best-effort non-blocking shutdown before the socket is closed
     virtual void Shutdown(SOCKET fd) {}
     //! Whether the layer is TLS
@@ -103,6 +106,8 @@ private:
     //! Decoded P2P bytes not yet returned by Recv()
     mutable std::vector<uint8_t> m_rx_plain GUARDED_BY(m_mutex);
     mutable size_t m_rx_offset GUARDED_BY(m_mutex){0};
+    //! The last read blocked until the OS socket is writable
+    mutable bool m_read_waits_send GUARDED_BY(m_mutex){false};
     mutable bool m_eof GUARDED_BY(m_mutex){false};
     mutable bool m_failed GUARDED_BY(m_mutex){false};
     mutable uint64_t m_payload_recv_reported GUARDED_BY(m_mutex){0};
