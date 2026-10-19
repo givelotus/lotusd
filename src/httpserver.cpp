@@ -360,6 +360,15 @@ static std::vector<std::string> g_public_prefixes;
 //! Whether /chronik is served (-chronik and -chronikpubliconrpcport)
 static bool g_chronik_enabled{false};
 
+/** A web server requests are relayed to */
+struct ForwardTarget {
+    bool enabled{false};
+    std::string host;
+    uint16_t port{0};
+};
+//! Web server that gets every other request on -publicbind (-publicfallback)
+static ForwardTarget g_public_fallback;
+
 //! Whether /p2p/ws is served
 static bool g_p2p_websocket_enabled{false};
 //! Path P2P WebSocket upgrades are served at (-p2pwebsocketpath)
@@ -1348,6 +1357,96 @@ TryHandleWebSocketUpgrade(Stream &stream, beast::flat_buffer &buffer,
     co_return false;
 }
 
+/** Copy bytes from `from` to `to` until either side fails or closes */
+template <typename From, typename To>
+static asio::awaitable<void> PumpBytes(From &from, To &to) {
+    std::array<char, 16384> data;
+    while (true) {
+        auto [rec, n] = co_await from.async_read_some(
+            asio::buffer(data), asio::as_tuple(asio::use_awaitable));
+        if (rec) {
+            co_return;
+        }
+        auto [wec, wn] =
+            co_await asio::async_write(to, asio::buffer(data.data(), n),
+                                       asio::as_tuple(asio::use_awaitable));
+        if (wec) {
+            co_return;
+        }
+    }
+}
+
+/**
+ * Whether a public listener serves this request itself: a P2P WebSocket
+ * upgrade we accept, or a Chronik path. Decided from the header alone.
+ */
+static bool ServedPublicly(const BeastRequest &req) {
+    const std::string_view target{req.target()};
+    if (websocket::is_upgrade(req) && IsP2PWebSocketRequest(req)) {
+        return true;
+    }
+    return IsPublicPath(target) &&
+           !URIHasPathPrefix(target, g_p2p_websocket_path);
+}
+
+/**
+ * Hand the rest of a public connection to -publicfallback: the request
+ * header as received (field names and order kept), whatever followed it in
+ * `buffer` (the start of a body, pipelined requests), then raw bytes both
+ * ways. The client sees the fallback's responses unchanged, as from an
+ * ordinary site behind this TLS endpoint.
+ */
+template <typename Stream>
+static asio::awaitable<void>
+RelayToPublicFallback(Stream &stream, beast::flat_buffer &buffer,
+                      const BeastRequest &header,
+                      const HTTPConnectionInfo &conn) {
+    beast::tcp_stream upstream{co_await asio::this_coro::executor};
+    tcp::resolver resolver{co_await asio::this_coro::executor};
+    auto [rec, results] = co_await resolver.async_resolve(
+        g_public_fallback.host, std::to_string(g_public_fallback.port),
+        asio::as_tuple(asio::use_awaitable));
+    boost::system::error_code cec{rec};
+    if (!rec) {
+        upstream.expires_after(std::chrono::seconds{10});
+        auto [ec, endpoint] = co_await upstream.async_connect(
+            results, asio::as_tuple(asio::use_awaitable));
+        cec = ec;
+    }
+    if (cec) {
+        LogDebug(BCLog::HTTP, "-publicfallback %s:%u unreachable: %s\n",
+                 g_public_fallback.host, g_public_fallback.port, cec.message());
+        BeastResponse res{MakeSimpleResponse(502, header.version())};
+        res.keep_alive(false);
+        co_await WriteResponse(stream, res);
+        co_return;
+    }
+    upstream.expires_never();
+    boost::system::error_code ignored;
+    upstream.socket().set_option(tcp::no_delay(true), ignored);
+
+    std::string head{strprintf("%s %s HTTP/%u.%u\r\n",
+                               std::string_view{header.method_string()},
+                               std::string_view{header.target()},
+                               header.version() / 10, header.version() % 10)};
+    for (const auto &f : header) {
+        head += strprintf("%s: %s\r\n", std::string_view{f.name_string()},
+                          std::string_view{f.value()});
+    }
+    // Where the request really came from, for the fallback's own logs.
+    head += strprintf("X-Forwarded-For: %s\r\nX-Forwarded-Proto: %s\r\n\r\n",
+                      conn.peer.ToStringAddr(), conn.is_tls ? "https" : "http");
+    const std::array<asio::const_buffer, 2> first{asio::buffer(head),
+                                                  buffer.data()};
+    auto [wec, wn] = co_await asio::async_write(
+        upstream, first, asio::as_tuple(asio::use_awaitable));
+    buffer.consume(buffer.size());
+    if (wec) {
+        co_return;
+    }
+    co_await (PumpBytes(stream, upstream) || PumpBytes(upstream, stream));
+}
+
 /** Serve HTTP/1.1 keep-alive requests on an established (TLS or plain) stream */
 template <typename Stream>
 static asio::awaitable<void> ServeHTTP(Stream &stream,
@@ -1394,6 +1493,13 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
 
         idle->Touch();
         const auto &header{parser.get()};
+        if (conn.public_only && g_public_fallback.enabled &&
+            !g_reject_requests.load() && !ServedPublicly(header)) {
+            // Not ours: the fallback site answers (body and all).
+            idle->busy = true;
+            co_await RelayToPublicFallback(stream, buffer, header, conn);
+            co_return;
+        }
         if (auto expect{header.find(http::field::expect)};
             expect != header.end() &&
             beast::iequals(expect->value(), "100-continue")) {
@@ -1977,6 +2083,18 @@ bool InitHTTPServer(Config &config) {
                   "such as /p2p/ws, not / and without query or trailing /)\n",
                   g_p2p_websocket_path);
         return false;
+    }
+    g_public_fallback = {};
+    if (const std::string fallback{gArgs.GetArg("-publicfallback", "")};
+        !fallback.empty()) {
+        uint16_t port{0};
+        std::string host;
+        if (!SplitHostPort(fallback, port, host) || host.empty() || port == 0) {
+            LogPrintf("Error: invalid -publicfallback '%s' (host:port)\n",
+                      fallback);
+            return false;
+        }
+        g_public_fallback = {.enabled = true, .host = host, .port = port};
     }
     g_p2p_websocket_token_hashes.clear();
     for (const std::string &token : gArgs.GetArgs("-p2pwebsockettoken")) {
