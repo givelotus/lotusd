@@ -1,0 +1,162 @@
+{
+  "schema": 1,
+  "batch": "port-mapping",
+  "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior.",
+  "files": [
+    {
+      "path": "src/common/pcp.cpp",
+      "rules": [
+        {
+          "id": "port-mapping-pcp-1",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"natpmp: Response too small\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"natpmp_response_too_small\",\n                                \"natpmp: Response too small\")",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "natpmp: Response too small\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-2",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"natpmp: Response to wrong command\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"natpmp_command_unexpected\",\n                                \"natpmp: Response to wrong command\")",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "natpmp: Response to wrong command\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-5",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"natpmp: Response port doesn't match request\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"natpmp_response_port_mismatch\",\n                                \"natpmp: Response port doesn't match request\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "natpmp: Response port doesn't match request\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-6",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"pcp: Response too small\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"pcp_response_too_small\",\n                                \"pcp: Response too small\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "pcp: Response too small\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-7",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"pcp: Response to wrong command\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"pcp_command_unexpected\",\n                                \"pcp: Response to wrong command\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "pcp: Response to wrong command\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-8",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Warning,\n                              \"pcp: Mapping nonce mismatch\\n\")",
+          "replacement": "LogWarningEvent(BCLog::NET, \"pcp_mapping_nonce_mismatch\",\n                                \"pcp: Mapping nonce mismatch\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "pcp: Mapping nonce mismatch\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-pcp-9",
+          "old": "LogPrintLevel(\n                    BCLog::NET, BCLog::Level::Warning,\n                    \"pcp: Response protocol or port doesn't match request\\n\")",
+          "replacement": "LogWarningEvent(\n                    BCLog::NET, \"pcp_response_mapping_mismatch\",\n                    \"pcp: Response protocol or port doesn't match request\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "pcp: Response protocol or port doesn't match request\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "src/mapport.cpp",
+      "rules": [
+        {
+          "id": "port-mapping-mapport-1",
+          "old": "LogPrintLevel(\n                BCLog::NET, BCLog::Level::Debug,\n                \"portmap: Could not determine IPv4 default gateway\\n\")",
+          "replacement": "LogEvent(BCLog::NET, \"portmap_ipv4_gateway_missing\",\n                     \"portmap: Could not determine IPv4 default gateway\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "portmap: Could not determine IPv4 default gateway\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-mapport-2",
+          "old": "LogPrintLevel(BCLog::NET, BCLog::Level::Debug,\n                              \"portmap: Got unsupported PCP version response, \"\n                              \"falling back to NAT-PMP\\n\")",
+          "replacement": "LogEvent(BCLog::NET, \"portmap_natpmp_fallback\",\n                         \"portmap: Got unsupported PCP version response, \"\n                         \"falling back to NAT-PMP\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "portmap: Got unsupported PCP version response, falling back to NAT-PMP\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-mapport-3",
+          "old": "LogPrintLevel(\n                BCLog::NET, BCLog::Level::Debug,\n                \"portmap: Could not determine IPv6 default gateway\\n\")",
+          "replacement": "LogEvent(BCLog::NET, \"portmap_ipv6_gateway_missing\",\n                     \"portmap: Could not determine IPv6 default gateway\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "portmap: Could not determine IPv6 default gateway\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        },
+        {
+          "id": "port-mapping-mapport-4",
+          "old": "LogPrintLevel(\n                BCLog::NET, BCLog::Level::Warning,\n                \"portmap: At least one mapping failed because of a \"\n                \"NO_RESOURCES error. This usually indicates that the port is \"\n                \"already used on the router. If this is the only instance of \"\n                \"bitcoin running on the network, this will resolve itself \"\n                \"automatically. Otherwise, you might want to choose a \"\n                \"different P2P port to prevent this conflict.\\n\")",
+          "replacement": "LogWarningEvent(\n                BCLog::NET, \"portmap_router_resources_exhausted\",\n                \"portmap: At least one mapping failed because of a \"\n                \"NO_RESOURCES error. This usually indicates that the port is \"\n                \"already used on the router. If this is the only instance of \"\n                \"bitcoin running on the network, this will resolve itself \"\n                \"automatically. Otherwise, you might want to choose a \"\n                \"different P2P port to prevent this conflict.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "portmap: At least one mapping failed because of a NO_RESOURCES error. This usually indicates that the port is already used on the router. If this is the only instance of bitcoin running on the network, this will resolve itself automatically. Otherwise, you might want to choose a different P2P port to prevent this conflict.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Name existing PCP and NAT-PMP response/gateway/resource diagnostics without changing their levels, categories, text or wire behavior."
+        }
+      ],
+      "support_adjustments": []
+    }
+  ]
+}

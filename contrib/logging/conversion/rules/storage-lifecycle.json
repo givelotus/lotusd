@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "batch": "storage-lifecycle",
+  "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text.",
+  "files": [
+    {
+      "path": "src/node/blockstorage.cpp",
+      "rules": [
+        {
+          "id": "storage-lifecycle-blockstorage-1",
+          "old": "LogPrintf(\"Checking all blk files are present...\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_files_checking\",\n                 \"Checking all blk files are present...\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Checking all blk files are present...\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-2",
+          "old": "LogPrintf(\n            \"LoadBlockIndexDB(): Block files have previously been pruned\\n\")",
+          "replacement": "LogInfoEvent(\n            BCLog::ALL, \"block_files_previously_pruned\",\n            \"LoadBlockIndexDB(): Block files have previously been pruned\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "LoadBlockIndexDB(): Block files have previously been pruned\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-3",
+          "old": "LogPrintf(\"Removing unusable blk?????.dat and rev?????.dat files for \"\n              \"-reindex with -prune\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_files_prune_reindex_cleaning\",\n                 \"Removing unusable blk?????.dat and rev?????.dat files for \"\n                 \"-reindex with -prune\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Removing unusable blk?????.dat and rev?????.dat files for -reindex with -prune\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-4",
+          "old": "LogError(\"FindUndoPos failed\\n\")",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"undo_position_failed\",\n                          \"FindUndoPos failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "FindUndoPos failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-5",
+          "old": "LogError(\"OpenUndoFile failed\\n\")",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"undo_file_open_failed\",\n                          \"OpenUndoFile failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "OpenUndoFile failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-6",
+          "old": "LogError(\"FindNextBlockPos failed\\n\")",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_position_failed\",\n                      \"FindNextBlockPos failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "FindNextBlockPos failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-7",
+          "old": "LogError(\"OpenBlockFile failed\\n\")",
+          "replacement": "LogErrorEvent(BCLog::ALL, \"block_file_open_failed\",\n                      \"OpenBlockFile failed\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "OpenBlockFile failed\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-blockstorage-8",
+          "old": "LogPrintf(\"Reindexing finished\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"block_reindex_finished\",\n                         \"Reindexing finished\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Reindexing finished\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "src/node/chainstate.cpp",
+      "rules": [
+        {
+          "id": "storage-lifecycle-chainstate-1",
+          "old": "LogPrintf(\"Validating signatures for all blocks.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_all_signatures_enabled\",\n                     \"Validating signatures for all blocks.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Validating signatures for all blocks.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-chainstate-2",
+          "old": "LogPrintf(\n            \"Block pruning enabled.  Use RPC call pruneblockchain(height) to \"\n            \"manually prune block and undo files.\\n\")",
+          "replacement": "LogInfoEvent(\n            BCLog::ALL, \"chainstate_pruning_manual\",\n            \"Block pruning enabled.  Use RPC call pruneblockchain(height) to \"\n            \"manually prune block and undo files.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Block pruning enabled.  Use RPC call pruneblockchain(height) to manually prune block and undo files.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-chainstate-3",
+          "old": "LogPrintf(\n            \"[snapshot] deleting snapshot chainstate due to reindexing\\n\")",
+          "replacement": "LogInfoEvent(\n            BCLog::ALL, \"chainstate_snapshot_reindex_cleanup\",\n            \"[snapshot] deleting snapshot chainstate due to reindexing\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] deleting snapshot chainstate due to reindexing\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-chainstate-4",
+          "old": "LogPrintf(\"[snapshot] cleaning up unneeded background chainstate, then \"\n                  \"reinitializing\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chainstate_background_cleanup\",\n                     \"[snapshot] cleaning up unneeded background chainstate, \"\n                     \"then reinitializing\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "[snapshot] cleaning up unneeded background chainstate, then reinitializing\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "src/txdb.cpp",
+      "rules": [
+        {
+          "id": "storage-lifecycle-txdb-1",
+          "old": "LogPrintf(\"Simulating a crash. Goodbye.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_database_crash_simulated\",\n                                 \"Simulating a crash. Goodbye.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Simulating a crash. Goodbye.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        },
+        {
+          "id": "storage-lifecycle-txdb-2",
+          "old": "LogPrintf(\n            \"\\nThe database is too old. The block index cannot be upgraded \"\n            \"and reindexing is required.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"chain_database_reindex_required\",\n                     \"\\nThe database is too old. The block index cannot be \"\n                     \"upgraded and reindexing is required.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "\nThe database is too old. The block index cannot be upgraded and reindexing is required.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Replace constant block-file, reindex, chainstate and database lifecycle diagnostics with named events, preserving original severity, categories and human text."
+        }
+      ],
+      "support_adjustments": []
+    }
+  ]
+}
