@@ -76,7 +76,7 @@ bool CheckPackage(const Package &txns, PackageValidationState &state) {
         // at a time, we could catch duplicate inputs within a single tx.
         // This is a more severe, consensus error, and we want to report
         // that from CheckTransaction instead.
-        std::transform(tx->vin.cbegin(), tx->vin.cend(),
+        std::transform(tx->vin.begin(), tx->vin.end(),
                        std::inserter(inputs_seen, inputs_seen.end()),
                        [](const auto &input) { return input.prevout; });
     }
@@ -94,7 +94,7 @@ bool IsChildWithParents(const Package &package) {
     // child.
     const auto &child = package.back();
     std::unordered_set<TxId, SaltedTxIdHasher> input_txids;
-    std::transform(child->vin.cbegin(), child->vin.cend(),
+    std::transform(child->vin.begin(), child->vin.end(),
                    std::inserter(input_txids, input_txids.end()),
                    [](const auto &input) { return input.prevout.GetTxId(); });
 

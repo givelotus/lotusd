@@ -442,6 +442,8 @@ protected:
         return *this;
     }
 
+    explicit CScript(CScriptBase &&base) : CScriptBase(std::move(base)) {}
+
 public:
     CScript() = default;
     CScript(const_iterator pbegin, const_iterator pend)
@@ -451,6 +453,14 @@ public:
         : CScriptBase(pbegin, pend) {}
     CScript(const uint8_t *pbegin, const uint8_t *pend)
         : CScriptBase(pbegin, pend) {}
+
+    /**
+     * A script viewing bytes owned elsewhere (see prevector::Borrow); the
+     * bytes must outlive it.
+     */
+    static CScript Borrow(Span<const uint8_t> bytes) {
+        return CScript(CScriptBase::Borrow(bytes.data(), bytes.size()));
+    }
 
     SERIALIZE_METHODS(CScript, obj) { READWRITE(AsBase<CScriptBase>(obj)); }
 
