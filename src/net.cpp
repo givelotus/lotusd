@@ -529,8 +529,7 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
     }
     // P2P over WebSocket: ws:// and wss:// URLs, and NET_WSS addresses.
     if (pszDest != nullptr && IsWebSocketURL(pszDest)) {
-        return ConnectWebSocketNode(pszDest, nullptr, fCountFailure,
-                                    conn_type);
+        return ConnectWebSocketNode(pszDest, nullptr, fCountFailure, conn_type);
     }
     // Only an explicitly advertised endpoint opts into automatic UDP.
     // Explicit wt:// URLs above remain WT-only, independent of this policy.
@@ -1005,6 +1004,179 @@ V1TransportDeserializer::GetMessage(const std::chrono::microseconds time,
     return msg;
 }
 
+void P2PV2TransportDeserializer::Reset() {
+    m_state = State::LENGTH;
+    m_pos = 0;
+    m_length = 0;
+    m_id_size = 0;
+    m_type.clear();
+    m_name_length = 0;
+    m_invalid_type = false;
+    m_payload.clear();
+}
+
+int P2PV2TransportDeserializer::Read(const Config &config,
+                                     Span<const uint8_t> &msg_bytes) {
+    const size_t start_size{msg_bytes.size()};
+    while (!msg_bytes.empty() && m_state != State::DONE) {
+        switch (m_state) {
+            case State::LENGTH: {
+                const size_t n{std::min<size_t>(4 - m_pos, msg_bytes.size())};
+                std::memcpy(m_length_bytes + m_pos, msg_bytes.data(), n);
+                msg_bytes = msg_bytes.subspan(n);
+                m_pos += n;
+                if (m_pos < 4) {
+                    break;
+                }
+                m_length = ReadLE32(m_length_bytes);
+                m_pos = 0;
+                if (m_length == 0) {
+                    LogDebug(BCLog::NET, "p2p-v2: empty message, peer=%d\n",
+                             m_node_id);
+                    Reset();
+                    return -1;
+                }
+                m_state = State::ID;
+                break;
+            }
+            case State::ID: {
+                const uint8_t id{msg_bytes[0]};
+                msg_bytes = msg_bytes.subspan(1);
+                m_id_size = 1;
+                if (id == 0) {
+                    m_state = State::NAME_LENGTH;
+                    break;
+                }
+                if (const std::string *type{GetP2PV2MessageType(id)}) {
+                    m_type = *type;
+                } else {
+                    m_type = strprintf("unknown-%u", id);
+                    m_invalid_type = true;
+                }
+                m_state = State::DATA;
+                break;
+            }
+            case State::NAME_LENGTH:
+                m_name_length = msg_bytes[0];
+                msg_bytes = msg_bytes.subspan(1);
+                m_id_size = 2 + m_name_length;
+                if (m_name_length == 0 ||
+                    m_name_length > CMessageHeader::MESSAGE_TYPE_SIZE ||
+                    m_id_size > m_length) {
+                    LogDebug(BCLog::NET,
+                             "p2p-v2: bad message type length, peer=%d\n",
+                             m_node_id);
+                    Reset();
+                    return -1;
+                }
+                m_state = State::NAME;
+                break;
+            case State::NAME: {
+                const size_t n{std::min<size_t>(m_name_length - m_type.size(),
+                                                msg_bytes.size())};
+                m_type.append(reinterpret_cast<const char *>(msg_bytes.data()),
+                              n);
+                msg_bytes = msg_bytes.subspan(n);
+                if (m_type.size() == m_name_length) {
+                    m_invalid_type =
+                        !std::all_of(m_type.begin(), m_type.end(), [](char c) {
+                            return c >= ' ' && c <= 0x7E;
+                        });
+                    m_state = State::DATA;
+                }
+                break;
+            }
+            case State::DATA: {
+                if (m_length < m_id_size) {
+                    LogDebug(BCLog::NET,
+                             "p2p-v2: message shorter than its type, peer=%d\n",
+                             m_node_id);
+                    Reset();
+                    return -1;
+                }
+                const uint32_t size{m_length - m_id_size};
+                if (m_pos == 0) {
+                    // Size check once the type is known, as for v1 headers.
+                    const CMessageHeader hdr{
+                        m_config.GetChainParams().NetMagic(),
+                        m_type.size() <= CMessageHeader::MESSAGE_TYPE_SIZE
+                            ? m_type.c_str()
+                            : "",
+                        size};
+                    if (hdr.IsOversized(config)) {
+                        LogDebug(BCLog::NET,
+                                 "Header error: Size too large (%s, %u bytes), "
+                                 "peer=%d\n",
+                                 SanitizeString(m_type), size, m_node_id);
+                        Reset();
+                        return -1;
+                    }
+                }
+                const size_t n{
+                    std::min<size_t>(size - m_pos, msg_bytes.size())};
+                if (m_payload.size() < m_pos + n) {
+                    // Allocate up to 256 KiB ahead, never past the message.
+                    m_payload.resize(
+                        std::min<size_t>(size, m_pos + n + 256 * 1024));
+                }
+                std::memcpy(m_payload.data() + m_pos, msg_bytes.data(), n);
+                msg_bytes = msg_bytes.subspan(n);
+                m_pos += n;
+                if (m_pos == size) {
+                    m_state = State::DONE;
+                }
+                break;
+            }
+            case State::DONE:
+                break;
+        }
+        // A message of only an id has no DATA bytes to wait for.
+        if (m_state == State::DATA && m_length == m_id_size) {
+            m_state = State::DONE;
+        }
+    }
+    return int(start_size - msg_bytes.size());
+}
+
+CNetMessage
+P2PV2TransportDeserializer::GetMessage(const std::chrono::microseconds time,
+                                       bool &reject_message) {
+    reject_message = m_invalid_type;
+    if (m_invalid_type) {
+        LogDebug(BCLog::NET, "p2p-v2: invalid message type %s, peer=%d\n",
+                 SanitizeString(m_type), m_node_id);
+    }
+    CNetMessage msg(std::move(m_payload));
+    msg.m_type = std::move(m_type);
+    msg.m_time = time;
+    msg.m_message_size = m_length - m_id_size;
+    msg.m_raw_message_size = m_length + 4;
+    // Harvest entropy from the timing of messages, as v1 does with checksums.
+    RandAddEvent(uint32_t(time.count()));
+    Reset();
+    return msg;
+}
+
+void P2PV2TransportSerializer::prepareForTransport(
+    const Config &config, CSerializedNetMsg &msg,
+    std::vector<uint8_t> &header) const {
+    const auto id{GetP2PV2MessageId(msg.m_type)};
+    const size_t id_size{id ? 1 : 2 + msg.m_type.size()};
+    const uint32_t length{uint32_t(id_size + msg.data.size())};
+    header.reserve(4 + id_size);
+    header.resize(4);
+    WriteLE32(header.data(), length);
+    if (id) {
+        header.push_back(*id);
+    } else {
+        assert(!msg.m_type.empty() &&
+               msg.m_type.size() <= CMessageHeader::MESSAGE_TYPE_SIZE);
+        header.push_back(0);
+        header.push_back(uint8_t(msg.m_type.size()));
+        header.insert(header.end(), msg.m_type.begin(), msg.m_type.end());
+    }
+}
+
 void V1TransportSerializer::prepareForTransport(
     const Config &config, CSerializedNetMsg &msg,
     std::vector<uint8_t> &header) const {
@@ -1366,6 +1538,8 @@ std::string P2PWebSocketCompressionName(P2PWebSocketCompression c) {
             return P2P_WS_PROTOCOL_ZSTD;
         case P2PWebSocketCompression::ZSTD_DICT:
             return P2P_WS_PROTOCOL_ZSTD_DICT;
+        case P2PWebSocketCompression::P2P_V2:
+            return P2P_WS_PROTOCOL_V2;
     } // no default case, so the compiler can warn about missing cases
     assert(false);
 }
@@ -4060,10 +4234,20 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
              uint64_t nLocalExtraEntropyIn, const CAddress &addrBindIn,
              const std::string &addrNameIn, ConnectionType conn_type_in,
              bool inbound_onion, CNodeOptions &&node_opts)
-    : m_deserializer{std::make_unique<V1TransportDeserializer>(
-          V1TransportDeserializer(GetConfig(), idIn))},
+    : m_deserializer{
+          node_opts.websocket_info && node_opts.websocket_info->compression ==
+                                          P2PWebSocketCompression::P2P_V2
+              ? std::unique_ptr<TransportDeserializer>{std::make_unique<
+                    P2PV2TransportDeserializer>(GetConfig(), idIn)}
+              : std::make_unique<V1TransportDeserializer>(
+                    V1TransportDeserializer(GetConfig(), idIn))},
       m_serializer{
-          std::make_unique<V1TransportSerializer>(V1TransportSerializer())},
+          node_opts.websocket_info && node_opts.websocket_info->compression ==
+                                          P2PWebSocketCompression::P2P_V2
+              ? std::unique_ptr<const TransportSerializer>{std::make_unique<
+                    P2PV2TransportSerializer>()}
+              : std::make_unique<V1TransportSerializer>(
+                    V1TransportSerializer())},
       m_permission_flags{node_opts.permission_flags}, m_sock{sock},
       m_connected(GetTime<std::chrono::seconds>()), addr{addrIn},
       addrBind{addrBindIn},
@@ -4097,7 +4281,7 @@ CNode::CNode(NodeId idIn, std::shared_ptr<Sock> sock, const CAddress &addrIn,
         std::optional<size_t> ws;
         if (websocket) {
             const std::array<size_t, 2> idx{
-                std::min<size_t>(size_t(m_websocket_info->compression), 3),
+                std::min<size_t>(size_t(m_websocket_info->compression), 4),
                 m_websocket_info->tls ? 1U : 0U};
             ws = metrics->websocket_peers.SeriesIndex(idx);
             metrics->websocket_peers.Add(1, *ws);

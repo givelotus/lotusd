@@ -2031,9 +2031,8 @@ BOOST_AUTO_TEST_CASE(net_wss_address) {
     BOOST_CHECK_EQUAL(WebSocketURLForAddress(service),
                       "wss://node.example.com:443/p2p/ws");
 
-    for (const char *bad :
-         {"", "-a.com", "a-.com", "a..com", ".a.com", "a.com.", "a_b.com",
-          "a b", "x.y/z"}) {
+    for (const char *bad : {"", "-a.com", "a-.com", "a..com", ".a.com",
+                            "a.com.", "a_b.com", "a b", "x.y/z"}) {
         BOOST_CHECK_MESSAGE(!CNetAddr{}.SetWSSDomain(bad), bad);
     }
     BOOST_CHECK(!CNetAddr{}.SetWSSDomain(std::string(64, 'a') + ".com"));
@@ -2130,6 +2129,121 @@ BOOST_AUTO_TEST_CASE(net_wss_address) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(p2p_v2_transport) {
+    const Config &config{GetConfig()};
+    P2PV2TransportSerializer ser;
+    const auto header_for = [&](const std::string &type, size_t size) {
+        CSerializedNetMsg msg;
+        msg.m_type = type;
+        msg.data.assign(size, 0x07);
+        std::vector<uint8_t> header;
+        ser.prepareForTransport(config, msg, header);
+        return header;
+    };
+    // Known type: length, then a 1-byte id; no magic, no checksum.
+    const auto ping{header_for(NetMsgType::PING, 8)};
+    BOOST_REQUIRE_EQUAL(ping.size(), 5U);
+    BOOST_CHECK_EQUAL(ReadLE32(ping.data()), 9U);
+    BOOST_CHECK_EQUAL(ping[4], *GetP2PV2MessageId(NetMsgType::PING));
+    // Type without an id: 0, its length and name.
+    const auto other{header_for("custommsg", 3)};
+    BOOST_CHECK_EQUAL(ReadLE32(other.data()), 2U + 9U + 3U);
+    BOOST_CHECK_EQUAL(other[4], 0);
+    BOOST_CHECK_EQUAL(other[5], 9);
+    // Ids are fixed: these never change.
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::VERSION), 1);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::AVAPROOFSREQ), 41);
+    BOOST_CHECK(!GetP2PV2MessageType(0));
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::SENDINVSHORT), 58);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(58), NetMsgType::SENDINVSHORT);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::INVSHORT), 59);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(59), NetMsgType::INVSHORT);
+    BOOST_CHECK(!GetP2PV2MessageType(60));
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::AVATREASURY), 42);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(42), NetMsgType::AVATREASURY);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::AVABATCH), 43);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(43), NetMsgType::AVABATCH);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::MINEDHEADER), 44);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(44), NetMsgType::MINEDHEADER);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::SEALEDHEADER), 45);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(45), NetMsgType::SEALEDHEADER);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::SEALEDBLOCK), 46);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(46), NetMsgType::SEALEDBLOCK);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::MERKLIXSYNC), 47);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(47), NetMsgType::MERKLIXSYNC);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::GETMERKLIXBUCK), 48);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(48), NetMsgType::GETMERKLIXBUCK);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::MERKLIXBUCK), 49);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(49), NetMsgType::MERKLIXBUCK);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::GETSHORTTX), 50);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(50), NetMsgType::GETSHORTTX);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::SHORTTX), 51);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(51), NetMsgType::SHORTTX);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::GETUTXOROOTS), 52);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(52), NetMsgType::GETUTXOROOTS);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::UTXOROOTS), 53);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(53), NetMsgType::UTXOROOTS);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::GETUTXOSHARD), 54);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(54), NetMsgType::GETUTXOSHARD);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::UTXOSHARD), 55);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(55), NetMsgType::UTXOSHARD);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::GETBLOCKUNDO), 56);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(56), NetMsgType::GETBLOCKUNDO);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageId(NetMsgType::BLOCKUNDO), 57);
+    BOOST_CHECK_EQUAL(*GetP2PV2MessageType(57), NetMsgType::BLOCKUNDO);
+
+
+    // Deserialize one byte at a time.
+    const auto parse = [&](const std::vector<uint8_t> &bytes,
+                           bool &reject) -> std::optional<CNetMessage> {
+        P2PV2TransportDeserializer des{config, /*node_id=*/0};
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            Span<const uint8_t> b{bytes.data() + i, 1};
+            if (des.Read(config, b) < 0) {
+                return std::nullopt;
+            }
+            if (des.Complete()) {
+                BOOST_CHECK_EQUAL(i, bytes.size() - 1);
+                return des.GetMessage(std::chrono::microseconds{0}, reject);
+            }
+        }
+        return std::nullopt;
+    };
+    bool reject{false};
+    auto with_payload = [](std::vector<uint8_t> h, size_t n) {
+        h.insert(h.end(), n, 0x07);
+        return h;
+    };
+    auto msg{parse(with_payload(ping, 8), reject)};
+    BOOST_REQUIRE(msg);
+    BOOST_CHECK(!reject);
+    BOOST_CHECK_EQUAL(msg->m_type, NetMsgType::PING);
+    BOOST_CHECK_EQUAL(msg->m_message_size, 8U);
+    BOOST_CHECK_EQUAL(msg->m_raw_message_size, 13U);
+    msg = parse(with_payload(other, 3), reject);
+    BOOST_REQUIRE(msg);
+    BOOST_CHECK_EQUAL(msg->m_type, "custommsg");
+    BOOST_CHECK_EQUAL(msg->m_message_size, 3U);
+    // An id-only message (verack) completes with no payload.
+    msg = parse(header_for(NetMsgType::VERACK, 0), reject);
+    BOOST_REQUIRE(msg);
+    BOOST_CHECK_EQUAL(msg->m_type, NetMsgType::VERACK);
+    BOOST_CHECK_EQUAL(msg->m_message_size, 0U);
+    // Unassigned id or unprintable name: rejected message.
+    msg = parse({2, 0, 0, 0, 200, 0x01}, reject);
+    BOOST_REQUIRE(msg);
+    BOOST_CHECK(reject);
+    msg = parse({3, 0, 0, 0, 0, 1, 0x01}, reject);
+    BOOST_REQUIRE(msg);
+    BOOST_CHECK(reject);
+    // Empty, oversized, a type longer than its message, a long name: the
+    // stream is invalid.
+    BOOST_CHECK(!parse({0, 0, 0, 0}, reject));
+    BOOST_CHECK(!parse({0xff, 0xff, 0xff, 0x7f, 16, 0}, reject));
+    BOOST_CHECK(!parse({2, 0, 0, 0, 0, 5, 'a', 'b', 'c', 'd', 'e'}, reject));
+    BOOST_CHECK(!parse({20, 0, 0, 0, 0, 13}, reject));
+}
+
 BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
     auto url{ParseWebSocketURL("wss://Node.example.com/p2p/ws")};
     BOOST_REQUIRE(url);
@@ -2151,8 +2265,8 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
     BOOST_CHECK_EQUAL(url->authority, "[::1]:8443");
     BOOST_CHECK_EQUAL(url->target, "/custom?x=1");
 
-    for (const char *bad :
-         {"http://a.com", "wss://", "wss://:443", "ws://a.com:99999", "a.com"}) {
+    for (const char *bad : {"http://a.com", "wss://", "wss://:443",
+                            "ws://a.com:99999", "a.com"}) {
         BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
     }
     // A key pin in the fragment
@@ -2166,8 +2280,9 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
     BOOST_CHECK_EQUAL(url->target, "/p2p/ws");
     // Standard base64 with padding is accepted as well
     BOOST_CHECK(DecodeSpkiPin(EncodeBase64(key)) == key);
-    for (const char *bad : {"wss://host/p2p/ws#spki=", "wss://host/p2p/ws#spki=AAAA",
-                            "wss://host/p2p/ws#other=x"}) {
+    for (const char *bad :
+         {"wss://host/p2p/ws#spki=", "wss://host/p2p/ws#spki=AAAA",
+          "wss://host/p2p/ws#other=x"}) {
         BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
     }
 
@@ -2226,7 +2341,8 @@ BOOST_AUTO_TEST_CASE(sock_buffered_data_hooks) {
     const Config &config{m_node.chainman->GetConfig()};
     ConnmanTestMsg connman{config, 0x1337, 0x1337, *m_node.addrman};
     const std::string garbage(100, 'x');
-    auto sock{std::make_shared<BufferedSock>(SOCKET(sv[0]), garbage, Sock::SEND)};
+    auto sock{
+        std::make_shared<BufferedSock>(SOCKET(sv[0]), garbage, Sock::SEND)};
     CNode *node = new CNode{/*id=*/0,
                             sock,
                             CAddress{},
