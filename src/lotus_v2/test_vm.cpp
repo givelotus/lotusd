@@ -145,14 +145,14 @@ void RegistryAllocation() {
 }
 void ControlAndArithmetic() {
     for (const auto &valid :
-         {"4d4e9e00a6", "00696a4e", "4e69614e6b646a4e",
-          "c96979c969794f6b6a666a4e",
+         {"4d4e9e00a6", "00696a4e", "4e69614e4e6b646a4e",
+          "c96979c969794e4f6b6a666a4e",
           "4e7a91", "4c004c00914e91"})
         Expect(valid, VmStatus::Success, {}, PROFILE, 1);
     Expect("006179634e64", VmStatus::Success);
-    Expect("00614e6b634e64", VmStatus::Success); // BREAK in skipped arm
+    Expect("00614e4e6b634e64", VmStatus::Success); // BREAK in skipped arm
     Expect("00696b6a4e", VmStatus::Success); // BREAK in zero-iteration loop
-    Expect("4e614e6b634e64", VmStatus::Invalid); // executed outside loop
+    Expect("4e614e4e6b634e64", VmStatus::Invalid); // executed outside loop
     Expect("00616b", VmStatus::Invalid); // still requires complete syntax
     Expect("006b6a", VmStatus::Invalid);
     Expect("61", VmStatus::Invalid, {Number(2)});
@@ -541,7 +541,7 @@ void ChargedAccounting() {
     CHECK(loop_dynamic.charged && loop_dynamic.accounting_cost == 4646 &&
           loop_dynamic.invocation.status == VmStatus::Success &&
           loop_dynamic.invocation.executed_cost == 56);
-    auto loop_break = charge("5269794e6b6a4e");
+    auto loop_break = charge("5269794e4e6b6a4e");
     CHECK(loop_break.charged &&
           loop_break.invocation.status == VmStatus::Success &&
           loop_break.invocation.executed_cost > 0 &&
@@ -668,6 +668,60 @@ void EnumerateIdiom() {
     CHECK(separated.accounting_cost > charge("c969794e796a4e", 256).accounting_cost);
     // Three nested loops never decode, whatever their bounds.
     Expect("c969c969c9696a6a6a4e", VmStatus::Invalid, {}, PROFILE, 1);
+}
+// BREAK pops Boolean(cond) and N(depth): N(1) exits `depth` loops, N(0)
+// continues. The depth is checked even when the condition is false.
+void ConditionalBreak() {
+    // acc=0; 3 iterations of acc+=1, each followed by a BREAK.
+    Expect("00 5069 7998 004e6b 6a 50a7 4e", VmStatus::Success);   // cond 0
+    Expect("00 5069 7998 4e4e6b 6a 4ea7 4e", VmStatus::Success);   // cond 1
+    Expect("00 5069 7998 4e4e6b 66 6a 4ea7 4e", VmStatus::Success); // rest skipped
+    Expect("00 5069 7998 004e6b 66 6a 4e", VmStatus::Invalid);     // rest runs
+    // Depth 2 leaves both loops; depth 2 with cond 0 runs all 4 bodies.
+    Expect("00 4f69 79 4f69 7998 4e4f6b 6a6a 4ea7 4e", VmStatus::Success);
+    Expect("00 4f69 79 4f69 7998 004f6b 6a6a 51a7 4e", VmStatus::Success);
+    Expect("00 4f69 79 4f69 7998 4e4e6b 6a6a 4fa7 4e", VmStatus::Success);
+    // A depth out of range errors even when cond is 0.
+    for (const auto &bad : {"4e69 79 004f6b 6a 4e", "4e69 79 00006b 6a 4e",
+                            "004e6b 4e", "4e4e6b 4e"}) {
+        const auto result = EvaluateVm(Hex(bad), {}, PROFILE);
+        CHECK(result.status == VmStatus::Invalid &&
+              result.error == "BREAK depth");
+    }
+    // Non-Boolean conditions error; so does a missing operand.
+    for (const auto &bad : {"4e69 79 4f4e6b 6a 4e", "4e69 79 4d4e6b 6a 4e"})
+        CHECK(EvaluateVm(Hex(bad), {}, PROFILE).error ==
+              "noncanonical Boolean");
+    VmBytes long_true(17);
+    long_true[0] = 1;
+    CHECK(EvaluateVm(Hex("4e69 79 7a 4e6b 6a 794e"), {long_true}, PROFILE)
+              .error == "noncanonical Boolean");
+    CHECK(EvaluateVm(Hex("4e69 79 4e6b 6a 4e"), {}, PROFILE).error ==
+          "stack underflow");
+    // Skipped arms and zero-iteration loops never execute BREAK.
+    Expect("00 61 4d4d6b 64 4e", VmStatus::Success);
+    Expect("00 69 4d4d6b 6a 4e", VmStatus::Success);
+    // The size pass continues after BREAK: with cond 0 the straight-line
+    // body is charged exactly, including work after the BREAK.
+    auto schedule = IllustrativeCost();
+    const auto fall = EvaluateVmCharged(
+        Hex("00 5069 7998 004e6b 03616263b879 6a 50a7 4e"), {}, PROFILE,
+        schedule);
+    CHECK(fall.charged && fall.invocation.status == VmStatus::Success &&
+          fall.invocation.executed_cost == fall.accounting_cost);
+    // A taken BREAK costs less than the static bound, never more.
+    const auto taken = EvaluateVmCharged(
+        Hex("00 5069 7998 4e4e6b 03616263b879 6a 4ea7 4e"), {}, PROFILE,
+        schedule);
+    CHECK(taken.charged && taken.invocation.status == VmStatus::Success &&
+          taken.invocation.executed_cost < taken.accounting_cost);
+    // Wide operands are charged at their size in both views.
+    VmBytes wide_one(32);
+    wide_one[0] = 1;
+    const auto wide = EvaluateVmCharged(Hex("4e69 79 007c 6b 6a 794e"),
+                                        {wide_one}, PROFILE, schedule);
+    CHECK(wide.charged && wide.invocation.status == VmStatus::Success &&
+          wide.invocation.executed_cost <= wide.accounting_cost);
 }
 void AuthenticatedPayment() {
     const auto wire =
@@ -1281,6 +1335,7 @@ int main() {
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();
+    ConditionalBreak();
     AuthenticatedPayment();
     AuthenticatedFieldSizeHints();
     PreparedTransactionOwnership();
