@@ -86,6 +86,7 @@ TEST_FRAMEWORK_MODULES = [
     "merkle",
     "messages",
     "muhash",
+    "results",
     "script",
     "test_framework",
     "test_node",
