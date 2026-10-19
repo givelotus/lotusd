@@ -33,10 +33,24 @@ be added in a later schema version, but existing fields keep their meaning.
 One JSON object per line, each with `"event"` and `"schema": 1`:
 
 - `{"event": "start", "name": ...}` when a test starts;
+- `{"event": "phase", "name": ..., "phase": ...}` as each of the test's phases
+  starts (`chain_init`, `network_setup`, `body`, `final_stop`, `cleanup`);
+- `{"event": "log", "name": ..., "time": ..., "level": ..., "logger": ...,
+  "message": ...}` for each line the test logs at INFO or above;
 - `{"event": "finish", "result": {...}}` when it finishes, with the result above;
 - `{"event": "summary", ...}` once at the end, with the summary below.
 
-Use `--jsonl-file=-` to stream the events to standard output.
+Events of tests running at the same time interleave; `name` says which test
+each is about. With `--jsonl-file=-` the events go to standard output, which
+then carries nothing else: the usual console output goes to standard error.
+
+## Console
+
+On an interactive terminal (and not on CI), the bottom of the screen shows
+the run's progress and one line per running test: its phase, how long it has
+been running and the last line it logged. Finished tests and failure details
+are printed above it. Otherwise each test prints a line when it starts and
+when it finishes.
 
 ## Summary (`--json-summary=FILE`)
 

@@ -9,16 +9,22 @@ job. The worker becomes the leader of its own process group (so the runner
 can stop it and every bitcoind it started), sends the test's own stdout and
 stderr to files in the job's directory, runs the test class with the job's
 arguments, and sends the JobResult back over the connection.
+
+While the test runs, the worker also sends its progress over the connection:
+{"event": "phase", "phase": name} as each phase starts, and {"event": "log",
+...} for each line the test logs at INFO or above.
 """
 
 import glob
 import importlib.util
+import logging
 import multiprocessing
 import os
 import shutil
 import signal
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import unittest
@@ -36,6 +42,48 @@ def load_class(tests_dir, file, class_name):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return getattr(module, class_name)
+
+
+class Progress:
+    """Sends messages to the test runner; the test's threads all log."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.lock = threading.Lock()
+
+    def send(self, message):
+        with self.lock:
+            try:
+                self.conn.send(message)
+            except (OSError, ValueError):
+                # The runner is gone: let the test finish anyway
+                pass
+
+    def phase(self, name):
+        self.send({"event": "phase", "phase": name})
+
+
+class ProgressLogHandler(logging.Handler):
+    """Forwards the test's log lines at INFO and above."""
+
+    def __init__(self, progress):
+        super().__init__(logging.INFO)
+        self.progress = progress
+
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return
+        self.progress.send(
+            {
+                "event": "log",
+                "time": record.created,
+                "level": record.levelname,
+                "logger": record.name,
+                "message": message,
+            }
+        )
 
 
 def read(path):
@@ -88,10 +136,13 @@ def run_job(job, conn):
         os.dup2(f, fd)
         os.close(f)
     os.environ.update(job.get("env", {}))
+    progress = Progress(conn)
+    logging.getLogger("TestFramework").addHandler(ProgressLogHandler(progress))
     try:
         cls = load_class(job["tests_dir"], job["file"], job["class_name"])
         sys.argv = [os.path.join(job["tests_dir"], job["file"])] + job["argv"]
         test = cls(argv=job["argv"])
+        test.on_phase = progress.phase
         exit_code = test.main(exit_process=False)
     except BaseException as e:
         # The test could not even be set up (import error, bad arguments...)
@@ -111,7 +162,7 @@ def run_job(job, conn):
                 "message": str(e),
                 "traceback": traceback.format_exc(),
             }
-        conn.send(result.to_dict())
+        progress.send(result.to_dict())
         os._exit(1)
     sys.stdout.flush()
     sys.stderr.flush()
@@ -130,14 +181,15 @@ def run_job(job, conn):
             "message": "the test wrote to stderr",
             "traceback": result.stderr_tail,
         }
-    conn.send(result.to_dict())
+    progress.send(result.to_dict())
     os._exit(exit_code)
 
 
-def run_in_process(job, timeout=None):
+def run_in_process(job, timeout=None, on_progress=None):
     """Run a test job (see test_framework/worker.py) in a new process.
 
-    Returns the JobResult. A worker that dies without reporting a result is
+    Calls on_progress(message) for each progress message. Returns the
+    JobResult. A worker that dies without reporting a result is
     "crashed"; one still running after `timeout` seconds is stopped (with
     every process it started) and "timeout"."""
     ctx = multiprocessing.get_context("spawn")
@@ -151,9 +203,13 @@ def run_in_process(job, timeout=None):
     while result is None:
         if receiver.poll(0.2):
             try:
-                result = JobResult.from_dict(receiver.recv())
+                message = receiver.recv()
             except EOFError:
                 break
+            if "event" not in message:
+                result = JobResult.from_dict(message)
+            elif on_progress is not None:
+                on_progress(message)
         elif not process.is_alive() and not receiver.poll(0):
             break
         elif timeout is not None and time.time() - start > timeout:
@@ -208,6 +264,7 @@ class Case(BitcoinTestFramework):
     def run_test(self):
         action = os.environ["WORKER_UNIT_ACTION"]
         print("hello from the test")
+        self.log.info("working on it")
         if action == "fail":
             raise AssertionError("boom")
         if action == "skip":
@@ -221,7 +278,7 @@ class Case(BitcoinTestFramework):
             time.sleep(600)
 """
 
-    def run_action(self, action, timeout=None):
+    def run_action(self, action, timeout=None, on_progress=None):
         workdir = tempfile.mkdtemp(prefix="worker_unit_")
         self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
         with open(os.path.join(workdir, "case_test.py"), "w", encoding="utf8") as f:
@@ -244,7 +301,7 @@ class Case(BitcoinTestFramework):
             "stderr_path": f"{tmpdir}.stderr",
             "env": {"WORKER_UNIT_ACTION": action},
         }
-        return run_in_process(job, timeout)
+        return run_in_process(job, timeout, on_progress)
 
     def test_passed(self):
         result = self.run_action("pass")
@@ -252,6 +309,15 @@ class Case(BitcoinTestFramework):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("hello from the test", result.stdout_tail)
         self.assertIn("body", [p["name"] for p in result.phases])
+
+    def test_progress(self):
+        events = []
+        self.run_action("pass", on_progress=events.append)
+        phases = [e["phase"] for e in events if e["event"] == "phase"]
+        self.assertEqual(phases[:3], ["chain_init", "network_setup", "body"])
+        logs = [e for e in events if e["event"] == "log"]
+        self.assertIn("working on it", [e["message"] for e in logs])
+        self.assertTrue(all(e["level"] != "DEBUG" for e in logs))
 
     def test_failed(self):
         result = self.run_action("fail")

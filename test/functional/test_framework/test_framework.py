@@ -235,6 +235,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.nodes: List[TestNode] = []
         # Wall-clock phases of this test (see --phasedir)
         self._phases = []
+        # Called with each phase's name as it starts (the test runner's worker
+        # uses it to show the test's progress)
+        self.on_phase = None
         self._node_timings = []
         self._waits = []
         self.network_thread = None
@@ -696,6 +699,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     @contextlib.contextmanager
     def _phase(self, name):
         """Record the wall-clock duration of a phase of the test."""
+        if self.on_phase is not None:
+            self.on_phase(name)
         start = time.time()
         try:
             yield

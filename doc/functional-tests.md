@@ -70,6 +70,11 @@ it started, after `--test-timeout` seconds (default 1200, multiplied by
 of the test's log, warnings and errors from the nodes' logs, and the command
 that runs the test again on its own.
 
+On a terminal, the runner shows each running test's phase, time so far and
+last log line as it goes. For tools, `--jsonl-file=FILE` (or `-` for
+standard output) streams each test's start, phases, log lines and result as
+JSON lines; see `test/functional/README-runner-output.md`.
+
 Some tests have variants, e.g. a descriptor-wallet run. The runner runs every
 variant; their results are named `<test>[<variant>]`. To run one by itself:
 
