@@ -52,6 +52,52 @@ been running and the last line it logged. Finished tests and failure details
 are printed above it. Otherwise each test prints a line when it starts and
 when it finishes.
 
+### Failure details
+
+For a failed test the runner prints, once each:
+
+- the traceback (or the failure message), and the test's stderr if it is not
+  already the failure;
+- the end of the test's **log timeline**: the framework log and every node's
+  `debug.log` merged by time, up to and including the line where the
+  framework logged the exception (only that line: the traceback is above),
+  at most 40 lines. Without a logged exception (a timeout, a crash), the
+  last 40 lines. Each line starts with its source (`test`, `node0`, ...), in
+  a fixed-width column, then the time of day; node lines show the category,
+  and warnings and errors their level, without the source location:
+
+  ```
+  test   12:00:01.123000 Mining 10 blocks
+  node0  12:00:01.130211 [net] received: inv (37 bytes) peer=0
+  node1  12:00:01.131002 WARNING [validation] ...
+  test   12:00:02.004000 ERROR Unexpected exception
+  ```
+- the test directory, the command that reruns the test, and `combined.log`.
+
+`<test directory>/combined.log` is the whole timeline as plain text, written
+when the test fails: the text logs (`test_framework.log` and each node's
+`debug.log`) merged by time, each line prefixed by its source, continuation
+lines (e.g. tracebacks) indented under their event. A node line's
+`(mocktime: ...)` does not affect the order: lines are ordered by their
+wall-clock timestamp, and lines with the same timestamp keep the order of
+their file (the framework first, then the nodes by number). Lines before a
+log's first timestamp are shown with the time they are ordered by.
+
+`test_framework/timeline.py` builds both in constant memory:
+
+- the timeline excerpt reads only the end of each log: the framework log
+  backwards to the logged exception, and each node's log up to that time,
+  found by binary search (the logs are in time order). It takes a few
+  milliseconds whatever the size of the logs;
+- `combined.log` is merged in large binary blocks, comparing the
+  timestamps as bytes (fixed-width ISO 8601 with microseconds sorts
+  correctly as bytes), without parsing lines; only blocks with lines that
+  do not start with such a timestamp are parsed line by line. About 500
+  MB/s of CPU time on an Apple M-series core.
+
+For an HTML version of the same logs, run
+`combine_logs.py --html <test directory> > combined.html` (needs `jinja2`).
+
 ## Summary (`--json-summary=FILE`)
 
 `{"schema": 1, "wall_time": s, "accumulated_time": s, "counts": {status: n}, "failed": [names]}`
