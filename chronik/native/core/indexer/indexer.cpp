@@ -356,6 +356,12 @@ IndexerImpl::IndexerImpl(const Host &host, IndexerParams params,
                                           m_lokad_id_group, m_tokens.get(),
                                           m_ext_groups);
     m_subs = std::make_shared<SubsHub>(HostSha256(m_host));
+    {
+        SubscriptionHub registrar(*m_subs);
+        for (const auto &ext : m_exts) {
+            ext->RegisterWsScriptTypes(registrar);
+        }
+    }
 
     for (const auto &ext : m_exts) {
         ext->Open(indexes_path, m_params.wipe);

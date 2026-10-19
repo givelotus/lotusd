@@ -137,8 +137,7 @@ Service::Start(const Host &host, ServiceParams params,
                           return HttpResponse::Protobuf(proto::Empty());
                       });
     for (const auto &ext : indexer.Extensions()) {
-        // RegisterWsScriptTypes takes the undefined SubscriptionHub (see
-        // extension.h); no extension implements it yet.
+        // (WS script types are registered by the indexer at startup.)
         ext->RegisterRoutes(*impl->router);
     }
 

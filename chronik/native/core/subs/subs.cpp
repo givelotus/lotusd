@@ -10,6 +10,7 @@
 #include <chronik/native/token/lokad_id.h>
 
 #include <set>
+#include <stdexcept>
 
 namespace chronik::native {
 
@@ -186,6 +187,9 @@ void Subs::TxEventAllGroups(const Tx &tx, TxMsgType msg_type,
     BroadcastTxMsg(tx.txid, msg_type);
     m_subs_txid.HandleTxEvent(tx, aux, msg_type, &m_pending_wakers);
     m_subs_script.HandleTxEvent(tx, aux, msg_type, &m_pending_wakers);
+    for (const auto &group : m_subs_ext) {
+        group->HandleTxEvent(tx, aux, msg_type, &m_pending_wakers);
+    }
     m_subs_token_id.HandleTxEvent(tx, aux, msg_type, &m_pending_wakers);
     m_subs_lokad_id.HandleTxEvent(tx, aux, msg_type, &m_pending_wakers);
 }
@@ -195,8 +199,46 @@ void Subs::HandleTxEvent(const Tx &tx, TxMsgType msg_type, const SubsAux &aux) {
 }
 
 bool Subs::AllGroupsEmpty() const {
+    for (const auto &group : m_subs_ext) {
+        if (!group->IsEmpty()) {
+            return false;
+        }
+    }
     return m_subs_txid.IsEmpty() && m_subs_script.IsEmpty() &&
            m_subs_token_id.IsEmpty() && m_subs_lokad_id.IsEmpty();
+}
+
+size_t Subs::AddExtGroup(std::unique_ptr<SubsGroupKind> kind) {
+    m_subs_ext.push_back(std::make_unique<SubsGroup>(std::move(kind)));
+    return m_subs_ext.size() - 1;
+}
+
+// ---- SubsHub / SubscriptionHub ----
+
+const WsScriptType *SubsHub::FindWsScriptType(const std::string &script_type,
+                                              size_t payload_size) const {
+    for (const WsScriptType &type : m_ws_script_types) {
+        if (type.script_type == script_type &&
+            type.payload_size == payload_size) {
+            return &type;
+        }
+    }
+    return nullptr;
+}
+
+size_t SubscriptionHub::AddGroup(std::unique_ptr<SubsGroupKind> kind) {
+    return m_hub.Write()->AddExtGroup(std::move(kind));
+}
+
+void SubscriptionHub::AddWsScriptType(WsScriptType type) {
+    {
+        auto subs = m_hub.Write();
+        if (type.group >= subs->NumExtGroups()) {
+            throw std::invalid_argument("WS script type " + type.script_type +
+                                        " has no extension group");
+        }
+    }
+    m_hub.m_ws_script_types.push_back(std::move(type));
 }
 
 void Subs::HandleBlockTxEvents(const std::vector<TxRef> &txs,
