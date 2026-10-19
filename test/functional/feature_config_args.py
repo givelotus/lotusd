@@ -151,6 +151,14 @@ class ConfArgsTest(BitcoinTestFramework):
             ),
             extra_args=["-proxy"],
         )
+        # ZeroMQ is not part of Lotus V2: its options are unknown.
+        self.nodes[0].assert_start_raises_init_error(
+            expected_msg=(
+                "Error: Error parsing command line arguments: Invalid parameter"
+                " -zmqpubhashblock=tcp://127.0.0.1:1"
+            ),
+            extra_args=["-zmqpubhashblock=tcp://127.0.0.1:1"],
+        )
 
     def test_log_buffer(self):
         self.stop_node(0)

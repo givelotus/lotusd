@@ -10,12 +10,14 @@ set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 include(Deprecation)
-foreach(FEATURE WALLET ZMQ CLI TX QT SEEDER CHAINSTATE IGUANA)
+foreach(FEATURE WALLET CLI TX QT SEEDER CHAINSTATE IGUANA)
 	deprecate_build_flag("BUILD_BITCOIN_${FEATURE}" "BUILD_${FEATURE}")
 endforeach()
 
 option(BUILD_WALLET "Activate the wallet functionality" ON)
-option(BUILD_ZMQ "Activate the ZeroMQ functionalities" ON)
+if(BUILD_ZMQ)
+	message(FATAL_ERROR "ZeroMQ is not part of Lotus V2; remove -DBUILD_ZMQ=ON")
+endif()
 option(BUILD_CLI "Build lotus-cli" ON)
 option(BUILD_TX "Build bitcoin-tx" ON)
 option(BUILD_QT "Build bitcoin-qt" ON)
@@ -80,7 +82,6 @@ native_add_cmake_flags(
 	"-DBUILD_WALLET=OFF"
 	"-DBUILD_CHRONIK=OFF"
 	"-DBUILD_QT=OFF"
-	"-DBUILD_ZMQ=OFF"
 	"-DENABLE_HTTP2=OFF"
 	"-DENABLE_QRCODE=OFF"
 	"-DUSE_JEMALLOC=OFF"
@@ -865,16 +866,6 @@ if(BUILD_WALLET)
 	install_manpages(bitcoin-wallet)
 else()
 	target_sources(server PRIVATE dummywallet.cpp)
-endif()
-
-# ZeroMQ
-if(BUILD_ZMQ)
-	add_subdirectory(zmq)
-	target_link_libraries(server zmq)
-
-	# FIXME: This is needed because of an unwanted dependency:
-	# zmqpublishnotifier.cpp -> blockstorage.h -> txdb.h -> dbwrapper.h -> leveldb/db.h
-	target_link_libraries(zmq leveldb)
 endif()
 
 # RPC client support

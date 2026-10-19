@@ -60,7 +60,6 @@ enum class OptionsCategory {
     CONNECTION,
     WALLET,
     WALLET_DEBUG_TEST,
-    ZMQ,
     DEBUG_TEST,
     CHAINPARAMS,
     NODE_RELAY,
