@@ -32,6 +32,25 @@ static bool CheckTransactionCommon(const CTransaction &tx,
                              "bad-txns-v2-too-many-outputs");
     }
 
+    // Only a V2 script can authorize a HAS_STATE output (ENFORCEOUTPUT and
+    // the per-transaction post-check), so a transaction of another version
+    // must not create one through the legacy output bridge.
+    if (tx.nVersion != 7) {
+        for (const auto &txout : tx.vout) {
+            const bool maybe_state =
+                !txout.vBranches.empty()
+                    ? (txout.nFlags & lotus::v2::OUTPUT_FLAG_HAS_STATE) != 0
+                    : txout.scriptPubKey.size() >= 43 &&
+                          (txout.scriptPubKey[0] &
+                           lotus::v2::OUTPUT_FLAG_HAS_STATE) != 0 &&
+                          (txout.scriptPubKey[0] & 0xf8) == 0;
+            if (maybe_state && txout.ToV2Output().HasState()) {
+                return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                     "bad-txns-legacy-state-output");
+            }
+        }
+    }
+
     // Size limit
     if (::GetSerializeSize(tx) > MAX_TX_SIZE) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
