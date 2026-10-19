@@ -260,6 +260,9 @@ class MiniWallet:
     def generate(self, num_blocks, **kwargs):
         """Generate blocks with coinbase outputs to the internal address, and call rescan_utxos"""
         kwargs.setdefault("invalid_call", False)
+        # MiniWallet coins are V2 outputs, which only a version 7 coinbase
+        # pays (regtest nodes default to legacy coinbases).
+        kwargs.setdefault("coinbase_version", 7)
         blocks = self._test_node.generatetodescriptor(
             num_blocks, self.get_descriptor(), **kwargs
         )

@@ -569,6 +569,11 @@ def write_config(config_path, *, n, chain, extra_config="", disable_autoconnect=
         f.write(f"chronikbind=127.0.0.1:{chronik_port(n)}\n")
         # Disable server-side timeouts to avoid intermittent issues
         f.write("rpcservertimeout=99000\n")
+        if chain_name_conf_section == "regtest":
+            # The inherited tests mine legacy coinbases and spend them with
+            # legacy transactions. A V2 test passes -coinbaseversion=7 on the
+            # command line, which takes precedence over the config file.
+            f.write("coinbaseversion=2\n")
         # Chronik by default is tuned for initial sync, tune it down for regtest
         f.write("chroniktxnumcachebucketsize=100\n")
         # FIXME fix the doc issues and turn this flag on to prevent new doc bugs
