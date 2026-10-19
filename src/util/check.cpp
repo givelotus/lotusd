@@ -4,6 +4,7 @@
 
 #include <util/check.h>
 
+#include <logging.h>
 #include <tinyformat.h>
 
 void assertion_fail(const char *file, int line, const char *func,
@@ -11,5 +12,8 @@ void assertion_fail(const char *file, int line, const char *func,
     auto str = strprintf("%s:%s %s: Assertion `%s' failed.\n", file, line, func,
                          assertion);
     fwrite(str.data(), 1, str.size(), stderr);
+    // Write the log lines queued so far, so that the log shows what led
+    // here.
+    LogInstance().Flush();
     std::abort();
 }
