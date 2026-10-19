@@ -118,6 +118,7 @@ enum class LogFormat {
     JSON,
     LOGFMT,
     JSON_GCP,
+    JSON_ECS,
 };
 
 /** Parse a supported -logformat value */
