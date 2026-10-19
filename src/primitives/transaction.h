@@ -14,6 +14,8 @@
 #include <serialize.h>
 #include <support/allocators/chunked_slab.h>
 
+#include <atomic>
+
 /**
  * An outpoint - a combination of a transaction hash and an index n into its
  * vout.
@@ -195,6 +197,32 @@ inline void SerializeTransaction(const TxType &tx, Stream &s) {
     s << tx.nLockTime;
 }
 
+class CTransaction;
+
+/** Precompute sighash midstate to avoid quadratic hashing */
+struct PrecomputedTransactionData {
+    uint256 hashPrevouts, hashSequence, hashOutputs;
+
+    PrecomputedTransactionData()
+        : hashPrevouts(), hashSequence(), hashOutputs() {}
+
+    PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
+        default;
+    PrecomputedTransactionData &
+    operator=(const PrecomputedTransactionData &txdata) = default;
+
+    template <class T> explicit PrecomputedTransactionData(const T &tx);
+
+    /**
+     * Copy the midstate cached when the CTransaction was constructed instead
+     * of hashing again.
+     */
+    explicit PrecomputedTransactionData(const CTransaction &tx);
+
+    /** Hash the midstate of tx. */
+    template <class T> static PrecomputedTransactionData Compute(const T &tx);
+};
+
 /**
  * The basic transaction that is broadcasted on the network and contained in
  * blocks. A transaction can contain multiple inputs and outputs.
@@ -222,6 +250,10 @@ private:
     /** Memory only. */
     const uint32_t m_serialize_size;
     const uint256 hash;
+    enum : uint8_t { PRECOMPUTED_EMPTY, PRECOMPUTED_WRITING, PRECOMPUTED_READY };
+    mutable std::atomic<uint8_t> m_precomputed_state{PRECOMPUTED_EMPTY};
+    mutable PrecomputedTransactionData m_precomputed;
+    const PrecomputedTransactionData &FillPrecomputedData() const;
 
     uint32_t ComputeSerializedSize() const;
     uint256 ComputeHash() const;
@@ -233,6 +265,8 @@ public:
     /** Convert a CMutableTransaction into a CTransaction. */
     explicit CTransaction(const CMutableTransaction &tx);
     explicit CTransaction(CMutableTransaction &&tx);
+    CTransaction(const CTransaction &) = delete;
+    CTransaction &operator=(const CTransaction &) = delete;
 
     template <typename Stream> inline void Serialize(Stream &s) const {
         if constexpr (std::is_same_v<std::remove_cvref_t<Stream>,
@@ -256,6 +290,18 @@ public:
 
     TxId GetId() const { return TxId(hash); }
     TxHash GetHash() const { return TxHash(hash); }
+
+    /**
+     * Sighash midstate (hashPrevouts, hashSequence, hashOutputs), computed on
+     * first call and immutable afterwards, so safe to share across threads.
+     */
+    const PrecomputedTransactionData &GetPrecomputedData() const {
+        if (m_precomputed_state.load(std::memory_order_acquire) ==
+            PRECOMPUTED_READY) {
+            return m_precomputed;
+        }
+        return FillPrecomputedData();
+    }
 
     // Return sum of txouts.
     Amount GetValueOut() const;
@@ -281,9 +327,12 @@ public:
     std::string ToString() const;
 };
 #if defined(__x86_64__)
-static_assert(sizeof(CTransaction) == 96,
-              "sizeof CTransaction is expected to be 96 bytes");
+static_assert(sizeof(CTransaction) == 192,
+              "sizeof CTransaction is expected to be 192 bytes");
 #endif
+
+inline PrecomputedTransactionData::PrecomputedTransactionData(const CTransaction &tx)
+    : PrecomputedTransactionData(tx.GetPrecomputedData()) {}
 
 /**
  * A mutable version of CTransaction.
@@ -351,21 +400,6 @@ static inline CTransactionRef MakeTransactionRef(Tx &&txIn) {
  */
 template <> struct SharedPtrDeserializeAllocator<CTransaction> {
     using type = TransactionRefAllocator;
-};
-
-/** Precompute sighash midstate to avoid quadratic hashing */
-struct PrecomputedTransactionData {
-    uint256 hashPrevouts, hashSequence, hashOutputs;
-
-    PrecomputedTransactionData()
-        : hashPrevouts(), hashSequence(), hashOutputs() {}
-
-    PrecomputedTransactionData(const PrecomputedTransactionData &txdata) =
-        default;
-    PrecomputedTransactionData &
-    operator=(const PrecomputedTransactionData &txdata) = default;
-
-    template <class T> explicit PrecomputedTransactionData(const T &tx);
 };
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H

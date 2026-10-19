@@ -39,8 +39,10 @@
 
 #include <univalue.h>
 
+#include <atomic>
 #include <map>
 #include <string>
+#include <thread>
 
 typedef std::vector<uint8_t> valtype;
 
@@ -978,6 +980,142 @@ BOOST_AUTO_TEST_CASE(tx_getvalueout) {
     mtx.vout[1].nValue = (std::numeric_limits<int64_t>::max() - 1) * SATOSHI;
     CTransaction overflow_sum_tx{mtx};
     BOOST_CHECK_THROW(overflow_sum_tx.GetValueOut(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(precompute_and_script_checks_share_transaction_cache) {
+    const COutPoint previous{TxId{uint256::ONE}, 0};
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(previous);
+    mtx.vout.emplace_back(90 * SATOSHI, CScript() << OP_TRUE);
+    const CTransaction tx{std::move(mtx)};
+    PrecomputedBatchTxData prepared;
+    PrecomputeSingleTxData(tx, prepared);
+    BOOST_REQUIRE(prepared.regular_tx_checked);
+    BOOST_REQUIRE(prepared.regular_tx_valid);
+    const auto *cached = &tx.GetPrecomputedData();
+    CCoinsView base;
+    CCoinsViewCache coins{&base};
+    coins.AddCoin(previous, Coin{CTxOut{100 * SATOSHI, CScript() << OP_TRUE},
+                                 1, false}, false);
+    ValidationCache cache{1 << 20, 1 << 20};
+    LOCK(cs_main);
+    // Exercise the same checker used by mempool and block validation, then
+    // its deferred script-worker variant, against the cache warmed above.
+    for (bool deferred : {false, true}) {
+        TxValidationState state;
+        TxSigCheckLimiter limiter;
+        int sigchecks = 0;
+        std::vector<CScriptCheck> checks;
+        BOOST_REQUIRE(CheckInputScripts(tx, state, coins, 0, false, false,
+            tx.GetPrecomputedData(), cache, sigchecks, limiter, nullptr,
+            deferred ? &checks : nullptr));
+        for (auto &check : checks) BOOST_CHECK(!check().has_value());
+        BOOST_CHECK(cached == &tx.GetPrecomputedData());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cached_size_and_precomputed_data) {
+    // CTransaction caches its serialized size at construction and its
+    // sighash midstate on first use; both must match a fresh computation.
+    auto check = [](const CMutableTransaction &mtx) {
+        const CTransaction tx{mtx};
+        DataStream ss{};
+        ss << tx;
+        BOOST_CHECK_EQUAL(tx.GetTotalSize(), ss.size());
+        BOOST_CHECK_EQUAL(::GetSerializeSize(tx), ss.size());
+        BOOST_CHECK_EQUAL(::GetSerializeSize(mtx), ss.size());
+
+        const PrecomputedTransactionData fresh{mtx};
+        const PrecomputedTransactionData &cached = tx.GetPrecomputedData();
+        BOOST_CHECK(cached.hashPrevouts == fresh.hashPrevouts);
+        BOOST_CHECK(cached.hashSequence == fresh.hashSequence);
+        BOOST_CHECK(cached.hashOutputs == fresh.hashOutputs);
+        const PrecomputedTransactionData copied{tx};
+        BOOST_CHECK(copied.hashOutputs == fresh.hashOutputs);
+        BOOST_CHECK(PrecomputedTransactionData::Compute(tx).hashPrevouts ==
+                    fresh.hashPrevouts);
+    };
+
+    // Null transaction.
+    check(CMutableTransaction{});
+    {
+        const CTransaction null_tx;
+        BOOST_CHECK_EQUAL(null_tx.GetTotalSize(), ::GetSerializeSize(
+                                                      CMutableTransaction{}));
+    }
+    // Varying input/output counts and script sizes, including scripts that
+    // spill out of CScript's inline prevector storage.
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (size_t n_in = 0; n_in < 4; ++n_in) {
+        for (size_t n_out = 0; n_out < 4; ++n_out) {
+            CMutableTransaction mtx;
+            mtx.nVersion = 2;
+            mtx.nLockTime = rng.rand32();
+            for (size_t i = 0; i < n_in; ++i) {
+                mtx.vin.emplace_back(TxId{rng.rand256()}, rng.rand32(),
+                                     CScript() << rng.randbytes(i * 40),
+                                     rng.rand32());
+            }
+            for (size_t i = 0; i < n_out; ++i) {
+                mtx.vout.emplace_back(int64_t(rng.rand32()) * SATOSHI,
+                                      CScript() << rng.randbytes(i * 30));
+            }
+            check(mtx);
+            // Moving the mutable transaction in must give the same caches.
+            CMutableTransaction moved{mtx};
+            const CTransaction tx_moved{std::move(moved)};
+            BOOST_CHECK_EQUAL(tx_moved.GetTotalSize(),
+                              ::GetSerializeSize(mtx));
+            BOOST_CHECK(tx_moved.GetPrecomputedData().hashSequence ==
+                        PrecomputedTransactionData{mtx}.hashSequence);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(precomputed_data_concurrent_first_use) {
+    // Many threads racing on the first GetPrecomputedData() call must all see
+    // the same fully written cache, and the fill must happen in place.
+    constexpr int NUM_THREADS{8};
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (int round = 0; round < 200; ++round) {
+        CMutableTransaction mtx;
+        for (int i = 0; i < 3; ++i) {
+            mtx.vin.emplace_back(TxId{rng.rand256()}, rng.rand32(), CScript(),
+                                 rng.rand32());
+            mtx.vout.emplace_back(int64_t(rng.rand32()) * SATOSHI,
+                                  CScript() << rng.randbytes(25));
+        }
+        const PrecomputedTransactionData fresh{mtx};
+        const CTransactionRef tx = MakeTransactionRef(mtx);
+
+        std::atomic<bool> go{false};
+        std::vector<const PrecomputedTransactionData *> seen(NUM_THREADS);
+        std::vector<PrecomputedTransactionData> values(NUM_THREADS);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < NUM_THREADS; ++t) {
+            threads.emplace_back([&, t] {
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                const PrecomputedTransactionData &data =
+                    tx->GetPrecomputedData();
+                seen[t] = &data;
+                values[t] = data;
+            });
+        }
+        go.store(true, std::memory_order_release);
+        for (auto &thread : threads) {
+            thread.join();
+        }
+
+        const PrecomputedTransactionData *const cached =
+            &tx->GetPrecomputedData();
+        for (int t = 0; t < NUM_THREADS; ++t) {
+            BOOST_CHECK(seen[t] == cached);
+            BOOST_CHECK(values[t].hashPrevouts == fresh.hashPrevouts);
+            BOOST_CHECK(values[t].hashSequence == fresh.hashSequence);
+            BOOST_CHECK(values[t].hashOutputs == fresh.hashOutputs);
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

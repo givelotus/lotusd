@@ -63,8 +63,8 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
         "e726b3189dcc1c52957d0b69822613775fffffffff0221bd831d010000001976a9"
         "14fe91e42445fc4862e1b5566206b928764d9fc6b888ac5fad1502000000001976"
         "a914f883e595eb29b156edf2b0c2939a9e834a58e98f88ac00000000")};
-    CTransaction tx_1(deserialize, stream_1);
-    CTransactionRef ptx_1{MakeTransactionRef(tx_1)};
+    CTransactionRef ptx_1;
+    stream_1 >> ptx_1;
 
     // Random real transaction
     DataStream stream_2{ParseHex(
@@ -76,8 +76,8 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
         "6c547957b7700ff4dfbdefe76036c339ffffffff021bff3d11000000001976a914"
         "04943fdd508053c75000106d3bc6e2754dbcff1988ac2f15de00000000001976a9"
         "14a266436d2965547608b9e15d9032a7b9d64fa43188ac00000000")};
-    CTransaction tx_2(deserialize, stream_2);
-    CTransactionRef ptx_2{MakeTransactionRef(tx_2)};
+    CTransactionRef ptx_2;
+    stream_2 >> ptx_2;
 
     // Random real transaction
     DataStream stream_3{ParseHex(
@@ -89,8 +89,8 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
         "a33b5df5e29c726fa53b9a5816b286ffffffff0200477e25010000001976a914c7"
         "ff9b23b7c620df1617eb5f9a8a973c6eff693c88ac0068b63a010000001976a914"
         "3fcea20063968cb44c8afeea332223523f43d81788ac00000000")};
-    CTransaction tx_3(deserialize, stream_3);
-    CTransactionRef ptx_3{MakeTransactionRef(tx_3)};
+    CTransactionRef ptx_3;
+    stream_3 >> ptx_3;
 
     // It's easy to see that txids are sorted in lexicographical order:
     TxId txid_1{TxIdFromString(
@@ -99,9 +99,9 @@ BOOST_AUTO_TEST_CASE(package_hash_tests) {
         "0xb4749f017444b051c44dfd2720e88f314ff94f3dd6d56d40ef65854fcd7fff6b")};
     TxId txid_3{TxIdFromString(
         "0xfc073689bfb493026d6a618ab07f9f008bd90e1748663c2728211675fb9e234c")};
-    BOOST_CHECK_EQUAL(tx_1.GetId(), txid_1);
-    BOOST_CHECK_EQUAL(tx_2.GetId(), txid_2);
-    BOOST_CHECK_EQUAL(tx_3.GetId(), txid_3);
+    BOOST_CHECK_EQUAL(ptx_1->GetId(), txid_1);
+    BOOST_CHECK_EQUAL(ptx_2->GetId(), txid_2);
+    BOOST_CHECK_EQUAL(ptx_3->GetId(), txid_3);
 
     BOOST_CHECK(txid_1 < txid_2);
     BOOST_CHECK(txid_2 < txid_3);

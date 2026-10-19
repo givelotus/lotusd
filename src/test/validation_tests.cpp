@@ -84,9 +84,8 @@ static CBlock makeLargeDummyBlock(const size_t num_tx) {
     CBlock block;
     block.vtx.reserve(num_tx);
 
-    CTransaction tx;
     for (size_t i = 0; i < num_tx; i++) {
-        block.vtx.push_back(MakeTransactionRef(tx));
+        block.vtx.push_back(MakeTransactionRef());
     }
     return block;
 }

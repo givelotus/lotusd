@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <thread>
 
 std::string COutPoint::ToString() const {
     return strprintf("COutPoint(%s, %u)", txid.ToString().substr(0, 10), n);
@@ -192,6 +193,26 @@ CTransaction::CTransaction(const CMutableTransaction &tx)
 CTransaction::CTransaction(CMutableTransaction &&tx)
     : vin(std::move(tx.vin)), vout(std::move(tx.vout)), nVersion(tx.nVersion),
       nLockTime(tx.nLockTime), m_serialize_size(ComputeSerializedSize()), hash(ComputeHash()) {}
+
+const PrecomputedTransactionData &CTransaction::FillPrecomputedData() const {
+    // Hashing is deterministic, so racing callers compute identical data; only
+    // the thread that claims the slot writes it.
+    const PrecomputedTransactionData computed =
+        PrecomputedTransactionData::Compute(*this);
+    uint8_t expected = PRECOMPUTED_EMPTY;
+    if (m_precomputed_state.compare_exchange_strong(
+            expected, PRECOMPUTED_WRITING, std::memory_order_relaxed)) {
+        m_precomputed = computed;
+        m_precomputed_state.store(PRECOMPUTED_READY, std::memory_order_release);
+        return m_precomputed;
+    }
+    // Another thread is storing its identical result; that is a 96-byte copy.
+    while (m_precomputed_state.load(std::memory_order_acquire) !=
+           PRECOMPUTED_READY) {
+        std::this_thread::yield();
+    }
+    return m_precomputed;
+}
 
 Amount CTransaction::GetValueOut() const {
     Amount nValueOut = Amount::zero();
