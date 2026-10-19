@@ -48,11 +48,10 @@ class multidict(dict):
 class RawTransactionsTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 3
-        self.extra_args = [["-txindex"], ["-txindex"], ["-txindex"]]
-        self.noban_tx_relay = True
-        self.supports_cli = False
+    num_nodes = 3
+    extra_args = [["-txindex"], ["-txindex"], ["-txindex"]]
+    noban_tx_relay = True
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -77,9 +77,8 @@ def assert_balances(node, mine):
 class AvoidReuseTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
+    num_nodes = 2
+    noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

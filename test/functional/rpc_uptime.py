@@ -12,9 +12,8 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class UptimeTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
+    num_nodes = 1
+    setup_clean_chain = True
 
     def run_test(self):
         self._test_uptime()

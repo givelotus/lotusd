@@ -21,14 +21,13 @@ from test_framework.wallet_util import test_address
 class WalletTest(BitcoinTestFramework):
     # FIXME: a "descriptors" variant (--descriptors) fails.
 
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.noban_tx_relay = True
-        self.setup_clean_chain = True
-        self.extra_args = [
-            ["-acceptnonstdtxn=1"],
-        ] * self.num_nodes
-        self.supports_cli = False
+    num_nodes = 4
+    noban_tx_relay = True
+    setup_clean_chain = True
+    extra_args = [
+        ["-acceptnonstdtxn=1"],
+    ] * num_nodes
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

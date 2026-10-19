@@ -54,11 +54,10 @@ class MultiWalletTest(BitcoinTestFramework):
         "descriptors": {"descriptors": True},
     }
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.rpc_timeout = 120
-        self.extra_args = [["-nowallet"], []]
+    setup_clean_chain = True
+    num_nodes = 2
+    rpc_timeout = 120
+    extra_args = [["-nowallet"], []]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

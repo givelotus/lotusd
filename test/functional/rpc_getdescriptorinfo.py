@@ -9,10 +9,9 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class DescriptorTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [["-disablewallet"]]
-        self.wallet_names = []
+    num_nodes = 1
+    extra_args = [["-disablewallet"]]
+    wallet_names = []
 
     def test_desc(self, desc, isrange, issolvable, hasprivatekeys):
         info = self.nodes[0].getdescriptorinfo(desc)

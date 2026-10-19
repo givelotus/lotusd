@@ -18,10 +18,9 @@ from test_framework.util import assert_equal, assert_raises_rpc_error, satoshi_r
 
 
 class AbandonConflictTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [["-minrelaytxfee=10"], []]
-        self.noban_tx_relay = True
+    num_nodes = 2
+    extra_args = [["-minrelaytxfee=10"], []]
+    noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
