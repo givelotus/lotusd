@@ -118,7 +118,21 @@ public:
                         std::forward<Token>(token), /*zero_is_eof=*/false);
     }
 
-    /** Send close_notify once (not waiting for the peer's) */
+    /**
+     * Send close_notify, waiting for the socket to take it (not for the
+     * peer's). Completes with an error if the session was released.
+     */
+    template <typename Token> auto async_shutdown(Token &&token) {
+        return Run<int>(
+            [this]() {
+                // 0: our close_notify is sent; the peer's is not awaited.
+                const int r{SSL_shutdown(m_ssl.get())};
+                return r == 0 ? 1 : r;
+            },
+            std::forward<Token>(token), /*zero_is_eof=*/false);
+    }
+
+    /** Send close_notify once, without waiting (not for the peer's) */
     void shutdown(boost::system::error_code &ec) {
         ec = {};
         if (m_ssl) {
