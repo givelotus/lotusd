@@ -362,6 +362,25 @@ BOOST_AUTO_TEST_CASE(path_params) {
     resp = router.Handle(MakeRequest("GET", "/blocks/%ff/1"));
     BOOST_CHECK_EQUAL(resp.status, 400);
     BOOST_CHECK_EQUAL(BodyStr(resp), "Invalid URL: Invalid UTF-8 in `start`");
+
+    // Raw routes (no Path extractor) get the encoded segments, unchecked.
+    router.Get(
+        "/raw/:a/:b",
+        [](const HttpRequest &, const PathParams &p) {
+            BOOST_REQUIRE_EQUAL(p.names.size(), 2u);
+            return HttpResponse::Text(200, "raw:" + p[0] + "," + p[1]);
+        },
+        Router::PathExtraction::Raw);
+    BOOST_CHECK_EQUAL(
+        BodyStr(router.Handle(MakeRequest("GET", "/raw/%ff/ab%2Fcd"))),
+        "raw:%ff,ab%2Fcd");
+    BOOST_CHECK_EQUAL(router.Handle(MakeRequest("HEAD", "/raw/x/y")).status,
+                      200);
+    BOOST_CHECK_THROW(router.Post("/raw/:a/:b",
+                                  [](const HttpRequest &, const PathParams &) {
+                                      return HttpResponse::Empty(200);
+                                  }),
+                      std::logic_error);
 }
 
 BOOST_AUTO_TEST_CASE(handler_errors) {
