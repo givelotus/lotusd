@@ -10,12 +10,14 @@ list(APPEND CHRONIK_NATIVE_CORE_SOURCES
     core/groups/group.cpp
     core/groups/lokad_id.cpp
     core/groups/script.cpp
+    core/groups/token_id.cpp
     core/groups/txid.cpp
     core/index/group_history.cpp
     core/index/group_utxos.cpp
 )
 list(APPEND CHRONIK_NATIVE_TEST_SOURCES
     test/groups_script_tests.cpp
+    test/groups_token_id_tests.cpp
     test/index_group_history_tests.cpp
     test/index_group_utxos_tests.cpp
 )
