@@ -1,0 +1,239 @@
+{
+ "constants": {
+  "xpi": "0xb70061479e",
+  "txpi": "0xadda0f1635",
+  "rxpi": "0x8172b45d63"
+ },
+ "valid": [
+  {
+   "hrp": "xpi",
+   "root": "0000000000000000000000000000000000000000000000000000000000000000",
+   "address": "xpi1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdf6lcjth",
+   "note": "zero"
+  },
+  {
+   "hrp": "txpi",
+   "root": "0000000000000000000000000000000000000000000000000000000000000000",
+   "address": "txpi1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqwzheyxxu",
+   "note": "zero"
+  },
+  {
+   "hrp": "rxpi",
+   "root": "0000000000000000000000000000000000000000000000000000000000000000",
+   "address": "rxpi1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqtsrjj5u2",
+   "note": "zero"
+  },
+  {
+   "hrp": "xpi",
+   "root": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "address": "xpi1qlllllllllllllllllllllllllllllllllllllllllllllllllllstuvup384",
+   "note": "ff"
+  },
+  {
+   "hrp": "txpi",
+   "root": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "address": "txpi1qlllllllllllllllllllllllllllllllllllllllllllllllllllsghp6a927",
+   "note": "ff"
+  },
+  {
+   "hrp": "rxpi",
+   "root": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "address": "rxpi1qlllllllllllllllllllllllllllllllllllllllllllllllllllsd943thsg",
+   "note": "ff"
+  },
+  {
+   "hrp": "xpi",
+   "root": "3bc5a5a682fb9be2d4556872a3a7370c40d5abe83823214762ee3630394f6432",
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "note": "sha256('example branch root')"
+  },
+  {
+   "hrp": "txpi",
+   "root": "3bc5a5a682fb9be2d4556872a3a7370c40d5abe83823214762ee3630394f6432",
+   "address": "txpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqj4tec67d",
+   "note": "sha256('example branch root')"
+  },
+  {
+   "hrp": "rxpi",
+   "root": "3bc5a5a682fb9be2d4556872a3a7370c40d5abe83823214762ee3630394f6432",
+   "address": "rxpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqh8ljwgym",
+   "note": "sha256('example branch root')"
+  },
+  {
+   "hrp": "xpi",
+   "root": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "address": "xpi1qqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sj2cx6ux3",
+   "note": "0x00..1f"
+  },
+  {
+   "hrp": "txpi",
+   "root": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "address": "txpi1qqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0s3p4qxgt6",
+   "note": "0x00..1f"
+  },
+  {
+   "hrp": "rxpi",
+   "root": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "address": "rxpi1qqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0s5npts63v",
+   "note": "0x00..1f"
+  },
+  {
+   "hrp": "xpi",
+   "root": "3bc5a5a682fb9be2d4556872a3a7370c40d5abe83823214762ee3630394f6432",
+   "address": "XPI1Q80Z6TF5ZLWD794Z4DPE28FEHP3QDT2LG8Q3JZ3MZACMRQW20VSEQ37XLYWNX",
+   "note": "uppercase form (QR)"
+  }
+ ],
+ "invalid": [
+  {
+   "address": "xpi1q80z6tF5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "mixed case",
+   "note": "one uppercase letter in a lowercase address"
+  },
+  {
+   "address": "XPI1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "mixed case",
+   "note": "uppercase prefix with lowercase body"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqj4tec67d",
+   "reason": "bad checksum",
+   "note": "testnet body behind the mainnet prefix (wrong network)"
+  },
+  {
+   "address": "txpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad checksum",
+   "note": "mainnet body behind the testnet prefix (wrong network)"
+  },
+  {
+   "address": "xpj1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "unknown prefix",
+   "note": "typo in the prefix"
+  },
+  {
+   "address": "xpi:q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "unknown prefix",
+   "note": "cashaddr-style separator"
+  },
+  {
+   "address": "lotus_q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "unknown prefix",
+   "note": "V1 XAddress prefix"
+  },
+  {
+   "address": "q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "unknown prefix",
+   "note": "no prefix"
+  },
+  {
+   "address": "xpi1",
+   "reason": "bad length",
+   "note": "empty body"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywn",
+   "reason": "bad length",
+   "note": "last character deleted (checksum)"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehpqdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad length",
+   "note": "one character deleted in the payload"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehpq3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad length",
+   "note": "one character inserted in the payload"
+  },
+  {
+   "address": "xpi1qr2fjmamr3r3t2yhg8fxvcjqwcar29j50feqxpy5wzg39d0alaz4q0l6ydwrqp",
+   "reason": "bad length",
+   "note": "'q' inserted before a final 'p' (bech32/cashaddr constant-1 weakness shape)"
+  },
+  {
+   "address": "xpi1qr2fjmamr3r3t2yhg8fxvcjqwcar29j50feqxpy5wzg39d0alaz4q0l6ydwrqqp",
+   "reason": "bad length",
+   "note": "two 'q' inserted before a final 'p'"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794zqdpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad checksum",
+   "note": "single substitution in payload"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnq",
+   "reason": "bad checksum",
+   "note": "single substitution in checksum"
+  },
+  {
+   "address": "xpi1p80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad checksum",
+   "note": "version symbol changed with the old checksum"
+  },
+  {
+   "address": "xpi1q08z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad checksum",
+   "note": "adjacent transposition"
+  },
+  {
+   "address": "xpi1q80z6tb5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad character",
+   "note": "'b' is not in the alphabet"
+  },
+  {
+   "address": "xpi1q80z6ti5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad character",
+   "note": "'i' is not in the alphabet"
+  },
+  {
+   "address": "xpi1q80z6to5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad character",
+   "note": "'o' is not in the alphabet"
+  },
+  {
+   "address": "xpi1q80z6t15zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "unknown prefix",
+   "note": "'1' inside the body moves the separator"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx ",
+   "reason": "bad length",
+   "note": "trailing space (callers must trim; length is checked before the alphabet)"
+  },
+  {
+   "address": "xpi1q80z6t 5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx",
+   "reason": "bad character",
+   "note": "space inside the body"
+  },
+  {
+   "address": "xpi1p80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqcrgtu6th",
+   "reason": "unknown version",
+   "note": "version 1 with a correct checksum"
+  },
+  {
+   "address": "xpi1l80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqq5cyk4p9",
+   "reason": "unknown version",
+   "note": "version 31 with a correct checksum"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vsepzal5adq8",
+   "reason": "nonzero padding",
+   "note": "padding bit set with a correct checksum"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vse0x0vdwlyf",
+   "reason": "nonzero padding",
+   "note": "all four padding bits set with a correct checksum"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vsewdrs98z8",
+   "reason": "bad length",
+   "note": "51 payload symbols with a correct checksum"
+  },
+  {
+   "address": "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseqqknycqhxe",
+   "reason": "bad length",
+   "note": "53 payload symbols with a correct checksum"
+  }
+ ]
+}
