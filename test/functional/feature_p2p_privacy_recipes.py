@@ -32,8 +32,10 @@ SITE_PORT_INDEX = 42
 PUBLIC_PORT_INDEX = 43
 PATH = "/assets/v2/stream"
 TOKEN = "Zq0-recipe_token"
-PAGE = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n"
-        b"Connection: close\r\n\r\n<html></html>")
+PAGE = (
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n"
+    b"Connection: close\r\n\r\n<html></html>"
+)
 
 
 def serve_page(port):
@@ -72,13 +74,18 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
     def spki_pin(self, cert_path):
         pub = subprocess.run(
             [self.openssl, "x509", "-in", cert_path, "-pubkey", "-noout"],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         ).stdout
         der = subprocess.run(
             [self.openssl, "pkey", "-pubin", "-outform", "DER"],
-            input=pub, check=True, capture_output=True,
+            input=pub,
+            check=True,
+            capture_output=True,
         ).stdout
-        return base64.urlsafe_b64encode(hashlib.sha256(der).digest()).decode().rstrip("=")
+        return (
+            base64.urlsafe_b64encode(hashlib.sha256(der).digest()).decode().rstrip("=")
+        )
 
     def setup_network(self):
         self.bridge_port = p2p_port(BRIDGE_PORT_INDEX)
@@ -88,12 +95,15 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
         self.add_nodes(self.num_nodes)
 
         # Recipe: bridge server.
-        self.start_node(0, [
-            f"-publicbind=127.0.0.1:{self.bridge_port}",
-            f"-p2pwebsocketpath={PATH}",
-            f"-p2pwebsockettoken={TOKEN}",
-            f"-publicfallback=127.0.0.1:{p2p_port(SITE_PORT_INDEX)}",
-        ])
+        self.start_node(
+            0,
+            [
+                f"-publicbind=127.0.0.1:{self.bridge_port}",
+                f"-p2pwebsocketpath={PATH}",
+                f"-p2pwebsockettoken={TOKEN}",
+                f"-publicfallback=127.0.0.1:{p2p_port(SITE_PORT_INDEX)}",
+            ],
+        )
         cert = os.path.join(self.nodes[0].datadir, self.chain, "node_tls_cert.pem")
         self.pin = self.spki_pin(cert)
 
@@ -101,23 +111,31 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
         # (Without the test framework's bind= and connect=0 defaults.)
         conf = os.path.join(self.nodes[1].datadir, "bitcoin.conf")
         with open(conf, encoding="utf8") as f:
-            lines = [line for line in f
-                     if not line.startswith(("bind=", "connect="))]
+            lines = [line for line in f if not line.startswith(("bind=", "connect="))]
         with open(conf, "w", encoding="utf8") as f:
             f.writelines(lines)
         url = f"wss://localhost:{self.bridge_port}{PATH}?token={TOKEN}#spki={self.pin}"
-        self.start_node(1, [
-            f"-connect={url}",
-            f"-proxy=127.0.0.1:{p2p_port(PROXY_PORT_INDEX)}",
-            "-listen=0", "-discover=0", "-dnsseed=0", "-fixedseeds=0",
-            "-onlynet=wss",
-        ])
+        self.start_node(
+            1,
+            [
+                f"-connect={url}",
+                f"-proxy=127.0.0.1:{p2p_port(PROXY_PORT_INDEX)}",
+                "-listen=0",
+                "-discover=0",
+                "-dnsseed=0",
+                "-fixedseeds=0",
+                "-onlynet=wss",
+            ],
+        )
 
         # Recipe: public node behind a TLS-terminating proxy.
-        self.start_node(2, [
-            f"-publicbind=127.0.0.1:{self.public_port}",
-            "-externaldomain=node.example.org",
-        ])
+        self.start_node(
+            2,
+            [
+                f"-publicbind=127.0.0.1:{self.public_port}",
+                "-externaldomain=node.example.org",
+            ],
+        )
 
     def run_test(self):
         bridge, client, public = self.nodes
@@ -152,8 +170,10 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
         self.proxy.stop()
         client.disconnectnode(nodeid=peer["id"])
         self.wait_until(lambda: client.getpeerinfo() == [])
-        client.addnode(node=f"wss://localhost:{self.bridge_port}{PATH}?token={TOKEN}",
-                       command="onetry")
+        client.addnode(
+            node=f"wss://localhost:{self.bridge_port}{PATH}?token={TOKEN}",
+            command="onetry",
+        )
         self.wait_until(lambda: client.getpeerinfo() == [], timeout=5)
         assert_equal(len([p for p in bridge.getpeerinfo() if p["inbound"]]), 0)
 
@@ -176,7 +196,9 @@ class P2PPrivacyRecipesTest(BitcoinTestFramework):
 
         self.log.info("Public node: advertises the domain, not the listener")
         local = public.getnetworkinfo()["localaddresses"]
-        assert_equal([(a["address"], a["port"]) for a in local], [("node.example.org", 443)])
+        assert_equal(
+            [(a["address"], a["port"]) for a in local], [("node.example.org", 443)]
+        )
         self.site.close()
 
 

@@ -104,14 +104,30 @@ class P2PWebSocketPinningTest(BitcoinTestFramework):
         key = os.path.join(datadir, "node_tls_key.pem")
         cert = os.path.join(datadir, "reissued_cert.pem")
         subprocess.run(
-            [openssl, "req", "-new", "-x509", "-key", key, "-subj", "/CN=other",
-             "-days", "30", "-out", cert],
-            check=True, capture_output=True,
+            [
+                openssl,
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                key,
+                "-subj",
+                "/CN=other",
+                "-days",
+                "30",
+                "-out",
+                cert,
+            ],
+            check=True,
+            capture_output=True,
         )
         self.restart_node(
             0,
-            [f"-publicbind=127.0.0.1:{self.public_port}", f"-tlscert={cert}",
-             f"-tlskey={key}"],
+            [
+                f"-publicbind=127.0.0.1:{self.public_port}",
+                f"-tlscert={cert}",
+                f"-tlskey={key}",
+            ],
         )
         peer = self.connect(self.url(pin=spki))
         assert_equal(peer["websocket"]["pinned"], True)

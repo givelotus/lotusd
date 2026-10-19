@@ -3,6 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Long-poll requests yield a single HTTP worker and wake on tip/shutdown."""
+
 from concurrent.futures import ThreadPoolExecutor
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -35,8 +36,17 @@ class CoroutineLongpollTest(BitcoinTestFramework):
                 ("getblocktemplate", [{"longpollid": longpollid}]),
             ]
             futures = [workers.submit(call, method, args) for method, args in requests]
-            self.wait_until(lambda: sum(c["method"] in {"waitfornewblock", "waitforblockheight", "getblocktemplate"}
-                                       for c in quick.getrpcinfo()["active_commands"]) == len(requests), timeout=5)
+            self.wait_until(
+                lambda: (
+                    sum(
+                        c["method"]
+                        in {"waitfornewblock", "waitforblockheight", "getblocktemplate"}
+                        for c in quick.getrpcinfo()["active_commands"]
+                    )
+                    == len(requests)
+                ),
+                timeout=5,
+            )
             assert all(not f.done() for f in futures)
             assert_equal(quick.getblockcount(), height)
             new_tip = self.generate(self.nodes[1], 1)[0]
@@ -48,12 +58,24 @@ class CoroutineLongpollTest(BitcoinTestFramework):
                     assert_equal(result, {"hash": new_tip, "height": height + 1})
             # ABC treats negative nonzero wait timeouts as already expired.
             assert_equal(quick.waitforblock(tip, -1)["hash"], new_tip)
-            shutdown_waiters = [workers.submit(call, "waitfornewblock", [0]) for _ in range(3)]
-            self.wait_until(lambda: sum(c["method"] == "waitfornewblock"
-                                       for c in quick.getrpcinfo()["active_commands"]) == 3, timeout=5)
+            shutdown_waiters = [
+                workers.submit(call, "waitfornewblock", [0]) for _ in range(3)
+            ]
+            self.wait_until(
+                lambda: (
+                    sum(
+                        c["method"] == "waitfornewblock"
+                        for c in quick.getrpcinfo()["active_commands"]
+                    )
+                    == 3
+                ),
+                timeout=5,
+            )
             self.stop_node(0)
             for future in shutdown_waiters:
-                assert_equal(future.result(timeout=5), {"hash": new_tip, "height": height + 1})
+                assert_equal(
+                    future.result(timeout=5), {"hash": new_tip, "height": height + 1}
+                )
 
 
 if __name__ == "__main__":

@@ -32,7 +32,10 @@ class HTTPTLSCertsTest(BitcoinTestFramework):
 
     def ossl(self, *args, stdin=None):
         return subprocess.run(
-            [self.openssl, *args], input=stdin, check=True, capture_output=True,
+            [self.openssl, *args],
+            input=stdin,
+            check=True,
+            capture_output=True,
             text=True,
         ).stdout
 
@@ -40,7 +43,9 @@ class HTTPTLSCertsTest(BitcoinTestFramework):
         return ssl.get_server_certificate(("127.0.0.1", rpc_port(0)))
 
     def subject_cn(self, pem):
-        out = self.ossl("x509", "-noout", "-subject", "-nameopt", "multiline", stdin=pem)
+        out = self.ossl(
+            "x509", "-noout", "-subject", "-nameopt", "multiline", stdin=pem
+        )
         return out.split("commonName", 1)[1].split("=", 1)[1].strip()
 
     def days_left(self, pem):
@@ -56,11 +61,29 @@ class HTTPTLSCertsTest(BitcoinTestFramework):
 
     def issue(self, key, cert, cn, days, new_key=False):
         if new_key:
-            self.ossl("genpkey", "-algorithm", "EC", "-pkeyopt",
-                      "ec_paramgen_curve:P-256", "-out", key)
+            self.ossl(
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-out",
+                key,
+            )
         tmp = cert + ".tmp"
-        self.ossl("req", "-new", "-x509", "-key", key, "-subj", f"/CN={cn}",
-                  "-days", str(days), "-out", tmp)
+        self.ossl(
+            "req",
+            "-new",
+            "-x509",
+            "-key",
+            key,
+            "-subj",
+            f"/CN={cn}",
+            "-days",
+            str(days),
+            "-out",
+            tmp,
+        )
         os.replace(tmp, cert)
 
     def run_test(self):
@@ -118,12 +141,14 @@ class HTTPTLSCertsTest(BitcoinTestFramework):
         with node.assert_debug_log(["Reloaded TLS certificate"]):
             # A new key and certificate, as an ACME client would write them.
             new_key = own_key + ".next"
-            self.issue(new_key, own_cert + ".next", "two.example.net", days=30,
-                       new_key=True)
+            self.issue(
+                new_key, own_cert + ".next", "two.example.net", days=30, new_key=True
+            )
             os.replace(new_key, own_key)
             os.replace(own_cert + ".next", own_cert)
             self.wait_until(
-                lambda: self.subject_cn(self.served_pem()) == "two.example.net")
+                lambda: self.subject_cn(self.served_pem()) == "two.example.net"
+            )
 
         self.log.info("A broken replacement keeps the working certificate")
         with node.assert_debug_log(["unable to load TLS certificate"]):

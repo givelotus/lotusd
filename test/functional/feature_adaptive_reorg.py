@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Chain-equivalent nodes must recover identical adaptive capacity after reorg."""
+
 from test_framework.blocktools import create_block, create_coinbase
 from test_framework.messages import CTxOut, ToHex
-from test_framework.script import CScript, OP_RETURN
+from test_framework.script import OP_RETURN, CScript
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet
@@ -24,7 +25,9 @@ class AdaptiveReorgTest(BitcoinTestFramework):
         txs = []
         for _ in range(31):
             tx = wallet.create_self_transfer(fee_rate=0)["tx"]
-            tx.vout.extend(CTxOut(0, CScript([OP_RETURN, b"x" * 9990])) for _ in range(90))
+            tx.vout.extend(
+                CTxOut(0, CScript([OP_RETURN, b"x" * 9990])) for _ in range(90)
+            )
             txs.append(tx)
         orphan = create_block(int(parent, 16), create_coinbase(132), now, txlist=txs)
         orphan.solve()
@@ -40,7 +43,11 @@ class AdaptiveReorgTest(BitcoinTestFramework):
             assert_equal(b.submitblock(raw), None)
             parent = block.hash_hex
         assert_equal(a.getbestblockhash(), b.getbestblockhash())
-        keys = ("ema_block_size_bytes", "adaptive_target_block_size", "adaptive_max_block_size")
+        keys = (
+            "ema_block_size_bytes",
+            "adaptive_target_block_size",
+            "adaptive_max_block_size",
+        )
         for key in keys:
             assert_equal(a.getfeerateinfo()[key], b.getfeerateinfo()[key])
         expected = {key: a.getfeerateinfo()[key] for key in keys}

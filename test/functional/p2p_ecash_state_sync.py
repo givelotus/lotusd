@@ -7,6 +7,7 @@
 Both nodes already validated the pivot, so its local anchor is authenticated.
 This does not simulate acquiring a new anchor from an Avalanche quorum.
 """
+
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error
 from test_framework.wallet import MiniWallet
@@ -25,8 +26,9 @@ class EcashStateSyncTest(BitcoinTestFramework):
         pivot = server.getbestblockhash()
         before = client.gettxoutsetinfo()
         assert_equal(client.getfastsyncinfo()["swarm_state"], "idle")
-        assert_raises_rpc_error(-1, "pivot block header not found",
-                                client.syncutxoshardswarm, "01" * 32)
+        assert_raises_rpc_error(
+            -1, "pivot block header not found", client.syncutxoshardswarm, "01" * 32
+        )
         client.syncutxoshardswarm(pivot, [], True)
         self.wait_until(lambda: client.getfastsyncinfo()["swarm_state"] == "completed")
         info = client.getfastsyncinfo()
