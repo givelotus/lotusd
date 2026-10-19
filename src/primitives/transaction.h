@@ -15,6 +15,7 @@
 #include <span.h>
 
 #include <atomic>
+#include <concepts>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -248,6 +249,20 @@ constexpr bool IsLongScript(uint64_t size) {
 std::vector<uint8_t> &TransactionScratchBuffer();
 
 /**
+ * Find the serialized transaction at the start of bytes, checking its
+ * structure exactly like ReadTransactionWire, without copying it.
+ */
+TransactionWire ScanTransactionWire(Span<const uint8_t> bytes);
+
+/** Streams whose unread bytes are contiguous in memory, such as DataStream. */
+template <typename Stream>
+concept ContiguousReadStream = requires(Stream &s, size_t n) {
+    { UCharCast(s.data()) } -> std::convertible_to<const uint8_t *>;
+    { s.size() } -> std::convertible_to<size_t>;
+    s.ignore(n);
+};
+
+/**
  * Read one serialized transaction from s into buf, checking its structure
  * exactly like CMutableTransaction deserialization does. buf is reused, so
  * the result is only valid until buf is next modified.
@@ -304,6 +319,24 @@ TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf) {
     wire.n_inputs = n_inputs;
     wire.n_outputs = n_outputs;
     return wire;
+}
+
+/**
+ * Read one serialized transaction from s and return build(wire). Bytes of a
+ * contiguous stream are used where they are, and only consumed once build
+ * has returned; other streams are read into the per-thread scratch buffer.
+ */
+template <typename Stream, typename Build>
+auto ReadTransactionWith(Stream &s, Build &&build) {
+    if constexpr (ContiguousReadStream<Stream>) {
+        const TransactionWire wire =
+            ScanTransactionWire({UCharCast(s.data()), size_t(s.size())});
+        auto result = build(wire);
+        s.ignore(wire.bytes.size());
+        return result;
+    } else {
+        return build(ReadTransactionWire(s, TransactionScratchBuffer()));
+    }
 }
 
 /**
@@ -368,8 +401,7 @@ public:
      */
     template <typename Stream>
     CTransaction(deserialize_type, Stream &s)
-        : CTransaction(OwnedLayout(
-              ReadTransactionWire(s, TransactionScratchBuffer()))) {}
+        : CTransaction(ReadTransactionWith(s, &CTransaction::OwnedLayout)) {}
 
     bool IsNull() const { return vin.empty() && vout.empty(); }
 
@@ -584,8 +616,9 @@ CTransactionRef MakeTransactionRef(const CMutableTransaction &tx);
  */
 template <> struct SharedPtrDeserializer<CTransaction> {
     template <typename Stream> static CTransactionRef Make(Stream &s) {
-        return MakeTransactionRef(
-            ReadTransactionWire(s, TransactionScratchBuffer()));
+        return ReadTransactionWith(s, [](const TransactionWire &wire) {
+            return MakeTransactionRef(wire);
+        });
     }
 };
 
