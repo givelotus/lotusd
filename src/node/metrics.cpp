@@ -193,6 +193,9 @@ NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
               REQUEST_BUCKETS, /*divisor=*/1e9,
               std::vector<LabelDim>{{"method", SortedWithOther(rpc_methods)}})
               .HideEmptySeries()},
+      process_start_time{Add<Gauge>(registry,
+                                    "lotus_process_start_time_seconds",
+                                    "Start time of the process (Unix time).")},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     initial_block_download.Set(1);
     registry.AddCollector([this] {
@@ -225,11 +228,13 @@ NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods) {
         detail::g_node_metrics.store(m, std::memory_order_release);
     }
     m->registry.Start();
+    metrics::SetThreadRegistry(&m->registry);
     return *m;
 }
 
 void StopNodeMetrics() {
     if (NodeMetrics * m{GetNodeMetrics()}) {
+        metrics::SetThreadRegistry(nullptr);
         m->registry.Stop();
     }
 }
