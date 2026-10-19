@@ -132,6 +132,9 @@ bool RemoveWallet(WalletContext &context,
     std::string name = wallet->GetName();
 
     // Unregister with the validation interface which also drops shared ponters.
+    // This first runs the notifications already queued for the wallet, which
+    // take cs_wallet.
+    AssertLockNotHeld(wallet->cs_wallet);
     wallet->m_chain_notifications_handler.reset();
     {
         LOCK(context.wallets_mutex);
@@ -3042,9 +3045,13 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet> &walletInstance,
     // repeated at the next start.
     // This is temporary until rescan and notifications delivery are unified
     // under same interface.
+    // The notifications queue on the wallet's own worker (not the shared
+    // validation thread) until cs_wallet is released.
     walletInstance->m_attaching_chain = true;
     walletInstance->m_chain_notifications_handler =
-        walletInstance->chain().handleNotifications(walletInstance);
+        walletInstance->chain().handleNotifications(
+            walletInstance,
+            interfaces::Chain::NotificationDelivery::DEDICATED_WORKER);
 
     int rescan_height = 0;
     if (!gArgs.GetBoolArg("-rescan", false)) {

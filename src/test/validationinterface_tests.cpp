@@ -4,10 +4,14 @@
 
 #include <avalanche/processor.h>
 #include <consensus/validation.h>
+#include <interfaces/chain.h>
+#include <interfaces/handler.h>
 #include <node/transaction.h>
 #include <primitives/block.h>
 #include <scheduler.h>
 #include <script/standard.h>
+#include <shutdown.h>
+#include <txmempool.h>
 #include <util/check.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -16,9 +20,11 @@
 #include <util/validation_queue_memory.h>
 
 #include <test/util/setup_common.h>
+#include <test/util/logging.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -1019,6 +1025,253 @@ BOOST_FIXTURE_TEST_CASE(broadcast_wait_fences_secondary_queue,
     // Returned only after the worker had applied the event.
     BOOST_CHECK(subscriber->indexed);
     m_node.validation_signals->UnregisterSharedValidationInterface(subscriber);
+}
+
+namespace {
+/** Records Chain::Notifications in the order they arrive. */
+struct RecordingNotifications final : public interfaces::Chain::Notifications {
+    std::mutex mutex;
+    std::vector<std::string> events;
+    //! Called with the height before a blockConnected is recorded.
+    std::function<void(int)> on_block_connected;
+
+    void Record(std::string event) {
+        std::lock_guard<std::mutex> lock(mutex);
+        events.push_back(std::move(event));
+    }
+    std::vector<std::string> Events() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return events;
+    }
+    void transactionAddedToMempool(const CTransactionRef &tx,
+                                   uint64_t) override {
+        Record("added " + tx->GetId().ToString());
+    }
+    void transactionRemovedFromMempool(const CTransactionRef &tx,
+                                       MemPoolRemovalReason reason,
+                                       uint64_t) override {
+        Record("removed " + tx->GetId().ToString() + " " +
+               RemovalReasonToString(reason));
+    }
+    void blockConnected(ChainstateRole, const CBlock &block,
+                        int height) override {
+        if (on_block_connected) {
+            on_block_connected(height);
+        }
+        Record(
+            strprintf("connected %d %s", height, block.GetHash().ToString()));
+    }
+    void blockDisconnected(const CBlock &block, int height) override {
+        Record(strprintf("disconnected %d %s", height,
+                         block.GetHash().ToString()));
+    }
+    void updatedBlockTip() override { Record("tip"); }
+    void chainStateFlushed(ChainstateRole, const CBlockLocator &) override {
+        Record("flushed");
+    }
+};
+
+/** Main-queue-only fence: does not wait for subscribers' worker queues. */
+bool MainQueueDrains(ValidationSignals &signals) {
+    using namespace std::chrono_literals;
+    auto promise = std::make_shared<std::promise<void>>();
+    auto drained = promise->get_future();
+    signals.CallFunctionInValidationInterfaceQueue(
+        [promise] { promise->set_value(); });
+    return drained.wait_for(60s) == std::future_status::ready;
+}
+
+size_t CountPrefix(const std::vector<std::string> &events,
+                   const std::string &prefix) {
+    return std::count_if(events.begin(), events.end(), [&](const auto &e) {
+        return e.rfind(prefix, 0) == 0;
+    });
+}
+
+constexpr auto DEDICATED_WORKER =
+    interfaces::Chain::NotificationDelivery::DEDICATED_WORKER;
+} // namespace
+
+BOOST_FIXTURE_TEST_CASE(async_notifications_offload_scheduler,
+                        TestChain100Setup) {
+    // Fixture callbacks predate this subscriber and its causal event oracle.
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    using namespace std::chrono_literals;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto fake = std::make_shared<RecordingNotifications>();
+    fake->on_block_connected = [released](int) { released.wait(); };
+    auto handler = m_node.chain->handleNotifications(fake, DEDICATED_WORKER);
+    const int start =
+        WITH_LOCK(cs_main, return m_node.chainman->ActiveChain().Height());
+
+    mineBlocks(3);
+    // The scheduler is not held by the blocked subscriber...
+    const bool offloaded = MainQueueDrains(*m_node.validation_signals);
+    // ...but the full fence still waits for it.
+    auto sync = std::async(std::launch::async, [&] {
+        m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    });
+    const bool fenced = sync.wait_for(100ms) == std::future_status::timeout;
+    release.set_value();
+    BOOST_CHECK(offloaded);
+    BOOST_CHECK(fenced);
+    BOOST_REQUIRE(sync.wait_for(60s) == std::future_status::ready);
+    sync.get();
+
+    std::vector<int> heights;
+    size_t last_connected = 0, last_tip = 0;
+    const auto events = fake->Events();
+    for (size_t i = 0; i < events.size(); ++i) {
+        int height;
+        if (sscanf(events[i].c_str(), "connected %d", &height) == 1) {
+            heights.push_back(height);
+            last_connected = i;
+        } else if (events[i] == "tip") {
+            last_tip = i;
+        }
+    }
+    const std::vector<int> expected{start + 1, start + 2, start + 3};
+    BOOST_CHECK_EQUAL_COLLECTIONS(heights.begin(), heights.end(),
+                                  expected.begin(), expected.end());
+    BOOST_CHECK_GT(last_tip, last_connected);
+    handler.reset();
+}
+
+BOOST_FIXTURE_TEST_CASE(async_notifications_preserve_order_across_reorg,
+                        TestChain100Setup) {
+    // Fixture callbacks predate this subscriber and its causal event oracle.
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    auto async_fake = std::make_shared<RecordingNotifications>();
+    auto sync_fake = std::make_shared<RecordingNotifications>();
+    auto async_handler =
+        m_node.chain->handleNotifications(async_fake, DEDICATED_WORKER);
+    auto sync_handler = m_node.chain->handleNotifications(sync_fake);
+
+    const CScript spk = GetScriptForRawPubKey(coinbaseKey.GetPubKey());
+    // A mempool transaction, then a block that confirms it.
+    const auto mtx = CreateValidMempoolTransaction(
+        m_coinbase_txns[0], 0, 1, coinbaseKey, spk,
+        m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI);
+    // Its child stays in the mempool after the block.
+    const auto child = CreateValidMempoolTransaction(
+        MakeTransactionRef(mtx), 0, 101, coinbaseKey, spk,
+        m_coinbase_txns[0]->vout[0].nValue - 4000 * SATOSHI);
+    CreateAndProcessBlock({mtx}, spk);
+    mineBlocks(1);
+    // Reorg: disconnect both blocks, then mine a longer empty branch.
+    {
+        BlockValidationState state;
+        CBlockIndex *fork = WITH_LOCK(
+            cs_main,
+            return m_node.chainman
+                ->ActiveChain()[m_node.chainman->ActiveChain().Height() - 1]);
+        BOOST_REQUIRE(
+            m_node.chainman->ActiveChainstate().InvalidateBlock(state, fork));
+    }
+    mineBlocks(3);
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+
+    const auto async_events = async_fake->Events();
+    const auto sync_events = sync_fake->Events();
+    BOOST_CHECK_EQUAL_COLLECTIONS(async_events.begin(), async_events.end(),
+                                  sync_events.begin(), sync_events.end());
+    // The sequence covers every kind of event.
+    BOOST_CHECK_GE(CountPrefix(sync_events, "added "), 2U);
+    BOOST_CHECK_GE(CountPrefix(sync_events, "disconnected "), 2U);
+    BOOST_CHECK_GE(CountPrefix(sync_events, "connected "), 5U);
+    BOOST_CHECK_GE(CountPrefix(sync_events, "tip"), 1U);
+    async_handler.reset();
+    sync_handler.reset();
+}
+
+BOOST_FIXTURE_TEST_CASE(async_notifications_disconnect_drains,
+                        TestChain100Setup) {
+    // Fixture callbacks predate this subscriber and its causal event oracle.
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    using namespace std::chrono_literals;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto fake = std::make_shared<RecordingNotifications>();
+    fake->on_block_connected = [released](int) { released.wait(); };
+    auto handler = m_node.chain->handleNotifications(fake, DEDICATED_WORKER);
+    auto control = std::make_shared<RecordingNotifications>();
+    auto control_handler = m_node.chain->handleNotifications(control);
+
+    // Five blocks queue at least ten events behind the held worker.
+    mineBlocks(5);
+    BOOST_REQUIRE(MainQueueDrains(*m_node.validation_signals));
+    const size_t queued = control->Events().size();
+    BOOST_CHECK_GE(queued, 10U);
+    BOOST_CHECK(fake->Events().empty());
+
+    auto disconnect = std::async(std::launch::async, [&] { handler.reset(); });
+    const bool drained_first =
+        disconnect.wait_for(100ms) == std::future_status::timeout;
+    release.set_value();
+    BOOST_CHECK(drained_first);
+    BOOST_REQUIRE(disconnect.wait_for(60s) == std::future_status::ready);
+    disconnect.get();
+    // Every event accepted before disconnect ran, in order.
+    BOOST_CHECK(fake->Events() == control->Events());
+
+    // Events generated after the disconnect are not delivered.
+    mineBlocks(1);
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    BOOST_CHECK_EQUAL(fake->Events().size(), queued);
+    BOOST_CHECK_GT(control->Events().size(), queued);
+    control_handler.reset();
+}
+
+BOOST_FIXTURE_TEST_CASE(async_notifications_worker_exception_discards_rest,
+                        TestChain100Setup) {
+    ASSERT_DEBUG_LOG("Wallet notification callback exception: injected wallet failure");
+    // Fixture mining may still have callbacks queued. They predate both
+    // subscribers and must not enter the three-block causal event oracle.
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto fake = std::make_shared<RecordingNotifications>();
+    const int start =
+        WITH_LOCK(cs_main, return m_node.chainman->ActiveChain().Height());
+    fake->on_block_connected = [released, start](int height) {
+        released.wait();
+        if (height == start + 2) {
+            throw std::runtime_error("injected wallet failure");
+        }
+    };
+    auto handler = m_node.chain->handleNotifications(fake, DEDICATED_WORKER);
+    auto control = std::make_shared<RecordingNotifications>();
+    auto control_handler = m_node.chain->handleNotifications(control);
+
+    // Queue everything first, so the failure cannot affect generation.
+    mineBlocks(3);
+    m_node.chainman->ActiveChainstate().ForceFlushStateToDisk();
+    BOOST_REQUIRE(MainQueueDrains(*m_node.validation_signals));
+    BOOST_CHECK(!ShutdownRequested());
+
+    release.set_value();
+    // The fence still completes: discarded callbacks count as completed.
+    m_node.validation_signals->SyncWithValidationInterfaceQueue();
+    BOOST_CHECK(ShutdownRequested());
+
+    // The subscriber saw exactly the events before the failing callback.
+    const auto all = control->Events();
+    const auto failed_at =
+        std::find_if(all.begin(), all.end(), [&](const std::string &e) {
+            return e.rfind(strprintf("connected %d ", start + 2), 0) == 0;
+        });
+    BOOST_REQUIRE(failed_at != all.end());
+    const std::vector<std::string> before(all.begin(), failed_at);
+    const std::vector<std::string> after(failed_at, all.end());
+    BOOST_CHECK(fake->Events() == before);
+    BOOST_CHECK_EQUAL(CountPrefix(before, "connected "), 1U);
+    // Neither the third block nor the later flush reached the subscriber.
+    BOOST_CHECK_EQUAL(CountPrefix(after, "connected "), 2U);
+    BOOST_CHECK_GE(CountPrefix(after, "flushed"), 1U);
+    handler.reset();
+    control_handler.reset();
+    AbortShutdown();
 }
 
 BOOST_AUTO_TEST_CASE(queued_payload_charges_retained_shared_ownership) {
