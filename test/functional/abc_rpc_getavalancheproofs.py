@@ -20,21 +20,20 @@ from test_framework.wallet_util import bytes_to_wif
 
 
 class GetAvalancheProofsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.conflicting_proof_cooldown = 100
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                f"-avalancheconflictingproofcooldown={self.conflicting_proof_cooldown}",
-                "-avaproofstakeutxoconfirmations=2",
-                "-avacooldown=0",
-                "-avaminquorumstake=250000000",
-                "-avaminquorumconnectedstakeratio=0.9",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminavaproofsnodecount=0",
-            ]
+    num_nodes = 1
+    conflicting_proof_cooldown = 100
+    noban_tx_relay = True
+    extra_args = [
+        [
+            f"-avalancheconflictingproofcooldown={conflicting_proof_cooldown}",
+            "-avaproofstakeutxoconfirmations=2",
+            "-avacooldown=0",
+            "-avaminquorumstake=250000000",
+            "-avaminquorumconnectedstakeratio=0.9",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminavaproofsnodecount=0",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

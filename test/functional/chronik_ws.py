@@ -40,29 +40,28 @@ MAX_WS_MESSAGE_SIZE = 2 * 10_000
 
 
 class ChronikWsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-chronik",
-                # Observe manual rejection/invalidation without work-based
-                # automatic retries reconnecting the parked block.
-                "-automaticunparking=0",
-                "-enableminerfund",
-                # Disable staking preconsensus to avoid too many votes
-                "-avalanchestakingpreconsensus=0",
-                # Use a high thresold to avoid stalling transactions
-                "-avastalevotethreshold=100000",
-            ],
-        ]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-chronik",
+            # Observe manual rejection/invalidation without work-based
+            # automatic retries reconnecting the parked block.
+            "-automaticunparking=0",
+            "-enableminerfund",
+            # Disable staking preconsensus to avoid too many votes
+            "-avalanchestakingpreconsensus=0",
+            # Use a high thresold to avoid stalling transactions
+            "-avastalevotethreshold=100000",
+        ],
+    ]
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

@@ -54,10 +54,9 @@ SCHNORR_LEGACY_MULTISIG_ERROR = (
 
 
 class SchnorrMultisigTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.block_heights = {}
-        self.extra_args = [["-acceptnonstdtxn=1"]]
+    num_nodes = 1
+    block_heights = {}
+    extra_args = [["-acceptnonstdtxn=1"]]
 
     def reconnect_p2p(self):
         """Tear down and bootstrap the P2P connection to the node.

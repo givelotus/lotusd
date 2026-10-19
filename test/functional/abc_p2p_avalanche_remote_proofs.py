@@ -31,19 +31,18 @@ GETAVAPROOFS_INTERVAL = 60
 
 
 class AvalancheRemoteProofsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=10000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaminquorumstake=1000000",
-                "-avaminavaproofsnodecount=0",
-                "-avacooldown=0",
-                "-persistavapeers=0",
-            ]
-        ] * self.num_nodes
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=10000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaminquorumstake=1000000",
+            "-avaminavaproofsnodecount=0",
+            "-avacooldown=0",
+            "-persistavapeers=0",
+        ]
+    ] * num_nodes
 
     def run_test(self):
         self.disconnect_nodes(0, 1)

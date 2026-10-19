@@ -40,22 +40,21 @@ class LongpollThread(threading.Thread):
 
 
 class AbcMiningHeartbeatTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-enablertt",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                # Keep policy parking stable until this test explicitly accepts it.
-                "-automaticunparking=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-            ],
-        ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-enablertt",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            # Keep policy parking stable until this test explicitly accepts it.
+            "-automaticunparking=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
+        ],
+    ]
 
     def check_rtt(self):
         node = self.nodes[0]

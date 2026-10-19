@@ -55,20 +55,19 @@ def add_interface_node(test_node) -> str:
 
 
 class AvalancheProofTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                f"-avaproofstakeutxodustthreshold={PROOF_DUST_THRESHOLD}",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avalancheconflictingproofcooldown=0",
-                "-avacooldown=0",
-            ]
-        ] * self.num_nodes
-        self.supports_cli = False
-        self.rpc_timeout = 120
+    setup_clean_chain = True
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            f"-avaproofstakeutxodustthreshold={PROOF_DUST_THRESHOLD}",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avalancheconflictingproofcooldown=0",
+            "-avacooldown=0",
+        ]
+    ] * num_nodes
+    supports_cli = False
+    rpc_timeout = 120
 
     def run_test(self):
         # Turn off node 1 while node 0 mines blocks to generate stakes,

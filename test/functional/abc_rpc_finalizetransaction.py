@@ -15,20 +15,19 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheFinalizeTransactionTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avacooldown=0",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                # This is disabled by default on the test framework
-                "-avalanchepreconsensusmining=1",
-            ],
-        ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avacooldown=0",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            # This is disabled by default on the test framework
+            "-avalanchepreconsensusmining=1",
+        ],
+    ]
 
     def run_test(self):
         node = self.nodes[0]

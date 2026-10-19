@@ -12,14 +12,13 @@ from test_framework.util import assert_equal, assert_greater_than
 
 
 class PersistHeadersTimeTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-enablertt=1",
-                "-persistrecentheaderstime=1",
-            ]
+    num_nodes = 1
+    extra_args = [
+        [
+            "-enablertt=1",
+            "-persistrecentheaderstime=1",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

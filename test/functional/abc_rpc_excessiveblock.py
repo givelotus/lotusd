@@ -20,11 +20,10 @@ BLOCKSIZE_TOO_LOW = (
 
 
 class ExcessiveBlockSizeRPCTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.tip = None
-        self.setup_clean_chain = True
-        self.extra_args = [[f"-blockmaxsize={LEGACY_MAX_BLOCK_SIZE}"]]
+    num_nodes = 1
+    tip = None
+    setup_clean_chain = True
+    extra_args = [[f"-blockmaxsize={LEGACY_MAX_BLOCK_SIZE}"]]
 
     def check_subversion(self, pattern_str):
         # Check that the subversion is set as expected

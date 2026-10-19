@@ -34,22 +34,21 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheMinerFundTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-enableminerfund",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                # Keep policy parking stable until this test explicitly accepts it.
-                "-automaticunparking=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-            ],
-        ]
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-enableminerfund",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            # Keep policy parking stable until this test explicitly accepts it.
+            "-automaticunparking=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+        ],
+    ]
 
     def run_for_ratio(self, ratio):
         node = self.nodes[0]

@@ -17,8 +17,7 @@ from test_framework.util import assert_equal
 
 
 class GetInvalidBlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         node = self.nodes[0]

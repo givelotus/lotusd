@@ -29,35 +29,34 @@ ADDRS = [
 
 
 class AvalancheTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-                # Observe voted/manual parking until this test explicitly
-                # accepts or unparks the block, without work-based retries.
-                "-automaticunparking=0",
-                "-avalanchestakingpreconsensus=0",
-            ],
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-noparkdeepreorg",
-                "-avalanchestakingpreconsensus=0",
-            ],
-        ]
-        self.supports_cli = False
-        self.rpc_timeout = 120
+    setup_clean_chain = True
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
+            # Observe voted/manual parking until this test explicitly
+            # accepts or unparks the block, without work-based retries.
+            "-automaticunparking=0",
+            "-avalanchestakingpreconsensus=0",
+        ],
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-noparkdeepreorg",
+            "-avalanchestakingpreconsensus=0",
+        ],
+    ]
+    supports_cli = False
+    rpc_timeout = 120
 
     def run_test(self):
         node = self.nodes[0]

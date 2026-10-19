@@ -29,13 +29,12 @@ class PreviousSpendableOutput:
 
 
 class TransactionOrderingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.block_heights = {}
-        self.tip = None
-        self.blocks = {}
-        self.noban_tx_relay = True
+    num_nodes = 1
+    setup_clean_chain = True
+    block_heights = {}
+    tip = None
+    blocks = {}
+    noban_tx_relay = True
 
     def add_transactions_to_block(self, block, tx_list):
         block.vtx.extend(tx_list)
