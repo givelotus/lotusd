@@ -378,12 +378,140 @@ def build_requests(record: Dict[str, Any], mode: str = "full",
                       P.ScriptBatchUtxosRequest().SerializeToString(),
                       "ScriptBatchUtxosResponse"))
 
+    # ---- Lotus V2 service (/v2, /v2/explorer/v1)
+    if record.get("v2"):
+        reqs += v2_requests(record, mode)
+
     # ---- Mutating broadcasts (only at the end of a run)
     if allow_mutating and record.get("broadcast"):
         reqs += broadcast_requests(record["broadcast"])
 
     for i, r in enumerate(reqs):
         r["id"] = i
+    return reqs
+
+
+JSON_CT = "application/json"
+V2X = "/v2/explorer/v1"
+
+
+def _v2_post(route, path, value, raw=None):
+    body = raw if raw is not None else json.dumps(value).encode()
+    return _req(route, "POST", path, "json", body=body,
+                headers={"Content-Type": JSON_CT})
+
+
+def _rev(h: str) -> str:
+    return bytes.fromhex(h)[::-1].hex()
+
+
+def v2_requests(record: Dict[str, Any], mode: str = "full") -> List[Dict[str, Any]]:
+    """The V2 service routes: /v2 (status, branch UTXO/output queries, outpoint
+    lookups) and the schema-1 explorer. Responses are JSON; IDs are tried in
+    both RPC (display) and wire byte order. Continuations embed the
+    per-process service epoch, so they are not followed across nodes."""
+    reqs: List[Dict[str, Any]] = []
+    blocks = record["blocks"]
+    tip = record["tip_height"]
+    txids = record["txids"] if mode == "full" else record["txids"][:30]
+    txids = txids[:: max(1, len(txids) // 40)][:40]
+    branches = record.get("v2_branches", [])
+    assets = record.get("v2_assets", [])
+    zero = "00" * 32
+
+    # ---- /v2
+    reqs.append(_req("/v2/status", "GET", "/v2/status", "json"))
+    reqs.append(_req("/v2/status", "GET", "/v2/status?x=1", "json"))
+    for txid in txids[:20] + [zero]:
+        for t in {txid, _rev(txid)}:
+            for idx in ["0", "1"]:
+                reqs.append(_req("/v2/utxos/:txid/:out_idx", "GET",
+                                 f"/v2/utxos/{t}/{idx}", "json"))
+    for bad in [f"/v2/utxos/{zero[:-2]}/0", f"/v2/utxos/{zero}/abc",
+                f"/v2/utxos/{zero}/-1", f"/v2/utxos/{'zz' * 32}/0",
+                f"/v2/utxos/{zero}/4294967296"]:
+        reqs.append(_req("/v2/utxos/:txid/:out_idx", "GET", bad, "json"))
+    for kind in ["utxos", "outputs"]:
+        route = f"/v2/branches/{kind}"
+        for b in branches[:8]:
+            for page in [100, 1]:
+                reqs.append(_v2_post(route, route, {"any_branch": [b], "page_size": page}))
+        if branches:
+            reqs.append(_v2_post(route, route, {"any_branch": branches[:16], "page_size": 100}))
+        for value in [{"any_branch": [zero], "page_size": 10},
+                      {"any_branch": [], "page_size": 10},
+                      {"any_branch": [zero], "page_size": 0},
+                      {"any_branch": [zero], "page_size": 1001},
+                      {"any_branch": [zero[:-2]], "page_size": 10},
+                      {"any_branch": [zero], "page_size": 10, "cursor": "00"},
+                      {"any_branch": [zero], "page_size": 10, "foo": 1},
+                      {}]:
+            reqs.append(_v2_post(route, route, value))
+        for raw in [b"", b"{", b"null", b"[]"]:
+            reqs.append(_v2_post(route, route, None, raw=raw))
+
+    # ---- /v2/explorer/v1
+    def xget(sub, path):
+        reqs.append(_req(V2X + sub, "GET", V2X + path, "json"))
+
+    xget("/status", "/status")
+    xget("/status", "/status?a=1")
+    for q in ["", "?page_size=1", "?page_size=100", "?page_size=101",
+              f"?before_height={tip}", "?before_height=1&page_size=5",
+              "?page_size=0", "?page_size=01", "?page_size=1&page_size=2",
+              "?foo=1", "?page_size=%31", "?cursor=00"]:
+        xget("/blocks", f"/blocks{q}")
+    for blk in blocks[:: max(1, len(blocks) // 25)] + blocks[-3:]:
+        h, bhash = blk["height"], blk["hash"]
+        xget("/blocks/by-height/:height", f"/blocks/by-height/{h}")
+        for bid in {bhash, _rev(bhash)}:
+            xget("/blocks/:block_id", f"/blocks/{bid}")
+            xget("/blocks/:block_id/transactions", f"/blocks/{bid}/transactions")
+            xget("/blocks/:block_id/transactions",
+                 f"/blocks/{bid}/transactions?page_size=1")
+    for h in [tip + 1, "abc", "-1", "01"]:
+        xget("/blocks/by-height/:height", f"/blocks/by-height/{h}")
+    xget("/blocks/:block_id", f"/blocks/{zero}")
+    xget("/blocks/:block_id", f"/blocks/{zero[:-2]}")
+    for txid in txids + [zero]:
+        for t in {txid, _rev(txid)}:
+            xget("/transactions/by-id/:txid", f"/transactions/by-id/{t}")
+            xget("/transactions/by-hash/:txhash", f"/transactions/by-hash/{t}")
+            for sub in ["inputs", "outputs"]:
+                xget(f"/transactions/by-id/:txid/{sub}", f"/transactions/by-id/{t}/{sub}")
+                xget(f"/transactions/by-id/:txid/{sub}",
+                     f"/transactions/by-id/{t}/{sub}?page_size=1")
+            xget("/transactions/by-id/:txid/witnesses",
+                 f"/transactions/by-id/{t}/witnesses?input_index=0")
+            xget("/transactions/by-id/:txid/witnesses",
+                 f"/transactions/by-id/{t}/witnesses")
+            xget("/transactions/by-id/:txid/wire", f"/transactions/by-id/{t}/wire")
+            xget("/transactions/by-id/:txid/wire",
+                 f"/transactions/by-id/{t}/wire?offset=1&length=10")
+            xget("/transactions/by-id/:txid/wire",
+                 f"/transactions/by-id/{t}/wire?offset=100000")
+            xget("/outputs/:txid/:out_idx", f"/outputs/{t}/0")
+            xget("/outputs/:txid/:out_idx", f"/outputs/{t}/7")
+    xget("/outputs/:txid/:out_idx", f"/outputs/{zero}/4294967296")
+    for q in ["", "?page_size=1", "?page_size=0"]:
+        xget("/assets", f"/assets{q}")
+    for a in assets[:4] + [zero]:
+        xget("/assets/:token_id", f"/assets/{a}")
+        for sub in ["events", "outputs"]:
+            xget(f"/assets/:token_id/{sub}", f"/assets/{a}/{sub}")
+            xget(f"/assets/:token_id/{sub}", f"/assets/{a}/{sub}?page_size=1")
+    for kind in ["outputs", "utxos"]:
+        route = f"{V2X}/branches/{kind}"
+        for b in branches[:4]:
+            reqs.append(_v2_post(route, route, {"any_branch": [b], "page_size": 100}))
+            reqs.append(_v2_post(route, route, {"any_branch": [b], "page_size": 1}))
+        if branches:
+            reqs.append(_v2_post(route, route, {"any_branch": branches[:16]}))
+        for value in [{"any_branch": [zero]}, {}, {"any_branch": []}]:
+            reqs.append(_v2_post(route, route, value))
+        for raw in [b"", b"{"]:
+            reqs.append(_v2_post(route, route, None, raw=raw))
+    xget("/nope", "/nope")
     return reqs
 
 
