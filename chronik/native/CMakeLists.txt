@@ -103,6 +103,9 @@ endif()
 # ---- Protobuf messages (chronik.proto) ----
 include("${CHRONIK_NATIVE_ROOT}/proto/proto.cmake")
 
+# ---- HTTP/WS transports (query pool, standalone Beast listener) ----
+include("${CHRONIK_NATIVE_ROOT}/transport/transport.cmake")
+
 # ---- Host adapter (node build only) ----
 if(NOT CHRONIK_NATIVE_STANDALONE)
     add_library(chronik_native_host_abc STATIC
