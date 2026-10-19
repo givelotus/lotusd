@@ -1189,42 +1189,13 @@ def lotus_v2_compute_tx_identities(tx) -> tuple:
             txhash_b[0] ^= nver & 0xFF
         return (bytes(txid_b), bytes(txhash_b))
 
-    core_bytes = bytearray(nver.to_bytes(4, "little") + lock.to_bytes(8, "little"))
-    full_bytes = bytearray(core_bytes)
-    for (
-        prev_txid,
-        prev_index,
-        seq,
-        flags,
-        path_index,
-        witnesses,
-        has_cb,
-        cb_data,
-    ) in v2_inputs:
-        core_bytes += prev_txid
-        full_bytes += prev_txid
-        for i in range(4):
-            ib = (prev_index >> (8 * i)) & 0xFF
-            sb = (seq >> (8 * i)) & 0xFF
-            core_bytes.append(ib)
-            full_bytes.append(ib)
-            core_bytes.append(sb)
-            full_bytes.append(sb)
-        core_bytes.append(flags)
-        full_bytes.append(flags)
-        if witnesses:
-            full_bytes += witnesses[0][0]
-        if has_cb:
-            core_bytes += cb_data
-            full_bytes += cb_data
-    for o in v2_outputs:
-        ow = _lotus_v2_encode_output(o)
-        if len(ow) <= 2186 and _lotus_v2_decode_output_bytes(ow) is not None:
-            core_bytes += ow
-            full_bytes += ow
-    txid_b = lotus_v2_tagged_hash("Lotus/v2/txid", bytes(core_bytes))
-    txhash_b = lotus_v2_tagged_hash("Lotus/v2/txhash", bytes(full_bytes))
-    return (txid_b, txhash_b)
+    # Not a well-formed V2 structure: the node names it by its own domain
+    # tag over the chain ID and the complete serialized transaction, with
+    # TxId == TxHash (see ComputeV2TxIdentities).
+    fallback = lotus_v2_tagged_hash(
+        "Lotus/v2/txid/nonstructural", b"\x00" * 32 + tx.serialize()
+    )
+    return (fallback, fallback)
 
 
 # The block id commits to the network's chain id (raw bytes, as in
