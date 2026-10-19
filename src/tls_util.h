@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,26 @@ bool UseCertificatePem(SSL_CTX *ctx, const std::string &cert_chain_pem,
 /** Load PEM files (certificate chain and key) into `ctx` */
 bool UseCertificateFiles(SSL_CTX *ctx, const fs::path &cert_chain,
                          const fs::path &key);
+
+/**
+ * Client TLS contexts are immutable after publication. Check file mtimes on
+ * new handshakes (at most once a second), just like the inbound listener.
+ * A failed replacement retains the last valid context; existing SSL objects
+ * retain their own OpenSSL reference to that context.
+ */
+class ReloadingClientContext {
+    std::mutex m_mutex;
+    std::shared_ptr<SSL_CTX> m_context;
+    std::optional<fs::path> m_cert, m_key;
+    fs::file_time_type m_cert_mtime{}, m_key_mtime{};
+    bool m_loaded{false};
+    std::chrono::steady_clock::time_point m_next_check{};
+
+public:
+    ReloadingClientContext(const std::optional<fs::path> &cert,
+                           const std::optional<fs::path> &key);
+    std::shared_ptr<SSL_CTX> Get();
+};
 
 struct SelfSigned {
     std::string cert_pem;
