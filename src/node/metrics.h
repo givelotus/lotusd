@@ -66,6 +66,13 @@ struct NodeMetrics {
     //! WebSocket peers, by compression x tls (0 = plain, 1 = TLS)
     metrics::Gauge &websocket_peers;
 
+    // Chain
+    metrics::Gauge &tip_height;
+    metrics::Gauge &tip_timestamp;
+    metrics::Gauge &tip_age;
+    metrics::Gauge &initial_block_download;
+    metrics::EventHistogram &block_connect_seconds;
+
     // HTTP and RPC
     metrics::Counter &http_requests;
     metrics::EventHistogram &http_request_seconds;
@@ -96,6 +103,14 @@ void StopNodeMetrics();
 
 /** Label index of a P2P message type ("other" for unknown types) */
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept;
+
+/** Set the chain tip gauges (call with cs_main held, where the tip changes) */
+inline void SetTipMetrics(int height, int64_t block_time) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->tip_height.Set(double(height));
+        m->tip_timestamp.Set(double(block_time));
+    }
+}
 
 } // namespace node
 

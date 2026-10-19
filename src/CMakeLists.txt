@@ -959,6 +959,8 @@ if(BUILD_CHAINSTATE)
 		util/syserror.cpp
 		util/threadinterrupt.cpp
 		util/threadnames.cpp
+		metrics/metrics.cpp
+		node/metrics.cpp
 		util/time.cpp
 		util/tokenpipe.cpp
 		validation.cpp
