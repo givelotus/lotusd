@@ -750,12 +750,16 @@ public:
                                              lotus::v2::DeferredRecords &&records);
     //! The reason of the first failed deferred rule, if one failed.
     std::optional<std::string> RuleFailure() const;
+    //! Signature checks executed by the transaction's inputs so far.
+    void AddSigChecks(int n) { m_sigchecks.fetch_add(n); }
+    int SigChecks() const { return m_sigchecks.load(); }
 
 private:
     std::vector<lotus::v2::Output> m_outputs;
     lotus::v2::DeferredTxRun m_run;
     mutable Mutex m_mutex;
     std::optional<std::string> m_rule_failure GUARDED_BY(m_mutex);
+    std::atomic<int> m_sigchecks{0};
 };
 
 /**

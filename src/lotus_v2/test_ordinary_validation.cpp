@@ -463,9 +463,52 @@ void StateOutputPostCheck() {
     RejectWithoutMutation(tx, profile, fixture.view, fixture.chain);
 }
 
+void CacheBypassForDeferredRecords() {
+    // A candidate whose inputs stage deferred records (here an ENFORCEOUTPUT
+    // claim) is marked, and a marked candidate is never cached.
+    Fixture fixture;
+    const auto profile = Profile();
+    std::vector<uint8_t> claim{0x08};                  // template: any output
+    claim.insert(claim.end(), 8, 0x00);
+    claim.push_back(0x10);                             // claim N(0)
+    claim.insert(claim.end(), 16, 0x00);
+    claim.insert(claim.end(), {0xeb, 0x4e});           // ENFORCEOUTPUT TRUE
+    auto &coin = fixture.view.begin()->second;
+    coin.output.branches = {BranchLeaf(claim)};
+    auto tx = fixture.tx;
+    tx.inputs[0].witnesses[0].script = claim;
+    OrdinaryCandidateEffects claimed, plain;
+    std::string error;
+    CHECK(CheckOrdinaryCandidate(tx, profile, fixture.chain, fixture.view,
+                                 claimed, error));
+    CHECK(claimed.produced_records);
+    Fixture plain_fixture;
+    CHECK(CheckOrdinaryCandidate(plain_fixture.tx, profile, plain_fixture.chain,
+                                 plain_fixture.view, plain, error));
+    CHECK(!plain.produced_records);
+
+    IdentityDigests identities;
+    identities.txid.fill(0xc1);
+    identities.txhash.fill(0xc2);
+    Hash coins{};
+    coins.fill(0xc3);
+    OrdinaryCandidateEffects found;
+    CandidateCheckResult result{};
+    PutCachedOrdinaryResolved(profile, fixture.chain, 77, identities, coins,
+                              nullptr, claimed);
+    CHECK(!TryGetCachedOrdinaryResolved(profile, fixture.chain, 77, identities,
+                                        coins, nullptr, found, result, error));
+    PutCachedOrdinaryResolved(profile, fixture.chain, 77, identities, coins,
+                              nullptr, plain);
+    CHECK(TryGetCachedOrdinaryResolved(profile, fixture.chain, 77, identities,
+                                       coins, nullptr, found, result, error));
+    CHECK(result == CandidateCheckResult::Accepted);
+}
+
 int main() {
     ProfileCountCaps();
     StateOutputPostCheck();
+    CacheBypassForDeferredRecords();
     LookupBoundary();
     ValidMintAndAccounting();
     InvalidAccountingAndCoverage();
