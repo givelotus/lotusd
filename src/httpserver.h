@@ -95,9 +95,10 @@ void RegisterHTTPAsyncHandler(const std::string &prefix, bool exactMatch,
                               const HTTPAsyncRequestHandler &handler);
 
 /**
- * Exempt requests whose URI is `prefix`, or continues it with '/' or '?', from
- * the -rpcallowip address check. Handlers for such paths must not rely on the
- * ACL. Call before StartHTTPServer.
+ * Serve requests whose URI is `prefix`, or continues it with '/' or '?', on
+ * -publicbind listeners (to any client). Only built-in WebSocket/proxy
+ * endpoints use this; on the RPC listeners they still require -rpcallowip.
+ * Call before StartHTTPServer.
  */
 void RegisterPublicHTTPPrefix(const std::string &prefix);
 

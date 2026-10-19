@@ -796,9 +796,10 @@ void SetupServerArgs(NodeContext &node) {
         OptionsCategory::CHRONIK);
     argsman.AddArg(
         "-chronikpubliconrpcport",
-        strprintf("Also serve Chronik on the RPC port under /chronik (HTTP "
-                  "and /chronik/ws WebSocket, with TLS when enabled). These "
-                  "paths are exempt from -rpcallowip (default: %d)",
+        strprintf("Also serve Chronik on the HTTP server under /chronik (HTTP "
+                  "and /chronik/ws WebSocket, with TLS when enabled): on the "
+                  "RPC port for -rpcallowip clients and on -publicbind "
+                  "listeners for anyone (default: %d)",
                   DEFAULT_CHRONIK_PUBLIC_ON_RPC_PORT),
         ArgsManager::ALLOW_ANY, OptionsCategory::CHRONIK);
     argsman.AddArg("-chroniktokenindex",
@@ -1049,10 +1050,11 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
         "-p2pwebsocket",
-        strprintf("Accept P2P connections over WebSocket at %s on the RPC "
-                  "port (ws:// or wss://, auto-detected), in addition to the "
-                  "normal P2P port. Requires -listen and -server. The path is "
-                  "exempt from -rpcallowip (default: %d)",
+        strprintf("Accept P2P connections over WebSocket at %s (ws:// or "
+                  "wss://, auto-detected), in addition to the normal P2P "
+                  "port: on -publicbind listeners for anyone, and on the RPC "
+                  "port for -rpcallowip clients. Requires -listen and "
+                  "-server (default: %d)",
                   P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
@@ -1604,6 +1606,15 @@ void SetupServerArgs(NodeContext &node) {
                              DEFAULT_HTTP_SERVER_TIMEOUT),
                    ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
                    OptionsCategory::RPC);
+    argsman.AddArg(
+        "-publicbind=<addr>:<port>",
+        "Also listen on <addr>:<port> for public clients, serving only the "
+        "P2P WebSocket (/p2p/ws) and Chronik (/chronik) endpoints, with TLS "
+        "auto-detected. JSON-RPC, wallet and REST requests are refused "
+        "there whatever the client address, so this is the port to expose "
+        "or put behind a reverse proxy. Can be specified multiple times.",
+        ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
+        OptionsCategory::RPC);
     argsman.AddArg("-rpciothreads=<n>",
                    strprintf("Number of threads performing HTTP/WebSocket "
                              "socket I/O and TLS (default: %d)",
