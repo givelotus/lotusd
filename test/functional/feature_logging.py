@@ -83,6 +83,7 @@ class LoggingTest(BitcoinTestFramework):
         self.test_text_source_locations()
         self.test_json_format()
         self.test_logfmt_format()
+        self.test_gcp_format()
         self.test_json_aux_only()
 
     def assert_no_absolute_source_paths(self, log_path):
@@ -120,6 +121,24 @@ class LoggingTest(BitcoinTestFramework):
             }, record
             assert record["source_line"].isdigit(), record
         assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+
+    def test_gcp_format(self):
+        self.restart_node(
+            0, ["-logformat=json-gcp", "-debuglogfile=gcp.log", "-logsourcelocations"]
+        )
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        with open(self.relative_log_path("gcp.log"), encoding="utf-8") as stream:
+            records = [json.loads(line) for line in stream if line.strip()]
+        assert len(records) > 20
+        for record in records:
+            assert record["severity"] in {"DEBUG", "INFO", "WARNING", "ERROR"}
+            assert "level" not in record
+            assert isinstance(record["time"], str)
+            location = record["logging.googleapis.com/sourceLocation"]
+            assert set(location) == {"file", "line", "function"}
+            assert isinstance(location["line"], str)
+        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
     def test_json_aux_only(self):
         self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
         path = self.relative_log_path("aux-only.jsonl")
@@ -139,7 +158,7 @@ class LoggingTest(BitcoinTestFramework):
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
             ["-logformat=xml"],
-            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json)",
+            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp)",
         )
         json_log_path = self.relative_log_path("json.log")
         self.start_node(

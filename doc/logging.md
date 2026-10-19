@@ -21,3 +21,21 @@ The quoted-string encoding follows the decoder used by
 [go-logfmt](https://github.com/go-logfmt/logfmt), including Unicode escapes and
 replacement of malformed UTF-8. The functional check reads the actual file
 sink after startup, mining and shutdown; encoder tests cover quotes/newlines.
+
+`-logformat=json` writes one JSON object per physical line with `time`, `level`,
+`category`, `thread` and `message`. `-logsourcelocations` adds a `source` object
+with `file`, numeric `line`, and bare `function`. The timestamp and source
+flags have the same meaning as for logfmt; thread, category and level are
+always present. Event names and values are escaped as JSON strings, including
+when an event descriptor was constructed outside the normal naming convention.
+Numeric/boolean fields remain JSON numbers/booleans. The human message stays
+available for consumers that do not interpret typed fields.
+
+`-logformat=json-gcp` uses `time`, uppercase `severity`, `message`, and
+`logging.googleapis.com/sourceLocation` (`file`, int64-string `line`, bare
+`function`). Trace maps to DEBUG because Cloud Logging has no TRACE severity.
+Category, thread and typed event fields stay in the JSON payload. Sources:
+[agent structured logging](https://cloud.google.com/logging/docs/structured-logging)
+and [LogEntrySourceLocation](https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogEntrySourceLocation).
+Cloud behavior is checked against the specification; no cloud ingestion or
+account deployment is part of the local tests.

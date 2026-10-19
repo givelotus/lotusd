@@ -352,6 +352,28 @@ BOOST_AUTO_TEST_CASE(structured_source_caller) {
                       "logging_event_tests::structured_source_caller::test_method");
 }
 
+BOOST_AUTO_TEST_CASE(gcp_json_schema) {
+    BOOST_CHECK(BCLog::ParseLogFormat("json-gcp") ==
+                BCLog::LogFormat::JSON_GCP);
+    Format(BCLog::LogFormat::JSON_GCP);
+    LogInstance().m_log_timestamps = true;
+    LogInstance().m_log_sourcelocations = true;
+    LogWarningEvent(BCLog::NET, "peer_failed", "failed: {error}")
+        .Field(LogField::PeerId, 7)
+        .Field(LogField::Error, "quote\"newline\n");
+    const auto record{Json()};
+    BOOST_CHECK_EQUAL(record["severity"].get_str(), "WARNING");
+    BOOST_CHECK(record["level"].isNull());
+    BOOST_CHECK(record["time"].isStr());
+    BOOST_CHECK_EQUAL(record["peer_id"].getInt<int64_t>(), 7);
+    BOOST_CHECK_EQUAL(record["error"].get_str(), "quote\"newline\n");
+    const auto location{record["logging.googleapis.com/sourceLocation"]};
+    BOOST_CHECK(location["file"].isStr());
+    BOOST_CHECK(location["line"].isStr());
+    BOOST_CHECK_EQUAL(location["function"].get_str().find('('),
+                      std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
     Format(BCLog::LogFormat::JSON);
     const CService endpoint{LookupNumeric("203.0.113.7", 10605)};
