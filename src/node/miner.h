@@ -35,6 +35,30 @@ class Processor;
 
 namespace node {
 static const bool DEFAULT_PRINTPRIORITY = false;
+/**
+ * Default version of the coinbase transactions this node builds. 1 and 2 are
+ * legacy coinbases, valid only where Consensus::Params::allowLegacyCoinbase
+ * (regtest); -coinbaseversion selects one there.
+ */
+static constexpr uint32_t DEFAULT_COINBASE_VERSION = 7;
+
+/** Whether v is a coinbase version this node can build: 1, 2 or 7. */
+constexpr bool IsCoinbaseVersion(uint32_t v) {
+    return v == 1 || v == 2 || v == 7;
+}
+
+/**
+ * A coinbase for the block at nHeight after prev_block, with no outputs.
+ * Version 7: the V2 coinbase input, committing to the parent and height.
+ * Version 1 or 2: a legacy coinbase, null prevout and a BIP34 scriptSig
+ * "nHeight OP_0".
+ */
+CMutableTransaction CreateCoinbaseShell(uint32_t version,
+                                        const BlockHash &prev_block,
+                                        int nHeight);
+
+/** Pad the coinbase input so that the transaction is MIN_TX_SIZE bytes. */
+void PadCoinbaseToMinSize(CMutableTransaction &coinbase);
 
 struct CBlockTemplateEntry {
     CTransactionRef tx;
@@ -72,11 +96,14 @@ private:
 
     const bool add_finalized_txs;
 
+    const uint32_t coinbase_version;
+
 public:
     struct Options {
         bool fPrintPriority{DEFAULT_PRINTPRIORITY};
         bool test_block_validity{true};
         bool add_finalized_txs{false};
+        uint32_t coinbase_version{DEFAULT_COINBASE_VERSION};
     };
 
     BlockAssembler(const Config &config, Chainstate &chainstate,
