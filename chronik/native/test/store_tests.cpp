@@ -13,15 +13,21 @@
 #if CHRONIK_NATIVE_HAVE_MDBX
 #include <chronik/native/mdbx_store.h>
 #endif
+#if CHRONIK_NATIVE_HAVE_LEVELDB
+#include <chronik/native/leveldb_store.h>
+#endif
 
 #include <test/test_sha256.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <chrono>
+#include <map>
 #include <random>
+#include <set>
 #include <thread>
 
 using namespace chronik::native;
@@ -32,6 +38,9 @@ namespace {
 void RegisterTestStoreBackends() {
 #if CHRONIK_NATIVE_HAVE_MDBX
     RegisterMdbxStore();
+#endif
+#if CHRONIK_NATIVE_HAVE_LEVELDB
+    RegisterLevelDbStore();
 #endif
 }
 
@@ -471,6 +480,227 @@ BOOST_AUTO_TEST_CASE(long_keys) {
         }
     }
 }
+
+BOOST_AUTO_TEST_CASE(randomized_against_model) {
+    // Random writes, clears and commits; after every operation the write
+    // txn (read-your-writes) and, after commits, a read txn must match an
+    // in-memory model through Get, forward/backward cursors and dup cursors.
+    for (StoreBackend backend : Backends()) {
+        BOOST_TEST_CONTEXT("backend " << StoreBackendName(backend)) {
+            TempDir dir("model");
+            auto store = OpenStore(backend, dir.path, kTestTables, Opts());
+            const TableId t = store->Table("plain");
+            const TableId d = store->Table("dup_var");
+            using Plain = std::map<Bytes, Bytes>;
+            using Dups = std::map<Bytes, std::set<Bytes>>;
+            Plain committed_plain, plain;
+            Dups committed_dups, dups;
+            std::mt19937 rng(12345);
+            auto rnd_key = [&]() {
+                // Short keys over a tiny alphabet, incl. 0x00 and 0xff, so
+                // seeks hit exact keys, neighbours and prefix boundaries.
+                static const uint8_t alphabet[] = {0x00, 0x01, 0x7f, 0x80, 0xff};
+                Bytes k(rng() % 3);
+                for (auto &b : k) {
+                    b = alphabet[rng() % 5];
+                }
+                return k;
+            };
+            auto check = [&](const ReadTxn &txn, const Plain &mp,
+                             const Dups &md) {
+                // Forward and backward scans
+                std::vector<std::pair<Bytes, Bytes>> fwd, bwd;
+                auto c = txn.OpenCursor(t);
+                for (bool ok = c->SeekFirst(); ok; ok = c->Next()) {
+                    fwd.emplace_back(ToBytes(c->Key()), ToBytes(c->Value()));
+                }
+                for (bool ok = c->SeekLast(); ok; ok = c->Prev()) {
+                    bwd.emplace_back(ToBytes(c->Key()), ToBytes(c->Value()));
+                }
+                std::vector<std::pair<Bytes, Bytes>> expected(mp.begin(),
+                                                              mp.end());
+                BOOST_REQUIRE(fwd == expected);
+                std::reverse(expected.begin(), expected.end());
+                BOOST_REQUIRE(bwd == expected);
+                // A plain cursor over a dup table visits (key, dup) pairs
+                std::vector<std::pair<Bytes, Bytes>> dfwd, dbwd, dexp;
+                for (const auto &[key, values] : md) {
+                    for (const Bytes &value : values) {
+                        dexp.emplace_back(key, value);
+                    }
+                }
+                auto dt = txn.OpenCursor(d);
+                for (bool ok = dt->SeekFirst(); ok; ok = dt->Next()) {
+                    dfwd.emplace_back(ToBytes(dt->Key()), ToBytes(dt->Value()));
+                }
+                for (bool ok = dt->SeekLast(); ok; ok = dt->Prev()) {
+                    dbwd.emplace_back(ToBytes(dt->Key()), ToBytes(dt->Value()));
+                }
+                BOOST_REQUIRE(dfwd == dexp);
+                std::reverse(dexp.begin(), dexp.end());
+                BOOST_REQUIRE(dbwd == dexp);
+                {
+                    const Bytes k = rnd_key();
+                    auto ge = md.lower_bound(k);
+                    BOOST_REQUIRE_EQUAL(dt->SeekGe(k), ge != md.end());
+                    if (ge != md.end()) {
+                        BOOST_REQUIRE(ToBytes(dt->Key()) == ge->first);
+                        BOOST_REQUIRE(ToBytes(dt->Value()) ==
+                                      *ge->second.begin());
+                    }
+                }
+                // Seeks and gets
+                for (int i = 0; i < 8; ++i) {
+                    const Bytes k = rnd_key();
+                    auto ge = mp.lower_bound(k);
+                    BOOST_REQUIRE_EQUAL(c->SeekGe(k), ge != mp.end());
+                    if (ge != mp.end()) {
+                        BOOST_REQUIRE(ToBytes(c->Key()) == ge->first);
+                    }
+                    auto le = mp.upper_bound(k);
+                    const bool has_le = le != mp.begin();
+                    BOOST_REQUIRE_EQUAL(c->SeekLe(k), has_le);
+                    if (has_le) {
+                        --le;
+                        BOOST_REQUIRE(ToBytes(c->Key()) == le->first);
+                    }
+                    auto got = txn.Get(t, k);
+                    auto it = mp.find(k);
+                    BOOST_REQUIRE_EQUAL(got.has_value(), it != mp.end());
+                    if (got) {
+                        BOOST_REQUIRE(ToBytes(*got) == it->second);
+                    }
+                    // Dups of k
+                    std::vector<Bytes> want;
+                    if (auto dit = md.find(k); dit != md.end()) {
+                        want.assign(dit->second.begin(), dit->second.end());
+                    }
+                    BOOST_REQUIRE(AllDups(txn, d, k) == want);
+                    auto dc = txn.OpenDupCursor(d);
+                    const Bytes vp = rnd_key();
+                    auto vge = std::lower_bound(want.begin(), want.end(), vp);
+                    BOOST_REQUIRE_EQUAL(dc->SeekValueGe(k, vp),
+                                        vge != want.end());
+                    if (vge != want.end()) {
+                        BOOST_REQUIRE(ToBytes(dc->Value()) == *vge);
+                        BOOST_REQUIRE_EQUAL(dc->CountRemaining(),
+                                            size_t(want.end() - vge));
+                    }
+                }
+            };
+            auto txn = store->BeginWrite();
+            for (int step = 0; step < 3000; ++step) {
+                const int op = rng() % 100;
+                const Bytes k = rnd_key();
+                const Bytes v = rnd_key();
+                if (op < 30) {
+                    txn->Put(t, k, v);
+                    plain[k] = v;
+                } else if (op < 45) {
+                    txn->Del(t, k);
+                    plain.erase(k);
+                } else if (op < 70) {
+                    txn->PutDup(d, k, v);
+                    dups[k].insert(v);
+                } else if (op < 82) {
+                    txn->DelDup(d, k, v);
+                    if (auto it = dups.find(k); it != dups.end()) {
+                        it->second.erase(v);
+                        if (it->second.empty()) {
+                            dups.erase(it);
+                        }
+                    }
+                } else if (op < 88) {
+                    txn->DelDupByPrefix(d, k, v);
+                    if (auto it = dups.find(k); it != dups.end()) {
+                        auto first = it->second.lower_bound(v);
+                        if (first != it->second.end() &&
+                            StartsWith(*first, v)) {
+                            it->second.erase(first);
+                            if (it->second.empty()) {
+                                dups.erase(it);
+                            }
+                        }
+                    }
+                } else if (op < 90) {
+                    if (rng() % 2) {
+                        txn->Clear(t);
+                        plain.clear();
+                    } else {
+                        txn->Clear(d);
+                        dups.clear();
+                    }
+                } else if (op < 97) {
+                    check(*txn, plain, dups);
+                } else {
+                    txn->Commit();
+                    committed_plain = plain;
+                    committed_dups = dups;
+                    {
+                        auto read = store->BeginRead();
+                        check(*read, committed_plain, committed_dups);
+                    }
+                    txn = store->BeginWrite();
+                }
+            }
+            txn.reset();
+            auto read = store->BeginRead();
+            check(*read, committed_plain, committed_dups);
+        }
+    }
+}
+
+#if CHRONIK_NATIVE_HAVE_LEVELDB
+BOOST_AUTO_TEST_CASE(leveldb_table_ids_and_refusals) {
+    RegisterTestStoreBackends();
+    TempDir dir("ldbids");
+    {
+        auto store = OpenStore(StoreBackend::LevelDb, dir.path, kTestTables,
+                               Opts());
+        auto txn = store->BeginWrite();
+        txn->Put(store->Table("plain"), S("k"), S("v"));
+        txn->PutDup(store->Table("dup_var"), S("m"), S("x"));
+        txn->Commit();
+    }
+    {
+        // Tables reordered and a new one added: ids are persistent, so the
+        // data stays with its table.
+        const TableSpec reordered[] = {
+            {"extra", TableSpec::Kind::Plain, std::nullopt},
+            {"dup_fixed", TableSpec::Kind::Dup, 20},
+            {"dup_var", TableSpec::Kind::Dup, std::nullopt},
+            {"plain", TableSpec::Kind::Plain, std::nullopt},
+        };
+        auto store =
+            OpenStore(StoreBackend::LevelDb, dir.path, reordered, Opts());
+        auto txn = store->BeginRead();
+        BOOST_CHECK(ToBytes(*txn->Get(store->Table("plain"), S("k"))) == S("v"));
+        BOOST_CHECK(!txn->Get(store->Table("extra"), S("k")));
+        BOOST_CHECK(AllDups(*txn, store->Table("dup_var"), S("m")) ==
+                    std::vector<Bytes>{S("x")});
+        BOOST_CHECK(AllDups(*txn, store->Table("dup_fixed"), S("m")).empty());
+    }
+    {
+        // A table whose kind changed must not be reinterpreted
+        const TableSpec changed[] = {
+            {"plain", TableSpec::Kind::Dup, std::nullopt},
+        };
+        BOOST_CHECK_THROW(
+            OpenStore(StoreBackend::LevelDb, dir.path, changed, Opts()),
+            ChronikError);
+    }
+#if CHRONIK_NATIVE_HAVE_MDBX
+    {
+        // An MDBX index directory is refused
+        TempDir mdbx_dir("ldbmdbx");
+        OpenStore(StoreBackend::Mdbx, mdbx_dir.path, kTestTables, Opts());
+        BOOST_CHECK_THROW(OpenStore(StoreBackend::LevelDb, mdbx_dir.path,
+                                    kTestTables, Opts()),
+                          ChronikError);
+    }
+#endif
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(sha256_helper) {
     uint8_t out[32];

@@ -22,7 +22,10 @@ namespace chronik::native {
 
 /** Port of ChronikIndexerParams (chronik-indexer/src/indexer.rs). */
 struct IndexerParams {
-    /** Index at <datadir_net>/indexes/chronik (same as Rust). */
+    /**
+     * Index at <datadir_net>/indexes/chronik (MDBX, same as Rust) or
+     * indexes/chronik-leveldb (LevelDB), see StoreIndexDirName.
+     */
     std::filesystem::path datadir_net;
     /** -chronikreindex / -reindex */
     bool wipe = false;

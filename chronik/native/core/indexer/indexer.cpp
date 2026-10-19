@@ -289,7 +289,8 @@ IndexerImpl::IndexerImpl(const Host &host, IndexerParams params,
     if (m_params.perf_stats) {
         CreateDirIfMissing(perf_path);
     }
-    const std::filesystem::path db_path = indexes_path / "chronik";
+    const std::filesystem::path db_path =
+        indexes_path / std::string(StoreIndexDirName(m_params.backend));
     m_config.db_path = db_path;
     m_config.perf_path = perf_path;
     if (m_params.wipe) {
@@ -318,7 +319,10 @@ IndexerImpl::IndexerImpl(const Host &host, IndexerParams params,
             schema.Add(spec);
         }
     }
-    RefuseLegacyRocksDb(db_path);
+    if (m_params.backend == StoreBackend::Mdbx) {
+        // (A LevelDB directory also has CURRENT/MANIFEST-* files.)
+        RefuseLegacyRocksDb(db_path);
+    }
     StoreOptions store_opts;
     store_opts.sha256 = HostSha256(m_host);
     m_store = OpenStore(m_params.backend, db_path, schema.Tables(), store_opts);

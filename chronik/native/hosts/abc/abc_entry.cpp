@@ -26,6 +26,9 @@
 #include <chronik-cpp/chronik.h>
 
 #include <chronik/native/error.h>
+#ifdef CHRONIK_NATIVE_HAVE_LEVELDB
+#include <chronik/native/leveldb_store.h>
+#endif
 #ifdef CHRONIK_NATIVE_HAVE_MDBX
 #include <chronik/native/mdbx_store.h>
 #endif
@@ -42,6 +45,16 @@
 namespace chronik {
 
 namespace {
+
+/** Registers the storage backends linked into this build (idempotent). */
+void RegisterStoreBackends() {
+#ifdef CHRONIK_NATIVE_HAVE_MDBX
+    native::RegisterMdbxStore();
+#endif
+#ifdef CHRONIK_NATIVE_HAVE_LEVELDB
+    native::RegisterLevelDbStore();
+#endif
+}
 
 // Duration between WebSocket pings initiated by Chronik.
 // 45s has been empirically established as a reliable duration for both browser
@@ -152,7 +165,29 @@ ParseChronikParams(const ArgsManager &args, const Config &config, bool fWipe) {
         "-chroniktxnumcachebuckets", DEFAULT_TX_NUM_CACHE_BUCKETS);
     out.indexer.tx_num_cache_bucket_size = (size_t)args.GetIntArg(
         "-chroniktxnumcachebucketsize", DEFAULT_TX_NUM_CACHE_BUCKET_SIZE);
-    out.indexer.backend = native::StoreBackend::Mdbx;
+#ifdef CHRONIK_NATIVE_HAVE_MDBX
+    const std::string default_backend = "mdbx";
+#else
+    const std::string default_backend = "leveldb";
+#endif
+    const std::string backend_name =
+        args.GetArg("-chronikdbbackend", default_backend);
+    const std::optional<native::StoreBackend> backend =
+        native::ParseStoreBackend(backend_name);
+    if (!backend) {
+        return {{_(strprintf("Unknown -chronikdbbackend %s (expected mdbx "
+                             "or leveldb).",
+                             backend_name)
+                       .c_str())}};
+    }
+    RegisterStoreBackends();
+    if (!native::HasStoreBackend(*backend)) {
+        return {{_(strprintf("-chronikdbbackend=%s is not available in this "
+                             "build.",
+                             backend_name)
+                       .c_str())}};
+    }
+    out.indexer.backend = *backend;
     out.indexer.token_index_factory = native::token_io::MakeEcashTokenIndex;
     out.indexer.decompress_pubkey =
         [](native::ByteView form) -> std::optional<native::Bytes> {
@@ -223,9 +258,6 @@ bool Start(const ArgsManager &args, const Config &config,
     caps.default_http_port = BaseParams().ChronikPort();
     caps.client_name = CLIENT_NAME;
 
-#ifdef CHRONIK_NATIVE_HAVE_MDBX
-    native::RegisterMdbxStore();
-#endif
     g_host = std::make_unique<native::abc::AbcHost>(node, std::move(caps));
     try {
         std::unique_ptr<native::Service> service =
