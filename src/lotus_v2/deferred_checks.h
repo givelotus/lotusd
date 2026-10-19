@@ -261,6 +261,12 @@ struct StateAuthorization {
 // claims with a single match. A flow may split one claim's amount across
 // several outputs it matches.
 extern const DeferredKindKey kOutputClaimsKind;
+// The most (claim, matching output) pairs, the edges of the flow graph, a
+// transaction may record. Exceeding it fails the input that crosses it
+// ("claim-pairs-exceeded"). The VM budget is per invocation, so without
+// this bound the inputs of one transaction could together record far more
+// edges than phase 2 was measured for (bench V2ClaimFlowLadderAtCap).
+inline constexpr size_t MAX_TX_CLAIM_PAIRS = 4096;
 struct OutputClaim {
     uint64_t amount = 0;
     std::vector<uint16_t> matches;

@@ -2397,9 +2397,11 @@ namespace {
                             return out.HasState() &&
                                    out.state_root == expected_state;
                         };
-                        Charge(RawMul(
-                            cost_profile.opcode[0xeb].per_scanned_output,
-                            last - first));
+                        // A flat charge per transaction output, the same
+                        // as the static charge: it covers the scan and the
+                        // claim's phase-2 edges (one per matching output).
+                        Charge(RawMul(cost_profile.opcode[0xeb].per_tx_output,
+                                      output_count));
                         // The match mask: every output in range the
                         // template matches. Phase 2 assigns the claim.
                         std::vector<uint16_t> matched;
@@ -3126,7 +3128,7 @@ Hash VmProfileDigest(const VmProfile &vm, const VmCostProfile &cost) {
             le(op.base, 8);
             le(op.per_operand_byte, 8);
             le(op.per_result_byte, 8);
-            le(op.per_scanned_output, 8);
+            le(op.per_tx_output, 8);
         }
     le(cost.field_sizes.size(), 8);
     for (const auto &[op, sizes] : cost.field_sizes) {
