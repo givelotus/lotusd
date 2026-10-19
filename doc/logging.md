@@ -52,3 +52,22 @@ See [ECS log fields](https://www.elastic.co/guide/en/ecs/8.11/ecs-log.html),
 [event fields](https://www.elastic.co/guide/en/ecs/8.11/ecs-event.html), and
 [source roles](https://www.elastic.co/guide/en/ecs/8.11/ecs-source.html).
 An actual Elasticsearch/collector deployment is not claimed by local tests.
+
+`-logformat=journald` is Linux-only and writes the native journal protocol to
+`/run/systemd/journal/socket`, without linking libsystemd. Selecting it enables
+that sink even with `-nodebuglogfile`; it does not open the main debug file.
+`-printtoconsole` and callbacks still receive readable text. An optional
+`-debuglogjsonfile` continues to receive generic JSON. Startup fails explicitly
+if the journal socket is unavailable. Later send failures fall back to stderr
+and increment `lotus_log_journal_failures_total`; they are not counted as
+successful journal writes. A successful socket send is collector acceptance,
+not a durable-storage acknowledgment.
+
+`MESSAGE`, `PRIORITY` and optional `CODE_FILE`, `CODE_LINE`, `CODE_FUNC` follow
+the journal field conventions. Debug/trace map to priority 7, info to 6,
+warning to 4 and error to 3. Custom metadata and typed values use `LOTUS_*`
+uppercase names; the daemon never submits trusted `_` fields. Multiline/NUL
+values use the length-prefixed binary representation. Oversize entries use
+one sealed memfd via SCM_RIGHTS. Journal transport failures cannot indefinitely
+block the logger: socket sends have a 100ms timeout and stderr fallback.
+Source: [native journal protocol](https://systemd.io/JOURNAL_NATIVE_PROTOCOL/).

@@ -16,6 +16,7 @@
 #include <array>
 #include <bit>
 #include <charconv>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -111,10 +112,20 @@ bool BCLog::Logger::StartLogging() {
         assert(m_buffering);
         assert(m_fileout == nullptr);
 
-        if (m_print_to_file) {
+        m_startup_error.clear();
+        if (m_log_format == LogFormat::JOURNALD) {
+            if (!m_journal.Open()) {
+                m_startup_error = "Could not open journald socket "
+                                  "/run/systemd/journal/socket: " +
+                                  std::string{std::strerror(errno)};
+                return false;
+            }
+        } else if (m_print_to_file) {
             assert(!m_file_path.empty());
             m_fileout = OpenLogFile(m_file_path);
             if (!m_fileout) {
+                m_startup_error = "Could not open debug log file " +
+                                  fs::PathToString(m_file_path);
                 return false;
             }
 
@@ -125,6 +136,8 @@ bool BCLog::Logger::StartLogging() {
         if (!m_json_file_path.empty()) {
             m_json_fileout = OpenLogFile(m_json_file_path);
             if (!m_json_fileout) {
+                m_startup_error = "Could not open JSON log file " +
+                                  fs::PathToString(m_json_file_path);
                 return false;
             }
         }
@@ -188,6 +201,7 @@ void BCLog::Logger::DisconnectTestLogger() {
         fclose(m_json_fileout);
     }
     m_json_fileout = nullptr;
+    m_journal.Close();
     m_print_callbacks.clear();
     m_has_callbacks = false;
     m_max_buffer_memusage = DEFAULT_MAX_LOG_BUFFER;
@@ -511,7 +525,18 @@ std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
     if (str == "logfmt") {
         return LogFormat::LOGFMT;
     }
+#ifdef __linux__
+    if (str == "journald") return LogFormat::JOURNALD;
+#endif
     return std::nullopt;
+}
+
+const char *BCLog::SupportedLogFormats() {
+#ifdef __linux__
+    return "text, logfmt, json, json-gcp, json-ecs, journald";
+#else
+    return "text, logfmt, json, json-gcp, json-ecs";
+#endif
 }
 
 std::string BCLog::Logger::GetLogPrefix(BCLog::LogFlags category,
@@ -914,6 +939,26 @@ void BCLog::Logger::WriteLine(const std::string &line, bool to_file) {
 
 void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file) {
     Encode(line);
+    if (m_log_format == LogFormat::JOURNALD) {
+        const bool failed{to_file && !m_journal.Send(m_line_buf)};
+        if (failed) ++m_journal_failures;
+        // Console and callbacks remain readable; never print native framing.
+        TextEncoder{}.Encode(
+            line,
+            LogOptions{.timestamps = m_log_timestamps,
+                       .time_micros = m_log_time_micros,
+                       .threadnames = m_log_threadnames,
+                       .sourcelocations = m_log_sourcelocations,
+                       .always_print_category_level =
+                           m_always_print_category_level},
+            m_line_buf);
+        if (failed) {
+            fputs("journald send failed; log entry follows on stderr: ",
+                  stderr);
+            fwrite(m_line_buf.data(), 1, m_line_buf.size(), stderr);
+            fflush(stderr);
+        }
+    }
     WriteLine(m_line_buf, to_file);
     if (m_json_fileout && to_file) {
         const LogOptions opts{.timestamps = true,
