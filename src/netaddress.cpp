@@ -676,6 +676,15 @@ std::string CNetAddr::GetWSSPath() const {
                                  : std::string(slash, m_addr.end());
 }
 
+CNetAddr CNetAddr::FromRaw(Network net, Span<const uint8_t> bytes,
+                           uint32_t scope_id) {
+    CNetAddr addr;
+    addr.m_net = net;
+    addr.m_addr.assign(bytes.begin(), bytes.end());
+    addr.m_scope_id = scope_id;
+    return addr;
+}
+
 enum Network CNetAddr::GetNetwork() const {
     if (IsInternal()) {
         return NET_INTERNAL;

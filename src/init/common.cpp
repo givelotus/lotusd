@@ -32,6 +32,14 @@ void AddLoggingArgs(ArgsManager &argsman) {
                   "Pass -nodebuglogfile to disable writing the log to a file.)",
                   DEFAULT_DEBUGLOGFILE),
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg(
+        "-debuglogjsonfile=<file>",
+        "Also write the log as generic JSON lines (as -logformat=json, with "
+        "source locations) to this file, whatever -logformat is. Relative "
+        "paths are prefixed by the net-specific datadir. Meant for tests and "
+        "tools that match structured fields.",
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-debug=<category>",
                    "Output debug and trace logging (default: -nodebug, "
                    "supplying <category> is optional). "
@@ -136,6 +144,10 @@ void SetLoggingOptions(const ArgsManager &args) {
     LogInstance().m_print_to_file = !args.IsArgNegated("-debuglogfile");
     LogInstance().m_file_path = AbsPathForConfigVal(
         args, args.GetPathArg("-debuglogfile", DEFAULT_DEBUGLOGFILE));
+    if (const fs::path json_path{args.GetPathArg("-debuglogjsonfile")};
+        !json_path.empty()) {
+        LogInstance().m_json_file_path = AbsPathForConfigVal(args, json_path);
+    }
 
     LogInstance().m_print_to_console =
         args.GetBoolArg("-printtoconsole", !args.GetBoolArg("-daemon", false));

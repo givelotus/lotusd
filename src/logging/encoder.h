@@ -5,6 +5,7 @@
 #ifndef BITCOIN_LOGGING_ENCODER_H
 #define BITCOIN_LOGGING_ENCODER_H
 
+#include <logging/event.h>
 #include <util/time.h>
 
 #include <chrono>
@@ -45,6 +46,12 @@ struct LogLine {
     bool continued{false};
     //! Some call site was rate limited when this was logged
     bool ratelimited{false};
+    //! A structured event (then message is empty), or nullptr
+    const LogEventSite *event{nullptr};
+    //! The event's fields
+    FieldList fields;
+    //! Some fields did not fit in the record and were left out
+    bool fields_truncated{false};
 };
 
 /**

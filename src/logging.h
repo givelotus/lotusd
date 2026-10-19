@@ -247,6 +247,11 @@ struct LogRecord {
         //! Some call site was suppressed when this was logged (the "[*]"
         //! marker)
         SUPPRESSIONS = 8,
+        //! This record's call site has just been suppressed: write the
+        //! notice first
+        SUPPRESSION_NOTICE = 16,
+        //! Some fields did not fit
+        FIELDS_TRUNCATED = 32,
     };
     //! Producer's time (SystemClock), microseconds since the epoch
     int64_t time_us;
@@ -380,6 +385,12 @@ class Logger {
     friend struct LoggerTestAccess;
 
 public:
+    /** A record on the heap; releases what its fields hold */
+    struct RecordDeleter {
+        void operator()(LogRecord *rec) const;
+    };
+    using OwnedRecord = std::unique_ptr<LogRecord, RecordDeleter>;
+
     struct BufferedLog {
         SystemClock::time_point now;
         std::chrono::seconds mocktime;
@@ -387,6 +398,8 @@ public:
         std::source_location source_loc;
         LogFlags category;
         Level level;
+        //! A structured event logged before StartLogging
+        OwnedRecord record;
     };
 
     //! How often the logger thread writes queued lines while busy
@@ -450,6 +463,26 @@ private:
 
     /** Encode a line into m_line_buf in the current format */
     void Encode(const LogLine &line) EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex);
+    /** Write a line to every sink (encoding it in each one's format) */
+    void WriteLogLine(const LogLine &line, bool to_file)
+        EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
+    //! The secondary JSON log file (-debuglogjsonfile)
+    FILE *m_json_fileout GUARDED_BY(m_consumer_mutex) = nullptr;
+    JsonEncoder m_json_encoder;
+    std::string m_json_buf GUARDED_BY(m_consumer_mutex);
+
+    friend class EventBuilder;
+    /** Claim a record for an event (or leave the builder inert) */
+    void BeginEvent(EventBuilder &builder) noexcept
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+    /** Publish an event's record */
+    void EndEvent(EventBuilder &builder) noexcept
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+    /** The "Excessive logging" notice for a call site */
+    std::string SuppressionNotice(const std::source_location &loc) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_cs);
 
     //! Rings of threads (in use or orphaned), and rings ready for reuse
     mutable StdMutex m_rings_mutex;
@@ -535,6 +568,8 @@ public:
     LogFormat m_log_format = LogFormat::TEXT;
 
     fs::path m_file_path;
+    //! Also write generic JSON lines here, if set (-debuglogjsonfile)
+    fs::path m_json_file_path;
     std::atomic<bool> m_reopen_file{false};
 
     std::string GetLogPrefix(LogFlags category, Level level) const;
@@ -561,6 +596,7 @@ public:
     bool Enabled() const {
         return m_buffering.load(std::memory_order_relaxed) ||
                m_print_to_console || m_print_to_file ||
+               !m_json_file_path.empty() ||
                m_has_callbacks.load(std::memory_order_relaxed);
     }
 
@@ -787,5 +823,8 @@ static inline void LogPrintf_(std::source_location &&source_loc,
 #define LogPrintfToBeContinued LogPrintf
 #define LogPrintToBeContinued LogDebug
 #define LogPrintLevelToBeContinued LogPrintLevel
+
+// Structured events (LogEvent etc.)
+#include <logging/event.h> // IWYU pragma: export
 
 #endif // BITCOIN_LOGGING_H
