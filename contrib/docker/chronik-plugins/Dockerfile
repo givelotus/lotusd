@@ -22,8 +22,6 @@ FROM debian:bookworm-slim
 
 RUN apt update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libdb5.3++ \
-  libevent-2.1-7 \
-  libevent-pthreads-2.1-7 \
   libprotobuf32 \
   libpython3.11 \
   libzmq5
