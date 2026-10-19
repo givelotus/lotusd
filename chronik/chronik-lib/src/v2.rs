@@ -36,6 +36,7 @@ type Result<T> = std::result::Result<T, String>;
 pub struct V2Service {
     db: Arc<Mutex<V2Db>>,
     limits: f::ServiceLimits,
+    bounds: db::Bounds,
     genesis: [u8; 32],
     authority: Arc<crate::v2_server::Authority>,
     service_epoch: [u8; 16],
@@ -52,12 +53,14 @@ pub fn open_service(
     if path.is_empty() || path.len() > 4096 {
         return Err("path bound".into());
     }
+    // block_bytes is the consensus block-size limit; the index bounds and
+    // the largest transaction and change counts follow from it.
+    let bounds = db::Bounds::new(limits.block_bytes.into())
+        .map_err(|_| "service limits")?;
     if limits.transactions == 0
-        || limits.transactions as usize > db::MAX_TRANSACTIONS
+        || limits.transactions as usize > bounds.transactions()
         || limits.changes == 0
-        || limits.changes as usize > db::MAX_CHANGES
-        || limits.block_bytes == 0
-        || limits.block_bytes as usize > db::MAX_BATCH_BYTES
+        || limits.changes as usize > bounds.changes()
         || limits.roots == 0
         || limits.roots > 256
         || limits.clauses == 0
@@ -89,11 +92,13 @@ pub fn open_service(
             genesis: binding.genesis,
             profile: binding.profile,
         },
+        bounds,
     )
     .map_err(|e| e.to_string())?;
     Ok(Box::new(V2Service {
         db: Arc::new(Mutex::new(database)),
         limits,
+        bounds,
         genesis: binding.genesis,
         authority: Arc::new(crate::v2_server::Authority::default()),
         service_epoch,
@@ -177,12 +182,22 @@ impl V2Service {
         if block.transactions.len() > self.limits.transactions as usize {
             return Err("transaction bound".into());
         }
+        // The block's wire bytes are within the consensus size limit; the
+        // facts copied for them are within the index bounds it implies.
+        let facts_cap = self.bounds.batch_bytes();
+        let mut wire = block.header_wire.len();
         let mut bytes = 218usize;
         let mut changes = 0usize;
-        if bytes > self.limits.block_bytes as usize {
+        if wire > self.bounds.block_bytes() || bytes > facts_cap {
             return Err("block bytes bound".into());
         }
         for tx in &block.transactions {
+            wire = wire
+                .checked_add(tx.wire.len())
+                .ok_or("block overflow")?;
+            if wire > self.bounds.block_bytes() {
+                return Err("block bytes bound".into());
+            }
             let descriptor_bytes = tx
                 .full_inputs
                 .iter()
@@ -197,7 +212,7 @@ impl V2Service {
                 .checked_add(tx.wire.len())
                 .and_then(|n| n.checked_add(descriptor_bytes))
                 .ok_or("full facts overflow")?;
-            if bytes > self.limits.block_bytes as usize {
+            if bytes > facts_cap {
                 return Err("full facts bound".into());
             }
 
@@ -214,9 +229,7 @@ impl V2Service {
                         .and_then(|k| n.checked_add(k))
                 })
                 .ok_or("block overflow")?;
-            if changes > self.limits.changes as usize
-                || bytes > self.limits.block_bytes as usize
-            {
+            if changes > self.limits.changes as usize || bytes > facts_cap {
                 return Err("block input bound".into());
             }
             for output in &tx.outputs {
@@ -226,7 +239,7 @@ impl V2Service {
                 bytes = bytes
                     .checked_add(4 + output.wire.len())
                     .ok_or("block overflow")?;
-                if bytes > self.limits.block_bytes as usize {
+                if bytes > facts_cap {
                     return Err("block bytes bound".into());
                 }
             }
