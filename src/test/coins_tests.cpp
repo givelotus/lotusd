@@ -1202,7 +1202,13 @@ BOOST_AUTO_TEST_CASE(coins_resource_is_used) {
         // several nodes without the need to allocate anything else.
         const auto usage_before = memusage::DynamicUsage(map);
 
-        for (size_t i = 0; i < 1000; ++i) {
+        // V2 CTxOut fields (token id, state root, branches, paths) make each
+        // node larger than upstream's, so insert only as many nodes as one
+        // preallocated chunk holds rather than a fixed 1000.
+        const size_t node_count = std::min<size_t>(
+            1000, resource.ChunkSizeBytes() /
+                          (sizeof(CoinsCachePair) + sizeof(void *) * 4) / 2);
+        for (size_t i = 0; i < node_count; ++i) {
             COutPoint out_point{TxId{}, /*nIn=*/static_cast<uint32_t>(i)};
             map[out_point];
         }

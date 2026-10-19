@@ -379,6 +379,18 @@ VerifyTxScriptsAgainst(const CTransaction &tx, SpentOutput &&spent_output,
     return std::nullopt;
 }
 
+// Interim rule until transaction-scoped VM effects exist: no script can yet
+// authorize a HAS_STATE output, so any V2 transaction creating one fails its
+// script check.
+bool HasUnauthorizedV2StateOutput(const CTransaction &tx) {
+    if (tx.nVersion != 7) return false;
+    for (const CTxOut &out : tx.vout) {
+        if ((out.nFlags & 0x04U) != 0 || out.ToV2Output().HasState())
+            return true;
+    }
+    return false;
+}
+
 std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
     const uint32_t flags, bool sigCacheStore,
@@ -389,6 +401,13 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     bool consensus_only = false) {
     assert(!tx.IsCoinBase());
     assert(resolved_inputs.size() == tx.vin.size());
+
+    if (HasUnauthorizedV2StateOutput(tx)) {
+        ParallelTxScriptError err;
+        err.reject_reason = "state-output-unauthorized";
+        err.debug_message = "no script authorized a HAS_STATE output";
+        return err;
+    }
 
     if (tx.nVersion == 7 && !tx.vin.empty() && tx.vin.size() <= 16) {
         static const lotus::v2::Hash kOpTrueBranchLeaf =
@@ -4294,6 +4313,11 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
                        std::vector<CScriptCheck> *pvChecks) {
     AssertLockHeld(cs_main);
     assert(!tx.IsCoinBase());
+
+    if (HasUnauthorizedV2StateOutput(tx)) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "state-output-unauthorized");
+    }
 
     if (pvChecks) {
         pvChecks->reserve(tx.vin.size());
