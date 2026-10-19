@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "batch": "sqlite-statements",
+  "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched.",
+  "files": [
+    {
+      "path": "src/wallet/sqlite.cpp",
+      "rules": [
+        {
+          "id": "sqlite-statements-sqlite-1",
+          "old": "LogPrintf(\"%s: Unable to bind statement: %s\\n\", __func__,\n                  sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_statement_bind_failed\",\n                     \"{name}: Unable to bind statement: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to bind statement: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-2",
+          "old": "LogPrintf(\"%s: Unable to execute statement: %s\\n\", __func__,\n                      sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_statement_execute_failed\",\n                         \"{name}: Unable to execute statement: {error}\")\n                .Field(BCLog::LogField::Name, __func__)\n                .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 3,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to execute statement: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-3",
+          "old": "LogPrintf(\"%s: Unable to bind key to statement: %s\\n\", __func__,\n                  sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_key_bind_failed\",\n                     \"{name}: Unable to bind key to statement: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to bind key to statement: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-4",
+          "old": "LogPrintf(\"%s: Unable to bind value to statement: %s\\n\", __func__,\n                  sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_value_bind_failed\",\n                     \"{name}: Unable to bind value to statement: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "%s: Unable to bind value to statement: %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "__func__",
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-8",
+          "old": "LogPrintf(\n            \"SQLiteBatch::ReadAtCursor: Unable to execute cursor step: %s\\n\",\n            sqlite3_errstr(res))",
+          "replacement": "LogInfoEvent(\n            BCLog::ALL, \"sqlite_cursor_step_failed\",\n            \"SQLiteBatch::ReadAtCursor: Unable to execute cursor step: {error}\")\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch::ReadAtCursor: Unable to execute cursor step: %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "sqlite3_errstr(res)"
+            ]
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-9",
+          "old": "LogPrintf(\"SQLiteBatch: Failed to begin the transaction\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_transaction_begin_failed\",\n                     \"SQLiteBatch: Failed to begin the transaction\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Failed to begin the transaction\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-10",
+          "old": "LogPrintf(\"SQLiteBatch: Failed to commit the transaction\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_transaction_commit_failed\",\n                     \"SQLiteBatch: Failed to commit the transaction\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Failed to commit the transaction\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        },
+        {
+          "id": "sqlite-statements-sqlite-11",
+          "old": "LogPrintf(\"SQLiteBatch: Failed to abort the transaction\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"sqlite_transaction_abort_failed\",\n                     \"SQLiteBatch: Failed to abort the transaction\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "SQLiteBatch: Failed to abort the transaction\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert eleven statement binding/execution, cursor and transaction diagnostics. Capture SQLite error strings before resetting or closing statements, and preserve original levels and human wording. Wallet notification callbacks are untouched."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Preserve reviewed local indentation and line wrapping only",
+          "old": "    sqlite3_reset(stmt);\n    if (res != SQLITE_DONE) {\n        LogInfoEvent(BCLog::ALL, \"sqlite_statement_execute_failed\",\n                         \"{name}: Unable to execute statement: {error}\")\n                .Field(BCLog::LogField::Name, __func__)\n                .Field(BCLog::LogField::Error, sqlite3_errstr(res));\n    }\n",
+          "new": "    sqlite3_reset(stmt);\n    if (res != SQLITE_DONE) {\n        LogInfoEvent(BCLog::ALL, \"sqlite_statement_execute_failed\",\n                     \"{name}: Unable to execute statement: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res));\n    }\n"
+        },
+        {
+          "purpose": "Preserve reviewed local indentation and line wrapping only",
+          "old": "    sqlite3_reset(m_delete_stmt);\n    if (res != SQLITE_DONE) {\n        LogInfoEvent(BCLog::ALL, \"sqlite_statement_execute_failed\",\n                         \"{name}: Unable to execute statement: {error}\")\n                .Field(BCLog::LogField::Name, __func__)\n                .Field(BCLog::LogField::Error, sqlite3_errstr(res));\n    }\n",
+          "new": "    sqlite3_reset(m_delete_stmt);\n    if (res != SQLITE_DONE) {\n        LogInfoEvent(BCLog::ALL, \"sqlite_statement_execute_failed\",\n                     \"{name}: Unable to execute statement: {error}\")\n            .Field(BCLog::LogField::Name, __func__)\n            .Field(BCLog::LogField::Error, sqlite3_errstr(res));\n    }\n"
+        }
+      ]
+    }
+  ]
+}

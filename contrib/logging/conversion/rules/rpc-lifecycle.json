@@ -1,0 +1,275 @@
+{
+  "schema": 1,
+  "batch": "rpc-lifecycle",
+  "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields. Canonical shared adaptation: both retained synchronous and coroutine HTTP processors carry the same first four reviewed diagnostics; require exactly two occurrences of each mapping.",
+  "files": [
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append reviewed custom typed registry keys; retain existing ids and avoid unrelated ECS/OTel semantics",
+          "old": "    X(Name, name, STRING, \"\", \"\")                                              \\\n    X(Value, value, STRING, \"\", \"\")\n\n",
+          "new": "    X(Name, name, STRING, \"\", \"\")                                              \\\n    X(Value, value, STRING, \"\", \"\")                                            \\\n    X(RpcUser, rpc_user, STRING, \"\", \"\")\n\n"
+        }
+      ]
+    },
+    {
+      "path": "src/httprpc.cpp",
+      "rules": [
+        {
+          "id": "rpc-lifecycle-httprpc-1",
+          "old": "LogPrintf(\"ThreadRPCServer incorrect password attempt from %s\\n\",\n                  jreq.peerAddr)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_authentication_failed\",\n                     \"ThreadRPCServer incorrect password attempt from {addr}\")\n            .Field(BCLog::LogField::Addr, jreq.peerAddr)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "ThreadRPCServer incorrect password attempt from %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "jreq.peerAddr"
+            ]
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-2",
+          "old": "LogPrintf(\"RPC User %s not allowed to call any methods\\n\",\n                      jreq.authUser)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_access_denied\",\n                         \"RPC User {rpc_user} not allowed to call any methods\")\n                .Field(BCLog::LogField::RpcUser, jreq.authUser)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "RPC User %s not allowed to call any methods\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "jreq.authUser"
+            ]
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-3",
+          "old": "LogPrintf(\"RPC User %s not allowed to call method %s\\n\",\n                          jreq.authUser, jreq.strMethod)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_method_access_denied\",\n                             \"RPC User {rpc_user} not allowed to call method \"\n                             \"{original_method}\")\n                    .Field(BCLog::LogField::RpcUser, jreq.authUser)\n                    .Field(BCLog::LogField::OriginalMethod, jreq.strMethod)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "RPC User %s not allowed to call method %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "jreq.authUser",
+              "jreq.strMethod"
+            ]
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-4",
+          "old": "LogPrintf(\n                                \"RPC User %s not allowed to call method %s\\n\",\n                                jreq.authUser, strMethod)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_method_access_denied\",\n                                         \"RPC User {rpc_user} not allowed to \"\n                                         \"call method {original_method}\")\n                                .Field(BCLog::LogField::RpcUser, jreq.authUser)\n                                .Field(BCLog::LogField::OriginalMethod,\n                                       strMethod)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "RPC User %s not allowed to call method %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "jreq.authUser",
+              "strMethod"
+            ]
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-5",
+          "old": "LogPrintf(\"Using random cookie authentication.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_cookie_auth_enabled\",\n                     \"Using random cookie authentication.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using random cookie authentication.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-6",
+          "old": "LogPrintf(\"Config options rpcuser and rpcpassword will soon be \"\n                  \"deprecated. Locally-run instances may remove rpcuser to use \"\n                  \"cookie-based auth, or may be replaced with rpcauth. Please \"\n                  \"see share/rpcauth for rpcauth auth generation.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_password_options_deprecated\",\n                     \"Config options rpcuser and rpcpassword will soon be \"\n                     \"deprecated. Locally-run instances may remove rpcuser to \"\n                     \"use cookie-based auth, or may be replaced with rpcauth. \"\n                     \"Please see share/rpcauth for rpcauth auth generation.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Config options rpcuser and rpcpassword will soon be deprecated. Locally-run instances may remove rpcuser to use cookie-based auth, or may be replaced with rpcauth. Please see share/rpcauth for rpcauth auth generation.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-7",
+          "old": "LogPrintf(\"Using rpcauth authentication.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_rpcauth_enabled\",\n                     \"Using rpcauth authentication.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using rpcauth authentication.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-8",
+          "old": "LogPrintf(\"Invalid -rpcauth argument.\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"rpc_rpcauth_invalid\",\n                             \"Invalid -rpcauth argument.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Invalid -rpcauth argument.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-9",
+          "old": "LogDebug(BCLog::RPC, \"Starting HTTP RPC server\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_http_started\", \"Starting HTTP RPC server\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Starting HTTP RPC server\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-10",
+          "old": "LogDebug(BCLog::RPC, \"Interrupting HTTP RPC server\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_http_interrupting\",\n             \"Interrupting HTTP RPC server\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Interrupting HTTP RPC server\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-httprpc-11",
+          "old": "LogDebug(BCLog::RPC, \"Stopping HTTP RPC server\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_http_stopping\", \"Stopping HTTP RPC server\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Stopping HTTP RPC server\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "src/rpc/server.cpp",
+      "rules": [
+        {
+          "id": "rpc-lifecycle-server-1",
+          "old": "LogDebug(BCLog::RPC, \"Starting RPC\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_server_started\", \"Starting RPC\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Starting RPC\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-server-2",
+          "old": "LogDebug(BCLog::RPC, \"Interrupting RPC\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_server_interrupting\", \"Interrupting RPC\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Interrupting RPC\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-server-3",
+          "old": "LogDebug(BCLog::RPC, \"Stopping RPC\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_server_stopping\", \"Stopping RPC\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Stopping RPC\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "src/rpc/blockchain.cpp",
+      "rules": [
+        {
+          "id": "rpc-lifecycle-blockchain-1",
+          "old": "LogDebug(BCLog::RPC,\n                         \"Attempt to prune blocks close to the tip. \"\n                         \"Retaining the minimum number of blocks.\\n\")",
+          "replacement": "LogEvent(BCLog::RPC, \"rpc_pruning_tip_limit\",\n                         \"Attempt to prune blocks close to the tip. Retaining \"\n                         \"the minimum number of blocks.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Attempt to prune blocks close to the tip. Retaining the minimum number of blocks.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        },
+        {
+          "id": "rpc-lifecycle-blockchain-2",
+          "old": "LogPrintLevel(BCLog::RPC, BCLog::Level::Warning,\n                                  \"Failed to roll back to requested height, \"\n                                  \"reverting to tip.\\n\")",
+          "replacement": "LogWarningEvent(BCLog::RPC, \"rpc_rollback_reverted\",\n                                    \"Failed to roll back to requested height, \"\n                                    \"reverting to tip.\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintLevel",
+            "format": "Failed to roll back to requested height, reverting to tip.\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Preserve levels, categories and message wording. Add custom typed rpc_user without an unrelated ECS/OTel role; retain raw method names as OriginalMethod. The RPC whitelist test checks the actual denial event, username and raw method as fields."
+        }
+      ],
+      "support_adjustments": []
+    },
+    {
+      "path": "test/functional/rpc_whitelist.py",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Assert denied RPC event, authenticated user and original raw method in one structured record",
+          "old": "                )\n                assert_equal(403, rpccall(self.nodes[0], user, permission).status)\n        # Now test the strange users\n",
+          "new": "                )\n                with self.nodes[0].assert_debug_log(\n                    [\n                        {\n                            \"event\": \"rpc_method_access_denied\",\n                            \"rpc_user\": user[0],\n                            \"original_method\": permission,\n                        }\n                    ]\n                ):\n                    assert_equal(403, rpccall(self.nodes[0], user, permission).status)\n        # Now test the strange users\n"
+        }
+      ]
+    }
+  ]
+}
