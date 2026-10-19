@@ -44,8 +44,7 @@ class ModifiedVersionTimestampP2PInterface(P2PInterface):
 
 
 class VersionTimestampTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
+    num_nodes = 2
 
     def setup_network(self):
         self.setup_nodes()

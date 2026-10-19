@@ -12,8 +12,7 @@ from test_framework.util import assert_equal
 
 
 class ECashRPCTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def test_currency(self, *, ticker: str, satoshis_per_unit: int, decimals: int):
         info = self.nodes[0].getcurrencyinfo()

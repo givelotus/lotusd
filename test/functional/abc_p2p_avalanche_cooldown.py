@@ -24,23 +24,22 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheCooldownTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-enableminerfund",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                # Keep rejection checks inside the cooldown on loaded hosts.
-                # Expiry is checked separately after restarting with 100 ms.
-                "-avacooldown=600000",
-                "-persistavapeers=0",
-            ],
-        ]
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-enableminerfund",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            # Keep rejection checks inside the cooldown on loaded hosts.
+            # Expiry is checked separately after restarting with 100 ms.
+            "-avacooldown=600000",
+            "-persistavapeers=0",
+        ],
+    ]
 
     def run_test(self):
         node = self.nodes[0]

@@ -43,20 +43,19 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheTransactionVotingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avacooldown=0",
-                "-avaproofstakeutxoconfirmations=1",
-                # Low enough for coinbase transactions to be staked in valid proofs
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-avastalevotethreshold=256",
-            ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avacooldown=0",
+            "-avaproofstakeutxoconfirmations=1",
+            # Low enough for coinbase transactions to be staked in valid proofs
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-avastalevotethreshold=256",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

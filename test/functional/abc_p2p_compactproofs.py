@@ -51,17 +51,16 @@ class ProofStoreP2PInterface(AvaP2PInterface):
 
 
 class CompactProofsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-persistavapeers=0",
-            ]
-        ] * self.num_nodes
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-persistavapeers=0",
+        ]
+    ] * num_nodes
 
     def setup_network(self):
         # Don't connect the nodes

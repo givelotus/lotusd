@@ -22,19 +22,18 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheIsFinalTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

@@ -29,12 +29,11 @@ from test_framework.util import assert_equal
 
 
 class ChronikTxRemovalOrder(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        # Keep the disconnect/reinsert ordering observable until explicit unpark.
-        self.extra_args = [["-chronik", "-automaticunparking=0"]]
-        self.rpc_timeout = 240
+    setup_clean_chain = True
+    num_nodes = 1
+    # Keep the disconnect/reinsert ordering observable until explicit unpark.
+    extra_args = [["-chronik", "-automaticunparking=0"]]
+    rpc_timeout = 240
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

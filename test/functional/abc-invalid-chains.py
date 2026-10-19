@@ -11,14 +11,13 @@ from test_framework.util import assert_equal
 
 
 class InvalidChainsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
-        self.tip = None
-        self.blocks = {}
-        self.block_heights = {}
-        self.extra_args = [["-automaticunparking=1"]]
+    num_nodes = 1
+    setup_clean_chain = True
+    noban_tx_relay = True
+    tip = None
+    blocks = {}
+    block_heights = {}
+    extra_args = [["-automaticunparking=1"]]
 
     def next_block(self, number):
         if self.tip is None:
