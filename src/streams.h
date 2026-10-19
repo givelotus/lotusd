@@ -93,6 +93,15 @@ public:
 
     size_t size() const { return m_data.size(); }
     bool empty() const { return m_data.empty(); }
+    /** The unread bytes. */
+    const uint8_t *data() const { return m_data.data(); }
+
+    void ignore(size_t num_ignore) {
+        if (num_ignore > m_data.size()) {
+            throw std::ios_base::failure("SpanReader::ignore(): end of data");
+        }
+        m_data = m_data.subspan(num_ignore);
+    }
 
     void read(Span<std::byte> dst) {
         if (dst.size() == 0) {
