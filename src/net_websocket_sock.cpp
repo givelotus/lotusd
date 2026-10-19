@@ -4,6 +4,8 @@
 
 #include <net_websocket_sock.h>
 
+#include <crypto/common.h>
+
 #include <compat/compat.h>
 #include <crypto/common.h>
 #include <logging.h>
@@ -88,29 +90,56 @@ WebSocketSock::~WebSocketSock() {
 }
 
 void WebSocketSock::UpdateFlagsLocked() const {
-    m_has_buffered = m_rx_offset < m_rx_plain.size() || m_layer->HasBuffered() ||
-                     WebSocketCodec::HasCompleteFrame(m_rx_wire) ||
-                     m_eof || m_failed;
-    const bool pending{!m_coalesce.empty() || m_tx_offset < m_tx.size() ||
+    m_has_buffered =
+        m_rx_offset < m_rx_plain.size() || m_layer->HasBuffered() ||
+        WebSocketCodec::HasCompleteFrame(m_rx_wire) || m_eof || m_failed;
+    const bool pending{CoalescedReadyLocked() || m_tx_offset < m_tx.size() ||
                        m_layer->HasPendingWrite()};
     // A read blocked on writability resumes from FlushPending().
     m_pending_events = (pending ? m_layer->WriteWaitsFor() : Event{0}) |
                        (m_read_waits_send ? Sock::SEND : Event{0});
 }
 
-void WebSocketSock::EncodeCoalescedLocked() const {
-    if (m_coalesce.empty()) {
-        return;
+bool WebSocketSock::CoalescedReadyLocked() const {
+    if (m_info->compression != P2PWebSocketCompression::P2P_V2) {
+        return !m_coalesce.empty();
     }
-    m_codec.EncodeMessage(m_coalesce, m_tx);
-    AddCounters(*m_info, m_coalesce.size(), 0, 0, 0);
-    m_coalesce.clear();
-    if (m_out_header_have > 0) {
-        // The start of the current header went into the zstd stream.
-        m_out_header_split = true;
-    }
+    // P2P_V2: only whole messages can be sent.
+    constexpr size_t PREFIX{WebSocketCodec::V2_LENGTH_SIZE};
+    return m_coalesce.size() >= PREFIX &&
+           m_coalesce.size() - PREFIX >= ReadLE32(m_coalesce.data());
 }
 
+void WebSocketSock::EncodeCoalescedLocked() const {
+    if (m_info->compression != P2PWebSocketCompression::P2P_V2) {
+        if (m_coalesce.empty()) {
+            return;
+        }
+        m_codec.EncodeMessage(m_coalesce, m_tx);
+        AddCounters(*m_info, m_coalesce.size(), 0, 0, 0);
+        m_coalesce.clear();
+        if (m_out_header_have > 0) {
+            // The start of the current header went into the zstd stream.
+            m_out_header_split = true;
+        }
+        return;
+    }
+    // P2P_V2: each length-prefixed P2P message becomes one WebSocket
+    // message; a partial one waits for the rest.
+    constexpr size_t PREFIX{WebSocketCodec::V2_LENGTH_SIZE};
+    size_t pos{0};
+    while (m_coalesce.size() - pos >= PREFIX) {
+        const uint32_t len{ReadLE32(m_coalesce.data() + pos)};
+        if (m_coalesce.size() - pos - PREFIX < len) {
+            break;
+        }
+        m_codec.EncodeMessage(Span{m_coalesce}.subspan(pos + PREFIX, len),
+                              m_tx);
+        AddCounters(*m_info, len, 0, 0, 0);
+        pos += PREFIX + len;
+    }
+    m_coalesce.erase(m_coalesce.begin(), m_coalesce.begin() + pos);
+}
 void WebSocketSock::EncodeIndependentLocked(Span<const uint8_t> payload) const {
     const auto frame{
         GetP2PIndependentFrameCache().Encode(m_out_header, payload)};

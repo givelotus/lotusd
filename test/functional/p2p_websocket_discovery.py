@@ -7,8 +7,8 @@
 - node1 (automatic outbound connections enabled) learns node0's
   -externaldomain (a NET_WSS address) over ADDRv2 through a TCP peer and
   then dials it on its own over wss://, without any -addnode.
-- node2/node3 peer with node0 using p2p-zstd and no compression
-  (-p2pwebsocketoffer), and node4 uses ws:// on node0's RPC port.
+- node2/node3 peer with node0 over wss://, and node4 uses ws:// on node0's
+  RPC port (all p2p-v2).
 """
 
 import os
@@ -30,8 +30,8 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         self.extra_args = [
             [f"-publicbind=127.0.0.1:{public}", f"-externaldomain=localhost:{public}"],
             [],
-            [f"-addnode={url}", "-p2pwebsocketoffer=p2p-zstd"],
-            [f"-addnode={url}", "-p2pwebsocketoffer=none"],
+            [f"-addnode={url}"],
+            [f"-addnode={url}"],
             [f"-addnode=ws://127.0.0.1:{rpc_port(0)}/p2p/ws"],
         ]
         self.add_nodes(self.num_nodes, self.extra_args)
@@ -81,11 +81,8 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         assert_equal(auto["addr"], f"localhost:{p2p_port(PUBLIC_PORT_INDEX)}")
 
         self.log.info("Non-default modes node to node, and ws:// on the RPC port")
-        expected = {
-            2: ("wss", "p2p-zstd"),
-            3: ("wss", "none"),
-            4: ("ws", "p2p-zstd-v1"),
-        }
+        # (Lotus v2 peers all speak p2p-v2.)
+        expected = {2: ("wss", "p2p-v2"), 3: ("wss", "p2p-v2"), 4: ("ws", "p2p-v2")}
         for n, (transport, compression) in expected.items():
             self.wait_until(lambda n=n: len(self.ws_peers(n)) == 1)
             peer = self.ws_peers(n)[0]
@@ -94,10 +91,7 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         tip = self.generate(node0, 1, sync_fun=self.no_op)[0]
         for n in expected:
             self.wait_until(lambda n=n: self.nodes[n].getbestblockhash() == tip)
-        # The uncompressed peer's wire bytes exceed its payload (frame
-        # headers only); the compressed ones are smaller.
-        none_ws = self.ws_peers(3)[0]["websocket"]
-        assert none_ws["wire_bytes_recv"] > none_ws["payload_bytes_recv"]
+        # Larger messages are compressed: less on the wire than carried.
         zstd_ws = self.ws_peers(2)[0]["websocket"]
         assert zstd_ws["wire_bytes_recv"] < zstd_ws["payload_bytes_recv"]
 
