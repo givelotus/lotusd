@@ -46,9 +46,8 @@ class ModifiedVersionTimestampP2PInterface(P2PInterface):
 class VersionTimestampTest(BitcoinTestFramework):
     num_nodes = 2
 
-    def setup_network(self):
-        self.setup_nodes()
-        # Don't connect the nodes
+    # Don't connect the nodes
+    topology = "none"
 
     def run_test(self):
         # Set a deterministic time so that we can check the time offset with other

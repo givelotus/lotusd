@@ -32,8 +32,7 @@ class ImportMultiTest(BitcoinTestFramework):
 
     requires = {"wallet"}
 
-    def setup_network(self, split=False):
-        self.setup_nodes()
+    topology = "none"
 
     def test_importmulti(
         self, req, success, error_code=None, error_message=None, warnings=None

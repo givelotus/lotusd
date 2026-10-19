@@ -34,9 +34,8 @@ class AbcMiningRPCTest(BitcoinTestFramework):
         ],
     ]
 
-    def setup_network(self):
-        self.setup_nodes()
-        # Don't connect the nodes
+    # Don't connect the nodes
+    topology = "none"
 
     def run_for_node(self, node, minerFundAddress):
         # Connect to a peer so getblocktemplate will return results
