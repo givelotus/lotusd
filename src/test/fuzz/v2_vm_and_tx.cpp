@@ -6,9 +6,11 @@
 #include <lotus_v2/incremental_utxo.h>
 #include <lotus_v2/ordinary_validation.h>
 #include <lotus_v2/output.h>
+#include <lotus_v2/output_template.h>
 #include <lotus_v2/sparse_state.h>
 #include <lotus_v2/transaction.h>
 #include <lotus_v2/vm.h>
+#include <lotus_v2/vm_simulation.h>
 
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
@@ -31,10 +33,17 @@ lotus::v2::Hash ConsumeHash32(FuzzedDataProvider &fdp) {
 
 lotus::v2::Output ConsumeValidOutput(FuzzedDataProvider &fdp) {
     lotus::v2::Output out;
-    out.flags = fdp.ConsumeIntegralInRange<uint8_t>(0, 3);
+    out.flags = fdp.ConsumeIntegralInRange<uint8_t>(0, 7);
+    if (out.HasState() && out.IsBurn()) {
+        out.flags &= ~lotus::v2::OUTPUT_FLAG_HAS_STATE;
+    }
     out.value = fdp.ConsumeIntegralInRange<uint64_t>(0, 1'000'000'000ULL);
     if (out.HasToken()) {
         out.token_id = ConsumeHash32(fdp);
+    }
+    if (out.HasState()) {
+        out.state_root = ConsumeHash32(fdp);
+        out.state_root[0] |= 1; // nonzero
     }
     if (!out.IsBurn()) {
         const size_t n_branches = fdp.ConsumeIntegralInRange<size_t>(1, 4);
@@ -91,6 +100,7 @@ FUZZ_TARGET(v2_vm_and_tx) {
             Assert(decoded_again.flags == decoded_out.flags);
             Assert(decoded_again.value == decoded_out.value);
             Assert(decoded_again.token_id == decoded_out.token_id);
+            Assert(decoded_again.state_root == decoded_out.state_root);
             Assert(decoded_again.branches == decoded_out.branches);
             Assert(decoded_again.paths == decoded_out.paths);
         }
@@ -132,6 +142,34 @@ FUZZ_TARGET(v2_vm_and_tx) {
                 (void)lotus::v2::InputFullLeaf(full_bytes);
             }
             (void)lotus::v2::CheckCoinbaseContext(decoded_tx, chain_id, 10, err);
+        }
+    }
+
+    // ENFORCEOUTPUT templates: parsing is deterministic and every accepted
+    // template satisfies the structural rules matching relies on.
+    {
+        const std::vector<uint8_t> raw =
+            fdp.ConsumeBytes<uint8_t>(fdp.ConsumeIntegralInRange<size_t>(0, 160));
+        lotus::v2::OutputTemplate t, again;
+        std::string err, err_again;
+        const bool ok = lotus::v2::ParseOutputTemplate(raw, t, err);
+        Assert(ok == lotus::v2::ParseOutputTemplate(raw, again, err_again));
+        Assert(err == err_again);
+        if (ok) {
+            Assert(err.empty());
+            Assert((t.branch_mask & t.branch_stack_mask) == 0);
+            Assert(t.branch_count <= lotus::v2::MAX_OUTPUT_BRANCHES);
+            Assert(!t.branch_count ||
+                   ((t.branch_mask | t.branch_stack_mask) >> t.branch_count) ==
+                       0);
+            Assert(t.branches.size() ==
+                   size_t(__builtin_popcount(t.branch_mask)));
+            Assert(t.state_mode <= 2 && t.output_mode <= 2 &&
+                   t.paths_mode <= 2);
+            Assert(!(t.burn && t.paths_mode == 2));
+            Assert(t.state_mode != 1 || t.state_root != lotus::v2::Hash32{});
+        } else {
+            Assert(!err.empty());
         }
     }
 
@@ -235,6 +273,45 @@ FUZZ_TARGET(v2_vm_and_tx) {
             out.branches = {spent_coin.output.branches[0]};
             out.paths = {{0}};
             tx.outputs.push_back(out);
+
+            // A consensus success is reproduced exactly by the simulation
+            // evaluator: no draft is appended and the effects agree.
+            {
+                const lotus::v2::ResolvedCoins resolved{spent_coin.output};
+                lotus::v2::VmTransactionEffects effects;
+                lotus::v2::VmExecutionContext context{
+                    tx, tx_profile, chain_id, resolved, 0, 0, std::nullopt};
+                context.effects = &effects;
+                const auto consensus = lotus::v2::EvaluateVmWithContext(
+                    script, args, vm_profile, context);
+                lotus::v2::SimTransaction draft;
+                draft.tx = tx;
+                draft.resolved = resolved;
+                draft.tx_profile = tx_profile;
+                draft.chain_id = chain_id;
+                draft.vm = vm_profile;
+                lotus::v2::SimOptions options;
+                if (fdp.ConsumeBool()) {
+                    options.signatures = lotus::v2::SimSignatures::AssumeValid;
+                }
+                const auto sim = lotus::v2::EvaluateVmSimulated(draft, options);
+                Assert(sim.invocations.size() == 1);
+                Assert(sim.tx.outputs.size() ==
+                       tx.outputs.size() + sim.drafts.size());
+                std::string post_error;
+                Assert(sim.post_check_ok ==
+                       lotus::v2::FinalizeVmTransactionEffects(
+                           sim.tx.outputs, sim.effects, post_error));
+                if (consensus.status == lotus::v2::VmStatus::Success &&
+                    options.signatures == lotus::v2::SimSignatures::Verify) {
+                    Assert(sim.invocations[0].status ==
+                           lotus::v2::VmStatus::Success);
+                    Assert(sim.drafts.empty() && !sim.provisional);
+                    Assert(sim.effects.claims == effects.claims);
+                    Assert(sim.effects.state_authorized ==
+                           effects.state_authorized);
+                }
+            }
 
             lotus::v2::OrdinaryCandidateProfile ord_profile{
                 tx_profile, vm_profile, cost_profile,
