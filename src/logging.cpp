@@ -664,6 +664,7 @@ void BCLog::Logger::Encode(const LogLine &line) {
         .threadnames = m_log_threadnames,
         .sourcelocations = m_log_sourcelocations,
         .always_print_category_level = m_always_print_category_level,
+        .text_priority = m_log_text_priority,
     };
     m_encoder->Encode(line, opts, m_line_buf);
 }
@@ -951,7 +952,8 @@ void BCLog::Logger::WriteLogLine(const LogLine &line, bool to_file) {
                        .threadnames = m_log_threadnames,
                        .sourcelocations = m_log_sourcelocations,
                        .always_print_category_level =
-                           m_always_print_category_level},
+                           m_always_print_category_level,
+                       .text_priority = m_log_text_priority},
             m_line_buf);
         if (failed) {
             fputs("journald send failed; log entry follows on stderr: ",

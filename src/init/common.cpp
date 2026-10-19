@@ -108,6 +108,12 @@ void AddLoggingArgs(ArgsManager &argsman) {
                   DEFAULT_LOGLEVELALWAYS),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg(
+        "-logtextpriority",
+        "Prefix each text output line with a systemd <N> severity (default: "
+        "0). "
+        "For journal capture of stdout; does not affect JSON, logfmt or syslog",
+        ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg(
         "-logformat=<format>",
         strprintf(
             "Format of log lines: %s (default: %s). journald sends native "
@@ -162,6 +168,8 @@ void SetLoggingOptions(const ArgsManager &args) {
         args.GetBoolArg("-logthreadnames", DEFAULT_LOGTHREADNAMES);
     LogInstance().m_log_sourcelocations =
         args.GetBoolArg("-logsourcelocations", DEFAULT_LOGSOURCELOCATIONS);
+    LogInstance().m_log_text_priority =
+        args.GetBoolArg("-logtextpriority", false);
     LogInstance().m_always_print_category_level =
         args.GetBoolArg("-loglevelalways", DEFAULT_LOGLEVELALWAYS);
 
