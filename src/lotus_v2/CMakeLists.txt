@@ -185,7 +185,8 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 
 add_library(lotus_v2_validation STATIC
-    transaction.cpp signing.cpp vm.cpp field_size.cpp ordinary_validation.cpp
+    transaction.cpp signing.cpp vm.cpp vm_simulation.cpp field_size.cpp
+    ordinary_validation.cpp
     monetary.cpp block.cpp block_wire.cpp block_cost.cpp header_context.cpp
     asert_candidate.cpp block_transition.cpp block_assembler.cpp
     chronik_explorer.cpp chronik_sync.cpp disk_state.cpp candidate_store.cpp
@@ -367,6 +368,9 @@ add_executable(test_lotus_v2_vm test_vm.cpp vm.cpp)
 target_compile_definitions(test_lotus_v2_vm PRIVATE LOTUS_V2_VM_TEST_INSTRUMENTATION)
 target_link_libraries(test_lotus_v2_vm PRIVATE lotus_v2_validation)
 
+add_executable(test_lotus_v2_vm_simulation test_vm_simulation.cpp)
+target_link_libraries(test_lotus_v2_vm_simulation PRIVATE lotus_v2_validation)
+
 add_executable(test_lotus_v2_chronik_explorer test_chronik_explorer.cpp)
 target_link_libraries(test_lotus_v2_chronik_explorer PRIVATE lotus_v2_development_runtime)
 
@@ -419,6 +423,7 @@ foreach(_lotus_v2_test_target
     test_lotus_v2_signing
     test_lotus_v2_transaction
     test_lotus_v2_vm
+    test_lotus_v2_vm_simulation
     test_lotus_v2_chronik_explorer
     test_lotus_v2_chronik_sync
     test_lotus_v2_candidate_facade
