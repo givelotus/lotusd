@@ -28,6 +28,8 @@ struct LogOptions {
     bool threadnames{false};
     bool sourcelocations{false};
     bool always_print_category_level{false};
+    //! systemd stdout/journal priority prefix, text output only.
+    bool text_priority{false};
 };
 
 /** One log line, as an encoder sees it (views valid during Encode) */

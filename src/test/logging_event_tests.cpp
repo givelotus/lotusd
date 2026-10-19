@@ -590,6 +590,31 @@ BOOST_AUTO_TEST_CASE(syslog_rfc5424_encoding) {
     BOOST_CHECK_EQUAL(payload["bytes"].getInt<int>(), 123);
 }
 
+BOOST_AUTO_TEST_CASE(text_priority_prefix) {
+    BCLog::TextEncoder encoder;
+    BCLog::LogLine line{.time = SystemClock::time_point{},
+                        .level = BCLog::Level::Warning,
+                        .category = BCLog::ALL,
+                        .message = "first\nsecond\n"};
+    std::string encoded;
+    encoder.Encode(line, BCLog::LogOptions{.timestamps = false}, encoded);
+    BOOST_CHECK_EQUAL(encoded, "[warning] first\nsecond\n");
+    encoder.Encode(
+        line, BCLog::LogOptions{.timestamps = false, .text_priority = true},
+        encoded);
+    BOOST_CHECK_EQUAL(encoded, "<4>[warning] first\n<4>second\n");
+    line.level = BCLog::Level::Info;
+    encoder.Encode(
+        line, BCLog::LogOptions{.timestamps = false, .text_priority = true},
+        encoded);
+    BOOST_CHECK_EQUAL(encoded, "<6>first\n<6>second\n");
+    BCLog::JsonEncoder{}.Encode(line, BCLog::LogOptions{.text_priority = true},
+                                encoded);
+    UniValue record;
+    BOOST_REQUIRE(record.read(encoded));
+    BOOST_CHECK_EQUAL(record["message"].get_str(), "first\nsecond");
+}
+
 BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
     Format(BCLog::LogFormat::JSON);
     const CService endpoint{LookupNumeric("203.0.113.7", 10605)};
