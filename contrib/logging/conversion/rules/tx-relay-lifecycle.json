@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "batch": "tx-relay-lifecycle",
+  "files": [
+    {
+      "path": "src/net_processing.cpp",
+      "rules": [
+        {
+          "id": "relay_orphan_removed",
+          "old": "LogDebug(BCLog::TXPACKAGES, \"   removed orphan tx %s\\n\",\n                 txid.ToString())",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_orphan_removed\",\n            \"   removed orphan tx {txid}\")\n        .Field(BCLog::LogField::TxId, txid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "   removed orphan tx %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "txid.ToString()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_orphan_accepted",
+          "old": "LogDebug(BCLog::TXPACKAGES, \"   accepted orphan tx %s\\n\",\n                     orphanTxId.ToString())",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_orphan_accepted\",\n                \"   accepted orphan tx {txid}\")\n            .Field(BCLog::LogField::TxId, orphanTxId)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "   accepted orphan tx %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "orphanTxId.ToString()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_transaction_inv_violation",
+          "old": "LogDebug(BCLog::NET,\n                             \"transaction (%s) inv sent in violation of \"\n                             \"protocol, disconnecting peer=%d\\n\",\n                             txid.ToString(), pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"relay_transaction_inv_violation\",\n                        \"transaction ({txid}) inv sent in violation of \"\n                        \"protocol, disconnecting peer={peer_id}\")\n                    .Field(BCLog::LogField::TxId, txid)\n                    .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "transaction (%s) inv sent in violation of protocol, disconnecting peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "txid.ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_transaction_message_violation",
+          "old": "LogDebug(BCLog::NET,\n                     \"transaction sent in violation of protocol peer=%d\\n\",\n                     pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"relay_transaction_message_violation\",\n                \"transaction sent in violation of protocol peer={peer_id}\")\n            .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "transaction sent in violation of protocol peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_forced_nonmempool_rejected",
+          "old": "LogPrintf(\n                            \"Not relaying non-mempool transaction %s from \"\n                            \"forcerelay peer=%d\\n\",\n                            tx.GetId().ToString(), pfrom.GetId())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"relay_forced_nonmempool_rejected\",\n                            \"Not relaying non-mempool transaction {txid} from\"\n                            \" forcerelay peer={peer_id}\")\n                        .Field(BCLog::LogField::TxId, tx.GetId())\n                        .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Not relaying non-mempool transaction %s from forcerelay peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "tx.GetId().ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_transaction_forced",
+          "old": "LogPrintf(\"Force relaying tx %s from peer=%d\\n\",\n                                  tx.GetId().ToString(), pfrom.GetId())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"relay_transaction_forced\",\n                            \"Force relaying tx {txid} from peer={peer_id}\")\n                        .Field(BCLog::LogField::TxId, tx.GetId())\n                        .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Force relaying tx %s from peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "tx.GetId().ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_orphan_reconsiderable_parent",
+          "old": "LogDebug(\n                        BCLog::TXPACKAGES,\n                        \"found tx %s in reconsiderable rejects, looking for \"\n                        \"child in orphanage\\n\",\n                        txid.ToString())",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_orphan_reconsiderable_parent\",\n                        \"found tx {txid} in reconsiderable rejects, looking \"\n                        \"for child in orphanage\")\n                    .Field(BCLog::LogField::TxId, txid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "found tx %s in reconsiderable rejects, looking for child in orphanage\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "txid.ToString()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_orphan_overflow",
+          "old": "LogDebug(BCLog::TXPACKAGES,\n                                 \"orphanage overflow, removed %u tx\\n\",\n                                 nEvicted)",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_orphan_overflow\",\n                            \"orphanage overflow, removed {count} tx\")\n                        .Field(BCLog::LogField::Count, nEvicted)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "orphanage overflow, removed %u tx\n",
+            "specifiers": [
+              "%u"
+            ],
+            "arguments": [
+              "nEvicted"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_orphan_rejected_parents",
+          "old": "LogDebug(BCLog::MEMPOOL,\n                             \"not keeping orphan with rejected parents %s\\n\",\n                             tx.GetId().ToString())",
+          "replacement": "LogEvent(BCLog::MEMPOOL, \"relay_orphan_rejected_parents\",\n                        \"not keeping orphan with rejected parents {txid}\")\n                    .Field(BCLog::LogField::TxId, tx.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "not keeping orphan with rejected parents %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "tx.GetId().ToString()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_orphan_reconsiderable_failure",
+          "old": "LogDebug(\n                    BCLog::TXPACKAGES,\n                    \"tx %s failed but reconsiderable, looking for child in \"\n                    \"orphanage\\n\",\n                    txid.ToString())",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_orphan_reconsiderable_failure\",\n                    \"tx {txid} failed but reconsiderable, looking for child \"\n                    \"in orphanage\")\n                .Field(BCLog::LogField::TxId, txid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "tx %s failed but reconsiderable, looking for child in orphanage\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "txid.ToString()"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_conflicting_pool_overflow",
+          "old": "LogDebug(BCLog::TXPACKAGES,\n                             \"conflicting pool overflow, removed %u tx\\n\",\n                             nEvicted)",
+          "replacement": "LogEvent(BCLog::TXPACKAGES, \"relay_conflicting_pool_overflow\",\n                        \"conflicting pool overflow, removed {count} tx\")\n                    .Field(BCLog::LogField::Count, nEvicted)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "conflicting pool overflow, removed %u tx\n",
+            "specifiers": [
+              "%u"
+            ],
+            "arguments": [
+              "nEvicted"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        },
+        {
+          "id": "relay_transaction_timeout",
+          "old": "LogDebug(BCLog::NET, \"timeout of inflight tx %s from peer=%d\\n\",\n                     entry.second.ToString(), entry.first)",
+          "replacement": "LogEvent(BCLog::NET, \"relay_transaction_timeout\",\n                \"timeout of inflight tx {txid} from peer={peer_id}\")\n            .Field(BCLog::LogField::TxId, entry.second)\n            .Field(BCLog::LogField::PeerId, entry.first)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "timeout of inflight tx %s from peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "entry.second.ToString()",
+              "entry.first"
+            ]
+          },
+          "review_note": "TxId is actual transaction identifier, copied as fixed raw hash without ToString allocation. PeerId and nonnegative eviction Count retain original scalar expressions. Preserve all branches, categories, severity and exact human text including leading spaces. No validation-state string formatting or guessed semantic fields."
+        }
+      ]
+    },
+    {
+      "path": "test/functional/p2p_permissions.py",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "old": "        with self.nodes[1].assert_debug_log([f\"Force relaying tx {txid} from peer=0\"]):",
+          "new": "        with self.nodes[1].assert_debug_log([\n            f\"Force relaying tx {txid} from peer=0\",\n            {\"event\": \"relay_transaction_forced\", \"txid\": txid, \"peer_id\": 0},\n        ]):",
+          "purpose": "Check actual production structured event fields while preserving original human log assertion in existing functional scenario"
+        }
+      ]
+    },
+    {
+      "path": "test/functional/p2p_invalid_tx.py",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "old": "        with node.assert_debug_log([\"orphanage overflow, removed 1 tx\"]):",
+          "new": "        with node.assert_debug_log([\n            \"orphanage overflow, removed 1 tx\",\n            {\"event\": \"relay_orphan_overflow\", \"count\": 1},\n        ]):",
+          "purpose": "Check actual production structured event fields while preserving original human log assertion in existing functional scenario"
+        }
+      ]
+    },
+    {
+      "path": "test/functional/p2p_orphan_handling.py",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "old": "            [f\"not keeping orphan with rejected parents {child['txid']}\"]",
+          "new": "            [\n                f\"not keeping orphan with rejected parents {child['txid']}\",\n                {\"event\": \"relay_orphan_rejected_parents\", \"txid\": child[\"txid\"]},\n            ]",
+          "purpose": "Check actual production structured event fields while preserving original human log assertion in existing functional scenario"
+        }
+      ]
+    }
+  ]
+}
