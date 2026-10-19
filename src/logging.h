@@ -202,7 +202,8 @@ public:
         STILL_SUPPRESSED,
     };
     //! Consumes `source_loc`'s available bytes corresponding to the size of the
-    //! (formatted) `str` and returns its status.
+    //! message `str` (without log prefixes or JSON wrapping) and returns its
+    //! status.
     [[nodiscard]] Status Consume(const std::source_location &source_loc,
                                  std::string_view str)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
