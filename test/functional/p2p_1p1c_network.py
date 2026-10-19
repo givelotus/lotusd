@@ -22,12 +22,11 @@ FEERATE_1SAT_VB = Decimal("10")
 
 
 class PackageRelayTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 4
-        self.noban_tx_relay = True
-        self.extra_args = [["-acceptnonstdtxn=1", "-maxmempool=5"]] * self.num_nodes
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 4
+    noban_tx_relay = True
+    extra_args = [["-acceptnonstdtxn=1", "-maxmempool=5"]] * num_nodes
+    supports_cli = False
 
     def raise_network_minfee(self):
         filler_wallet = MiniWallet(self.nodes[0])
