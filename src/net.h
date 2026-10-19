@@ -53,6 +53,7 @@
 #include <vector>
 
 class AddrMan;
+class ArgsManager;
 class BanMan;
 class Config;
 class CNode;
@@ -89,6 +90,11 @@ static const int DEFAULT_MAX_AVALANCHE_OUTBOUND_CONNECTIONS = 150;
 static const int MAX_FEELER_CONNECTIONS = 1;
 /** -listen default */
 static const bool DEFAULT_LISTEN = true;
+/**
+ * -p2prawlisten default: when listening, accept plain P2P (the ordinary,
+ * non-WebSocket wire protocol) connections.
+ */
+static const bool DEFAULT_P2P_RAW_LISTEN = true;
 /**
  * The maximum number of peer connections to maintain.
  * This quantity might not be reachable on some systems, especially on platforms
@@ -197,6 +203,27 @@ CService GetLocalAddress(const CNetAddr &addrPeer);
 
 extern bool fDiscover;
 extern bool fListen;
+/**
+ * Whether a listening node accepts plain (non-WebSocket) P2P connections
+ * (-p2prawlisten). When false, no plain P2P address is learned (AddLocal,
+ * discovery, peers' view of us) or advertised as ours: only NET_WSS ones.
+ */
+extern bool g_listen_plain_p2p;
+
+/**
+ * -p2pwslisten: accept P2P connections over WebSocket when listening.
+ */
+bool GetP2PWebSocketListen(const ArgsManager &args);
+
+/**
+ * Check the P2P transport listening options (-p2prawlisten, -p2pwslisten)
+ * against each other and against the options that need a plain P2P
+ * listener. Call after parameter interaction. Returns an error, or
+ * std::nullopt; warnings are appended to `warnings`.
+ */
+std::optional<bilingual_str>
+CheckP2PListenArgs(const ArgsManager &args,
+                   std::vector<bilingual_str> &warnings);
 
 struct LocalServiceInfo {
     int nScore;

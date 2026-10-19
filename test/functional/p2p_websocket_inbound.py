@@ -106,8 +106,8 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
         peer.close()
         self.wait_until(lambda: len(self.ws_peers()) == 0)
 
-        self.log.info("Without -p2pwebsocket, /p2p/ws is not served")
-        self.restart_node(0, ["-p2pwebsocket=0"])
+        self.log.info("Without -p2pwslisten, /p2p/ws is not served")
+        self.restart_node(0, ["-p2pwslisten=0"])
         conn = http.client.HTTPConnection("127.0.0.1", rpc_port(0))
         conn.request(
             "GET",
