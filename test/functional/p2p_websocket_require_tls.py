@@ -56,6 +56,7 @@ def upgrade(port, *, tls=False, prefix=b"", headers=()):
         "GET /p2p/ws HTTP/1.1\r\nHost: node.example\r\nConnection: Upgrade\r\n"
         "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Protocol: p2p-v2\r\n"
         + "".join(f"{h}\r\n" for h in headers)
         + "\r\n"
     )

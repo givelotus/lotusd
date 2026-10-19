@@ -226,6 +226,33 @@ class H2WebSocket:
         self.message = b""
         self.closed = False
 
+    def as_byte_stream(self):
+        """Raw RFC6455 bytes over DATA, for the native P2P frame converter."""
+        parent = self
+
+        class Stream:
+            def sendall(self, data):
+                parent.client.send_body(parent.sid, data, end_stream=False)
+
+            def recv(self, size):
+                while True:
+                    response = parent.client.responses.get(parent.sid)
+                    if response is not None and response.body:
+                        data, response.body = response.body[:size], response.body[size:]
+                        return data
+                    if parent.closed or (
+                        response is not None and (response.ended or response.reset)
+                    ):
+                        return b""
+                    if not parent.client.pump():
+                        return b""
+
+            def close(self):
+                # The native layer already emitted its close frame.
+                parent.closed = True
+
+        return Stream()
+
     def getsubprotocol(self):
         return self.response.headers.get("sec-websocket-protocol")
 
