@@ -197,8 +197,13 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
         }
         if (!LookupHost(url.host, /*fAllowLookup=*/false)) {
             // A name, not an address literal: SNI lets TLS-terminating
-            // proxies route by name.
+            // proxies route by name, as every browser sends it.
             SSL_set_tlsext_host_name(ssl.get(), url.host.c_str());
+        } else {
+            LogPrintf("Dialing %s: TLS to an IP address carries no server "
+                      "name, which is unusual for web traffic; prefer a host "
+                      "name to blend in\n",
+                      url.authority);
         }
         SSL_set_connect_state(ssl.get());
         while (true) {
@@ -226,6 +231,7 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
         const std::vector<unsigned char> spki{tls::SpkiSha256(peer)};
         X509_free(peer);
         info->peer_spki = spki.empty() ? "" : EncodeSpkiPin(spki);
+        info->alpn = tls::NegotiatedAlpn(ssl.get());
         if (pin) {
             if (spki.size() != pin->size() ||
                 CRYPTO_memcmp(spki.data(), pin->data(), spki.size()) != 0) {
