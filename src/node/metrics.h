@@ -18,6 +18,8 @@
 static constexpr bool DEFAULT_METRICS{false};
 //! Repeated scrapes within this interval get the previous rendering
 static constexpr std::chrono::milliseconds METRICS_MIN_SCRAPE_INTERVAL{1000};
+//! One P2P message in this many has its handling time measured
+static constexpr uint32_t METRICS_P2P_TIMING_SAMPLE{16};
 
 namespace node {
 
@@ -59,6 +61,8 @@ struct NodeMetrics {
     metrics::Counter &p2p_sent_bytes;
     metrics::Counter &p2p_received_messages;
     metrics::Counter &p2p_sent_messages;
+    //! 1 in METRICS_P2P_TIMING_SAMPLE messages
+    metrics::EventHistogram &p2p_message_handling_seconds;
 
     // Peers (CNode objects), by direction x transport x network
     metrics::Gauge &peers;
