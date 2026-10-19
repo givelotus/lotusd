@@ -87,20 +87,21 @@ P2P_V2_MESSAGE_TYPES = [
     "invshort",
 ]
 P2P_V2_IDS = {name.encode(): i + 1 for i, name in enumerate(P2P_V2_MESSAGE_TYPES)}
+P2P_ZSTD_DICT_VERSION = 2
 RSV1 = 0x40
 
 _P2P_DICT = None
 
 
 def p2p_zstd_dict():
-    """The node's P2P zstd dictionary, read from src/net_zstd_dict_data.h."""
+    """The node's P2P zstd dictionary, read from src/net_zstd_dict_v2_data.h."""
     global _P2P_DICT
     if _P2P_DICT is None:
         here = os.path.dirname(os.path.realpath(__file__))
-        header = os.path.join(here, "..", "..", "..", "src", "net_zstd_dict_data.h")
+        header = os.path.join(here, "..", "..", "..", "src", "net_zstd_dict_v2_data.h")
         with open(header, encoding="utf8") as f:
             text = f.read()
-        body = text[text.index("{", text.index("P2P_ZSTD_DICT_V1[")) :]
+        body = text[text.index("{", text.index("P2P_ZSTD_DICT_V2[")) :].split("}", 1)[0]
         _P2P_DICT = bytes(int(h, 16) for h in re.findall(r"0x([0-9a-fA-F]{2})", body))
     return _P2P_DICT
 

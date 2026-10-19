@@ -1942,7 +1942,9 @@ BOOST_AUTO_TEST_CASE(p2p_zstd_session_warm_window_and_dict) {
 
     // The prebaked dictionary helps the very first small message.
     std::vector<uint8_t> plain_frame, dict_frame;
-    P2PZstdSession plain{false}, dict{true};
+    // This fixture deliberately uses a legacy 24-byte envelope, so retain
+    // its V1 coverage rather than claiming it represents native framing.
+    P2PZstdSession plain{false}, dict{true, 1};
     plain.CompressFrame(ping, plain_frame);
     dict.CompressFrame(ping, dict_frame);
     BOOST_CHECK_LT(dict_frame.size(), plain_frame.size());
@@ -1958,7 +1960,7 @@ BOOST_AUTO_TEST_CASE(p2p_zstd_session_warm_window_and_dict) {
     P2PZstdSession wrong{false};
     std::vector<uint8_t> out;
     std::vector<uint8_t> dict_inv;
-    P2PZstdSession dict2{true};
+    P2PZstdSession dict2{true, 1};
     dict2.CompressFrame(inv, dict_inv);
     bool failed{false};
     try {
@@ -1986,6 +1988,24 @@ BOOST_AUTO_TEST_CASE(p2p_zstd_dict_is_stable) {
     uint8_t digest[CSHA256::OUTPUT_SIZE];
     hasher.Finalize(digest);
     BOOST_CHECK_EQUAL(HexStr(digest), P2P_ZSTD_DICT_V1_SHA256);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_zstd_v2_dict_is_stable) {
+    BOOST_CHECK_EQUAL(P2P_ZSTD_DICT_VERSION, 2U);
+    BOOST_CHECK_THROW(P2PZstdSession(true, 99), std::invalid_argument);
+    const auto bytes{GetP2PZstdDictionaryBytes()};
+    BOOST_CHECK(bytes.data() == P2P_ZSTD_DICT_V2);
+    BOOST_CHECK_EQUAL(bytes.size(), 8076U);
+    BOOST_CHECK_EQUAL(P2P_ZSTD_DICT_V2_SHA256,
+                      "15b846b0cc57bfbd0aa14bcd3f0cc505754735e8bab63ad6b3e402302c17ca1a");
+    CSHA256 hasher;
+    hasher.Write(bytes.data(), bytes.size());
+    uint8_t digest[CSHA256::OUTPUT_SIZE];
+    hasher.Finalize(digest);
+    BOOST_CHECK_EQUAL(HexStr(digest), P2P_ZSTD_DICT_V2_SHA256);
+    // The selected dictionary must be the native version, not V1's envelope
+    // templates. Existing V1 digest coverage remains independently above.
+    BOOST_CHECK(bytes.size() != sizeof(P2P_ZSTD_DICT_V1));
 }
 
 BOOST_AUTO_TEST_CASE(p2p_websocket_negotiation) {
