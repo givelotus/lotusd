@@ -19,6 +19,7 @@
 #include <rpc/protocol.h> // For HTTP status codes
 #include <shutdown.h>
 #include <sync.h>
+#include <tls_util.h>
 #include <util/check.h>
 #include <util/fs.h>
 #include <util/sock.h>
@@ -1348,20 +1349,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
 }
 
 static std::string ClientCertFingerprint(SSL *ssl) {
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
-    X509 *cert = SSL_get1_peer_certificate(ssl);
-#else
-    X509 *cert = SSL_get_peer_certificate(ssl);
-#endif
-    if (!cert) {
-        return {};
-    }
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int len{0};
-    std::string hex;
-    if (X509_digest(cert, EVP_sha256(), md, &len) == 1) {
-        hex = HexStr(Span<const unsigned char>{md, len});
-    }
+    X509 *cert{tls::PeerCertificate(ssl)};
+    std::string hex{tls::CertSha256Hex(cert)};
     X509_free(cert);
     return hex;
 }
@@ -1593,103 +1582,16 @@ static void libevent_log_cb(int severity, const char *msg) {
     LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
 }
 
-namespace {
-struct EVPPKeyDeleter {
-    void operator()(EVP_PKEY *p) const { EVP_PKEY_free(p); }
-};
-struct EVPPKeyCtxDeleter {
-    void operator()(EVP_PKEY_CTX *p) const { EVP_PKEY_CTX_free(p); }
-};
-struct X509Deleter {
-    void operator()(X509 *p) const { X509_free(p); }
-};
-struct BNDeleter {
-    void operator()(BIGNUM *p) const { BN_free(p); }
-};
-} // namespace
-
-static bool AddX509Extension(X509 *cert, int nid, const char *value) {
-    X509V3_CTX ctx;
-    X509V3_set_ctx_nodb(&ctx);
-    X509V3_set_ctx(&ctx, cert, cert, nullptr, nullptr, 0);
-    X509_EXTENSION *ext =
-        X509V3_EXT_conf_nid(nullptr, &ctx, nid, const_cast<char *>(value));
-    if (!ext) {
-        return false;
-    }
-    const bool ok{X509_add_ext(cert, ext, -1) == 1};
-    X509_EXTENSION_free(ext);
-    return ok;
-}
-
 /**
  * Generate a self-signed EC P-256 certificate valid for 10 years and write it
  * and its key (mode 0600) as PEM files.
  */
 static bool GenerateSelfSignedCertificate(const fs::path &cert_path,
                                           const fs::path &key_path) {
-    std::unique_ptr<EVP_PKEY_CTX, EVPPKeyCtxDeleter> pctx{
-        EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr)};
-    EVP_PKEY *raw_key{nullptr};
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) != 1 ||
-        EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx.get(),
-                                               NID_X9_62_prime256v1) != 1 ||
-        EVP_PKEY_CTX_set_ec_param_enc(pctx.get(), OPENSSL_EC_NAMED_CURVE) !=
-            1 ||
-        EVP_PKEY_keygen(pctx.get(), &raw_key) != 1) {
-        return false;
-    }
-    std::unique_ptr<EVP_PKEY, EVPPKeyDeleter> key{raw_key};
-
-    std::unique_ptr<X509, X509Deleter> cert{X509_new()};
-    std::unique_ptr<BIGNUM, BNDeleter> serial{BN_new()};
-    if (!cert || !serial || X509_set_version(cert.get(), 2) != 1 ||
-        BN_rand(serial.get(), 127, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY) != 1 ||
-        !BN_to_ASN1_INTEGER(serial.get(),
-                            X509_get_serialNumber(cert.get())) ||
-        !X509_gmtime_adj(X509_getm_notBefore(cert.get()), -3600) ||
-        !X509_gmtime_adj(X509_getm_notAfter(cert.get()),
-                         10L * 365 * 24 * 3600) ||
-        X509_set_pubkey(cert.get(), key.get()) != 1) {
-        return false;
-    }
-    std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> name{
-        X509_NAME_new(), &X509_NAME_free};
-    if (!name ||
-        X509_NAME_add_entry_by_txt(
-            name.get(), "CN", MBSTRING_ASC,
-            reinterpret_cast<const unsigned char *>("bitcoind node"), -1, -1,
-            0) != 1 ||
-        X509_set_subject_name(cert.get(), name.get()) != 1 ||
-        X509_set_issuer_name(cert.get(), name.get()) != 1 ||
-        !AddX509Extension(cert.get(), NID_basic_constraints,
-                          "critical,CA:FALSE") ||
-        !AddX509Extension(cert.get(), NID_subject_alt_name,
-                          "DNS:localhost,IP:127.0.0.1,IP:::1") ||
-        X509_sign(cert.get(), key.get(), EVP_sha256()) == 0) {
-        return false;
-    }
-
-    FILE *key_file = fsbridge::fopen(key_path, "wb");
-    if (!key_file) {
-        return false;
-    }
-#ifndef WIN32
-    fchmod(fileno(key_file), S_IRUSR | S_IWUSR);
-#endif
-    const bool key_ok{PEM_write_PrivateKey(key_file, key.get(), nullptr,
-                                           nullptr, 0, nullptr, nullptr) == 1};
-    const bool key_closed{fclose(key_file) == 0};
-    if (!key_ok || !key_closed) {
-        return false;
-    }
-    FILE *cert_file = fsbridge::fopen(cert_path, "wb");
-    if (!cert_file) {
-        return false;
-    }
-    const bool cert_ok{PEM_write_X509(cert_file, cert.get()) == 1};
-    const bool cert_closed{fclose(cert_file) == 0};
-    return cert_ok && cert_closed;
+    const auto pem{tls::GenerateSelfSigned(
+        "bitcoind node", {"localhost"}, {"127.0.0.1", "::1"},
+        std::chrono::hours{24 * 365 * 10})};
+    return pem && tls::WritePemFiles(*pem, cert_path, key_path);
 }
 
 /** Set up g_ssl_ctx from -tlscert/-tlskey or the datadir certificate */
