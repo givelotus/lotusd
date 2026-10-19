@@ -15,7 +15,7 @@ import unittest
 from collections import deque
 from typing import IO, Any, Dict, Iterable, List, Optional
 
-from .results import FAILED, PASSED, SKIPPED, JobResult
+from .results import FAILED, PASSED, SKIPPED, JobResult, parse_job_name
 
 GLYPHS = {PASSED: "✓", SKIPPED: "○"}
 
@@ -62,7 +62,9 @@ def last_lines(path: str, count: int, pattern=None, stop=None) -> List[str]:
 
 def rerun_command(result: JobResult, tests_dir: str) -> str:
     """The command that runs this test job again on its own."""
-    args = result.name.split()[1:]
+    _, variant, args = parse_job_name(result.name)
+    if variant:
+        args = [f"--variant={variant}"] + args
     return " ".join([os.path.join(tests_dir, result.file)] + args + ["--nocleanup"])
 
 
@@ -222,6 +224,12 @@ class TestReporting(unittest.TestCase):
         self.assertLess(text.index("b.py"), text.index("a.py"))
         self.assertIn("1 failed:", text)
         self.assertIn("rerun: /tests/x_test.py --nocleanup", text)
+
+    def test_rerun_variant(self):
+        result = self.make_result(name="x_test.py[cli] --opt")
+        self.assertEqual(
+            rerun_command(result, "/t"), "/t/x_test.py --variant=cli --opt --nocleanup"
+        )
 
     def test_json_lines(self):
         path = os.path.join(tempfile.mkdtemp(prefix="reporting_unit_"), "out.jsonl")
