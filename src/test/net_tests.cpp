@@ -14,6 +14,7 @@
 #include <config.h>
 #include <crypto/sha256.h>
 #include <hash.h>
+#include <init.h>
 #include <net_processing.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
@@ -1058,6 +1059,144 @@ BOOST_AUTO_TEST_CASE(get_local_addr_for_peer_port) {
     BOOST_CHECK(*chosen_local_addr == expected);
 
     m_node.args->ForceSetArg("-bind", "");
+}
+
+BOOST_AUTO_TEST_CASE(plain_p2p_off_advertises_no_plain_address) {
+    // -p2prawlisten=0: peers cannot reach us with plain P2P, so no IP
+    // address (ours, discovered, or as a peer sees us) is ever advertised;
+    // a NET_WSS one (-externaldomain) still is.
+    g_listen_plain_p2p = false;
+
+    in_addr ip;
+    ip.s_addr = htonl(0x03040506);
+    const CService plain{ip, 20001};
+    BOOST_CHECK(!AddLocal(plain, LOCAL_MANUAL));
+    BOOST_CHECK(!AddLocal(plain, LOCAL_BIND));
+    BOOST_CHECK(!IsLocal(plain));
+
+    CNetAddr domain;
+    BOOST_REQUIRE(domain.SetWSSDomain("node.example.com"));
+    const CService wss{domain, 443};
+    BOOST_CHECK(AddLocal(wss, LOCAL_MANUAL));
+
+    in_addr peer_us_addr;
+    peer_us_addr.s_addr = htonl(0x02030405);
+    const CService peer_us{peer_us_addr, 20002};
+    in_addr peer_in_addr;
+    peer_in_addr.s_addr = htonl(0x01020304);
+    for (const auto conn_type :
+         {ConnectionType::OUTBOUND_FULL_RELAY, ConnectionType::INBOUND}) {
+        CNode peer{/*id=*/0,
+                   /*sock=*/nullptr,
+                   /*addrIn=*/
+                   CAddress{CService{peer_in_addr, 8333}, NODE_NETWORK},
+                   /*nKeyedNetGroupIn=*/0,
+                   /*nLocalHostNonceIn=*/0,
+                   /*nLocalExtraEntropyIn=*/0,
+                   /*addrBindIn=*/CAddress{},
+                   /*addrNameIn=*/std::string{},
+                   /*conn_type_in=*/conn_type,
+                   /*inbound_onion=*/false};
+        peer.fSuccessfullyConnected = true;
+        peer.SetAddrLocal(peer_us);
+        BOOST_CHECK(!IsPeerAddrLocalGood(&peer));
+        // Repeated: the peer's view of us used to be picked at random.
+        for (int i = 0; i < 20; ++i) {
+            const auto chosen{GetLocalAddrForPeer(peer)};
+            BOOST_REQUIRE(chosen);
+            BOOST_CHECK(chosen->IsWSS());
+            BOOST_CHECK(*chosen == wss);
+        }
+        RemoveLocal(wss);
+        BOOST_CHECK(!GetLocalAddrForPeer(peer));
+        BOOST_CHECK(AddLocal(wss, LOCAL_MANUAL));
+    }
+    RemoveLocal(wss);
+
+    // Back to the default: plain addresses are learned again.
+    g_listen_plain_p2p = true;
+    BOOST_CHECK(AddLocal(plain, LOCAL_MANUAL));
+    BOOST_CHECK(IsLocal(plain));
+    RemoveLocal(plain);
+}
+
+BOOST_AUTO_TEST_CASE(p2p_listen_args) {
+    const auto check{[](const std::vector<std::pair<std::string, std::string>>
+                            &settings,
+                        bool interaction = true) {
+        ArgsManager args;
+        for (const auto &[name, value] : settings) {
+            args.ForceSetArg(name, value);
+        }
+        if (interaction) {
+            InitParameterInteraction(args);
+        }
+        std::vector<bilingual_str> warnings;
+        auto error{CheckP2PListenArgs(args, warnings)};
+        return std::make_tuple(error ? error->original : std::string{},
+                               warnings.size(),
+                               GetP2PWebSocketListen(args));
+    }};
+    const auto ok{[&](const std::vector<std::pair<std::string, std::string>>
+                          &settings,
+                      size_t n_warnings = 0) {
+        const auto [error, warnings, ws]{check(settings)};
+        BOOST_CHECK_MESSAGE(error.empty(), error);
+        BOOST_CHECK_EQUAL(warnings, n_warnings);
+        return ws;
+    }};
+    const auto fails{
+        [&](const std::vector<std::pair<std::string, std::string>> &settings,
+            const std::string &needle) {
+            const auto [error, warnings, ws]{check(settings)};
+            BOOST_CHECK_MESSAGE(error.find(needle) != std::string::npos,
+                                "\"" + error + "\" lacks \"" + needle + "\"");
+        }};
+
+    // Defaults: both transports, as before these options existed.
+    BOOST_CHECK(ok({}));
+    BOOST_CHECK(ok({{"-p2prawlisten", "1"}}));
+
+    BOOST_CHECK(!ok({{"-p2pwslisten", "0"}}));
+    BOOST_CHECK(ok({{"-p2pwslisten", "1"}}));
+
+    // WebSocket only.
+    BOOST_CHECK(ok({{"-p2prawlisten", "0"}}));
+    // Neither transport: allowed, with a warning, unless not listening.
+    ok({{"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 1);
+    ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-p2pwslisten", "0"}}, 0);
+
+    // Options that need a plain P2P listener are refused, not ignored.
+    fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234"}}, "-bind");
+    fails({{"-p2prawlisten", "0"}, {"-bind", "127.0.0.1:1234=onion"}},
+          "-bind");
+    fails({{"-p2prawlisten", "0"}, {"-whitebind", "noban@127.0.0.1:1234"}},
+          "-whitebind");
+    fails({{"-p2prawlisten", "0"}, {"-externalip", "1.2.3.4"}},
+          "-externalip");
+    fails({{"-p2prawlisten", "0"}, {"-listenonion", "1"}}, "-listenonion");
+    fails({{"-p2prawlisten", "0"},
+           {"-i2psam", "127.0.0.1:7656"},
+           {"-i2pacceptincoming", "1"}},
+          "-i2pacceptincoming");
+    // ... but only these explicit settings: the defaults are turned off.
+    {
+        ArgsManager args;
+        args.ForceSetArg("-p2prawlisten", "0");
+        InitParameterInteraction(args);
+        BOOST_CHECK(!args.GetBoolArg("-listenonion", true));
+        BOOST_CHECK(!args.GetBoolArg("-i2pacceptincoming", true));
+        BOOST_CHECK(!args.GetBoolArg("-discover", true));
+        BOOST_CHECK(!args.GetBoolArg("-natpmp", true));
+        // -listen keeps its default.
+        BOOST_CHECK(args.GetBoolArg("-listen", DEFAULT_LISTEN));
+    }
+    // -bind still soft-sets -listen=1, as before.
+    fails({{"-p2prawlisten", "0"}, {"-proxy", "127.0.0.1:9050"},
+           {"-bind", "127.0.0.1:1234"}},
+          "-bind");
+    // Not listening: -p2prawlisten=0 changes nothing.
+    ok({{"-listen", "0"}, {"-p2prawlisten", "0"}, {"-externalip", "1.2.3.4"}});
 }
 
 BOOST_AUTO_TEST_CASE(avalanche_statistics) {
