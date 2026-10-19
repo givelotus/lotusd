@@ -195,6 +195,11 @@ static RPCHelpMan getpeerinfo() {
                          {RPCResult::Type::STR_HEX, "peer_cert_fingerprint",
                           /*optional=*/true,
                           "SHA-256 of the peer's TLS certificate, if any"},
+                         {RPCResult::Type::STR, "peer_spki", /*optional=*/true,
+                          "base64url SHA-256 of the peer's TLS public key, "
+                          "usable as a pin (-p2pwebsocketpin, #spki=)"},
+                         {RPCResult::Type::BOOL, "pinned",
+                          "Whether the peer's key matched a configured pin"},
                      }},
                     {RPCResult::Type::NUM, "startingheight",
                      "The starting height (block) of the peer"},
@@ -379,6 +384,10 @@ static RPCHelpMan getpeerinfo() {
                         wsobj.pushKV("peer_cert_fingerprint",
                                      ws->peer_cert_fingerprint_hex);
                     }
+                    if (!ws->peer_spki.empty()) {
+                        wsobj.pushKV("peer_spki", ws->peer_spki);
+                    }
+                    wsobj.pushKV("pinned", ws->pinned);
                     obj.pushKV("websocket", std::move(wsobj));
                 } else {
                     obj.pushKV("transport", "tcp");

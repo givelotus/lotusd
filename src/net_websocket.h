@@ -71,6 +71,10 @@ struct WebSocketTransportInfo {
     std::atomic<uint64_t> wire_bytes_recv{0};
     //! SHA-256 fingerprint of the peer's TLS certificate, if any
     std::string peer_cert_fingerprint_hex;
+    //! base64url SHA-256 of the peer's public key (SPKI), if any
+    std::string peer_spki;
+    //! The peer's key matched a configured pin
+    bool pinned{false};
 };
 
 /** Node-wide totals over all P2P WebSocket connections */
@@ -91,10 +95,21 @@ struct ParsedWebSocketURL {
     std::string authority;
     //! Request target, "/p2p/ws" if the URL has no path
     std::string target;
+    //! Required SHA-256 of the server's public key (from "#spki=")
+    std::optional<std::vector<unsigned char>> spki_pin;
 };
 
-/** Parse ws://host[:port][/path] (default port 80) or wss:// (443) */
+/**
+ * Parse ws://host[:port][/path][#spki=<pin>] (default port 80) or wss://
+ * (443). A pin (see DecodeSpkiPin) is only meaningful for wss://.
+ */
 std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url);
+
+/** Encode a public key hash as an unpadded base64url pin */
+std::string EncodeSpkiPin(Span<const unsigned char> sha256);
+
+/** Decode a pin (base64url or base64, with or without padding) */
+std::optional<std::vector<unsigned char>> DecodeSpkiPin(std::string_view pin);
 
 /** An established outbound P2P WebSocket */
 struct WebSocketDialResult {

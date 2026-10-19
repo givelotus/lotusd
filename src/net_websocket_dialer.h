@@ -22,11 +22,14 @@ static const char *const DEFAULT_P2P_WEBSOCKET_OFFER =
  * Start the outbound P2P WebSocket dialer (its own I/O thread) and register
  * it with SetWebSocketDialer(). If given, the certificate is presented to
  * wss:// peers that ask for one (see -tlsmutual). `offer` is a comma
- * separated subset of DEFAULT_P2P_WEBSOCKET_OFFER, or "none".
+ * separated subset of DEFAULT_P2P_WEBSOCKET_OFFER, or "none". `pins` are
+ * -p2pwebsocketpin entries "<host>=<pin>" (see DecodeSpkiPin); returns
+ * false if one is invalid.
  */
 bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
                              const std::optional<fs::path> &client_key,
-                             const std::string &offer);
+                             const std::string &offer,
+                             const std::vector<std::string> &pins = {});
 
 /** Unregister and stop the dialer. Call after CConnman::Stop(). */
 void StopP2PWebSocketDialer();
