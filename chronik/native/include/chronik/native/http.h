@@ -244,13 +244,27 @@ public:
     Router(Router &&) noexcept;
     Router &operator=(Router &&) noexcept;
 
+    /**
+     * How a route's ":param" values reach its handler:
+     *  - Decode: axum's Path extractor (percent-decoded, invalid UTF-8 is a
+     *    400 rejection before the handler runs);
+     *  - Raw: handlers that read the URI themselves (axum OriginalUri, no
+     *    Path extractor): values are the raw, still-encoded segments and no
+     *    rejection happens.
+     * All methods of one pattern share its mode.
+     */
+    enum class PathExtraction { Decode, Raw };
+
     void Add(std::string_view method, std::string_view pattern,
-             HttpHandler handler);
-    void Get(std::string_view pattern, HttpHandler h) {
-        Add("GET", pattern, std::move(h));
+             HttpHandler handler,
+             PathExtraction extraction = PathExtraction::Decode);
+    void Get(std::string_view pattern, HttpHandler h,
+             PathExtraction extraction = PathExtraction::Decode) {
+        Add("GET", pattern, std::move(h), extraction);
     }
-    void Post(std::string_view pattern, HttpHandler h) {
-        Add("POST", pattern, std::move(h));
+    void Post(std::string_view pattern, HttpHandler h,
+              PathExtraction extraction = PathExtraction::Decode) {
+        Add("POST", pattern, std::move(h), extraction);
     }
     /**
      * POST route with an explicit OPTIONS handler answering 200

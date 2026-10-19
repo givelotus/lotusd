@@ -173,6 +173,7 @@ struct Router::Route {
     std::vector<std::pair<std::string, HttpHandler>> methods;
     std::string allow;
     bool is_websocket = false;
+    PathExtraction extraction = PathExtraction::Decode;
 
     const HttpHandler *Find(std::string_view method) const {
         for (const auto &[m, h] : methods) {
@@ -197,7 +198,7 @@ Router::Router(RouterOptions opts) : m_opts(std::move(opts)) {
 }
 
 void Router::Add(std::string_view method, std::string_view pattern,
-                 HttpHandler handler) {
+                 HttpHandler handler, PathExtraction extraction) {
     Route *route = nullptr;
     for (auto &r : m_routes) {
         if (r->pattern == pattern) {
@@ -215,8 +216,12 @@ void Router::Add(std::string_view method, std::string_view pattern,
                 new_route->segments.push_back({false, std::string(seg)});
             }
         }
+        new_route->extraction = extraction;
         route = new_route.get();
         m_routes.push_back(std::move(new_route));
+    } else if (route->extraction != extraction) {
+        throw std::logic_error("Mixed path extraction for " +
+                               std::string(pattern));
     }
     if (route->Find(method)) {
         throw std::logic_error("Overlapping method route for " +
@@ -350,6 +355,10 @@ HttpResponse Router::Dispatch(const HttpRequest &req) const {
     // Path extractor: percent-decode params; invalid UTF-8 is a rejection.
     // Only routes with params extract them (Path<...>).
     params.names = route->param_names;
+    if (route->extraction == PathExtraction::Raw) {
+        params.values.assign(raw_params.begin(), raw_params.end());
+        raw_params.clear();
+    }
     for (size_t i = 0; i < raw_params.size(); ++i) {
         std::string decoded = PercentDecode(raw_params[i]);
         if (!IsValidUtf8(decoded)) {
