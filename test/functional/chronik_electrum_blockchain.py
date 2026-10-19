@@ -69,7 +69,7 @@ class ChronikElectrumBlockchain(BitcoinTestFramework):
             ]
         ]
 
-    requires = {"chronik"}
+    requires = {"chronik", "chronik_electrum"}
 
     def run_test(self):
         self.client = self.nodes[0].get_chronik_electrum_client(name="client")
