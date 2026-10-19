@@ -83,7 +83,7 @@ public:
     virtual Bytes LoadRawTx(uint32_t file_num, uint32_t data_pos) const = 0;
 
     // ---- mempool / relay ----
-    /** Rejects trailing bytes */
+    /** Accepts trailing bytes, like Rust TxMut::deser */
     virtual DecodedTx DecodeRawTx(std::span<const uint8_t> raw) const = 0;
     /** Fill inputs[i].coin from CoinsTip+mempool view (broadcast checks). */
     virtual SpentCoinLookup LookupSpentCoins(Tx &tx) const = 0;

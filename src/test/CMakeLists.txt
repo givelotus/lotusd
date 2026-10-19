@@ -116,6 +116,13 @@ if(BUILD_CHRONIK AND NOT CHRONIK_IMPLEMENTATION STREQUAL "native")
 		../../chronik/test/chronikbridge_tests.cpp
 	)
 endif()
+# The native host adapter tests port the bridge tests' expectations to
+# chronik::native::abc::AbcHost.
+if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
+	set(BITCOIN_CHRONIK_TESTS
+		chronik_native_abc_tests.cpp
+	)
+endif()
 
 add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 	fixture.cpp
@@ -340,6 +347,9 @@ endfunction()
 add_boost_test_runners_with_upgrade_activated(bitcoin test_bitcoin)
 
 target_link_libraries(test_bitcoin rpcclient testutil)
+if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
+	target_link_libraries(test_bitcoin chronik_native_host_abc)
+endif()
 if(TARGET bitcoinconsensus-shared)
 	target_link_libraries(test_bitcoin bitcoinconsensus-shared)
 else()
