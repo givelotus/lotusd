@@ -12,6 +12,7 @@
 #include <chronik/native/token_io/batch.h>
 #include <chronik/native/token_io/data.h>
 #include <chronik/native/token_io/io.h>
+#include <chronik/native/token_io/token_index.h>
 #include <chronik/native/groups/token_id.h>
 #include <chronik/native/mem/tokens.h>
 
@@ -883,6 +884,38 @@ BOOST_AUTO_TEST_CASE(test_token_db_tables_and_wipe) {
     BOOST_CHECK_EQUAL(
         ErrorMsg([&] { TokenReader(*db, *txn).TokenMetas({1}); }),
         "Inconsistent DB: Token TxNum 1 not found in DB");
+}
+
+BOOST_AUTO_TEST_CASE(test_ecash_token_index_seam) {
+    TestDb db("token_index_seam");
+    const auto token_index = MakeEcashTokenIndex(*db);
+    BOOST_CHECK_EQUAL(token_index->TokenIdGroup().Name(), "TokenIdGroup");
+    const auto hook = token_index->MakeMempoolHook();
+    BOOST_CHECK(mem::MempoolTokens::FromHook(hook.get()) != nullptr);
+
+    const std::vector<Tx> txs{
+        make_tx(0, {{0xff, 0}}, 1, EMPTY),
+        make_tx(1, {}, 2,
+                Slp(slp::GenesisOpreturn(GenesisInfo::EmptySlp(),
+                                         SlpTokenType::Fungible(), 2, 10))),
+    };
+    auto txn = db->BeginWrite();
+    index::TxsMemData txs_mem;
+    const index::TxNum first = index::TxWriter(*db).Insert(
+        *txn, MockTokenDb::TxsBatch(txs, 0), txs_mem);
+    const auto index_txs = index::PrepareIndexedTxs(*db, *txn, first, txs);
+    const auto aux = token_index->ConnectBlock(*db, *txn, index_txs);
+    const TokenIdSubsAux subs = token_index->SubsAux(aux.get());
+    BOOST_REQUIRE_EQUAL(subs.txs.size(), 1u);
+    BOOST_CHECK(subs.txs.at(chronik::native::test::TxIdNum(1)).second ==
+                (TokenIdSubsAux::MaybeTokenIds{std::nullopt, token_id(1),
+                                               token_id(1)}));
+    const auto aux_db = token_index->AuxFromDb(*db, *txn, index_txs);
+    BOOST_CHECK(token_index->SubsAux(aux_db.get()).txs == subs.txs);
+    BOOST_CHECK(token_index->SubsAux(nullptr).txs.empty());
+    token_index->DisconnectBlock(*db, *txn, index_txs);
+    BOOST_CHECK(!TokenReader(*db, *txn).TokenTx(1));
+    BOOST_CHECK(!TokenReader(*db, *txn).HasAnyTokens());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
