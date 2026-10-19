@@ -56,6 +56,14 @@ public:
 
     uint32_t GetHeight() const { return nHeightAndIsCoinBase >> 1; }
     bool IsCoinBase() const { return nHeightAndIsCoinBase & 0x01; }
+    /**
+     * Whether a legacy (version 1 or 2) transaction created the coin. Its
+     * output is then a legacy CTxOut; a version 7 transaction creates V2
+     * outputs only. The output's representation is the bit: it is stored
+     * as such (TxOutCompression keeps a V2 output by its fields, a legacy
+     * one by its script), so the two cannot disagree.
+     */
+    bool IsLegacy() const { return out.IsLegacy(); }
     bool IsSpent() const { return out.IsNull(); }
 
     uint64_t GetFeePerOutput() const { return nFeePerOutput; }
