@@ -7,6 +7,7 @@
 
 #include <netaddress.h>
 #include <util/sock.h>
+#include <util/threadinterrupt.h>
 
 #include <atomic>
 #include <cstdint>
@@ -81,22 +82,35 @@ struct WebSocketTransportTotals {
 };
 WebSocketTransportTotals &GetWebSocketTransportTotals();
 
-/** An established outbound P2P WebSocket, bridged to a socketpair */
+/** A ws:// or wss:// P2P peer URL */
+struct ParsedWebSocketURL {
+    bool tls{false};
+    std::string host;
+    uint16_t port{0};
+    //! Value of the Host header: host:port, with [] around IPv6 literals
+    std::string authority;
+    //! Request target, "/p2p/ws" if the URL has no path
+    std::string target;
+};
+
+/** Parse ws://host[:port][/path] (default port 80) or wss:// (443) */
+std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url);
+
+/** An established outbound P2P WebSocket */
 struct WebSocketDialResult {
-    //! CConnman's end of the socketpair
+    //! A WebSocketSock on the connection, for CNode
     std::unique_ptr<Sock> sock;
     std::shared_ptr<WebSocketTransportInfo> info;
-    //! TCP endpoints of the WebSocket connection
-    CService remote;
-    CService local;
 };
 
 /**
- * Opens a ws:// or wss:// P2P connection and starts bridging it. Blocking,
- * with an internal timeout. Provided by the node (net_websocket.cpp).
+ * Turns a connected TCP socket (direct or through a proxy) into a P2P
+ * WebSocket: TLS for wss:// and the WebSocket upgrade, blocking with an
+ * internal timeout. Provided by the node (net_websocket.cpp).
  */
-using WebSocketDialer =
-    std::function<std::optional<WebSocketDialResult>(const std::string &url)>;
+using WebSocketDialer = std::function<std::optional<WebSocketDialResult>(
+    std::unique_ptr<Sock> &&tcp, const ParsedWebSocketURL &url,
+    CThreadInterrupt &interrupt)>;
 void SetWebSocketDialer(WebSocketDialer dialer);
 WebSocketDialer GetWebSocketDialer();
 
