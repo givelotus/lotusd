@@ -1811,9 +1811,13 @@ void CConnman::SocketHandlerConnected(
                 sendSet = it->second.occurred & Sock::SEND;
                 errorSet = it->second.occurred & Sock::ERR;
                 // Flush data the socket implementation buffered itself.
-                if ((it->second.occurred & pnode->m_sock->PendingEvents()) &&
-                    !pnode->m_sock->FlushPending()) {
-                    errorSet = true;
+                if (it->second.occurred & pnode->m_sock->PendingEvents()) {
+                    if (!pnode->m_sock->FlushPending()) {
+                        errorSet = true;
+                    } else if (pnode->m_sock->HasBufferedRecv()) {
+                        // e.g. a TLS read that was waiting to write
+                        recvSet = true;
+                    }
                 }
             }
             // The OS socket being readable was only requested on behalf of
