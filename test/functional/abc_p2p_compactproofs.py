@@ -62,9 +62,8 @@ class CompactProofsTest(BitcoinTestFramework):
         ]
     ] * num_nodes
 
-    def setup_network(self):
-        # Don't connect the nodes
-        self.setup_nodes()
+    # Don't connect the nodes
+    topology = "none"
 
     @staticmethod
     def received_avaproofs(peer):

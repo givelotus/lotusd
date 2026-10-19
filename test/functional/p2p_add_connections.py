@@ -38,9 +38,8 @@ class P2PAddConnections(BitcoinTestFramework):
         [],
     ]
 
-    def setup_network(self):
-        self.setup_nodes()
-        # Don't connect the nodes
+    # Don't connect the nodes
+    topology = "none"
 
     def add_outbounds(self, node, quantity, conn_type):
         services = NODE_NETWORK
