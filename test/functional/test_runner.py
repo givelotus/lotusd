@@ -82,6 +82,7 @@ TEST_FRAMEWORK_MODULES = [
     "log_match",
     "address",
     "blocktools",
+    "discovery",
     "merkle",
     "messages",
     "muhash",
@@ -489,6 +490,8 @@ def main():
 
     check_script_prefixes(all_tests)
 
+    discovered = discover_tests(tests_dir, src_dir, test_list)
+
     if not args.keepcache:
         shutil.rmtree(os.path.join(build_dir, "test", "cache"), ignore_errors=True)
 
@@ -506,6 +509,7 @@ def main():
         build_timings=build_timings,
         failfast=args.failfast,
         phase_dir=phase_dir,
+        discovered=discovered,
     )
 
 
@@ -523,6 +527,7 @@ def run_tests(
     build_timings=None,
     failfast=False,
     phase_dir=None,
+    discovered=None,
 ):
     args = args or []
 
@@ -589,7 +594,7 @@ def run_tests(
     # Run Tests
     start_time = time.time()
     test_results = execute_test_processes(
-        num_jobs, test_list, build_dir, tests_dir, tmpdir, flags, failfast
+        num_jobs, test_list, build_dir, tests_dir, tmpdir, flags, failfast, discovered
     )
     runtime = time.time() - start_time
 
@@ -623,7 +628,14 @@ def run_tests(
 
 
 def execute_test_processes(
-    num_jobs, test_list, build_dir, tests_dir, tmpdir, flags, failfast=False
+    num_jobs,
+    test_list,
+    build_dir,
+    tests_dir,
+    tmpdir,
+    flags,
+    failfast=False,
+    discovered=None,
 ):
     update_queue = Queue()
     job_queue = Queue()
@@ -751,8 +763,14 @@ def execute_test_processes(
         t.daemon = True
         t.start()
 
-    # Push all our test cases into the job queue.
+    # Push all our test cases into the job queue. A test file that could not
+    # be imported, or defines no test, fails without being started.
     for i, t in enumerate(test_list):
+        error = (discovered or {}).get(t.split()[0], {}).get("error")
+        if error is not None:
+            update_queue.put(TestCase(i, t, tests_dir, tmpdir, failfast_event, flags))
+            update_queue.put(TestResult(i, t, "", "Failed", 0, "", error))
+            continue
         job_queue.put(TestCase(i, t, tests_dir, tmpdir, failfast_event, flags))
 
     # Wait for all the jobs to be completed
@@ -956,6 +974,30 @@ class TestResult:
     @property
     def was_successful(self):
         return self.status != "Failed"
+
+
+def discover_tests(tests_dir, src_dir, test_list):
+    """Import the selected test files in a separate process (importing can
+    have side effects) and return {file: spec} from test_framework.discovery.
+    A file with several test classes maps to its first class."""
+    files = sorted(
+        {t.split()[0] for t in test_list if not t.startswith(SETUP_SCRIPTS_SUBDIR)}
+    )
+    if not files:
+        return {}
+    output = subprocess.run(
+        [sys.executable, "-m", "test_framework.discovery", tests_dir] + files,
+        cwd=tests_dir,
+        env=dict(os.environ, SRCDIR=src_dir),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    discovered = {}
+    for line in output.splitlines():
+        spec = json.loads(line)
+        discovered.setdefault(spec["file"], spec)
+    return discovered
 
 
 def get_all_scripts_from_disk(

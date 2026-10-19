@@ -1378,6 +1378,11 @@ class TestProgrammaticRun(unittest.TestCase):
                 body(self)
 
         body = run_test
+        # Keep the cases' log lines out of the test runner's own logging
+        for name in ("TestFramework", "asyncio"):
+            logger = logging.getLogger(name)
+            self.addCleanup(setattr, logger, "propagate", logger.propagate)
+            logger.propagate = False
         workdir = tempfile.mkdtemp(prefix="test_framework_unit_")
         self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
         configfile = os.path.join(workdir, "config.ini")
