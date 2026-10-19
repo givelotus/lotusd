@@ -33,6 +33,11 @@ public:
 
     //! Bound wire bytes without reserving them; follows current P2P config.
     uint64_t MaxWireMessageSize() const;
+    //! P2P_V2: smaller messages (pings, acks) go raw: compressing them costs
+    //! time and saves next to nothing
+    static constexpr size_t V2_COMPRESS_MIN = 64;
+    //! P2P_V2: size of the length prefix of messages in the decoded stream
+    static constexpr size_t V2_LENGTH_SIZE = 4;
 
     WebSocketCodec(Role role, P2PWebSocketCompression compression);
 
@@ -46,7 +51,11 @@ public:
     void EncodeIndependent(Span<const uint8_t> frame,
                            std::vector<uint8_t> &out);
 
-    /** Append `payload` (P2P bytes) to `out` as one binary message */
+    /**
+     * Append `payload` (P2P bytes) to `out` as one binary message. In P2P_V2
+     * mode `payload` is one whole P2P message (id and payload), compressed or
+     * not depending on what it is worth (see V2_COMPRESS_MIN).
+     */
     void EncodeMessage(Span<const uint8_t> payload, std::vector<uint8_t> &out);
 
     /** Append a Close frame (once) */
@@ -61,7 +70,9 @@ public:
 
     /**
      * Decode complete frames from `in`. P2P bytes are appended to `plain`,
-     * frames to send back (pong, close reply) to `reply`.
+     * frames to send back (pong, close reply) to `reply`. In P2P_V2 mode each
+     * message is appended as its 4-byte little-endian length and the message,
+     * so the P2P layer sees its boundaries.
      */
     DecodeResult Decode(Span<const uint8_t> in, std::vector<uint8_t> &plain,
                         std::vector<uint8_t> &reply);
@@ -94,6 +105,8 @@ private:
     bool m_in_message{false};
     //! The message being received is an independent (RSV2) frame
     bool m_message_independent{false};
+    //! P2P_V2: the message being received is compressed (RSV1)
+    bool m_message_compressed{false};
     bool m_peer_closed{false};
     bool m_close_sent{false};
     uint64_t m_wire_sent{0};
