@@ -273,9 +273,24 @@ public:
                                        const CBlockLocator &locator) {}
     };
 
+    //! How a Notifications subscriber receives callbacks.
+    enum class NotificationDelivery {
+        //! Inline on the shared ValidationSignals thread (default).
+        SCHEDULER_THREAD,
+        //! On a FIFO worker owned by the handler, in the order the scheduler
+        //! generated the events. Waited for by
+        //! SyncWithValidationInterfaceQueue() and FlushBackgroundCallbacks();
+        //! a full worker queue makes the scheduler wait. Disconnecting the
+        //! handler runs the queued callbacks first, so it must not be done
+        //! while holding a lock those callbacks take (for a wallet, cs_wallet).
+        DEDICATED_WORKER,
+    };
+
     //! Register handler for notifications.
     virtual std::unique_ptr<Handler>
-    handleNotifications(std::shared_ptr<Notifications> notifications) = 0;
+    handleNotifications(std::shared_ptr<Notifications> notifications,
+                        NotificationDelivery delivery =
+                            NotificationDelivery::SCHEDULER_THREAD) = 0;
 
     //! Wait for pending notifications to be processed unless block hash points
     //! to the current chain tip.
