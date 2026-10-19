@@ -10,6 +10,8 @@ from test_framework.util import assert_array_result, assert_equal
 
 
 class ListTransactionsTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 2
         self.noban_tx_relay = True
