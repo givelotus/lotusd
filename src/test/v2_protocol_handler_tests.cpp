@@ -1789,6 +1789,8 @@ BOOST_AUTO_TEST_CASE(invalid_last_member_does_not_double_burst_admission_work) {
     connman->ProcessMessagesOnce(node);
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started_at);
+    // The logger thread runs the callback: deliver queued lines first.
+    LogInstance().Flush();
     BOOST_TEST_MESSAGE("256-TX burst admission_prechecks=" << checks.load()
                        << " diagnostic_elapsed_us=" << elapsed.count());
     LogInstance().DeleteCallback(callback);

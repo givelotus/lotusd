@@ -129,6 +129,7 @@ class HTTPMetricsTest(BitcoinTestFramework):
         connected = samples[("lotus_block_connect_seconds_count", ())]
         assert_equal(connected, 1)
         assert_equal(samples[("lotus_metrics_dropped_samples_total", ())], 0)
+        assert_equal(samples[("lotus_log_dropped_lines_total", ())], 0)
         assert_equal(samples[("lotus_chain_tip_height", ())], 0)
         assert_equal(samples[("lotus_initial_block_download", ())], 1)
         assert samples[("lotus_process_start_time_seconds", ())] > 1e9

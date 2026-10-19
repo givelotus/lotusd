@@ -447,6 +447,8 @@ BOOST_AUTO_TEST_CASE(logargs) {
 
     // Log the arguments
     local_args.LogArgs();
+    // Lines are written by the logger thread: write the queued ones.
+    LogInstance().Flush();
 
     LogInstance().DeleteCallback(print_connection);
     // Check that what should appear does, and what shouldn't doesn't.

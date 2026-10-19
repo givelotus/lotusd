@@ -13,7 +13,9 @@
 #include <util/fs.h>
 #include <util/fs_helpers.h>
 #include <util/string.h>
+#include <util/threadnames.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <future>
@@ -21,15 +23,32 @@
 #include <iostream>
 #include <source_location>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
+#ifndef WIN32
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using util::RemovePrefix;
 using util::SplitString;
 using util::TrimString;
+
+namespace BCLog {
+/** Test-only access: hold the consumer wake mutex while producers publish. */
+struct LoggerTestAccess {
+    static StdMutex &WakeMutex(Logger &logger) { return logger.m_wake_mutex; }
+    static StdMutex &ConsumerMutex(Logger &logger) {
+        return logger.m_consumer_mutex;
+    }
+    static void ResetWake(Logger &logger) { logger.m_wake_requested = false; }
+};
+} // namespace BCLog
 
 BOOST_FIXTURE_TEST_SUITE(logging_tests, BasicTestingSetup)
 
@@ -47,8 +66,9 @@ static void flush_debug_log() {
     LogPrintf("%s\n", FLUSH_SENTINEL_LOG_MESSAGE);
 }
 
-/** Lines of the debug log, without flush sentinels */
+/** Lines of the debug log (all queued lines written), without sentinels */
 static std::vector<std::string> ReadDebugLogLines() {
+    LogInstance().Flush();
     std::vector<std::string> lines;
     std::ifstream ifs{LogInstance().m_file_path};
     for (std::string line; std::getline(ifs, line);) {
@@ -84,6 +104,8 @@ struct LogSetup : public BasicTestingSetup {
           prev_category_levels{LogInstance().CategoryLevels()},
           prev_log_level{LogInstance().LogLevel()},
           prev_category_mask{LogInstance().GetCategoryMask()} {
+        // Lines queued so far belong to the previous log file.
+        LogInstance().Flush();
         LogInstance().m_file_path = tmp_log_path;
         LogInstance().m_reopen_file = true;
         LogInstance().m_print_to_file = true;
@@ -100,6 +122,7 @@ struct LogSetup : public BasicTestingSetup {
     }
 
     ~LogSetup() {
+        LogInstance().Flush();
         LogInstance().m_log_format = prev_log_format;
         LogInstance().m_file_path = prev_log_path;
         LogPrintf("Sentinel log to reopen log file\n");
@@ -115,6 +138,51 @@ struct LogSetup : public BasicTestingSetup {
         LogInstance().EnableCategory(BCLog::LogFlags{prev_category_mask});
     }
 };
+
+#ifndef WIN32
+BOOST_FIXTURE_TEST_CASE(logging_fork_preserves_delivery, LogSetup) {
+    LogPrintf("fork parent queued once\n");
+    // Exercise consecutive fork/restart cycles, child error barriers and
+    // child delivery. Each wait is bounded so a lifecycle regression fails.
+    for (int cycle{0}; cycle < 2; ++cycle) {
+        const pid_t pid{LogInstance().ForkProcess()};
+        BOOST_REQUIRE_GE(pid, 0);
+        if (pid == 0) {
+            LogWarning("fork child warning %d\n", cycle);
+            LogError("fork child plain error %d\n", cycle);
+            LogInstance().Flush();
+            _exit(0);
+        }
+        int status{0};
+        pid_t waited{0};
+        const auto deadline{std::chrono::steady_clock::now() +
+                            std::chrono::seconds{5}};
+        do {
+            waited = waitpid(pid, &status, WNOHANG);
+            if (waited != 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } while (std::chrono::steady_clock::now() < deadline);
+        if (waited == 0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+        }
+        BOOST_REQUIRE_EQUAL(waited, pid);
+        BOOST_REQUIRE(WIFEXITED(status));
+        BOOST_CHECK_EQUAL(WEXITSTATUS(status), 0);
+        LogError("fork parent continued %d\n", cycle);
+    }
+    const auto lines{ReadDebugLogLines()};
+    const auto count = [&](std::string_view message) {
+        return std::count_if(lines.begin(), lines.end(), [&](const auto &line) {
+            return line.find(message) != std::string::npos;
+        });
+    };
+    BOOST_CHECK_EQUAL(count("fork parent queued once"), 1);
+    BOOST_CHECK_EQUAL(count("fork child warning"), 2);
+    BOOST_CHECK_EQUAL(count("fork child plain error"), 2);
+    BOOST_CHECK_EQUAL(count("fork parent continued"), 2);
+}
+#endif
 
 BOOST_FIXTURE_TEST_CASE(logging_LogPrintf_, LogSetup) {
     LogInstance().m_log_sourcelocations = true;
@@ -667,8 +735,11 @@ BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
     LogInstance().LogPrintStr("rest\n", std::source_location{loc}, BCLog::NET,
                               BCLog::Level::Debug,
                               /*site=*/nullptr);
+    // Options apply when lines are written (by the logger thread).
+    LogInstance().Flush();
     LogInstance().m_log_sourcelocations = true;
     LogDebug(BCLog::NET, "with function\n");
+    LogInstance().Flush();
     LogInstance().m_log_timestamps = false;
     SetMockTime(1700000000);
     LogError("no timestamp, mocktime\n");
@@ -722,6 +793,7 @@ BOOST_FIXTURE_TEST_CASE(logging_json_rate_limit, LogSetup) {
     // The quota counts messages, not lines: the same number of messages
     // fit in text and JSON format, whatever the metadata adds.
     for (const auto format : {BCLog::LogFormat::TEXT, BCLog::LogFormat::JSON}) {
+        LogInstance().Flush();
         LogInstance().m_log_format = format;
         LogInstance().m_log_timestamps = true;
         LogInstance().m_log_sourcelocations = true;
@@ -733,7 +805,6 @@ BOOST_FIXTURE_TEST_CASE(logging_json_rate_limit, LogSetup) {
             LogInfo("%s\n", std::string(99, 'x'));
         }
         flush_debug_log();
-        LogInstance().SetRateLimiting(nullptr);
         size_t messages{0}, warnings{0};
         for (const std::string &line : ReadDebugLogLines()) {
             if (line.find("Excessive logging detected") != std::string::npos) {
@@ -751,7 +822,276 @@ BOOST_FIXTURE_TEST_CASE(logging_json_rate_limit, LogSetup) {
             const auto records{ReadJsonLogLines()};
             BOOST_CHECK(records.back()["ratelimited"].get_bool());
         }
+        LogInstance().SetRateLimiting(nullptr);
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_async_order_per_thread, LogSetup) {
+    // Each thread's lines are written in the order it logged them, and
+    // none is lost while the rings have room.
+    LogInstance().EnableCategory(BCLog::NET);
+    constexpr int THREADS{8}, LINES{300};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < THREADS; ++t) {
+        threads.emplace_back([t] {
+            util::ThreadRename(strprintf("order.%d", t));
+            for (int i = 0; i < LINES; ++i) {
+                LogDebug(BCLog::NET, "order t=%d i=%d\n", t, i);
+            }
+        });
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+    std::vector<int> next(THREADS, 0);
+    for (const std::string &line : ReadDebugLogLines()) {
+        int t, i;
+        if (std::sscanf(line.c_str(), "[net] order t=%d i=%d", &t, &i) == 2) {
+            BOOST_REQUIRE(t >= 0 && t < THREADS);
+            BOOST_CHECK_EQUAL(i, next[t]);
+            next[t] = i + 1;
+        }
+    }
+    for (int t = 0; t < THREADS; ++t) {
+        BOOST_CHECK_EQUAL(next[t], LINES);
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_async_saturation, LogSetup) {
+    // With the logger thread stalled, a thread logging far more than its
+    // ring holds drops debug lines (and counts them) but never a warning
+    // or an error, and never blocks on a debug line.
+    LogInstance().EnableCategory(BCLog::NET);
+    const uint64_t dropped_before{LogInstance().DroppedLines()};
+    LogInstance().PauseForTesting(true);
+    constexpr int LINES{20 * int(BCLog::LogRing::CAPACITY)};
+    std::thread producer{[] {
+        util::ThreadRename("saturate");
+        for (int i = 0; i < LINES; ++i) {
+            LogDebug(BCLog::NET, "flood %d\n", i);
+            if (i % 1000 == 999) {
+                LogWarning("warning %d\n", i);
+            }
+        }
+        LogError("error at the end\n");
+    }};
+    producer.join();
+    LogInstance().PauseForTesting(false);
+    const auto lines{ReadDebugLogLines()};
+    size_t warnings{0}, errors{0}, floods{0}, notices{0};
+    for (const std::string &line : lines) {
+        warnings += line.starts_with("[warning] warning ");
+        errors += line == "[error] error at the end";
+        floods += line.starts_with("[net] flood ");
+        notices += line.find("Logging could not keep up") != std::string::npos;
+    }
+    BOOST_CHECK_EQUAL(warnings, size_t(LINES / 1000));
+    BOOST_CHECK_EQUAL(errors, 1U);
+    const uint64_t dropped{LogInstance().DroppedLines() - dropped_before};
+    BOOST_CHECK(dropped > 0);
+    BOOST_CHECK_EQUAL(floods + dropped, uint64_t(LINES));
+    BOOST_CHECK(notices >= 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_async_flush, LogSetup) {
+    // Flush writes what is queued, also when the logger thread does not
+    // run (as at shutdown and before an abort).
+    LogInstance().PauseForTesting(true);
+    LogPrintf("queued line\n");
+    LogInstance().Flush();
+    LogInstance().PauseForTesting(false);
+    std::ifstream ifs{LogInstance().m_file_path};
+    std::string content{std::istreambuf_iterator<char>{ifs}, {}};
+    BOOST_CHECK(content.find("queued line\n") != std::string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_async_reopen_under_load, LogSetup) {
+    // Apply the fixture path before rename. A lightly filled larger ring may
+    // otherwise remain below its wake threshold during the first rotation.
+    LogInstance().Flush();
+
+    // The log file is rotated (renamed, then reopened) while a thread logs:
+    // every line is in exactly one of the files, in order, unless it was
+    // dropped because the thread outran the logger (counted).
+    LogInstance().EnableCategory(BCLog::NET);
+    const uint64_t dropped_before{LogInstance().DroppedLines()};
+    std::atomic<bool> stop{false};
+    std::atomic<int> logged{0};
+    std::thread producer{[&] {
+        util::ThreadRename("rotate");
+        for (int i = 0; !stop || i < 2000; ++i) {
+            LogDebug(BCLog::NET, "rotate %d\n", i);
+            logged = i + 1;
+            if (i % 64 == 0) {
+                std::this_thread::sleep_for(std::chrono::microseconds{50});
+            }
+        }
+    }};
+    const fs::path path{LogInstance().m_file_path};
+    std::vector<fs::path> rotated;
+    for (int r = 0; r < 5; ++r) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{3});
+        rotated.push_back(
+            fs::PathFromString(fs::PathToString(path) + strprintf(".%d", r)));
+        fs::rename(path, rotated.back());
+        LogInstance().m_reopen_file = true;
+        // (Make sure the reopen happened before the next rename.)
+        LogInstance().Flush();
+    }
+    stop = true;
+    producer.join();
+    LogInstance().Flush();
+    rotated.push_back(path);
+    int next{0};
+    uint64_t dropped_lines{0};
+    for (const fs::path &file : rotated) {
+        std::ifstream ifs{file};
+        for (std::string line; std::getline(ifs, line);) {
+            int i;
+            if (std::sscanf(line.c_str(), "[net] rotate %d", &i) == 1) {
+                BOOST_CHECK(i >= next);
+                dropped_lines += i - next;
+                next = i + 1;
+            }
+        }
+    }
+    dropped_lines += logged.load() - next;
+    BOOST_CHECK_EQUAL(dropped_lines,
+                      LogInstance().DroppedLines() - dropped_before);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_producer_wake_does_not_lock, LogSetup) {
+    LogInstance().EnableCategory(BCLog::NET);
+    {
+        LogInstance().PauseForTesting(true);
+        LogInstance().Flush();
+        std::promise<void> done;
+        const auto future{done.get_future()};
+        std::unique_lock<StdMutex> wake_lock{
+            BCLog::LoggerTestAccess::WakeMutex(LogInstance())};
+        BCLog::LoggerTestAccess::ResetWake(LogInstance());
+        std::thread producer{[&] {
+            util::ThreadRename("wake-test");
+            for (size_t i = 0; i < BCLog::LogRing::CAPACITY / 2; ++i) {
+                LogDebug(BCLog::NET, "wake probe\n");
+            }
+            done.set_value();
+        }};
+        // A producer must finish while another thread owns the wake mutex.
+        const bool ready{future.wait_for(std::chrono::milliseconds{500}) ==
+                         std::future_status::ready};
+        wake_lock.unlock();
+        producer.join();
+        LogInstance().PauseForTesting(false);
+        LogInstance().Flush();
+        BOOST_CHECK_MESSAGE(ready, "plain producer blocked on wake mutex");
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_callback_severe_overflow, LogSetup) {
+    LogInstance().EnableCategory(BCLog::NET);
+    LogInstance().SetRateLimiting(nullptr);
+    LogInstance().PauseForTesting(true);
+    LogInstance().Flush();
+    const uint64_t before{LogInstance().DroppedLines()};
+    bool triggered{false};
+    bool callback_line_intact{false};
+    const size_t count{BCLog::LogRing::CAPACITY + 3};
+    auto callback{LogInstance().PushBackCallback([&](const std::string &line) {
+        if (triggered || line.find("callback seed") == std::string::npos)
+            return;
+        triggered = true;
+        const std::string original{line};
+        // Callback runs on the consuming thread. Its own ring cannot drain
+        // until this callback returns, so this deterministically fills it.
+        for (size_t i = 0; i < count; ++i) {
+            LogWarning("callback warning %u\n", i);
+        }
+        LogError("callback plain error\n");
+        callback_line_intact = line == original;
+    })};
+    LogPrintf("callback seed\n");
+    LogInstance().Flush();
+    LogInstance().Flush();
+    LogInstance().DeleteCallback(callback);
+    LogInstance().PauseForTesting(false);
+    size_t warnings{0}, errors{0};
+    for (const auto &line : ReadDebugLogLines()) {
+        warnings += line.find("callback warning ") != std::string::npos;
+        errors += line.find("callback plain error") != std::string::npos;
+    }
+    BOOST_REQUIRE(triggered);
+    BOOST_CHECK(callback_line_intact);
+    BOOST_CHECK_EQUAL(warnings, count);
+    BOOST_CHECK_EQUAL(errors, 1U);
+    BOOST_CHECK_EQUAL(LogInstance().DroppedLines() - before, 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_error_is_flushed_by_consumer, LogSetup) {
+    LogInstance().PauseForTesting(true);
+    LogInstance().Flush();
+    const auto producer{std::this_thread::get_id()};
+    std::atomic<bool> seen{false}, rendered_on_producer{false};
+    auto callback{LogInstance().PushBackCallback([&](const std::string &line) {
+        if (line.find("consumer flush marker") != std::string::npos) {
+            rendered_on_producer = std::this_thread::get_id() == producer;
+            seen = true;
+        }
+    })};
+    std::atomic<bool> locked{false}, go{false};
+    std::thread blocker{[&] {
+        std::unique_lock<StdMutex> lock{
+            BCLog::LoggerTestAccess::WakeMutex(LogInstance())};
+        locked = true;
+        while (!go.load())
+            std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }};
+    while (!locked.load())
+        std::this_thread::yield();
+    LogInstance().PauseForTesting(false);
+    go = true;
+    LogError("consumer flush marker\n");
+    // Read without calling Flush: returning from Error must already have
+    // completed the consumer's stdio flush, not just published a slot.
+    std::ifstream stream{LogInstance().m_file_path};
+    const std::string content{std::istreambuf_iterator<char>{stream}, {}};
+    blocker.join();
+    LogInstance().DeleteCallback(callback);
+    BOOST_CHECK(seen.load());
+    BOOST_CHECK(!rendered_on_producer.load());
+    BOOST_CHECK(content.find("consumer flush marker\n") != std::string::npos);
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_pause_rechecks_consumer_lock, LogSetup) {
+    LogInstance().PauseForTesting(true);
+    LogInstance().Flush();
+    std::atomic<bool> seen{false};
+    auto callback{LogInstance().PushBackCallback([&](const std::string &line) {
+        if (line.find("paused consumer marker") != std::string::npos)
+            seen = true;
+    })};
+    {
+        std::unique_lock<StdMutex> consumer{
+            BCLog::LoggerTestAccess::ConsumerMutex(LogInstance())};
+        LogInstance().PauseForTesting(false);
+        std::thread producer{[] {
+            for (size_t i = 0; i < BCLog::LogRing::WAKE_THRESHOLD; ++i) {
+                LogPrintf("paused consumer marker\n");
+            }
+        }};
+        producer.join();
+        // Let the notified worker pass the outer pause check and block on
+        // this lock, then pause it before it can acquire the lock.
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        LogInstance().PauseForTesting(true);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    BOOST_CHECK(!seen.load());
+    LogInstance().Flush();
+    BOOST_CHECK(seen.load());
+    LogInstance().DeleteCallback(callback);
+    LogInstance().PauseForTesting(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

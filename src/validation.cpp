@@ -3291,6 +3291,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
         gArgs.GetIntArg("-testblockconnectpauseheight", -1) == pindex->nHeight) {
         LogInfo("Pausing block connection at test height %d\n",
                 pindex->nHeight);
+        LogInstance().Flush();
         while (!m_chainman.m_interrupt) {
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
