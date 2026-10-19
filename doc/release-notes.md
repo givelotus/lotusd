@@ -96,3 +96,10 @@ Privacy: relay timing no longer hides which node a transaction entered the
 network at, and a node's own transactions go to all of its peers at once.
 Wallets that care should submit each transaction to several independent
 nodes (`sendrawtransaction` on each).
+
+Lotus V2:
+- ZeroMQ support has been removed. The `-zmqpub*` options are no longer
+  recognized and make the node fail at startup, the `getzmqnotifications` RPC
+  and the `zmq` log category are gone, and `-DBUILD_ZMQ=ON` is rejected at
+  configure time. Use Chronik's WebSocket endpoint (`/chronik/ws`) for block
+  and transaction push notifications.
