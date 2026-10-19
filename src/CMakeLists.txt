@@ -721,6 +721,7 @@ add_library(server
 	rpc/server.cpp
 	rpc/server_util.cpp
 	rpc/txoutproof.cpp
+	rpc/v2vm.cpp
 	script/scriptcache.cpp
 	script/sigcache.cpp
 	shutdown.cpp
