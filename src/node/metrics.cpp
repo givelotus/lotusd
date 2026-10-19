@@ -79,6 +79,13 @@ namespace {
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
         0.25,   0.5,     1,      2.5,   5,      10,    30,   60,    300};
 
+    std::vector<std::string> SortedWithOther(std::vector<std::string> v) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        v.push_back("other");
+        return v;
+    }
+
     /** Index of s in sorted[0, size-1), else size-1 ("other") */
     size_t SortedIndex(const std::vector<std::string> &sorted,
                        std::string_view s) noexcept {
@@ -102,7 +109,7 @@ size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept {
     return SortedIndex(L::MsgTypes(), msg_type);
 }
 
-NodeMetrics::NodeMetrics()
+NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
     : p2p_received_bytes{Add<Counter>(
           registry, "lotus_p2p_received_bytes_total",
           "P2P bytes received (header and payload), by message type.",
@@ -177,7 +184,16 @@ NodeMetrics::NodeMetrics()
       http_tls_handshakes{
           Add<Counter>(registry, "lotus_http_tls_handshakes_total",
                        "TLS handshakes on the HTTP listeners, by result.",
-                       std::vector<LabelDim>{{"result", {"ok", "failed"}}})} {
+                       std::vector<LabelDim>{{"result", {"ok", "failed"}}})},
+      rpc_request_seconds{
+          Add<EventHistogram>(
+              registry, "lotus_rpc_request_duration_seconds",
+              "Time to execute an RPC command, by method (methods appear "
+              "once called).",
+              REQUEST_BUCKETS, /*divisor=*/1e9,
+              std::vector<LabelDim>{{"method", SortedWithOther(rpc_methods)}})
+              .HideEmptySeries()},
+      m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
     initial_block_download.Set(1);
     registry.AddCollector([this] {
         const double tip{tip_timestamp.Value()};
@@ -189,6 +205,10 @@ NodeMetrics::NodeMetrics()
     });
 }
 
+size_t NodeMetrics::RPCMethodIndex(std::string_view method) const noexcept {
+    return SortedIndex(m_rpc_methods, method);
+}
+
 size_t NodeMetrics::PeerSeries(bool inbound, bool websocket,
                                size_t network) const noexcept {
     const std::array<size_t, 3> idx{
@@ -197,11 +217,11 @@ size_t NodeMetrics::PeerSeries(bool inbound, bool websocket,
     return peers.SeriesIndex(idx);
 }
 
-NodeMetrics &StartNodeMetrics() {
+NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods) {
     NodeMetrics *m{GetNodeMetrics()};
     if (!m) {
         // Never freed: recording threads may hold the pointer.
-        m = new NodeMetrics();
+        m = new NodeMetrics(std::move(rpc_methods));
         detail::g_node_metrics.store(m, std::memory_order_release);
     }
     m->registry.Start();
