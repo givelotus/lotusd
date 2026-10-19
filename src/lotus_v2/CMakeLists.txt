@@ -91,7 +91,8 @@ if(NOT TARGET Boost::headers)
     find_package(Boost 1.64 REQUIRED)
 endif()
 
-target_sources(lotus_v2_header PRIVATE header.cpp transaction.cpp monetary.cpp)
+target_sources(lotus_v2_header PRIVATE header.cpp transaction.cpp monetary.cpp
+    deferred_checks.cpp)
 target_link_libraries(lotus_v2_header PUBLIC lotus_v2_blake3 Boost::headers)
 
 add_executable(test_lotus_v2_header
@@ -371,6 +372,9 @@ target_link_libraries(test_lotus_v2_vm PRIVATE lotus_v2_validation)
 add_executable(test_lotus_v2_vm_simulation test_vm_simulation.cpp)
 target_link_libraries(test_lotus_v2_vm_simulation PRIVATE lotus_v2_validation)
 
+add_executable(test_lotus_v2_deferred_checks test_deferred_checks.cpp)
+target_link_libraries(test_lotus_v2_deferred_checks PRIVATE lotus_v2_header)
+
 add_executable(test_lotus_v2_chronik_explorer test_chronik_explorer.cpp)
 target_link_libraries(test_lotus_v2_chronik_explorer PRIVATE lotus_v2_development_runtime)
 
@@ -424,6 +428,7 @@ foreach(_lotus_v2_test_target
     test_lotus_v2_transaction
     test_lotus_v2_vm
     test_lotus_v2_vm_simulation
+    test_lotus_v2_deferred_checks
     test_lotus_v2_chronik_explorer
     test_lotus_v2_chronik_sync
     test_lotus_v2_candidate_facade

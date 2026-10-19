@@ -1147,7 +1147,7 @@ namespace {
         std::optional<Hash> cached_txid;
         std::optional<VmAssetTotalsMap> local_asset_totals;
         // Effects of this invocation, committed by the caller on success.
-        VmTransactionEffects staged_effects;
+        DeferredRecords staged_effects;
         size_t mint_count;
         std::vector<VmBytes> stack;
         std::vector<VmBytes> alternate;
@@ -2485,11 +2485,14 @@ namespace {
                         if (found == last)
                             throw VmFailure("ENFORCEOUTPUT no matching output");
                         // Order-free effects (I-11): record, never consume.
-                        staged_effects.claims.emplace_back(uint16_t(found),
-                                                           uint64_t(claim));
+                        const uint16_t witness = uint16_t(ctx.witness_index);
+                        staged_effects.Add(
+                            kOutputClaimsKind, witness,
+                            OutputClaim{uint64_t(claim), {uint16_t(found)}});
                         if (t.state_mode != OutputTemplate::STATE_NONE)
-                            staged_effects.state_authorized.push_back(
-                                uint16_t(found));
+                            staged_effects.Add(
+                                kStateAuthorizationKind, witness,
+                                StateAuthorization{{uint16_t(found)}});
                         Push(Number(Int(found)));
                         break;
                     }
@@ -2673,7 +2676,7 @@ namespace {
             return stack;
         }
         VmCostUnits ExecutedCost() const { return executed_cost; }
-        const VmTransactionEffects &StagedEffects() const {
+        const DeferredRecords &StagedEffects() const {
             return staged_effects;
         }
     };
@@ -2751,39 +2754,6 @@ bool PreparedVmTransaction::TryGetFieldSizeAt(uint8_t op, size_t idx,
         return true;
     }
     return false;
-}
-
-bool FinalizeVmTransactionEffects(std::span<const Output> outputs,
-                                  const VmTransactionEffects &effects,
-                                  std::string &error) {
-    std::vector<__uint128_t> claimed(outputs.size());
-    std::vector<uint8_t> authorized(outputs.size());
-    for (const auto &[j, claim] : effects.claims) {
-        if (j >= outputs.size()) {
-            error = "output-overclaimed";
-            return false;
-        }
-        claimed[j] += claim;
-    }
-    for (uint16_t j : effects.state_authorized) {
-        if (j >= outputs.size()) {
-            error = "state-output-unauthorized";
-            return false;
-        }
-        authorized[j] = 1;
-    }
-    for (size_t j = 0; j < outputs.size(); ++j) {
-        if (claimed[j] > outputs[j].value) {
-            error = "output-overclaimed";
-            return false;
-        }
-        if (outputs[j].HasState() && !authorized[j]) {
-            error = "state-output-unauthorized";
-            return false;
-        }
-    }
-    error.clear();
-    return true;
 }
 
 bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
