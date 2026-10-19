@@ -1,0 +1,218 @@
+{
+  "schema": 1,
+  "batch": "bdb-lifecycle",
+  "files": [
+    {
+      "path": "src/wallet/bdb.cpp",
+      "rules": [
+        {
+          "id": "bdb-lifecycle-1",
+          "old": "LogPrintf(\"BerkeleyEnvironment::Close: Error %d closing database \"\n                  \"environment: %s\\n\",\n                  ret, DbEnv::strerror(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_close_failed\",\n                     \"BerkeleyEnvironment::Close: Error {error_code} closing \"\n                     \"database environment: {error}\")\n            .Field(BCLog::LogField::ErrorCode, ret)\n            .Field(BCLog::LogField::Error, DbEnv::strerror(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyEnvironment::Close: Error %d closing database environment: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "ret",
+              "DbEnv::strerror(ret)"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-2",
+          "old": "LogPrintf(\"BerkeleyEnvironment::Open: Error %d opening database \"\n                  \"environment: %s\\n\",\n                  ret, DbEnv::strerror(ret))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_open_failed\",\n                     \"BerkeleyEnvironment::Open: Error {error_code} opening \"\n                     \"database environment: {error}\")\n            .Field(BCLog::LogField::ErrorCode, ret)\n            .Field(BCLog::LogField::Error, DbEnv::strerror(ret))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyEnvironment::Open: Error %d opening database environment: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "ret",
+              "DbEnv::strerror(ret)"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-3",
+          "old": "LogPrintf(\"BerkeleyEnvironment::Open: Error %d closing failed \"\n                      \"database environment: %s\\n\",\n                      ret2, DbEnv::strerror(ret2))",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_failed_open_close_failed\",\n                         \"BerkeleyEnvironment::Open: Error {error_code} \"\n                         \"closing failed database environment: {error}\")\n                .Field(BCLog::LogField::ErrorCode, ret2)\n                .Field(BCLog::LogField::Error, DbEnv::strerror(ret2))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyEnvironment::Open: Error %d closing failed database environment: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "ret2",
+              "DbEnv::strerror(ret2)"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-4",
+          "old": "LogDebug(BCLog::WALLETDB, \"BerkeleyEnvironment::MakeMock\\n\")",
+          "replacement": "LogEvent(BCLog::WALLETDB, \"wallet_bdb_mock_created\",\n             \"BerkeleyEnvironment::MakeMock\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "BerkeleyEnvironment::MakeMock\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-5",
+          "old": "LogPrintf(\"Using BerkeleyDB version %s\\n\", BerkeleyDatabaseVersion())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_version\",\n                 \"Using BerkeleyDB version {database_version}\")\n        .Field(BCLog::LogField::DatabaseVersion,\n               DbEnv::version(nullptr, nullptr, nullptr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Using BerkeleyDB version %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "BerkeleyDatabaseVersion()"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-6",
+          "old": "LogPrintf(\"BerkeleyBatch::Rewrite: Rewriting %s...\\n\", strFile)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_rewrite_started\",\n                             \"BerkeleyBatch::Rewrite: Rewriting {name}...\")\n                    .Field(BCLog::LogField::Name, strFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyBatch::Rewrite: Rewriting %s...\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFile"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-7",
+          "old": "LogPrintf(\"BerkeleyBatch::Rewrite: Can't create \"\n                                  \"database file %s\\n\",\n                                  strFileRes)",
+          "replacement": "LogInfoEvent(BCLog::ALL,\n                                     \"wallet_bdb_rewrite_create_failed\",\n                                     \"BerkeleyBatch::Rewrite: Can't create \"\n                                     \"database file {name}\")\n                            .Field(BCLog::LogField::Name, strFileRes)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyBatch::Rewrite: Can't create database file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFileRes"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-8",
+          "old": "LogPrintf(\"BerkeleyBatch::Rewrite: Failed to rewrite \"\n                              \"database file %s\\n\",\n                              strFileRes)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"wallet_bdb_rewrite_failed\",\n                                 \"BerkeleyBatch::Rewrite: Failed to rewrite \"\n                                 \"database file {name}\")\n                        .Field(BCLog::LogField::Name, strFileRes)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "BerkeleyBatch::Rewrite: Failed to rewrite database file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFileRes"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-9",
+          "old": "LogDebug(BCLog::WALLETDB,\n                         \"BerkeleyEnvironment::Flush: %s checkpoint\\n\",\n                         strFile)",
+          "replacement": "LogEvent(BCLog::WALLETDB, \"wallet_bdb_checkpoint\",\n                         \"BerkeleyEnvironment::Flush: {name} checkpoint\")\n                    .Field(BCLog::LogField::Name, strFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "BerkeleyEnvironment::Flush: %s checkpoint\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFile"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-10",
+          "old": "LogDebug(BCLog::WALLETDB,\n                         \"BerkeleyEnvironment::Flush: %s detach\\n\", strFile)",
+          "replacement": "LogEvent(BCLog::WALLETDB, \"wallet_bdb_detach\",\n                         \"BerkeleyEnvironment::Flush: {name} detach\")\n                    .Field(BCLog::LogField::Name, strFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "BerkeleyEnvironment::Flush: %s detach\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFile"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-11",
+          "old": "LogDebug(BCLog::WALLETDB,\n                         \"BerkeleyEnvironment::Flush: %s closed\\n\", strFile)",
+          "replacement": "LogEvent(BCLog::WALLETDB, \"wallet_bdb_closed\",\n                         \"BerkeleyEnvironment::Flush: {name} closed\")\n                    .Field(BCLog::LogField::Name, strFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "BerkeleyEnvironment::Flush: %s closed\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFile"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        },
+        {
+          "id": "bdb-lifecycle-12",
+          "old": "LogDebug(BCLog::WALLETDB, \"Flushing %s\\n\", strFile)",
+          "replacement": "LogEvent(BCLog::WALLETDB, \"wallet_bdb_flushing\", \"Flushing {name}\")\n        .Field(BCLog::LogField::Name, strFile)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Flushing %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "strFile"
+            ]
+          },
+          "review_note": "ErrorCode is actual Berkeley return code; Error is DbEnv::strerror result, captured immediately; DatabaseVersion is original wrapper return without unnecessary std::string allocation; Name is existing database filename, not misrepresented as full Path. Preserve severity/category and human wording. Reuses custom keys added by earlier SQLite conversion; touches no wallet callbacks."
+        }
+      ],
+      "support_adjustments": []
+    }
+  ]
+}
