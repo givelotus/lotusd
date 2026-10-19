@@ -64,8 +64,12 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         )
 
         self.log.info("...and dials it automatically over wss://")
-        self.wait_until(lambda: len(self.ws_peers(1)) >= 1, timeout=120)
-        auto = self.ws_peers(1)[0]
+        # (Lotus v2: node1's first peering with node0 is ws:// as well.)
+        self.wait_until(
+            lambda: any(p["transport"] == "wss" for p in node1.getpeerinfo()),
+            timeout=120,
+        )
+        auto = [p for p in node1.getpeerinfo() if p["transport"] == "wss"][0]
         assert_equal(auto["transport"], "wss")
         assert_equal(auto["inbound"], False)
         assert auto["connection_type"] in (
