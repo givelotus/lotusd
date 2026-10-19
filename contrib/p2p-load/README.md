@@ -56,3 +56,33 @@ The client polls with zero timeout while a WebSocketSock already has buffered
 receive bytes, matching the node's buffering semantics. Earlier exploratory
 receipts made with an unconditional 10 ms wait are retained as harness pilot
 runs and must not be used as final performance attribution.
+
+## Native V7 corpus and interleaved compression controls
+
+The corpus above belongs to the legacy ABC baseline. For native V2, build
+`lotusd`, `lotus-cli`, and `p2p-load` from the same corrected, frozen source.
+Generate a separate corpus with `--native-fixture --fixture-only`; the native
+builder uses the actual J3 MiniWallet and native miner, records exact V7
+transaction/block counts and bytes, and verifies its separately mined relay
+candidate. Its padding uses native burn commitments. This is another explicit
+load distribution, rather than a mainnet compression model. A legacy fixture
+cannot be substituted for it.
+
+    python3 contrib/p2p-load/run_matrix.py --build /path/to/build --native-fixture --fixture-only --output /path/to/native-corpus
+    python3 contrib/p2p-load/run_interleaved.py --build /path/to/build --fixture /path/to/native-corpus --output /path/to/interleaved-results
+
+Run these only after the native consensus fixes and both compression decoders
+have passed their gates. The interleaved runner schedules thresholds
+0, 16 KiB, 0, 64 KiB, 0, 256 KiB, 0. Threshold zero retains streaming encoding;
+all decoders accept both forms. Each run covers WS/WSS and relay/50-block
+serving at 50/100/250/500 peers, retaining resource-blocked rows where the
+shared-host limits forbid execution. `--plan-only` records the schedule
+without starting nodes, generating a corpus, or requiring binaries.
+
+The runner freezes the source/tree, binary digests, fixture marker, and relay
+bytes; it rejects changed inputs on resume. Each matrix uses independent
+APFS fixture copies. `interleaved.json` retains cell timings, separate raw CPU
+receipts, actual WebSocket wire/payload counter deltas, and compress-once cache
+counter deltas. Wire ratios exclude TLS overhead. It generates no automatic
+speedup conclusion: examine the adjacent controls and host load before
+attributing a timing change to compression.
