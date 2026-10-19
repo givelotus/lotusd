@@ -186,6 +186,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		chainstate_write_tests.cpp
 		checkdatasig_tests.cpp
 		checkpoints_tests.cpp
+		lotus_v2_genesis_tests.cpp
 		checkqueue_tests.cpp
 		coins_tests.cpp
 		rpc_batch_snapshot_tests.cpp
