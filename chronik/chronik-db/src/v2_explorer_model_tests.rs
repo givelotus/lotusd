@@ -130,6 +130,7 @@ fn spend_input_metadata_does_not_copy_the_spent_output() {
         flags: 0,
         value: u64::MAX,
         token_id: Hash32([0; 32]),
+        state_root: Hash32([0; 32]),
         branches: vec![Hash32([7; 32])],
         paths: vec![vec![0]],
     };

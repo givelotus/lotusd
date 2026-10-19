@@ -382,7 +382,7 @@ fn decode_coin(bytes: &[u8]) -> Result<Coin> {
         return Err(Error::Corrupt);
     }
     let coin: Coin = decode(bytes)?;
-    if coin.flags & !3 != 0 || coin.token_id.is_some() != (coin.flags & 1 != 0)
+    if coin.flags & !7 != 0 || coin.token_id.is_some() != (coin.flags & 1 != 0)
     {
         return Err(Error::Corrupt);
     }
@@ -1559,6 +1559,7 @@ mod tests {
             flags: if burn { 2 } else { 0 },
             value: 100,
             token_id: Hash32::default(),
+            state_root: Hash32::default(),
             branches: vec![Hash32([root; 32])],
             paths: if burn { vec![] } else { vec![vec![0]] },
         }
@@ -2030,6 +2031,7 @@ mod tests {
             flags: 1,
             value: u64::MAX,
             token_id: Hash32([77; 32]),
+            state_root: Hash32::default(),
             branches: (0..16).map(|i| Hash32([i; 32])).collect(),
             paths: vec![(0..16).collect()],
         };

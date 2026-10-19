@@ -14,6 +14,7 @@ fn output(token: u8, value: u64, burn: bool) -> Output {
         flags: if burn { 3 } else { 1 },
         value,
         token_id: Hash32([token; 32]),
+        state_root: Hash32::default(),
         branches: vec![Hash32([8; 32])],
         paths: if burn { vec![] } else { vec![vec![0]] },
     }
