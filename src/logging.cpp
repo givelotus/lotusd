@@ -662,6 +662,41 @@ void BCLog::AppendJsonEscaped(std::string &out, std::string_view str) {
     }
 }
 
+std::string_view BCLog::BareFunctionName(std::string_view signature) {
+    // "void CConnman::DumpAddresses(int) const" -> "CConnman::DumpAddresses"
+    const size_t close{signature.rfind(')')};
+    if (close == std::string_view::npos) {
+        return signature;
+    }
+    // The parameter list's '(' (skipping nested parentheses)
+    int depth{0};
+    size_t open{close};
+    while (true) {
+        const char c{signature[open]};
+        depth += c == ')' ? 1 : c == '(' ? -1 : 0;
+        if (depth == 0 || open == 0) {
+            break;
+        }
+        --open;
+    }
+    // The name ends there; it starts after the last space outside brackets
+    // (before it: the return type).
+    size_t start{open};
+    depth = 0;
+    while (start > 0) {
+        const char c{signature[start - 1]};
+        if (c == ')' || c == '>') {
+            ++depth;
+        } else if (c == '(' || c == '<') {
+            --depth;
+        } else if (c == ' ' && depth == 0) {
+            break;
+        }
+        --start;
+    }
+    return signature.substr(start, open - start);
+}
+
 void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
                                    LogFlags category, Level level,
                                    const std::source_location &source_loc,
@@ -672,14 +707,8 @@ void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
     out.clear();
     out += '{';
     if (m_log_timestamps) {
-        out += "\"ts\":\"";
+        out += "\"time\":\"";
         AppendRfc3339(out, now, /*with_micros=*/true);
-        out += "\",";
-    }
-    if (mocktime > 0s) {
-        out += "\"mocktime\":\"";
-        AppendRfc3339(out, SystemClock::time_point{mocktime},
-                      /*with_micros=*/false);
         out += "\",";
     }
     out += "\"level\":\"";
@@ -688,15 +717,16 @@ void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
     out += LogCategoryName(category);
     out += "\",\"thread\":\"";
     AppendJsonEscaped(out, threadname.empty() ? "unknown" : threadname);
-    out += "\",\"file\":\"";
-    AppendJsonEscaped(out, JsonSourceFile(source_loc));
-    out += "\",\"line\":";
-    char num[16];
-    const auto res{std::to_chars(num, num + sizeof(num), source_loc.line())};
-    out.append(num, res.ptr);
-    if (m_log_sourcelocations) {
-        out += ",\"func\":\"";
-        AppendJsonEscaped(out, source_loc.function_name());
+    out += "\",\"message\":\"";
+    if (!msg.empty() && msg.back() == '\n') {
+        msg.remove_suffix(1);
+    }
+    AppendJsonEscaped(out, msg);
+    out += '"';
+    if (mocktime > 0s) {
+        out += ",\"mocktime\":\"";
+        AppendRfc3339(out, SystemClock::time_point{mocktime},
+                      /*with_micros=*/false);
         out += '"';
     }
     if (continued) {
@@ -705,12 +735,19 @@ void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
     if (ratelimited) {
         out += ",\"ratelimited\":true";
     }
-    out += ",\"msg\":\"";
-    if (!msg.empty() && msg.back() == '\n') {
-        msg.remove_suffix(1);
+    if (m_log_sourcelocations) {
+        out += ",\"source\":{\"file\":\"";
+        AppendJsonEscaped(out, JsonSourceFile(source_loc));
+        out += "\",\"line\":";
+        char num[16];
+        const auto res{
+            std::to_chars(num, num + sizeof(num), source_loc.line())};
+        out.append(num, res.ptr);
+        out += ",\"function\":\"";
+        AppendJsonEscaped(out, BareFunctionName(source_loc.function_name()));
+        out += "\"}";
     }
-    AppendJsonEscaped(out, msg);
-    out += "\"}\n";
+    out += "}\n";
 }
 
 /** Append GetLogPrefix(category, level) to out, without allocating */
