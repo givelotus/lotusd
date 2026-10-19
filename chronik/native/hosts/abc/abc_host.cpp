@@ -105,10 +105,106 @@ uint256 FromHash(const Hash32 &h) {
     return out;
 }
 
+/** Whether the node's outputs have Lotus V2 native-output fields. */
+template <typename TxOutT>
+constexpr bool kV2Outputs = requires(const TxOutT &o) { o.vBranches; };
+
+/**
+ * Script of an output as Chronik indexes it. A Lotus V2 native output (empty
+ * or one-byte scriptPubKey with branches) becomes the synthetic native output
+ * frame `flags || value LE8 || [token_id] || branches || paths`, byte for
+ * byte as the Rust bridge's BridgeTxOutputScript builds it, so the script
+ * group keys and responses match Rust.
+ */
+template <typename TxOutT> Bytes OutputScript(const TxOutT &output) {
+    if constexpr (requires {
+                      output.vBranches;
+                      output.nFlags;
+                      output.tokenId;
+                      output.vPaths;
+                  }) {
+        if (output.scriptPubKey.size() <= 1 && !output.vBranches.empty()) {
+            uint8_t flags = output.nFlags & 0x03;
+            const bool has_token =
+                !output.tokenId.IsNull() || (flags & 1) != 0;
+            if (has_token) {
+                flags |= 1;
+            }
+            const bool is_burn = (flags & 2) != 0;
+            Bytes out;
+            out.push_back(flags);
+            const uint64_t val = static_cast<uint64_t>(
+                std::max<int64_t>(0, output.nValue / Amount::satoshi()));
+            for (int i = 0; i < 8; ++i) {
+                out.push_back(static_cast<uint8_t>((val >> (8 * i)) & 0xff));
+            }
+            if (has_token) {
+                out.insert(out.end(), output.tokenId.begin(),
+                           output.tokenId.end());
+            }
+            out.push_back(static_cast<uint8_t>(output.vBranches.size()));
+            for (const auto &branch : output.vBranches) {
+                out.insert(out.end(), branch.begin(), branch.end());
+            }
+            if (is_burn) {
+                out.push_back(0);
+            } else if (!output.vPaths.empty()) {
+                out.push_back(static_cast<uint8_t>(output.vPaths.size()));
+                for (const auto &path : output.vPaths) {
+                    out.push_back(static_cast<uint8_t>(path.size()));
+                    out.insert(out.end(), path.begin(), path.end());
+                }
+            } else {
+                out.push_back(static_cast<uint8_t>(output.vBranches.size()));
+                for (size_t idx = 0; idx < output.vBranches.size(); ++idx) {
+                    out.push_back(1);
+                    out.push_back(static_cast<uint8_t>(idx));
+                }
+            }
+            return out;
+        }
+    }
+    return Bytes(output.scriptPubKey.begin(), output.scriptPubKey.end());
+}
+
+/**
+ * Script of an input as Chronik indexes it: a Lotus V2 input with an empty
+ * scriptSig shows its coinbase data (coinbase inputs) or the script of its
+ * first branch witness, like the Rust bridge's BridgeTxInputScript.
+ */
+template <typename TxInT> Bytes InputScript(const TxInT &input) {
+    if constexpr (requires {
+                      input.vCoinbaseData;
+                      input.vWitnesses;
+                      input.nFlags;
+                  }) {
+        if (input.scriptSig.empty()) {
+            if (input.nFlags == 2 && !input.vCoinbaseData.empty()) {
+                return Bytes(input.vCoinbaseData.begin(),
+                             input.vCoinbaseData.end());
+            }
+            if (!input.vWitnesses.empty() &&
+                !input.vWitnesses[0].script.empty()) {
+                return Bytes(input.vWitnesses[0].script.begin(),
+                             input.vWitnesses[0].script.end());
+            }
+        }
+    }
+    return Bytes(input.scriptSig.begin(), input.scriptSig.end());
+}
+
+/** Lotus V2 mint inputs (flags 3) spend no coin and are not indexed. */
+template <typename TxInT> bool IsMintInput(const TxInT &input) {
+    if constexpr (requires { input.nFlags; }) {
+        return input.nFlags == 3;
+    }
+    return false;
+}
+
 TxOutput ConvertOutput(const CTxOut &output) {
     return TxOutput{
         .sats = output.nValue / Amount::satoshi(),
-        .script = Bytes(output.scriptPubKey.begin(), output.scriptPubKey.end()),
+        .script = OutputScript(output),
     };
 }
 
@@ -142,10 +238,14 @@ Tx ConvertTx(bool is_coinbase, const CTransaction &tx,
     out.inputs.reserve(tx.vin.size());
     for (size_t idx = 0; idx < tx.vin.size(); ++idx) {
         const CTxIn &input = tx.vin[idx];
+        if (!is_coinbase && IsMintInput(input)) {
+            // Like the Rust bridge; spent_coins stays indexed by vin index.
+            continue;
+        }
         TxInput in;
         in.prev_out.txid = ToHash(input.prevout.GetTxId());
         in.prev_out.out_idx = input.prevout.GetN();
-        in.script = Bytes(input.scriptSig.begin(), input.scriptSig.end());
+        in.script = InputScript(input);
         in.sequence = input.nSequence;
         if (!is_coinbase) {
             if (idx >= spent_coins.size()) {
@@ -163,7 +263,15 @@ Tx ConvertTx(bool is_coinbase, const CTransaction &tx,
         out.outputs.push_back(ConvertOutput(output));
     }
     out.locktime = tx.nLockTime;
-    out.wire_size = uint32_t(::GetSerializeSize(tx));
+    if constexpr (kV2Outputs<CTxOut>) {
+        // Lotus V2: the Rust Chronik reports the size of the legacy-shaped
+        // serialization of the converted tx (TxMut::ser_len over the
+        // native-frame output scripts and V2 input scripts), not that of the
+        // native V2 wire; keep its value.
+        out.wire_size = uint32_t(SerializeLegacyTx(out).size());
+    } else {
+        out.wire_size = uint32_t(::GetSerializeSize(tx));
+    }
     return out;
 }
 
@@ -434,13 +542,29 @@ DecodedTx AbcHost::DecodeRawTx(std::span<const uint8_t> raw) const {
         out.error = *decoded.error;
         return out;
     }
-    const Bytes ser = SerializeLegacyTx(decoded.tx);
-    DataStream stream{MakeByteSpan(ser)};
-    CMutableTransaction mtx;
-    stream >> mtx;
+    // Lotus V2: the txid is the node's own identity of the raw bytes (a
+    // native V2 tx's real txid). The Rust bridge recomputes it from the
+    // legacy-shaped fields instead, which differs for native V2 txs (design
+    // C1 §1.2, an accepted divergence). Legacy txs get the same txid.
+    std::optional<::TxId> node_txid;
+    try {
+        DataStream raw_stream{MakeByteSpan(raw)};
+        CMutableTransaction node_mtx;
+        raw_stream >> node_mtx;
+        node_txid = CTransaction(std::move(node_mtx)).GetId();
+    } catch (const std::exception &) {
+        // Not a node tx: use the legacy-shaped identity below.
+    }
+    if (!node_txid) {
+        const Bytes ser = SerializeLegacyTx(decoded.tx);
+        DataStream stream{MakeByteSpan(ser)};
+        CMutableTransaction mtx;
+        stream >> mtx;
+        node_txid = CTransaction(mtx).GetId();
+    }
     out.ok = true;
     out.tx = std::move(decoded.tx);
-    out.tx.txid = ToHash(CTransaction(mtx).GetId());
+    out.tx.txid = ToHash(*node_txid);
     out.tx.raw = Bytes(raw.begin(), raw.end());
     return out;
 }
