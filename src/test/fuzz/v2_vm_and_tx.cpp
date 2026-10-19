@@ -180,6 +180,20 @@ FUZZ_TARGET(v2_vm_and_tx) {
         Assert(res1.status == res2.status);
         Assert(res1.final_stack == res2.final_stack);
 
+        // EXT2: a leading `ff xx` pair succeeds at scan time whatever follows,
+        // and a lone trailing prefix is malformed framing.
+        {
+            std::vector<uint8_t> ext{0xff,
+                                     fdp.ConsumeIntegral<uint8_t>()};
+            ext.insert(ext.end(), script.begin(),
+                       script.begin() + std::min<size_t>(script.size(), 254));
+            Assert(lotus::v2::EvaluateVm(ext, {}, vm_profile).status ==
+                   lotus::v2::VmStatus::AutomaticSuccess);
+            Assert(lotus::v2::EvaluateVm(std::vector<uint8_t>{0xff}, {},
+                                         vm_profile)
+                       .status == lotus::v2::VmStatus::Invalid);
+        }
+
         const lotus::v2::VmChargedResult charged =
             lotus::v2::EvaluateVmCharged(script, args, vm_profile, cost_profile,
                                          in_cnt, out_cnt, nullptr);

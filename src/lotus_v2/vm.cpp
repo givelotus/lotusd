@@ -45,7 +45,7 @@ namespace {
             : std::runtime_error(message), status(kind) {}
     };
     struct Instruction {
-        uint8_t op;
+        VmOpcode op;
         VmBytes data;
         size_t peer = 0; // IF: ELSE or ENDIF; ELSE/loop: closing marker
         size_t end = 0;  // IF: ENDIF
@@ -63,6 +63,10 @@ namespace {
     bool Assigned(uint8_t op) {
         return GenesisAssigned(op);
     }
+    // Two-byte `ff xx` opcodes. None is assigned at genesis, so every pair is
+    // OP_SUCCESS_EXT_xx. Assigning one is a soft fork under P03's contract.
+    bool GenesisAssignedExt(uint8_t) { return false; }
+    bool AssignedExt(uint8_t selector) { return GenesisAssignedExt(selector); }
 
     size_t PushLength(std::span<const uint8_t> script, size_t &pos,
                       const VmProfile &profile) {
@@ -96,6 +100,16 @@ namespace {
         size_t pos = 0;
         while (pos < script.size()) {
             uint8_t op = script[pos++];
+            if (op == VM_EXT2_PREFIX) {
+                // The selector is never parsed as a push or a one-byte opcode.
+                if (pos == script.size()) throw VmFailure("truncated EXT2");
+                const uint8_t selector = script[pos++];
+                if (!(genesis ? GenesisAssignedExt(selector)
+                              : AssignedExt(selector)))
+                    return true;
+                instructions.push_back(Instruction{VmExt2(selector), {}, 0, 0});
+                continue;
+            }
             if (!(genesis ? GenesisAssigned(op) : Assigned(op))) return true;
             size_t len = 0;
             if (op >= 1 && op <= 75) {
@@ -118,14 +132,14 @@ namespace {
 
     void Structure(std::vector<Instruction> &code, const VmProfile &profile) {
         struct Frame {
-            uint8_t op;
+            VmOpcode op;
             size_t start;
             bool has_else;
         };
         std::vector<Frame> frames;
         size_t loop_depth = 0;
         for (size_t i = 0; i < code.size(); ++i) {
-            uint8_t op = code[i].op;
+            const VmOpcode op = code[i].op;
             if (op == 0x61 || op == 0x62 || op == 0x67 || op == 0x68 ||
                 op == 0x69) {
                 if (op >= 0x67 && ++loop_depth > 2)
@@ -1250,7 +1264,7 @@ namespace {
             for (size_t i = begin; i < end; ++i) {
                 Tick();
                 const auto &ins = code[i];
-                const uint8_t op = ins.op;
+                const VmOpcode op = ins.op;
                 if (op == 0x61 || op == 0x62) {
                     VmBytes cond_bytes = Pop();
                     const std::array<size_t, 1> cond_op{cond_bytes.size()};
@@ -1519,7 +1533,7 @@ namespace {
                     case 0x8f:
                     case 0x90: {
                         auto b = Pop(), a = Pop();
-                        Push(SimdBitwiseBinOp(op, a, b));
+                        Push(SimdBitwiseBinOp(uint8_t(op), a, b));
                         break;
                     }
                     case 0x91:
