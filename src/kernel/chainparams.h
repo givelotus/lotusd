@@ -150,6 +150,8 @@ public:
     const CCheckpointData &Checkpoints() const { return checkpointData; }
     //! Lotus V2 chain id committed by block ids, state roots and PoW.
     const lotus::v2::ChainId &V2ChainId() const { return m_v2_chain_id; }
+    //! Whether this network's genesis block is a pre-launch placeholder.
+    bool IsPlaceholderGenesis() const { return m_is_placeholder_genesis; }
 
     std::optional<AssumeutxoData> AssumeutxoForHeight(int height) const {
         return FindFirst(m_assumeutxo_data,
@@ -198,6 +200,7 @@ protected:
     bool m_is_mockable_chain;
     CCheckpointData checkpointData;
     lotus::v2::ChainId m_v2_chain_id{};
+    bool m_is_placeholder_genesis{false};
     std::vector<AssumeutxoData> m_assumeutxo_data;
     ChainTxData chainTxData;
 
