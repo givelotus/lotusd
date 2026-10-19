@@ -150,10 +150,15 @@ fn try_setup_chronik(
         false
     };
     let v2_binding = crate::v2_ffi::get_v2_binding(&node.bridge);
+    // Index bounds follow the consensus block-size limit, so that every
+    // valid block is indexed.
+    let v2_block_bytes = crate::v2_ffi::get_v2_max_block_bytes(&node.bridge);
+    let v2_bounds = chronik_db::v2_branch::Bounds::new(v2_block_bytes.into())
+        .map_err(|err| V2ServiceOpenFailed(err.to_string()))?;
     let v2_limits = crate::v2_ffi::ServiceLimits {
-        block_bytes: chronik_db::v2_branch::MAX_BATCH_BYTES as u32,
-        transactions: chronik_db::v2_branch::MAX_TRANSACTIONS as u32,
-        changes: chronik_db::v2_branch::MAX_CHANGES as u32,
+        block_bytes: v2_block_bytes,
+        transactions: v2_bounds.transactions() as u32,
+        changes: v2_bounds.changes() as u32,
         roots: 256,
         clauses: 16,
         page_size: 1000,

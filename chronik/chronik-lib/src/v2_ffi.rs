@@ -283,6 +283,8 @@ mod ffi_inner {
         type ChronikBridge = chronik_bridge::ffi::ChronikBridge;
 
         fn get_v2_binding(bridge: &ChronikBridge) -> Binding;
+        /// Consensus block-size limit (largest valid block, in wire bytes).
+        fn get_v2_max_block_bytes(bridge: &ChronikBridge) -> u32;
         fn bridge_v2_native_block(
             block: &CBlock,
             bindex: &CBlockIndex,

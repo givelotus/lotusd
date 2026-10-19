@@ -414,6 +414,7 @@ mod tests {
                     genesis: [2; 32],
                     profile: [3; 32],
                 },
+                chronik_db::v2_branch::Bounds::new(32_000_000).unwrap(),
             )
             .unwrap();
             db.initialize_genesis(test_block(
