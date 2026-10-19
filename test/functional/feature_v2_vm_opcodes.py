@@ -14,7 +14,10 @@ continuation from a zero-output draft); and checks that a reorg restores the
 spent state root and its continuation.
 """
 
+import json
 import struct
+import time
+import urllib.request
 
 from test_framework.messages import (
     lotus_v2_branch_leaf,
@@ -22,7 +25,7 @@ from test_framework.messages import (
     ser_compact_size,
 )
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, assert_raises_rpc_error
+from test_framework.util import assert_equal, assert_raises_rpc_error, chronik_port
 
 OP_TRUE = b"\x4e"
 OP_TRUE_DESCRIPTOR = "raw(4e)"
@@ -156,6 +159,41 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.extra_args = [["-acceptnonstdtxn=1"]]
 
+    def setup_nodes(self):
+        self.chronik = self.is_chronik_compiled()
+        if self.chronik:
+            self.extra_args = [self.extra_args[0] + ["-chronik"]]
+        super().setup_nodes()
+
+    def chronik_get(self, path: str) -> bytes:
+        url = f"http://127.0.0.1:{chronik_port(0)}{path}"
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return response.read()
+
+    def chronik_synced(self):
+        tip = bytes.fromhex(self.node.getbestblockhash())[::-1].hex()
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            status = json.loads(self.chronik_get("/v2/explorer/v1/status"))
+            anchor = status.get("indexed_anchor") or {}
+            if anchor.get("block_id") == tip:
+                return
+            time.sleep(0.2)
+        raise AssertionError("Chronik did not index the tip")
+
+    def check_chronik_state(self, txid: str, state: bytes):
+        """Chronik reports the state root in /tx (TxOutput.state_root, field
+        7) and in the V2 explorer output record."""
+        if not self.chronik:
+            return
+        self.chronik_synced()
+        tx_pb = self.chronik_get(f"/tx/{txid}")
+        assert b"\x3a\x20" + state in tx_pb
+        wire_txid = bytes.fromhex(txid)[::-1].hex()
+        record = json.loads(self.chronik_get(f"/v2/explorer/v1/outputs/{wire_txid}/0"))
+        assert_equal(record["data"]["has_state"], True)
+        assert_equal(record["data"]["state_root"], state.hex())
+
     def coinbase(self, height: int):
         block = self.node.getblock(self.node.getblockhash(height), 2)
         cb = block["tx"][0]
@@ -219,6 +257,7 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         self.mine()
         coin = self.node.gettxout(create_txid, 0)
         assert_equal(coin["stateRoot"], state0.hex())
+        self.check_chronik_state(create_txid, state0)
         return create_txid, vault_value, 0
 
     def continuation(self, vault, n_args=None, state=None, value=None):
@@ -246,6 +285,7 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         assert_equal(self.node.gettxout(txid, 0), None)
         coin = self.node.gettxout(next_txid, 0)
         assert_equal(coin["stateRoot"], statehash([num(n + 1)]).hex())
+        self.check_chronik_state(next_txid, statehash([num(n + 1)]))
         return next_txid, value - FEE, n + 1
 
     def test_rejections(self, vault):
@@ -335,7 +375,7 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         assert_equal(self.node.gettxout(next_txid, 0)["stateRoot"], state_next)
 
         self.log.info("simulatev2transaction can be disabled")
-        self.restart_node(0, ["-acceptnonstdtxn=1", "-v2simulationrpc=0"])
+        self.restart_node(0, self.extra_args[0] + ["-v2simulationrpc=0"])
         assert_raises_rpc_error(
             -1,
             "simulatev2transaction is disabled",
