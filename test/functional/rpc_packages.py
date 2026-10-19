@@ -9,6 +9,7 @@ from decimal import Decimal
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.messages import CTransaction, FromHex, ToHex
 from test_framework.p2p import P2PTxInvStore
+from test_framework.script import OP_0, CScript
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.txtools import pad_tx
 from test_framework.util import assert_equal, assert_fee_amount, assert_raises_rpc_error
@@ -432,7 +433,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         assert_equal(legacy_pool, node.getrawmempool())
 
         # Create a transaction chain such as only the parent gets accepted (by
-        # making the child's version non-standard). Make sure the parent does
+        # making the child's output non-standard). Make sure the parent does
         # get broadcast.
         self.log.info(
             "If a package is partially submitted, transactions included in mempool get broadcast"
@@ -440,14 +441,14 @@ class RPCPackagesTest(BitcoinTestFramework):
         peer = node.add_p2p_connection(P2PTxInvStore())
         txs = self.wallet.create_self_transfer_chain(chain_length=2)
         bad_child = FromHex(CTransaction(), txs[1]["hex"])
-        bad_child.nVersion = 0xFFFFFFFF
+        bad_child.vout[0].scriptPubKey = CScript([OP_0])
         hex_partial_acceptance = [txs[0]["hex"], bad_child.serialize().hex()]
         res = node.submitpackage(hex_partial_acceptance)
         assert_equal(res["package_msg"], "transaction failed")
         first_txid = txs[0]["txid"]
         assert "error" not in res["tx-results"][first_txid]
         sec_txid = bad_child.txid_hex
-        assert_equal(res["tx-results"][sec_txid]["error"], "version")
+        assert_equal(res["tx-results"][sec_txid]["error"], "scriptpubkey")
         peer.wait_for_broadcast([first_txid])
 
 
