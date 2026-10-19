@@ -60,7 +60,7 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
     def run_test(self):
         node = self.nodes[0]
         with_path = wss("lotus-node.invalid/lotus/p2p", 8443)
-        later = wss(b"\x00\xffsome future format", 9000, version=0x7f)
+        later = wss(b"\x00\xffsome future format", 9000, version=0x7F)
         malformed = [
             wss("bad name.invalid", 443),
             wss("x.invalid/p2p/ws", 443),  # the default path is implicit
@@ -73,10 +73,14 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
         msg = msg_addrv2()
         msg.addrs = [with_path, later] + malformed
         source.send_and_ping(msg)
-        known = {(a["port"], a.get("wss_version"), a.get("wss_path"), a["address"])
-                 for a in node.getnodeaddresses(0, "wss")}
+        known = {
+            (a["port"], a.get("wss_version"), a.get("wss_path"), a["address"])
+            for a in node.getnodeaddresses(0, "wss")
+        }
         assert (8443, 1, "/lotus/p2p", "lotus-node.invalid") in known, known
-        assert any(port == 9000 and version == 0x7F for port, version, _, _ in known), known
+        assert any(port == 9000 and version == 0x7F for port, version, _, _ in known), (
+            known
+        )
         assert_equal(len(known), 2)
         assert_equal(len(node.getpeerinfo()), 2)  # nobody was disconnected
 
@@ -85,10 +89,13 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
         receiver.wait_until(lambda: len(receiver.received) >= 2)
         with p2p_lock:
             relayed = {(a.port, a.wss_version, a.ip) for a in receiver.received}
-        assert_equal(relayed, {
-            (8443, 1, "lotus-node.invalid/lotus/p2p"),
-            (9000, 0x7F, b"\x00\xffsome future format"),
-        })
+        assert_equal(
+            relayed,
+            {
+                (8443, 1, "lotus-node.invalid/lotus/p2p"),
+                (9000, 0x7F, b"\x00\xffsome future format"),
+            },
+        )
         node.setmocktime(0)
 
         self.log.info("It dials version 1 at its path, never a later version")
@@ -100,10 +107,14 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
             pass
 
         self.log.info("-externaldomain advertises -p2pwebsocketpath")
-        self.restart_node(0, self.extra_args[0] + [
-            "-externaldomain=Self.Example.org:8443",
-            "-p2pwebsocketpath=/lotus/ws",
-        ])
+        self.restart_node(
+            0,
+            self.extra_args[0]
+            + [
+                "-externaldomain=Self.Example.org:8443",
+                "-p2pwebsocketpath=/lotus/ws",
+            ],
+        )
         # Nodes advertise themselves only once out of initial block download.
         self.generate(self.nodes[0], 1, sync_fun=self.no_op)
         peer = self.nodes[0].add_p2p_connection(AddrReceiver())
@@ -111,8 +122,11 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
         peer.wait_until(lambda: any(a.net == CAddress.NET_WSS for a in peer.received))
         self.nodes[0].setmocktime(0)
         with p2p_lock:
-            own = [(a.wss_version, a.ip, a.port) for a in peer.received
-                   if a.net == CAddress.NET_WSS]
+            own = [
+                (a.wss_version, a.ip, a.port)
+                for a in peer.received
+                if a.net == CAddress.NET_WSS
+            ]
         assert_equal(own, [(1, "self.example.org/lotus/ws", 8443)])
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(

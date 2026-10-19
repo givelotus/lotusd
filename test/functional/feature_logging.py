@@ -117,15 +117,25 @@ class LoggingTest(BitcoinTestFramework):
         with open(self.relative_log_path("logfmt.log"), encoding="utf-8") as stream:
             for line in stream:
                 if line.strip():
-                    records.append(dict(word.split("=", 1) for word in shlex.split(line)))
+                    records.append(
+                        dict(word.split("=", 1) for word in shlex.split(line))
+                    )
         assert len(records) > 20
         for record in records:
             assert set(record) >= {
-                "time", "level", "category", "thread", "message",
-                "source_file", "source_line", "source_function",
+                "time",
+                "level",
+                "category",
+                "thread",
+                "message",
+                "source_file",
+                "source_line",
+                "source_function",
             }, record
             assert record["source_line"].isdigit(), record
-        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+        assert any(
+            record["message"].startswith("Bitcoin ABC version") for record in records
+        )
 
     def test_gcp_format(self):
         self.restart_node(
@@ -143,13 +153,20 @@ class LoggingTest(BitcoinTestFramework):
             location = record["logging.googleapis.com/sourceLocation"]
             assert set(location) == {"file", "line", "function"}
             assert isinstance(location["line"], str)
-        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+        assert any(
+            record["message"].startswith("Bitcoin ABC version") for record in records
+        )
 
     def test_ecs_format(self):
-        self.restart_node(0, [
-            "-logformat=json-ecs", "-debuglogfile=ecs.log",
-            "-logsourcelocations", "-logtimestamps=0",
-        ])
+        self.restart_node(
+            0,
+            [
+                "-logformat=json-ecs",
+                "-debuglogfile=ecs.log",
+                "-logsourcelocations",
+                "-logtimestamps=0",
+            ],
+        )
         self.generate(self.nodes[0], 1)
         self.stop_node(0)
         with open(self.relative_log_path("ecs.log"), encoding="utf-8") as stream:
@@ -159,18 +176,30 @@ class LoggingTest(BitcoinTestFramework):
             assert record["ecs.version"] == "8.11.0"
             assert isinstance(record["@timestamp"], str)
             assert set(record) >= {
-                "log.level", "log.logger", "message", "process.thread.name",
-                "log.origin.file.name", "log.origin.file.line", "log.origin.function",
+                "log.level",
+                "log.logger",
+                "message",
+                "process.thread.name",
+                "log.origin.file.name",
+                "log.origin.file.line",
+                "log.origin.function",
             }
             assert isinstance(record["log.origin.file.line"], int)
             assert "source" not in record
-        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+        assert any(
+            record["message"].startswith("Bitcoin ABC version") for record in records
+        )
 
     def test_syslog_format(self):
         self.log.info("Test RFC 5424 file output")
-        self.restart_node(0, [
-            "-logformat=syslog", "-debuglogfile=syslog.log", "-logsourcelocations",
-        ])
+        self.restart_node(
+            0,
+            [
+                "-logformat=syslog",
+                "-debuglogfile=syslog.log",
+                "-logsourcelocations",
+            ],
+        )
         self.generate(self.nodes[0], 1)
         self.stop_node(0)
         records = []
@@ -183,24 +212,35 @@ class LoggingTest(BitcoinTestFramework):
                 assert fields[2:] == ["-"] * 5
                 records.append(json.loads(payload))
         assert len(records) > 20
-        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
+        assert any(
+            record["message"].startswith("Bitcoin ABC version") for record in records
+        )
         assert any(record["message"] == "Shutdown: done" for record in records)
 
     def test_text_priority(self):
         self.log.info("Test opt-in text priority prefix")
-        self.restart_node(0, [
-            "-logformat=text", "-logtextpriority", "-debuglogfile=priority.log",
-        ])
+        self.restart_node(
+            0,
+            [
+                "-logformat=text",
+                "-logtextpriority",
+                "-debuglogfile=priority.log",
+            ],
+        )
         self.generate(self.nodes[0], 1)
         self.stop_node(0)
         with open(self.relative_log_path("priority.log"), encoding="utf-8") as stream:
             lines = [line for line in stream if line.strip()]
         assert len(lines) > 20
         assert all(line[:3] in ("<3>", "<4>", "<6>", "<7>") for line in lines)
-        assert any(line.startswith("<6>") and "Shutdown: done" in line for line in lines)
+        assert any(
+            line.startswith("<6>") and "Shutdown: done" in line for line in lines
+        )
         self.restart_node(0, ["-logformat=text", "-debuglogfile=priority-default.log"])
         self.stop_node(0)
-        with open(self.relative_log_path("priority-default.log"), encoding="utf-8") as stream:
+        with open(
+            self.relative_log_path("priority-default.log"), encoding="utf-8"
+        ) as stream:
             lines = [line for line in stream if line.strip()]
         assert lines and all(not line.startswith("<") for line in lines)
 
@@ -211,34 +251,49 @@ class LoggingTest(BitcoinTestFramework):
         default_log = self.relative_log_path("debug.log")
         if os.path.exists(default_log):
             os.unlink(default_log)
-        self.start_node(0, [
-            "-nodebuglogfile", "-printtoconsole=0", f"-debuglogjsonfile={path}",
-        ])
+        self.start_node(
+            0,
+            [
+                "-nodebuglogfile",
+                "-printtoconsole=0",
+                f"-debuglogjsonfile={path}",
+            ],
+        )
         height = self.nodes[0].getblockcount() + 1
-        with self.nodes[0].assert_debug_log([
-            {"source": {"function": "UpdateTipLog"}},
-        ]):
+        with self.nodes[0].assert_debug_log(
+            [
+                {"source": {"function": "UpdateTipLog"}},
+            ]
+        ):
             self.generate(self.nodes[0], 1)
         self.stop_node(0)
         assert not os.path.exists(default_log)
         with open(path, encoding="utf-8") as stream:
             records = [json.loads(line) for line in stream if line.strip()]
-        assert any("UpdateTip: new best=" in record["message"] and
-                   f"height={height} " in record["message"] for record in records)
+        assert any(
+            "UpdateTip: new best=" in record["message"]
+            and f"height={height} " in record["message"]
+            for record in records
+        )
         assert any(record["message"] == "Shutdown: done" for record in records)
 
     def test_framework_fields(self):
         self.log.info("Framework dictionary matching and final drop counter")
         self.restart_node(0, [])
         node = self.nodes[0]
-        with node.assert_debug_log([
-            {"source": {"file": "src/validation.cpp", "function": "UpdateTipLog"}},
-            "UpdateTip: new best=",
-        ]):
+        with node.assert_debug_log(
+            [
+                {"source": {"file": "src/validation.cpp", "function": "UpdateTipLog"}},
+                "UpdateTip: new best=",
+            ]
+        ):
             self.generate(node, 1)
-        with node.wait_for_debug_log([
-            {"source": {"function": "UpdateTipLog"}}, b"UpdateTip: new best=",
-        ]):
+        with node.wait_for_debug_log(
+            [
+                {"source": {"function": "UpdateTipLog"}},
+                b"UpdateTip: new best=",
+            ]
+        ):
             self.generate(node, 1)
         self.stop_node(0)
         records = [
@@ -254,7 +309,8 @@ class LoggingTest(BitcoinTestFramework):
         self.nodes[0].assert_start_raises_init_error(
             ["-logformat=xml"],
             "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json, json-gcp, json-ecs, syslog"
-            + (", journald" if sys.platform == "linux" else "") + ")",
+            + (", journald" if sys.platform == "linux" else "")
+            + ")",
         )
         json_log_path = self.relative_log_path("json.log")
         self.start_node(
@@ -290,9 +346,7 @@ class LoggingTest(BitcoinTestFramework):
             # The bare name: no return type, no parameters
             function = r["source"]["function"]
             assert not function.startswith(("void ", "bool ", "static ")), r
-            assert function.endswith("operator()") or not function.endswith(
-                ")"
-            ), r
+            assert function.endswith("operator()") or not function.endswith(")"), r
             assert not r["message"].endswith("\n")
         msgs = [r["message"] for r in records]
         # Lines logged before the log file was opened are buffered and
@@ -306,9 +360,7 @@ class LoggingTest(BitcoinTestFramework):
         assert any(r["source"]["file"] == "src/init.cpp" for r in records)
         assert all(not os.path.isabs(r["source"]["file"]) for r in records)
         self.assert_no_absolute_source_paths(json_log_path)
-        assert any(
-            r["category"] == "none" and r["level"] == "info" for r in records
-        )
+        assert any(r["category"] == "none" and r["level"] == "info" for r in records)
 
         self.log.info("Init errors are logged at error level")
         # An error after the log file is open: the P2P port is taken.
