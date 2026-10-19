@@ -87,7 +87,10 @@ WebSocketCodec::WebSocketCodec(Role role, P2PWebSocketCompression compression)
         compression == P2PWebSocketCompression::ZSTD_DICT ||
         compression == P2PWebSocketCompression::P2P_V2) {
         m_zstd = std::make_unique<P2PZstdSession>(
-            compression != P2PWebSocketCompression::ZSTD);
+            compression != P2PWebSocketCompression::ZSTD,
+            compression == P2PWebSocketCompression::P2P_V2
+                ? P2P_ZSTD_DICT_VERSION
+                : 1);
     }
 }
 

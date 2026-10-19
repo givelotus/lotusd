@@ -107,6 +107,7 @@ TEST_FRAMEWORK_MODULES = [
 ]
 
 NON_TESTS = {
+    "p2p_zstd_dictionary_capture.py",
     # These are python files that live in the functional tests directory, but
     # are not test scripts.
     "combine_logs.py",
