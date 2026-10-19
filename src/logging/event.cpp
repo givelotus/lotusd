@@ -4,6 +4,8 @@
 
 #include <logging/event.h>
 
+#include <tinyformat.h>
+
 #include <cassert>
 #include <charconv>
 #include <cstring>
@@ -187,6 +189,34 @@ void AppendQuotedText(std::string &out, std::string_view text) {
     out += '"';
 }
 
+namespace {
+    // Only explicit, bounded float precision is supported; formatting runs here
+    // on the consumer, with the same backend as the original printf call.
+    bool AppendFormattedField(std::string &out, const FieldView &field,
+                              std::string_view format) {
+        if (format.empty()) {
+            field.AppendText(out);
+            return true;
+        }
+        if (field.kind != FieldKind::F64 ||
+            (format.back() != 'f' && format.back() != 'g')) return false;
+        const char kind{format.back()};
+        format.remove_suffix(1);
+        int precision{6};
+        if (!format.empty()) {
+            if (format.front() != '.' || format.size() < 2) return false;
+            format.remove_prefix(1);
+            const auto [end, error]{std::from_chars(
+                format.data(), format.data() + format.size(), precision)};
+            if (error != std::errc{} || end != format.data() + format.size() ||
+                precision < 0 || precision > 18) return false;
+        }
+        out += kind == 'f' ? strprintf("%.*f", precision, field.F64())
+                           : strprintf("%.*g", precision, field.F64());
+        return true;
+    }
+} // namespace
+
 void AppendEventMessage(std::string &out, const LogEventSite &site,
                         FieldList fields, uint64_t *used) {
     if (used) {
@@ -208,12 +238,16 @@ void AppendEventMessage(std::string &out, const LogEventSite &site,
             break;
         }
         out.append(tmpl.substr(pos, open - pos));
-        const std::string_view name{tmpl.substr(open + 1, close - open - 1)};
+        const std::string_view placeholder{tmpl.substr(open + 1, close - open - 1)};
+        const size_t colon{placeholder.find(':')};
+        const std::string_view name{placeholder.substr(0, colon)};
+        const std::string_view format{colon == std::string_view::npos
+                                          ? std::string_view{}
+                                          : placeholder.substr(colon + 1)};
         bool found{false};
         size_t i{0};
         for (const FieldView f : fields) {
-            if (f.Info().name == name) {
-                f.AppendText(out);
+            if (f.Info().name == name && AppendFormattedField(out, f, format)) {
                 if (used && i < 64) {
                     *used |= uint64_t{1} << i;
                 }
