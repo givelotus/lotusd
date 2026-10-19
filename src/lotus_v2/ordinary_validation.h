@@ -35,6 +35,10 @@ struct OrdinaryCandidateEffects {
     __uint128_t token_output_burn_floor{};
     VmCostUnits invocation_cost{};
     uint64_t serialized_bytes{};
+    // Set when the inputs staged deferred records. Such a candidate is never
+    // stored in the validated-ordinary cache: a hit would skip the records
+    // its validity depends on.
+    bool produced_records{false};
     std::vector<Outpoint> consumed;
     std::vector<Coin> created;
 };
