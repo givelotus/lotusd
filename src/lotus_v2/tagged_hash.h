@@ -38,6 +38,9 @@ enum class HashDomain {
     SimPlaceholder,
     // Non-consensus VM profile commitment (VmProfileDigest).
     VmProfile,
+    // Name of a transaction that is not a well-formed V2 structure: the
+    // chain ID and its complete serialization (never a valid identity).
+    TxIdFallback,
 };
 
 // Hardware-accelerated BIP-340 style tagged SHA-256:

@@ -187,7 +187,7 @@ static bool CheckRegularTransactionRules(const CTransaction &tx,
 }
 
 // A transaction whose content is not a well-formed V2 transaction has only the
-// flat fallback TxId/TxHash (see ComputeV2TxIdentities). Checked after every
+// fallback TxId/TxHash name (see ComputeV2TxIdentities). Checked after every
 // other rule so the more specific reject reason wins; this catches what those
 // rules do not, such as a legacy-version transaction with more than 65,535
 // outputs (which the u16 V2 header cannot count).
