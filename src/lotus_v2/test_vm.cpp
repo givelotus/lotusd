@@ -1019,8 +1019,39 @@ void StateHashAndVerify() {
           "STATEVERIFY coin lacks state");
     Expect("ed", VmStatus::Unsupported, {VmBytes(32)});
 }
+// Deferred records helpers: one claim / one authorization per record.
+DeferredRecords ClaimRecords(
+    std::initializer_list<std::pair<uint16_t, uint64_t>> claims) {
+    DeferredRecords records;
+    for (const auto &[j, amount] : claims)
+        records.Add(kOutputClaimsKind, 0, OutputClaim{amount, {j}});
+    return records;
+}
+DeferredRecords AuthorizeRecords(std::initializer_list<uint16_t> outputs) {
+    DeferredRecords records;
+    for (uint16_t j : outputs)
+        records.Add(kStateAuthorizationKind, 0, StateAuthorization{{j}});
+    return records;
+}
+// The consensus deferred checks over per-input records.
+bool PostCheck(std::span<const Output> outputs,
+               std::vector<DeferredRecords> per_input, std::string &error) {
+    return RunDeferredChecks(DeferredCheckRegistry::Consensus(),
+                             DeferredTxView{outputs, per_input.size()},
+                             per_input, error) == DeferredOutcome::Accepted;
+}
+std::vector<OutputClaim> ClaimsOf(const DeferredRecords &records) {
+    return OutputClaimsOf(records);
+}
+std::vector<uint16_t> AuthorizedOf(const DeferredRecords &records) {
+    std::vector<uint16_t> out;
+    for (const auto &record : StateAuthorizationsOf(records))
+        out.insert(out.end(), record.outputs.begin(), record.outputs.end());
+    return out;
+}
+
 void TransactionEffects() {
-    // Order-free effects (plan I-11) and the per-transaction post-check.
+    // Order-free deferred records (plan I-11) and the consensus kinds.
     Output plain;
     plain.value = 100;
     plain.branches = {Hash{}};
@@ -1031,39 +1062,35 @@ void TransactionEffects() {
     stateful.state_root.fill(0x62);
     const std::vector<Output> outputs{plain, stateful};
     std::string error;
-    VmTransactionEffects effects;
-    CHECK(!FinalizeVmTransactionEffects(outputs, effects, error) &&
+    CHECK(!PostCheck(outputs, {DeferredRecords{}}, error) &&
           error == "state-output-unauthorized");
-    effects.state_authorized = {1};
-    CHECK(FinalizeVmTransactionEffects(outputs, effects, error));
-    // Claims on one output sum across invocations, in any order.
-    VmTransactionEffects a, b;
-    a.claims = {{0, 60}};
-    b.claims = {{0, 40}, {1, 100}};
+    CHECK(PostCheck(outputs, {AuthorizeRecords({1})}, error));
+    // Claims on one output sum across inputs, in any order.
     for (const bool ab : {true, false}) {
-        VmTransactionEffects merged = effects;
-        merged.Merge(ab ? a : b);
-        merged.Merge(ab ? b : a);
-        CHECK(FinalizeVmTransactionEffects(outputs, merged, error));
-        merged.claims.push_back({0, 1});
-        CHECK(!FinalizeVmTransactionEffects(outputs, merged, error) &&
+        auto a = ClaimRecords({{0, 60}});
+        auto b = ClaimRecords({{0, 40}, {1, 100}});
+        b.Merge(AuthorizeRecords({1}));
+        std::vector<DeferredRecords> per_input;
+        per_input.push_back(ab ? a : b);
+        per_input.push_back(ab ? b : a);
+        CHECK(PostCheck(outputs, per_input, error));
+        per_input[0].Merge(ClaimRecords({{0, 1}}));
+        CHECK(!PostCheck(outputs, per_input, error) &&
               error == "output-overclaimed");
     }
     // Claims cannot overflow the comparison.
-    VmTransactionEffects huge = effects;
-    huge.claims = {{0, UINT64_MAX}, {0, UINT64_MAX}};
-    CHECK(!FinalizeVmTransactionEffects(outputs, huge, error));
+    {
+        auto huge = ClaimRecords({{0, UINT64_MAX}, {0, UINT64_MAX}});
+        huge.Merge(AuthorizeRecords({1}));
+        CHECK(!PostCheck(outputs, {huge}, error));
+    }
     // Out-of-range indexes are rejected rather than ignored.
-    VmTransactionEffects stray = effects;
-    stray.claims = {{2, 0}};
-    CHECK(!FinalizeVmTransactionEffects(outputs, stray, error));
-    stray = effects;
-    stray.state_authorized.push_back(2);
-    CHECK(!FinalizeVmTransactionEffects(outputs, stray, error));
+    CHECK(!PostCheck(outputs, {ClaimRecords({{2, 0}})}, error));
+    CHECK(!PostCheck(outputs, {AuthorizeRecords({1, 2})}, error));
 
     // An invocation commits nothing on failure and nothing when no
-    // effect-producing opcode runs; the accumulator lives in the context,
-    // never in the (reusable) prepared transaction.
+    // record-producing opcode runs; the records live in the context, never
+    // in the (reusable) prepared transaction.
     const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
     ChainId chain{};
     Transaction tx;
@@ -1077,16 +1104,17 @@ void TransactionEffects() {
     Output coin = plain;
     coin.value = 500;
     ResolvedCoins resolved{coin};
+    const auto existing = ClaimRecords({{0, 5}});
     for (const auto &script : {Hex("4e"), Hex("4d")}) {
         tx.inputs[0].witnesses[0].script = script;
         resolved[0]->branches[0] = BranchLeaf(script);
-        VmTransactionEffects accumulator = effects;
+        DeferredRecords accumulator = existing;
         VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
                                std::nullopt};
         ctx.effects = &accumulator;
         EvaluateVmWithContext(script, {}, PROFILE, ctx);
-        CHECK(accumulator.claims == effects.claims &&
-              accumulator.state_authorized == effects.state_authorized);
+        CHECK(ClaimsOf(accumulator) == ClaimsOf(existing) &&
+              AuthorizedOf(accumulator).empty());
     }
 }
 struct TemplateSpec {
@@ -1191,7 +1219,7 @@ void EnforceOutput() {
 
     struct Run {
         VmChargedResult charged;
-        VmTransactionEffects effects;
+        DeferredRecords effects;
     };
     // Runs `script` as input `input` (0 spend, 1 mint) with fresh effects.
     auto run = [&](size_t input, const VmBytes &script,
@@ -1239,7 +1267,9 @@ void EnforceOutput() {
             throw std::runtime_error("ENFORCEOUTPUT expected output " +
                                      std::to_string(j) + ": " +
                                      r.charged.invocation.error);
-        CHECK(r.effects.claims.size() == 1 && r.effects.claims[0].first == j);
+        const auto claims = ClaimsOf(r.effects);
+        CHECK(claims.size() == 1 && claims[0].matches ==
+                                        std::vector<uint16_t>{uint16_t(j)});
         return r;
     };
     auto expect_error = [&](const TemplateSpec &t, const std::string &error,
@@ -1292,7 +1322,7 @@ void EnforceOutput() {
     token.token_mode = 3; // SELF: the mint's own token id
     {
         const auto r = expect_match(token, 2, 1, {}, state_push());
-        CHECK(r.effects.state_authorized == std::vector<uint16_t>{2});
+        CHECK(AuthorizedOf(r.effects) == std::vector<uint16_t>{2});
     }
     TemplateSpec native = any;
     native.token_mode = 1;
@@ -1401,7 +1431,7 @@ void EnforceOutput() {
     stateful.state_root = state;
     {
         const auto r = expect_match(stateful, 2);
-        CHECK(r.effects.state_authorized == std::vector<uint16_t>{2});
+        CHECK(AuthorizedOf(r.effects) == std::vector<uint16_t>{2});
     }
     stateful.state_root = fill(0x5f);
     expect_error(stateful, none);
@@ -1490,24 +1520,22 @@ void EnforceOutput() {
         const auto first = run(0, script_for(any, 60, 0));
         CHECK(first.charged.invocation.status == VmStatus::Success);
         const auto second = run(0, script_for(any, 40, 0));
-        VmTransactionEffects total = first.effects;
-        total.Merge(second.effects);
+        std::vector<DeferredRecords> total{first.effects, second.effects};
         std::string error;
-        CHECK(FinalizeVmTransactionEffects(tx.outputs, total, error) == false &&
+        CHECK(PostCheck(tx.outputs, total, error) == false &&
               error == "state-output-unauthorized"); // o2 still unauthorized
-        total.state_authorized.push_back(2);
-        CHECK(FinalizeVmTransactionEffects(tx.outputs, total, error));
+        total[1].Merge(AuthorizeRecords({2}));
+        CHECK(PostCheck(tx.outputs, total, error));
         const auto third = run(0, script_for(any, 1, 0));
-        total.Merge(third.effects); // 60 + 40 + 1 > 100
-        CHECK(!FinalizeVmTransactionEffects(tx.outputs, total, error) &&
+        total.push_back(third.effects); // 60 + 40 + 1 > 100
+        CHECK(!PostCheck(tx.outputs, total, error) &&
               error == "output-overclaimed");
         // Pinning the second claim to output 1 (value 200) fixes it.
         pinned.output_index = 1;
         const auto moved = run(0, script_for(pinned, 101, 1));
-        VmTransactionEffects pinned_total = first.effects;
-        pinned_total.Merge(moved.effects);
-        pinned_total.state_authorized.push_back(2);
-        CHECK(FinalizeVmTransactionEffects(tx.outputs, pinned_total, error));
+        std::vector<DeferredRecords> pinned_total{first.effects, moved.effects};
+        pinned_total[1].Merge(AuthorizeRecords({2}));
+        CHECK(PostCheck(tx.outputs, pinned_total, error));
     }
     // A failing invocation commits nothing: `<enforce> FALSE`.
     {
@@ -1527,7 +1555,7 @@ void EnforceOutput() {
         forged.state_root = state;
         const auto r = run(0, script_for(forged, 0, 2));
         CHECK(r.charged.invocation.status == VmStatus::Success &&
-              r.effects.state_authorized == std::vector<uint16_t>{2});
+              AuthorizedOf(r.effects) == std::vector<uint16_t>{2});
     }
     // Without a transaction-effects accumulator: Unsupported.
     {
@@ -1551,7 +1579,7 @@ void EnforceOutput() {
         const auto script = script_for(any, 0, 0);
         VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
                                std::nullopt};
-        VmTransactionEffects effects;
+        DeferredRecords effects;
         ctx.effects = &effects;
         const auto cheaper = EvaluateVmCharged(script, {}, vm, no_scan, 2, 4, &ctx);
         CHECK(cheaper.accounting_cost + 5 * 4 == r.charged.accounting_cost);
