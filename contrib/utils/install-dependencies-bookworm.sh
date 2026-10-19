@@ -48,7 +48,6 @@ PACKAGES=(
   libclang-dev
   libdb++-dev
   libdb-dev
-  libevent-dev
   libjemalloc-dev
   libprotobuf-dev
   libpcsclite-dev

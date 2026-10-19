@@ -30,3 +30,9 @@ This release includes the following features and fixes:
 - The Chronik Electrum peer discovery feature is now disabled by default. To
   enable it, set the desired peer check interval with the
   `-chronikelectrumpeersvalidationinterval` node option.
+- libevent is no longer a dependency. The RPC command line client now uses
+  Boost.Beast and the Tor controller Boost.Asio, like the HTTP server. The
+  `libevent` logging category is still accepted by `-debug`, `-debugexclude`
+  and the `logging` RPC but has no effect; it is deprecated. A host name given
+  to the command line client's `-rpcconnect` is now tried on each of its
+  addresses, and `-rpcclienttimeout=0` now means no timeout at all.
