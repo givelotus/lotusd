@@ -304,6 +304,47 @@ void DeallocateTransactionStorage(void *p, size_t bytes) noexcept {
     DeallocateStorage(p, bytes);
 }
 
+TransactionWire ScanTransactionWire(Span<const uint8_t> bytes) {
+    size_t pos = 0;
+    auto skip = [&](uint64_t count) {
+        if (count > bytes.size() - pos) {
+            throw std::ios_base::failure("ScanTransactionWire(): end of data");
+        }
+        pos += count;
+    };
+    auto read_compact_size = [&]() {
+        SpanReader reader{bytes.subspan(pos)};
+        const uint64_t n = ReadCompactSize(reader);
+        pos = bytes.size() - reader.size();
+        return n;
+    };
+    TransactionWire wire;
+    auto skip_script = [&]() {
+        const uint64_t size = read_compact_size();
+        if (IsLongScript(size)) {
+            wire.long_script_bytes += size;
+        }
+        skip(size);
+    };
+    skip(sizeof(uint32_t));
+    const uint64_t n_inputs = read_compact_size();
+    for (uint64_t i = 0; i < n_inputs; ++i) {
+        skip(sizeof(uint256) + sizeof(uint32_t));
+        skip_script();
+        skip(sizeof(uint32_t));
+    }
+    const uint64_t n_outputs = read_compact_size();
+    for (uint64_t i = 0; i < n_outputs; ++i) {
+        skip(sizeof(int64_t));
+        skip_script();
+    }
+    skip(sizeof(uint32_t));
+    wire.bytes = bytes.first(pos);
+    wire.n_inputs = n_inputs;
+    wire.n_outputs = n_outputs;
+    return wire;
+}
+
 size_t CTransaction::StorageSize(const TransactionWire &wire) {
     return Offsets(wire.n_inputs, wire.n_outputs, wire.long_script_bytes).total;
 }
@@ -368,7 +409,8 @@ CTransaction::Layout CTransaction::Place(const TransactionWire &wire,
     layout.vout = {
         std::launder(reinterpret_cast<const CTxOut *>(base + offsets.vout)),
         wire.n_outputs};
-    // Hash now: the serialization is not kept.
+    // Hash now: the serialization is not kept, and a contiguous stream may
+    // release it as soon as this returns.
     layout.hash = HashSerialization(bytes);
     layout.serialize_size = bytes.size();
     layout.long_script_bytes = wire.long_script_bytes;
