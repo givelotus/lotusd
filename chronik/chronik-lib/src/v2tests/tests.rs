@@ -38,6 +38,7 @@ fn block(
         flags: 0,
         value: u64::MAX,
         token_id: Hash32([0; 32]),
+        state_root: Hash32::default(),
         branches: vec![Hash32([9; 32])],
         paths: vec![vec![0]],
     };
