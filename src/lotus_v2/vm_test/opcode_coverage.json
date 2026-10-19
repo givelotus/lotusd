@@ -1200,7 +1200,7 @@
       "byte": "de",
       "name": "UTXOFLAGS",
       "group": "input",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "df",
@@ -1296,13 +1296,13 @@
       "byte": "ee",
       "name": "UTXOSTATEROOT",
       "group": "output",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "ef",
       "name": "OUTPUTSTATEROOT",
       "group": "output",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "f0",
@@ -1338,13 +1338,13 @@
       "byte": "f5",
       "name": "ACTIVEBRANCHINDEX",
       "group": "invocation_and_locks",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "f6",
       "name": "ACTIVEWITNESSINDEX",
       "group": "invocation_and_locks",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "ff",
