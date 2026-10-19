@@ -27,6 +27,7 @@ constexpr std::string_view TagView(HashDomain domain) noexcept {
     case HashDomain::Utxo: return "Lotus/v2/utxo";
     case HashDomain::PreconsensusBatch: return "lotus.v2.preconsensus.batch";
     case HashDomain::State: return "Lotus/v2/state";
+    case HashDomain::ContractState: return "Lotus/v2/contractstate";
     }
     std::abort();
 }
@@ -49,6 +50,36 @@ Hash TaggedHash(HashDomain domain, std::span<const uint8_t> payload) {
         constexpr uint8_t separator = 0;
         blake3_hasher_update(&hasher, &separator, 1);
         blake3_hasher_update(&hasher, payload.data(), payload.size());
+    }
+    Hash result;
+    blake3_hasher_finalize(&hasher, result.data(), result.size());
+    return result;
+}
+
+Hash ContractStateHash(std::span<const std::vector<uint8_t>> items) {
+    const std::string_view tag = TagView(HashDomain::ContractState);
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, tag.data(), tag.size());
+    constexpr uint8_t separator = 0;
+    blake3_hasher_update(&hasher, &separator, 1);
+    auto compact = [&](uint64_t value) {
+        uint8_t buffer[9];
+        size_t size = 0;
+        if (value < 253) {
+            buffer[size++] = uint8_t(value);
+        } else {
+            const size_t width = value <= 0xffff ? 2 : value <= 0xffffffff ? 4 : 8;
+            buffer[size++] = width == 2 ? 253 : width == 4 ? 254 : 255;
+            for (size_t i = 0; i < width; ++i)
+                buffer[size++] = uint8_t(value >> (8 * i));
+        }
+        blake3_hasher_update(&hasher, buffer, size);
+    };
+    compact(items.size());
+    for (const auto &item : items) {
+        compact(item.size());
+        if (!item.empty()) blake3_hasher_update(&hasher, item.data(), item.size());
     }
     Hash result;
     blake3_hasher_finalize(&hasher, result.data(), result.size());
