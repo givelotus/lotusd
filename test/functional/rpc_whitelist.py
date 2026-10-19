@@ -126,7 +126,16 @@ class RPCWhitelistTest(BitcoinTestFramework):
                 self.log.info(
                     f"[{user[0]}]: Testing a non permitted permission ({permission})"
                 )
-                assert_equal(403, rpccall(self.nodes[0], user, permission).status)
+                with self.nodes[0].assert_debug_log(
+                    [
+                        {
+                            "event": "rpc_method_access_denied",
+                            "rpc_user": user[0],
+                            "original_method": permission,
+                        }
+                    ]
+                ):
+                    assert_equal(403, rpccall(self.nodes[0], user, permission).status)
         # Now test the strange users
         for permission in self.never_allowed:
             self.log.info("Strange test 1")
