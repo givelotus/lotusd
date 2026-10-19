@@ -37,28 +37,27 @@ AVALANCHE_INVALID_AVAPROOFS_INTERVAL = 60 * 60
 
 
 class AvalancheProofVotingTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.avaproof_stake_utxo_confirmations = 1
-        self.conflicting_proof_cooldown = 100
-        self.peer_replacement_cooldown = 2000
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                f"-avaproofstakeutxoconfirmations={self.avaproof_stake_utxo_confirmations}",
-                f"-avalancheconflictingproofcooldown={self.conflicting_proof_cooldown}",
-                f"-avalanchepeerreplacementcooldown={self.peer_replacement_cooldown}",
-                "-avacooldown=0",
-                "-avastalevotethreshold=140",
-                "-avastalevotefactor=1",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-whitelist=noban@127.0.0.1",
-                "-persistavapeers=0",
-            ],
-        ]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    avaproof_stake_utxo_confirmations = 1
+    conflicting_proof_cooldown = 100
+    peer_replacement_cooldown = 2000
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            f"-avaproofstakeutxoconfirmations={avaproof_stake_utxo_confirmations}",
+            f"-avalancheconflictingproofcooldown={conflicting_proof_cooldown}",
+            f"-avalanchepeerreplacementcooldown={peer_replacement_cooldown}",
+            "-avacooldown=0",
+            "-avastalevotethreshold=140",
+            "-avastalevotefactor=1",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-whitelist=noban@127.0.0.1",
+            "-persistavapeers=0",
+        ],
+    ]
+    supports_cli = False
 
     # Build a fake quorum of nodes.
     def get_quorum(self, node):
