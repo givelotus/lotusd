@@ -7,9 +7,10 @@ Test that invalid messages get rejected and/or ban the sender as expected for
 each case.
 """
 
+from test_framework import p2p
 from test_framework.messages import NODE_NETWORK, msg_version
 from test_framework.p2p import P2PInterface, msg_ping
-from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_framework import BitcoinTestFramework, SkipTest
 
 
 def msg_bad_checksum(connection, original_message):
@@ -45,6 +46,11 @@ class BadVersionP2PInterface(P2PInterface):
 
 class InvalidMessageTest(BitcoinTestFramework):
     num_nodes = 2
+
+    def skip_test_if_missing_module(self):
+        if p2p.P2P_TRANSPORT == "websocket":
+            # Lotus v2's p2p-v2 framing has no checksum to corrupt.
+            raise SkipTest("p2p-v2 messages carry no checksum")
 
     def run_test(self):
         # Try to connect to a node using an invalid checksum on version message.

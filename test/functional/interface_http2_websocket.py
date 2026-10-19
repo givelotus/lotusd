@@ -5,7 +5,7 @@
 """Test WebSockets over HTTP/2 (RFC 8441 extended CONNECT) on the node.
 
 An independent client (Python h2, its own WebSocket framing and the test
-framework's p2p-zstd implementation) opens the P2P WebSocket and Chronik's
+framework's native p2p-v2 implementation) opens the P2P WebSocket and Chronik's
 WebSocket on HTTP/2 connections, next to ordinary requests on the same
 connection, under the same access rules as HTTP/1.1 upgrades.
 """
@@ -51,9 +51,7 @@ class HTTP2WebSocketTest(BitcoinTestFramework):
     def ws_peers(self, node):
         return [p for p in node.getpeerinfo() if p["transport"] == "wss"]
 
-    def p2p(
-        self, client, path="/p2p/ws", protocols=("p2p-zstd-v1", "p2p-zstd"), headers=()
-    ):
+    def p2p(self, client, path="/p2p/ws", protocols=("p2p-v2",), headers=()):
         from test_framework.http2 import H2WebSocket
         from test_framework.p2p_websocket import P2PWebSocketClient
 
@@ -102,19 +100,22 @@ class HTTP2WebSocketTest(BitcoinTestFramework):
             assert_equal(c.alpn, "h2")
             ws, peer = self.p2p(c)
             assert_equal(ws.status, 200)
-            assert_equal(ws.getsubprotocol(), "p2p-zstd-v1")
+            assert_equal(ws.getsubprotocol(), "p2p-v2")
             their = peer.handshake()
             assert_equal(their.nStartingHeight, node.getblockcount())
             self.wait_until(lambda: len(self.ws_peers(node)) == 1)
             info = self.ws_peers(node)[0]
             assert_equal(info["websocket"]["alpn"], "h2")
             assert_equal(info["websocket"]["tls"], True)
-            assert_equal(info["websocket"]["compression"], "p2p-zstd-v1")
+            assert_equal(info["websocket"]["compression"], "p2p-v2")
 
             self.log.info("  ... beside more streams on the same connection")
-            ws2, peer2 = self.p2p(c, protocols=())
+            refused, absent = self.p2p(c, protocols=())
+            assert_equal(refused.status, 400)
+            assert_equal(absent, None)
+            ws2, peer2 = self.p2p(c)
             assert_equal(ws2.status, 200)
-            assert_equal(ws2.getsubprotocol(), None)
+            assert_equal(ws2.getsubprotocol(), "p2p-v2")
             peer2.handshake()
             self.wait_until(lambda: len(self.ws_peers(node)) == 2)
             if port == rpc_port(0):

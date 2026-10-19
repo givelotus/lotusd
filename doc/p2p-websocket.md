@@ -131,6 +131,19 @@ connection, serving `/p2p/ws` (and the other public endpoints) to anyone:
   WebSocket peers; peers on `ws://` (onion, private addresses) present no
   certificate and are dropped.
 - I2P is not supported.
+- Peers speak only the `p2p-v2` subprotocol (other offers are refused with
+  HTTP 400). Each P2P message is one WebSocket message: a 1-byte message
+  id (or `0`, a length byte and the name for types without an id), then the
+  payload; the WebSocket message carries its length. There is no network
+  magic or checksum: TLS (or Tor, or the private network) and WebSocket
+  framing already delimit and protect messages. Messages of 64 bytes or more
+  are compressed with the connection's zstd stream and the built-in
+  dictionary, marked by the frame's RSV1 bit; smaller ones are sent plain.
+  Ids index an append-only table (`g_p2p_v2_message_types` in
+  `src/protocol.cpp`); new message types are added at the end, never
+  renumbered. `getpeerinfo` reports the compression as `p2p-v2`, and
+  `bytes*_per_msg` counts 5 bytes of header per message (the length the node
+  tracks, plus the id) instead of v1's 24.
 
 ## Serving
 

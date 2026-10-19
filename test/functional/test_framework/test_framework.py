@@ -1040,14 +1040,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             lambda: check_bytesrecv(
                 find_conn(from_connection, to_connection_subver, inbound=False),
                 "pong",
-                32,
+                8 + p2p.P2P_MSG_OVERHEAD,
             )
         )
         self.wait_until(
             lambda: check_bytesrecv(
                 find_conn(to_connection, from_connection_subver, inbound=True),
                 "pong",
-                32,
+                8 + p2p.P2P_MSG_OVERHEAD,
             )
         )
 
