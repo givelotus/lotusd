@@ -3198,6 +3198,14 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             return InitError(
                 _("Unable to start HTTP server. See debug log for details."));
         }
+    } else if (args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
+        // P2P peers arrive over WebSocket on the HTTP server: run it for
+        // them, without RPC listeners.
+        if (!InitHTTPServer(config, /*serve_rpc=*/false)) {
+            return InitError(
+                _("Unable to start HTTP server. See debug log for details."));
+        }
+        StartHTTPServer();
     }
 
     // Step 5: verify wallet database integrity
@@ -4241,8 +4249,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
     }
 
-    if (fListen && GetP2PWebSocketListen(args) &&
-        args.GetBoolArg("-server", false)) {
+    if (fListen && GetP2PWebSocketListen(args)) {
         // WebSocket peers on the P2P port too: connections starting like
         // HTTP or TLS go to the HTTP server's P2P port endpoint.
         connOptions.p2p_port_websocket = [](std::unique_ptr<Sock> &&sock,
@@ -4257,6 +4264,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                 1)};
         LogPrintf("Accepting %sWebSocket P2P peers on the P2P port\n",
                   g_listen_plain_p2p ? "raw and " : "");
+        connOptions.share_http_listener = ShareHTTPP2PListener;
     }
 
     if (!node.connman->Start(scheduler, connOptions)) {
