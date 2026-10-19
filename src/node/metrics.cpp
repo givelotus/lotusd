@@ -158,6 +158,10 @@ NodeMetrics::NodeMetrics()
           "Time to connect a block to the chain tip (ConnectBlock: "
           "validating it and updating the UTXO view).",
           BLOCK_CONNECT_BUCKETS, /*divisor=*/1e9)},
+      mempool_transactions{Add<Gauge>(registry, "lotus_mempool_transactions",
+                                      "Transactions in the mempool.")},
+      mempool_bytes{Add<Gauge>(registry, "lotus_mempool_bytes",
+                               "Total size of the mempool's transactions.")},
       http_requests{Add<Counter>(
           registry, "lotus_http_requests_total",
           "HTTP requests answered (not WebSocket sessions), by endpoint and "

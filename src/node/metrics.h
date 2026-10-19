@@ -77,6 +77,10 @@ struct NodeMetrics {
     metrics::Gauge &initial_block_download;
     metrics::EventHistogram &block_connect_seconds;
 
+    // Mempool
+    metrics::Gauge &mempool_transactions;
+    metrics::Gauge &mempool_bytes;
+
     // HTTP and RPC
     metrics::Counter &http_requests;
     metrics::EventHistogram &http_request_seconds;
@@ -107,6 +111,14 @@ void StopNodeMetrics();
 
 /** Label index of a P2P message type ("other" for unknown types) */
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept;
+
+/** Set the mempool gauges (call with the mempool lock held) */
+inline void SetMempoolMetrics(size_t transactions, uint64_t bytes) noexcept {
+    if (auto *m{GetNodeMetrics()}) {
+        m->mempool_transactions.Set(double(transactions));
+        m->mempool_bytes.Set(double(bytes));
+    }
+}
 
 /** Set the chain tip gauges (call with cs_main held, where the tip changes) */
 inline void SetTipMetrics(int height, int64_t block_time) noexcept {
