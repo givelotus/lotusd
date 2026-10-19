@@ -1,6 +1,6 @@
 {
   "schema": "lotus/v2/native-vm-opcode-coverage/v1",
-  "spec_sha256": "fb790b230e76befc90a1f183ea727cb3232d1f03e9b5838b10d025d96b9832da",
+  "spec_sha256": "aa337a17b51d89876bd7fee9b586e2e6a8f6ac5f96f0eacc9a2f8d967715b014",
   "entries": [
     {
       "byte": "00",
@@ -609,18 +609,6 @@
       "status": "control"
     },
     {
-      "byte": "67",
-      "name": "ENUMERATE_INPUTS",
-      "group": "control",
-      "status": "control"
-    },
-    {
-      "byte": "68",
-      "name": "ENUMERATE_OUTPUTS",
-      "group": "control",
-      "status": "control"
-    },
-    {
       "byte": "69",
       "name": "ENUMERATE",
       "group": "control",
@@ -637,6 +625,12 @@
       "name": "BREAK",
       "group": "control",
       "status": "control"
+    },
+    {
+      "byte": "6c",
+      "name": "EMITLOG",
+      "group": "control",
+      "status": "invalid"
     },
     {
       "byte": "70",
@@ -1065,6 +1059,12 @@
       "status": "implemented"
     },
     {
+      "byte": "c3",
+      "name": "STATEHASH",
+      "group": "cryptography",
+      "status": "unsupported"
+    },
+    {
       "byte": "c8",
       "name": "TXVERSION",
       "group": "transaction",
@@ -1197,6 +1197,18 @@
       "status": "implemented"
     },
     {
+      "byte": "de",
+      "name": "UTXOFLAGS",
+      "group": "input",
+      "status": "unsupported"
+    },
+    {
+      "byte": "df",
+      "name": "INPUTWITNESSARG",
+      "group": "input",
+      "status": "unsupported"
+    },
+    {
       "byte": "e0",
       "name": "OUTPUTFLAGS",
       "group": "output",
@@ -1263,6 +1275,36 @@
       "status": "implemented"
     },
     {
+      "byte": "eb",
+      "name": "ENFORCEOUTPUT",
+      "group": "output",
+      "status": "unsupported"
+    },
+    {
+      "byte": "ec",
+      "name": "TXTOKENBALANCE",
+      "group": "output",
+      "status": "unsupported"
+    },
+    {
+      "byte": "ed",
+      "name": "STATEVERIFY",
+      "group": "output",
+      "status": "unsupported"
+    },
+    {
+      "byte": "ee",
+      "name": "UTXOSTATEROOT",
+      "group": "output",
+      "status": "unsupported"
+    },
+    {
+      "byte": "ef",
+      "name": "OUTPUTSTATEROOT",
+      "group": "output",
+      "status": "unsupported"
+    },
+    {
       "byte": "f0",
       "name": "ACTIVEBYTECODE",
       "group": "invocation_and_locks",
@@ -1291,6 +1333,24 @@
       "name": "CHECKSEQUENCEVERIFY",
       "group": "invocation_and_locks",
       "status": "implemented"
+    },
+    {
+      "byte": "f5",
+      "name": "ACTIVEBRANCHINDEX",
+      "group": "invocation_and_locks",
+      "status": "unsupported"
+    },
+    {
+      "byte": "f6",
+      "name": "ACTIVEWITNESSINDEX",
+      "group": "invocation_and_locks",
+      "status": "unsupported"
+    },
+    {
+      "byte": "ff",
+      "name": "EXT2",
+      "group": "invocation_and_locks",
+      "status": "prefix"
     }
   ]
 }
