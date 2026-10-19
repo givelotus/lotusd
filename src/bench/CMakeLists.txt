@@ -79,6 +79,7 @@ add_executable(bitcoin-bench
 	strencodings.cpp
 	transaction_lifetime.cpp
 	util_time.cpp
+	v2_claim_flow.cpp
 	verify_script.cpp
 	ws_block_serve.cpp
 

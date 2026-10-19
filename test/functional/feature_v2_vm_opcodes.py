@@ -231,7 +231,8 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         assert_equal(profile["limits"]["max_outputs"], 256)
         assert_equal(profile["simulation_rpc"], True)
         eb = [c for c in profile["cost_profile"]["opcodes"] if c["byte"] == "eb"]
-        assert_equal(eb[0]["per_scanned_output"], 1)
+        assert_equal(eb[0]["per_tx_output"], 32)
+        assert_equal(profile["limits"]["max_tx_claim_pairs"], 4096)
 
     def test_create_vault(self):
         self.log.info("Fund a creator coin, then create a stateful vault")
