@@ -129,6 +129,13 @@ std::optional<LogFormat> ParseLogFormat(std::string_view str);
  */
 void AppendJsonEscaped(std::string &out, std::string_view str);
 
+/**
+ * The bare name of a function from its signature (as in
+ * std::source_location::function_name()): "void CConnman::Stop(int) const"
+ * gives "CConnman::Stop". Structured formats name functions this way.
+ */
+std::string_view BareFunctionName(std::string_view signature);
+
 class LogRateLimiter;
 
 /**
@@ -540,19 +547,19 @@ public:
      * Write one log record as a JSON object followed by a newline into out
      * (replacing its contents, keeping its capacity). msg is the raw
      * message; one trailing newline is dropped. Fields, in order:
-     *   ts        RFC 3339 UTC with microseconds (omitted with
+     *   time      RFC 3339 UTC with microseconds (omitted with
      *             -logtimestamps=0)
-     *   mocktime  RFC 3339 mock time, only when mock time is set
      *   level     trace, debug, info, warning or error
      *   category  debug category; "none" for uncategorized messages
      *   thread    internal thread name ("unknown" if unnamed)
-     *   file, line  source location of the log call
-     *   func      function name, only with -logsourcelocations
+     *   message   the message
+     *   mocktime  RFC 3339 mock time, only when mock time is set
      *   continued true when this record continues a previous record that
      *             did not end in a newline (only present when true)
      *   ratelimited true while any source location is rate limited, the
      *             equivalent of the "[*]" text prefix (only when true)
-     *   msg       the message
+     *   source    {file, line, function} with -logsourcelocations; the
+     *             function is its bare name ("CConnman::Stop")
      */
     void FormatJsonLine(std::string &out, std::string_view msg,
                         LogFlags category, Level level,
