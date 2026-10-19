@@ -1418,6 +1418,34 @@ private:
     std::thread threadOpenAddedConnections;
     std::thread threadOpenConnections;
     std::thread threadMessageHandler;
+
+    /**
+     * An outbound connection being established. Each is dialed (TCP, TLS,
+     * WebSocket upgrade) on its own thread, so a slow or unresponsive peer
+     * never holds up the threads opening other connections. Until it
+     * finishes it counts as a connection of its type, address and group,
+     * and keeps its outbound slot.
+     */
+    struct PendingOutbound {
+        uint64_t id;
+        CAddress addr;
+        std::string name;
+        ConnectionType conn_type;
+    };
+    struct DialThread {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    mutable Mutex m_pending_mutex;
+    std::list<PendingOutbound> m_pending_outbound GUARDED_BY(m_pending_mutex);
+    std::list<DialThread> m_dial_threads GUARDED_BY(m_pending_mutex);
+    uint64_t m_next_pending_id GUARDED_BY(m_pending_mutex){0};
+
+    /** Whether an outbound attempt to this address or name is in progress */
+    bool IsPendingOutbound(const CAddress &addr, const std::string &name) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_pending_mutex);
+    /** Join the dial threads that are done (all, with `all`) */
+    void ReapDialThreads(bool all) EXCLUSIVE_LOCKS_REQUIRED(!m_pending_mutex);
     std::thread threadI2PAcceptIncoming;
 
     /**
