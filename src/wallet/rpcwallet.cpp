@@ -40,8 +40,6 @@
 
 #include <univalue.h>
 
-#include <event2/http.h>
-
 #include <optional>
 #include <variant>
 

@@ -74,6 +74,8 @@ enum LogFlags : uint32_t {
     PRUNE = (1 << 14),
     PROXY = (1 << 15),
     MEMPOOLREJ = (1 << 16),
+    // Kept so -debug=libevent stays valid; nothing logs to it since libevent
+    // was removed.
     LIBEVENT = (1 << 17),
     COINDB = (1 << 18),
     QT = (1 << 19),
