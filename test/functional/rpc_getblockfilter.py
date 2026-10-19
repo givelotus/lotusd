@@ -14,13 +14,12 @@ FILTER_TYPES = ["basic"]
 
 
 class GetBlockFilterTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.extra_args = [
-            ["-blockfilterindex", "-noparkdeepreorg"],
-            ["-noparkdeepreorg"],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    extra_args = [
+        ["-blockfilterindex", "-noparkdeepreorg"],
+        ["-noparkdeepreorg"],
+    ]
 
     def run_test(self):
         # Create two chains by disconnecting nodes 0 & 1, mining, then

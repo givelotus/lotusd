@@ -8,10 +8,9 @@ from test_framework.util import p2p_port
 
 
 class SetBanTests(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
-        self.extra_args = [[], []]
+    num_nodes = 2
+    setup_clean_chain = True
+    extra_args = [[], []]
 
     def is_banned(self, node, addr):
         return any(e["address"] == addr for e in node.listbanned())

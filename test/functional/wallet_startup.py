@@ -11,10 +11,9 @@ from test_framework.util import assert_equal
 
 
 class WalletStartupTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.supports_cli = True
+    setup_clean_chain = True
+    num_nodes = 1
+    supports_cli = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
