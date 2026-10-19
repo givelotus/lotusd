@@ -22,19 +22,18 @@ from test_framework.wallet import MiniWallet
 
 
 class PrioritiseTransactionTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        # TODO: remove -txindex. Currently required for getrawtransaction call
-        # (called by calculate_fee_from_txid)
-        self.extra_args = [
-            [
-                "-printpriority=1",
-                "-acceptnonstdtxn=1",
-                "-txindex",
-                f"-blockmaxsize={2 * LEGACY_MAX_BLOCK_SIZE}",
-            ]
+    num_nodes = 1
+    # TODO: remove -txindex. Currently required for getrawtransaction call
+    # (called by calculate_fee_from_txid)
+    extra_args = [
+        [
+            "-printpriority=1",
+            "-acceptnonstdtxn=1",
+            "-txindex",
+            f"-blockmaxsize={2 * LEGACY_MAX_BLOCK_SIZE}",
         ]
-        self.supports_cli = False
+    ]
+    supports_cli = False
 
     def test_diamond(self):
         self.log.info("Test diamond-shape package with priority")

@@ -55,11 +55,10 @@ class BaseNode(P2PInterface):
 
 
 class AssumeValidTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 3
-        # Need a bit of extra time when running with the thread sanitizer
-        self.rpc_timeout = 120
+    setup_clean_chain = True
+    num_nodes = 3
+    # Need a bit of extra time when running with the thread sanitizer
+    rpc_timeout = 120
 
     def setup_network(self):
         self.add_nodes(3)

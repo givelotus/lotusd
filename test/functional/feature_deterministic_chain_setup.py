@@ -54,9 +54,8 @@ def get_empty_block(
 
 
 class DeterministicChainSetupTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
+    num_nodes = 1
+    setup_clean_chain = True
 
     def run_test(self):
         node = self.nodes[0]

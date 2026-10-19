@@ -44,12 +44,11 @@ EXPECTED = [
 
 
 class BindPortExternalIPTest(BitcoinTestFramework):
-    def set_test_params(self):
-        # Avoid any -bind= on the command line. Force the framework to avoid adding -bind=127.0.0.1.
-        self.setup_clean_chain = True
-        self.bind_to_localhost_only = False
-        self.num_nodes = len(EXPECTED)
-        self.extra_args = [e[0] for e in EXPECTED]
+    # Avoid any -bind= on the command line. Force the framework to avoid adding -bind=127.0.0.1.
+    setup_clean_chain = True
+    bind_to_localhost_only = False
+    num_nodes = len(EXPECTED)
+    extra_args = [e[0] for e in EXPECTED]
 
     def add_options(self, parser):
         parser.add_argument(

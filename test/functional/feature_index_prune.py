@@ -15,20 +15,19 @@ from test_framework.util import (
 
 
 class FeatureIndexPruneTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.extra_args = [
-            ["-fastprune", "-prune=1", "-blockfilterindex=1", "-noparkdeepreorg"],
-            ["-fastprune", "-prune=1", "-coinstatsindex=1", "-noparkdeepreorg"],
-            [
-                "-fastprune",
-                "-prune=1",
-                "-blockfilterindex=1",
-                "-coinstatsindex=1",
-                "-noparkdeepreorg",
-            ],
-            ["-noparkdeepreorg"],
-        ]
+    num_nodes = 4
+    extra_args = [
+        ["-fastprune", "-prune=1", "-blockfilterindex=1", "-noparkdeepreorg"],
+        ["-fastprune", "-prune=1", "-coinstatsindex=1", "-noparkdeepreorg"],
+        [
+            "-fastprune",
+            "-prune=1",
+            "-blockfilterindex=1",
+            "-coinstatsindex=1",
+            "-noparkdeepreorg",
+        ],
+        ["-noparkdeepreorg"],
+    ]
 
     def setup_network(self):
         # No P2P connection, so that linear_sync works

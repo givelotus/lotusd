@@ -74,30 +74,29 @@ def calc_usage(blockdir):
 
 
 class PruneTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 6
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 6
+    supports_cli = False
 
-        # Create nodes 0 and 1 to mine.
-        # Create node 2 to test pruning.
-        self.full_node_default_args = [
-            "-maxreceivebuffer=20000",
-            "-blockmaxsize=999000",
-            "-checkblocks=5",
-            "-noparkdeepreorg",
-        ]
-        # Create nodes 3 and 4 to test manual pruning (they will be re-started with manual pruning later)
-        # Create nodes 5 to test wallet in prune mode, but do not connect
-        self.extra_args = [
-            self.full_node_default_args,
-            self.full_node_default_args,
-            ["-maxreceivebuffer=20000", "-prune=550", "-noparkdeepreorg"],
-            ["-maxreceivebuffer=20000", "-blockmaxsize=999000", "-noparkdeepreorg"],
-            ["-maxreceivebuffer=20000", "-blockmaxsize=999000", "-noparkdeepreorg"],
-            ["-prune=550"],
-        ]
-        self.rpc_timeout = 120
+    # Create nodes 0 and 1 to mine.
+    # Create node 2 to test pruning.
+    full_node_default_args = [
+        "-maxreceivebuffer=20000",
+        "-blockmaxsize=999000",
+        "-checkblocks=5",
+        "-noparkdeepreorg",
+    ]
+    # Create nodes 3 and 4 to test manual pruning (they will be re-started with manual pruning later)
+    # Create nodes 5 to test wallet in prune mode, but do not connect
+    extra_args = [
+        full_node_default_args,
+        full_node_default_args,
+        ["-maxreceivebuffer=20000", "-prune=550", "-noparkdeepreorg"],
+        ["-maxreceivebuffer=20000", "-blockmaxsize=999000", "-noparkdeepreorg"],
+        ["-maxreceivebuffer=20000", "-blockmaxsize=999000", "-noparkdeepreorg"],
+        ["-prune=550"],
+    ]
+    rpc_timeout = 120
 
     def setup_network(self):
         self.setup_nodes()
