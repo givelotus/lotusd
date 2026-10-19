@@ -535,37 +535,82 @@ Bytes AbcHost::LoadRawTx(uint32_t file_num, uint32_t data_pos) const {
 
 DecodedTx AbcHost::DecodeRawTx(std::span<const uint8_t> raw) const {
     // Same decoder and error texts as the Rust Chronik (TxMut::deser), which
-    // also accepts trailing bytes. The txid is that of the decoded fields.
+    // also accepts trailing bytes.
     LegacyTxDecodeResult decoded = DecodeLegacyTx(raw);
     DecodedTx out;
-    if (decoded.error) {
+    const bool native_v7 = kV2Outputs<CTxOut> && raw.size() >= 4 &&
+                           raw[0] == 7 && raw[1] == 0 && raw[2] == 0 &&
+                           raw[3] == 0;
+    if (decoded.error && !native_v7) {
         out.error = *decoded.error;
         return out;
     }
-    // Lotus V2: the txid is the node's own identity of the raw bytes (a
-    // native V2 tx's real txid). The Rust bridge recomputes it from the
-    // legacy-shaped fields instead, which differs for native V2 txs (design
-    // C1 §1.2, an accepted divergence). Legacy txs get the same txid.
-    std::optional<::TxId> node_txid;
-    try {
-        DataStream raw_stream{MakeByteSpan(raw)};
-        CMutableTransaction node_mtx;
-        raw_stream >> node_mtx;
-        node_txid = CTransaction(std::move(node_mtx)).GetId();
-    } catch (const std::exception &) {
-        // Not a node tx: use the legacy-shaped identity below.
-    }
-    if (!node_txid) {
-        const Bytes ser = SerializeLegacyTx(decoded.tx);
+    out.ok = true;
+    out.tx = std::move(decoded.tx);
+    out.tx.raw = Bytes(raw.begin(), raw.end());
+    if constexpr (kV2Outputs<CTxOut>) {
+        // Lotus V2 (Rust ChronikBridge::decode_raw_tx): a native V2 tx has
+        // no legacy-shaped fields, so the node's own decoding of the raw
+        // bytes gives its inputs, outputs and txid, as indexed once it is
+        // broadcast; its coins are looked up afterwards.
+        std::optional<CMutableTransaction> node_tx;
+        try {
+            DataStream raw_stream{MakeByteSpan(raw)};
+            CMutableTransaction mtx;
+            raw_stream >> mtx;
+            node_tx = std::move(mtx);
+        } catch (const std::exception &e) {
+            if (native_v7) {
+                out.ok = false;
+                out.error = e.what();
+                return out;
+            }
+        }
+        if (node_tx) {
+            const CTransaction ctx{std::move(*node_tx)};
+            Tx tx = ConvertTx(/*is_coinbase=*/true, ctx, {});
+            const bool is_coinbase = ctx.IsCoinBase();
+            tx.inputs.clear();
+            for (const CTxIn &input : ctx.vin) {
+                if (!is_coinbase && IsMintInput(input)) {
+                    continue;
+                }
+                TxInput in;
+                in.prev_out.txid = ToHash(input.prevout.GetTxId());
+                in.prev_out.out_idx = input.prevout.GetN();
+                in.script = InputScript(input);
+                in.sequence = input.nSequence;
+                tx.inputs.push_back(std::move(in));
+            }
+            tx.wire_size = uint32_t(SerializeLegacyTx(tx).size());
+            tx.raw = std::move(out.tx.raw);
+            out.tx = std::move(tx);
+            return out;
+        }
+        // Not a node tx: like the Rust bridge, the txid the node computes
+        // for the legacy-shaped fields, built without reserializing them.
+        CMutableTransaction mtx;
+        mtx.nVersion = out.tx.version;
+        mtx.nLockTime = out.tx.locktime;
+        for (const TxInput &in : out.tx.inputs) {
+            mtx.vin.emplace_back(COutPoint(::TxId(FromHash(in.prev_out.txid)),
+                                           in.prev_out.out_idx),
+                                 CScript(in.script.begin(), in.script.end()),
+                                 in.sequence);
+        }
+        for (const TxOutput &o : out.tx.outputs) {
+            mtx.vout.emplace_back(o.sats * SATOSHI,
+                                  CScript(o.script.begin(), o.script.end()));
+        }
+        out.tx.txid = ToHash(CTransaction(mtx).GetId());
+    } else {
+        // The txid is that of the decoded fields.
+        const Bytes ser = SerializeLegacyTx(out.tx);
         DataStream stream{MakeByteSpan(ser)};
         CMutableTransaction mtx;
         stream >> mtx;
-        node_txid = CTransaction(mtx).GetId();
+        out.tx.txid = ToHash(CTransaction(mtx).GetId());
     }
-    out.ok = true;
-    out.tx = std::move(decoded.tx);
-    out.tx.txid = ToHash(*node_txid);
-    out.tx.raw = Bytes(raw.begin(), raw.end());
     return out;
 }
 
