@@ -75,17 +75,12 @@ void AddLoggingArgs(ArgsManager &argsman) {
         strprintf("Prepend debug output with timestamp (default: %u)",
                   DEFAULT_LOGTIMESTAMPS),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
-#ifdef HAVE_THREAD_LOCAL
     argsman.AddArg(
         "-logthreadnames",
-        strprintf(
-            "Prepend debug output with name of the originating thread (only "
-            "available on platforms supporting thread_local) (default: %u)",
-            DEFAULT_LOGTHREADNAMES),
+        strprintf("Prepend debug output with name of the originating thread "
+                  "(default: %u)",
+                  DEFAULT_LOGTHREADNAMES),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
-#else
-    argsman.AddHiddenArgs({"-logthreadnames"});
-#endif
     argsman.AddArg(
         "-logsourcelocations",
         strprintf(
@@ -137,10 +132,8 @@ void SetLoggingOptions(const ArgsManager &args) {
         args.GetBoolArg("-logtimestamps", DEFAULT_LOGTIMESTAMPS);
     LogInstance().m_log_time_micros =
         args.GetBoolArg("-logtimemicros", DEFAULT_LOGTIMEMICROS);
-#ifdef HAVE_THREAD_LOCAL
     LogInstance().m_log_threadnames =
         args.GetBoolArg("-logthreadnames", DEFAULT_LOGTHREADNAMES);
-#endif
     LogInstance().m_log_sourcelocations =
         args.GetBoolArg("-logsourcelocations", DEFAULT_LOGSOURCELOCATIONS);
     LogInstance().m_always_print_category_level =
