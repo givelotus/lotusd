@@ -3,7 +3,6 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <net_websocket_codec.h>
-
 #include <net_zstd_independent.h>
 
 #include <tinyformat.h>
@@ -137,7 +136,12 @@ void WebSocketCodec::AppendFrame(uint8_t opcode, Span<const uint8_t> payload,
 void WebSocketCodec::EncodeMessage(Span<const uint8_t> payload,
                                    std::vector<uint8_t> &out) {
     if (m_compression == P2PWebSocketCompression::P2P_V2) {
-        if (payload.size() < V2_COMPRESS_MIN) {
+        const size_t threshold = g_p2p_compress_once_threshold.load();
+        if (threshold && payload.size() >= threshold) {
+            const auto frame = GetP2PIndependentFrameCache().EncodeNative(payload);
+            ++m_independent_sent;
+            AppendFrame(OP_BINARY, *frame, out, RSV2);
+        } else if (payload.size() < V2_COMPRESS_MIN) {
             AppendFrame(OP_BINARY, payload, out);
         } else {
             m_scratch.clear();
@@ -158,6 +162,7 @@ void WebSocketCodec::EncodeMessage(Span<const uint8_t> payload,
 void WebSocketCodec::EncodeIndependent(Span<const uint8_t> frame,
                                        std::vector<uint8_t> &out) {
     assert(m_independent);
+    ++m_independent_sent;
     AppendFrame(OP_BINARY, frame, out, RSV2);
 }
 
@@ -182,7 +187,14 @@ WebSocketCodec::FinishMessage(std::vector<uint8_t> &plain) {
         // Length prefix, filled in once the message size is known.
         const size_t start{plain.size()};
         plain.resize(start + V2_LENGTH_SIZE);
-        if (m_message_compressed) {
+        if (m_message_independent) {
+            try {
+                DecompressP2PIndependent(m_message, plain, plain_limit);
+                ++m_independent_recv;
+            } catch (const std::exception &e) {
+                return strprintf("independent zstd: %s", e.what());
+            }
+        } else if (m_message_compressed) {
             size_t produced{0};
             try {
                 m_zstd->DecompressFrame(
@@ -259,9 +271,10 @@ WebSocketCodec::Decode(Span<const uint8_t> in, std::vector<uint8_t> &plain,
         }
         // Validate as soon as the header is known, before buffering.
         const bool v2{m_compression == P2PWebSocketCompression::P2P_V2};
-        // Native per-message RSV1 and shared independent RSV2 are disjoint.
+        // Native RSV1/RSV2 plus the retained shared zstd codec modes.
         if (h->rsv != 0 &&
-            !((v2 && h->rsv == RSV1 && h->opcode == OP_BINARY) ||
+            !((v2 && h->opcode == OP_BINARY &&
+               (h->rsv == RSV1 || (h->rsv == RSV2 && h->fin))) ||
               (m_independent && h->rsv == RSV2 && h->opcode == OP_BINARY && h->fin))) {
             result.error = "reserved bits set (extensions not supported)";
             return result;
@@ -277,7 +290,8 @@ WebSocketCodec::Decode(Span<const uint8_t> in, std::vector<uint8_t> &plain,
             return result;
         }
         const bool compressed = v2
-            ? (h->opcode == OP_BINARY ? h->rsv == RSV1 : m_message_compressed)
+            ? (h->opcode == OP_BINARY ? (h->rsv == RSV1 || h->rsv == RSV2)
+                                     : (m_message_compressed || m_message_independent))
             : bool(m_zstd);
         const uint64_t wire_limit = compressed
             ? MaxWireMessageSize() : GetP2PWebSocketMessageSizeLimit();
