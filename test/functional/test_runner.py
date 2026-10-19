@@ -95,6 +95,8 @@ NON_TESTS = {
     # are not test scripts.
     "combine_logs.py",
     "create_cache.py",
+    # A standalone benchmark script, run by hand
+    "lotus_v2_loopback_tps_stress.py",
     "test_runner.py",
 }
 
