@@ -2,6 +2,7 @@
 
 #include "commitment.h"
 #include "field_size.h"
+#include "output_template.h"
 #include "tagged_hash.h"
 #include "vendor/blake3/blake3.h"
 
@@ -2203,6 +2204,170 @@ namespace {
                         auto root = Pop();
                         const auto &output = OutputAt(Numeric(Pop()));
                         Push(Number(ContinuesBranch(output, root)));
+                        break;
+                    }
+                    case 0xeb: { // ENFORCEOUTPUT
+                        const Int claim = Numeric(Pop());
+                        const VmBytes template_bytes = Pop();
+                        const auto &ctx = Context();
+                        if (!ctx.effects)
+                            throw VmFailure(
+                                "ENFORCEOUTPUT without transaction effects",
+                                true);
+                        if (claim < 0 || claim > Int(UINT64_MAX))
+                            throw VmFailure("ENFORCEOUTPUT claim range");
+                        OutputTemplate t;
+                        std::string error;
+                        if (!ParseOutputTemplate(template_bytes, t, error))
+                            throw VmFailure(error.c_str());
+                        const auto &input = ctx.tx.inputs[ctx.input_index];
+                        const bool mint = input.flags == 3;
+                        if (mint &&
+                            t.paths_mode == OutputTemplate::PATHS_INHERIT)
+                            throw VmFailure("template inherit in mint");
+                        uint64_t expected_value = t.value;
+                        if (t.value_mode == OutputTemplate::VALUE_FROM_STACK) {
+                            const Int value = Numeric(Pop());
+                            if (value < 0 || value > Int(UINT64_MAX))
+                                throw VmFailure("ENFORCEOUTPUT value range");
+                            expected_value = uint64_t(value);
+                        }
+                        // (slot, root) pins; stack roots pop highest slot
+                        // first, so scripts push them in ascending order.
+                        std::vector<std::pair<size_t, Hash32>> pins;
+                        for (size_t slot = 0, k = 0; slot < 16; ++slot)
+                            if ((t.branch_mask >> slot) & 1)
+                                pins.emplace_back(slot, t.branches[k++]);
+                        for (size_t slot = 16; slot-- > 0;) {
+                            if (!((t.branch_stack_mask >> slot) & 1)) continue;
+                            const VmBytes root = Pop();
+                            if (root.size() != 32)
+                                throw VmFailure("ENFORCEOUTPUT root width");
+                            Hash32 pinned;
+                            std::copy(root.begin(), root.end(), pinned.begin());
+                            pins.emplace_back(slot, pinned);
+                        }
+                        Hash32 expected_state = t.state_root;
+                        if (t.state_mode == OutputTemplate::STATE_STACK) {
+                            const VmBytes root = Pop();
+                            if (root.size() != 32)
+                                throw VmFailure("ENFORCEOUTPUT state width");
+                            std::copy(root.begin(), root.end(),
+                                      expected_state.begin());
+                            if (expected_state == Hash32{})
+                                throw VmFailure("ENFORCEOUTPUT zero state");
+                        }
+                        const auto &outputs = ctx.tx.outputs;
+                        size_t first = 0, last = outputs.size();
+                        if (t.output_mode == OutputTemplate::OUTPUT_TEMPLATE) {
+                            if (t.output_index >= outputs.size())
+                                throw VmFailure(
+                                    "introspection index out of range");
+                            first = t.output_index;
+                            last = first + 1;
+                        } else if (t.output_mode ==
+                                   OutputTemplate::OUTPUT_STACK) {
+                            first = Index(Numeric(Pop()), outputs.size());
+                            last = first + 1;
+                        }
+                        const Output *coin =
+                            mint ? nullptr : &CoinAt(Int(ctx.input_index));
+                        const Hash32 self_root =
+                            mint ? input.prev_txid
+                                 : coin->branches[coin->paths[input.path_index]
+                                                             [ctx.witness_index]];
+                        auto matches = [&](const Output &out) {
+                            if (out.IsBurn() != t.burn) return false;
+                            switch (t.value_mode) {
+                            case OutputTemplate::VALUE_EXACT:
+                            case OutputTemplate::VALUE_FROM_STACK:
+                                if (out.value != expected_value) return false;
+                                break;
+                            case OutputTemplate::VALUE_MIN:
+                                if (out.value < expected_value) return false;
+                                break;
+                            }
+                            switch (t.token_mode) {
+                            case OutputTemplate::TOKEN_NATIVE:
+                                if (out.HasToken()) return false;
+                                break;
+                            case OutputTemplate::TOKEN_EXACT:
+                                if (t.token_id == Hash32{}
+                                        ? out.HasToken()
+                                        : (!out.HasToken() ||
+                                           out.token_id != t.token_id))
+                                    return false;
+                                break;
+                            case OutputTemplate::TOKEN_SELF:
+                                if (!out.HasToken() ||
+                                    out.token_id != self_root)
+                                    return false;
+                                break;
+                            }
+                            if (t.branch_count &&
+                                out.branches.size() != t.branch_count)
+                                return false;
+                            for (const auto &[slot, root] : pins)
+                                if (slot >= out.branches.size() ||
+                                    out.branches[slot] != root)
+                                    return false;
+                            switch (t.paths_mode) {
+                            case OutputTemplate::OMIT:
+                                // A burn has no paths, so pinned roots are
+                                // compared by slot only.
+                                if (!t.burn)
+                                    for (const auto &pin : pins)
+                                        if (!RequiresBranch(
+                                                out, VmBytes(pin.second.begin(),
+                                                             pin.second.end())))
+                                            return false;
+                                break;
+                            case OutputTemplate::PATHS_EXPLICIT:
+                                if (out.paths != t.paths) return false;
+                                break;
+                            case OutputTemplate::PATHS_INHERIT: {
+                                if (out.paths != coin->paths ||
+                                    out.branches.size() != coin->branches.size())
+                                    return false;
+                                if (!t.wildcard) {
+                                    for (size_t i = 0; i < out.branches.size();
+                                         ++i) {
+                                        const bool pinned = std::any_of(
+                                            pins.begin(), pins.end(),
+                                            [&](const auto &pin) {
+                                                return pin.first == i;
+                                            });
+                                        if (!pinned &&
+                                            out.branches[i] != coin->branches[i])
+                                            return false;
+                                    }
+                                }
+                                break;
+                            }
+                            }
+                            if (t.state_mode == OutputTemplate::STATE_NONE)
+                                return !out.HasState();
+                            return out.HasState() &&
+                                   out.state_root == expected_state;
+                        };
+                        Charge(RawMul(
+                            cost_profile.opcode[0xeb].per_scanned_output,
+                            last - first));
+                        size_t found = last;
+                        for (size_t j = first; j < last; ++j)
+                            if (matches(outputs[j])) {
+                                found = j;
+                                break;
+                            }
+                        if (found == last)
+                            throw VmFailure("ENFORCEOUTPUT no matching output");
+                        // Order-free effects (I-11): record, never consume.
+                        staged_effects.claims.emplace_back(uint16_t(found),
+                                                           uint64_t(claim));
+                        if (t.state_mode != OutputTemplate::STATE_NONE)
+                            staged_effects.state_authorized.push_back(
+                                uint16_t(found));
+                        Push(Number(Int(found)));
                         break;
                     }
                     case 0xec: { // TXTOKENBALANCE: asset -> N(in) N(out)
