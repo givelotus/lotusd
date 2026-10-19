@@ -10,7 +10,8 @@
 //   branch_mask:u16   slots pinned to roots carried in the template
 //   branch_stack_mask:u16  slots pinned to roots popped from the stack
 //   state_mode:u8     0 none, 1 root in template, 2 root from the stack
-//   output_mode:u8    0 first match, 1 index in template, 2 index from stack
+//   output_mode:u8    0 any output, 1 index in template, 2 index from stack
+//                     (restricts the match mask to one output)
 //   [state_root:h32]  iff state_mode == 1 (nonzero)
 //   [output_index:u16] iff output_mode == 1
 //   popcount(branch_mask) x h32, in ascending slot order
@@ -40,7 +41,7 @@ struct OutputTemplate {
     // Paths: OMIT, EXPLICIT, INHERIT (the spent coin's paths).
     enum : uint8_t { PATHS_EXPLICIT = 1, PATHS_INHERIT = 2 };
     enum : uint8_t { STATE_NONE = 0, STATE_TEMPLATE = 1, STATE_STACK = 2 };
-    enum : uint8_t { OUTPUT_FIRST = 0, OUTPUT_TEMPLATE = 1, OUTPUT_STACK = 2 };
+    enum : uint8_t { OUTPUT_ANY = 0, OUTPUT_TEMPLATE = 1, OUTPUT_STACK = 2 };
 
     uint8_t value_mode = 0;
     uint8_t token_mode = 0;
