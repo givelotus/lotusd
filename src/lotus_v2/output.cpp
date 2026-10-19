@@ -75,8 +75,17 @@ namespace {
 
     bool Valid(const Output &output, std::string &error) {
         if (output.legacy_script) { error = "legacy state output is not a V2 transaction output"; return false; }
-        if (output.flags & 0xfc) {
+        if ((output.flags & 0xf8) || (output.HasState() && output.IsBurn())) {
             error = "flags";
+            return false;
+        }
+        if (output.HasState()) {
+            if (output.state_root == Hash32{}) {
+                error = "zero state root";
+                return false;
+            }
+        } else if (output.state_root != Hash32{}) {
+            error = "absent state root";
             return false;
         }
         if (output.HasToken()) {
@@ -148,7 +157,7 @@ bool DecodeOutput(const std::vector<uint8_t> &frame, Output &result,
         return false;
     }
     parsed.flags = uint8_t(value);
-    if (parsed.flags & 0xfc) {
+    if (parsed.flags & 0xf8) {
         error = "flags";
         return false;
     }
@@ -163,6 +172,14 @@ bool DecodeOutput(const std::vector<uint8_t> &frame, Output &result,
             return false;
         }
         std::copy_n(token, 32, parsed.token_id.begin());
+    }
+    if (parsed.HasState()) {
+        const uint8_t *root;
+        if (!reader.Take(32, root)) {
+            error = "truncated state root";
+            return false;
+        }
+        std::copy_n(root, 32, parsed.state_root.begin());
     }
     uint64_t count;
     if (!reader.CompactSize(MAX_OUTPUT_BRANCHES, count)) {
@@ -230,7 +247,8 @@ bool DecodeOutput(const std::vector<uint8_t> &frame, Output &result,
 bool ComputeOutputSerializedSize(const Output &output, size_t &size,
                                  std::string &error) {
     if (!Valid(output, error)) return false;
-    size_t total = 1 + 8 + (output.HasToken() ? 32 : 0) + 1 +
+    size_t total = 1 + 8 + (output.HasToken() ? 32 : 0) +
+                   (output.HasState() ? 32 : 0) + 1 +
                    output.branches.size() * 32 + 1;
     for (const auto &path : output.paths) {
         total += 1 + path.size();
@@ -255,6 +273,9 @@ bool EncodeOutput(const Output &output, std::vector<uint8_t> &result,
     if (output.HasToken())
         result.insert(result.end(), output.token_id.begin(),
                       output.token_id.end());
+    if (output.HasState())
+        result.insert(result.end(), output.state_root.begin(),
+                      output.state_root.end());
     AppendCompactSize(output.branches.size(), result);
     for (const auto &branch : output.branches)
         result.insert(result.end(), branch.begin(), branch.end());
