@@ -1,0 +1,19 @@
+# lotusd: -logformat=json -debuglogfile=/var/log/lotus/debug.jsonl
+[sources.lotus]
+type = "file"
+include = ["/var/log/lotus/debug.jsonl"]
+read_from = "beginning"
+
+[transforms.lotus_json]
+type = "remap"
+inputs = ["lotus"]
+source = '''
+. = parse_json!(.message)
+.timestamp = parse_timestamp!(.time, format: "%+")
+'''
+
+# Replace/add your normal backend sink. Console is runnable for inspection.
+[sinks.console]
+type = "console"
+inputs = ["lotus_json"]
+encoding.codec = "json"
