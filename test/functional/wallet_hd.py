@@ -12,6 +12,8 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletHDTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2
