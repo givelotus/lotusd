@@ -319,7 +319,18 @@ public:
     bool Update(uint32_t input, const DeferredRecords &records,
                 std::string &error) override {
         auto &slot = per_input_[input];
-        for (const auto *claim : records.Of<OutputClaim>(kOutputClaimsKind)) {
+        const auto claims = records.Of<OutputClaim>(kOutputClaimsKind);
+        size_t pairs = 0;
+        for (const auto *claim : claims) pairs += claim->matches.size();
+        // The pair cap bounds phase 2. Concurrent inputs share the count;
+        // whichever crosses the cap fails, and so does the transaction.
+        if (pairs > MAX_TX_CLAIM_PAIRS ||
+            pairs_.fetch_add(pairs, std::memory_order_relaxed) + pairs >
+                MAX_TX_CLAIM_PAIRS) {
+            error = "claim-pairs-exceeded";
+            return false;
+        }
+        for (const auto *claim : claims) {
             if (claim->matches.empty()) {
                 error = "output-overclaimed";
                 return false;
@@ -356,6 +367,7 @@ public:
 private:
     std::span<const Output> outputs_;
     std::vector<std::vector<OutputClaim>> per_input_;
+    std::atomic<size_t> pairs_{0};
 };
 
 namespace {
