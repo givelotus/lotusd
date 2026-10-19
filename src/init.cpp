@@ -1698,6 +1698,10 @@ void SetupServerArgs(NodeContext &node) {
 
     SetupChainParamsBaseOptions(argsman);
 
+    argsman.AddArg("-v2simulationrpc",
+                   "Enable the non-consensus simulatev2transaction RPC "
+                   "(default: 1 on regtest, 0 otherwise)",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
         "-acceptnonstdtxn",
         strprintf(
