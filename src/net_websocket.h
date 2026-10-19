@@ -47,6 +47,14 @@ static constexpr size_t MAX_P2P_PORT_PENDING{64};
 static constexpr size_t MAX_P2P_PORT_PENDING_PER_ADDR{8};
 //! Sec-WebSocket-Protocol tokens, in order of preference
 static const char *const P2P_WS_PROTOCOL_ZSTD_DICT = "p2p-zstd-v1";
+/**
+ * Lotus v2 P2P over WebSocket: one P2P message per WebSocket message, as a
+ * 1-byte message id (0: followed by a 1-byte length and the message type
+ * name) and the payload, without network magic or checksum (TLS and the
+ * WebSocket length frame it). RSV1 marks a message compressed with the
+ * connection's zstd stream (with the P2P dictionary); clear, it is raw.
+ */
+static const char *const P2P_WS_PROTOCOL_V2 = "p2p-v2";
 static const char *const P2P_WS_PROTOCOL_ZSTD = "p2p-zstd";
 
 /** How P2P bytes are compressed inside WebSocket messages */
@@ -59,6 +67,8 @@ enum class P2PWebSocketCompression : uint8_t {
     ZSTD,
     //! As ZSTD, primed with the prebaked P2P dictionary (P2P_ZSTD_DICT_V1)
     ZSTD_DICT,
+    //! Lotus v2 framing (P2P_WS_PROTOCOL_V2): per-message compression
+    P2P_V2,
 };
 
 std::string P2PWebSocketCompressionName(P2PWebSocketCompression c);
@@ -168,7 +178,10 @@ std::string WebSocketURLForAddress(const CService &addr);
 /** Size of a WebSocket frame header for a payload of this size */
 constexpr uint64_t WebSocketFrameHeaderSize(uint64_t payload_size,
                                             bool masked) {
-    return 2 + (payload_size > 65535 ? 8 : payload_size > 125 ? 2 : 0) +
+    return 2 +
+           (payload_size > 65535 ? 8
+            : payload_size > 125 ? 2
+                                 : 0) +
            (masked ? 4 : 0);
 }
 

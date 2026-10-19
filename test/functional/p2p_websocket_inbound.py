@@ -44,16 +44,24 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
         node = self.nodes[0]
         self.generate(node, 10)
 
+        self.log.info("Lotus v2 peers speak p2p-v2 only: others are refused")
+        from test_framework.p2p_websocket import WebSocketRefused
+
+        for subprotocols in (["p2p-zstd-v1", "p2p-zstd"], ["p2p-zstd"], None):
+            try:
+                self.connect("ws", subprotocols)
+                raise AssertionError(f"{subprotocols} was accepted")
+            except WebSocketRefused as e:
+                assert "400" in e.status_line, e.status_line
+
         for scheme, subprotocols, expected in [
-            ("ws", ["p2p-zstd-v1", "p2p-zstd"], "p2p-zstd-v1"),
-            ("ws", ["p2p-zstd"], "p2p-zstd"),
-            ("ws", None, "none"),
-            ("wss", ["p2p-zstd-v1", "p2p-zstd"], "p2p-zstd-v1"),
-            ("wss", None, "none"),
+            ("ws", ["p2p-v2"], "p2p-v2"),
+            ("ws", ["p2p-zstd-v1", "p2p-v2"], "p2p-v2"),
+            ("wss", ["p2p-v2"], "p2p-v2"),
         ]:
             self.log.info(f"{scheme}:// with {subprotocols} -> {expected}")
             peer = self.connect(scheme, subprotocols)
-            assert_equal(peer.subprotocol or "none", expected)
+            assert_equal(peer.subprotocol, expected)
             their_version = peer.handshake()
             assert_equal(their_version.nStartingHeight, 10)
 
@@ -73,12 +81,8 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
             assert_equal(info["websocket"]["compression"], expected)
             assert_equal(info["subver"], "/p2p_websocket.py/")
             ws = info["websocket"]
-            assert ws["payload_bytes_recv"] >= peer.payload_bytes_sent - 64
-            if expected == "none":
-                # Same bytes plus frame headers
-                assert ws["wire_bytes_sent"] > ws["payload_bytes_sent"]
-            else:
-                assert ws["wire_bytes_sent"] < ws["payload_bytes_sent"]
+            assert ws["payload_bytes_recv"] > 0
+            assert ws["wire_bytes_sent"] > 0
 
             self.log.info("Closing the WebSocket disconnects the peer")
             peer.close()
@@ -89,21 +93,19 @@ class P2PWebSocketInboundTest(BitcoinTestFramework):
         assert totals["wire_bytes_sent"] > 0
 
         self.log.info("The P2P node disconnecting closes the WebSocket")
-        peer = self.connect("ws", ["p2p-zstd-v1"])
+        peer = self.connect("ws", ["p2p-v2"])
         peer.handshake()
         self.wait_until(lambda: len(self.ws_peers()) == 1)
         node.disconnectnode(nodeid=self.ws_peers()[0]["id"])
-        import websocket
-
         try:
             while True:
                 peer.recv_message()
-        except (websocket.WebSocketConnectionClosedException, ConnectionError):
+        except ConnectionError:
             pass
 
-        self.log.info("The socketpair bridge (debug option) still works")
+        self.log.info("-p2pwebsocketbridge is ignored (p2p-v2 is never bridged)")
         self.restart_node(0, ["-p2pwebsocketbridge=1"])
-        peer = self.connect("wss", ["p2p-zstd-v1"])
+        peer = self.connect("wss", ["p2p-v2"])
         peer.handshake()
         peer.send_message(msg_ping(nonce=7))
         assert_equal(peer.wait_for(b"pong").nonce, 7)

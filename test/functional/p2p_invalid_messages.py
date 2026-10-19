@@ -6,6 +6,7 @@
 import random
 import time
 
+from test_framework import p2p
 from test_framework.cdefs import DEFAULT_MAX_BLOCK_SIZE, LEGACY_MAX_BLOCK_SIZE
 from test_framework.messages import (
     MAX_HEADERS_RESULTS,
@@ -60,12 +61,16 @@ class InvalidMessagesTest(BitcoinTestFramework):
     extra_args = [["-whitelist=addr@127.0.0.1"]]
 
     def run_test(self):
-        self.test_buffer()
+        if p2p.P2P_TRANSPORT == "tcp":
+            # The v1 header's framing (split headers, magic, checksum, size,
+            # type bytes). Lotus v2's p2p-v2 framing has none of these; its
+            # parsing is covered by net_tests/p2p_v2_transport.
+            self.test_buffer()
+            self.test_magic_bytes()
+            self.test_checksum()
+            self.test_size()
+            self.test_msgtype()
         self.test_duplicate_version_msg()
-        self.test_magic_bytes()
-        self.test_checksum()
-        self.test_size()
-        self.test_msgtype()
         self.test_addrv2_empty()
         self.test_addrv2_no_addresses()
         self.test_addrv2_too_long_address()
@@ -310,10 +315,10 @@ class InvalidMessagesTest(BitcoinTestFramework):
             unexpected_msgs=["Misbehaving"],
         ):
             conn.send_and_ping(msg)
-        # Check that traffic is accounted for (24 bytes header + msg_size)
+        # Check that traffic is accounted for (message header + msg_size)
         assert_equal(
             self.nodes[0].getpeerinfo()[0]["bytesrecv_per_msg"][msg_type.decode()],
-            msg_size + 24,
+            msg_size + p2p.p2p_msg_overhead(msg_type),
         )
         self.nodes[0].disconnect_p2ps()
 
@@ -485,10 +490,10 @@ class InvalidMessagesTest(BitcoinTestFramework):
             "(c) Wait for node to drop junk messages, while remaining connected"
         )
         conn.sync_with_ping(timeout=400)
-        # Check that traffic is accounted for (24 bytes header + payload)
+        # Check that traffic is accounted for (message header + payload)
         assert_equal(
             self.nodes[0].getpeerinfo()[0]["bytesrecv_per_msg"]["*other*"],
-            80 * (24 + MAX_PROTOCOL_MESSAGE_LENGTH),
+            80 * (p2p.p2p_msg_overhead(b"badmsg") + MAX_PROTOCOL_MESSAGE_LENGTH),
         )
 
         # Despite being served up a bunch of nonsense, the peers should still

@@ -42,7 +42,7 @@ namespace metric_labels {
     }
     const std::vector<std::string> &WebSocketCompressions() {
         static const std::vector<std::string> labels{
-            "none", "permessage-deflate", "zstd", "zstd-dict"};
+            "none", "permessage-deflate", "zstd", "zstd-dict", "p2p-v2"};
         return labels;
     }
     const std::vector<std::string> &Directions() {
