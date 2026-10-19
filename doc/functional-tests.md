@@ -401,6 +401,10 @@ class WalletExampleTest(BitcoinTestFramework):
   to the test log, e.g. `self.log.info('Create enough transactions to fill a block')`.
   Logs make the test code easier to read and the test logic easier
   [to debug](#test-logging).
+- For one spendable coin, use `cointx, coinvalue = self.mine_mature_coin(node)`:
+  a coinbase paying to `ADDRESS_ECREG_P2SH_OP_TRUE` (spend it with
+  `SCRIPTSIG_OP_TRUE`), matured by `COINBASE_MATURITY` more blocks. For many
+  coins, use `MiniWallet`.
 - Set `self.num_nodes` to the minimum number of nodes necessary for the test.
   Having additional unrequired nodes adds to the execution time of the test as
   well as memory/CPU/disk requirements (which is important when running tests in

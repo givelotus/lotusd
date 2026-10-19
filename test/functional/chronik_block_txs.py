@@ -6,13 +6,10 @@ Test Chronik's /block-txs/:hash_or_height endpoint.
 """
 
 from test_framework.address import (
-    ADDRESS_ECREG_P2SH_OP_TRUE,
-    ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
 from test_framework.blocktools import (
-    COINBASE_MATURITY,
     GENESIS_BLOCK_HASH,
     create_block,
     create_coinbase,
@@ -92,15 +89,9 @@ class ChronikBlockTxsTest(BitcoinTestFramework):
             ),
         )
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
+        cointx, coinvalue = self.mine_mature_coin(node)
+        tip = node.getbestblockhash()
 
-        tip = self.generatetoaddress(
-            node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE
-        )[-1]
-
-        coinvalue = 5000000000
         tx1 = CTransaction()
         tx1.vin = [
             CTxIn(outpoint=COutPoint(int(cointx, 16), 0), scriptSig=SCRIPTSIG_OP_TRUE)

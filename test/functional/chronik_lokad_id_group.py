@@ -7,11 +7,10 @@ Test Chronik indexes tx by LOKAD ID correctly.
 
 from test_framework.address import (
     ADDRESS_ECREG_P2SH_OP_TRUE,
-    ADDRESS_ECREG_UNSPENDABLE,
     P2SH_OP_TRUE,
     SCRIPTSIG_OP_TRUE,
 )
-from test_framework.blocktools import COINBASE_MATURITY, create_block, create_coinbase
+from test_framework.blocktools import create_block, create_coinbase
 from test_framework.hash import hash160
 from test_framework.messages import COutPoint, CTransaction, CTxIn, CTxOut
 from test_framework.p2p import P2PDataStore
@@ -39,12 +38,7 @@ class ChronikLokadIdGroup(BitcoinTestFramework):
         mocktime = 1300000000
         node.setmocktime(mocktime)
 
-        coinblockhash = self.generatetoaddress(node, 1, ADDRESS_ECREG_P2SH_OP_TRUE)[0]
-        coinblock = node.getblock(coinblockhash)
-        cointx = coinblock["tx"][0]
-        coinvalue = 5000000000
-
-        self.generatetoaddress(node, COINBASE_MATURITY, ADDRESS_ECREG_UNSPENDABLE)
+        cointx, coinvalue = self.mine_mature_coin(node)
 
         def p2lokad(lokad_id: bytes):
             return CScript([lokad_id, OP_EQUAL])
