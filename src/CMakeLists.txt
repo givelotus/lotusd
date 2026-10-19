@@ -722,6 +722,7 @@ add_library(server
 	rpc/server_util.cpp
 	rpc/txoutproof.cpp
 	rpc/v2vm.cpp
+	script/bridge_checker.cpp
 	script/scriptcache.cpp
 	script/sigcache.cpp
 	shutdown.cpp
@@ -975,6 +976,7 @@ if(BUILD_CHAINSTATE)
 		script/interpreter.cpp
 		script/intmath.cpp
 		script/script.cpp
+		script/bridge_checker.cpp
 		script/scriptcache.cpp
 		script/script_error.cpp
 		script/sigcache.cpp
