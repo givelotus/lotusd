@@ -1089,6 +1089,494 @@ void TransactionEffects() {
               accumulator.state_authorized == effects.state_authorized);
     }
 }
+struct TemplateSpec {
+    uint8_t value_mode = 0, token_mode = 0, paths_mode = 0;
+    bool burn = false, wildcard = false;
+    uint64_t value = 0;
+    Hash token{};
+    uint8_t branch_count = 0;
+    uint16_t mask = 0, stack_mask = 0;
+    uint8_t state_mode = 0, output_mode = 0;
+    Hash state_root{};
+    uint16_t output_index = 0;
+    std::vector<Hash> branches;
+    std::vector<std::vector<uint8_t>> paths;
+};
+VmBytes EncodeTemplate(const TemplateSpec &t) {
+    VmBytes out{uint8_t(t.value_mode | t.token_mode << 2 | t.paths_mode << 4 |
+                        uint8_t(t.burn) << 6 | uint8_t(t.wildcard) << 7)};
+    auto le = [&](uint64_t v, size_t width) {
+        for (size_t i = 0; i < width; ++i) out.push_back(uint8_t(v >> (8 * i)));
+    };
+    if (t.value_mode == 1 || t.value_mode == 2) le(t.value, 8);
+    if (t.token_mode == 2) out.insert(out.end(), t.token.begin(), t.token.end());
+    le(t.branch_count, 1);
+    le(t.mask, 2);
+    le(t.stack_mask, 2);
+    le(t.state_mode, 1);
+    le(t.output_mode, 1);
+    if (t.state_mode == 1)
+        out.insert(out.end(), t.state_root.begin(), t.state_root.end());
+    if (t.output_mode == 1) le(t.output_index, 2);
+    for (const auto &b : t.branches) out.insert(out.end(), b.begin(), b.end());
+    if (t.paths_mode == 1) {
+        out.push_back(uint8_t(t.paths.size()));
+        for (const auto &path : t.paths) {
+            out.push_back(uint8_t(path.size()));
+            out.insert(out.end(), path.begin(), path.end());
+        }
+    }
+    return out;
+}
+void PushBytes(VmBytes &script, const VmBytes &data) {
+    if (data.empty()) {
+        script.insert(script.end(), {0x4c, 0x00}); // 0x00 is N(0)
+    } else if (data.size() <= 75) {
+        script.push_back(uint8_t(data.size()));
+    } else {
+        CHECK(data.size() <= 255);
+        script.insert(script.end(), {0x4c, uint8_t(data.size())});
+    }
+    script.insert(script.end(), data.begin(), data.end());
+}
+
+void EnforceOutput() {
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    const VmProfile vm{4096, 16, 1024, 64, 16, 65536, 16, 100000};
+    ChainId chain{};
+    auto fill = [](uint8_t b) {
+        Hash h;
+        h.fill(b);
+        return h;
+    };
+    Transaction tx;
+    Input spend;
+    spend.flags = 1;
+    spend.prev_txid.fill(0x81);
+    spend.sequence = UINT32_MAX;
+    spend.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    Input mint;
+    mint.flags = 3;
+    mint.sequence = UINT32_MAX;
+    mint.witnesses = {BranchWitness{Hex("79794e"), {}, {}}};
+    tx.inputs = {spend, mint};
+    Output coin;
+    coin.value = 200;
+    coin.branches = {Hash{}, fill(0xb1)};
+    coin.paths = {{0}, {1}};
+    ResolvedCoins resolved{coin, std::nullopt};
+    const Hash state = fill(0x5e);
+    Output o0;  // native 100, two branches
+    o0.value = 100;
+    o0.branches = {fill(0xa0), fill(0xa1)};
+    o0.paths = {{0}, {1}};
+    Output o1;  // continuation of the spent coin (synced per run)
+    o1.value = 200;
+    Output o2;  // minted token with state
+    o2.flags = 5;
+    o2.value = 5;
+    o2.branches = {fill(0xa0)};
+    o2.paths = {{0}};
+    o2.state_root = state;
+    Output o3;  // native burn
+    o3.flags = 2;
+    o3.value = 7;
+    o3.branches = {fill(0xa2)};
+    tx.outputs = {o0, o1, o2, o3};
+    VmCostProfile cost;
+    cost.max_invocation_cost = 100000000;
+    cost.structural_byte_cost = 1;
+    for (auto &op : cost.opcode) op = {1, 1, 1};
+    cost.opcode[0xeb].per_scanned_output = 5;
+
+    struct Run {
+        VmChargedResult charged;
+        VmTransactionEffects effects;
+    };
+    // Runs `script` as input `input` (0 spend, 1 mint) with fresh effects.
+    auto run = [&](size_t input, const VmBytes &script,
+                   std::vector<VmBytes> args = {}, bool sync = true) {
+        tx.inputs[input].witnesses[0].script = script;
+        tx.inputs[input].witnesses[0].arguments = args;
+        resolved[0]->branches[0] = BranchLeaf(tx.inputs[0].witnesses[0].script);
+        tx.inputs[1].prev_txid = BranchLeaf(tx.inputs[1].witnesses[0].script);
+        tx.outputs[2].token_id = tx.inputs[1].prev_txid;
+        if (sync) {
+            tx.outputs[1].branches = resolved[0]->branches;
+            tx.outputs[1].paths = resolved[0]->paths;
+        }
+        PositiveDelta delta{};
+        delta[0] = 5;
+        Run r;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, input, 0,
+                               input == 1 ? std::optional(delta)
+                                          : std::nullopt};
+        ctx.effects = &r.effects;
+        r.charged = EvaluateVmCharged(script, args, vm, cost, 2, 4, &ctx);
+        return r;
+    };
+    // `<template> <claim> eb <j> EQUALVERIFY [drop delta] TRUE`
+    auto script_for = [&](const TemplateSpec &t, uint64_t claim,
+                          int expect_j, bool for_mint = false,
+                          const VmBytes &prefix = {}) {
+        VmBytes script = prefix;
+        PushBytes(script, EncodeTemplate(t));
+        VmBytes claim_n(16);
+        for (size_t i = 0; i < 8; ++i) claim_n[i] = uint8_t(claim >> (8 * i));
+        PushBytes(script, claim_n);
+        script.push_back(0xeb);
+        PushBytes(script, Number(uint8_t(expect_j)));
+        script.push_back(0x92);
+        if (for_mint) script.push_back(0x79);
+        script.push_back(0x4e);
+        return script;
+    };
+    auto expect_match = [&](const TemplateSpec &t, int j, size_t input = 0,
+                            std::vector<VmBytes> args = {},
+                            const VmBytes &prefix = {}) {
+        const auto r = run(input, script_for(t, 0, j, input == 1, prefix), args);
+        if (r.charged.invocation.status != VmStatus::Success)
+            throw std::runtime_error("ENFORCEOUTPUT expected output " +
+                                     std::to_string(j) + ": " +
+                                     r.charged.invocation.error);
+        CHECK(r.effects.claims.size() == 1 && r.effects.claims[0].first == j);
+        return r;
+    };
+    auto expect_error = [&](const TemplateSpec &t, const std::string &error,
+                            size_t input = 0, std::vector<VmBytes> args = {},
+                            const VmBytes &prefix = {}) {
+        const auto r = run(input, script_for(t, 0, 0, input == 1, prefix), args);
+        if (r.charged.invocation.status != VmStatus::Invalid ||
+            r.charged.invocation.error != error)
+            throw std::runtime_error("ENFORCEOUTPUT expected '" + error +
+                                     "', got: " + r.charged.invocation.error);
+        CHECK(r.effects.Empty()); // staged effects are discarded on failure
+    };
+    const std::string none = "ENFORCEOUTPUT no matching output";
+
+    // Value modes: OMIT, EXACT, MIN, FROM_STACK. The scan takes the first
+    // non-burn, stateless match.
+    TemplateSpec any;
+    expect_match(any, 0);
+    TemplateSpec exact;
+    exact.value_mode = 1;
+    exact.value = 200;
+    expect_match(exact, 1);
+    exact.value = 201;
+    expect_error(exact, none);
+    TemplateSpec min;
+    min.value_mode = 2;
+    min.value = 101;
+    expect_match(min, 1);
+    TemplateSpec from_stack;
+    from_stack.value_mode = 3;
+    expect_match(from_stack, 0, 0, {}, Hex("10 64000000000000000000000000000000"));
+    // Burn: only burn outputs match burn templates.
+    TemplateSpec burn;
+    burn.burn = true;
+    expect_match(burn, 3);
+    burn.value_mode = 1;
+    burn.value = 8;
+    expect_error(burn, none);
+    // Tokens: NATIVE, EXACT (zero = native), SELF from the mint invocation.
+    TemplateSpec token;
+    token.state_mode = 2; // o2 carries state
+    token.token_mode = 2;
+    auto state_push = [&] {
+        VmBytes p;
+        PushBytes(p, VmBytes(state.begin(), state.end()));
+        return p;
+    };
+    token.token = BranchLeaf(Hex("4e")); // not the minted id
+    expect_error(token, none, 0, {}, state_push());
+    token.token_mode = 3; // SELF: the mint's own token id
+    {
+        const auto r = expect_match(token, 2, 1, {}, state_push());
+        CHECK(r.effects.state_authorized == std::vector<uint16_t>{2});
+    }
+    TemplateSpec native = any;
+    native.token_mode = 1;
+    expect_match(native, 0);
+    native.token_mode = 2; // EXACT with a zero id means native
+    expect_match(native, 0);
+    // Branch count and static/stack pins (stack roots pushed ascending).
+    TemplateSpec pins;
+    pins.branch_count = 2;
+    pins.mask = 1;
+    pins.branches = {fill(0xa0)};
+    // o0's path {1} omits branch 0, so OMIT paths cannot pin it (below);
+    // these pin cases state the paths explicitly.
+    pins.paths_mode = 1;
+    pins.paths = {{0}, {1}};
+    expect_match(pins, 0);
+    pins.branches = {fill(0xa2)};
+    expect_error(pins, none);
+    TemplateSpec stack_pins;
+    stack_pins.branch_count = 2;
+    stack_pins.stack_mask = 3;
+    stack_pins.paths_mode = 1;
+    stack_pins.paths = {{0}, {1}};
+    VmBytes roots;
+    PushBytes(roots, VmBytes(32, 0xa0)); // slot 0 (deeper)
+    PushBytes(roots, VmBytes(32, 0xa1)); // slot 1 (top, popped first)
+    expect_match(stack_pins, 0, 0, {}, roots);
+    VmBytes swapped;
+    PushBytes(swapped, VmBytes(32, 0xa1));
+    PushBytes(swapped, VmBytes(32, 0xa0));
+    expect_error(stack_pins, none, 0, {}, swapped);
+    // Three stack roots and a stack value: pop order value, roots, state.
+    {
+        TemplateSpec three;
+        three.value_mode = 3;
+        three.stack_mask = 0b111;
+        three.branch_count = 3;
+        three.paths_mode = 1;
+        three.paths = {{0}, {1}, {2}};
+        tx.outputs[0].branches = {fill(0xa0), fill(0xa1), fill(0xa3)};
+        tx.outputs[0].paths = {{0}, {1}, {2}};
+        VmBytes prefix;
+        PushBytes(prefix, VmBytes(32, 0xa0));
+        PushBytes(prefix, VmBytes(32, 0xa1));
+        PushBytes(prefix, VmBytes(32, 0xa3));
+        PushBytes(prefix, Number(100));
+        expect_match(three, 0, 0, {}, prefix);
+        tx.outputs[0] = o0;
+    }
+    // OMIT paths requires every pinned root on every path: o0's path {1}
+    // lacks branch 0, so pinning only slot 0 fails for o0.
+    TemplateSpec omit_paths;
+    omit_paths.mask = 1;
+    omit_paths.branches = {fill(0xa0)};
+    tx.outputs[0].paths = {{0, 1}};
+    expect_match(omit_paths, 0);
+    tx.outputs[0].paths = {{0}, {1}};
+    expect_error(omit_paths, none);
+    tx.outputs[0] = o0;
+    // EXPLICIT paths.
+    TemplateSpec explicit_paths;
+    explicit_paths.paths_mode = 1;
+    explicit_paths.paths = {{0}, {1}};
+    expect_match(explicit_paths, 0);
+    explicit_paths.paths = {{0, 1}};
+    expect_error(explicit_paths, none);
+    // INHERIT: same paths and branch count as the spent coin; unpinned
+    // branches must also match unless the wildcard bit is set.
+    TemplateSpec inherit;
+    inherit.paths_mode = 2;
+    expect_match(inherit, 1);
+    {
+        auto script = script_for(inherit, 0, 1);
+        tx.inputs[0].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(script);
+        tx.outputs[1].branches = resolved[0]->branches;
+        tx.outputs[1].paths = resolved[0]->paths;
+        tx.outputs[1].branches[1] = fill(0xc1); // changed unpinned branch
+        CHECK(run(0, script, {}, false).charged.invocation.error == none);
+        inherit.wildcard = true;
+        // o0 has the coin's paths too, so a wildcard alone would select it;
+        // pin output 1 (I-11: a script that needs an output pins it).
+        inherit.output_mode = 1;
+        inherit.output_index = 1;
+        const auto wild = script_for(inherit, 0, 1);
+        tx.inputs[0].witnesses[0].script = wild;
+        resolved[0]->branches[0] = BranchLeaf(wild);
+        tx.outputs[1].branches[0] = resolved[0]->branches[0];
+        const auto wild_run = run(0, wild, {}, false);
+        if (wild_run.charged.invocation.status != VmStatus::Success)
+            throw std::runtime_error("wildcard: " +
+                                     wild_run.charged.invocation.error);
+        inherit.wildcard = false;
+        inherit.output_mode = 0;
+        // Unpinned, the wildcard selects the first output with the coin's
+        // paths and branch count.
+        TemplateSpec wild_first;
+        wild_first.paths_mode = 2;
+        wild_first.wildcard = true;
+        expect_match(wild_first, 0);
+    }
+    expect_error(inherit, "template inherit in mint", 1);
+    // State modes: NONE skips stateful outputs; TEMPLATE/STACK authorize.
+    TemplateSpec stateful;
+    stateful.state_mode = 1;
+    stateful.state_root = state;
+    {
+        const auto r = expect_match(stateful, 2);
+        CHECK(r.effects.state_authorized == std::vector<uint16_t>{2});
+    }
+    stateful.state_root = fill(0x5f);
+    expect_error(stateful, none);
+    TemplateSpec stack_state;
+    stack_state.state_mode = 2;
+    expect_match(stack_state, 2, 0, {}, state_push());
+    expect_error(stack_state, "ENFORCEOUTPUT zero state", 0, {},
+                 [&] { VmBytes p; PushBytes(p, VmBytes(32)); return p; }());
+    // Output pinning: in the template or from the stack.
+    TemplateSpec pinned = any;
+    pinned.output_mode = 1;
+    pinned.output_index = 1;
+    expect_match(pinned, 1);
+    pinned.output_index = 3; // a burn: no match
+    expect_error(pinned, none);
+    pinned.output_index = 4;
+    expect_error(pinned, "introspection index out of range");
+    TemplateSpec stack_pinned = any;
+    stack_pinned.output_mode = 2;
+    {
+        VmBytes prefix;
+        PushBytes(prefix, Number(1));
+        expect_match(stack_pinned, 1, 0, {}, prefix);
+    }
+    // Malformed templates are script errors.
+    auto raw_error = [&](const VmBytes &raw, const std::string &error) {
+        VmBytes script;
+        PushBytes(script, raw);
+        PushBytes(script, Number(0));
+        script.insert(script.end(), {0xeb, 0x79, 0x4e});
+        const auto r = run(0, script);
+        if (r.charged.invocation.error != error)
+            throw std::runtime_error("template '" + error + "' got " +
+                                     r.charged.invocation.error);
+    };
+    const VmBytes good = EncodeTemplate(any);
+    for (size_t n = 0; n < good.size(); ++n)
+        raw_error(VmBytes(good.begin(), good.begin() + n), "template truncated");
+    auto trailing = good;
+    trailing.push_back(0);
+    raw_error(trailing, "template trailing bytes");
+    TemplateSpec bad;
+    bad.paths_mode = 3;
+    raw_error(EncodeTemplate(bad), "template paths mode");
+    bad = {};
+    bad.state_mode = 3;
+    raw_error(EncodeTemplate(bad), "template state mode");
+    bad = {};
+    bad.mask = 1;
+    bad.stack_mask = 1;
+    bad.branches = {fill(1)};
+    raw_error(EncodeTemplate(bad), "template mask overlap");
+    bad = {};
+    bad.branch_count = 1;
+    bad.mask = 2;
+    bad.branches = {fill(1)};
+    raw_error(EncodeTemplate(bad), "template mask beyond branch count");
+    bad = {};
+    bad.branch_count = 17;
+    raw_error(EncodeTemplate(bad), "template branch count");
+    bad = {};
+    bad.state_mode = 1;
+    raw_error(EncodeTemplate(bad), "template zero state root");
+    bad = {};
+    bad.burn = true;
+    bad.paths_mode = 2;
+    raw_error(EncodeTemplate(bad), "template burn inherits paths");
+    bad.paths_mode = 1;
+    bad.paths = {{0}};
+    raw_error(EncodeTemplate(bad), "template burn with paths");
+    // Claim range.
+    {
+        VmBytes script;
+        PushBytes(script, good);
+        VmBytes big(16, 0);
+        big[8] = 1; // 2^64
+        PushBytes(script, big);
+        script.insert(script.end(), {0xeb, 0x79, 0x4e});
+        CHECK(run(0, script).charged.invocation.error ==
+              "ENFORCEOUTPUT claim range");
+    }
+
+    // Claims are recorded, not consumed (I-11): two identical templates
+    // both select output 0, and the post-check judges the sum.
+    {
+        const auto first = run(0, script_for(any, 60, 0));
+        CHECK(first.charged.invocation.status == VmStatus::Success);
+        const auto second = run(0, script_for(any, 40, 0));
+        VmTransactionEffects total = first.effects;
+        total.Merge(second.effects);
+        std::string error;
+        CHECK(FinalizeVmTransactionEffects(tx.outputs, total, error) == false &&
+              error == "state-output-unauthorized"); // o2 still unauthorized
+        total.state_authorized.push_back(2);
+        CHECK(FinalizeVmTransactionEffects(tx.outputs, total, error));
+        const auto third = run(0, script_for(any, 1, 0));
+        total.Merge(third.effects); // 60 + 40 + 1 > 100
+        CHECK(!FinalizeVmTransactionEffects(tx.outputs, total, error) &&
+              error == "output-overclaimed");
+        // Pinning the second claim to output 1 (value 200) fixes it.
+        pinned.output_index = 1;
+        const auto moved = run(0, script_for(pinned, 101, 1));
+        VmTransactionEffects pinned_total = first.effects;
+        pinned_total.Merge(moved.effects);
+        pinned_total.state_authorized.push_back(2);
+        CHECK(FinalizeVmTransactionEffects(tx.outputs, pinned_total, error));
+    }
+    // A failing invocation commits nothing: `<enforce> FALSE`.
+    {
+        VmBytes script;
+        PushBytes(script, good);
+        PushBytes(script, Number(9));
+        script.insert(script.end(), {0xeb, 0x79, 0x4d});
+        const auto r = run(0, script);
+        CHECK(r.charged.invocation.status == VmStatus::Invalid &&
+              r.effects.Empty());
+    }
+    // I-10: any invocation may authorize state with a zero claim, so state
+    // authorization alone is not authentication (documented weakness).
+    {
+        TemplateSpec forged;
+        forged.state_mode = 1;
+        forged.state_root = state;
+        const auto r = run(0, script_for(forged, 0, 2));
+        CHECK(r.charged.invocation.status == VmStatus::Success &&
+              r.effects.state_authorized == std::vector<uint16_t>{2});
+    }
+    // Without a transaction-effects accumulator: Unsupported.
+    {
+        const auto script = script_for(any, 0, 0);
+        tx.inputs[0].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(script);
+        tx.outputs[1].branches = resolved[0]->branches;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
+                               std::nullopt};
+        CHECK(EvaluateVmWithContext(script, {}, vm, ctx).status ==
+              VmStatus::Unsupported);
+    }
+    // Static cost: a literal template gives an exact charge including the
+    // per-output scan; a dynamic template is charged the worst case.
+    {
+        const auto r = run(0, script_for(any, 0, 0));
+        CHECK(r.charged.charged &&
+              r.charged.accounting_cost == r.charged.invocation.executed_cost);
+        VmCostProfile no_scan = cost;
+        no_scan.opcode[0xeb].per_scanned_output = 0;
+        const auto script = script_for(any, 0, 0);
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, 0, 0,
+                               std::nullopt};
+        VmTransactionEffects effects;
+        ctx.effects = &effects;
+        const auto cheaper = EvaluateVmCharged(script, {}, vm, no_scan, 2, 4, &ctx);
+        CHECK(cheaper.accounting_cost + 5 * 4 == r.charged.accounting_cost);
+        VmBytes dynamic = Hex("eb 79 4e");
+        const auto d = run(0, dynamic, {good, Number(0)});
+        CHECK(d.charged.invocation.status == VmStatus::Success &&
+              d.charged.accounting_cost > d.charged.invocation.executed_cost);
+    }
+    // Example: a vault that may only be spent into an exact continuation
+    // of itself carrying at least its own value
+    // (`d0 d6` = UTXOVALUE(this input), FROM_STACK value, INHERIT paths).
+    {
+        TemplateSpec vault;
+        vault.value_mode = 3;
+        vault.paths_mode = 2;
+        expect_match(vault, 1, 0, {}, Hex("d0 d6"));
+        tx.outputs[1].value = 199;
+        const auto script = script_for(vault, 0, 1, false, Hex("d0 d6"));
+        tx.inputs[0].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(script);
+        tx.outputs[1].branches = resolved[0]->branches;
+        CHECK(run(0, script, {}, false).charged.invocation.error == none);
+        tx.outputs[1].value = 200;
+    }
+}
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
     auto charge = [&](const std::string &script,
@@ -1911,6 +2399,7 @@ int main() {
     InputWitnessArg();
     StateHashAndVerify();
     TransactionEffects();
+    EnforceOutput();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();

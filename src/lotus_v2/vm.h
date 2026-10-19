@@ -126,6 +126,8 @@ struct VmOpcodeCost {
     uint64_t base = 0;
     uint64_t per_operand_byte = 0;
     uint64_t per_result_byte = 0;
+    // ENFORCEOUTPUT (eb) only: charged once per transaction output scanned.
+    uint64_t per_scanned_output = 0;
 };
 struct VmCostProfile {
     VmCostUnits max_invocation_cost = 0;
