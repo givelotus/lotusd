@@ -4,6 +4,7 @@
 
 #include <tls_util.h>
 
+#include <logging.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
@@ -173,6 +174,47 @@ bool UseCertificateFiles(SSL_CTX *ctx, const fs::path &cert_chain,
            SSL_CTX_use_PrivateKey_file(ctx, fs::PathToString(key).c_str(),
                                        SSL_FILETYPE_PEM) == 1 &&
            SSL_CTX_check_private_key(ctx) == 1;
+}
+
+ReloadingClientContext::ReloadingClientContext(
+    const std::optional<fs::path> &cert, const std::optional<fs::path> &key)
+    : m_cert{cert}, m_key{key} {
+    auto ctx{NewContext(/*server=*/false)};
+    if (ctx) {
+        // Self-signed peers are allowed; explicit SPKI pins authenticate
+        // peers in the dialer, as before certificate reloading.
+        SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_NONE, nullptr);
+        m_context = std::shared_ptr<SSL_CTX>{ctx.release(), SslCtxDeleter{}};
+    }
+}
+
+std::shared_ptr<SSL_CTX> ReloadingClientContext::Get() {
+    std::lock_guard<std::mutex> lock{m_mutex};
+    const auto now{std::chrono::steady_clock::now()};
+    if (!m_context || !m_cert || !m_key || now < m_next_check) {
+        return m_context;
+    }
+    m_next_check = now + std::chrono::seconds{1};
+    std::error_code cert_error, key_error;
+    const auto cert_mtime{fs::last_write_time(*m_cert, cert_error)};
+    const auto key_mtime{fs::last_write_time(*m_key, key_error)};
+    if (m_loaded && !cert_error && !key_error && cert_mtime == m_cert_mtime &&
+        key_mtime == m_key_mtime) {
+        return m_context;
+    }
+    auto ctx{NewContext(/*server=*/false)};
+    if (!ctx || !UseCertificateFiles(ctx.get(), *m_cert, *m_key)) {
+        LogPrintf("Not reloading TLS client certificate %s: %s\n",
+                  fs::PathToString(*m_cert), ErrorString());
+        return m_context;
+    }
+    SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_NONE, nullptr);
+    m_context = std::shared_ptr<SSL_CTX>{ctx.release(), SslCtxDeleter{}};
+    m_loaded = true;
+    m_cert_mtime = cert_mtime;
+    m_key_mtime = key_mtime;
+    LogPrintf("Loaded TLS client certificate %s\n", fs::PathToString(*m_cert));
+    return m_context;
 }
 
 namespace {
