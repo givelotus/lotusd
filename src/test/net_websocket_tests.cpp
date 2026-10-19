@@ -16,6 +16,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <csignal>
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -161,7 +163,22 @@ struct RawPeer {
 };
 } // namespace
 
-BOOST_FIXTURE_TEST_SUITE(net_websocket_tests, BasicTestingSetup)
+namespace {
+/**
+ * OpenSSL writes to sockets with write(), which raises SIGPIPE once the peer
+ * has closed. The node ignores SIGPIPE at startup (AppInitBasicSetup); do
+ * the same here, where tests close one end before the other.
+ */
+struct WebSocketTestingSetup : BasicTestingSetup {
+    WebSocketTestingSetup() {
+#ifndef WIN32
+        signal(SIGPIPE, SIG_IGN);
+#endif
+    }
+};
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(net_websocket_tests, WebSocketTestingSetup)
 
 BOOST_AUTO_TEST_CASE(roundtrip_all_modes_and_sizes) {
     FastRandomContext rng{/*fDeterministic=*/true};

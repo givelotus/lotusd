@@ -14,6 +14,10 @@
  * SSL_OP_ENABLE_KTLS), OpenSSL offloads record encryption to the kernel
  * behind the same calls.
  *
+ * OpenSSL's socket BIO writes with write(), not send(MSG_NOSIGNAL): a write
+ * after the peer closed raises SIGPIPE on Linux, which the node ignores
+ * (AppInitBasicSetup). A custom BIO would avoid that but lose kernel TLS.
+ *
  * The handshake has completed before the layer is constructed.
  */
 class TlsByteLayer final : public WebSocketByteLayer {
