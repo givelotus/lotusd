@@ -409,7 +409,6 @@ static const std::map<std::string, BCLog::LogFlags, std::less<>>
         {"leveldb", BCLog::LEVELDB},
         {"validation", BCLog::VALIDATION},
         {"avalanche", BCLog::AVALANCHE},
-        {"i2p", BCLog::I2P},
         {"chronik", BCLog::CHRONIK},
 #ifdef DEBUG_LOCKCONTENTION
         {"lock", BCLog::LOCK},
