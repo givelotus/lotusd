@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 from enum import Enum
 from typing import List
@@ -136,8 +137,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     This class also contains various public and private helper methods."""
 
-    def __init__(self):
-        """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method"""
+    def __init__(self, argv=None):
+        """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method
+
+        argv: the test's command-line arguments (default: sys.argv[1:]), so a
+        test can also be run from code, e.g. by the test runner."""
+        # Outcome details, filled in by main() (see also self.success)
+        self.skip_reason = None
+        self.failure = None
         self.chain: str = "regtest"
         self.setup_clean_chain: bool = False
         self.noban_tx_relay: bool = False
@@ -151,7 +158,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.rpc_timeout = 60
         self.supports_cli = True
         self.bind_to_localhost_only = True
-        self.parse_args()
+        self.parse_args(argv)
         self.default_wallet_name = ""
         self.wallet_data_filename = "wallet.dat"
         # Optional list of wallet names that can be set in set_test_params to
@@ -178,8 +185,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         Can be overloaded by subclasses if needed to add custom logic."""
         self.run_test()
 
-    def main(self):
-        """Main function. This should not be overridden by the subclass test scripts."""
+    def main(self, exit_process=True):
+        """Main function. This should not be overridden by the subclass test scripts.
+
+        Exits the process with the test's exit code, or returns it when
+        `exit_process` is False."""
         assert hasattr(self, "num_nodes"), (
             "Test must set self.num_nodes in set_test_params()"
         )
@@ -193,18 +203,31 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     self._run_test_internal()
         except SkipTest as e:
             self.log.warning(f"Test Skipped: {e.message}")
+            self.skip_reason = e.message
             self.success = TestStatus.SKIPPED
         except subprocess.CalledProcessError as e:
             self.log.exception(
                 f"Called Process failed with stdout='{e.stdout}'; stderr='{e.stderr}';"
             )
+            self._record_failure(e)
             self.success = TestStatus.FAILED
-        except BaseException:
+        except BaseException as e:
             self.log.exception("Unexpected exception")
+            self._record_failure(e)
             self.success = TestStatus.FAILED
         finally:
             exit_code = self.shutdown()
+        if exit_process:
             sys.exit(exit_code)
+        return exit_code
+
+    def _record_failure(self, e):
+        """Keep the failing exception's details (for structured results)."""
+        self.failure = {
+            "type": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
 
     def run_test_methods(self):
         for method_name in self.options.test_methods:
@@ -213,7 +236,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             method()
             self.log.info(f"Method '{method_name}' executed successfully.")
 
-    def parse_args(self):
+    def parse_args(self, argv=None):
         parser = argparse.ArgumentParser(usage="%(prog)s [options]")
         parser.add_argument(
             "--nocleanup",
@@ -357,7 +380,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         )
 
         self.add_options(parser)
-        self.options = parser.parse_args()
+        self.options = parser.parse_args(argv)
 
         config = configparser.ConfigParser()
         config.read_file(open(self.options.configfile, encoding="utf-8"))
@@ -1337,3 +1360,61 @@ class TestMetaClass(unittest.TestCase):
                         "set_test_params": lambda self: None,
                     },
                 )
+
+
+class TestProgrammaticRun(unittest.TestCase):
+    """Run node-less tests in-process with main(exit_process=False)."""
+
+    def run_case(self, run_test):
+        class Case(BitcoinTestFramework):
+            def set_test_params(self):
+                self.num_nodes = 0
+                self.setup_clean_chain = True
+
+            def setup_network(self):
+                pass
+
+            def run_test(self):
+                body(self)
+
+        body = run_test
+        workdir = tempfile.mkdtemp(prefix="test_framework_unit_")
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        configfile = os.path.join(workdir, "config.ini")
+        with open(configfile, "w", encoding="utf8") as f:
+            f.write(
+                "[environment]\nBUILDDIR=" + workdir + "\nEXEEXT=\nEMULATOR=\n"
+                "PACKAGE_BUGREPORT=\n[components]\n"
+            )
+        test = Case(
+            argv=[
+                f"--configfile={configfile}",
+                f"--tmpdir={os.path.join(workdir, 'tmp')}",
+                "--loglevel=CRITICAL",
+            ]
+        )
+        return test, test.main(exit_process=False)
+
+    def test_passed(self):
+        test, code = self.run_case(lambda self: None)
+        self.assertEqual(code, TEST_EXIT_PASSED)
+        self.assertIsNone(test.failure)
+        self.assertIsNone(test.skip_reason)
+
+    def test_skipped(self):
+        def run_test(self):
+            raise SkipTest("not today")
+
+        test, code = self.run_case(run_test)
+        self.assertEqual(code, TEST_EXIT_SKIPPED)
+        self.assertEqual(test.skip_reason, "not today")
+
+    def test_failed(self):
+        def run_test(self):
+            raise AssertionError("boom")
+
+        test, code = self.run_case(run_test)
+        self.assertEqual(code, TEST_EXIT_FAILED)
+        self.assertEqual(test.failure["type"], "AssertionError")
+        self.assertEqual(test.failure["message"], "boom")
+        self.assertIn("raise AssertionError", test.failure["traceback"])
