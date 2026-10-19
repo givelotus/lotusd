@@ -74,9 +74,8 @@ static void ProcessPCP() {
         // IPv4
         std::optional<CNetAddr> gateway4 = QueryDefaultGateway(NET_IPV4);
         if (!gateway4) {
-            LogPrintLevel(
-                BCLog::NET, BCLog::Level::Debug,
-                "portmap: Could not determine IPv4 default gateway\n");
+            LogEvent(BCLog::NET, "portmap_ipv4_gateway_missing",
+                     "portmap: Could not determine IPv4 default gateway");
         } else {
             LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
                           "portmap: gateway [IPv4]: %s\n",
@@ -91,9 +90,9 @@ static void ProcessPCP() {
                 requested_lifetime, g_mapport_interrupt);
             MappingError *pcp_err = std::get_if<MappingError>(&res);
             if (pcp_err && *pcp_err == MappingError::UNSUPP_VERSION) {
-                LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
-                              "portmap: Got unsupported PCP version response, "
-                              "falling back to NAT-PMP\n");
+                LogEvent(BCLog::NET, "portmap_natpmp_fallback",
+                         "portmap: Got unsupported PCP version response, "
+                         "falling back to NAT-PMP");
                 res = NATPMPRequestPortMap(*gateway4, private_port,
                                            requested_lifetime,
                                            g_mapport_interrupt);
@@ -104,9 +103,8 @@ static void ProcessPCP() {
         // IPv6
         std::optional<CNetAddr> gateway6 = QueryDefaultGateway(NET_IPV6);
         if (!gateway6) {
-            LogPrintLevel(
-                BCLog::NET, BCLog::Level::Debug,
-                "portmap: Could not determine IPv6 default gateway\n");
+            LogEvent(BCLog::NET, "portmap_ipv6_gateway_missing",
+                     "portmap: Could not determine IPv6 default gateway");
         } else {
             LogPrintLevel(BCLog::NET, BCLog::Level::Debug,
                           "portmap: gateway [IPv6]: %s\n",
@@ -126,14 +124,14 @@ static void ProcessPCP() {
 
         // Log message if we got NO_RESOURCES.
         if (no_resources) {
-            LogPrintLevel(
-                BCLog::NET, BCLog::Level::Warning,
+            LogWarningEvent(
+                BCLog::NET, "portmap_router_resources_exhausted",
                 "portmap: At least one mapping failed because of a "
                 "NO_RESOURCES error. This usually indicates that the port is "
                 "already used on the router. If this is the only instance of "
                 "bitcoin running on the network, this will resolve itself "
                 "automatically. Otherwise, you might want to choose a "
-                "different P2P port to prevent this conflict.\n");
+                "different P2P port to prevent this conflict.");
         }
 
         // Sanity-check returned lifetime.
