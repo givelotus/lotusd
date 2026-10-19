@@ -826,37 +826,22 @@ class RawTransactionsTest(BitcoinTestFramework):
         # TRANSACTION VERSION NUMBER TESTS #
         ####################################
 
-        # Test the minimum transaction version number that fits in a signed
-        # 32-bit integer.
-        # As transaction version is serialized unsigned, this should convert to its
-        # unsigned equivalent.
-        tx = CTransaction()
-        tx.nVersion = 0x80000000
-        rawtx = ToHex(tx)
-        decrawtx = self.nodes[0].decoderawtransaction(rawtx)
-        assert_equal(decrawtx["version"], 0x80000000)
-
-        # Test the maximum transaction version number that fits in a signed
-        # 32-bit integer.
-        tx = CTransaction()
-        tx.nVersion = 0x7FFFFFFF
-        rawtx = ToHex(tx)
-        decrawtx = self.nodes[0].decoderawtransaction(rawtx)
-        assert_equal(decrawtx["version"], 0x7FFFFFFF)
-
-        # Test the minimum transaction version number that fits in an unsigned 32-bit integer.
-        tx = CTransaction()
-        tx.nVersion = 0
-        rawtx = ToHex(tx)
-        decrawtx = self.nodes[0].decoderawtransaction(rawtx)
-        assert_equal(decrawtx["version"], 0)
-
-        # Test the maximum transaction version number that fits in an unsigned 32-bit integer.
-        tx = CTransaction()
-        tx.nVersion = 0xFFFFFFFF
-        rawtx = tx.serialize().hex()
-        decrawtx = self.nodes[0].decoderawtransaction(rawtx)
-        assert_equal(decrawtx["version"], 0xFFFFFFFF)
+        # Legacy versions 1 and 2 decode; any other version except 7 (V2)
+        # does not.
+        for version in (1, 2):
+            tx = CTransaction()
+            tx.nVersion = version
+            decrawtx = self.nodes[0].decoderawtransaction(ToHex(tx))
+            assert_equal(decrawtx["version"], version)
+        for version in (0, 3, 6, 8, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF):
+            tx = CTransaction()
+            tx.nVersion = version
+            assert_raises_rpc_error(
+                -22,
+                "TX decode failed",
+                self.nodes[0].decoderawtransaction,
+                tx.serialize().hex(),
+            )
 
         self.log.info("sendrawtransaction/testmempoolaccept with maxfeerate")
 
