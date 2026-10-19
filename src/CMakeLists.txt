@@ -655,6 +655,8 @@ add_library(server
 	net.cpp
 	net_processing.cpp
 	net_websocket.cpp
+	net_websocket_codec.cpp
+	net_websocket_sock.cpp
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp
