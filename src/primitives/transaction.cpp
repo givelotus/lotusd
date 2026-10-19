@@ -368,19 +368,29 @@ static_assert(lotus::v2::MAX_TX_INPUTS == MAX_V2_TX_INPUTS &&
               lotus::v2::MAX_TX_OUTPUTS == MAX_V2_TX_OUTPUTS);
 
 // Returns true when the identity is the structural V2 TxId/TxHash. Returns
-// false, after filling a flat fallback digest, when the transaction is not a
+// false, after filling a fallback digest, when the transaction is not a
 // well-formed V2 transaction (ComputeTransactionIdentities fails on its
 // content). The fallback only names such a transaction (logs, reject caches);
 // validation rejects it with bad-txns-v2-identity, so it is never accepted.
-static bool ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
-                                  uint32_t nVersion,
+//
+// The fallback must never equal the identity of a different transaction,
+// valid or not, or rejecting the invalid one could poison a reject cache
+// entry for the other. It therefore uses its own domain tag (never TxId or
+// TxHash), commits to the chain ID, and hashes the complete serialized
+// transaction, which is self-delimiting. TxId and TxHash are the same value:
+// a transaction that is not a V2 structure has no witness-free core, and
+// excluding any field would let two different transactions share a name.
+template <typename TxType>
+static bool ComputeV2TxIdentities(const TxType &tx,
                                   lotus::v2::Hash32 &txid_out,
                                   lotus::v2::Hash32 &txhash_out,
                                   lotus::v2::Hash32 *outputs_root_out = nullptr) {
+    const uint32_t nVersion = tx.nVersion;
     std::string err;
     if (lotus::v2::ComputeTransactionIdentities(
-            v2tx, lotus::v2::DefaultTxProfile, GetActiveV2ChainId(), txid_out,
-            txhash_out, err, outputs_root_out)) {
+            tx.ToV2Transaction(), lotus::v2::DefaultTxProfile,
+            GetActiveV2ChainId(), txid_out, txhash_out, err,
+            outputs_root_out)) {
         if (nVersion != 7) {
             txid_out[0] ^= uint8_t(nVersion & 0xffU);
             txhash_out[0] ^= uint8_t(nVersion & 0xffU);
@@ -390,56 +400,19 @@ static bool ComputeV2TxIdentities(const lotus::v2::Transaction &v2tx,
     if (outputs_root_out) {
         *outputs_root_out = lotus::v2::Hash32{};
     }
-    std::vector<uint8_t> core_bytes;
-    std::vector<uint8_t> full_bytes;
-    for (unsigned i = 0; i < 4; ++i) {
-        core_bytes.push_back(uint8_t(nVersion >> (8 * i)));
-        full_bytes.push_back(uint8_t(nVersion >> (8 * i)));
-    }
-    for (unsigned i = 0; i < 8; ++i) {
-        core_bytes.push_back(uint8_t(v2tx.lock >> (8 * i)));
-        full_bytes.push_back(uint8_t(v2tx.lock >> (8 * i)));
-    }
-    for (const auto &in : v2tx.inputs) {
-        core_bytes.insert(core_bytes.end(), in.prev_txid.begin(),
-                          in.prev_txid.end());
-        full_bytes.insert(full_bytes.end(), in.prev_txid.begin(),
-                          in.prev_txid.end());
-        for (unsigned i = 0; i < 4; ++i) {
-            core_bytes.push_back(uint8_t(in.prev_index >> (8 * i)));
-            full_bytes.push_back(uint8_t(in.prev_index >> (8 * i)));
-            core_bytes.push_back(uint8_t(in.sequence >> (8 * i)));
-            full_bytes.push_back(uint8_t(in.sequence >> (8 * i)));
-        }
-        core_bytes.push_back(in.flags);
-        full_bytes.push_back(in.flags);
-        if (!in.witnesses.empty()) {
-            full_bytes.insert(full_bytes.end(), in.witnesses[0].script.begin(),
-                              in.witnesses[0].script.end());
-        }
-        if (in.has_coinbase_data) {
-            core_bytes.insert(core_bytes.end(), in.coinbase_data.begin(),
-                              in.coinbase_data.end());
-            full_bytes.insert(full_bytes.end(), in.coinbase_data.begin(),
-                              in.coinbase_data.end());
-        }
-    }
-    for (const auto &out : v2tx.outputs) {
-        std::vector<uint8_t> owire;
-        if (lotus::v2::EncodeOutput(out, owire, err)) {
-            core_bytes.insert(core_bytes.end(), owire.begin(), owire.end());
-            full_bytes.insert(full_bytes.end(), owire.begin(), owire.end());
-        }
-    }
-    txid_out = lotus::v2::TaggedHash(lotus::v2::HashDomain::TxId, core_bytes);
-    txhash_out =
-        lotus::v2::TaggedHash(lotus::v2::HashDomain::TxHash, full_bytes);
+    const lotus::v2::ChainId &chain_id = GetActiveV2ChainId();
+    std::vector<uint8_t> preimage(chain_id.begin(), chain_id.end());
+    VectorWriter writer{preimage, preimage.size()};
+    SerializeTransaction(tx, writer);
+    txid_out =
+        lotus::v2::TaggedHash(lotus::v2::HashDomain::TxIdFallback, preimage);
+    txhash_out = txid_out;
     return false;
 }
 
 TxId CMutableTransaction::GetId() const {
     lotus::v2::Hash32 txid{}, txhash{};
-    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    ComputeV2TxIdentities(*this, txid, txhash);
     uint256 out;
     std::memcpy(out.begin(), txid.data(), 32);
     return TxId(out);
@@ -447,7 +420,7 @@ TxId CMutableTransaction::GetId() const {
 
 TxHash CMutableTransaction::GetHash() const {
     lotus::v2::Hash32 txid{}, txhash{};
-    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    ComputeV2TxIdentities(*this, txid, txhash);
     uint256 out;
     std::memcpy(out.begin(), txhash.data(), 32);
     return TxHash(out);
@@ -455,7 +428,7 @@ TxHash CMutableTransaction::GetHash() const {
 
 uint256 CTransaction::ComputeHash() const {
     lotus::v2::Hash32 txid{}, txhash{};
-    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    ComputeV2TxIdentities(*this, txid, txhash);
     uint256 out;
     std::memcpy(out.begin(), txid.data(), 32);
     return out;
@@ -463,7 +436,7 @@ uint256 CTransaction::ComputeHash() const {
 
 uint256 CTransaction::ComputeWitnessHash() const {
     lotus::v2::Hash32 txid{}, txhash{};
-    ComputeV2TxIdentities(ToV2Transaction(), nVersion, txid, txhash);
+    ComputeV2TxIdentities(*this, txid, txhash);
     uint256 out;
     std::memcpy(out.begin(), txhash.data(), 32);
     return out;
@@ -590,7 +563,7 @@ void CTransaction::InitHashes() {
     }
     lotus::v2::Hash32 txid{}, txhash{}, outputs_root{};
     m_structural_v2_identity = ComputeV2TxIdentities(
-        ToV2Transaction(), nVersion, txid, txhash, &outputs_root);
+        *this, txid, txhash, &outputs_root);
     std::memcpy(hash.begin(), txid.data(), 32);
     std::memcpy(m_witness_hash.begin(), txhash.data(), 32);
     std::memcpy(m_outputs_hash.begin(), outputs_root.data(), 32);
