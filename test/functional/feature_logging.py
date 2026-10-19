@@ -5,6 +5,7 @@
 
 import json
 import os
+import shlex
 import socket
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -81,6 +82,7 @@ class LoggingTest(BitcoinTestFramework):
 
         self.test_text_source_locations()
         self.test_json_format()
+        self.test_logfmt_format()
         self.test_json_aux_only()
 
     def assert_no_absolute_source_paths(self, log_path):
@@ -98,6 +100,26 @@ class LoggingTest(BitcoinTestFramework):
         with open(log_path, encoding="utf-8") as f:
             assert any("[src/init.cpp:" in line for line in f)
 
+    def test_logfmt_format(self):
+        self.log.info("Test -logformat=logfmt through the actual file sink")
+        self.restart_node(
+            0, ["-logformat=logfmt", "-debuglogfile=logfmt.log", "-logsourcelocations"]
+        )
+        self.generate(self.nodes[0], 1)
+        self.stop_node(0)
+        records = []
+        with open(self.relative_log_path("logfmt.log"), encoding="utf-8") as stream:
+            for line in stream:
+                if line.strip():
+                    records.append(dict(word.split("=", 1) for word in shlex.split(line)))
+        assert len(records) > 20
+        for record in records:
+            assert set(record) >= {
+                "time", "level", "category", "thread", "message",
+                "source_file", "source_line", "source_function",
+            }, record
+            assert record["source_line"].isdigit(), record
+        assert any(record["message"].startswith("Bitcoin ABC version") for record in records)
     def test_json_aux_only(self):
         self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
         path = self.relative_log_path("aux-only.jsonl")
@@ -117,7 +139,7 @@ class LoggingTest(BitcoinTestFramework):
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
             ["-logformat=xml"],
-            "Error: Invalid -logformat 'xml' (valid values: text, json)",
+            "Error: Invalid -logformat 'xml' (valid values: text, logfmt, json)",
         )
         json_log_path = self.relative_log_path("json.log")
         self.start_node(
