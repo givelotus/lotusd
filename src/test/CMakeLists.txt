@@ -139,6 +139,10 @@ if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
 		chronik_native_abc_tests.cpp
 		chronik_native_blockreader_tests.cpp
 	)
+	# Lotus V2 service host input (builds with the MDBX backend).
+	if(CHRONIK_NATIVE_MDBX)
+		list(APPEND BITCOIN_CHRONIK_TESTS chronik_native_abc_v2_tests.cpp)
+	endif()
 endif()
 
 add_boost_unit_tests_to_suite(bitcoin test_bitcoin
