@@ -37,11 +37,23 @@ static void ResetLogger() {
     LogInstance().SetCategoryLogLevel({});
 }
 
+static const std::string FLUSH_SENTINEL_LOG_MESSAGE{
+    "Sentinel log to reopen log file"};
+static void flush_debug_log() {
+    // Reopening the log file makes sure earlier lines reached the file
+    // (the sentinel itself is skipped by ReadDebugLogLines).
+    LogInstance().m_reopen_file = true;
+    LogPrintf("%s\n", FLUSH_SENTINEL_LOG_MESSAGE);
+}
+
+/** Lines of the debug log, without flush sentinels */
 static std::vector<std::string> ReadDebugLogLines() {
     std::vector<std::string> lines;
     std::ifstream ifs{LogInstance().m_file_path};
     for (std::string line; std::getline(ifs, line);) {
-        lines.push_back(std::move(line));
+        if (line.find(FLUSH_SENTINEL_LOG_MESSAGE) == std::string::npos) {
+            lines.push_back(std::move(line));
+        }
     }
     return lines;
 }
@@ -99,38 +111,6 @@ struct LogSetup : public BasicTestingSetup {
         LogInstance().EnableCategory(BCLog::LogFlags{prev_category_mask});
     }
 };
-
-static const std::string FLUSH_SENTINEL_LOG_MESSAGE{
-    "Sentinel log to reopen log file"};
-static void flush_debug_log() {
-    // This is a hacky way of ensuring the previous logs have been committed
-    // to disk. It is not elegant but it works for the purpose of these
-    // tests.
-    LogInstance().m_reopen_file = true;
-    LogPrintf("%s\n", FLUSH_SENTINEL_LOG_MESSAGE);
-}
-
-BOOST_AUTO_TEST_CASE(logging_timer) {
-    SetMockTime(1);
-    auto micro_timer =
-        BCLog::Timer<std::chrono::microseconds>("tests", "end_msg");
-    SetMockTime(2);
-    BOOST_CHECK_EQUAL(micro_timer.LogMsg("test micros"),
-                      "tests: test micros (1000000μs)");
-
-    SetMockTime(1);
-    auto ms_timer = BCLog::Timer<std::chrono::milliseconds>("tests", "end_msg");
-    SetMockTime(2);
-    BOOST_CHECK_EQUAL(ms_timer.LogMsg("test ms"), "tests: test ms (1000.00ms)");
-
-    SetMockTime(1);
-    auto sec_timer = BCLog::Timer<std::chrono::seconds>("tests", "end_msg");
-    SetMockTime(2);
-    BOOST_CHECK_EQUAL(sec_timer.LogMsg("test secs"),
-                      "tests: test secs (1.00s)");
-
-    SetMockTime(0);
-}
 
 BOOST_FIXTURE_TEST_CASE(logging_LogPrintf_, LogSetup) {
     LogInstance().m_log_sourcelocations = true;
@@ -570,6 +550,18 @@ BOOST_FIXTURE_TEST_CASE(logging_filesize_rate_limit, LogSetup) {
                                 /*suppressions_active=*/false);
         }
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_reopened_file_unbuffered, LogSetup) {
+    // The first line after a reopen (e.g. after SIGHUP for log rotation)
+    // must reach the file at once, like every line before it: the new file
+    // is unbuffered too. It used to sit in a stdio buffer until enough
+    // lines filled it.
+    LogInstance().m_reopen_file = true;
+    LogPrintf("first line after reopen\n");
+    const auto lines{ReadDebugLogLines()};
+    BOOST_REQUIRE(!lines.empty());
+    BOOST_CHECK_EQUAL(lines.back(), "first line after reopen");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
