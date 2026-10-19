@@ -353,7 +353,7 @@ builds:
             - - doc-rpc
               - doc-doxygen
         post_build: |
-            xvfb-run -a -e /dev/stderr ninja install-manpages-html
+            ninja install-manpages-html
         timeout: 600
         artifacts:
             doc/*: doc
@@ -555,7 +555,6 @@ builds:
               # them on the native platform.
               #- install-tests
               - install-test-suite-bitcoin
-              - install-test-suite-bitcoin-qt
               - install-test-suite-avalanche
               - install-test-suite-pow
             - - package
@@ -565,17 +564,6 @@ builds:
         artifacts:
             bitcoin-abc-*-x86_64-w64-mingw32.exe: bitcoin-abc-x86_64-w64-mingw32.exe
 
-    build-without-bip70:
-        Werror: true
-        cmake_flags:
-            - '-DENABLE_BIP70=OFF'
-        targets:
-            - - all
-              - install
-            - - check
-              - check-functional
-        timeout: 1800
-
     build-without-cli:
         Werror: true
         cmake_flags:
@@ -584,16 +572,6 @@ builds:
             - - all
               - install
             - - check-functional
-        timeout: 1200
-
-    build-without-qt:
-        Werror: true
-        cmake_flags:
-            - '-DBUILD_QT=OFF'
-        targets:
-            - - all
-              - install
-            - - check
         timeout: 1200
 
     build-without-wallet:
