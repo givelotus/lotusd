@@ -298,13 +298,28 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
 
         self.log.info("A really large transaction")
         tx = FromHex(CTransaction(), raw_tx_reference)
-        tx.vin = [tx.vin[0]] * (1 + MAX_BLOCK_BASE_SIZE // len(tx.vin[0].serialize()))
+        # A large output: too many inputs would hit the input cap first.
+        tx.vout[0].scriptPubKey = CScript([OP_RETURN, b"\x00" * MAX_BLOCK_BASE_SIZE])
         self.check_mempool_result(
             result_expected=[
                 {
                     "txid": tx.txid_hex,
                     "allowed": False,
                     "reject-reason": "bad-txns-oversize",
+                }
+            ],
+            rawtxs=[ToHex(tx)],
+        )
+
+        self.log.info("A legacy transaction with more than 256 inputs")
+        tx = FromHex(CTransaction(), raw_tx_reference)
+        tx.vin = [tx.vin[0]] * 257
+        self.check_mempool_result(
+            result_expected=[
+                {
+                    "txid": tx.txid_hex,
+                    "allowed": False,
+                    "reject-reason": "bad-txns-v2-too-many-inputs",
                 }
             ],
             rawtxs=[ToHex(tx)],
@@ -403,12 +418,10 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
 
         self.log.info("Some nonstandard transactions")
         tx = FromHex(CTransaction(), raw_tx_reference)
-        tx.nVersion = 3  # A version currently non-standard
-        self.check_mempool_result(
-            result_expected=[
-                {"txid": tx.txid_hex, "allowed": False, "reject-reason": "version"}
-            ],
-            rawtxs=[ToHex(tx)],
+        # Versions other than 1, 2 and 7 do not decode.
+        tx.nVersion = 3
+        assert_raises_rpc_error(
+            -22, "TX decode failed", node.testmempoolaccept, [ToHex(tx)]
         )
         tx = FromHex(CTransaction(), raw_tx_reference)
         tx.vout[0].scriptPubKey = CScript([OP_0])  # Some non-standard script
@@ -466,9 +479,11 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         output_p2sh_burn = CTxOut(
             nValue=540, scriptPubKey=CScript([OP_HASH160, hash160(b"burn"), OP_EQUAL])
         )
-        # Use enough outputs to make the tx too large for our policy
-        num_scripts = 100000 // len(output_p2sh_burn.serialize())
-        tx.vout = [output_p2sh_burn] * num_scripts
+        # Make the tx too large for our policy (with one output: more than
+        # 256 outputs would hit the output cap first)
+        tx.vout = [
+            CTxOut(nValue=0, scriptPubKey=CScript([OP_RETURN, b"\x00" * 100000]))
+        ]
         self.check_mempool_result(
             result_expected=[
                 {"txid": tx.txid_hex, "allowed": False, "reject-reason": "tx-size"}
