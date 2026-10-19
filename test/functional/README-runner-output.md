@@ -8,11 +8,11 @@ be added in a later schema version, but existing fields keep their meaning.
 | Field | Type | Meaning |
 |---|---|---|
 | `schema` | int | Version of this format (1) |
-| `name` | str | Display name, e.g. `wallet_basic.py` or `rpc_bind.py --ipv4` |
+| `name` | str | Display name: the file, its variant in brackets, then any extra arguments, e.g. `wallet_basic.py`, `rpc_bind.py[ipv4]` |
 | `file` | str | Test file, relative to `test/functional` |
 | `class_name` | str | Test class that ran |
 | `variant` | str | Variant name, empty for the default |
-| `settings` | object | Shared settings, e.g. `{"transport": "tcp"}` |
+| `settings` | object | Reserved for settings shared by all tests; always `{}` for now |
 | `status` | str | `passed`, `failed`, `skipped`, `timeout` or `crashed` |
 | `exit_code` | int or null | The test's exit code (null if it never returned one) |
 | `start_time` | float | Start, in seconds since the epoch |
@@ -36,7 +36,7 @@ One JSON object per line, each with `"event"` and `"schema": 1`:
 - `{"event": "finish", "result": {...}}` when it finishes, with the result above;
 - `{"event": "summary", ...}` once at the end, with the summary below.
 
-Use `--jsonl-file=/dev/stdout` to stream the events to a pipe.
+Use `--jsonl-file=-` to stream the events to standard output.
 
 ## Summary (`--json-summary=FILE`)
 
