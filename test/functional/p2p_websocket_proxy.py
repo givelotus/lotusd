@@ -51,7 +51,7 @@ class P2PWebSocketProxyTest(BitcoinTestFramework):
             self.wait_until(lambda: len(self.ws_peers(1)) == 1)
             peer = self.ws_peers(1)[0]
             assert_equal(peer["transport"], scheme)
-            assert_equal(peer["websocket"]["compression"], "p2p-zstd-v1")
+            assert_equal(peer["websocket"]["compression"], "p2p-v2")
             with self.proxy.lock:
                 # SOCKS5 address type 3: a domain name, not an address
                 assert_equal(self.proxy.requests, [(3, host, self.public_port)])
