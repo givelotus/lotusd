@@ -931,7 +931,6 @@ BOOST_FIXTURE_TEST_CASE(logging_async_reopen_under_load, LogSetup) {
     // Apply the fixture path before rename. A lightly filled larger ring may
     // otherwise remain below its wake threshold during the first rotation.
     LogInstance().Flush();
-
     // The log file is rotated (renamed, then reopened) while a thread logs:
     // every line is in exactly one of the files, in order, unless it was
     // dropped because the thread outran the logger (counted).
@@ -1097,6 +1096,41 @@ BOOST_FIXTURE_TEST_CASE(logging_error_is_flushed_by_consumer, LogSetup) {
     BOOST_CHECK(seen.load());
     BOOST_CHECK(!rendered_on_producer.load());
     BOOST_CHECK(content.find("consumer flush marker\n") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(logging_shutdown_counter_is_unfiltered) {
+    BCLog::Logger logger;
+    logger.m_file_path = m_args.GetDataDirBase() / "shutdown-counter.jsonl";
+    logger.m_print_to_file = true;
+    logger.m_log_format = BCLog::LogFormat::JSON;
+    logger.PauseForTesting(true);
+    BOOST_REQUIRE(logger.StartLogging());
+    size_t callback_summaries{0};
+    logger.PushBackCallback([&](const std::string &line) {
+        callback_summaries +=
+            line.find("Logger shutdown:") != std::string::npos;
+    });
+    for (size_t i = 0; i < BCLog::LogRing::CAPACITY + 7; ++i) {
+        logger.LogPrintStr("shutdown flood marker\n",
+                           std::source_location::current(), BCLog::NET,
+                           BCLog::Level::Debug, nullptr);
+    }
+    logger.SetLogLevel(BCLog::Level::Error);
+    logger.DisableCategory(BCLog::ALL);
+    logger.FinishLogging();
+    std::ifstream stream{logger.m_file_path};
+    size_t written{0};
+    UniValue last;
+    for (std::string line; std::getline(stream, line);) {
+        if (line.empty()) continue;
+        BOOST_REQUIRE(last.read(line));
+        written += last["message"].get_str() == "shutdown flood marker";
+    }
+    BOOST_CHECK_EQUAL(written, BCLog::LogRing::CAPACITY);
+    BOOST_CHECK_EQUAL(last["event"].get_str(), "logger_shutdown");
+    BOOST_CHECK_EQUAL(last["dropped_lines"].getInt<uint64_t>(), 7U);
+    BOOST_CHECK_EQUAL(callback_summaries, 0U);
+    logger.DisconnectTestLogger();
 }
 
 BOOST_FIXTURE_TEST_CASE(logging_pause_rechecks_consumer_lock, LogSetup) {

@@ -472,7 +472,8 @@ private:
     /** Encode a line into m_line_buf in the current format */
     void Encode(const LogLine &line) EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex);
     /** Write a line to every sink (encoding it in each one's format) */
-    void WriteLogLine(const LogLine &line, bool to_file)
+    void WriteLogLine(const LogLine &line, bool to_file,
+                      bool notify_callbacks = true)
         EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
     //! The secondary JSON log file (-debuglogjsonfile)
     FILE *m_json_fileout GUARDED_BY(m_consumer_mutex) = nullptr;
@@ -510,6 +511,7 @@ private:
     std::condition_variable m_wake_cv;
     std::atomic<bool> m_wake{false};
     bool m_stop GUARDED_BY(m_wake_mutex){false};
+    bool m_shutdown_summary GUARDED_BY(m_wake_mutex){false};
     std::atomic<bool> m_thread_running{false};
     //! A wake-up of the logger thread is pending (rings filling up)
     std::atomic<bool> m_wake_requested{false};
@@ -521,6 +523,8 @@ private:
     //! do)
     std::atomic<bool> m_paused_for_testing{false};
 
+    void WriteDropSummary()
+        EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs, !m_rings_mutex);
 
     /** Keep a message logged before StartLogging (with m_cs held) */
     void BufferLog(std::string_view str, std::source_location &&source_loc,
@@ -556,14 +560,16 @@ private:
     void WriteRecord(LogRecord &rec)
         EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
     /** Write a rendered line to the outputs */
-    void WriteLine(const std::string &line, bool to_file)
+    void WriteLine(const std::string &line, bool to_file,
+                   bool notify_callbacks = true)
         EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
     void ReopenIfRequested() EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex);
     void ThreadMain() EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs,
                                                !m_rings_mutex, !m_wake_mutex);
     void StartThread() EXCLUSIVE_LOCKS_REQUIRED(!m_wake_mutex);
-    void StopThread() EXCLUSIVE_LOCKS_REQUIRED(!m_wake_mutex, !m_consumer_mutex,
-                                               !m_cs, !m_rings_mutex);
+    void StopThread(bool summarize = false)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_wake_mutex, !m_consumer_mutex, !m_cs,
+                                 !m_rings_mutex);
 
 public:
     Logger();
@@ -645,6 +651,10 @@ public:
 
     /** Lines dropped because their thread's ring was full (ever) */
     uint64_t DroppedLines() const EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
+    /** Drain on graceful exit, then write the unfiltered final drop counter. */
+    void FinishLogging()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
 
     /** Connect a slot to the print signal and return the connection */
     std::list<std::function<void(const std::string &)>>::iterator
