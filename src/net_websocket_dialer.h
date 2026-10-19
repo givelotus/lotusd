@@ -21,7 +21,9 @@ static const char *const DEFAULT_P2P_WEBSOCKET_OFFER =
 /**
  * Start the outbound P2P WebSocket dialer (its own I/O thread) and register
  * it with SetWebSocketDialer(). If given, the certificate is presented to
- * wss:// peers that ask for one (see -tlsmutual). `offer` is a comma
+ * wss:// peers that ask for one (see -tlsmutual). New TLS handshakes pick
+ * up changed certificate/key files; invalid replacements keep the last valid
+ * identity and existing sessions retain their original identity. `offer` is a comma
  * separated subset of DEFAULT_P2P_WEBSOCKET_OFFER, or "none". `pins` are
  * -p2pwebsocketpin entries "<host>=<pin>" (see DecodeSpkiPin); returns
  * false if one is invalid.
