@@ -51,12 +51,13 @@ The following are some helpful notes on how to run Bitcoin ABC on your native pl
 
 Unpack the files into a directory and run:
 
-- `bin/bitcoin-qt` (GUI) or
-- `bin/bitcoind` (headless)
+- `bin/bitcoind` (headless), and
+- `bin/lotus-cli` to control it
 
 ### Windows
 
-Unpack the files into a directory, and then run bitcoin-qt.exe.
+Unpack the files into a directory, and then run bitcoind.exe from the `daemon`
+folder. There is no graphical wallet; use `lotus-cli` to control the node.
 
 ### macOS
 
@@ -87,8 +88,6 @@ The Bitcoin ABC repo's [root README](/README.md) contains relevant information o
 - [Release Notes](release-notes.md)
 - [Release Process](release-process.md)
 - [Source Code Documentation (External Link)](https://www.bitcoinabc.org/doc/dev/)
-- [Translation Process](translation_process.md)
-- [Translation Strings Policy](translation_strings_policy.md)
 - [JSON-RPC Interface](JSON-RPC-interface.md)
 - [Unauthenticated REST Interface](REST-interface.md)
 - [Shared Libraries](shared-libraries.md)

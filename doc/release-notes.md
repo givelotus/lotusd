@@ -103,3 +103,8 @@ Lotus V2:
   and the `zmq` log category are gone, and `-DBUILD_ZMQ=ON` is rejected at
   configure time. Use Chronik's WebSocket endpoint (`/chronik/ws`) for block
   and transaction push notifications.
+- The `bitcoin-qt` GUI has been removed, along with its build options
+  (`-DBUILD_QT`, `-DENABLE_QRCODE`, `-DENABLE_BIP70`,
+  `-DENABLE_DBUS_NOTIFICATIONS`) and its depends packages. Passing one of
+  these options now only produces CMake's unused-variable warning. Use
+  `lotus-cli` or the RPC interface to operate the wallet.

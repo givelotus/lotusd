@@ -1,9 +1,8 @@
 # JSON-RPC Interface
 
-The headless daemon `bitcoind` has the JSON-RPC API enabled by default, the GUI
-`bitcoin-qt` has it disabled by default. This can be changed with the `-server`
-option. In the GUI it is possible to execute RPC methods in the Debug Console
-Dialog.
+The headless daemon `bitcoind` has the JSON-RPC API enabled by default. This can
+be changed with the `-server` option. Use `lotus-cli` to execute RPC methods
+from the command line.
 
 ## Parameter passing
 
