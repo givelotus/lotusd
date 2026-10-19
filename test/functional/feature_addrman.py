@@ -6,6 +6,7 @@
 import os
 
 from test_framework.messages import hash256, ser_uint256
+from test_framework.p2p import DISK_MAGIC_BYTES
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
 from test_framework.util import assert_equal
@@ -15,7 +16,7 @@ def serialize_addrman(
     *,
     addrman_format=1,
     lowest_compatible=4,
-    net_magic=b"\xfa\xbf\xb5\xda",
+    net_magic=DISK_MAGIC_BYTES["regtest"],
     bucket_key=1,
     len_new=None,
     len_tried=None,
