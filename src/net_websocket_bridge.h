@@ -289,7 +289,7 @@ RunP2PWebSocketBridge(WS &ws, LocalSocket local,
     if (info->compression == P2PWebSocketCompression::ZSTD ||
         info->compression == P2PWebSocketCompression::ZSTD_DICT) {
         zstd = std::make_unique<P2PZstdSession>(
-            info->compression == P2PWebSocketCompression::ZSTD_DICT);
+            info->compression == P2PWebSocketCompression::ZSTD_DICT, 1);
     }
     // Clients mask what they send (RFC 6455 5.3).
     co_await (PumpLocalToWebSocket(local, ws, zstd.get(), *info, is_client) ||
