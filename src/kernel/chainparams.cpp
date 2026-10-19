@@ -418,6 +418,7 @@ public:
         consensus.nPowTargetSpacing = 2 * 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
         consensus.allowNullStateRoot = true;
+        consensus.allowLegacyCoinbase = true;
         consensus.fPowNoRetargeting = true;
 
         // two days

@@ -76,6 +76,9 @@ BOOST_AUTO_TEST_CASE(read_tx_data_from_disk) {
     // Test with undo data
     const std::vector<uint8_t> program{0x4e}; // Native OP_1.
     const CScript destination(program.begin(), program.end());
+    // A native spend needs a V2 coinbase; this fixture mines legacy ones by
+    // default.
+    m_coinbase_version = 7;
     CBlock coinsBlock = CreateAndProcessBlock({}, destination,
                                               &chainman.ActiveChainstate());
     const COutPoint prevout(coinsBlock.vtx[0]->GetId(), 0);

@@ -961,28 +961,120 @@ BOOST_FIXTURE_TEST_CASE(template_root_is_checked_from_selected_transactions, Tes
 // every peer.
 BOOST_FIXTURE_TEST_CASE(coinbase_outputs_survive_wire_round_trip,
                         TestChain100Setup) {
-    node::BlockAssembler::Options options;
-    options.test_block_validity = false;
-    const CScript payout =
-        GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
-    const auto block_template = node::BlockAssembler(
-        node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
-        m_node.mempool.get(), options).CreateNewBlock(payout);
-    BOOST_REQUIRE(block_template);
-    const CTransaction &coinbase = *block_template->block.vtx[0];
+    for (const uint32_t version : {2U, 7U}) {
+        node::BlockAssembler::Options options;
+        options.test_block_validity = false;
+        options.coinbase_version = version;
+        const CScript payout =
+            GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+        const auto block_template = node::BlockAssembler(
+            node::BlockFitter(GetConfig()), m_node.chainman->ActiveChainstate(),
+            m_node.mempool.get(), options).CreateNewBlock(payout);
+        BOOST_REQUIRE(block_template);
+        const CTransaction &coinbase = *block_template->block.vtx[0];
+        BOOST_CHECK_EQUAL(uint32_t(coinbase.nVersion), version);
 
-    DataStream ss{};
-    ss << coinbase;
-    const CTransaction decoded(deserialize, ss);
-    BOOST_CHECK_EQUAL(decoded.GetId(), coinbase.GetId());
-    BOOST_CHECK_EQUAL(decoded.GetHash(), coinbase.GetHash());
-    BOOST_REQUIRE_EQUAL(decoded.vout.size(), coinbase.vout.size());
-    BOOST_CHECK(coinbase.vout[0].scriptPubKey == payout);
-    for (size_t i = 0; i < coinbase.vout.size(); ++i) {
-        BOOST_CHECK(decoded.vout[i].scriptPubKey ==
-                    coinbase.vout[i].scriptPubKey);
-        BOOST_CHECK(decoded.vout[i] == coinbase.vout[i]);
+        DataStream ss{};
+        ss << coinbase;
+        const CTransaction decoded(deserialize, ss);
+        BOOST_CHECK_EQUAL(decoded.GetId(), coinbase.GetId());
+        BOOST_CHECK_EQUAL(decoded.GetHash(), coinbase.GetHash());
+        BOOST_REQUIRE_EQUAL(decoded.vout.size(), coinbase.vout.size());
+        BOOST_CHECK(coinbase.vout[0].scriptPubKey == payout);
+        for (size_t i = 0; i < coinbase.vout.size(); ++i) {
+            BOOST_CHECK(decoded.vout[i].scriptPubKey ==
+                        coinbase.vout[i].scriptPubKey);
+            BOOST_CHECK(decoded.vout[i] == coinbase.vout[i]);
+        }
     }
+}
+
+// The coinbase version selects the coinbase form: a V2 coinbase commits to
+// the parent block and height in its input, a legacy coinbase has a null
+// prevout and the BIP34 height in its scriptSig. Both are valid on regtest.
+BOOST_FIXTURE_TEST_CASE(coinbase_version_selects_coinbase_form,
+                        TestChain100Setup) {
+    for (const uint32_t version : {1U, 2U, 7U}) {
+        m_coinbase_version = version;
+        const CBlock block =
+            CreateAndProcessBlock({}, CScript() << OP_TRUE);
+        BOOST_CHECK_EQUAL(m_node.chainman->ActiveTip()->GetBlockHash(),
+                          block.GetHash());
+        const CTransaction &coinbase = *block.vtx[0];
+        BOOST_CHECK_EQUAL(uint32_t(coinbase.nVersion), version);
+        if (version == 7) {
+            BOOST_CHECK_EQUAL(coinbase.vin[0].nFlags, 2);
+            BOOST_CHECK(coinbase.vin[0].prevout ==
+                        COutPoint(TxId(block.hashPrevBlock),
+                                  uint32_t(block.nHeight)));
+        } else {
+            BOOST_CHECK_EQUAL(coinbase.vin[0].nFlags, 0);
+            BOOST_CHECK(coinbase.vin[0].prevout.IsNull());
+            const CScript height = CScript() << int(block.nHeight);
+            BOOST_CHECK(std::equal(height.begin(), height.end(),
+                                   coinbase.vin[0].scriptSig.begin()));
+        }
+    }
+}
+
+namespace {
+struct TestNetMinerSetup : public TestingSetup {
+    TestNetMinerSetup() : TestingSetup(ChainType::TESTNET) {}
+};
+
+// Build a block on the tip, then give it a coinbase of the given version with
+// the same outputs, and check it.
+std::string ValidateWithCoinbaseVersion(node::NodeContext &node,
+                                        uint32_t version) {
+    std::shared_ptr<CBlock> block =
+        PrepareBlock(GetConfig(), node, CScript() << OP_TRUE);
+    LOCK(cs_main);
+    CBlockIndex *tip = node.chainman->ActiveTip();
+    CMutableTransaction coinbase{*block->vtx[0]};
+    const CMutableTransaction shell = node::CreateCoinbaseShell(
+        version, tip->GetBlockHash(), tip->nHeight + 1);
+    coinbase.nVersion = shell.nVersion;
+    coinbase.vin = shell.vin;
+    node::PadCoinbaseToMinSize(coinbase);
+    block->vtx[0] = MakeTransactionRef(coinbase);
+    block->hashMerkleRoot = BlockMerkleRoot(*block);
+    block->hashStateRoot = ComputeV2BlockStateRoot(
+        *block, block->hashPrevBlock, block->nHeight,
+        uint64_t(tip->GetMedianTimePast()), false);
+    block->SetSize(::GetSerializeSize(*block));
+    BlockValidationState state;
+    const bool ok = TestBlockValidity(
+        state, GetConfig().GetChainParams(),
+        node.chainman->ActiveChainstate(), *block, tip, GetAdjustedTime,
+        BlockValidationOptions(GetConfig()).withCheckPoW(false));
+    return ok ? "valid" : state.GetRejectReason();
+}
+} // namespace
+
+// Off regtest every coinbase after genesis is a V2 coinbase: a legacy one is
+// rejected, and the assembler refuses to build one.
+BOOST_FIXTURE_TEST_CASE(legacy_coinbase_rejected_off_regtest,
+                        TestNetMinerSetup) {
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 7), "valid");
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 2),
+                      "bad-cb-version");
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 1),
+                      "bad-cb-version");
+    node::BlockAssembler::Options options;
+    options.coinbase_version = 2;
+    BOOST_CHECK_THROW(PrepareBlock(GetConfig(), m_node, CScript() << OP_TRUE,
+                                   options),
+                      std::runtime_error);
+}
+
+// Version 3 is not a transaction version at all; the transaction rule rejects
+// it before the coinbase rule is reached.
+BOOST_FIXTURE_TEST_CASE(coinbase_version_other_than_1_2_7_rejected,
+                        TestChain100Setup) {
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 2), "valid");
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 7), "valid");
+    BOOST_CHECK_EQUAL(ValidateWithCoinbaseVersion(m_node, 3),
+                      "bad-txns-version");
 }
 
 BOOST_FIXTURE_TEST_CASE(finalized_template_after_deferred_remove_readd_matches_own_root, AvalancheTestChain100Setup) {
