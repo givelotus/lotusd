@@ -197,15 +197,27 @@ e.g. `self.nodes[0]`.
 To change the level of logs output to the console, use the `-l` command line
 argument.
 
-`test_framework.log` and bitcoind `debug.log`s can be combined into a single
-aggregate log by running the `combine_logs.py` script. The output can be plain
-text, colorized text or html. For example:
+When a test fails under `test_runner.py`, the runner merges
+`test_framework.log` and the nodes' `debug.log`s by time into
+`<test data directory>/combined.log`, and prints the last lines of that
+timeline up to the failure (see
+[README-runner-output.md](../test/functional/README-runner-output.md)).
+
+`test_framework.log` and bitcoind `debug.log`s can also be combined into a
+single aggregate log by running the `combine_logs.py` script. The output can
+be plain text, colorized text or html. For example:
 
 ```
 test/functional/combine_logs.py -c <test data directory> | less -r
 ```
 
-will pipe the colorized logs from the test into less.
+will pipe the colorized logs from the test into less, and
+
+```
+test/functional/combine_logs.py --html <test data directory> > combined.html
+```
+
+writes them as an HTML page (this needs `jinja2`).
 
 The last failed test data directory can also be accessed via the ./lastfailure
 symlink to avoid copy-pasting a new directory on each iterated test run.

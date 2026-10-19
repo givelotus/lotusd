@@ -95,6 +95,7 @@ TEST_FRAMEWORK_MODULES = [
     "script",
     "test_framework",
     "test_node",
+    "timeline",
     "txtools",
     "util",
     "worker",
@@ -1063,9 +1064,9 @@ def print_results(test_results, tests_dir, max_len_name, runtime, combined_logs_
 
             if BOLD[0]:
                 combined_logs_args += ["--color"]
-                combined_logs, _ = subprocess.Popen(
-                    combined_logs_args, universal_newlines=True, stdout=subprocess.PIPE
-                ).communicate()
+            combined_logs, _ = subprocess.Popen(
+                combined_logs_args, universal_newlines=True, stdout=subprocess.PIPE
+            ).communicate()
             print("\n".join(deque(combined_logs.splitlines(), combined_logs_len)))
 
     status = TICK + "Passed" if all_passed else CROSS + "Failed"
