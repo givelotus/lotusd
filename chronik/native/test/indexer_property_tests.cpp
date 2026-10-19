@@ -9,13 +9,13 @@
 
 #include <chronik/native/indexer.h>
 #include <chronik/native/indexer_impl.h>
-#include <chronik/native/mdbx_store.h>
 #include <chronik/native/schema.h>
 #include <chronik/native/token_io/token_index.h>
 
 #include <core/db/dump.h>
 #include <test/fake_host.h>
 #include <test/index_test_util.h>
+#include <test/test_backend.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -42,6 +42,7 @@ IndexerParams MakeParams(const std::filesystem::path &dir,
                          const PropertyConf &conf) {
     IndexerParams p;
     p.datadir_net = dir;
+    p.backend = nt::TestBackend();
     p.lokad_id_index = conf.lokad_id_index;
     p.scripthash_index = conf.scripthash_index;
     p.token_index = conf.tokens;
@@ -53,7 +54,7 @@ IndexerParams MakeParams(const std::filesystem::path &dir,
 
 /** Returns the number of reorgs performed. */
 int RunProperty(uint64_t seed, int steps, const PropertyConf &conf) {
-    RegisterMdbxStore();
+    nt::RegisterTestStores();
     std::mt19937_64 rng(seed);
     th::FakeHost host;
     host.Caps().slp_alp_tokens = conf.tokens;

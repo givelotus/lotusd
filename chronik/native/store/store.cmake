@@ -43,3 +43,32 @@ if(CHRONIK_NATIVE_MDBX)
         PUBLIC CHRONIK_NATIVE_HAVE_MDBX=1)
     list(APPEND CHRONIK_NATIVE_TEST_LIBRARIES chronik_native_store_mdbx)
 endif()
+
+if(CHRONIK_NATIVE_LEVELDB)
+    if(NOT TARGET leveldb)
+        # Standalone build: the node's vendored LevelDB (and its crc32c),
+        # without their tests.
+        list(APPEND CMAKE_MODULE_PATH "${CHRONIK_NATIVE_REPO_ROOT}/cmake/modules")
+        include(AddCompilerFlags)
+        set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(CRC32C_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${CHRONIK_NATIVE_REPO_ROOT}/src/crc32c"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/crc32c" EXCLUDE_FROM_ALL)
+        add_subdirectory("${CHRONIK_NATIVE_REPO_ROOT}/src/leveldb"
+            "${CMAKE_CURRENT_BINARY_DIR}/vendor/leveldb" EXCLUDE_FROM_ALL)
+    endif()
+
+    add_library(chronik_native_store_leveldb STATIC
+        "${CHRONIK_NATIVE_ROOT}/store/leveldb/leveldb_store.cpp"
+    )
+    target_include_directories(chronik_native_store_leveldb
+        PUBLIC "${CHRONIK_NATIVE_ROOT}/include")
+    target_link_libraries(chronik_native_store_leveldb
+        PUBLIC chronik_native_core
+        PRIVATE leveldb)
+    set_target_properties(chronik_native_store_leveldb PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(chronik_native_store_leveldb
+        PUBLIC CHRONIK_NATIVE_HAVE_LEVELDB=1)
+    list(APPEND CHRONIK_NATIVE_TEST_LIBRARIES chronik_native_store_leveldb)
+endif()
