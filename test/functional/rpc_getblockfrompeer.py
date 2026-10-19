@@ -12,9 +12,8 @@ class GetBlockFromPeerTest(BitcoinTestFramework):
     num_nodes = 2
     extra_args = [[], ["-noparkdeepreorg"]]
 
-    def setup_network(self):
-        self.setup_nodes()
-        # Don't connect the nodes initially
+    # Don't connect the nodes initially
+    topology = "none"
 
     def check_for_block(self, blockhash):
         try:

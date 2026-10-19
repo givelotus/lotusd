@@ -20,9 +20,8 @@ class AbortNodeTest(BitcoinTestFramework):
     num_nodes = 2
     extra_args = [["-noparkdeepreorg"], []]
 
-    def setup_network(self):
-        self.setup_nodes()
-        # We'll connect the nodes later
+    # We'll connect the nodes later
+    topology = "none"
 
     def run_test(self):
         self.generate(self.nodes[0], 3, sync_fun=self.no_op)

@@ -29,9 +29,8 @@ class FeatureIndexPruneTest(BitcoinTestFramework):
         ["-noparkdeepreorg"],
     ]
 
-    def setup_network(self):
-        # No P2P connection, so that linear_sync works
-        self.setup_nodes()
+    # No P2P connection, so that linear_sync works
+    topology = "none"
 
     def linear_sync(self, node_from, *, height_from=None):
         # Linear sync over RPC, because P2P sync may not be linear.
