@@ -483,6 +483,10 @@ class SizePass {
                 pop();
                 pop();
                 push(16);
+            } else if (op == 0xec) { // TXTOKENBALANCE
+                pop();
+                push(16);
+                push(16);
             } else if (op == 0xdb || op == 0xdc || op == 0xe6 || op == 0xe7 ||
                        op == 0xf0) {
                 const auto literal = LiteralValue(previous);
