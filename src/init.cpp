@@ -1081,6 +1081,21 @@ void SetupServerArgs(NodeContext &node) {
         "specified multiple times.",
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebsocketpeer=<[permissions@]pin>",
+        "Recognize inbound P2P WebSocket peers presenting a TLS client "
+        "certificate with this public key (base64url SHA-256 of the DER "
+        "SubjectPublicKeyInfo, as shown by getpeerinfo's websocket.peer_spki) "
+        "and grant them permissions, with the syntax of -whitelist. Turns on "
+        "-tlsmutual. Can be specified multiple times.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebsocketrequirecert",
+        strprintf("Only accept inbound P2P WebSocket peers whose TLS client "
+                  "certificate key is listed with -p2pwebsocketpeer (default: "
+                  "%d). Plain TCP peers are not affected.",
+                  false),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebsocketbridge",
         "Carry inbound P2P WebSocket peers through a socketpair bridge "
         "instead of handing their connection to the P2P layer (for testing; "
@@ -3446,6 +3461,29 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         if (connection_direction & ConnectionDirection::Out) {
             connOptions.vWhitelistedRangeOutgoing.push_back(subnet);
         }
+    }
+
+    for (const auto &entry : args.GetArgs("-p2pwebsocketpeer")) {
+        NetKeyPermissions key;
+        bilingual_str error;
+        if (!NetKeyPermissions::TryParse(entry, key, error)) {
+            return InitError(error);
+        }
+        const auto spki{DecodeSpkiPin(key.m_key)};
+        if (!spki) {
+            return InitError(strprintf(
+                _("Invalid public key in -p2pwebsocketpeer: '%s'"), entry));
+        }
+        // Compare in the form getpeerinfo shows (unpadded base64url).
+        key.m_key = EncodeSpkiPin(*spki);
+        connOptions.vWhitelistedKeys.push_back(std::move(key));
+    }
+    connOptions.m_websocket_require_known_key =
+        args.GetBoolArg("-p2pwebsocketrequirecert", false);
+    if (connOptions.m_websocket_require_known_key &&
+        connOptions.vWhitelistedKeys.empty()) {
+        return InitError(_("-p2pwebsocketrequirecert needs at least one "
+                           "-p2pwebsocketpeer"));
     }
 
     connOptions.vSeedNodes = args.GetArgs("-seednode");
