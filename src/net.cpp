@@ -130,7 +130,7 @@ static const uint64_t RANDOMIZER_ID_ADDRCACHE = 0x1cf2e4ddd306dda9ULL;
 //
 bool fDiscover = true;
 bool fListen = true;
-bool g_listen_plain_p2p = true;
+bool g_listen_plain_p2p = false;
 GlobalMutex g_maplocalhost_mutex;
 std::map<CNetAddr, LocalServiceInfo>
     mapLocalHost GUARDED_BY(g_maplocalhost_mutex);
@@ -354,6 +354,12 @@ bool GetP2PWebSocketListen(const ArgsManager &args) {
 std::optional<bilingual_str>
 CheckP2PListenArgs(const ArgsManager &args,
                    std::vector<bilingual_str> &warnings) {
+    if (args.GetBoolArg("-p2prawlisten", DEFAULT_P2P_RAW_LISTEN)) {
+        return _("Lotus V2 does not accept raw P2P (-p2prawlisten=1)");
+    }
+    if (args.GetBoolArg("-listen", DEFAULT_LISTEN) && !GetP2PWebSocketListen(args)) {
+        return _("-p2pwslisten=0 needs -listen=0: peers can only connect over WebSocket");
+    }
     if (!args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
         // Nothing is accepted on any transport.
         return std::nullopt;
@@ -395,10 +401,6 @@ CheckP2PListenArgs(const ArgsManager &args,
         warnings.push_back(
             _("-p2prawlisten=0 and -p2pwslisten=0: no inbound P2P "
               "connections will be accepted, as with -listen=0"));
-    } else if (!args.GetBoolArg("-server", false)) {
-        warnings.push_back(
-            _("-p2prawlisten=0 without -server: WebSocket peers need the "
-              "HTTP server, so no inbound P2P connections will be accepted"));
     }
     return std::nullopt;
 }
@@ -591,10 +593,11 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
         if (addrConnect.IsWSS()) {
             return ConnectWebSocketNode(WebSocketURLForAddress(addrConnect),
                                         &addrConnect, fCountFailure, conn_type,
+                                        /*dest_name=*/"",
                                         /*record_attempt=*/!attempt_recorded);
         }
         // An IP address does not advertise an HTTP/WebSocket TCP listener.
-        // Continue through the ordinary raw P2P path below.
+        // Lotus v2 continues with WebSocket on the P2P port, not raw TCP.
     }
     if (pszDest == nullptr && addrConnect.IsWSS()) {
         if (!addrConnect.IsDialableWSS() || IsLocal(addrConnect) ||
@@ -656,119 +659,32 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
         }
     }
 
-    // -onlynet with wss (e.g. -onlynet=wss for a WebSocket-only node) also
-    // binds manual plain P2P connections (-addnode, -connect, addnode RPC):
-    // with only wss, no plain P2P connection is ever made. Without wss in
-    // -onlynet, manual connections ignore -onlynet as before.
-    if (IsReachable(NET_WSS)) {
-        bool reachable{true};
-        if (addrConnect.IsValid()) {
-            // By the address family: local and private addresses (network
-            // "unroutable", never limited by -onlynet) are plain P2P too.
-            reachable = addrConnect.IsIPv4()   ? IsReachable(NET_IPV4)
-                        : addrConnect.IsIPv6() ? IsReachable(NET_IPV6)
-                                               : IsReachable(addrConnect);
-        } else if (pszDest) {
-            // A name for the proxy to resolve.
-            std::string host;
-            uint16_t port{0};
-            SplitHostPort(pszDest, port, host);
-            reachable = host.ends_with(".onion")
-                            ? IsReachable(NET_ONION)
-                            : IsReachable(NET_IPV4) || IsReachable(NET_IPV6);
-        }
-        if (!reachable) {
-            LogPrintf("Not connecting to %s: plain P2P to network %s is not "
-                      "allowed by -onlynet\n",
-                      pszDest ? pszDest : addrConnect.ToStringAddrPort(),
-                      !addrConnect.IsValid() ? "ipv4/ipv6"
-                      : addrConnect.IsIPv4() ? "ipv4"
-                      : addrConnect.IsIPv6()
-                          ? "ipv6"
-                          : GetNetworkName(addrConnect.GetNetwork()));
-            return nullptr;
-        }
-    }
-
-    // Connect
-    std::unique_ptr<Sock> sock;
-    Proxy proxy;
-    CAddress addr_bind;
-    assert(!addr_bind.IsValid());
-
+    // Lotus v2 peers speak P2P only over WebSocket, at /p2p/ws on the P2P
+    // port: there is no raw TCP P2P. Onion and private addresses use ws://
+    // (Tor encrypts already; a private network is the operator's), public
+    // ones wss://.
+    std::string host;
+    uint16_t port{default_port};
+    bool tls{true};
     if (addrConnect.IsValid()) {
-        const Network proxy_network{addrConnect.IsIPv4() ? NET_IPV4
-                                    : addrConnect.IsIPv6()
-                                        ? NET_IPV6
-                                        : addrConnect.GetNetwork()};
-        const bool use_proxy{GetProxy(proxy_network, proxy)};
-        bool proxyConnectionFailed = false;
-
-        if (use_proxy) {
-            LogPrintLevel(BCLog::PROXY, BCLog::Level::Debug,
-                          "Using proxy: %s to connect to %s:%s\n",
-                          proxy.ToString(), addrConnect.ToStringAddr(),
-                          addrConnect.GetPort());
-            sock = ConnectThroughProxy(proxy, addrConnect.ToStringAddr(),
-                                       addrConnect.GetPort(),
-                                       proxyConnectionFailed);
-        } else {
-            // no proxy needed (none set for target network)
-            sock = ConnectDirectly(addrConnect,
-                                   conn_type == ConnectionType::MANUAL);
-        }
-        if (!proxyConnectionFailed && !attempt_recorded) {
-            // If a connection to the node was attempted, and failure (if any)
-            // is not caused by a problem connecting to the proxy, mark this as
-            // an attempt.
-            addrman.Attempt(addrConnect, fCountFailure);
-        }
-    } else if (pszDest && GetNameProxy(proxy)) {
-        std::string host;
-        uint16_t port{default_port};
+        host = addrConnect.ToStringAddr();
+        port = addrConnect.GetPort();
+        tls = addrConnect.IsRoutable() && !addrConnect.IsTor();
+    } else if (pszDest) {
+        // Unresolved here (e.g. a name for -proxy to resolve).
         SplitHostPort(std::string(pszDest), port, host);
-        bool proxyConnectionFailed;
-        sock = ConnectThroughProxy(proxy, host, port, proxyConnectionFailed);
-    }
-    if (!sock) {
+        tls = !host.ends_with(".onion") && host != "localhost";
+    } else {
         return nullptr;
     }
-
-    NetPermissionFlags permission_flags = NetPermissionFlags::None;
-    std::vector<NetWhitelistPermissions> whitelist_permissions =
-        conn_type == ConnectionType::MANUAL
-            ? vWhitelistedRangeOutgoing
-            : std::vector<NetWhitelistPermissions>{};
-    AddWhitelistPermissionFlags(permission_flags, addrConnect,
-                                whitelist_permissions);
-
-    // Add node
-    NodeId id = GetNewNodeId();
-    uint64_t nonce = GetDeterministicRandomizer(RANDOMIZER_ID_LOCALHOSTNONCE)
-                         .Write(id)
-                         .Finalize();
-    uint64_t extra_entropy =
-        GetDeterministicRandomizer(RANDOMIZER_ID_EXTRAENTROPY)
-            .Write(id)
-            .Finalize();
-    if (!addr_bind.IsValid()) {
-        addr_bind = GetBindAddress(*sock);
-    }
-    CNode *pnode = new CNode(
-        id, std::move(sock), addrConnect, CalculateKeyedNetGroup(addrConnect),
-        nonce, extra_entropy, addr_bind, pszDest ? pszDest : "", conn_type,
-        /* inbound_onion */ false,
-        CNodeOptions{
-            .permission_flags = permission_flags,
-            .recv_flood_size = nReceiveFloodSize,
-        });
-    pnode->AddRef();
-
-    // We're making a new connection, harvest entropy from the time (and our
-    // peer count)
-    RandAddEvent(uint32_t(id));
-
-    return pnode;
+    const bool ipv6{host.find(':') != std::string::npos};
+    const std::string url{strprintf("%s://%s:%u%s", tls ? "wss" : "ws",
+                                    ipv6 ? "[" + host + "]" : host, port,
+                                    P2P_WEBSOCKET_PATH)};
+    return ConnectWebSocketNode(
+        url, addrConnect.IsValid() ? &addrConnect : nullptr, fCountFailure,
+        conn_type, pszDest ? std::string{pszDest} : "",
+        /*record_attempt=*/!attempt_recorded);
 }
 
 void CNode::CloseSocketDisconnect() {
@@ -1600,6 +1516,7 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
                                       const CAddress *wss_addr,
                                       bool fCountFailure,
                                       ConnectionType conn_type,
+                                      const std::string &dest_name,
                                       bool record_attempt) {
     const auto parsed{ParseWebSocketURL(url)};
     if (!parsed) {
@@ -1730,7 +1647,7 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
     CNode *pnode = new CNode(
         id, std::move(dialed->sock), addrConnect,
         CalculateKeyedNetGroup(addrConnect), nonce, extra_entropy, addr_bind,
-        wss_addr ? "" : url, conn_type,
+        dest_name.empty() ? (wss_addr ? "" : url) : dest_name, conn_type,
         /* inbound_onion */ false,
         CNodeOptions{
             .permission_flags = permission_flags,
@@ -1754,6 +1671,13 @@ void CConnman::AcceptWebSocketPeer(
              static_cast<const CNetAddr &>(listen.addr) ==
                  static_cast<const CNetAddr &>(addr_bind))) {
             listen.AddSocketPermissionFlags(flags);
+        }
+    }
+    for (const auto &[bound, permissions] : m_shared_http_permissions) {
+        if (bound.GetPort() == addr_bind.GetPort() &&
+            (bound.IsBindAny() || static_cast<const CNetAddr &>(bound) ==
+                                      static_cast<const CNetAddr &>(addr_bind))) {
+            NetPermissions::AddFlag(flags, permissions);
         }
     }
     bool known{false};
@@ -3392,6 +3316,12 @@ void CConnman::ThreadMessageHandler() {
 
 bool CConnman::BindListenPort(const CService &addrBind, bilingual_str &strError,
                               NetPermissionFlags permissions) {
+    // Share an existing HTTP listener only; ordinary P2P ports use the shared
+    // raw-off socket/acceptor path, with no second listener implementation.
+    if (!g_listen_plain_p2p && m_share_http_listener && m_share_http_listener(addrBind)) {
+        m_shared_http_permissions.emplace_back(addrBind, permissions);
+        return true;
+    }
     int nOne = 1;
 
     // Create socket for listening for incoming connections
