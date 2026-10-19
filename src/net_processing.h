@@ -82,18 +82,27 @@ NextRelayTick(std::chrono::microseconds now,
     return tick.count() <= 0 ? now : (now / tick + 1) * tick;
 }
 /**
- * Maximum rate of inventory items to send per second.
- * Allows higher-throughput transaction relay while retaining bounded bursts.
+ * Transaction relay fan-out: at each tick a relayed transaction is
+ * announced to clamp(max(min, ceil(pct x relay peers)), min, max) peers,
+ * picked uniformly among those not known to have it (-txrelayfanoutmin,
+ * -txrelayfanoutpct, -txrelayfanoutmax). Transactions this node
+ * originated (wallet, RPC) go to every relay peer.
  */
-static constexpr unsigned int INVENTORY_BROADCAST_PER_SECOND = 2500;
+static constexpr size_t DEFAULT_TXRELAY_FANOUT_MIN{8};
+static constexpr double DEFAULT_TXRELAY_FANOUT_PCT{0.25};
+static constexpr size_t DEFAULT_TXRELAY_FANOUT_MAX{32};
 /**
- * Maximum number of inventory items to send per transmission per MB of max
- * block size.
+ * Default per-peer cap on transaction announcements per second
+ * (-txrelayratemax), spent per tick: a peer is sent at most
+ * ceil(rate x tick) announcements per tick and the excess waits for the
+ * next tick (nothing is dropped). Sized for 1M transactions per second
+ * network-wide: target TPS x 2 / fan-out minimum.
  */
-static constexpr unsigned int INVENTORY_BROADCAST_MAX_PER_MB =
-    INVENTORY_BROADCAST_PER_SECOND * 5;
-static constexpr unsigned int INVENTORY_BROADCAST_MAX =
-    5000 * INVENTORY_BROADCAST_PER_SECOND;
+static constexpr uint64_t DEFAULT_TXRELAY_RATE_MAX{250'000};
+
+/** Number of peers to announce a relayed transaction to (see above) */
+size_t TxRelayFanout(size_t relay_peers, size_t fanout_min, double fanout_pct,
+                     size_t fanout_max) noexcept;
 /** The number of most recently announced transactions a peer can request. */
 static constexpr unsigned int INVENTORY_MAX_RECENT_RELAY = 350000;
 
@@ -162,6 +171,12 @@ public:
 
         //! Interval of the transaction relay tick (-txrelaytick)
         std::chrono::milliseconds txrelay_tick{DEFAULT_TXRELAY_TICK};
+        //! Fan-out of relayed transactions (see TxRelayFanout)
+        size_t txrelay_fanout_min{DEFAULT_TXRELAY_FANOUT_MIN};
+        double txrelay_fanout_pct{DEFAULT_TXRELAY_FANOUT_PCT};
+        size_t txrelay_fanout_max{DEFAULT_TXRELAY_FANOUT_MAX};
+        //! Per-peer announcements per second (-txrelayratemax)
+        uint64_t txrelay_rate_max{DEFAULT_TXRELAY_RATE_MAX};
     };
 
     static std::unique_ptr<PeerManager>
@@ -197,7 +212,10 @@ public:
     virtual lotus::v2::net::V2PeerProtocolHandler *GetV2ProtocolHandler() = 0;
     virtual void MarkPeerKnownTx(NodeId peer_id, const TxId &txid) = 0;
 
-    /** Relay transaction to all peers. */
+    /**
+     * Queue a transaction for relay. At the next relay tick it is announced
+     * to a fan-out of peers (to every peer if this node originated it).
+     */
     virtual void RelayTransaction(const TxId &txid) = 0;
 
     /** Batch interface; implementations may coalesce peer locking. */

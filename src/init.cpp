@@ -612,6 +612,33 @@ void SetupServerArgs(NodeContext &node) {
                   count_milliseconds(DEFAULT_TXRELAY_TICK)),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-txrelayfanoutmin=<n>",
+        strprintf("Announce each relayed transaction to at least this many "
+                  "peers (default: %u). The fan-out is clamp(max(min, "
+                  "ceil(pct x relay peers)), min, max); transactions this "
+                  "node originated go to every peer",
+                  DEFAULT_TXRELAY_FANOUT_MIN),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-txrelayfanoutpct=<fraction>",
+                   strprintf("Fraction of relay peers to announce each relayed "
+                             "transaction to, between -txrelayfanoutmin and "
+                             "-txrelayfanoutmax (default: %s)",
+                             util::ToString(DEFAULT_TXRELAY_FANOUT_PCT)),
+                   ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-txrelayfanoutmax=<n>",
+        strprintf("Announce each relayed transaction to at most this many "
+                  "peers (default: %u)",
+                  DEFAULT_TXRELAY_FANOUT_MAX),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-txrelayratemax=<n>",
+        strprintf("Announce at most this many transactions per second to "
+                  "each peer; the excess waits for later ticks "
+                  "(default: %u)",
+                  DEFAULT_TXRELAY_RATE_MAX),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-testdisablehighbandwidthshorttx",
         "Disable unsolicited shorttx frames in regtest tests (default: 0)",
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
