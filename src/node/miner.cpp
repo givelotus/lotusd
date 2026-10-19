@@ -64,6 +64,38 @@ void ApplyArgsManOptions(const ArgsManager &args,
         args.GetBoolArg("-printpriority", DEFAULT_PRINTPRIORITY);
     options.add_finalized_txs = args.GetBoolArg(
         "-avalanchepreconsensusmining", DEFAULT_AVALANCHE_MINING_PRECONSENSUS);
+    options.coinbase_version = uint32_t(
+        args.GetIntArg("-coinbaseversion", DEFAULT_COINBASE_VERSION));
+}
+
+CMutableTransaction CreateCoinbaseShell(uint32_t version,
+                                        const BlockHash &prev_block,
+                                        int nHeight) {
+    CMutableTransaction coinbase;
+    coinbase.nVersion = version;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].scriptSig = CScript() << nHeight << OP_0;
+    if (version == 7) {
+        coinbase.vin[0].prevout =
+            COutPoint(TxId(prev_block), static_cast<uint32_t>(nHeight));
+        coinbase.vin[0].nFlags = 2;
+        coinbase.vin[0].fHasCoinbaseData = true;
+        coinbase.vin[0].vCoinbaseData.assign(
+            coinbase.vin[0].scriptSig.begin(), coinbase.vin[0].scriptSig.end());
+    }
+    return coinbase;
+}
+
+void PadCoinbaseToMinSize(CMutableTransaction &coinbase) {
+    const uint64_t size = ::GetSerializeSize(coinbase);
+    if (size >= MIN_TX_SIZE) {
+        return;
+    }
+    CTxIn &in = coinbase.vin[0];
+    in.scriptSig << std::vector<uint8_t>(MIN_TX_SIZE - size - 1);
+    if (in.nFlags == 2) {
+        in.vCoinbaseData.assign(in.scriptSig.begin(), in.scriptSig.end());
+    }
 }
 
 static BlockAssembler::Options ConfiguredOptions() {
@@ -81,7 +113,8 @@ BlockAssembler::BlockAssembler(const BlockFitter &fitter,
       m_mempool(mempool), m_chainstate(chainstate), m_avalanche(avalanche),
       fPrintPriority{options.fPrintPriority},
       test_block_validity{options.test_block_validity},
-      add_finalized_txs{avalanche && options.add_finalized_txs} {}
+      add_finalized_txs{avalanche && options.add_finalized_txs},
+      coinbase_version{options.coinbase_version} {}
 
 BlockAssembler::BlockAssembler(const BlockFitter &fitter,
                                Chainstate &chainstate,
@@ -230,18 +263,17 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
 
     // Create coinbase transaction.
     const Amount blockSubsidy = GetBlockSubsidy(nHeight, consensusParams);
-    CMutableTransaction coinbaseTx;
-    coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout = COutPoint(TxId(pindexPrev->GetBlockHash()),
-                                          static_cast<uint32_t>(nHeight));
-    coinbaseTx.vin[0].nFlags = 2;
+    if (!IsCoinbaseVersion(coinbase_version) ||
+        (coinbase_version != 7 && !consensusParams.allowLegacyCoinbase)) {
+        throw std::runtime_error(strprintf(
+            "%s: coinbase version %u is not allowed on this network",
+            __func__, coinbase_version));
+    }
+    CMutableTransaction coinbaseTx = CreateCoinbaseShell(
+        coinbase_version, pindexPrev->GetBlockHash(), nHeight);
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
     coinbaseTx.vout[0].nValue = blockFitter.nFees + blockSubsidy;
-    coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
-    coinbaseTx.vin[0].fHasCoinbaseData = true;
-    coinbaseTx.vin[0].vCoinbaseData.assign(coinbaseTx.vin[0].scriptSig.begin(),
-                                           coinbaseTx.vin[0].scriptSig.end());
 
     const Amount blockReward = coinbaseTx.vout[0].nValue;
 
@@ -289,14 +321,7 @@ BlockAssembler::CreateNewBlock(const CScript &scriptPubKeyIn) {
     }
 
     // Make sure the coinbase is big enough.
-    uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
-    if (coinbaseSize < MIN_TX_SIZE) {
-        coinbaseTx.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
-        coinbaseTx.vin[0].vCoinbaseData.assign(
-            coinbaseTx.vin[0].scriptSig.begin(),
-            coinbaseTx.vin[0].scriptSig.end());
-    }
+    PadCoinbaseToMinSize(coinbaseTx);
 
     pblocktemplate->entries[0].tx = MakeTransactionRef(coinbaseTx);
     pblocktemplate->entries[0].fees = -1 * blockFitter.nFees;

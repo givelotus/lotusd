@@ -45,6 +45,9 @@ struct TxPackageTest : TestChain100Setup {
     TxPackageTest() {
         // Native funding uses the same private key and real activated coinbases.
         m_coinbase_txns.clear();
+        // Native spends need V2 coinbases; this fixture mines legacy ones by
+        // default.
+        m_coinbase_version = 7;
         const auto program = NativePackageProgram(coinbaseKey);
         for (int i = 0; i < COINBASE_MATURITY; ++i) {
             const auto block = CreateAndProcessBlock({}, program);
