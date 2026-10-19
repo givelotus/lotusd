@@ -87,6 +87,13 @@ public:
                 std::string &out) const override;
 };
 
+/** Elastic Common Schema JSON using ECS 8.11 field names and units. */
+class JsonEcsEncoder final : public LogEncoder {
+public:
+    void Encode(const LogLine &line, const LogOptions &opts,
+                std::string &out) const override;
+};
+
 /** Logfmt with JSON-compatible quoted string values (one physical line). */
 class LogfmtEncoder final : public LogEncoder {
 public:
