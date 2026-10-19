@@ -43,8 +43,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
     ] * num_nodes
     supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def check_mempool_result(self, result_expected, *args, **kwargs):
         """Wrapper to check result of testmempoolaccept on node_0's mempool"""

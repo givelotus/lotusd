@@ -56,9 +56,7 @@ class ChronikWsTest(BitcoinTestFramework):
     ]
     supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
-        self.skip_if_no_chronik_plugins()
+    requires = {"chronik", "chronik_plugins"}
 
     def run_test(self):
         node = self.nodes[0]

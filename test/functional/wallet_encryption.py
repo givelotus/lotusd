@@ -20,8 +20,7 @@ class WalletEncryptionTest(BitcoinTestFramework):
     setup_clean_chain = True
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         passphrase = "WalletPassphrase"

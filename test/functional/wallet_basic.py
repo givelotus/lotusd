@@ -29,8 +29,7 @@ class WalletTest(BitcoinTestFramework):
     ] * num_nodes
     supports_cli = False
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def setup_network(self):
         self.setup_nodes()

@@ -24,8 +24,7 @@ class ReorgsRestoreTest(BitcoinTestFramework):
     num_nodes = 3
     extra_args = [["-noparkdeepreorg"]] * num_nodes
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         # Send a tx from which to conflict outputs later
