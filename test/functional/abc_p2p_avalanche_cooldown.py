@@ -35,7 +35,9 @@ class AvalancheCooldownTest(BitcoinTestFramework):
                 "-avaproofstakeutxoconfirmations=1",
                 "-avaminquorumstake=0",
                 "-avaminavaproofsnodecount=0",
-                "-avacooldown=10000",
+                # Keep rejection checks inside the cooldown on loaded hosts.
+                # Expiry is checked separately after restarting with 100 ms.
+                "-avacooldown=600000",
                 "-persistavapeers=0",
             ],
         ]

@@ -396,9 +396,15 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                             out += '}';
                         }
                         out += ' ';
-                        AppendUInt(
-                            out,
-                            static_cast<const Counter &>(*metric).Value(i));
+                        if (const auto *fc{
+                                dynamic_cast<const FunctionCounter *>(
+                                    metric.get())}) {
+                            AppendUInt(out, fc->Value());
+                        } else {
+                            AppendUInt(
+                                out,
+                                static_cast<const Counter &>(*metric).Value(i));
+                        }
                         out += '\n';
                         break;
                     }
