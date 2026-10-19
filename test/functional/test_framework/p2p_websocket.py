@@ -29,8 +29,9 @@ def load_p2p_zstd_dict(srcdir):
 
 
 class P2PWebSocketClient:
-    def __init__(self, url, *, subprotocols=None, srcdir=None, net="regtest",
-                 timeout=30):
+    def __init__(
+        self, url, *, subprotocols=None, srcdir=None, net="regtest", timeout=30
+    ):
         import websocket
         import zstandard
 

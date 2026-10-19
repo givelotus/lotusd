@@ -24,17 +24,24 @@ V2_SIG = b"\r\n\r\n\x00\r\nQUIT\n"
 
 
 def proxy_v2_tcp4(src, sport, dst="10.0.0.5", dport=10605):
-    addrs = (socket.inet_aton(src) + socket.inet_aton(dst)
-             + struct.pack(">HH", sport, dport))
+    addrs = (
+        socket.inet_aton(src) + socket.inet_aton(dst) + struct.pack(">HH", sport, dport)
+    )
     return V2_SIG + bytes([0x21, 0x11]) + struct.pack(">H", len(addrs)) + addrs
 
 
 def upgrade(path="/p2p/ws", headers=()):
     key = base64.b64encode(os.urandom(16)).decode()
-    lines = [f"GET {path} HTTP/1.1", "Host: node", "Upgrade: websocket",
-             "Connection: Upgrade", f"Sec-WebSocket-Key: {key}",
-             "Sec-WebSocket-Version: 13", "Sec-WebSocket-Protocol: p2p-zstd-v1",
-             *headers]
+    lines = [
+        f"GET {path} HTTP/1.1",
+        "Host: node",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Key: {key}",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Protocol: p2p-zstd-v1",
+        *headers,
+    ]
     return ("\r\n".join(lines) + "\r\n\r\n").encode()
 
 
@@ -97,14 +104,17 @@ class HTTPTrustedProxyTest(BitcoinTestFramework):
         self.wait_until(lambda: len(self.nodes[0].getpeerinfo()) > len(before))
         peer = [p for p in self.nodes[0].getpeerinfo() if p["id"] not in before][0]
         s.close()
-        self.wait_until(lambda: peer["id"] not in
-                        {p["id"] for p in self.nodes[0].getpeerinfo()})
+        self.wait_until(
+            lambda: peer["id"] not in {p["id"] for p in self.nodes[0].getpeerinfo()}
+        )
         return peer["addr"]
 
     def run_test(self):
         self.log.info("PROXY v2 from a trusted balancer: the client's address")
-        assert_equal(self.ws_peer_addr(proxy_v2_tcp4("203.0.113.7", 51000) + upgrade()),
-                     "203.0.113.7:51000")
+        assert_equal(
+            self.ws_peer_addr(proxy_v2_tcp4("203.0.113.7", 51000) + upgrade()),
+            "203.0.113.7:51000",
+        )
         self.log.info("PROXY v1, and a LOCAL v2 header (balancer health check)")
         v1 = b"PROXY TCP4 198.51.100.22 10.0.0.5 35646 10605\r\n"
         assert_equal(self.ws_peer_addr(v1 + upgrade()), "198.51.100.22:35646")
@@ -121,10 +131,13 @@ class HTTPTrustedProxyTest(BitcoinTestFramework):
         assert self.ws_peer_addr(upgrade(headers=[xff])).startswith("198.51.100.4:")
         self.log.info("...combined with PROXY from the outer balancer")
         assert self.ws_peer_addr(
-            proxy_v2_tcp4("10.0.3.3", 4000) + upgrade(headers=["X-Forwarded-For: 192.0.2.10"])
+            proxy_v2_tcp4("10.0.3.3", 4000)
+            + upgrade(headers=["X-Forwarded-For: 192.0.2.10"])
         ).startswith("192.0.2.10:")
         self.log.info("...and ignored from an untrusted client")
-        assert self.ws_peer_addr(upgrade(headers=[xff]), host="::1").startswith("[::1]:")
+        assert self.ws_peer_addr(upgrade(headers=[xff]), host="::1").startswith(
+            "[::1]:"
+        )
 
         self.log.info("-rpcallowip applies to the resolved client")
         rpc = rpc_port(0)
@@ -133,18 +146,30 @@ class HTTPTrustedProxyTest(BitcoinTestFramework):
         def rpc_request(extra=()):
             # Credentials change on restart (a new cookie).
             url = urllib.parse.urlparse(self.nodes[0].url)
-            auth = "Authorization: Basic " + base64.b64encode(
-                f"{url.username}:{url.password}".encode()).decode()
-            lines = ["POST / HTTP/1.1", "Host: node", "Connection: close", auth,
-                     "Content-Type: application/json", f"Content-Length: {len(body)}",
-                     *extra]
+            auth = (
+                "Authorization: Basic "
+                + base64.b64encode(f"{url.username}:{url.password}".encode()).decode()
+            )
+            lines = [
+                "POST / HTTP/1.1",
+                "Host: node",
+                "Connection: close",
+                auth,
+                "Content-Type: application/json",
+                f"Content-Length: {len(body)}",
+                *extra,
+            ]
             return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
         assert_equal(self.exchange(rpc_request(), port=rpc)[0].split()[1], "200")
-        status = self.exchange(rpc_request(["X-Forwarded-For: 203.0.113.9"]), port=rpc)[0]
+        status = self.exchange(rpc_request(["X-Forwarded-For: 203.0.113.9"]), port=rpc)[
+            0
+        ]
         assert_equal(status.split()[1], "403")
         self.restart_node(0, self.args0 + ["-rpcallowip=203.0.113.0/24"])
-        status = self.exchange(rpc_request(["X-Forwarded-For: 203.0.113.9"]), port=rpc)[0]
+        status = self.exchange(rpc_request(["X-Forwarded-For: 203.0.113.9"]), port=rpc)[
+            0
+        ]
         assert_equal(status.split()[1], "200")
 
         self.log.info("/livez, /readyz and /healthz")
@@ -156,11 +181,15 @@ class HTTPTrustedProxyTest(BitcoinTestFramework):
             assert_equal(json.loads(body)["reason"], "initial block download")
         self.generate(self.nodes[0], 1, sync_fun=self.no_op)
         status, body, _ = self.exchange(get("/readyz"))
-        assert_equal((status.split()[1], json.loads(body)["reason"]), ("503", "no peers"))
+        assert_equal(
+            (status.split()[1], json.loads(body)["reason"]), ("503", "no peers")
+        )
         self.connect_nodes(1, 0)
         status, body, _ = self.exchange(get("/readyz?verbose=1"))
         assert_equal((status.split()[1], json.loads(body)), ("200", {"status": "ok"}))
-        status, body, _ = self.exchange(b"HEAD /livez HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        status, body, _ = self.exchange(
+            b"HEAD /livez HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        )
         assert_equal((status.split()[1], body), ("200", b""))
         # Also on the RPC port, without credentials.
         assert_equal(self.exchange(get("/livez"), port=rpc)[0].split()[1], "200")
@@ -174,7 +203,8 @@ class HTTPTrustedProxyTest(BitcoinTestFramework):
         self.log.info("An invalid -trustedproxy is a startup error")
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
-            ["-trustedproxy=not-a-subnet"], "Unable to start HTTP server",
+            ["-trustedproxy=not-a-subnet"],
+            "Unable to start HTTP server",
             match=ErrorMatch.PARTIAL_REGEX,
         )
 

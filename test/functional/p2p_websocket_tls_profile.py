@@ -95,7 +95,9 @@ class P2PWebSocketTLSProfileTest(BitcoinTestFramework):
         self.nodes[1].addnode(
             node=f"wss://localhost:{self.public_port}/p2p/ws", command="onetry"
         )
-        self.wait_until(lambda: len(self.ws_peers(0)) == 1 and len(self.ws_peers(1)) == 1)
+        self.wait_until(
+            lambda: len(self.ws_peers(0)) == 1 and len(self.ws_peers(1)) == 1
+        )
         assert_equal(self.ws_peers(0)[0]["websocket"]["alpn"], "http/1.1")
         assert_equal(self.ws_peers(1)[0]["websocket"]["alpn"], "http/1.1")
 
@@ -116,7 +118,9 @@ class P2PWebSocketTLSProfileTest(BitcoinTestFramework):
 
         self.log.info("Dialing an IP address sends no SNI, with a warning")
         ip_url = f"wss://127.0.0.1:{p2p_port(CAPTURE_PORT_INDEX)}/p2p/ws"
-        with self.nodes[1].assert_debug_log(["TLS to an IP address carries no server name"]):
+        with self.nodes[1].assert_debug_log(
+            ["TLS to an IP address carries no server name"]
+        ):
             self.nodes[1].addnode(node=ip_url, command="onetry")
             self.wait_until(lambda: len(capture.hellos) == 2)
         assert_equal(capture.hellos[1]["sni"], None)
