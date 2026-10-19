@@ -1900,14 +1900,15 @@ void HTTPRequest::WriteHeader(const std::string &hdr,
     m_impl->beast_res.insert(hdr, value);
 }
 
-void HTTPRequest::WriteReply(int nStatus, const std::string &strReply) {
+void HTTPRequest::WriteReply(int nStatus, std::string strReply) {
     assert(!replySent && m_impl);
     if (ShutdownRequested()) {
         WriteHeader("Connection", "close");
     }
     BeastResponse &res = m_impl->beast_res;
     res.result(static_cast<unsigned>(nStatus));
-    res.body() = strReply;
+    // The body is moved through to the socket write: no copies.
+    res.body() = std::move(strReply);
     MaybeCompressZstd(m_impl->beast_req, res);
     FinalizeResponse(res, m_impl->beast_req.version());
 
