@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <map>
+#include <queue>
 #include <set>
 #include <tuple>
 
@@ -281,10 +282,66 @@ std::vector<SpentInput> ReceiptSpends(const ReceiptTx &tx) {
 
 using OldValueFn = std::function<std::optional<Bytes>(const Bytes &)>;
 
+} // namespace
+
+std::vector<size_t>
+ProcessingOrder(const std::vector<ConfirmedTx> &transactions) {
+    std::map<TxId, size_t> index;
+    for (size_t i = 0; i < transactions.size(); ++i) {
+        index.emplace(transactions[i].location.txid, i);
+    }
+    std::vector<size_t> pending(transactions.size(), 0);
+    std::vector<std::vector<size_t>> children(transactions.size());
+    for (size_t child = 0; child < transactions.size(); ++child) {
+        for (const SpentInput &spend : transactions[child].spends) {
+            const auto it = index.find(spend.outpoint.txid);
+            if (it != index.end() && it->second != child) {
+                ++pending[child];
+                children[it->second].push_back(child);
+            }
+        }
+    }
+    std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>>
+        ready;
+    for (size_t i = 0; i < transactions.size(); ++i) {
+        if (pending[i] == 0) {
+            ready.push(i);
+        }
+    }
+    std::vector<size_t> order;
+    order.reserve(transactions.size());
+    while (!ready.empty()) {
+        const size_t i = ready.top();
+        ready.pop();
+        order.push_back(i);
+        for (const size_t child : children[i]) {
+            if (--pending[child] == 0) {
+                ready.push(child);
+            }
+        }
+    }
+    if (order.size() < transactions.size()) {
+        std::vector<bool> placed(transactions.size(), false);
+        for (const size_t i : order) {
+            placed[i] = true;
+        }
+        for (size_t i = 0; i < transactions.size(); ++i) {
+            if (!placed[i]) {
+                order.push_back(i);
+            }
+        }
+    }
+    return order;
+}
+
+namespace {
+
 std::map<Bytes, Bytes> AssetEntries(const CommittedBlock &block,
+                                    const std::vector<size_t> &order,
                                     const OldValueFn &old_value) {
     std::map<Bytes, Bytes> entries;
-    for (const ConfirmedTx &tx : block.transactions) {
+    for (const size_t tx_index : order) {
+        const ConfirmedTx &tx = block.transactions[tx_index];
         std::vector<ResolvedCreation> resolved_spends;
         std::vector<Hash32> mint_token_ids;
         for (const InputFact &input : tx.explorer.inputs) {
@@ -414,7 +471,9 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
     reserve(reservation, PreflightExplorerBlock(restored));
     std::map<Bytes, Bytes> legacy_current;
     std::map<Bytes, std::optional<Bytes>> legacy_previous;
-    for (const ConfirmedTx &tx : restored.transactions) {
+    const std::vector<size_t> order = ProcessingOrder(restored.transactions);
+    for (const size_t tx_index : order) {
+        const ConfirmedTx &tx = restored.transactions[tx_index];
         const Bytes tk = PrefixKey('t', tx.location.txid.hash.b);
         legacy_current[tk] = codec::Encode(tx.location);
         legacy_previous[tk] = std::nullopt;
@@ -481,10 +540,12 @@ void ValidateUndo(const V2Env &db, const Binding &binding, const Anchor &anchor,
         undo_map.emplace(k, v);
     }
     const auto asset_entries =
-        AssetEntries(restored, [&](const Bytes &k) -> std::optional<Bytes> {
-            auto it = undo_map.find(k);
-            return it == undo_map.end() ? std::nullopt : it->second;
-        });
+        AssetEntries(restored, order,
+                     [&](const Bytes &k) -> std::optional<Bytes> {
+                         auto it = undo_map.find(k);
+                         return it == undo_map.end() ? std::nullopt
+                                                     : it->second;
+                     });
     for (const auto &[k, v] : asset_entries) {
         if (!expected.insert(k).second || db.Get(k) != v) {
             ThrowCorrupt();
@@ -783,9 +844,14 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
         }
         return;
     }
+    // Resolve and apply in-block parents before their children: the host
+    // may confirm blocks in canonical (txid) order, where a child can precede
+    // the parent whose output it spends.
+    const std::vector<size_t> order = ProcessingOrder(block.transactions);
     CommittedBlock resolved = block;
     std::map<OutPoint, ResolvedCreation> creations;
-    for (ConfirmedTx &tx : resolved.transactions) {
+    for (const size_t tx_index : order) {
+        ConfirmedTx &tx = resolved.transactions[tx_index];
         for (size_t index = 0; index < tx.explorer.inputs.size(); ++index) {
             InputFact &input = tx.explorer.inputs[index];
             if (input.flags == 1) {
@@ -854,7 +920,8 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
     std::map<Bytes, std::optional<Bytes>> state;
     std::map<Bytes, std::optional<Bytes>> undo;
     std::set<OutPoint> spent;
-    for (const ConfirmedTx &tx : block.transactions) {
+    for (const size_t tx_index : order) {
+        const ConfirmedTx &tx = block.transactions[tx_index];
         const Bytes tx_key = PrefixKey('t', tx.location.txid.hash.b);
         if (m_db->Get(tx_key)) {
             ThrowInvalid("duplicate transaction");
@@ -926,7 +993,7 @@ void V2Db::ConnectImpl(const CommittedBlock &block, bool genesis) {
         undo[k] = std::nullopt;
         state[k] = std::move(v);
     }
-    for (auto &[k, v] : AssetEntries(resolved, [&](const Bytes &key) {
+    for (auto &[k, v] : AssetEntries(resolved, order, [&](const Bytes &key) {
              return m_db->Get(key);
          })) {
         auto old = m_db->Get(k);
