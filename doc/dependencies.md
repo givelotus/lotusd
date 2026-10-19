@@ -29,7 +29,6 @@ These are the dependencies currently used by Bitcoin ABC. You can find instructi
 | systemtap ([tracing](tracing.md))| | | | | |
 | XCB |  |  |  |  | Yes (Linux only) |
 | xkbcommon |  |  |  |  | Yes (Linux only) |
-| ZeroMQ | [4.3.1](https://github.com/zeromq/libzmq/releases) | 4.1.5 | No |  |  |
 | zlib | [1.2.11](http://zlib.net/) |  |  |  | No |
 
 Controlling dependencies
@@ -45,5 +44,4 @@ factors that affect the dependency list.
 * Qt is not needed with `-DBUILD_QT=OFF`.
 * qrencode is not needed with `-DENABLE_QRCODE=OFF`.
 * systemtap is not needed with `-DENABLE_TRACING=OFF`.
-* ZeroMQ is not needed with the `-DBUILD_ZMQ=OFF`.
 * nghttp2 is only needed with `-DENABLE_HTTP2=ON` (default OFF).
