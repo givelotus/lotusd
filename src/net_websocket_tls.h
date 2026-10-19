@@ -28,6 +28,7 @@ public:
     ssize_t Write(SOCKET fd, const uint8_t *buf, size_t len) override;
     bool HasBuffered() const override;
     Sock::Event WriteWaitsFor() const override { return m_write_waits_for; }
+    Sock::Event ReadWaitsFor() const override { return m_read_waits_for; }
     void Shutdown(SOCKET fd) override;
     bool IsTLS() const override { return true; }
 
@@ -40,6 +41,7 @@ private:
 
     const tls::SslPtr m_ssl;
     Sock::Event m_write_waits_for{Sock::SEND};
+    Sock::Event m_read_waits_for{Sock::RECV};
     //! Length of a write OpenSSL must see again (0: none pending). The
     //! caller's buffer only grows at the end, so the bytes are unchanged.
     size_t m_retry_len{0};

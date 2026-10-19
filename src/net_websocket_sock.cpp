@@ -87,7 +87,9 @@ void WebSocketSock::UpdateFlagsLocked() const {
                      WebSocketCodec::HasCompleteFrame(m_rx_wire) ||
                      m_eof || m_failed;
     const bool pending{!m_coalesce.empty() || m_tx_offset < m_tx.size()};
-    m_pending_events = pending ? m_layer->WriteWaitsFor() : Event{0};
+    // A read blocked on writability resumes from FlushPending().
+    m_pending_events = (pending ? m_layer->WriteWaitsFor() : Event{0}) |
+                       (m_read_waits_send ? Sock::SEND : Event{0});
 }
 
 bool WebSocketSock::FlushLocked() const {
@@ -166,6 +168,7 @@ ssize_t WebSocketSock::Send(const void *data, size_t len, int flags) const {
 bool WebSocketSock::FillLocked() const {
     // Read what the OS socket (or TLS layer) has, then decode.
     uint8_t buf[64 * 1024];
+    m_read_waits_send = false;
     while (!m_eof) {
         const ssize_t n{m_layer->Read(m_socket, buf, sizeof(buf))};
         if (n > 0) {
@@ -180,6 +183,7 @@ bool WebSocketSock::FillLocked() const {
             break;
         }
         if (WouldBlock(errno)) {
+            m_read_waits_send = m_layer->ReadWaitsFor() == Sock::SEND;
             break;
         }
         m_failed = true;
@@ -255,7 +259,12 @@ Sock::Event WebSocketSock::PendingEvents() const {
 
 bool WebSocketSock::FlushPending() const {
     LOCK(m_mutex);
-    const bool ok{!m_failed && FlushLocked()};
+    bool ok{!m_failed && FlushLocked()};
+    // Retry a read that was waiting for the socket to become writable; what
+    // it decodes is then reported by HasBufferedRecv().
+    if (ok && m_read_waits_send) {
+        ok = FillLocked();
+    }
     UpdateFlagsLocked();
     return ok;
 }
