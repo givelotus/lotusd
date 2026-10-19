@@ -1,6 +1,7 @@
 #include "vm.h"
 
 #include "field_size.h"
+#include "tagged_hash.h"
 
 #include <algorithm>
 #include <iostream>
@@ -127,8 +128,8 @@ void RegistryAllocation() {
     // Newly registered bytes are assigned: never success. Without an
     // authenticated context (or before their semantics land) they are
     // Unsupported; three index operands are supplied for the readers.
-    for (uint8_t b : {0xc3, 0xde, 0xdf, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf5,
-                      0xf6})
+    // STATEHASH (c3) is context-free and covered by StateHashAndVerify.
+    for (uint8_t b : {0xde, 0xdf, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf5, 0xf6})
         CHECK(EvaluateVm(VmBytes{b, 0x4e}, {Number(0), Number(0), Number(0)},
                          PROFILE)
                   .status == VmStatus::Unsupported);
@@ -890,6 +891,133 @@ void InputWitnessArg() {
             std::to_string(uint64_t(loose.accounting_cost)));
     CHECK(tight.invocation.executed_cost <= tight.accounting_cost);
     Expect("df", VmStatus::Unsupported, {Number(0), Number(0), Number(0)});
+}
+void StateHashAndVerify() {
+    // STATEHASH (c3): item_1..item_k N(k) -> Hash32 under the
+    // Lotus/v2/contractstate tag. Expected digests come from the Python
+    // reference (test_framework.messages.lotus_v2_tagged_hash).
+    const VmProfile wide{8192, 64, 8192, 256, 256, 1048576, 64, 100000};
+    auto check = [&](const std::string &pushes, const std::string &digest) {
+        const auto script = Hex(pushes + "c3 20" + digest + "92 4e");
+        const auto result = EvaluateVm(script, {}, wide);
+        if (result.status != VmStatus::Success)
+            throw std::runtime_error("STATEHASH " + pushes + ": " + result.error);
+    };
+    check("00", "593ba2e63160ffe5a848e607a2c8d2bb2aef41e2956facd1b888178b0e170484");
+    check("4c00 4e",
+          "df8a9562ee5772b99d5cc7bcee85abd81aa0e78e8556676e9c622aca0369ac5b");
+    check("01aa 10000102030405060708090a0b0c0d0e0f 4f",
+          "6e84c64bbe536e5d14d89ee55c0c81fa8cf9ce41430b22e9dc7909d35ec3b77c");
+    check("0101 4c00 020203 50",
+          "43f4bb1049bc44deee1b79c758100b8e417d872cd35422143c10e92c356b66ef");
+    std::string sixty_four;
+    for (int i = 0; i < 64; ++i) sixty_four += "4c00";
+    const std::string n64 = "10 40000000000000000000000000000000";
+    check(sixty_four + n64,
+          "894f918b4e09176295283b91e943d64d8aaa3cb2ea4736bc2abe7d50480522ce");
+    // k outside 0..64, or more items than the stack holds, is an error.
+    CHECK(EvaluateVm(Hex(sixty_four + "4c00 10 41000000000000000000000000000000 c3 4e"),
+                     {}, wide)
+              .error == "STATEHASH item count");
+    CHECK(EvaluateVm(Hex("4d c3 4e"), {}, wide).error == "STATEHASH item count");
+    CHECK(EvaluateVm(Hex("01aa 4f c3 4e"), {}, wide).error == "stack underflow");
+    // The streamed digest equals the materialized tagged hash, including
+    // multi-chunk items and three-byte CompactSize lengths.
+    for (const size_t length : {size_t(0), size_t(300), size_t(2000)}) {
+        std::vector<VmBytes> items{VmBytes(length, 0x5c), Hex("01")};
+        VmBytes preimage{2};
+        for (const auto &item : items) {
+            if (item.size() < 253)
+                preimage.push_back(uint8_t(item.size()));
+            else
+                preimage.insert(preimage.end(), {253, uint8_t(item.size()),
+                                                 uint8_t(item.size() >> 8)});
+            preimage.insert(preimage.end(), item.begin(), item.end());
+        }
+        CHECK(ContractStateHash(items) ==
+              TaggedHash(HashDomain::ContractState, preimage));
+        CHECK(ContractStateHash(items) !=
+              TaggedHash(HashDomain::State, preimage)); // separate tag (I-13)
+    }
+    // Static cost: a literal count gives exact sizes, so accounting equals
+    // the executed cost; a dynamic count is bounded by the 64-item worst case.
+    VmCostProfile cost;
+    cost.max_invocation_cost = 100000000;
+    cost.structural_byte_cost = 1;
+    for (auto &op : cost.opcode) op = {1, 1, 1};
+    const auto exact = EvaluateVmCharged(
+        Hex("01aa 10000102030405060708090a0b0c0d0e0f 4f c3 79 4e"), {}, wide,
+        cost);
+    CHECK(exact.invocation.status == VmStatus::Success && exact.charged &&
+          exact.accounting_cost == exact.invocation.executed_cost);
+    const auto dynamic = EvaluateVmCharged(Hex("c3 79 4e"),
+                                           {Hex("aa"), Number(1)}, wide, cost);
+    CHECK(dynamic.invocation.status == VmStatus::Success && dynamic.charged &&
+          dynamic.accounting_cost > dynamic.invocation.executed_cost);
+
+    // STATEVERIFY (ed): Hash32 ->, against the spent coin's state root.
+    const TxProfile tx_profile{32, 32, 8, 8192, 16, 8192, 64};
+    ChainId chain{};
+    Transaction tx;
+    Input spend;
+    spend.flags = 1;
+    spend.prev_txid.fill(0x51);
+    spend.sequence = UINT32_MAX;
+    spend.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    Input mint;
+    mint.flags = 3;
+    mint.sequence = UINT32_MAX;
+    mint.witnesses = {BranchWitness{Hex("4e"), {}, {}}};
+    tx.inputs = {spend, mint};
+    Output coin;
+    coin.value = 700;
+    coin.branches = {Hash{}};
+    coin.paths = {{0}};
+    coin.flags = 4;
+    const std::vector<VmBytes> state_items{Hex("01"), Hex("0203")};
+    coin.state_root = ContractStateHash(state_items);
+    ResolvedCoins resolved{coin, std::nullopt};
+    Output pay = coin;
+    pay.flags = 0;
+    pay.state_root = Hash{};
+    pay.branches[0].fill(0x46);
+    tx.outputs = {pay};
+    auto run = [&](size_t input, const VmBytes &script) {
+        tx.inputs[input].witnesses[0].script = script;
+        resolved[0]->branches[0] = BranchLeaf(tx.inputs[0].witnesses[0].script);
+        tx.inputs[1].prev_txid = BranchLeaf(tx.inputs[1].witnesses[0].script);
+        PositiveDelta delta{};
+        delta[0] = 1;
+        VmExecutionContext ctx{tx, tx_profile, chain, resolved, input, 0,
+                               input == 1 ? std::optional(delta)
+                                          : std::nullopt};
+        return EvaluateVmWithContext(script, {}, PROFILE, ctx);
+    };
+    VmBytes push_root{32};
+    push_root.insert(push_root.end(), coin.state_root.begin(),
+                     coin.state_root.end());
+    auto with = [](VmBytes a, const std::string &tail) {
+        const auto b = Hex(tail);
+        a.insert(a.end(), b.begin(), b.end());
+        return a;
+    };
+    CHECK(run(0, with(push_root, "ed 4e")).status == VmStatus::Success);
+    // STATEHASH then STATEVERIFY: commit to the items behind the root.
+    CHECK(run(0, Hex("0101 020203 4f c3 ed 4e")).status == VmStatus::Success);
+    CHECK(run(0, Hex("0101 020204 4f c3 ed 4e")).error ==
+          "STATEVERIFY mismatch");
+    auto wrong = push_root;
+    wrong.back() ^= 1;
+    CHECK(run(0, with(wrong, "ed 4e")).error == "STATEVERIFY mismatch");
+    CHECK(run(0, Hex("1f" + std::string(62, '0') + "ed 4e")).error ==
+          "STATEVERIFY root width");
+    CHECK(run(1, with(push_root, "ed 4e")).error ==
+          "STATEVERIFY requires spend");
+    resolved[0]->flags = 0;
+    resolved[0]->state_root = Hash{};
+    CHECK(run(0, with(push_root, "ed 4e")).error ==
+          "STATEVERIFY coin lacks state");
+    Expect("ed", VmStatus::Unsupported, {VmBytes(32)});
 }
 void ChargedAccounting() {
     auto schedule = IllustrativeCost();
@@ -1711,6 +1839,7 @@ int main() {
     StateAndActiveIndexOpcodes();
     TokenBalance();
     InputWitnessArg();
+    StateHashAndVerify();
     HashAndBounds();
     ChargedAccounting();
     EnumerateIdiom();

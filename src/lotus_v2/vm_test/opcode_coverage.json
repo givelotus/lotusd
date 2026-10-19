@@ -1062,7 +1062,7 @@
       "byte": "c3",
       "name": "STATEHASH",
       "group": "cryptography",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "c8",
@@ -1290,7 +1290,7 @@
       "byte": "ed",
       "name": "STATEVERIFY",
       "group": "output",
-      "status": "unsupported"
+      "status": "implemented"
     },
     {
       "byte": "ee",
