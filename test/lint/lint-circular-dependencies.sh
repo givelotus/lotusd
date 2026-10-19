@@ -15,10 +15,6 @@ set -euo pipefail
 EXPECTED_CIRCULAR_DEPENDENCIES=(
     "node/blockstorage -> validation -> node/blockstorage"
     "node/utxo_snapshot -> validation -> node/utxo_snapshot"
-    "qt/addresstablemodel -> qt/walletmodel -> qt/addresstablemodel"
-    "qt/bitcoingui -> qt/walletframe -> qt/bitcoingui"
-    "qt/recentrequeststablemodel -> qt/walletmodel -> qt/recentrequeststablemodel"
-    "qt/transactiontablemodel -> qt/walletmodel -> qt/transactiontablemodel"
     "wallet/fees -> wallet/wallet -> wallet/fees"
     "wallet/rpcwallet -> wallet/wallet -> wallet/rpcwallet"
     "wallet/wallet -> wallet/walletdb -> wallet/wallet"

@@ -19,7 +19,6 @@ exclude_from_source_package(
 	"verifybinaries/"
 
 	# Files
-	"bitcoin-qt.pro"
 	"README.md"
 	"valgrind.supp"
 )
