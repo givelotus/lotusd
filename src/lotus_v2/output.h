@@ -33,7 +33,10 @@ struct Output {
     Hash32 state_root{};
     std::vector<Hash32> branches;
     std::vector<std::vector<uint8_t>> paths;
-    // State transfer only; EncodeOutput rejects this legacy representation.
+    // A legacy coin (created by a version 1 or 2 transaction): its legacy
+    // scriptPubKey. Such an Output is a spent coin or a state coin, never a
+    // V2 transaction output; EncodeOutput rejects it, EncodeCoinOutput
+    // gives its coin wire.
     std::optional<std::vector<uint8_t>> legacy_script;
 
     bool HasToken() const { return (flags & 1) != 0; }
@@ -50,6 +53,19 @@ bool EncodeOutput(const Output &output, std::vector<uint8_t> &result,
                   std::string &error);
 bool ComputeOutputSerializedSize(const Output &output, size_t &size,
                                  std::string &error);
+
+// Largest legacy coin script (the legacy MAX_SCRIPT_SIZE).
+constexpr size_t MAX_LEGACY_COIN_SCRIPT_BYTES = 10000;
+
+// The wire of a coin, the spent output an input commits to (coins root, own
+// input hash, coin introspection, state records): EncodeOutput for a V2
+// coin; for a legacy coin
+//   LegacyCoinWire = 0x80 || value:u64le || CompactSize(|script|) || script.
+// 0x80 is not a valid V2 output flags byte, so the two cannot collide.
+bool EncodeCoinOutput(const Output &coin, std::vector<uint8_t> &result,
+                      std::string &error);
+bool ComputeCoinOutputSerializedSize(const Output &coin, size_t &size,
+                                     std::string &error);
 
 } // namespace lotus::v2
 
