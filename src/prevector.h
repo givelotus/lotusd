@@ -29,6 +29,8 @@
  *   - Size capacity: the number of allocated elements
  *   - T* indirect: a pointer to an array of capacity elements of type T
  *     (only the first _size are initialized).
+ * - Borrowed (see Borrow()): indirect, with capacity 0. The elements belong to
+ *   someone else and are never freed or reallocated here.
  *
  * The data type T must be movable by memmove/realloc(). Once we switch to C++,
  * move constructors can be used instead.
@@ -269,6 +271,9 @@ private:
                pos;
     }
     bool is_direct() const { return _size <= N; }
+    bool is_borrowed() const {
+        return !is_direct() && _union.indirect_contents.capacity == 0;
+    }
 
     void change_capacity(size_type new_capacity) {
         if (new_capacity <= N) {
@@ -277,11 +282,21 @@ private:
                 T *src = indirect;
                 T *dst = direct_ptr(0);
                 memcpy(dst, src, size() * sizeof(T));
-                free(indirect);
+                if (!is_borrowed()) {
+                    free(indirect);
+                }
                 _size -= N + 1;
             }
         } else {
-            if (!is_direct()) {
+            if (is_borrowed()) {
+                // Take a private copy instead of reallocating borrowed memory.
+                char *new_indirect = static_cast<char *>(
+                    malloc(((size_t)sizeof(T)) * new_capacity));
+                assert(new_indirect);
+                memcpy(new_indirect, indirect_ptr(0), size() * sizeof(T));
+                _union.indirect_contents.indirect = new_indirect;
+                _union.indirect_contents.capacity = new_capacity;
+            } else if (!is_direct()) {
                 // FIXME: Because malloc/realloc here won't call new_handler if
                 // allocation fails, assert success. These should instead use an
                 // allocator or new/delete so that handlers are called as
@@ -386,7 +401,7 @@ public:
     }
 
     prevector &operator=(prevector<N, T, Size, Diff> &&other) noexcept {
-        if (!is_direct()) {
+        if (!is_direct() && !is_borrowed()) {
             free(_union.indirect_contents.indirect);
         }
         _union = std::move(other._union);
@@ -549,8 +564,28 @@ public:
         std::swap(_size, other._size);
     }
 
+    /**
+     * View n elements owned by someone else without copying them, when they do
+     * not fit inline (smaller arrays are copied inline as usual). The elements
+     * must outlive the result and every move of it. Copies of a borrowed
+     * prevector own their elements, and growing one takes a private copy
+     * first; it must not otherwise be modified in place.
+     */
+    static prevector Borrow(const T *elements, size_type n) {
+        prevector v;
+        if (n <= N) {
+            v.assign(elements, elements + n);
+        } else {
+            v._union.indirect_contents.indirect =
+                reinterpret_cast<char *>(const_cast<T *>(elements));
+            v._union.indirect_contents.capacity = 0;
+            v._size = n + N + 1;
+        }
+        return v;
+    }
+
     ~prevector() {
-        if (!is_direct()) {
+        if (!is_direct() && !is_borrowed()) {
             free(_union.indirect_contents.indirect);
             _union.indirect_contents.indirect = nullptr;
         }

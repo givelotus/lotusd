@@ -57,7 +57,7 @@ GetMinerFundWhitelist(const Consensus::Params &params) {
 }
 
 bool CheckMinerFund(const Consensus::Params &params,
-                    const std::vector<CTxOut> &coinbaseTxOut,
+                    Span<const CTxOut> coinbaseTxOut,
                     const Amount &blockReward, const CBlockIndex *pprev) {
     const auto whitelist = GetMinerFundWhitelist(params);
     if (whitelist.empty()) {

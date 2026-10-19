@@ -915,12 +915,12 @@ void Unserialize(Stream &is, std::set<K, Pred, A> &m);
  * shared_ptr
  */
 /**
- * Allocator used to create objects deserialized into a shared_ptr<const T>.
- * Specialize it to give a type its own allocator; std::allocator gives
- * std::make_shared behaviour.
+ * Creates objects deserialized into a shared_ptr<const T>. Specialize it to
+ * give a type its own construction; the default is std::make_shared.
  */
-template <typename T> struct SharedPtrDeserializeAllocator {
-    using type = std::allocator<T>;
+template <typename T> struct SharedPtrDeserializer {
+    template <typename Stream>
+    static std::shared_ptr<const T> Make(Stream &is);
 };
 template <typename Stream, typename T>
 void Serialize(Stream &os, const std::shared_ptr<const T> &p);
@@ -1162,8 +1162,13 @@ void Serialize(Stream &os, const std::shared_ptr<const T> &p) {
 
 template <typename Stream, typename T>
 void Unserialize(Stream &is, std::shared_ptr<const T> &p) {
-    p = std::allocate_shared<const T>(
-        typename SharedPtrDeserializeAllocator<T>::type{}, deserialize, is);
+    p = SharedPtrDeserializer<T>::Make(is);
+}
+
+template <typename T>
+template <typename Stream>
+std::shared_ptr<const T> SharedPtrDeserializer<T>::Make(Stream &is) {
+    return std::make_shared<const T>(deserialize, is);
 }
 
 /**
