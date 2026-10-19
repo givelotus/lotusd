@@ -26,6 +26,7 @@
 
 #include <chronik/native/codec/script_compress.h>
 #include <chronik/native/host.h>
+#include <chronik/native/tx/legacy_tx.h>
 #include <chronik/native/types.h>
 
 #include <chainparams.h>
@@ -35,6 +36,8 @@
 #include <crypto/sha256.h>
 #include <feerate.h>
 #include <lotus_v2/fee_hysteresis.h>
+#include <lotus_v2/output.h>
+#include <lotus_v2/transaction.h>
 #include <node/blockstorage.h>
 #include <node/transaction.h>
 #include <pubkey.h>
@@ -89,11 +92,56 @@ AbcHost MakeHost(const node::NodeContext &node) {
 // script field, so a block read back from disk differs from the in-memory
 // CBlock the test miner returns, and undo coins of such outputs have an empty
 // script. The eCash tier has no such outputs. On V2, the tests convert the
-// stored block and take coinbase scripts from the node's own serialization;
-// V2-specific conversion belongs to the V2 extension of the adapter.
+// stored block, and expect the adapter to index native outputs (such as those
+// undo coins) as the native output frame, checked against the node's own
+// lotus::v2::EncodeOutput.
 template <typename T>
 constexpr bool HasV2Branches = requires(const T &o) { o.vBranches; };
 constexpr bool kV2Outputs = HasV2Branches<CTxOut>;
+
+/** The script the adapter must index for a node output. */
+template <typename TxOutT> cn::Bytes ExpectedScript(const TxOutT &output) {
+    if constexpr (HasV2Branches<TxOutT>) {
+        if (output.scriptPubKey.size() <= 1 && !output.vBranches.empty()) {
+            lotus::v2::Output native;
+            native.flags = output.nFlags & 0x03;
+            if (!output.tokenId.IsNull()) {
+                native.flags |= 1;
+                std::memcpy(native.token_id.data(), output.tokenId.begin(),
+                            32);
+            }
+            native.value = uint64_t(output.nValue / SATOSHI);
+            native.branches = output.vBranches;
+            if (!native.IsBurn()) {
+                // Without explicit paths, each branch is its own path.
+                native.paths = output.vPaths;
+                for (size_t idx = 0; output.vPaths.empty() &&
+                                     idx < output.vBranches.size();
+                     ++idx) {
+                    native.paths.push_back({uint8_t(idx)});
+                }
+            }
+            std::vector<uint8_t> frame;
+            std::string error;
+            BOOST_REQUIRE_MESSAGE(
+                lotus::v2::EncodeOutput(native, frame, error), error);
+            return cn::Bytes(frame.begin(), frame.end());
+        }
+    }
+    return cn::Bytes(output.scriptPubKey.begin(), output.scriptPubKey.end());
+}
+
+/**
+ * Expected Tx::wire_size: the node's serialization size, except on V2 where
+ * the adapter keeps the Rust Chronik's size of the legacy-shaped
+ * serialization of the converted tx.
+ */
+uint32_t ExpectedWireSize(const CTransaction &tx, const cn::Tx &expected) {
+    if constexpr (kV2Outputs) {
+        return uint32_t(cn::SerializeLegacyTx(expected).size());
+    }
+    return uint32_t(::GetSerializeSize(tx));
+}
 
 CBlock AsStored(const BlockManager &blockman, const CBlockIndex &index,
                 const CBlock &block) {
@@ -206,7 +254,7 @@ void CheckMatchesDisk(const BlockManager &blockman, const CBlock &block,
             BOOST_REQUIRE(nativeCoin);
             BOOST_CHECK_EQUAL(coin.GetTxOut().nValue / SATOSHI,
                               nativeCoin->output.sats);
-            BOOST_CHECK_EQUAL(HexStr(coin.GetTxOut().scriptPubKey),
+            BOOST_CHECK_EQUAL(HexStr(ExpectedScript(coin.GetTxOut())),
                               HexStr(nativeCoin->output.script));
             BOOST_CHECK_EQUAL(coin.GetHeight(), nativeCoin->height);
             BOOST_CHECK_EQUAL(coin.IsCoinBase(), nativeCoin->is_coinbase);
@@ -262,7 +310,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_genesis, TestChain100Setup) {
     }};
     expectedGenesisTx.locktime = 0;
     expectedGenesisTx.wire_size =
-        uint32_t(::GetSerializeSize(*genesisBlock.vtx[0]));
+        ExpectedWireSize(*genesisBlock.vtx[0], expectedGenesisTx);
 
     // 8 magic bytes in block file, +header +1 compact size
     const uint32_t genesisTxDataPos = 8 + HeaderSize() + 1;
@@ -369,7 +417,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
     }};
     expectedTestTx0.locktime = 0;
     expectedTestTx0.wire_size =
-        uint32_t(::GetSerializeSize(*testBlock.vtx[0]));
+        ExpectedWireSize(*testBlock.vtx[0], expectedTestTx0);
 
     cn::Tx expectedTestTx1;
     expectedTestTx1.txid = ToHash(tx1.GetId());
@@ -380,10 +428,10 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
         .sequence = 0xffff'ffff,
         .coin = cn::Coin{.output = {5000000000,
                                     kV2Outputs
-                                        ? ToBytes(testBlockUndo->vtxundo[0]
-                                                      .vprevout[0]
-                                                      .GetTxOut()
-                                                      .scriptPubKey)
+                                        ? ExpectedScript(testBlockUndo
+                                                             ->vtxundo[0]
+                                                             .vprevout[0]
+                                                             .GetTxOut())
                                         : cn::Bytes{0x51}},
                          .height = 101,
                          .is_coinbase = true},
@@ -391,7 +439,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
     expectedTestTx1.outputs = {
         {4999990000, {0x53}}, {1000, {0x54}}, {0, ToBytes(scriptPad)}};
     expectedTestTx1.locktime = 123;
-    expectedTestTx1.wire_size = uint32_t(::GetSerializeSize(tx1));
+    expectedTestTx1.wire_size = ExpectedWireSize(CTransaction(tx1), expectedTestTx1);
 
     cn::Tx expectedTestTx2;
     expectedTestTx2.txid = ToHash(tx2.GetId());
@@ -416,7 +464,7 @@ BOOST_FIXTURE_TEST_CASE(test_bridge_detailled, TestChain100Setup) {
     };
     expectedTestTx2.outputs = {{4999970000, {0x55}}, {0, ToBytes(scriptPad)}};
     expectedTestTx2.locktime = tx2.nLockTime;
-    expectedTestTx2.wire_size = uint32_t(::GetSerializeSize(tx2));
+    expectedTestTx2.wire_size = ExpectedWireSize(CTransaction(tx2), expectedTestTx2);
 
     const uint32_t expectedDataPos =
         WITH_LOCK(::cs_main, return tip.nDataPos);
@@ -1294,6 +1342,118 @@ BOOST_FIXTURE_TEST_CASE(test_compression, BasicTestingSetup) {
 
     CheckRoundtrip(CScript(), false);
     CheckRoundtrip(CScript() << OP_EQUAL << OP_VERIFY, false);
+}
+
+// Lotus V2 native outputs are indexed as the synthetic native output frame,
+// which must equal the node's own EncodeOutput of the same fields (the Rust
+// bridge's BridgeTxOutputScript builds the same bytes).
+BOOST_AUTO_TEST_CASE(test_v2_native_output_frames) {
+    auto fill = [](uint8_t b) {
+        lotus::v2::Hash32 h;
+        h.fill(b);
+        return h;
+    };
+    auto frame = [](const CTxOut &out) {
+        CMutableTransaction mtx;
+        mtx.vin = {CTxIn(TxId(uint256::ONE), 0)};
+        mtx.vout = {out};
+        return cn::abc::ConvertTx(/*is_coinbase=*/true, CTransaction(mtx), {})
+            .outputs.at(0);
+    };
+    auto encode = [](const lotus::v2::Output &o) {
+        std::vector<uint8_t> bytes;
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(lotus::v2::EncodeOutput(o, bytes, error), error);
+        return HexStr(bytes);
+    };
+
+    // Token output with three branches and implied single-branch paths.
+    CTxOut token(1234 * SATOSHI, CScript());
+    token.nFlags = 1;
+    std::memset(token.tokenId.begin(), 0xaa, 32);
+    token.vBranches = {fill(0x11), fill(0x22), fill(0x33)};
+    lotus::v2::Output expected;
+    expected.flags = 1;
+    expected.value = 1234;
+    expected.token_id = fill(0xaa);
+    expected.branches = token.vBranches;
+    expected.paths = {{0}, {1}, {2}};
+    const cn::TxOutput tokenOut = frame(token);
+    BOOST_CHECK_EQUAL(tokenOut.script.size(), 145u);
+    BOOST_CHECK_EQUAL(HexStr(tokenOut.script), encode(expected));
+    BOOST_CHECK_EQUAL(tokenOut.sats, 1234);
+
+    // Native output with explicit paths and a one-byte script field.
+    CTxOut native(5 * SATOSHI, CScript() << OP_1);
+    native.vBranches = {fill(0x01), fill(0x02)};
+    native.vPaths = {{0, 1}, {1}};
+    expected = {};
+    expected.value = 5;
+    expected.branches = native.vBranches;
+    expected.paths = native.vPaths;
+    BOOST_CHECK_EQUAL(HexStr(frame(native).script), encode(expected));
+
+    // Burns carry their public roots but no paths.
+    CTxOut burn(7 * SATOSHI, CScript());
+    burn.nFlags = 2;
+    burn.vBranches = {fill(0x05)};
+    burn.vPaths = {{0}};
+    expected = {};
+    expected.flags = 2;
+    expected.value = 7;
+    expected.branches = burn.vBranches;
+    BOOST_CHECK_EQUAL(HexStr(frame(burn).script), encode(expected));
+
+    // Legacy outputs keep their script, also with V2 fields absent.
+    const CScript p2pkh = CScript() << OP_DUP << OP_HASH160
+                                    << std::vector<uint8_t>(20, 3)
+                                    << OP_EQUALVERIFY << OP_CHECKSIG;
+    BOOST_CHECK_EQUAL(HexStr(frame(CTxOut(SATOSHI, p2pkh)).script),
+                      HexStr(p2pkh));
+    CTxOut empty(SATOSHI, CScript());
+    BOOST_CHECK(frame(empty).script.empty());
+}
+
+// V2 inputs with an empty scriptSig show their coinbase data or first branch
+// witness script; mint inputs spend no coin and are not indexed.
+BOOST_AUTO_TEST_CASE(test_v2_input_scripts_and_mints) {
+    CMutableTransaction coinbase;
+    coinbase.vin = {CTxIn()};
+    coinbase.vin[0].nFlags = 2;
+    coinbase.vin[0].fHasCoinbaseData = true;
+    coinbase.vin[0].vCoinbaseData = {0x51, 0x52, 0x53};
+    coinbase.vout = {CTxOut(SATOSHI, CScript() << OP_1)};
+    const cn::Tx cbTx =
+        cn::abc::ConvertTx(/*is_coinbase=*/true, CTransaction(coinbase), {});
+    BOOST_REQUIRE_EQUAL(cbTx.inputs.size(), 1u);
+    BOOST_CHECK_EQUAL(HexStr(cbTx.inputs[0].script), "515253");
+
+    CMutableTransaction tx;
+    tx.vin = {CTxIn(TxId(uint256::ONE), 0), CTxIn(TxId(uint256::ONE), 1),
+              CTxIn(TxId(uint256::ONE), 2)};
+    tx.vin[0].nFlags = 1;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0xac, 0x51};
+    tx.vin[0].vWitnesses = {witness};
+    tx.vin[1].nFlags = 3; // mint
+    tx.vin[2].scriptSig = CScript() << OP_2;
+    tx.vout = {CTxOut(SATOSHI, CScript() << OP_1)};
+    const std::vector<::Coin> coins = {
+        ::Coin(CTxOut(10 * SATOSHI, CScript() << OP_3), 5, false),
+        ::Coin(),
+        ::Coin(CTxOut(20 * SATOSHI, CScript() << OP_4), 6, true),
+    };
+    const cn::Tx out =
+        cn::abc::ConvertTx(/*is_coinbase=*/false, CTransaction(tx), coins);
+    BOOST_REQUIRE_EQUAL(out.inputs.size(), 2u);
+    BOOST_CHECK_EQUAL(HexStr(out.inputs[0].script), "ac51");
+    BOOST_CHECK_EQUAL(out.inputs[0].prev_out.out_idx, 0u);
+    BOOST_CHECK_EQUAL(out.inputs[0].coin->output.sats, 10);
+    // The mint input is skipped; spent coins stay indexed by vin index.
+    BOOST_CHECK_EQUAL(HexStr(out.inputs[1].script), HexStr(CScript() << OP_2));
+    BOOST_CHECK_EQUAL(out.inputs[1].prev_out.out_idx, 2u);
+    BOOST_CHECK_EQUAL(out.inputs[1].coin->output.sats, 20);
+    BOOST_CHECK(out.inputs[1].coin->is_coinbase);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
