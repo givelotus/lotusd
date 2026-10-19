@@ -9,6 +9,7 @@
 #include <blockfileinfo.h>
 #include <blockfilter.h>
 #include <chain.h>
+#include <chainparams.h>
 #include <coins.h>
 #include <compressor.h>
 #include <consensus/merkle.h>
@@ -321,11 +322,20 @@ FUZZ_TARGET_DESERIALIZE(blocktransactionsrequest_deserialize, {
     BlockTransactionsRequest btr;
     DeserializeFromFuzzingInput(buffer, btr);
 })
-FUZZ_TARGET_DESERIALIZE(snapshotmetadata_deserialize, {
-    auto msg_start = Params().DiskMagic();
-    SnapshotMetadata snapshot_metadata{msg_start};
-    DeserializeFromFuzzingInput(buffer, snapshot_metadata);
-})
+// SnapshotMetadata takes the network magic from Params(), so select a chain
+// first; without one, Params() asserts on every input.
+static void initialize_snapshotmetadata_deserialize() {
+    SelectParams(ChainType::MAIN);
+}
+FUZZ_TARGET_INIT(snapshotmetadata_deserialize,
+                 initialize_snapshotmetadata_deserialize) {
+    try {
+        auto msg_start = Params().DiskMagic();
+        SnapshotMetadata snapshot_metadata{msg_start};
+        DeserializeFromFuzzingInput(buffer, snapshot_metadata);
+    } catch (const invalid_fuzzing_input_exception &) {
+    }
+}
 FUZZ_TARGET_DESERIALIZE(uint160_deserialize, {
     uint160 u160;
     DeserializeFromFuzzingInput(buffer, u160);
