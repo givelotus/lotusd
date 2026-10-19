@@ -229,9 +229,11 @@ BOOST_AUTO_TEST_CASE(ossl_stream_reads_gathers_and_retries) {
                     sent += n;
                 }
             }
-            boost::system::error_code ec;
-            stream.shutdown(ec);
-            co_return blocked;
+            // close_notify must get out even though the client is still
+            // draining a full socket.
+            auto [sec, s] = co_await stream.async_shutdown(
+                asio::as_tuple(asio::use_awaitable));
+            co_return blocked && !sec;
         },
         asio::use_future)};
     io.run();
