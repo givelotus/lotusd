@@ -5,6 +5,7 @@
 #include "deferred_checks.h"
 
 #include <algorithm>
+#include <set>
 
 namespace lotus::v2 {
 
@@ -255,6 +256,73 @@ const DeferredCheckRegistry &DeferredCheckRegistry::Consensus() {
         return r;
     }();
     return registry;
+}
+
+// ---------------------------------------------------------------------------
+
+namespace {
+    bool CheckedAdd(__uint128_t &total, __uint128_t value) {
+        if (total + value < total) return false;
+        total += value;
+        return true;
+    }
+} // namespace
+
+bool NativeConservation::AddInput(__uint128_t value) {
+    return CheckedAdd(inputs_, value);
+}
+bool NativeConservation::AddOutput(__uint128_t value) {
+    return CheckedAdd(outputs_, value);
+}
+const char *ConservationFailureName(ConservationFailure failure) {
+    switch (failure) {
+    case ConservationFailure::None:
+        return "";
+    case ConservationFailure::Overflow:
+        return "conservation-overflow";
+    case ConservationFailure::NativeInflation:
+        return "native-inflation";
+    case ConservationFailure::MintWithoutDelta:
+        return "mint-without-positive-delta";
+    case ConservationFailure::TokenInflation:
+        return "token-inflation";
+    }
+    return "conservation-unknown";
+}
+
+bool NativeConservation::Final(std::string &error) {
+    const auto failure = Check();
+    error = ConservationFailureName(failure);
+    return failure == ConservationFailure::None;
+}
+bool TokenConservation::Final(std::string &error) {
+    const auto failure = Check();
+    error = ConservationFailureName(failure);
+    return failure == ConservationFailure::None;
+}
+
+ConservationFailure NativeConservation::Check() const {
+    return inputs_ < outputs_ ? ConservationFailure::NativeInflation
+                              : ConservationFailure::None;
+}
+
+bool TokenConservation::AddInput(const Hash32 &token, __uint128_t value) {
+    return CheckedAdd(totals_[token].inputs, value);
+}
+bool TokenConservation::AddOutput(const Hash32 &token, __uint128_t value) {
+    return CheckedAdd(totals_[token].outputs, value);
+}
+ConservationFailure TokenConservation::Check() const {
+    std::set<Hash32> positive;
+    for (const auto &[token, totals] : totals_)
+        if (totals.outputs > totals.inputs) positive.insert(token);
+    // Mint inputs in transaction order; a second mint of one token finds
+    // its delta already taken.
+    for (const Hash32 &token : mints_)
+        if (positive.erase(token) != 1)
+            return ConservationFailure::MintWithoutDelta;
+    return positive.empty() ? ConservationFailure::None
+                            : ConservationFailure::TokenInflation;
 }
 
 } // namespace lotus::v2

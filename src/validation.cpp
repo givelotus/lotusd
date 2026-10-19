@@ -762,12 +762,13 @@ bool CheckTxInputsFromResolvedCoins(const CTransaction &tx,
                                     const std::vector<Coin> &resolved_inputs,
                                     int nSpendHeight, Amount &txfee) {
     Amount nValueIn = Amount::zero();
-    std::map<uint256, std::pair<__uint128_t, __uint128_t>> tokenTotals;
-    bool has_authority_input = false;
+    // Structural contributions to the conservation kinds.
+    lotus::v2::NativeConservation native;
+    lotus::v2::TokenConservation tokens;
     for (size_t i = 0; i < tx.vin.size(); ++i) {
         const auto &in = tx.vin[i];
         if (in.nFlags == 3) {
-            has_authority_input = true;
+            tokens.AddMint(Consensus::TokenKey(uint256(in.prevout.GetTxId())));
             continue;
         }
         const Coin &coin = resolved_inputs[i];
@@ -788,11 +789,11 @@ bool CheckTxInputsFromResolvedCoins(const CTransaction &tx,
         uint256 tok_id;
         uint64_t tok_val = 0;
         if (ExtractTokenIdAndValueFast(prev_txout, tok_id, tok_val)) {
-            if (prev_txout.nValue < Amount::zero()) {
+            if (prev_txout.nValue < Amount::zero() ||
+                !tokens.AddInput(Consensus::TokenKey(tok_id), tok_val)) {
                 return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                      "bad-txns-inputvalues-outofrange");
             }
-            tokenTotals[tok_id].first += tok_val;
             continue;
         }
         nValueIn += prev_txout.nValue;
@@ -800,58 +801,22 @@ bool CheckTxInputsFromResolvedCoins(const CTransaction &tx,
             return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                  "bad-txns-inputvalues-outofrange");
         }
+        native.AddInput(uint64_t(prev_txout.nValue / SATOSHI));
     }
 
     for (const auto &out : tx.vout) {
         uint256 tok_id;
         uint64_t tok_val = 0;
         if (ExtractTokenIdAndValueFast(out, tok_id, tok_val)) {
-            if (out.nValue < Amount::zero()) {
+            if (out.nValue < Amount::zero() ||
+                !tokens.AddOutput(Consensus::TokenKey(tok_id), tok_val)) {
                 return state.Invalid(TxValidationResult::TX_CONSENSUS,
                                      "bad-txns-vout-negative");
             }
-            tokenTotals[tok_id].second += tok_val;
         }
     }
 
-    if (!tokenTotals.empty() || has_authority_input) {
-        std::set<uint256> positiveTokenDeltas;
-        for (const auto &[tokenId, totals] : tokenTotals) {
-            if (totals.second > totals.first) {
-                positiveTokenDeltas.insert(tokenId);
-            }
-        }
-        for (const auto &in : tx.vin) {
-            if (in.nFlags != 3) {
-                continue;
-            }
-            if (positiveTokenDeltas.erase(uint256(in.prevout.GetTxId())) != 1) {
-                return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                     "bad-txns-mint-without-positive-delta");
-            }
-        }
-        if (!positiveTokenDeltas.empty()) {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                                 "bad-txns-token-inflation");
-        }
-    }
-
-    const Amount value_out = tx.GetValueOut();
-    if (nValueIn < value_out) {
-        return state.Invalid(
-            TxValidationResult::TX_CONSENSUS, "bad-txns-in-belowout",
-            strprintf("value in (%s) < value out (%s)", FormatMoney(nValueIn),
-                      FormatMoney(value_out)));
-    }
-
-    const Amount txfee_aux = nValueIn - value_out;
-    if (!MoneyRange(txfee_aux)) {
-        return state.Invalid(TxValidationResult::TX_CONSENSUS,
-                             "bad-txns-fee-outofrange");
-    }
-
-    txfee = txfee_aux;
-    return true;
+    return Consensus::FinishTxConservation(tx, native, tokens, nValueIn, state, txfee);
 }
 
 bool AreInputsStandardFromResolvedCoins(
