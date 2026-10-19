@@ -57,16 +57,19 @@ This release includes the following features and fixes:
   and the `logging` RPC but has no effect; it is deprecated. A host name given
   to the command line client's `-rpcconnect` is now tried on each of its
   addresses, and `-rpcclienttimeout=0` now means no timeout at all.
-- P2P over WebSocket is accepted on the P2P port, beside raw P2P:
+- In the shared eCash engine, P2P over WebSocket is accepted on the P2P port, beside raw P2P:
   connections starting with a TLS ClientHello or an HTTP `GET` go to the
   WebSocket endpoint, everything else is raw P2P, so stock peers connect
   as with Bitcoin ABC. The P2P port serves nothing else over HTTP (404, or
   `-publicfallback`).
-- New `-p2prawlisten` (default 1) and `-p2pwslisten` (default 1) select
+- In the shared eCash engine, new `-p2prawlisten` (default 1) and `-p2pwslisten` (default 1) select
   which transports `-listen` accepts. With
   `-p2prawlisten=0` the node closes raw P2P connections, advertises no raw
   P2P address and refuses `-externalip`, `-listenonion`, onion binds and
   `-i2pacceptincoming`. See doc/p2p-websocket.md for a WebSocket-only node.
+- Lotus v2 accepts only WebSocket P2P: `-p2prawlisten` defaults to 0 and
+  cannot be enabled. `-p2pwslisten` must remain enabled when listening;
+  public Chronik and P2P can share the HTTP listener.
 - New `-p2prequiretls` (default 0) refuses WebSocket peers that did not use
   TLS, or that a `-trustedproxy` does not vouch for (`X-Forwarded-Proto`,
   PROXY v2 SSL TLV).

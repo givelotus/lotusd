@@ -3,6 +3,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <config/bitcoin-config.h> // IWYU pragma: keep
+
 #include <httpserver.h>
 
 #include <chainparams.h>
@@ -1232,6 +1234,7 @@ static asio::awaitable<bool> InProcessChronikWebSocket(
     if (!extra) {
         co_return false;
     }
+    if (conn.disarm_deadline) conn.disarm_deadline();
     auto session{std::make_shared<InProcessWsSession<Stream>>(
         stream, co_await asio::this_coro::executor, handlers)};
     co_await session->Run(req, std::move(*extra), conn);
@@ -1593,7 +1596,7 @@ static bool ServedPublicly(const BeastRequest &req,
 /** Whether the P2P port serves this request itself (from the header alone) */
 static bool ServedOnP2PPort(const BeastRequest &req,
                             const HTTPConnectionInfo &conn) {
-    return websocket::is_upgrade(req) && IsP2PWebSocketRequest(req, conn);
+    return ServedPublicly(req, conn);
 }
 
 /**
@@ -1725,10 +1728,10 @@ ForwardedClient(const BeastRequest &header, const HTTPConnectionInfo &conn) {
 static bool EndpointAllowed(const BeastRequest &req,
                             const HTTPConnectionInfo &conn,
                             const HTTPConnectionInfo &client) {
-    return conn.p2p_port ? IsP2PWebSocketRequest(req, client)
-           : conn.public_only ? IsPublicPath(req.target()) ||
-                                    IsP2PWebSocketRequest(req, client)
-                              : ClientAllowed(client.peer);
+    // Native peers have no raw transport. Public Chronik remains available
+    // on the native P2P listener, while private dispatch still checks ACLs.
+    return IsP2PWebSocketRequest(req, client) ||
+           (conn.public_only ? IsPublicPath(req.target()) : ClientAllowed(client.peer));
 }
 
 /**
@@ -1739,9 +1742,10 @@ static bool EndpointAllowed(const BeastRequest &req,
 static asio::awaitable<BeastResponse>
 RouteRequest(BeastRequest &&req, const HTTPConnectionInfo &client,
              bool endpoint_allowed) {
-    if (endpoint_allowed && !client.p2p_port && g_chronik_enabled &&
+    if (endpoint_allowed && g_chronik_enabled &&
         !g_reject_requests.load() &&
         URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
+        if (client.disarm_deadline) client.disarm_deadline();
         g_connections.AddRequest();
         if (auto handlers{GetChronikInProcess()}) {
             co_return co_await InProcessChronikHTTP(std::move(handlers), req,
@@ -3126,13 +3130,15 @@ static bool BindEndpoint(const std::string &host, uint16_t port,
 }
 
 /** Bind HTTP server to specified addresses */
-static bool HTTPBindAddresses() {
+static bool HTTPBindAddresses(bool serve_rpc) {
     uint16_t http_port{static_cast<uint16_t>(
         gArgs.GetIntArg("-rpcport", BaseParams().RPCPort()))};
     std::vector<std::pair<std::string, uint16_t>> endpoints;
 
     // Determine what addresses to bind to
-    if (!(gArgs.IsArgSet("-rpcallowip") && gArgs.IsArgSet("-rpcbind"))) {
+    if (!serve_rpc) {
+        // P2P and public endpoints only (shared via ShareHTTPP2PListener).
+    } else if (!(gArgs.IsArgSet("-rpcallowip") && gArgs.IsArgSet("-rpcbind"))) {
         // Default to loopback if not allowing external IPs.
         endpoints.push_back(std::make_pair("::1", http_port));
         endpoints.push_back(std::make_pair("127.0.0.1", http_port));
@@ -3178,7 +3184,7 @@ static bool HTTPBindAddresses() {
                 .Field(BCLog::LogField::ListenPort, i->second);
         }
     }
-    if (g_acceptors.empty()) {
+    if (serve_rpc && g_acceptors.empty()) {
         return false;
     }
 
@@ -3403,7 +3409,7 @@ static bool InitTLS() {
     return true;
 }
 
-bool InitHTTPServer(Config &config) {
+bool InitHTTPServer(Config &config, bool serve_rpc) {
     if (!InitHTTPAllowList()) {
         return false;
     }
@@ -3571,7 +3577,7 @@ bool InitHTTPServer(Config &config) {
         g_io->restart();
     }
 
-    if (!HTTPBindAddresses()) {
+    if (!HTTPBindAddresses(serve_rpc)) {
         LogInfoEvent(BCLog::ALL, "rpc_bind_failed",
                      "Unable to bind any endpoint for RPC server");
         return false;
@@ -3616,6 +3622,25 @@ void StartHTTPServer() {
             LogEvent(BCLog::HTTP, "http_io_stopped", "Exited http I/O loop");
         });
     }
+}
+
+bool ShareHTTPP2PListener(const CService &addr) {
+    boost::system::error_code ec;
+    const auto ip = asio::ip::make_address(addr.ToStringAddr(), ec);
+    if (ec) return false;
+    const tcp::endpoint endpoint{ip, addr.GetPort()};
+    for (const auto &listener : g_acceptors) {
+        if (listener.acceptor->local_endpoint(ec) == endpoint) {
+            LogInfoEvent(
+                BCLog::ALL, "p2p_listener_shared",
+                "P2P on {listen_address} shares the {listener_kind} listener")
+                .Field(BCLog::LogField::ListenAddress, addr.ToStringAddrPort())
+                .Field(BCLog::LogField::ListenerKind,
+                       listener.public_only ? "public" : "RPC");
+            return true;
+        }
+    }
+    return false;
 }
 
 void InterruptHTTPServer() {
