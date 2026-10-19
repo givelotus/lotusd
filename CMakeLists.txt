@@ -145,6 +145,15 @@ deprecate_build_flag(BUILD_BITCOIN_CHRONIK_PLUGINS BUILD_CHRONIK_PLUGINS)
 
 option(BUILD_CHRONIK "Activate the Chronik indexer" OFF)
 option(BUILD_CHRONIK_PLUGINS "Activate the plugin system for Chronik" OFF)
+set(CHRONIK_IMPLEMENTATION "native" CACHE STRING
+	"Chronik implementation to build: native (default, pure C++) or rust")
+set_property(CACHE CHRONIK_IMPLEMENTATION PROPERTY STRINGS native rust)
+if(NOT CHRONIK_IMPLEMENTATION MATCHES "^(rust|native)$")
+	message(FATAL_ERROR "CHRONIK_IMPLEMENTATION must be rust or native, got '${CHRONIK_IMPLEMENTATION}'")
+endif()
+if(BUILD_CHRONIK AND BUILD_CHRONIK_PLUGINS AND CHRONIK_IMPLEMENTATION STREQUAL "native")
+	message(FATAL_ERROR "BUILD_CHRONIK_PLUGINS requires CHRONIK_IMPLEMENTATION=rust: the native Chronik does not support Python plugins")
+endif()
 
 add_subdirectory(src)
 if(BUILD_CHRONIK)

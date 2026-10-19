@@ -194,6 +194,12 @@ set(ENABLE_WALLET ${BUILD_WALLET})
 set(ENABLE_CHRONIK ${BUILD_CHRONIK})
 # Activate Chronik indexer plugins
 set(ENABLE_CHRONIK_PLUGINS ${BUILD_CHRONIK_PLUGINS})
+# Which Chronik implementation is compiled in (native C++ or Rust)
+if(BUILD_CHRONIK AND CHRONIK_IMPLEMENTATION STREQUAL "native")
+	set(ENABLE_CHRONIK_NATIVE ON)
+else()
+	set(ENABLE_CHRONIK_NATIVE OFF)
+endif()
 
 # Activate ZeroMQ
 set(ENABLE_ZMQ ${BUILD_ZMQ})
