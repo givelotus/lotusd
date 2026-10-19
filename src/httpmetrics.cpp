@@ -8,6 +8,7 @@
 #include <logging.h>
 #include <node/metrics.h>
 #include <rpc/protocol.h>
+#include <rpc/server.h>
 
 #include <string>
 
@@ -31,7 +32,7 @@ static bool HTTPReqMetrics(Config &, HTTPRequest *req, const std::string &) {
 }
 
 void StartHTTPMetrics() {
-    node::StartNodeMetrics();
+    node::StartNodeMetrics(tableRPC.listCommands());
     RegisterHTTPHandler("/metrics", true, HTTPReqMetrics);
     LogPrintf("Serving metrics at /metrics on the RPC listeners\n");
 }
