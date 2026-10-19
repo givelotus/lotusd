@@ -30,7 +30,9 @@ Plain TCP P2P is unchanged, and the two can be used together.
 | `-publicfallback=<host>:<port>` | Hand everything else on `-publicbind` (pages, probes, upgrades without the token) to a plain-HTTP web server, which then answers that connection byte for byte. |
 | `-p2pwebsocketpeer=[permissions@]<pin>` | Recognize inbound peers by their TLS client key and grant them permissions, as `-whitelist` does. Turns on `-tlsmutual`. |
 | `-p2pwebsocketrequirecert` | Only accept WebSocket peers whose client key is listed with `-p2pwebsocketpeer`. Plain TCP peers are not affected. |
-| `-p2pwebsockettrustforwardedfor` | Take the peer address from `X-Forwarded-For` on upgrades from loopback (a local reverse proxy). |
+| `-trustedproxy=<ip\|subnet>` | Load balancers and reverse proxies whose client addresses are believed: a PROXY protocol v1/v2 header at the start of a connection (layer-4 balancers such as AWS NLB, HAProxy), and `X-Forwarded-For` on each request (HTTP proxies such as AWS ALB, nginx), walked from the right while hops are trusted. The address found is used for `-rpcallowip`, P2P peers (bans, eviction, addrman) and logs. Repeatable. |
+| `-p2pwebsockettrustforwardedfor` | Shorthand for trusting a proxy on this host (`127.0.0.0/8`, `::1`). |
+| `-httphealth` | `/livez` (the server runs), `/readyz` and `/healthz` (out of initial block download, with peers; else 503 and the reason), for health checks. On by default, off with `-p2pwebsockettoken` or `-publicfallback`, where they would reveal the node to probes. |
 
 TLS is detected on each connection, so one port serves `ws://`, `wss://`,
 HTTP and HTTPS.
@@ -184,12 +186,34 @@ channel you trust. Optionally, list users' client keys with
 ```
 publicbind=127.0.0.1:8443
 externaldomain=node.example.org
-p2pwebsockettrustforwardedfor=1
+trustedproxy=127.0.0.1
 ```
 
 Point the proxy's `https://node.example.org/p2p/ws` (WebSocket enabled) at
 `127.0.0.1:8443`. Other nodes learn `node.example.org` over ADDRv2 and dial
 it.
+
+### Nodes behind load balancers on a private network
+
+For example AWS (an NLB, then an ALB) in a VPC, or OVH servers on a vRack:
+
+```
+publicbind=0.0.0.0:443             # the port the balancers forward to
+trustedproxy=10.0.0.0/8            # every balancer layer's private range
+externaldomain=p2p.example.com     # the public name peers should dial
+discover=0                         # never advertise private addresses
+rpcallowip=10.20.0.0/16            # RPC only via your permissioned balancer
+```
+
+- Each layer adds its hop: a layer-4 balancer with PROXY protocol v2
+  enabled, an HTTP balancer with `X-Forwarded-For`. The node walks back
+  through trusted hops to the first untrusted address, the client. Whatever
+  a client writes into `X-Forwarded-For` itself is ignored, because the walk
+  stops at the client.
+- Point target-group health checks at `/readyz`, so syncing nodes or nodes
+  without peers get no traffic.
+- Several nodes behind one public name look like one address to the
+  network. That is harmless: each node recognizes connections to itself.
 
 ### Through Xray (VLESS + REALITY) or Tor
 
