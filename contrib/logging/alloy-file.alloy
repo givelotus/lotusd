@@ -1,0 +1,26 @@
+// lotusd: -logformat=json -debuglogfile=/var/log/lotus/debug.jsonl
+loki.source.file "lotus" {
+  targets = [{__path__ = "/var/log/lotus/debug.jsonl", job = "lotus"}]
+  forward_to = [loki.process.lotus.receiver]
+}
+
+loki.process "lotus" {
+  stage.json {
+    expressions = {level = "level", category = "category", time = "time"}
+  }
+  stage.labels {
+    values = {level = "", category = ""}
+  }
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339Nano"
+  }
+  // Keep the complete JSON line, including fields that are not labels.
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}
