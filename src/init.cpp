@@ -1724,6 +1724,16 @@ void SetupServerArgs(NodeContext &node) {
             DEFAULT_METRICS),
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg(
+        "-metricslabel=<name>=<value>",
+        strprintf(
+            "Add the label <name>=\"<value>\" to every metric served at "
+            "/metrics (e.g. -metricslabel=region=eu-west). Can be given up to "
+            "%u times. Names follow Prometheus rules; \"client\" and "
+            "\"network\" are set by the node and cannot be used",
+            METRICS_LABELS_MAX),
+        ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION,
+        OptionsCategory::RPC);
+    argsman.AddArg(
         "-publicfallback=<host>:<port>",
         "On -publicbind listeners, hand every request the node does not "
         "serve (anything but an accepted P2P WebSocket upgrade or Chronik) "
@@ -1980,7 +1990,17 @@ static bool AppInitServers(Config &config,
         StartREST(&node);
     }
     if (args.GetBoolArg("-metrics", DEFAULT_METRICS)) {
-        StartHTTPMetrics();
+        // Checked in AppInitParameterInteraction
+        const auto labels{
+            node::ParseMetricsLabels(args.GetArgs("-metricslabel"))};
+        if (!labels) {
+            return InitError(util::ErrorString(labels));
+        }
+        if (auto started{StartHTTPMetrics(
+                config.GetChainParams().GetChainType(), *labels)};
+            !started) {
+            return InitError(util::ErrorString(started));
+        }
     }
 
     StartHTTPServer();
@@ -2196,6 +2216,12 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
     // -ecash cannot change at runtime: resolve it once instead of on every
     // amount written as JSON.
     Currency::SetECash(args.GetBoolArg("-ecash", DEFAULT_ECASH));
+
+    if (const auto labels{
+            node::ParseMetricsLabels(args.GetArgs("-metricslabel"))};
+        !labels) {
+        return InitError(util::ErrorString(labels));
+    }
 
     const CChainParams &chainparams = config.GetChainParams();
     // Step 2: parameter interactions

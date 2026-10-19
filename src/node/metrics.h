@@ -6,12 +6,16 @@
 #define BITCOIN_NODE_METRICS_H
 
 #include <metrics/metrics.h>
+#include <util/chaintype.h>
+#include <util/result.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 //! Serve /metrics (to -rpcallowip clients, without authentication)
@@ -21,7 +25,42 @@ static constexpr std::chrono::milliseconds METRICS_MIN_SCRAPE_INTERVAL{1000};
 //! One P2P message in this many has its handling time measured
 static constexpr uint32_t METRICS_P2P_TIMING_SAMPLE{16};
 
+/**
+ * Prefix of every node metric name. One constant, so that the namespace is
+ * trivial to change; metrics with a name defined by Prometheus conventions
+ * (process_*) do not take it. See doc/metrics.md.
+ */
+inline constexpr std::string_view METRICS_NAMESPACE{"fullnode_"};
+//! Labels the node sets on every series; -metricslabel cannot use them
+inline constexpr std::array<std::string_view, 2> METRICS_RESERVED_LABELS{
+    "client", "network"};
+//! Maximum length of a -metricslabel value, in bytes
+static constexpr size_t METRICS_LABEL_VALUE_MAX{128};
+//! Maximum number of -metricslabel options
+static constexpr size_t METRICS_LABELS_MAX{16};
+
 namespace node {
+
+/** METRICS_NAMESPACE + name */
+std::string MetricName(std::string_view name);
+
+/** Value of the client label: the daemon this build is (e.g. "ecashd") */
+std::string MetricsClientLabel();
+/**
+ * Value of the network label, "<chain>-<network>": e.g. "ecash-mainnet",
+ * "ecash-testnet", "ecash-regtest". The chain part is the build's
+ * (FULLNODE_CHAIN), so that each daemon reports its own.
+ */
+std::string MetricsNetworkLabel(ChainType chain);
+
+/**
+ * Parse -metricslabel=<name>=<value> options into constant labels. Names
+ * follow Prometheus rules and must not be reserved (client, network, le,
+ * quantile, or starting with "__") or repeated; values are 1 to
+ * METRICS_LABEL_VALUE_MAX bytes without control characters.
+ */
+util::Result<std::vector<std::pair<std::string, std::string>>>
+ParseMetricsLabels(const std::vector<std::string> &options);
 
 /** Label values of the node's metrics (index = enum value where noted) */
 namespace metric_labels {
@@ -88,6 +127,8 @@ struct NodeMetrics {
     metrics::EventHistogram &rpc_request_seconds;
 
     metrics::Gauge &process_start_time;
+    //! Always 1; labelled with version and commit
+    metrics::Gauge &build_info;
 
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
@@ -115,10 +156,14 @@ inline NodeMetrics *GetNodeMetrics() noexcept {
 }
 
 /**
- * Create the metrics (once), start the drain thread and give new threads
- * their rings. rpc_methods: every registered RPC command.
+ * Create the metrics (once), set the constant labels on every series
+ * (client, network, then the operator's), start the drain thread and give
+ * new threads their rings. rpc_methods: every registered RPC command.
+ * Fails if an operator label is also the name of a metric's label.
  */
-NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods);
+util::Result<NodeMetrics *> StartNodeMetrics(
+    std::vector<std::string> rpc_methods, ChainType chain,
+    const std::vector<std::pair<std::string, std::string>> &operator_labels);
 /** Stop the drain thread (recording still works, into full rings) */
 void StopNodeMetrics();
 
