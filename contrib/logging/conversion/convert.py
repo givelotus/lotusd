@@ -139,10 +139,17 @@ def outer_event(node):
 
 def validate_mapping(old, event):
     description = describe(old)
-    # The event renderer has no printf width/precision language. Keep those
-    # calls legacy until an explicit rendering feature and regression exist.
-    if any(s not in {"%s", "%d", "%u"} for s in description["specifiers"]):
+    # Decimal integer length modifiers preserve decimal text. Explicit float
+    # precision uses the separately tested consumer rendering contract.
+    def rendering(spec):
+        if spec == "%s" or re.fullmatch(r"%(?:ll|l|z|t|j)?[diu]", spec):
+            return None
+        if re.fullmatch(r"%(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
+            return spec[1:]
         raise ValueError("format width/precision/type needs manual rendering support")
+
+    for spec in description["specifiers"]:
+        rendering(spec)
     oldargs, newargs = args(old), args(event)
     macro = description["macro"]
     category = (
@@ -171,7 +178,7 @@ def validate_mapping(old, event):
         raise ValueError("severity/category changed")
     message = literal(newargs[2])
     # Regex only examines captured literal bodies, never source boundaries.
-    placeholders = re.findall(r"\{[a-z][a-z0-9_]*\}", message)
+    placeholders = re.findall(r"\{[a-z][a-z0-9_]*(?::[^}]*)?\}", message)
     parts = format_parts(description["format"])
     rebuilt = ""
     cursor = 0
@@ -182,7 +189,14 @@ def validate_mapping(old, event):
         elif spec:
             if cursor >= len(placeholders):
                 raise ValueError("missing message placeholder")
-            rebuilt += placeholders[cursor]
+            placeholder = placeholders[cursor]
+            format_spec = rendering(spec)
+            suffix = ":" + format_spec + "}" if format_spec is not None else None
+            if (suffix is not None and not placeholder.endswith(suffix)) or (
+                suffix is None and ":" in placeholder
+            ):
+                raise ValueError("message float precision changed")
+            rebuilt += placeholder
             cursor += 1
     if rebuilt.endswith("\n"):
         rebuilt = rebuilt[:-1]
