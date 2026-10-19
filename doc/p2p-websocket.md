@@ -145,6 +145,23 @@ connection, serving `/p2p/ws` (and the other public endpoints) to anyone:
   `bytes*_per_msg` counts 5 bytes of header per message (the length the node
   tracks, plus the id) instead of v1's 24.
 
+### Native compression dictionary
+
+Lotus `p2p-v2` uses the immutable raw-content `P2P_ZSTD_DICT_V2` from
+`src/net_zstd_dict_v2_data.h`. Its version is 2; all native encoders and
+decoders must use those exact bytes. It was trained on captured native V7
+transaction witnesses, 134-byte headers, blocks, compact blocks and address
+traffic, without legacy 24-byte envelopes. The generic eCash dictionary V1
+is retained byte-for-byte in `src/net_zstd_dict_data.h`.
+
+This is a pre-launch protocol update, not runtime dictionary negotiation.
+A deployed dictionary must never be silently replaced. Future changes need
+a protocol version change (or explicit dictionary negotiation), including
+any self-contained compressed-frame cache key/version.
+
+The capture and deterministic training procedure, held-out corpus and
+comparison limits are in `contrib/testdata/p2p-zstd-v2/README.md`.
+
 ## Serving
 
 The table describes the shared eCash engine. Lotus v2 keeps raw P2P disabled,
