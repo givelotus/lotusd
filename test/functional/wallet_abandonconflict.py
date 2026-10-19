@@ -22,8 +22,7 @@ class AbandonConflictTest(BitcoinTestFramework):
     extra_args = [["-minrelaytxfee=10"], []]
     noban_tx_relay = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         def total_fees(*txids):

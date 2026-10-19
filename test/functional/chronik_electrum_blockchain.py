@@ -69,8 +69,7 @@ class ChronikElectrumBlockchain(BitcoinTestFramework):
             ]
         ]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
+    requires = {"chronik"}
 
     def run_test(self):
         self.client = self.nodes[0].get_chronik_electrum_client(name="client")

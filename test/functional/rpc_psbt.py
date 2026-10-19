@@ -25,8 +25,7 @@ class PSBTTest(BitcoinTestFramework):
     supports_cli = False
     noban_tx_relay = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         # Create and fund a raw tx for sending 10 BTC
