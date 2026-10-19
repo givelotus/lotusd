@@ -447,9 +447,9 @@ void ProfileCountCaps() {
     p.transaction.max_outputs = 257;
     CHECK(!ValidateOrdinaryProfile(p, error));
 }
-void InterimStateOutputReject() {
-    // Until transaction-scoped VM effects exist, no script can authorize a
-    // HAS_STATE output, so any such output is rejected.
+void StateOutputPostCheck() {
+    // The per-transaction post-check rejects a HAS_STATE output that no
+    // invocation authorized (here: plain OP_TRUE and mint scripts).
     Fixture fixture;
     const auto profile = Profile();
     auto tx = fixture.tx;
@@ -465,7 +465,7 @@ void InterimStateOutputReject() {
 
 int main() {
     ProfileCountCaps();
-    InterimStateOutputReject();
+    StateOutputPostCheck();
     LookupBoundary();
     ValidMintAndAccounting();
     InvalidAccountingAndCoverage();
