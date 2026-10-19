@@ -46,18 +46,6 @@ using node::NodeContext;
 using node::TransactionError;
 using util::ToString;
 
-static bool IsDisallowedNonV7Tx(const CTransaction &tx,
-                                const NodeContext &node) {
-    const bool allow_legacy_tx =
-        (node.args && node.args->GetBoolArg("-allowlegacytx", false)) ||
-        gArgs.GetBoolArg("-allowlegacytx", false) ||
-        (std::getenv("LOTUS_ALLOW_LEGACY_TX") != nullptr);
-    if (allow_legacy_tx) {
-        return false;
-    }
-    return tx.nVersion != 7 || tx.vin.empty() || tx.vin[0].nFlags == 0;
-}
-
 static RPCHelpMan sendrawtransaction() {
     return RPCHelpMan{
         "sendrawtransaction",
@@ -115,10 +103,6 @@ static RPCHelpMan sendrawtransaction() {
             std::string err_string;
             AssertLockNotHeld(cs_main);
             NodeContext &node = EnsureAnyNodeContext(request.context);
-            if (IsDisallowedNonV7Tx(*tx, node)) {
-                throw JSONRPCError(RPC_TRANSACTION_REJECTED,
-                                   "bad-txns-non-v7-format");
-            }
             const int64_t now_ms =
                 TicksSinceEpoch<std::chrono::milliseconds>(NodeClock::now());
             const auto &fee_ctrl =
@@ -1457,18 +1441,6 @@ static RPCHelpMan testrawtxbatch() {
                 const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
-                if (IsDisallowedNonV7Tx(*tx, node)) {
-                    all_allowed = false;
-                    result_inner.pushKV("allowed", false);
-                    result_inner.pushKV("reject-reason",
-                                        "bad-txns-non-v7-format");
-                    result_inner.pushKV(
-                        "reject-details",
-                        "bad-txns-non-v7-format, transaction must use Lotus V2 "
-                        "version 7 format");
-                    results_arr.push_back(std::move(result_inner));
-                    continue;
-                }
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
@@ -1716,11 +1688,6 @@ static RPCHelpMan submitrawtxbatch() {
             CTxMemPool &mempool = EnsureMemPool(node);
             ChainstateManager &chainman = EnsureChainman(node);
 
-            const bool has_disallowed_non_v7 = std::any_of(
-                txns.begin(), txns.end(), [&](const CTransactionRef &tx) {
-                    return IsDisallowedNonV7Tx(*tx, node);
-                });
-
             UniValue results_arr(UniValue::VARR);
             bool all_allowed = false;
             std::string package_error_str;
@@ -1743,11 +1710,11 @@ static RPCHelpMan submitrawtxbatch() {
                 // RCU snapshot when snap_defer exits.
                 PackageMempoolAcceptResult res =
                     ProcessRawTxBatch(chainstate, mempool, txns,
-                                      /*test_accept=*/has_disallowed_non_v7,
+                                      /*test_accept=*/false,
                                       max_raw_tx_fee_rate,
                                       &precomputed_batch);
 
-                if (!has_disallowed_non_v7 && res.m_state.IsValid() &&
+                if (res.m_state.IsValid() &&
                     res.m_tx_results.size() == txns.size()) {
                     for (const auto &tx : txns) {
                         mempool.AddUnbroadcastTx(tx->GetId());
@@ -1767,8 +1734,7 @@ static RPCHelpMan submitrawtxbatch() {
                 package_error_str = package_result.m_state.GetRejectReason();
             }
 
-            all_allowed =
-                !has_disallowed_non_v7 && package_result.m_state.IsValid();
+            all_allowed = package_result.m_state.IsValid();
             bool exit_early{false};
 
             for (size_t idx = 0; idx < txns.size(); ++idx) {
@@ -1776,18 +1742,6 @@ static RPCHelpMan submitrawtxbatch() {
                 const std::string &txid_hex = txid_hexes[idx];
                 UniValue result_inner(UniValue::VOBJ);
                 result_inner.pushKV("txid", txid_hex);
-                if (IsDisallowedNonV7Tx(*tx, node)) {
-                    all_allowed = false;
-                    result_inner.pushKV("allowed", false);
-                    result_inner.pushKV("reject-reason",
-                                        "bad-txns-non-v7-format");
-                    result_inner.pushKV(
-                        "reject-details",
-                        "bad-txns-non-v7-format, transaction must use Lotus V2 "
-                        "version 7 format");
-                    results_arr.push_back(std::move(result_inner));
-                    continue;
-                }
                 auto it = package_result.m_tx_results.find(tx->GetId());
                 if (exit_early || it == package_result.m_tx_results.end()) {
                     all_allowed = false;
