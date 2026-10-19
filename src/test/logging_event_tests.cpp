@@ -100,7 +100,9 @@ BOOST_FIXTURE_TEST_SUITE(logging_event_tests, EventLogSetup)
 
 BOOST_AUTO_TEST_CASE(nonfinite_float_fields_produce_valid_json) {
     // Raw consumer fixture: Value supplies a name, not a producer type contract.
-    BCLog::JsonEncoder encoder;
+    BCLog::JsonEncoder json;
+    BCLog::JsonGcpEncoder gcp;
+    BCLog::JsonEcsEncoder ecs;
     const BCLog::LogEventSite site{"numeric_encoding", nullptr, BCLog::ALL,
                                    BCLog::Level::Info};
     for (const double value : {1.25, std::numeric_limits<double>::quiet_NaN(),
@@ -117,14 +119,20 @@ BOOST_AUTO_TEST_CASE(nonfinite_float_fields_produce_valid_json) {
         line.category = BCLog::ALL;
         line.event = &site;
         line.fields = BCLog::FieldList{data, 1};
-        std::string encoded;
-        encoder.Encode(line, BCLog::LogOptions{.timestamps = false}, encoded);
-        UniValue record;
-        const bool valid{record.read(encoded)};
-        BOOST_CHECK_MESSAGE(valid, encoded);
-        if (!valid) continue;
-        if (std::isfinite(value)) BOOST_CHECK_EQUAL(record["value"].get_real(), value);
-        else BOOST_CHECK(record["value"].isNull());
+        for (const BCLog::LogEncoder *encoder :
+             {static_cast<BCLog::LogEncoder *>(&json),
+              static_cast<BCLog::LogEncoder *>(&gcp),
+              static_cast<BCLog::LogEncoder *>(&ecs)}) {
+            std::string encoded;
+            encoder->Encode(line, BCLog::LogOptions{.timestamps = false}, encoded);
+            UniValue record;
+            const bool valid{record.read(encoded)};
+            BOOST_CHECK_MESSAGE(valid, encoded);
+            if (!valid) continue;
+            const auto &field{record[encoder == &ecs ? "lotus.value" : "value"]};
+            if (std::isfinite(value)) BOOST_CHECK_EQUAL(field.get_real(), value);
+            else BOOST_CHECK(field.isNull());
+        }
     }
 }
 
@@ -348,8 +356,9 @@ BOOST_AUTO_TEST_CASE(structured_source_caller) {
     LogInstance().m_log_sourcelocations = true;
     LogEvent(BCLog::NET, "caller_location");
     const auto record{Json()};
-    BOOST_CHECK_EQUAL(record["source"]["function"].get_str(),
-                      "logging_event_tests::structured_source_caller::test_method");
+    BOOST_CHECK_EQUAL(
+        record["source"]["function"].get_str(),
+        "logging_event_tests::structured_source_caller::test_method");
 }
 
 BOOST_AUTO_TEST_CASE(gcp_json_schema) {
@@ -372,6 +381,37 @@ BOOST_AUTO_TEST_CASE(gcp_json_schema) {
     BOOST_CHECK(location["line"].isStr());
     BOOST_CHECK_EQUAL(location["function"].get_str().find('('),
                       std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ecs_json_schema) {
+    BOOST_CHECK(BCLog::ParseLogFormat("json-ecs") ==
+                BCLog::LogFormat::JSON_ECS);
+    Format(BCLog::LogFormat::JSON_ECS);
+    LogInstance().m_log_timestamps = false;
+    LogInstance().m_log_sourcelocations = true;
+    LogEvent(BCLog::NET, "peer_received", "received {bytes} bytes")
+        .Field(LogField::PeerId, 7)
+        .Field(LogField::Addr, "peer.example:8333")
+        .Field(LogField::Bytes, uint64_t{123})
+        .Field(LogField::DurationUs, 1500ns)
+        .Field(LogField::Error, "error text");
+    const auto record{Json()};
+    BOOST_CHECK_EQUAL(record["ecs.version"].get_str(), "8.11.0");
+    BOOST_CHECK(record["@timestamp"].isStr());
+    BOOST_CHECK_EQUAL(record["log.level"].get_str(), "debug");
+    BOOST_CHECK_EQUAL(record["log.logger"].get_str(), "net");
+    BOOST_CHECK_EQUAL(record["event.action"].get_str(), "peer_received");
+    BOOST_CHECK_EQUAL(record["lotus.peer_id"].getInt<int>(), 7);
+    BOOST_CHECK_EQUAL(record["lotus.addr"].get_str(), "peer.example:8333");
+    BOOST_CHECK(record["source.address"].isNull());
+    BOOST_CHECK_EQUAL(record["lotus.bytes"].getInt<int>(), 123);
+    BOOST_CHECK_EQUAL(record["event.duration"].getInt<int>(), 1500);
+    BOOST_CHECK_EQUAL(record["error.message"].get_str(), "error text");
+    BOOST_CHECK(record["log.origin.file.line"].isNum());
+    BOOST_CHECK_EQUAL(record["log.origin.function"].get_str(),
+                      "logging_event_tests::ecs_json_schema::test_method");
+    BOOST_CHECK(record["level"].isNull());
+    BOOST_CHECK(record["peer_id"].isNull());
 }
 
 BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
