@@ -467,7 +467,7 @@ class FastSyncAndReversePeelTest(BitcoinTestFramework):
         assert_equal(node2.getblockchaininfo()["earliest_verified_height"], 103)
         assert_equal(node2.getblockchaininfo()["fast_sync_active"], True)
         self.generatetodescriptor(
-            node2, 1, V2_OP_TRUE_DESCRIPTOR, sync_fun=self.no_op
+            node2, 1, V2_OP_TRUE_DESCRIPTOR, coinbase_version=7, sync_fun=self.no_op
         )
         assert_equal(node2.getblockcount(), 106)
         live_tip = node2.getbestblockhash()
