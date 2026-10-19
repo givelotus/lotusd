@@ -160,10 +160,9 @@ def c_string_to_str(c_string):
 
 
 class UTXOCacheTracepointTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = False
-        self.num_nodes = 1
-        self.extra_args = [["-txindex"]]
+    setup_clean_chain = False
+    num_nodes = 1
+    extra_args = [["-txindex"]]
 
     def skip_test_if_missing_module(self):
         self.skip_if_platform_not_linux()

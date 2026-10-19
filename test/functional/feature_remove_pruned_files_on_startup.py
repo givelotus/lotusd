@@ -9,9 +9,8 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class FeatureRemovePrunedFilesOnStartupTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [["-fastprune", "-prune=1"]]
+    num_nodes = 1
+    extra_args = [["-fastprune", "-prune=1"]]
 
     def mine_batches(self, blocks):
         n = blocks // 250

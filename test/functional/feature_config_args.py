@@ -16,12 +16,11 @@ from test_framework.util import assert_equal, get_temp_default_datadir, write_co
 
 
 class ConfArgsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.supports_cli = False
-        self.wallet_names = []
-        self.disable_autoconnect = False
+    setup_clean_chain = True
+    num_nodes = 1
+    supports_cli = False
+    wallet_names = []
+    disable_autoconnect = False
 
     def test_config_file_parser(self):
         self.stop_node(0)

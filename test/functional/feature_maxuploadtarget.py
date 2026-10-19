@@ -34,21 +34,20 @@ class TestP2PConn(P2PInterface):
 
 
 class MaxUploadTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        # Start a node with maxuploadtarget of 200 MB (/24h)
-        self.extra_args = [
-            [
-                "-maxuploadtarget=200",
-                "-acceptnonstdtxn=1",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    # Start a node with maxuploadtarget of 200 MB (/24h)
+    extra_args = [
+        [
+            "-maxuploadtarget=200",
+            "-acceptnonstdtxn=1",
         ]
-        self.supports_cli = False
+    ]
+    supports_cli = False
 
-        # Cache for utxos, as the listunspent may take a long time later in the
-        # test
-        self.utxo_cache = []
+    # Cache for utxos, as the listunspent may take a long time later in the
+    # test
+    utxo_cache = []
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
