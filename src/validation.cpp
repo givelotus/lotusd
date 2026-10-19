@@ -316,6 +316,27 @@ static bool CheckInputsFromMempoolAndCache(
                              validation_cache, nSigChecksOut);
 }
 
+const lotus::v2::VmProfile &NodeV2VmProfile() {
+    static constexpr lotus::v2::VmProfile profile{
+        10000, 65535, 8192, 1000, 1000, 65536, 64, 1000000};
+    return profile;
+}
+
+const lotus::v2::VmCostProfile &NodeV2VmCost() {
+    static const lotus::v2::VmCostProfile cost = []() {
+        lotus::v2::VmCostProfile c{};
+        c.max_invocation_cost = 1000000;
+        c.structural_byte_cost = 1;
+        for (auto &op : c.opcode) {
+            op.base = 1;
+        }
+        // ENFORCEOUTPUT pays for each output its template scans.
+        c.opcode[0xeb].per_scanned_output = 1;
+        return c;
+    }();
+    return cost;
+}
+
 namespace {
 
 struct ParallelTxScriptError {
@@ -4106,17 +4127,8 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
             }
         }
 
-        static constexpr lotus::v2::VmProfile kDefaultVmProfile{
-            10000, 65535, 8192, 1000, 1000, 65536, 64, 1000000};
-        static const lotus::v2::VmCostProfile kDefaultVmCost = []() {
-            lotus::v2::VmCostProfile c{};
-            c.max_invocation_cost = 1000000;
-            c.structural_byte_cost = 1;
-            for (auto &op : c.opcode) {
-                op.base = 1;
-            }
-            return c;
-        }();
+        const lotus::v2::VmProfile &kDefaultVmProfile = NodeV2VmProfile();
+        const lotus::v2::VmCostProfile &kDefaultVmCost = NodeV2VmCost();
 
         struct CachedPreparedVm {
             const CTransaction *tx_ptr{nullptr};
