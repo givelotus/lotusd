@@ -459,16 +459,9 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
         total_weight += share.weight;
     }
 
-    CMutableTransaction coinbaseTx;
-    coinbaseTx.vin.resize(1);
-    coinbaseTx.vin[0].prevout = COutPoint(
-        TxId(tmpl.prev_block_hash), static_cast<uint32_t>(tmpl.next_height));
-    coinbaseTx.vin[0].nFlags = 2;
-    coinbaseTx.vin[0].scriptSig = CScript() << tmpl.next_height << OP_0;
-    coinbaseTx.vin[0].fHasCoinbaseData = true;
-    coinbaseTx.vin[0].vCoinbaseData.assign(
-        coinbaseTx.vin[0].scriptSig.begin(),
-        coinbaseTx.vin[0].scriptSig.end());
+    // A pool is a mainnet feature: its coinbase is always a V2 coinbase.
+    CMutableTransaction coinbaseTx = ::node::CreateCoinbaseShell(
+        7, tmpl.prev_block_hash, int(tmpl.next_height));
 
     if (pplns_payouts.empty() || total_weight <= 0.0) {
         const CScript &recipient =
@@ -512,15 +505,12 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
                                      stakingRewardsPayoutScripts[0]);
     }
 
+    // The payees by script; the coinbase pays each the V0-leaf V2 output
+    // over its script.
+    const std::vector<CTxOut> payouts = coinbaseTx.vout;
+    ::node::SetCoinbaseOutputs(coinbaseTx, payouts);
+    ::node::PadCoinbaseToMinSize(coinbaseTx);
     uint64_t coinbaseSize = ::GetSerializeSize(coinbaseTx);
-    if (coinbaseSize < MIN_TX_SIZE) {
-        coinbaseTx.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - coinbaseSize - 1);
-        coinbaseTx.vin[0].vCoinbaseData.assign(
-            coinbaseTx.vin[0].scriptSig.begin(),
-            coinbaseTx.vin[0].scriptSig.end());
-        coinbaseSize = ::GetSerializeSize(coinbaseTx);
-    }
 
     CTransactionRef coinbaseRef = MakeTransactionRef(std::move(coinbaseTx));
 
@@ -597,7 +587,7 @@ UniValue MiningPoolManager::GetMiningJobJSON(const Config &config,
     const std::string header_hex = HexStr(ss_header);
 
     UniValue coinbase_outputs(UniValue::VARR);
-    for (const auto &out : coinbaseRef->vout) {
+    for (const auto &out : payouts) {
         UniValue out_obj(UniValue::VOBJ);
         out_obj.pushKV("value_sats", int64_t(out.nValue / SATOSHI));
         out_obj.pushKV("script_hex", HexStr(out.scriptPubKey));

@@ -57,6 +57,25 @@ CMutableTransaction CreateCoinbaseShell(uint32_t version,
                                         const BlockHash &prev_block,
                                         int nHeight);
 
+/**
+ * Set explicitly typed coinbase outputs. Native coinbases require native
+ * outputs; legacy coinbases require legacy outputs. This never translates
+ * a legacy script into a native program. Legacy-only reward configurations
+ * fail closed until a native policy is explicitly specified.
+ */
+void SetCoinbaseOutputs(CMutableTransaction &coinbase,
+                        const std::vector<CTxOut> &outputs);
+
+/**
+ * The coinbase input's script: the coinbase data of a version 7 coinbase, the
+ * scriptSig of a legacy one.
+ */
+CScript GetCoinbaseScript(const CTransaction &coinbase);
+CScript GetCoinbaseScript(const CMutableTransaction &coinbase);
+
+/** Set the coinbase input's script (see GetCoinbaseScript). */
+void SetCoinbaseScript(CMutableTransaction &coinbase, const CScript &script);
+
 /** Pad the coinbase input so that the transaction is MIN_TX_SIZE bytes. */
 void PadCoinbaseToMinSize(CMutableTransaction &coinbase);
 
@@ -116,9 +135,13 @@ public:
                    const CTxMemPool *mempool, const Options &options,
                    const avalanche::Processor *avalanche = nullptr);
 
-    /** Construct a new block template with coinbase to scriptPubKeyIn */
+    /** Legacy payout script overload; rejected for native coinbase version 7. */
     std::unique_ptr<CBlockTemplate>
     CreateNewBlock(const CScript &scriptPubKeyIn);
+
+    /** Native callers supply an explicit native policy; the reward sets value.
+     */
+    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CTxOut &payout);
 
     uint64_t GetMaxGeneratedBlockSize() const {
         return blockFitter.getMaxGeneratedBlockSize();

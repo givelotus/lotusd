@@ -263,9 +263,15 @@ class MiniWallet:
         # MiniWallet coins are V2 outputs, which only a version 7 coinbase
         # pays (regtest nodes default to legacy coinbases).
         kwargs.setdefault("coinbase_version", 7)
-        blocks = self._test_node.generatetodescriptor(
-            num_blocks, self.get_descriptor(), **kwargs
-        )
+        # Explicit native payouts commit the actual VM program. A raw legacy
+        # descriptor is intentionally rejected for version-7 coinbases.
+        from test_framework.xpiaddr import encode
+
+        hrp = {"main": "xpi", "test": "txpi", "regtest": "rxpi"}[
+            self._test_node.getblockchaininfo()["chain"]
+        ]
+        address = encode(hrp, lotus_v2_branch_leaf(self._scriptPubKey))
+        blocks = self._test_node.generatetoaddress(num_blocks, address, **kwargs)
         # Calling rescan_utxos here makes sure that after a generate the utxo
         # set is in a clean state. For example, the wallet will update
         # - if the caller consumed utxos, but never used them

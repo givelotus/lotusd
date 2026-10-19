@@ -71,8 +71,7 @@ bool IsStandardTx(const CTransaction &tx,
                   std::string &reason) {
     // Only allow these tx versions, there is no point accepting a tx that
     // violates the consensus rules
-    if (tx.nVersion != 1 && tx.nVersion != 2 &&
-        tx.nVersion != CTransaction::CURRENT_VERSION) {
+    if (tx.nVersion != 1 && tx.nVersion != 2 && tx.nVersion != 7) {
         reason = "version";
         return false;
     }

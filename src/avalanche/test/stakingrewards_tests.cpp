@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <primitives/v2_outputs.h>
 #include <avalanche/avalanche.h>
 #include <avalanche/peermanager.h>
 #include <avalanche/processor.h>
@@ -193,11 +194,11 @@ BOOST_FIXTURE_TEST_CASE(staking_rewards_policy_and_coinbase_split,
         BOOST_CHECK_EQUAL(cb.vout[0].nValue,
                           blockSubsidy - expectedStakerShare -
                               expectedTreasuryShare);
-        BOOST_CHECK(cb.vout[0].scriptPubKey == minerScript);
+        BOOST_CHECK(CoinbaseOutputPaysScript(cb.vout[0], minerScript));
         BOOST_CHECK_EQUAL(cb.vout[1].nValue, expectedStakerShare);
-        BOOST_CHECK(cb.vout[1].scriptPubKey == stakerScript);
+        BOOST_CHECK(CoinbaseOutputPaysScript(cb.vout[1], stakerScript));
         BOOST_CHECK_EQUAL(cb.vout[2].nValue, expectedTreasuryShare);
-        BOOST_CHECK(cb.vout[2].scriptPubKey == treasuryScript);
+        BOOST_CHECK(CoinbaseOutputPaysScript(cb.vout[2], treasuryScript));
 
         CBlockIndex blockIdx;
         blockIdx.phashBlock = &dummyBlockHash;

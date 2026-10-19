@@ -12,6 +12,7 @@
 #include <net.h>
 #include <node/blockfitter.h>
 #include <node/miner.h>
+#include <primitives/v2_outputs.h>
 #include <node/context.h>
 #include <pow/pow.h>
 #include <primitives/block.h>
@@ -53,12 +54,15 @@ std::shared_ptr<CBlock>
 PrepareBlock(const Config &config, const NodeContext &node,
              const CScript &coinbase_scriptPubKey,
              const node::BlockAssembler::Options &assembler_options) {
-    auto block =
-        std::make_shared<CBlock>(BlockAssembler{
+    auto block = std::make_shared<CBlock>(
+        BlockAssembler{
             BlockFitter(config), Assert(node.chainman)->ActiveChainstate(),
             Assert(node.mempool.get()), assembler_options, node.avalanche.get()}
-                                     .CreateNewBlock(coinbase_scriptPubKey)
-                                     ->block);
+            .CreateNewBlock(
+                assembler_options.coinbase_version == 7
+                    ? V0LeafOutput(Amount::zero(), coinbase_scriptPubKey)
+                    : CTxOut(Amount::zero(), coinbase_scriptPubKey))
+            ->block);
 
     LOCK(cs_main);
     const CBlockIndex *pindexPrev = Assert(node.chainman)->ActiveTip();
@@ -101,17 +105,15 @@ void createCoinbaseAndMerkleRoot(CBlock *pblock, const CBlockIndex *pindexPrev,
     CMutableTransaction tx_coinbase{*pblock->vtx.at(0)};
     CMutableTransaction shell = node::CreateCoinbaseShell(
         tx_coinbase.nVersion, pindexPrev->GetBlockHash(), nHeight);
-    shell.vin[0].scriptSig = CScript{}
-                             << nHeight
-                             << getExcessiveBlockSizeSig(nExcessiveBlockSize);
-    if (shell.vin[0].nFlags == 2) {
-        shell.vin[0].vCoinbaseData.assign(shell.vin[0].scriptSig.begin(),
-                                          shell.vin[0].scriptSig.end());
-    }
+    node::SetCoinbaseScript(shell,
+                            CScript{} << nHeight
+                                      << getExcessiveBlockSizeSig(
+                                             nExcessiveBlockSize));
     tx_coinbase.vin = shell.vin;
     node::PadCoinbaseToMinSize(tx_coinbase);
 
-    assert(tx_coinbase.vin[0].scriptSig.size() <= MAX_COINBASE_SCRIPTSIG_SIZE);
+    assert(node::GetCoinbaseScript(tx_coinbase).size() <=
+           MAX_COINBASE_SCRIPTSIG_SIZE);
     assert(::GetSerializeSize(tx_coinbase) >= MIN_TX_SIZE);
 
     pblock->vtx[0] = MakeTransactionRef(std::move(tx_coinbase));

@@ -12,6 +12,13 @@ from .signature_hash import (
 
 MAX_OP_RETURN_PAYLOAD = 220
 VOUT_VALUE_SIZE = 8
+# A transaction has at most 256 outputs (the V2 cap applies to every version).
+MAX_TX_OUTPUTS = 256
+# Payload of the large (non-standard) OP_RETURN outputs used when standard
+# ones cannot reach the size within MAX_TX_OUTPUTS. Such an output takes
+# value (8) + script length (3) + OP_RETURN (1) + OP_PUSHDATA2 (3) + data.
+LARGE_OP_RETURN_PAYLOAD = 9000
+LARGE_VOUT_OVERHEAD = VOUT_VALUE_SIZE + 3 + 1 + 3
 
 
 def pad_tx(tx: CTransaction, pad_to_size: int = MIN_TX_SIZE, deterministic=False):
@@ -30,6 +37,21 @@ def pad_tx(tx: CTransaction, pad_to_size: int = MIN_TX_SIZE, deterministic=False
     required_padding = pad_to_size - curr_size
 
     while required_padding > 0:
+        room = MAX_TX_OUTPUTS - len(tx.vout)
+        if (
+            required_padding
+            > (room - 1) * (MAX_OP_RETURN_PAYLOAD + VOUT_VALUE_SIZE + 4)
+            and required_padding > LARGE_OP_RETURN_PAYLOAD + LARGE_VOUT_OVERHEAD + 300
+        ):
+            # Too much padding for standard outputs within the output cap.
+            data = (
+                b"\x00" * LARGE_OP_RETURN_PAYLOAD
+                if deterministic
+                else random.randbytes(LARGE_OP_RETURN_PAYLOAD)
+            )
+            tx.vout.append(CTxOut(0, CScript([OP_RETURN, data])))
+            required_padding -= LARGE_OP_RETURN_PAYLOAD + LARGE_VOUT_OVERHEAD
+            continue
         if required_padding <= 10:
             # Smallest possible padding with an empty OP_RETURN vout:
             #     vout.value (8 bytes) + script length (1) + OP_RETURN (1)
