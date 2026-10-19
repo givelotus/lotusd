@@ -1073,6 +1073,14 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebsocketpin=<host>=<pin>",
+        "Only connect to wss:// peers at <host> (dialed URLs and advertised "
+        "names) whose TLS public key has this SHA-256 (base64url of the DER "
+        "SubjectPublicKeyInfo, as shown by getpeerinfo's websocket.peer_spki). "
+        "A URL can also carry one as wss://host/path#spki=<pin>. Can be "
+        "specified multiple times.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebsocketbridge",
         "Carry inbound P2P WebSocket peers through a socketpair bridge "
         "instead of handing their connection to the P2P layer (for testing; "
@@ -3481,9 +3489,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         }
         if (!StartP2PWebSocketDialer(
                 cert, key,
-                args.GetArg("-p2pwebsocketoffer",
-                            DEFAULT_P2P_WEBSOCKET_OFFER))) {
-            LogPrintf("P2P over WebSocket is not supported on this platform\n");
+                args.GetArg("-p2pwebsocketoffer", DEFAULT_P2P_WEBSOCKET_OFFER),
+                args.GetArgs("-p2pwebsocketpin"))) {
+            return InitError(Untranslated(
+                "Unable to start the P2P WebSocket dialer (check "
+                "-p2pwebsocketpin; see the debug log)"));
         }
     }
 
