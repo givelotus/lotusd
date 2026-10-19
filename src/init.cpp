@@ -1665,7 +1665,11 @@ void SetupServerArgs(NodeContext &node) {
         "-tlsephemeral",
         strprintf("When -tlscert is not set, serve TLS on the RPC port with a "
                   "self-signed EC P-256 certificate kept in <datadir>/%s and "
-                  "<datadir>/%s, generating it if needed (default: %d)",
+                  "<datadir>/%s, generating it if needed. It is issued for "
+                  "the first -externaldomain (else a random host name), "
+                  "valid for 90 days and renewed with the same key when "
+                  "fewer than 30 remain. A replaced -tlscert/-tlskey is "
+                  "picked up without a restart (default: %d)",
                   HTTP_TLS_CERT_FILENAME, HTTP_TLS_KEY_FILENAME,
                   DEFAULT_HTTP_TLS_EPHEMERAL),
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
