@@ -57,10 +57,40 @@ test/functional/test_runner.py --extended
 ```
 
 By default, the test_runner will run many tests in parallel. To specify
-how many jobs to run, append `--jobs=n`
+how many jobs to run, append `--jobs=n` (at most 45, so that tests running
+at the same time get disjoint port ranges).
+
+Each test runs in its own worker process and is stopped, with every process
+it started, after `--test-timeout` seconds (default 1200, multiplied by
+`--timeout-factor`). For a failure the runner prints the exception, the end
+of the test's log, warnings and errors from the nodes' logs, and the command
+that runs the test again on its own.
+
+Some tests have variants, e.g. a descriptor-wallet run. The runner runs every
+variant; their results are named `<test>[<variant>]`. To run one by itself:
+
+```
+test/functional/wallet_balance.py --list-variants
+test/functional/wallet_balance.py --variant=descriptors
+test/functional/wallet_balance.py --variant=all
+```
+
+Through the runner, naming a test runs all its variants, and
+`<test>[<variant>]` runs just that one (quote it for the shell):
+
+```
+test/functional/test_runner.py 'wallet_balance.py[descriptors]'
+```
 
 The individual tests and the test_runner harness have many command-line
-options. Run `test/functional/test_runner.py -h` to see them all.
+options. Run `test/functional/test_runner.py -h` to see them all. Useful
+ones:
+
+- `--jsonl-file=FILE`, `--json-summary=FILE` and `--junitoutput=FILE` write
+  structured results (see
+  [README-runner-output.md](/test/functional/README-runner-output.md)).
+- `--phase-report` shows where the time goes: cache copy, node starts and
+  stops, test bodies, and waiting for nodes to sync.
 
 #### Troubleshooting and debugging test failures
 
@@ -307,9 +337,41 @@ don't have test cases for.
 - Avoid wildcard imports where possible
 - Use a module-level docstring to describe what the test is testing, and how it
   is testing it.
-- When subclassing the BitcoinTestFramework, place overrides for the
-  `set_test_params()`, `add_options()` and `setup_xxxx()` methods at the top of
-  the subclass, then locally-defined helper methods, then the `run_test()` method.
+- When subclassing the BitcoinTestFramework, declare the test's parameters
+  (class attributes, see below), then the `set_test_params()`, `add_options()`
+  and `setup_xxxx()` overrides, then locally-defined helper methods, then the
+  `run_test()` method.
+
+#### Declaring a test
+
+A test declares what it is as class attributes; the framework (and the test
+runner, without running it) reads them:
+
+```python
+class WalletExampleTest(BitcoinTestFramework):
+    num_nodes = 2
+    setup_clean_chain = True
+    extra_args = [["-whitelist=noban@127.0.0.1"], []]
+    # Skip unless these are built/available (see REQUIREMENTS)
+    requires = {"wallet"}
+    # How setup_network() connects the nodes: "chain" (default), "none", or
+    # explicit (from, to) pairs
+    topology = "none"
+    # Extra runs with other option values; the first is the default
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
+    def run_test(self):
+        ...
+```
+
+- Use `set_test_params()` only for parameters computed at runtime, e.g. from
+  `self.options`.
+- Override `skip_test_if_missing_module()` or `setup_network()` only for what
+  `requires` or `topology` cannot express.
+- A variant's keys are the destinations of command-line options (the
+  framework's, or the test's own `add_options()`). A test can also subclass
+  another test, e.g. to override some of its methods. A base class meant only
+  to be subclassed sets `abstract = True`.
 
 #### Naming guidelines
 
@@ -339,7 +401,7 @@ don't have test cases for.
 - Avoid stop-starting the nodes multiple times during the test if possible. A
   stop-start takes several seconds, so doing it several times blows up the
   runtime of the test.
-- Set the `self.setup_clean_chain` variable in `set_test_params()` to `True` to
+- Set `setup_clean_chain = True` (a class attribute) to
   initialize an empty blockchain and start from the Genesis block, rather than
   load a premined blockchain from cache with the default value of `False`. The
   cached data directories contain a 200-block pre-mined blockchain with the
