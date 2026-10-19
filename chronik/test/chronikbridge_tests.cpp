@@ -7,6 +7,7 @@
 #include <chronik-cpp/chronik_bridge.h>
 #include <chronik-cpp/util/hash.h>
 #include <config.h>
+#include <logging.h>
 #include <streams.h>
 #include <util/strencodings.h>
 #include <validation.h>
@@ -15,7 +16,54 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <fstream>
+#include <iterator>
+
 BOOST_AUTO_TEST_SUITE(chronikbridge_tests)
+
+BOOST_FIXTURE_TEST_CASE(test_log_print_shared_quota_and_progress,
+                        BasicTestingSetup) {
+    // Exercise the linked Rust/C++ bridge, not a copy of its logger adapter.
+    auto limiter = BCLog::LogRateLimiter::Create(
+        [](std::function<bool()>, std::chrono::milliseconds) {}, 64,
+        std::chrono::hours{1});
+    std::atomic<int> allowed{0}, other_site{0}, progress{0};
+    auto &logger = LogInstance();
+    auto callback = logger.PushBackCallback([&](const std::string &line) {
+        if (line.find("BRIDGE_ALLOWED") != std::string::npos) ++allowed;
+        if (line.find("BRIDGE_OTHER_SITE") != std::string::npos) ++other_site;
+        if (line.find("BRIDGE_PROGRESS") != std::string::npos) ++progress;
+    });
+    logger.SetRateLimiting(limiter);
+    const std::string first = "BRIDGE_ALLOWED\n";
+    const std::string over_quota(128, 'q');
+    const std::string suppressed = "BRIDGE_OTHER_SITE\n";
+    const std::string expected_progress = "BRIDGE_PROGRESS" + std::string(128, 'p');
+    chronik_bridge::log_print("rust_a", "a.rs", 1, first, true);
+    chronik_bridge::log_print("rust_b", "b.rs", 2, over_quota, true);
+    // Rust locations still share the existing bridge call site's quota.
+    chronik_bridge::log_print("rust_c", "c.rs", 3, suppressed, true);
+    // Expected progress bypasses even an already exhausted shared quota.
+    chronik_bridge::log_print("rust_progress", "progress.rs", 4,
+                              expected_progress, false);
+    // This original-owner API writes synchronously before async logging is
+    // introduced; with the async logger, Error waits for prior publications.
+    logger.LogPrintStr("BRIDGE_BARRIER\n", std::source_location::current(),
+                       BCLog::LogFlags::NONE, BCLog::Level::Error, nullptr);
+    logger.SetRateLimiting(nullptr);
+    logger.DeleteCallback(callback);
+    BOOST_CHECK(limiter->SuppressionsActive());
+    BOOST_CHECK_EQUAL(allowed.load(), 1);
+    // Rate limiting suppresses disk writes, not console/callback delivery.
+    BOOST_CHECK_EQUAL(other_site.load(), 1);
+    BOOST_CHECK_EQUAL(progress.load(), 1);
+    std::ifstream stream{logger.m_file_path};
+    const std::string disk_log{std::istreambuf_iterator<char>{stream},
+                               std::istreambuf_iterator<char>{}};
+    BOOST_CHECK(disk_log.find("BRIDGE_ALLOWED") != std::string::npos);
+    BOOST_CHECK(disk_log.find("BRIDGE_OTHER_SITE") == std::string::npos);
+    BOOST_CHECK(disk_log.find("BRIDGE_PROGRESS") != std::string::npos);
+}
 
 BOOST_FIXTURE_TEST_CASE(test_get_chain_tip_empty, ChainTestingSetup) {
     // Setup chainstate
