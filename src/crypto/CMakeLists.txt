@@ -106,3 +106,24 @@ if(ENABLE_SHANI)
 	target_compile_definitions(crypto_shani PUBLIC ENABLE_SHANI)
 	target_compile_options(crypto_shani PRIVATE ${CRYPTO_SHANI_FLAGS})
 endif()
+
+# ARMv8 SHA-256 instructions
+set(CRYPTO_ARM_SHANI_FLAGS -march=armv8-a+crypto)
+
+string(JOIN " " CMAKE_REQUIRED_FLAGS ${CRYPTO_ARM_SHANI_FLAGS})
+check_cxx_source_compiles("
+	#include <arm_neon.h>
+	int main() {
+		uint32x4_t a, b, c;
+		vsha256h2q_u32(a, b, c);
+		vsha256hq_u32(a, b, c);
+		vsha256su0q_u32(a, b);
+		vsha256su1q_u32(a, b, c);
+	}
+" ENABLE_ARM_SHANI)
+
+if(ENABLE_ARM_SHANI)
+	add_crypto_library(crypto_arm_shani sha256_arm_shani.cpp)
+	target_compile_definitions(crypto_arm_shani PUBLIC ENABLE_ARM_SHANI)
+	target_compile_options(crypto_arm_shani PRIVATE ${CRYPTO_ARM_SHANI_FLAGS})
+endif()
