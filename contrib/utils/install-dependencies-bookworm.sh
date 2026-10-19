@@ -51,10 +51,6 @@ PACKAGES=(
   libjemalloc-dev
   libprotobuf-dev
   libpcsclite-dev
-  libqrencode-dev
-  libqt5core5a
-  libqt5dbus5
-  libqt5gui5
   libsqlite3-dev
   libssl-dev
   libtinfo5
@@ -74,8 +70,6 @@ PACKAGES=(
   python3-setuptools
   python3-yaml
   qemu-user-static
-  qttools5-dev
-  qttools5-dev-tools
   shellcheck
   software-properties-common
   swig
@@ -83,7 +77,6 @@ PACKAGES=(
   unzip
   wget
   xorriso
-  xvfb
   yamllint
   zip
 )

@@ -564,13 +564,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.options.emulator = config["environment"]["EMULATOR"] or None
 
         os.environ["PATH"] = (
-            config["environment"]["BUILDDIR"]
-            + os.pathsep
-            + config["environment"]["BUILDDIR"]
-            + os.path.sep
-            + "qt"
-            + os.pathsep
-            + os.environ["PATH"]
+            config["environment"]["BUILDDIR"] + os.pathsep + os.environ["PATH"]
         )
 
         # Add test dir to sys.path (to access generated modules)
