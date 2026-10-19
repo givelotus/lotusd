@@ -23,6 +23,8 @@ FINAL_HEIGHT = 399
 
 
 class AssumeutxoTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
 

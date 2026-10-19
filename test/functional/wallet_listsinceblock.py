@@ -17,6 +17,8 @@ from test_framework.wallet_util import bytes_to_wif
 
 
 class ListSinceBlockTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 4
         self.setup_clean_chain = True

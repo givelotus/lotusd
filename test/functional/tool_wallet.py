@@ -16,6 +16,8 @@ BUFFER_SIZE = 16 * 1024
 
 
 class ToolWalletTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True

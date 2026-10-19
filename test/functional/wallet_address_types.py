@@ -41,6 +41,8 @@ from test_framework.util import assert_equal, assert_greater_than
 
 
 class AddressTypeTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.num_nodes = 5
         self.noban_tx_relay = True
