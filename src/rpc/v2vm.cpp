@@ -138,17 +138,19 @@ MintDelta(const lotus::v2::Transaction &tx,
     return delta;
 }
 
-UniValue EffectsJson(const lotus::v2::VmTransactionEffects &effects) {
+UniValue EffectsJson(const lotus::v2::DeferredRecords &effects) {
     UniValue claims(UniValue::VARR);
-    for (const auto &[output, amount] : effects.claims) {
+    for (const auto &record : lotus::v2::OutputClaimsOf(effects)) {
         UniValue claim(UniValue::VOBJ);
-        claim.pushKV("output", output);
-        claim.pushKV("amount", amount);
+        claim.pushKV("output", record.matches.front());
+        claim.pushKV("amount", record.amount);
         claims.push_back(claim);
     }
     UniValue authorized(UniValue::VARR);
-    for (const auto output : effects.state_authorized) {
-        authorized.push_back(output);
+    for (const auto &record : lotus::v2::StateAuthorizationsOf(effects)) {
+        for (const auto output : record.outputs) {
+            authorized.push_back(output);
+        }
     }
     UniValue out(UniValue::VOBJ);
     out.pushKV("claims", claims);
@@ -157,15 +159,23 @@ UniValue EffectsJson(const lotus::v2::VmTransactionEffects &effects) {
 }
 
 UniValue PostCheckJson(const std::vector<lotus::v2::Output> &outputs,
-                       const lotus::v2::VmTransactionEffects &effects,
-                       bool &ok) {
+                       std::span<const lotus::v2::DeferredRecords> per_input,
+                       size_t input_count, bool &ok) {
     std::string error;
-    ok = lotus::v2::FinalizeVmTransactionEffects(outputs, effects, error);
+    ok = lotus::v2::RunDeferredChecks(
+             lotus::v2::DeferredCheckRegistry::Consensus(),
+             lotus::v2::DeferredTxView{outputs, input_count}, per_input,
+             error) == lotus::v2::DeferredOutcome::Accepted;
+    if (ok) {
+        error.clear();
+    }
     UniValue claimed(UniValue::VARR);
     std::vector<__uint128_t> sums(outputs.size());
-    for (const auto &[output, amount] : effects.claims) {
-        if (output < sums.size()) {
-            sums[output] += amount;
+    for (const auto &records : per_input) {
+        for (const auto &claim : lotus::v2::OutputClaimsOf(records)) {
+            if (claim.matches.front() < sums.size()) {
+                sums[claim.matches.front()] += claim.amount;
+            }
         }
     }
     for (size_t j = 0; j < outputs.size(); ++j) {
@@ -420,17 +430,22 @@ RPCHelpMan testv2transaction() {
                 result.pushKV("invocations", UniValue(UniValue::VARR));
                 bool ok = false;
                 result.pushKV("post_check",
-                              PostCheckJson(tx.outputs, {}, ok));
+                              PostCheckJson(tx.outputs, {}, tx.inputs.size(),
+                                            ok));
                 return result;
             }
             bool valid = true;
-            lotus::v2::VmTransactionEffects tx_effects;
+            // Records of the successful invocations, per input; the
+            // deferred checks run over them sequentially, as in mempool
+            // acceptance.
+            std::vector<lotus::v2::DeferredRecords> per_input(
+                tx.inputs.size());
             UniValue invocations(UniValue::VARR);
             for (size_t i = 0; i < tx.inputs.size(); ++i) {
                 const auto delta = MintDelta(tx, resolved, i);
                 for (size_t j = 0; j < tx.inputs[i].witnesses.size(); ++j) {
                     const auto &witness = tx.inputs[i].witnesses[j];
-                    lotus::v2::VmTransactionEffects effects;
+                    lotus::v2::DeferredRecords effects;
                     auto context = prepared.Invocation(i, j, delta, nullptr);
                     context.effects = &effects;
                     const auto vm = lotus::v2::EvaluateVmCharged(
@@ -444,7 +459,7 @@ RPCHelpMan testv2transaction() {
                              lotus::v2::VmStatus::AutomaticSuccess) &&
                         vm.charged;
                     valid &= ok;
-                    tx_effects.Merge(effects);
+                    per_input[i].Merge(effects);
                     UniValue entry(UniValue::VOBJ);
                     entry.pushKV("input", uint64_t(i));
                     entry.pushKV("witness", uint64_t(j));
@@ -459,7 +474,8 @@ RPCHelpMan testv2transaction() {
                 }
             }
             bool post_ok = false;
-            UniValue post = PostCheckJson(tx.outputs, tx_effects, post_ok);
+            UniValue post = PostCheckJson(tx.outputs, per_input,
+                                          tx.inputs.size(), post_ok);
             result.pushKV("valid", valid && post_ok);
             result.pushKV("error", "");
             result.pushKV("invocations", invocations);
@@ -670,7 +686,8 @@ RPCHelpMan simulatev2transaction() {
             result.pushKV("drafts", drafts);
             result.pushKV("signing_requests", requests);
             result.pushKV("post_check",
-                          PostCheckJson(sim.tx.outputs, sim.effects, post_ok));
+                          PostCheckJson(sim.tx.outputs, sim.input_effects,
+                                        sim.tx.inputs.size(), post_ok));
             return result;
         },
     };

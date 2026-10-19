@@ -89,6 +89,8 @@ SimulationResult EvaluateVmSimulated(const SimTransaction &draft,
     SimulationResult result;
     result.tx = draft.tx;
     Simulation hooks(result, options);
+    auto &per_input = result.input_effects;
+    per_input.assign(result.tx.inputs.size(), DeferredRecords{});
     for (size_t i = 0; i < result.tx.inputs.size(); ++i) {
         for (size_t j = 0; j < result.tx.inputs[i].witnesses.size(); ++j) {
             // Copy the witness: drafts appended during the invocation may
@@ -117,9 +119,12 @@ SimulationResult EvaluateVmSimulated(const SimTransaction &draft,
                                        draft.chain_id,  draft.resolved,
                                        i,               j,
                                        delta};
-            context.effects = &result.effects;
+            DeferredRecords records;
+            context.effects = &records;
             const auto vm = detail::EvaluateVmSimulationInvocation(
                 witness.script, witness.arguments, draft.vm, context, hooks);
+            result.effects.Merge(records);
+            per_input[i].Merge(std::move(records));
             invocation.status = vm.status;
             invocation.error = vm.error;
             invocation.executed_cost = vm.executed_cost;
@@ -138,8 +143,15 @@ SimulationResult EvaluateVmSimulated(const SimTransaction &draft,
                     [](const SimInvocation &invocation) {
                         return invocation.provisional_delta;
                     });
-    result.post_check_ok = FinalizeVmTransactionEffects(
-        result.tx.outputs, result.effects, result.post_check_error);
+    // The deferred checks over the successful invocations' records, run
+    // through the consensus kinds: reported, not enforced.
+    result.post_check_ok =
+        RunDeferredChecks(DeferredCheckRegistry::Consensus(),
+                          DeferredTxView{result.tx.outputs,
+                                         result.tx.inputs.size()},
+                          per_input, result.post_check_error) ==
+        DeferredOutcome::Accepted;
+    if (result.post_check_ok) result.post_check_error.clear();
     return result;
 }
 
