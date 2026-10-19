@@ -121,6 +121,7 @@ enum class LogFormat {
     JSON_GCP,
     JSON_ECS,
     JOURNALD,
+    SYSLOG,
 };
 
 /** Parse a supported -logformat value */

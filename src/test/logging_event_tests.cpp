@@ -19,6 +19,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -551,6 +552,43 @@ BOOST_AUTO_TEST_CASE(journal_native_transport) {
     fs::remove(path);
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(syslog_rfc5424_encoding) {
+    BOOST_CHECK(BCLog::ParseLogFormat("syslog") == BCLog::LogFormat::SYSLOG);
+    BCLog::SyslogEncoder encoder;
+    BCLog::LogLine line{.time = SystemClock::time_point{} + 123456us,
+                        .level = BCLog::Level::Warning,
+                        .category = BCLog::NET,
+                        .thread = "network",
+                        .loc = std::source_location::current(),
+                        .message = "quote\"\ninvalid\xff\n"};
+    std::string encoded;
+    encoder.Encode(line, BCLog::LogOptions{.sourcelocations = true}, encoded);
+    const std::string prefix{
+        "<28>1 1970-01-01T00:00:00.123456Z - - - - - \xef\xbb\xbf"};
+    BOOST_REQUIRE(encoded.starts_with(prefix));
+    UniValue payload;
+    BOOST_REQUIRE(payload.read(encoded.substr(prefix.size())));
+    BOOST_CHECK_EQUAL(payload["message"].get_str(),
+                      "quote\"\ninvalid\xef\xbf\xbd");
+    BOOST_CHECK_EQUAL(
+        payload["source"]["function"].get_str(),
+        "logging_event_tests::syslog_rfc5424_encoding::test_method");
+    BOOST_CHECK_EQUAL(std::count(encoded.begin(), encoded.end(), '\n'), 1);
+    encoder.Encode(line, BCLog::LogOptions{.timestamps = false}, encoded);
+    BOOST_CHECK(encoded.starts_with("<28>1 - - - - - - \xef\xbb\xbf"));
+    Format(BCLog::LogFormat::SYSLOG);
+    LogEvent(BCLog::NET, "peer_received", "received {bytes} bytes")
+        .Field(LogField::PeerId, 42)
+        .Field(LogField::Bytes, uint64_t{123});
+    const auto lines{Lines()};
+    BOOST_REQUIRE_EQUAL(lines.size(), 1U);
+    const auto start{lines[0].find("\xef\xbb\xbf")};
+    BOOST_REQUIRE(start != std::string::npos);
+    BOOST_REQUIRE(payload.read(lines[0].substr(start + 3)));
+    BOOST_CHECK_EQUAL(payload["peer_id"].getInt<int>(), 42);
+    BOOST_CHECK_EQUAL(payload["bytes"].getInt<int>(), 123);
+}
 
 BOOST_AUTO_TEST_CASE(peer_address_and_port_are_separate) {
     Format(BCLog::LogFormat::JSON);
