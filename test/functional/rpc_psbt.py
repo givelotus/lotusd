@@ -21,10 +21,9 @@ from test_framework.util import (
 class PSBTTest(BitcoinTestFramework):
     # FIXME: a "descriptors" variant (--descriptors) fails.
 
-    def set_test_params(self):
-        self.num_nodes = 3
-        self.supports_cli = False
-        self.noban_tx_relay = True
+    num_nodes = 3
+    supports_cli = False
+    noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

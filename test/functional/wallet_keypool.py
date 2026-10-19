@@ -13,8 +13,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 class KeyPoolTest(BitcoinTestFramework):
     # FIXME: a "descriptors" variant (--descriptors) fails.
 
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

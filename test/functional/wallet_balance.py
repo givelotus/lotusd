@@ -45,10 +45,9 @@ def create_transactions(node, address, amt, fees):
 class WalletTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
+    num_nodes = 2
+    setup_clean_chain = True
+    noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

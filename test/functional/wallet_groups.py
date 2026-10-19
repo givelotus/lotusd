@@ -10,24 +10,23 @@ from test_framework.util import assert_approx, assert_equal
 
 
 class WalletGroupTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 5
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [],
-            [],
-            ["-avoidpartialspends"],
-            # 2.93 XEC is the threshold that causes a node to prefer a
-            # non-grouped tx (3 inputs, 2 outputs) to a grouped tx (5 inputs,
-            # 2 outputs). The fee for the grouped tx is 294 sats higher than
-            # the fee for the non-grouped tx. See tx5 below.
-            ["-maxapsfee=2.93"],
-            ["-maxapsfee=2.94"],
-        ]
+    setup_clean_chain = True
+    num_nodes = 5
+    noban_tx_relay = True
+    extra_args = [
+        [],
+        [],
+        ["-avoidpartialspends"],
+        # 2.93 XEC is the threshold that causes a node to prefer a
+        # non-grouped tx (3 inputs, 2 outputs) to a grouped tx (5 inputs,
+        # 2 outputs). The fee for the grouped tx is 294 sats higher than
+        # the fee for the non-grouped tx. See tx5 below.
+        ["-maxapsfee=2.93"],
+        ["-maxapsfee=2.94"],
+    ]
 
-        self.rpc_timeout = 480
-        self.supports_cli = False
+    rpc_timeout = 480
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

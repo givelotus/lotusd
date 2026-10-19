@@ -27,12 +27,11 @@ def get_unspent(listunspent, amount):
 class RawTransactionsTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.setup_clean_chain = True
-        # This test isn't testing tx relay. Set whitelist on the peers for
-        # instant tx relay.
-        self.extra_args = [["-whitelist=noban@127.0.0.1"]] * self.num_nodes
+    num_nodes = 4
+    setup_clean_chain = True
+    # This test isn't testing tx relay. Set whitelist on the peers for
+    # instant tx relay.
+    extra_args = [["-whitelist=noban@127.0.0.1"]] * num_nodes
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

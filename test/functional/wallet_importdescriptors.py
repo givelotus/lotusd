@@ -27,11 +27,10 @@ from test_framework.wallet_util import get_generate_key, test_address
 
 
 class ImportDescriptorsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [[], ["-keypool=5"]]
-        self.setup_clean_chain = True
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [[], ["-keypool=5"]]
+    setup_clean_chain = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

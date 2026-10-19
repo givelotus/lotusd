@@ -20,10 +20,9 @@ from test_framework.wallet_util import bytes_to_wif
 class RpcCreateMultiSigTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 3
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 3
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -15,9 +15,8 @@ from test_framework.util import assert_equal
 
 
 class GetChainTipsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], [], []]
+    num_nodes = 4
+    extra_args = [["-noparkdeepreorg"], ["-noparkdeepreorg"], [], []]
 
     def run_test(self):
         self.log.info("Test getchaintips behavior with two chains of different length")

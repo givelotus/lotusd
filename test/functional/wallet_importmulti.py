@@ -27,9 +27,8 @@ from test_framework.wallet_util import get_key, get_multisig, test_address
 
 
 class ImportMultiTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
+    num_nodes = 2
+    setup_clean_chain = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

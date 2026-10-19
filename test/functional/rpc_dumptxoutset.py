@@ -12,9 +12,8 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class DumptxoutsetTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def run_test(self):
         """Test a trivial usage of the dumptxoutset RPC command."""

@@ -18,10 +18,9 @@ BUFFER_SIZE = 16 * 1024
 class ToolWalletTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.rpc_timeout = 120
+    num_nodes = 1
+    setup_clean_chain = True
+    rpc_timeout = 120
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -11,8 +11,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 class DeriveaddressesTest(BitcoinTestFramework):
     variants = {"default": {}, "cli": {"usecli": True}}
 
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         assert_raises_rpc_error(

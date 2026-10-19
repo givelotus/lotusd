@@ -41,18 +41,17 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletBackupTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 4
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
-        # nodes 1, 2, 3 are spenders, let's give them a keypool=100
-        self.extra_args = [
-            ["-keypool=100"],
-            ["-keypool=100"],
-            ["-keypool=100"],
-            [],
-        ]
-        self.rpc_timeout = 120
+    num_nodes = 4
+    setup_clean_chain = True
+    noban_tx_relay = True
+    # nodes 1, 2, 3 are spenders, let's give them a keypool=100
+    extra_args = [
+        ["-keypool=100"],
+        ["-keypool=100"],
+        ["-keypool=100"],
+        [],
+    ]
+    rpc_timeout = 120
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
