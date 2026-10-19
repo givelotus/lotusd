@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "batch": "fee-rate-values",
+  "review_note": "FeeRate is the actual CFeeRate value, copied without caller ToString; canonical ticker/kB human text is rendered on the consumer. PeerId/TxId/Count retain actual original semantics and types. Preserve branches, severities, categories and exact human text.",
+  "files": [
+    {
+      "path": "src/node/miner.cpp",
+      "rules": [
+        {
+          "id": "mining_transaction_fee_rate",
+          "old": "LogPrintf(\n            \"fee rate %s txid %s\\n\",\n            CFeeRate(entry->GetModifiedFee(), entry->GetTxSize()).ToString(),\n            entry->GetTx().GetId().ToString())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"mining_transaction_fee_rate\",\n                     \"fee rate {fee_rate} txid {txid}\")\n            .Field(BCLog::LogField::FeeRate,\n                   CFeeRate(entry->GetModifiedFee(), entry->GetTxSize()))\n            .Field(BCLog::LogField::TxId, entry->GetTx().GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "fee rate %s txid %s\n",
+            "specifiers": [
+              "%s",
+              "%s"
+            ],
+            "arguments": [
+              "CFeeRate(entry->GetModifiedFee(), entry->GetTxSize()).ToString()",
+              "entry->GetTx().GetId().ToString()"
+            ]
+          },
+          "review_note": "FeeRate is the actual CFeeRate value, copied without caller ToString; canonical ticker/kB human text is rendered on the consumer. PeerId/TxId/Count retain actual original semantics and types. Preserve branches, severities, categories and exact human text."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include structured API and fee-rate value adapter directly",
+          "old": "#include <minerfund.h>\n",
+          "new": "#include <logging.h>\n#include <logging/values.h>\n#include <minerfund.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/txmempool.cpp",
+      "rules": [
+        {
+          "id": "mempool_minimum_fee_raised",
+          "old": "LogDebug(BCLog::MEMPOOL,\n                 \"Removed %u txn, rolling minimum fee bumped to %s\\n\",\n                 nTxnRemoved, maxFeeRateRemoved.ToString())",
+          "replacement": "LogEvent(BCLog::MEMPOOL, \"mempool_minimum_fee_raised\",\n                 \"Removed {count} txn, rolling minimum fee bumped to {fee_rate}\")\n            .Field(BCLog::LogField::Count, nTxnRemoved)\n            .Field(BCLog::LogField::FeeRate, maxFeeRateRemoved)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Removed %u txn, rolling minimum fee bumped to %s\n",
+            "specifiers": [
+              "%u",
+              "%s"
+            ],
+            "arguments": [
+              "nTxnRemoved",
+              "maxFeeRateRemoved.ToString()"
+            ]
+          },
+          "review_note": "FeeRate is the actual CFeeRate value, copied without caller ToString; canonical ticker/kB human text is rendered on the consumer. PeerId/TxId/Count retain actual original semantics and types. Preserve branches, severities, categories and exact human text."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include raw fee-rate snapshot adapter",
+          "old": "#include <logging.h>\n",
+          "new": "#include <logging.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/net_processing.cpp",
+      "rules": [
+        {
+          "id": "peer_fee_filter_received",
+          "old": "LogDebug(BCLog::NET, \"received: feefilter of %s from peer=%d\\n\",\n                     CFeeRate(newFeeFilter).ToString(), pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_fee_filter_received\",\n                     \"received: feefilter of {fee_rate} from peer={peer_id}\")\n                .Field(BCLog::LogField::FeeRate, CFeeRate(newFeeFilter))\n                .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "received: feefilter of %s from peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "CFeeRate(newFeeFilter).ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "FeeRate is the actual CFeeRate value, copied without caller ToString; canonical ticker/kB human text is rendered on the consumer. PeerId/TxId/Count retain actual original semantics and types. Preserve branches, severities, categories and exact human text."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include raw fee-rate snapshot adapter after earlier peer-state API include",
+          "old": "#include <logging.h>\n",
+          "new": "#include <logging.h>\n#include <logging/values.h>\n"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/values.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Declare CFeeRate adapter type",
+          "old": "#include <logging/event.h>\n",
+          "new": "#include <feerate.h>\n#include <logging/event.h>\n"
+        },
+        {
+          "purpose": "Assert safe in-process scalar representation",
+          "old": "#include <cstring>\n",
+          "new": "#include <cstring>\n#include <type_traits>\n"
+        },
+        {
+          "purpose": "Copy rate value without arithmetic or allocation; format on consumer",
+          "old": "/** Transactions, by reference:",
+          "new": "/** Fee rates: copy their single Amount value; format on the consumer. */\ntemplate <> struct LogValue<CFeeRate> {\n    // This is an in-process value snapshot, not a new wire serialization.\n    // Avoid GetFeePerK(): it performs arithmetic which can overflow for rates\n    // outside the monetary range even though ToString itself accepts them.\n    static_assert(std::is_trivially_copyable_v<CFeeRate>);\n    static_assert(std::has_unique_object_representations_v<CFeeRate>);\n    static_assert(sizeof(CFeeRate) == sizeof(Amount));\n    static constexpr size_t MAX_SIZE{sizeof(CFeeRate)};\n    static size_t Pack(const CFeeRate &rate, std::span<std::byte> out) {\n        std::memcpy(out.data(), &rate, sizeof(rate));\n        return sizeof(rate);\n    }\n    static void Render(std::span<const std::byte> in, std::string &out) {\n        CFeeRate rate;\n        std::memcpy(&rate, in.data(), sizeof(rate));\n        out += rate.ToString();\n    }\n};\n\n/** Transactions, by reference:"
+        }
+      ]
+    },
+    {
+      "path": "src/logging/fields.h",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Append FeeRate STRING without changing any existing field ID or formatting",
+          "old": "    X(ErrorCode, error_code, INT, \"\", \"\")",
+          "new": "    X(ErrorCode, error_code, INT, \"\", \"\") \\\n    X(FeeRate, fee_rate, STRING, \"\", \"\")"
+        }
+      ]
+    },
+    {
+      "path": "src/test/logging_event_tests.cpp",
+      "rules": [],
+      "support_adjustments": [
+        {
+          "purpose": "Use integer boundaries in exact native formatting regression",
+          "old": "#include <memory>\n",
+          "new": "#include <limits>\n#include <memory>\n"
+        },
+        {
+          "purpose": "Test copied fee-rate values across mutation, bounds and JSON rendering",
+          "old": "BOOST_AUTO_TEST_CASE(wss_packed_address_keeps_full_payload)",
+          "new": "BOOST_AUTO_TEST_CASE(fee_rate_value_is_snapshot_and_preserves_text) {\n    Format(BCLog::LogFormat::JSON);\n    const std::array<int64_t, 8> amounts{\n        std::numeric_limits<int64_t>::min(), -100000001, -1, 0,\n        1, 100000000, 100000001, std::numeric_limits<int64_t>::max()};\n    for (const int64_t amount : amounts) {\n        CFeeRate rate{amount * SATOSHI};\n        const auto expected{rate.ToString()};\n        std::array<std::byte, BCLog::LogValue<CFeeRate>::MAX_SIZE> packed;\n        const auto size{BCLog::LogValue<CFeeRate>::Pack(rate, packed)};\n        rate = CFeeRate{};\n        std::string rendered;\n        BCLog::LogValue<CFeeRate>::Render(std::span{packed}.first(size),\n                                        rendered);\n        BOOST_CHECK_EQUAL(rendered, expected);\n    }\n    CFeeRate rate{12345 * SATOSHI};\n    const auto expected{rate.ToString()};\n    LogInfoEvent(BCLog::ALL, \"fee_rate_snapshot\", \"rate={fee_rate}\")\n        .Field(LogField::FeeRate, rate);\n    rate = CFeeRate{};\n    const auto record{Json()};\n    BOOST_CHECK_EQUAL(record[\"fee_rate\"].get_str(), expected);\n    BOOST_CHECK_EQUAL(record[\"message\"].get_str(), \"rate=\" + expected);\n}\n\nBOOST_AUTO_TEST_CASE(wss_packed_address_keeps_full_payload)"
+        }
+      ]
+    }
+  ]
+}
