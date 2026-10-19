@@ -23,6 +23,7 @@
 #include <dnsseeds.h>
 #include <i2p.h>
 #include <logging.h>
+#include <logging/values.h>
 #include <netaddress.h>
 #include <netbase.h>
 #include <node/eviction.h>
@@ -289,8 +290,11 @@ std::optional<CService> GetLocalAddrForPeer(CNode &node) {
         }
     }
     if (addrLocal.IsRoutable() || addrmantest) {
-        LogDebug(BCLog::NET, "Advertising address %s to peer=%d\n",
-                 addrLocal.ToStringAddrPort(), node.GetId());
+        LogEvent(BCLog::NET, "peer_address_advertised",
+                 "Advertising address {addr} to peer={peer_id}")
+            .Field(BCLog::LogField::Addr,
+                   static_cast<const CService &>(addrLocal))
+            .Field(BCLog::LogField::PeerId, node.GetId());
         return addrLocal;
     }
     // Address is unroutable. Don't advertise.
@@ -398,7 +402,8 @@ CheckP2PListenArgs(const ArgsManager &args,
 
 void RemoveLocal(const CService &addr) {
     LOCK(g_maplocalhost_mutex);
-    LogPrintf("RemoveLocal(%s)\n", addr.ToStringAddrPort());
+    LogInfoEvent(BCLog::ALL, "local_address_removed", "RemoveLocal({addr})")
+        .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
     mapLocalHost.erase(addr);
 }
 
@@ -535,7 +540,8 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
         // Look for an existing connection
         CNode *pnode = FindNode(static_cast<CService>(addrConnect));
         if (pnode) {
-            LogPrintf("Failed to open new connection, already connected\n");
+            LogInfoEvent(BCLog::ALL, "connection_already_present",
+                         "Failed to open new connection, already connected");
             return nullptr;
         }
     }
@@ -569,7 +575,9 @@ CNode *CConnman::ConnectNode(CAddress addrConnect, const char *pszDest,
             LOCK(m_nodes_mutex);
             CNode *pnode = FindNode(static_cast<CService>(addrConnect));
             if (pnode) {
-                LogPrintf("Failed to open new connection, already connected\n");
+                LogInfoEvent(
+                    BCLog::ALL, "connection_already_present",
+                    "Failed to open new connection, already connected");
                 return nullptr;
             }
         }
@@ -1743,15 +1751,17 @@ void CConnman::CreateNodeFromAcceptedSocket(
     }
 
     if (!fNetworkActive) {
-        LogDebug(BCLog::NET,
-                 "connection from %s dropped: not accepting new connections\n",
-                 addr.ToStringAddrPort());
+        LogEvent(
+            BCLog::NET, "connection_not_accepting",
+            "connection from {addr} dropped: not accepting new connections")
+            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
         return;
     }
 
     if (!sock->IsSelectable()) {
-        LogPrintf("connection from %s dropped: non-selectable socket\n",
-                  addr.ToStringAddrPort());
+        LogInfoEvent(BCLog::ALL, "connection_socket_unselectable",
+                     "connection from {addr} dropped: non-selectable socket")
+            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
         return;
     }
 
@@ -1762,18 +1772,19 @@ void CConnman::CreateNodeFromAcceptedSocket(
     if (!websocket_info &&
         sock->SetSockOpt(IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) ==
             SOCKET_ERROR) {
-        LogDebug(BCLog::NET,
-                 "connection from %s: unable to set TCP_NODELAY, continuing "
-                 "anyway\n",
-                 addr.ToStringAddrPort());
+        LogEvent(BCLog::NET, "connection_tcp_nodelay_failed",
+                 "connection from {addr}: unable to set TCP_NODELAY, "
+                 "continuing anyway")
+            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
     }
 
     // Don't accept connections from banned peers.
     bool banned = m_banman && m_banman->IsBanned(addr);
     if (!NetPermissions::HasFlag(permission_flags, NetPermissionFlags::NoBan) &&
         banned) {
-        LogDebug(BCLog::NET, "connection from %s dropped (banned)\n",
-                 addr.ToStringAddrPort());
+        LogEvent(BCLog::NET, "connection_address_banned",
+                 "connection from {addr} dropped (banned)")
+            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
         return;
     }
 
@@ -1782,16 +1793,18 @@ void CConnman::CreateNodeFromAcceptedSocket(
     bool discouraged = m_banman && m_banman->IsDiscouraged(addr);
     if (!NetPermissions::HasFlag(permission_flags, NetPermissionFlags::NoBan) &&
         nInbound + 1 >= nMaxInbound && discouraged) {
-        LogDebug(BCLog::NET, "connection from %s dropped (discouraged)\n",
-                 addr.ToStringAddrPort());
+        LogEvent(BCLog::NET, "connection_address_discouraged",
+                 "connection from {addr} dropped (discouraged)")
+            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr));
         return;
     }
 
     if (nInbound >= nMaxInbound) {
         if (!AttemptToEvictConnection()) {
             // No connection to evict, disconnect the new connection
-            LogDebug(BCLog::NET, "failed to find an eviction candidate - "
-                                 "connection dropped (full)\n");
+            LogEvent(BCLog::NET, "connection_slots_full",
+                     "failed to find an eviction candidate - connection "
+                     "dropped (full)");
             return;
         }
     }
@@ -2390,7 +2403,9 @@ void CConnman::ThreadDNSAddressSeed() {
             } while (!fNetworkActive);
         }
 
-        LogPrintf("Loading addresses from DNS seed %s\n", seed);
+        LogInfoEvent(BCLog::ALL, "dns_seed_loading",
+                     "Loading addresses from DNS seed {name}")
+            .Field(BCLog::LogField::Name, seed);
         if (HaveNameProxy()) {
             AddAddrFetch(seed);
         } else {
@@ -2542,7 +2557,8 @@ void CConnman::ThreadOpenConnections(
     const bool use_seednodes{gArgs.IsArgSet("-seednode")};
 
     if (!add_fixed_seeds) {
-        LogPrintf("Fixed seeds are disabled\n");
+        LogInfoEvent(BCLog::ALL, "fixed_seeds_disabled",
+                     "Fixed seeds are disabled");
     }
 
     while (!interruptNet) {
@@ -3263,7 +3279,8 @@ bool CConnman::BindListenPort(const CService &addrBind, bilingual_str &strError,
                       strError.original);
         return false;
     }
-    LogPrintf("Bound to %s\n", addrBind.ToStringAddrPort());
+    LogInfoEvent(BCLog::ALL, "network_listener_bound", "Bound to {addr}")
+        .Field(BCLog::LogField::Addr, static_cast<const CService &>(addrBind));
 
     // Listen for incoming connections
     if (sock->Listen(SOMAXCONN) == SOCKET_ERROR) {
@@ -3461,7 +3478,8 @@ bool CConnman::Start(CScheduler &scheduler, const Options &connOptions) {
                                       [this] { ThreadSocketHandler(); });
 
     if (!gArgs.GetBoolArg("-dnsseed", DEFAULT_DNSSEED)) {
-        LogPrintf("DNS seeding disabled\n");
+        LogInfoEvent(BCLog::ALL, "dns_seeding_disabled",
+                     "DNS seeding disabled");
     } else {
         threadDNSAddressSeed = std::thread(&util::TraceThread, "dnsseed",
                                            [this] { ThreadDNSAddressSeed(); });
