@@ -17,7 +17,6 @@ qt_mingw32_packages=qt
 
 sqlite_packages=sqlite
 
-zmq_packages=zeromq
 
 http2_packages = nghttp2
 
