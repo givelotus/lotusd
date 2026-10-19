@@ -160,17 +160,18 @@ class WalletGroupTest(BitcoinTestFramework):
         self.generate(self.nodes[0], 1)
 
         # Fill node2's wallet with 10000 outputs corresponding to the same
-        # scriptPubKey
+        # scriptPubKey (a transaction has at most 256 outputs)
         for _ in range(5):
             raw_tx = self.nodes[0].createrawtransaction(
                 [{"txid": "0" * 64, "vout": 0}], [{addr2[0]: 50_000}]
             )
             tx = FromHex(CTransaction(), raw_tx)
             tx.vin = []
-            tx.vout = [tx.vout[0]] * 2000
-            funded_tx = self.nodes[0].fundrawtransaction(ToHex(tx))
-            signed_tx = self.nodes[0].signrawtransactionwithwallet(funded_tx["hex"])
-            self.nodes[0].sendrawtransaction(signed_tx["hex"])
+            tx.vout = [tx.vout[0]] * 250
+            for _ in range(8):
+                funded_tx = self.nodes[0].fundrawtransaction(ToHex(tx))
+                signed_tx = self.nodes[0].signrawtransactionwithwallet(funded_tx["hex"])
+                self.nodes[0].sendrawtransaction(signed_tx["hex"])
             self.generate(self.nodes[0], 1)
 
         # Check that we can create a transaction that only requires ~100 of our
