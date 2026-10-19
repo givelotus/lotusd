@@ -94,10 +94,13 @@ class RPCInterfaceTest(BitcoinTestFramework):
         self.log.info("Testing work queue exceeded...")
         self.restart_node(0, ["-rpcworkqueue=1", "-rpcthreads=1"])
         processes = []
-        error_queue = multiprocessing.Queue()
-        stop_queue = multiprocessing.Queue()
+        # "spawn" (the macOS default) makes the test fail on all platforms:
+        # always fork, also when the test runner runs this test in a worker.
+        mp = multiprocessing.get_context("fork")
+        error_queue = mp.Queue()
+        stop_queue = mp.Queue()
         for _ in range(3):
-            p = multiprocessing.Process(
+            p = mp.Process(
                 target=test_work_queue_getrpcinfo,
                 args=(self.nodes[0], error_queue, stop_queue),
             )
@@ -122,8 +125,4 @@ class RPCInterfaceTest(BitcoinTestFramework):
 
 
 if __name__ == "__main__":
-    # Setting the multiprocessing start method to "spawn" causes the test to fail
-    # on all platforms. Not setting it causes a failure on Mac OS, because it defaults
-    # to spawn (for python 3.8+).
-    multiprocessing.set_start_method("fork")
     RPCInterfaceTest().main()

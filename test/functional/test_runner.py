@@ -92,6 +92,7 @@ TEST_FRAMEWORK_MODULES = [
     "test_node",
     "txtools",
     "util",
+    "worker",
 ]
 
 NON_TESTS = {
