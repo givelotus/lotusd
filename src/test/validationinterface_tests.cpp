@@ -10,6 +10,7 @@
 #include <validation.h>
 #include <validationinterface.h>
 #include <util/bounded_task_queue.h>
+#include <util/threadnames.h>
 #include <util/validation_queue_memory.h>
 
 #include <test/util/setup_common.h>
@@ -854,6 +855,120 @@ BOOST_AUTO_TEST_CASE(bounded_worker_exception_is_fatal_and_drains_accepted_work)
     BOOST_CHECK_EQUAL(completed.load(), 1);
     BOOST_CHECK_EQUAL(queue.BytesRetained(), 0);
     BOOST_CHECK(!queue.Enqueue(1, [] {}));
+    queue.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_block_policy_waits_for_space) {
+    using namespace std::chrono_literals;
+    std::atomic<unsigned> fatal{0};
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    std::mutex order_mutex;
+    std::vector<unsigned> order;
+    auto record = [&](unsigned value) {
+        std::lock_guard<std::mutex> lock(order_mutex);
+        order.push_back(value);
+    };
+    BoundedTaskQueue queue(
+        1000, 2, [&] { ++fatal; }, BoundedTaskQueue::Overflow::BLOCK);
+    BOOST_REQUIRE(queue.Enqueue(1, [&] {
+        started.set_value();
+        released.wait();
+        record(1);
+    }));
+    started.get_future().wait();
+    BOOST_REQUIRE(queue.Enqueue(1, [&] { record(2); }));
+    auto producer = std::async(std::launch::async, [&] {
+        return queue.Enqueue(1, [&] { record(3); });
+    });
+    const bool blocked = producer.wait_for(50ms) == std::future_status::timeout;
+    release.set_value();
+    BOOST_CHECK(blocked);
+    BOOST_REQUIRE(producer.wait_for(10s) == std::future_status::ready);
+    BOOST_CHECK(producer.get());
+    queue.Sync();
+    const std::vector<unsigned> expected{1, 2, 3};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(),
+                                  expected.end());
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 0);
+    BOOST_CHECK_EQUAL(fatal.load(), 0);
+    queue.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_block_policy_admits_oversized_when_empty) {
+    using namespace std::chrono_literals;
+    std::atomic<unsigned> fatal{0}, completed{0};
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    BoundedTaskQueue queue(
+        8, 10, [&] { ++fatal; }, BoundedTaskQueue::Overflow::BLOCK);
+    auto oversized = std::async(std::launch::async, [&] {
+        return queue.Enqueue(9, [&] {
+            started.set_value();
+            released.wait();
+            ++completed;
+        });
+    });
+    BOOST_REQUIRE(oversized.wait_for(10s) == std::future_status::ready);
+    BOOST_CHECK(oversized.get());
+    started.get_future().wait();
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 9);
+    auto small = std::async(std::launch::async, [&] {
+        return queue.Enqueue(1, [&] { ++completed; });
+    });
+    const bool blocked = small.wait_for(50ms) == std::future_status::timeout;
+    release.set_value();
+    BOOST_CHECK(blocked);
+    BOOST_REQUIRE(small.wait_for(10s) == std::future_status::ready);
+    BOOST_CHECK(small.get());
+    queue.Sync();
+    BOOST_CHECK_EQUAL(completed.load(), 2);
+    BOOST_CHECK_EQUAL(queue.BytesRetained(), 0);
+    BOOST_CHECK_EQUAL(fatal.load(), 0);
+    queue.Stop();
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_block_policy_stop_releases_producer) {
+    using namespace std::chrono_literals;
+    std::atomic<unsigned> fatal{0}, completed{0};
+    std::promise<void> started, release;
+    auto released = release.get_future().share();
+    BoundedTaskQueue queue(
+        1000, 2, [&] { ++fatal; }, BoundedTaskQueue::Overflow::BLOCK);
+    BOOST_REQUIRE(queue.Enqueue(1, [&] {
+        started.set_value();
+        released.wait();
+        ++completed;
+    }));
+    started.get_future().wait();
+    BOOST_REQUIRE(queue.Enqueue(1, [&] { ++completed; }));
+    bool late_ran = false;
+    auto producer = std::async(std::launch::async, [&] {
+        return queue.Enqueue(1, [&] { late_ran = true; });
+    });
+    BOOST_CHECK(producer.wait_for(50ms) == std::future_status::timeout);
+    // Stop() joins the worker, which is still held: run it on a helper.
+    auto stopper = std::async(std::launch::async, [&] { queue.Stop(); });
+    BOOST_REQUIRE(producer.wait_for(10s) == std::future_status::ready);
+    BOOST_CHECK(!producer.get());
+    release.set_value();
+    BOOST_REQUIRE(stopper.wait_for(10s) == std::future_status::ready);
+    stopper.get();
+    // Accepted tasks still ran; the rejected one did not.
+    BOOST_CHECK_EQUAL(completed.load(), 2);
+    BOOST_CHECK(!late_ran);
+    BOOST_CHECK(!queue.Enqueue(1, [] {}));
+    BOOST_CHECK_EQUAL(fatal.load(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(bounded_worker_block_policy_names_its_thread) {
+    BoundedTaskQueue queue(
+        10, 10, [] {}, BoundedTaskQueue::Overflow::BLOCK, "walletnotify");
+    std::string name;
+    BOOST_REQUIRE(
+        queue.Enqueue(1, [&] { name = util::ThreadGetInternalName(); }));
+    queue.Sync();
+    BOOST_CHECK_EQUAL(name, "walletnotify");
     queue.Stop();
 }
 
