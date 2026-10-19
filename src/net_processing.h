@@ -48,21 +48,39 @@ static constexpr size_t MAX_ADDR_TO_SEND{1000};
 
 /**
  * Average delay between trickled inventory transmissions for inbound peers.
- * Locally originated transactions use this ordinary timer for every peer.
+ * Since Nucleation relay, only avalanche proof announcements use this
+ * Poisson timer; transaction announcements go out on the fixed relay tick.
  */
 static constexpr std::chrono::milliseconds INBOUND_INVENTORY_BROADCAST_INTERVAL{
     5000};
 /**
- * Average delay between trickled inventory transmissions for outbound peers.
- * Ordinary outbound peers retain the upstream two-second mean. Fast peers
- * have a separate 25 ms suppression window for relayed transactions only.
+ * Average delay between trickled inventory transmissions for outbound peers
+ * (proof announcements only, see above).
  */
 static constexpr std::chrono::milliseconds
     OUTBOUND_INVENTORY_BROADCAST_INTERVAL{2000};
-static constexpr std::chrono::milliseconds
-    FAST_INBOUND_INVENTORY_BROADCAST_INTERVAL{50};
-static constexpr std::chrono::milliseconds
-    FAST_OUTBOUND_INVENTORY_BROADCAST_INTERVAL{25};
+/**
+ * Default interval of the transaction relay tick (-txrelaytick). Every peer
+ * announces on the same tick boundaries of the monotonic clock; there is no
+ * random delay. Under load the tick is what batches many transactions into
+ * one announcement.
+ */
+static constexpr std::chrono::milliseconds DEFAULT_TXRELAY_TICK{10};
+/** Bounds of -txrelaytick */
+static constexpr std::chrono::milliseconds MIN_TXRELAY_TICK{1};
+static constexpr std::chrono::milliseconds MAX_TXRELAY_TICK{1000};
+/**
+ * The first relay tick strictly after `now`: tick boundaries are the
+ * multiples of `tick` on the monotonic clock, so peers that send at the
+ * same boundary share it. A peer that sends at boundary b next sends at
+ * b + tick (strictly after, so a send exactly on a boundary does not
+ * repeat at the same instant).
+ */
+constexpr std::chrono::microseconds
+NextRelayTick(std::chrono::microseconds now,
+              std::chrono::microseconds tick) noexcept {
+    return tick.count() <= 0 ? now : (now / tick + 1) * tick;
+}
 /**
  * Maximum rate of inventory items to send per second.
  * Allows higher-throughput transaction relay while retaining bounded bursts.
@@ -141,6 +159,9 @@ public:
         //! checksums, for the next peers asking for them (0 disables)
         size_t block_message_cache_bytes{size_t(DEFAULT_BLOCK_MESSAGE_CACHE_MB)
                                          << 20};
+
+        //! Interval of the transaction relay tick (-txrelaytick)
+        std::chrono::milliseconds txrelay_tick{DEFAULT_TXRELAY_TICK};
     };
 
     static std::unique_ptr<PeerManager>

@@ -498,15 +498,18 @@ struct Peer {
         /** The last time a BIP35 `mempool` request was serviced. */
         std::atomic<std::chrono::seconds> m_last_mempool_req{0s};
         /**
-         * The next time after which we will send an `inv` message containing
-         * transaction announcements to this peer.
+         * Whether transactions may be queued for announcement to this peer.
+         * Set by the first SendMessages after the version handshake, so
+         * transactions received during the handshake are not announced
+         * as soon as it completes (which would reveal their arrival time).
+         */
+        bool m_relay_ready GUARDED_BY(m_tx_inventory_mutex){false};
+        /**
+         * The relay tick (monotonic clock, see NextRelayTick) at or after
+         * which we next send this peer transaction announcements.
          */
         std::chrono::microseconds
-            m_next_inv_send_time GUARDED_BY(m_tx_inventory_mutex){0};
-        std::chrono::microseconds
-            m_next_fast_inv_send_time GUARDED_BY(m_tx_inventory_mutex){0};
-        std::set<TxId>
-            m_local_inventory_to_send GUARDED_BY(m_tx_inventory_mutex);
+            m_next_tx_tick GUARDED_BY(m_tx_inventory_mutex){0};
 
         /**
          * Minimum fee rate with which to filter transaction announcements to
@@ -1332,7 +1335,22 @@ private:
     CNodeState *State(NodeId pnode) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     std::atomic<std::chrono::microseconds> m_next_inv_to_inbounds{0us};
-    std::atomic<std::chrono::microseconds> m_next_fast_inv_to_inbounds{0us};
+
+    /**
+     * Set when transaction inventory is waiting for a relay tick; the tick
+     * task then wakes the message handler (see ScheduleRelayTick).
+     */
+    std::atomic<bool> m_txrelay_wake{false};
+    /** Wake the message handler at each relay tick while inventory waits */
+    void ScheduleRelayTick(CScheduler &scheduler);
+    /**
+     * Current time on the relay tick clock: the monotonic clock (unit tests
+     * mock it with MockableSteadyClock; -mocktime does not affect it).
+     */
+    static std::chrono::microseconds RelayTickNow() {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            MockableSteadyClock::now().time_since_epoch());
+    }
 
     /** Number of nodes with fSyncStarted. */
     int nSyncStarted GUARDED_BY(cs_main) = 0;
@@ -1845,7 +1863,6 @@ static void AddKnownTx(Peer &peer, const TxId &txid) {
     LOCK(tx_relay->m_tx_inventory_mutex);
     tx_relay->m_tx_inventory_known_filter.insert(txid);
     tx_relay->m_tx_inventory_to_send.erase(txid);
-    tx_relay->m_local_inventory_to_send.erase(txid);
 }
 
 static void AddKnownProof(Peer &peer, const avalanche::ProofId &proofid) {
@@ -1878,10 +1895,7 @@ static bool IsLimitedPeer(const Peer &peer) {
 std::chrono::microseconds
 PeerManagerImpl::NextInvToInbounds(std::chrono::microseconds now,
                                    std::chrono::milliseconds average_interval) {
-    auto &next_inv =
-        average_interval == FAST_INBOUND_INVENTORY_BROADCAST_INTERVAL
-            ? m_next_fast_inv_to_inbounds
-            : m_next_inv_to_inbounds;
+    auto &next_inv = m_next_inv_to_inbounds;
     if (next_inv.load() < now) {
         // If this function were called from multiple threads simultaneously
         // it would possible that both update the next send variable, and return
@@ -3024,11 +3038,28 @@ void PeerManagerImpl::StartScheduledTasks(CScheduler &scheduler) {
         },
         AVALANCHE_STATISTICS_REFRESH_PERIOD);
 
+    ScheduleRelayTick(scheduler);
+
     // schedule next run for 2-5 minutes in the future
     const auto avalanchePeriodicNetworkingInterval =
         2min + FastRandomContext().randrange<std::chrono::milliseconds>(3min);
     scheduler.scheduleFromNow([&] { AvalanchePeriodicNetworking(scheduler); },
                               avalanchePeriodicNetworkingInterval);
+}
+
+void PeerManagerImpl::ScheduleRelayTick(CScheduler &scheduler) {
+    // Run just after the next tick boundary, so that the message handler
+    // finds the tick elapsed when it calls SendMessages.
+    const auto now{RelayTickNow()};
+    const auto delay{NextRelayTick(now, m_opts.txrelay_tick) - now + 100us};
+    scheduler.scheduleFromNow(
+        [this, &scheduler] {
+            if (m_txrelay_wake.exchange(false, std::memory_order_relaxed)) {
+                m_connman.WakeMessageHandler();
+            }
+            ScheduleRelayTick(scheduler);
+        },
+        std::chrono::ceil<std::chrono::milliseconds>(delay));
 }
 
 /**
@@ -3346,8 +3377,6 @@ void PeerManagerImpl::SendPings() {
 }
 
 void PeerManagerImpl::RelayTransaction(const TxId &txid) {
-    const bool local =
-        WITH_LOCK(m_mempool.cs, return m_mempool.IsUnbroadcastTx(txid));
     LOCK(m_peer_mutex);
     for (auto &it : m_peer_map) {
         Peer &peer = *it.second;
@@ -3361,16 +3390,16 @@ void PeerManagerImpl::RelayTransaction(const TxId &txid) {
         // otherwise at risk of leaking to a spy, if the spy is able to
         // distinguish transactions received during the handshake from the rest
         // in the announcement.
-        if (tx_relay->m_next_inv_send_time == 0s) {
+        if (!tx_relay->m_relay_ready) {
             continue;
         }
 
         if (!tx_relay->m_tx_inventory_known_filter.contains(txid) ||
             tx_relay->m_avalanche_stalled_txids.count(txid) > 0) {
             tx_relay->m_tx_inventory_to_send.insert(txid);
-            if (local) tx_relay->m_local_inventory_to_send.insert(txid);
         }
     }
+    m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
 
 void PeerManagerImpl::RelayTransactionBatch(
@@ -3378,7 +3407,6 @@ void PeerManagerImpl::RelayTransactionBatch(
     if (txs.empty()) {
         return;
     }
-    const auto local_ids = m_mempool.GetUnbroadcastTxs();
     LOCK(m_peer_mutex);
     for (auto &it : m_peer_map) {
         Peer &peer = *it.second;
@@ -3387,7 +3415,7 @@ void PeerManagerImpl::RelayTransactionBatch(
             continue;
         }
         LOCK(tx_relay->m_tx_inventory_mutex);
-        if (tx_relay->m_next_inv_send_time == 0s) {
+        if (!tx_relay->m_relay_ready) {
             continue;
         }
         for (const auto &tx : txs) {
@@ -3398,11 +3426,10 @@ void PeerManagerImpl::RelayTransactionBatch(
             if (!tx_relay->m_tx_inventory_known_filter.contains(txid) ||
                 tx_relay->m_avalanche_stalled_txids.count(txid) > 0) {
                 tx_relay->m_tx_inventory_to_send.insert(txid);
-                if (local_ids.count(txid))
-                    tx_relay->m_local_inventory_to_send.insert(txid);
             }
         }
     }
+    m_txrelay_wake.store(true, std::memory_order_relaxed);
 }
 
 void PeerManagerImpl::MarkPeerKnownTx(NodeId peer_id, const TxId &txid) {
@@ -3427,7 +3454,6 @@ void PeerManagerImpl::MarkPeerKnownTxBatch(
                 const TxId &txid = tx->GetId();
                 tx_relay->m_tx_inventory_known_filter.insert(txid);
                 tx_relay->m_tx_inventory_to_send.erase(txid);
-                tx_relay->m_local_inventory_to_send.erase(txid);
             }
         }
     }
@@ -5847,15 +5873,14 @@ void PeerManagerImpl::ProcessMessage(
 
         if (auto tx_relay = peer->GetTxRelay()) {
             // `TxRelay::m_tx_inventory_to_send` must be empty before the
-            // version handshake is completed as
-            // `TxRelay::m_next_inv_send_time` is first initialised in
-            // `SendMessages` after the verack is received. Any transactions
-            // received during the version handshake would otherwise
-            // immediately be advertised without random delay, potentially
+            // version handshake is completed as `TxRelay::m_relay_ready` is
+            // first set in `SendMessages` after the verack is received. Any
+            // transactions received during the version handshake would
+            // otherwise be advertised as soon as it completes, potentially
             // leaking the time of arrival to a spy.
             Assume(WITH_LOCK(tx_relay->m_tx_inventory_mutex,
                              return tx_relay->m_tx_inventory_to_send.empty() &&
-                                    tx_relay->m_next_inv_send_time == 0s));
+                                    !tx_relay->m_relay_ready));
         }
 
         const bool disable_shorttx_for_test =
@@ -9742,27 +9767,22 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             peer->m_blocks_for_inv_relay.clear();
         }
 
+        // Poisson timer for proof announcements (transactions use the
+        // fixed relay tick below).
         auto computeNextInvSendTime =
-            [&](std::chrono::microseconds &next, bool fast = false,
-                bool allow_noban = true)
+            [&](std::chrono::microseconds &next)
                 EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) -> bool {
-            bool fSendTrickle =
-                allow_noban && pto->HasPermission(NetPermissionFlags::NoBan);
+            bool fSendTrickle = pto->HasPermission(NetPermissionFlags::NoBan);
 
             if (next < current_time) {
                 fSendTrickle = true;
                 if (pto->IsInboundConn()) {
                     next = NextInvToInbounds(
-                        current_time,
-                        fast ? FAST_INBOUND_INVENTORY_BROADCAST_INTERVAL
-                             : INBOUND_INVENTORY_BROADCAST_INTERVAL);
+                        current_time, INBOUND_INVENTORY_BROADCAST_INTERVAL);
                 } else {
-                    // Briefly defer outbound inventory so incoming announcements
-                    // can suppress transactions the peer already knows.
                     next = current_time +
                            m_rng.rand_exp_duration(
-                               fast ? FAST_OUTBOUND_INVENTORY_BROADCAST_INTERVAL
-                                    : OUTBOUND_INVENTORY_BROADCAST_INTERVAL);
+                               OUTBOUND_INVENTORY_BROADCAST_INTERVAL);
                 }
             }
 
@@ -9810,19 +9830,22 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                  pto->HasPermission(NetPermissionFlags::NoBan) ||
                  m_v2_protocol_handler.IsHighBandwidthShortTxPeer(
                      pto->GetId()));
-            const bool normal_trickle = computeNextInvSendTime(
-                tx_relay->m_next_inv_send_time, false, true);
-            size_t relayed_inventory_count = 0;
-            for (const auto &id : tx_relay->m_tx_inventory_to_send) {
-                relayed_inventory_count +=
-                    !tx_relay->m_local_inventory_to_send.count(id);
+            // Every peer announces transactions on the same fixed relay
+            // tick (-txrelaytick) of the monotonic clock; there is no
+            // random per-peer delay.
+            const auto tick_now{RelayTickNow()};
+            if (!tx_relay->m_relay_ready) {
+                // First send after the handshake: from now on transactions
+                // may be queued for this peer (see RelayTransaction).
+                tx_relay->m_relay_ready = true;
+                tx_relay->m_next_tx_tick =
+                    NextRelayTick(tick_now, m_opts.txrelay_tick);
             }
-            const bool fast_trickle =
-                high_bandwidth_peer &&
-                (computeNextInvSendTime(tx_relay->m_next_fast_inv_send_time,
-                                        true, false) ||
-                 relayed_inventory_count >= 16);
-            const bool fSendTrickle = normal_trickle || fast_trickle;
+            const bool fSendTrickle = tick_now >= tx_relay->m_next_tx_tick;
+            if (fSendTrickle) {
+                tx_relay->m_next_tx_tick =
+                    NextRelayTick(tick_now, m_opts.txrelay_tick);
+            }
 
             // Time to send but the peer has requested we not relay
             // transactions.
@@ -9830,7 +9853,6 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 LOCK(tx_relay->m_bloom_filter_mutex);
                 if (!tx_relay->m_relay_txs) {
                     tx_relay->m_tx_inventory_to_send.clear();
-                    tx_relay->m_local_inventory_to_send.clear();
                 }
             }
 
@@ -9845,11 +9867,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
 
                 for (const auto &txinfo : vtxinfo) {
                     const TxId &txid = txinfo.tx->GetId();
-                    if (!normal_trickle &&
-                        tx_relay->m_local_inventory_to_send.count(txid))
-                        continue;
                     tx_relay->m_tx_inventory_to_send.erase(txid);
-                    tx_relay->m_local_inventory_to_send.erase(txid);
                     // Don't send transactions that peers will not put into
                     // their mempool
                     if (txinfo.fee < filterrate.GetFee(txinfo.vsize)) {
@@ -9878,10 +9896,7 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                 for (std::set<TxId>::iterator it =
                          tx_relay->m_tx_inventory_to_send.begin();
                      it != tx_relay->m_tx_inventory_to_send.end(); it++) {
-                    if (normal_trickle ||
-                        !tx_relay->m_local_inventory_to_send.count(*it)) {
-                        vInvTx.push_back(it);
-                    }
+                    vInvTx.push_back(it);
                 }
                 const CFeeRate filterrate{
                     tx_relay->m_fee_filter_received.load()};
@@ -9911,7 +9926,6 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                     const TxId txid = *it;
                     // Remove it from the to-be-sent set
                     tx_relay->m_tx_inventory_to_send.erase(it);
-                    tx_relay->m_local_inventory_to_send.erase(txid);
                     // Check if not in the filter already
                     if (tx_relay->m_tx_inventory_known_filter.contains(txid) &&
                         tx_relay->m_avalanche_stalled_txids.count(txid) == 0) {
@@ -9950,6 +9964,11 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         addInvAndMaybeFlush(MSG_TX, entry.first);
                     }
                 }
+            }
+            if (!tx_relay->m_tx_inventory_to_send.empty()) {
+                // Left over (rate cap, or not yet this peer's tick): come
+                // back at the next tick.
+                m_txrelay_wake.store(true, std::memory_order_relaxed);
             }
         }
     } // release cs_main
