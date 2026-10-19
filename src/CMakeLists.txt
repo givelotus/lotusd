@@ -642,6 +642,7 @@ add_library(server
 	dnsseeds.cpp
 	flatfile.cpp
 	headerssync.cpp
+	httpmetrics.cpp
 	httprpc.cpp
 	httpserver.cpp
 	i2p.cpp
@@ -686,6 +687,7 @@ add_library(server
 	node/interfaces.cpp
 	node/kernel_notifications.cpp
 	node/mempool_persist_args.cpp
+	node/metrics.cpp
 	node/miner.cpp
 	node/peerman_args.cpp
 	node/psbt.cpp
