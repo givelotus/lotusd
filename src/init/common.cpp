@@ -110,7 +110,7 @@ void AddLoggingArgs(ArgsManager &argsman) {
     argsman.AddArg(
         "-logformat=<format>",
         strprintf(
-            "Format of log lines: text or json (default: %s). json writes one "
+            "Format of log lines: text, logfmt or json (default: %s). json writes one "
             "JSON object per line with the fields time (RFC 3339, "
             "microseconds; omitted with -logtimestamps=0), level, category, "
             "thread, message and, with -logsourcelocations, source (file, "
