@@ -199,4 +199,54 @@ BOOST_FIXTURE_TEST_CASE(test_v2_service_routes, TestChain100Setup) {
     BOOST_CHECK_EQUAL(get("/v2/status").status, 503);
 }
 
+BOOST_FIXTURE_TEST_CASE(test_v2_decode_raw_tx, TestChain100Setup) {
+    // validate-tx and broadcast checks decode a native V2 (v7) tx with the
+    // node's decoding: its own inputs, outputs and txid, which differ per
+    // tx (the legacy decoder sees no inputs or outputs in v7 bytes).
+    const cn::abc::AbcHost host(m_node, cn::HostCapabilities{});
+    std::vector<uint256> txids;
+    for (const int64_t sats : {1000, 2000}) {
+        CMutableTransaction mtx;
+        mtx.vin = {CTxIn(COutPoint(m_coinbase_txns[0]->GetId(), 1),
+                         CScript(), 0xffffffff)};
+        mtx.vout = {CTxOut(sats * SATOSHI, CScript() << OP_TRUE)};
+        AdaptLegacyTxToV7(mtx);
+        const CTransaction tx(mtx);
+        BOOST_REQUIRE_EQUAL(tx.nVersion, 7);
+        DataStream ss{};
+        ss << tx;
+        const auto span = MakeUCharSpan(ss);
+        const cn::Bytes raw(span.begin(), span.end());
+
+        const cn::DecodedTx decoded = host.DecodeRawTx(raw);
+        BOOST_REQUIRE_MESSAGE(decoded.ok, decoded.error);
+        const cn::Tx expected = cn::abc::ConvertTx(
+            false, tx, {::Coin(CTxOut(sats * SATOSHI, CScript()), 1, true)});
+        BOOST_CHECK(std::equal(decoded.tx.txid.b.begin(),
+                               decoded.tx.txid.b.end(), tx.GetId().begin()));
+        BOOST_CHECK_EQUAL(decoded.tx.version, 7);
+        BOOST_REQUIRE_EQUAL(decoded.tx.inputs.size(), 1u);
+        BOOST_CHECK(decoded.tx.inputs[0].prev_out.txid ==
+                    expected.inputs[0].prev_out.txid);
+        BOOST_CHECK_EQUAL(decoded.tx.inputs[0].prev_out.out_idx, 1u);
+        BOOST_CHECK(decoded.tx.inputs[0].script == expected.inputs[0].script);
+        BOOST_CHECK_EQUAL(decoded.tx.inputs[0].sequence, 0xffffffffu);
+        BOOST_CHECK(!decoded.tx.inputs[0].coin);
+        BOOST_REQUIRE_EQUAL(decoded.tx.outputs.size(), 1u);
+        BOOST_CHECK_EQUAL(decoded.tx.outputs[0].sats, sats);
+        BOOST_CHECK(decoded.tx.outputs[0].script ==
+                    expected.outputs[0].script);
+        BOOST_CHECK_EQUAL(decoded.tx.locktime, tx.nLockTime);
+        BOOST_CHECK_EQUAL(decoded.tx.wire_size, expected.wire_size);
+        BOOST_CHECK(decoded.tx.raw == raw);
+
+        // Looking up the spent coins keeps the txid.
+        cn::Tx looked_up = decoded.tx;
+        (void)host.LookupSpentCoins(looked_up);
+        BOOST_CHECK(looked_up.txid == decoded.tx.txid);
+        txids.push_back(tx.GetId());
+    }
+    BOOST_CHECK(txids[0] != txids[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
