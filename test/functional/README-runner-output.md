@@ -27,3 +27,24 @@ be added in a later schema version, but existing fields keep their meaning.
 | `stderr_nonempty` | bool | Whether the test wrote anything to stderr |
 
 `passed` and `skipped` count as success; any other status fails the run.
+
+## JSON lines (`--jsonl-file=FILE`)
+
+One JSON object per line, each with `"event"` and `"schema": 1`:
+
+- `{"event": "start", "name": ...}` when a test starts;
+- `{"event": "finish", "result": {...}}` when it finishes, with the result above;
+- `{"event": "summary", ...}` once at the end, with the summary below.
+
+Use `--jsonl-file=/dev/stdout` to stream the events to a pipe.
+
+## Summary (`--json-summary=FILE`)
+
+`{"schema": 1, "wall_time": s, "accumulated_time": s, "counts": {status: n}, "failed": [names]}`
+
+## JUnit (`--junitoutput=FILE`)
+
+As before, plus:
+- `<skipped message="reason">`;
+- `<failure type message>traceback</failure>`;
+- `<properties>` with `phase.<name>` durations when the test reported them.
