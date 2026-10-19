@@ -105,6 +105,28 @@ class ConversionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             convert.convert(old, [rule(old, new)])
 
+    def test_decimal_integer_lengths(self):
+        for spec in ["%i", "%ld", "%lu", "%lld", "%llu", "%zu", "%td", "%ju"]:
+            old = 'LogPrintf("value=' + spec + '", x)'
+            new = 'LogInfoEvent(BCLog::ALL,"value","value={count}").Field(BCLog::LogField::Count,x)'
+            self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+
+    def test_float_precision_is_exact(self):
+        for spec in ["%f", "%g", "%.0f", "%.2f", "%.18g"]:
+            old = 'LogPrintf("elapsed=' + spec + '", x)'
+            new = ('LogInfoEvent(BCLog::ALL,"elapsed","elapsed={elapsed_ms:'
+                   + spec[1:] + '}").Field(BCLog::LogField::ElapsedMs,x)')
+            self.assertEqual(convert.convert(old, [rule(old, new)])[0], new)
+            for changed in [new.replace(spec[1:] + '}', '.1f}'),
+                            new.replace(':' + spec[1:], '')]:
+                with self.assertRaises(ValueError):
+                    convert.convert(old, [rule(old, changed)])
+        for spec in ["%.19f", "%08.2f", "%+f", "%e"]:
+            old = 'LogPrintf("elapsed=' + spec + '", x)'
+            new = 'LogInfoEvent(BCLog::ALL,"elapsed","elapsed={elapsed_ms:f}").Field(BCLog::LogField::ElapsedMs,x)'
+            with self.assertRaises(ValueError):
+                convert.convert(old, [rule(old, new)])
+
     def test_all_catalog_rules_and_idempotence(self):
         for path in sorted((Path(__file__).parent / "rules").glob("*.json")):
             catalog = json.loads(path.read_text())
