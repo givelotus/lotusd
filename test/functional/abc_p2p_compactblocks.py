@@ -73,6 +73,8 @@ class TestP2PConn(P2PInterface):
 
 
 class FullBlockTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 1
     setup_clean_chain = True
     block_heights = {}

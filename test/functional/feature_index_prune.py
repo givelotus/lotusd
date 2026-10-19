@@ -15,6 +15,8 @@ from test_framework.util import (
 
 
 class FeatureIndexPruneTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 4
     extra_args = [
         ["-fastprune", "-prune=1", "-blockfilterindex=1", "-noparkdeepreorg"],

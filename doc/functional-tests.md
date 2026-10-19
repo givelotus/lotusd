@@ -51,10 +51,14 @@ Run the regression test suite with:
 test/functional/test_runner.py
 ```
 
-Run all possible tests with
+Long tests declare `extended = True` and are left out by default. Run them
+too with
 ```
 test/functional/test_runner.py --extended
 ```
+A test named on the command line always runs, extended or not. The runner
+records each test's duration in the build directory (`test/durations.json`)
+and starts the longest tests first in later runs.
 
 By default, the test_runner will run many tests in parallel. To specify
 how many jobs to run, append `--jobs=n` (at most 45, so that tests running
@@ -359,6 +363,8 @@ class WalletExampleTest(BitcoinTestFramework):
     topology = "none"
     # Extra runs with other option values; the first is the default
     variants = {"default": {}, "descriptors": {"descriptors": True}}
+    # Long test: run only with --extended (or a set of variant names)
+    extended = True
 
     def run_test(self):
         ...
@@ -366,6 +372,7 @@ class WalletExampleTest(BitcoinTestFramework):
 
 - Use `set_test_params()` only for parameters computed at runtime, e.g. from
   `self.options`.
+- Mark a test `extended` when it takes more than about 40 seconds on its own.
 - Override `skip_test_if_missing_module()` or `setup_network()` only for what
   `requires` or `topology` cannot express.
 - A variant's keys are the destinations of command-line options (the

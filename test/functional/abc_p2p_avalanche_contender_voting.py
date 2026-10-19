@@ -41,6 +41,8 @@ AVALANCHE_MAX_PERIODIC_NETWORKING_INTERVAL = 5 * 60
 
 
 class AvalancheContenderVotingTest(BitcoinTestFramework):
+    extended = True
+
     setup_clean_chain = True
     num_nodes = 1
     noban_tx_relay = True

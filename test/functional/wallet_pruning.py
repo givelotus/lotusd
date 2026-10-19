@@ -13,6 +13,8 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletPruningTest(BitcoinTestFramework):
+    extended = True
+
     setup_clean_chain = True
     num_nodes = 2
     wallet_names = []

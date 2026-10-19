@@ -9,6 +9,8 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletDescriptorTest(BitcoinTestFramework):
+    extended = True
+
     setup_clean_chain = True
     num_nodes = 1
     extra_args = [["-keypool=100"]]
