@@ -117,6 +117,18 @@ using P2PWebSocketAcceptor = std::function<void(
  */
 void SetP2PWebSocketAcceptor(P2PWebSocketAcceptor acceptor);
 
+/**
+ * Readiness of the node for /readyz and /healthz: "" when ready to serve,
+ * else a short reason ("initial block download", "no peers").
+ */
+using HTTPReadinessCheck = std::function<std::string()>;
+
+/**
+ * Set (or clear, with nullptr) the readiness check. While unset, /readyz
+ * answers 503 "starting". Thread-safe.
+ */
+void SetHTTPReadinessCheck(HTTPReadinessCheck check);
+
 /** Unregister handler for prefix */
 void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
 
