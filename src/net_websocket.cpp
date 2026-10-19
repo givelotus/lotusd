@@ -38,7 +38,7 @@ constexpr size_t MAX_RESPONSE_HEAD = 16 * 1024;
 constexpr const char *WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 struct DialerState {
-    tls::SslCtxPtr client_ctx;
+    std::unique_ptr<tls::ReloadingClientContext> client_ctx;
     //! Sec-WebSocket-Protocol value offered ("" offers none)
     std::string protocols;
     //! -p2pwebsocketpin: required public key hash per (lowercase) host
@@ -191,7 +191,8 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
     std::unique_ptr<WebSocketByteLayer> layer;
     auto info{std::make_shared<WebSocketTransportInfo>()};
     if (url.tls) {
-        tls::SslPtr ssl{SSL_new(state.client_ctx.get())};
+        const auto ctx{state.client_ctx->Get()};
+        tls::SslPtr ssl{ctx ? SSL_new(ctx.get()) : nullptr};
         if (!ssl || SSL_set_fd(ssl.get(), int(sock->Fd())) != 1) {
             return std::nullopt;
         }
@@ -340,20 +341,11 @@ bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
         }
         state->pins[ToLower(entry.substr(0, eq))] = *pin;
     }
-    state->client_ctx = tls::NewContext(/*server=*/false);
-    if (!state->client_ctx) {
+    // Context replacement is atomic and each SSL session retains its context.
+    state->client_ctx =
+        std::make_unique<tls::ReloadingClientContext>(client_cert, client_key);
+    if (!state->client_ctx->Get()) {
         return false;
-    }
-    // Peers commonly use self-signed certificates: TLS protects against
-    // passive observers and lets proxies route by SNI; peers are not
-    // authenticated (as with plain TCP P2P).
-    SSL_CTX_set_verify(state->client_ctx.get(), SSL_VERIFY_NONE, nullptr);
-    if (client_cert && client_key &&
-        !tls::UseCertificateFiles(state->client_ctx.get(), *client_cert,
-                                  *client_key)) {
-        LogPrintf("Not presenting a TLS client certificate to WebSocket "
-                  "peers: %s\n",
-                  tls::ErrorString());
     }
     // "p2p-zstd-v1,p2p-zstd" by default; "none" offers plain messages.
     for (const std::string &token : util::SplitString(offer, ',')) {
