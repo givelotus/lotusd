@@ -406,26 +406,31 @@ ParallelTxScriptError V2DeferredFailure(const std::string &reason) {
     return err;
 }
 
-std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
-    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
-    const uint32_t flags, bool sigCacheStore,
-    const PrecomputedTransactionData &txdata, SignatureCache &signature_cache,
-    int &nSigChecksOut, TxSigCheckLimiter &txLimitSigChecks,
-    CheckInputsLimiter *pBlockLimitSigChecks,
-    lotus::v2::BatchSigCollector *sig_collector,
-    bool consensus_only = false) {
-    assert(!tx.IsCoinBase());
-    assert(resolved_inputs.size() == tx.vin.size());
+/**
+ * The shape of a V2 transaction whose every input spends a single-branch
+ * coin with an OP_TRUE or a plain key-CHECKSIG leaf. Such scripts stage no
+ * deferred records, so the transaction is verified without the VM.
+ */
+struct V2FastPathShape {
+    std::array<lotus::v2::Hash, 16> leaf_hashes{};
+    std::array<bool, 16> is_schnorr_in{};
+    bool has_schnorr{false};
+};
 
-
-    if (tx.nVersion == 7 && !tx.vin.empty() && tx.vin.size() <= 16) {
-        static const lotus::v2::Hash kOpTrueBranchLeaf =
-            lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
-        bool fast_ok = true;
-        bool has_schnorr = false;
-        std::array<lotus::v2::Hash, 16> leaf_hashes{};
-        std::array<lotus::v2::Hash, 16> coin_leaves{};
-        std::array<bool, 16> is_schnorr_in{};
+std::optional<V2FastPathShape>
+GetV2FastPathShape(const CTransaction &tx,
+                   const std::vector<Coin> &resolved_inputs) {
+    if (tx.nVersion != 7 || tx.vin.empty() || tx.vin.size() > 16) {
+        return std::nullopt;
+    }
+    static const lotus::v2::Hash kOpTrueBranchLeaf =
+        lotus::v2::BranchLeaf(std::array<uint8_t, 1>{0x4e});
+    V2FastPathShape shape;
+    auto &leaf_hashes = shape.leaf_hashes;
+    auto &is_schnorr_in = shape.is_schnorr_in;
+    bool &has_schnorr = shape.has_schnorr;
+    bool fast_ok = true;
+    {
         for (size_t i = 0; i < tx.vin.size(); ++i) {
             const CTxIn &in = tx.vin[i];
             if (in.nFlags != 1 || in.nPathIndex != 0 ||
@@ -475,7 +480,31 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
                 break;
             }
         }
-        if (fast_ok) {
+    }
+    if (!fast_ok) {
+        return std::nullopt;
+    }
+    return shape;
+}
+
+std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+    const uint32_t flags, bool sigCacheStore,
+    const PrecomputedTransactionData &txdata, SignatureCache &signature_cache,
+    int &nSigChecksOut, TxSigCheckLimiter &txLimitSigChecks,
+    CheckInputsLimiter *pBlockLimitSigChecks,
+    lotus::v2::BatchSigCollector *sig_collector,
+    bool *produced_records = nullptr, bool consensus_only = false) {
+    assert(!tx.IsCoinBase());
+    assert(resolved_inputs.size() == tx.vin.size());
+    if (produced_records) *produced_records = false;
+
+    if (const auto shape = GetV2FastPathShape(tx, resolved_inputs)) {
+        const auto &leaf_hashes = shape->leaf_hashes;
+        const auto &is_schnorr_in = shape->is_schnorr_in;
+        const bool has_schnorr = shape->has_schnorr;
+        std::array<lotus::v2::Hash, 16> coin_leaves{};
+        {
             // Fast-path scripts stage no deferred records, but the deferred
             // final rules still apply (a HAS_STATE output is then
             // unauthorized). A separate run: if a signature fails below, the
@@ -625,6 +654,9 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     if (deferred && !deferred->Run().Accepted()) {
         return V2DeferredFailure("deferred-checks-incomplete");
     }
+    if (produced_records && deferred) {
+        *produced_records = deferred->Run().ProducedRecords();
+    }
     nSigChecksOut = nSigChecksTotal;
     return std::nullopt;
 }
@@ -691,7 +723,55 @@ bool CheckInputScriptsReusing(
     return true;
 }
 
-
+/**
+ * Phase 1 of a V2 transaction as one check per input, for a check queue.
+ * The checks share `deferred`: the one that completes the last input runs
+ * the transaction's final rules. Each input stages its signatures in its
+ * own collector of `collectors` (one per input, owned by the caller).
+ */
+std::vector<CScriptCheck> MakeV2InputChecks(
+    const CTransaction &tx, const std::vector<Coin> &resolved_inputs,
+    uint32_t flags, bool sigCacheStore,
+    const PrecomputedTransactionData &txdata, SignatureCache &signature_cache,
+    TxSigCheckLimiter *txLimitSigChecks,
+    CheckInputsLimiter *pBlockLimitSigChecks,
+    const std::shared_ptr<V2DeferredTxChecks> &deferred,
+    std::span<lotus::v2::BatchSigCollector> collectors) {
+    assert(collectors.size() == tx.vin.size());
+    static const CTxOut kEmptyTxOut{};
+    const bool has_v2_input = std::any_of(
+        tx.vin.begin(), tx.vin.end(),
+        [](const CTxIn &in) { return in.nFlags == 1 || in.nFlags == 3; });
+    std::shared_ptr<CScriptCheck::V2ResolvedCoins> v2_resolved_coins;
+    if (has_v2_input) {
+        v2_resolved_coins =
+            std::make_shared<CScriptCheck::V2ResolvedCoins>(tx.vin.size());
+        for (size_t j = 0; j < tx.vin.size(); ++j) {
+            if (tx.vin[j].nFlags == 3) {
+                (*v2_resolved_coins)[j] = std::nullopt;
+                continue;
+            }
+            assert(!resolved_inputs[j].IsSpent());
+            (*v2_resolved_coins)[j] =
+                resolved_inputs[j].GetTxOut().ToV2Output();
+        }
+    }
+    std::vector<CScriptCheck> checks;
+    checks.reserve(tx.vin.size());
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const CTxOut &prev_txout =
+            (tx.vin[i].nFlags == 3 ||
+             (v2_resolved_coins && tx.vin[i].nFlags == 1))
+                ? kEmptyTxOut
+                : resolved_inputs[i].GetTxOut();
+        checks.emplace_back(prev_txout, tx, signature_cache, i, flags,
+                            sigCacheStore, txdata, txLimitSigChecks,
+                            pBlockLimitSigChecks, v2_resolved_coins,
+                            &collectors[i]);
+        checks.back().SetV2Deferred(deferred);
+    }
+    return checks;
+}
 
 struct BatchTxIdIndexSlot {
     TxId txid;
@@ -1085,6 +1165,9 @@ private:
         // ConsensusScriptChecks
         const uint32_t m_next_block_script_verify_flags;
         int m_sig_checks_standard{0};
+        // Set when the V2 inputs staged deferred records: such a
+        // transaction bypasses the script execution cache.
+        bool m_v2_produced_records{false};
 
         // Pre-resolved input coins and lock points captured during Pass 1 of
         // batch validation so Pass 2 can validate scripts/signatures in parallel.
@@ -2404,7 +2487,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                     tx, ws.m_resolved_inputs, scriptVerifyFlags,
                     /*sigCacheStore=*/true, tx.GetPrecomputedData(),
                     val_cache.m_signature_cache, ws.m_sig_checks_standard,
-                    txLimiter, nullptr, &local_sigs);
+                    txLimiter, nullptr, &local_sigs,
+                    &ws.m_v2_produced_records);
                 if (err.has_value()) {
                     ws_errors[k] = std::move(err);
                     size_t prev = min_failed_k.load(std::memory_order_relaxed);
@@ -2521,7 +2605,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                 return PackageMempoolAcceptResult(package_state, std::move(results));
             }
         }
-        if (!args.m_test_accept) {
+        if (!args.m_test_accept && !ws.m_v2_produced_records) {
             ScriptCacheKey consensusKey(
                 *ws.m_ptx, ws.m_next_block_script_verify_flags,
                 val_cache.ScriptExecutionCacheHasher());
@@ -4208,6 +4292,7 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     lotus::v2::DeferredRecords records;
     auto result = CheckInput(records);
     if (!m_v2_deferred) return result;
+    m_v2_deferred->AddSigChecks(metrics.nSigChecks);
     // Phase 1 is done for this input: hand its records to the deferred
     // check kinds. The completion that finishes the transaction also runs
     // its final rules here, so no barrier across the block is needed.
@@ -4546,10 +4631,10 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         check.SetV2Deferred(deferred);
 
         // If pvChecks is not null, defer the check execution to the caller.
-        // A V2 transaction is one check unit: its inputs run here and the
-        // transaction-scoped effects are finalized below, so it is never
-        // deferred.
-        if (pvChecks && tx.nVersion != 7) {
+        // The checks of a V2 transaction share its deferred checks: the one
+        // that completes the last input runs the transaction's final rules,
+        // so the caller may run them in any order and on any thread.
+        if (pvChecks) {
             pvChecks->push_back(std::move(check));
             continue;
         }
@@ -4616,7 +4701,11 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
 
     nSigChecksOut = nSigChecksTotal;
 
-    if (scriptCacheStore && !pvChecks) {
+    // A transaction whose inputs staged deferred records is never cached:
+    // its validity is only known with those records in hand, which a cache
+    // hit would skip.
+    const bool produced_records = deferred && deferred->Run().ProducedRecords();
+    if (scriptCacheStore && !pvChecks && !produced_records) {
         // We executed all of the provided scripts, and were told to cache the
         // result. Do so now.
         validation_cache.m_script_execution_cache.insert(
@@ -5400,29 +5489,68 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
     // Pass 2: Static UTXO Dependency-Graph Multi-Core Parallel Script, VM &
     // Batch Schnorr Signature Verification using blockundo.vtxundo[txIndex].
+    //
+    // A V2 transaction that needs the VM runs as one check per input on the
+    // script check queue (phase 1 of its deferred checks); the check that
+    // completes its last input runs its final rules (phase 2), so there is
+    // no barrier across the block. Other transactions are verified whole by
+    // the worker pool, concurrently with the queue. On any failure the
+    // reported reason is the canonical one: that of the first failing
+    // transaction in block order, as a sequential check reports it.
     if (fScriptChecks && state.IsValid() && !pending_script_txs.empty()) {
         const size_t n_pending = pending_script_txs.size();
+        // Per pending transaction: its deferred checks when it runs on the
+        // queue, and one signature collector per input. Sized once, so the
+        // checks may keep pointers to the collectors.
+        std::vector<std::shared_ptr<V2DeferredTxChecks>> queued(n_pending);
+        std::vector<std::vector<lotus::v2::BatchSigCollector>>
+            queued_collectors(n_pending);
+        std::vector<size_t> pool_ks;
+        pool_ks.reserve(n_pending);
+        for (size_t k = 0; k < n_pending; ++k) {
+            const size_t t_idx = pending_script_txs[k].tx_index;
+            const CTransaction &tx = *block.vtx[t_idx + 1];
+            const std::vector<Coin> &resolved_inputs =
+                blockundo.vtxundo[t_idx].vprevout;
+            if (tx.nVersion != 7 || tx.vin.empty() ||
+                GetV2FastPathShape(tx, resolved_inputs)) {
+                pool_ks.push_back(k);
+                continue;
+            }
+            queued[k] = std::make_shared<V2DeferredTxChecks>(tx);
+            queued_collectors[k].resize(tx.vin.size());
+            control->Add(MakeV2InputChecks(
+                tx, resolved_inputs, flags, fCacheResults,
+                tx.GetPrecomputedData(),
+                m_chainman.m_validation_cache.m_signature_cache,
+                &nSigChecksTxLimiters[t_idx], &nSigChecksBlockLimiter,
+                queued[k], queued_collectors[k]));
+        }
+
+        const size_t n_pool = pool_ks.size();
         const unsigned int hw_threads =
             std::max(1u, std::thread::hardware_concurrency());
         const size_t num_workers =
-            (n_pending >= 2)
-                ? std::min<size_t>(n_pending, static_cast<size_t>(hw_threads))
+            (n_pool >= 2)
+                ? std::min<size_t>(n_pool, static_cast<size_t>(hw_threads))
                 : 1;
         std::vector<std::optional<ParallelTxScriptError>> tx_errors(n_pending);
         std::vector<int> tx_sigchecks(n_pending, 0);
+        std::unique_ptr<bool[]> tx_produced(new bool[n_pending]());
         std::vector<lotus::v2::BatchSigCollector> worker_collectors(
             num_workers);
-        std::atomic<size_t> next_k{0};
-        std::atomic<size_t> min_failed_k{n_pending};
+        std::atomic<size_t> next_p{0};
+        std::atomic<size_t> min_failed_p{n_pool};
 
         auto worker_fn = [&](size_t tid) {
             lotus::v2::BatchSigCollector &local_sigs = worker_collectors[tid];
             while (true) {
-                const size_t k = next_k.fetch_add(1, std::memory_order_relaxed);
-                if (k >= n_pending ||
-                    k > min_failed_k.load(std::memory_order_relaxed)) {
+                const size_t p = next_p.fetch_add(1, std::memory_order_relaxed);
+                if (p >= n_pool ||
+                    p > min_failed_p.load(std::memory_order_relaxed)) {
                     break;
                 }
+                const size_t k = pool_ks[p];
                 const size_t t_idx = pending_script_txs[k].tx_index;
                 const CTransaction &tx = *block.vtx[t_idx + 1];
                 const std::vector<Coin> &resolved_inputs =
@@ -5432,13 +5560,14 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                     tx, resolved_inputs, flags, fCacheResults, txdata,
                     m_chainman.m_validation_cache.m_signature_cache,
                     tx_sigchecks[k], nSigChecksTxLimiters[t_idx],
-                    &nSigChecksBlockLimiter, &local_sigs, /*consensus_only=*/true);
+                    &nSigChecksBlockLimiter, &local_sigs, &tx_produced[k],
+                    /*consensus_only=*/true);
                 if (err.has_value()) {
                     tx_errors[k] = std::move(err);
-                    size_t prev = min_failed_k.load(std::memory_order_relaxed);
-                    while (k < prev &&
-                           !min_failed_k.compare_exchange_weak(
-                               prev, k, std::memory_order_relaxed)) {
+                    size_t prev = min_failed_p.load(std::memory_order_relaxed);
+                    while (p < prev &&
+                           !min_failed_p.compare_exchange_weak(
+                               prev, p, std::memory_order_relaxed)) {
                     }
                 }
             }
@@ -5448,16 +5577,79 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             metrics->script_check_transactions.Record(n_pending);
             metrics->script_check_workers.Record(num_workers);
         }
-        ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
+        if (n_pool > 0) {
+            ParallelScriptWorkerPool::Instance().Run(num_workers, worker_fn);
+        }
+        // Joins the queue: every queued check has run (or was skipped after
+        // a failure) and its results are visible here.
+        const auto queue_error = control->Complete();
 
-        for (size_t k = 0; k < n_pending; ++k) {
-            if (tx_errors[k].has_value()) {
+        auto reject = [&](const ParallelTxScriptError &err) {
+            state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                          err.reject_reason, err.debug_message);
+        };
+        // The canonical reason of a failed transaction: a sequential check,
+        // with a fresh per-transaction sigcheck limit and without the block
+        // limit (which depends on the order inputs ran in).
+        auto sequential_error =
+            [&](size_t k) -> std::optional<ParallelTxScriptError> {
+            const size_t t_idx = pending_script_txs[k].tx_index;
+            const CTransaction &tx = *block.vtx[t_idx + 1];
+            int dummy_sigchecks = 0;
+            TxSigCheckLimiter dummy_tx_limiter =
+                fEnforceSigCheck ? TxSigCheckLimiter{}
+                                 : TxSigCheckLimiter::getDisabled();
+            TxSigCheckLimiter dummy_block_limiter =
+                TxSigCheckLimiter::getDisabled();
+            return VerifyTxScriptsFromResolvedCoins(
+                tx, blockundo.vtxundo[t_idx].vprevout, flags,
+                /*cache_results=*/false, tx.GetPrecomputedData(),
+                m_chainman.m_validation_cache.m_signature_cache,
+                dummy_sigchecks, dummy_tx_limiter, &dummy_block_limiter,
+                /*sig_collector=*/nullptr, /*produced_records=*/nullptr,
+                /*consensus_only=*/true);
+        };
+
+        const bool pool_failed = min_failed_p.load() < n_pool;
+        if (queue_error.has_value() || pool_failed) {
+            // Pool transactions below the first pool failure all ran and
+            // passed. A queued transaction that was not accepted failed, or
+            // was skipped once the queue saw a failure: check it again.
+            for (size_t k = 0; k < n_pending && state.IsValid(); ++k) {
+                if (!queued[k]) {
+                    if (tx_errors[k].has_value()) reject(*tx_errors[k]);
+                    continue;
+                }
+                if (queued[k]->Run().Accepted()) {
+                    continue;
+                }
+                if (auto err = sequential_error(k)) reject(*err);
+            }
+            if (state.IsValid() && queue_error.has_value()) {
+                // Only the block sigcheck limit failed.
                 state.Invalid(
                     BlockValidationResult::BLOCK_CONSENSUS,
                     strprintf("mandatory-script-verify-flag-failed (%s)",
-                              ScriptErrorString(tx_errors[k]->script_err)),
-                    tx_errors[k]->debug_message);
-                break;
+                              ScriptErrorString(queue_error->first)),
+                    queue_error->second);
+            }
+        }
+
+        if (state.IsValid()) {
+            // Optional block-scoped rules over the deferred records of the
+            // block's V2 transactions, in block order. Only queued
+            // transactions can carry records: fast-path scripts stage none
+            // and transactions with records are never cached.
+            std::vector<const lotus::v2::DeferredTxRun *> runs;
+            for (const auto &d : queued) {
+                if (d) runs.push_back(&d->Run());
+            }
+            std::string hook_error;
+            if (!lotus::v2::RunDeferredBlockChecks(
+                    lotus::v2::DeferredCheckRegistry::Consensus(), runs,
+                    hook_error)) {
+                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                              hook_error, "V2 deferred block check");
             }
         }
 
@@ -5466,34 +5658,14 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
             for (const auto &wc : worker_collectors) {
                 combined_sigs.Merge(wc);
             }
+            for (const auto &per_tx : queued_collectors) {
+                for (const auto &c : per_tx) {
+                    combined_sigs.Merge(c);
+                }
+            }
             if (!combined_sigs.Empty() && !combined_sigs.VerifyAll()) {
-                for (size_t k = 0; k < n_pending; ++k) {
-                    const size_t t_idx = pending_script_txs[k].tx_index;
-                    const CTransaction &tx = *block.vtx[t_idx + 1];
-                    const std::vector<Coin> &resolved_inputs =
-                        blockundo.vtxundo[t_idx].vprevout;
-                    const PrecomputedTransactionData &txdata = tx.GetPrecomputedData();
-                    int dummy_sigchecks = 0;
-                    TxSigCheckLimiter dummy_tx_limiter =
-                        TxSigCheckLimiter::getDisabled();
-                    TxSigCheckLimiter dummy_block_limiter =
-                        TxSigCheckLimiter::getDisabled();
-                    auto err = VerifyTxScriptsFromResolvedCoins(
-                        tx, resolved_inputs, flags, /*cache_results=*/false,
-                        txdata,
-                        m_chainman.m_validation_cache.m_signature_cache,
-                        dummy_sigchecks, dummy_tx_limiter,
-                        &dummy_block_limiter, /*sig_collector=*/nullptr,
-                        /*consensus_only=*/true);
-                    if (err.has_value()) {
-                        state.Invalid(
-                            BlockValidationResult::BLOCK_CONSENSUS,
-                            strprintf(
-                                "mandatory-script-verify-flag-failed (%s)",
-                                ScriptErrorString(err->script_err)),
-                            err->debug_message);
-                        break;
-                    }
+                for (size_t k = 0; k < n_pending && state.IsValid(); ++k) {
+                    if (auto err = sequential_error(k)) reject(*err);
                 }
                 if (state.IsValid()) {
                     state.Invalid(
@@ -5516,9 +5688,17 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
 
         if (state.IsValid() && fCacheResults) {
             for (size_t k = 0; k < n_pending; ++k) {
+                // Transactions that staged deferred records bypass the
+                // script execution cache.
+                const bool produced = queued[k]
+                                          ? queued[k]->Run().ProducedRecords()
+                                          : tx_produced[k];
+                if (produced) continue;
+                const int sigchecks =
+                    queued[k] ? queued[k]->SigChecks() : tx_sigchecks[k];
                 m_chainman.m_validation_cache.m_script_execution_cache.insert(
                     ScriptCacheElement{pending_script_txs[k].cache_key,
-                                       tx_sigchecks[k]});
+                                       sigchecks});
             }
         }
     }
