@@ -2944,7 +2944,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         [&args] {
             constexpr uint64_t min_disk_space = 250_MiB;
             if (!CheckDiskSpace(args.GetBlocksDirPath(), min_disk_space)) {
-                LogPrintf("Shutting down due to lack of disk space!\n");
+                LogInfoEvent(BCLog::ALL, "shutdown_disk_space",
+                             "Shutting down due to lack of disk space!");
                 StartShutdown();
             }
             return true;
@@ -3028,7 +3029,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             LogPrintf("Using asmap version %s for IP bucketing\n",
                       asmap_version.ToString());
         } else {
-            LogPrintf("Using /16 prefix for IP bucketing\n");
+            LogInfoEvent(BCLog::ALL, "ip_bucketing_legacy",
+                         "Using /16 prefix for IP bucketing");
         }
 
         uiInterface.InitMessage(_("Loading P2P addresses...").translated);
@@ -3287,9 +3289,11 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     Assert(!ApplyArgsManOptions(args, chainman_opts));
 
     if (chainman_opts.checkpoints_enabled) {
-        LogPrintf("Checkpoints will be verified.\n");
+        LogInfoEvent(BCLog::ALL, "checkpoint_verification_enabled",
+                     "Checkpoints will be verified.");
     } else {
-        LogPrintf("Skipping checkpoint verification.\n");
+        LogInfoEvent(BCLog::ALL, "checkpoint_verification_disabled",
+                     "Skipping checkpoint verification.");
     }
 
     BlockManager::Options blockman_opts{
@@ -3304,7 +3308,7 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     const auto [index_cache_sizes, kernel_cache_sizes] =
         CalculateCacheSizes(args, g_enabled_filter_types.size());
 
-    LogInfo("Cache configuration:\n");
+    LogInfoEvent(BCLog::ALL, "cache_configuration", "Cache configuration:");
     LogInfo("* Using %.1f MiB for block index database\n",
             kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
@@ -3371,11 +3375,13 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         // latter is not in libbitcoinkernel.
         chainman.snapshot_download_completed = [&node]() {
             if (!node.chainman->m_blockman.IsPruneMode()) {
-                LogPrintf("[snapshot] re-enabling NODE_NETWORK services\n");
+                LogInfoEvent(BCLog::ALL, "snapshot_network_service_restored",
+                             "[snapshot] re-enabling NODE_NETWORK services");
                 node.connman->AddLocalServices(NODE_NETWORK);
             }
 
-            LogPrintf("[snapshot] restarting indexes\n");
+            LogInfoEvent(BCLog::ALL, "snapshot_indexes_restarting",
+                         "[snapshot] restarting indexes");
 
             // Drain the validation interface queue to ensure that the old
             // indexes don't have any pending work.
@@ -3467,7 +3473,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
                     do_reindex = true;
                     AbortShutdown();
                 } else {
-                    LogPrintf("Aborted block database rebuild. Exiting.\n");
+                    LogInfoEvent(BCLog::ALL, "block_database_rebuild_aborted",
+                                 "Aborted block database rebuild. Exiting.");
                     return false;
                 }
             } else {
@@ -3481,7 +3488,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     // As the program has not fully started yet, Shutdown() is possibly
     // overkill.
     if (ShutdownRequested()) {
-        LogPrintf("Shutdown requested. Exiting.\n");
+        LogInfoEvent(BCLog::ALL, "startup_shutdown_requested",
+                     "Shutdown requested. Exiting.");
         return false;
     }
 
@@ -3599,11 +3607,13 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         // Prior to setting NODE_NETWORK, check if we can provide historical
         // blocks.
         if (!background_sync_in_progress) {
-            LogPrintf("Setting NODE_NETWORK on non-prune mode\n");
+            LogInfoEvent(BCLog::ALL, "network_service_enabled",
+                         "Setting NODE_NETWORK on non-prune mode");
             nLocalServices = ServiceFlags(nLocalServices | NODE_NETWORK);
         } else {
-            LogPrintf("Running node in NODE_NETWORK_LIMITED mode until "
-                      "snapshot background sync completes\n");
+            LogInfoEvent(BCLog::ALL, "snapshot_network_limited",
+                         "Running node in NODE_NETWORK_LIMITED mode until "
+                         "snapshot background sync completes");
         }
     }
 
@@ -3664,7 +3674,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             ImportBlocks(chainman, avalanche, vImportFiles);
             if (args.GetBoolArg("-stopafterblockimport",
                                 DEFAULT_STOPAFTERBLOCKIMPORT)) {
-                LogPrintf("Stopping after block import\n");
+                LogInfoEvent(BCLog::ALL, "block_import_stop_requested",
+                             "Stopping after block import");
                 StartShutdown();
                 return;
             }
@@ -3709,7 +3720,9 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
     //// debug print
     {
         LOCK(cs_main);
-        LogPrintf("block tree size = %u\n", chainman.BlockIndex().size());
+        LogInfoEvent(BCLog::ALL, "block_index_loaded",
+                     "block tree size = {count}")
+            .Field(BCLog::LogField::Count, chainman.BlockIndex().size());
         chain_active_height = chainman.ActiveChain().Height();
         if (const CBlockIndex *tip{chainman.ActiveChain().Tip()}) {
             node::SetTipMetrics(tip->nHeight, tip->GetBlockTime());
@@ -3732,7 +3745,8 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
             tip_info->header_time = chainman.m_best_header->GetBlockTime();
         }
     }
-    LogPrintf("nBestHeight = %d\n", chain_active_height);
+    LogInfoEvent(BCLog::ALL, "chain_tip_loaded", "nBestHeight = {height}")
+        .Field(BCLog::LogField::Height, chain_active_height);
     if (node.peerman) {
         node.peerman->SetBestHeight(chain_active_height);
     }
