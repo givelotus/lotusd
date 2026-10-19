@@ -39,6 +39,9 @@ DEFAULT_ALLOW = [
     # FormatFullVersion() of the host build; the same function in both
     # implementations but may differ between two build trees.
     "ChronikInfo.version",
+    # Lotus V2 service: the per-process random service epoch, the only
+    # difference between two nodes once it is zeroed (normalize_v2_epoch).
+    "json.<service_epoch>",
 ]
 
 # Lotus V2 tier, Rust (A) vs native (B): the design C1 section 1 defects.
@@ -118,6 +121,67 @@ def _short(value: Any) -> Any:
     return value
 
 
+def _v2_epoch(value) -> Optional[str]:
+    if isinstance(value, dict):
+        for holder in (value, value.get("snapshot")):
+            if isinstance(holder, dict) and isinstance(holder.get("service_epoch"), str):
+                return holder["service_epoch"]
+    return None
+
+
+def _epoch_raw(body: bytes, parsed) -> bytes:
+    """Raw JSON body with its service epoch zeroed (see normalize_v2_epoch)."""
+    epoch = _v2_epoch(parsed)
+    if not epoch or len(epoch) != 32:
+        return body
+    zero = "0" * 32
+    return (body.replace(epoch.encode(), zero.encode())
+            .replace(epoch.encode().hex().encode(), zero.encode().hex().encode()))
+
+
+def normalize_v2_epoch(value):
+    """Lotus V2 service responses carry the per-process random service epoch
+    (`service_epoch`), also inside `snapshot_token` and inside the hex-encoded
+    JSON of explorer cursors. Two nodes never share it, so it is replaced by
+    zeros (in plain and hex-of-ASCII form) before comparing; every other byte
+    of tokens and cursors is still compared."""
+    epoch = _v2_epoch(value)
+    if not epoch or len(epoch) != 32:
+        return value
+    zero = "0" * 32
+    nested, nested_zero = epoch.encode().hex(), zero.encode().hex()
+
+    def walk(v):
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        if isinstance(v, str):
+            return v.replace(epoch, zero).replace(nested, nested_zero)
+        return v
+
+    return walk(value)
+
+
+def diff_json(a, b, path: str, out: List[Dict[str, Any]]) -> None:
+    """Append every differing leaf of two parsed JSON values to out
+    (objects by key, arrays by index as "path[i]")."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for key in sorted(set(a) | set(b)):
+            sub = f"{path}.{key}"
+            if key not in a or key not in b:
+                out.append({"path": sub, "a": _short(a.get(key)), "b": _short(b.get(key))})
+            else:
+                diff_json(a[key], b[key], sub, out)
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            out.append({"path": f"{path}.<len>", "a": len(a), "b": len(b)})
+        for i, (x, y) in enumerate(zip(a, b)):
+            diff_json(x, y, f"{path}[{i}]", out)
+    elif a != b or type(a) is not type(b):
+        out.append({"path": path, "a": _short(a), "b": _short(b)})
+
+
 def diff_messages(a, b, path: str, out: List[Dict[str, Any]]) -> None:
     """Append every differing leaf of two messages of the same type to out."""
     from google.protobuf.descriptor import FieldDescriptor
@@ -187,6 +251,11 @@ def diff_messages(a, b, path: str, out: List[Dict[str, Any]]) -> None:
 
 
 def parse_body(type_name: Optional[str], body: bytes):
+    if type_name == "json":
+        try:
+            return json.loads(body), None
+        except Exception as err:  # JSONDecodeError, UnicodeDecodeError
+            return None, f"parse error: {err}"
     cls = pb_class(type_name)
     if cls is None:
         return None, "no message type"
@@ -206,6 +275,8 @@ def response_type(req: Dict[str, Any], resp: Dict[str, Any]) -> Optional[str]:
     if resp.get("status") is None:
         return None
     ctype = (resp.get("headers") or {}).get("content-type", "")
+    if ctype.startswith("application/json"):
+        return "json"
     if not ctype.startswith(PROTOBUF_CT):
         return None
     if resp["status"] == 200:
@@ -268,8 +339,16 @@ def compare_http(req, ra, rb, allow: List[str]) -> Dict[str, Any]:
             mb, eb = parse_body(tb, bb)
             if ma is not None and mb is not None:
                 pdiffs: List[Dict[str, Any]] = []
-                diff_messages(ma, mb, ta, pdiffs)
-                if not pdiffs:
+                if ta == "json":
+                    diff_json(normalize_v2_epoch(ma), normalize_v2_epoch(mb),
+                              "json", pdiffs)
+                else:
+                    diff_messages(ma, mb, ta, pdiffs)
+                if not pdiffs and ta == "json" and _epoch_raw(ba, ma) == _epoch_raw(bb, mb):
+                    # Same bytes once each side's service epoch is zeroed.
+                    pdiffs.append({"path": "json.<service_epoch>",
+                                   "a": _v2_epoch(ma), "b": _v2_epoch(mb)})
+                elif not pdiffs:
                     # Same message, different encoding (e.g. field order).
                     pdiffs.append({"path": f"{ta}.<encoding>", "a": len(ba), "b": len(bb)})
                 diffs += pdiffs
