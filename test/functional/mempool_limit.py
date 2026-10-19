@@ -42,10 +42,10 @@ class MempoolLimitTest(BitcoinTestFramework):
         if self.is_chronik_compiled():
             # Turn ON chronik if it's been built. This allow to test tx handling
             # under various conditions without duplicating the complicated test.
-            self.extra_args[0].extend(["-chronik=1"])
+            self.extra_args[0] = self.extra_args[0] + ["-chronik=1"]
             self.log.info("Running the tests with Chronik enabled")
 
-        self.restart_node(0)
+        self.restart_node(0, extra_args=self.extra_args[0])
 
         # Restarting the node resets mempool minimum feerate
         assert_equal(node.getmempoolinfo()["minrelaytxfee"], Decimal("10"))
