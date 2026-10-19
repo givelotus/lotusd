@@ -35,7 +35,7 @@ uint64_t LeU64(const uint8_t *p) {
 }
 
 void AddSize(size_t &total, size_t amount) {
-    if (amount > MAX_BATCH_BYTES || total + amount > MAX_BATCH_BYTES) {
+    if (amount > SIZE_MAX - total) {
         ThrowInvalid("explorer batch bound");
     }
     total += amount;
@@ -111,22 +111,22 @@ Bytes WitnessKey(const TxId &id, uint32_t input, uint32_t index) {
 }
 
 size_t PreflightExplorerBlock(const CommittedBlock &block) {
-    size_t size = 4096;
+    size_t size = RESERVE_EXPLORER_BLOCK;
     for (const ConfirmedTx &tx : block.transactions) {
         const size_t wire = tx.explorer.wire.size();
-        if (wire > SIZE_MAX / 6) {
+        if (wire > SIZE_MAX / RESERVE_EXPLORER_PER_WIRE_BYTE) {
             ThrowInvalid("wire bound");
         }
-        AddSize(size, wire * 6);
-        AddSize(size, 4096);
+        AddSize(size, wire * RESERVE_EXPLORER_PER_WIRE_BYTE);
+        AddSize(size, RESERVE_EXPLORER_TX);
         for (const InputFact &input : tx.explorer.inputs) {
-            AddSize(size, 8192);
-            if (input.witnesses.size() > SIZE_MAX / 2048) {
+            AddSize(size, RESERVE_EXPLORER_INPUT);
+            if (input.witnesses.size() > SIZE_MAX / RESERVE_EXPLORER_WITNESS) {
                 ThrowInvalid("witness bound");
             }
-            AddSize(size, input.witnesses.size() * 2048);
+            AddSize(size, input.witnesses.size() * RESERVE_EXPLORER_WITNESS);
         }
-        AddSize(size, (wire / WIRE_CHUNK_BYTES + 1) * 1024);
+        AddSize(size, (wire / WIRE_CHUNK_BYTES + 1) * RESERVE_EXPLORER_CHUNK);
     }
     return size;
 }
@@ -381,7 +381,7 @@ std::optional<TxMeta> ReadSnapshot::ExplorerTx(const TxId &id) const {
     const auto meta = DecodeRecord<TxMeta>(*bytes);
     const TxLocation &loc = meta.location;
     if (meta.input_count > 65535 || meta.output_count > 65535 ||
-        meta.wire_size == 0 || meta.wire_size > MAX_BATCH_BYTES) {
+        meta.wire_size == 0 || meta.wire_size > bounds.BlockBytes()) {
         ThrowCorrupt();
     }
     if (loc.txid != id || Transaction(id) != loc) {
