@@ -29,8 +29,7 @@ These dependencies are required:
  Library     | Purpose          | Description
  ------------|------------------|----------------------
  libssl      | Crypto           | Random Number Generation, Elliptic Curve Cryptography
- libboost    | Utility          | Library for threading, data structures, etc
- libevent    | Networking       | OS independent asynchronous networking
+ libboost    | Utility          | Library for threading, data structures, networking, etc
 
 Optional dependencies:
 
@@ -61,7 +60,7 @@ Dependency Build Instructions: Ubuntu & Debian
 ----------------------------------------------
 Build requirements:
 
-    sudo apt-get install bsdmainutils build-essential cmake libssl-dev libevent-dev lld ninja-build python3 python3-pytest
+    sudo apt-get install bsdmainutils build-essential cmake libssl-dev lld ninja-build python3 python3-pytest
 
 **Installing cmake on older distribution of Debian or Ubuntu:**
 
@@ -144,7 +143,7 @@ Dependency Build Instructions: Fedora
 -------------------------------------
 Build requirements:
 
-    sudo dnf install boost-devel cmake gcc-c++ libdb-cxx-devel libdb-devel libevent-devel ninja-build openssl-devel python3
+    sudo dnf install boost-devel cmake gcc-c++ libdb-cxx-devel libdb-devel ninja-build openssl-devel python3
 
 ZMQ dependencies (can be disabled by passing `-DBUILD_ZMQ=OFF` on the cmake command line):
 
@@ -234,7 +233,7 @@ Setup and Build Example: Arch Linux
 This example lists the steps necessary to setup and build a command line only,
 non-wallet distribution of the latest changes on Arch Linux:
 
-    pacman -S base-devel boost cmake git libevent ninja python
+    pacman -S base-devel boost cmake git ninja python
     git clone https://github.com/Bitcoin-ABC/bitcoin-abc.git
     cd bitcoin-abc/
     mkdir build
