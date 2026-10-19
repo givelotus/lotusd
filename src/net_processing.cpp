@@ -5214,11 +5214,13 @@ void PeerManagerImpl::HeadersDirectFetchBlocks(const Config &config,
                     .Field(BCLog::LogField::PeerId, pfrom.GetId());
             }
             if (vGetData.size() > 1) {
-                LogDebug(BCLog::NET,
-                         "Downloading blocks toward %s (%d) via headers "
-                         "direct fetch\n",
-                         last_header.GetBlockHash().ToString(),
-                         last_header.nHeight);
+                LogEvent(
+                    BCLog::NET, "relay_headers_direct_fetch",
+                    "Downloading blocks toward {block_hash} ({height}) via "
+                    "headers direct fetch")
+                    .Field(BCLog::LogField::BlockHash,
+                           last_header.GetBlockHash())
+                    .Field(BCLog::LogField::Height, last_header.nHeight);
             }
             if (vGetData.size() > 0) {
                 if (!m_opts.ignore_incoming_txs &&
@@ -7355,8 +7357,10 @@ void PeerManagerImpl::ProcessMessage(
                  pfrom.GetId());
         for (; pindex; pindex = m_chainman.ActiveChain().Next(pindex)) {
             if (pindex->GetBlockHash() == hashStop) {
-                LogDebug(BCLog::NET, "  getblocks stopping at %d %s\n",
-                         pindex->nHeight, pindex->GetBlockHash().ToString());
+                LogEvent(BCLog::NET, "relay_getblocks_stopped",
+                         "  getblocks stopping at {height} {block_hash}")
+                    .Field(BCLog::LogField::Height, pindex->nHeight)
+                    .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                 break;
             }
             // If pruning, don't inv blocks unless we have on disk and are
@@ -7369,10 +7373,12 @@ void PeerManagerImpl::ProcessMessage(
                 (!pindex->nStatus.hasData() ||
                  pindex->nHeight <= m_chainman.ActiveChain().Tip()->nHeight -
                                         nPrunedBlocksLikelyToHave)) {
-                LogDebug(
-                    BCLog::NET,
-                    " getblocks stopping, pruned or too old block at %d %s\n",
-                    pindex->nHeight, pindex->GetBlockHash().ToString());
+                LogEvent(
+                    BCLog::NET, "relay_getblocks_pruned",
+                    " getblocks stopping, pruned or too old block at {height}"
+                    " {block_hash}")
+                    .Field(BCLog::LogField::Height, pindex->nHeight)
+                    .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                 break;
             }
             WITH_LOCK(
@@ -7381,8 +7387,10 @@ void PeerManagerImpl::ProcessMessage(
             if (--nLimit <= 0) {
                 // When this block is requested, we'll send an inv that'll
                 // trigger the peer to getblocks the next batch of inventory.
-                LogDebug(BCLog::NET, "  getblocks stopping at limit %d %s\n",
-                         pindex->nHeight, pindex->GetBlockHash().ToString());
+                LogEvent(BCLog::NET, "relay_getblocks_limit",
+                         "  getblocks stopping at limit {height} {block_hash}")
+                    .Field(BCLog::LogField::Height, pindex->nHeight)
+                    .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash());
                 WITH_LOCK(peer->m_block_inv_mutex, {
                     peer->m_continuation_block = pindex->GetBlockHash();
                 });
@@ -7436,8 +7444,10 @@ void PeerManagerImpl::ProcessMessage(
             // pruned after we release cs_main above, so this read should never
             // fail.
             if (!ret) {
-                LogError("getblocktxn: block read failed for block %s\n",
-                         req.blockhash.ToString());
+                LogErrorEvent(
+                    BCLog::ALL, "relay_getblocktxn_read_failed",
+                    "getblocktxn: block read failed for block {block_hash}")
+                    .Field(BCLog::LogField::BlockHash, req.blockhash);
                 // Nothing to do here
                 return;
             }
@@ -7658,8 +7668,11 @@ void PeerManagerImpl::ProcessMessage(
         }
 
         if (received_new_header) {
-            LogInfo("Saw new cmpctblock header hash=%s peer=%d\n",
-                    blockhash.ToString(), pfrom.GetId());
+            LogInfoEvent(
+                BCLog::ALL, "relay_compact_header_seen",
+                "Saw new cmpctblock header hash={block_hash} peer={peer_id}")
+                .Field(BCLog::LogField::BlockHash, blockhash)
+                .Field(BCLog::LogField::PeerId, pfrom.GetId());
         }
 
         // When we succeed in decoding a block's txids from a cmpctblock
@@ -7684,9 +7697,11 @@ void PeerManagerImpl::ProcessMessage(
 
             // If AcceptBlockHeader returned true, it set pindex
             if (!pindex) {
-                LogError(
-                    "cmpctblock: header accepted but no pindex for block %s\n",
-                    blockhash.ToString());
+                LogErrorEvent(
+                    BCLog::ALL, "relay_compact_header_index_missing",
+                    "cmpctblock: header accepted but no pindex for block "
+                    "{block_hash}")
+                    .Field(BCLog::LogField::BlockHash, blockhash);
                 // Nothing to do here
                 return;
             }
@@ -8596,9 +8611,12 @@ void PeerManagerImpl::ProcessMessage(
                         std::make_shared<CBlock>();
                     if (!m_chainman.m_blockman.ReadBlock(*pblockRead,
                                                          *pindex)) {
-                        LogError("getBlockFromIndex: cannot load block from "
-                                 "disk %s\n",
-                                 pindex->GetBlockHash().ToString());
+                        LogErrorEvent(
+                            BCLog::ALL, "relay_index_block_read_failed",
+                            "getBlockFromIndex: cannot load block from disk "
+                            "{block_hash}")
+                            .Field(BCLog::LogField::BlockHash,
+                                   pindex->GetBlockHash());
                         return nullptr;
                     }
                     pblock = pblockRead;
@@ -8686,11 +8704,15 @@ void PeerManagerImpl::ProcessMessage(
                                     auto currentBlock =
                                         getBlockFromIndex(block);
                                     if (!currentBlock) {
-                                        LogError(
+                                        LogErrorEvent(
+                                            BCLog::ALL,
+                                            "relay_finalized_descendant_"
+                                            "missing",
                                             "avaresponse: failed to get "
                                             "finalized block descendant from "
-                                            "index %s\n",
-                                            block->GetBlockHash().ToString());
+                                            "index {block_hash}")
+                                            .Field(BCLog::LogField::BlockHash,
+                                                   block->GetBlockHash());
                                         missing_block = true;
                                         break;
                                     }
@@ -11285,10 +11307,12 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
                         (BLOCK_DOWNLOAD_TIMEOUT_BASE +
                          BLOCK_DOWNLOAD_TIMEOUT_PER_PEER *
                              nOtherPeersWithValidatedDownloads)) {
-                LogPrintf("Timeout downloading block %s from peer=%d, "
-                          "disconnecting\n",
-                          queuedBlock.pindex->GetBlockHash().ToString(),
-                          pto->GetId());
+                LogInfoEvent(BCLog::ALL, "relay_block_download_timeout",
+                             "Timeout downloading block {block_hash} from "
+                             "peer={peer_id}, disconnecting")
+                    .Field(BCLog::LogField::BlockHash,
+                           queuedBlock.pindex->GetBlockHash())
+                    .Field(BCLog::LogField::PeerId, pto->GetId());
                 pto->fDisconnect = true;
                 return true;
             }
@@ -11384,9 +11408,12 @@ bool PeerManagerImpl::SendMessages(const Config &config, CNode *pto) {
             for (const CBlockIndex *pindex : vToDownload) {
                 vGetData.push_back(CInv(MSG_BLOCK, pindex->GetBlockHash()));
                 BlockRequested(config, pto->GetId(), *pindex);
-                LogDebug(BCLog::NET, "Requesting block %s (%d) peer=%d\n",
-                         pindex->GetBlockHash().ToString(), pindex->nHeight,
-                         pto->GetId());
+                LogEvent(
+                    BCLog::NET, "relay_block_requested",
+                    "Requesting block {block_hash} ({height}) peer={peer_id}")
+                    .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+                    .Field(BCLog::LogField::Height, pindex->nHeight)
+                    .Field(BCLog::LogField::PeerId, pto->GetId());
             }
             if (state.vBlocksInFlight.empty() && staller != -1) {
                 if (State(staller)->m_stalling_since == 0us) {
