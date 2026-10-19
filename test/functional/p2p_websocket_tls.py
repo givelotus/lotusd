@@ -78,7 +78,9 @@ class P2PWebSocketTLSTest(BitcoinTestFramework):
         return resp, data
 
     def ws_peers(self, n):
-        return [p for p in self.nodes[n].getpeerinfo() if p["transport"] != "tcp"]
+        # The wss:// peers. (Lotus v2: node2's ordinary peering with node0 is
+        # WebSocket as well, ws:// on the P2P port.)
+        return [p for p in self.nodes[n].getpeerinfo() if p["transport"] == "wss"]
 
     def run_test(self):
         node0, node1, node2 = self.nodes
@@ -96,7 +98,7 @@ class P2PWebSocketTLSTest(BitcoinTestFramework):
         assert_equal(inbound["transport"], "wss")
         assert_equal(inbound["inbound"], True)
         # node0's TCP peer is node2
-        tcp_peers = [p for p in node0.getpeerinfo() if p["transport"] == "tcp"]
+        tcp_peers = [p for p in node0.getpeerinfo() if p["transport"] == "ws"]
         assert_equal(len(tcp_peers), 1)
 
         self.log.info("JSON-RPC over http:// and https:// on the same port")

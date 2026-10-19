@@ -95,7 +95,7 @@ class HTTPMetricsTest(BitcoinTestFramework):
         )
         assert "commit" in labels
 
-        self.log.info("Peers: node1 over WebSocket, node1 over TCP")
+        self.log.info("Peers: both native connections use WebSocket")
         self.wait_until(
             lambda: (
                 self.total(
@@ -111,14 +111,14 @@ class HTTPMetricsTest(BitcoinTestFramework):
         self.wait_until(
             lambda: (
                 self.total(
-                    self.scrape(), m("peers"), direction="outbound", transport="tcp"
+                    self.scrape(), m("peers"), direction="outbound", transport="ws"
                 )
                 == 1
             )
         )
         samples = self.scrape()
-        assert_equal(self.total(samples, m("p2p_websocket_peers")), 1)
-        assert_equal(self.total(samples, m("p2p_websocket_peers"), tls="false"), 1)
+        assert_equal(self.total(samples, m("p2p_websocket_peers")), 2)
+        assert_equal(self.total(samples, m("p2p_websocket_peers"), tls="false"), 2)
         # The WebSocket peer's handshake is timed under transport="ws"
         assert (
             self.total(
@@ -134,6 +134,16 @@ class HTTPMetricsTest(BitcoinTestFramework):
                 samples,
                 m("p2p_connections_total"),
                 direction="inbound",
+                transport="ws",
+            ),
+            1,
+        )
+        assert_equal(self.total(samples, m("peers"), transport="tcp"), 0)
+        assert_equal(
+            self.total(
+                samples,
+                m("p2p_connections_total"),
+                direction="outbound",
                 transport="ws",
             ),
             1,

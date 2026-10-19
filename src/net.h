@@ -95,7 +95,7 @@ static const bool DEFAULT_LISTEN = true;
  * -p2prawlisten default: when listening, accept plain P2P (the ordinary,
  * non-WebSocket wire protocol) connections.
  */
-static const bool DEFAULT_P2P_RAW_LISTEN = true;
+static const bool DEFAULT_P2P_RAW_LISTEN = false;
 /**
  * The maximum number of peer connections to maintain.
  * This quantity might not be reachable on some systems, especially on platforms
@@ -986,6 +986,8 @@ public:
         //! starting with HTTP or TLS to this (the HTTP server). Unset: the
         //! P2P port only speaks plain P2P, exactly as without WebSocket.
         P2PPortWebSocketHandler p2p_port_websocket;
+        //! Share an already-bound HTTP listener, without opening a new socket.
+        std::function<bool(const CService &)> share_http_listener;
         //! How long a P2P port connection may take to show what it speaks
         std::chrono::seconds p2p_port_handshake_timeout{
             DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
@@ -1040,6 +1042,7 @@ public:
         m_websocket_require_known_key =
             connOptions.m_websocket_require_known_key;
         m_p2p_port_websocket = connOptions.p2p_port_websocket;
+        m_share_http_listener = connOptions.share_http_listener;
         m_p2p_port_handshake_timeout = connOptions.p2p_port_handshake_timeout;
         m_wt_dial_policy = connOptions.m_wt_dial_policy;
         m_wt_bulk = connOptions.m_wt_bulk;
@@ -1382,6 +1385,7 @@ private:
     CNode *ConnectWebSocketNode(const std::string &url,
                                 const CAddress *wss_addr, bool fCountFailure,
                                 ConnectionType conn_type,
+                                const std::string &dest_name = "",
                                 bool record_attempt = true);
     /**
      * Open an outbound P2P connection over WebTransport to `url` (wt://),
@@ -1459,6 +1463,8 @@ private:
 
     //! See Options::p2p_port_websocket
     P2PPortWebSocketHandler m_p2p_port_websocket;
+    std::function<bool(const CService &)> m_share_http_listener;
+    std::vector<std::pair<CService, NetPermissionFlags>> m_shared_http_permissions;
     std::chrono::seconds m_p2p_port_handshake_timeout{
         DEFAULT_P2P_PORT_HANDSHAKE_TIMEOUT};
 
