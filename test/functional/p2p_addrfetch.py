@@ -16,7 +16,7 @@ ADDR = CAddress()
 ADDR.time = int(time.time())
 ADDR.nServices = NODE_NETWORK
 ADDR.ip = "192.0.0.8"
-ADDR.port = 18444
+ADDR.port = 12605
 
 
 class P2PAddrFetch(BitcoinTestFramework):

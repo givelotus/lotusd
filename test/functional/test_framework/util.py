@@ -541,7 +541,7 @@ def initialize_datadir(dirname, n, chain, disable_autoconnect=True):
     if not os.path.isdir(datadir):
         os.makedirs(datadir)
     write_config(
-        os.path.join(datadir, "bitcoin.conf"),
+        os.path.join(datadir, "lotusd.conf"),
         n=n,
         chain=chain,
         disable_autoconnect=disable_autoconnect,
@@ -609,18 +609,18 @@ def get_temp_default_datadir(temp_dir: pathlib.Path) -> tuple[dict, pathlib.Path
     temp_dir, as well as the complete path it would return."""
     if sys.platform == "win32":
         env = {"APPDATA": str(temp_dir)}
-        datadir = temp_dir / "Bitcoin"
+        datadir = temp_dir / "Lotusd"
     else:
         env = {"HOME": str(temp_dir)}
         if sys.platform == "darwin":
-            datadir = temp_dir / "Library/Application Support/Bitcoin"
+            datadir = temp_dir / "Library/Application Support/Lotusd"
         else:
-            datadir = temp_dir / ".bitcoin"
+            datadir = temp_dir / ".lotusd"
     return env, datadir
 
 
 def append_config(datadir, options):
-    with open(os.path.join(datadir, "bitcoin.conf"), "a", encoding="utf8") as f:
+    with open(os.path.join(datadir, "lotusd.conf"), "a", encoding="utf8") as f:
         for option in options:
             f.write(f"{option}\n")
 
@@ -628,8 +628,8 @@ def append_config(datadir, options):
 def get_auth_cookie(datadir, chain):
     user = None
     password = None
-    if os.path.isfile(os.path.join(datadir, "bitcoin.conf")):
-        with open(os.path.join(datadir, "bitcoin.conf"), "r", encoding="utf8") as f:
+    if os.path.isfile(os.path.join(datadir, "lotusd.conf")):
+        with open(os.path.join(datadir, "lotusd.conf"), "r", encoding="utf8") as f:
             for line in f:
                 if line.startswith("rpcuser="):
                     assert user is None  # Ensure that there is only one rpcuser line

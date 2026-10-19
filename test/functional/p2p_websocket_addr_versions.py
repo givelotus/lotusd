@@ -50,7 +50,7 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
     def setup_network(self):
         self.add_nodes(self.num_nodes, self.extra_args)
         # Automatic outbound connections, to see what gets dialed.
-        conf = os.path.join(self.nodes[0].datadir, "bitcoin.conf")
+        conf = os.path.join(self.nodes[0].datadir, "lotusd.conf")
         with open(conf, encoding="utf8") as f:
             lines = [line for line in f if line.strip() != "connect=0"]
         with open(conf, "w", encoding="utf8") as f:

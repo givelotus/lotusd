@@ -12,7 +12,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 static inline uint16_t GetDefaultPort() {
@@ -49,6 +51,7 @@ private:
     NodeSeconds doneAfter{NodeSeconds{0s}};
     CService you;
     ServiceFlags yourServices{ServiceFlags(NODE_NETWORK)};
+    std::optional<std::pair<int, BlockHash>> checkpoint;
     bool checkpointVerified{false};
     bool needAddrReply{false};
 
