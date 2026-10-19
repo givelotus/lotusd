@@ -264,6 +264,9 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
     if (!state.protocols.empty()) {
         request += strprintf("Sec-WebSocket-Protocol: %s\r\n", state.protocols);
     }
+    if (!url.token.empty()) {
+        request += strprintf("Authorization: Bearer %s\r\n", url.token);
+    }
     request += "\r\n";
     if (!WriteAll(*layer, *sock, request, deadline, interrupt)) {
         LogDebug(BCLog::NET, "WebSocket upgrade to %s: write failed\n",
