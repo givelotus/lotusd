@@ -1316,8 +1316,28 @@ CNode *CConnman::ConnectWebSocketNode(const std::string &url,
 void CConnman::AcceptWebSocketPeer(
     std::unique_ptr<Sock> &&sock, const CAddress &addr,
     const CAddress &addr_bind, std::shared_ptr<WebSocketTransportInfo> info) {
-    CreateNodeFromAcceptedSocket(std::move(sock), NetPermissionFlags::None,
-                                 addr_bind, addr, std::move(info));
+    NetPermissionFlags flags{NetPermissionFlags::None};
+    bool known{false};
+    if (info && !info->peer_spki.empty()) {
+        for (const auto &key : vWhitelistedKeys) {
+            if (key.m_key == info->peer_spki) {
+                NetPermissions::AddFlag(flags, key.m_flags);
+                known = true;
+            }
+        }
+        info->pinned = known;
+    }
+    if (m_websocket_require_known_key && !known) {
+        LogDebug(BCLog::NET,
+                 "WebSocket peer %s dropped: %s (-p2pwebsocketrequirecert)\n",
+                 addr.ToStringAddrPort(),
+                 info && !info->peer_spki.empty()
+                     ? "its key is not listed in -p2pwebsocketpeer"
+                     : "no client certificate");
+        return;
+    }
+    CreateNodeFromAcceptedSocket(std::move(sock), flags, addr_bind, addr,
+                                 std::move(info));
 }
 
 void CConnman::CreateNodeFromAcceptedSocket(

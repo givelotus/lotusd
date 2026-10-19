@@ -73,7 +73,8 @@ struct WebSocketTransportInfo {
     std::string peer_cert_fingerprint_hex;
     //! base64url SHA-256 of the peer's public key (SPKI), if any
     std::string peer_spki;
-    //! The peer's key matched a configured pin
+    //! The peer's key matched a configured pin (outbound) or a
+    //! -p2pwebsocketpeer entry (inbound)
     bool pinned{false};
 };
 
