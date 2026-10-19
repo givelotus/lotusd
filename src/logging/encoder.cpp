@@ -373,67 +373,108 @@ void TextEncoder::Encode(const LogLine &line, const LogOptions &opts,
     out.append(msg.data() + run, msg.size() - run);
 }
 
+namespace {
+    enum class JsonSchema { GENERIC, GCP };
+
+    void EncodeJson(const LogLine &line, const LogOptions &opts,
+                    std::string &out, JsonSchema schema) {
+        std::string_view msg{line.event ? EventText(line, /*with_fields=*/false)
+                                        : line.message};
+        out.clear();
+        out += '{';
+        if (opts.timestamps) {
+            out += "\"time\":\"";
+            AppendRfc3339(out, line.time, /*with_micros=*/true);
+            out += "\",";
+        }
+        out += schema == JsonSchema::GCP ? "\"severity\":\"" : "\"level\":\"";
+        if (schema == JsonSchema::GCP) {
+            switch (line.level) {
+                case Level::Trace:
+                case Level::Debug:
+                    out += "DEBUG";
+                    break;
+                case Level::Info:
+                    out += "INFO";
+                    break;
+                case Level::Warning:
+                    out += "WARNING";
+                    break;
+                case Level::Error:
+                    out += "ERROR";
+                    break;
+            }
+        } else {
+            out += LogLevelName(line.level);
+        }
+        out += "\",\"category\":\"";
+        out += LogCategoryName(line.category);
+        out += "\",\"thread\":\"";
+        AppendJsonEscaped(out, line.thread.empty() ? "unknown" : line.thread);
+        out += "\",\"message\":\"";
+        if (!msg.empty() && msg.back() == '\n') {
+            msg.remove_suffix(1);
+        }
+        AppendJsonEscaped(out, msg);
+        out += '"';
+        if (line.event) {
+            out += ",\"event\":\"";
+            AppendJsonEscaped(out, line.event->event);
+            out += '"';
+            for (const FieldView f : line.fields) {
+                out += ",\"";
+                out += f.Info().name;
+                out += "\":";
+                AppendJsonValue(out, f);
+            }
+            if (line.fields_truncated) {
+                out += ",\"fields_truncated\":true";
+            }
+        }
+        if (line.mocktime > 0s) {
+            out += ",\"mocktime\":\"";
+            AppendRfc3339(out, SystemClock::time_point{line.mocktime},
+                          /*with_micros=*/false);
+            out += '"';
+        }
+        if (line.continued) {
+            out += ",\"continued\":true";
+        }
+        if (line.ratelimited) {
+            out += ",\"ratelimited\":true";
+        }
+        if (opts.sourcelocations) {
+            out +=
+                schema == JsonSchema::GCP
+                    ? ",\"logging.googleapis.com/sourceLocation\":{\"file\":\""
+                    : ",\"source\":{\"file\":\"";
+            AppendJsonEscaped(out, SourceFileName(line.loc));
+            out += "\",\"line\":";
+            char num[16];
+            const auto res{
+                std::to_chars(num, num + sizeof(num), line.loc.line())};
+            // LogEntrySourceLocation.line is an int64 JSON string in the GCP
+            // API.
+            if (schema == JsonSchema::GCP) out += '"';
+            out.append(num, res.ptr);
+            if (schema == JsonSchema::GCP) out += '"';
+            out += ",\"function\":\"";
+            AppendJsonEscaped(out, BareFunctionName(line.loc.function_name()));
+            out += "\"}";
+        }
+        out += "}\n";
+    }
+
+} // namespace
+
 void JsonEncoder::Encode(const LogLine &line, const LogOptions &opts,
                          std::string &out) const {
-    std::string_view msg{line.event ? EventText(line, /*with_fields=*/false)
-                                    : line.message};
-    out.clear();
-    out += '{';
-    if (opts.timestamps) {
-        out += "\"time\":\"";
-        AppendRfc3339(out, line.time, /*with_micros=*/true);
-        out += "\",";
-    }
-    out += "\"level\":\"";
-    out += LogLevelName(line.level);
-    out += "\",\"category\":\"";
-    out += LogCategoryName(line.category);
-    out += "\",\"thread\":\"";
-    AppendJsonEscaped(out, line.thread.empty() ? "unknown" : line.thread);
-    out += "\",\"message\":\"";
-    if (!msg.empty() && msg.back() == '\n') {
-        msg.remove_suffix(1);
-    }
-    AppendJsonEscaped(out, msg);
-    out += '"';
-    if (line.event) {
-        out += ",\"event\":\"";
-        AppendJsonEscaped(out, line.event->event);
-        out += '"';
-        for (const FieldView f : line.fields) {
-            out += ",\"";
-            out += f.Info().name;
-            out += "\":";
-            AppendJsonValue(out, f);
-        }
-        if (line.fields_truncated) {
-            out += ",\"fields_truncated\":true";
-        }
-    }
-    if (line.mocktime > 0s) {
-        out += ",\"mocktime\":\"";
-        AppendRfc3339(out, SystemClock::time_point{line.mocktime},
-                      /*with_micros=*/false);
-        out += '"';
-    }
-    if (line.continued) {
-        out += ",\"continued\":true";
-    }
-    if (line.ratelimited) {
-        out += ",\"ratelimited\":true";
-    }
-    if (opts.sourcelocations) {
-        out += ",\"source\":{\"file\":\"";
-        AppendJsonEscaped(out, SourceFileName(line.loc));
-        out += "\",\"line\":";
-        char num[16];
-        const auto res{std::to_chars(num, num + sizeof(num), line.loc.line())};
-        out.append(num, res.ptr);
-        out += ",\"function\":\"";
-        AppendJsonEscaped(out, BareFunctionName(line.loc.function_name()));
-        out += "\"}";
-    }
-    out += "}\n";
+    EncodeJson(line, opts, out, JsonSchema::GENERIC);
+}
+
+void JsonGcpEncoder::Encode(const LogLine &line, const LogOptions &opts,
+                            std::string &out) const {
+    EncodeJson(line, opts, out, JsonSchema::GCP);
 }
 
 void LogfmtEncoder::Encode(const LogLine &line, const LogOptions &opts,
@@ -495,6 +536,8 @@ std::unique_ptr<LogEncoder> MakeLogEncoder(LogFormat format) {
     switch (format) {
         case LogFormat::TEXT:
             return std::make_unique<TextEncoder>();
+        case LogFormat::JSON_GCP:
+            return std::make_unique<JsonGcpEncoder>();
         case LogFormat::LOGFMT:
             return std::make_unique<LogfmtEncoder>();
         case LogFormat::JSON:
