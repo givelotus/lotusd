@@ -5,13 +5,14 @@
 """Test /metrics (-metrics): the Prometheus text format, values that change,
 and access limited to -rpcallowip clients on the RPC listeners."""
 
-import http.client
 import re
 import socket
 import ssl
 import time
 
+from test_framework.metrics import NAMESPACE, m, request, scrape
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     assert_equal,
     assert_raises_rpc_error,
@@ -21,64 +22,6 @@ from test_framework.util import (
 from test_framework.wallet import MiniWallet
 
 PUBLIC_PORT_INDEX = 41
-NAME = r"[a-zA-Z_:][a-zA-Z0-9_:]*"
-LABEL = r'[a-zA-Z_][a-zA-Z0-9_]*="(?:[^"\\\n]|\\[\\"n])*"'
-SAMPLE = re.compile(
-    rf"^({NAME})(\{{{LABEL}(?:,{LABEL})*\}})? "
-    r"(NaN|[+-]Inf|[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)$"
-)
-LABEL_PAIR = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
-
-
-def parse(text):
-    """Parse and check an exposition; return {(name, labels): value}."""
-    assert text.endswith("\n")
-    types = {}
-    samples = {}
-    for line in text.splitlines():
-        if line.startswith("# HELP "):
-            assert re.match(rf"^# HELP {NAME} .+$", line), line
-            continue
-        if line.startswith("# TYPE "):
-            _, _, name, kind = line.split(" ")
-            assert kind in ("counter", "gauge", "histogram"), line
-            assert name not in types, f"duplicate TYPE {name}"
-            types[name] = kind
-            continue
-        m = SAMPLE.match(line)
-        assert m, f"bad sample line: {line!r}"
-        name, labels, value = m.group(1), m.group(2) or "", m.group(3)
-        family = name
-        if name not in types:
-            for suffix in ("_bucket", "_sum", "_count"):
-                base = name[: -len(suffix)]
-                if name.endswith(suffix) and types.get(base) == "histogram":
-                    family = base
-        assert family in types, f"sample before/without TYPE: {line}"
-        if types[family] == "counter":
-            assert name.endswith("_total"), name
-        key = (name, tuple(LABEL_PAIR.findall(labels)))
-        assert key not in samples, f"duplicate series {line}"
-        samples[key] = float(value)
-    # Histograms: cumulative buckets ending with +Inf == _count
-    for name, kind in types.items():
-        if kind != "histogram":
-            continue
-        series = {}
-        for (n, labels), v in samples.items():
-            if n == name + "_bucket":
-                rest = tuple(p for p in labels if p[0] != "le")
-                le = dict(labels)["le"]
-                series.setdefault(rest, []).append(
-                    (float("inf") if le == "+Inf" else float(le), v)
-                )
-        for rest, buckets in series.items():
-            counts = [v for _, v in sorted(buckets)]
-            assert counts == sorted(counts), f"{name} not cumulative"
-            assert sorted(buckets)[-1][0] == float("inf")
-            assert_equal(counts[-1], samples[(name + "_count", rest)])
-            assert (name + "_sum", rest) in samples
-    return samples
 
 
 class HTTPMetricsTest(BitcoinTestFramework):
@@ -91,6 +34,8 @@ class HTTPMetricsTest(BitcoinTestFramework):
         self.extra_args = [
             [
                 "-metrics",
+                "-metricslabel=region=test-1",
+                '-metricslabel=role=edge "a\\b"',
                 "-trustedproxy=127.0.0.1",
                 f"-publicbind=127.0.0.1:{self.public_port}",
             ],
@@ -103,50 +48,59 @@ class HTTPMetricsTest(BitcoinTestFramework):
         self.start_node(1)
 
     def request(self, port, path="/metrics", method="GET", headers=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-        conn.request(method, path, headers=headers or {})
-        res = conn.getresponse()
-        body = res.read().decode()
-        conn.close()
-        return res, body
+        return request(port, path, method, headers)
 
     def scrape(self):
-        res, body = self.request(rpc_port(0))
-        assert_equal(res.status, 200)
-        assert_equal(
-            res.getheader("Content-Type"),
-            "text/plain; version=0.0.4; charset=utf-8",
-        )
-        return parse(body)
+        return scrape(self.nodes[0])
 
     def total(self, samples, name, **labels):
         """Sum of a metric's series matching the given labels"""
-        return sum(
-            v
-            for (n, ls), v in samples.items()
-            if n == name and all(dict(ls).get(k) == w for k, w in labels.items())
-        )
+        return samples.total(name, **labels)
 
     def run_test(self):
         node = self.nodes[0]
         self.log.info("The exposition is well formed")
         samples = self.scrape()
         # The genesis block was connected at startup.
-        connected = samples[("lotus_block_connect_seconds_count", ())]
+        connected = samples.value(m("block_connect_seconds_count"))
         assert_equal(connected, 1)
-        assert_equal(samples[("lotus_metrics_dropped_samples_total", ())], 0)
-        assert_equal(samples[("lotus_log_dropped_lines_total", ())], 0)
-        assert_equal(samples[("lotus_log_journal_failures_total", ())], 0)
-        assert_equal(samples[("lotus_chain_tip_height", ())], 0)
-        assert_equal(samples[("lotus_initial_block_download", ())], 1)
-        assert samples[("lotus_process_start_time_seconds", ())] > 1e9
+        assert_equal(samples.value(m("metrics_dropped_samples_total")), 0)
+        assert_equal(samples.value(m("log_dropped_lines_total")), 0)
+        assert_equal(samples.value(m("log_journal_failures_total")), 0)
+        assert_equal(samples.value(m("chain_tip_height")), 0)
+        assert_equal(samples.value(m("initial_block_download")), 1)
+        assert samples.value("process_start_time_seconds") > 1e9
+
+        self.log.info("Names are namespaced; every series has the constant labels")
+        assert "lotus_" not in samples.text
+        for name in samples.types:
+            assert name.startswith((NAMESPACE, "process_")), name
+        samples.check_constant_labels(
+            {
+                "client": "ecashd",
+                "network": "ecash-regtest",
+                "region": "test-1",
+                "role": 'edge "a\\b"',
+            }
+        )
+        assert 'role="edge \\"a\\\\b\\""' in samples.text
+        version = node.getnetworkinfo()["version"]
+        info = samples.series(m("build_info"))
+        assert_equal(len(info), 1)
+        labels, value = info[0]
+        assert_equal(value, 1)
+        assert_equal(
+            labels["version"],
+            f"{version // 1000000}.{version // 10000 % 100}.{version // 100 % 100}",
+        )
+        assert "commit" in labels
 
         self.log.info("Peers: node1 over WebSocket, node1 over TCP")
         self.wait_until(
             lambda: (
                 self.total(
                     self.scrape(),
-                    "lotus_peers",
+                    m("peers"),
                     direction="inbound",
                     transport="websocket",
                 )
@@ -157,60 +111,57 @@ class HTTPMetricsTest(BitcoinTestFramework):
         self.wait_until(
             lambda: (
                 self.total(
-                    self.scrape(), "lotus_peers", direction="outbound", transport="tcp"
+                    self.scrape(), m("peers"), direction="outbound", transport="tcp"
                 )
                 == 1
             )
         )
         samples = self.scrape()
-        assert_equal(self.total(samples, "lotus_p2p_websocket_peers"), 1)
-        assert_equal(self.total(samples, "lotus_p2p_websocket_peers", tls="false"), 1)
+        assert_equal(self.total(samples, m("p2p_websocket_peers")), 1)
+        assert_equal(self.total(samples, m("p2p_websocket_peers"), tls="false"), 1)
         assert_equal(
             self.total(
                 samples,
-                "lotus_p2p_connections_total",
+                m("p2p_connections_total"),
                 direction="inbound",
                 transport="websocket",
             ),
             1,
         )
         for name in (
-            "lotus_p2p_received_messages_total",
-            "lotus_p2p_sent_messages_total",
+            m("p2p_received_messages_total"),
+            m("p2p_sent_messages_total"),
         ):
             assert self.total(samples, name, type="version") >= 2, name
-        assert self.total(samples, "lotus_p2p_sent_bytes_total") > 0
-        assert ("lotus_p2p_received_bytes_total", (("type", "other"),)) in samples
+        assert self.total(samples, m("p2p_sent_bytes_total")) > 0
+        assert samples.has(m("p2p_received_bytes_total"), type="other")
 
         self.log.info("Chain and mempool values change")
         wallet = MiniWallet(node)
         self.generate(wallet, 101)
         self.wait_until(
             lambda: (
-                self.scrape()[("lotus_block_connect_seconds_count", ())]
-                == connected + 101
+                self.scrape().value(m("block_connect_seconds_count")) == connected + 101
             )
         )
-        self.wait_until(
-            lambda: self.scrape()[("lotus_initial_block_download", ())] == 0
-        )
+        self.wait_until(lambda: self.scrape().value(m("initial_block_download")) == 0)
         samples = self.scrape()
-        assert_equal(samples[("lotus_chain_tip_height", ())], 101)
+        assert_equal(samples.value(m("chain_tip_height")), 101)
         tip_time = node.getblockheader(node.getbestblockhash())["time"]
-        assert_equal(samples[("lotus_chain_tip_timestamp_seconds", ())], tip_time)
+        assert_equal(samples.value(m("chain_tip_timestamp_seconds")), tip_time)
         # Computed at scrape time; negative if the tip's timestamp is ahead
         # of the clock (quickly mined regtest blocks).
-        age = samples[("lotus_chain_tip_age_seconds", ())]
+        age = samples.value(m("chain_tip_age_seconds"))
         assert abs(age - (time.time() - tip_time)) < 30, age
-        assert samples[("lotus_block_connect_seconds_sum", ())] > 0
+        assert samples.value(m("block_connect_seconds_sum")) > 0
         # Message handling is timed for 1 message in 16.
-        assert self.total(samples, "lotus_p2p_message_handling_seconds_count") > 0
-        assert_equal(samples[("lotus_mempool_transactions", ())], 0)
+        assert self.total(samples, m("p2p_message_handling_seconds_count")) > 0
+        assert_equal(samples.value(m("mempool_transactions")), 0)
         tx = wallet.send_self_transfer(from_node=node)
-        self.wait_until(lambda: self.scrape()[("lotus_mempool_transactions", ())] == 1)
-        assert_equal(self.scrape()[("lotus_mempool_bytes", ())], len(tx["hex"]) // 2)
+        self.wait_until(lambda: self.scrape().value(m("mempool_transactions")) == 1)
+        assert_equal(self.scrape().value(m("mempool_bytes")), len(tx["hex"]) // 2)
         self.generate(node, 1)
-        self.wait_until(lambda: self.scrape()[("lotus_mempool_transactions", ())] == 0)
+        self.wait_until(lambda: self.scrape().value(m("mempool_transactions")) == 0)
 
         self.log.info("HTTP and RPC requests")
         # Baselines exclude completed setup RPCs and the one-second scrape cache.
@@ -230,29 +181,27 @@ class HTTPMetricsTest(BitcoinTestFramework):
         time.sleep(1.1)  # past the rendering cache
         samples = self.scrape()
         assert (
-            self.total(samples, "lotus_http_requests_total", endpoint="rpc", code="2xx")
+            self.total(samples, m("http_requests_total"), endpoint="rpc", code="2xx")
             > 0
         )
         assert (
+            self.total(samples, m("http_requests_total"), endpoint="health", code="2xx")
+            >= 1
+        )
+        assert (
             self.total(
-                samples, "lotus_http_requests_total", endpoint="health", code="2xx"
+                samples, m("http_requests_total"), endpoint="metrics", code="2xx"
             )
             >= 1
         )
         assert (
             self.total(
-                samples, "lotus_http_requests_total", endpoint="metrics", code="2xx"
-            )
-            >= 1
-        )
-        assert (
-            self.total(
-                samples, "lotus_http_request_duration_seconds_count", endpoint="rpc"
+                samples, m("http_request_duration_seconds_count"), endpoint="rpc"
             )
             > 0
         )
         assert_equal(
-            self.total(samples, "lotus_http_tls_handshakes_total", result="ok"), 1
+            self.total(samples, m("http_tls_handshakes_total"), result="ok"), 1
         )
         for method in (
             "getblockcount",
@@ -260,27 +209,25 @@ class HTTPMetricsTest(BitcoinTestFramework):
             "getblockhash",
             "waitforblockheight",
         ):
-            name = "lotus_rpc_request_duration_seconds_count"
+            name = m("rpc_request_duration_seconds_count")
             assert_equal(
                 self.total(samples, name, method=method),
                 self.total(before_rpc, name, method=method) + 1,
             )
         # The timer covers the await lifetime, not only initial dispatch.
-        name = "lotus_rpc_request_duration_seconds_sum"
+        name = m("rpc_request_duration_seconds_sum")
         assert (
             self.total(samples, name, method="waitforblockheight")
             - self.total(before_rpc, name, method="waitforblockheight")
         ) >= 0.075
         # Only methods that were called have series.
         assert_equal(
-            self.total(
-                samples, "lotus_rpc_request_duration_seconds_count", method="stop"
-            ),
+            self.total(samples, m("rpc_request_duration_seconds_count"), method="stop"),
             0,
         )
         assert not any(
-            n.startswith("lotus_rpc_request") and ("method", "stop") in ls
-            for n, ls in samples
+            n.startswith(m("rpc_request")) and ("method", "stop") in ls
+            for n, ls in samples.samples
         )
 
         self.log.info("HEAD has the headers but no body; POST is refused")
@@ -297,18 +244,37 @@ class HTTPMetricsTest(BitcoinTestFramework):
             rpc_port(0), headers={"X-Forwarded-For": "203.0.113.5"}
         )
         assert_equal(res.status, 403)
-        assert "lotus_" not in body
+        assert NAMESPACE not in body
         res, _ = self.request(rpc_port(0), headers={"X-Forwarded-For": "127.0.0.1"})
         assert_equal(res.status, 200)
 
         self.log.info("Public listeners never serve metrics")
         res, body = self.request(self.public_port)
         assert_equal(res.status, 404)
-        assert "lotus_" not in body
+        assert NAMESPACE not in body
 
         self.log.info("Without -metrics there is no /metrics")
         res, _ = self.request(rpc_port(1))
         assert_equal(res.status, 404)
+
+        self.log.info("Invalid or reserved -metricslabel names are refused")
+        self.stop_node(1)
+        for arg, error in (
+            ("network=x", 'the label "network" is set by the node'),
+            ("client=x", 'the label "client" is set by the node'),
+            ("9x=y", "is not a valid label name"),
+            ("__x=y", "is not a valid label name"),
+            ("le=y", "is not a valid label name"),
+            ("novalue", "expected <name>=<value>"),
+            ("a=", "the value must be 1 to 128 bytes"),
+            # The name of a metric's own label
+            ("type=x", 'label name "type" is used by a metric'),
+        ):
+            self.nodes[1].assert_start_raises_init_error(
+                ["-metrics", f"-metricslabel={arg}"],
+                re.escape(error),
+                match=ErrorMatch.PARTIAL_REGEX,
+            )
 
 
 if __name__ == "__main__":

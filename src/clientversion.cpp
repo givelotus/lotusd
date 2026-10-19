@@ -64,6 +64,16 @@ std::string FormatFullVersion() {
     return CLIENT_BUILD;
 }
 
+std::string FormatBuildCommit() {
+#if defined(BUILD_GIT_COMMIT)
+    return BUILD_GIT_COMMIT;
+#elif defined(GIT_COMMIT_ID)
+    return GIT_COMMIT_ID;
+#else
+    return "";
+#endif
+}
+
 /**
  * Format the subversion field according to BIP 14 spec.
  * (https://github.com/bitcoin/bips/blob/master/bip-0014.mediawiki)

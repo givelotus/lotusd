@@ -12,6 +12,7 @@
 #include <cmath>
 #include <functional>
 #include <new>
+#include <set>
 
 namespace metrics {
 
@@ -63,12 +64,14 @@ namespace {
     }
 
     /**
-     * Append `{a="x",b="y"` (without the closing brace) for a series, or
-     * nothing if the metric has no labels. Returns whether a brace was opened.
+     * Append `{c="v",a="x",b="y"` (without the closing brace) for a series:
+     * the registry's constant labels, then the metric's own. Appends nothing
+     * if there are neither. Returns whether a brace was opened.
      */
-    bool AppendLabels(std::string &out, const Metric &m, size_t series) {
+    bool AppendLabels(std::string &out, const std::string &const_labels,
+                      const Metric &m, size_t series) {
         const auto &labels{m.Labels()};
-        if (labels.empty()) {
+        if (labels.empty() && const_labels.empty()) {
             return false;
         }
         // Row-major: the last dimension varies fastest.
@@ -79,8 +82,9 @@ namespace {
             series /= labels[d].values.size();
         }
         out += '{';
+        out += const_labels;
         for (size_t d = 0; d < labels.size(); ++d) {
-            if (d) {
+            if (d || !const_labels.empty()) {
                 out += ',';
             }
             out += labels[d].name;
@@ -96,6 +100,35 @@ size_t ThisThreadShard() noexcept {
     thread_local const size_t shard{
         g_next_shard.fetch_add(1, std::memory_order_relaxed) % NUM_SHARDS};
     return shard;
+}
+
+static bool IsNameChar(char c, bool first, bool colon) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
+           (colon && c == ':') || (!first && c >= '0' && c <= '9');
+}
+
+bool IsValidMetricName(std::string_view s) {
+    if (s.empty()) {
+        return false;
+    }
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (!IsNameChar(s[i], i == 0, /*colon=*/true)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsValidLabelName(std::string_view s) {
+    if (s.empty() || s.starts_with("__")) {
+        return false;
+    }
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (!IsNameChar(s[i], i == 0, /*colon=*/false)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void AppendLabelValue(std::string &out, std::string_view value) {
@@ -222,14 +255,51 @@ void EventHistogram::Apply(const Sample &s) {
     series.sum += s.value;
 }
 
-Registry::Registry()
-    : m_uid{g_next_registry_uid.fetch_add(1, std::memory_order_relaxed)} {}
+Registry::Registry(std::string name_prefix)
+    : m_uid{g_next_registry_uid.fetch_add(1, std::memory_order_relaxed)},
+      m_name_prefix{std::move(name_prefix)} {}
+
+std::optional<std::string> Registry::SetConstLabels(
+    std::vector<std::pair<std::string, std::string>> labels) {
+    std::set<std::string> taken{"le", "quantile"};
+    for (const auto &metric : m_metrics) {
+        for (const auto &dim : metric->Labels()) {
+            taken.insert(dim.name);
+        }
+    }
+    std::set<std::string> seen;
+    std::string rendered;
+    for (const auto &[name, value] : labels) {
+        if (!IsValidLabelName(name)) {
+            return "invalid label name \"" + name + "\"";
+        }
+        if (taken.count(name)) {
+            return "label name \"" + name + "\" is used by a metric";
+        }
+        if (!seen.insert(name).second) {
+            return "label name \"" + name + "\" is repeated";
+        }
+        if (!rendered.empty()) {
+            rendered += ',';
+        }
+        rendered += name;
+        rendered += "=\"";
+        AppendLabelValue(rendered, value);
+        rendered += '"';
+    }
+    m_const_labels = std::move(rendered);
+    return std::nullopt;
+}
 
 Registry::~Registry() {
     Stop();
 }
 
 void Registry::AddMetric(std::unique_ptr<Metric> metric) {
+    assert(IsValidMetricName(metric->Name()));
+    for (const auto &dim : metric->Labels()) {
+        assert(IsValidLabelName(dim.name) && dim.name != "le");
+    }
     if (auto *h{dynamic_cast<EventHistogram *>(metric.get())}) {
         h->m_registry = this;
         h->m_id = uint32_t(m_histograms.size());
@@ -392,7 +462,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                 switch (metric->Type()) {
                     case MetricType::COUNTER: {
                         out += name;
-                        if (AppendLabels(out, *metric, i)) {
+                        if (AppendLabels(out, m_const_labels, *metric, i)) {
                             out += '}';
                         }
                         out += ' ';
@@ -410,7 +480,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                     }
                     case MetricType::GAUGE: {
                         out += name;
-                        if (AppendLabels(out, *metric, i)) {
+                        if (AppendLabels(out, m_const_labels, *metric, i)) {
                             out += '}';
                         }
                         out += ' ';
@@ -428,7 +498,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                             cumulative += s.buckets[b];
                             out += name;
                             out += "_bucket";
-                            if (AppendLabels(out, h, i)) {
+                            if (AppendLabels(out, m_const_labels, h, i)) {
                                 out += ',';
                             } else {
                                 out += '{';
@@ -443,7 +513,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                         }
                         out += name;
                         out += "_sum";
-                        if (AppendLabels(out, h, i)) {
+                        if (AppendLabels(out, m_const_labels, h, i)) {
                             out += '}';
                         }
                         out += ' ';
@@ -451,7 +521,7 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
                         out += '\n';
                         out += name;
                         out += "_count";
-                        if (AppendLabels(out, h, i)) {
+                        if (AppendLabels(out, m_const_labels, h, i)) {
                             out += '}';
                         }
                         out += ' ';
@@ -463,10 +533,21 @@ std::string Registry::Render(std::chrono::milliseconds min_interval) {
             }
         }
     }
-    out += "# HELP lotus_metrics_dropped_samples_total Event samples dropped "
-           "because a recording thread's buffer was full.\n"
-           "# TYPE lotus_metrics_dropped_samples_total counter\n"
-           "lotus_metrics_dropped_samples_total ";
+    const std::string dropped_name{m_name_prefix +
+                                   "metrics_dropped_samples_total"};
+    out += "# HELP ";
+    out += dropped_name;
+    out += " Event samples dropped because a recording thread's buffer was "
+           "full.\n# TYPE ";
+    out += dropped_name;
+    out += " counter\n";
+    out += dropped_name;
+    if (!m_const_labels.empty()) {
+        out += '{';
+        out += m_const_labels;
+        out += '}';
+    }
+    out += ' ';
     AppendUInt(out, DroppedSamples());
     out += '\n';
     m_rendered = out;

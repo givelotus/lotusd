@@ -32,11 +32,19 @@ static bool HTTPReqMetrics(Config &, HTTPRequest *req, const std::string &) {
     return true;
 }
 
-void StartHTTPMetrics() {
-    node::NodeMetrics &m{node::StartNodeMetrics(tableRPC.listCommands())};
+util::Result<void> StartHTTPMetrics(
+    ChainType chain,
+    const std::vector<std::pair<std::string, std::string>> &labels) {
+    auto started{
+        node::StartNodeMetrics(tableRPC.listCommands(), chain, labels)};
+    if (!started) {
+        return util::Error{util::ErrorString(started)};
+    }
+    node::NodeMetrics &m{**started};
     m.process_start_time.Set(double(GetStartupTime()));
     RegisterHTTPHandler("/metrics", true, HTTPReqMetrics);
     LogPrintf("Serving metrics at /metrics on the RPC listeners\n");
+    return {};
 }
 
 void StopHTTPMetrics() {
