@@ -603,6 +603,15 @@ void SetupServerArgs(NodeContext &node) {
         "ingestion without waiting for reconciliation rounds (default: 1)",
         ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg(
+        "-txrelaytick=<ms>",
+        strprintf("Announce transactions to peers on a fixed tick of this "
+                  "many milliseconds, shared by all peers (%d to %d, "
+                  "default: %d)",
+                  count_milliseconds(MIN_TXRELAY_TICK),
+                  count_milliseconds(MAX_TXRELAY_TICK),
+                  count_milliseconds(DEFAULT_TXRELAY_TICK)),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-testdisablehighbandwidthshorttx",
         "Disable unsolicited shorttx frames in regtest tests (default: 0)",
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
