@@ -188,6 +188,13 @@ public:
     bool IsTLS() const;
 
     /**
+     * The scheme the client used: "https" over TLS, or when a -trustedproxy
+     * TCP peer says so in the right-most X-Forwarded-Proto value; otherwise
+     * "http".
+     */
+    std::string GetScheme() const;
+
+    /**
      * Hex SHA-256 fingerprint of the TLS client certificate, or an empty
      * string if none was presented (see -tlsmutual).
      */

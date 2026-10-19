@@ -92,6 +92,8 @@
 #include <validation.h>
 #include <validationinterface.h>
 #include <walletinitinterface.h>
+#include <walletpwa/http.h>
+#include <walletpwa/launch.h>
 
 #include <boost/signals2/signal.hpp>
 
@@ -270,6 +272,7 @@ void Shutdown(NodeContext &node) {
     }
 
     StopHTTPRPC();
+    walletpwa::StopWalletPwa();
     StopREST();
     StopRPC();
     StopHTTPServer();
@@ -1648,6 +1651,30 @@ void SetupServerArgs(NodeContext &node) {
         "-rpccorsdomain=value",
         "Domain from which to accept cross origin requests (browser enforced)",
         ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-walletpwa",
+        strprintf("Serve the wallet UI at /wallet/ on the RPC listeners, with "
+                  "browser logins at /auth/session (default: %u)",
+                  walletpwa::DEFAULT_WALLET_PWA),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg("-walletpwadir=<dir>",
+                   "Serve the wallet UI from this directory, read on every "
+                   "request, instead of the one built in (for development)",
+                   ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-walletpwaorigin=<origin>",
+        "Also accept browser logins from this origin, given as "
+        "scheme://host[:port] (e.g. https://node.example.org behind a reverse "
+        "proxy). Loopback origins are always accepted. Can be specified "
+        "multiple times",
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
+    argsman.AddArg(
+        "-gui",
+        strprintf("Once the node is up, open the wallet UI in the default "
+                  "browser with a one-time login link. Implies -server "
+                  "(default: %u)",
+                  walletpwa::DEFAULT_GUI),
+        ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
 
     argsman.AddArg("-rpcworkqueue=<n>",
                    strprintf("Set the depth of the work queue to service RPC "
@@ -1948,6 +1975,7 @@ static bool AppInitServers(Config &config,
     if (!StartHTTPRPC(httpRPCRequestProcessor)) {
         return false;
     }
+    walletpwa::StartWalletPwa(args, CheckRPCCredentials);
     if (args.GetBoolArg("-rest", DEFAULT_REST_ENABLE)) {
         StartREST(&node);
     }
@@ -1956,11 +1984,22 @@ static bool AppInitServers(Config &config,
     }
 
     StartHTTPServer();
+    if (args.GetBoolArg("-gui", walletpwa::DEFAULT_GUI)) {
+        walletpwa::LaunchWalletPwa(args);
+    }
     return true;
 }
 
 // Parameter interaction based on rules
 void InitParameterInteraction(ArgsManager &args) {
+    // The wallet UI is served by the RPC server.
+    if (args.GetBoolArg("-gui", walletpwa::DEFAULT_GUI)) {
+        if (args.SoftSetBoolArg("-server", true)) {
+            LogPrintf("%s: parameter interaction: -gui=1 -> setting "
+                      "-server=1\n",
+                      __func__);
+        }
+    }
     // when specifying an explicit binding address, you want to listen on it
     // even when -connect or -proxy is specified.
     if (args.IsArgSet("-bind")) {
@@ -2205,6 +2244,10 @@ bool AppInitParameterInteraction(Config &config, const ArgsManager &args) {
         return InitError(
             strprintf(_("Specified blocks directory \"%s\" does not exist."),
                       args.GetArg("-blocksdir", "")));
+    }
+
+    if (const auto error{walletpwa::CheckWalletPwaArgs(args)}) {
+        return InitError(Untranslated(*error));
     }
 
     const std::string db_backend = args.GetArg("-dbbackend", "mdbx");
