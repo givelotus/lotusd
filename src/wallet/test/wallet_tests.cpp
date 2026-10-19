@@ -153,6 +153,14 @@ BOOST_AUTO_TEST_CASE(native_wallet_ownership_keeps_canonical_transaction) {
     BOOST_CHECK_EQUAL(m_wallet.IsMine(tx->vout[0]), ISMINE_NO);
     BOOST_CHECK(OutputGetCredit(m_wallet, tx->vout[0], ISMINE_ALL) == Amount::zero());
 
+    // Ownership recognition must not advertise a native coin as spendable by
+    // the ordinary wallet's currently legacy-only funder/signer.
+    CCoinControl control;
+    control.m_include_unsafe_inputs = true;
+    std::vector<COutput> available;
+    AvailableCoins(m_wallet, available, &control);
+    BOOST_CHECK(available.empty());
+
     CKey unrelated;
     unrelated.MakeNewKey(true);
     const auto unknown = V0LeafOutput(
@@ -712,6 +720,18 @@ public:
 
     std::unique_ptr<CWallet> wallet;
 };
+
+// The wallet creates legacy version 2 transactions paying legacy outputs.
+BOOST_FIXTURE_TEST_CASE(wallet_creates_legacy_v2_transactions,
+                        ListCoinsTestingSetup) {
+    const CWalletTx &wtx =
+        AddTx(CRecipient{GetScriptForRawPubKey({}), 1 * COIN,
+                         false /* subtract fee */});
+    BOOST_CHECK_EQUAL(wtx.tx->nVersion, 2);
+    for (const CTxOut &out : wtx.tx->vout) {
+        BOOST_CHECK(out.IsLegacy());
+    }
+}
 
 BOOST_FIXTURE_TEST_CASE(ListCoinsTest, ListCoinsTestingSetup) {
     std::string coinbaseAddress = coinbaseKey.GetPubKey().GetID().ToString();
