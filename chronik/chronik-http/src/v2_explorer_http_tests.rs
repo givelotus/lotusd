@@ -77,6 +77,7 @@ impl Fixture {
             flags: if burn { 3 } else { 1 },
             value: u64::MAX,
             token_id: Hash32([9; 32]),
+            state_root: Hash32::default(),
             branches: vec![Hash32([8; 32]), Hash32([7; 32])],
             paths: if burn { vec![] } else { vec![vec![0, 1]] },
         };

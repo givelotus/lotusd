@@ -448,7 +448,7 @@ fn location(l: TxLocation) -> Value {
     json!({"block_id":hex::encode(l.block_id.0),"height":l.height.to_string(),"tx_index":l.tx_index.to_string(),"txid":hex::encode(l.txid.0.0),"txhash":hex::encode(l.txhash.0.0)})
 }
 fn output_fields(out: &Output) -> Value {
-    json!({"flags":out.flags.to_string(),"value":out.value.to_string(),"has_token":out.has_token(),"token_id":hex::encode(out.token_id.0),"is_burn":out.is_burn(),"branches":out.branches.iter().map(|h|hex::encode(h.0)).collect::<Vec<_>>(),"paths":out.paths.iter().map(|p|p.iter().map(u8::to_string).collect::<Vec<_>>()).collect::<Vec<_>>()})
+    json!({"flags":out.flags.to_string(),"value":out.value.to_string(),"has_token":out.has_token(),"token_id":hex::encode(out.token_id.0),"is_burn":out.is_burn(),"has_state":out.has_state(),"state_root":hex::encode(out.state_root.0),"branches":out.branches.iter().map(|h|hex::encode(h.0)).collect::<Vec<_>>(),"paths":out.paths.iter().map(|p|p.iter().map(u8::to_string).collect::<Vec<_>>()).collect::<Vec<_>>()})
 }
 fn record(r: &OutputRecord) -> Value {
     let mut v = output_fields(&r.output);
@@ -1304,6 +1304,7 @@ mod tests {
             flags: 0,
             value: u64::MAX,
             token_id: Hash32([0; 32]),
+            state_root: Hash32::default(),
             branches: vec![],
             paths: vec![],
         };
@@ -1311,6 +1312,16 @@ mod tests {
         assert_eq!(value["value"], u64::MAX.to_string());
         assert_eq!(value["flags"], "0");
         assert_eq!(value["has_token"], false);
+        assert_eq!(value["has_state"], false);
+        assert_eq!(value["state_root"], hex::encode([0; 32]));
+        let stateful = Output {
+            flags: 4,
+            state_root: Hash32([5; 32]),
+            ..out
+        };
+        let value = output_fields(&stateful);
+        assert_eq!(value["has_state"], true);
+        assert_eq!(value["state_root"], hex::encode([5; 32]));
     }
 }
 // Parse and bound the request before any storage observation. Snapshot equality

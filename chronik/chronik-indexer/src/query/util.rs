@@ -13,6 +13,7 @@ use bitcoinsuite_core::{
     ser::BitcoinSer,
     tx::{OutPoint, SpentBy, Tx, TxId},
 };
+use chronik_db::groups::decode_v2_output_script;
 use chronik_db::io::{
     BlockHeight, DbBlock, SpentByEntry, SpentByReader, TxNum, TxReader,
 };
@@ -102,6 +103,7 @@ pub(crate) fn make_tx_proto(params: MakeTxProtoParams<'_>) -> proto::Tx {
             .map(|(output_idx, output)| proto::TxOutput {
                 sats: output.sats,
                 output_script: output.script.to_vec(),
+                state_root: v2_state_root(&output.script),
                 spent_by: params
                     .outputs_spent
                     .spent_by(output_idx as u32)
@@ -276,5 +278,42 @@ impl<'a> OutputsSpent<'a> {
             txid: *txid,
             input_idx: entry.input_idx,
         })
+    }
+}
+
+/// The state root of a Lotus V2 HAS_STATE output, or empty.
+pub(crate) fn v2_state_root(script: &bitcoinsuite_core::script::Script) -> Vec<u8> {
+    decode_v2_output_script(script)
+        .filter(|output| output.has_state())
+        .map(|output| output.state_root.0.to_vec())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod v2_state_root_tests {
+    use bitcoinsuite_core::{
+        lotus_v2::{Hash32, Output},
+        script::Script,
+    };
+
+    use super::v2_state_root;
+
+    #[test]
+    fn reports_only_has_state_roots() {
+        let mut output = Output {
+            flags: 4,
+            value: 7,
+            state_root: Hash32([3; 32]),
+            branches: vec![Hash32([1; 32])],
+            paths: vec![vec![0]],
+            ..Output::default()
+        };
+        let script = Script::new(output.encode().unwrap().into());
+        assert_eq!(v2_state_root(&script), vec![3; 32]);
+        output.flags = 0;
+        output.state_root = Hash32::default();
+        let script = Script::new(output.encode().unwrap().into());
+        assert!(v2_state_root(&script).is_empty());
+        assert!(v2_state_root(&Script::new(vec![0x51].into())).is_empty());
     }
 }
