@@ -132,17 +132,13 @@ bool BCLog::Logger::StartLogging() {
         }
         while (!m_msgs_before_open.empty()) {
             const auto &buflog = m_msgs_before_open.front();
-            if (m_log_format == LogFormat::JSON) {
-                FormatJsonLine(m_line_buf, buflog.str, buflog.category,
-                               buflog.level, buflog.source_loc,
-                               buflog.threadname, buflog.now, buflog.mocktime,
-                               /*continued=*/false, /*ratelimited=*/false);
-            } else {
-                FormatTextLine(m_line_buf, buflog.str, buflog.category,
-                               buflog.level, buflog.source_loc,
-                               buflog.threadname, buflog.now, buflog.mocktime,
-                               /*ratelimited=*/false);
-            }
+            Encode(LogLine{.time = buflog.now,
+                           .mocktime = buflog.mocktime,
+                           .level = buflog.level,
+                           .category = buflog.category,
+                           .thread = buflog.threadname,
+                           .loc = buflog.source_loc,
+                           .message = buflog.str});
             WriteLine(m_line_buf, /*to_file=*/true);
             m_msgs_before_open.pop_front();
         }
@@ -402,38 +398,10 @@ std::string BCLog::Logger::LogLevelToStr(BCLog::Level level) {
     assert(false);
 }
 
-/**
- * Name of a category for the JSON format, without copying it.
- * Uncategorized messages (NONE, or the ALL mask) are "none".
- */
-static std::string_view LogCategoryName(BCLog::LogFlags category) {
-    if (category == BCLog::NONE || category == BCLog::ALL) {
-        return "none";
-    }
+std::string_view BCLog::LogCategoryText(LogFlags category) {
     auto it = LOG_CATEGORIES_BY_FLAG.find(category);
     return it == LOG_CATEGORIES_BY_FLAG.end() ? std::string_view{"unknown"}
                                               : std::string_view{it->second};
-}
-
-/** The "file" field of a JSON record (the source file of the log call) */
-static std::string_view JsonSourceFile(const std::source_location &loc) {
-    return RemovePrefixView(loc.file_name(), "./");
-}
-
-static std::string_view LogLevelName(BCLog::Level level) {
-    switch (level) {
-        case BCLog::Level::Trace:
-            return "trace";
-        case BCLog::Level::Debug:
-            return "debug";
-        case BCLog::Level::Info:
-            return "info";
-        case BCLog::Level::Warning:
-            return "warning";
-        case BCLog::Level::Error:
-            return "error";
-    }
-    assert(false);
 }
 
 std::string LogCategoryToStr(BCLog::LogFlags category) {
@@ -518,266 +486,6 @@ std::optional<BCLog::LogFormat> BCLog::ParseLogFormat(std::string_view str) {
         return LogFormat::JSON;
     }
     return std::nullopt;
-}
-
-namespace {
-//! Characters needing no JSON escaping: printable ASCII but '"', '\\', DEL.
-constexpr std::array<bool, 256> JSON_PLAIN{[] {
-    std::array<bool, 256> plain{};
-    for (int c = 0x20; c < 0x7f; ++c) {
-        plain[c] = c != '"' && c != '\\';
-    }
-    return plain;
-}()};
-
-/**
- * Length of the valid UTF-8 sequence starting at s[0] (a byte >= 0x80), or
- * 0 if it is not one (overlong, surrogate, beyond U+10FFFF or truncated).
- */
-size_t Utf8SequenceLength(std::string_view s) {
-    const auto b{[&](size_t i) { return uint8_t(s[i]); }};
-    const uint8_t c{b(0)};
-    size_t len;
-    uint8_t lo{0x80}, hi{0xbf};
-    if (c >= 0xc2 && c <= 0xdf) {
-        len = 2;
-    } else if (c >= 0xe0 && c <= 0xef) {
-        len = 3;
-        if (c == 0xe0) {
-            lo = 0xa0;
-        } else if (c == 0xed) {
-            hi = 0x9f;
-        }
-    } else if (c >= 0xf0 && c <= 0xf4) {
-        len = 4;
-        if (c == 0xf0) {
-            lo = 0x90;
-        } else if (c == 0xf4) {
-            hi = 0x8f;
-        }
-    } else {
-        return 0;
-    }
-    if (s.size() < len || b(1) < lo || b(1) > hi) {
-        return 0;
-    }
-    for (size_t i = 2; i < len; ++i) {
-        if (b(i) < 0x80 || b(i) > 0xbf) {
-            return 0;
-        }
-    }
-    return len;
-}
-
-void AppendDigits(std::string &out, uint32_t value, int width) {
-    char buf[10];
-    for (int i = width - 1; i >= 0; --i) {
-        buf[i] = char('0' + value % 10);
-        value /= 10;
-    }
-    out.append(buf, width);
-}
-
-/** RFC 3339 UTC time, e.g. 2026-10-19T12:34:56.123456Z */
-void AppendRfc3339(std::string &out, SystemClock::time_point tp,
-                   bool with_micros) {
-    const auto secs{std::chrono::floor<std::chrono::seconds>(tp)};
-    const auto days{std::chrono::floor<std::chrono::days>(secs)};
-    const std::chrono::year_month_day ymd{days};
-    const std::chrono::hh_mm_ss hms{secs - days};
-    AppendDigits(out, uint32_t(std::clamp(int{ymd.year()}, 0, 9999)), 4);
-    out += '-';
-    AppendDigits(out, unsigned{ymd.month()}, 2);
-    out += '-';
-    AppendDigits(out, unsigned{ymd.day()}, 2);
-    out += 'T';
-    AppendDigits(out, uint32_t(hms.hours().count()), 2);
-    out += ':';
-    AppendDigits(out, uint32_t(hms.minutes().count()), 2);
-    out += ':';
-    AppendDigits(out, uint32_t(hms.seconds().count()), 2);
-    if (with_micros) {
-        out += '.';
-        AppendDigits(
-            out,
-            uint32_t(
-                std::chrono::duration_cast<std::chrono::microseconds>(tp - secs)
-                    .count()),
-            6);
-    }
-    out += 'Z';
-}
-} // namespace
-
-void BCLog::AppendJsonEscaped(std::string &out, std::string_view str) {
-    static constexpr char HEX[]{"0123456789abcdef"};
-    size_t i{0};
-    while (i < str.size()) {
-        // Copy runs of plain characters at once.
-        size_t run{i};
-        while (run < str.size() && JSON_PLAIN[uint8_t(str[run])]) {
-            ++run;
-        }
-        out.append(str.data() + i, run - i);
-        i = run;
-        if (i == str.size()) {
-            break;
-        }
-        const uint8_t c{uint8_t(str[i])};
-        if (c >= 0x80) {
-            const size_t len{Utf8SequenceLength(str.substr(i))};
-            if (len) {
-                out.append(str.data() + i, len);
-                i += len;
-            } else {
-                // U+FFFD REPLACEMENT CHARACTER for each invalid byte
-                out.append("\xef\xbf\xbd");
-                ++i;
-            }
-            continue;
-        }
-        switch (c) {
-            case '"':
-                out.append("\\\"");
-                break;
-            case '\\':
-                out.append("\\\\");
-                break;
-            case '\n':
-                out.append("\\n");
-                break;
-            case '\r':
-                out.append("\\r");
-                break;
-            case '\t':
-                out.append("\\t");
-                break;
-            default: {
-                const char esc[6]{'\\', 'u',         '0',
-                                  '0',  HEX[c >> 4], HEX[c & 0xf]};
-                out.append(esc, sizeof(esc));
-            }
-        }
-        ++i;
-    }
-}
-
-std::string_view BCLog::BareFunctionName(std::string_view signature) {
-    // "void CConnman::DumpAddresses(int) const" -> "CConnman::DumpAddresses"
-    const size_t close{signature.rfind(')')};
-    if (close == std::string_view::npos) {
-        return signature;
-    }
-    // The parameter list's '(' (skipping nested parentheses)
-    int depth{0};
-    size_t open{close};
-    while (true) {
-        const char c{signature[open]};
-        depth += c == ')' ? 1 : c == '(' ? -1 : 0;
-        if (depth == 0 || open == 0) {
-            break;
-        }
-        --open;
-    }
-    // The name ends there; it starts after the last space outside brackets
-    // (before it: the return type).
-    size_t start{open};
-    depth = 0;
-    while (start > 0) {
-        const char c{signature[start - 1]};
-        if (c == ')' || c == '>') {
-            ++depth;
-        } else if (c == '(' || c == '<') {
-            --depth;
-        } else if (c == ' ' && depth == 0) {
-            break;
-        }
-        --start;
-    }
-    return signature.substr(start, open - start);
-}
-
-void BCLog::Logger::FormatJsonLine(std::string &out, std::string_view msg,
-                                   LogFlags category, Level level,
-                                   const std::source_location &source_loc,
-                                   std::string_view threadname,
-                                   SystemClock::time_point now,
-                                   std::chrono::seconds mocktime,
-                                   bool continued, bool ratelimited) const {
-    out.clear();
-    out += '{';
-    if (m_log_timestamps) {
-        out += "\"time\":\"";
-        AppendRfc3339(out, now, /*with_micros=*/true);
-        out += "\",";
-    }
-    out += "\"level\":\"";
-    out += LogLevelName(level);
-    out += "\",\"category\":\"";
-    out += LogCategoryName(category);
-    out += "\",\"thread\":\"";
-    AppendJsonEscaped(out, threadname.empty() ? "unknown" : threadname);
-    out += "\",\"message\":\"";
-    if (!msg.empty() && msg.back() == '\n') {
-        msg.remove_suffix(1);
-    }
-    AppendJsonEscaped(out, msg);
-    out += '"';
-    if (mocktime > 0s) {
-        out += ",\"mocktime\":\"";
-        AppendRfc3339(out, SystemClock::time_point{mocktime},
-                      /*with_micros=*/false);
-        out += '"';
-    }
-    if (continued) {
-        out += ",\"continued\":true";
-    }
-    if (ratelimited) {
-        out += ",\"ratelimited\":true";
-    }
-    if (m_log_sourcelocations) {
-        out += ",\"source\":{\"file\":\"";
-        AppendJsonEscaped(out, JsonSourceFile(source_loc));
-        out += "\",\"line\":";
-        char num[16];
-        const auto res{
-            std::to_chars(num, num + sizeof(num), source_loc.line())};
-        out.append(num, res.ptr);
-        out += ",\"function\":\"";
-        AppendJsonEscaped(out, BareFunctionName(source_loc.function_name()));
-        out += "\"}";
-    }
-    out += "}\n";
-}
-
-/** Append GetLogPrefix(category, level) to out, without allocating */
-void BCLog::Logger::AppendLogPrefix(std::string &out, LogFlags category,
-                                    Level level) const {
-    if (category == LogFlags::NONE) {
-        category = LogFlags::ALL;
-    }
-    const bool has_category{m_always_print_category_level ||
-                            category != LogFlags::ALL};
-    // If there is no category, Info is implied
-    if (!has_category && level == Level::Info) {
-        return;
-    }
-    out += '[';
-    if (has_category) {
-        const auto it{LOG_CATEGORIES_BY_FLAG.find(category)};
-        if (it != LOG_CATEGORIES_BY_FLAG.end()) {
-            out += it->second;
-        }
-    }
-    if (m_always_print_category_level || !has_category ||
-        level != Level::Debug) {
-        // If there is a category, Debug is implied, so don't add the level
-        if (has_category) {
-            out += ':';
-        }
-        out += LogLevelName(level);
-    }
-    out += "] ";
 }
 
 std::string BCLog::Logger::GetLogPrefix(BCLog::LogFlags category,
@@ -893,63 +601,19 @@ BCLog::LogRateLimiter::Status BCLog::LogRateLimiter::Consume(
     return Status::NEWLY_SUPPRESSED;
 }
 
-void BCLog::Logger::FormatTextLine(std::string &out, std::string_view msg,
-                                   LogFlags category, Level level,
-                                   const std::source_location &source_loc,
-                                   std::string_view threadname,
-                                   SystemClock::time_point now,
-                                   std::chrono::seconds mocktime,
-                                   bool ratelimited) const {
-    out.clear();
-    if (ratelimited) {
-        // To avoid confusion caused by dropped log messages when debugging
-        // an issue, lines are prefixed with "[*]" when there are any
-        // suppressed source locations.
-        out += "[*] ";
+void BCLog::Logger::Encode(const LogLine &line) {
+    if (!m_encoder || m_encoder_format != m_log_format) {
+        m_encoder = MakeLogEncoder(m_log_format);
+        m_encoder_format = m_log_format;
     }
-    if (m_log_timestamps) {
-        AppendRfc3339(out, now, m_log_time_micros);
-        if (mocktime > 0s) {
-            out += " (mocktime: ";
-            AppendRfc3339(out, SystemClock::time_point{mocktime},
-                          /*with_micros=*/false);
-            out += ')';
-        }
-        out += ' ';
-    }
-    if (m_log_threadnames) {
-        out += '[';
-        out += threadname.empty() ? "unknown" : threadname;
-        out += "] ";
-    }
-    if (m_log_sourcelocations) {
-        out += '[';
-        out += JsonSourceFile(source_loc);
-        out += ':';
-        char num[16];
-        const auto res{
-            std::to_chars(num, num + sizeof(num), source_loc.line())};
-        out.append(num, res.ptr);
-        out += "] [";
-        out += source_loc.function_name();
-        out += "] ";
-    }
-    AppendLogPrefix(out, category, level);
-    // Escape control characters except newline ('\n') in C syntax, as
-    // LogEscapeMessage does; copy runs of other characters at once.
-    size_t run{0};
-    for (size_t i = 0; i < msg.size(); ++i) {
-        const uint8_t ch{uint8_t(msg[i])};
-        if ((ch >= 32 || ch == '\n') && ch != '\x7f') {
-            continue;
-        }
-        out.append(msg.data() + run, i - run);
-        static constexpr char HEX[]{"0123456789abcdef"};
-        const char esc[4]{'\\', 'x', HEX[ch >> 4], HEX[ch & 0xf]};
-        out.append(esc, sizeof(esc));
-        run = i + 1;
-    }
-    out.append(msg.data() + run, msg.size() - run);
+    const LogOptions opts{
+        .timestamps = m_log_timestamps,
+        .time_micros = m_log_time_micros,
+        .threadnames = m_log_threadnames,
+        .sourcelocations = m_log_sourcelocations,
+        .always_print_category_level = m_always_print_category_level,
+    };
+    m_encoder->Encode(line, opts, m_line_buf);
 }
 
 void BCLog::Logger::BufferLog(std::string_view str,
@@ -1214,7 +878,6 @@ void BCLog::Logger::WriteLine(const std::string &line, bool to_file) {
 }
 
 void BCLog::Logger::WriteRecord(LogRecord &rec) {
-    const bool ratelimited{(rec.flags & LogRecord::SUPPRESSIONS) != 0};
     std::string *spill{nullptr};
     std::string_view msg;
     if (rec.flags & LogRecord::SPILLED) {
@@ -1224,16 +887,17 @@ void BCLog::Logger::WriteRecord(LogRecord &rec) {
         msg = std::string_view{reinterpret_cast<const char *>(rec.payload),
                                rec.size};
     }
-    const SystemClock::time_point now{std::chrono::microseconds{rec.time_us}};
-    const std::chrono::seconds mocktime{rec.mocktime_s};
-    if (m_log_format == LogFormat::JSON) {
-        FormatJsonLine(m_line_buf, msg, rec.category, rec.level, rec.loc,
-                       rec.thread, now, mocktime,
-                       rec.flags & LogRecord::CONTINUED, ratelimited);
-    } else {
-        FormatTextLine(m_line_buf, msg, rec.category, rec.level, rec.loc,
-                       rec.thread, now, mocktime, ratelimited);
-    }
+    Encode(LogLine{
+        .time = SystemClock::time_point{std::chrono::microseconds{rec.time_us}},
+        .mocktime = std::chrono::seconds{rec.mocktime_s},
+        .level = rec.level,
+        .category = rec.category,
+        .thread = rec.thread,
+        .loc = rec.loc,
+        .message = msg,
+        .continued = (rec.flags & LogRecord::CONTINUED) != 0,
+        .ratelimited = (rec.flags & LogRecord::SUPPRESSIONS) != 0,
+    });
     delete spill;
     WriteLine(m_line_buf, !(rec.flags & LogRecord::NO_FILE));
 }
@@ -1314,15 +978,13 @@ bool BCLog::Logger::DrainLocked() {
                 "Logging could not keep up: %d debug/info log lines were "
                 "dropped (%d in total).\n",
                 dropped - m_dropped_reported, dropped)};
-            if (m_log_format == LogFormat::JSON) {
-                FormatJsonLine(m_line_buf, msg, LogFlags::ALL, Level::Warning,
-                               std::source_location::current(), "logger", now,
-                               GetMockTime(), false, false);
-            } else {
-                FormatTextLine(m_line_buf, msg, LogFlags::ALL, Level::Warning,
-                               std::source_location::current(), "logger", now,
-                               GetMockTime(), false);
-            }
+            Encode(LogLine{.time = now,
+                           .mocktime = GetMockTime(),
+                           .level = Level::Warning,
+                           .category = LogFlags::ALL,
+                           .thread = "logger",
+                           .loc = std::source_location::current(),
+                           .message = msg});
             WriteLine(m_line_buf, /*to_file=*/true);
             m_dropped_reported = dropped;
             wrote = true;
