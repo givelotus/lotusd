@@ -36,9 +36,9 @@ cases = [
     ("7d", (b"a"*3, b"b"*100, number(0)), 0, 0, False),
     ("4e69796a4e", (), 0, 0, False),
     ("4e697a6a", (), 0, 0, False),
-    ("67794e6b6a", (), 1, 0, False),
-    ("674e6b6a", (), 1, 0, False),
-    ("6768796a796a", (), 3, 4, False),
+    ("c969794e6b6a", (), 1, 0, False),
+    ("c9694e6b6a", (), 1, 0, False),
+    ("c969ca69796a796a", (), 3, 4, False),
     ("00e7", (), 0, 0, True),
     ("e7", (number(0),), 0, 0, True),
     ("f0", (), 0, 0, False),
@@ -76,7 +76,7 @@ cases = [
     ("00c1", (b"\x11"*32, b"\x33"*32, b"\x22"*64), 0, 0, False),
     ("c0", (), 0, 0, False),
     ("c1", (), 0, 0, False),
-    ("67c06a", (), 2, 0, False),
+    ("c969c06a", (), 2, 0, False),
     # Big-int size propagation and quadratic limb cost scaling (16B..1024B).
     ("8b", (b"\x01" * 64,), 0, 0, True),
     ("a0", (b"\x01" * 32, b"\x02" * 64), 0, 0, True),
@@ -109,7 +109,7 @@ for _ in range(256):
     cases.append((script.hex(), (), 0, 0, False))
 
 arms = ("79", "4e", "b8", "4e7a", "4c00", "4e6b")
-bodies = ("79", "7a", "4e6b", "794e6b", "00614e6b637964", "68796a79")
+bodies = ("79", "7a", "4e6b", "794e6b", "00614e6b637964", "ca69796a79")
 for _ in range(200):
     if rng.getrandbits(1):
         then_arm, else_arm = rng.choice(arms), rng.choice(arms)
@@ -117,7 +117,7 @@ for _ in range(200):
         args = (b"x" * rng.randrange(0, 65),)
         inputs, outputs = 0, 0
     else:
-        script = "67" + rng.choice(bodies) + "6a4e"
+        script = "c969" + rng.choice(bodies) + "6a4e"
         args = (b"x" * rng.randrange(0, 65),)
         inputs, outputs = rng.randrange(0, 5), rng.randrange(0, 5)
     cases.append((script, args, inputs, outputs, False))

@@ -18,7 +18,8 @@ using namespace lotus::v2;
 
 namespace {
 const VmProfile PROFILE{512, 8, 128, 16, 8, 256, 8, 100000};
-VmBytes Hex(const std::string &hex) {
+VmBytes Hex(std::string hex) {
+    hex.erase(std::remove(hex.begin(), hex.end(), ' '), hex.end());
     CHECK(hex.size() % 2 == 0);
     auto digit = [](char c) -> uint8_t {
         if (c >= '0' && c <= '9') return c - '0';
@@ -51,7 +52,7 @@ void FramingAndSuccess() {
     Expect("5e4cfd", VmStatus::AutomaticSuccess);
     Expect("015e4e91", VmStatus::Invalid); // success byte is push payload
     for (const auto &bad : {"0244", "4cfd01005e", "4c015e5e", "4cfd", "4c4b",
-                            "0064", "616a64", "676167646a", "6767676a6a6a"})
+                            "0064", "616a64", "4e69610069646a", "0069006900696a6a6a"})
         Expect(bad, VmStatus::Invalid);
     Expect("bd", VmStatus::Invalid); // CHECKDATASIG underflows; not success
 }
@@ -89,9 +90,63 @@ void Ext2Framing() {
           charged.invocation.status == VmStatus::AutomaticSuccess);
     CHECK(VmExt2(0x12) == 0xff12 && IsVmExt2(VmExt2(0)) && !IsVmExt2(0xff));
 }
+// The P03 registry (docs/lotus-v2/tools/opcodes.json) leaves exactly these
+// 31 single-byte OP_SUCCESS_N; check_opcode_coverage.py checks the registry
+// itself against vm_test/opcode_coverage.json.
+const std::vector<uint8_t> REGISTRY_SUCCESS_BYTES{
+    0x5e, 0x5f, 0x67, 0x68, 0x6d, 0x6e, 0x6f, 0x82, 0x83, 0x84, 0x85,
+    0x86, 0x87, 0x95, 0x96, 0x97, 0xb5, 0xb6, 0xb7, 0xc4, 0xc5, 0xc6,
+    0xc7, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe};
+void RegistryAllocation() {
+    CHECK(REGISTRY_SUCCESS_BYTES.size() == 31);
+    for (unsigned b = 0; b < 255; ++b) { // ff: see Ext2Framing
+        const bool success =
+            std::find(REGISTRY_SUCCESS_BYTES.begin(),
+                      REGISTRY_SUCCESS_BYTES.end(),
+                      b) != REGISTRY_SUCCESS_BYTES.end();
+        // Suffix 4c would be a truncated push if the byte were assigned.
+        const auto result = EvaluateVm(VmBytes{uint8_t(b), 0x4c}, {}, PROFILE);
+        CHECK((result.status == VmStatus::AutomaticSuccess) == success);
+    }
+    // Retired fused loop headers are OP_SUCCESS_103/104.
+    Expect("674c", VmStatus::AutomaticSuccess);
+    Expect("68", VmStatus::AutomaticSuccess);
+    Expect("4e69 67 6a", VmStatus::AutomaticSuccess);
+    // EMITLOG rejects wherever the scan reaches it: alone, before a success
+    // byte, in a skipped arm, after RETURN, inside a loop.
+    for (const auto &bad : {"6c", "6cfe", "6cff00", "00616c644e", "666c",
+                            "4e6c", "00696c6a4e", "0061 4e 63 6c 64 4e"}) {
+        const auto result = EvaluateVm(Hex(bad), {}, PROFILE);
+        CHECK(result.status == VmStatus::Invalid &&
+              result.error == "EMITLOG is invalid on-chain");
+    }
+    Expect("fe6c", VmStatus::AutomaticSuccess); // success scanned first
+    Expect("ff006c", VmStatus::AutomaticSuccess);
+    Expect("016c794e", VmStatus::Success);     // push payload is data
+    // Newly registered bytes are assigned: never success, Unsupported until
+    // their semantics are implemented.
+    for (uint8_t b : {0xc3, 0xde, 0xdf, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf5,
+                      0xf6})
+        CHECK(EvaluateVm(VmBytes{b, 0x4e}, {}, PROFILE).status ==
+              VmStatus::Unsupported);
+    // Cost profiles need a base for every executable assigned byte, but not
+    // for EMITLOG or the EXT2 prefix.
+    VmCostProfile schedule;
+    schedule.max_invocation_cost = 1000;
+    schedule.structural_byte_cost = 1;
+    for (auto &op : schedule.opcode) op = {1, 1, 1};
+    schedule.opcode[0x6c] = {};
+    schedule.opcode[0xff] = {};
+    std::string error;
+    CHECK(ValidateVmCostProfile(PROFILE, schedule, error));
+    schedule.opcode[0xc3] = {};
+    CHECK(!ValidateVmCostProfile(PROFILE, schedule, error) &&
+          error == "missing assigned opcode cost");
+}
 void ControlAndArithmetic() {
     for (const auto &valid :
-         {"4d4e9e00a6", "00696a4e", "4e69614e6b646a4e", "677967794f6b6a666a4e",
+         {"4d4e9e00a6", "00696a4e", "4e69614e6b646a4e",
+          "c96979c969794f6b6a666a4e",
           "4e7a91", "4c004c00914e91"})
         Expect(valid, VmStatus::Success, {}, PROFILE, 1);
     Expect("006179634e64", VmStatus::Success);
@@ -527,15 +582,22 @@ void ChargedAccounting() {
     // still checked. The same body with one input exceeds the cap.
     schedule = IllustrativeCost();
     schedule.max_invocation_cost = 24;
-    auto zero_bound = charge("67794e796a4e", {}, 0);
-    CHECK(zero_bound.charged && zero_bound.accounting_cost == 24 &&
+    schedule.max_invocation_cost = 10000000;
+    const auto zero_cost = charge("0069794e796a4e").accounting_cost;
+    const auto one_cost = charge("4e69794e796a4e").accounting_cost;
+    // Old fused-header charges (24, 76) plus the bound push and ENUMERATE's
+    // 16-byte operand.
+    CHECK(zero_cost == 24 + 34 && one_cost == 76 + 34);
+    schedule.max_invocation_cost = zero_cost;
+    auto zero_bound = charge("0069794e796a4e");
+    CHECK(zero_bound.charged && zero_bound.accounting_cost == zero_cost &&
           zero_bound.invocation.status == VmStatus::Success);
-    auto one_bound = charge("67794e796a4e", {}, 1);
+    auto one_bound = charge("4e69794e796a4e");
     CHECK(!one_bound.charged &&
           one_bound.invocation.status == VmStatus::Invalid);
-    schedule.max_invocation_cost = 76;
-    one_bound = charge("67794e796a4e", {}, 1);
-    CHECK(one_bound.charged && one_bound.accounting_cost == 76 &&
+    schedule.max_invocation_cost = one_cost;
+    one_bound = charge("4e69794e796a4e");
+    CHECK(one_bound.charged && one_bound.accounting_cost == one_cost &&
           one_bound.invocation.status == VmStatus::Success);
     schedule = IllustrativeCost();
     schedule.opcode[0xbb].base = 0;
@@ -1150,6 +1212,7 @@ void BigIntAndZeroPadding() {
 int main() {
     FramingAndSuccess();
     Ext2Framing();
+    RegistryAllocation();
     ControlAndArithmetic();
     StackOpcodes();
     ByteOpcodes();

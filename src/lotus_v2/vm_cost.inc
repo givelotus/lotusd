@@ -94,8 +94,11 @@ void CheckCostProfile(const VmCostProfile &cost, const VmProfile &vm_profile) {
     if (!cost.max_invocation_cost || !cost.structural_byte_cost)
         throw VmFailure("invalid explicit cost profile",
                         VmStatus::OperationalError);
+    // EMITLOG never executes on-chain (the scan rejects it) and EXT2 is a
+    // prefix; neither needs a one-byte cost.
     for (unsigned op = 0; op <= 255; ++op)
-        if (GenesisAssigned(uint8_t(op)) && !cost.opcode[op].base)
+        if (GenesisAssigned(uint8_t(op)) && op != OP_EMITLOG &&
+            op != VM_EXT2_PREFIX && !cost.opcode[op].base)
             throw VmFailure("missing assigned opcode cost", true);
     for (unsigned selector = 0; selector <= 255; ++selector)
         if (GenesisAssignedExt(uint8_t(selector)) &&
@@ -209,8 +212,8 @@ class SizePass {
     const VmCostProfile &schedule;
     const PreparedVmTransaction *prepared;
     size_t script_length;
-    uint16_t input_count;
-    uint16_t output_count;
+    [[maybe_unused]] uint16_t input_count;
+    [[maybe_unused]] uint16_t output_count;
     size_t limit;
     VmCostUnits Worst(VmOpcode op) const {
         VmCostUnits cost = WorstOpCost(op, limit, schedule);
@@ -592,14 +595,12 @@ class SizePass {
                                    MergeSizes(left.exits[d], right.exits[d]));
                 i = ins.end;
                 previous = nullptr;
-            } else if (op >= 0x67 && op <= 0x69) {
+            } else if (op == 0x69) {
                 SizeState entry = starting;
-                if (op == 0x69) {
-                    if (entry.known && !entry.main.empty())
-                        entry.main.pop_back();
-                    else
-                        entry = UnknownSizes();
-                }
+                if (entry.known && !entry.main.empty())
+                    entry.main.pop_back();
+                else
+                    entry = UnknownSizes();
                 SizeState body_start = entry;
                 if (body_start.known) body_start.main.push_back(16);
                 auto inner_entries = entries;
@@ -646,18 +647,12 @@ class SizePass {
                     for (auto &exit_state : body.exits)
                         if (exit_state) exit_state = UnknownSizes();
                 }
-                const auto lit =
-                    op == 0x69 ? LiteralValue(previous) : std::nullopt;
-                const size_t bound = op == 0x67   ? input_count
-                                     : op == 0x68 ? output_count
-                                     : (lit && *lit >= 0 && *lit <= 256)
+                const auto lit = LiteralValue(previous);
+                const size_t bound = (lit && *lit >= 0 && *lit <= 256)
                                          ? static_cast<size_t>(*lit)
                                          : 256;
                 const std::array<size_t, 1> loop_operand{16};
-                part = OpCost(op,
-                              op == 0x69 ? std::span<const size_t>(loop_operand)
-                                         : std::span<const size_t>(),
-                              {}, schedule);
+                part = OpCost(op, loop_operand, {}, schedule);
                 VmCostUnits iter = CostAdd(OpCost(0x6a, {}, {}, schedule),
                                            body.cost, schedule);
                 part = CostAdd(part, CostMul(bound, iter, schedule), schedule);
