@@ -22,8 +22,10 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <source_location>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -34,6 +36,7 @@ static const bool DEFAULT_LOGTIMESTAMPS = true;
 static const bool DEFAULT_LOGTHREADNAMES = false;
 static const bool DEFAULT_LOGSOURCELOCATIONS = false;
 static constexpr bool DEFAULT_LOGLEVELALWAYS = false;
+static constexpr const char *DEFAULT_LOGFORMAT = "text";
 
 extern bool fLogIPs;
 extern const char *const DEFAULT_DEBUGLOGFILE;
@@ -120,6 +123,26 @@ constexpr uint64_t RATELIMIT_MAX_BYTES{1024 * 1024};
 constexpr auto RATELIMIT_WINDOW{1h};
 constexpr bool DEFAULT_LOGRATELIMIT{true};
 
+//! How each log line is written (-logformat)
+enum class LogFormat {
+    //! Human-readable text, with optional prefixes (the historical format)
+    TEXT,
+    //! One JSON object per line, for log shippers (see FormatJsonLine)
+    JSON,
+};
+
+/** Parse a -logformat value ("text" or "json") */
+std::optional<LogFormat> ParseLogFormat(std::string_view str);
+
+/**
+ * Append str to out as the contents of a JSON string (without the quotes).
+ * Quotes, backslashes and control characters (and DEL) are escaped; valid
+ * UTF-8 is copied as is; each byte that is not part of a valid UTF-8
+ * sequence becomes U+FFFD, so the output is always valid JSON and the same
+ * input always gives the same output. Never allocates if out has capacity.
+ */
+void AppendJsonEscaped(std::string &out, std::string_view str);
+
 //! Fixed window rate limiter for logging.
 class LogRateLimiter {
 public:
@@ -181,7 +204,7 @@ public:
     //! Consumes `source_loc`'s available bytes corresponding to the size of the
     //! (formatted) `str` and returns its status.
     [[nodiscard]] Status Consume(const std::source_location &source_loc,
-                                 const std::string &str)
+                                 std::string_view str)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
     //! Resets all usage to zero. Called periodically by the scheduler.
     void Reset() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
@@ -240,6 +263,12 @@ private:
                              SystemClock::time_point now,
                              std::chrono::seconds mocktime) const;
 
+    /**
+     * Line being formatted in JSON mode. Reused, so a line costs no
+     * allocation once the buffer has grown to the longest line seen.
+     */
+    std::string m_line_buf GUARDED_BY(m_cs);
+
     std::string LogTimestampStr(SystemClock::time_point now,
                                 std::chrono::seconds mocktime) const;
 
@@ -261,11 +290,38 @@ public:
     bool m_log_threadnames = DEFAULT_LOGTHREADNAMES;
     bool m_log_sourcelocations = DEFAULT_LOGSOURCELOCATIONS;
     bool m_always_print_category_level = DEFAULT_LOGLEVELALWAYS;
+    LogFormat m_log_format = LogFormat::TEXT;
 
     fs::path m_file_path;
     std::atomic<bool> m_reopen_file{false};
 
     std::string GetLogPrefix(LogFlags category, Level level) const;
+
+    /**
+     * Write one log record as a JSON object followed by a newline into out
+     * (replacing its contents, keeping its capacity). msg is the raw
+     * message; one trailing newline is dropped. Fields, in order:
+     *   ts        RFC 3339 UTC with microseconds (omitted with
+     *             -logtimestamps=0)
+     *   mocktime  RFC 3339 mock time, only when mock time is set
+     *   level     trace, debug, info, warning or error
+     *   category  debug category; "none" for uncategorized messages
+     *   thread    internal thread name ("unknown" if unnamed)
+     *   file, line  source location of the log call
+     *   func      function name, only with -logsourcelocations
+     *   continued true when this record continues a previous record that
+     *             did not end in a newline (only present when true)
+     *   ratelimited true while any source location is rate limited, the
+     *             equivalent of the "[*]" text prefix (only when true)
+     *   msg       the message
+     */
+    void FormatJsonLine(std::string &out, std::string_view msg,
+                        LogFlags category, Level level,
+                        const std::source_location &source_loc,
+                        std::string_view threadname,
+                        SystemClock::time_point now,
+                        std::chrono::seconds mocktime, bool continued,
+                        bool ratelimited) const;
 
     ~Logger();
 
