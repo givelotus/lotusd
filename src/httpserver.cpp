@@ -668,13 +668,71 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
     co_return std::move(*slot->response);
 }
 
+/**
+ * Write a response. On plain TCP, first write directly while the socket
+ * accepts data: a reply that fits in the socket buffer (most of them) then
+ * costs one writev and no trip through the I/O scheduler. Whatever does not
+ * fit is written asynchronously, continuing the same serializer.
+ */
 template <typename Stream>
 static asio::awaitable<boost::system::error_code>
 WriteResponse(Stream &stream, BeastResponse &res) {
-    beast::get_lowest_layer(stream).expires_after(g_server_timeout);
+    http::serializer<false, http::string_body> sr{res};
+    if constexpr (std::is_same_v<Stream, beast::tcp_stream>) {
+        auto &socket{stream.socket()};
+        boost::system::error_code ec;
+        socket.non_blocking(true, ec);
+        while (!ec && !sr.is_done()) {
+            http::write_some(socket, sr, ec);
+        }
+        if (ec != asio::error::would_block) {
+            co_return ec;
+        }
+    }
     auto [ec, n] = co_await http::async_write(
-        stream, res, asio::as_tuple(asio::use_awaitable));
+        stream, sr, asio::as_tuple(asio::use_awaitable));
     co_return ec;
+}
+
+/**
+ * Per-connection -rpcservertimeout enforcement. Instead of re-arming a timer
+ * around every read and write, one timer wakes up about once per timeout and
+ * shuts the socket down if the connection made no progress for that long
+ * while no handler was running. Only used on the connection's strand.
+ */
+struct IdleState {
+    explicit IdleState(const asio::any_io_executor &exec) : timer(exec) {}
+    asio::steady_timer timer;
+    std::chrono::steady_clock::time_point last_activity{
+        std::chrono::steady_clock::now()};
+    //! A handler (or a WebSocket session) is running: never time out
+    bool busy{false};
+    //! The connection is finished: the socket may be gone
+    bool done{false};
+
+    void Touch() { last_activity = std::chrono::steady_clock::now(); }
+};
+
+static asio::awaitable<void> WatchIdle(std::shared_ptr<IdleState> state,
+                                       tcp::socket *socket) {
+    while (!state->done) {
+        if (state->busy) {
+            state->timer.expires_after(g_server_timeout);
+        } else {
+            state->timer.expires_at(state->last_activity + g_server_timeout);
+        }
+        co_await state->timer.async_wait(asio::as_tuple(asio::use_awaitable));
+        if (state->done) {
+            co_return;
+        }
+        if (!state->busy && std::chrono::steady_clock::now() >=
+                                state->last_activity + g_server_timeout) {
+            boost::system::error_code ec;
+            socket->shutdown(tcp::socket::shutdown_both, ec);
+            socket->cancel(ec);
+            co_return;
+        }
+    }
 }
 
 /** Map "/chronik/x?y" to "/x?y" */
@@ -1141,12 +1199,26 @@ template <typename Stream>
 static asio::awaitable<void> ServeHTTP(Stream &stream,
                                        beast::flat_buffer &buffer,
                                        const HTTPConnectionInfo &conn) {
+    // Idle timeout (see IdleState) replaces per-operation stream timeouts.
+    auto &lowest{beast::get_lowest_layer(stream)};
+    lowest.expires_never();
+    auto idle{std::make_shared<IdleState>(co_await asio::this_coro::executor)};
+    asio::co_spawn(idle->timer.get_executor(),
+                   WatchIdle(idle, &lowest.socket()), asio::detached);
+    struct StopWatch {
+        std::shared_ptr<IdleState> state;
+        ~StopWatch() {
+            state->done = true;
+            state->timer.cancel();
+        }
+    } stop_watch{idle};
+
     while (true) {
         http::request_parser<http::string_body> parser;
         parser.header_limit(MAX_HEADERS_SIZE);
         parser.body_limit(g_max_body_size);
 
-        beast::get_lowest_layer(stream).expires_after(g_server_timeout);
+        idle->Touch();
         auto [hdr_ec, hdr_n] = co_await http::async_read_header(
             stream, buffer, parser, asio::as_tuple(asio::use_awaitable));
         if (hdr_ec) {
@@ -1167,6 +1239,7 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             co_return;
         }
 
+        idle->Touch();
         const auto &header{parser.get()};
         if (auto expect{header.find(http::field::expect)};
             expect != header.end() &&
@@ -1205,13 +1278,14 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         const unsigned version{req.version()};
         const bool is_head{req.method() == http::verb::head};
 
+        // Handlers may take arbitrarily long (e.g. long polling), as may
+        // WebSocket sessions.
+        idle->busy = true;
         if (websocket::is_upgrade(req) && !g_reject_requests.load() &&
             co_await TryHandleWebSocketUpgrade(stream, req, conn)) {
             co_return;
         }
 
-        // Handlers may take arbitrarily long (e.g. long polling).
-        beast::get_lowest_layer(stream).expires_never();
         BeastResponse res;
         if (g_chronik_enabled && !g_reject_requests.load() &&
             URIHasPathPrefix(req.target(), CHRONIK_PREFIX)) {
@@ -1239,6 +1313,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
             // Keep Content-Length, send no body.
             res.body().clear();
         }
+        idle->busy = false;
+        idle->Touch();
         const auto ec{co_await WriteResponse(stream, res)};
         g_connections.RemoveRequest();
         if (ec || close) {
