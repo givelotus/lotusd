@@ -29,6 +29,7 @@
 #include <kernel/chainstatemanager_opts.h>
 #include <kernel/cs_main.h>
 #include <node/blockprefetch.h>
+#include <lotus_v2/deferred_checks.h>
 #include <node/blockstorage.h>
 #include <policy/packages.h>
 #include <script/script_error.h>
@@ -729,6 +730,35 @@ class BatchSigCollector;
 } // namespace lotus::v2
 
 /**
+ * The deferred (two-phase) V2 checks of one validation run of one version 7
+ * transaction, shared by the CScriptChecks of its inputs. Each input
+ * completes once, from any thread; the completion that brings the pending
+ * count to zero runs the per-transaction final rules (lotus_v2/
+ * deferred_checks.h). Never reused across runs.
+ */
+class V2DeferredTxChecks {
+public:
+    explicit V2DeferredTxChecks(const CTransaction &tx);
+    V2DeferredTxChecks(const V2DeferredTxChecks &) = delete;
+    V2DeferredTxChecks &operator=(const V2DeferredTxChecks &) = delete;
+
+    lotus::v2::DeferredTxRun &Run() { return m_run; }
+    const lotus::v2::DeferredTxRun &Run() const { return m_run; }
+    //! Completes one input; returns the reject reason when this completion
+    //! failed an inline or final rule.
+    std::optional<std::string> CompleteInput(uint32_t input, bool succeeded,
+                                             lotus::v2::DeferredRecords &&records);
+    //! The reason of the first failed deferred rule, if one failed.
+    std::optional<std::string> RuleFailure() const;
+
+private:
+    std::vector<lotus::v2::Output> m_outputs;
+    lotus::v2::DeferredTxRun m_run;
+    mutable Mutex m_mutex;
+    std::optional<std::string> m_rule_failure GUARDED_BY(m_mutex);
+};
+
+/**
  * Closure representing one script verification.
  * Note that this stores references to the spending transaction.
  *
@@ -752,9 +782,13 @@ private:
     CheckInputsLimiter *pBlockLimitSigChecks;
     std::shared_ptr<const V2ResolvedCoins> m_resolved_coins;
     lotus::v2::BatchSigCollector *m_sig_collector{nullptr};
-    // Transaction-scoped V2 VM effects, owned by the caller that finalizes
-    // the transaction after all of its inputs are checked.
-    lotus::v2::VmTransactionEffects *m_v2_effects{nullptr};
+    // Deferred V2 checks of the whole transaction, shared by the checks of
+    // all its inputs (null: this input is checked on its own and its
+    // deferred records are discarded).
+    std::shared_ptr<V2DeferredTxChecks> m_v2_deferred;
+
+    std::optional<std::pair<ScriptError, std::string>>
+    CheckInput(lotus::v2::DeferredRecords &records);
 
 public:
     CScriptCheck(
@@ -780,8 +814,8 @@ public:
 
     std::optional<std::pair<ScriptError, std::string>> operator()();
 
-    void SetV2Effects(lotus::v2::VmTransactionEffects *effects) {
-        m_v2_effects = effects;
+    void SetV2Deferred(std::shared_ptr<V2DeferredTxChecks> deferred) {
+        m_v2_deferred = std::move(deferred);
     }
 
     ScriptExecutionMetrics GetScriptExecutionMetrics() const { return metrics; }
