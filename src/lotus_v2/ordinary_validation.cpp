@@ -189,6 +189,11 @@ Hash OrdinaryValidationProfileDigest(const OrdinaryCandidateProfile &op) {
         put(cost.per_operand_byte);
         put(cost.per_result_byte);
     }
+    for (const auto &cost : op.vm_cost.ext_opcode) {
+        put(cost.base);
+        put(cost.per_operand_byte);
+        put(cost.per_result_byte);
+    }
     put(op.vm_cost.field_sizes.size());
     for (const auto &[opcode, sizes] : op.vm_cost.field_sizes) {
         put(opcode, 1);

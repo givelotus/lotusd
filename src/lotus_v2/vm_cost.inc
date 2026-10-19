@@ -56,10 +56,11 @@ VmCostUnits RawMul(VmCostUnits a, VmCostUnits b) {
     VmCostUnits result;
     return __builtin_mul_overflow(a, b, &result) ? ~VmCostUnits(0) : result;
 }
-VmCostUnits OpCost(uint8_t op, std::span<const size_t> operands,
+VmCostUnits OpCost(VmOpcode op, std::span<const size_t> operands,
                    std::span<const size_t> results,
                    const VmCostProfile &profile, bool enforce = true) {
-    const auto &formula = profile.opcode[op];
+    const auto &formula = IsVmExt2(op) ? profile.ext_opcode[op & 0xff]
+                                       : profile.opcode[op & 0xff];
     VmCostUnits cost = formula.base;
     for (size_t bound : operands)
         cost = enforce
@@ -75,7 +76,7 @@ VmCostUnits OpCost(uint8_t op, std::span<const size_t> operands,
                    : RawAdd(cost, RawMul(formula.per_result_byte, bound));
     return cost;
 }
-VmCostUnits WorstOpCost(uint8_t op, size_t limit,
+VmCostUnits WorstOpCost(VmOpcode op, size_t limit,
                         const VmCostProfile &profile) {
     std::vector<size_t> operands(6, limit);
     if (op == 0xa0 || op == 0xa1 || op == 0xa2 || op == 0xb2 || op == 0xb3 ||
@@ -95,6 +96,10 @@ void CheckCostProfile(const VmCostProfile &cost, const VmProfile &vm_profile) {
                         VmStatus::OperationalError);
     for (unsigned op = 0; op <= 255; ++op)
         if (GenesisAssigned(uint8_t(op)) && !cost.opcode[op].base)
+            throw VmFailure("missing assigned opcode cost", true);
+    for (unsigned selector = 0; selector <= 255; ++selector)
+        if (GenesisAssignedExt(uint8_t(selector)) &&
+            !cost.ext_opcode[selector].base)
             throw VmFailure("missing assigned opcode cost", true);
     for (const auto &[op, sizes] : cost.field_sizes) {
         if (op != 0xdb && op != 0xdc && op != 0xe6 && op != 0xe7 && op != 0xf0)
@@ -207,7 +212,7 @@ class SizePass {
     uint16_t input_count;
     uint16_t output_count;
     size_t limit;
-    VmCostUnits Worst(uint8_t op) const {
+    VmCostUnits Worst(VmOpcode op) const {
         VmCostUnits cost = WorstOpCost(op, limit, schedule);
         if (op == 0xc0 || op == 0xc1)
             cost = CostAdd(cost, CostMul(
@@ -238,7 +243,7 @@ class SizePass {
     };
     TransferResult Transfer(const Instruction &ins, SizeState state,
                             const Instruction *previous) const {
-        const uint8_t op = ins.op;
+        const VmOpcode op = ins.op;
         if (!state.known) return {UnknownSizes(), Worst(op)};
         auto &main = state.main;
         auto &alt = state.alt;
@@ -547,7 +552,7 @@ class SizePass {
         const Instruction *previous = nullptr;
         for (size_t i = begin; i < end; ++i) {
             const auto &ins = code[i];
-            const uint8_t op = ins.op;
+            const VmOpcode op = ins.op;
             SizeState starting = out.state ? *out.state : UnknownSizes();
             VmCostUnits part = 0, worst = 0;
             if (op == 0x61 || op == 0x62) {
