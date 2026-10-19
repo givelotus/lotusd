@@ -131,6 +131,7 @@ class HTTPMetricsTest(BitcoinTestFramework):
         assert_equal(samples[("lotus_metrics_dropped_samples_total", ())], 0)
         assert_equal(samples[("lotus_chain_tip_height", ())], 0)
         assert_equal(samples[("lotus_initial_block_download", ())], 1)
+        assert samples[("lotus_process_start_time_seconds", ())] > 1e9
 
         self.log.info("Peers: node1 over WebSocket, node1 over TCP")
         self.wait_until(
