@@ -125,6 +125,10 @@ $PY contrib/chronik-parity/compare.py DIR/cli.A.jsonl DIR/cli.B.jsonl --report r
     spending ALP tokens, and a mint with 2 batons.
 - **Conflicts.** A mempool tx and its child are double-spent by a block
   (`generateblock`) every few rounds.
+- **Canonical-order spends.** Every few rounds a block (`generateblock`)
+  holds a chain of 2–4 txs in which each child's txid sorts before its
+  parent's, so in the block's canonical order a tx spends a coin created
+  later in the same block.
 - **Reorgs.** Each run includes four:
   - R1: `invalidateblock` on all nodes, then a longer fork and
     `reconsiderblock`.
