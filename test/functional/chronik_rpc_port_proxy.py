@@ -12,6 +12,7 @@ from test_framework.util import (
     assert_equal,
     chronik_sub_to_blocks,
     chronik_port,
+    p2p_port,
     rpc_port,
 )
 
@@ -200,6 +201,21 @@ class ChronikRpcPortProxyTest(BitcoinTestFramework):
         conn.request("POST", "/", '{"method": "getblockcount"}')
         assert_equal(conn.getresponse().status, 401)
         conn.close()
+
+        self.log.info("Chronik is served on -publicbind listeners, RPC is not")
+        public_port = p2p_port(40)
+        self.restart_node(0, ["-chronik", f"-publicbind=127.0.0.1:{public_port}"])
+        public = ChronikClient("127.0.0.1/chronik", public_port)
+        assert_equal(public.blockchain_info().ok().tip_height, 122)
+        conn = http.client.HTTPConnection("127.0.0.1", public_port)
+        conn.request("POST", "/", '{"method": "getblockcount"}')
+        assert_equal(conn.getresponse().status, 404)
+        conn.close()
+        ws = public.ws()
+        chronik_sub_to_blocks(ws, node)
+        tip = self.generate(node, 1)[0]
+        assert_equal(ws.recv().block.block_hash[::-1].hex(), tip)
+        ws.close()
 
         self.log.info("-chronikpubliconrpcport=0 disables /chronik on the RPC port")
         self.restart_node(0, ["-chronik", "-chronikpubliconrpcport=0"])
