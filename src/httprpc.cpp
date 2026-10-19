@@ -138,13 +138,26 @@ static bool multiUserAuthorized(std::string strUserPass) {
     return false;
 }
 
-static bool RPCAuthorized(const std::string &strAuth,
-                          std::string &strAuthUsernameOut) {
+bool CheckRPCCredentials(const std::string &strUserPass,
+                         std::string &strAuthUsernameOut) {
     // Belt-and-suspenders measure if InitRPCAuthentication was not called.
     if (strRPCUserColonPass.empty()) {
         return false;
     }
 
+    if (strUserPass.find(':') != std::string::npos) {
+        strAuthUsernameOut = strUserPass.substr(0, strUserPass.find(':'));
+    }
+
+    // Check if authorized under single-user field
+    if (TimingResistantEqual(strUserPass, strRPCUserColonPass)) {
+        return true;
+    }
+    return multiUserAuthorized(strUserPass);
+}
+
+static bool RPCAuthorized(const std::string &strAuth,
+                          std::string &strAuthUsernameOut) {
     if (strAuth.substr(0, 6) != "Basic ") {
         return false;
     }
@@ -157,16 +170,19 @@ static bool RPCAuthorized(const std::string &strAuth,
         return false;
     }
     strUserPass.assign(userpass_data->begin(), userpass_data->end());
+    return CheckRPCCredentials(strUserPass, strAuthUsernameOut);
+}
 
-    if (strUserPass.find(':') != std::string::npos) {
-        strAuthUsernameOut = strUserPass.substr(0, strUserPass.find(':'));
+/**
+ * Reply 401 to a request without (valid) credentials. Requests from the
+ * wallet PWA (they carry X-CSRF-Token) get no WWW-Authenticate, so that the
+ * browser does not prompt for a password: the app shows its login screen.
+ */
+static void ReplyUnauthorized(HTTPRequest *req) {
+    if (!req->GetHeader("x-csrf-token").first) {
+        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
     }
-
-    // Check if authorized under single-user field
-    if (TimingResistantEqual(strUserPass, strRPCUserColonPass)) {
-        return true;
-    }
-    return multiUserAuthorized(strUserPass);
+    req->WriteReply(HTTP_UNAUTHORIZED);
 }
 
 static bool checkCORS(HTTPRequest *req) {
@@ -304,16 +320,19 @@ bool HTTPRPCRequestProcessor::ProcessHTTPRequest(HTTPRequest *req) {
     }
     // Check authorization
     std::pair<bool, std::string> authHeader = req->GetHeader("authorization");
-    if (!authHeader.first) {
-        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
-        req->WriteReply(HTTP_UNAUTHORIZED);
-        return false;
-    }
-
     JSONRPCRequest jreq;
     jreq.context = context;
     jreq.peerAddr = req->GetPeer().ToStringAddrPort();
-    if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
+    if (!authHeader.first) {
+        // Without Basic credentials, only a wallet PWA browser session
+        // (cookie, Origin and CSRF token) can authorize the request.
+        auto user{walletpwa::AuthorizeWalletPwaSession(req)};
+        if (!user) {
+            ReplyUnauthorized(req);
+            return false;
+        }
+        jreq.authUser = std::move(*user);
+    } else if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
         LogPrintf("ThreadRPCServer incorrect password attempt from %s\n",
                   jreq.peerAddr);
 
@@ -418,16 +437,19 @@ HTTPRPCRequestProcessor::ProcessHTTPRequestAsync(
     }
 
     std::pair<bool, std::string> authHeader = req->GetHeader("authorization");
-    if (!authHeader.first) {
-        req->WriteHeader("WWW-Authenticate", WWW_AUTH_HEADER_DATA);
-        req->WriteReply(HTTP_UNAUTHORIZED);
-        co_return false;
-    }
-
     JSONRPCRequest jreq;
     jreq.context = context;
     jreq.peerAddr = req->GetPeer().ToStringAddrPort();
-    if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
+    if (!authHeader.first) {
+        // Without Basic credentials, only a wallet PWA browser session
+        // (cookie, Origin and CSRF token) can authorize the request.
+        auto user{walletpwa::AuthorizeWalletPwaSession(req)};
+        if (!user) {
+            ReplyUnauthorized(req);
+            co_return false;
+        }
+        jreq.authUser = std::move(*user);
+    } else if (!RPCAuthorized(authHeader.second, jreq.authUser)) {
         LogPrintf("ThreadRPCServer incorrect password attempt from %s\n",
                   jreq.peerAddr);
 
@@ -583,6 +605,10 @@ bool StartHTTPRPC(HTTPRPCRequestProcessor &httpRPCRequestProcessor) {
         [&httpRPCRequestProcessor](
             Config &, HTTPRequest *req, const std::string &,
             boost::asio::any_io_executor executor) -> boost::asio::awaitable<bool> {
+        // GET /wallet/<path> is the wallet PWA; everything else is JSON-RPC.
+        if (walletpwa::MaybeServeWalletPwa(req)) {
+            co_return true;
+        }
         co_return co_await HTTPRPCRequestProcessor::DelegateHTTPRequestAsync(
             &httpRPCRequestProcessor, req, std::move(executor));
     };

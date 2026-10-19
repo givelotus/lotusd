@@ -10,6 +10,7 @@ add_custom_target(check-devtools)
 
 set(DEVTOOLS_TESTS_PYTHON
   ./chainparams/test_make_chainparams.py
+  ./test_embed_wallet_pwa.py
 )
 
 foreach(TEST ${DEVTOOLS_TESTS_PYTHON})
