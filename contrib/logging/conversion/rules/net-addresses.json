@@ -1,0 +1,231 @@
+{
+  "schema": 1,
+  "batch": "net-addresses",
+  "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer.",
+  "files": [
+    {
+      "path": "src/net.cpp",
+      "rules": [
+        {
+          "id": "net-addresses-net-1",
+          "old": "LogDebug(BCLog::NET, \"Advertising address %s to peer=%d\\n\",\n                 addrLocal.ToStringAddrPort(), node.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_address_advertised\",\n                 \"Advertising address {addr} to peer={peer_id}\")\n            .Field(BCLog::LogField::Addr,\n                   static_cast<const CService &>(addrLocal))\n            .Field(BCLog::LogField::PeerId, node.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Advertising address %s to peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "addrLocal.ToStringAddrPort()",
+              "node.GetId()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-2",
+          "old": "LogPrintf(\"RemoveLocal(%s)\\n\", addr.ToStringAddrPort())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"local_address_removed\", \"RemoveLocal({addr})\")\n        .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "RemoveLocal(%s)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-3",
+          "old": "LogPrintf(\"Failed to open new connection, already connected\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"connection_already_present\",\n                         \"Failed to open new connection, already connected\")",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Failed to open new connection, already connected\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-5",
+          "old": "LogDebug(BCLog::NET,\n                 \"connection from %s dropped: not accepting new connections\\n\",\n                 addr.ToStringAddrPort())",
+          "replacement": "LogEvent(\n            BCLog::NET, \"connection_not_accepting\",\n            \"connection from {addr} dropped: not accepting new connections\")\n            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "connection from %s dropped: not accepting new connections\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-6",
+          "old": "LogPrintf(\"connection from %s dropped: non-selectable socket\\n\",\n                  addr.ToStringAddrPort())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"connection_socket_unselectable\",\n                     \"connection from {addr} dropped: non-selectable socket\")\n            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "connection from %s dropped: non-selectable socket\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-7",
+          "old": "LogDebug(BCLog::NET,\n                 \"connection from %s: unable to set TCP_NODELAY, continuing \"\n                 \"anyway\\n\",\n                 addr.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::NET, \"connection_tcp_nodelay_failed\",\n                 \"connection from {addr}: unable to set TCP_NODELAY, \"\n                 \"continuing anyway\")\n            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "connection from %s: unable to set TCP_NODELAY, continuing anyway\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-8",
+          "old": "LogDebug(BCLog::NET, \"connection from %s dropped (banned)\\n\",\n                 addr.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::NET, \"connection_address_banned\",\n                 \"connection from {addr} dropped (banned)\")\n            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "connection from %s dropped (banned)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-9",
+          "old": "LogDebug(BCLog::NET, \"connection from %s dropped (discouraged)\\n\",\n                 addr.ToStringAddrPort())",
+          "replacement": "LogEvent(BCLog::NET, \"connection_address_discouraged\",\n                 \"connection from {addr} dropped (discouraged)\")\n            .Field(BCLog::LogField::Addr, static_cast<const CService &>(addr))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "connection from %s dropped (discouraged)\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addr.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-10",
+          "old": "LogDebug(BCLog::NET, \"failed to find an eviction candidate - \"\n                                 \"connection dropped (full)\\n\")",
+          "replacement": "LogEvent(BCLog::NET, \"connection_slots_full\",\n                     \"failed to find an eviction candidate - connection \"\n                     \"dropped (full)\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "failed to find an eviction candidate - connection dropped (full)\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-11",
+          "old": "LogPrintf(\"Loading addresses from DNS seed %s\\n\", seed)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seed_loading\",\n                     \"Loading addresses from DNS seed {name}\")\n            .Field(BCLog::LogField::Name, seed)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Loading addresses from DNS seed %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "seed"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-12",
+          "old": "LogPrintf(\"Fixed seeds are disabled\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"fixed_seeds_disabled\",\n                     \"Fixed seeds are disabled\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Fixed seeds are disabled\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-13",
+          "old": "LogPrintf(\"Bound to %s\\n\", addrBind.ToStringAddrPort())",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"network_listener_bound\", \"Bound to {addr}\")\n        .Field(BCLog::LogField::Addr, static_cast<const CService &>(addrBind))",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Bound to %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "addrBind.ToStringAddrPort()"
+            ]
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        },
+        {
+          "id": "net-addresses-net-14",
+          "old": "LogPrintf(\"DNS seeding disabled\\n\")",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"dns_seeding_disabled\",\n                     \"DNS seeding disabled\")",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "DNS seeding disabled\n",
+            "specifiers": [],
+            "arguments": []
+          },
+          "review_note": "Convert fourteen address discovery, listener and connection-admission diagnostics. Pack the CService base instead of formatting endpoint strings on the caller; retain privacy branches, original levels and human wording. Uses the repaired full WSS address packer."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include typed endpoint value adapters",
+          "old": "#include <logging.h>\n#include <netaddress.h>\n",
+          "new": "#include <logging.h>\n#include <logging/values.h>\n#include <netaddress.h>\n"
+        },
+        {
+          "purpose": "Preserve reviewed local indentation and line wrapping only",
+          "old": "            if (pnode) {\n                LogInfoEvent(BCLog::ALL, \"connection_already_present\",\n                         \"Failed to open new connection, already connected\");\n                return nullptr;\n",
+          "new": "            if (pnode) {\n                LogInfoEvent(\n                    BCLog::ALL, \"connection_already_present\",\n                    \"Failed to open new connection, already connected\");\n                return nullptr;\n"
+        }
+      ]
+    }
+  ]
+}
