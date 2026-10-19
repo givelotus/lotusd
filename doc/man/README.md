@@ -23,17 +23,6 @@ installation target. They will be copied to your installation directory as well:
 ninja install-manpages
 ```
 
-## Headless generation
-
-Generating the man page for `bitcoin-qt` will require a X server. If you are
-running headlessly, you can use the `xfvb-run` utility included in the `xvfb`
-package:
-
-```shell
-sudo apt-get install xvfb
-xvfb-run ninja install-manpages
-```
-
 ## Generate as HTML
 
 It is possible to convert the man pages to HTML using `pandoc`. Version 2.4 or

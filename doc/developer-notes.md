@@ -242,9 +242,6 @@ configuration options and toggled while bitcoind is running with the `logging`
 RPC.  For instance, launching bitcoind with `-debug` or `-debug=1` will turn on
 all log categories and `-loglevel=trace` will turn on all log severity levels.
 
-The Qt code routes `qDebug()` output to debug.log under category "qt": run with `-debug=qt`
-to see it.
-
 ### Writing tests
 
 For details on unit tests, see [Compiling/running unit tests](unit-tests.md).
@@ -947,7 +944,7 @@ Header Inclusions
 
   - Header inclusions should use angle brackets (`#include <>`).
   The include path should be relative to the `src` folder.
-  e.g.: `#include <qt/test/guiutiltests.h>`
+  e.g.: `#include <wallet/test/util.h>`
 
   - Native C++ headers should be preferred over C compatibility headers.
   e.g.: use `<cstdint>` instead of `<stdint.h>`
@@ -971,28 +968,6 @@ All headers should be lexically ordered inside their block.
 ...
 #endif // BITCOIN_FOO_BAR_H
 ```
-
-GUI
------
-
-- Do not display or manipulate dialogs in model code (classes `*Model`)
-
-  - *Rationale*: Model classes pass through events and data from the core, they
-    should not interact with the user. That's where View classes come in. The converse also
-    holds: try to not directly access core data structures from Views.
-
-- Avoid adding slow or blocking code in the GUI thread. In particular do not
-  add new `interface::Node` and `interface::Wallet` method calls, even if they
-  may be fast now, in case they are changed to lock or communicate across
-  processes in the future.
-
-  Prefer to offload work from the GUI thread to worker threads (see
-  `RPCExecutor` in console code as an example) or take other steps (see
-  <https://doc.qt.io/archives/qq/qq27-responsive-guis.html>) to keep the GUI
-  responsive.
-
-  - *Rationale*: Blocking the GUI thread can increase latency, and lead to
-    hangs and deadlocks.
 
 Unit Tests
 -----------

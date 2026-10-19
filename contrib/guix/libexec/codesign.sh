@@ -82,11 +82,8 @@ mkdir -p "$DISTSRC"
             done
             ;;
         *darwin*)
-            # Apply detached codesignatures to dist/ (in-place)
-            signapple apply dist/Bitcoin-Qt.app codesignatures/osx/dist
-
-            # Make a .zip from dist/
-            zip "${OUTDIR}/${DISTNAME}-${HOST}.zip" dist/*
+            # There is no macOS application bundle to sign.
+            echo "no macOS app to sign"
             ;;
         *)
             exit 1
