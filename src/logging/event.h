@@ -343,6 +343,8 @@ void AppendQuotedText(std::string &out, std::string_view text);
 /**
  * The event's human message: its template with {field} placeholders
  * replaced by the fields' text values (or the event name if it has none).
+ * FLOAT fields also accept :f/:g or :.Nf/:.Ng (precision 0..18), formatted
+ * only on the consumer. Numeric structured fields retain their raw value.
  * Bit i of *used is set if the template used field i.
  */
 void AppendEventMessage(std::string &out, const LogEventSite &site,
