@@ -15,6 +15,7 @@
 #include <consensus/validation.h>
 #include <logging.h>
 #include <lotus_v2/fee_hysteresis.h>
+#include <node/metrics.h>
 #include <node/snapshot.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
@@ -229,6 +230,7 @@ CTxMemPool::txiter CTxMemPool::addUnchecked(
 
     nTransactionsUpdated++;
     totalTxSize += entry->GetTxSize();
+    node::SetMempoolMetrics(mapTx.size(), totalTxSize);
     m_total_fee += entry->GetFee();
     MarkSnapshotEntryChanged(tx->GetId());
     node::PublishMempoolSnapshot(*this);
@@ -287,6 +289,8 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason) {
     RemoveUnbroadcastTx(txid, true);
 
     totalTxSize -= (*it)->GetTxSize();
+    // (one entry is about to leave mapTx)
+    node::SetMempoolMetrics(mapTx.size() - 1, totalTxSize);
     m_total_fee -= (*it)->GetFee();
     cachedInnerUsage -= (*it)->DynamicMemoryUsage();
     cachedInnerUsage -=
@@ -444,6 +448,7 @@ void CTxMemPool::_clear() {
     m_utxo_fast_filter.ClearMempool();
     totalTxSize = 0;
     m_total_fee = Amount::zero();
+    node::SetMempoolMetrics(0, 0);
     cachedInnerUsage = 0;
     lastRollingFeeUpdate = GetTime();
     blockSinceLastRollingFeeBump = false;
