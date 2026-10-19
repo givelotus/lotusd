@@ -23,6 +23,13 @@ from test_framework.util import (
 
 
 class RPCBindTest(BitcoinTestFramework):
+    variants = {
+        "default": {},
+        "ipv4": {"run_ipv4": True},
+        "ipv6": {"run_ipv6": True},
+        "nonloopback": {"run_nonloopback": True},
+    }
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.bind_to_localhost_only = False
