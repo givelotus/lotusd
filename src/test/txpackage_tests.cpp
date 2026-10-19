@@ -323,7 +323,13 @@ BOOST_AUTO_TEST_CASE(package_validation_tests) {
 
     // A single, giant transaction submitted through ProcessNewPackage fails on
     // single tx policy.
-    CTransactionRef giant_ptx = create_placeholder_tx(999, 999);
+    // V2 transactions have at most 256 inputs and outputs, so the size comes
+    // from large scriptSigs rather than from the input count.
+    CMutableTransaction giant_mtx{*create_placeholder_tx(256, 256)};
+    for (auto &in : giant_mtx.vin) {
+        in.scriptSig = CScript() << std::vector<uint8_t>(400, 0x51);
+    }
+    CTransactionRef giant_ptx = MakeTransactionRef(giant_mtx);
     BOOST_CHECK(GetVirtualTransactionSize(*giant_ptx) >
                 MAX_PACKAGE_SIZE * 1000);
     Package package_single_giant{giant_ptx};
