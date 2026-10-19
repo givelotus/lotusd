@@ -14,8 +14,7 @@ MAX_INITIAL_BROADCAST_DELAY = 15 * 60
 
 
 class MempoolUnbroadcastTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
+    num_nodes = 2
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

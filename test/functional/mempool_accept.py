@@ -33,16 +33,15 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class MempoolAcceptanceTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-txindex",
-                "-acceptnonstdtxn=0",  # Try to mimic main-net
-                "-permitbaremultisig=0",
-            ]
-        ] * self.num_nodes
-        self.supports_cli = False
+    num_nodes = 1
+    extra_args = [
+        [
+            "-txindex",
+            "-acceptnonstdtxn=0",  # Try to mimic main-net
+            "-permitbaremultisig=0",
+        ]
+    ] * num_nodes
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

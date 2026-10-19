@@ -14,9 +14,8 @@ from test_framework.wallet import MiniWallet
 
 
 class MempoolCoinbaseTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
+    num_nodes = 2
+    noban_tx_relay = True
 
     def run_test(self):
         wallet = MiniWallet(self.nodes[0])

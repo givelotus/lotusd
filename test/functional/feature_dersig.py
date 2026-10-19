@@ -36,11 +36,10 @@ def unDERify(tx):
 
 
 class BIP66Test(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.setup_clean_chain = True
-        self.rpc_timeout = 240
+    num_nodes = 1
+    noban_tx_relay = True
+    setup_clean_chain = True
+    rpc_timeout = 240
 
     def create_tx(self, input_txid):
         utxo_to_spend = self.miniwallet.get_utxo(txid=input_txid, mark_as_spent=False)

@@ -14,12 +14,11 @@ from test_framework.util import assert_equal, p2p_port, rpc_port
 
 
 class BindExtraTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        # Avoid any -bind= on the command line. Force the framework to avoid
-        # adding -bind=127.0.0.1.
-        self.bind_to_localhost_only = False
-        self.num_nodes = 3
+    setup_clean_chain = True
+    # Avoid any -bind= on the command line. Force the framework to avoid
+    # adding -bind=127.0.0.1.
+    bind_to_localhost_only = False
+    num_nodes = 3
 
     def setup_network(self):
         # Due to OS-specific network stats queries, we only run on Linux.

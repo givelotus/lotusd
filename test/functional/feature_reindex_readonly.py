@@ -13,10 +13,9 @@ from test_framework.test_framework import BitcoinTestFramework, SkipTest
 
 
 class BlockstoreReindexTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [["-fastprune"]]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-fastprune"]]
 
     def reindex_readonly(self):
         self.log.debug("Generate block big enough to start second block file")

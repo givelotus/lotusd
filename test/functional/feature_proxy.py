@@ -70,9 +70,8 @@ ONION_UNIX_IDX = 5
 
 
 class ProxyTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 6
-        self.setup_clean_chain = True
+    num_nodes = 6
+    setup_clean_chain = True
 
     def setup_nodes(self):
         self.have_ipv6 = test_ipv6_local()

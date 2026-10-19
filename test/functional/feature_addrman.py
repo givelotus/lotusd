@@ -45,8 +45,7 @@ def write_addrman(peers_dat, **kwargs):
 
 
 class AddrmanTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         peers_dat = os.path.join(self.nodes[0].datadir, self.chain, "peers.dat")

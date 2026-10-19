@@ -20,9 +20,8 @@ CUSTOM_MEMPOOL_EXPIRY = 10  # hours
 
 
 class MempoolExpiryTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [[]]
+    num_nodes = 1
+    extra_args = [[]]
 
     def test_transaction_expiry(self, timeout):
         """Tests that a transaction expires after the expiry timeout and its

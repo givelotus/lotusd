@@ -8,9 +8,8 @@ from test_framework.util import assert_equal
 
 
 class HelpTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def setup_network(self):
         self.add_nodes(self.num_nodes)
