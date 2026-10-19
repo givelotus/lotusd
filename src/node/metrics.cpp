@@ -69,6 +69,11 @@ namespace {
     const std::vector<double> BLOCK_CONNECT_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
         0.1,    0.25,    0.5,    1,     2.5,    5,     10,   30,    60};
+    //! Seconds; P2P message handling, from a ping to a large block
+    const std::vector<double> MESSAGE_BUCKETS{
+        0.00001, 0.000025, 0.00005, 0.0001, 0.00025, 0.0005,
+        0.001,   0.0025,   0.005,   0.01,   0.025,   0.05,
+        0.1,     0.25,     0.5,     1,      2.5,     10};
     //! Seconds; HTTP and RPC requests (long polls can take minutes)
     const std::vector<double> REQUEST_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
@@ -115,6 +120,13 @@ NodeMetrics::NodeMetrics()
           Add<Counter>(registry, "lotus_p2p_sent_messages_total",
                        "P2P messages queued for sending, by message type.",
                        std::vector<LabelDim>{{"type", L::MsgTypes()}})},
+      p2p_message_handling_seconds{Add<EventHistogram>(
+          registry, "lotus_p2p_message_handling_seconds",
+          "Time to process a received P2P message or coalesced batch, by initial message type. Only "
+          "one dispatch turn in 16 is timed: _count is a sample, use "
+          "lotus_p2p_received_messages_total for totals.",
+          MESSAGE_BUCKETS, /*divisor=*/1e9,
+          std::vector<LabelDim>{{"type", L::MsgTypes()}})},
       peers{Add<Gauge>(registry, "lotus_peers",
                        "Connected peers, by direction, transport and network.",
                        std::vector<LabelDim>{{"direction", L::Directions()},
