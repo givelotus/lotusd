@@ -103,10 +103,11 @@ void AddLoggingArgs(ArgsManager &argsman) {
         "-logformat=<format>",
         strprintf(
             "Format of log lines: text or json (default: %s). json writes one "
-            "JSON object per line with the fields ts (RFC 3339, microseconds; "
-            "omitted with -logtimestamps=0), level, category, thread, file, "
-            "line, func (with -logsourcelocations) and msg; -logthreadnames, "
-            "-logtimemicros and -loglevelalways do not apply to it",
+            "JSON object per line with the fields time (RFC 3339, "
+            "microseconds; omitted with -logtimestamps=0), level, category, "
+            "thread, message and, with -logsourcelocations, source (file, "
+            "line, function); -logthreadnames, -logtimemicros and "
+            "-loglevelalways do not apply to it",
             DEFAULT_LOGFORMAT),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-logratelimit",
