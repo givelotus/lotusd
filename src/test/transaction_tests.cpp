@@ -15,8 +15,9 @@
 #include <core_io.h>
 #include <core_memusage.h>
 #include <key.h>
-#include <lotus_v2/output.h>
 #include <lotus_v2/commitment.h>
+#include <lotus_v2/output.h>
+#include <lotus_v2/transaction.h>
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <script/script.h>
@@ -1746,6 +1747,172 @@ BOOST_AUTO_TEST_CASE(native_retained_memory_counts_nested_capacity_without_doubl
     legacy.vout.emplace_back(1000 * SATOSHI, CScript() << std::vector<uint8_t>(500, 0x24));
     const CTransaction tx{legacy};
     BOOST_CHECK_EQUAL(RecursiveDynamicUsage(tx), tx.GetStorageSize());
+}
+
+// Lotus V2 transactions carry at most 256 inputs and 256 outputs (I-6).
+BOOST_AUTO_TEST_CASE(v2_input_output_count_caps) {
+    lotus::v2::Output output;
+    output.value = 1000;
+    lotus::v2::Hash branch{};
+    branch[0] = 7;
+    output.branches = {branch};
+    output.paths = {{0}};
+    auto make = [&](size_t inputs, size_t outputs) {
+        CMutableTransaction tx;
+        tx.nVersion = 7;
+        tx.fHasV2Lock = true;
+        for (size_t i = 0; i < inputs; ++i) {
+            tx.vin.emplace_back(COutPoint(TxId(uint256S("11")), uint32_t(i)));
+            tx.vin.back().nFlags = 1;
+            tx.vin.back().nSequence = CTxIn::SEQUENCE_FINAL;
+            lotus::v2::BranchWitness witness;
+            witness.script = {0x4e};
+            tx.vin.back().vWitnesses = {witness};
+        }
+        for (size_t j = 0; j < outputs; ++j)
+            tx.vout.push_back(CTxOut::FromV2Output(output));
+        return CTransaction(tx);
+    };
+    TxValidationState state;
+    BOOST_CHECK(CheckRegularTransaction(make(256, 256), state));
+    BOOST_CHECK(!CheckRegularTransaction(make(257, 1), state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-v2-too-many-inputs");
+    state = TxValidationState{};
+    BOOST_CHECK(!CheckRegularTransaction(make(1, 257), state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                      "bad-txns-v2-too-many-outputs");
+}
+
+// The 256-output cap is a validation rule, not part of identity: a 257-output
+// V2 transaction keeps the TxId/TxHash computed from its serialized bytes,
+// round-trips with that identity, and is rejected by validation with the
+// explicit error.
+BOOST_AUTO_TEST_CASE(v2_over_cap_identity_comes_from_bytes) {
+    lotus::v2::Output output;
+    output.value = 1000;
+    lotus::v2::Hash branch{};
+    branch[0] = 7;
+    output.branches = {branch};
+    output.paths = {{0}};
+    CMutableTransaction mtx;
+    mtx.nVersion = 7;
+    mtx.fHasV2Lock = true;
+    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+    mtx.vin.back().nFlags = 1;
+    mtx.vin.back().nSequence = CTxIn::SEQUENCE_FINAL;
+    lotus::v2::BranchWitness witness;
+    witness.script = {0x4e};
+    mtx.vin.back().vWitnesses = {witness};
+    for (size_t j = 0; j < 257; ++j) {
+        output.value = 1000 + j;
+        mtx.vout.push_back(CTxOut::FromV2Output(output));
+    }
+    const CTransaction tx(mtx);
+
+    DataStream stream{};
+    stream << tx;
+    const std::vector<uint8_t> bytes(UCharCast(stream.data()),
+                                     UCharCast(stream.data()) + stream.size());
+
+    // Header core: version 7, lock, u16 input count, u16 output count.
+    BOOST_REQUIRE(bytes.size() > 16);
+    lotus::v2::TxHeaderCore header{};
+    std::copy_n(bytes.begin(), 16, header.begin());
+    BOOST_CHECK_EQUAL(header[0], 7);
+    BOOST_CHECK_EQUAL(header[12] | (header[13] << 8), 1);
+    BOOST_CHECK_EQUAL(header[14] | (header[15] << 8), 257);
+
+    // Leaves come from the serialized input and output records, which follow
+    // the header in order; check the records reassemble the exact bytes.
+    const lotus::v2::Transaction v2tx = tx.ToV2Transaction();
+    std::string error;
+    std::vector<uint8_t> body;
+    std::vector<lotus::v2::Hash> core_leaves, full_leaves, output_leaves;
+    for (const auto &in : v2tx.inputs) {
+        std::vector<uint8_t> core, full;
+        BOOST_REQUIRE(lotus::v2::EncodeInputCore(
+            in, lotus::v2::DefaultTxProfile, core, error));
+        BOOST_REQUIRE(lotus::v2::EncodeInputFull(
+            in, lotus::v2::DefaultTxProfile, full, error));
+        core_leaves.push_back(lotus::v2::InputCoreLeaf(core));
+        full_leaves.push_back(lotus::v2::InputFullLeaf(full));
+        body.insert(body.end(), full.begin(), full.end());
+    }
+    for (const auto &out : v2tx.outputs) {
+        std::vector<uint8_t> wire;
+        BOOST_REQUIRE(lotus::v2::EncodeOutput(out, wire, error));
+        output_leaves.push_back(lotus::v2::OutputLeaf(wire));
+        body.insert(body.end(), wire.begin(), wire.end());
+    }
+    BOOST_CHECK(std::equal(body.begin(), body.end(), bytes.begin() + 16,
+                           bytes.end()) &&
+                body.size() == bytes.size() - 16);
+    const auto outputs_root = lotus::v2::IndexedTreeRoot(output_leaves);
+    const auto expected_txid = lotus::v2::TransactionId(
+        GetActiveV2ChainId(), header, lotus::v2::IndexedTreeRoot(core_leaves),
+        outputs_root);
+    const auto expected_txhash = lotus::v2::TransactionHash(
+        GetActiveV2ChainId(), header, lotus::v2::IndexedTreeRoot(full_leaves),
+        outputs_root);
+
+    BOOST_CHECK(std::equal(expected_txid.begin(), expected_txid.end(),
+                           tx.GetId().begin()));
+    BOOST_CHECK(std::equal(expected_txhash.begin(), expected_txhash.end(),
+                           tx.GetHash().begin()));
+    BOOST_CHECK(std::equal(outputs_root.begin(), outputs_root.end(),
+                           tx.GetOutputsHash().begin()));
+    BOOST_CHECK(mtx.GetId() == tx.GetId());
+    BOOST_CHECK(mtx.GetHash() == tx.GetHash());
+
+    // ComputeTransactionIdentities agrees and ignores the profile caps.
+    lotus::v2::Hash32 txid{}, txhash{};
+    BOOST_CHECK(lotus::v2::ComputeTransactionIdentities(
+        v2tx, lotus::v2::DefaultTxProfile, GetActiveV2ChainId(), txid, txhash,
+        error));
+    BOOST_CHECK(txid == expected_txid && txhash == expected_txhash);
+
+    // Deserializing the bytes yields the same identity.
+    CTransaction decoded(deserialize, stream);
+    BOOST_CHECK(decoded.GetId() == tx.GetId());
+    BOOST_CHECK(decoded.GetHash() == tx.GetHash());
+
+    TxValidationState state;
+    BOOST_CHECK(!CheckRegularTransaction(tx, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(),
+                      "bad-txns-v2-too-many-outputs");
+}
+
+// A transaction that is not a well-formed V2 transaction has only the flat
+// fallback identity; validation rejects it explicitly instead of accepting it
+// under that identity. A legacy-version transaction with 65,536 outputs passes
+// every other context-free rule but cannot be counted by the u16 V2 header.
+BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_rejected) {
+    CMutableTransaction mtx;
+    mtx.nVersion = 1;
+    mtx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+    mtx.vout.assign(65535, CTxOut(Amount::zero(), CScript()));
+    {
+        const CTransaction tx(mtx);
+        BOOST_CHECK(tx.HasStructuralV2Identity());
+        TxValidationState state;
+        BOOST_CHECK(CheckRegularTransaction(tx, state));
+    }
+    mtx.vout.emplace_back(Amount::zero(), CScript());
+    const CTransaction tx(mtx);
+    BOOST_CHECK(!tx.HasStructuralV2Identity());
+    TxValidationState state;
+    BOOST_CHECK(!CheckRegularTransaction(tx, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-v2-identity");
+
+    // More specific reasons still win: an empty-input transaction also has
+    // the fallback identity but is rejected as bad-txns-vin-empty.
+    CMutableTransaction empty;
+    empty.vout.emplace_back(Amount::zero(), CScript());
+    const CTransaction empty_tx(empty);
+    BOOST_CHECK(!empty_tx.HasStructuralV2Identity());
+    state = TxValidationState{};
+    BOOST_CHECK(!CheckRegularTransaction(empty_tx, state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-vin-empty");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

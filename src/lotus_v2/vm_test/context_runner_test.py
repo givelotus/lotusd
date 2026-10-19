@@ -15,7 +15,7 @@ from lotus_v2_reference.signing import (Input, Transaction, TxProfile, Witness,
     encode_transaction, signing_message, identity_digests)
 from lotus_v2_reference.vm import branch_leaf_hash
 
-profile = TxProfile(65535, 65535, 65535, 8192, 1024, 8192, 64)
+profile = TxProfile(256, 256, 256, 8192, 1024, 8192, 64)
 out_profile = Profile(16, 16, 812, 8192)
 key = PrivateKey((3).to_bytes(32, 'big'))
 public = key.public_key_xonly.format()
