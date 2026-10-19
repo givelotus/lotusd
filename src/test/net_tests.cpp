@@ -1875,4 +1875,73 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
     BOOST_CHECK(!IsWebSocketURL("1.2.3.4:8333"));
 }
 
+namespace {
+/** A Sock that holds received data and a pending write in user space */
+class BufferedSock final : public Sock {
+public:
+    BufferedSock(SOCKET s, std::string data, Event pending)
+        : Sock{s}, m_data{std::move(data)}, m_pending{pending} {}
+    bool HasBufferedRecv() const override { return !m_data.empty(); }
+    Event PendingEvents() const override { return m_pending; }
+    bool FlushPending() const override {
+        ++m_flushes;
+        m_pending = 0;
+        return true;
+    }
+    ssize_t Recv(void *buf, size_t len, int) const override {
+        const size_t n{std::min(len, m_data.size())};
+        if (n == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        std::memcpy(buf, m_data.data(), n);
+        m_data.erase(0, n);
+        return n;
+    }
+    mutable std::string m_data;
+    mutable Event m_pending;
+    mutable int m_flushes{0};
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(sock_buffered_data_hooks) {
+    int sv[2];
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    const Config &config{m_node.chainman->GetConfig()};
+    ConnmanTestMsg connman{config, 0x1337, 0x1337, *m_node.addrman};
+    const std::string garbage(100, 'x');
+    auto sock{std::make_shared<BufferedSock>(SOCKET(sv[0]), garbage, Sock::SEND)};
+    CNode *node = new CNode{/*id=*/0,
+                            sock,
+                            CAddress{},
+                            /*nKeyedNetGroupIn=*/0,
+                            /*nLocalHostNonceIn=*/0,
+                            /*nLocalExtraEntropyIn=*/0,
+                            CAddress{},
+                            /*addrNameIn=*/"",
+                            ConnectionType::INBOUND,
+                            /*inbound_onion=*/false};
+    connman.AddTestNode(*node);
+
+    // Nothing queued by CConnman and receiving paused: the socket is still
+    // polled for SEND because its implementation has a pending write.
+    node->fPauseRecv = true;
+    std::vector<CNode *> nodes{node};
+    auto events{connman.GenerateWaitSocketsForTest(nodes)};
+    BOOST_REQUIRE_EQUAL(events.size(), 1U);
+    BOOST_CHECK_EQUAL(events.begin()->second.requested, Sock::SEND);
+
+    // Buffered data is received although the OS socket (sv[1] never writes)
+    // is not readable, and the pending write is flushed once writable.
+    node->fPauseRecv = false;
+    const uint64_t before{connman.GetTotalBytesRecv()};
+    connman.SocketHandlerForTest();
+    BOOST_CHECK_EQUAL(connman.GetTotalBytesRecv() - before, garbage.size());
+    BOOST_CHECK_EQUAL(sock->m_flushes, 1);
+    BOOST_CHECK(sock->m_data.empty());
+
+    connman.ClearTestNodes();
+    close(sv[1]);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
