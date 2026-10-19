@@ -176,7 +176,8 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
         LogPrintf("Assuming ancestors of block %s have valid signatures.\n",
                   chainman.AssumedValidBlock().GetHex());
     } else {
-        LogPrintf("Validating signatures for all blocks.\n");
+        LogInfoEvent(BCLog::ALL, "chainstate_all_signatures_enabled",
+                     "Validating signatures for all blocks.");
     }
     LogPrintf("Setting nMinimumChainWork=%s\n",
               chainman.MinimumChainWork().GetHex());
@@ -187,9 +188,10 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
     }
     if (chainman.m_blockman.GetPruneTarget() ==
         BlockManager::PRUNE_TARGET_MANUAL) {
-        LogPrintf(
+        LogInfoEvent(
+            BCLog::ALL, "chainstate_pruning_manual",
             "Block pruning enabled.  Use RPC call pruneblockchain(height) to "
-            "manually prune block and undo files.\n");
+            "manually prune block and undo files.");
     } else if (chainman.m_blockman.GetPruneTarget()) {
         LogPrintf("Prune configured to target %u MiB on disk for block and "
                   "undo files.\n",
@@ -207,8 +209,9 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
     bool has_snapshot = chainman.DetectSnapshotChainstate(options.mempool);
 
     if (has_snapshot && options.wipe_chainstate_db) {
-        LogPrintf(
-            "[snapshot] deleting snapshot chainstate due to reindexing\n");
+        LogInfoEvent(
+            BCLog::ALL, "chainstate_snapshot_reindex_cleanup",
+            "[snapshot] deleting snapshot chainstate due to reindexing");
         if (!chainman.DeleteSnapshotChainstate()) {
             return {ChainstateLoadStatus::FAILURE_FATAL,
                     Untranslated("Couldn't remove snapshot chainstate.")};
@@ -236,8 +239,9 @@ ChainstateLoadResult LoadChainstate(ChainstateManager &chainman,
     if (snapshot_completion == SnapshotCompletionResult::SKIPPED) {
         // do nothing; expected case
     } else if (snapshot_completion == SnapshotCompletionResult::SUCCESS) {
-        LogPrintf("[snapshot] cleaning up unneeded background chainstate, then "
-                  "reinitializing\n");
+        LogInfoEvent(BCLog::ALL, "chainstate_background_cleanup",
+                     "[snapshot] cleaning up unneeded background chainstate, "
+                     "then reinitializing");
         if (!chainman.ValidatedSnapshotCleanup()) {
             return {ChainstateLoadStatus::FAILURE_FATAL,
                     Untranslated(

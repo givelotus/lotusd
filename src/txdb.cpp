@@ -253,7 +253,8 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor &cursor,
             if (m_options.simulate_crash_ratio) {
                 static FastRandomContext rng;
                 if (rng.randrange(m_options.simulate_crash_ratio) == 0) {
-                    LogPrintf("Simulating a crash. Goodbye.\n");
+                    LogInfoEvent(BCLog::ALL, "chain_database_crash_simulated",
+                                 "Simulating a crash. Goodbye.");
                     // _Exit skips logger shutdown; retain the deterministic
                     // fault-injection diagnostic before terminating.
                     LogInstance().Flush();
@@ -477,9 +478,9 @@ bool CBlockTreeDB::Upgrade() {
     // The node requires a reindex.
     constexpr int TRACK_SIZE_VERSION = 220800;
     if (pcursor->Valid() && version < TRACK_SIZE_VERSION) {
-        LogPrintf(
-            "\nThe database is too old. The block index cannot be upgraded "
-            "and reindexing is required.\n");
+        LogInfoEvent(BCLog::ALL, "chain_database_reindex_required",
+                     "\nThe database is too old. The block index cannot be "
+                     "upgraded and reindexing is required.");
         return false;
     }
 
