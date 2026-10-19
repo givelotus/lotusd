@@ -39,6 +39,9 @@
 #include <hosts/abc/abc_host.h>
 #include <hosts/abc/abc_http.h>
 #include <hosts/abc/abc_subscriber.h>
+#ifdef CHRONIK_NATIVE_HAVE_LOTUS_V2_SERVICE
+#include <hosts/abc/abc_v2.h>
+#endif
 
 #include <tinyformat.h>
 
@@ -55,13 +58,19 @@ constexpr bool kLotusV2Node = IsLotusV2Output<CTxOut>;
 
 /**
  * Extensions of the node's tier: on Lotus V2, the V2 branch/asset groups of
- * the legacy index and their WS subscriptions.
+ * the legacy index and their WS subscriptions, and (in builds with the MDBX
+ * backend) the native V2 service on its own v2_index env.
  */
-std::vector<std::unique_ptr<native::Extension>> MakeTierExtensions() {
+std::vector<std::unique_ptr<native::Extension>>
+MakeTierExtensions(const node::NodeContext &node, const native::Host &host) {
     std::vector<std::unique_ptr<native::Extension>> exts;
     if constexpr (kLotusV2Node) {
         exts.push_back(
             std::make_unique<native::lotus_v2::LegacyGroupsExtension>());
+#ifdef CHRONIK_NATIVE_HAVE_LOTUS_V2_SERVICE
+        exts.push_back(
+            std::make_unique<native::abc::AbcV2ServiceExtension>(node, host));
+#endif
     }
     return exts;
 }
@@ -284,7 +293,7 @@ bool Start(const ArgsManager &args, const Config &config,
     try {
         std::unique_ptr<native::Service> service =
             native::Service::Start(*g_host, std::move(*params),
-                                   MakeTierExtensions());
+                                   MakeTierExtensions(node, *g_host));
         if (!service) {
             // Shutdown was requested during resync
             return true;
