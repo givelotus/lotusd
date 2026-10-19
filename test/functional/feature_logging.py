@@ -79,7 +79,23 @@ class LoggingTest(BitcoinTestFramework):
         # just sanity check no crash here
         self.restart_node(0, [f"-debuglogfile={os.devnull}"])
 
+        self.test_text_source_locations()
         self.test_json_format()
+
+    def assert_no_absolute_source_paths(self, log_path):
+        src = os.path.join(self.config["environment"]["SRCDIR"], "src") + os.sep
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                assert src not in line, line
+
+    def test_text_source_locations(self):
+        self.log.info("-logsourcelocations shows source-relative paths")
+        self.restart_node(0, ["-logsourcelocations", "-debuglogfile=src.log"])
+        self.stop_node(0)
+        log_path = self.relative_log_path("src.log")
+        self.assert_no_absolute_source_paths(log_path)
+        with open(log_path, encoding="utf-8") as f:
+            assert any("[src/init.cpp:" in line for line in f)
 
     def test_json_format(self):
         self.log.info("Test -logformat=json")
@@ -128,6 +144,11 @@ class LoggingTest(BitcoinTestFramework):
         assert any("UpdateTip: new best=" in m and "height=1 " in m for m in msgs)
         assert any(r["category"] == "net" and r["level"] == "debug" for r in records)
         assert any(r["thread"] == "init" for r in records)
+        # Source files are relative to the source tree (compile-time
+        # -fmacro-prefix-map), like "src/init.cpp".
+        assert any(r["file"] == "src/init.cpp" for r in records)
+        assert all(not os.path.isabs(r["file"]) for r in records)
+        self.assert_no_absolute_source_paths(json_log_path)
         assert any(
             r["category"] == "none" and r["level"] == "info" for r in records
         )
