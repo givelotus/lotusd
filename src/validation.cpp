@@ -329,8 +329,11 @@ const lotus::v2::VmCostProfile &NodeV2VmCost() {
         for (auto &op : c.opcode) {
             op.base = 1;
         }
-        // ENFORCEOUTPUT pays for each output its template scans.
-        c.opcode[0xeb].per_scanned_output = 1;
+        // ENFORCEOUTPUT pays a flat 32 per transaction output: one claim
+        // has at most one assignment edge per output, and one edge of the
+        // slowest assignment found takes 22-27 cost units of VM time at
+        // the pair cap (bench V2ClaimFlowLadderAtCap / V2VmCostUnit).
+        c.opcode[0xeb].per_tx_output = 32;
         return c;
     }();
     return cost;
