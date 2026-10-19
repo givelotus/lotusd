@@ -21,8 +21,8 @@ using chronik::native::lotus_v2::test::V2TempDir;
 namespace {
 
 f::ServiceLimits Limits() {
-    return f::ServiceLimits{1024 * 1024, 4096, 65536, 256, 16, 1,
-                            4096,        8192, 4096};
+    return f::ServiceLimits{32'000'000, 4096, 65536, 256, 16,
+                            1,          4096, 8192,  4096};
 }
 
 f::Binding TestBinding() {
@@ -287,16 +287,29 @@ BOOST_AUTO_TEST_CASE(exact_transport_response_and_block_boundaries) {
             BOOST_CHECK(bytes.size() <= cap);
         }
     }
+    // block_bytes is the consensus block-size limit: a header-only block
+    // needs 134 wire bytes.
     f::ServiceLimits caps = Limits();
-    caps.block_bytes = 217;
+    caps.block_bytes = 133;
+    caps.transactions = 1;
+    caps.changes = 1;
+    // Counts above what a block within the limit can hold are refused.
+    f::ServiceLimits over = caps;
+    over.transactions = 3;
+    V2TempDir refused("service");
+    BOOST_CHECK(Fails([&] { Open(refused, TestBinding(), true, over); }));
+    over = caps;
+    over.changes = 4;
+    V2TempDir refused_changes("service");
+    BOOST_CHECK(
+        Fails([&] { Open(refused_changes, TestBinding(), true, over); }));
     V2TempDir other("service");
     service = Open(other, TestBinding(), true, caps);
     const f::NativeBlock empty{Tip(2, 0), Tip(2, 0), {}, Header(0, 2)};
     BOOST_CHECK(Fails([&] { service->InitializeGenesis(empty); }));
     BOOST_CHECK(!service->GetStatus(Tip(2, 0)).initialized);
     service.reset();
-    caps = Limits();
-    caps.block_bytes = 218;
+    caps.block_bytes = 134;
     service = Open(other, TestBinding(), false, caps);
     service->InitializeGenesis(empty);
     BOOST_CHECK(service->GetStatus(Tip(2, 0)).ready);

@@ -79,7 +79,7 @@ BOOST_AUTO_TEST_SUITE(lotus_v2_branch_tests)
 BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
     V2TempDir dir("v2-schema3");
     std::optional<V2Db> db;
-    db.emplace(dir.path, TestBinding());
+    db.emplace(dir.path, TestBinding(), TestBounds());
     db->InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = *db->Checkpoint();
     Output token = TestOutput(5, false);
@@ -206,14 +206,15 @@ BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
         codec::Write(w, TestBinding());
         raw.Put(Str("v2-binding"), identity);
     }
-    BOOST_CHECK(ThrowsInvalid([&] { V2Db(dir.path, TestBinding()); },
-                              "binding/schema mismatch"));
+    BOOST_CHECK(
+        ThrowsInvalid([&] { V2Db(dir.path, TestBinding(), TestBounds()); },
+                      "binding/schema mismatch"));
 }
 
 BOOST_AUTO_TEST_CASE(restart_inverse_burns_and_replay) {
     V2TempDir dir("v2-index");
     std::optional<V2Db> db;
-    db.emplace(dir.path, TestBinding());
+    db.emplace(dir.path, TestBinding(), TestBounds());
     db->InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = db->Snapshot().anchor;
     const CommittedBlock first = TestBlock(
@@ -242,7 +243,7 @@ BOOST_AUTO_TEST_CASE(restart_inverse_burns_and_replay) {
                     Op(20, 0));
     }
     db.reset();
-    db.emplace(dir.path, TestBinding());
+    db.emplace(dir.path, TestBinding(), TestBounds());
     BOOST_CHECK(db->Snapshot().anchor == second.anchor);
     db->Connect(second);
     db->Disconnect(second.anchor);
@@ -258,14 +259,14 @@ BOOST_AUTO_TEST_CASE(restart_inverse_burns_and_replay) {
     db.reset();
     Binding other = TestBinding();
     other.profile = B32(4);
-    BOOST_CHECK(ThrowsInvalid([&] { V2Db(dir.path, other); },
+    BOOST_CHECK(ThrowsInvalid([&] { V2Db(dir.path, other, TestBounds()); },
                               "binding/schema mismatch"));
 }
 
 BOOST_AUTO_TEST_CASE(explicit_genesis_history_and_coins) {
     V2TempDir dir("v2-genesis");
     std::optional<V2Db> db;
-    db.emplace(dir.path, TestBinding());
+    db.emplace(dir.path, TestBinding(), TestBounds());
     BOOST_CHECK(!db->Checkpoint());
     BOOST_CHECK(ThrowsV2([&] { db->Snapshot(); }));
     const Anchor genesis{TestBinding().genesis, 0};
@@ -290,12 +291,13 @@ BOOST_AUTO_TEST_CASE(explicit_genesis_history_and_coins) {
     BOOST_CHECK(db->Snapshot().Utxo(Op(20, 0)));
     BOOST_CHECK(ThrowsV2([&] { db->Disconnect(genesis); }));
     db.reset();
-    BOOST_CHECK(V2Db(dir.path, TestBinding()).Checkpoint() == genesis);
+    BOOST_CHECK(V2Db(dir.path, TestBinding(), TestBounds()).Checkpoint() ==
+                genesis);
 }
 
 BOOST_AUTO_TEST_CASE(early_capacity_and_corrupt_storage_fail_closed) {
     V2TempDir dir("v2-capacity");
-    V2Db db(dir.path, TestBinding());
+    V2Db db(dir.path, TestBinding(), TestBounds());
     db.InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = *db.Checkpoint();
     Output wide = TestOutput(5, false);
@@ -304,10 +306,17 @@ BOOST_AUTO_TEST_CASE(early_capacity_and_corrupt_storage_fail_closed) {
         wide.branches.push_back(Fill(i));
     }
     wide.paths = {{0}};
+    // 2000 sixteen-branch outputs need more than a 32 KB block.
+    V2TempDir small_dir("v2-capacity-small");
+    V2Db small(small_dir.path, TestBinding(), Bounds(32'768));
+    small.InitializeGenesis(FixtureGenesis({}));
     const CommittedBlock oversized =
         TestBlock(genesis, 10, 20, std::vector<Output>(2000, wide), {});
     BOOST_CHECK(
-        ThrowsInvalid([&] { db.Connect(oversized); }, "staging capacity"));
+        ThrowsInvalid([&] { small.Connect(oversized); }, "staging capacity"));
+    BOOST_CHECK(small.Checkpoint() == genesis);
+    db.Connect(oversized);
+    db.Disconnect(oversized.anchor);
     BOOST_CHECK(db.Checkpoint() == genesis);
     const CommittedBlock first =
         TestBlock(genesis, 10, 20, {TestOutput(5, false)}, {});
@@ -332,7 +341,7 @@ BOOST_AUTO_TEST_CASE(early_capacity_and_corrupt_storage_fail_closed) {
 
 BOOST_AUTO_TEST_CASE(complete_token_policy_and_sixteen_positions) {
     V2TempDir dir("v2-policy");
-    V2Db db(dir.path, TestBinding());
+    V2Db db(dir.path, TestBinding(), TestBounds());
     db.InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = db.Snapshot().anchor;
     Output policy;
@@ -362,7 +371,7 @@ BOOST_AUTO_TEST_CASE(complete_token_policy_and_sixteen_positions) {
 
 BOOST_AUTO_TEST_CASE(invalid_transitions_leave_checkpoint_unchanged) {
     V2TempDir dir("v2-invalid");
-    V2Db db(dir.path, TestBinding());
+    V2Db db(dir.path, TestBinding(), TestBounds());
     db.InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = db.Snapshot().anchor;
     const CommittedBlock first = TestBlock(
@@ -383,18 +392,117 @@ BOOST_AUTO_TEST_CASE(invalid_transitions_leave_checkpoint_unchanged) {
     BOOST_CHECK(ThrowsV2([&] { db.Connect(replay); }));
     const CommittedBlock duplicate = TestBlock(first.anchor, 11, 20, {}, {});
     BOOST_CHECK(ThrowsV2([&] { db.Connect(duplicate); }));
-    CommittedBlock overflow = TestBlock(first.anchor, 11, 22, {}, {});
+    // More transactions than a block within the size limit can hold.
+    V2TempDir small_dir("v2-small");
+    V2Db small(small_dir.path, TestBinding(), Bounds(4 * MIN_TX_WIRE_BYTES));
+    small.InitializeGenesis(FixtureGenesis({}));
+    CommittedBlock overflow = TestBlock(genesis, 11, 22, {}, {});
     overflow.transactions = std::vector<ConfirmedTx>(
-        MAX_TRANSACTIONS + 1, overflow.transactions[0]);
-    BOOST_CHECK(ThrowsV2([&] { db.Connect(overflow); }));
+        small.GetBounds().Transactions() + 1, overflow.transactions[0]);
+    BOOST_CHECK(
+        ThrowsInvalid([&] { small.Connect(overflow); }, "transaction bound"));
     BOOST_CHECK(ThrowsV2([&] {
         db.Snapshot().NextPosting(Fill(5), 16, std::nullopt);
     }));
 }
 
+/**
+ * The staging reserved for any element, charged to its shortest wire
+ * encoding, stays within STAGING_PER_WIRE_BYTE: a block within the consensus
+ * size limit always fits Bounds::BatchBytes (Rust
+ * staging_covers_shortest_encodings).
+ */
+BOOST_AUTO_TEST_CASE(staging_covers_shortest_encodings) {
+    // Charged to every wire byte: explorer entries and started chunks.
+    const size_t per_byte =
+        RESERVE_EXPLORER_PER_WIRE_BYTE +
+        (RESERVE_EXPLORER_CHUNK + WIRE_CHUNK_BYTES - 1) / WIRE_CHUNK_BYTES;
+    const size_t budget = STAGING_PER_WIRE_BYTE - per_byte;
+    const size_t tx = RESERVE_TX + RESERVE_EXPLORER_TX + RESERVE_EXPLORER_CHUNK;
+    BOOST_CHECK(tx <= budget * MIN_TX_HEADER_WIRE_BYTES);
+    // A spend is an input, a spend and an asset element twice.
+    const size_t spend =
+        2 * RESERVE_ASSET_ELEMENT + RESERVE_SPEND + RESERVE_EXPLORER_INPUT;
+    BOOST_CHECK(spend <= budget * MIN_SPEND_WIRE_BYTES);
+    const size_t input = RESERVE_ASSET_ELEMENT + RESERVE_EXPLORER_INPUT;
+    BOOST_CHECK(input <= budget * MIN_INPUT_WIRE_BYTES);
+    BOOST_CHECK(RESERVE_EXPLORER_WITNESS <= budget * MIN_WITNESS_WIRE_BYTES);
+    // The shortest output has one branch; each further one is 32 bytes.
+    const size_t output =
+        RESERVE_ASSET_ELEMENT + RESERVE_OUTPUT + RESERVE_BRANCH;
+    BOOST_CHECK(output <= budget * MIN_OUTPUT_WIRE_BYTES);
+    BOOST_CHECK(RESERVE_BRANCH <= budget * 32);
+    BOOST_CHECK(1024 + RESERVE_EXPLORER_BLOCK <= STAGING_PER_BLOCK);
+    const Bounds bounds(32'000'000);
+    BOOST_CHECK_EQUAL(bounds.Transactions(), 32'000'000 / MIN_TX_WIRE_BYTES);
+    BOOST_CHECK_EQUAL(bounds.Changes(), 32'000'000 / MIN_INPUT_WIRE_BYTES);
+    BOOST_CHECK(ThrowsInvalid([] { Bounds(0); }, "block size limit"));
+    BOOST_CHECK(ThrowsInvalid([] { Bounds(Bounds::MAX_BLOCK_BYTES + 1); },
+                              "block size limit"));
+}
+
+/**
+ * A block over the former fixed bounds (4096 transactions, 32 MiB of
+ * staging) but within the consensus size limit is indexed and undone (Rust
+ * block_over_former_fixed_bounds_is_indexed).
+ */
+BOOST_AUTO_TEST_CASE(block_over_former_fixed_bounds_is_indexed) {
+    constexpr uint32_t TXS = 4100;
+    V2TempDir dir("v2-large");
+    V2Db db(dir.path, TestBinding(), TestBounds());
+    db.InitializeGenesis(FixtureGenesis({}));
+    const Anchor genesis = *db.Checkpoint();
+    const CommittedBlock fan = TestBlock(
+        genesis, 10, 20, std::vector<Output>(TXS, TestOutput(5, false)), {});
+    db.Connect(fan);
+    const Anchor anchor{B32(11), 2};
+    // Each spends one fan output to one output: the shortest encodings, as
+    // in a real block of this many transactions.
+    const size_t wire_len = MIN_TX_HEADER_WIRE_BYTES + MIN_SPEND_WIRE_BYTES +
+                            MIN_WITNESS_WIRE_BYTES + MIN_OUTPUT_WIRE_BYTES;
+    auto numbered = [](uint8_t fill, uint32_t i) {
+        Bytes32 id = B32(fill);
+        for (size_t j = 0; j < 4; ++j) {
+            id[j] = uint8_t(i >> (8 * (3 - j)));
+        }
+        return Hash32{id};
+    };
+    auto txid = [&](uint32_t i) { return TxId{numbered(0x60, i)}; };
+    CommittedBlock large{
+        anchor, fan.anchor, {}, FixtureHeader(anchor, fan.anchor)};
+    for (uint32_t i = 0; i < TXS; ++i) {
+        std::vector<SpentInput> spends{SpentInput{Op(20, i), 0}};
+        std::vector<Output> outputs{TestOutput(6, false)};
+        ExplorerTxFacts explorer = FixtureFacts(spends, outputs);
+        explorer.wire = Bytes(wire_len, 0);
+        large.transactions.push_back(ConfirmedTx{
+            TxLocation{H(anchor.block_id), anchor.height, i, txid(i),
+                       TxHash{numbered(0x61, i)}},
+            std::move(outputs), std::move(spends), std::move(explorer)});
+    }
+    // Over the former bounds by count and by reserved staging.
+    BOOST_CHECK(large.transactions.size() > 4096);
+    BOOST_CHECK(PreflightExplorerBlock(large) > 32 * 1024 * 1024);
+    BOOST_CHECK(TXS * wire_len <= TestBounds().BlockBytes());
+    db.Connect(large);
+    BOOST_CHECK(db.Checkpoint() == anchor);
+    {
+        const ReadSnapshot snapshot = db.Snapshot();
+        for (uint32_t i : {0u, TXS / 2, TXS - 1}) {
+            const auto spent = snapshot.GetOutput(Op(20, i));
+            BOOST_REQUIRE(spent && spent->spend);
+            BOOST_CHECK(spent->spend->transaction.txid == txid(i));
+            BOOST_CHECK(snapshot.Utxo(OutPoint{txid(i), 0}));
+        }
+    }
+    db.Disconnect(anchor);
+    BOOST_CHECK(db.Checkpoint() == fan.anchor);
+    BOOST_CHECK(!db.Snapshot().GetOutput(Op(20, TXS - 1))->spend);
+}
+
 BOOST_AUTO_TEST_CASE(intra_block_spend_and_snapshot_isolation) {
     V2TempDir dir("v2-intra");
-    V2Db db(dir.path, TestBinding());
+    V2Db db(dir.path, TestBinding(), TestBounds());
     db.InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = db.Snapshot().anchor;
     CommittedBlock first =
@@ -478,8 +586,8 @@ BOOST_AUTO_TEST_CASE(canonical_order_block_spends_later_parents) {
     };
     V2TempDir topo_dir("v2-topo");
     V2TempDir dir("v2-ctor");
-    V2Db topo(topo_dir.path, TestBinding());
-    V2Db db(dir.path, TestBinding());
+    V2Db topo(topo_dir.path, TestBinding(), TestBounds());
+    V2Db db(dir.path, TestBinding(), TestBounds());
     CommittedBlock second;
     for (V2Db *d : {&topo, &db}) {
         d->InitializeGenesis(FixtureGenesis({}));
@@ -581,7 +689,7 @@ BOOST_AUTO_TEST_CASE(durable_checkpoint_without_clean_shutdown) {
         int code = 1;
         try {
             // Deliberately leaked: no destructor may run before _exit.
-            auto *db = new V2Db(dir.path, binding);
+            auto *db = new V2Db(dir.path, binding, TestBounds());
             db->InitializeGenesis(FixtureGenesis({}));
             db->Connect(block);
             code = 77;
@@ -593,7 +701,7 @@ BOOST_AUTO_TEST_CASE(durable_checkpoint_without_clean_shutdown) {
     BOOST_REQUIRE(waitpid(pid, &status, 0) == pid);
     BOOST_REQUIRE(WIFEXITED(status));
     BOOST_CHECK_EQUAL(WEXITSTATUS(status), 77);
-    V2Db db(dir.path, binding);
+    V2Db db(dir.path, binding, TestBounds());
     BOOST_CHECK(db.Snapshot().anchor == block.anchor);
     db.Connect(block);
     db.Disconnect(block.anchor);

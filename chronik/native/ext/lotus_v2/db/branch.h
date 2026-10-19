@@ -27,6 +27,16 @@ namespace chronik::native::lotus_v2 {
 
 /** Max serialized output record (output <= 812 B plus two locations). */
 inline constexpr size_t MAX_BRANCH_RECORD_BYTES = 1200;
+/** Branch staging reserved per transaction. */
+inline constexpr size_t RESERVE_TX = 512;
+/** Asset staging reserved per output, spend and input. */
+inline constexpr size_t RESERVE_ASSET_ELEMENT = 8192;
+/** Branch staging reserved per spend: old/new records, undo and keys. */
+inline constexpr size_t RESERVE_SPEND = 6 * MAX_BRANCH_RECORD_BYTES + 1024;
+/** Branch staging reserved per output, plus RESERVE_BRANCH per branch. */
+inline constexpr size_t RESERVE_OUTPUT = 6 * MAX_BRANCH_RECORD_BYTES;
+/** Posting staging reserved per output branch (two postings). */
+inline constexpr size_t RESERVE_BRANCH = 2 * 512;
 
 /** "Loc"/TxLocation key helpers shared with the explorer/asset modules. */
 Bytes OutPointBytes(const OutPoint &op);
@@ -50,10 +60,16 @@ class ReadSnapshot;
 /** Owns a dedicated database. Mutations require exclusive access. */
 class V2Db {
 public:
-    /** Open or create a dedicated V2 directory; reject foreign schema. */
-    V2Db(const std::filesystem::path &path, const Binding &binding);
+    /**
+     * Open or create a dedicated V2 directory; reject foreign schema.
+     * `bounds` come from the consensus block-size limit.
+     */
+    V2Db(const std::filesystem::path &path, const Binding &binding,
+         const Bounds &bounds);
 
     const Binding &GetBinding() const { return m_binding; }
+    /** Size bounds from the consensus block-size limit. */
+    const Bounds &GetBounds() const { return m_bounds; }
     /** Last fully indexed block; a new database has no checkpoint. */
     std::optional<Anchor> Checkpoint() const;
     /** Index the caller-authenticated committed genesis. */
@@ -77,6 +93,7 @@ private:
 
     std::unique_ptr<V2Env> m_db;
     Binding m_binding;
+    Bounds m_bounds;
 };
 
 /**
@@ -85,13 +102,17 @@ private:
  */
 class ReadSnapshot {
 public:
-    ReadSnapshot(V2EnvSnapshot inner, Anchor anchor, Binding binding)
-        : anchor(anchor), binding(binding), m_inner(std::move(inner)) {}
+    ReadSnapshot(V2EnvSnapshot inner, Anchor anchor, Binding binding,
+                 Bounds bounds)
+        : anchor(anchor), binding(binding), bounds(bounds),
+          m_inner(std::move(inner)) {}
 
     /** Checkpoint matching this snapshot. */
     Anchor anchor;
     /** Immutable schema deployment binding. */
     Binding binding;
+    /** Size bounds from the consensus block-size limit. */
+    Bounds bounds;
 
     const V2EnvSnapshot &Inner() const { return m_inner; }
 
