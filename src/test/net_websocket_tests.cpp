@@ -18,6 +18,7 @@
 
 #include <csignal>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -422,6 +423,87 @@ BOOST_AUTO_TEST_CASE(tls_key_update_mid_stream) {
     BOOST_CHECK(ReceiveAll(*p.client, *p.server, b.size()) == b);
     BOOST_CHECK_EQUAL(p.server->Send(a.data(), a.size(), 0), 1000);
     BOOST_CHECK(ReceiveAll(*p.server, *p.client, a.size()) == a);
+}
+
+namespace {
+/** A byte layer whose reads wait for writability until unblocked */
+class WriteBlockedReadLayer final : public WebSocketByteLayer {
+public:
+    std::vector<uint8_t> wire;
+    bool blocked{true};
+    ssize_t Read(SOCKET, uint8_t *buf, size_t len) override {
+        if (blocked || wire.empty()) {
+            errno = EAGAIN;
+            return -1;
+        }
+        const size_t n{std::min(len, wire.size())};
+        std::memcpy(buf, wire.data(), n);
+        wire.erase(wire.begin(), wire.begin() + n);
+        return n;
+    }
+    ssize_t Write(SOCKET, const uint8_t *, size_t len) override { return len; }
+    Sock::Event ReadWaitsFor() const override {
+        return blocked ? Sock::SEND : Sock::RECV;
+    }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(read_waiting_for_send_resumes_on_flush) {
+    // A read that must write first (TLS) asks to be woken when the socket
+    // is writable, not readable: the data it needs may already have been
+    // read from the OS socket, so readability might never come.
+    int sv[2];
+    BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    auto layer{std::make_unique<WriteBlockedReadLayer>()};
+    WriteBlockedReadLayer &l{*layer};
+    WebSocketSock server{SOCKET(sv[0]), Role::SERVER, Info(C::NONE),
+                         std::move(layer)};
+    WebSocketCodec client{Role::CLIENT, C::NONE};
+    const std::vector<uint8_t> payload(100, 4);
+    client.EncodeMessage(payload, l.wire);
+
+    uint8_t buf[256];
+    BOOST_CHECK_EQUAL(server.Recv(buf, sizeof(buf), 0), -1);
+    BOOST_CHECK_EQUAL(errno, EAGAIN);
+    BOOST_CHECK_EQUAL(server.PendingEvents(), Sock::SEND);
+    BOOST_CHECK(!server.HasBufferedRecv());
+
+    // Writable: FlushPending() retries the read, and the data is buffered.
+    l.blocked = false;
+    BOOST_CHECK(server.FlushPending());
+    BOOST_CHECK(server.HasBufferedRecv());
+    BOOST_CHECK_EQUAL(server.PendingEvents(), 0);
+    BOOST_CHECK_EQUAL(server.Recv(buf, sizeof(buf), 0), 100);
+    BOOST_CHECK(std::equal(payload.begin(), payload.end(), buf));
+    close(sv[1]);
+}
+
+BOOST_AUTO_TEST_CASE(tls_key_update_while_send_blocked) {
+    // A KeyUpdate asking for one back arrives while the server cannot write.
+    // (OpenSSL 4.0 defers the reply to the next write; a TLS library that
+    // sends it from SSL_read would block the read on writability instead,
+    // the case read_waiting_for_send_resumes_on_flush covers.)
+    TlsPair p{C::NONE};
+    if (SSL_version(p.client_ssl) != TLS1_3_VERSION) {
+        return;
+    }
+    // Nobody reads the server's data: its writes block.
+    const std::vector<uint8_t> chunk(256 * 1024, 7);
+    size_t sent{0};
+    ssize_t n;
+    while ((n = p.server->Send(chunk.data(), chunk.size(), 0)) > 0) {
+        sent += n;
+        BOOST_REQUIRE(sent < 64 * 1024 * 1024);
+    }
+    BOOST_REQUIRE_EQUAL(SSL_key_update(p.client_ssl, SSL_KEY_UPDATE_REQUESTED),
+                        1);
+    const std::vector<uint8_t> b(100, 9);
+    BOOST_REQUIRE_EQUAL(p.client->Send(b.data(), b.size(), 0), 100);
+    // Everything arrives both ways, and the server's keys rotate too.
+    BOOST_CHECK(ReceiveAll(*p.client, *p.server, b.size()) == b);
+    BOOST_CHECK_EQUAL(ReceiveAll(*p.server, *p.client, sent).size(), sent);
+    BOOST_CHECK_EQUAL(p.server->Send(b.data(), b.size(), 0), 100);
+    BOOST_CHECK(ReceiveAll(*p.server, *p.client, b.size()) == b);
 }
 
 BOOST_AUTO_TEST_CASE(tls_orderly_close) {
