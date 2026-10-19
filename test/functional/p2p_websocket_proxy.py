@@ -36,6 +36,9 @@ class ForwardingSocks5Proxy:
                 conn, _ = self.server.accept()
             except OSError:
                 return
+            if not self.running:
+                conn.close()
+                return
             threading.Thread(target=self.handle, args=(conn,), daemon=True).start()
 
     @staticmethod
@@ -88,6 +91,12 @@ class ForwardingSocks5Proxy:
 
     def stop(self):
         self.running = False
+        # On Linux, close() alone neither wakes a thread blocked in accept()
+        # nor stops the socket listening; shutdown() does both.
+        try:
+            self.server.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.server.close()
 
 

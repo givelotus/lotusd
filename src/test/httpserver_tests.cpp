@@ -11,6 +11,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <csignal>
+
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -27,7 +29,22 @@
 
 #include <thread>
 
-BOOST_FIXTURE_TEST_SUITE(httpserver_tests, BasicTestingSetup)
+namespace {
+/**
+ * OpenSSL writes to sockets with write(), which raises SIGPIPE once the peer
+ * has closed. The node ignores SIGPIPE at startup (AppInitBasicSetup); do
+ * the same here, where tests close one end before the other.
+ */
+struct HTTPServerTestingSetup : BasicTestingSetup {
+    HTTPServerTestingSetup() {
+#ifndef WIN32
+        signal(SIGPIPE, SIG_IGN);
+#endif
+    }
+};
+} // namespace
+
+BOOST_FIXTURE_TEST_SUITE(httpserver_tests, HTTPServerTestingSetup)
 
 BOOST_AUTO_TEST_CASE(test_query_parameters) {
     std::string uri{};
