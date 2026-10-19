@@ -9,6 +9,7 @@
 #include <hosts/abc/abc_host.h>
 #include <hosts/abc/abc_v2.h>
 
+#include <chronik/native/http.h>
 #include <chronik/native/types.h>
 #include <ext/lotus_v2/service/service.h>
 
@@ -157,6 +158,45 @@ BOOST_FIXTURE_TEST_CASE(test_v2_service_lifecycle, TestChain100Setup) {
     ext.Open(indexes, /*wipe=*/false);
     BOOST_CHECK(!ext.Service()->Checkpoint());
     ext.Close();
+}
+
+// The extension serves /v2 and /v2/explorer/v1 over its current service.
+BOOST_FIXTURE_TEST_CASE(test_v2_service_routes, TestChain100Setup) {
+    ChainstateManager &chainman = *Assert(m_node.chainman);
+    const cn::abc::AbcHost host(m_node, cn::HostCapabilities{});
+    cn::abc::AbcV2ServiceExtension ext(m_node, host);
+    cn::Router router;
+    ext.RegisterRoutes(router);
+    auto get = [&](const std::string &path) {
+        cn::HttpRequest req;
+        req.method = "GET";
+        req.path = path;
+        return router.Handle(req);
+    };
+    auto body = [](const cn::HttpResponse &r) {
+        return std::string(r.body.begin(), r.body.end());
+    };
+    // Not opened yet: unavailable.
+    BOOST_CHECK_EQUAL(get("/v2/status").status, 503);
+    BOOST_CHECK_EQUAL(get("/v2/explorer/v1/status").status, 503);
+
+    ext.Open(m_path_root / "indexes", /*wipe=*/false);
+    ext.Resync();
+    const CBlockIndex &tip = Tip(chainman);
+    const cn::HttpResponse status = get("/v2/status");
+    BOOST_CHECK_EQUAL(status.status, 200);
+    BOOST_CHECK(body(status).find("\"ready\":true") != std::string::npos);
+    const cn::HttpResponse block =
+        get("/v2/explorer/v1/blocks/by-height/" + std::to_string(tip.nHeight));
+    BOOST_CHECK_EQUAL(block.status, 200);
+    BOOST_CHECK(body(block).find("\"height\":\"100\"") != std::string::npos);
+    BOOST_CHECK(body(block).find("\"tx_count\":\"1\"") != std::string::npos);
+    const std::string explorer_status = body(get("/v2/explorer/v1/status"));
+    BOOST_CHECK(explorer_status.find("\"reason\":\"ready\"") !=
+                std::string::npos);
+
+    ext.Close();
+    BOOST_CHECK_EQUAL(get("/v2/status").status, 503);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
