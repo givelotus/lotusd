@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -180,6 +181,56 @@ struct WebSocketTestingSetup : BasicTestingSetup {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(net_websocket_tests, WebSocketTestingSetup)
+
+BOOST_AUTO_TEST_CASE(client_certificate_reload) {
+    const auto cert{m_path_root / "client.pem"};
+    const auto key{m_path_root / "client.key"};
+    const auto first{tls::GenerateSelfSigned("first.example", {}, {},
+                                           std::chrono::hours{24})};
+    const auto second{tls::GenerateSelfSigned("second.example", {}, {},
+                                            std::chrono::hours{24})};
+    BOOST_REQUIRE(first && second);
+    BOOST_REQUIRE(tls::WritePemFiles(*first, cert, key));
+    // Zero is a valid filesystem timestamp, not an uninitialized sentinel.
+    fs::last_write_time(cert, fs::file_time_type{});
+    fs::last_write_time(key, fs::file_time_type{});
+    tls::ReloadingClientContext contexts{cert, key};
+    const auto old{contexts.Get()};
+    BOOST_REQUIRE(old);
+    tls::SslPtr session{SSL_new(old.get())};
+    BOOST_REQUIRE(session);
+    const auto original{tls::SpkiSha256(SSL_get_certificate(session.get()))};
+    BOOST_REQUIRE_EQUAL(original.size(), 32);
+    const auto next_check = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+    };
+
+    // A mismatched pair cannot replace the valid published context.
+    BOOST_REQUIRE(tls::ReplaceFile(cert, second->cert_pem));
+    next_check();
+    BOOST_CHECK(contexts.Get() == old);
+    BOOST_CHECK(tls::SpkiSha256(SSL_get_certificate(session.get())) == original);
+    // The corrected key completes the rotation without restarting the dialer.
+    BOOST_REQUIRE(tls::ReplaceFile(key, second->key_pem));
+    next_check();
+    const auto rotated{contexts.Get()};
+    BOOST_REQUIRE(rotated);
+    BOOST_CHECK(rotated != old);
+    BOOST_CHECK(tls::SpkiSha256(SSL_CTX_get0_certificate(rotated.get())) != original);
+    BOOST_CHECK(tls::SpkiSha256(SSL_get_certificate(session.get())) == original);
+    BOOST_CHECK(contexts.Get() == rotated);
+    // Malformed and missing files also leave the last good identity intact.
+    BOOST_REQUIRE(tls::ReplaceFile(key, "not a PEM key"));
+    next_check();
+    BOOST_CHECK(contexts.Get() == rotated);
+    BOOST_REQUIRE(tls::ReplaceFile(key, second->key_pem));
+    fs::remove(cert);
+    next_check();
+    BOOST_CHECK(contexts.Get() == rotated);
+    tls::ReloadingClientContext anonymous{std::nullopt, std::nullopt};
+    BOOST_REQUIRE(anonymous.Get());
+    BOOST_CHECK(SSL_CTX_get0_certificate(anonymous.Get().get()) == nullptr);
+}
 
 BOOST_AUTO_TEST_CASE(roundtrip_all_modes_and_sizes) {
     FastRandomContext rng{/*fDeterministic=*/true};

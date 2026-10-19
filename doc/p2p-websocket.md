@@ -22,7 +22,7 @@ Plain TCP P2P is unchanged, and the two can be used together.
 | `-p2pwebsocket` (default on) | Accept P2P upgrades at `/p2p/ws`. Needs `-listen` and `-server`. |
 | `-publicbind=<addr>:<port>` | An extra listener for anyone, serving **only** P2P WebSocket and Chronik (`/chronik`). JSON-RPC, wallet and REST are refused there whatever the client address. Expose this port, never the RPC port. Not advertised. |
 | RPC port | Also serves P2P WebSocket, but only to `-rpcallowip` clients. |
-| `-tlscert`, `-tlskey` | Certificate chain and key for TLS. A replaced file (e.g. an ACME renewal) is picked up without a restart. |
+| `-tlscert`, `-tlskey` | Certificate chain and key for TLS. New inbound handshakes and outbound `wss://` dials pick up replaced files (e.g. an ACME renewal) without a restart, checking mtimes at most once a second. The certificate/key pair must load and match before replacing the context. Failed replacements keep the previous identity; established connections are unaffected. |
 | `-tlsephemeral` (default on) | Without `-tlscert`, use a self-signed certificate in the datadir. It is issued for the first `-externaldomain` (else a random host name), valid for 90 days, and renewed with the same key when fewer than 30 days remain. |
 | `-externaldomain=<domain>[:port]` | Advertise `wss://<domain>:<port><path>` (default port 443; the path is `-p2pwebsocketpath`, else `/p2p/ws`) to peers that support ADDRv2 (BIP155), so they can find and dial it. |
 | `-p2pwebsocketpath=<path>` | Serve the upgrade at another path. |
