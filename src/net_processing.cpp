@@ -34,6 +34,7 @@
 #include <netbase.h>
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
+#include <node/metrics.h>
 #include <node/miner.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
@@ -1288,6 +1289,10 @@ private:
     std::chrono::seconds m_stale_tip_check_time GUARDED_BY(cs_main){0s};
 
     const Options m_opts;
+
+    //! Messages processed, to sample their handling time for metrics. Only
+    //! touched by ProcessMessages (the message handler thread).
+    uint32_t m_metrics_message_count{0};
 
     bool RejectIncomingTxs(const CNode &peer) const;
 
@@ -8600,6 +8605,17 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
     }
 
     try {
+        // Sample one dispatch turn in sixteen. A turn may coalesce a
+        // contiguous transaction or Avalanche-response batch; preserve that
+        // processing path and attribute the total time to its initial type.
+        std::optional<SteadyClock::time_point> timed;
+        auto *metrics{node::GetNodeMetrics()};
+        const size_t timed_type{
+            metrics ? node::MetricMsgTypeIndex(msg.m_type) : 0};
+        if (metrics &&
+            ++m_metrics_message_count % METRICS_P2P_TIMING_SAMPLE == 0) {
+            timed = SteadyClock::now();
+        }
         if (msg.m_type == NetMsgType::TX && fMoreWork &&
             !RejectIncomingTxs(*pfrom) &&
             !m_chainman.IsInitialBlockDownload()) {
@@ -8718,6 +8734,10 @@ bool PeerManagerImpl::ProcessMessages(const Config &config, CNode *pfrom,
         } else {
             ProcessMessage(config, *pfrom, msg.m_type, msg.m_recv, msg.m_time,
                            interruptMsgProc);
+        }
+        if (timed) {
+            metrics->p2p_message_handling_seconds.RecordDuration(
+                SteadyClock::now() - *timed, timed_type);
         }
         if (interruptMsgProc) {
             return false;

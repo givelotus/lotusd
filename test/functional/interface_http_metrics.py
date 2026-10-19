@@ -176,6 +176,8 @@ class HTTPMetricsTest(BitcoinTestFramework):
         age = samples[("lotus_chain_tip_age_seconds", ())]
         assert abs(age - (time.time() - tip_time)) < 30, age
         assert samples[("lotus_block_connect_seconds_sum", ())] > 0
+        # Message handling is timed for 1 message in 16.
+        assert self.total(samples, "lotus_p2p_message_handling_seconds_count") > 0
 
         self.log.info("HTTP and RPC requests")
         node.getblockcount()
