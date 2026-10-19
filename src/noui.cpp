@@ -39,7 +39,18 @@ bool noui_ThreadSafeMessageBox(const bilingual_str &message,
     }
 
     if (!fSecure) {
-        LogPrintf("%s%s\n", strCaption, message.original);
+        // Log at the message's severity, so that structured (-logformat=json)
+        // and filtered logs see errors as errors.
+        switch (style) {
+            case CClientUIInterface::MSG_ERROR:
+                LogError("%s%s\n", strCaption, message.original);
+                break;
+            case CClientUIInterface::MSG_WARNING:
+                LogWarning("%s%s\n", strCaption, message.original);
+                break;
+            default:
+                LogInfo("%s%s\n", strCaption, message.original);
+        }
     }
     tfm::format(std::cerr, "%s%s\n", strCaption, message.original);
     return false;

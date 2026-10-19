@@ -9,6 +9,7 @@
 #include <test/util/logging.h>
 #include <test/util/setup_common.h>
 #include <tinyformat.h>
+#include <univalue.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
 #include <util/string.h>
@@ -66,6 +67,7 @@ struct LogSetup : public BasicTestingSetup {
     bool prev_log_timestamps;
     bool prev_log_threadnames;
     bool prev_log_sourcelocations;
+    BCLog::LogFormat prev_log_format;
     std::unordered_map<BCLog::LogFlags, BCLog::Level> prev_category_levels;
     BCLog::Level prev_log_level;
     uint32_t prev_category_mask;
@@ -78,6 +80,7 @@ struct LogSetup : public BasicTestingSetup {
           prev_log_timestamps{LogInstance().m_log_timestamps},
           prev_log_threadnames{LogInstance().m_log_threadnames},
           prev_log_sourcelocations{LogInstance().m_log_sourcelocations},
+          prev_log_format{LogInstance().m_log_format},
           prev_category_levels{LogInstance().CategoryLevels()},
           prev_log_level{LogInstance().LogLevel()},
           prev_category_mask{LogInstance().GetCategoryMask()} {
@@ -97,6 +100,7 @@ struct LogSetup : public BasicTestingSetup {
     }
 
     ~LogSetup() {
+        LogInstance().m_log_format = prev_log_format;
         LogInstance().m_file_path = prev_log_path;
         LogPrintf("Sentinel log to reopen log file\n");
         LogInstance().m_print_to_file = prev_print_to_file;
@@ -562,6 +566,175 @@ BOOST_FIXTURE_TEST_CASE(logging_reopened_file_unbuffered, LogSetup) {
     const auto lines{ReadDebugLogLines()};
     BOOST_REQUIRE(!lines.empty());
     BOOST_CHECK_EQUAL(lines.back(), "first line after reopen");
+}
+
+BOOST_AUTO_TEST_CASE(logging_json_escape) {
+    const auto esc{[](std::string_view in) {
+        std::string out;
+        BCLog::AppendJsonEscaped(out, in);
+        return out;
+    }};
+    BOOST_CHECK_EQUAL(esc(""), "");
+    BOOST_CHECK_EQUAL(esc("plain text 123"), "plain text 123");
+    BOOST_CHECK_EQUAL(esc(R"(say "hi" \ bye)"), R"(say \"hi\" \\ bye)");
+    BOOST_CHECK_EQUAL(esc("a\nb\rc\td"), R"(a\nb\rc\td)");
+    BOOST_CHECK_EQUAL(esc(std::string_view{"\x00\x01\x1f\x7f", 4}),
+                      R"(\u0000\u0001\u001f\u007f)");
+    // Valid UTF-8 (2, 3 and 4 byte sequences) is kept as is.
+    BOOST_CHECK_EQUAL(esc("\xc3\xa9 \xe8\xb2\x93 \xf0\x9f\x98\x80"),
+                      "\xc3\xa9 \xe8\xb2\x93 \xf0\x9f\x98\x80");
+    BOOST_CHECK_EQUAL(esc("\xef\xbf\xbf\xf4\x8f\xbf\xbf"),
+                      "\xef\xbf\xbf\xf4\x8f\xbf\xbf");
+    // Each invalid byte becomes U+FFFD.
+    const std::string R{"\xef\xbf\xbd"};
+    BOOST_CHECK_EQUAL(esc("a\x80z"), "a" + R + "z");
+    // Overlong encodings
+    BOOST_CHECK_EQUAL(esc("\xc0\x80"), R + R);
+    BOOST_CHECK_EQUAL(esc("\xe0\x80\x80"), R + R + R);
+    BOOST_CHECK_EQUAL(esc("\xf0\x80\x80\x80"), R + R + R + R);
+    // UTF-16 surrogates, beyond U+10FFFF, invalid lead bytes
+    BOOST_CHECK_EQUAL(esc("\xed\xa0\x80"), R + R + R);
+    BOOST_CHECK_EQUAL(esc("\xf4\x90\x80\x80"), R + R + R + R);
+    BOOST_CHECK_EQUAL(esc("\xf5\xff"), R + R);
+    // Truncated sequences, at the end and before a plain character
+    BOOST_CHECK_EQUAL(esc("\xe8\xb2"), R + R);
+    BOOST_CHECK_EQUAL(esc("\xe8\xb2x"), R + R + "x");
+    BOOST_CHECK_EQUAL(esc("\xf0\x9f\x98\""), R + R + R + "\\\"");
+    // Every escaped output is valid JSON that round-trips the valid input.
+    for (const std::string_view in :
+         {"q\"\\\n\x01", "\xe8\xb2\x93", "x\xff\xfey", "\xed\xbf\xbf"}) {
+        UniValue v;
+        BOOST_CHECK(v.read("[\"" + esc(in) + "\"]"));
+    }
+    UniValue v;
+    BOOST_REQUIRE(v.read("[\"" + esc("q\"\\\n\x01 \xe8\xb2\x93") + "\"]"));
+    BOOST_CHECK_EQUAL(v[0].get_str(), "q\"\\\n\x01 \xe8\xb2\x93");
+}
+
+BOOST_AUTO_TEST_CASE(logging_parse_format) {
+    BOOST_CHECK(BCLog::ParseLogFormat("text") == BCLog::LogFormat::TEXT);
+    BOOST_CHECK(BCLog::ParseLogFormat("json") == BCLog::LogFormat::JSON);
+    BOOST_CHECK(!BCLog::ParseLogFormat("JSON"));
+    BOOST_CHECK(!BCLog::ParseLogFormat(""));
+}
+
+static std::vector<UniValue> ReadJsonLogLines() {
+    std::vector<UniValue> records;
+    for (const std::string &line : ReadDebugLogLines()) {
+        if (line.empty()) {
+            continue;
+        }
+        UniValue v;
+        BOOST_REQUIRE_MESSAGE(v.read(line) && v.isObject(),
+                              "not a JSON object: " + line);
+        records.push_back(std::move(v));
+    }
+    return records;
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
+    LogInstance().m_log_format = BCLog::LogFormat::JSON;
+    LogInstance().m_log_timestamps = true;
+    LogInstance().EnableCategory(BCLog::NET);
+    // Text-only options do not change the JSON fields.
+    LogInstance().m_log_threadnames = false;
+    LogInstance().m_log_sourcelocations = false;
+
+    const auto loc{std::source_location::current()};
+    LogInstance().LogPrintStr("hello \"world\"\n", std::source_location{loc},
+                              BCLog::NET, BCLog::Level::Debug,
+                              /*should_ratelimit=*/false);
+    LogInfo("two\nlines\n");
+    LogWarning("bad byte \xff and tab\t\n");
+    // A message without trailing newline, then its continuation
+    LogInstance().LogPrintStr("partial ", std::source_location{loc}, BCLog::NET,
+                              BCLog::Level::Debug,
+                              /*should_ratelimit=*/false);
+    LogInstance().LogPrintStr("rest\n", std::source_location{loc}, BCLog::NET,
+                              BCLog::Level::Debug,
+                              /*should_ratelimit=*/false);
+    LogInstance().m_log_sourcelocations = true;
+    LogDebug(BCLog::NET, "with function\n");
+    LogInstance().m_log_timestamps = false;
+    SetMockTime(1700000000);
+    LogError("no timestamp, mocktime\n");
+    SetMockTime(0);
+    flush_debug_log();
+
+    const auto records{ReadJsonLogLines()};
+    BOOST_TEST_INFO_SCOPE(util::Join(ReadDebugLogLines(), "\n"));
+    BOOST_REQUIRE_EQUAL(records.size(), 7U);
+
+    const UniValue &r0{records[0]};
+    const std::vector<std::string> keys{"ts",   "level", "category", "thread",
+                                        "file", "line",  "msg"};
+    BOOST_CHECK(r0.getKeys() == keys);
+    const std::string &ts{r0["ts"].get_str()};
+    // 2026-10-19T12:34:56.123456Z
+    BOOST_CHECK_EQUAL(ts.size(), 27U);
+    BOOST_CHECK_EQUAL(ts[10], 'T');
+    BOOST_CHECK_EQUAL(ts[19], '.');
+    BOOST_CHECK_EQUAL(ts.back(), 'Z');
+    BOOST_CHECK_EQUAL(r0["level"].get_str(), "debug");
+    BOOST_CHECK_EQUAL(r0["category"].get_str(), "net");
+    BOOST_CHECK_EQUAL(r0["file"].get_str(),
+                      RemovePrefix(loc.file_name(), "./"));
+    BOOST_CHECK_EQUAL(r0["line"].getInt<int>(), int(loc.line()));
+    BOOST_CHECK_EQUAL(r0["msg"].get_str(), "hello \"world\"");
+
+    BOOST_CHECK_EQUAL(records[1]["level"].get_str(), "info");
+    BOOST_CHECK_EQUAL(records[1]["category"].get_str(), "none");
+    BOOST_CHECK_EQUAL(records[1]["msg"].get_str(), "two\nlines");
+
+    BOOST_CHECK_EQUAL(records[2]["level"].get_str(), "warning");
+    BOOST_CHECK_EQUAL(records[2]["msg"].get_str(),
+                      "bad byte \xef\xbf\xbd and tab\t");
+
+    BOOST_CHECK_EQUAL(records[3]["msg"].get_str(), "partial ");
+    BOOST_CHECK(!records[3].exists("continued"));
+    BOOST_CHECK_EQUAL(records[4]["msg"].get_str(), "rest");
+    BOOST_CHECK(records[4]["continued"].get_bool());
+
+    BOOST_CHECK(records[5]["func"].get_str().find("logging_json_format") !=
+                std::string::npos);
+    BOOST_CHECK_EQUAL(records[5]["msg"].get_str(), "with function");
+
+    BOOST_CHECK(!records[6].exists("ts"));
+    BOOST_CHECK_EQUAL(records[6]["mocktime"].get_str(), "2023-11-14T22:13:20Z");
+    BOOST_CHECK_EQUAL(records[6]["level"].get_str(), "error");
+}
+
+BOOST_FIXTURE_TEST_CASE(logging_json_rate_limit, LogSetup) {
+    LogInstance().m_log_format = BCLog::LogFormat::JSON;
+    ScopedScheduler scheduler{};
+    LogInstance().SetRateLimiting(scheduler.GetLimiter(1000, 1h));
+
+    for (int i = 0; i < 20; ++i) {
+        LogInfo("%s\n", std::string(100, 'x'));
+    }
+    flush_debug_log();
+    const auto records{ReadJsonLogLines()};
+    BOOST_TEST_INFO_SCOPE(util::Join(ReadDebugLogLines(), "\n"));
+    // JSON lines are counted against the quota with their metadata, so
+    // fewer than ten 100-byte messages fit in 1000 bytes.
+    size_t plain{0}, flagged{0}, warnings{0};
+    for (const UniValue &r : records) {
+        const bool rl{r.exists("ratelimited") && r["ratelimited"].get_bool()};
+        if (r["level"].get_str() == "warning") {
+            ++warnings;
+            BOOST_CHECK(rl);
+            BOOST_CHECK(
+                r["msg"].get_str().starts_with("Excessive logging detected"));
+        } else if (rl) {
+            ++flagged;
+        } else {
+            ++plain;
+        }
+    }
+    BOOST_CHECK_EQUAL(warnings, 1U);
+    BOOST_CHECK(plain > 0 && plain < 10);
+    // The line that started the suppression
+    BOOST_CHECK_EQUAL(flagged, 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
