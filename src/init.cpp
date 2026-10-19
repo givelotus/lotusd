@@ -1073,6 +1073,13 @@ void SetupServerArgs(NodeContext &node) {
         ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
         OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebsocketbridge",
+        "Carry inbound P2P WebSocket peers through a socketpair bridge "
+        "instead of handing their connection to the P2P layer (for testing; "
+        "always used for permessage-deflate clients) (default: 0)",
+        ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY,
+        OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-p2pwebsockettrustforwardedfor",
         "For P2P WebSocket peers connecting from localhost (a reverse "
         "proxy), take their address from the last X-Forwarded-For hop "
