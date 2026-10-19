@@ -127,7 +127,7 @@ class HTTPPublicFallbackTest(BitcoinTestFramework):
             "Connection: Upgrade",
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
-            "Sec-WebSocket-Protocol: p2p-zstd-v1",
+            "Sec-WebSocket-Protocol: p2p-v2",
         ]
         if auth:
             lines.append(f"Authorization: Bearer {auth}")

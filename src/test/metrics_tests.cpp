@@ -8,6 +8,7 @@
 #include <metrics/metrics.h>
 #include <metrics/process.h>
 #include <node/metrics.h>
+#include <net_websocket.h>
 #include <protocol.h>
 #include <script/script.h>
 #include <txmempool.h>
@@ -27,6 +28,15 @@
 using namespace metrics;
 
 BOOST_FIXTURE_TEST_SUITE(metrics_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(websocket_v2_compression_label) {
+    const auto &labels{node::metric_labels::WebSocketCompressions()};
+    const auto v2{size_t(P2PWebSocketCompression::P2P_V2)};
+    BOOST_REQUIRE_LT(v2, labels.size());
+    BOOST_CHECK_EQUAL(labels[v2], "p2p-v2");
+    BOOST_CHECK_EQUAL(
+        labels[size_t(P2PWebSocketCompression::ZSTD_DICT)], "zstd-dict");
+}
 
 BOOST_AUTO_TEST_CASE(escaping) {
     std::string out;

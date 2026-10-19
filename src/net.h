@@ -451,6 +451,52 @@ public:
                              std::vector<uint8_t> &header) const override;
 };
 
+/**
+ * Lotus v2 P2P over WebSocket ("p2p-v2"). Between CConnman and the
+ * WebSocketSock each message is [4-byte LE length][id][payload], where id is
+ * a 1-byte message id or 0, a 1-byte name length and the name (see
+ * GetP2PV2MessageId). There is no network magic and no checksum: TLS (or Tor)
+ * protects the bytes, the WebSocket frames them, and no payload is hashed.
+ * The WebSocketSock turns each such message into one WebSocket message.
+ */
+class P2PV2TransportDeserializer final : public TransportDeserializer {
+public:
+    P2PV2TransportDeserializer(const Config &config, NodeId node_id)
+        : m_config{config}, m_node_id{node_id} {}
+
+    bool Complete() const override { return m_state == State::DONE; }
+    int Read(const Config &config, Span<const uint8_t> &msg_bytes) override;
+    CNetMessage GetMessage(std::chrono::microseconds time,
+                           bool &reject_message) override;
+    bool HasData() const override { return m_state != State::LENGTH || m_pos; }
+
+private:
+    enum class State { LENGTH, ID, NAME_LENGTH, NAME, DATA, DONE };
+    void Reset();
+
+    const Config &m_config;
+    //! Only for logging
+    const NodeId m_node_id;
+    State m_state{State::LENGTH};
+    //! Bytes read of the current field
+    uint32_t m_pos{0};
+    uint8_t m_length_bytes[4]{};
+    //! Length of the message (id and payload)
+    uint32_t m_length{0};
+    //! Bytes of it consumed by the id (1, or 2 + the name)
+    uint32_t m_id_size{0};
+    std::string m_type;
+    uint8_t m_name_length{0};
+    bool m_invalid_type{false};
+    DataStream m_payload{};
+};
+
+class P2PV2TransportSerializer final : public TransportSerializer {
+public:
+    void prepareForTransport(const Config &config, CSerializedNetMsg &msg,
+                             std::vector<uint8_t> &header) const override;
+};
+
 struct CNodeOptions {
     NetPermissionFlags permission_flags = NetPermissionFlags::None;
     bool prefer_evict = false;
@@ -1166,8 +1212,8 @@ public:
      * @param[in] addr_bind Our address on the HTTP connection.
      * @param[in] info   Transport details shared with the bridge.
      */
-    void AcceptWebSocketPeer(std::unique_ptr<Sock> &&sock,
-                             const CAddress &addr, const CAddress &addr_bind,
+    void AcceptWebSocketPeer(std::unique_ptr<Sock> &&sock, const CAddress &addr,
+                             const CAddress &addr_bind,
                              std::shared_ptr<WebSocketTransportInfo> info);
 
     /**

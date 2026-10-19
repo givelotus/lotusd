@@ -152,6 +152,9 @@ std::string SecWebSocketAccept(const std::string &key) {
 }
 
 P2PWebSocketCompression CompressionForProtocol(std::string_view protocol) {
+    if (protocol == P2P_WS_PROTOCOL_V2) {
+        return P2PWebSocketCompression::P2P_V2;
+    }
     if (protocol == P2P_WS_PROTOCOL_ZSTD_DICT) {
         return P2PWebSocketCompression::ZSTD_DICT;
     }
@@ -236,7 +239,7 @@ HandshakeHTTP2(const DialerState &state, std::unique_ptr<HandshakeSock> sock,
         return std::nullopt;
     }
     if (!h2->ResponseHeader("sec-websocket-extensions").empty() ||
-        !OfferedProtocol(state.protocols, selected)) {
+        selected != P2P_WS_PROTOCOL_V2 || !OfferedProtocol(state.protocols, selected)) {
         LogDebug(BCLog::NET,
                  "WebSocket upgrade to %s (HTTP/2): invalid response\n",
                  url.authority);
@@ -405,7 +408,7 @@ Handshake(const DialerState &state, std::unique_ptr<Sock> &&tcp,
         ToLower(header("connection")).find("upgrade") == std::string::npos ||
         header("sec-websocket-accept") != SecWebSocketAccept(key) ||
         !header("sec-websocket-extensions").empty() ||
-        !OfferedProtocol(state.protocols, selected)) {
+        selected != P2P_WS_PROTOCOL_V2) {
         LogDebug(BCLog::NET, "WebSocket upgrade to %s: invalid response\n",
                  url.authority);
         return std::nullopt;
@@ -436,9 +439,10 @@ bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
     for (const std::string &entry : pins) {
         // A host never contains '=', so the first one separates the pin.
         const size_t eq{entry.find('=')};
-        const auto pin{eq == std::string::npos
-                           ? std::nullopt
-                           : DecodeSpkiPin(std::string_view{entry}.substr(eq + 1))};
+        const auto pin{
+            eq == std::string::npos
+                ? std::nullopt
+                : DecodeSpkiPin(std::string_view{entry}.substr(eq + 1))};
         if (!pin || eq == 0) {
             LogPrintf("Error: invalid -p2pwebsocketpin=%s (expected "
                       "<host>=<base64url SHA-256 of the public key>)\n",
@@ -453,17 +457,12 @@ bool StartP2PWebSocketDialer(const std::optional<fs::path> &client_cert,
     if (!state->client_ctx->Get()) {
         return false;
     }
-    // "p2p-zstd-v1,p2p-zstd" by default; "none" offers plain messages.
-    for (const std::string &token : util::SplitString(offer, ',')) {
-        const std::string t{util::TrimString(token)};
-        if (t == P2P_WS_PROTOCOL_ZSTD_DICT || t == P2P_WS_PROTOCOL_ZSTD) {
-            state->protocols += (state->protocols.empty() ? "" : ", ") + t;
-        } else if (t == "permessage-deflate") {
-            LogPrintf("-p2pwebsocketoffer: permessage-deflate is only "
-                      "accepted from inbound clients, not offered\n");
-        } else if (t != "none") {
-            LogPrintf("Ignoring unknown -p2pwebsocketoffer entry %s\n", t);
-        }
+    // Lotus v2 peers speak only p2p-v2.
+    state->protocols = P2P_WS_PROTOCOL_V2;
+    if (offer != P2P_WS_PROTOCOL_V2) {
+        LogPrintf("Ignoring -p2pwebsocketoffer=%s: Lotus v2 peers speak %s "
+                  "only\n",
+                  offer, P2P_WS_PROTOCOL_V2);
     }
     WITH_LOCK(g_dialer_mutex, g_dialer = state);
     SetWebSocketDialer([](std::unique_ptr<Sock> &&tcp,

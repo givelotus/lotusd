@@ -51,7 +51,7 @@ class P2PWebSocketTokenTest(BitcoinTestFramework):
                 "Connection: Upgrade",
                 f"Sec-WebSocket-Key: {key}",
                 "Sec-WebSocket-Version: 13",
-                "Sec-WebSocket-Protocol: p2p-zstd-v1",
+                "Sec-WebSocket-Protocol: p2p-v2",
             ]
         lines += list(headers)
         with socket.create_connection(("127.0.0.1", self.public_port)) as s:

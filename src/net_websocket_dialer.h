@@ -15,8 +15,7 @@
 #include <net_websocket.h>
 
 //! What outbound P2P WebSockets offer, in order of preference
-static const char *const DEFAULT_P2P_WEBSOCKET_OFFER =
-    "p2p-zstd-v1,p2p-zstd";
+static const char *const DEFAULT_P2P_WEBSOCKET_OFFER = "p2p-v2";
 
 /**
  * Start the outbound P2P WebSocket dialer (its own I/O thread) and register

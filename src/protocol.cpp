@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <limits>
+#include <map>
 
 static std::atomic<bool> g_initial_block_download_completed(false);
 
@@ -259,6 +260,67 @@ std::string CInv::ToString() const {
     } catch (const std::out_of_range &) {
         return strprintf("0x%08x %s", type, hash.ToString());
     }
+}
+
+/**
+ * p2p-v2 message ids (index + 1). APPEND ONLY: never reorder or remove, or
+ * nodes would misread each other's messages.
+ */
+static const std::vector<std::string> g_p2p_v2_message_types{
+    NetMsgType::VERSION,     NetMsgType::VERACK,       NetMsgType::ADDR,
+    NetMsgType::ADDRV2,      NetMsgType::SENDADDRV2,   NetMsgType::INV,
+    NetMsgType::GETDATA,     NetMsgType::MERKLEBLOCK,  NetMsgType::GETBLOCKS,
+    NetMsgType::GETHEADERS,  NetMsgType::TX,           NetMsgType::HEADERS,
+    NetMsgType::BLOCK,       NetMsgType::GETADDR,      NetMsgType::MEMPOOL,
+    NetMsgType::PING,        NetMsgType::PONG,         NetMsgType::NOTFOUND,
+    NetMsgType::FILTERLOAD,  NetMsgType::FILTERADD,    NetMsgType::FILTERCLEAR,
+    NetMsgType::SENDHEADERS, NetMsgType::FEEFILTER,    NetMsgType::SENDCMPCT,
+    NetMsgType::CMPCTBLOCK,  NetMsgType::GETBLOCKTXN,  NetMsgType::BLOCKTXN,
+    NetMsgType::GETCFILTERS, NetMsgType::CFILTER,      NetMsgType::GETCFHEADERS,
+    NetMsgType::CFHEADERS,   NetMsgType::GETCFCHECKPT, NetMsgType::CFCHECKPT,
+    NetMsgType::AVAHELLO,    NetMsgType::AVAPOLL,      NetMsgType::AVARESPONSE,
+    NetMsgType::AVAPROOF,    NetMsgType::GETAVAADDR,   NetMsgType::GETAVAPROOFS,
+    NetMsgType::AVAPROOFS,   NetMsgType::AVAPROOFSREQ,
+    // Consolidated eCash/V2 extensions: ids append to the original 41.
+    NetMsgType::AVATREASURY,
+    NetMsgType::AVABATCH,
+    NetMsgType::MINEDHEADER,
+    NetMsgType::SEALEDHEADER,
+    NetMsgType::SEALEDBLOCK,
+    NetMsgType::MERKLIXSYNC,
+    NetMsgType::GETMERKLIXBUCK,
+    NetMsgType::MERKLIXBUCK,
+    NetMsgType::GETSHORTTX,
+    NetMsgType::SHORTTX,
+    NetMsgType::GETUTXOROOTS,
+    NetMsgType::UTXOROOTS,
+    NetMsgType::GETUTXOSHARD,
+    NetMsgType::UTXOSHARD,
+    NetMsgType::GETBLOCKUNDO,
+    NetMsgType::BLOCKUNDO,
+
+    NetMsgType::SENDINVSHORT,
+    NetMsgType::INVSHORT,
+};
+static_assert(sizeof(uint8_t) == 1);
+
+std::optional<uint8_t> GetP2PV2MessageId(std::string_view msg_type) {
+    static const std::map<std::string, uint8_t, std::less<>> ids{[] {
+        std::map<std::string, uint8_t, std::less<>> m;
+        for (size_t i = 0; i < g_p2p_v2_message_types.size(); ++i) {
+            m.emplace(g_p2p_v2_message_types[i], uint8_t(i + 1));
+        }
+        return m;
+    }()};
+    const auto it{ids.find(msg_type)};
+    return it == ids.end() ? std::nullopt : std::optional{it->second};
+}
+
+const std::string *GetP2PV2MessageType(uint8_t id) {
+    if (id == 0 || id > g_p2p_v2_message_types.size()) {
+        return nullptr;
+    }
+    return &g_p2p_v2_message_types[id - 1];
 }
 
 const std::vector<std::string> &getAllNetMessageTypes() {

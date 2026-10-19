@@ -129,6 +129,15 @@ class HTTPMetricsTest(BitcoinTestFramework):
             )
             >= 1
         )
+        assert all(
+            p["websocket"]["compression"] == "p2p-v2" for p in node.getpeerinfo()
+        )
+        assert_equal(
+            self.total(samples, m("p2p_websocket_peers"), compression="p2p-v2"), 2
+        )
+        assert_equal(
+            self.total(samples, m("p2p_websocket_peers"), compression="zstd-dict"), 0
+        )
         assert_equal(
             self.total(
                 samples,
