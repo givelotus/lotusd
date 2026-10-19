@@ -270,17 +270,24 @@ bool IsP2PKHTemplate(const CScript &script) {
            script[1] == OP_HASH160 && script[2] == 20 &&
            script[23] == OP_EQUALVERIFY && script[24] == OP_CHECKSIG;
 }
+bool IsP2SHTemplate(const CScript &script) {
+    return script.size() == 23 && script[0] == OP_HASH160 &&
+           script[1] == 20 && script[22] == OP_EQUAL;
+}
 } // namespace
 
 // The rules that depend on the kind of the spent coin.
 // - A2: a legacy (version 1 or 2) transaction spends only coins created by
 //   legacy transactions. A V2 coin's scriptPubKey is its V2 wire encoding,
 //   which the legacy interpreter must never run as a legacy script.
-// - A5/A6: a version 7 input spending a legacy coin (the legacy bridge)
-//   spends a P2PKH coin through path 0 with one witness without siblings,
-//   whose arguments are [sig, compressed pubkey] and whose pubkey hashes to
-//   the coin's key hash. The signature is checked with the input's other
-//   scripts (CScriptCheck).
+// - A5-A7: a version 7 input spending a legacy coin (the legacy bridge)
+//   spends a P2PKH or P2SH coin through path 0 with one witness without
+//   siblings. For P2PKH the witness has no script, its arguments are [sig,
+//   compressed pubkey] and the pubkey hashes to the coin's key hash. For
+//   P2SH the witness script is the redeem script, which hashes to the
+//   coin's script hash, and the arguments are the pushes before it. The
+//   signatures and the redeem script run with the input's other scripts
+//   (CScriptCheck).
 static bool CheckSpentCoin(const CTransaction &tx, const CTxIn &in,
                            const Coin &coin, TxValidationState &state) {
     if (tx.nVersion != 7) {
@@ -294,7 +301,8 @@ static bool CheckSpentCoin(const CTransaction &tx, const CTxIn &in,
         return true;
     }
     const CScript &script = coin.GetTxOut().scriptPubKey;
-    if (!IsP2PKHTemplate(script)) {
+    const bool p2sh = IsP2SHTemplate(script);
+    if (!p2sh && !IsP2PKHTemplate(script)) {
         return state.Invalid(TxValidationResult::TX_CONSENSUS,
                              "bad-txns-v2-legacy-coin-template");
     }
@@ -304,6 +312,15 @@ static bool CheckSpentCoin(const CTransaction &tx, const CTxIn &in,
                              "bad-txns-v2-legacy-coin-witness");
     }
     const lotus::v2::BranchWitness &witness = in.vWitnesses[0];
+    if (p2sh) {
+        const uint160 script_hash = Hash160(witness.script);
+        if (!std::equal(script_hash.begin(), script_hash.end(),
+                        script.begin() + 2)) {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                 "bad-txns-v2-legacy-p2sh-hash");
+        }
+        return true;
+    }
     if (!witness.script.empty() || witness.arguments.size() != 2 ||
         witness.arguments[1].size() != CPubKey::COMPRESSED_SIZE ||
         (witness.arguments[1][0] != 0x02 && witness.arguments[1][0] != 0x03)) {
