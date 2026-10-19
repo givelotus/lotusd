@@ -2084,4 +2084,42 @@ BOOST_AUTO_TEST_CASE(v2_state_output_post_check) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(v2_legacy_state_output) {
+    // A non-V2 transaction runs no V2 script, so it cannot create a
+    // HAS_STATE output through the legacy scriptPubKey bridge.
+    lotus::v2::Output stateful;
+    stateful.flags = lotus::v2::OUTPUT_FLAG_HAS_STATE;
+    stateful.value = 1000;
+    stateful.branches = {lotus::v2::BranchLeaf(std::vector<uint8_t>{0x4e})};
+    stateful.paths = {{0}};
+    stateful.state_root[0] = 1;
+    std::vector<uint8_t> wire;
+    std::string error;
+    BOOST_REQUIRE(lotus::v2::EncodeOutput(stateful, wire, error));
+    auto make = [&](int32_t version, CScript script) {
+        CMutableTransaction mtx;
+        mtx.nVersion = version;
+        mtx.vin.emplace_back(COutPoint{TxId{uint256S("bb")}, 0});
+        mtx.vout.emplace_back(1000 * SATOSHI, script);
+        return CTransaction{mtx};
+    };
+    TxValidationState state;
+    BOOST_CHECK(!CheckRegularTransaction(
+        make(2, CScript(wire.begin(), wire.end())), state));
+    BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-legacy-state-output");
+    // The same output without the state flag, and ordinary scripts whose
+    // first byte has bit 2 set, are unaffected.
+    stateful.flags = 0;
+    stateful.state_root = {};
+    BOOST_REQUIRE(lotus::v2::EncodeOutput(stateful, wire, error));
+    TxValidationState plain;
+    BOOST_CHECK(CheckRegularTransaction(
+        make(2, CScript(wire.begin(), wire.end())), plain));
+    TxValidationState p2pkh;
+    BOOST_CHECK(CheckRegularTransaction(
+        make(2, CScript() << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 7)
+                          << OP_EQUALVERIFY << OP_CHECKSIG),
+        p2pkh));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
