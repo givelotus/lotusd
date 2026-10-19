@@ -22,9 +22,7 @@ class ToolWalletTest(BitcoinTestFramework):
     setup_clean_chain = True
     rpc_timeout = 120
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
-        self.skip_if_no_wallet_tool()
+    requires = {"wallet", "wallet_tool"}
 
     def bitcoin_wallet_process(self, *args):
         binary = (

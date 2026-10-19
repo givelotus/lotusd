@@ -33,8 +33,7 @@ class RawTransactionsTest(BitcoinTestFramework):
     # instant tx relay.
     extra_args = [["-whitelist=noban@127.0.0.1"]] * num_nodes
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def setup_network(self):
         self.setup_nodes()

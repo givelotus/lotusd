@@ -12,8 +12,7 @@ class ChronikDisallowPruneTest(BitcoinTestFramework):
     setup_clean_chain = True
     num_nodes = 1
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
+    requires = {"chronik"}
 
     def run_test(self):
         self.nodes[0].stop_node()

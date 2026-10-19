@@ -32,8 +32,7 @@ class ImportDescriptorsTest(BitcoinTestFramework):
     extra_args = [[], ["-keypool=5"]]
     setup_clean_chain = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def test_importdesc(
         self,

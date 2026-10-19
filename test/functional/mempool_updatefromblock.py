@@ -18,8 +18,7 @@ class MempoolUpdateFromBlockTest(BitcoinTestFramework):
     num_nodes = 1
     ancestor_descendant_count = 60
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def transaction_graph_test(
         self,

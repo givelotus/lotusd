@@ -30,8 +30,7 @@ class WalletStandardnessTest(BitcoinTestFramework):
     num_nodes = 2
     extra_args = [["-acceptnonstdtxn=0"], ["-acceptnonstdtxn=1"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def run_test(self):
         std_node, nonstd_node = self.nodes

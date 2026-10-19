@@ -34,8 +34,7 @@ class ChronikScriptHashTest(BitcoinTestFramework):
     extra_args = [["-chronik", "-chronikscripthashindex=1"]]
     rpc_timeout = 240
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_chronik()
+    requires = {"chronik"}
 
     def run_test(self):
         self.node = self.nodes[0]

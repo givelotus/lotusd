@@ -13,8 +13,7 @@ class GetInfoRPCTest(BitcoinTestFramework):
     setup_clean_chain = True
     extra_args = [["-avalanche=0"]]
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_cli()
+    requires = {"cli"}
 
     def run_test(self):
         node = self.nodes[0]

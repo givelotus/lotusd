@@ -157,8 +157,7 @@ class ImportRescanTest(BitcoinTestFramework):
     rpc_timeout = 120
     noban_tx_relay = True
 
-    def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+    requires = {"wallet"}
 
     def setup_network(self):
         self.extra_args = [[] for _ in range(self.num_nodes)]
