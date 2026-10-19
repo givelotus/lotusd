@@ -5,7 +5,7 @@
 
 import os
 
-from test_framework.messages import CBlockHeader, FromHex
+from test_framework.messages import V2_TESTNET_CHAIN_ID, CBlockHeader, FromHex
 from test_framework.p2p import P2PInterface, msg_headers
 from test_framework.test_framework import BitcoinTestFramework
 
@@ -52,7 +52,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
             peer_checkpoint.wait_for_disconnect()
         assert {
             "height": 4,
-            "hash": self.headers[3].hash_hex,
+            "hash": self.headers[3].hash_hex_for_chain(V2_TESTNET_CHAIN_ID),
             "branchlen": 4,
             "status": "headers-only",
         } in self.nodes[0].getchaintips()
@@ -62,7 +62,7 @@ class RejectLowDifficultyHeadersTest(BitcoinTestFramework):
         peer_before_checkpoint.send_and_ping(msg_headers(self.headers_fork))
         assert {
             "height": 2,
-            "hash": self.headers_fork[1].hash_hex,
+            "hash": self.headers_fork[1].hash_hex_for_chain(V2_TESTNET_CHAIN_ID),
             "branchlen": 2,
             "status": "headers-only",
         } in self.nodes[1].getchaintips()
