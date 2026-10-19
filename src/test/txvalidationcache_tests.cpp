@@ -36,6 +36,9 @@ struct NativeValidationCacheSetup : TestChain100Setup {
         bytes.push_back(0xbb); // Native BIP340 CHECKSIG.
         program = CScript(bytes.begin(), bytes.end());
         m_coinbase_txns.clear();
+        // Native spends need V2 coinbases; this fixture mines legacy ones by
+        // default.
+        m_coinbase_version = 7;
         for (int i = 0; i < COINBASE_MATURITY; ++i) {
             const auto block = CreateAndProcessBlock({}, program);
             BOOST_REQUIRE(m_node.chainman->ActiveTip()->GetBlockHash() == block.GetHash());
