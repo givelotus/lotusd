@@ -79,6 +79,9 @@ VmCostUnits OpCost(VmOpcode op, std::span<const size_t> operands,
 VmCostUnits WorstOpCost(VmOpcode op, size_t limit,
                         const VmCostProfile &profile) {
     std::vector<size_t> operands(6, limit);
+    if (op == 0xeb) // ENFORCEOUTPUT: claim, template, value, 16 roots,
+                    // state root and output index
+        operands.assign(21, limit);
     if (op == 0xc3) { // STATEHASH: 64 items, the count and their framing
         operands.assign(VM_STATEHASH_MAX_ITEMS + 1, limit);
         operands.push_back(CompactSizeBytes(VM_STATEHASH_MAX_ITEMS) +
@@ -220,8 +223,14 @@ class SizePass {
     uint16_t input_count;
     uint16_t output_count;
     size_t limit;
+    VmCostUnits ScanCost(VmOpcode op) const {
+        return op == 0xeb ? CostMul(schedule.opcode[0xeb].per_scanned_output,
+                                    output_count, schedule)
+                          : 0;
+    }
     VmCostUnits Worst(VmOpcode op) const {
-        VmCostUnits cost = WorstOpCost(op, limit, schedule);
+        VmCostUnits cost =
+            CostAdd(WorstOpCost(op, limit, schedule), ScanCost(op), schedule);
         if (op == 0xc0 || op == 0xc1)
             cost = CostAdd(cost, CostMul(
                 MerkleStepCost(std::nullopt),
@@ -488,6 +497,31 @@ class SizePass {
                 pop();
                 pop();
                 push(16);
+            } else if (op == 0xeb) { // ENFORCEOUTPUT
+                // Exact only for `<template push> <claim push> eb`; the
+                // template then fixes how many operands are popped.
+                const Instruction *self = &ins;
+                std::optional<OutputTemplate> parsed;
+                if (previous && previous == self - 1 &&
+                    self - code.data() >= 2 && previous->op <= 0x5d) {
+                    const Instruction &pushed = *(self - 2);
+                    OutputTemplate t;
+                    std::string error;
+                    if (pushed.op >= 1 && pushed.op <= 0x4c &&
+                        ParseOutputTemplate(pushed.data, t, error))
+                        parsed = std::move(t);
+                }
+                if (!parsed) return {UnknownSizes(), Worst(op)};
+                pop(); // claim
+                pop(); // template
+                if (parsed->value_mode == OutputTemplate::VALUE_FROM_STACK)
+                    pop();
+                for (uint16_t m = parsed->branch_stack_mask; m;
+                     m &= uint16_t(m - 1))
+                    pop();
+                if (parsed->state_mode == OutputTemplate::STATE_STACK) pop();
+                if (parsed->output_mode == OutputTemplate::OUTPUT_STACK) pop();
+                push(16);
             } else if (op == 0xc3) { // STATEHASH
                 const auto k = LiteralValue(previous);
                 if (!k || *k < 0 || *k > Int(VM_STATEHASH_MAX_ITEMS))
@@ -566,7 +600,8 @@ class SizePass {
         } catch (const std::out_of_range &) {
             return {UnknownSizes(), Worst(op)};
         }
-        VmCostUnits charged = OpCost(op, operands, results, schedule);
+        VmCostUnits charged = CostAdd(OpCost(op, operands, results, schedule),
+                                      ScanCost(op), schedule);
         if (op == 0xc0 || op == 0xc1) {
             const size_t cap = op == 0xc0 ? 64 : 256;
             charged = CostAdd(
