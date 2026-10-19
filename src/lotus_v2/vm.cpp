@@ -51,14 +51,22 @@ namespace {
         size_t end = 0;  // IF: ENDIF
     };
 
-    // Frozen genesis allocation for C_account. Extensions must not edit this.
+    // Genesis allocation for C_account, byte for byte the P03 registry
+    // (docs/lotus-v2/tools/opcodes.json, sha256 recorded in
+    // vm_test/opcode_coverage.json): 225 assigned bytes, 31 OP_SUCCESS_N.
+    // This is a pre-genesis reallocation (67/68 retired, new bytes added);
+    // after genesis, only unassigned bytes may become assigned (soft fork).
+    // 0x6c (EMITLOG) counts as assigned but the scan rejects it on-chain, and
+    // 0xff (EXT2) is the two-byte prefix handled by the scan.
     bool GenesisAssigned(uint8_t op) {
-        return op <= 0x5d || (op >= 0x60 && op <= 0x6b) ||
-               (op >= 0x70 && op <= 0x81) || (op >= 0x88 && op <= 0x94) ||
-               (op >= 0x98 && op <= 0xb4) || (op >= 0xb8 && op <= 0xc2) ||
-               (op >= 0xc8 && op <= 0xdd) || (op >= 0xe0 && op <= 0xea) ||
-               (op >= 0xf0 && op <= 0xf4);
+        return op <= 0x5d || (op >= 0x60 && op <= 0x66) ||
+               (op >= 0x69 && op <= 0x6c) || (op >= 0x70 && op <= 0x81) ||
+               (op >= 0x88 && op <= 0x94) || (op >= 0x98 && op <= 0xb4) ||
+               (op >= 0xb8 && op <= 0xc3) || (op >= 0xc8 && op <= 0xdf) ||
+               (op >= 0xe0 && op <= 0xef) || (op >= 0xf0 && op <= 0xf6) ||
+               op == 0xff;
     }
+    constexpr uint8_t OP_EMITLOG = 0x6c;
     // Current enforcement allocation. A future activated view may add bytes.
     bool Assigned(uint8_t op) {
         return GenesisAssigned(op);
@@ -110,6 +118,11 @@ namespace {
                 instructions.push_back(Instruction{VmExt2(selector), {}, 0, 0});
                 continue;
             }
+            // EMITLOG is simulation-only and permanently invalid on-chain. It
+            // rejects as soon as the scan reaches it, so a later success byte,
+            // a skipped arm or an earlier RETURN cannot hide it.
+            if (op == OP_EMITLOG)
+                throw VmFailure("EMITLOG is invalid on-chain");
             if (!(genesis ? GenesisAssigned(op) : Assigned(op))) return true;
             size_t len = 0;
             if (op >= 1 && op <= 75) {
@@ -140,9 +153,8 @@ namespace {
         size_t loop_depth = 0;
         for (size_t i = 0; i < code.size(); ++i) {
             const VmOpcode op = code[i].op;
-            if (op == 0x61 || op == 0x62 || op == 0x67 || op == 0x68 ||
-                op == 0x69) {
-                if (op >= 0x67 && ++loop_depth > 2)
+            if (op == 0x61 || op == 0x62 || op == 0x69) {
+                if (op == 0x69 && ++loop_depth > 2)
                     throw VmFailure("loop nesting exceeds two");
                 if (frames.size() >= profile.max_ast_depth)
                     throw VmFailure("AST depth exceeded");
@@ -164,8 +176,7 @@ namespace {
                 else
                     code[frame.start].peer = i;
             } else if (op == 0x6a) {
-                if (frames.empty() || frames.back().op < 0x67 ||
-                    frames.back().op > 0x69)
+                if (frames.empty() || frames.back().op != 0x69)
                     throw VmFailure("unmatched ENDENUMERATE");
                 code[frames.back().start].peer = i;
                 frames.pop_back();
@@ -1283,19 +1294,13 @@ namespace {
                     i = ins.end;
                     continue;
                 }
-                if (op >= 0x67 && op <= 0x69) {
-                    VmBytes bound_bytes;
-                    if (op == 0x69) bound_bytes = Pop();
-                    Int bound = op == 0x67   ? Int(input_count)
-                                : op == 0x68 ? Int(output_count)
-                                             : Numeric(bound_bytes);
-                    if (bound < 0 || (op == 0x69 && bound > 256))
+                if (op == 0x69) {
+                    VmBytes bound_bytes = Pop();
+                    const Int bound = Numeric(bound_bytes);
+                    if (bound < 0 || bound > 256)
                         throw VmFailure("loop bound");
                     const std::array<size_t, 1> loop_op{bound_bytes.size()};
-                    Charge(OpCost(op,
-                                  op == 0x69 ? std::span<const size_t>(loop_op)
-                                             : std::span<const size_t>(),
-                                  {}, cost_profile, false));
+                    Charge(OpCost(op, loop_op, {}, cost_profile, false));
                     for (size_t index = 0; index < size_t(bound); ++index) {
                         Tick();
                         Push(Number(index));
