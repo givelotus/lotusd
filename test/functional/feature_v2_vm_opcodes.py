@@ -8,7 +8,10 @@ A counter vault holds HAS_STATE root STATEHASH(n). Spending it proves n with
 STATEVERIFY, and ENFORCEOUTPUT requires an exact continuation of the vault
 (INHERIT paths, same branches) holding STATEHASH(n + 1) and the vault's value
 minus a fixed fee. The test creates, spends and continues the vault; checks
-rejected transitions, unauthorized state, legacy EMITLOG; exercises
+rejected transitions, unauthorized state, legacy EMITLOG; checks that
+ENFORCEOUTPUT claims are assigned by maximum flow (a transaction a
+first-match rule would reject is accepted, an infeasible one rejected);
+exercises
 getv2vmprofile, testv2transaction and simulatev2transaction (which builds the
 continuation from a zero-output draft); and checks that a reorg restores the
 spent state root and its continuation.
@@ -33,7 +36,7 @@ FEE = 10_000
 
 # Opcodes (P03 registry).
 N0, N1 = b"\x00", b"\x4e"
-DROP, DUP, ADD, SUB, EQUALVERIFY = b"\x79", b"\x7a", b"\x9e", b"\x9f", b"\x92"
+DUP, ADD, SUB = b"\x7a", b"\x9e", b"\x9f"
 STATEHASH, INPUTINDEX, UTXOVALUE = b"\xc3", b"\xd0", b"\xd6"
 ENFORCEOUTPUT, STATEVERIFY, EMITLOG = b"\xeb", b"\xed", b"\x6c"
 
@@ -95,7 +98,7 @@ def template(
 #   n DUP N(1) STATEHASH STATEVERIFY       -- the coin holds STATEHASH(n)
 #   N(1) ADD N(1) STATEHASH                -- next state STATEHASH(n + 1)
 #   INPUTINDEX UTXOVALUE <FEE> SUB         -- next value
-#   <template> N(0) ENFORCEOUTPUT DROP TRUE
+#   <template> N(0) ENFORCEOUTPUT TRUE       -- ENFORCEOUTPUT pushes nothing
 VAULT_TEMPLATE = template(value_mode=3, paths_mode=2, state_mode=2)
 VAULT = (
     DUP
@@ -113,7 +116,6 @@ VAULT = (
     + push(VAULT_TEMPLATE)
     + N0
     + ENFORCEOUTPUT
-    + DROP
     + N1
 )
 VAULT_ROOT = lotus_v2_branch_leaf(VAULT)
@@ -122,7 +124,7 @@ VAULT_ROOT = lotus_v2_branch_leaf(VAULT)
 # with that single branch. (Anyone may spend it: state authorization alone
 # does not authenticate state, see plan I-10.)
 CREATOR_TEMPLATE = template(value_mode=3, branch_count=1, stack_mask=1, state_mode=2)
-CREATOR = push(CREATOR_TEMPLATE) + N0 + ENFORCEOUTPUT + DROP + N1
+CREATOR = push(CREATOR_TEMPLATE) + N0 + ENFORCEOUTPUT + N1
 CREATOR_ROOT = lotus_v2_branch_leaf(CREATOR)
 
 
@@ -210,6 +212,7 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         vault = self.test_create_vault()
         vault = self.test_continue_vault(vault)
         self.test_rejections(vault)
+        self.test_claim_assignment()
         self.test_simulation_and_reorg(vault)
 
     def test_profile(self):
@@ -250,7 +253,8 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         result = self.node.testv2transaction(create)
         assert_equal(result["valid"], True)
         effects = result["invocations"][0]["effects"]
-        assert_equal(effects["claims"], [{"output": 0, "amount": 0}])
+        # A claim records its amount and every output its template matches.
+        assert_equal(effects["claims"], [{"amount": 0, "matches": [0]}])
         assert_equal(effects["state_authorized"], [0])
         assert_equal(result["post_check"]["ok"], True)
         create_txid = self.node.sendrawtransaction(create)
@@ -342,6 +346,72 @@ class V2VmOpcodesTest(BitcoinTestFramework):
         sim = self.node.simulatev2transaction(emit)
         assert_equal(sim["invocations"][0]["status"], "success")
         assert_equal(sim["events"][0]["topic"], b"topic".hex())
+
+    def test_claim_assignment(self):
+        self.log.info("Claims are assigned by maximum flow, not first match")
+        # Two payment coins pin root R. A claims 20k from an output of
+        # exactly 20k; B claims 20k from any output with R. Both templates
+        # match o0 first, so a first-match rule would put 40k on o0 (20k);
+        # the maximum flow assigns B to o1 instead.
+        root = bytes([0x11]) * 32
+
+        def pay(claim, **tpl):
+            return (
+                push(template(mask=1, branches=[root], **tpl))
+                + push(num(claim))
+                + ENFORCEOUTPUT
+                + N1
+            )
+
+        pay_a = pay(20_000, value_mode=1, value=20_000)
+        pay_b = pay(20_000)
+        txid, vout, value = self.coinbase(4)
+        fund = v7(
+            [spend_input(txid, vout, OP_TRUE)],
+            [
+                output(100_000, lotus_v2_branch_leaf(pay_b)),
+                output(100_000, lotus_v2_branch_leaf(pay_a)),
+                output(value - 200_000 - FEE, lotus_v2_branch_leaf(OP_TRUE)),
+            ],
+        )
+        fund_txid = self.node.sendrawtransaction(fund)
+        self.mine()
+
+        def spend(o1_value):
+            return v7(
+                [spend_input(fund_txid, 0, pay_b), spend_input(fund_txid, 1, pay_a)],
+                [
+                    output(20_000, root),
+                    output(o1_value, root),
+                    output(
+                        200_000 - 20_000 - o1_value - FEE, lotus_v2_branch_leaf(OP_TRUE)
+                    ),
+                ],
+            )
+
+        # o1 has room for B: feasible.
+        result = self.node.testv2transaction(spend(30_000))
+        assert_equal(result["valid"], True)
+        claims = [inv["effects"]["claims"] for inv in result["invocations"]]
+        assert_equal(
+            claims,
+            [
+                [{"amount": 20_000, "matches": [0, 1]}],
+                [{"amount": 20_000, "matches": [0]}],
+            ],
+        )
+        assigned = [o["claimed"] for o in result["post_check"]["outputs"]]
+        assert_equal(assigned, [20_000, 20_000, 0])
+        # o1 too small for B: no assignment exists.
+        result = self.node.testv2transaction(spend(19_999))
+        assert_equal(result["valid"], False)
+        assert_equal(result["post_check"]["error"], "output-overclaimed")
+        assert_raises_rpc_error(
+            -26, "output-overclaimed", self.node.sendrawtransaction, spend(19_999)
+        )
+        self.node.sendrawtransaction(spend(30_000))
+        self.mine()
+        assert_equal(self.node.getrawmempool(), [])
 
     def test_simulation_and_reorg(self, vault):
         self.log.info("Simulate the continuation from a zero-output draft")

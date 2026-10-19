@@ -112,6 +112,154 @@ bool RunDeferredBlockChecks(const DeferredCheckRegistry &registry,
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Maximum flow (Dinic) over the bipartite claim graph. Nodes: 0 is the
+// source, 1..C the claims, C+1..C+O the outputs, C+O+1 the sink. The
+// augmenting search is iterative, so its depth does not depend on the
+// graph size.
+
+namespace {
+    struct FlowEdge {
+        uint32_t to;
+        uint32_t reverse;
+        uint64_t capacity;
+    };
+
+    class ClaimFlow {
+    public:
+        ClaimFlow(std::span<const OutputClaim> claims,
+                  std::span<const uint64_t> values)
+            : claims_(claims.size()), outputs_(values.size()),
+              graph_(claims.size() + values.size() + 2) {
+            const uint32_t source = 0, sink = Sink();
+            std::vector<uint8_t> used(values.size());
+            for (size_t c = 0; c < claims.size(); ++c) {
+                const uint32_t node = uint32_t(1 + c);
+                Connect(source, node, claims[c].amount);
+                for (uint16_t j : claims[c].matches) {
+                    Connect(node, OutputNode(j), claims[c].amount);
+                    used[j] = 1;
+                }
+            }
+            for (size_t j = 0; j < values.size(); ++j)
+                if (used[j]) Connect(OutputNode(j), sink, values[j]);
+        }
+
+        __uint128_t Run() {
+            __uint128_t total = 0;
+            while (Levels()) {
+                std::fill(next_.begin(), next_.end(), 0);
+                for (;;) {
+                    const uint64_t pushed = Augment();
+                    if (!pushed) break;
+                    total += pushed;
+                }
+            }
+            return total;
+        }
+
+        // Flow into each output: the used capacity of its sink edge.
+        std::vector<__uint128_t> Assigned(std::span<const uint64_t> values) const {
+            std::vector<__uint128_t> out(outputs_);
+            for (size_t j = 0; j < outputs_; ++j)
+                for (const auto &edge : graph_[OutputNode(j)])
+                    if (edge.to == Sink())
+                        out[j] = values[j] - edge.capacity;
+            return out;
+        }
+
+    private:
+        uint32_t Sink() const { return uint32_t(claims_ + outputs_ + 1); }
+        uint32_t OutputNode(size_t j) const {
+            return uint32_t(claims_ + 1 + j);
+        }
+        void Connect(uint32_t from, uint32_t to, uint64_t capacity) {
+            graph_[from].push_back(
+                FlowEdge{to, uint32_t(graph_[to].size()), capacity});
+            graph_[to].push_back(
+                FlowEdge{from, uint32_t(graph_[from].size() - 1), 0});
+        }
+        // Breadth-first levels from the source; false when the sink is
+        // unreachable in the residual graph.
+        bool Levels() {
+            level_.assign(graph_.size(), UINT32_MAX);
+            next_.assign(graph_.size(), 0);
+            std::vector<uint32_t> queue{0};
+            level_[0] = 0;
+            for (size_t head = 0; head < queue.size(); ++head) {
+                const uint32_t v = queue[head];
+                for (const auto &edge : graph_[v]) {
+                    if (edge.capacity && level_[edge.to] == UINT32_MAX) {
+                        level_[edge.to] = level_[v] + 1;
+                        queue.push_back(edge.to);
+                    }
+                }
+            }
+            return level_[Sink()] != UINT32_MAX;
+        }
+        // One augmenting path in the level graph (iterative depth-first
+        // search with per-node edge cursors); returns the flow pushed, or 0
+        // when the level graph is blocked.
+        uint64_t Augment() {
+            path_.clear();
+            uint32_t v = 0;
+            for (;;) {
+                if (v == Sink()) {
+                    uint64_t pushed = UINT64_MAX;
+                    for (const auto &[u, k] : path_)
+                        pushed = std::min(pushed, graph_[u][k].capacity);
+                    for (const auto &[u, k] : path_) {
+                        FlowEdge &edge = graph_[u][k];
+                        edge.capacity -= pushed;
+                        graph_[edge.to][edge.reverse].capacity += pushed;
+                    }
+                    return pushed;
+                }
+                auto &cursor = next_[v];
+                const auto &edges = graph_[v];
+                while (cursor < edges.size() &&
+                       (!edges[cursor].capacity ||
+                        level_[edges[cursor].to] != level_[v] + 1))
+                    ++cursor;
+                if (cursor < edges.size()) {
+                    path_.emplace_back(v, cursor);
+                    v = edges[cursor].to;
+                    continue;
+                }
+                // Dead end: retreat and skip the edge that led here.
+                if (path_.empty()) return 0;
+                level_[v] = UINT32_MAX;
+                v = path_.back().first;
+                path_.pop_back();
+                ++next_[v];
+            }
+        }
+
+        size_t claims_, outputs_;
+        std::vector<std::vector<FlowEdge>> graph_;
+        std::vector<uint32_t> level_;
+        std::vector<uint32_t> next_;
+        std::vector<std::pair<uint32_t, uint32_t>> path_;
+    };
+} // namespace
+
+__uint128_t MaxClaimFlow(std::span<const OutputClaim> claims,
+                         std::span<const uint64_t> output_values,
+                         std::vector<__uint128_t> *assigned) {
+    ClaimFlow flow(claims, output_values);
+    const __uint128_t total = flow.Run();
+    if (assigned) *assigned = flow.Assigned(output_values);
+    return total;
+}
+
+bool OutputClaimsFeasible(std::span<const OutputClaim> claims,
+                          std::span<const uint64_t> output_values,
+                          std::vector<__uint128_t> *assigned) {
+    __uint128_t claimed = 0;
+    for (const auto &claim : claims) claimed += claim.amount;
+    return MaxClaimFlow(claims, output_values, assigned) == claimed;
+}
+
 const DeferredKindKey kStateAuthorizationKind{"state-authorization"};
 const DeferredKindKey kOutputClaimsKind{"output-claims"};
 
@@ -172,6 +320,10 @@ public:
                 std::string &error) override {
         auto &slot = per_input_[input];
         for (const auto *claim : records.Of<OutputClaim>(kOutputClaimsKind)) {
+            if (claim->matches.empty()) {
+                error = "output-overclaimed";
+                return false;
+            }
             for (uint16_t j : claim->matches) {
                 if (j >= outputs_.size()) {
                     error = "output-overclaimed";
@@ -182,24 +334,15 @@ public:
         }
         return true;
     }
-    // Interim rule: each claim names one output, and the claims on output j
-    // sum to at most its value.
+    // Phase 2: one maximum-flow feasibility check over every claim.
     bool Final(std::string &error) override {
-        std::vector<__uint128_t> claimed(outputs_.size());
-        for (const auto &slot : per_input_) {
-            for (const auto &claim : slot) {
-                if (claim.matches.size() != 1) {
-                    error = "output-overclaimed";
-                    return false;
-                }
-                claimed[claim.matches[0]] += claim.amount;
-            }
-        }
-        for (size_t j = 0; j < outputs_.size(); ++j) {
-            if (claimed[j] > outputs_[j].value) {
-                error = "output-overclaimed";
-                return false;
-            }
+        std::vector<uint64_t> values(outputs_.size());
+        for (size_t j = 0; j < outputs_.size(); ++j)
+            values[j] = outputs_[j].value;
+        const auto claims = Claims();
+        if (!OutputClaimsFeasible(claims, values)) {
+            error = "output-overclaimed";
+            return false;
         }
         return true;
     }
