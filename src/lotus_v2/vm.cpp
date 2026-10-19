@@ -2400,14 +2400,14 @@ namespace {
                         Charge(RawMul(
                             cost_profile.opcode[0xeb].per_scanned_output,
                             last - first));
-                        size_t found = last;
+                        // The match mask: every output in range the
+                        // template matches. Phase 2 assigns the claim.
+                        std::vector<uint16_t> matched;
                         for (size_t j = first; j < last; ++j)
-                            if (matches(outputs[j])) {
-                                found = j;
-                                break;
-                            }
-                        if (found == last && simulation &&
-                            t.output_mode == OutputTemplate::OUTPUT_FIRST) {
+                            if (matches(outputs[j]))
+                                matched.push_back(uint16_t(j));
+                        if (matched.empty() && simulation &&
+                            t.output_mode == OutputTemplate::OUTPUT_ANY) {
                             // Constructive matching: a draft built from the
                             // template, with placeholders for free slots.
                             Output draft;
@@ -2475,25 +2475,27 @@ namespace {
                             if (!matches(draft))
                                 throw VmFailure(
                                     "ENFORCEOUTPUT draft cannot match template");
-                            found = simulation->AppendDraft(
+                            const size_t found = simulation->AppendDraft(
                                 std::move(draft), template_bytes,
                                 std::move(popped), uint64_t(claim),
                                 std::move(placeholders));
                             output_count = uint16_t(outputs.size());
-                            last = found + 1; // the draft is the match
+                            matched = {uint16_t(found)}; // the draft
                         }
-                        if (found == last)
+                        if (matched.empty())
                             throw VmFailure("ENFORCEOUTPUT no matching output");
-                        // Order-free effects (I-11): record, never consume.
+                        // Order-free records (I-11): the claim and its match
+                        // mask; nothing is consumed or pushed. A
+                        // state-constraining template authorizes every
+                        // output it matches (each carries exactly the
+                        // expected root).
                         const uint16_t witness = uint16_t(ctx.witness_index);
+                        if (t.state_mode != OutputTemplate::STATE_NONE)
+                            staged_effects.Add(kStateAuthorizationKind, witness,
+                                               StateAuthorization{matched});
                         staged_effects.Add(
                             kOutputClaimsKind, witness,
-                            OutputClaim{uint64_t(claim), {uint16_t(found)}});
-                        if (t.state_mode != OutputTemplate::STATE_NONE)
-                            staged_effects.Add(
-                                kStateAuthorizationKind, witness,
-                                StateAuthorization{{uint16_t(found)}});
-                        Push(Number(Int(found)));
+                            OutputClaim{uint64_t(claim), std::move(matched)});
                         break;
                     }
                     case 0xec: { // TXTOKENBALANCE: asset -> N(in) N(out)
