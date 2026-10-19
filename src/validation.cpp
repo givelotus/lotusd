@@ -37,6 +37,7 @@
 #include <lotus_v2/signing.h>
 #include <minerfund.h>
 #include <node/blockstorage.h>
+#include <node/metrics.h>
 #include <node/snapshot.h>
 #include <node/utxo_snapshot.h>
 #include <policy/block/minerfund.h>
@@ -2511,6 +2512,9 @@ bool ChainstateManager::IsInitialBlockDownload() const {
     }
     LogPrintf("Leaving InitialBlockDownload (latching to false)\n");
     m_cached_finished_ibd.store(true, std::memory_order_relaxed);
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->initial_block_download.Set(0);
+    }
     return false;
 }
 
@@ -4014,6 +4018,7 @@ void Chainstate::UpdateTip(const CBlockIndex *pindexNew) {
         g_best_block = pindexNew;
         g_best_block_cv.notify_all();
     }
+    node::SetTipMetrics(pindexNew->nHeight, pindexNew->GetBlockTime());
 
     node::PublishChainTipSnapshot(m_chainman, m_mempool);
 
@@ -4176,6 +4181,10 @@ bool Chainstate::ConnectTip(BlockValidationState &state,
         bool rv = ConnectBlock(blockConnecting, state, pindexNew, view,
                                BlockValidationOptions(m_chainman.GetConfig()),
                                &blockFees);
+        if (auto *metrics{node::GetNodeMetrics()}; metrics && rv) {
+            metrics->block_connect_seconds.RecordDuration(SteadyClock::now() -
+                                                          time_2);
+        }
         if (m_chainman.m_options.signals) {
             m_chainman.m_options.signals->BlockChecked(blockConnecting, state);
         }
