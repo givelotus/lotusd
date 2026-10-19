@@ -107,6 +107,8 @@ private:
     void EncodeIndependentLocked(Span<const uint8_t> payload) const
         EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     //! Frame coalesced data; write as much as possible. False on error.
+    /** Whether m_coalesce holds data that can be encoded now */
+    bool CoalescedReadyLocked() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     bool FlushLocked() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
     //! Read and decode what is available. False on fatal error.
     bool FillLocked() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);

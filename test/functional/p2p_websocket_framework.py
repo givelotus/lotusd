@@ -37,7 +37,7 @@ class P2PWebSocketFrameworkTest(BitcoinTestFramework):
             )
             info = node.getpeerinfo()[0]
             assert_equal(info["transport"], "ws")
-            assert_equal(info["websocket"]["compression"], "none")
+            assert_equal(info["websocket"]["compression"], "p2p-v2")
             peer.send_and_ping(msg_ping(nonce=1))
 
             self.log.info("...and relays a block to the node")

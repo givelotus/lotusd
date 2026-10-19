@@ -114,7 +114,7 @@ class HTTPPublicBindTest(BitcoinTestFramework):
             lambda: any(p["transport"] == "wss" for p in self.nodes[1].getpeerinfo())
         )
         peer = [p for p in node.getpeerinfo() if p["transport"] == "wss"][0]
-        assert_equal(peer["websocket"]["compression"], "p2p-zstd-v1")
+        assert_equal(peer["websocket"]["compression"], "p2p-v2")
         assert_equal(peer["addrbind"], f"127.0.0.1:{public_port()}")
         self.log.info("node2 peers with node0 over plain ws:// on the public port")
         self.wait_until(
@@ -122,7 +122,7 @@ class HTTPPublicBindTest(BitcoinTestFramework):
         )
         out = [p for p in self.nodes[2].getpeerinfo() if p["transport"] == "ws"][0]
         assert_equal(out["websocket"]["tls"], False)
-        assert_equal(out["websocket"]["compression"], "p2p-zstd-v1")
+        assert_equal(out["websocket"]["compression"], "p2p-v2")
         self.sync_blocks()
         tip = self.generate(self.nodes[2], 1)[0]
         assert_equal(self.nodes[1].getbestblockhash(), tip)
@@ -138,7 +138,7 @@ class HTTPPublicBindTest(BitcoinTestFramework):
             self.log.info("An independent peer handshakes on the public port")
             client = P2PWebSocketClient(
                 f"ws://127.0.0.1:{public_port()}/p2p/ws",
-                subprotocols=["p2p-zstd-v1"],
+                subprotocols=["p2p-v2"],
                 srcdir=self.config["environment"]["SRCDIR"],
             )
             assert_equal(client.handshake().nStartingHeight, node.getblockcount())

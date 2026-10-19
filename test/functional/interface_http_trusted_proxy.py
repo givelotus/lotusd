@@ -39,7 +39,7 @@ def upgrade(path="/p2p/ws", headers=()):
         "Connection: Upgrade",
         f"Sec-WebSocket-Key: {key}",
         "Sec-WebSocket-Version: 13",
-        "Sec-WebSocket-Protocol: p2p-zstd-v1",
+        "Sec-WebSocket-Protocol: p2p-v2",
         *headers,
     ]
     return ("\r\n".join(lines) + "\r\n\r\n").encode()
