@@ -21,6 +21,10 @@ class LoggingTest(BitcoinTestFramework):
         # test default log file name
         default_log_path = self.relative_log_path("debug.log")
         assert os.path.isfile(default_log_path)
+        # The test framework runs nodes with -logthreadnames: lines name
+        # their thread.
+        with open(default_log_path, encoding="utf-8") as f:
+            assert any("Z [init] " in line for line in f)
 
         # test alternative log file name in datadir
         self.restart_node(0, ["-debuglogfile=foo.log"])
