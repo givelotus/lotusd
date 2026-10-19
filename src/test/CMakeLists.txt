@@ -256,6 +256,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		sigcheckcount_tests.cpp
 		skiplist_tests.cpp
 		sock_tests.cpp
+		sockwakeup_tests.cpp
 		streams_tests.cpp
 		sync_tests.cpp
 		timedata_tests.cpp
