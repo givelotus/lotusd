@@ -80,8 +80,20 @@ int main() {
     for (uint8_t i = 0; i < 16; ++i) full_path.push_back(i);
     largest.output.paths.push_back(std::move(full_path));
     std::sort(largest.output.paths.begin(), largest.output.paths.end());
+    // MAX_COIN_BYTES is larger (internal legacy state coins); V2 outputs top
+    // out at 885 bytes stateless and 917 bytes with a state root.
     Check(EncodeCoin(largest, encoded) && encoded.size() == 885,
           "maximum stateless V2 Coin is exactly 885 bytes");
+    largest.output.flags = 5;
+    largest.output.state_root[0] = 1;
+    Check(EncodeCoin(largest, encoded) && encoded.size() == 917 &&
+              encoded.size() <= MAX_COIN_BYTES,
+          "maximum valid V2 Coin is exactly 917 bytes");
+    {
+        Coin round;
+        Check(DecodeCoinBytes(encoded, round) && round.output == largest.output,
+              "HAS_STATE Coin round-trips");
+    }
     Hash leaf;
     Check(UtxoLeaf(c0, leaf) && Hex(leaf) ==
               "927c546dbc432596769cd2ff7261757a5536c17560c60f5ba4dd9ac5bb5d1ab6",
