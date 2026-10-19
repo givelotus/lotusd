@@ -35,6 +35,16 @@ Bytes PrefixKey(uint8_t prefix, ByteView bytes);
 /** 'p' || root || (position or 255) */
 Bytes PostingPrefix(const Hash32 &root, std::optional<uint8_t> position);
 
+/**
+ * Order in which a block's transactions are resolved and applied: every
+ * in-block parent before the children spending its outputs, otherwise block
+ * order (a topologically ordered block keeps its own order). Hosts may
+ * confirm blocks in canonical (txid) order. Members of a dependency cycle
+ * follow in block order and are rejected as spending a missing coin.
+ */
+std::vector<size_t>
+ProcessingOrder(const std::vector<ConfirmedTx> &transactions);
+
 class ReadSnapshot;
 
 /** Owns a dedicated database. Mutations require exclusive access. */
