@@ -9,6 +9,7 @@
 #include <index/blockfilterindex.h>
 #include <interfaces/chain.h>
 #include <node/miner.h>
+#include <primitives/v2_outputs.h>
 #include <pow/pow.h>
 #include <script/standard.h>
 #include <test/util/blockfilter.h>
@@ -86,7 +87,7 @@ CBlock BuildChainTestingSetup::CreateBlock(
     std::unique_ptr<CBlockTemplate> pblocktemplate =
         BlockAssembler{config, m_node.chainman->ActiveChainstate(),
                        m_node.mempool.get()}
-            .CreateNewBlock(scriptPubKey);
+            .CreateNewBlock(V0LeafOutput(Amount::zero(), scriptPubKey));
     CBlock &block = pblocktemplate->block;
     block.hashPrevBlock = prev->GetBlockHash();
     block.SetBlockTime(prev->nTime + 1);

@@ -5,6 +5,8 @@
 
 #include <kernel/chainparams.h>
 
+#include <primitives/v2_outputs.h>
+
 #include <chainparamsconstants.h>
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
@@ -32,25 +34,16 @@ static CBlock CreateGenesisBlock(const CScript &coinbaseScriptSig,
                                  uint32_t nBits, uint32_t nVersion,
                                  const Amount genesisReward,
                                  std::vector<CTransactionRef> extraTxs = {}) {
+    // A V2 coinbase. Its coinbase data is the classic genesis scriptSig and
+    // its output is the V0-leaf V2 output over the classic genesis script.
     CMutableTransaction txNew;
     txNew.nVersion = 7;
     txNew.vin.resize(1);
-    txNew.vout.resize(1);
     txNew.vin[0].nFlags = 2;
-    txNew.vin[0].scriptSig = coinbaseScriptSig;
     txNew.vin[0].fHasCoinbaseData = true;
-    txNew.vin[0].vCoinbaseData.assign(txNew.vin[0].scriptSig.begin(),
-                                      txNew.vin[0].scriptSig.end());
-    // Genesis intentionally commits this fixed opaque root; it is not a
-    // spendable legacy-script-to-native payment conversion. Preserve its
-    // exact existing output wire bytes and chain identity explicitly.
-    lotus::v2::Output genesis_output;
-    genesis_output.value = static_cast<uint64_t>(genesisReward / SATOSHI);
-    genesis_output.branches = {lotus::v2::BranchLeaf(
-        std::span<const uint8_t>(genesisOutputScript.data(),
-                                 genesisOutputScript.size()))};
-    genesis_output.paths = {{0}};
-    txNew.vout[0] = CTxOut::FromV2Output(genesis_output);
+    txNew.vin[0].vCoinbaseData.assign(coinbaseScriptSig.begin(),
+                                      coinbaseScriptSig.end());
+    txNew.vout.push_back(V0LeafOutput(genesisReward, genesisOutputScript));
 
     CBlock genesis;
     genesis.SetBlockTime(nTime);
@@ -104,8 +97,8 @@ static CBlock CreateGenesisBlock(uint64_t nTime, uint64_t nNonce,
  *   is symbolic only.
  */
 static constexpr bool V2_GENESIS_IS_PLACEHOLDER = true;
-static constexpr uint64_t MAINNET_GENESIS_NONCE = 7612265698;
-static constexpr uint64_t TESTNET_GENESIS_NONCE = 166335650;
+static constexpr uint64_t MAINNET_GENESIS_NONCE = 223676906;
+static constexpr uint64_t TESTNET_GENESIS_NONCE = 259010196;
 
 static CBlock CreateLotusV2GenesisBlock(const char *pszTimestamp,
                                         const char *v1GenesisHash,
@@ -121,14 +114,15 @@ static CBlock CreateLotusV2GenesisBlock(const char *pszTimestamp,
         CScript() << 486604799 << CScriptNum(4) << MessageBytes(pszTimestamp)
                   << std::vector<uint8_t>(v1Genesis.begin(), v1Genesis.end());
 
+    // A plain version 1 (Bitcoin-format) transaction spending Bitcoin's
+    // genesis coinbase output, named by its SHA256d.
     CMutableTransaction returnToSender;
-    returnToSender.nVersion = 7;
+    returnToSender.nVersion = 1;
     returnToSender.vin.resize(1);
     returnToSender.vin[0].prevout =
         COutPoint(TxId(uint256S("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2c"
                                 "c77ab2127b7afdeda33b")),
                   0);
-    returnToSender.vin[0].nFlags = 1;
     returnToSender.vin[0].scriptSig =
         CScript() << MessageBytes(
             "Satoshi's genesis coins, spent at last. Returned to sender.");
@@ -261,11 +255,11 @@ public:
             consensus.hashGenesisBlock = genesis.GetHash();
         }
         assert(consensus.hashGenesisBlock ==
-               uint256S("000000001d4f799ae04ce551956bfde3a2614f1a436a995a1aeae1"
-                        "9522a36388"));
+               uint256S("00000000dab29e7cb5ca245b4020ca01ab27e97a8b17df9e06e5df"
+                        "282d523d0d"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("5840374ac4f460eeca1453d2d313f26d8bc937e878e2cca3d59c86"
-                        "c40099a09a"));
+               uint256S("0bc8e349384b1f9d8ae011f36f4918e506b399660006c67948323c"
+                        "4d87a7095f"));
         m_is_placeholder_genesis = V2_GENESIS_IS_PLACEHOLDER;
 
         // Lotus V2 has no DNS seeders yet. The inherited eCash seeders and
@@ -366,11 +360,11 @@ public:
             consensus.hashGenesisBlock = genesis.GetHash();
         }
         assert(consensus.hashGenesisBlock ==
-               uint256S("00000000ecba3e71b2c96d27565993b12661cdf3f7a81ad00df50b"
-                        "7baabccaae"));
+               uint256S("00000000847b57404820e16c3f539f35b56a75b8312d7d0f0bafa3"
+                        "f971563873"));
         assert(genesis.hashMerkleRoot ==
-               uint256S("cd34e0783d193972653c350b58dea8997a9be2241a5f0a795110e6"
-                        "4a33ebbf6f"));
+               uint256S("df805417a2dc2a3bc8739271105cc114f328d358956e0de4b7c3ed"
+                        "0daf025cae"));
         m_is_placeholder_genesis = V2_GENESIS_IS_PLACEHOLDER;
 
         // Lotus V2 testnet has no DNS seeders or fixed seeds yet.
@@ -465,8 +459,8 @@ public:
             consensus.hashGenesisBlock = genesis.GetHash();
         }
         assert(consensus.hashGenesisBlock ==
-               uint256S("0x720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561"
-                        "c99b7e50723e4"));
+               uint256S("0x5297d8c90656af6365bd4c2280f100b13b6fee2e9d909cd29eb"
+                        "509fa3feb7605"));
         assert(genesis.hashMerkleRoot ==
                uint256S("0xab7a9a3a45e6decf448edff44e2904ba8531902e11e5bc8a7bf8"
                         "833661220aca"));
