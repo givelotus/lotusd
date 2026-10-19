@@ -13,7 +13,6 @@
 #include <chronik/native/index/txs.h>
 #include <chronik/native/indexer.h>
 #include <chronik/native/indexer_impl.h>
-#include <chronik/native/mdbx_store.h>
 #include <chronik/native/metadata.h>
 #include <chronik/native/schema.h>
 #include <chronik/native/store.h>
@@ -23,6 +22,7 @@
 #include <core/indexer/indexer_errors.h>
 #include <test/fake_host.h>
 #include <test/index_test_util.h>
+#include <test/test_backend.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -52,7 +52,7 @@ struct Env {
     nt::IndexTempDir dir;
 
     explicit Env(const std::string &name, int num_blocks = 1) : dir(name) {
-        RegisterMdbxStore();
+        nt::RegisterTestStores();
         std::filesystem::create_directories(dir.path);
         for (int i = 0; i < num_blocks; ++i) {
             host.Extend(host.MakeBlock(host.TipHeight(), {}));
@@ -61,6 +61,7 @@ struct Env {
     IndexerParams Params() const {
         IndexerParams p;
         p.datadir_net = dir.path;
+        p.backend = nt::TestBackend();
         p.token_index = false;
         p.lokad_id_index = true;
         return p;
@@ -74,7 +75,7 @@ struct Env {
         return ix;
     }
     std::filesystem::path DbPath() const {
-        return dir.path / "indexes" / "chronik";
+        return nt::TestIndexDir(dir.path);
     }
     /** Dump of a fresh index of the current active chain (separate dir). */
     std::vector<std::string> FreshDump(std::optional<IndexerParams> p = {}) {
@@ -103,7 +104,8 @@ std::unique_ptr<KvStore> OpenRaw(const std::filesystem::path &db_path) {
     opts.sha256 = [](ByteView data, uint8_t out[32]) {
         nt::TestSha256(data, out);
     };
-    return OpenStore(StoreBackend::Mdbx, db_path, schema::EcashTables(), opts);
+    return OpenStore(nt::TestBackend(), db_path, schema::EcashTables(),
+                     opts);
 }
 
 void SetSchemaVersion(const std::filesystem::path &db_path, uint64_t v) {
@@ -183,9 +185,9 @@ BOOST_AUTO_TEST_CASE(test_indexer) {
     // indexes and indexes/chronik now exist
     BOOST_CHECK(std::filesystem::exists(params.datadir_net / "indexes"));
     BOOST_CHECK(
-        std::filesystem::exists(params.datadir_net / "indexes" / "chronik"));
+        std::filesystem::exists(nt::TestIndexDir(params.datadir_net)));
     BOOST_CHECK(ix->Impl().Config().db_path ==
-                params.datadir_net / "indexes" / "chronik");
+                nt::TestIndexDir(params.datadir_net));
 }
 
 BOOST_AUTO_TEST_CASE(test_schema_version) {
@@ -235,7 +237,7 @@ BOOST_AUTO_TEST_CASE(test_schema_version) {
     std::filesystem::create_directories(new_dir / "indexes");
     IndexerParams new_params = env.Params();
     new_params.datadir_net = new_dir;
-    PutMeta(new_dir / "indexes" / "chronik", "FOO", {'B', 'A', 'R'});
+    PutMeta(nt::TestIndexDir(new_dir), "FOO", {'B', 'A', 'R'});
     // Error: non-empty DB without schema version
     BOOST_CHECK_EQUAL(nt::ErrorMsg([&] { env.Open(new_params); }),
                       "Missing schema version in non-empty Chronik database, "
@@ -244,7 +246,7 @@ BOOST_AUTO_TEST_CASE(test_schema_version) {
     new_params.wipe = true;
     env.Open(new_params)->Close();
     BOOST_CHECK(env.host.HasLog("Wiping Chronik at " +
-                                (new_dir / "indexes" / "chronik").string() +
+                                nt::TestIndexDir(new_dir).string() +
                                 "\n"));
 }
 

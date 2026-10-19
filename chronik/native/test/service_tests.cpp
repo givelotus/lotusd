@@ -11,7 +11,6 @@
 #include <chronik/native/http.h>
 #include <chronik/native/index/blocks.h>
 #include <chronik/native/indexer_impl.h>
-#include <chronik/native/mdbx_store.h>
 #include <chronik/native/pause.h>
 #include <chronik/native/proto.h>
 #include <chronik/native/service.h>
@@ -21,6 +20,7 @@
 #include <core/service/service_impl.h>
 #include <test/fake_host.h>
 #include <test/index_test_util.h>
+#include <test/test_backend.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -48,7 +48,7 @@ struct ServiceEnv {
 
     explicit ServiceEnv(const std::string &name, int num_blocks = 3)
         : dir(name) {
-        RegisterMdbxStore();
+        nt::RegisterTestStores();
         std::filesystem::create_directories(dir.path);
         for (int i = 0; i < num_blocks; ++i) {
             host.Extend(host.MakeBlock(host.TipHeight(), {}));
@@ -57,6 +57,7 @@ struct ServiceEnv {
     ServiceParams Params(std::vector<std::string> hosts = {}) const {
         ServiceParams p;
         p.indexer.datadir_net = dir.path;
+        p.indexer.backend = nt::TestBackend();
         p.indexer.token_index = false;
         p.hosts = std::move(hosts);
         p.default_port = 8331;

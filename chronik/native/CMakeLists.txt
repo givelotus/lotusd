@@ -134,6 +134,11 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
         target_compile_definitions(chronik_native_host_abc
             PRIVATE CHRONIK_NATIVE_HAVE_MDBX=1)
     endif()
+    if(CHRONIK_NATIVE_LEVELDB)
+        target_link_libraries(chronik_native_host_abc chronik_native_store_leveldb)
+        target_compile_definitions(chronik_native_host_abc
+            PRIVATE CHRONIK_NATIVE_HAVE_LEVELDB=1)
+    endif()
     target_link_libraries(server chronik_native_host_abc)
 endif()
 

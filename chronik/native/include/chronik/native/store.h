@@ -145,6 +145,14 @@ std::unique_ptr<KvStore> OpenStore(StoreBackend,
                                    const StoreOptions &opts);
 void DestroyStore(StoreBackend, const std::filesystem::path &dir);
 std::string_view StoreBackendName(StoreBackend);
+/** Inverse of StoreBackendName ("mdbx", "leveldb"); nullopt if unknown. */
+std::optional<StoreBackend> ParseStoreBackend(std::string_view name);
+/**
+ * Index directory under <datadir_net>/indexes: "chronik" for MDBX (shared
+ * with Rust Chronik), "chronik-leveldb" for LevelDB, so the two layouts are
+ * never confused.
+ */
+std::string_view StoreIndexDirName(StoreBackend);
 
 } // namespace chronik::native
 
