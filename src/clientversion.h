@@ -44,6 +44,8 @@ extern const std::string CLIENT_BUILD;
 
 std::string FormatVersion(int nVersion);
 std::string FormatFullVersion();
+/** Commit the build was made from (hex), or "" if unknown */
+std::string FormatBuildCommit();
 std::string FormatUserAgent(const std::string &name, const std::string &version,
                             const std::vector<std::string> &comments);
 

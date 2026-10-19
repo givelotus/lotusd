@@ -15,10 +15,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 /**
@@ -289,8 +291,22 @@ private:
  */
 class Registry {
 public:
-    Registry();
+    /**
+     * name_prefix is prepended to the registry's own metric
+     * (metrics_dropped_samples_total); callers name their metrics in full.
+     */
+    explicit Registry(std::string name_prefix = "");
     ~Registry();
+
+    /**
+     * Labels added to every series (e.g. client and network), rendered
+     * before each metric's own labels. Set before the first rendering.
+     * Fails (and changes nothing) if a name is not a valid label name,
+     * is repeated, is reserved (le, quantile, or a `__` prefix) or is
+     * already a label of a registered metric.
+     */
+    [[nodiscard]] std::optional<std::string>
+    SetConstLabels(std::vector<std::pair<std::string, std::string>> labels);
 
     /** Take ownership of a metric (before Start; not thread-safe) */
     template <typename T> T &Add(std::unique_ptr<T> metric) {
@@ -345,6 +361,10 @@ public:
 
 private:
     void AddMetric(std::unique_ptr<Metric> metric);
+
+    const std::string m_name_prefix;
+    //! Rendered constant labels (`a="x",b="y"`), or empty
+    std::string m_const_labels;
     EventRing *ClaimRing() EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
 
     //! Distinguishes registries in the threads' ring caches
@@ -380,6 +400,14 @@ private:
  */
 void SetThreadRegistry(Registry *registry) noexcept;
 void PrepareThisThread() noexcept;
+
+/** Whether s is a valid Prometheus metric name ([a-zA-Z_:][a-zA-Z0-9_:]*) */
+bool IsValidMetricName(std::string_view s);
+/**
+ * Whether s is a valid Prometheus label name ([a-zA-Z_][a-zA-Z0-9_]*) that
+ * is not reserved for internal use (a `__` prefix)
+ */
+bool IsValidLabelName(std::string_view s);
 
 /** Escape a label value (backslash, double quote, newline) */
 void AppendLabelValue(std::string &out, std::string_view value);

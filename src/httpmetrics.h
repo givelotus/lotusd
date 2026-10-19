@@ -5,12 +5,21 @@
 #ifndef BITCOIN_HTTPMETRICS_H
 #define BITCOIN_HTTPMETRICS_H
 
+#include <util/chaintype.h>
+#include <util/result.h>
+
+#include <string>
+#include <utility>
+#include <vector>
+
 /**
  * Start the node's metrics (node/metrics.h) and serve them at /metrics on
  * the RPC listeners. Call before StartHTTPServer, after the RPC commands
- * are registered.
+ * are registered. labels: from -metricslabel (see ParseMetricsLabels).
  */
-void StartHTTPMetrics();
+[[nodiscard]] util::Result<void> StartHTTPMetrics(
+    ChainType chain,
+    const std::vector<std::pair<std::string, std::string>> &labels);
 /** Stop serving /metrics and stop the metrics' drain thread */
 void StopHTTPMetrics();
 

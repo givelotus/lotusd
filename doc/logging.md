@@ -59,7 +59,7 @@ that sink even with `-nodebuglogfile`; it does not open the main debug file.
 `-printtoconsole` and callbacks still receive readable text. An optional
 `-debuglogjsonfile` continues to receive generic JSON. Startup fails explicitly
 if the journal socket is unavailable. Later send failures fall back to stderr
-and increment `lotus_log_journal_failures_total`; they are not counted as
+and increment `fullnode_log_journal_failures_total`; they are not counted as
 successful journal writes. A successful socket send is collector acceptance,
 not a durable-storage acknowledgment.
 

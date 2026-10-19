@@ -4,12 +4,17 @@
 
 #include <node/metrics.h>
 
+#include <clientversion.h>
+#include <config/bitcoin-config.h>
 #include <logging.h>
 #include <protocol.h>
+#include <tinyformat.h>
 #include <util/time.h>
+#include <util/translation.h>
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <memory>
 
 namespace node {
@@ -110,101 +115,183 @@ size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept {
     return SortedIndex(L::MsgTypes(), msg_type);
 }
 
+std::string MetricName(std::string_view name) {
+    std::string out{METRICS_NAMESPACE};
+    out += name;
+    return out;
+}
+
+std::string MetricsClientLabel() {
+    return FULLNODE_CLIENT;
+}
+
+std::string MetricsNetworkLabel(ChainType chain) {
+    const std::string out{FULLNODE_CHAIN};
+    switch (chain) {
+        case ChainType::MAIN:
+            return out + "-mainnet";
+        case ChainType::TESTNET:
+            return out + "-testnet";
+        case ChainType::REGTEST:
+            return out + "-regtest";
+    }
+    assert(false);
+}
+
+util::Result<std::vector<std::pair<std::string, std::string>>>
+ParseMetricsLabels(const std::vector<std::string> &options) {
+    std::vector<std::pair<std::string, std::string>> labels;
+    if (options.size() > METRICS_LABELS_MAX) {
+        return util::Error{
+            strprintf(_("At most %u -metricslabel options are allowed"),
+                      METRICS_LABELS_MAX)};
+    }
+    for (const std::string &option : options) {
+        const size_t eq{option.find('=')};
+        if (eq == std::string::npos) {
+            return util::Error{strprintf(
+                _("-metricslabel=%s: expected <name>=<value>"), option)};
+        }
+        std::string name{option.substr(0, eq)};
+        std::string value{option.substr(eq + 1)};
+        if (!metrics::IsValidLabelName(name) || name == "le" ||
+            name == "quantile") {
+            return util::Error{strprintf(
+                _("-metricslabel=%s: \"%s\" is not a valid label name "
+                  "([a-zA-Z_][a-zA-Z0-9_]*, not le, quantile or __*)"),
+                option, name)};
+        }
+        if (std::find(METRICS_RESERVED_LABELS.begin(),
+                      METRICS_RESERVED_LABELS.end(),
+                      name) != METRICS_RESERVED_LABELS.end()) {
+            return util::Error{strprintf(
+                _("-metricslabel=%s: the label \"%s\" is set by the node"),
+                option, name)};
+        }
+        if (value.empty() || value.size() > METRICS_LABEL_VALUE_MAX ||
+            std::any_of(value.begin(), value.end(), [](char c) {
+                return (unsigned char)c < 0x20 || c == 0x7f;
+            })) {
+            return util::Error{strprintf(
+                _("-metricslabel=%s: the value must be 1 to %u bytes without "
+                  "control characters"),
+                option, METRICS_LABEL_VALUE_MAX)};
+        }
+        for (const auto &label : labels) {
+            if (label.first == name) {
+                return util::Error{strprintf(
+                    _("-metricslabel: the label \"%s\" is given twice"), name)};
+            }
+        }
+        labels.emplace_back(std::move(name), std::move(value));
+    }
+    return labels;
+}
+
 NodeMetrics::NodeMetrics(std::vector<std::string> rpc_methods)
-    : p2p_received_bytes{Add<Counter>(
-          registry, "lotus_p2p_received_bytes_total",
+    : registry{MetricName("")},
+      p2p_received_bytes{Add<Counter>(
+          registry, MetricName("p2p_received_bytes_total"),
           "P2P bytes received (header and payload), by message type.",
           std::vector<LabelDim>{{"type", L::MsgTypes()}})},
       p2p_sent_bytes{Add<Counter>(
-          registry, "lotus_p2p_sent_bytes_total",
+          registry, MetricName("p2p_sent_bytes_total"),
           "P2P bytes queued for sending (header and payload), by message "
           "type.",
           std::vector<LabelDim>{{"type", L::MsgTypes()}})},
       p2p_received_messages{
-          Add<Counter>(registry, "lotus_p2p_received_messages_total",
+          Add<Counter>(registry, MetricName("p2p_received_messages_total"),
                        "P2P messages received, by message type.",
                        std::vector<LabelDim>{{"type", L::MsgTypes()}})},
       p2p_sent_messages{
-          Add<Counter>(registry, "lotus_p2p_sent_messages_total",
+          Add<Counter>(registry, MetricName("p2p_sent_messages_total"),
                        "P2P messages queued for sending, by message type.",
                        std::vector<LabelDim>{{"type", L::MsgTypes()}})},
       p2p_message_handling_seconds{Add<EventHistogram>(
-          registry, "lotus_p2p_message_handling_seconds",
-          "Time to process a received P2P message or coalesced batch, by initial message type. Only "
+          registry, MetricName("p2p_message_handling_seconds"),
+          "Time to process a received P2P message or coalesced batch, by "
+          "initial message type. Only "
           "one dispatch turn in 16 is timed: _count is a sample, use "
-          "lotus_p2p_received_messages_total for totals.",
+          "fullnode_p2p_received_messages_total for totals.",
           MESSAGE_BUCKETS, /*divisor=*/1e9,
           std::vector<LabelDim>{{"type", L::MsgTypes()}})},
-      peers{Add<Gauge>(registry, "lotus_peers",
+      peers{Add<Gauge>(registry, MetricName("peers"),
                        "Connected peers, by direction, transport and network.",
                        std::vector<LabelDim>{{"direction", L::Directions()},
                                              {"transport", L::Transports()},
-                                             {"network", L::Networks()}})},
+                                             {"peer_network", L::Networks()}})},
       p2p_connections{Add<Counter>(
-          registry, "lotus_p2p_connections_total",
+          registry, MetricName("p2p_connections_total"),
           "P2P connections established, by direction and transport.",
           std::vector<LabelDim>{{"direction", L::Directions()},
                                 {"transport", L::Transports()}})},
       websocket_peers{Add<Gauge>(
-          registry, "lotus_p2p_websocket_peers",
+          registry, MetricName("p2p_websocket_peers"),
           "Connected P2P WebSocket peers, by compression and TLS.",
           std::vector<LabelDim>{{"compression", L::WebSocketCompressions()},
                                 {"tls", {"false", "true"}}})},
-      tip_height{Add<Gauge>(registry, "lotus_chain_tip_height",
+      tip_height{Add<Gauge>(registry, MetricName("chain_tip_height"),
                             "Height of the active chain tip.")},
       tip_timestamp{
-          Add<Gauge>(registry, "lotus_chain_tip_timestamp_seconds",
+          Add<Gauge>(registry, MetricName("chain_tip_timestamp_seconds"),
                      "Block timestamp of the active chain tip (Unix time).")},
-      tip_age{Add<Gauge>(registry, "lotus_chain_tip_age_seconds",
+      tip_age{Add<Gauge>(registry, MetricName("chain_tip_age_seconds"),
                          "Seconds since the active chain tip's block "
                          "timestamp, at scrape time.")},
       initial_block_download{
-          Add<Gauge>(registry, "lotus_initial_block_download",
+          Add<Gauge>(registry, MetricName("initial_block_download"),
                      "1 while in initial block download, else 0.")},
       block_connect_seconds{Add<EventHistogram>(
-          registry, "lotus_block_connect_seconds",
+          registry, MetricName("block_connect_seconds"),
           "Time to connect a block to the chain tip (ConnectBlock: "
           "validating it and updating the UTXO view).",
           BLOCK_CONNECT_BUCKETS, /*divisor=*/1e9)},
-      mempool_transactions{Add<Gauge>(registry, "lotus_mempool_transactions",
+      mempool_transactions{Add<Gauge>(registry,
+                                      MetricName("mempool_transactions"),
                                       "Transactions in the mempool.")},
-      mempool_bytes{Add<Gauge>(registry, "lotus_mempool_bytes",
+      mempool_bytes{Add<Gauge>(registry, MetricName("mempool_bytes"),
                                "Total size of the mempool's transactions.")},
       http_requests{Add<Counter>(
-          registry, "lotus_http_requests_total",
+          registry, MetricName("http_requests_total"),
           "HTTP requests answered (not WebSocket sessions), by endpoint and "
           "status class.",
           std::vector<LabelDim>{{"endpoint", L::HTTPEndpoints()},
                                 {"code", L::HTTPCodeClasses()}})},
       http_request_seconds{Add<EventHistogram>(
-          registry, "lotus_http_request_duration_seconds",
+          registry, MetricName("http_request_duration_seconds"),
           "Time from receiving an HTTP request's header to writing its "
           "response, by endpoint.",
           REQUEST_BUCKETS, /*divisor=*/1e9,
           std::vector<LabelDim>{{"endpoint", L::HTTPEndpoints()}})},
       http_tls_handshakes{
-          Add<Counter>(registry, "lotus_http_tls_handshakes_total",
+          Add<Counter>(registry, MetricName("http_tls_handshakes_total"),
                        "TLS handshakes on the HTTP listeners, by result.",
                        std::vector<LabelDim>{{"result", {"ok", "failed"}}})},
       rpc_request_seconds{
           Add<EventHistogram>(
-              registry, "lotus_rpc_request_duration_seconds",
+              registry, MetricName("rpc_request_duration_seconds"),
               "Time to execute an RPC command, by method (methods appear "
               "once called).",
               REQUEST_BUCKETS, /*divisor=*/1e9,
               std::vector<LabelDim>{{"method", SortedWithOther(rpc_methods)}})
               .HideEmptySeries()},
-      process_start_time{Add<Gauge>(registry,
-                                    "lotus_process_start_time_seconds",
+      process_start_time{Add<Gauge>(registry, "process_start_time_seconds",
                                     "Start time of the process (Unix time).")},
+      build_info{Add<Gauge>(
+          registry, MetricName("build_info"),
+          "Always 1, labelled with the build's version and commit (empty if "
+          "unknown).",
+          std::vector<LabelDim>{{"version", {FormatVersion(CLIENT_VERSION)}},
+                                {"commit", {FormatBuildCommit()}}})},
       m_rpc_methods{SortedWithOther(std::move(rpc_methods))} {
+    build_info.Set(1);
     registry.Add(std::make_unique<metrics::FunctionCounter>(
-        "lotus_log_dropped_lines_total",
+        MetricName("log_dropped_lines_total"),
         "Debug and info log lines dropped because the logging thread could "
         "not keep up (the log says so too).",
         [] { return LogInstance().DroppedLines(); }));
     registry.Add(std::make_unique<metrics::FunctionCounter>(
-        "lotus_log_journal_failures_total",
+        MetricName("log_journal_failures_total"),
         "Journal sends that failed and fell back to stderr.",
         [] { return LogInstance().JournalFailures(); }));
     initial_block_download.Set(1);
@@ -230,16 +317,26 @@ size_t NodeMetrics::PeerSeries(bool inbound, bool websocket,
     return peers.SeriesIndex(idx);
 }
 
-NodeMetrics &StartNodeMetrics(std::vector<std::string> rpc_methods) {
+util::Result<NodeMetrics *> StartNodeMetrics(
+    std::vector<std::string> rpc_methods, ChainType chain,
+    const std::vector<std::pair<std::string, std::string>> &operator_labels) {
     NodeMetrics *m{GetNodeMetrics()};
     if (!m) {
         // Never freed: recording threads may hold the pointer.
         m = new NodeMetrics(std::move(rpc_methods));
         detail::g_node_metrics.store(m, std::memory_order_release);
     }
+    std::vector<std::pair<std::string, std::string>> labels{
+        {"client", MetricsClientLabel()},
+        {"network", MetricsNetworkLabel(chain)}};
+    labels.insert(labels.end(), operator_labels.begin(), operator_labels.end());
+    if (auto error{m->registry.SetConstLabels(std::move(labels))}) {
+        return util::Error{
+            Untranslated(strprintf("-metricslabel: %s", *error))};
+    }
     m->registry.Start();
     metrics::SetThreadRegistry(&m->registry);
-    return *m;
+    return m;
 }
 
 void StopNodeMetrics() {
