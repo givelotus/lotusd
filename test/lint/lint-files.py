@@ -46,7 +46,6 @@ ALLOWED_FILENAME_EXCEPTION_REGEXPS = (
 )
 ALLOWED_SOURCE_FILENAME_EXCEPTION_REGEXPS = (
     "^src/(secp256k1/|test/fuzz/FuzzedDataProvider.h)",
-    "^cmake/utils/EventCheckVersion.cpp$",
     "^contrib/buildbot/test/test_endpoint_",
     "^apps/marlin-wallet/ios/",
 )

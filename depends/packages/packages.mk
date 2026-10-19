@@ -1,4 +1,4 @@
-packages:=boost libevent zstd
+packages:=boost zstd
 
 protobuf_native_packages = native_protobuf
 protobuf_packages = protobuf

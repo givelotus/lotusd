@@ -490,12 +490,6 @@ endif()
 
 target_link_libraries(util univalue crypto)
 
-macro(link_event TARGET)
-	non_native_target_link_libraries(${TARGET} Event 2.1.8 ${ARGN})
-endmacro()
-
-link_event(util event)
-
 macro(link_boost_headers_only TARGET)
 	non_native_target_link_boost_headers_only(${TARGET} 1.64)
 endmacro()
@@ -747,11 +741,6 @@ target_link_libraries(server
 	leveldb
 )
 
-link_event(server event)
-if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-	link_event(server pthreads)
-endif()
-
 # The Boost.Beast HTTP/WebSocket server detects TLS on the RPC port and
 # supports zstd content encoding.
 include(BrewHelper)
@@ -840,7 +829,6 @@ if(BUILD_CLI)
 	)
 
 	target_link_libraries(bitcoin-cli common rpcclient)
-	link_event(bitcoin-cli event)
 
 	add_to_symbols_check(bitcoin-cli)
 	add_to_security_check(bitcoin-cli)
