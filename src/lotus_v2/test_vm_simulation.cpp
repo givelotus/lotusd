@@ -190,7 +190,7 @@ void ConstructiveEnforceOutput() {
         auto draft = Draft({script, script});
         const auto r = EvaluateVmSimulated(draft, {});
         CHECK(AllSucceeded(r) && r.drafts.size() == 1 &&
-              r.tx.outputs.size() == 1 && r.effects.claims.size() == 2);
+              r.tx.outputs.size() == 1 && lotus::v2::OutputClaimsOf(r.effects).size() == 2);
         CHECK(!r.post_check_ok && r.post_check_error == "output-overclaimed");
         Tpl min = pinned;
         min.value_mode = 2;
@@ -261,7 +261,7 @@ void ConstructiveEnforceOutput() {
               out.branches == std::vector<Hash32>{BranchLeaf(script)} &&
               out.paths == (std::vector<std::vector<uint8_t>>{{0}}));
         CHECK(r.drafts[0].popped.size() == 2 && r.post_check_ok &&
-              r.effects.state_authorized == std::vector<uint16_t>{0});
+              StateAuthorizationsOf(r.effects) == std::vector<StateAuthorization>{{{0}}});
     }
     // A pinned output index is never constructed.
     {

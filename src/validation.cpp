@@ -400,20 +400,11 @@ VerifyTxScriptsAgainst(const CTransaction &tx, SpentOutput &&spent_output,
     return std::nullopt;
 }
 
-// Per-transaction V2 post-check over the effects recorded by every input's
-// invocations: claims fit their outputs and every HAS_STATE output was
-// authorized. Returns the reject reason on failure.
-std::optional<std::string>
-FinalizeV2TransactionEffects(const CTransaction &tx,
-                             const lotus::v2::VmTransactionEffects &effects) {
-    if (tx.nVersion != 7) return std::nullopt;
-    std::vector<lotus::v2::Output> outputs;
-    outputs.reserve(tx.vout.size());
-    for (const CTxOut &out : tx.vout) outputs.push_back(out.ToV2Output());
-    std::string error;
-    if (!lotus::v2::FinalizeVmTransactionEffects(outputs, effects, error))
-        return error;
-    return std::nullopt;
+ParallelTxScriptError V2DeferredFailure(const std::string &reason) {
+    ParallelTxScriptError err;
+    err.reject_reason = reason;
+    err.debug_message = "V2 deferred transaction check";
+    return err;
 }
 
 std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
@@ -427,16 +418,6 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
     assert(!tx.IsCoinBase());
     assert(resolved_inputs.size() == tx.vin.size());
 
-    lotus::v2::VmTransactionEffects v2_effects;
-    auto finalize = [&]() -> std::optional<ParallelTxScriptError> {
-        if (auto reason = FinalizeV2TransactionEffects(tx, v2_effects)) {
-            ParallelTxScriptError err;
-            err.reject_reason = *reason;
-            err.debug_message = "V2 transaction effects post-check";
-            return err;
-        }
-        return std::nullopt;
-    };
 
     if (tx.nVersion == 7 && !tx.vin.empty() && tx.vin.size() <= 16) {
         static const lotus::v2::Hash kOpTrueBranchLeaf =
@@ -496,9 +477,17 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
             }
         }
         if (fast_ok) {
-            // Fast-path scripts record no effects, but the post-check still
-            // applies (a HAS_STATE output is then unauthorized).
-            if (auto err = finalize()) return err;
+            // Fast-path scripts stage no deferred records, but the deferred
+            // final rules still apply (a HAS_STATE output is then
+            // unauthorized). A separate run: if a signature fails below, the
+            // general loop validates every input again from scratch.
+            V2DeferredTxChecks fast_deferred(tx);
+            for (size_t i = 0; i < tx.vin.size(); ++i) {
+                if (auto reason = fast_deferred.CompleteInput(
+                        uint32_t(i), true, lotus::v2::DeferredRecords{})) {
+                    return V2DeferredFailure(*reason);
+                }
+            }
             if (!has_schnorr) {
                 nSigChecksOut = 0;
                 return std::nullopt;
@@ -580,6 +569,12 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
 
     static const CTxOut kEmptyTxOut{};
     int nSigChecksTotal = 0;
+    // Phase 1 runs the inputs in ascending order and phase 2 runs in the
+    // last completion: the canonical order of reject reasons.
+    std::shared_ptr<V2DeferredTxChecks> deferred;
+    if (tx.nVersion == 7) {
+        deferred = std::make_shared<V2DeferredTxChecks>(tx);
+    }
     for (size_t i = 0; i < tx.vin.size(); i++) {
         if (tx.vin[i].nFlags != 3) {
             assert(!resolved_inputs[i].IsSpent());
@@ -594,8 +589,13 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
                            sigCacheStore, txdata, &txLimitSigChecks,
                            pBlockLimitSigChecks, v2_resolved_coins,
                            sig_collector);
-        check.SetV2Effects(&v2_effects);
+        check.SetV2Deferred(deferred);
         if (auto result = check(); result.has_value()) {
+            if (deferred) {
+                if (auto reason = deferred->RuleFailure()) {
+                    return V2DeferredFailure(*reason);
+                }
+            }
             uint32_t mandatoryFlags =
                 flags & ~STANDARD_NOT_MANDATORY_VERIFY_FLAGS;
             // Block flags are consensus requirements. The policy fallback is
@@ -623,7 +623,9 @@ std::optional<ParallelTxScriptError> VerifyTxScriptsFromResolvedCoins(
         }
         nSigChecksTotal += check.GetScriptExecutionMetrics().nSigChecks;
     }
-    if (auto err = finalize()) return err;
+    if (deferred && !deferred->Run().Accepted()) {
+        return V2DeferredFailure("deferred-checks-incomplete");
+    }
     nSigChecksOut = nSigChecksTotal;
     return std::nullopt;
 }
@@ -4085,7 +4087,53 @@ GetSpentCoins(const CTransactionRef &ptx, const CCoinsViewCache &coins_view) {
     return spent_coins;
 }
 
+V2DeferredTxChecks::V2DeferredTxChecks(const CTransaction &tx)
+    : m_outputs([&] {
+          std::vector<lotus::v2::Output> outputs;
+          outputs.reserve(tx.vout.size());
+          for (const CTxOut &out : tx.vout) outputs.push_back(out.ToV2Output());
+          return outputs;
+      }()),
+      m_run(lotus::v2::DeferredCheckRegistry::Consensus(),
+            lotus::v2::DeferredTxView{m_outputs, tx.vin.size()}) {}
+
+std::optional<std::string>
+V2DeferredTxChecks::CompleteInput(uint32_t input, bool succeeded,
+                                  lotus::v2::DeferredRecords &&records) {
+    std::string error;
+    const auto outcome =
+        m_run.CompleteInput(input, succeeded, std::move(records), error);
+    if (outcome != lotus::v2::DeferredOutcome::Failed || !succeeded) {
+        return std::nullopt;
+    }
+    LOCK(m_mutex);
+    if (!m_rule_failure) m_rule_failure = error;
+    return error;
+}
+
+std::optional<std::string> V2DeferredTxChecks::RuleFailure() const {
+    LOCK(m_mutex);
+    return m_rule_failure;
+}
+
 std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
+    lotus::v2::DeferredRecords records;
+    auto result = CheckInput(records);
+    if (!m_v2_deferred) return result;
+    // Phase 1 is done for this input: hand its records to the deferred
+    // check kinds. The completion that finishes the transaction also runs
+    // its final rules here, so no barrier across the block is needed.
+    if (auto reason = m_v2_deferred->CompleteInput(
+            nIn, !result.has_value(), std::move(records))) {
+        return std::make_pair(ScriptError::UNKNOWN,
+                              strprintf("V2 deferred check failed (%s) in %s",
+                                        *reason, ptxTo->GetId().ToString()));
+    }
+    return result;
+}
+
+std::optional<std::pair<ScriptError, std::string>>
+CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     ScriptError error{ScriptError::UNKNOWN};
     auto make_debug_str = [&]() {
@@ -4224,7 +4272,7 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
             for (size_t j = 0; j < path.size(); ++j) {
                 const auto &w = ptxTo->vin[nIn].vWitnesses[j];
                 auto ctx = prepared_vm.Invocation(nIn, j, {}, m_sig_collector);
-                ctx.effects = m_v2_effects;
+                ctx.effects = &records;
                 const lotus::v2::VmChargedResult vm_res =
                     lotus::v2::EvaluateVmCharged(
                         w.script, w.arguments, kDefaultVmProfile,
@@ -4269,7 +4317,7 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
         }
         const auto &w = ptxTo->vin[nIn].vWitnesses[0];
         auto ctx = prepared_vm.Invocation(nIn, 0, delta, m_sig_collector);
-        ctx.effects = m_v2_effects;
+        ctx.effects = &records;
         const lotus::v2::VmChargedResult vm_res =
             lotus::v2::EvaluateVmCharged(
                 w.script, w.arguments, kDefaultVmProfile, prepared_vm.Cost(),
@@ -4365,7 +4413,10 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
     }
 
     int nSigChecksTotal = 0;
-    lotus::v2::VmTransactionEffects v2_effects;
+    std::shared_ptr<V2DeferredTxChecks> deferred;
+    if (tx.nVersion == 7) {
+        deferred = std::make_shared<V2DeferredTxChecks>(tx);
+    }
 
     const bool has_v2_input = std::any_of(
         tx.vin.begin(), tx.vin.end(),
@@ -4404,7 +4455,7 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         CScriptCheck check(prev_txout, tx, validation_cache.m_signature_cache,
                            i, flags, sigCacheStore, txdata, &txLimitSigChecks,
                            pBlockLimitSigChecks, resolved_coins);
-        check.SetV2Effects(&v2_effects);
+        check.SetV2Deferred(deferred);
 
         // If pvChecks is not null, defer the check execution to the caller.
         // A V2 transaction is one check unit: its inputs run here and the
@@ -4416,6 +4467,14 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         }
 
         if (auto result = check(); result.has_value()) {
+            // A failed deferred rule is a transaction-level consensus
+            // failure, not a script error of this input.
+            if (deferred) {
+                if (auto reason = deferred->RuleFailure()) {
+                    return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                                         *reason);
+                }
+            }
             // Compute flags without the optional standardness flags.
             // This differs from MANDATORY_SCRIPT_VERIFY_FLAGS as it contains
             // additional upgrade flags (see AcceptToMemoryPoolWorker variable
@@ -4462,8 +4521,9 @@ bool CheckInputScripts(const CTransaction &tx, TxValidationState &state,
         nSigChecksTotal += check.GetScriptExecutionMetrics().nSigChecks;
     }
 
-    if (auto reason = FinalizeV2TransactionEffects(tx, v2_effects)) {
-        return state.Invalid(TxValidationResult::TX_CONSENSUS, *reason);
+    if (deferred && !pvChecks && !deferred->Run().Accepted()) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS,
+                             "deferred-checks-incomplete");
     }
 
     nSigChecksOut = nSigChecksTotal;
