@@ -6,6 +6,7 @@
 #define BITCOIN_NET_ZSTD_DICT_H
 
 #include <net_zstd_dict_data.h>
+#include <net_zstd_dict_v2_data.h>
 #include <span.h>
 
 #include <zstd.h>
@@ -16,14 +17,14 @@
 #include <vector>
 
 /**
- * Streaming zstd compression of a P2P byte stream for the p2p-zstd and
- * p2p-zstd-v1 WebSocket sub-protocols.
+ * Streaming zstd compression of P2P WebSocket message bodies.
+ * Lotus defaults to V2; explicit version 1 preserves the legacy codec.
  *
  * Each direction is a single zstd frame that never ends: every message is
  * compressed with ZSTD_e_flush, so it can be decoded as soon as it arrives,
  * while later messages still reference earlier ones (a warm sliding window
- * across the whole connection). With p2p-zstd-v1 both streams start primed
- * with P2P_ZSTD_DICT_V1, so even the first small messages compress well.
+ * across the whole connection). Lotus p2p-v2 streams start primed with
+ * P2P_ZSTD_DICT_V2, trained on native message bodies without v1 framing.
  */
 
 //! Compression level of P2P streams (fast; the window does most of the work)
@@ -33,19 +34,42 @@ static constexpr int P2P_ZSTD_WINDOW_LOG = 17;
 //! Largest window accepted from a peer (bounds decoder memory to ~1 MiB)
 static constexpr int P2P_ZSTD_MAX_WINDOW_LOG = 20;
 
-/** Dictionary shared by all p2p-zstd-v1 compressors (created once) */
-inline const ZSTD_CDict *GetP2PZstdCDict() {
+//! p2p-v2 fixes the dictionary at version 2; legacy V1 bytes remain immutable.
+inline constexpr uint32_t P2P_ZSTD_DICT_VERSION = 2;
+inline Span<const uint8_t> GetP2PZstdDictionaryBytes() {
+    return {P2P_ZSTD_DICT_V2, sizeof(P2P_ZSTD_DICT_V2)};
+}
+
+/** Dictionary shared by all p2p-v2 compressors (created once). */
+inline const ZSTD_CDict *GetP2PZstdCDict(uint32_t version = P2P_ZSTD_DICT_VERSION) {
+    if (version == 1) {
+        static const std::unique_ptr<ZSTD_CDict, size_t (*)(ZSTD_CDict *)> legacy{
+            ZSTD_createCDict(P2P_ZSTD_DICT_V1, sizeof(P2P_ZSTD_DICT_V1), P2P_ZSTD_LEVEL),
+            &ZSTD_freeCDict};
+        return legacy.get();
+    }
+    if (version != P2P_ZSTD_DICT_VERSION) {
+        throw std::invalid_argument("Unsupported P2P zstd dictionary version");
+    }
     static const std::unique_ptr<ZSTD_CDict, size_t (*)(ZSTD_CDict *)> cdict{
-        ZSTD_createCDict(P2P_ZSTD_DICT_V1, sizeof(P2P_ZSTD_DICT_V1),
+        ZSTD_createCDict(P2P_ZSTD_DICT_V2, sizeof(P2P_ZSTD_DICT_V2),
                          P2P_ZSTD_LEVEL),
         &ZSTD_freeCDict};
     return cdict.get();
 }
 
-/** Dictionary shared by all p2p-zstd-v1 decompressors (created once) */
-inline const ZSTD_DDict *GetP2PZstdDDict() {
+/** Dictionary shared by all p2p-v2 decompressors (created once). */
+inline const ZSTD_DDict *GetP2PZstdDDict(uint32_t version = P2P_ZSTD_DICT_VERSION) {
+    if (version == 1) {
+        static const std::unique_ptr<ZSTD_DDict, size_t (*)(ZSTD_DDict *)> legacy{
+            ZSTD_createDDict(P2P_ZSTD_DICT_V1, sizeof(P2P_ZSTD_DICT_V1)), &ZSTD_freeDDict};
+        return legacy.get();
+    }
+    if (version != P2P_ZSTD_DICT_VERSION) {
+        throw std::invalid_argument("Unsupported P2P zstd dictionary version");
+    }
     static const std::unique_ptr<ZSTD_DDict, size_t (*)(ZSTD_DDict *)> ddict{
-        ZSTD_createDDict(P2P_ZSTD_DICT_V1, sizeof(P2P_ZSTD_DICT_V1)),
+        ZSTD_createDDict(P2P_ZSTD_DICT_V2, sizeof(P2P_ZSTD_DICT_V2)),
         &ZSTD_freeDDict};
     return ddict.get();
 }
@@ -60,7 +84,8 @@ inline uint64_t P2PZstdMaxWireSize(uint64_t plain_limit) {
 
 class P2PZstdSession {
 public:
-    explicit P2PZstdSession(bool use_dict)
+    explicit P2PZstdSession(bool use_dict,
+                            uint32_t dictionary_version = P2P_ZSTD_DICT_VERSION)
         : m_cctx{ZSTD_createCCtx(), &ZSTD_freeCCtx},
           m_dctx{ZSTD_createDCtx(), &ZSTD_freeDCtx} {
         if (!m_cctx || !m_dctx) {
@@ -68,8 +93,8 @@ public:
         }
         if (use_dict) {
             // The CDict carries the compression level.
-            Check(ZSTD_CCtx_refCDict(m_cctx.get(), GetP2PZstdCDict()));
-            Check(ZSTD_DCtx_refDDict(m_dctx.get(), GetP2PZstdDDict()));
+            Check(ZSTD_CCtx_refCDict(m_cctx.get(), GetP2PZstdCDict(dictionary_version)));
+            Check(ZSTD_DCtx_refDDict(m_dctx.get(), GetP2PZstdDDict(dictionary_version)));
         } else {
             Check(ZSTD_CCtx_setParameter(m_cctx.get(), ZSTD_c_compressionLevel,
                                          P2P_ZSTD_LEVEL));
