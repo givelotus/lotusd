@@ -47,8 +47,12 @@ slot is placement-constructed before publication and read after acquire.
 Records must remain trivially destructible; reference payloads are still
 released by the consumer before their slot is reused.
 
-Wake notifications retain the original 512-record threshold, independently of
-burst capacity. No user-facing sizing option is added. This is burst capacity,
-not a promise to buffer an indefinitely stalled sink. Sustained artificial
-floods may still drop; measurements must report accepted, dropped and actually
-written counts.
+The inherited 1,024-slot ring lost debug/info records during the full functional
+suite. With the framework JSON sidecar, a 16,384-slot candidate still lost
+44,787 lines in compactblocks. A 65,536-slot candidate still lost 4,482
+lines, so the next power of two above that measured burst plus the existing
+queue is 131,072. Wake notifications retain the original 512-record
+threshold, independently of burst capacity. No user-facing sizing option is
+added. This is burst capacity, not a promise to buffer an indefinitely stalled
+sink. Sustained artificial floods may still drop; measurements must report
+accepted, dropped and actually written counts.
