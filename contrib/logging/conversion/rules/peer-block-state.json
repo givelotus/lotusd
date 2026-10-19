@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "batch": "peer-block-state",
+  "files": [
+    {
+      "path": "src/net_processing.cpp",
+      "rules": [
+        {
+          "id": "peer-block-state-1",
+          "old": "LogDebug(BCLog::NET, \"node state unavailable: peer=%d\\n\", nodeid)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_state_unavailable\",\n                 \"node state unavailable: peer={peer_id}\")\n            .Field(BCLog::LogField::PeerId, nodeid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "node state unavailable: peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "nodeid"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-2",
+          "old": "LogDebug(BCLog::NET,\n                 \"Not downloading blocks from peer=%d, which doesn't have the \"\n                 \"snapshot block in its best chain.\\n\",\n                 peer.m_id)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_snapshot_chain_missing\",\n                 \"Not downloading blocks from peer={peer_id}, which doesn't \"\n                 \"have the snapshot block in its best chain.\")\n            .Field(BCLog::LogField::PeerId, peer.m_id)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Not downloading blocks from peer=%d, which doesn't have the snapshot block in its best chain.\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "peer.m_id"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-3",
+          "old": "LogDebug(BCLog::NET, \"Cleared nodestate for peer=%d\\n\", nodeid)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_state_cleared\",\n             \"Cleared nodestate for peer={peer_id}\")\n        .Field(BCLog::LogField::PeerId, nodeid)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Cleared nodestate for peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "nodeid"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-4",
+          "old": "LogDebug(BCLog::NET, \"Misbehaving: peer=%d%s\\n\", peer.m_id,\n             message_prefixed)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_misbehavior\",\n             \"Misbehaving: peer={peer_id}{reason}\")\n        .Field(BCLog::LogField::PeerId, peer.m_id)\n        .Field(BCLog::LogField::Reason, message_prefixed)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Misbehaving: peer=%d%s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "peer.m_id",
+              "message_prefixed"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-5",
+          "old": "LogDebug(BCLog::NET, \"peer=%d: %s\\n\", nodeid, message)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_validation_feedback\",\n                 \"peer={peer_id}: {reason}\")\n            .Field(BCLog::LogField::PeerId, nodeid)\n            .Field(BCLog::LogField::Reason, message)",
+          "count": 2,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "peer=%d: %s\n",
+            "specifiers": [
+              "%d",
+              "%s"
+            ],
+            "arguments": [
+              "nodeid",
+              "message"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-7",
+          "old": "LogDebug(BCLog::NET, \"Requesting block %s from peer=%d\\n\", hash.ToString(),\n             peer_id)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_requested\",\n             \"Requesting block {block_hash} from peer={peer_id}\")\n        .Field(BCLog::LogField::BlockHash, hash)\n        .Field(BCLog::LogField::PeerId, peer_id)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Requesting block %s from peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "hash.ToString()",
+              "peer_id"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-8",
+          "old": "LogDebug(\n                BCLog::NET,\n                \"historical block serving limit reached, disconnect peer=%d\\n\",\n                pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_historical_limit\",\n                     \"historical block serving limit reached, disconnect \"\n                     \"peer={peer_id}\")\n                .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "historical block serving limit reached, disconnect peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-9",
+          "old": "LogDebug(BCLog::NET,\n                     \"Ignore block request below NODE_NETWORK_LIMITED \"\n                     \"threshold, disconnect peer=%d\\n\",\n                     pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_limited_height\",\n                     \"Ignore block request below NODE_NETWORK_LIMITED \"\n                     \"threshold, disconnect peer={peer_id}\")\n                .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Ignore block request below NODE_NETWORK_LIMITED threshold, disconnect peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-10",
+          "old": "LogError(\"Cannot load block from disk, disconnect peer=%d\\n\",\n                     pfrom.GetId())",
+          "replacement": "LogErrorEvent(\n                BCLog::ALL, \"peer_block_disk_read_failed\",\n                \"Cannot load block from disk, disconnect peer={peer_id}\")\n                .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogError",
+            "format": "Cannot load block from disk, disconnect peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-11",
+          "old": "LogDebug(BCLog::NET, \"more getheaders (from %s) to peer=%d\\n\",\n                         locator.vHave.front().ToString(), pfrom.GetId())",
+          "replacement": "LogEvent(\n                    BCLog::NET, \"peer_headers_requested\",\n                    \"more getheaders (from {block_hash}) to peer={peer_id}\")\n                    .Field(BCLog::LogField::BlockHash, locator.vHave.front())\n                    .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "more getheaders (from %s) to peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "locator.vHave.front().ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-12",
+          "old": "LogDebug(BCLog::NET, \"Requesting block %s from  peer=%d\\n\",\n                         pindex->GetBlockHash().ToString(), pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_requested\",\n                         \"Requesting block {block_hash} from  peer={peer_id}\")\n                    .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())\n                    .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Requesting block %s from  peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "pindex->GetBlockHash().ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-13",
+          "old": "LogDebug(BCLog::NET, \"Protecting outbound peer=%d from eviction\\n\",\n                     pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_eviction_protected\",\n                     \"Protecting outbound peer={peer_id} from eviction\")\n                .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Protecting outbound peer=%d from eviction\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-14",
+          "old": "LogDebug(BCLog::NET, \"received block %s peer=%d\\n\",\n                 pblock->GetHash().ToString(), pfrom.GetId())",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_received\",\n                 \"received block {block_hash} peer={peer_id}\")\n            .Field(BCLog::LogField::BlockHash, pblock->GetHash())\n            .Field(BCLog::LogField::PeerId, pfrom.GetId())",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "received block %s peer=%d\n",
+            "specifiers": [
+              "%s",
+              "%d"
+            ],
+            "arguments": [
+              "pblock->GetHash().ToString()",
+              "pfrom.GetId()"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        },
+        {
+          "id": "peer-block-state-15",
+          "old": "LogDebug(BCLog::NET, \"Stall started peer=%d\\n\", staller)",
+          "replacement": "LogEvent(BCLog::NET, \"peer_block_stall_started\",\n                             \"Stall started peer={peer_id}\")\n                        .Field(BCLog::LogField::PeerId, staller)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogDebug",
+            "format": "Stall started peer=%d\n",
+            "specifiers": [
+              "%d"
+            ],
+            "arguments": [
+              "staller"
+            ]
+          },
+          "review_note": "PeerId is actual NodeId; BlockHash is the actual requested/received block or locator header hash, packed from uint256 without caller ToString; Reason is the existing validation/misbehavior explanation. Preserve branch, severity, category and exact wording, including existing double space."
+        }
+      ],
+      "support_adjustments": [
+        {
+          "purpose": "Include the structured logging API directly",
+          "old": "#include <kernel/mempool_entry.h>\n#include <merkleblock.h>\n",
+          "new": "#include <kernel/mempool_entry.h>\n#include <logging.h>\n#include <merkleblock.h>\n"
+        }
+      ]
+    }
+  ]
+}
