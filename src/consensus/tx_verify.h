@@ -8,8 +8,14 @@
 #include <kernel/cs_main.h>
 #include <threadsafety.h>
 
+#include <array>
 #include <cstdint>
 #include <vector>
+
+namespace lotus::v2 {
+class NativeConservation;
+class TokenConservation;
+} // namespace lotus::v2
 
 struct Amount;
 class CBlockIndex;
@@ -17,6 +23,7 @@ class CCoinsViewCache;
 class Coin;
 class CTransaction;
 class TxValidationState;
+class uint256;
 
 namespace Consensus {
 struct Params;
@@ -47,6 +54,23 @@ bool CheckTxInputsFromSpentCoins(const CTransaction &tx,
                                  const std::vector<Coin> &spent_coins,
                                  TxValidationState &state, int nSpendHeight,
                                  Amount &txfee);
+
+//! The conservation kinds' token key for a token id or mint input txid.
+std::array<uint8_t, 32> TokenKey(const uint256 &id);
+
+/**
+ * The final rules of the native and token conservation kinds
+ * (lotus_v2/deferred_checks.h) over the contributions the caller collected
+ * from the spent coins and outputs, with the node's reject reasons and
+ * precedence: token rules, then native, then the fee range.
+ * @param[in] nValueIn The native input total the caller range-checked.
+ * @param[out] txfee Set to the transaction fee if successful.
+ */
+bool FinishTxConservation(const CTransaction &tx,
+                          lotus::v2::NativeConservation &native,
+                          const lotus::v2::TokenConservation &tokens,
+                          const Amount &nValueIn, TxValidationState &state,
+                          Amount &txfee);
 
 } // namespace Consensus
 

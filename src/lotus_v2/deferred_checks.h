@@ -33,6 +33,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -263,6 +264,68 @@ std::vector<OutputClaim> CollectOutputClaims(const DeferredTxRun &run);
 std::vector<OutputClaim> OutputClaimsOf(const DeferredRecords &records);
 std::vector<StateAuthorization>
 StateAuthorizationsOf(const DeferredRecords &records);
+
+// ---------------------------------------------------------------------------
+// Conservation kinds. Their contributions are structural (input and output
+// values), applied when the transaction is prepared; no script contributes,
+// so their final rules are decided before any input runs, by the caller
+// that prepares the transaction (the ordinary V2 path and the node's
+// CheckTxInputs variants). Each caller keeps its own reject reasons and its
+// historical precedence between these and its other structural rules: the
+// failure code below is mapped by the caller.
+
+enum class ConservationFailure {
+    None,
+    Overflow,              // a running total does not fit
+    NativeInflation,       // native outputs exceed native inputs
+    MintWithoutDelta,      // a mint input whose token has no positive delta
+    TokenInflation,        // a positive token delta without a mint input
+};
+
+// Generic names of the conservation failures (callers may map the code to
+// their own reasons instead).
+const char *ConservationFailureName(ConservationFailure failure);
+
+// Native conservation: one counter per transaction. Inputs add, outputs
+// (including burns) subtract; the remainder is the fee and must be >= 0.
+class NativeConservation final : public DeferredAccumulator {
+public:
+    bool AddInput(__uint128_t value);
+    bool AddOutput(__uint128_t value);
+    ConservationFailure Check() const;
+    bool Final(std::string &error) override;
+    __uint128_t Inputs() const { return inputs_; }
+    __uint128_t Outputs() const { return outputs_; }
+    // Valid when Check() passes.
+    __uint128_t Fee() const { return inputs_ - outputs_; }
+
+private:
+    __uint128_t inputs_ = 0;
+    __uint128_t outputs_ = 0;
+};
+
+// Token conservation: one counter per token id. Spent amounts add, outputs
+// (including burns) subtract. Final: every token whose outputs exceed its
+// inputs (a positive delta) is matched by exactly one mint input for that
+// token, and every mint input names a token with a positive delta.
+class TokenConservation final : public DeferredAccumulator {
+public:
+    struct Totals {
+        __uint128_t inputs = 0;
+        __uint128_t outputs = 0;
+    };
+    bool AddInput(const Hash32 &token, __uint128_t value);
+    bool AddOutput(const Hash32 &token, __uint128_t value);
+    // Mint inputs in transaction order.
+    void AddMint(const Hash32 &token) { mints_.push_back(token); }
+    ConservationFailure Check() const;
+    bool Final(std::string &error) override;
+    const std::map<Hash32, Totals> &PerToken() const { return totals_; }
+
+private:
+    std::map<Hash32, Totals> totals_;
+    std::vector<Hash32> mints_;
+};
 
 } // namespace lotus::v2
 
