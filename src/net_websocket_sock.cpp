@@ -90,6 +90,13 @@ WebSocketSock::~WebSocketSock() {
 }
 
 void WebSocketSock::UpdateFlagsLocked() const {
+    const uint64_t independent = m_codec.IndependentFramesSent() - m_independent_sent_reported;
+    m_independent_sent_reported += independent;
+    if (independent) {
+        m_info->independent_frames_sent += independent;
+        if (auto *metrics = node::GetNodeMetrics())
+            metrics->websocket_independent_frames.Add(0, independent);
+    }
     m_has_buffered =
         m_rx_offset < m_rx_plain.size() || m_layer->HasBuffered() ||
         WebSocketCodec::HasCompleteFrame(m_rx_wire) || m_eof || m_failed;
@@ -146,10 +153,6 @@ void WebSocketSock::EncodeIndependentLocked(Span<const uint8_t> payload) const {
     m_codec.EncodeIndependent(*frame, m_tx);
     m_out_independent = false;
     AddCounters(*m_info, m_out_header.size() + payload.size(), 0, 0, 0);
-    ++m_info->independent_frames_sent;
-    if (auto *metrics{node::GetNodeMetrics()}) {
-        metrics->websocket_independent_frames.Add(0);
-    }
 }
 
 void WebSocketSock::QueueLocked(Span<const uint8_t> bytes) const {
