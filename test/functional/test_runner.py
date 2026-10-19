@@ -31,7 +31,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from collections import deque
 from queue import Empty, Queue
-from typing import Set, Tuple
+from typing import Any, Dict, NamedTuple, Set, Tuple
 
 from test_framework import reporting, worker
 from test_framework.results import FAILED, PASSED, SKIPPED, JobResult, parse_job_name
@@ -164,6 +164,8 @@ class TestCase:
         self.spec = spec
         # Seconds before the test is stopped, or None
         self.timeout = timeout
+        # Called with the test's progress messages (see worker.py)
+        self.on_progress = None
 
     def run(self, slot):
         """Run the test in pool slot `slot` (0 to jobs-1), which gives it its
@@ -227,7 +229,7 @@ class TestCase:
             "stdout_path": f"{testdir}.stdout",
             "stderr_path": f"{testdir}.stderr",
         }
-        result = worker.run_in_process(job, self.timeout)
+        result = worker.run_in_process(job, self.timeout, self.on_progress)
         status = {"passed": "Passed", "skipped": "Skipped"}.get(result.status, "Failed")
         stdout = worker.read(job["stdout_path"])
         stderr = worker.read(job["stderr_path"])
@@ -374,8 +376,9 @@ def main():
     parser.add_argument(
         "--jsonl-file",
         help=(
-            "Write one JSON object per test start, test result and the final"
-            " summary to this file (see README-runner-output.md)"
+            "Write one JSON object per event (a test's start, phases, log lines"
+            " and result, then the summary) to this file, or to standard output"
+            " with -, which then has only these (see README-runner-output.md)"
         ),
     )
     parser.add_argument(
@@ -410,6 +413,8 @@ def main():
         ),
     )
     args, unknown_args = parser.parse_known_args()
+    # First: with --jsonl-file=-, everything else printed goes to stderr
+    jsonl = reporting.open_jsonl(args.jsonl_file)
 
     # args to be passed on always start with two dashes; tests are the
     # remaining unknown args
@@ -560,7 +565,7 @@ def main():
         phase_dir=phase_dir,
         discovered=discovered,
         test_timeout=test_timeout(args.test_timeout, passon_args),
-        jsonl_file=args.jsonl_file,
+        jsonl=jsonl,
         json_summary=args.json_summary,
     )
 
@@ -581,7 +586,7 @@ def run_tests(
     phase_dir=None,
     discovered=None,
     test_timeout=None,
-    jsonl_file=None,
+    jsonl=None,
     json_summary=None,
 ):
     args = args or []
@@ -645,8 +650,6 @@ def run_tests(
         except subprocess.CalledProcessError as e:
             sys.stdout.buffer.write(e.output)
             raise
-
-    jsonl = reporting.open_jsonl(jsonl_file)
 
     # Run Tests
     start_time = time.time()
@@ -731,41 +734,59 @@ def execute_test_processes(
     job_queue = Queue()
     failfast_event = threading.Event()
     test_results = []
-    poll_timeout = 1  # seconds, between status line updates
 
     ##
     # Define some helper functions we will need for threading.
     ##
 
-    status_line = reporting.StatusLine(sys.stdout, len(test_list))
+    live = reporting.LiveStatus(sys.stdout, len(test_list))
     if on_ci() or running_setup_script(test_list):
-        status_line.enabled = False
+        live.enabled = False
+    # Seconds between live status updates
+    poll_timeout = 0.25 if live.enabled else 1
+    last_shown = [0.0]
 
-    def show_status(running_jobs):
+    def show_status(running_jobs, force=True):
+        """Redraw the live status, at most every poll_timeout unless forced."""
+        if not force and time.time() - last_shown[0] < poll_timeout:
+            return
+        last_shown[0] = time.time()
         failed = len([r for r in test_results if not r.was_successful])
-        status_line.show(len(test_results), failed, [j[1] for j in running_jobs])
+        live.show(len(test_results), failed, list(running_jobs.values()))
 
     def handle_message(message, running_jobs):
         """
         handle_message handles a single message from handle_test_cases
         """
         if isinstance(message, TestCase):
-            running_jobs.append((message.test_num, message.test_case))
-            if not status_line.enabled:
+            running_jobs[message.test_num] = reporting.RunningJob(
+                message.test_case, time.time()
+            )
+            if not live.enabled:
                 print(f"{bold(message.test_case)} started")
             if jsonl is not None:
                 jsonl.write("start", name=message.test_case)
             show_status(running_jobs)
             return
 
+        if isinstance(message, Progress):
+            job = running_jobs.get(message.num)
+            if job is not None:
+                job.update(message.event)
+            if jsonl is not None:
+                fields = {k: v for k, v in message.event.items() if k != "event"}
+                jsonl.write(message.event["event"], name=message.name, **fields)
+            show_status(running_jobs, force=False)
+            return
+
         if isinstance(message, TestResult):
             test_result = message
 
-            running_jobs.remove((test_result.num, test_result.name))
+            running_jobs.pop(test_result.num, None)
             test_results.append(test_result)
             result = job_result_of(test_result)
 
-            status_line.clear()
+            live.clear()
             print(reporting.finish_line(result))
             if jsonl is not None:
                 jsonl.write("finish", result=result.to_dict())
@@ -800,7 +821,7 @@ def execute_test_processes(
         handle_update_messages waits for messages to be sent from handle_test_cases via the
         update_queue.  It serializes the results so we can print nice status update messages.
         """
-        running_jobs = []
+        running_jobs = {}
 
         while True:
             message = None
@@ -826,6 +847,9 @@ def execute_test_processes(
             # Signal that the test is starting to inform the poor waiting
             # programmer
             update_queue.put(test)
+            test.on_progress = lambda event, test=test: update_queue.put(
+                Progress(test.test_num, test.test_case, event)
+            )
             result = test.run(slot)
             update_queue.put(result)
             job_queue.task_done()
@@ -1055,6 +1079,14 @@ def print_results(test_results, tests_dir, max_len_name, runtime, combined_logs_
         results += RED[0]
     results += f"Runtime: {TimeResolution.seconds(runtime)} s\n"
     print(results)
+
+
+class Progress(NamedTuple):
+    """A progress message from a running test (see test_framework/worker.py)."""
+
+    num: int
+    name: str
+    event: Dict[str, Any]
 
 
 class TestResult:
