@@ -14,7 +14,9 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 class Config;
 
@@ -435,6 +437,16 @@ bool IsBlockLike(const std::string &strCommand);
 
 /** Get a vector of all valid message types (see above) */
 const std::vector<std::string> &getAllNetMessageTypes();
+
+/**
+ * Lotus v2 P2P over WebSocket ("p2p-v2") sends message types as 1-byte ids:
+ * the 1-based index in a fixed table. The table is append-only: an id never
+ * changes meaning. Types without an id are sent as id 0 followed by their
+ * name.
+ */
+std::optional<uint8_t> GetP2PV2MessageId(std::string_view msg_type);
+/** The message type of a p2p-v2 id, or nullptr if unassigned */
+const std::string *GetP2PV2MessageType(uint8_t id);
 
 /**
  * nServices flags.

@@ -53,6 +53,24 @@ static constexpr int BRIDGE_SOCKET_BUFFER = 1024 * 1024;
 inline std::pair<std::string, P2PWebSocketCompression>
 NegotiateP2PCompression(std::string_view offered_protocols,
                         bool permessage_deflate_offered) {
+    // Lotus v2: p2p-v2 wins wherever it is in the client's list.
+    for (std::string_view rest{offered_protocols}; !rest.empty();) {
+        const size_t comma{rest.find(',')};
+        std::string_view token{rest.substr(0, comma)};
+        rest = comma == std::string_view::npos ? std::string_view{}
+                                               : rest.substr(comma + 1);
+        while (!token.empty() &&
+               (token.front() == ' ' || token.front() == '\t')) {
+            token.remove_prefix(1);
+        }
+        while (!token.empty() &&
+               (token.back() == ' ' || token.back() == '\t')) {
+            token.remove_suffix(1);
+        }
+        if (token == P2P_WS_PROTOCOL_V2) {
+            return {P2P_WS_PROTOCOL_V2, P2PWebSocketCompression::P2P_V2};
+        }
+    }
     bool zstd{false};
     while (!offered_protocols.empty()) {
         const size_t comma{offered_protocols.find(',')};
@@ -60,10 +78,12 @@ NegotiateP2PCompression(std::string_view offered_protocols,
         offered_protocols = comma == std::string_view::npos
                                 ? std::string_view{}
                                 : offered_protocols.substr(comma + 1);
-        while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
+        while (!token.empty() &&
+               (token.front() == ' ' || token.front() == '\t')) {
             token.remove_prefix(1);
         }
-        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+        while (!token.empty() &&
+               (token.back() == ' ' || token.back() == '\t')) {
             token.remove_suffix(1);
         }
         if (token == P2P_WS_PROTOCOL_ZSTD_DICT) {
@@ -84,6 +104,9 @@ NegotiateP2PCompression(std::string_view offered_protocols,
 inline P2PWebSocketCompression
 CompressionFromSelectedProtocol(std::string_view selected,
                                 bool permessage_deflate) {
+    if (selected == P2P_WS_PROTOCOL_V2) {
+        return P2PWebSocketCompression::P2P_V2;
+    }
     if (selected == P2P_WS_PROTOCOL_ZSTD_DICT) {
         return P2PWebSocketCompression::ZSTD_DICT;
     }
@@ -109,8 +132,10 @@ void ConfigureP2PWebSocket(WS &ws, beast::role_type role,
     ws.auto_fragment(false);
     ws.read_message_max(P2PZstdMaxWireSize(GetP2PWebSocketMessageSizeLimit()));
     websocket::permessage_deflate pmd;
-    pmd.server_enable = enable_permessage_deflate && role == beast::role_type::server;
-    pmd.client_enable = enable_permessage_deflate && role == beast::role_type::client;
+    pmd.server_enable =
+        enable_permessage_deflate && role == beast::role_type::server;
+    pmd.client_enable =
+        enable_permessage_deflate && role == beast::role_type::client;
     ws.set_option(pmd);
 }
 
@@ -159,10 +184,9 @@ inline void CountRecv(WebSocketTransportInfo &info, size_t payload,
 
 /** CConnman -> peer: read P2P bytes, (compress,) send as binary messages */
 template <typename WS>
-asio::awaitable<void> PumpLocalToWebSocket(LocalSocket &local, WS &ws,
-                                           P2PZstdSession *zstd,
-                                           WebSocketTransportInfo &info,
-                                           bool masked) {
+asio::awaitable<void>
+PumpLocalToWebSocket(LocalSocket &local, WS &ws, P2PZstdSession *zstd,
+                     WebSocketTransportInfo &info, bool masked) {
     std::vector<uint8_t> in(MAX_BRIDGE_CHUNK);
     std::vector<uint8_t> out;
     while (true) {
@@ -191,10 +215,9 @@ asio::awaitable<void> PumpLocalToWebSocket(LocalSocket &local, WS &ws,
 
 /** peer -> CConnman: receive messages, (decompress,) write P2P bytes */
 template <typename WS>
-asio::awaitable<void> PumpWebSocketToLocal(WS &ws, LocalSocket &local,
-                                           P2PZstdSession *zstd,
-                                           WebSocketTransportInfo &info,
-                                           bool masked) {
+asio::awaitable<void>
+PumpWebSocketToLocal(WS &ws, LocalSocket &local, P2PZstdSession *zstd,
+                     WebSocketTransportInfo &info, bool masked) {
     beast::flat_buffer buffer;
     std::vector<std::vector<uint8_t>> chunks;
     while (true) {
@@ -269,9 +292,8 @@ RunP2PWebSocketBridge(WS &ws, LocalSocket local,
             info->compression == P2PWebSocketCompression::ZSTD_DICT);
     }
     // Clients mask what they send (RFC 6455 5.3).
-    co_await (
-        PumpLocalToWebSocket(local, ws, zstd.get(), *info, is_client) ||
-        PumpWebSocketToLocal(ws, local, zstd.get(), *info, !is_client));
+    co_await (PumpLocalToWebSocket(local, ws, zstd.get(), *info, is_client) ||
+              PumpWebSocketToLocal(ws, local, zstd.get(), *info, !is_client));
     boost::system::error_code ignored;
     local.close(ignored);
     // Bounded by the WebSocket handshake timeout, which covers closing too.
