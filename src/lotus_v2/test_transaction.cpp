@@ -120,6 +120,43 @@ void FixedPayment() {
         !EncodeTransaction(tx, PROFILE, mutated, error)); // duplicate outpoint
 }
 
+void StatefulOutputFraming() {
+    Transaction tx;
+    Input input;
+    input.prev_txid.fill(0x11);
+    input.flags = 1;
+    input.sequence = UINT32_MAX;
+    input.witnesses = {{{0x4e}, {}, {}}};
+    tx.inputs = {input};
+    Output output;
+    output.flags = OUTPUT_FLAG_HAS_STATE;
+    output.value = 1000;
+    output.state_root.fill(0x22);
+    output.branches = {Hash32{0x33}};
+    output.paths = {{0}};
+    tx.outputs = {output};
+    std::string error;
+    for (bool token : {false, true}) {
+        if (token) {
+            tx.outputs[0].flags |= OUTPUT_FLAG_HAS_TOKEN;
+            tx.outputs[0].token_id.fill(0x44);
+        }
+        std::vector<uint8_t> wire;
+        CHECK(EncodeTransaction(tx, PROFILE, wire, error));
+        Transaction decoded;
+        CHECK(DecodeTransaction(wire, PROFILE, decoded, error));
+        CHECK(decoded.outputs == tx.outputs);
+        Accept(wire);
+        for (size_t n = 0; n < wire.size(); ++n) {
+            Reject({wire.begin(), wire.begin() + n});
+        }
+        // The same shared output grammar still rejects state on burn outputs.
+        tx.outputs[0].flags |= OUTPUT_FLAG_IS_BURN;
+        CHECK(!EncodeTransaction(tx, PROFILE, wire, error));
+        tx.outputs[0].flags &= ~OUTPUT_FLAG_IS_BURN;
+    }
+}
+
 void ArgumentElementBound() {
     Transaction tx;
     Input spend;
@@ -262,6 +299,15 @@ void Coinbase() {
     tx.outputs[0].flags = 1;
     tx.outputs[0].token_id[0] = 1;
     CHECK(!EncodeTransaction(tx, PROFILE, maximum, error));
+    // A coinbase runs no script and can never authorize a HAS_STATE output.
+    tx.outputs[0].flags = 4;
+    tx.outputs[0].token_id = Hash32{};
+    tx.outputs[0].state_root[0] = 1;
+    CHECK(!EncodeTransaction(tx, PROFILE, maximum, error) &&
+          error == "coinbase shape");
+    tx.outputs[0].flags = 0;
+    tx.outputs[0].state_root = Hash32{};
+    CHECK(EncodeTransaction(tx, PROFILE, maximum, error));
 }
 
 void Corpus(const char *path) {
@@ -323,6 +369,7 @@ void CountCaps() {
           error == "profile");
 }
 int main(int argc, char **argv) {
+    StatefulOutputFraming();
     CountCaps();
     FixedPayment();
     ArgumentElementBound();

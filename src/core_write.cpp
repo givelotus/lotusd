@@ -292,6 +292,12 @@ void TxToUniv(const CTransaction &tx, const BlockHash &hashBlock,
         UniValue o(UniValue::VOBJ);
         ScriptPubKeyToUniv(txout.scriptPubKey, o, true);
         out.pushKV("scriptPubKey", std::move(o));
+        if (tx.nVersion == 7) {
+            const lotus::v2::Output v2out = txout.ToV2Output();
+            if (v2out.HasState()) {
+                out.pushKV("stateRoot", HexStr(v2out.state_root));
+            }
+        }
 
         if (is_change_func && is_change_func(txout)) {
             out.pushKV("ischange", true);

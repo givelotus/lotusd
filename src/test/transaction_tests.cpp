@@ -6,6 +6,7 @@
 #include <chainparams.h> // For CChainParams
 #include <checkqueue.h>
 #include <clientversion.h>
+#include <compressor.h>
 #include <common/system.h>
 #include <config.h>
 #include <consensus/amount.h>
@@ -1913,6 +1914,115 @@ BOOST_AUTO_TEST_CASE(v2_fallback_identity_is_rejected) {
     state = TxValidationState{};
     BOOST_CHECK(!CheckRegularTransaction(empty_tx, state));
     BOOST_CHECK_EQUAL(state.GetRejectReason(), "bad-txns-vin-empty");
+}
+
+BOOST_AUTO_TEST_CASE(v2_state_root_round_trip) {
+    lotus::v2::Output stateless;
+    stateless.value = 1000;
+    lotus::v2::Hash branch{};
+    branch[0] = 7;
+    stateless.branches = {branch};
+    stateless.paths = {{0}};
+    lotus::v2::Output stateful = stateless;
+    stateful.flags = lotus::v2::OUTPUT_FLAG_HAS_STATE;
+    stateful.state_root[0] = 0x42;
+    lotus::v2::Output other = stateful;
+    other.state_root[0] = 0x43;
+    lotus::v2::Output token_state = stateful;
+    token_state.flags |= lotus::v2::OUTPUT_FLAG_HAS_TOKEN;
+    token_state.token_id[3] = 9;
+
+    auto make = [&](const lotus::v2::Output &out) {
+        CMutableTransaction tx;
+        tx.nVersion = 7;
+        tx.fHasV2Lock = true;
+        tx.vin.emplace_back(COutPoint(TxId(uint256S("11")), 0));
+        tx.vin.back().nFlags = 1;
+        tx.vin.back().nSequence = CTxIn::SEQUENCE_FINAL;
+        lotus::v2::BranchWitness witness;
+        witness.script = {0x4e};
+        tx.vin.back().vWitnesses = {witness};
+        tx.vout.push_back(CTxOut::FromV2Output(out));
+        return CTransaction(tx);
+    };
+    const CTransaction a = make(stateful), b = make(other),
+                       c = make(stateless), d = make(token_state);
+    // The state root is committed by every identity.
+    BOOST_CHECK(a.GetId() != b.GetId() && a.GetId() != c.GetId());
+    BOOST_CHECK(a.GetHash() != b.GetHash());
+    BOOST_CHECK(a.GetOutputsHash() != b.GetOutputsHash());
+    BOOST_CHECK(a.vout[0] != b.vout[0]);
+    BOOST_CHECK(a.vout[0].ToV2Output() == stateful);
+
+    for (const CTransaction *tx : {&a, &b, &c, &d}) {
+        DataStream ss{};
+        ss << *tx;
+        CMutableTransaction back;
+        ss >> back;
+        BOOST_CHECK(CTransaction(back).GetId() == tx->GetId());
+        BOOST_CHECK(back.vout[0].ToV2Output() == tx->vout[0].ToV2Output());
+        BOOST_CHECK(back.vout[0].stateRoot == tx->vout[0].stateRoot);
+    }
+    // Wire: flags | value | token | state root | ...
+    {
+        DataStream ss{};
+        ss << d;
+        std::vector<uint8_t> out_bytes;
+        std::string err;
+        BOOST_CHECK(lotus::v2::EncodeOutput(token_state, out_bytes, err));
+        const std::string hex = HexStr(ss);
+        BOOST_CHECK(hex.find(HexStr(out_bytes)) != std::string::npos);
+    }
+
+    // Coins compression keeps the state bit and root for both CTxOut
+    // representations (scriptPubKey wire bytes and the structured tag form).
+    for (const auto &out : {stateful, token_state}) {
+        CTxOut txout = CTxOut::FromV2Output(out);
+        for (bool structured : {false, true}) {
+            CTxOut in = txout;
+            if (structured) in.scriptPubKey.clear();
+            DataStream ss{};
+            ss << Using<TxOutCompression>(in);
+            CTxOut back;
+            ss >> Using<TxOutCompression>(back);
+            BOOST_CHECK(back.ToV2Output() == out);
+            if (structured) {
+                BOOST_CHECK_EQUAL(back.nFlags, out.flags);
+                BOOST_CHECK(back.stateRoot == txout.stateRoot);
+            }
+        }
+    }
+    // Context-free checks: a V2 coinbase may not create a HAS_STATE output.
+    {
+        CMutableTransaction cb;
+        cb.nVersion = 7;
+        cb.fHasV2Lock = true;
+        cb.vin.emplace_back(COutPoint(TxId(uint256S("22")), 5));
+        cb.vin[0].nFlags = 2;
+        cb.vin[0].nSequence = CTxIn::SEQUENCE_FINAL;
+        cb.vout.push_back(CTxOut::FromV2Output(stateless));
+        TxValidationState cb_state;
+        BOOST_CHECK(CheckCoinbase(CTransaction(cb), cb_state));
+        cb.vout.push_back(CTxOut::FromV2Output(stateful));
+        BOOST_CHECK(!CheckCoinbase(CTransaction(cb), cb_state));
+        BOOST_CHECK_EQUAL(cb_state.GetRejectReason(), "bad-cb-state-output");
+        // The wire decoder refuses a state-carrying coinbase output too.
+        DataStream ss{};
+        ss << CTransaction(cb);
+        CMutableTransaction back;
+        BOOST_CHECK_THROW(ss >> back, std::ios_base::failure);
+    }
+    // Burn + state compressed tag is invalid.
+    {
+        DataStream ss{};
+        CTxOut in = CTxOut::FromV2Output(stateful);
+        in.scriptPubKey.clear();
+        in.nFlags = 0x06;
+        ss << Using<TxOutCompression>(in);
+        CTxOut back;
+        BOOST_CHECK_THROW(ss >> Using<TxOutCompression>(back),
+                          std::ios_base::failure);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
