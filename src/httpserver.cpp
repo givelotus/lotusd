@@ -720,7 +720,8 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
 
     g_connections.AddRequest();
     if (g_reject_requests.load()) {
-        LogDebug(BCLog::HTTP, "Rejecting request while shutting down\n");
+        LogEvent(BCLog::HTTP, "http_shutdown_request_rejected",
+                 "Rejecting request while shutting down");
         co_return MakeSimpleResponse(HTTP_SERVICE_UNAVAILABLE, version);
     }
 
@@ -794,9 +795,10 @@ DispatchRequest(BeastRequest &&beast_req, const HTTPConnectionInfo &conn) {
                 if (auto *metrics{node::GetNodeMetrics()}) {
                     metrics->rpc_work_queue_rejected.Inc();
                 }
-                LogPrintf("WARNING: request rejected because http work queue "
-                          "depth exceeded, it can be increased with the "
-                          "-rpcworkqueue= setting\n");
+                LogInfoEvent(BCLog::ALL, "http_work_queue_full",
+                             "WARNING: request rejected because http work "
+                             "queue depth exceeded, it can be increased with "
+                             "the -rpcworkqueue= setting");
                 item->req->WriteReply(HTTP_SERVICE_UNAVAILABLE,
                                       "Work queue depth exceeded");
             }
@@ -3097,13 +3099,15 @@ static bool HTTPBindAddresses() {
         endpoints.push_back(std::make_pair("::1", http_port));
         endpoints.push_back(std::make_pair("127.0.0.1", http_port));
         if (gArgs.IsArgSet("-rpcallowip")) {
-            LogPrintf("WARNING: option -rpcallowip was specified without "
-                      "-rpcbind; this doesn't usually make sense\n");
+            LogInfoEvent(BCLog::ALL, "rpc_allowip_without_bind",
+                         "WARNING: option -rpcallowip was specified without "
+                         "-rpcbind; this doesn't usually make sense");
         }
         if (gArgs.IsArgSet("-rpcbind")) {
-            LogPrintf("WARNING: option -rpcbind was ignored because "
-                      "-rpcallowip was not specified, refusing to allow "
-                      "everyone to connect\n");
+            LogInfoEvent(
+                BCLog::ALL, "rpc_bind_without_allowip",
+                "WARNING: option -rpcbind was ignored because -rpcallowip was "
+                "not specified, refusing to allow everyone to connect");
         }
     } else if (gArgs.IsArgSet("-rpcbind")) {
         // Specific bind address.
@@ -3124,8 +3128,9 @@ static bool HTTPBindAddresses() {
         if (BindEndpoint(i->first, i->second, /*public_only=*/false)) {
             const std::optional<CNetAddr> addr{LookupHost(i->first, false)};
             if (i->first.empty() || (addr.has_value() && addr->IsBindAny())) {
-                LogPrintf("WARNING: the RPC server is not safe to expose to "
-                          "untrusted networks such as the public internet\n");
+                LogInfoEvent(BCLog::ALL, "rpc_untrusted_network_warning",
+                             "WARNING: the RPC server is not safe to expose to "
+                             "untrusted networks such as the public internet");
             }
         } else {
             LogPrintf("Binding RPC on address %s port %i failed.\n", i->first,
@@ -3297,7 +3302,8 @@ static bool InitTLS() {
     TlsFiles files;
     if (gArgs.IsArgSet("-tlscert") || gArgs.IsArgSet("-tlskey")) {
         if (!gArgs.IsArgSet("-tlscert") || !gArgs.IsArgSet("-tlskey")) {
-            LogPrintf("Error: -tlscert and -tlskey must be used together\n");
+            LogInfoEvent(BCLog::ALL, "http_tls_pair_missing",
+                         "Error: -tlscert and -tlskey must be used together");
             return false;
         }
         files.cert = gArgs.GetPathArg("-tlscert");
@@ -3307,11 +3313,13 @@ static bool InitTLS() {
         files.key = gArgs.GetDataDirNet() / HTTP_TLS_KEY_FILENAME;
         files.generated = true;
         if (!EnsureGeneratedCertificate(files)) {
-            LogPrintf("Error: failed to generate a TLS certificate\n");
+            LogInfoEvent(BCLog::ALL, "http_tls_certificate_failed",
+                         "Error: failed to generate a TLS certificate");
             return false;
         }
     } else {
-        LogPrintf("TLS disabled on the RPC port\n");
+        LogInfoEvent(BCLog::ALL, "http_tls_disabled",
+                     "TLS disabled on the RPC port");
         return true;
     }
 
@@ -3406,8 +3414,9 @@ bool InitHTTPServer(Config &config) {
     g_p2p_websocket_token_hashes.clear();
     for (const std::string &token : gArgs.GetArgs("-p2pwebsockettoken")) {
         if (!IsValidWebSocketToken(token)) {
-            LogPrintf("Error: invalid -p2pwebsockettoken (use 1-256 of "
-                      "A-Z a-z 0-9 . _ ~ -)\n");
+            LogInfoEvent(BCLog::ALL, "websocket_token_invalid",
+                         "Error: invalid -p2pwebsockettoken (use 1-256 of A-Z "
+                         "a-z 0-9 . _ ~ -)");
             return false;
         }
         g_p2p_websocket_token_hashes.push_back(HashToken(token));
@@ -3483,11 +3492,12 @@ bool InitHTTPServer(Config &config) {
     }
 
     if (!HTTPBindAddresses()) {
-        LogPrintf("Unable to bind any endpoint for RPC server\n");
+        LogInfoEvent(BCLog::ALL, "rpc_bind_failed",
+                     "Unable to bind any endpoint for RPC server");
         return false;
     }
 
-    LogDebug(BCLog::HTTP, "Initialized HTTP server\n");
+    LogEvent(BCLog::HTTP, "http_server_initialized", "Initialized HTTP server");
     int workQueueDepth = std::max(
         (long)gArgs.GetIntArg("-rpcworkqueue", DEFAULT_HTTP_WORKQUEUE), 1L);
     LogDebug(BCLog::HTTP, "creating work queue of depth %d\n", workQueueDepth);
@@ -3516,14 +3526,18 @@ void StartHTTPServer() {
     }
     for (int i = 0; i < ioThreads; ++i) {
         g_thread_http_io.emplace_back([i] {
-            util::ThreadRename(i == 0 ? std::string{"http"} : strprintf("http.%i", i));
+            util::ThreadRename(i == 0 ? std::string{"http"}
+                                      : strprintf("http.%i", i));
+            LogEvent(BCLog::HTTP, "http_io_started", "Entering http I/O loop");
             g_io->run();
+            LogEvent(BCLog::HTTP, "http_io_stopped", "Exited http I/O loop");
         });
     }
 }
 
 void InterruptHTTPServer() {
-    LogDebug(BCLog::HTTP, "Interrupting HTTP server\n");
+    LogEvent(BCLog::HTTP, "http_server_interrupting",
+             "Interrupting HTTP server");
     // Reject requests on current connections
     g_reject_requests = true;
     if (g_work_queue) {
@@ -3532,11 +3546,12 @@ void InterruptHTTPServer() {
 }
 
 void StopHTTPServer() {
-    LogDebug(BCLog::HTTP, "Stopping HTTP server\n");
+    LogEvent(BCLog::HTTP, "http_server_stopping", "Stopping HTTP server");
     SetP2PWebSocketAcceptor(nullptr);
     SetHTTPReadinessCheck(nullptr);
     if (g_work_queue) {
-        LogDebug(BCLog::HTTP, "Waiting for HTTP worker threads to exit\n");
+        LogEvent(BCLog::HTTP, "http_workers_stopping",
+                 "Waiting for HTTP worker threads to exit");
         g_work_queue->WaitExit();
     }
     // Stop accepting connections.
@@ -3556,7 +3571,8 @@ void StopHTTPServer() {
     }
     g_connections.ShutdownAll();
     if (g_io) {
-        LogDebug(BCLog::HTTP, "Waiting for HTTP I/O threads to exit\n");
+        LogEvent(BCLog::HTTP, "http_io_threads_stopping",
+                 "Waiting for HTTP I/O threads to exit");
         g_io_work.reset();
         g_io->stop();
         for (auto &thread : g_thread_http_io) {
@@ -3571,7 +3587,7 @@ void StopHTTPServer() {
         g_ssl_ctx.reset();
         g_tls_files.reset();
     }
-    LogDebug(BCLog::HTTP, "Stopped HTTP server\n");
+    LogEvent(BCLog::HTTP, "http_server_stopped", "Stopped HTTP server");
 }
 
 struct event_base *EventBase() {
