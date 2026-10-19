@@ -15,7 +15,7 @@ To enable Chronik, simply pass `-chronik` as CLI argument:
 ./bitcoind -chronik
 ```
 
-Alternatively, you can also set it in the bitcoin.conf file:
+Alternatively, you can also set it in the lotusd.conf file:
 
 ```
 chronik=1

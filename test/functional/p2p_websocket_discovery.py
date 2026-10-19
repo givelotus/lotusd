@@ -37,7 +37,7 @@ class P2PWebSocketDiscoveryTest(BitcoinTestFramework):
         self.add_nodes(self.num_nodes, self.extra_args)
         self.start_node(0)
         # node1 makes automatic outbound connections (no connect=0).
-        conf = os.path.join(self.nodes[1].datadir, "bitcoin.conf")
+        conf = os.path.join(self.nodes[1].datadir, "lotusd.conf")
         with open(conf, encoding="utf8") as f:
             lines = [line for line in f if line.strip() != "connect=0"]
         with open(conf, "w", encoding="utf8") as f:

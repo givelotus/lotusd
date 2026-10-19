@@ -25,7 +25,8 @@
 #define REQUIRE_VERSION 70001
 
 static inline int GetRequireHeight() {
-    return Params().Checkpoints().mapCheckpoints.rbegin()->first;
+    const auto &checkpoints = Params().Checkpoints().mapCheckpoints;
+    return checkpoints.empty() ? 0 : checkpoints.rbegin()->first;
 }
 
 static inline bool HasCheckpoint() {

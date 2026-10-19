@@ -28,12 +28,20 @@
 BOOST_FIXTURE_TEST_SUITE(checkpoints_tests, TestingSetup)
 
 BOOST_AUTO_TEST_CASE(sanity) {
+    // The Lotus V2 networks have no history yet, so mainnet and testnet have
+    // no checkpoints.
     const auto params = CreateChainParams(*m_node.args, ChainType::MAIN);
-    const CCheckpointData &checkpoints = params->Checkpoints();
+    BOOST_CHECK(params->Checkpoints().mapCheckpoints.empty());
+    BOOST_CHECK(CreateChainParams(*m_node.args, ChainType::TESTNET)
+                    ->Checkpoints()
+                    .mapCheckpoints.empty());
+
     BlockHash p11111 = *BlockHash::FromHex(
         "0000000069e244f73d78e8fd29ba2fd2ed618bd6fa2ee92559f542fdb26e7c1d");
     BlockHash p134444 = *BlockHash::FromHex(
         "00000000000005b12ffd4cd315cd34ffd4a594f430ac814c91184a0d42d2b0fe");
+    const CCheckpointData checkpoints = {
+        .mapCheckpoints = {{11111, p11111}, {134444, p134444}}};
     BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 11111, p11111));
     BOOST_CHECK(Checkpoints::CheckBlock(checkpoints, 134444, p134444));
 
