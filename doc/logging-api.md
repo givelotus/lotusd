@@ -44,6 +44,13 @@ are appended in text output. Message wording should remain stable during
 conversion. Do not call `ToString`, `HexStr` or `strprintf` merely to construct
 an argument when a typed adapter can defer that work to the consumer.
 
+FLOAT fields accept `{elapsed_ms:f}` or `{elapsed_ms:g}` (default precision
+six), and explicit precision such as `{elapsed_ms:.2f}` or `{elapsed_ms:.3g}`.
+Precision is bounded to 0..18; widths, sign flags and dynamic precision are
+unsupported. Formatting uses the original printf backend on the consumer.
+Structured JSON keeps the original finite number, independently of rounded
+message text; NaN and infinities use JSON `null`.
+
 Scope conventions are enforced by `check-log-events`: `peer_*` carries PeerId,
 `rpc_call_*` carries Method, `mempool_tx_*` carries TxId, and `block_connect_*`
 carries BlockHash. Global listener/server events use names that do not imply

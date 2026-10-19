@@ -102,7 +102,7 @@ def registry(root):
     return dict(re.findall(r"\bX\(\s*(\w+)\s*,\s*(\w+)\s*,", text))
 
 
-def check(source, names):
+def check(source, names, types=None):
     issues = []
     items = tokens(source)
     calls = 0
@@ -146,9 +146,19 @@ def check(source, names):
                 message = literal(args[2])
                 # Double braces are not a single registry placeholder.
                 message = message.replace("{{", "").replace("}}", "")
-                if re.search(r"\{[a-z][a-z0-9_]*:[^}]*\}", message):
-                    raise ValueError("template format specs are not supported")
-                used = set(re.findall(r"\{([a-z][a-z0-9_]*)\}", message))
+                placeholders = list(re.finditer(
+                    r"\{([a-z][a-z0-9_]*)(?::([^}]*))?\}", message))
+                for placeholder in placeholders:
+                    spec = placeholder.group(2)
+                    if spec is None:
+                        continue
+                    if not re.fullmatch(r"(?:\.(?:[0-9]|1[0-8]))?[fg]", spec):
+                        raise ValueError("template format spec is not supported")
+                    key = next((key for key in fields
+                                if names[key] == placeholder.group(1)), None)
+                    if types is None or types.get(key) != "FLOAT":
+                        raise ValueError("float format requires a FLOAT registry field")
+                used = {placeholder.group(1) for placeholder in placeholders}
                 missing = used - {names[key] for key in fields}
                 if missing:
                     raise ValueError(
@@ -213,6 +223,16 @@ class ContractTests(unittest.TestCase):
         source = 'LogEvent(BCLog::NET, "peer_x", "peer={peer_id:08}").Field(LogField::PeerId, 1);'
         self.assertIn("not supported", check(source, self.names)[1][0][1])
 
+    def test_float_precision_contract(self):
+        names = {"ElapsedMs": "elapsed_ms"}
+        source = 'LogInfoEvent(BCLog::ALL,"elapsed","{elapsed_ms:%s}").Field(LogField::ElapsedMs, value);'
+        for spec in ["f", "g", ".0f", ".2f", ".18g"]:
+            self.assertFalse(check(source % spec, names, {"ElapsedMs": "FLOAT"})[1])
+        for spec in ["", ".19f", ".-1f", "08.2f", "*f", ".2x"]:
+            self.assertTrue(check(source % spec, names, {"ElapsedMs": "FLOAT"})[1])
+        self.assertIn("requires a FLOAT", check(
+            source % ".2f", names, {"ElapsedMs": "STRING"})[1][0][1])
+
     def test_comments_and_strings(self):
         source = '// LogEvent(NET, "peer_bad");\nconst char *x = R"q(LogEvent(NET, "peer_bad"))q";\n/* LogEvent(NET,"bad"); */'
         self.assertEqual(check(source, self.names), (0, []))
@@ -272,6 +292,9 @@ def main():
         return not result.wasSuccessful()
     root = Path(__file__).resolve().parents[2]
     names = registry(root)
+    types = dict(re.findall(
+        r"\bX\(\s*(\w+)\s*,\s*\w+\s*,\s*(\w+)\s*,",
+        (root / "src/logging/fields.h").read_text(encoding="utf-8")))
     if options.paths:
         paths = [Path(path) for path in options.paths]
     else:
@@ -290,7 +313,7 @@ def main():
         text = path.read_text(encoding="utf-8")
         if not re.search(r"\bLog(?:Trace|Info|Warning|Error)?Event\b", text):
             continue
-        count, issues = check(text, names)
+        count, issues = check(text, names, types)
         total += count
         for line, issue in issues:
             print(f"{relative}:{line}: {issue}")
