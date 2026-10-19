@@ -225,12 +225,13 @@ public:
      * message. Replies of at least HTTP_ZSTD_MIN_REPLY_SIZE bytes are sent
      * with "Content-Encoding: zstd" when the client's Accept-Encoding allows
      * it and no Content-Encoding header was written.
+     * Pass an rvalue (e.g. std::move) to hand the body over without copying.
      *
      * @note Can be called only once. As this will give the request back to the
      * main thread, do not call any other HTTPRequest methods after calling
      * this.
      */
-    void WriteReply(int nStatus, const std::string &strReply = "");
+    void WriteReply(int nStatus, std::string strReply = "");
 };
 
 /**
