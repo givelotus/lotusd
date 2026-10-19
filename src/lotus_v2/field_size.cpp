@@ -42,7 +42,7 @@ bool DeriveFieldSizes(const VmExecutionContext &context,
         if (i >= context.resolved.size() || !context.resolved[i]) continue;
         const Output &coin = *context.resolved[i];
         size_t size = 0;
-        if (!OutputSerializedSize(coin, size, error)) {
+        if (!ComputeCoinOutputSerializedSize(coin, size, error)) {
             field_sizes.clear();
             return false;
         }

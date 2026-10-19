@@ -197,6 +197,7 @@ add_boost_unit_tests_to_suite(bitcoin test_bitcoin
 		coin_legacy_bit_tests.cpp
 		coins_tests.cpp
 		tx_verify_bridge_tests.cpp
+		v2_legacy_bridge_tests.cpp
 		rpc_batch_snapshot_tests.cpp
         # Native header-bound SnapSync replaces eCash's StateAnchor API here.
         # Retain shared storage tests plus the actual native node bridge;

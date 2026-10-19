@@ -108,16 +108,8 @@ bool EncodeCoin(const Coin &coin, std::vector<uint8_t> &encoded) {
     if (coin.output.IsBurn()) return false;
     std::vector<uint8_t> output;
     std::string error;
-    if (coin.output.legacy_script) {
-        const auto &script = *coin.output.legacy_script;
-        if (script.size() > 10000 || coin.output.flags ||
-            coin.output.token_id != Hash32{} || !coin.output.branches.empty() ||
-            !coin.output.paths.empty()) return false;
-        output.push_back(0x80); // State-transfer-only discriminator.
-        for (unsigned i = 0; i < 8; ++i) output.push_back(uint8_t(coin.output.value >> (8 * i)));
-        PutCompactSize(output, script.size());
-        output.insert(output.end(), script.begin(), script.end());
-    } else if (!EncodeOutput(coin.output, output, error)) return false;
+    // A legacy coin is recorded with its LegacyCoinWire (0x80 discriminator).
+    if (!EncodeCoinOutput(coin.output, output, error)) return false;
     std::vector<uint8_t> result;
     result.reserve(36 + 9 + output.size() + COIN_METADATA_BYTES);
     result.insert(result.end(), coin.outpoint.tx_id.begin(), coin.outpoint.tx_id.end());
