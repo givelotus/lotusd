@@ -21,7 +21,7 @@ import time
 import traceback
 import unittest
 from enum import Enum
-from typing import AbstractSet, Any, Dict, List, Optional
+from typing import AbstractSet, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from . import coverage
 from .address import ADDRESS_ECREG_P2SH_OP_TRUE
@@ -164,6 +164,11 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     # Disable ThreadOpenConnections by default, so that adding entries to
     # addrman will not result in automatic connections to them.
     disable_autoconnect: bool = True
+    # How setup_network() connects the nodes:
+    # - "chain": node i+1 connects to node i, then all nodes sync (default);
+    # - "none": no connections;
+    # - ((from, to), ...): these connections, then all nodes sync.
+    topology: Union[str, Sequence[Tuple[int, int]]] = "chain"
     # What the test needs, from REQUIREMENTS (e.g. {"wallet", "chronik"});
     # the test is skipped when something is missing.
     requires: AbstractSet[str] = frozenset()
@@ -701,24 +706,32 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             self._initialize_chain()
 
     def setup_network(self):
-        """Override this method to customize test network topology"""
+        """Start the nodes and connect them as `topology` says. Override this
+        method only for setups that `topology` cannot express."""
         self.setup_nodes()
-
-        # Connect the nodes as a "chain".  This allows us
-        # to split the network between nodes 1 and 2 to get
-        # two halves that can work on competing chains.
-        #
-        # Topology looks like this:
-        # node0 <-- node1 <-- node2 <-- node3
-        #
-        # If all nodes are in IBD (clean chain from genesis), node0 is assumed to be the source of blocks (miner). To
-        # ensure block propagation, all nodes will establish outgoing connections toward node0.
-        # See fPreferredDownload in net_processing.
-        #
-        # If further outbound connections are needed, they can be added at the beginning of the test with e.g.
-        # self.connect_nodes(1, 2)
-        for i in range(self.num_nodes - 1):
-            self.connect_nodes(i + 1, i)
+        if self.topology == "none":
+            return
+        if self.topology == "chain":
+            # Connect the nodes as a "chain".  This allows us
+            # to split the network between nodes 1 and 2 to get
+            # two halves that can work on competing chains.
+            #
+            # Topology looks like this:
+            # node0 <-- node1 <-- node2 <-- node3
+            #
+            # If all nodes are in IBD (clean chain from genesis), node0 is assumed to be the source of blocks (miner). To
+            # ensure block propagation, all nodes will establish outgoing connections toward node0.
+            # See fPreferredDownload in net_processing.
+            #
+            # If further outbound connections are needed, they can be added at the beginning of the test with e.g.
+            # self.connect_nodes(1, 2)
+            connections = [(i + 1, i) for i in range(self.num_nodes - 1)]
+        elif isinstance(self.topology, str):
+            raise ValueError(f"unknown topology '{self.topology}'")
+        else:
+            connections = list(self.topology)
+        for a, b in connections:
+            self.connect_nodes(a, b)
         self.sync_all()
 
     def setup_nodes(self):
@@ -1689,3 +1702,32 @@ class TestRequirements(unittest.TestCase):
         Fake.requires = {"no_such_thing"}
         with self.assertRaises(ValueError):
             BitcoinTestFramework.skip_test_if_missing_module(Fake())
+
+
+class TestTopology(unittest.TestCase):
+    def connections(self, topology, num_nodes=3):
+        calls = []
+
+        class Fake:
+            pass
+
+        fake = Fake()
+        fake.topology = topology
+        fake.num_nodes = num_nodes
+        fake.setup_nodes = lambda: calls.append("setup_nodes")
+        fake.connect_nodes = lambda a, b: calls.append((a, b))
+        fake.sync_all = lambda: calls.append("sync_all")
+        BitcoinTestFramework.setup_network(fake)
+        return calls
+
+    def test_topologies(self):
+        self.assertEqual(
+            self.connections("chain"), ["setup_nodes", (1, 0), (2, 1), "sync_all"]
+        )
+        self.assertEqual(self.connections("none"), ["setup_nodes"])
+        self.assertEqual(
+            self.connections(((0, 2), (1, 2))),
+            ["setup_nodes", (0, 2), (1, 2), "sync_all"],
+        )
+        with self.assertRaises(ValueError):
+            self.connections("star")
