@@ -289,4 +289,50 @@ bool EncodeOutput(const Output &output, std::vector<uint8_t> &result,
     return true;
 }
 
+namespace {
+bool ValidLegacyCoin(const Output &coin, std::string &error) {
+    if (coin.legacy_script->size() > MAX_LEGACY_COIN_SCRIPT_BYTES ||
+        coin.flags || coin.token_id != Hash32{} ||
+        coin.state_root != Hash32{} || !coin.branches.empty() ||
+        !coin.paths.empty()) {
+        error = "legacy coin";
+        return false;
+    }
+    return true;
+}
+
+size_t CompactSizeBytes(uint64_t value) {
+    return value < 253 ? 1 : value <= 65535 ? 3 : value <= 4294967295ULL ? 5 : 9;
+}
+} // namespace
+
+bool ComputeCoinOutputSerializedSize(const Output &coin, size_t &size,
+                                     std::string &error) {
+    if (!coin.legacy_script) {
+        return ComputeOutputSerializedSize(coin, size, error);
+    }
+    if (!ValidLegacyCoin(coin, error)) return false;
+    const size_t n = coin.legacy_script->size();
+    size = 1 + 8 + CompactSizeBytes(n) + n;
+    error.clear();
+    return true;
+}
+
+bool EncodeCoinOutput(const Output &coin, std::vector<uint8_t> &result,
+                      std::string &error) {
+    if (!coin.legacy_script) {
+        return EncodeOutput(coin, result, error);
+    }
+    if (!ValidLegacyCoin(coin, error)) return false;
+    const auto &script = *coin.legacy_script;
+    result.clear();
+    result.reserve(1 + 8 + CompactSizeBytes(script.size()) + script.size());
+    result.push_back(0x80);
+    AppendInteger(coin.value, 8, result);
+    AppendCompactSize(script.size(), result);
+    result.insert(result.end(), script.begin(), script.end());
+    error.clear();
+    return true;
+}
+
 } // namespace lotus::v2

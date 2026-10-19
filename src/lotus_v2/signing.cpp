@@ -49,6 +49,19 @@ namespace {
         return EncodeOutput(output, out, error);
     }
 
+    // The wire of a spent coin; a legacy coin has its LegacyCoinWire.
+    bool CoinBytes(const Output &coin, std::vector<uint8_t> &out,
+                   std::string &error) {
+        return EncodeCoinOutput(coin, out, error);
+    }
+
+    bool AnyLegacyCoin(const ResolvedCoins &resolved) noexcept {
+        for (const auto &coin : resolved) {
+            if (coin && coin->legacy_script) return true;
+        }
+        return false;
+    }
+
     bool ResolvedValid(const Transaction &tx, const ResolvedCoins &resolved,
                        std::string &error) {
         if (resolved.size() != tx.inputs.size()) {
@@ -95,7 +108,7 @@ namespace {
     bool OwnInputHashOf(const Input &input, const TxProfile &profile,
                         const Output &coin, Hash &result, std::string &error) {
         std::vector<uint8_t> core, wire;
-        if (!OutputBytes(coin, wire, error))
+        if (!CoinBytes(coin, wire, error))
             return false;
         return OwnInputHashFromCoinWire(input, profile, wire, core, result,
                                         error);
@@ -245,7 +258,7 @@ bool ComputeCoinsRoot(const Transaction &tx, const ResolvedCoins &resolved,
             leaves.push_back(CoinEntryLeaf({}));
         else {
             wire.clear();
-            if (!OutputBytes(*resolved[i], wire, error)) return false;
+            if (!CoinBytes(*resolved[i], wire, error)) return false;
             leaves.push_back(CoinEntryLeaf(wire));
         }
     }
@@ -296,7 +309,8 @@ SigningPreparationStatus PrepareSigningContextChecked(
             return BranchLeaf(s);
         }();
 
-        if (precomputed_identities != nullptr && TxIsAllAutomaticSuccess(tx)) {
+        if (precomputed_identities != nullptr && TxIsAllAutomaticSuccess(tx) &&
+            !AnyLegacyCoin(resolved)) {
             for (size_t i = 0; i < tx.inputs.size(); ++i) {
                 const Input &input = tx.inputs[i];
                 const Output &coin = *resolved[i];
@@ -339,17 +353,27 @@ SigningPreparationStatus PrepareSigningContextChecked(
             auto &invocations = prepared.invocations_[i];
             if (input.flags == 1) {
                 const Output &coin = *resolved[i];
-                if (input.path_index >= coin.paths.size() ||
-                    input.witnesses.size() !=
-                        coin.paths[input.path_index].size()) {
+                // A legacy coin is spent through path 0 by one witness with
+                // no siblings (the legacy bridge); a V2 coin by one of its
+                // paths.
+                const size_t path_width =
+                    coin.legacy_script
+                        ? 1
+                        : (input.path_index < coin.paths.size()
+                               ? coin.paths[input.path_index].size()
+                               : 0);
+                if ((coin.legacy_script
+                         ? input.path_index != 0
+                         : input.path_index >= coin.paths.size()) ||
+                    input.witnesses.size() != path_width) {
                     error = "positional witness count/index";
                     return SigningPreparationStatus::InvalidWitness;
                 }
                 coin_wire.clear();
-                if (!OutputBytes(coin, coin_wire, error))
+                if (!CoinBytes(coin, coin_wire, error))
                     return SigningPreparationStatus::OperationalError;
                 coin_leaves.push_back(CoinEntryLeaf(coin_wire));
-                if (precomputed_identities == nullptr ||
+                if (precomputed_identities == nullptr || coin.legacy_script ||
                     !InputIsPureMode0Checksig(input)) {
                     if (!OwnInputHashFromCoinWire(
                             input, profile, coin_wire, core,
@@ -366,6 +390,25 @@ SigningPreparationStatus PrepareSigningContextChecked(
                             return SigningPreparationStatus::OperationalError;
                         prepared.output_leaves_[i] = OutputLeaf(core);
                     }
+                }
+                if (coin.legacy_script) {
+                    const BranchWitness &witness = input.witnesses[0];
+                    if (!witness.siblings.empty()) {
+                        error = "legacy coin witness";
+                        return SigningPreparationStatus::InvalidWitness;
+                    }
+                    const Hash leaf =
+                        LegacyBridgeLeaf(*coin.legacy_script, witness.script);
+                    PreparedSigningContext::Invocation invocation;
+                    invocation.kind = 1;
+                    invocation.selector.reserve(41);
+                    invocation.selector.push_back(1);
+                    Integer(i, 4, invocation.selector);
+                    Integer(0, 4, invocation.selector);
+                    invocation.selector.insert(invocation.selector.end(),
+                                               leaf.begin(), leaf.end());
+                    invocations.push_back(std::move(invocation));
+                    continue;
                 }
                 const auto &path = coin.paths[input.path_index];
                 invocations.reserve(path.size());
