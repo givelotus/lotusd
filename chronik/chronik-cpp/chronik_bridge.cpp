@@ -59,7 +59,7 @@ chronik_bridge::Coin BridgeCoin(const Coin &coin) {
 }
 
 rust::Vec<chronik_bridge::TxInput>
-BridgeTxInputs(bool isCoinbase, const std::vector<CTxIn> &inputs,
+BridgeTxInputs(bool isCoinbase, Span<const CTxIn> inputs,
                const std::vector<Coin> &spent_coins) {
     rust::Vec<chronik_bridge::TxInput> bridged_inputs;
     bridged_inputs.reserve(inputs.size());
@@ -83,7 +83,7 @@ BridgeTxInputs(bool isCoinbase, const std::vector<CTxIn> &inputs,
 }
 
 rust::Vec<chronik_bridge::TxOutput>
-BridgeTxOutputs(const std::vector<CTxOut> &outputs) {
+BridgeTxOutputs(Span<const CTxOut> outputs) {
     rust::Vec<chronik_bridge::TxOutput> bridged_outputs;
     bridged_outputs.reserve(outputs.size());
     for (const CTxOut &output : outputs) {

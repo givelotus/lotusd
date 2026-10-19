@@ -12,9 +12,12 @@
 #include <primitives/txid.h>
 #include <script/script.h>
 #include <serialize.h>
-#include <support/allocators/chunked_slab.h>
+#include <span.h>
 
 #include <atomic>
+#include <cstddef>
+#include <memory>
+#include <vector>
 
 /**
  * An outpoint - a combination of a transaction hash and an index n into its
@@ -61,9 +64,10 @@ public:
  */
 class CTxIn {
 public:
+    // nSequence follows prevout so that it fills prevout's tail padding.
     COutPoint prevout;
-    CScript scriptSig;
     uint32_t nSequence;
+    CScript scriptSig;
 
     /**
      * Setting nSequence to this value for every input in a transaction disables
@@ -105,8 +109,8 @@ public:
 
     explicit CTxIn(COutPoint prevoutIn, CScript scriptSigIn = CScript(),
                    uint32_t nSequenceIn = SEQUENCE_FINAL)
-        : prevout(prevoutIn), scriptSig(std::move(scriptSigIn)),
-          nSequence(nSequenceIn) {}
+        : prevout(prevoutIn), nSequence(nSequenceIn),
+          scriptSig(std::move(scriptSigIn)) {}
     CTxIn(TxId prevTxId, uint32_t nOut, CScript scriptSigIn = CScript(),
           uint32_t nSequenceIn = SEQUENCE_FINAL)
         : CTxIn(COutPoint(prevTxId, nOut), std::move(scriptSigIn),
@@ -224,8 +228,92 @@ struct PrecomputedTransactionData {
 };
 
 /**
+ * A serialized transaction whose structure has been checked, with its input
+ * and output counts. Used to build a CTransaction from these bytes.
+ */
+struct TransactionWire {
+    Span<const uint8_t> bytes;
+    uint32_t n_inputs{0};
+    uint32_t n_outputs{0};
+    /** Total size of the scripts too long for CScript's inline buffer. */
+    size_t long_script_bytes{0};
+};
+
+/** Whether a script of this size is stored outside CScript's inline buffer. */
+constexpr bool IsLongScript(uint64_t size) {
+    return size > CScriptBase::STATIC_SIZE;
+}
+
+/** Per-thread scratch buffer for serialized transaction bytes. */
+std::vector<uint8_t> &TransactionScratchBuffer();
+
+/**
+ * Read one serialized transaction from s into buf, checking its structure
+ * exactly like CMutableTransaction deserialization does. buf is reused, so
+ * the result is only valid until buf is next modified.
+ */
+template <typename Stream>
+TransactionWire ReadTransactionWire(Stream &s, std::vector<uint8_t> &buf) {
+    buf.clear();
+    auto read = [&](uint64_t count) {
+        // Bounded steps, so a bogus length cannot force a huge allocation.
+        while (count > 0) {
+            const size_t step = std::min<uint64_t>(count, MAX_VECTOR_ALLOCATE);
+            const size_t old_size = buf.size();
+            buf.resize(old_size + step);
+            s.read(MakeWritableByteSpan(Span{buf}.subspan(old_size)));
+            count -= step;
+        }
+    };
+    struct Appender {
+        std::vector<uint8_t> &out;
+        void write(Span<const std::byte> src) {
+            out.insert(out.end(), UCharCast(src.data()),
+                       UCharCast(src.data()) + src.size());
+        }
+    } appender{buf};
+    auto read_compact_size = [&]() {
+        // ReadCompactSize rejects non-canonical encodings, so writing the
+        // value back reproduces the original bytes.
+        const uint64_t n = ReadCompactSize(s);
+        WriteCompactSize(appender, n);
+        return n;
+    };
+    TransactionWire wire;
+    auto read_script = [&]() {
+        const uint64_t size = read_compact_size();
+        if (IsLongScript(size)) {
+            wire.long_script_bytes += size;
+        }
+        read(size);
+    };
+    read(sizeof(uint32_t));
+    const uint64_t n_inputs = read_compact_size();
+    for (uint64_t i = 0; i < n_inputs; ++i) {
+        read(sizeof(uint256) + sizeof(uint32_t));
+        read_script();
+        read(sizeof(uint32_t));
+    }
+    const uint64_t n_outputs = read_compact_size();
+    for (uint64_t i = 0; i < n_outputs; ++i) {
+        read(sizeof(int64_t));
+        read_script();
+    }
+    read(sizeof(uint32_t));
+    wire.bytes = buf;
+    wire.n_inputs = n_inputs;
+    wire.n_outputs = n_outputs;
+    return wire;
+}
+
+/**
  * The basic transaction that is broadcasted on the network and contained in
  * blocks. A transaction can contain multiple inputs and outputs.
+ *
+ * A CTransaction stores its inputs and outputs in one allocation, followed by
+ * the bytes of every script longer than CScript's inline capacity, which
+ * those scripts borrow. A CTransactionRef also shares that allocation with
+ * its reference count (see MakeTransactionRef).
  */
 class CTransaction {
 public:
@@ -236,37 +324,33 @@ public:
     // Wellington.
     static constexpr uint32_t MIN_VERSION = 1, MAX_VERSION = 2;
 
-    // The local variables are made const to prevent unintended modification
-    // without updating the cached hash value. However, CTransaction is not
-    // actually immutable; deserialization and assignment are implemented,
-    // and bypass the constness. This is safe, as they update the entire
-    // structure, including the hash.
-    const std::vector<CTxIn> vin;
-    const std::vector<CTxOut> vout;
+    // The fields are const because the cached hash and size describe them; a
+    // CTransaction is never modified after construction.
+    const Span<const CTxIn> vin;
+    const Span<const CTxOut> vout;
     const uint32_t nVersion;
     const uint32_t nLockTime;
 
-private:
-    /** Memory only. */
-    const uint32_t m_serialize_size;
-    const uint256 hash;
-    enum : uint8_t { PRECOMPUTED_EMPTY, PRECOMPUTED_WRITING, PRECOMPUTED_READY };
-    mutable std::atomic<uint8_t> m_precomputed_state{PRECOMPUTED_EMPTY};
-    mutable PrecomputedTransactionData m_precomputed;
-    const PrecomputedTransactionData &FillPrecomputedData() const;
+    /** Bytes needed to hold the inputs, outputs and long scripts of wire. */
+    static size_t StorageSize(const TransactionWire &wire);
 
-    uint32_t ComputeSerializedSize() const;
-    uint256 ComputeHash() const;
-
-public:
     /** Construct a CTransaction that qualifies as IsNull() */
     CTransaction();
 
     /** Convert a CMutableTransaction into a CTransaction. */
     explicit CTransaction(const CMutableTransaction &tx);
-    explicit CTransaction(CMutableTransaction &&tx);
+
+    /**
+     * Build from wire inside caller-provided storage of StorageSize(wire)
+     * bytes, which must outlive this object. Used by MakeTransactionRef.
+     */
+    CTransaction(const TransactionWire &wire, void *storage);
+
+    /** Shared through CTransactionRef, never copied or moved. */
     CTransaction(const CTransaction &) = delete;
     CTransaction &operator=(const CTransaction &) = delete;
+
+    ~CTransaction();
 
     template <typename Stream> inline void Serialize(Stream &s) const {
         if constexpr (std::is_same_v<std::remove_cvref_t<Stream>,
@@ -274,7 +358,7 @@ public:
             s.seek(m_serialize_size);
             return;
         }
-        SerializeTransaction(*this, s);
+        s.write(MakeByteSpan(SerializeToScratch()));
     }
 
     /**
@@ -284,12 +368,16 @@ public:
      */
     template <typename Stream>
     CTransaction(deserialize_type, Stream &s)
-        : CTransaction(CMutableTransaction(deserialize, s)) {}
+        : CTransaction(OwnedLayout(
+              ReadTransactionWire(s, TransactionScratchBuffer()))) {}
 
     bool IsNull() const { return vin.empty() && vout.empty(); }
 
     TxId GetId() const { return TxId(hash); }
     TxHash GetHash() const { return TxHash(hash); }
+
+    /** Bytes used by the inputs, outputs and long scripts. */
+    size_t GetStorageSize() const;
 
     /**
      * Sighash midstate (hashPrevouts, hashSequence, hashOutputs), computed on
@@ -325,11 +413,47 @@ public:
     }
 
     std::string ToString() const;
+
+private:
+    /** Inputs, outputs and long scripts placed in storage. */
+    struct Layout {
+        Span<const CTxIn> vin;
+        Span<const CTxOut> vout;
+        uint256 hash;
+        uint32_t serialize_size;
+        uint32_t long_script_bytes;
+        uint32_t nVersion;
+        uint32_t nLockTime;
+        /** Whether this object frees the storage. */
+        bool owned;
+    };
+    static Layout Place(const TransactionWire &wire, void *storage,
+                        bool owned);
+    static Layout OwnedLayout(const TransactionWire &wire);
+    explicit CTransaction(const Layout &layout);
+
+    const uint256 hash;
+    const uint32_t m_serialize_size;
+    const uint32_t m_long_script_bytes;
+    /** Whether this object frees its storage, which starts at vin.data(). */
+    const bool m_owns_storage;
+
+    /**
+     * Sighash midstate, filled on first use. The storage lives inline so the
+     * fill never allocates; m_precomputed_state publishes it exactly once.
+     */
+    enum : uint8_t { PRECOMPUTED_EMPTY, PRECOMPUTED_WRITING, PRECOMPUTED_READY };
+    mutable std::atomic<uint8_t> m_precomputed_state{PRECOMPUTED_EMPTY};
+    mutable PrecomputedTransactionData m_precomputed;
+
+    const PrecomputedTransactionData &FillPrecomputedData() const;
+
+    /**
+     * Serialize into a per-thread buffer, valid until the next call on this
+     * thread, so a stream receives the transaction in a single write.
+     */
+    Span<const uint8_t> SerializeToScratch() const;
 };
-#if defined(__x86_64__)
-static_assert(sizeof(CTransaction) == 192,
-              "sizeof CTransaction is expected to be 192 bytes");
-#endif
 
 inline PrecomputedTransactionData::PrecomputedTransactionData(const CTransaction &tx)
     : PrecomputedTransactionData(tx.GetPrecomputedData()) {}
@@ -379,27 +503,90 @@ static_assert(sizeof(CMutableTransaction) == 56,
 #endif
 
 using CTransactionRef = std::shared_ptr<const CTransaction>;
+
 /**
- * Transactions are created on network/RPC threads and often released on
- * validation threads, so they are carved from a thread-safe process-wide slab
- * (shared_ptr control block and CTransaction in one slot).
+ * Transaction storage comes from process-wide thread-safe slabs, one per size
+ * class (transactions are created on network/RPC threads and often released
+ * on validation threads). Oversized requests use the heap.
  */
-using TransactionRefAllocator = GlobalConcurrentSlabAllocator<CTransaction>;
-static inline CTransactionRef MakeTransactionRef() {
-    return std::allocate_shared<const CTransaction>(TransactionRefAllocator{});
-}
-template <typename Tx>
-static inline CTransactionRef MakeTransactionRef(Tx &&txIn) {
-    return std::allocate_shared<const CTransaction>(TransactionRefAllocator{},
-                                                    std::forward<Tx>(txIn));
-}
+void *AllocateTransactionStorage(size_t bytes);
+void DeallocateTransactionStorage(void *p, size_t bytes) noexcept;
+
+/**
+ * Storage requested from TransactionRefAllocator, which fills in its address
+ * when the control block is allocated.
+ */
+struct TransactionStorageRequest {
+    size_t storage_bytes;
+    void *storage{nullptr};
+};
+
+/**
+ * Allocator that places a transaction's storage directly after the shared_ptr
+ * control block, in the same allocation.
+ */
+template <typename T> class TransactionRefAllocator {
+public:
+    using value_type = T;
+
+    explicit TransactionRefAllocator(TransactionStorageRequest &request) noexcept
+        : m_request(&request), m_storage_bytes(request.storage_bytes) {}
+    template <typename U>
+    TransactionRefAllocator(const TransactionRefAllocator<U> &other) noexcept
+        : m_request(other.m_request), m_storage_bytes(other.m_storage_bytes) {}
+
+    T *allocate(size_t n) {
+        assert(n == 1);
+        auto *p = static_cast<std::byte *>(
+            AllocateTransactionStorage(HeadSize() + m_storage_bytes));
+        m_request->storage = p + HeadSize();
+        return reinterpret_cast<T *>(p);
+    }
+    void deallocate(T *p, size_t n) noexcept {
+        DeallocateTransactionStorage(p, HeadSize() + m_storage_bytes);
+    }
+
+    template <typename U> struct rebind {
+        using other = TransactionRefAllocator<U>;
+    };
+
+    friend bool operator==(const TransactionRefAllocator &a,
+                           const TransactionRefAllocator &b) noexcept {
+        return a.m_storage_bytes == b.m_storage_bytes;
+    }
+    friend bool operator!=(const TransactionRefAllocator &a,
+                           const TransactionRefAllocator &b) noexcept {
+        return !(a == b);
+    }
+
+private:
+    template <typename U> friend class TransactionRefAllocator;
+
+    static constexpr size_t HeadSize() noexcept {
+        return (sizeof(T) + alignof(std::max_align_t) - 1) &
+               ~(alignof(std::max_align_t) - 1);
+    }
+
+    /** Only used by allocate(), during MakeTransactionRef. */
+    TransactionStorageRequest *m_request;
+    size_t m_storage_bytes;
+};
+
+/** Build a CTransactionRef around wire in a single allocation. */
+CTransactionRef MakeTransactionRef(const TransactionWire &wire);
+/** A reference to a null transaction (see CTransaction()). */
+CTransactionRef MakeTransactionRef();
+CTransactionRef MakeTransactionRef(const CMutableTransaction &tx);
 
 /**
  * Deserialize transaction references (P2P tx messages, block vtx, disk) into
- * the slab too.
+ * a single allocation as well.
  */
-template <> struct SharedPtrDeserializeAllocator<CTransaction> {
-    using type = TransactionRefAllocator;
+template <> struct SharedPtrDeserializer<CTransaction> {
+    template <typename Stream> static CTransactionRef Make(Stream &s) {
+        return MakeTransactionRef(
+            ReadTransactionWire(s, TransactionScratchBuffer()));
+    }
 };
 
 #endif // BITCOIN_PRIMITIVES_TRANSACTION_H
