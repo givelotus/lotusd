@@ -3340,6 +3340,7 @@ BOOST_AUTO_TEST_CASE(url_encode) {
         {"\xff", "%FF"},
     };
     for (const auto &[input, expected] : vectors) {
+        BOOST_CHECK_EQUAL(urlEncode(input), expected);
         char *encoded = evhttp_uriencode(input.data(), input.size(), false);
         BOOST_REQUIRE(encoded);
         BOOST_CHECK_EQUAL(std::string(encoded), expected);
