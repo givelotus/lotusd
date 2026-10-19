@@ -1520,15 +1520,24 @@ template <class T> uint256 GetOutputsHash(const T &txTo) {
 } // namespace
 
 template <class T>
-PrecomputedTransactionData::PrecomputedTransactionData(const T &txTo) {
-    hashPrevouts = GetPrevoutHash(txTo);
-    hashSequence = GetSequenceHash(txTo);
-    hashOutputs = GetOutputsHash(txTo);
+PrecomputedTransactionData
+PrecomputedTransactionData::Compute(const T &txTo) {
+    PrecomputedTransactionData txdata;
+    txdata.hashPrevouts = GetPrevoutHash(txTo);
+    txdata.hashSequence = GetSequenceHash(txTo);
+    txdata.hashOutputs = GetOutputsHash(txTo);
+    return txdata;
 }
 
+template <class T>
+PrecomputedTransactionData::PrecomputedTransactionData(const T &txTo)
+    : PrecomputedTransactionData(Compute(txTo)) {}
+
 // explicit instantiation
-template PrecomputedTransactionData::PrecomputedTransactionData(
-    const CTransaction &txTo);
+template PrecomputedTransactionData
+PrecomputedTransactionData::Compute(const CTransaction &txTo);
+template PrecomputedTransactionData
+PrecomputedTransactionData::Compute(const CMutableTransaction &txTo);
 template PrecomputedTransactionData::PrecomputedTransactionData(
     const CMutableTransaction &txTo);
 
