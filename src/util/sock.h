@@ -240,6 +240,30 @@ public:
     [[nodiscard]] virtual bool WaitMany(std::chrono::milliseconds timeout,
                                         EventsPerSock &events_per_sock) const;
 
+    /* Hooks for implementations that buffer data in user space (e.g. TLS or
+     * WebSocket framing), which readiness of the OS socket cannot reveal.
+     * They must be safe to call from any thread without the lock that
+     * serializes Send()/Recv(). The defaults describe a plain socket. */
+
+    /**
+     * Whether Recv() can return data right now even if the OS socket is not
+     * readable (e.g. bytes already decrypted or decoded).
+     */
+    [[nodiscard]] virtual bool HasBufferedRecv() const { return false; }
+
+    /**
+     * Events on the OS socket needed to make progress with data this object
+     * has accepted from Send() but not yet written (0 if none). A TLS
+     * implementation may need RECV to complete a write.
+     */
+    [[nodiscard]] virtual Event PendingEvents() const { return 0; }
+
+    /**
+     * Try to write data accepted by Send() but not yet written. Called when
+     * one of PendingEvents() occurred. Returns false on a fatal error.
+     */
+    [[nodiscard]] virtual bool FlushPending() const { return true; }
+
     /**
      * Wait until the socket is readable or has an exceptional condition,
      * or the timeout expires,
