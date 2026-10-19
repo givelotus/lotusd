@@ -16,6 +16,7 @@ import hashlib
 import os
 import re
 import struct
+import unittest
 
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 P2P_WS_PATH = "/p2p/ws"
@@ -89,6 +90,7 @@ P2P_V2_MESSAGE_TYPES = [
 P2P_V2_IDS = {name.encode(): i + 1 for i, name in enumerate(P2P_V2_MESSAGE_TYPES)}
 P2P_ZSTD_DICT_VERSION = 2
 RSV1 = 0x40
+RSV2 = 0x20
 
 _P2P_DICT = None
 
@@ -109,7 +111,8 @@ def p2p_zstd_dict():
 class P2PV2Converter:
     """Between the framework's v1 messages and p2p-v2 WebSocket messages."""
 
-    def __init__(self, magic):
+    def __init__(self, magic, max_message_size=256 * 1024 * 1024):
+        self.max_message_size = max_message_size
         self.magic = magic
         self.pending = b""
         self.decompressor = None
@@ -132,9 +135,31 @@ class P2PV2Converter:
             bodies.append(prefix + payload)
         return bodies
 
-    def from_wire(self, body, compressed):
+    def from_wire(self, body, compressed, independent=False):
         """A received p2p-v2 message as a v1 message for the framework."""
-        if compressed:
+        if independent:
+            import zstandard
+
+            if (
+                len(body) < 6
+                or body[0] != 1
+                or struct.unpack("<I", body[1:5])[0] != P2P_ZSTD_DICT_VERSION
+            ):
+                raise ValueError("independent frame/dictionary version mismatch")
+            frame = body[5:]
+            params = zstandard.get_frame_parameters(frame)
+            if (
+                params.content_size > self.max_message_size
+                or params.window_size > 1024 * 1024
+            ):
+                raise ValueError("independent frame resource bound exceeded")
+            zdict = zstandard.ZstdCompressionDict(
+                p2p_zstd_dict(), dict_type=zstandard.DICT_TYPE_RAWCONTENT
+            )
+            body = zstandard.ZstdDecompressor(dict_data=zdict).decompress(
+                frame, max_output_size=self.max_message_size, allow_extra_data=False
+            )
+        elif compressed:
             if self.decompressor is None:
                 import zstandard
 
@@ -188,15 +213,25 @@ class WebSocketLayer:
     """WebSocket state for one connection (client or server role)."""
 
     def __init__(
-        self, client, host="127.0.0.1", port=0, path=P2P_WS_PATH, v2_magic=None
+        self,
+        client,
+        host="127.0.0.1",
+        port=0,
+        path=P2P_WS_PATH,
+        v2_magic=None,
+        max_message_size=256 * 1024 * 1024,
     ):
         self.client = client
         self.host = host
         self.port = port
         self.path = path
         # With the network magic: speak p2p-v2 (convert v1 messages).
-        self.v2 = P2PV2Converter(v2_magic) if v2_magic is not None else None
+        self.v2 = (
+            P2PV2Converter(v2_magic, max_message_size) if v2_magic is not None else None
+        )
         self.message_compressed = False
+        self.message_independent = False
+        self.independent_frames_recv = 0
         self.open = False
         self.closed = False
         self.buf = b""
@@ -324,17 +359,26 @@ class WebSocketLayer:
             self.buf = self.buf[pos + n :]
             if mask:
                 payload = apply_mask(mask, payload)
-            if rsv and not (self.v2 and rsv == RSV1 and opcode == OP_BINARY):
+            if rsv and not (
+                self.v2
+                and opcode == OP_BINARY
+                and (rsv == RSV1 or (rsv == RSV2 and fin))
+            ):
                 raise ValueError(f"unexpected WebSocket RSV bits {rsv:#x}")
             if opcode in (OP_BINARY, OP_CONTINUATION):
                 if opcode == OP_BINARY:
                     self.message_compressed = rsv == RSV1
+                    self.message_independent = rsv == RSV2
                 self.fragments += payload
                 if fin:
                     if self.v2:
                         out += self.v2.from_wire(
-                            self.fragments, self.message_compressed
+                            self.fragments,
+                            self.message_compressed,
+                            self.message_independent,
                         )
+                        if self.message_independent:
+                            self.independent_frames_recv += 1
                     else:
                         out += self.fragments
                     self.fragments = b""
@@ -348,3 +392,92 @@ class WebSocketLayer:
             else:
                 raise ValueError(f"unexpected WebSocket opcode {opcode}")
         return out, reply
+
+
+# Codec-only tests; they do not start nodes or claim consensus validity.
+
+
+class TestIndependentFrames(unittest.TestCase):
+    def setUp(self):
+        try:
+            import zstandard
+        except ImportError:
+            self.skipTest("zstandard needed for independent-frame tests")
+        self.zstd = zstandard
+        self.dictionary = zstandard.ZstdCompressionDict(
+            p2p_zstd_dict(), dict_type=zstandard.DICT_TYPE_RAWCONTENT
+        )
+        self.body = bytes([P2P_V2_IDS[b"tx"]]) + bytes(range(256)) * 400
+
+    def independent(self, body=None, content_size=True):
+        body = self.body if body is None else body
+        frame = self.zstd.ZstdCompressor(
+            dict_data=self.dictionary, write_content_size=content_size
+        ).compress(body)
+        return b"\x01" + struct.pack("<I", P2P_ZSTD_DICT_VERSION) + frame
+
+    def test_stream_independent_stream(self):
+        converter = P2PV2Converter(b"test")
+        compressor = self.zstd.ZstdCompressor(dict_data=self.dictionary).compressobj()
+
+        def streamed(body):
+            return compressor.compress(body) + compressor.flush(
+                self.zstd.COMPRESSOBJ_FLUSH_BLOCK
+            )
+
+        first = converter.from_wire(streamed(self.body), True)
+        independent = converter.from_wire(self.independent(), False, True)
+        last = converter.from_wire(streamed(self.body), True)
+        self.assertEqual(first, independent)
+        self.assertEqual(first, last)
+        self.assertEqual(
+            first, P2PV2Converter(b"test").from_wire(self.independent(), False, True)
+        )
+
+    def test_wire_independent_frame(self):
+        server = WebSocketLayer(False, v2_magic=b"test")
+        client = WebSocketLayer(True, v2_magic=b"test")
+        wire = server._frame(OP_BINARY, self.independent(), rsv=RSV2)
+        decoded, reply = client.decode(wire)
+        self.assertFalse(reply)
+        self.assertEqual(decoded, P2PV2Converter(b"test").from_wire(self.body, False))
+
+    def test_invalid_envelope_and_limits(self):
+        converter = P2PV2Converter(b"test")
+        original = self.independent()
+        malformed = [
+            b"",
+            original[:4],
+            bytes([2]) + original[1:],
+            original[:1] + struct.pack("<I", P2P_ZSTD_DICT_VERSION + 1) + original[5:],
+            original[:-1],
+            original + b"trailing",
+            self.independent(content_size=False),
+        ]
+        for frame in malformed:
+            with self.subTest(size=len(frame)):
+                with self.assertRaises(Exception):
+                    converter.from_wire(frame, False, True)
+        with self.assertRaises(ValueError):
+            P2PV2Converter(b"test", max_message_size=100).from_wire(
+                original, False, True
+            )
+
+        window_frame = self.zstd.ZstdCompressor(level=3).compress(
+            b"x" * (2 * 1024 * 1024)
+        )
+        self.assertGreater(
+            self.zstd.get_frame_parameters(window_frame).window_size, 1024 * 1024
+        )
+        with self.assertRaises(ValueError):
+            converter.from_wire(
+                b"\x01" + struct.pack("<I", P2P_ZSTD_DICT_VERSION) + window_frame,
+                False,
+                True,
+            )
+
+    def test_invalid_reserved_combinations(self):
+        for first in [0xE2, 0x92, 0x22, 0xA0, 0xA9]:
+            with self.subTest(first=first):
+                with self.assertRaises(ValueError):
+                    WebSocketLayer(True, v2_magic=b"test").decode(bytes([first, 1, 0]))
