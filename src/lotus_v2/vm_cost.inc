@@ -79,6 +79,11 @@ VmCostUnits OpCost(VmOpcode op, std::span<const size_t> operands,
 VmCostUnits WorstOpCost(VmOpcode op, size_t limit,
                         const VmCostProfile &profile) {
     std::vector<size_t> operands(6, limit);
+    if (op == 0xc3) { // STATEHASH: 64 items, the count and their framing
+        operands.assign(VM_STATEHASH_MAX_ITEMS + 1, limit);
+        operands.push_back(CompactSizeBytes(VM_STATEHASH_MAX_ITEMS) +
+                           VM_STATEHASH_MAX_ITEMS * CompactSizeBytes(limit));
+    }
     if (op == 0xa0 || op == 0xa1 || op == 0xa2 || op == 0xb2 || op == 0xb3 ||
         op == 0xb4) {
         const size_t max_limbs = std::max<size_t>(
@@ -483,6 +488,16 @@ class SizePass {
                 pop();
                 pop();
                 push(16);
+            } else if (op == 0xc3) { // STATEHASH
+                const auto k = LiteralValue(previous);
+                if (!k || *k < 0 || *k > Int(VM_STATEHASH_MAX_ITEMS))
+                    return {UnknownSizes(), Worst(op)};
+                pop();
+                size_t framing = CompactSizeBytes(uint64_t(*k));
+                for (Int i = 0; i < *k; ++i)
+                    framing += CompactSizeBytes(pop());
+                operands.push_back(framing);
+                push(32);
             } else if (op == 0xdf) { // INPUTWITNESSARG
                 pop();
                 pop();

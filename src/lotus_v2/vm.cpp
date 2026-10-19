@@ -2,6 +2,7 @@
 
 #include "commitment.h"
 #include "field_size.h"
+#include "tagged_hash.h"
 #include "vendor/blake3/blake3.h"
 
 #include <openssl/bn.h>
@@ -610,6 +611,17 @@ namespace {
 
     Int Numeric(const VmBytes &bytes) {
         return NumericBig(bytes).ToClampedInt128();
+    }
+    constexpr size_t VM_STATEHASH_MAX_ITEMS = 64;
+    size_t CompactSizeBytes(uint64_t value) {
+        return value < 253 ? 1 : value <= 0xffff ? 3 : value <= 0xffffffff ? 5 : 9;
+    }
+    // CS(k) plus CS(len) for every item: the STATEHASH preimage bytes that
+    // are not item payload.
+    size_t StateHashFramingBytes(const std::vector<VmBytes> &items) {
+        size_t total = CompactSizeBytes(items.size());
+        for (const auto &item : items) total += CompactSizeBytes(item.size());
+        return total;
     }
     VmBytes Number(Int number) {
         UInt value = UInt(number);
@@ -1995,6 +2007,21 @@ namespace {
                         if (op == 0xbb) Push(Number(1));
                         break;
                     }
+                    case 0xc3: { // STATEHASH: item_1..item_k N(k) -> Hash32
+                        const Int k = Numeric(Pop());
+                        if (k < 0 || k > Int(VM_STATEHASH_MAX_ITEMS))
+                            throw VmFailure("STATEHASH item count");
+                        Require(size_t(k));
+                        std::vector<VmBytes> items(static_cast<size_t>(k));
+                        for (size_t i = size_t(k); i-- > 0;) items[i] = Pop();
+                        // Charge the CompactSize framing on top of the items.
+                        if (tracking_step)
+                            step_operands.push_back(
+                                StateHashFramingBytes(items));
+                        const Hash digest = ContractStateHash(items);
+                        Push(VmBytes(digest.begin(), digest.end()));
+                        break;
+                    }
                     case 0xc8:
                         Context();
                         Push(Number(7));
@@ -2203,6 +2230,21 @@ namespace {
                                                    : found->second;
                         Push(Number(Int(value.inputs)));
                         Push(Number(Int(value.outputs)));
+                        break;
+                    }
+                    case 0xed: { // STATEVERIFY: Hash32 ->
+                        const VmBytes root = Pop();
+                        const auto &ctx = Context();
+                        if (ctx.tx.inputs[ctx.input_index].flags != 1)
+                            throw VmFailure("STATEVERIFY requires spend");
+                        if (root.size() != 32)
+                            throw VmFailure("STATEVERIFY root width");
+                        const auto &coin = CoinAt(Int(ctx.input_index));
+                        if (!coin.HasState())
+                            throw VmFailure("STATEVERIFY coin lacks state");
+                        if (!std::equal(root.begin(), root.end(),
+                                        coin.state_root.begin()))
+                            throw VmFailure("STATEVERIFY mismatch");
                         break;
                     }
                     case 0xee: { // UTXOSTATEROOT: zeros without HAS_STATE
