@@ -657,6 +657,7 @@ add_library(server
 	net_websocket.cpp
 	net_websocket_codec.cpp
 	net_websocket_sock.cpp
+	net_websocket_tls.cpp
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp
@@ -712,6 +713,7 @@ add_library(server
 	shutdown.cpp
 	streams.cpp
 	timedata.cpp
+	tls_util.cpp
 	torcontrol.cpp
 	txdb.cpp
 	txmempool.cpp

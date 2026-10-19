@@ -6,6 +6,8 @@
 #include <protocol.h>
 #include <net_websocket_codec.h>
 #include <net_websocket_sock.h>
+#include <net_websocket_tls.h>
+#include <tls_util.h>
 
 #include <random.h>
 #include <util/sock.h>
@@ -20,6 +22,7 @@
 #include <memory>
 #include <vector>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -322,6 +325,117 @@ BOOST_AUTO_TEST_CASE(codec_complete_frame_detection) {
         BOOST_CHECK(!WebSocketCodec::HasCompleteFrame(
             Span<const uint8_t>{wire.data(), len}));
     }
+}
+
+namespace {
+/** A client/server WebSocketSock pair over TLS on a socketpair */
+struct TlsPair {
+    std::unique_ptr<WebSocketSock> client, server;
+    SSL *client_ssl{nullptr}, *server_ssl{nullptr};
+    std::vector<unsigned char> server_spki;
+    explicit TlsPair(C compression) {
+        const auto pem{tls::GenerateSelfSigned("test", {"localhost"}, {},
+                                               std::chrono::hours{1})};
+        BOOST_REQUIRE(pem);
+        auto server_ctx{tls::NewContext(/*server=*/true)};
+        auto client_ctx{tls::NewContext(/*server=*/false)};
+        BOOST_REQUIRE(server_ctx && client_ctx);
+        BOOST_REQUIRE(tls::UseCertificatePem(server_ctx.get(), pem->cert_pem,
+                                             pem->key_pem));
+        int sv[2];
+        BOOST_REQUIRE_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+        BigBuffers(sv);
+        for (int fd : sv) {
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        }
+        tls::SslPtr c{SSL_new(client_ctx.get())}, srv{SSL_new(server_ctx.get())};
+        SSL_set_fd(c.get(), sv[0]);
+        SSL_set_fd(srv.get(), sv[1]);
+        SSL_set_connect_state(c.get());
+        SSL_set_accept_state(srv.get());
+        bool c_done{false}, s_done{false};
+        for (int i = 0; i < 1000 && !(c_done && s_done); ++i) {
+            c_done = c_done || SSL_do_handshake(c.get()) == 1;
+            s_done = s_done || SSL_do_handshake(srv.get()) == 1;
+        }
+        BOOST_REQUIRE(c_done && s_done);
+        X509 *peer{tls::PeerCertificate(c.get())};
+        server_spki = tls::SpkiSha256(peer);
+        X509_free(peer);
+        client_ssl = c.get();
+        server_ssl = srv.get();
+        client = std::make_unique<WebSocketSock>(
+            SOCKET(sv[0]), Role::CLIENT, Info(compression),
+            std::make_unique<TlsByteLayer>(std::move(c)));
+        server = std::make_unique<WebSocketSock>(
+            SOCKET(sv[1]), Role::SERVER, Info(compression),
+            std::make_unique<TlsByteLayer>(std::move(srv)));
+    }
+};
+} // namespace
+
+BOOST_AUTO_TEST_CASE(tls_roundtrip_all_modes_and_sizes) {
+    FastRandomContext rng{/*fDeterministic=*/true};
+    for (const C mode : {C::NONE, C::ZSTD_DICT}) {
+        TlsPair p{mode};
+        for (const size_t size : {1, 126, 65536, 3000000}) {
+            std::vector<uint8_t> payload{rng.randbytes<uint8_t>(size)};
+            BOOST_CHECK_EQUAL(p.client->Send(payload.data(), size, 0),
+                              ssize_t(size));
+            BOOST_CHECK(ReceiveAll(*p.client, *p.server, size) == payload);
+            BOOST_CHECK_EQUAL(p.server->Send(payload.data(), size, 0),
+                              ssize_t(size));
+            BOOST_CHECK(ReceiveAll(*p.server, *p.client, size) == payload);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(tls_key_update_mid_stream) {
+    TlsPair p{C::NONE};
+    const std::vector<uint8_t> a(1000, 1), b(2000, 2);
+    BOOST_CHECK_EQUAL(p.client->Send(a.data(), a.size(), 0), 1000);
+    BOOST_CHECK(ReceiveAll(*p.client, *p.server, a.size()) == a);
+    // The client rotates its keys and asks the server to do the same; data
+    // keeps flowing both ways.
+    if (SSL_version(p.client_ssl) == TLS1_3_VERSION) {
+        BOOST_REQUIRE_EQUAL(
+            SSL_key_update(p.client_ssl, SSL_KEY_UPDATE_REQUESTED), 1);
+    }
+    BOOST_CHECK_EQUAL(p.client->Send(b.data(), b.size(), 0), 2000);
+    BOOST_CHECK(ReceiveAll(*p.client, *p.server, b.size()) == b);
+    BOOST_CHECK_EQUAL(p.server->Send(a.data(), a.size(), 0), 1000);
+    BOOST_CHECK(ReceiveAll(*p.server, *p.client, a.size()) == a);
+}
+
+BOOST_AUTO_TEST_CASE(tls_orderly_close) {
+    TlsPair p{C::ZSTD_DICT};
+    const std::vector<uint8_t> a(500, 3);
+    BOOST_CHECK_EQUAL(p.client->Send(a.data(), a.size(), 0), 500);
+    BOOST_CHECK(ReceiveAll(*p.client, *p.server, a.size()) == a);
+    // Destroying the client sends a WebSocket Close and TLS close_notify.
+    p.client.reset();
+    uint8_t buf[16];
+    ssize_t n{-1};
+    for (int i = 0; i < 400 && n < 0; ++i) {
+        n = p.server->Recv(buf, sizeof(buf), 0);
+        if (n < 0) {
+            BOOST_REQUIRE_EQUAL(errno, EAGAIN);
+            Sock::Event occurred;
+            (void)p.server->Wait(std::chrono::milliseconds{5}, Sock::RECV,
+                                 &occurred);
+        }
+    }
+    BOOST_CHECK_EQUAL(n, 0);
+}
+
+BOOST_AUTO_TEST_CASE(tls_spki_fingerprint) {
+    TlsPair p{C::NONE};
+    BOOST_CHECK_EQUAL(p.server_spki.size(), 32U);
+    X509 *own{SSL_get_certificate(p.server_ssl)};
+    BOOST_CHECK(tls::SpkiSha256(own) == p.server_spki);
+    // A new certificate for a different key has a different SPKI hash.
+    TlsPair other{C::NONE};
+    BOOST_CHECK(other.server_spki != p.server_spki);
 }
 
 namespace {
