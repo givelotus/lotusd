@@ -224,6 +224,23 @@ work, under this naming scheme; they are not listed here.
 | `fullnode_chronik_lag_blocks` | gauge | | 1 | Blocks the index is behind the chain tip, at scrape time. |
 
 
+### Native Chronik observation boundaries
+
+Both backend choices report the same bounded request families, status classes,
+connection/subscription gauges and indexed-height/lag gauges. Native callbacks
+are installed by the ABC host; the portable core has no node-metrics dependency.
+Native request duration measures router dispatch; a successful WebSocket upgrade
+measures response-header preparation, excluding socket and query-pool waiting.
+Rust duration retains its middleware boundary. Compare timing workloads within
+a backend rather than treating these boundaries as identical. Connections count
+accepted handlers, and subscriptions count successfully reserved slots until
+release. Metrics callbacks cannot change a response or subscription outcome.
+
+The callbacks are fixed before publication and perform atomic recording only;
+they must not acquire registry, host or indexer locks. Native limiter callbacks
+run under its existing mutex. Shutdown drains the Chronik workers/sessions;
+node metrics remain allocated through process exit even after scraping stops.
+
 ## Tests
 
 `test/functional/test_framework/metrics.py` scrapes and checks an

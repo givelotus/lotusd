@@ -111,6 +111,10 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
         hosts/abc/abc_entry.cpp
         # chronik::native::Host for the node (ChronikBridge port).
         hosts/abc/abc_host.cpp
+        # Validation-interface worker feeding the Service.
+        hosts/abc/abc_subscriber.cpp
+        # In-process /chronik on the node's HTTP server.
+        hosts/abc/abc_http.cpp
     )
     target_include_directories(chronik_native_host_abc
         PUBLIC
@@ -121,7 +125,14 @@ if(NOT CHRONIK_NATIVE_STANDALONE)
     )
     target_link_libraries(chronik_native_host_abc
         chronik_native_core
+        chronik_native_service
         util
     )
+    # Storage backends: only the selected ones are linked.
+    if(CHRONIK_NATIVE_MDBX)
+        target_link_libraries(chronik_native_host_abc chronik_native_store_mdbx)
+        target_compile_definitions(chronik_native_host_abc
+            PRIVATE CHRONIK_NATIVE_HAVE_MDBX=1)
+    endif()
     target_link_libraries(server chronik_native_host_abc)
 endif()
