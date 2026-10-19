@@ -261,6 +261,19 @@ public:
     bool IsAddrV1Compatible() const;
 
     enum Network GetNetwork() const;
+
+    /**
+     * The raw representation (network, address bytes, scope id), for
+     * copying an address into a log record without allocating; FromRaw()
+     * makes the address again.
+     */
+    Network RawNetwork() const { return m_net; }
+    Span<const uint8_t> RawAddrBytes() const {
+        return Span{m_addr.data(), m_addr.size()};
+    }
+    uint32_t RawScopeId() const { return m_scope_id; }
+    static CNetAddr FromRaw(Network net, Span<const uint8_t> bytes,
+                            uint32_t scope_id);
     std::string ToStringAddr() const;
     bool GetInAddr(struct in_addr *pipv4Addr) const;
     Network GetNetClass() const;
