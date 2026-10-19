@@ -508,7 +508,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(util Threads::Threads)
 
 function(add_network_sources NETWORK_SOURCES)
-	set(NETWORK_DIR abc)
+	set(NETWORK_DIR lotus)
 
 	list(TRANSFORM
 		ARGN
@@ -970,8 +970,8 @@ if(BUILD_CHAINSTATE)
 		logging/journal.cpp
 		logging/encoder.cpp
 		logging/event.cpp
-		networks/abc/chainparamsconstants.cpp
-		networks/abc/checkpoints.cpp
+		networks/lotus/chainparamsconstants.cpp
+		networks/lotus/checkpoints.cpp
 		node/blockfitter.cpp
 		node/blockprefetch.cpp
 		node/blockstorage.cpp

@@ -190,15 +190,15 @@ MESSAGEMAP = {
 }
 
 NET_MAGIC_BYTES = {
-    "mainnet": b"\xe3\xe1\xf3\xe8",
-    "testnet3": b"\xf4\xe5\xf3\xf4",
-    "regtest": b"\xda\xb5\xbf\xfa",
+    "mainnet": b"\xce\xae\xde\x98",
+    "testnet3": b"\xc2\xb6\xf0\xcf",
+    "regtest": b"\x9e\xbd\xfd\xc5",
 }
 
 DISK_MAGIC_BYTES = {
-    "mainnet": b"\xf9\xbe\xb4\xd9",
-    "testnet3": b"\x0b\x11\x09\x07",
-    "regtest": b"\xfa\xbf\xb5\xda",
+    "mainnet": b"\xda\xc6\xdd\xe4",
+    "testnet3": b"\xf3\x9f\xf4\x96",
+    "regtest": b"\x8d\x99\xbf\xcc",
 }
 
 

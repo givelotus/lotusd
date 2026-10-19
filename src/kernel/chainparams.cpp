@@ -6,7 +6,6 @@
 #include <kernel/chainparams.h>
 
 #include <chainparamsconstants.h>
-#include <chainparamsseeds.h>
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
 #include <lotus_v2/commitment.h>
@@ -85,6 +84,30 @@ static CBlock CreateGenesisBlock(uint64_t nTime, uint64_t nNonce,
                               nBits, nVersion, genesisReward);
 }
 
+namespace {
+/**
+ * Lotus V2 chain ids. Block ids, state roots and proof of work all commit to
+ * the chain id, so blocks, headers and work from one network are never valid
+ * on another. Each id is SHA256 of the network's name ("Lotus V2 mainnet",
+ * "Lotus V2 testnet"). Regtest keeps the all-zero id that its fixtures were
+ * generated with.
+ */
+lotus::v2::ChainId ChainIdFromHex(const char *hex) {
+    lotus::v2::ChainId id{};
+    const std::vector<uint8_t> bytes = ParseHex(hex);
+    assert(bytes.size() == id.size());
+    std::copy(bytes.begin(), bytes.end(), id.begin());
+    return id;
+}
+
+const lotus::v2::ChainId V2_MAINNET_CHAIN_ID = ChainIdFromHex(
+    "960da6d7e4c6f4fe0b639f08e7c344a2c654610aed4b3377149666406a0d1597");
+const lotus::v2::ChainId V2_TESTNET_CHAIN_ID = ChainIdFromHex(
+    "5f5e904cc5dfab62a8b62ee22551bca02e47a6d92d0de1f73c150e906bc3851b");
+const lotus::v2::ChainId V2_REGTEST_CHAIN_ID{};
+
+} // namespace
+
 static std::vector<std::pair<CScript, uint32_t>>
 CreateDefaultDeveloperTreasuryOutputs() {
     // Deterministic standard P2PKH node-developer treasury payout slate
@@ -154,38 +177,33 @@ public:
          * normal data. The characters are rarely used upper ASCII, not valid as
          * UTF-8, and produce a large 32-bit integer with any alignment.
          */
-        diskMagic[0] = 0xf9;
-        diskMagic[1] = 0xbe;
-        diskMagic[2] = 0xb4;
-        diskMagic[3] = 0xd9;
-        netMagic[0] = 0xe3;
-        netMagic[1] = 0xe1;
-        netMagic[2] = 0xf3;
-        netMagic[3] = 0xe8;
-        nDefaultPort = 8333;
+        diskMagic[0] = 0xda;
+        diskMagic[1] = 0xc6;
+        diskMagic[2] = 0xdd;
+        diskMagic[3] = 0xe4;
+        netMagic[0] = 0xce;
+        netMagic[1] = 0xae;
+        netMagic[2] = 0xde;
+        netMagic[3] = 0x98;
+        nDefaultPort = 10605;
         nPruneAfterHeight = 100000;
         m_assumed_blockchain_size =
             ChainParamsConstants::MAINNET_ASSUMED_BLOCKCHAIN_SIZE;
         m_assumed_chain_state_size =
             ChainParamsConstants::MAINNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff,
-                                     lotus::v2::kHeaderVersion, 50 * COIN);
-        consensus.hashGenesisBlock = genesis.GetHash();
+        m_v2_chain_id = V2_MAINNET_CHAIN_ID;
+        {
+            const ScopedV2ChainId scoped_chain_id(m_v2_chain_id);
+            genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff,
+                                         lotus::v2::kHeaderVersion, 50 * COIN);
+            consensus.hashGenesisBlock = genesis.GetHash();
+        }
         assert(!consensus.hashGenesisBlock.IsNull());
 
-        // Note that of those which support the service bits prefix, most only
-        // support a subset of possible options. This is fine at runtime as
-        // we'll fall back to using them as an addrfetch if they don't support
-        // the service bits we want, but we should get them updated to support
-        // all service bits wanted by any release ASAP to avoid it where
-        // possible.
-        // Bitcoin ABC seeder
-        vSeeds.emplace_back("seed.bitcoinabc.org");
-        // Fabien
-        vSeeds.emplace_back("seeder.fabien.cash");
-        // status.cash
-        vSeeds.emplace_back("seeder.status.cash");
+        // Lotus V2 has no DNS seeders yet. The inherited eCash seeders and
+        // fixed seeds would only ever return eCash nodes.
+        vSeeds.clear();
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 0);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 5);
@@ -194,8 +212,7 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
         cashaddrPrefix = opts.ecash ? "ecash" : "bitcoincash";
 
-        vFixedSeeds = std::vector<SeedSpec6>(std::begin(pnSeed6_main),
-                                             std::end(pnSeed6_main));
+        vFixedSeeds.clear();
 
         fDefaultConsistencyChecks = false;
         fRequireStandard = true;
@@ -204,22 +221,10 @@ public:
 
         checkpointData = CheckpointData(ChainType::MAIN);
 
-        // eCash snapshot commitments do not authenticate this native chain.
-        // Add native assumptions only with independently verified snapshot data.
+        // No assumeutxo snapshots or transaction statistics exist for the
+        // Lotus V2 chain yet.
         m_assumeutxo_data = {};
-
-        // Data as of block
-        // 000000000000000001d2ce557406b017a928be25ee98906397d339c3f68eec5d
-        // (height 523992).
-        chainTxData = ChainTxData{
-            // UNIX timestamp of last known number of transactions.
-            1522608016,
-            // Total number of transactions between genesis and that timestamp
-            // (the tx=... number in the ChainStateFlushed debug.log lines)
-            248589038,
-            // Estimated number of transactions per second after that timestamp.
-            3.2,
-        };
+        chainTxData = ChainTxData{0, 0, 0};
     }
 };
 
@@ -268,35 +273,33 @@ public:
         consensus.defaultAssumeValid =
             ChainParamsConstants::TESTNET_DEFAULT_ASSUME_VALID;
 
-        diskMagic[0] = 0x0b;
-        diskMagic[1] = 0x11;
-        diskMagic[2] = 0x09;
-        diskMagic[3] = 0x07;
-        netMagic[0] = 0xf4;
-        netMagic[1] = 0xe5;
-        netMagic[2] = 0xf3;
-        netMagic[3] = 0xf4;
-        nDefaultPort = 18333;
+        diskMagic[0] = 0xf3;
+        diskMagic[1] = 0x9f;
+        diskMagic[2] = 0xf4;
+        diskMagic[3] = 0x96;
+        netMagic[0] = 0xc2;
+        netMagic[1] = 0xb6;
+        netMagic[2] = 0xf0;
+        netMagic[3] = 0xcf;
+        nDefaultPort = 11605;
         nPruneAfterHeight = 1000;
         m_assumed_blockchain_size =
             ChainParamsConstants::TESTNET_ASSUMED_BLOCKCHAIN_SIZE;
         m_assumed_chain_state_size =
             ChainParamsConstants::TESTNET_ASSUMED_CHAINSTATE_SIZE;
 
-        genesis = CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff,
-                                     lotus::v2::kHeaderVersion, 50 * COIN);
-        consensus.hashGenesisBlock = genesis.GetHash();
+        m_v2_chain_id = V2_TESTNET_CHAIN_ID;
+        {
+            const ScopedV2ChainId scoped_chain_id(m_v2_chain_id);
+            genesis = CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff,
+                                         lotus::v2::kHeaderVersion, 50 * COIN);
+            consensus.hashGenesisBlock = genesis.GetHash();
+        }
         assert(!consensus.hashGenesisBlock.IsNull());
 
+        // Lotus V2 testnet has no DNS seeders or fixed seeds yet.
         vFixedSeeds.clear();
         vSeeds.clear();
-        // nodes with support for servicebits filtering should be at the top
-        // Bitcoin ABC seeder
-        vSeeds.emplace_back("testnet-seed.bitcoinabc.org");
-        // Fabien
-        vSeeds.emplace_back("testnet-seeder.fabien.cash");
-        // status.cash
-        vSeeds.emplace_back("testnet-seeder.status.cash");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<uint8_t>(1, 111);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<uint8_t>(1, 196);
@@ -305,8 +308,6 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
         cashaddrPrefix = opts.ecash ? "ectest" : "bchtest";
 
-        vFixedSeeds = std::vector<SeedSpec6>(std::begin(pnSeed6_test),
-                                             std::end(pnSeed6_test));
 
         fDefaultConsistencyChecks = false;
         fRequireStandard = false;
@@ -315,14 +316,8 @@ public:
 
         checkpointData = CheckpointData(ChainType::TESTNET);
 
-        // eCash snapshot commitments do not authenticate this native chain.
-        // Add native assumptions only with independently verified snapshot data.
         m_assumeutxo_data = {};
-
-        // Data as of block
-        // 000000000005b07ecf85563034d13efd81c1a29e47e22b20f4fc6919d5b09cd6
-        // (height 1223263)
-        chainTxData = ChainTxData{1522608381, 15052068, 0.15};
+        chainTxData = ChainTxData{0, 0, 0};
     }
 };
 
@@ -372,22 +367,26 @@ public:
         // valid.
         consensus.defaultAssumeValid = BlockHash();
 
-        diskMagic[0] = 0xfa;
-        diskMagic[1] = 0xbf;
-        diskMagic[2] = 0xb5;
-        diskMagic[3] = 0xda;
-        netMagic[0] = 0xda;
-        netMagic[1] = 0xb5;
-        netMagic[2] = 0xbf;
-        netMagic[3] = 0xfa;
-        nDefaultPort = 18444;
+        diskMagic[0] = 0x8d;
+        diskMagic[1] = 0x99;
+        diskMagic[2] = 0xbf;
+        diskMagic[3] = 0xcc;
+        netMagic[0] = 0x9e;
+        netMagic[1] = 0xbd;
+        netMagic[2] = 0xfd;
+        netMagic[3] = 0xc5;
+        nDefaultPort = 12605;
         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
-        genesis = CreateGenesisBlock(1296688602, 4, 0x207fffff,
-                                     lotus::v2::kHeaderVersion, 50 * COIN);
-        consensus.hashGenesisBlock = genesis.GetHash();
+        m_v2_chain_id = V2_REGTEST_CHAIN_ID;
+        {
+            const ScopedV2ChainId scoped_chain_id(m_v2_chain_id);
+            genesis = CreateGenesisBlock(1296688602, 4, 0x207fffff,
+                                         lotus::v2::kHeaderVersion, 50 * COIN);
+            consensus.hashGenesisBlock = genesis.GetHash();
+        }
         assert(consensus.hashGenesisBlock ==
                uint256S("0x720da0e6627eb824fb69ad12fd5162fd02ea91775c4a04e7561"
                         "c99b7e50723e4"));

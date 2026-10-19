@@ -33,7 +33,7 @@
 #include <string>
 #include <variant>
 
-const char *const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+const char *const BITCOIN_CONF_FILENAME = "lotusd.conf";
 const char *const BITCOIN_SETTINGS_FILENAME = "settings.json";
 
 ArgsManager gArgs;
@@ -730,12 +730,12 @@ std::string HelpMessageOpt(const std::string &option,
 }
 
 fs::path GetDefaultDataDir() {
-    // Windows: C:\Users\Username\AppData\Roaming\Bitcoin
-    // macOS: ~/Library/Application Support/Bitcoin
-    // Unix-like: ~/.bitcoin
+    // Windows: C:\Users\Username\AppData\Roaming\Lotusd
+    // macOS: ~/Library/Application Support/Lotusd
+    // Unix-like: ~/.lotusd
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "Lotusd";
 #else
     fs::path pathRet;
     char *pszHome = getenv("HOME");
@@ -746,10 +746,10 @@ fs::path GetDefaultDataDir() {
     }
 #ifdef MAC_OSX
     // macOS
-    return pathRet / "Library/Application Support/Bitcoin";
+    return pathRet / "Library/Application Support/Lotusd";
 #else
     // Unix-like
-    return pathRet / ".bitcoin";
+    return pathRet / ".lotusd";
 #endif
 #endif
 }
