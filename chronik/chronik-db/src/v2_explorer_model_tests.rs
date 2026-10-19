@@ -1,5 +1,5 @@
 use super::*;
-use crate::v2_branch::{ConfirmedTx, SpentInput};
+use crate::v2_branch::{Bounds, ConfirmedTx, SpentInput};
 fn fixture() -> CommittedBlock {
     let anchor = Anchor {
         block_id: [3; 32],
@@ -161,12 +161,13 @@ fn frozen_creation_is_serialized_without_spend_state() {
 }
 #[test]
 fn reservation_and_metadata_bounds_reject_oversize() {
+    let bounds = Bounds::new(4096).unwrap();
     let mut block = fixture();
     block.transactions[0]
         .explorer
         .wire
-        .resize(MAX_BATCH_BYTES / 6, 0);
-    assert!(preflight_explorer_block(&block).is_err());
+        .resize(bounds.batch_bytes() / RESERVE_PER_WIRE_BYTE + 1, 0);
+    assert!(preflight_explorer_block(&block).unwrap() > bounds.batch_bytes());
     assert!(decode_record::<TxMeta>(&vec![0; MAX_RECORD_BYTES + 1]).is_err());
 }
 

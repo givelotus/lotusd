@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 fn limits() -> f::ServiceLimits {
     f::ServiceLimits {
-        block_bytes: 1024 * 1024,
+        block_bytes: 32_000_000,
         transactions: 4096,
         changes: 65536,
         roots: 256,
@@ -261,10 +261,22 @@ fn exact_transport_response_and_block_boundaries() {
             assert!(bytes.len() <= cap as usize);
         }
     }
+    // block_bytes is the consensus block-size limit: a header-only block
+    // needs 134 wire bytes.
     let mut caps = limits();
-    caps.block_bytes = 217;
+    caps.block_bytes = 133;
+    caps.transactions = 1;
+    caps.changes = 1;
+    // Counts above what a block within the limit can hold are refused.
+    let mut over = caps.clone();
+    over.transactions = 3;
+    assert!(open_service(Temp::new().path(), binding(), true, over).is_err());
+    let mut over = caps.clone();
+    over.changes = 4;
+    assert!(open_service(Temp::new().path(), binding(), true, over).is_err());
     let other = Temp::new();
-    let service = open_service(other.path(), binding(), true, caps).unwrap();
+    let service =
+        open_service(other.path(), binding(), true, caps.clone()).unwrap();
     let empty = f::NativeBlock {
         anchor: tip(2, 0),
         parent: tip(2, 0),
@@ -274,8 +286,7 @@ fn exact_transport_response_and_block_boundaries() {
     assert!(service.initialize_genesis(empty.clone()).is_err());
     assert!(!service.status(tip(2, 0)).unwrap().initialized);
     drop(service);
-    let mut caps = limits();
-    caps.block_bytes = 218;
+    caps.block_bytes = 134;
     let service = open_service(other.path(), binding(), false, caps).unwrap();
     service.initialize_genesis(empty).unwrap();
     assert!(service.status(tip(2, 0)).unwrap().ready);
