@@ -1058,9 +1058,28 @@ void SetupServerArgs(NodeContext &node) {
                   P2P_WEBSOCKET_PATH, DEFAULT_P2P_WEBSOCKET),
         ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg(
+        "-p2pwebsocketpath=<path>",
+        strprintf("Serve P2P WebSocket upgrades at this path instead of %s. "
+                  "It is advertised with -externaldomain; otherwise peers "
+                  "need the full URL (-addnode=wss://host/path)",
+                  P2P_WEBSOCKET_PATH),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg(
+        "-p2pwebsockettoken=<token>",
+        "Only accept P2P WebSocket upgrades carrying this token (1-256 of "
+        "A-Z a-z 0-9 . _ ~ -) as \"Authorization: Bearer <token>\" or a "
+        "\"t=<token>\" cookie. Dial such a peer with "
+        "wss://host/path?token=<token> (the token is sent as a header). "
+        "Without it, the endpoint answers like any unknown path. Can be "
+        "specified multiple times; incompatible with -externaldomain, since "
+        "the token is never advertised.",
+        ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE,
+        OptionsCategory::CONNECTION);
+    argsman.AddArg(
         "-externaldomain=<domain>[:port]",
         "Advertise that this node accepts P2P over WebSocket+TLS at "
-        "wss://<domain>:<port>/p2p/ws (default port: 443), e.g. behind a "
+        "wss://<domain>:<port>/p2p/ws (default port: 443; the path is "
+        "-p2pwebsocketpath if set), e.g. behind a "
         "TLS-terminating proxy. Only announced to peers supporting ADDRv2 "
         "(BIP155); others never see it. Can be specified multiple times.",
         ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY,
@@ -3543,13 +3562,32 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         return false;
     }
 
+    if (args.IsArgSet("-externaldomain") &&
+        args.IsArgSet("-p2pwebsockettoken")) {
+        // Peers learning a NET_WSS address dial it without a token:
+        // advertising it would only reveal a node they cannot use.
+        return InitError(_("-externaldomain cannot be combined with "
+                           "-p2pwebsockettoken: peers learning the address "
+                           "could not connect"));
+    }
+    // A -p2pwebsocketpath is advertised with the domain.
+    const std::string ws_path{
+        args.GetArg("-p2pwebsocketpath", P2P_WEBSOCKET_PATH)};
     for (const std::string &strDomain : args.GetArgs("-externaldomain")) {
         uint16_t port{443};
         std::string host;
         CNetAddr domain;
-        if (!SplitHostPort(strDomain, port, host) || !domain.SetWSSDomain(host)) {
+        if (!SplitHostPort(strDomain, port, host) ||
+            !domain.SetWSSDomain(host)) {
             return InitError(strprintf(_("Invalid -externaldomain: '%s'"),
                                        strDomain));
+        }
+        if (!domain.SetWSSDomain(host, ws_path)) {
+            return InitError(strprintf(
+                _("-p2pwebsocketpath '%s' cannot be advertised with "
+                  "-externaldomain (use / followed by A-Z a-z 0-9 - . _ ~ /, "
+                  "at most 255 characters)"),
+                ws_path));
         }
         AddLocal(CService{domain, port}, LOCAL_MANUAL);
     }

@@ -1886,6 +1886,21 @@ BOOST_AUTO_TEST_CASE(p2p_websocket_url_parsing) {
         BOOST_CHECK_MESSAGE(!ParseWebSocketURL(bad), bad);
     }
 
+    // An upgrade token leaves the request target and is never logged
+    url = ParseWebSocketURL("wss://host/a/b?x=1&token=Ab-9_.~&y=2#spki=" + pin);
+    BOOST_REQUIRE(url);
+    BOOST_CHECK_EQUAL(url->token, "Ab-9_.~");
+    BOOST_CHECK_EQUAL(url->target, "/a/b?x=1&y=2");
+    url = ParseWebSocketURL("ws://host/p?token=t");
+    BOOST_REQUIRE(url);
+    BOOST_CHECK_EQUAL(url->target, "/p");
+    BOOST_CHECK(!ParseWebSocketURL("wss://host/p?token="));
+    BOOST_CHECK(!ParseWebSocketURL("wss://host/p?token=a%20b"));
+    BOOST_CHECK_EQUAL(RedactWebSocketURL("wss://h/p?a=1&token=secret#spki=x"),
+                      "wss://h/p?a=1&token=***#spki=x");
+    BOOST_CHECK_EQUAL(RedactWebSocketURL("wss://h/p?xtoken=keep"),
+                      "wss://h/p?xtoken=keep");
+
     BOOST_CHECK(IsWebSocketURL("wss://a"));
     BOOST_CHECK(IsWebSocketURL("ws://a"));
     BOOST_CHECK(!IsWebSocketURL("1.2.3.4:8333"));
