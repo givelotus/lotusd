@@ -36,6 +36,7 @@
 #include <uint256.h>
 #include <util/check.h>
 #include <util/sock.h>
+#include <util/sockwakeup.h>
 #include <util/time.h>
 
 #include <atomic>
@@ -470,6 +471,9 @@ public:
     const uint64_t nKeyedNetGroup;
     std::atomic_bool fPauseRecv{false};
     std::atomic_bool fPauseSend{false};
+    //! Wakes the socket handler (e.g. when receiving resumes); set by
+    //! CConnman before the node is added to m_nodes
+    SockWakeup *m_socket_wakeup{nullptr};
 
     const ConnectionType m_conn_type;
 
@@ -1412,6 +1416,21 @@ private:
      * persistent address.
      */
     std::unique_ptr<i2p::sam::Session> m_i2p_sam_session;
+
+    /**
+     * Wakes SocketHandler() from its wait when it should wait on something
+     * new: a node was added, a node's receiving resumed, or a send left data
+     * queued. Without it, these wait for the wait's timeout (up to
+     * SELECT_TIMEOUT_MILLISECONDS). Created by Start().
+     */
+    std::unique_ptr<SockWakeup> m_socket_wakeup;
+    void WakeSocketHandler() {
+        if (m_socket_wakeup) {
+            m_socket_wakeup->Wake();
+        }
+    }
+    /** Add a fully set up node to m_nodes and wake SocketHandler() */
+    void AddNodeLocked(CNode *pnode) EXCLUSIVE_LOCKS_REQUIRED(m_nodes_mutex);
 
     std::thread threadDNSAddressSeed;
     std::thread threadSocketHandler;
