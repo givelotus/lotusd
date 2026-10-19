@@ -34,6 +34,7 @@ from queue import Empty, Queue
 from typing import Set, Tuple
 
 from test_framework import worker
+from test_framework.util import MAX_NODES, PORT_RANGE
 
 # Formatting. Default colors to empty strings.
 BOLD, GREEN, RED, GREY = ("", ""), ("", ""), ("", ""), ("", "")
@@ -205,15 +206,16 @@ class TestCase:
         # Seconds before the test is stopped, or None
         self.timeout = timeout
 
-    def run(self):
+    def run(self, slot):
+        """Run the test in pool slot `slot` (0 to jobs-1), which gives it its
+        port range: tests running at the same time never share one."""
         if self.failfast_event.is_set():
             return TestResult(self.test_num, self.test_case, "", "Skipped", 0, "", "")
 
-        portseed = self.test_num
-        portseed_arg = [f"--portseed={portseed}"]
+        portseed_arg = [f"--portseed={slot}"]
         test_argv = self.test_case.split()
         testname = re.sub(".py$", "", test_argv[0])
-        testdir = os.path.join(f"{self.tmpdir}", f"{testname}_{portseed}")
+        testdir = os.path.join(f"{self.tmpdir}", f"{testname}_{self.test_num}")
         tmpdir_arg = [f"--tmpdir={testdir}"]
         argv = test_argv[1:] + self.flags + portseed_arg + tmpdir_arg
         if self.spec is not None and not running_setup_script([testname]):
@@ -444,6 +446,11 @@ def main():
     # remaining unknown args
     tests = [arg for arg in unknown_args if arg[:2] != "--"]
     passon_args = [arg for arg in unknown_args if arg[:2] == "--"]
+    if args.jobs > max_jobs():
+        parser.error(
+            f"--jobs={args.jobs} is more than the {max_jobs()} tests that can run at"
+            " once with disjoint port ranges"
+        )
     passon_args.append(f"--configfile={configfile}")
 
     # Set up logging
@@ -710,6 +717,12 @@ def run_tests(
     sys.exit(not all_passed)
 
 
+def max_jobs():
+    """How many tests can run at once with disjoint port ranges (see
+    UniquePort in test_framework/util.py)."""
+    return (PORT_RANGE - 1 - MAX_NODES) // MAX_NODES
+
+
 def execute_test_processes(
     num_jobs,
     test_list,
@@ -815,7 +828,7 @@ def execute_test_processes(
                     sys.stdout.flush()
                     printed_status = True
 
-    def handle_test_cases():
+    def handle_test_cases(slot):
         """
         job_runner represents a single thread that is part of a worker pool.
         It waits for a test, then executes that test.
@@ -828,7 +841,7 @@ def execute_test_processes(
             # Signal that the test is starting to inform the poor waiting
             # programmer
             update_queue.put(test)
-            result = test.run()
+            result = test.run(slot)
             update_queue.put(result)
             job_queue.task_done()
 
@@ -842,8 +855,8 @@ def execute_test_processes(
     resultCollector.start()
 
     # Start some worker threads
-    for _ in range(num_jobs):
-        t = threading.Thread(target=handle_test_cases)
+    for slot in range(num_jobs):
+        t = threading.Thread(target=handle_test_cases, args=(slot,))
         t.daemon = True
         t.start()
 
