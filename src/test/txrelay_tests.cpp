@@ -24,9 +24,11 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -246,6 +248,148 @@ BOOST_AUTO_TEST_CASE(peers_share_one_relay_tick) {
         BOOST_REQUIRE_EQUAL(sent.inv_txids.size(), 1U);
         BOOST_CHECK(sent.inv_txids[0] == late->GetId());
     }
+}
+
+BOOST_AUTO_TEST_CASE(fanout_formula) {
+    // clamp(max(min, ceil(pct x n)), min, max)
+    BOOST_CHECK_EQUAL(TxRelayFanout(0, 8, 0.25, 32), 8U);
+    BOOST_CHECK_EQUAL(TxRelayFanout(4, 8, 0.25, 32), 8U);  // n < min
+    BOOST_CHECK_EQUAL(TxRelayFanout(32, 8, 0.25, 32), 8U); // pct x n == min
+    BOOST_CHECK_EQUAL(TxRelayFanout(33, 8, 0.25, 32), 9U); // ceil
+    BOOST_CHECK_EQUAL(TxRelayFanout(40, 8, 0.25, 32), 10U);
+    BOOST_CHECK_EQUAL(TxRelayFanout(128, 8, 0.25, 32), 32U); // == max
+    BOOST_CHECK_EQUAL(TxRelayFanout(129, 8, 0.25, 32), 32U); // capped
+    BOOST_CHECK_EQUAL(TxRelayFanout(5000, 8, 0.25, 32), 32U);
+    // Floating point: 0.1 x 30 must stay 3, not become 4.
+    BOOST_CHECK_EQUAL(TxRelayFanout(30, 1, 0.1, 100), 3U);
+    // Fixed fan-out (pct 0), flooding (pct 1 with a large max).
+    BOOST_CHECK_EQUAL(TxRelayFanout(50, 2, 0.0, 2), 2U);
+    BOOST_CHECK_EQUAL(TxRelayFanout(50, 1, 1.0, 1000), 50U);
+    // A max below the min is raised to the min.
+    BOOST_CHECK_EQUAL(TxRelayFanout(50, 8, 0.25, 4), 8U);
+}
+
+namespace {
+/** Peers (by id) that were sent an announcement for txid */
+std::set<NodeId> SentTo(const std::map<NodeId, Sent> &sent, const TxId &txid) {
+    std::set<NodeId> out;
+    for (const auto &[id, s] : sent) {
+        if (std::find(s.inv_txids.begin(), s.inv_txids.end(), txid) !=
+                s.inv_txids.end() ||
+            std::find(s.shorttx_txids.begin(), s.shorttx_txids.end(), txid) !=
+                s.shorttx_txids.end()) {
+            out.insert(id);
+        }
+    }
+    return out;
+}
+
+void AddToMempool(node::NodeContext &node, const CTransactionRef &tx,
+                  bool local = false) {
+    TestMemPoolEntryHelper entry;
+    LOCK2(cs_main, node.mempool->cs);
+    node.mempool->addUnchecked(entry.FromTx(tx));
+    if (local) {
+        node.mempool->AddUnbroadcastTx(tx->GetId());
+    }
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(fanout_selection) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{3'000'000ms};
+    RelayHarness h{m_node, PeerManager::Options{}};
+    for (int i = 0; i < 40; ++i) {
+        h.AddPeer(i % 2 ? ConnectionType::INBOUND
+                        : ConnectionType::OUTBOUND_FULL_RELAY);
+    }
+    h.SendAll();
+    const size_t k{TxRelayFanout(40, DEFAULT_TXRELAY_FANOUT_MIN,
+                                 DEFAULT_TXRELAY_FANOUT_PCT,
+                                 DEFAULT_TXRELAY_FANOUT_MAX)};
+    BOOST_REQUIRE_EQUAL(k, 10U);
+    FastRandomContext rng{true};
+    auto ms{3'000'000ms};
+
+    // Relayed transactions go to exactly k peers each, picked at random.
+    std::set<NodeId> reached;
+    for (int i = 0; i < 20; ++i) {
+        auto tx{MakeTx(rng)};
+        AddToMempool(m_node, tx);
+        h.peerman->RelayTransaction(tx->GetId());
+        clock.Set(ms += 10ms);
+        const auto to{SentTo(h.SendAll(), tx->GetId())};
+        BOOST_CHECK_EQUAL(to.size(), k);
+        reached.insert(to.begin(), to.end());
+    }
+    BOOST_CHECK_GT(reached.size(), 30U);
+
+    // A transaction this node originated goes to every peer.
+    auto local_tx{MakeTx(rng)};
+    AddToMempool(m_node, local_tx, /*local=*/true);
+    h.peerman->RelayTransaction(local_tx->GetId());
+    clock.Set(ms += 10ms);
+    BOOST_CHECK_EQUAL(SentTo(h.SendAll(), local_tx->GetId()).size(), 40U);
+
+    // Peers known to have it are not candidates; fewer than k candidates
+    // all get it.
+    auto known_tx{MakeTx(rng)};
+    AddToMempool(m_node, known_tx);
+    for (size_t i = 0; i < 35; ++i) {
+        h.peerman->MarkPeerKnownTx(h.nodes[i]->GetId(), known_tx->GetId());
+    }
+    h.peerman->RelayTransaction(known_tx->GetId());
+    clock.Set(ms += 10ms);
+    const auto to_unknown{SentTo(h.SendAll(), known_tx->GetId())};
+    BOOST_CHECK_EQUAL(to_unknown.size(), 5U);
+    for (size_t i = 35; i < 40; ++i) {
+        BOOST_CHECK(to_unknown.count(h.nodes[i]->GetId()));
+    }
+
+    // A child is announced to (at least) every peer its parent went to.
+    for (int round = 0; round < 5; ++round) {
+        auto parent{MakeTx(rng)};
+        AddToMempool(m_node, parent);
+        h.peerman->RelayTransaction(parent->GetId());
+        clock.Set(ms += 10ms);
+        const auto parent_to{SentTo(h.SendAll(), parent->GetId())};
+        BOOST_CHECK_EQUAL(parent_to.size(), k);
+        auto child{MakeTx(rng, {COutPoint(parent->GetId(), 0)})};
+        AddToMempool(m_node, child);
+        h.peerman->RelayTransaction(child->GetId());
+        clock.Set(ms += 10ms);
+        const auto child_to{SentTo(h.SendAll(), child->GetId())};
+        BOOST_CHECK_GE(child_to.size(), k);
+        for (const NodeId id : parent_to) {
+            BOOST_CHECK(child_to.count(id));
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(per_tick_rate_budget) {
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    MockTick clock{4'000'000ms};
+    PeerManager::Options opts;
+    opts.txrelay_rate_max = 1000; // x 10 ms = 10 per tick
+    RelayHarness h{m_node, opts};
+    CNode &peer = h.AddPeer();
+    h.SendAll();
+    FastRandomContext rng{true};
+    std::vector<CTransactionRef> txs;
+    for (int i = 0; i < 25; ++i) {
+        txs.push_back(MakeTx(rng));
+        AddToMempool(m_node, txs.back());
+    }
+    h.peerman->RelayTransactionBatch(txs);
+    size_t total{0};
+    for (const size_t expect : {10U, 10U, 5U, 0U}) {
+        clock.Set(4'000'000ms +
+                  10ms * (1 + total / 10 + (expect == 0 ? 1 : 0)));
+        const size_t n{h.SendAll()[peer.GetId()].Total()};
+        BOOST_CHECK_EQUAL(n, expect);
+        total += n;
+    }
+    BOOST_CHECK_EQUAL(total, 25U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
