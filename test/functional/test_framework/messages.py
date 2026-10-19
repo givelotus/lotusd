@@ -1227,6 +1227,14 @@ def lotus_v2_compute_tx_identities(tx) -> tuple:
     return (txid_b, txhash_b)
 
 
+# The block id commits to the network's chain id (raw bytes, as in
+# chainparams). Regtest uses all zeros, which the framework assumes.
+V2_REGTEST_CHAIN_ID = b"\x00" * 32
+V2_TESTNET_CHAIN_ID = bytes.fromhex(
+    "5f5e904cc5dfab62a8b62ee22551bca02e47a6d92d0de1f73c150e906bc3851b"
+)
+
+
 class CBlockHeader:
     __slots__ = (
         "hashPrevBlock",
@@ -1310,9 +1318,8 @@ class CBlockHeader:
             + ser_uint256(self.hashStateRoot)
         )
 
-    def _hash_bytes(self) -> bytes:
+    def _hash_bytes(self, chain_id: bytes = V2_REGTEST_CHAIN_ID) -> bytes:
         hdr = self._serialize_header()
-        chain_id = b"\x00" * 32
         body_hash = lotus_v2_tagged_hash("Lotus/v2/header/body", chain_id + hdr[50:134])
         work_hash = lotus_v2_tagged_hash("Lotus/v2/header/work", hdr[32:50] + body_hash)
         return lotus_v2_tagged_hash("Lotus/v2/blockid", hdr[0:32] + work_hash)
@@ -1321,6 +1328,10 @@ class CBlockHeader:
     def hash_hex(self) -> str:
         """Return block header hash as hex string."""
         return self._hash_bytes()[::-1].hex()
+
+    def hash_hex_for_chain(self, chain_id: bytes) -> str:
+        """Return the header hash as hex on the network with this chain id."""
+        return self._hash_bytes(chain_id)[::-1].hex()
 
     @property
     def hash_int(self) -> int:
