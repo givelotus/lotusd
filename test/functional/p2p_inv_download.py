@@ -128,6 +128,8 @@ def skip(context):
 
 
 class InventoryDownloadTest(BitcoinTestFramework):
+    extended = True
+
     num_nodes = 2
     extra_args = [
         [

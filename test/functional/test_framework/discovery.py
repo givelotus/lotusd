@@ -40,6 +40,8 @@ class TestSpec:
     num_nodes: Optional[int] = None
     setup_clean_chain: Optional[bool] = None
     variants: List[str] = dataclasses.field(default_factory=lambda: ["default"])
+    # The variants that run only with --extended
+    extended: List[str] = dataclasses.field(default_factory=list)
     error: Optional[str] = None
 
     def to_json(self):
@@ -79,6 +81,14 @@ def static_bool(cls, name) -> Optional[bool]:
     return value if isinstance(value, bool) else None
 
 
+def extended_variants(cls) -> List[str]:
+    if cls.extended is True:
+        return list(cls.variants)
+    if cls.extended is False:
+        return []
+    return [v for v in cls.variants if v in cls.extended]
+
+
 def discover_file(tests_dir, file) -> List[TestSpec]:
     path = os.path.join(tests_dir, file)
     spec = importlib.util.spec_from_file_location(module_name(file), path)
@@ -100,6 +110,7 @@ def discover_file(tests_dir, file) -> List[TestSpec]:
             num_nodes=static_int(cls, "num_nodes"),
             setup_clean_chain=static_bool(cls, "setup_clean_chain"),
             variants=list(cls.variants),
+            extended=extended_variants(cls),
         )
         for cls in sorted(classes, key=lambda c: c.__name__)
     ]
@@ -162,6 +173,15 @@ from plain_test import PlainTest
 class Derived(PlainTest):
     num_nodes = 1
     variants = {"one": {}, "two": {"usecli": True}}
+    extended = {"two"}
+""",
+        "long_test.py": """
+from test_framework.test_framework import BitcoinTestFramework
+class LongTest(BitcoinTestFramework):
+    num_nodes = 1
+    extended = True
+    def run_test(self):
+        pass
 """,
         "broken_test.py": "import a_module_that_does_not_exist\n",
         "helper_only.py": "X = 1\n",
@@ -184,6 +204,9 @@ class Derived(PlainTest):
         self.assertEqual(
             specs[("imports_other_test.py", "Derived")].variants, ["one", "two"]
         )
+        self.assertEqual(specs[("imports_other_test.py", "Derived")].extended, ["two"])
+        self.assertEqual(specs[("long_test.py", "LongTest")].extended, ["default"])
+        self.assertEqual(specs[("plain_test.py", "PlainTest")].extended, [])
         # The abstract base is skipped, its subclass found
         self.assertNotIn(("abstract_test.py", "Base"), specs)
         concrete = specs[("abstract_test.py", "Concrete")]
