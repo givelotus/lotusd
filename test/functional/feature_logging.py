@@ -89,6 +89,7 @@ class LoggingTest(BitcoinTestFramework):
         self.test_syslog_format()
         self.test_text_priority()
         self.test_json_aux_only()
+        self.test_framework_fields()
 
     def assert_no_absolute_source_paths(self, log_path):
         src = os.path.join(self.config["environment"]["SRCDIR"], "src") + os.sep
@@ -202,20 +203,51 @@ class LoggingTest(BitcoinTestFramework):
         with open(self.relative_log_path("priority-default.log"), encoding="utf-8") as stream:
             lines = [line for line in stream if line.strip()]
         assert lines and all(not line.startswith("<") for line in lines)
+
     def test_json_aux_only(self):
         self.log.info("An auxiliary JSON sink keeps logging enabled on its own")
         path = self.relative_log_path("aux-only.jsonl")
-        self.restart_node(0, [
+        self.stop_node(0)
+        default_log = self.relative_log_path("debug.log")
+        if os.path.exists(default_log):
+            os.unlink(default_log)
+        self.start_node(0, [
             "-nodebuglogfile", "-printtoconsole=0", f"-debuglogjsonfile={path}",
         ])
         height = self.nodes[0].getblockcount() + 1
-        self.generate(self.nodes[0], 1)
+        with self.nodes[0].assert_debug_log([
+            {"source": {"function": "UpdateTipLog"}},
+        ]):
+            self.generate(self.nodes[0], 1)
         self.stop_node(0)
+        assert not os.path.exists(default_log)
         with open(path, encoding="utf-8") as stream:
             records = [json.loads(line) for line in stream if line.strip()]
         assert any("UpdateTip: new best=" in record["message"] and
                    f"height={height} " in record["message"] for record in records)
         assert any(record["message"] == "Shutdown: done" for record in records)
+
+    def test_framework_fields(self):
+        self.log.info("Framework dictionary matching and final drop counter")
+        self.restart_node(0, [])
+        node = self.nodes[0]
+        with node.assert_debug_log([
+            {"source": {"file": "src/validation.cpp", "function": "UpdateTipLog"}},
+            "UpdateTip: new best=",
+        ]):
+            self.generate(node, 1)
+        with node.wait_for_debug_log([
+            {"source": {"function": "UpdateTipLog"}}, b"UpdateTip: new best=",
+        ]):
+            self.generate(node, 1)
+        self.stop_node(0)
+        records = [
+            json.loads(line)
+            for line in node.debug_log_json_path.read_text().splitlines()
+        ]
+        summaries = [r for r in records if r.get("event") == "logger_shutdown"]
+        assert summaries and summaries[-1]["dropped_lines"] == 0
+
     def test_json_format(self):
         self.log.info("Test -logformat=json")
         self.stop_node(0)
