@@ -33,6 +33,8 @@ from collections import deque
 from queue import Empty, Queue
 from typing import Set, Tuple
 
+from test_framework import worker
+
 # Formatting. Default colors to empty strings.
 BOLD, GREEN, RED, GREY = ("", ""), ("", ""), ("", ""), ("", "")
 try:
@@ -159,6 +161,7 @@ TEST_PARAMS = {
 # we only run a test if its execution time in seconds does not exceed
 # EXTENDED_CUTOFF
 DEFAULT_EXTENDED_CUTOFF = 40
+DEFAULT_TEST_TIMEOUT = 20 * 60
 DEFAULT_JOBS = os.cpu_count() or 1
 
 SETUP_SCRIPTS_SUBDIR = "setup_scripts"
@@ -180,7 +183,15 @@ class TestCase:
     """
 
     def __init__(
-        self, test_num, test_case, tests_dir, tmpdir, failfast_event, flags=None
+        self,
+        test_num,
+        test_case,
+        tests_dir,
+        tmpdir,
+        failfast_event,
+        flags=None,
+        spec=None,
+        timeout=None,
     ):
         self.tests_dir = tests_dir
         self.tmpdir = tmpdir
@@ -188,6 +199,11 @@ class TestCase:
         self.test_num = test_num
         self.failfast_event = failfast_event
         self.flags = flags
+        # The test's discovery spec (test_framework/discovery.py), if any:
+        # discovered tests run in a worker process, see run_in_worker().
+        self.spec = spec
+        # Seconds before the test is stopped, or None
+        self.timeout = timeout
 
     def run(self):
         if self.failfast_event.is_set():
@@ -195,19 +211,19 @@ class TestCase:
 
         portseed = self.test_num
         portseed_arg = [f"--portseed={portseed}"]
-        log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
-        log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
         test_argv = self.test_case.split()
         testname = re.sub(".py$", "", test_argv[0])
         testdir = os.path.join(f"{self.tmpdir}", f"{testname}_{portseed}")
         tmpdir_arg = [f"--tmpdir={testdir}"]
+        argv = test_argv[1:] + self.flags + portseed_arg + tmpdir_arg
+        if self.spec is not None and not running_setup_script([testname]):
+            return self.run_in_worker(test_argv[0], argv, testdir)
+
+        log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
+        log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
         start_time = time.time()
         process = subprocess.Popen(
-            [sys.executable, os.path.join(self.tests_dir, test_argv[0])]
-            + test_argv[1:]
-            + self.flags
-            + portseed_arg
-            + tmpdir_arg,
+            [sys.executable, os.path.join(self.tests_dir, test_argv[0])] + argv,
             universal_newlines=True,
             stdout=sys.stdout if running_setup_script([testname]) else log_stdout,
             stderr=log_stderr,
@@ -236,6 +252,48 @@ class TestCase:
             stderr,
         )
 
+    def run_in_worker(self, file, argv, testdir):
+        job = {
+            "name": self.test_case,
+            "file": file,
+            "class_name": self.spec["class_name"],
+            "tests_dir": self.tests_dir,
+            "argv": argv,
+            "tmpdir": testdir,
+            # Next to the test's directory, which the test creates itself
+            "stdout_path": f"{testdir}.stdout",
+            "stderr_path": f"{testdir}.stderr",
+        }
+        result = worker.run_in_process(job, self.timeout)
+        status = {"passed": "Passed", "skipped": "Skipped"}.get(result.status, "Failed")
+        stdout = worker.read(job["stdout_path"])
+        stderr = worker.read(job["stderr_path"])
+        if result.status in ("timeout", "crashed"):
+            stderr += f"\n{result.failure['message']}\n"
+        test_result = TestResult(
+            self.test_num,
+            self.test_case,
+            testdir,
+            status,
+            result.duration,
+            stdout,
+            stderr,
+        )
+        test_result.job_result = result
+        return test_result
+
+
+def test_timeout(seconds, passon_args):
+    """The per-test timeout in seconds, or None: `seconds` times the tests'
+    --timeout-factor (0 disables, as it does for the tests)."""
+    factor = 1.0
+    for arg in passon_args:
+        if arg.startswith("--timeout-factor="):
+            factor = float(arg.split("=", 1)[1])
+    if seconds == 0 or factor == 0:
+        return None
+    return seconds * factor
+
 
 def on_ci():
     return os.getenv("TRAVIS") == "true" or os.getenv("TEAMCITY_VERSION") is not None
@@ -250,6 +308,9 @@ def main():
     config.read_file(open(configfile, encoding="utf8"))
 
     src_dir = config["environment"]["SRCDIR"]
+    # Test modules need it to import (test_framework/cdefs.py), also in the
+    # worker processes that run them.
+    os.environ["SRCDIR"] = src_dir
     build_dir = config["environment"]["BUILDDIR"]
     tests_dir = os.path.join(src_dir, "test", "functional")
 
@@ -331,6 +392,16 @@ def main():
         "--failfast",
         action="store_true",
         help="stop execution after the first test failure",
+    )
+    parser.add_argument(
+        "--test-timeout",
+        type=int,
+        default=DEFAULT_TEST_TIMEOUT,
+        help=(
+            "Stop a test, and every process it started, after this many seconds"
+            " (multiplied by --timeout-factor, if given). 0 disables. Default:"
+            " %(default)s"
+        ),
     )
     parser.add_argument(
         "--phase-report",
@@ -512,6 +583,7 @@ def main():
         failfast=args.failfast,
         phase_dir=phase_dir,
         discovered=discovered,
+        test_timeout=test_timeout(args.test_timeout, passon_args),
     )
 
 
@@ -530,6 +602,7 @@ def run_tests(
     failfast=False,
     phase_dir=None,
     discovered=None,
+    test_timeout=None,
 ):
     args = args or []
 
@@ -596,7 +669,15 @@ def run_tests(
     # Run Tests
     start_time = time.time()
     test_results = execute_test_processes(
-        num_jobs, test_list, build_dir, tests_dir, tmpdir, flags, failfast, discovered
+        num_jobs,
+        test_list,
+        build_dir,
+        tests_dir,
+        tmpdir,
+        flags,
+        failfast,
+        discovered,
+        test_timeout,
     )
     runtime = time.time() - start_time
 
@@ -638,6 +719,7 @@ def execute_test_processes(
     flags,
     failfast=False,
     discovered=None,
+    test_timeout=None,
 ):
     update_queue = Queue()
     job_queue = Queue()
@@ -773,7 +855,18 @@ def execute_test_processes(
             update_queue.put(TestCase(i, t, tests_dir, tmpdir, failfast_event, flags))
             update_queue.put(TestResult(i, t, "", "Failed", 0, "", error))
             continue
-        job_queue.put(TestCase(i, t, tests_dir, tmpdir, failfast_event, flags))
+        job_queue.put(
+            TestCase(
+                i,
+                t,
+                tests_dir,
+                tmpdir,
+                failfast_event,
+                flags,
+                spec=(discovered or {}).get(t.split()[0]),
+                timeout=test_timeout,
+            )
+        )
 
     # Wait for all the jobs to be completed
     job_queue.join()
