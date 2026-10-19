@@ -4292,6 +4292,53 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     return result;
 }
 
+// A v7 input spending a legacy P2PKH coin (the legacy bridge). CheckTxInputs
+// has checked the witness shape ([sig, compressed pubkey], no script) and
+// that the pubkey hashes to the coin's key hash. The signature is a V2
+// BIP340 signature by the pubkey's x-only key over the V2 signing message of
+// invocation (input, witness 0), whose selector leaf is the legacy bridge
+// leaf (LegacyBridgeLeaf), in the mode its encoding names.
+std::optional<std::pair<ScriptError, std::string>>
+CScriptCheck::CheckLegacyBridgeInput(
+    const lotus::v2::PreparedSigningContext &signing,
+    const std::function<std::string()> &make_debug_str) const {
+    const auto &witness = ptxTo->vin[nIn].vWitnesses[0];
+    if (witness.arguments.size() != 2 ||
+        witness.arguments[1].size() != CPubKey::COMPRESSED_SIZE) {
+        return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+    }
+    const std::vector<uint8_t> &sig = witness.arguments[0];
+    const uint8_t mode = sig.size() == 65 ? sig[64] : 0;
+    if ((sig.size() != 64 && sig.size() != 65) ||
+        (sig.size() == 65 && (mode == 0 || mode > 2)) ||
+        (mode == 2 && nIn >= ptxTo->vout.size())) {
+        return std::make_pair(ScriptError::SIG_BADLENGTH, make_debug_str());
+    }
+    lotus::v2::Hash message;
+    std::string error;
+    if (!lotus::v2::SigningMessage(signing, nIn, 0, mode, std::nullopt,
+                                   message, error)) {
+        return std::make_pair(ScriptError::EVAL_FALSE, make_debug_str());
+    }
+    const std::span<const uint8_t> xonly(witness.arguments[1].data() + 1, 32);
+    if (m_sig_collector) {
+        if (!m_sig_collector->Add(xonly, sig, message)) {
+            return std::make_pair(ScriptError::SIG_NONSCHNORR,
+                                  make_debug_str());
+        }
+        return std::nullopt;
+    }
+    switch (lotus::v2::VerifyBip340Signature(xonly, sig, message, false)) {
+        case lotus::v2::SignatureStatus::Valid:
+            return std::nullopt;
+        case lotus::v2::SignatureStatus::InvalidSignature:
+            return std::make_pair(ScriptError::SIG_NULLFAIL, make_debug_str());
+        default:
+            return std::make_pair(ScriptError::SIG_NONSCHNORR,
+                                  make_debug_str());
+    }
+}
+
 std::optional<std::pair<ScriptError, std::string>>
 CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
@@ -4406,6 +4453,10 @@ CScriptCheck::CheckInput(lotus::v2::DeferredRecords &records) {
                                       make_debug_str());
             }
             const lotus::v2::Output &v2out = *resolved[nIn];
+            if (v2out.legacy_script) {
+                return CheckLegacyBridgeInput(prepared_vm.Signing(),
+                                              make_debug_str);
+            }
             if (ptxTo->vin[nIn].nPathIndex >= v2out.paths.size()) {
                 return std::make_pair(ScriptError::EVAL_FALSE,
                                       make_debug_str());

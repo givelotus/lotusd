@@ -727,6 +727,7 @@ bool CheckSequenceLocksAtTip(CBlockIndex *tip, const LockPoints &lock_points);
 
 namespace lotus::v2 {
 class BatchSigCollector;
+class PreparedSigningContext;
 } // namespace lotus::v2
 
 /**
@@ -793,6 +794,9 @@ private:
 
     std::optional<std::pair<ScriptError, std::string>>
     CheckInput(lotus::v2::DeferredRecords &records);
+    std::optional<std::pair<ScriptError, std::string>> CheckLegacyBridgeInput(
+        const lotus::v2::PreparedSigningContext &signing,
+        const std::function<std::string()> &make_debug_str) const;
 
 public:
     CScriptCheck(
