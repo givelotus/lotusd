@@ -21,21 +21,23 @@
 #include <cstdint>
 #include <cstring>
 
-static CBlock CreateGenesisBlock(const char *pszTimestamp,
+static std::vector<uint8_t> MessageBytes(const char *message) {
+    return std::vector<uint8_t>((const uint8_t *)message,
+                                (const uint8_t *)message + strlen(message));
+}
+
+static CBlock CreateGenesisBlock(const CScript &coinbaseScriptSig,
                                  const CScript &genesisOutputScript,
                                  uint64_t nTime, uint64_t nNonce,
                                  uint32_t nBits, uint32_t nVersion,
-                                 const Amount genesisReward) {
+                                 const Amount genesisReward,
+                                 std::vector<CTransactionRef> extraTxs = {}) {
     CMutableTransaction txNew;
     txNew.nVersion = 7;
     txNew.vin.resize(1);
     txNew.vout.resize(1);
     txNew.vin[0].nFlags = 2;
-    txNew.vin[0].scriptSig =
-        CScript() << 486604799 << CScriptNum(4)
-                  << std::vector<uint8_t>((const uint8_t *)pszTimestamp,
-                                          (const uint8_t *)pszTimestamp +
-                                              strlen(pszTimestamp));
+    txNew.vin[0].scriptSig = coinbaseScriptSig;
     txNew.vin[0].fHasCoinbaseData = true;
     txNew.vin[0].vCoinbaseData.assign(txNew.vin[0].scriptSig.begin(),
                                       txNew.vin[0].scriptSig.end());
@@ -57,6 +59,9 @@ static CBlock CreateGenesisBlock(const char *pszTimestamp,
     genesis.nHeaderVersion = nVersion;
     genesis.nHeight = 0;
     genesis.vtx.push_back(MakeTransactionRef(std::move(txNew)));
+    for (auto &tx : extraTxs) {
+        genesis.vtx.push_back(std::move(tx));
+    }
     genesis.hashPrevBlock.SetNull();
     genesis.hashMerkleRoot = BlockMerkleRoot(genesis);
     genesis.hashStateRoot =
@@ -80,8 +85,61 @@ static CBlock CreateGenesisBlock(uint64_t nTime, uint64_t nNonce,
                               "a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112"
                               "de5c384df7ba0b8d578a4c702b6bf11d5f")
                   << OP_CHECKSIG;
-    return CreateGenesisBlock(pszTimestamp, genesisOutputScript, nTime, nNonce,
-                              nBits, nVersion, genesisReward);
+    return CreateGenesisBlock(CScript() << 486604799 << CScriptNum(4)
+                                        << MessageBytes(pszTimestamp),
+                              genesisOutputScript, nTime, nNonce, nBits,
+                              nVersion, genesisReward);
+}
+
+/**
+ * PLACEHOLDER Lotus V2 genesis blocks for mainnet and testnet, so those
+ * networks can start before launch. They are replaced at launch, which resets
+ * both chains; nodes warn at startup while they are in use.
+ *
+ * - The coinbase answers Bitcoin's genesis headline and records the genesis
+ *   block hash of the Lotus V1 network of the same type.
+ * - A second transaction spends Bitcoin's genesis coinbase output
+ *   (4a5e1e4b...a33b:0) and pays the 50 coins back to Satoshi's genesis key.
+ *   Genesis transactions are never validated or added to the coin set, so it
+ *   is symbolic only.
+ */
+static constexpr bool V2_GENESIS_IS_PLACEHOLDER = true;
+static constexpr uint64_t MAINNET_GENESIS_NONCE = 7612265698;
+static constexpr uint64_t TESTNET_GENESIS_NONCE = 166335650;
+
+static CBlock CreateLotusV2GenesisBlock(const char *pszTimestamp,
+                                        const char *v1GenesisHash,
+                                        uint64_t nTime, uint64_t nNonce,
+                                        uint32_t nBits) {
+    const CScript satoshiGenesisScript =
+        CScript() << ParseHex("04678afdb0fe5548271967f1a67130b7105cd6a828e03909"
+                              "a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112"
+                              "de5c384df7ba0b8d578a4c702b6bf11d5f")
+                  << OP_CHECKSIG;
+    const BlockHash v1Genesis = *BlockHash::FromHex(v1GenesisHash);
+    const CScript coinbaseScriptSig =
+        CScript() << 486604799 << CScriptNum(4) << MessageBytes(pszTimestamp)
+                  << std::vector<uint8_t>(v1Genesis.begin(), v1Genesis.end());
+
+    CMutableTransaction returnToSender;
+    returnToSender.nVersion = 7;
+    returnToSender.vin.resize(1);
+    returnToSender.vin[0].prevout =
+        COutPoint(TxId(uint256S("4a5e1e4baab89f3a32518a88c31bc87f618f76673e2c"
+                                "c77ab2127b7afdeda33b")),
+                  0);
+    returnToSender.vin[0].nFlags = 1;
+    returnToSender.vin[0].scriptSig =
+        CScript() << MessageBytes(
+            "Satoshi's genesis coins, spent at last. Returned to sender.");
+    returnToSender.vout.resize(1);
+    returnToSender.vout[0].nValue = 50 * COIN;
+    returnToSender.vout[0].scriptPubKey = satoshiGenesisScript;
+
+    return CreateGenesisBlock(
+        coinbaseScriptSig, satoshiGenesisScript, nTime, nNonce, nBits,
+        lotus::v2::kHeaderVersion, 50 * COIN,
+        {MakeTransactionRef(std::move(returnToSender))});
 }
 
 namespace {
@@ -195,11 +253,20 @@ public:
         m_v2_chain_id = V2_MAINNET_CHAIN_ID;
         {
             const ScopedV2ChainId scoped_chain_id(m_v2_chain_id);
-            genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff,
-                                         lotus::v2::kHeaderVersion, 50 * COIN);
+            // 2026-10-19T00:00:00Z
+            genesis = CreateLotusV2GenesisBlock(
+                "19/Oct/2026 Chancellor on brink of second Lotus",
+                "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470",
+                1792368000, MAINNET_GENESIS_NONCE, 0x1d00ffff);
             consensus.hashGenesisBlock = genesis.GetHash();
         }
-        assert(!consensus.hashGenesisBlock.IsNull());
+        assert(consensus.hashGenesisBlock ==
+               uint256S("000000001d4f799ae04ce551956bfde3a2614f1a436a995a1aeae1"
+                        "9522a36388"));
+        assert(genesis.hashMerkleRoot ==
+               uint256S("5840374ac4f460eeca1453d2d313f26d8bc937e878e2cca3d59c86"
+                        "c40099a09a"));
+        m_is_placeholder_genesis = V2_GENESIS_IS_PLACEHOLDER;
 
         // Lotus V2 has no DNS seeders yet. The inherited eCash seeders and
         // fixed seeds would only ever return eCash nodes.
@@ -291,11 +358,20 @@ public:
         m_v2_chain_id = V2_TESTNET_CHAIN_ID;
         {
             const ScopedV2ChainId scoped_chain_id(m_v2_chain_id);
-            genesis = CreateGenesisBlock(1296688602, 414098458, 0x1d00ffff,
-                                         lotus::v2::kHeaderVersion, 50 * COIN);
+            // 2026-10-19T00:00:00Z
+            genesis = CreateLotusV2GenesisBlock(
+                "19/Oct/2026 testnet: Chancellor on brink of second Lotus",
+                "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1",
+                1792368000, TESTNET_GENESIS_NONCE, 0x1d00ffff);
             consensus.hashGenesisBlock = genesis.GetHash();
         }
-        assert(!consensus.hashGenesisBlock.IsNull());
+        assert(consensus.hashGenesisBlock ==
+               uint256S("00000000ecba3e71b2c96d27565993b12661cdf3f7a81ad00df50b"
+                        "7baabccaae"));
+        assert(genesis.hashMerkleRoot ==
+               uint256S("cd34e0783d193972653c350b58dea8997a9be2241a5f0a795110e6"
+                        "4a33ebbf6f"));
+        m_is_placeholder_genesis = V2_GENESIS_IS_PLACEHOLDER;
 
         // Lotus V2 testnet has no DNS seeders or fixed seeds yet.
         vFixedSeeds.clear();
