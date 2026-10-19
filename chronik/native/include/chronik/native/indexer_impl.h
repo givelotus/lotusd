@@ -150,6 +150,8 @@ public:
     const Host &GetHost() const { return m_host; }
     const KvStore &Store() const { return *m_store; }
     const IndexerConfig &Config() const { return m_config; }
+    /** The params the indexer was opened with (e.g. decompress_pubkey). */
+    const IndexerParams &Params() const { return m_params; }
     bool IsTokenIndexEnabled() const { return m_config.token_index; }
     bool IsLokadIdIndexEnabled() const { return m_config.lokad_id_index; }
     bool IsScripthashIndexEnabled() const {

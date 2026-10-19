@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-// Minimal route set of chronik-http server.rs; the query layer adds the rest.
+// Core routes of chronik-http server.rs; the query layer adds the rest.
 
 #include <chronik/native/routes.h>
 
@@ -34,6 +34,9 @@ proto::BlockchainInfo BlockchainInfo(const IndexerImpl &indexer) {
 
 } // namespace
 
+/** The query routes of server.rs (core/query/handlers.cpp). */
+void RegisterQueryRoutes(Router &router, const RouteContext &ctx);
+
 void RegisterCoreRoutes(Router &router, const RouteContext &ctx) {
     const IndexerImpl *indexer = &ctx.indexer;
     const Host *host = &ctx.host;
@@ -46,6 +49,7 @@ void RegisterCoreRoutes(Router &router, const RouteContext &ctx) {
         info.set_version(host->FormatFullVersion());
         return HttpResponse::Protobuf(info);
     });
+    RegisterQueryRoutes(router, ctx);
 }
 
 } // namespace chronik::native
