@@ -5,6 +5,7 @@
 #include <node/metrics.h>
 
 #include <protocol.h>
+#include <util/time.h>
 
 #include <algorithm>
 #include <array>
@@ -64,6 +65,10 @@ namespace {
     using metrics::LabelDim;
     namespace L = metric_labels;
 
+    //! Seconds; from an empty regtest block (~0.2 ms) to a large one (minutes)
+    const std::vector<double> BLOCK_CONNECT_BUCKETS{
+        0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05,
+        0.1,    0.25,    0.5,    1,     2.5,    5,     10,   30,    60};
     //! Seconds; HTTP and RPC requests (long polls can take minutes)
     const std::vector<double> REQUEST_BUCKETS{
         0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1,
@@ -125,6 +130,22 @@ NodeMetrics::NodeMetrics()
           "Connected P2P WebSocket peers, by compression and TLS.",
           std::vector<LabelDim>{{"compression", L::WebSocketCompressions()},
                                 {"tls", {"false", "true"}}})},
+      tip_height{Add<Gauge>(registry, "lotus_chain_tip_height",
+                            "Height of the active chain tip.")},
+      tip_timestamp{
+          Add<Gauge>(registry, "lotus_chain_tip_timestamp_seconds",
+                     "Block timestamp of the active chain tip (Unix time).")},
+      tip_age{Add<Gauge>(registry, "lotus_chain_tip_age_seconds",
+                         "Seconds since the active chain tip's block "
+                         "timestamp, at scrape time.")},
+      initial_block_download{
+          Add<Gauge>(registry, "lotus_initial_block_download",
+                     "1 while in initial block download, else 0.")},
+      block_connect_seconds{Add<EventHistogram>(
+          registry, "lotus_block_connect_seconds",
+          "Time to connect a block to the chain tip (ConnectBlock: "
+          "validating it and updating the UTXO view).",
+          BLOCK_CONNECT_BUCKETS, /*divisor=*/1e9)},
       http_requests{Add<Counter>(
           registry, "lotus_http_requests_total",
           "HTTP requests answered (not WebSocket sessions), by endpoint and "
@@ -141,6 +162,15 @@ NodeMetrics::NodeMetrics()
           Add<Counter>(registry, "lotus_http_tls_handshakes_total",
                        "TLS handshakes on the HTTP listeners, by result.",
                        std::vector<LabelDim>{{"result", {"ok", "failed"}}})} {
+    initial_block_download.Set(1);
+    registry.AddCollector([this] {
+        const double tip{tip_timestamp.Value()};
+        if (tip > 0) {
+            tip_age.Set(double(TicksSinceEpoch<std::chrono::seconds>(
+                            NodeClock::now())) -
+                        tip);
+        }
+    });
 }
 
 size_t NodeMetrics::PeerSeries(bool inbound, bool websocket,

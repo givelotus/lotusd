@@ -3364,6 +3364,13 @@ bool AppInitMain(Config &config, RPCServer &rpcServer,
         LOCK(cs_main);
         LogPrintf("block tree size = %u\n", chainman.BlockIndex().size());
         chain_active_height = chainman.ActiveChain().Height();
+        if (const CBlockIndex *tip{chainman.ActiveChain().Tip()}) {
+            node::SetTipMetrics(tip->nHeight, tip->GetBlockTime());
+        }
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->initial_block_download.Set(
+                chainman.IsInitialBlockDownload() ? 1 : 0);
+        }
         if (tip_info) {
             tip_info->block_height = chain_active_height;
             tip_info->block_time =
