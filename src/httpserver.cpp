@@ -9,20 +9,22 @@
 #include <common/args.h>
 #include <compat/compat.h>
 #include <config.h>
+#include <crypto/sha256.h>
+#include <http_tls_stream.h>
 #include <logging.h>
 #include <net_websocket.h>
 #include <net_websocket_bridge.h>
 #include <net_websocket_sock.h>
 #include <net_websocket_tls.h>
 #include <netbase.h>
-#include <protocol.h>
 #include <node/ui_interface.h>
+#include <protocol.h>
 #include <random.h>
 #include <rpc/protocol.h> // For HTTP status codes
 #include <shutdown.h>
 #include <sync.h>
-#include <http_tls_stream.h>
 #include <tls_util.h>
+#include <uint256.h>
 #include <util/check.h>
 #include <util/fs.h>
 #include <util/sock.h>
@@ -34,6 +36,8 @@
 // libevent is no longer used by the HTTP server, but torcontrol still uses it
 // and its logging is configured from here.
 #include <event2/event.h>
+
+#include <openssl/crypto.h>
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -358,6 +362,10 @@ static bool g_chronik_enabled{false};
 
 //! Whether /p2p/ws is served
 static bool g_p2p_websocket_enabled{false};
+//! Path P2P WebSocket upgrades are served at (-p2pwebsocketpath)
+static std::string g_p2p_websocket_path{P2P_WEBSOCKET_PATH};
+//! SHA-256 of the accepted upgrade tokens; none: no token needed
+static std::vector<uint256> g_p2p_websocket_token_hashes;
 //! Use X-Forwarded-For of /p2p/ws upgrades coming from loopback
 static bool g_p2p_websocket_trust_forwarded_for{false};
 //! Debug: bridge every /p2p/ws peer through a socketpair (-p2pwebsocketbridge)
@@ -1265,6 +1273,55 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
 #endif
 }
 
+static uint256 HashToken(std::string_view token) {
+    uint256 out;
+    CSHA256()
+        .Write(reinterpret_cast<const uint8_t *>(token.data()), token.size())
+        .Finalize(out.begin());
+    return out;
+}
+
+/**
+ * Whether a request carries an accepted upgrade token, as
+ * "Authorization: Bearer <t>" or a "t=<t>" cookie. Compared as SHA-256
+ * digests in constant time, so neither content nor length leaks by timing.
+ */
+static bool HasP2PWebSocketToken(const BeastRequest &req) {
+    std::vector<std::string> candidates;
+    const std::string_view auth{req[http::field::authorization]};
+    if (auth.substr(0, 7) == "Bearer ") {
+        candidates.emplace_back(auth.substr(7));
+    }
+    for (const std::string &cookie :
+         util::SplitString(req[http::field::cookie], ';')) {
+        const std::string_view trimmed{util::TrimStringView(cookie)};
+        if (trimmed.substr(0, 2) == "t=") {
+            candidates.emplace_back(trimmed.substr(2));
+        }
+    }
+    bool found{false};
+    for (const std::string &candidate : candidates) {
+        const uint256 hash{HashToken(candidate)};
+        for (const uint256 &accepted : g_p2p_websocket_token_hashes) {
+            found |= CRYPTO_memcmp(hash.begin(), accepted.begin(),
+                                   uint256::size()) == 0;
+        }
+    }
+    return found;
+}
+
+/**
+ * Whether a request is a P2P WebSocket upgrade for us. With tokens
+ * configured, one without a valid token is not: it is handled as a request
+ * for any other path would be, so the endpoint cannot be probed for.
+ */
+static bool IsP2PWebSocketRequest(const BeastRequest &req) {
+    return g_p2p_websocket_enabled &&
+           URIHasPathPrefix(req.target(), g_p2p_websocket_path) &&
+           (g_p2p_websocket_token_hashes.empty() ||
+            (websocket::is_upgrade(req) && HasP2PWebSocketToken(req)));
+}
+
 /**
  * Handle a WebSocket upgrade request if a WebSocket endpoint matches its
  * target. Returns true if the connection was taken over.
@@ -1275,7 +1332,7 @@ TryHandleWebSocketUpgrade(Stream &stream, beast::flat_buffer &buffer,
                           const BeastRequest &req,
                           const HTTPConnectionInfo &conn) {
     const std::string_view target{req.target()};
-    if (g_p2p_websocket_enabled && URIHasPathPrefix(target, P2P_WEBSOCKET_PATH)) {
+    if (IsP2PWebSocketRequest(req)) {
         co_await AcceptP2PWebSocket(stream, buffer, req, conn);
         co_return true;
     }
@@ -1378,7 +1435,8 @@ static asio::awaitable<void> ServeHTTP(Stream &stream,
         // on RPC listeners only for -rpcallowip clients. Other requests go
         // to DispatchRequest, which applies the same rules.
         const bool endpoint_allowed{conn.public_only
-                                        ? IsPublicPath(req.target())
+                                        ? IsPublicPath(req.target()) ||
+                                              IsP2PWebSocketRequest(req)
                                         : ClientAllowed(conn.peer)};
 
         // Handlers may take arbitrarily long (e.g. long polling), as may
@@ -1910,8 +1968,28 @@ bool InitHTTPServer(Config &config) {
         gArgs.GetBoolArg("-p2pwebsockettrustforwardedfor", false);
     g_p2p_websocket_force_bridge =
         gArgs.GetBoolArg("-p2pwebsocketbridge", false);
-    if (g_p2p_websocket_enabled) {
-        RegisterPublicHTTPPrefix(P2P_WEBSOCKET_PATH);
+    g_p2p_websocket_path =
+        gArgs.GetArg("-p2pwebsocketpath", P2P_WEBSOCKET_PATH);
+    if (g_p2p_websocket_path.size() < 2 || g_p2p_websocket_path[0] != '/' ||
+        g_p2p_websocket_path.find_first_of("?#% \t\r\n") != std::string::npos ||
+        g_p2p_websocket_path.back() == '/') {
+        LogPrintf("Error: invalid -p2pwebsocketpath '%s' (an absolute path "
+                  "such as /p2p/ws, not / and without query or trailing /)\n",
+                  g_p2p_websocket_path);
+        return false;
+    }
+    g_p2p_websocket_token_hashes.clear();
+    for (const std::string &token : gArgs.GetArgs("-p2pwebsockettoken")) {
+        if (!IsValidWebSocketToken(token)) {
+            LogPrintf("Error: invalid -p2pwebsockettoken (use 1-256 of "
+                      "A-Z a-z 0-9 . _ ~ -)\n");
+            return false;
+        }
+        g_p2p_websocket_token_hashes.push_back(HashToken(token));
+    }
+    if (g_p2p_websocket_enabled && g_p2p_websocket_token_hashes.empty()) {
+        // With a token, the path is only public for requests carrying it.
+        RegisterPublicHTTPPrefix(g_p2p_websocket_path);
     }
 
     g_config = &config;

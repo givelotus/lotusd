@@ -17,6 +17,7 @@ import time
 from test_framework.messages import NODE_NETWORK, CAddress, msg_addrv2
 from test_framework.p2p import P2PInterface, p2p_lock
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import assert_equal
 
 
@@ -97,6 +98,28 @@ class P2PWebSocketAddrVersionsTest(BitcoinTestFramework):
             timeout=120,
         ):
             pass
+
+        self.log.info("-externaldomain advertises -p2pwebsocketpath")
+        self.restart_node(0, self.extra_args[0] + [
+            "-externaldomain=Self.Example.org:8443",
+            "-p2pwebsocketpath=/lotus/ws",
+        ])
+        # Nodes advertise themselves only once out of initial block download.
+        self.generate(self.nodes[0], 1, sync_fun=self.no_op)
+        peer = self.nodes[0].add_p2p_connection(AddrReceiver())
+        self.nodes[0].setmocktime(int(time.time()) + 24 * 60 * 60)
+        peer.wait_until(lambda: any(a.net == CAddress.NET_WSS for a in peer.received))
+        self.nodes[0].setmocktime(0)
+        with p2p_lock:
+            own = [(a.wss_version, a.ip, a.port) for a in peer.received
+                   if a.net == CAddress.NET_WSS]
+        assert_equal(own, [(1, "self.example.org/lotus/ws", 8443)])
+        self.stop_node(0)
+        self.nodes[0].assert_start_raises_init_error(
+            ["-externaldomain=self.example.org", "-p2pwebsocketpath=/a!b"],
+            "cannot be advertised with -externaldomain",
+            match=ErrorMatch.PARTIAL_REGEX,
+        )
 
 
 if __name__ == "__main__":

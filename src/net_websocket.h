@@ -100,13 +100,23 @@ struct ParsedWebSocketURL {
     std::string target;
     //! Required SHA-256 of the server's public key (from "#spki=")
     std::optional<std::vector<unsigned char>> spki_pin;
+    //! Upgrade token (from "?token="), sent as Authorization: Bearer
+    std::string token;
 };
 
 /**
- * Parse ws://host[:port][/path][#spki=<pin>] (default port 80) or wss://
- * (443). A pin (see DecodeSpkiPin) is only meaningful for wss://.
+ * Parse ws://host[:port][/path][?token=<t>][#spki=<pin>] (default port 80)
+ * or wss:// (443). A pin (see DecodeSpkiPin) is only meaningful for wss://.
+ * The token is removed from the request target and sent as a header, so it
+ * does not appear in request logs.
  */
 std::optional<ParsedWebSocketURL> ParseWebSocketURL(std::string_view url);
+
+/** Whether a string is usable as an upgrade token ([A-Za-z0-9._~-]) */
+bool IsValidWebSocketToken(std::string_view token);
+
+/** The URL with any upgrade token replaced by "***", for logging */
+std::string RedactWebSocketURL(std::string_view url);
 
 /** Encode a public key hash as an unpadded base64url pin */
 std::string EncodeSpkiPin(Span<const unsigned char> sha256);
