@@ -78,8 +78,8 @@ BOOST_AUTO_TEST_CASE(connect_utxo_extblock) {
     AddCoins(view, prevTx0, 100);
 
     tx.vin[0].prevout = COutPoint(prevTx0.GetId(), 0);
-    auto tx0 = CTransaction(tx);
-    block.vtx[1] = MakeTransactionRef(tx0);
+    block.vtx[1] = MakeTransactionRef(tx);
+    const CTransaction &tx0 = *block.vtx[1];
 
     // Now update the UTXO set.
     CBlockUndo blockundo;

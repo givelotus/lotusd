@@ -388,11 +388,9 @@ static constexpr uint32_t MAX_RAWTX_BATCH_SIZE_KB{10000};
  * - precomputes PrecomputedTransactionData (BIP143 sighash midstates)
  */
 struct PrecomputedBatchTxData {
-    PrecomputedTransactionData txdata;
     TxValidationState regular_tx_state;
     bool regular_tx_checked{false};
     bool regular_tx_valid{false};
-    bool precomputed_txdata_ready{false};
 };
 
 void PrecomputeSingleTxData(const CTransaction &tx,

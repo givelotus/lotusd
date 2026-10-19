@@ -247,7 +247,7 @@ IsReplayProtectionEnabled(const Consensus::Params &params,
 static bool CheckInputsFromMempoolAndCache(
     const CTransaction &tx, TxValidationState &state,
     const CCoinsViewCache &view, const CTxMemPool &pool, const uint32_t flags,
-    PrecomputedTransactionData &txdata, ValidationCache &validation_cache,
+    const PrecomputedTransactionData &txdata, ValidationCache &validation_cache,
     int &nSigChecksOut, CCoinsViewCache &coins_tip)
     EXCLUSIVE_LOCKS_REQUIRED(cs_main, pool.cs) {
     AssertLockHeld(cs_main);
@@ -682,8 +682,6 @@ private:
          * signature verification.
          * Reused across PreChecks and ConsensusScriptChecks.
          */
-        PrecomputedTransactionData m_precomputed_txdata;
-        bool m_precomputed_txdata_ready{false};
         bool m_regular_tx_checked{false};
         bool m_regular_tx_valid{false};
         TxValidationState m_regular_tx_state;
@@ -1188,9 +1186,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs &args, Workspace &ws,
     // Validate input scripts against standard script flags.
     const uint32_t scriptVerifyFlags =
         ws.m_next_block_script_verify_flags | STANDARD_SCRIPT_VERIFY_FLAGS;
-    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
     if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false,
-                           ws.m_precomputed_txdata, GetValidationCache(),
+                           tx.GetPrecomputedData(), GetValidationCache(),
                            ws.m_sig_checks_standard)) {
         // State filled in by CheckInputScripts
         return false;
@@ -1266,7 +1263,7 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs &args, Workspace &ws) {
     int nSigChecksConsensus;
     if (!CheckInputsFromMempoolAndCache(
             tx, state, m_view, m_pool, ws.m_next_block_script_verify_flags,
-            ws.m_precomputed_txdata, GetValidationCache(), nSigChecksConsensus,
+            tx.GetPrecomputedData(), GetValidationCache(), nSigChecksConsensus,
             m_active_chainstate.CoinsTip())) {
         // This can occur under some circumstances, if the node receives an
         // unrequested tx which is invalid due to new consensus rules not
@@ -1755,10 +1752,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                 ws.m_regular_tx_valid = pre.regular_tx_valid;
                 ws.m_regular_tx_state = pre.regular_tx_state;
             }
-            if (pre.precomputed_txdata_ready) {
-                ws.m_precomputed_txdata = pre.txdata;
-                ws.m_precomputed_txdata_ready = true;
-            }
         }
     }
 
@@ -1815,10 +1808,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                                                       std::move(results));
                 }
                 ws.m_sig_checks_standard = elem.nSigChecks;
-                if (!ws.m_precomputed_txdata_ready) {
-                    ws.m_precomputed_txdata = PrecomputedTransactionData{tx};
-                    ws.m_precomputed_txdata_ready = true;
-                }
             } else {
                 uncached_ws_indices.push_back(idx);
             }
@@ -1855,15 +1844,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                     const uint32_t scriptVerifyFlags =
                         ws.m_next_block_script_verify_flags |
                         STANDARD_SCRIPT_VERIFY_FLAGS;
-                    if (!ws.m_precomputed_txdata_ready) {
-                        ws.m_precomputed_txdata =
-                            PrecomputedTransactionData{tx};
-                        ws.m_precomputed_txdata_ready = true;
-                    }
                     TxSigCheckLimiter txLimiter;
                     auto err = VerifyTxScriptsFromResolvedCoins(
                         tx, ws.m_resolved_inputs, scriptVerifyFlags,
-                        /*sigCacheStore=*/true, ws.m_precomputed_txdata,
+                        /*sigCacheStore=*/true, ws.m_ptx->GetPrecomputedData(),
                         val_cache.m_signature_cache, ws.m_sig_checks_standard,
                         txLimiter, nullptr, &local_sigs);
                     if (err.has_value()) {
@@ -1911,7 +1895,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
                         int dummy_sigchecks = 0;
                         auto err = VerifyTxScriptsFromResolvedCoins(
                             tx, ws.m_resolved_inputs, scriptVerifyFlags,
-                            /*sigCacheStore=*/false, ws.m_precomputed_txdata,
+                            /*sigCacheStore=*/false, ws.m_ptx->GetPrecomputedData(),
                             val_cache.m_signature_cache, dummy_sigchecks,
                             txLimiter, nullptr, nullptr);
                         if (err.has_value()) {
@@ -1968,7 +1952,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptRawTxBatch(
             }
             if (!CheckInputScripts(*ws.m_ptx, ws.m_state, resolved_view,
                     ws.m_next_block_script_verify_flags, true, true,
-                    ws.m_precomputed_txdata, GetValidationCache(), consensus_sigchecks) ||
+                    ws.m_ptx->GetPrecomputedData(), GetValidationCache(), consensus_sigchecks) ||
                 consensus_sigchecks != ws.m_sig_checks_standard) {
                 if (ws.m_state.IsValid()) {
                     ws.m_state.Invalid(TxValidationResult::TX_CONSENSUS, "inconsistent-sigchecks");
@@ -2395,10 +2379,9 @@ void PrecomputeSingleTxData(const CTransaction &tx,
     out.regular_tx_checked = true;
     out.regular_tx_valid = CheckRegularTransaction(tx, out.regular_tx_state);
     if (out.regular_tx_valid) {
-        out.txdata = PrecomputedTransactionData{tx};
-        out.precomputed_txdata_ready = true;
-    } else {
-        out.precomputed_txdata_ready = false;
+        // Populate the transaction-owned cache before cs_main. Every later
+        // batch/block script check binds this same storage by reference.
+        (void)tx.GetPrecomputedData();
     }
 }
 
@@ -3593,7 +3576,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                 const CTransaction &tx = *block.vtx[t_idx + 1];
                 const std::vector<Coin> &resolved_inputs =
                     blockundo.vtxundo[t_idx].vprevout;
-                PrecomputedTransactionData txdata(tx);
+                const PrecomputedTransactionData &txdata = tx.GetPrecomputedData();
                 auto err = VerifyTxScriptsFromResolvedCoins(
                     tx, resolved_inputs, flags, fCacheResults, txdata,
                     m_chainman.m_validation_cache.m_signature_cache,
@@ -3641,7 +3624,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state,
                     const CTransaction &tx = *block.vtx[t_idx + 1];
                     const std::vector<Coin> &resolved_inputs =
                         blockundo.vtxundo[t_idx].vprevout;
-                    PrecomputedTransactionData txdata(tx);
+                    const PrecomputedTransactionData &txdata = tx.GetPrecomputedData();
                     int dummy_sigchecks = 0;
                     TxSigCheckLimiter dummy_tx_limiter =
                         TxSigCheckLimiter::getDisabled();
