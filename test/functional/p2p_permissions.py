@@ -17,9 +17,8 @@ from test_framework.util import append_config, assert_equal, p2p_port, tor_port
 
 
 class P2PPermissionsTests(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.setup_clean_chain = True
+    num_nodes = 2
+    setup_clean_chain = True
 
     def run_test(self):
         self.check_tx_relay()

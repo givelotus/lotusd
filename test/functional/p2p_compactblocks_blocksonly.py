@@ -21,9 +21,8 @@ from test_framework.util import assert_equal
 
 
 class P2PCompactBlocksBlocksOnly(BitcoinTestFramework):
-    def set_test_params(self):
-        self.extra_args = [["-blocksonly"], [], [], []]
-        self.num_nodes = 4
+    extra_args = [["-blocksonly"], [], [], []]
+    num_nodes = 4
 
     def setup_network(self):
         self.setup_nodes()

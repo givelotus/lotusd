@@ -44,8 +44,7 @@ class P2PTxSpy(P2PInterface):
 
 
 class TxPrivacyTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])

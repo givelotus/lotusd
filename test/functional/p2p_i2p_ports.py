@@ -11,10 +11,9 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class I2PPorts(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        # The test assumes that an I2P SAM proxy is not listening here.
-        self.extra_args = [["-i2psam=127.0.0.1:60000"]]
+    num_nodes = 1
+    # The test assumes that an I2P SAM proxy is not listening here.
+    extra_args = [["-i2psam=127.0.0.1:60000"]]
 
     def run_test(self):
         node = self.nodes[0]

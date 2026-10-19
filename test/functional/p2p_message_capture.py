@@ -57,10 +57,9 @@ def mini_parser(dat_file):
 
 
 class MessageCaptureTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [["-capturemessages"]]
-        self.setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-capturemessages"]]
+    setup_clean_chain = True
 
     def run_test(self):
         capturedir = os.path.join(self.nodes[0].datadir, "regtest/message_capture")

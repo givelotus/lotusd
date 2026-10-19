@@ -22,10 +22,9 @@ from test_framework.util import assert_equal
 
 
 class P2PNoBloomFilterMessages(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [["-peerbloomfilters=0"]]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-peerbloomfilters=0"]]
 
     def test_message_causes_disconnect(self, message):
         """Add a p2p connection that sends a message and check that it disconnects."""

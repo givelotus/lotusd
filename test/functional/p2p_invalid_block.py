@@ -31,10 +31,9 @@ from test_framework.util import assert_equal
 
 
 class InvalidBlockRequestTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.noban_tx_relay = True
+    num_nodes = 1
+    setup_clean_chain = True
+    noban_tx_relay = True
 
     def run_test(self):
         # Add p2p connection to node0

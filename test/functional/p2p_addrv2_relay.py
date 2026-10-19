@@ -38,10 +38,9 @@ class AddrReceiver(P2PInterface):
 
 
 class AddrTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [["-whitelist=addr@127.0.0.1"]]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [["-whitelist=addr@127.0.0.1"]]
 
     def run_test(self):
         self.log.info("Create connection that sends addrv2 messages")
