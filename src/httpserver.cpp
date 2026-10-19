@@ -311,8 +311,28 @@ struct HTTPListener {
     bool public_only{false};
 };
 static std::vector<HTTPListener> g_acceptors;
+//! Where the TLS certificate comes from
+struct TlsFiles {
+    fs::path cert, key;
+    //! Generated in the datadir (renewed by us) rather than -tlscert/-tlskey
+    bool generated{false};
+    fs::file_time_type cert_mtime{}, key_mtime{};
+};
+static GlobalMutex g_tls_mutex;
 //! TLS context for connections detected as TLS, if TLS is enabled
-static tls::SslCtxPtr g_ssl_ctx;
+static tls::SslCtxPtr g_ssl_ctx GUARDED_BY(g_tls_mutex);
+static std::optional<TlsFiles> g_tls_files GUARDED_BY(g_tls_mutex);
+static std::chrono::steady_clock::time_point
+    g_tls_next_check GUARDED_BY(g_tls_mutex);
+static std::chrono::steady_clock::time_point
+    g_tls_next_renewal_check GUARDED_BY(g_tls_mutex);
+//! Validity of generated certificates, and how early they are renewed
+static constexpr std::chrono::hours GENERATED_CERT_VALIDITY{24 * 90};
+static constexpr std::chrono::hours GENERATED_CERT_RENEW_BEFORE{24 * 30};
+//! How often the certificate files are checked for replacement
+static constexpr std::chrono::seconds TLS_RELOAD_CHECK_INTERVAL{1};
+static constexpr std::chrono::hours TLS_RENEWAL_CHECK_INTERVAL{1};
+static tls::SslPtr NewServerSsl();
 //! The configuration handlers are invoked with
 static Config *g_config{nullptr};
 //! Maximum accepted request body size
@@ -342,7 +362,7 @@ static bool g_p2p_websocket_enabled{false};
 static bool g_p2p_websocket_trust_forwarded_for{false};
 //! Debug: bridge every /p2p/ws peer through a socketpair (-p2pwebsocketbridge)
 static bool g_p2p_websocket_force_bridge{false};
-static Mutex g_p2p_websocket_mutex;
+static GlobalMutex g_p2p_websocket_mutex;
 //! Receiver of /p2p/ws peers (CConnman), set once the node is ready
 static P2PWebSocketAcceptor
     g_p2p_websocket_acceptor GUARDED_BY(g_p2p_websocket_mutex);
@@ -1466,13 +1486,12 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
             deadline.cancel();
             co_await ServeHTTP(stream, buffer, conn);
             sock.shutdown(tcp::socket::shutdown_send, ec);
-        } else if (!g_ssl_ctx) {
+        } else if (tls::SslPtr ssl{NewServerSsl()}; !ssl) {
             LogDebug(BCLog::HTTP,
                      "TLS connection from %s rejected: TLS is disabled\n",
                      conn.peer.ToStringAddrPort());
         } else {
-            tls::SslPtr ssl{SSL_new(g_ssl_ctx.get())};
-            if (ssl && SSL_set_fd(ssl.get(), int(sock.native_handle())) == 1) {
+            if (SSL_set_fd(ssl.get(), int(sock.native_handle())) == 1) {
                 OsslStream tls_stream{stream, std::move(ssl)};
                 auto [hs_ec, hs] = co_await tls_stream.async_handshake(
                     asio::as_tuple(asio::use_awaitable));
@@ -1684,51 +1703,87 @@ static void libevent_log_cb(int severity, const char *msg) {
     LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
 }
 
-/**
- * Generate a self-signed EC P-256 certificate valid for 10 years and write it
- * and its key (mode 0600) as PEM files.
- */
-static bool GenerateSelfSignedCertificate(const fs::path &cert_path,
-                                          const fs::path &key_path) {
-    const auto pem{tls::GenerateSelfSigned(
-        "bitcoind node", {"localhost"}, {"127.0.0.1", "::1"},
-        std::chrono::hours{24 * 365 * 10})};
-    return pem && tls::WritePemFiles(*pem, cert_path, key_path);
+/** A random name shaped like an ordinary host name */
+static std::string RandomHostName() {
+    static constexpr const char *TLDS[]{"com", "net", "org", "io", "dev"};
+    FastRandomContext rng;
+    std::string name(6 + rng.randrange(6), 'a');
+    for (char &c : name) {
+        c = char('a' + rng.randrange(26));
+    }
+    return name + "." + TLDS[rng.randrange(std::size(TLDS))];
 }
 
-/** Set up g_ssl_ctx from -tlscert/-tlskey or the datadir certificate */
-static bool InitTLS() {
-    g_ssl_ctx.reset();
-    fs::path cert_path, key_path;
-    if (gArgs.IsArgSet("-tlscert") || gArgs.IsArgSet("-tlskey")) {
-        if (!gArgs.IsArgSet("-tlscert") || !gArgs.IsArgSet("-tlskey")) {
-            LogPrintf("Error: -tlscert and -tlskey must be used together\n");
-            return false;
+/**
+ * The name a generated certificate is issued for: the first -externaldomain,
+ * else the name already in use, else a random one. Never a string that
+ * identifies the software (older versions used "bitcoind node").
+ */
+static std::string GeneratedCertificateName(
+    const std::optional<tls::CertificateInfo> &current) {
+    for (const auto &domain : gArgs.GetArgs("-externaldomain")) {
+        uint16_t port;
+        std::string host;
+        if (SplitHostPort(domain, port, host) && !host.empty()) {
+            return ToLower(host);
         }
-        cert_path = gArgs.GetPathArg("-tlscert");
-        key_path = gArgs.GetPathArg("-tlskey");
-    } else if (gArgs.GetBoolArg("-tlsephemeral", DEFAULT_HTTP_TLS_EPHEMERAL)) {
-        cert_path = gArgs.GetDataDirNet() / HTTP_TLS_CERT_FILENAME;
-        key_path = gArgs.GetDataDirNet() / HTTP_TLS_KEY_FILENAME;
-        if (!fs::exists(cert_path) || !fs::exists(key_path)) {
-            LogPrintf("Generating self-signed TLS certificate %s\n",
-                      fs::PathToString(cert_path));
-            if (!GenerateSelfSignedCertificate(cert_path, key_path)) {
-                LogPrintf("Error: failed to generate a TLS certificate\n");
-                return false;
-            }
-        }
-    } else {
-        LogPrintf("TLS disabled on the RPC port\n");
+    }
+    if (current && !current->common_name.empty() &&
+        current->common_name != "bitcoind node" &&
+        current->common_name != "localhost") {
+        return current->common_name;
+    }
+    return RandomHostName();
+}
+
+/**
+ * Create the datadir certificate, or renew it when it nears expiry or its
+ * name should change. Renewals keep the key, so SPKI pins stay valid.
+ */
+static bool EnsureGeneratedCertificate(const TlsFiles &files) {
+    const auto key_pem{tls::ReadFile(files.key)};
+    const auto info{tls::ReadCertificateInfo(files.cert)};
+    const std::string name{GeneratedCertificateName(info)};
+    const int64_t renew_before{
+        std::chrono::seconds{GENERATED_CERT_RENEW_BEFORE}.count()};
+    if (key_pem && info && info->common_name == name &&
+        info->seconds_left > renew_before) {
         return true;
     }
-
-    auto ctx{tls::NewContext(/*server=*/true)};
-    if (!ctx || !tls::UseCertificateFiles(ctx.get(), cert_path, key_path)) {
-        LogPrintf("Error: unable to load TLS certificate %s / key %s: %s\n",
-                  fs::PathToString(cert_path), fs::PathToString(key_path),
-                  tls::ErrorString());
+    const auto pem{tls::GenerateSelfSigned(name, {name}, {},
+                                           GENERATED_CERT_VALIDITY,
+                                           key_pem.value_or(""))};
+    if (!pem) {
         return false;
+    }
+    const bool ok{key_pem ? tls::ReplaceFile(files.cert, pem->cert_pem)
+                          : tls::WritePemFiles(*pem, files.cert, files.key)};
+    if (ok) {
+        LogPrintf("%s TLS certificate %s for %s (valid %d days)\n",
+                  key_pem ? "Renewed" : "Generated",
+                  fs::PathToString(files.cert), name,
+                  std::chrono::duration_cast<std::chrono::hours>(
+                      GENERATED_CERT_VALIDITY)
+                          .count() /
+                      24);
+    }
+    return ok;
+}
+
+static void FileTimes(TlsFiles &files) {
+    std::error_code ec;
+    files.cert_mtime = fs::last_write_time(files.cert, ec);
+    files.key_mtime = fs::last_write_time(files.key, ec);
+}
+
+/** A server context for the certificate files, or nullptr */
+static tls::SslCtxPtr LoadServerContext(const TlsFiles &files) {
+    auto ctx{tls::NewContext(/*server=*/true)};
+    if (!ctx || !tls::UseCertificateFiles(ctx.get(), files.cert, files.key)) {
+        LogPrintf("Error: unable to load TLS certificate %s / key %s: %s\n",
+                  fs::PathToString(files.cert), fs::PathToString(files.key),
+                  tls::ErrorString());
+        return {};
     }
     if (gArgs.GetBoolArg("-tlsmutual", DEFAULT_HTTP_TLS_MUTUAL) ||
         gArgs.IsArgSet("-p2pwebsocketpeer")) {
@@ -1737,9 +1792,87 @@ static bool InitTLS() {
         SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER,
                            [](int, X509_STORE_CTX *) { return 1; });
     }
+    return ctx;
+}
+
+/**
+ * Pick up a replaced certificate (e.g. an ACME renewal of -tlscert) and
+ * renew a generated one. New handshakes use the new context; existing
+ * sessions keep theirs. A file that fails to load keeps the old context.
+ */
+static void ReloadTLSIfChanged() EXCLUSIVE_LOCKS_REQUIRED(g_tls_mutex) {
+    const auto now{std::chrono::steady_clock::now()};
+    if (now < g_tls_next_check || !g_tls_files) {
+        return;
+    }
+    g_tls_next_check = now + TLS_RELOAD_CHECK_INTERVAL;
+    TlsFiles &files{*g_tls_files};
+    if (files.generated && now >= g_tls_next_renewal_check) {
+        g_tls_next_renewal_check = now + TLS_RENEWAL_CHECK_INTERVAL;
+        if (!EnsureGeneratedCertificate(files)) {
+            LogPrintf("Error: failed to renew the TLS certificate %s\n",
+                      fs::PathToString(files.cert));
+        }
+    }
+    TlsFiles current{files};
+    FileTimes(current);
+    if (current.cert_mtime == files.cert_mtime &&
+        current.key_mtime == files.key_mtime) {
+        return;
+    }
+    files = current;
+    if (auto ctx{LoadServerContext(files)}) {
+        g_ssl_ctx = std::move(ctx);
+        LogPrintf("Reloaded TLS certificate %s\n",
+                  fs::PathToString(files.cert));
+    }
+}
+
+/** A server session for a new TLS connection, or nullptr if TLS is off */
+static tls::SslPtr NewServerSsl() {
+    LOCK(g_tls_mutex);
+    ReloadTLSIfChanged();
+    return tls::SslPtr{g_ssl_ctx ? SSL_new(g_ssl_ctx.get()) : nullptr};
+}
+
+/** Set up g_ssl_ctx from -tlscert/-tlskey or the datadir certificate */
+static bool InitTLS() {
+    LOCK(g_tls_mutex);
+    g_ssl_ctx.reset();
+    g_tls_files.reset();
+    TlsFiles files;
+    if (gArgs.IsArgSet("-tlscert") || gArgs.IsArgSet("-tlskey")) {
+        if (!gArgs.IsArgSet("-tlscert") || !gArgs.IsArgSet("-tlskey")) {
+            LogPrintf("Error: -tlscert and -tlskey must be used together\n");
+            return false;
+        }
+        files.cert = gArgs.GetPathArg("-tlscert");
+        files.key = gArgs.GetPathArg("-tlskey");
+    } else if (gArgs.GetBoolArg("-tlsephemeral", DEFAULT_HTTP_TLS_EPHEMERAL)) {
+        files.cert = gArgs.GetDataDirNet() / HTTP_TLS_CERT_FILENAME;
+        files.key = gArgs.GetDataDirNet() / HTTP_TLS_KEY_FILENAME;
+        files.generated = true;
+        if (!EnsureGeneratedCertificate(files)) {
+            LogPrintf("Error: failed to generate a TLS certificate\n");
+            return false;
+        }
+    } else {
+        LogPrintf("TLS disabled on the RPC port\n");
+        return true;
+    }
+
+    FileTimes(files);
+    auto ctx{LoadServerContext(files)};
+    if (!ctx) {
+        return false;
+    }
     g_ssl_ctx = std::move(ctx);
+    const auto now{std::chrono::steady_clock::now()};
+    g_tls_next_check = now + TLS_RELOAD_CHECK_INTERVAL;
+    g_tls_next_renewal_check = now + TLS_RENEWAL_CHECK_INTERVAL;
     LogPrintf("TLS enabled on the RPC port using %s\n",
-              fs::PathToString(cert_path));
+              fs::PathToString(files.cert));
+    g_tls_files = std::move(files);
     return true;
 }
 
@@ -1880,7 +2013,11 @@ void StopHTTPServer() {
     }
     g_acceptors.clear();
     g_work_queue.reset();
-    g_ssl_ctx.reset();
+    {
+        LOCK(g_tls_mutex);
+        g_ssl_ctx.reset();
+        g_tls_files.reset();
+    }
     LogDebug(BCLog::HTTP, "Stopped HTTP server\n");
 }
 
