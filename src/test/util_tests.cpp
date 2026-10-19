@@ -28,12 +28,15 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/time.h>
+#include <util/url.h>
 #include <util/vector.h>
 
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 
 #include <univalue.h>
+
+#include <event2/http.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -3293,6 +3296,55 @@ BOOST_AUTO_TEST_CASE(mib_string_literal_test) {
         operator""_MiB(static_cast<unsigned long long>(max_mib) + 1),
         std::overflow_error,
         HasReason("MiB value too large for size_t byte conversion"));
+}
+
+BOOST_AUTO_TEST_CASE(url_decode) {
+    using namespace std::string_literals;
+    // Only %XX with two hex digits is decoded, '+' is kept, and the result is
+    // cut at the first decoded NUL.
+    const std::vector<std::pair<std::string, std::string>> vectors{
+        {"", ""},
+        {"abc", "abc"},
+        {"%20", " "},
+        {"a+b", "a+b"},
+        {"%41%42", "AB"},
+        {"%4a%4A", "JJ"},
+        {"%zz", "%zz"},
+        {"%4", "%4"},
+        {"%", "%"},
+        {"abc%", "abc%"},
+        {"%%41", "%A"},
+        {"%C3%A9", "\xc3\xa9"},
+        {"a%00b", "a"},
+        {"/wallet/a%20b%2F%7e", "/wallet/a b/~"},
+        {"?a+b%2B", "?a+b+"},
+    };
+    for (const auto &[input, expected] : vectors) {
+        BOOST_CHECK_EQUAL(urlDecode(input), expected);
+        char *decoded = evhttp_uridecode(input.c_str(), false, nullptr);
+        BOOST_REQUIRE(decoded);
+        BOOST_CHECK_EQUAL(std::string(decoded), expected);
+        free(decoded);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(url_encode) {
+    using namespace std::string_literals;
+    // Unreserved characters are kept; everything else is %XX in upper case.
+    const std::vector<std::pair<std::string, std::string>> vectors{
+        {"", ""},
+        {"abcXYZ019-._~", "abcXYZ019-._~"},
+        {"a b/\xc3\xa9%~-._", "a%20b%2F%C3%A9%25~-._"},
+        {"+?&=#", "%2B%3F%26%3D%23"},
+        {"a\0b"s, "a%00b"},
+        {"\xff", "%FF"},
+    };
+    for (const auto &[input, expected] : vectors) {
+        char *encoded = evhttp_uriencode(input.data(), input.size(), false);
+        BOOST_REQUIRE(encoded);
+        BOOST_CHECK_EQUAL(std::string(encoded), expected);
+        free(encoded);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(parallel_range_reuses_workers_and_drains_errors) {
