@@ -319,6 +319,8 @@ static Config *g_config{nullptr};
 static uint64_t g_max_body_size{MIN_SUPPORTED_BODY_SIZE};
 //! Idle/read/write timeout
 static std::chrono::seconds g_server_timeout{DEFAULT_HTTP_SERVER_TIMEOUT};
+//! How long a TLS connection may take to accept our close_notify
+static constexpr std::chrono::seconds CLOSE_NOTIFY_TIMEOUT{5};
 //! Set by InterruptHTTPServer: reject new requests with 503
 static std::atomic<bool> g_reject_requests{false};
 //! List of subnets to allow RPC connections from
@@ -1492,8 +1494,24 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                         }
                     }
                     co_await ServeHTTP(tls_stream, buffer, conn);
-                    tls_stream.shutdown(ec);
-                    sock.shutdown(tcp::socket::shutdown_send, ec);
+                    if (tls_stream.native_handle()) {
+                        // Not handed off: close_notify after the last
+                        // response, even if the send buffer is full now
+                        // (a single attempt could drop it, which reads as a
+                        // truncated close). Bounded like the handshake.
+                        deadline.expires_after(CLOSE_NOTIFY_TIMEOUT);
+                        deadline.async_wait(
+                            [fd = sock.native_handle()](
+                                const boost::system::error_code &wec) {
+                                if (!wec) {
+                                    ::shutdown(fd, SHUT_RDWR);
+                                }
+                            });
+                        co_await tls_stream.async_shutdown(
+                            asio::as_tuple(asio::use_awaitable));
+                        deadline.cancel();
+                        sock.shutdown(tcp::socket::shutdown_send, ec);
+                    }
                 }
             }
         }
