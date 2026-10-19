@@ -239,6 +239,23 @@ BOOST_AUTO_TEST_CASE(client_certificate_reload) {
     BOOST_CHECK(SSL_CTX_get0_certificate(anonymous.Get().get()) == nullptr);
 }
 
+BOOST_AUTO_TEST_CASE(legacy_dictionary_token_keeps_v1_bytes) {
+    // An independently primed V1 peer must remain decodable under the legacy
+    // p2p-zstd-v1 token even though native p2p-v2 now defaults to dictionary 2.
+    const std::vector<uint8_t> payload{
+        P2P_ZSTD_DICT_V1 + sizeof(P2P_ZSTD_DICT_V1) - 512,
+        P2P_ZSTD_DICT_V1 + sizeof(P2P_ZSTD_DICT_V1)};
+    P2PZstdSession legacy_peer{true, 1};
+    std::vector<uint8_t> compressed, plain, reply;
+    legacy_peer.CompressFrame(payload, compressed);
+    const auto wire{Frame(0x82, compressed, false)};
+    WebSocketCodec receiver{Role::CLIENT, C::ZSTD_DICT};
+    const auto result{receiver.Decode(wire, plain, reply)};
+    BOOST_REQUIRE(!result.error);
+    BOOST_CHECK_EQUAL(result.consumed, wire.size());
+    BOOST_CHECK(plain == payload);
+}
+
 BOOST_AUTO_TEST_CASE(roundtrip_all_modes_and_sizes) {
     FastRandomContext rng{/*fDeterministic=*/true};
     for (const C mode : {C::NONE, C::ZSTD, C::ZSTD_DICT}) {
