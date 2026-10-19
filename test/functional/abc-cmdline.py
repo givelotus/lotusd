@@ -38,8 +38,7 @@ class AddrCounter(P2PInterface):
 
 
 class ABC_CmdLine_Test(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
+    num_nodes = 1
 
     def maxaddrtosend_test(self, max_addr_to_send):
         node = self.nodes[0]

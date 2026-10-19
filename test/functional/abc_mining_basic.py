@@ -23,17 +23,16 @@ STAKING_REWARD_RATIO = 10
 
 
 class AbcMiningRPCTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-enableminerfund",
-            ],
-            [
-                "-enableminerfund",
-                "-usecashaddr=0",
-            ],
-        ]
+    num_nodes = 2
+    extra_args = [
+        [
+            "-enableminerfund",
+        ],
+        [
+            "-enableminerfund",
+            "-usecashaddr=0",
+        ],
+    ]
 
     def setup_network(self):
         self.setup_nodes()

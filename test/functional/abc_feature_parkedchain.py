@@ -8,18 +8,17 @@ from test_framework.util import assert_equal
 
 
 class ParkedChainTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.extra_args = [
-            [
-                "-noparkdeepreorg",
-                "-noautomaticunparking",
-                "-whitelist=noban@127.0.0.1",
-            ],
-            [
-                "-automaticunparking=1",
-            ],
-        ]
+    num_nodes = 2
+    extra_args = [
+        [
+            "-noparkdeepreorg",
+            "-noautomaticunparking",
+            "-whitelist=noban@127.0.0.1",
+        ],
+        [
+            "-automaticunparking=1",
+        ],
+    ]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

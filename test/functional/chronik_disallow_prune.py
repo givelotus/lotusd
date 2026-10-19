@@ -9,9 +9,8 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class ChronikDisallowPruneTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

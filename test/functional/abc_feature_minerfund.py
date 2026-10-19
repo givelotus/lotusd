@@ -42,18 +42,17 @@ def create_cb_pay_to_address(node, block_reward, ratio=MINER_FUND_RATIO):
 
 
 class MinerFundTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-enableminerfund",
-                # Keep policy parking stable until the explicit unpark checks.
-                "-automaticunparking=0",
-            ],
-            [],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-enableminerfund",
+            # Keep policy parking stable until the explicit unpark checks.
+            "-automaticunparking=0",
+        ],
+        [],
+    ]
 
     @staticmethod
     def get_best_coinbase(n):

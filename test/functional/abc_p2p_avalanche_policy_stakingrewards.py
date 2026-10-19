@@ -32,22 +32,21 @@ QUORUM_NODE_COUNT = 16
 
 
 class ABCStakingRewardsPolicyTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-avalanchestakingrewards=1",
-                # Policy-parked blocks must stay parked until the explicit vote.
-                "-automaticunparking=0",
-            ],
-        ]
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-avalanchestakingrewards=1",
+            # Policy-parked blocks must stay parked until the explicit vote.
+            "-automaticunparking=0",
+        ],
+    ]
 
     def run_test(self):
         node = self.nodes[0]

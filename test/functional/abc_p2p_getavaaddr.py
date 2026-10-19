@@ -101,20 +101,19 @@ class AvaHelloInterface(AvaP2PInterface):
 
 
 class AvaAddrTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = False
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-            ]
+    setup_clean_chain = False
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
         ]
+    ]
 
     def check_all_peers_received_getavaaddr_once(self, avapeers):
         def received_all_getavaaddr(avapeers):

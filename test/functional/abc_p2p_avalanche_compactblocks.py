@@ -38,21 +38,20 @@ class CompactRelayPeer(P2PInterface):
 
 
 class AvalancheTxCompactBlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxoconfirmations=1",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                # Accelerate the test
-                "-avacooldown=0",
-                "-avastalevotethreshold=256",
-                "-avalanchestakingpreconsensus=0",
-            ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxoconfirmations=1",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            # Accelerate the test
+            "-avacooldown=0",
+            "-avastalevotethreshold=256",
+            "-avalanchestakingpreconsensus=0",
         ]
+    ]
 
     def check_and_get_reconstructed_block(self, node, compact_peer, block_tx):
         tmpl = node.getblocktemplate()

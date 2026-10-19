@@ -24,22 +24,21 @@ QUORUM_NODE_COUNT = 16
 
 
 class ChronikWsOrdering(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-chronik",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-                "-acceptnonstdtxn=1",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [
+        [
+            "-chronik",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
+            "-acceptnonstdtxn=1",
         ]
-        self.rpc_timeout = 240
+    ]
+    rpc_timeout = 240
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

@@ -21,17 +21,16 @@ from test_framework.wallet_util import bytes_to_wif
 
 
 class GetAvalanchePeerInfoTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-persistavapeers=0",
-            ]
+    setup_clean_chain = True
+    num_nodes = 1
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-persistavapeers=0",
         ]
+    ]
 
     def test_proofs_and_nodecounts(self):
         node = self.nodes[0]

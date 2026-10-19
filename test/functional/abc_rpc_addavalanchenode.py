@@ -28,15 +28,14 @@ def add_interface_node(test_node) -> int:
 
 
 class AddAvalancheNodeTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-            ]
+    num_nodes = 1
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

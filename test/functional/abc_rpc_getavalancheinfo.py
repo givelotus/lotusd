@@ -39,21 +39,20 @@ AVALANCHE_DANGLING_PROOF_TIMEOUT = 15 * 60
 
 
 class GetAvalancheInfoTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.conflicting_proof_cooldown = 100
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                f"-avalancheconflictingproofcooldown={self.conflicting_proof_cooldown}",
-                "-avacooldown=0",
-                "-avaminquorumstake=250000000",
-                "-avaminquorumconnectedstakeratio=0.9",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminavaproofsnodecount=0",
-                "-avalanchepeerreplacementcooldown=0",
-            ]
+    num_nodes = 1
+    conflicting_proof_cooldown = 100
+    noban_tx_relay = True
+    extra_args = [
+        [
+            f"-avalancheconflictingproofcooldown={conflicting_proof_cooldown}",
+            "-avacooldown=0",
+            "-avaminquorumstake=250000000",
+            "-avaminquorumconnectedstakeratio=0.9",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminavaproofsnodecount=0",
+            "-avalanchepeerreplacementcooldown=0",
         ]
+    ]
 
     def run_test(self):
         node = self.nodes[0]

@@ -42,19 +42,18 @@ class PreviousSpendableOutput:
 
 
 class FullBlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.block_heights = {}
-        self.tip = None
-        self.blocks = {}
-        self.excessive_block_size = 100 * ONE_MEGABYTE
-        self.noban_tx_relay = True
-        self.extra_args = [[f"-excessiveblocksize={self.excessive_block_size}"]]
-        self.supports_cli = False
-        # The default timeout is not enough when submitting large blocks with
-        # TSAN enabled
-        self.rpc_timeout = 360
+    num_nodes = 1
+    setup_clean_chain = True
+    block_heights = {}
+    tip = None
+    blocks = {}
+    excessive_block_size = 100 * ONE_MEGABYTE
+    noban_tx_relay = True
+    extra_args = [[f"-excessiveblocksize={excessive_block_size}"]]
+    supports_cli = False
+    # The default timeout is not enough when submitting large blocks with
+    # TSAN enabled
+    rpc_timeout = 360
 
     def add_transactions_to_block(self, block, tx_list):
         block.vtx.extend(tx_list)

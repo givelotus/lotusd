@@ -29,25 +29,24 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheTransactionFinalizationTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avacooldown=0",
-                "-avaproofstakeutxoconfirmations=1",
-                # Low enough for coinbase transactions to be staked in valid proofs
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                # So we can build arbitrary size txs using several OP_RETURN outputs
-                "-acceptnonstdtxn",
-                # So we can reinit between the tests
-                "-persistavapeers=0",
-                # Make the test faster by avoiding unwanted polls
-                "-avalanchestakingpreconsensus=0",
-            ]
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avacooldown=0",
+            "-avaproofstakeutxoconfirmations=1",
+            # Low enough for coinbase transactions to be staked in valid proofs
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            # So we can build arbitrary size txs using several OP_RETURN outputs
+            "-acceptnonstdtxn",
+            # So we can reinit between the tests
+            "-persistavapeers=0",
+            # Make the test faster by avoiding unwanted polls
+            "-avalanchestakingpreconsensus=0",
         ]
+    ]
 
     def finalize_tip(self, **kwargs):
         tip = self.nodes[0].getbestblockhash()

@@ -40,22 +40,21 @@ QUORUM_NODE_COUNT = 16
 
 
 class ChronikWsTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-chronik",
-                "-enableminerfund",
-            ],
-        ]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-chronik",
+            "-enableminerfund",
+        ],
+    ]
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_chronik()

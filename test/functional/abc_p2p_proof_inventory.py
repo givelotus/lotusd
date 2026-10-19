@@ -53,17 +53,16 @@ class ProofInvStoreP2PInterface(P2PInterface):
 
 
 class ProofInventoryTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 5
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=2",
-                "-avacooldown=0",
-                "-persistavapeers=0",
-            ]
-        ] * self.num_nodes
+    num_nodes = 5
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=2",
+            "-avacooldown=0",
+            "-persistavapeers=0",
+        ]
+    ] * num_nodes
 
     def generate_proof(self, node, mature=True):
         privkey, proof = gen_proof(self, node)

@@ -21,24 +21,23 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheRTTTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-enablertt",
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                # Keep policy parking stable until this test explicitly accepts it.
-                "-automaticunparking=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-                "-persistavapeers=0",
-            ],
-            [],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-enablertt",
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            # Keep policy parking stable until this test explicitly accepts it.
+            "-automaticunparking=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+            "-persistavapeers=0",
+        ],
+        [],
+    ]
 
     def check_rtt_policy(self):
         node = self.nodes[0]

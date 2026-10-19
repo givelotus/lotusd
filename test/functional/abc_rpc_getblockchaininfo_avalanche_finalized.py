@@ -19,23 +19,22 @@ QUORUM_NODE_COUNT = 16
 
 
 class AvalancheTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-avaproofstakeutxodustthreshold=1000000",
-                "-avaproofstakeutxoconfirmations=1",
-                "-avacooldown=0",
-                # Observe voted parking until the explicit unpark/finality checks.
-                "-automaticunparking=0",
-                "-avaminquorumstake=0",
-                "-avaminavaproofsnodecount=0",
-            ],
-        ]
-        self.supports_cli = False
-        self.rpc_timeout = 120
+    setup_clean_chain = True
+    num_nodes = 1
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-avaproofstakeutxodustthreshold=1000000",
+            "-avaproofstakeutxoconfirmations=1",
+            "-avacooldown=0",
+            # Observe voted parking until the explicit unpark/finality checks.
+            "-automaticunparking=0",
+            "-avaminquorumstake=0",
+            "-avaminavaproofsnodecount=0",
+        ],
+    ]
+    supports_cli = False
+    rpc_timeout = 120
 
     def run_test(self):
         node = self.nodes[0]

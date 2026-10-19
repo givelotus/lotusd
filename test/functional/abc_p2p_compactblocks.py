@@ -73,23 +73,22 @@ class TestP2PConn(P2PInterface):
 
 
 class FullBlockTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.setup_clean_chain = True
-        self.block_heights = {}
-        self.tip = None
-        self.blocks = {}
-        self.excessive_block_size = 16 * ONE_MEGABYTE
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [
-                "-maxmempool=99999",
-                f"-excessiveblocksize={self.excessive_block_size}",
-                "-acceptnonstdtxn=1",
-            ]
+    num_nodes = 1
+    setup_clean_chain = True
+    block_heights = {}
+    tip = None
+    blocks = {}
+    excessive_block_size = 16 * ONE_MEGABYTE
+    noban_tx_relay = True
+    extra_args = [
+        [
+            "-maxmempool=99999",
+            f"-excessiveblocksize={excessive_block_size}",
+            "-acceptnonstdtxn=1",
         ]
-        # UBSAN will cause this test to timeout without this.
-        self.rpc_timeout = 180
+    ]
+    # UBSAN will cause this test to timeout without this.
+    rpc_timeout = 180
 
     def add_transactions_to_block(self, block, tx_list):
         block.vtx.extend(tx_list)
