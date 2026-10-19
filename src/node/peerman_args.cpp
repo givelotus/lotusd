@@ -2,6 +2,7 @@
 
 #include <common/args.h>
 #include <net_processing.h>
+#include <util/strencodings.h>
 #include <util/time.h>
 
 #include <algorithm>
@@ -42,6 +43,25 @@ void ApplyArgsManOptions(const ArgsManager &argsman,
         options.txrelay_tick = std::chrono::milliseconds{
             std::clamp<int64_t>(*value, count_milliseconds(MIN_TXRELAY_TICK),
                                 count_milliseconds(MAX_TXRELAY_TICK))};
+    }
+
+    if (auto value{argsman.GetIntArg("-txrelayfanoutmin")}) {
+        options.txrelay_fanout_min =
+            size_t(std::clamp<int64_t>(*value, 0, 1000));
+    }
+    if (auto value{argsman.GetArg("-txrelayfanoutpct")}) {
+        int64_t millionths{0};
+        if (ParseFixedPoint(*value, 6, &millionths)) {
+            options.txrelay_fanout_pct =
+                std::clamp(double(millionths) / 1e6, 0.0, 1.0);
+        }
+    }
+    if (auto value{argsman.GetIntArg("-txrelayfanoutmax")}) {
+        options.txrelay_fanout_max =
+            size_t(std::clamp<int64_t>(*value, 0, 100000));
+    }
+    if (auto value{argsman.GetIntArg("-txrelayratemax")}) {
+        options.txrelay_rate_max = uint64_t(std::max<int64_t>(*value, 1));
     }
 
     if (auto value{argsman.GetIntArg("-avacooldown")}) {
