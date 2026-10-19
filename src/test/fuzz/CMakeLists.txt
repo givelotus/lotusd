@@ -75,6 +75,7 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 	process_message.cpp
 	process_messages.cpp
 	protocol.cpp
+	proxy_protocol.cpp
 	psbt.cpp
 	random.cpp
 	rolling_bloom_filter.cpp

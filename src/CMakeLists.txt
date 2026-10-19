@@ -695,6 +695,7 @@ add_library(server
 	pow/eda.cpp
 	pow/grasberg.cpp
 	pow/pow.cpp
+	proxy_protocol.cpp
 	rest.cpp
 	rpc/abc.cpp
 	rpc/avalanche.cpp
