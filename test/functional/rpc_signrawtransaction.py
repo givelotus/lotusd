@@ -14,6 +14,8 @@ RPC_WALLET_NOT_SPECIFIED = (
 
 
 class SignRawTransactionsTest(BitcoinTestFramework):
+    variants = {"default": {}, "descriptors": {"descriptors": True}}
+
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
