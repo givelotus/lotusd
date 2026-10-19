@@ -60,6 +60,61 @@ std::string BioToString(BIO *bio) {
 }
 } // namespace
 
+namespace {
+//! ALPN protocol list (length-prefixed): HTTP/1.1, which WebSocket uses
+constexpr unsigned char ALPN_HTTP11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+
+int SelectAlpn(SSL *, const unsigned char **out, unsigned char *outlen,
+               const unsigned char *in, unsigned int inlen, void *) {
+    unsigned char *selected{nullptr};
+    if (SSL_select_next_proto(&selected, outlen, ALPN_HTTP11,
+                              sizeof(ALPN_HTTP11), in,
+                              inlen) != OPENSSL_NPN_NEGOTIATED) {
+        // No http/1.1 offered (e.g. h2 only): continue without ALPN, as
+        // HTTP/1.1-only web servers do.
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+    *out = selected;
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/**
+ * Order the client's offer like a mainstream browser (Chrome) as far as
+ * OpenSSL allows. Remaining fingerprint differences (no GREASE values,
+ * fixed extension order, no h2 in ALPN, no ECH) are documented in
+ * doc/p2p-websocket.md.
+ */
+void ApplyClientProfile(SSL_CTX *ctx) {
+    SSL_CTX_set_ciphersuites(ctx, "TLS_AES_128_GCM_SHA256:"
+                                  "TLS_AES_256_GCM_SHA384:"
+                                  "TLS_CHACHA20_POLY1305_SHA256");
+    SSL_CTX_set_cipher_list(
+        ctx, "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+             "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+             "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+             "ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:"
+             "AES256-GCM-SHA384:AES128-SHA:AES256-SHA");
+    // The post-quantum hybrid group needs OpenSSL >= 3.5.
+    if (SSL_CTX_set1_groups_list(ctx, "X25519MLKEM768:X25519:P-256:P-384") !=
+        1) {
+        ERR_clear_error();
+        SSL_CTX_set1_groups_list(ctx, "X25519:P-256:P-384");
+    }
+    SSL_CTX_set1_sigalgs_list(
+        ctx, "ECDSA+SHA256:rsa_pss_rsae_sha256:RSA+SHA256:ECDSA+SHA384:"
+             "rsa_pss_rsae_sha384:RSA+SHA384:rsa_pss_rsae_sha512:RSA+SHA512");
+    SSL_CTX_set_alpn_protos(ctx, ALPN_HTTP11, sizeof(ALPN_HTTP11));
+}
+} // namespace
+
+std::string NegotiatedAlpn(const SSL *ssl) {
+    const unsigned char *data{nullptr};
+    unsigned int len{0};
+    SSL_get0_alpn_selected(ssl, &data, &len);
+    return data ? std::string(reinterpret_cast<const char *>(data), len)
+                : std::string{};
+}
+
 SslCtxPtr NewContext(bool server) {
     SslCtxPtr ctx{
         SSL_CTX_new(server ? TLS_server_method() : TLS_client_method())};
@@ -74,6 +129,11 @@ SslCtxPtr NewContext(bool server) {
     options |= SSL_OP_ENABLE_KTLS;
 #endif
     SSL_CTX_set_options(ctx.get(), options);
+    if (server) {
+        SSL_CTX_set_alpn_select_cb(ctx.get(), SelectAlpn, nullptr);
+    } else {
+        ApplyClientProfile(ctx.get());
+    }
     return ctx;
 }
 

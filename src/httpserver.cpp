@@ -602,6 +602,8 @@ struct HTTPConnectionInfo {
     std::string client_cert_fingerprint_hex;
     //! base64url SHA-256 of the client certificate's public key, if any
     std::string client_cert_spki;
+    //! ALPN protocol agreed in the TLS handshake, if any
+    std::string alpn;
 };
 
 /**
@@ -1195,6 +1197,7 @@ static asio::awaitable<void> AcceptP2PWebSocket(Stream &stream,
     info->compression = compression;
     info->peer_cert_fingerprint_hex = conn.client_cert_fingerprint_hex;
     info->peer_spki = conn.client_cert_spki;
+    info->alpn = conn.alpn;
     const CService peer{P2PWebSocketPeerAddress(req, conn)};
 
     if (!use_bridge) {
@@ -1502,6 +1505,7 @@ static asio::awaitable<void> HandleConnection(tcp::socket socket,
                              conn.peer.ToStringAddrPort(), tls::ErrorString());
                 } else {
                     conn.is_tls = true;
+                    conn.alpn = tls::NegotiatedAlpn(tls_stream.native_handle());
                     conn.client_cert_fingerprint_hex =
                         ClientCertFingerprint(tls_stream.native_handle());
                     if (X509 *cert{
