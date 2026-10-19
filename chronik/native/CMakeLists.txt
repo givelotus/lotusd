@@ -103,6 +103,7 @@ endif()
 # ---- Protobuf messages (chronik.proto) and HTTP/WS transports ----
 include("${CHRONIK_NATIVE_ROOT}/proto/proto.cmake")
 include("${CHRONIK_NATIVE_ROOT}/transport/transport.cmake")
+include("${CHRONIK_NATIVE_ROOT}/core/service/service.cmake")
 
 # ---- Host adapter (node build only) ----
 if(NOT CHRONIK_NATIVE_STANDALONE)
