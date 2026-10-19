@@ -8,28 +8,20 @@ the end-of-run summary and JSON lines (see README-runner-output.md)."""
 import dataclasses
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
 import time
 import unittest
-from collections import deque
-from typing import IO, Any, Dict, Iterable, List, Optional
+from typing import IO, Any, Dict, Iterable, List, Optional, Tuple
 
+from . import timeline
 from .results import FAILED, PASSED, SKIPPED, JobResult, parse_job_name
 
 GLYPHS = {PASSED: "✓", SKIPPED: "○"}
 
-# Lines of the framework log and of each node's log shown for a failure
-FRAMEWORK_LOG_LINES = 40
-NODE_LOG_LINES = 20
-NODE_LOG_PATTERN = re.compile(r"\b(warning|error)\b", re.IGNORECASE)
-# Where the framework logs the exception that failed the test; the failure
-# block shows the traceback once, then the log lines leading up to it
-FRAMEWORK_LOG_FAILURE = re.compile(
-    r"TestFramework \(ERROR\): (Unexpected exception|Called Process failed)"
-)
+# Lines of the merged log timeline shown for a failure
+TIMELINE_LINES = 40
 
 
 def glyph(status: str) -> str:
@@ -46,22 +38,6 @@ def finish_line(result: JobResult) -> str:
     return line
 
 
-def last_lines(path: str, count: int, pattern=None, stop=None) -> List[str]:
-    """The last `count` lines of a file (matching `pattern`, if given), up to
-    the first line matching `stop`, if given."""
-    try:
-        with open(path, encoding="utf8", errors="replace") as f:
-            lines = []
-            for line in f:
-                if stop and stop.search(line):
-                    break
-                if not pattern or pattern.search(line):
-                    lines.append(line.rstrip("\n"))
-            return list(deque(lines, count))
-    except OSError:
-        return []
-
-
 def rerun_command(result: JobResult, tests_dir: str) -> str:
     """The command that runs this test job again on its own."""
     _, variant, args = parse_job_name(result.name)
@@ -70,8 +46,29 @@ def rerun_command(result: JobResult, tests_dir: str) -> str:
     return " ".join([os.path.join(tests_dir, result.file)] + args + ["--nocleanup"])
 
 
+def failure_timeline(result: JobResult) -> Tuple[List[str], str, bool]:
+    """The end of the test's merged log timeline, up to the failure (the
+    framework's logged exception, when the test failed with one), read from
+    the end of each log; then the whole timeline written to
+    <tmpdir>/combined.log. Returns the excerpt's lines, the log's path (""
+    if it could not be written), and whether the failure was found."""
+    if not result.tmpdir or not os.path.isdir(result.tmpdir):
+        return [], "", False
+    stop = bool((result.failure or {}).get("traceback"))
+    lines, found = timeline.failure_excerpt(
+        result.tmpdir, TIMELINE_LINES, stop_at_failure=stop
+    )
+    try:
+        path = timeline.write_combined_log(result.tmpdir)
+    except OSError:
+        path = ""
+    return lines, path, found
+
+
 def failure_block(result: JobResult, tests_dir: str) -> str:
-    """What a developer needs to look into a failed test."""
+    """What a developer needs to look into a failed test: the traceback, the
+    end of the merged log timeline (framework and nodes, by time) up to the
+    failure, and how to rerun it. Writes <tmpdir>/combined.log."""
     out = [f"✖ {result.name} {result.status} after {result.duration:.0f} s"]
     failure = result.failure or {}
     if failure.get("traceback"):
@@ -80,20 +77,14 @@ def failure_block(result: JobResult, tests_dir: str) -> str:
         out += ["", failure["message"]]
     if result.stderr_tail and failure.get("type") != "stderr":
         out += ["", "stderr (last lines):"] + result.stderr_tail.splitlines()[-40:]
-    stop = FRAMEWORK_LOG_FAILURE if failure.get("traceback") else None
-    framework_log = last_lines(result.framework_log, FRAMEWORK_LOG_LINES, stop=stop)
-    if framework_log:
-        where = "before the failure" if stop else "last"
-        out += ["", f"{result.framework_log} ({len(framework_log)} lines {where}):"]
-        out += framework_log
-    for log in result.node_logs:
-        lines = last_lines(log, NODE_LOG_LINES, NODE_LOG_PATTERN)
-        if lines:
-            out += ["", f"{log} (last {len(lines)} warnings/errors):"] + lines
+    lines, combined_log, found = failure_timeline(result)
+    if lines:
+        where = "up to the failure" if found else "at the end"
+        out += ["", f"Log timeline, last {len(lines)} lines {where}:"] + lines
     out += ["", f"Test directory: {result.tmpdir}"]
     out += [f"Rerun: {rerun_command(result, tests_dir)}"]
-    combine = os.path.join(tests_dir, "combine_logs.py")
-    out += [f"Logs:  {combine} '{result.tmpdir}'"]
+    if combined_log:
+        out += [f"Log:   {combined_log}"]
     return "\n".join(out)
 
 
@@ -265,14 +256,27 @@ class TestReporting(unittest.TestCase):
     def test_failure_block(self):
         tmpdir = tempfile.mkdtemp(prefix="reporting_unit_")
         self.addCleanup(shutil.rmtree, tmpdir)
+        stamp = "2026-10-19T12:00:{:02d}.{:06d}Z"
         framework_log = os.path.join(tmpdir, "test_framework.log")
         with open(framework_log, "w", encoding="utf8") as f:
-            f.write("".join(f"line {i}\n" for i in range(100)))
-            f.write("TestFramework (ERROR): Unexpected exception\nTB again\n")
+            f.write(
+                "".join(
+                    f"{stamp.format(1, i)} TestFramework (INFO): line {i}\n"
+                    for i in range(100)
+                )
+            )
+            f.write(
+                f"{stamp.format(3, 0)} TestFramework (ERROR): Unexpected exception\n"
+                "TB again\n"
+                f"{stamp.format(5, 0)} TestFramework (INFO): Not stopping nodes\n"
+            )
         node_log = os.path.join(tmpdir, "node0", "regtest", "debug.log")
         os.makedirs(os.path.dirname(node_log))
         with open(node_log, "w", encoding="utf8") as f:
-            f.write("all fine\nsomething Warning here\nan ERROR there\nfine\n")
+            f.write(
+                f"{stamp.format(2, 0)} [net:warning] something here\n"
+                f"{stamp.format(4, 0)} after the failure\n"
+            )
         result = self.make_result(
             failure={"type": "AssertionError", "message": "m", "traceback": "TB"},
             framework_log=framework_log,
@@ -280,15 +284,31 @@ class TestReporting(unittest.TestCase):
             tmpdir=tmpdir,
         )
         block = failure_block(result, "/tests")
-        self.assertIn("TB", block)
-        self.assertIn("line 99", block)
-        self.assertIn("40 lines before the failure", block)
+        self.assertIn("\nTB\n", block)
+        self.assertIn("Log timeline, last 40 lines up to the failure:", block)
+        self.assertIn("test   12:00:01.000099 line 99", block)
+        self.assertIn("node0  12:00:02.000000 WARNING [net] something here", block)
+        self.assertIn("test   12:00:03.000000 ERROR Unexpected exception", block)
         self.assertNotIn("TB again", block)
-        self.assertNotIn("line 59\n", block)
-        self.assertIn("something Warning here", block)
-        self.assertIn("an ERROR there", block)
-        self.assertNotIn("all fine", block)
+        self.assertNotIn("line 61\n", block)
+        self.assertIn("line 62\n", block)
+        self.assertNotIn("after the failure", block)
+        self.assertNotIn("combine_logs.py", block)
         self.assertIn("Rerun: /tests/x_test.py --opt --nocleanup", block)
+        combined = os.path.join(tmpdir, "combined.log")
+        self.assertIn(f"Log:   {combined}", block)
+        with open(combined, encoding="utf8") as f:
+            text = f.read()
+        self.assertIn("TB again", text)
+        self.assertIn("after the failure", text)
+        # Without a traceback (e.g. a timeout): the end of the timeline
+        result.failure = {"type": "timeout", "message": "stopped", "traceback": ""}
+        block = failure_block(result, "/tests")
+        self.assertIn("last 40 lines at the end:", block)
+        self.assertIn("Not stopping nodes", block)
+        # No test directory at all
+        result.tmpdir = os.path.join(tmpdir, "missing")
+        self.assertNotIn("Log", failure_block(result, "/tests"))
 
     def test_summary(self):
         results = [
