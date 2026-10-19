@@ -159,7 +159,8 @@ class V2VmOpcodesTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
-        self.extra_args = [["-acceptnonstdtxn=1"]]
+        # V2 coinbases: the test spends them with version 7 transactions.
+        self.extra_args = [["-acceptnonstdtxn=1", "-coinbaseversion=7"]]
 
     def setup_nodes(self):
         self.chronik = self.is_chronik_compiled()

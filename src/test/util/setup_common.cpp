@@ -30,6 +30,7 @@
 #include <node/peerman_args.h>
 #include <noui.h>
 #include <pow/pow.h>
+#include <primitives/v2_outputs.h>
 #include <random.h>
 #include <rpc/blockchain.h>
 #include <rpc/register.h>
@@ -328,6 +329,41 @@ void TestChain100Setup::mineBlocks(int num_blocks) {
     }
 }
 
+CTransactionRef
+TestChain100Setup::MineV2Coinbase(const std::vector<CTxOut> &outputs) {
+    for (const CTxOut &out : outputs) {
+        Assert(!out.IsLegacy());
+    }
+    Chainstate &chainstate = Assert(m_node.chainman)->ActiveChainstate();
+    const uint32_t saved_version = m_coinbase_version;
+    m_coinbase_version = 7;
+    CBlock block = CreateBlock({}, CScript() << OP_TRUE, chainstate);
+    m_coinbase_version = saved_version;
+
+    CMutableTransaction coinbase{*block.vtx[0]};
+    node::SetCoinbaseOutputs(coinbase, outputs);
+    block.vtx[0] = MakeTransactionRef(std::move(coinbase));
+    createCoinbaseAndMerkleRoot(&block,
+                                WITH_LOCK(m_node.chainman->GetMutex(),
+                                          return m_node.chainman->ActiveTip()),
+                                GetConfig().GetMaxBlockSize());
+    const Consensus::Params &params =
+        GetConfig().GetChainParams().GetConsensus();
+    while (!CheckProofOfWork(block.GetHash(), block.nBits, params)) {
+        ++block.nNonce;
+    }
+    const auto shared_block = std::make_shared<const CBlock>(block);
+    bool new_block = false;
+    Assert(m_node.chainman->ProcessNewBlock(shared_block, true, true,
+                                            &new_block));
+    Assert(WITH_LOCK(m_node.chainman->GetMutex(),
+                     return m_node.chainman->ActiveTip()->GetBlockHash()) ==
+           block.GetHash());
+    SetMockTime(GetTime() + 1);
+    mineBlocks(COINBASE_MATURITY);
+    return block.vtx[0];
+}
+
 CBlock
 TestChain100Setup::CreateBlock(const std::vector<CMutableTransaction> &txns,
                                const CScript &scriptPubKey,
@@ -335,10 +371,12 @@ TestChain100Setup::CreateBlock(const std::vector<CMutableTransaction> &txns,
     const Config &config = GetConfig();
     BlockAssembler::Options options;
     options.coinbase_version = m_coinbase_version;
-    CBlock block = BlockAssembler{node::BlockFitter(config), chainstate,
-                                  nullptr, options}
-                       .CreateNewBlock(scriptPubKey)
-                       ->block;
+    CBlock block =
+        BlockAssembler{node::BlockFitter(config), chainstate, nullptr, options}
+            .CreateNewBlock(m_coinbase_version == 7
+                                ? V0LeafOutput(Amount::zero(), scriptPubKey)
+                                : CTxOut(Amount::zero(), scriptPubKey))
+            ->block;
 
     Assert(block.vtx.size() == 1);
     for (const CMutableTransaction &tx : txns) {

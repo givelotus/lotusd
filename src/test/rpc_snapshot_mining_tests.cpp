@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <primitives/v2_outputs.h>
 #include <config.h>
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
@@ -10,6 +11,7 @@
 #include <core_io.h>
 #include <kernel/disconnected_transactions.h>
 #include <key_io.h>
+#include <lotus_v2/address.h>
 #include <minerfund.h>
 #include <node/snapshot.h>
 #include <pow/pow.h>
@@ -286,9 +288,13 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_mineraddress_and_submitsealedblock) {
 
     CKey minerKey;
     minerKey.MakeNewKey(true);
-    const PKHash minerDest(minerKey.GetPubKey());
-    const std::string minerAddr = EncodeDestination(minerDest, config);
-    const CScript expectedMinerSpk = GetScriptForDestination(minerDest);
+    const auto minerPubKey = minerKey.GetPubKey();
+    const auto minerHash = lotus::v2::NativeKeyHash(
+        std::span<const uint8_t, 32>(minerPubKey.data() + 1, 32));
+    const std::string minerAddr = lotus::v2::EncodeKeyHashAddress(
+        lotus::v2::AddressNetwork::REGTEST, minerHash);
+    const auto minerProgram = lotus::v2::KeyHashProgram(minerHash);
+    const CScript expectedMinerSpk(minerProgram.begin(), minerProgram.end());
 
     {
         LOCK(::cs_main);
@@ -335,8 +341,8 @@ BOOST_AUTO_TEST_CASE(getblocktemplate_mineraddress_and_submitsealedblock) {
     CMutableTransaction decoded_cb;
     BOOST_REQUIRE(DecodeHexTx(decoded_cb, cb_hex));
     BOOST_REQUIRE(!decoded_cb.vout.empty());
-    BOOST_CHECK(decoded_cb.vout[0].ToV2Output() ==
-        CTxOut(decoded_cb.vout[0].nValue, expectedMinerSpk).ToV2Output());
+    BOOST_CHECK(!decoded_cb.vout[0].IsLegacy());
+    BOOST_CHECK(CoinbaseOutputPaysScript(decoded_cb.vout[0], expectedMinerSpk));
 
     CBlockHeader header;
     BOOST_REQUIRE(DecodeHexBlockHeader(header, header_hex));
@@ -432,7 +438,6 @@ BOOST_AUTO_TEST_CASE(snapshot_template_rejects_unchecked_invalid_native_script) 
         m_coinbase_txns[0]->vout[0].nValue - 2000 * SATOSHI, false_program);
     CMutableTransaction bad;
     bad.nVersion = 7;
-    bad.fHasV2Lock = true;
     bad.nV2Lock = 0;
     CTxIn input(COutPoint(parent.GetId(), 0));
     input.nFlags = 1;

@@ -6,6 +6,7 @@
 
 #include <core_io.h>
 #include <consensus/merkle.h>
+#include <primitives/v2_outputs.h>
 #include <serialize.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -142,15 +143,13 @@ BOOST_AUTO_TEST_CASE(blockfilter_basic_test) {
 BOOST_AUTO_TEST_CASE(native_output_filter_is_stable_across_wire_roundtrip) {
     CMutableTransaction transaction;
     transaction.nVersion = 7;
-    transaction.fHasV2Lock = true;
     transaction.nV2Lock = 0;
     CTxIn input(COutPoint(TxId(uint256{1}), 7));
     input.nFlags = 2;
     input.fHasCoinbaseData = true;
     input.vCoinbaseData = {1, 2};
     transaction.vin.push_back(std::move(input));
-    transaction.vout.emplace_back(100 * SATOSHI, CScript() << OP_TRUE);
-    AdaptLegacyTxToV7(transaction);
+    transaction.vout.push_back(V0LeafOutput(100 * SATOSHI, CScript() << OP_TRUE));
     CBlock block;
     block.nHeaderVersion = 2;
     block.nHeight = 7;

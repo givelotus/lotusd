@@ -12,6 +12,7 @@
 #include <consensus/merkle.h>
 #include <consensus/validation.h>
 #include <node/miner.h>
+#include <primitives/v2_outputs.h>
 #include <pow/pow.h>
 #include <random.h>
 #include <script/standard.h>
@@ -118,9 +119,11 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     static int i = 0;
     static uint64_t time = config.GetChainParams().GenesisBlock().GetBlockTime();
 
-    auto ptemplate = BlockAssembler{config, m_node.chainman->ActiveChainstate(),
-                                    m_node.mempool.get()}
-                         .CreateNewBlock(CScript{} << i++ << OP_TRUE);
+    const CScript unique_script = CScript{} << i++ << OP_TRUE;
+    auto ptemplate =
+        BlockAssembler{config, m_node.chainman->ActiveChainstate(),
+                       m_node.mempool.get()}
+            .CreateNewBlock(V0LeafOutput(Amount::zero(), unique_script));
     auto pblock = std::make_shared<CBlock>(ptemplate->block);
     pblock->hashPrevBlock = prev_hash;
     pblock->SetBlockTime(++time);
@@ -130,31 +133,21 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const Config &config,
     // the same height can have a different hash. Another one that has the
     // coinbase reward in a P2SH with OP_TRUE as scriptPubKey to make it easy to
     // spend
-    CMutableTransaction txCoinbase(*pblock->vtx[0]);
     // These branches are built before submission, so the assembler's active
     // tip may differ from this block's parent. Commit the actual branch height
     // and claim its subsidy, including across regtest halving boundaries.
+    // The coinbase is a legacy (version 2) coinbase, so that the legacy
+    // transactions of these tests can spend its P2SH OP_TRUE output.
     const int height = m_block_heights.at(prev_hash) + 1;
-    txCoinbase.vin[0].prevout =
-        COutPoint(TxId(prev_hash), static_cast<uint32_t>(height));
-    txCoinbase.vin[0].nFlags = 2;
-    txCoinbase.vin[0].scriptSig = CScript() << height << OP_0;
+    CMutableTransaction txCoinbase =
+        node::CreateCoinbaseShell(2, prev_hash, height);
     txCoinbase.vout.resize(2);
+    txCoinbase.vout[0].scriptPubKey = unique_script;
     txCoinbase.vout[1].scriptPubKey = P2SH_OP_TRUE;
     txCoinbase.vout[1].nValue =
         GetBlockSubsidy(height, config.GetChainParams().GetConsensus());
     txCoinbase.vout[0].nValue = Amount::zero();
-    // Replacing the assembler's height script also removes its size padding.
-    // Keep these otherwise valid coinbases above the consensus minimum.
-    const auto coinbase_size = ::GetSerializeSize(txCoinbase);
-    if (coinbase_size < MIN_TX_SIZE) {
-        txCoinbase.vin[0].scriptSig
-            << std::vector<uint8_t>(MIN_TX_SIZE - coinbase_size - 1);
-    }
-    txCoinbase.vin[0].fHasCoinbaseData = true;
-    txCoinbase.vin[0].vCoinbaseData.assign(
-        txCoinbase.vin[0].scriptSig.begin(),
-        txCoinbase.vin[0].scriptSig.end());
+    node::PadCoinbaseToMinSize(txCoinbase);
     assert(::GetSerializeSize(txCoinbase) >= MIN_TX_SIZE);
     pblock->vtx[0] = MakeTransactionRef(std::move(txCoinbase));
 

@@ -44,9 +44,11 @@ class MutatedBlocksTest(BitcoinTestFramework):
         block.solve()
 
         # Create mutated version of the block by changing the transaction
-        # version on the self-transfer.
+        # version on the self-transfer (to the other legacy version: other
+        # versions do not decode at all).
         mutated_block = copy.deepcopy(block)
-        mutated_block.vtx[1].nVersion = 4
+        mutated_block.vtx[1].nVersion = 3 - mutated_block.vtx[1].nVersion
+        assert mutated_block.vtx[1].nVersion in (1, 2)
 
         # Announce the new block via a compact block through the honest relayer
         cmpctblock = HeaderAndShortIDs()
