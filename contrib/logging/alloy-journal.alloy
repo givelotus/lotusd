@@ -1,0 +1,24 @@
+// lotusd: -logformat=journald (Linux). Reader needs journal permissions.
+loki.source.journal "lotus" {
+  matches = "SYSLOG_IDENTIFIER=lotusd"
+  format_as_json = true
+  labels = {job = "lotus"}
+  forward_to = [loki.process.lotus.receiver]
+}
+
+loki.process "lotus" {
+  stage.json {
+    expressions = {level = "LOTUS_LEVEL", category = "LOTUS_CATEGORY"}
+  }
+  stage.labels {
+    values = {level = "", category = ""}
+  }
+  // Preserve every native field (LOTUS_PEER_ID, CODE_FILE, ...).
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+}
