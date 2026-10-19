@@ -188,13 +188,17 @@ void AvailableCoins(const CWallet &wallet, std::vector<COutput> &vCoins,
             std::unique_ptr<SigningProvider> provider =
                 wallet.GetSolvingProvider(wtx.tx->vout[i].scriptPubKey);
 
-            bool solvable =
-                provider ? IsSolvable(*provider, wtx.tx->vout[i].scriptPubKey)
-                         : false;
+            // The ordinary CWallet signer/funder currently creates legacy
+            // transactions only. Recognizing a native branch is ownership
+            // metadata, not proof that this signer can spend that policy.
+            const bool legacy = wtx.tx->vout[i].IsLegacy();
+            bool solvable = legacy && provider &&
+                            IsSolvable(*provider, wtx.tx->vout[i].scriptPubKey);
             bool spendable =
-                ((mine & ISMINE_SPENDABLE) != ISMINE_NO) ||
-                (((mine & ISMINE_WATCH_ONLY) != ISMINE_NO) &&
-                 (coinControl && coinControl->fAllowWatchOnly && solvable));
+                legacy &&
+                (((mine & ISMINE_SPENDABLE) != ISMINE_NO) ||
+                 (((mine & ISMINE_WATCH_ONLY) != ISMINE_NO) &&
+                  (coinControl && coinControl->fAllowWatchOnly && solvable)));
 
             vCoins.push_back(
                 COutput(wallet, wtx, i, nDepth, spendable, solvable, safeTx,
@@ -650,6 +654,10 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
     CTransactionRef tx;
     {
         CMutableTransaction txNew;
+        // The wallet signs legacy coins with legacy signatures, so it builds
+        // legacy (version 2) transactions; V2 outputs are spent by the V2
+        // wallet.
+        txNew.nVersion = 2;
         std::set<CInputCoin> setCoins;
         LOCK(wallet.cs_wallet);
         // Previously the locktime was set to the current block height, to
