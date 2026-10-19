@@ -103,6 +103,7 @@ add_executable(fuzz EXCLUDE_FROM_ALL
 	txrequest.cpp
 	util.cpp
 	validation_load_mempool.cpp
+	websocket_codec.cpp
 )
 
 # Get the link options for this target and reuse them for checking if a
