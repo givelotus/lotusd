@@ -1127,6 +1127,7 @@ namespace {
         BatchSigCollector *batch_sigs;
         std::span<const uint8_t> active_script;
         std::optional<Hash> cached_txid;
+        std::optional<VmAssetTotalsMap> local_asset_totals;
         size_t mint_count;
         std::vector<VmBytes> stack;
         std::vector<VmBytes> alternate;
@@ -2158,6 +2159,35 @@ namespace {
                         Push(Number(ContinuesBranch(output, root)));
                         break;
                     }
+                    case 0xec: { // TXTOKENBALANCE: asset -> N(in) N(out)
+                        const VmBytes asset = Pop();
+                        const auto &ctx = Context();
+                        if (asset.size() != 32)
+                            throw VmFailure("token balance asset width");
+                        const VmAssetTotalsMap *totals = nullptr;
+                        if (ctx.prepared) {
+                            totals = &ctx.prepared->AssetTotals();
+                        } else {
+                            if (!local_asset_totals) {
+                                std::string error;
+                                local_asset_totals.emplace();
+                                if (!ComputeVmAssetTotals(ctx.tx, ctx.resolved,
+                                                          *local_asset_totals,
+                                                          error))
+                                    throw VmFailure("asset sum overflow");
+                            }
+                            totals = &*local_asset_totals;
+                        }
+                        Hash32 key;
+                        std::copy(asset.begin(), asset.end(), key.begin());
+                        const auto found = totals->find(key);
+                        const VmAssetTotals value =
+                            found == totals->end() ? VmAssetTotals{}
+                                                   : found->second;
+                        Push(Number(Int(value.inputs)));
+                        Push(Number(Int(value.outputs)));
+                        break;
+                    }
                     case 0xee: { // UTXOSTATEROOT: zeros without HAS_STATE
                         const auto &coin = CoinAt(Numeric(Pop()));
                         Push(coin.HasState() ? VmBytes(coin.state_root.begin(),
@@ -2369,6 +2399,30 @@ bool PreparedVmTransaction::TryGetFieldSizeAt(uint8_t op, size_t idx,
     return false;
 }
 
+bool AddVmAssetTotal(VmAssetTotalsMap &totals, const Output &output,
+                     bool input, std::string &error) {
+    auto &entry = totals[output.HasToken() ? output.token_id : Hash32{}];
+    __uint128_t &sum = input ? entry.inputs : entry.outputs;
+    if (sum > ~__uint128_t{0} - output.value) {
+        error = "asset sum overflow";
+        return false;
+    }
+    sum += output.value;
+    return true;
+}
+
+bool ComputeVmAssetTotals(const Transaction &tx, const ResolvedCoins &resolved,
+                          VmAssetTotalsMap &totals, std::string &error) {
+    totals.clear();
+    for (size_t i = 0; i < tx.inputs.size() && i < resolved.size(); ++i) {
+        if (tx.inputs[i].flags != 1 || !resolved[i]) continue;
+        if (!AddVmAssetTotal(totals, *resolved[i], true, error)) return false;
+    }
+    for (const Output &output : tx.outputs)
+        if (!AddVmAssetTotal(totals, output, false, error)) return false;
+    return true;
+}
+
 SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
     const Transaction &tx, const TxProfile &profile, const ChainId &chain,
     const ResolvedCoins &coins, const VmCostProfile &cost, std::string &error,
@@ -2389,6 +2443,8 @@ SigningPreparationStatus PreparedVmTransaction::PrepareChecked(
             precomputed_identities);
         if (signing_status != SigningPreparationStatus::Ready)
             return signing_status;
+        if (!ComputeVmAssetTotals(tx_, coins_, asset_totals_, error))
+            return SigningPreparationStatus::InvalidWitness;
         const auto context = Invocation(0, 0);
         try {
             VM_COUNT_PREPARATION(field_sizes);
