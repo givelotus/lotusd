@@ -248,6 +248,9 @@ void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor &cursor,
                 static FastRandomContext rng;
                 if (rng.randrange(m_options.simulate_crash_ratio) == 0) {
                     LogPrintf("Simulating a crash. Goodbye.\n");
+                    // _Exit skips logger shutdown; retain the deterministic
+                    // fault-injection diagnostic before terminating.
+                    LogInstance().Flush();
                     _Exit(0);
                 }
             }

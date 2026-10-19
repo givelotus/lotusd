@@ -801,6 +801,8 @@ BOOST_FIXTURE_TEST_CASE(
         BOOST_REQUIRE(chainman.ProcessNewBlock(std::make_shared<const CBlock>(block),
             true, true, nullptr, m_node.avalanche.get()));
         BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return chainman.ActiveTip()), chaintip);
+        // The logger thread runs the callbacks: deliver queued lines first.
+        LogInstance().Flush();
         BOOST_CHECK_EQUAL(parks, 1);
         BOOST_CHECK_EQUAL(unparks, 0);
         CBlockIndex *parkedIndex = WITH_LOCK(cs_main,
@@ -816,11 +818,15 @@ BOOST_FIXTURE_TEST_CASE(
             true, true, nullptr, m_node.avalanche.get()));
         BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return chainman.ActiveTip()->GetBlockHash()),
                           child.GetHash());
+        // The logger thread runs the callbacks: deliver queued lines first.
+        LogInstance().Flush();
         BOOST_CHECK_EQUAL(unparks, 1);
         WITH_LOCK(cs_main, BOOST_CHECK(!parkedIndex->m_preconsensus_policy_parked));
         BlockValidationState state;
         BOOST_REQUIRE(active_chainstate.ActivateBestChain(state, nullptr,
                                                           m_node.avalanche.get()));
+        // The logger thread runs the callbacks: deliver queued lines first.
+        LogInstance().Flush();
         BOOST_CHECK_EQUAL(parks, 1);
         AvalancheTest::updatedBlockTip(*m_node.avalanche);
         BOOST_CHECK(m_node.avalanche->getFinalizedMempoolBatches(

@@ -8,6 +8,7 @@
 
 #include <util/threadnames.h>
 
+#include <logging.h>
 #include <metrics/metrics.h>
 
 #if (defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
@@ -53,6 +54,7 @@ void util::ThreadRename(std::string &&name) {
     // Every node thread starts here: give it its metrics ring now, so that
     // recording never allocates on a hot path.
     metrics::PrepareThisThread();
+    LogInstance().PrepareThisThread();
 }
 
 void util::ThreadSetInternalName(std::string &&name) {

@@ -9,6 +9,7 @@
 
 #include <config.h>
 #include <interfaces/chain.h>
+#include <logging.h>
 #include <node/context.h>
 #include <util/time.h>
 
@@ -19,6 +20,7 @@
 #include <univalue.h>
 
 #include <any>
+#include <atomic>
 
 using util::SplitString;
 
@@ -874,6 +876,25 @@ BOOST_AUTO_TEST_CASE(rpc_arg_helper) {
     CheckRpc(params,
              UniValue{JSON(R"([5, "hello", 4, "test", true, 1.23, "world"])")},
              check_named);
+}
+
+BOOST_AUTO_TEST_CASE(logging_flushes_queued_records) {
+    LogInstance().PauseForTesting(true);
+    LogInstance().Flush();
+    std::atomic<bool> seen{false};
+    auto callback{LogInstance().PushBackCallback([&](const std::string &line) {
+        if (line.find("logging RPC barrier marker") != std::string::npos) {
+            seen = true;
+        }
+    })};
+    LogPrintf("logging RPC barrier marker\n");
+    BOOST_CHECK(!seen.load());
+    BOOST_CHECK_NO_THROW(CallRPC("logging"));
+    BOOST_CHECK(seen.load());
+    // Keep cleanup valid even when testing the old RPC without its barrier.
+    LogInstance().Flush();
+    LogInstance().DeleteCallback(callback);
+    LogInstance().PauseForTesting(false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

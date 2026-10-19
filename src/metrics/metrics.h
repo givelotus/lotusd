@@ -109,6 +109,20 @@ private:
     std::atomic<uint64_t> *m_cells;
 };
 
+/** A counter kept elsewhere, read through a function when scraped */
+class FunctionCounter final : public Metric {
+public:
+    FunctionCounter(std::string name, std::string help,
+                    std::function<uint64_t()> value)
+        : Metric{std::move(name), std::move(help), {}},
+          m_value{std::move(value)} {}
+    MetricType Type() const override { return MetricType::COUNTER; }
+    uint64_t Value() const { return m_value(); }
+
+private:
+    const std::function<uint64_t()> m_value;
+};
+
 /** Values set where they change; read at scrape time */
 class Gauge final : public Metric {
 public:

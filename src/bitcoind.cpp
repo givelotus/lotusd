@@ -17,6 +17,7 @@
 #include <httprpc.h>
 #include <init.h>
 #include <interfaces/chain.h>
+#include <logging.h>
 #include <node/context.h>
 #include <node/ui_interface.h>
 #include <noui.h>
@@ -59,7 +60,7 @@ int fork_daemon(bool nochdir, bool noclose, TokenPipeEnd &endpoint) {
         return -1;
     }
 
-    int pid = fork();
+    int pid = LogInstance().ForkProcess();
     if (pid < 0) {
         // fork failed.
         return -1;

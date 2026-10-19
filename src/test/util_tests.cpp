@@ -2572,7 +2572,7 @@ BOOST_AUTO_TEST_CASE(test_LockDirectory) {
     // relevant as test case as that is avoided with -daemonize).
     int fd[2];
     BOOST_CHECK_EQUAL(socketpair(AF_UNIX, SOCK_STREAM, 0, fd), 0);
-    pid_t pid = fork();
+    pid_t pid = LogInstance().ForkProcess();
     if (!pid) {
         BOOST_CHECK_EQUAL(close(fd[1]), 0); // Child: close parent end
         TestOtherProcess(dirname, lockname, fd[0]);

@@ -14,17 +14,23 @@
 #include <util/string.h>
 #include <util/time.h>
 
+#include <array>
 #include <atomic>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -212,7 +218,159 @@ public:
     bool SuppressionsActive() const { return m_suppression_active; }
 };
 
+//! Size of one log record (see LogRecord)
+inline constexpr size_t LOG_RECORD_SIZE{512};
+
+/**
+ * One log line on its way from the logging thread to the logger thread: a
+ * fixed-size slot of a per-thread ring. The producer copies what it knows
+ * (time, thread, source location, level, category) and the message into
+ * it; rendering (text or JSON), rate limit notices and I/O happen on the
+ * logger thread.
+ */
+struct LogRecord {
+    enum Flags : uint8_t {
+        //! Continues the thread's previous record, which had no newline
+        CONTINUED = 1,
+        //! The payload is a pointer to a heap std::string (long message)
+        SPILLED = 2,
+        //! Rate limited: console and callbacks only, not the log file
+        NO_FILE = 4,
+        //! Some call site was suppressed when this was logged (the "[*]"
+        //! marker)
+        SUPPRESSIONS = 8,
+    };
+    //! Producer's time (SystemClock), microseconds since the epoch
+    int64_t time_us;
+    //! Mock time in seconds, 0 if none
+    int64_t mocktime_s;
+    std::source_location loc;
+    //! Structured event descriptor; nullptr for plain messages
+    const void *event;
+    LogFlags category;
+    Level level;
+    uint8_t flags;
+    uint8_t num_fields;
+    uint8_t reserved;
+    //! Bytes used in payload
+    uint16_t size;
+    //! Producer's thread name, NUL terminated (truncated)
+    char thread[18];
+    //! Message bytes (or a std::string* if SPILLED), or encoded fields
+    alignas(8) std::byte payload[LOG_RECORD_SIZE - 64];
+};
+static_assert(sizeof(LogRecord) == LOG_RECORD_SIZE);
+static_assert(std::is_trivially_destructible_v<LogRecord>);
+static_assert(offsetof(LogRecord, payload) == 64);
+
+/**
+ * Single-producer single-consumer ring of log records, owned by one thread.
+ * Claim/Commit never block, lock, allocate or make a system call.
+ */
+class LogRing {
+    friend class Logger;
+    // Reserved for severe reentrant writes; never part of the SPSC queue.
+    LogRecord m_emergency;
+
+public:
+    static constexpr size_t CAPACITY{131072};
+    static constexpr size_t WAKE_THRESHOLD{512};
+    static_assert(WAKE_THRESHOLD <= CAPACITY);
+    static_assert((CAPACITY & (CAPACITY - 1)) == 0);
+
+    //! User-provided, so unused slot bytes are not initialized: their pages
+    //! are only touched when used.
+    LogRing() {}
+
+    /** Producer: a free slot, or nullptr if the ring is full */
+    LogRecord *Claim() noexcept {
+        const uint64_t head{m_head.load(std::memory_order_relaxed)};
+        if (head - m_cached_tail >= CAPACITY) {
+            m_cached_tail = m_tail.load(std::memory_order_acquire);
+            if (head - m_cached_tail >= CAPACITY) {
+                return nullptr;
+            }
+        }
+        // Begin the record lifetime only when used: default-constructing all
+        // source_location members at ring allocation would touch every page.
+        void *slot{m_slots.data() + (head & (CAPACITY - 1)) * LOG_RECORD_SIZE};
+        return ::new (slot) LogRecord;
+    }
+    /**
+     * Producer: publish the slot returned by Claim. Returns true while the
+     * ring has reached the wake threshold (independent of burst capacity).
+     */
+    bool Commit() noexcept {
+        const uint64_t head{m_head.load(std::memory_order_relaxed) + 1};
+        m_head.store(head, std::memory_order_release);
+        if (head - m_cached_tail < WAKE_THRESHOLD) {
+            return false;
+        }
+        // Possibly: look at the consumer's progress (only while backed up).
+        m_cached_tail = m_tail.load(std::memory_order_acquire);
+        return head - m_cached_tail >= WAKE_THRESHOLD;
+    }
+    /** Producer: count a line dropped because the ring was full */
+    void CountDrop() noexcept {
+        m_dropped.store(m_dropped.load(std::memory_order_relaxed) + 1,
+                        std::memory_order_relaxed);
+    }
+
+    /** Consumer: number of records ready */
+    size_t Available() const noexcept {
+        return size_t(m_head.load(std::memory_order_acquire) -
+                      m_tail.load(std::memory_order_relaxed));
+    }
+    /** Consumer: the oldest record (Available() > 0) */
+    LogRecord &Front() noexcept {
+        const auto offset{
+            (m_tail.load(std::memory_order_relaxed) & (CAPACITY - 1)) *
+            LOG_RECORD_SIZE};
+        return *std::launder(
+            reinterpret_cast<LogRecord *>(m_slots.data() + offset));
+    }
+    /** Consumer: release the oldest record */
+    void Pop() noexcept {
+        m_tail.store(m_tail.load(std::memory_order_relaxed) + 1,
+                     std::memory_order_release);
+    }
+    uint64_t Dropped() const noexcept {
+        return m_dropped.load(std::memory_order_relaxed);
+    }
+    /**
+     * Consumer, once the owning thread has exited and the ring is drained:
+     * make it ready for another thread. Returns the drops it had counted.
+     */
+    uint64_t Recycle() noexcept {
+        m_orphaned.store(false, std::memory_order_relaxed);
+        m_open_line = false;
+        return m_dropped.exchange(0, std::memory_order_relaxed);
+    }
+
+    //! Set when the owning thread exits; the consumer then reuses the ring
+    //! for another thread once it has drained it.
+    std::atomic<bool> m_orphaned{false};
+    //! The owning thread's last record had no trailing newline
+    bool m_open_line{false};
+
+private:
+    // Producer-owned
+    alignas(64) std::atomic<uint64_t> m_head{0};
+    uint64_t m_cached_tail{0};
+    std::atomic<uint64_t> m_dropped{0};
+    // Consumer-owned
+    alignas(64) std::atomic<uint64_t> m_tail{0};
+    alignas(64) std::array<std::byte, CAPACITY * LOG_RECORD_SIZE> m_slots;
+};
+
+/**
+ * The logger. Producers (any thread logging) put records into their own
+ * LogRing; a dedicated thread ("logger") renders them and writes them,
+ * flushing the file every few milliseconds. See doc/logging.md.
+ */
 class Logger {
+    friend struct LoggerTestAccess;
+
 public:
     struct BufferedLog {
         SystemClock::time_point now;
@@ -223,30 +381,36 @@ public:
         Level level;
     };
 
+    //! How often the logger thread writes queued lines while busy
+    static constexpr std::chrono::milliseconds FLUSH_INTERVAL{2};
+    //! ... and when its last pass found nothing to write (a thread whose
+    //! ring fills up, or an error, wakes it earlier)
+    static constexpr std::chrono::milliseconds IDLE_FLUSH_INTERVAL{20};
+
 private:
     // Can not use Mutex from sync.h because in debug mode it would cause a
     // deadlock when a potential deadlock was detected
     mutable StdMutex m_cs;
 
-    FILE *m_fileout GUARDED_BY(m_cs) = nullptr;
     std::list<BufferedLog> m_msgs_before_open GUARDED_BY(m_cs);
     //! Buffer messages before logging can be started.
-    bool m_buffering GUARDED_BY(m_cs) = true;
+    std::atomic<bool> m_buffering{true};
     size_t m_max_buffer_memusage GUARDED_BY(m_cs){DEFAULT_MAX_LOG_BUFFER};
     size_t m_cur_buffer_memusage GUARDED_BY(m_cs){0};
     size_t m_buffer_lines_discarded GUARDED_BY(m_cs){0};
 
-    /**
-     * m_started_new_line is a state variable that will suppress printing of the
-     * timestamp when multiple calls are made that don't end in a newline.
-     */
-    std::atomic_bool m_started_new_line{true};
-
     //! Manages the rate limiting of each log location.
     std::shared_ptr<LogRateLimiter> m_limiter GUARDED_BY(m_cs);
+    //! m_limiter, read by producers without the lock. Limiters that were
+    //! replaced are kept alive (m_old_limiters) since a producer may still
+    //! use one.
+    std::atomic<LogRateLimiter *> m_limiter_ptr{nullptr};
+    std::vector<std::shared_ptr<LogRateLimiter>>
+        m_old_limiters GUARDED_BY(m_cs);
 
-    //! Category-specific log level. Overrides `m_log_level`.
-    std::unordered_map<LogFlags, Level> m_category_log_levels GUARDED_BY(m_cs);
+    //! Per-category minimum level (index: bit of the category), or -1 to
+    //! use m_log_level.
+    std::array<std::atomic<int8_t>, 32> m_category_levels{};
 
     //! If there is no category-specific log level, all logs with a severity
     //! level lower than `m_log_level` will be ignored.
@@ -257,31 +421,106 @@ private:
      */
     std::atomic<uint32_t> m_categories{0};
 
-    void FormatLogStrInPlace(std::string &str, LogFlags category, Level level,
-                             const std::source_location &source_loc,
-                             std::string_view threadname,
-                             SystemClock::time_point now,
-                             std::chrono::seconds mocktime) const;
-
-    /**
-     * Line being formatted in JSON mode. Reused, so a line costs no
-     * allocation once the buffer has grown to the longest line seen.
-     */
-    std::string m_line_buf GUARDED_BY(m_cs);
-
-    std::string LogTimestampStr(SystemClock::time_point now,
-                                std::chrono::seconds mocktime) const;
-
     /** Slots that connect to the print signal */
     std::list<std::function<void(const std::string &)>>
         m_print_callbacks GUARDED_BY(m_cs){};
+    std::atomic<bool> m_has_callbacks{false};
 
-    /** Send a string to the log output (internal) */
-    void LogPrintStr_(std::string_view str, std::source_location &&source_loc,
-                      BCLog::LogFlags category, BCLog::Level level,
-                      LogSiteLimit *site) EXCLUSIVE_LOCKS_REQUIRED(m_cs);
+    // --- Consumer side (the logger thread, or a thread calling Flush) ---
+    StdMutex m_consumer_mutex;
+    FILE *m_fileout GUARDED_BY(m_consumer_mutex) = nullptr;
+    //! Line being rendered; reused, so rendering does not allocate once it
+    //! has grown to the longest line.
+    std::string m_line_buf GUARDED_BY(m_consumer_mutex);
+    //! Rings drained in the current pass (reused)
+    std::vector<LogRing *> m_drain_rings GUARDED_BY(m_consumer_mutex);
+    //! Dropped lines already reported
+    uint64_t m_dropped_reported GUARDED_BY(m_consumer_mutex){0};
+
+    //! Rings of threads (in use or orphaned), and rings ready for reuse
+    mutable StdMutex m_rings_mutex;
+    std::vector<std::shared_ptr<LogRing>> m_rings GUARDED_BY(m_rings_mutex);
+    std::vector<std::shared_ptr<LogRing>>
+        m_free_rings GUARDED_BY(m_rings_mutex);
+    //! Drops counted by rings since reused
+    uint64_t m_dropped_retired GUARDED_BY(m_rings_mutex){0};
+    //! Distinguishes loggers in the threads' ring caches
+    const uint64_t m_uid;
+
+    std::thread m_thread;
+    StdMutex m_wake_mutex;
+    std::condition_variable m_wake_cv;
+    std::atomic<bool> m_wake{false};
+    bool m_stop GUARDED_BY(m_wake_mutex){false};
+    std::atomic<bool> m_thread_running{false};
+    //! A wake-up of the logger thread is pending (rings filling up)
+    std::atomic<bool> m_wake_requested{false};
+    //! Errors request a pass that starts after publication; the consumer
+    //! acknowledges it only after all captured sinks have been flushed.
+    std::atomic<uint64_t> m_flush_requested{0};
+    std::atomic<uint64_t> m_flush_completed{0};
+    //! Tests: the logger thread stops writing (Flush and full rings still
+    //! do)
+    std::atomic<bool> m_paused_for_testing{false};
+
+    /** Append GetLogPrefix(category, level) to out */
+    void AppendLogPrefix(std::string &out, LogFlags category,
+                         Level level) const;
+
+    /** Render a plain message as a text line (prefixes, escaping) into out */
+    void FormatTextLine(std::string &out, std::string_view msg,
+                        LogFlags category, Level level,
+                        const std::source_location &source_loc,
+                        std::string_view threadname,
+                        SystemClock::time_point now,
+                        std::chrono::seconds mocktime, bool ratelimited) const;
+
+    /** Keep a message logged before StartLogging (with m_cs held) */
+    void BufferLog(std::string_view str, std::source_location &&source_loc,
+                   LogFlags category, Level level)
+        EXCLUSIVE_LOCKS_REQUIRED(m_cs);
+
+    /** The calling thread's ring (claimed once per thread) */
+    LogRing *ThreadRing() noexcept EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
+    std::shared_ptr<LogRing> ClaimRing()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
+    /** A slot when the ring is full, for warnings and errors: waits */
+    LogRecord *ClaimSlow(LogRing &ring)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+    /** Error path: wait for the consumer to flush, without rendering here. */
+    void FlushOnConsumer()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+    /** Consumer reentrancy only: write severe overflow without callbacks. */
+    void WriteEmergency(LogRecord &rec);
+    bool m_writing_emergency GUARDED_BY(m_consumer_mutex){false};
+    /** Queue a plain message (owned: moved into the record if too long) */
+    void Enqueue(std::string_view str, std::string *owned,
+                 std::source_location &&source_loc, LogFlags category,
+                 Level level, LogSiteLimit *site)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+
+    /** Render and write every queued record (consumer); false if none */
+    bool DrainLocked()
+        EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, !m_cs, !m_rings_mutex);
+    /** Render one record into m_line_buf and write it */
+    void WriteRecord(LogRecord &rec)
+        EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
+    /** Write a rendered line to the outputs */
+    void WriteLine(const std::string &line, bool to_file)
+        EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex, m_cs);
+    void ReopenIfRequested() EXCLUSIVE_LOCKS_REQUIRED(m_consumer_mutex);
+    void ThreadMain() EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs,
+                                               !m_rings_mutex, !m_wake_mutex);
+    void StartThread() EXCLUSIVE_LOCKS_REQUIRED(!m_wake_mutex);
+    void StopThread() EXCLUSIVE_LOCKS_REQUIRED(!m_wake_mutex, !m_consumer_mutex,
+                                               !m_cs, !m_rings_mutex);
 
 public:
+    Logger();
+
     bool m_print_to_console = false;
     bool m_print_to_file = false;
 
@@ -331,14 +570,55 @@ public:
      */
     void LogPrintStr(std::string_view str, std::source_location &&source_loc,
                      BCLog::LogFlags category, BCLog::Level level,
-                     LogSiteLimit *site);
+                     LogSiteLimit *site)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+    /** As LogPrintStr, taking the message (moved, not copied, if long) */
+    void LogPrintMovedStr(std::string &&str, std::source_location &&source_loc,
+                          BCLog::LogFlags category, BCLog::Level level,
+                          LogSiteLimit *site)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
 
-    /** Returns whether logs will be written to any output */
-    bool Enabled() const EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
-        StdLockGuard scoped_lock(m_cs);
-        return m_buffering || m_print_to_console || m_print_to_file ||
-               !m_print_callbacks.empty();
+    /** Returns whether logs will be written to any output (lock-free) */
+    bool Enabled() const {
+        return m_buffering.load(std::memory_order_relaxed) ||
+               m_print_to_console || m_print_to_file ||
+               m_has_callbacks.load(std::memory_order_relaxed);
     }
+
+    /**
+     * Write every line queued so far, on the calling thread, and flush the
+     * outputs. For shutdown, fatal errors and tests. Does nothing before
+     * StartLogging (lines are kept in memory until then).
+     */
+    void Flush()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex);
+
+    /**
+     * Give the calling thread its ring now (called at thread start by
+     * util::ThreadRename), so that logging never allocates later on.
+     */
+    void PrepareThisThread() noexcept EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
+
+#ifndef WIN32
+    /**
+     * Fork with the logger consumer stopped, joined and drained; restart it
+     * independently in parent and child (also in the parent on fork failure).
+     * Call only with application logging producers/configuration quiescent,
+     * no live event builder, and child-compatible sinks/callbacks. This does
+     * not make arbitrary concurrent application forks safe.
+     */
+    int ForkProcess()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_consumer_mutex, !m_cs, !m_rings_mutex,
+                                 !m_wake_mutex);
+#endif
+
+    /** Tests: stop (or resume) the logger thread's periodic writes */
+    void PauseForTesting(bool paused) { m_paused_for_testing = paused; }
+
+    /** Lines dropped because their thread's ring was full (ever) */
+    uint64_t DroppedLines() const EXCLUSIVE_LOCKS_REQUIRED(!m_rings_mutex);
 
     /** Connect a slot to the print signal and return the connection */
     std::list<std::function<void(const std::string &)>>::iterator
@@ -346,6 +626,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
         StdLockGuard scoped_lock(m_cs);
         m_print_callbacks.push_back(std::move(fun));
+        m_has_callbacks = true;
         return --m_print_callbacks.end();
     }
 
@@ -355,12 +636,16 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
         StdLockGuard scoped_lock(m_cs);
         m_print_callbacks.erase(it);
+        m_has_callbacks = !m_print_callbacks.empty();
     }
 
     /** Start logging (and flush all buffered messages) */
-    bool StartLogging() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+    bool StartLogging()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_cs, !m_consumer_mutex, !m_wake_mutex);
     /** Only for testing */
-    void DisconnectTestLogger() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+    void DisconnectTestLogger()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_cs, !m_consumer_mutex, !m_rings_mutex,
+                                 !m_wake_mutex);
 
     /**
      * This offers a slight speedup and slightly smaller memory usage compared
@@ -368,29 +653,25 @@ public:
      * Mostly intended for libbitcoin-kernel apps that don't want any logging.
      * Should be used instead of StartLogging().
      */
-    void DisableLogging() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+    void DisableLogging()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_cs, !m_consumer_mutex, !m_wake_mutex);
 
     void SetRateLimiting(std::shared_ptr<LogRateLimiter> limiter)
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
         StdLockGuard scoped_lock(m_cs);
+        if (m_limiter) {
+            m_old_limiters.push_back(m_limiter);
+        }
         m_limiter = std::move(limiter);
+        m_limiter_ptr.store(m_limiter.get(), std::memory_order_release);
     }
 
     void ShrinkDebugFile();
 
-    std::unordered_map<LogFlags, Level> CategoryLevels() const
-        EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
-        StdLockGuard scoped_lock(m_cs);
-        return m_category_log_levels;
-    }
-    void SetCategoryLogLevel(const std::unordered_map<LogFlags, Level> &levels)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_cs) {
-        StdLockGuard scoped_lock(m_cs);
-        m_category_log_levels = levels;
-    }
+    std::unordered_map<LogFlags, Level> CategoryLevels() const;
+    void SetCategoryLogLevel(const std::unordered_map<LogFlags, Level> &levels);
     bool SetCategoryLogLevel(std::string_view category_str,
-                             std::string_view level_str)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+                             std::string_view level_str);
 
     Level LogLevel() const { return m_log_level.load(); }
     void SetLogLevel(Level level) { m_log_level = level; }
@@ -405,8 +686,11 @@ public:
 
     /** Return true if log accepts specified category */
     bool WillLogCategory(LogFlags category) const;
-    bool WillLogCategoryLevel(LogFlags category, Level level) const
-        EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
+    /**
+     * Whether a message of this category and level is logged: lock-free. A
+     * disabled debug category costs one relaxed load.
+     */
+    bool WillLogCategoryLevel(LogFlags category, Level level) const;
 
     /** Returns a vector of the log categories in alphabetical order. */
     std::vector<LogCategory> LogCategoriesList() const;
@@ -458,8 +742,9 @@ static inline void LogPrintf_(std::source_location &&source_loc,
             log_msg = "Error \"" + std::string(fmterr.what()) +
                       "\" while formatting log message: " + fmt;
         }
-        LogInstance().LogPrintStr(log_msg, std::move(source_loc), flag, level,
-                                  should_ratelimit ? site : nullptr);
+        LogInstance().LogPrintMovedStr(std::move(log_msg),
+                                       std::move(source_loc), flag, level,
+                                       should_ratelimit ? site : nullptr);
     }
 }
 

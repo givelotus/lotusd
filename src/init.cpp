@@ -435,6 +435,7 @@ void Shutdown(NodeContext &node) {
     }
 
     LogPrintf("%s: done\n", __func__);
+    LogInstance().Flush();
 }
 
 /**
