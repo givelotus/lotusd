@@ -14,13 +14,12 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 class WalletHDTest(BitcoinTestFramework):
     variants = {"default": {}, "descriptors": {"descriptors": True}}
 
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.extra_args = [[], ["-keypool=0"]]
-        self.noban_tx_relay = True
+    setup_clean_chain = True
+    num_nodes = 2
+    extra_args = [[], ["-keypool=0"]]
+    noban_tx_relay = True
 
-        self.supports_cli = False
+    supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

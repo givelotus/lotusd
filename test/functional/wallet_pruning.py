@@ -13,16 +13,15 @@ from test_framework.util import assert_equal, assert_raises_rpc_error
 
 
 class WalletPruningTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 2
-        self.wallet_names = []
-        self.extra_args = [
-            # node dedicated to mining
-            [],
-            # node dedicated to testing pruning
-            ["-prune=550"],
-        ]
+    setup_clean_chain = True
+    num_nodes = 2
+    wallet_names = []
+    extra_args = [
+        # node dedicated to mining
+        [],
+        # node dedicated to testing pruning
+        ["-prune=550"],
+    ]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

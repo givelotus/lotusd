@@ -7,13 +7,12 @@ from test_framework.test_framework import BitcoinTestFramework
 
 
 class DeprecatedRpcTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 2
-        self.noban_tx_relay = True
-        self.extra_args = [
-            [],
-            [],
-        ]
+    num_nodes = 2
+    noban_tx_relay = True
+    extra_args = [
+        [],
+        [],
+    ]
 
     def run_test(self):
         # This test should be used to verify correct behaviour of deprecated

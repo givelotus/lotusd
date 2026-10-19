@@ -32,15 +32,14 @@ def node_sync_via_rpc(nodes):
 
 
 class PreciousTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 3
-        self.extra_args = [
-            ["-noparkdeepreorg"],
-            ["-noparkdeepreorg"],
-            ["-noparkdeepreorg"],
-        ]
-        self.supports_cli = False
+    setup_clean_chain = True
+    num_nodes = 3
+    extra_args = [
+        ["-noparkdeepreorg"],
+        ["-noparkdeepreorg"],
+        ["-noparkdeepreorg"],
+    ]
+    supports_cli = False
 
     def setup_network(self):
         self.setup_nodes()

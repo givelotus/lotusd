@@ -8,9 +8,8 @@ from test_framework.util import assert_equal
 
 
 class SignMessagesTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.setup_clean_chain = True
-        self.num_nodes = 1
+    setup_clean_chain = True
+    num_nodes = 1
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

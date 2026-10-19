@@ -42,9 +42,8 @@ def process_mapping(fname):
 
 
 class HelpRpcTest(BitcoinTestFramework):
-    def set_test_params(self):
-        self.num_nodes = 1
-        self.supports_cli = False
+    num_nodes = 1
+    supports_cli = False
 
     def run_test(self):
         self.test_client_conversion_table()
