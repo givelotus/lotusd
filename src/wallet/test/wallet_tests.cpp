@@ -12,6 +12,7 @@
 #include <util/time.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
+#include <node/transaction.h>
 #include <policy/policy.h>
 #include <rpc/server.h>
 #include <util/translation.h>
@@ -919,6 +920,41 @@ BOOST_FIXTURE_TEST_CASE(CreateWallet, TestChain100Setup) {
         BOOST_CHECK_EQUAL(wallet->mapWallet.count(mempool_tx.GetId()), 1U);
     }
 
+    TestUnloadWallet(std::move(wallet));
+}
+
+BOOST_FIXTURE_TEST_CASE(wallet_async_broadcast_visible, TestChain100Setup) {
+    using namespace std::chrono_literals;
+    WalletContext context;
+    context.chain = m_node.chain.get();
+    auto wallet = TestLoadWallet(context);
+    CKey key;
+    key.MakeNewKey(true);
+    AddKey(*wallet, key);
+    const auto tx = MakeTransactionRef(
+        TestSimpleSpend(*m_coinbase_txns[0], 0, coinbaseKey,
+                        GetScriptForRawPubKey(key.GetPubKey())));
+
+    // The wallet's notification worker has to wait for cs_wallet.
+    std::promise<void> locked;
+    auto holder = std::async(std::launch::async, [&] {
+        LOCK(wallet->cs_wallet);
+        locked.set_value();
+        UninterruptibleSleep(200ms);
+    });
+    locked.get_future().wait();
+    std::string err;
+    BOOST_CHECK(node::BroadcastTransaction(
+                    m_node, tx, err, DEFAULT_TRANSACTION_MAXFEE,
+                    /*relay=*/false,
+                    /*wait_callback=*/true) == node::TransactionError::OK);
+    holder.get();
+    {
+        LOCK(wallet->cs_wallet);
+        const auto it = wallet->mapWallet.find(tx->GetId());
+        BOOST_REQUIRE(it != wallet->mapWallet.end());
+        BOOST_CHECK(it->second.fInMempool);
+    }
     TestUnloadWallet(std::move(wallet));
 }
 
