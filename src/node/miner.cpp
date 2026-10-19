@@ -308,7 +308,8 @@ void BlockAssembler::addTxs(const CTxMemPool &mempool) {
             return *mi++;
         }
 
-        auto &entry = backlog.front();
+        // Move the entry out before pop() destroys it.
+        CTxMemPoolEntryRef entry = std::move(backlog.front());
         backlog.pop();
 
         isFromBacklog = true;
