@@ -153,7 +153,7 @@ BOOST_FIXTURE_TEST_CASE(logging_LogPrintf_, LogSetup) {
         // trailing \n. This will be backported in PR #30929, for now we add it
         // manually.
         LogInstance().LogPrintStr(msg + "\n", std::move(loc), category, level,
-                                  /*should_ratelimit=*/false);
+                                  /*site=*/nullptr);
     }
 
     flush_debug_log();
@@ -357,8 +357,9 @@ BOOST_AUTO_TEST_CASE(logging_log_rate_limiter) {
     auto &limiter{*Assert(limiter_)};
 
     using Status = BCLog::LogRateLimiter::Status;
-    auto source_loc_1{std::source_location::current()};
-    auto source_loc_2{std::source_location::current()};
+    BCLog::LogSiteLimit site_1, site_2;
+    auto loc_1{std::source_location::current()};
+    auto loc_2{std::source_location::current()};
 
     // A fresh limiter should not have any suppressions
     BOOST_CHECK(!limiter.SuppressionsActive());
@@ -368,23 +369,23 @@ BOOST_AUTO_TEST_CASE(logging_log_rate_limiter) {
     BOOST_CHECK(!limiter.SuppressionsActive());
 
     // No suppression should happen until more than max_bytes have been consumed
-    BOOST_CHECK_EQUAL(
-        limiter.Consume(source_loc_1, std::string(max_bytes - 1, 'a')),
-        Status::UNSUPPRESSED);
-    BOOST_CHECK_EQUAL(limiter.Consume(source_loc_1, "a"), Status::UNSUPPRESSED);
+    BOOST_CHECK_EQUAL(limiter.Consume(site_1, loc_1, max_bytes - 1),
+                      Status::UNSUPPRESSED);
+    BOOST_CHECK_EQUAL(limiter.Consume(site_1, loc_1, 1), Status::UNSUPPRESSED);
     BOOST_CHECK(!limiter.SuppressionsActive());
-    BOOST_CHECK_EQUAL(limiter.Consume(source_loc_1, "a"),
+    BOOST_CHECK_EQUAL(limiter.Consume(site_1, loc_1, 1),
                       Status::NEWLY_SUPPRESSED);
     BOOST_CHECK(limiter.SuppressionsActive());
-    BOOST_CHECK_EQUAL(limiter.Consume(source_loc_1, "a"),
+    BOOST_CHECK_EQUAL(limiter.Consume(site_1, loc_1, 1),
                       Status::STILL_SUPPRESSED);
     BOOST_CHECK(limiter.SuppressionsActive());
+    BOOST_CHECK_EQUAL(site_1.dropped.load(), 2U);
+    BOOST_CHECK_EQUAL(site_1.Available(), 0U);
 
-    // Location 2  should not be affected by location 1's suppression
-    BOOST_CHECK_EQUAL(
-        limiter.Consume(source_loc_2, std::string(max_bytes, 'a')),
-        Status::UNSUPPRESSED);
-    BOOST_CHECK_EQUAL(limiter.Consume(source_loc_2, "a"),
+    // Location 2 should not be affected by location 1's suppression
+    BOOST_CHECK_EQUAL(limiter.Consume(site_2, loc_2, max_bytes),
+                      Status::UNSUPPRESSED);
+    BOOST_CHECK_EQUAL(limiter.Consume(site_2, loc_2, 1),
                       Status::NEWLY_SUPPRESSED);
     BOOST_CHECK(limiter.SuppressionsActive());
 
@@ -392,37 +393,50 @@ BOOST_AUTO_TEST_CASE(logging_log_rate_limiter) {
     scheduler.MockForwardAndSync(reset_window);
 
     BOOST_CHECK(!limiter.SuppressionsActive());
-    BOOST_CHECK_EQUAL(
-        limiter.Consume(source_loc_1, std::string(max_bytes, 'a')),
-        Status::UNSUPPRESSED);
-    BOOST_CHECK_EQUAL(
-        limiter.Consume(source_loc_2, std::string(max_bytes, 'a')),
-        Status::UNSUPPRESSED);
+    BOOST_CHECK_EQUAL(limiter.Consume(site_1, loc_1, max_bytes),
+                      Status::UNSUPPRESSED);
+    BOOST_CHECK_EQUAL(limiter.Consume(site_2, loc_2, max_bytes),
+                      Status::UNSUPPRESSED);
+
+    // A site last used by another limiter starts with a full quota.
+    auto other{scheduler.GetLimiter(max_bytes, reset_window)};
+    BOOST_CHECK_EQUAL(other->Consume(site_1, loc_1, max_bytes),
+                      Status::UNSUPPRESSED);
 }
 
-BOOST_AUTO_TEST_CASE(logging_log_limit_stats) {
-    BCLog::LogRateLimiter::Stats stats(BCLog::RATELIMIT_MAX_BYTES);
-
-    // Check that stats gets initialized correctly.
-    BOOST_CHECK_EQUAL(stats.m_available_bytes, BCLog::RATELIMIT_MAX_BYTES);
-    BOOST_CHECK_EQUAL(stats.m_dropped_bytes, uint64_t{0});
-
-    const uint64_t MESSAGE_SIZE{BCLog::RATELIMIT_MAX_BYTES / 2};
-    BOOST_CHECK(stats.Consume(MESSAGE_SIZE));
-    BOOST_CHECK_EQUAL(stats.m_available_bytes,
-                      BCLog::RATELIMIT_MAX_BYTES - MESSAGE_SIZE);
-    BOOST_CHECK_EQUAL(stats.m_dropped_bytes, uint64_t{0});
-
-    BOOST_CHECK(stats.Consume(MESSAGE_SIZE));
-    BOOST_CHECK_EQUAL(stats.m_available_bytes,
-                      BCLog::RATELIMIT_MAX_BYTES - MESSAGE_SIZE * 2);
-    BOOST_CHECK_EQUAL(stats.m_dropped_bytes, uint64_t{0});
-
-    // Consuming more bytes after already having consumed RATELIMIT_MAX_BYTES
-    // should fail.
-    BOOST_CHECK(!stats.Consume(500));
-    BOOST_CHECK_EQUAL(stats.m_available_bytes, uint64_t{0});
-    BOOST_CHECK_EQUAL(stats.m_dropped_bytes, uint64_t{500});
+BOOST_AUTO_TEST_CASE(logging_log_rate_limiter_threads) {
+    // Many threads on one site: exactly the quota is let through, every
+    // other byte is counted as dropped, and one thread sees the start of
+    // the suppression.
+    constexpr uint64_t MAX_BYTES{100'000};
+    ScopedScheduler scheduler{};
+    auto limiter{scheduler.GetLimiter(MAX_BYTES, 1h)};
+    BCLog::LogSiteLimit site;
+    const auto loc{std::source_location::current()};
+    std::atomic<uint64_t> passed{0}, newly{0};
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 8; ++t) {
+        threads.emplace_back([&] {
+            for (int i = 0; i < 10'000; ++i) {
+                switch (limiter->Consume(site, loc, 10)) {
+                    case BCLog::LogRateLimiter::Status::UNSUPPRESSED:
+                        passed += 10;
+                        break;
+                    case BCLog::LogRateLimiter::Status::NEWLY_SUPPRESSED:
+                        ++newly;
+                        break;
+                    case BCLog::LogRateLimiter::Status::STILL_SUPPRESSED:
+                        break;
+                }
+            }
+        });
+    }
+    for (auto &t : threads) {
+        t.join();
+    }
+    BOOST_CHECK_EQUAL(passed.load(), MAX_BYTES);
+    BOOST_CHECK_EQUAL(newly.load(), 1U);
+    BOOST_CHECK_EQUAL(site.dropped.load(), 8U * 10'000 * 10 - MAX_BYTES);
 }
 
 namespace {
@@ -643,16 +657,16 @@ BOOST_FIXTURE_TEST_CASE(logging_json_format, LogSetup) {
     const auto loc{std::source_location::current()};
     LogInstance().LogPrintStr("hello \"world\"\n", std::source_location{loc},
                               BCLog::NET, BCLog::Level::Debug,
-                              /*should_ratelimit=*/false);
+                              /*site=*/nullptr);
     LogInfo("two\nlines\n");
     LogWarning("bad byte \xff and tab\t\n");
     // A message without trailing newline, then its continuation
     LogInstance().LogPrintStr("partial ", std::source_location{loc}, BCLog::NET,
                               BCLog::Level::Debug,
-                              /*should_ratelimit=*/false);
+                              /*site=*/nullptr);
     LogInstance().LogPrintStr("rest\n", std::source_location{loc}, BCLog::NET,
                               BCLog::Level::Debug,
-                              /*should_ratelimit=*/false);
+                              /*site=*/nullptr);
     LogInstance().m_log_sourcelocations = true;
     LogDebug(BCLog::NET, "with function\n");
     LogInstance().m_log_timestamps = false;
