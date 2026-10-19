@@ -71,15 +71,6 @@ class AvalancheOptionsTest(BitcoinTestFramework):
             extra_args=[
                 f"-avaproof={proof.serialize().hex()}",
                 f"-avamasterkey={bytes_to_wif(privkey.get_bytes())}",
-                "-i2psam=127.0.01:7656",
-            ],
-            expected_msg="Error: Running a staking node behind I2P is not supported. Please disable -i2psam.",
-        )
-
-        node.assert_start_raises_init_error(
-            extra_args=[
-                f"-avaproof={proof.serialize().hex()}",
-                f"-avamasterkey={bytes_to_wif(privkey.get_bytes())}",
                 "-onlynet=ipv6",
             ],
             expected_msg="Error: Restricting the outbound network is not supported when running a staking node. Please disable -onlynet.",

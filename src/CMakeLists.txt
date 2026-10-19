@@ -653,7 +653,6 @@ add_library(server
 	httpmetrics.cpp
 	httprpc.cpp
 	httpserver.cpp
-	i2p.cpp
 	index/base.cpp
 	index/blockfilterindex.cpp
 	index/coinstatsindex.cpp
@@ -1053,7 +1052,6 @@ if(BUILD_CHAINSTATE)
 		common/messages.cpp  # via net_permissions.cpp (ResolveErrMsg)
 		common/netif.cpp     # via net.cpp (GetLocalAddresses)
 		dnsseeds.cpp         # via net.cpp (GetRandomizedDNSSeeds)
-		i2p.cpp              # via net.cpp
 		key_io.cpp           # avalanche/processor.cpp uses DecodeSecret
 		minerfund.cpp        # via policy/block/minerfund.cpp
 		net.cpp              # avalanche uses CConnman
@@ -1073,7 +1071,6 @@ if(BUILD_CHAINSTATE)
 		timedata.cpp            # via net.cpp
 		util/asmap.cpp          # via netaddress.cpp
 		util/exception.cpp      # via util/thread.cpp
-		util/readwritefile.cpp  # via i2p.cpp
 		util/sock.cpp           # via net.cpp
 		util/thread.cpp         # via scheduler.cpp
 	)
