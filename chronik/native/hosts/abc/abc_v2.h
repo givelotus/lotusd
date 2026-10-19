@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <mutex>
 
 class CBlock;
 class CBlockIndex;
@@ -50,7 +51,9 @@ lotus_v2::ffi::NativeBlock ConvertV2NativeBlock(const CBlock &block,
  *    first error, then publish the authority;
  *  - Connect/Disconnect: the block's native form (read from disk, since the
  *    core's Block does not carry the node block), publishing the authority
- *    after each success. Failures are logged and never fail the indexer.
+ *    after each success. Failures are logged and never fail the indexer;
+ *  - RegisterRoutes: /v2 and /v2/explorer/v1 (chronik-http v2.rs and
+ *    v2_explorer.rs), each request on the then-current service.
  */
 class AbcV2ServiceExtension final : public Extension {
 public:
@@ -63,15 +66,20 @@ public:
     void Connect(const Block &block, WriteTxn *) override;
     void Disconnect(const Block &block, WriteTxn *) override;
     void Close() override;
+    /** /v2 and /v2/explorer/v1 over the current service. */
+    void RegisterRoutes(Router &router) override;
 
     /** The service, once opened (shared with the HTTP layer). */
-    std::shared_ptr<lotus_v2::V2Service> Service() const { return m_service; }
+    std::shared_ptr<lotus_v2::V2Service> Service() const;
 
 private:
     void Log(const std::string &msg) const;
+    void SetService(std::shared_ptr<lotus_v2::V2Service> service);
 
     const node::NodeContext &m_node;
     const Host &m_host;
+    /** Written on the indexer thread; read by HTTP handlers. */
+    mutable std::mutex m_service_mutex;
     std::shared_ptr<lotus_v2::V2Service> m_service;
 };
 
