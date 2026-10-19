@@ -467,7 +467,11 @@ public:
 
     std::set<COutPoint> setLockedCoins GUARDED_BY(cs_wallet);
 
-    /** Registered interfaces::Chain::Notifications handler. */
+    /**
+     * Registered interfaces::Chain::Notifications handler. Resetting it runs
+     * the notifications already queued for this wallet; never reset it while
+     * holding cs_wallet.
+     */
     std::unique_ptr<interfaces::Handler> m_chain_notifications_handler;
 
     /** Interface for accessing chain state. */
