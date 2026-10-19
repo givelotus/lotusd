@@ -110,13 +110,16 @@ void AddLoggingArgs(ArgsManager &argsman) {
     argsman.AddArg(
         "-logformat=<format>",
         strprintf(
-            "Format of log lines: text, logfmt, json, json-gcp or json-ecs (default: %s). json writes one "
+            "Format of log lines: %s (default: %s). journald sends native "
+            "entries to "
+            "/run/systemd/journal/socket (Linux only); stdout remains text. "
+            "json writes one "
             "JSON object per line with the fields time (RFC 3339, "
             "microseconds; omitted with -logtimestamps=0), level, category, "
             "thread, message and, with -logsourcelocations, source (file, "
             "line, function); -logthreadnames, -logtimemicros and "
             "-loglevelalways do not apply to it",
-            DEFAULT_LOGFORMAT),
+            BCLog::SupportedLogFormats(), DEFAULT_LOGFORMAT),
         ArgsManager::ALLOW_ANY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-logratelimit",
                    strprintf("Apply rate limiting to unconditional logging to "
@@ -230,7 +233,8 @@ void SetLoggingCategories(const ArgsManager &args) {
 
 bool StartLogging(const ArgsManager &args) {
     BCLog::Logger &logger = LogInstance();
-    if (logger.m_print_to_file) {
+    if (logger.m_print_to_file &&
+        logger.m_log_format != BCLog::LogFormat::JOURNALD) {
         if (args.GetBoolArg("-shrinkdebugfile",
                             logger.DefaultShrinkDebugFile())) {
             // Do this first since it both loads a bunch of debug.log into
@@ -241,9 +245,7 @@ bool StartLogging(const ArgsManager &args) {
     }
 
     if (!logger.StartLogging()) {
-        return InitError(
-            strprintf(Untranslated("Could not open debug log file %s"),
-                      fs::PathToString(logger.m_file_path)));
+        return InitError(Untranslated(logger.StartupError()));
     }
 
     if (!logger.m_log_timestamps) {
