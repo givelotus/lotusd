@@ -6,6 +6,7 @@
 import argparse
 import configparser
 import contextlib
+import io
 import json
 import logging
 import os
@@ -151,6 +152,10 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         # Outcome details, filled in by main() (see also self.success)
         self.skip_reason = None
         self.failure = None
+        # Set up properly by setup(); here so that a failure early in setup()
+        # is still reported (see main() and shutdown())
+        self.success = TestStatus.FAILED
+        self.log = logging.getLogger("TestFramework")
         self._argv = list(sys.argv[1:] if argv is None else argv)
         self.chain: str = "regtest"
         self.setup_clean_chain: bool = False
@@ -539,8 +544,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
             print("Testcase failed. Attaching python debugger. Enter ? for help")
             pdb.set_trace()
 
-        self.log.debug("Closing down network thread")
-        self.network_thread.close()
+        if self.network_thread is not None:
+            self.log.debug("Closing down network thread")
+            self.network_thread.close()
         if self.success == TestStatus.FAILED:
             self.log.info(
                 "Not stopping nodes as test failed. The dangling processes will be cleaned up later."
@@ -592,7 +598,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 "If this failure happened unexpectedly or intermittently, please"
                 " file a bug and provide a link or upload of the combined log."
             )
-            self.log.error(self.config["environment"]["PACKAGE_BUGREPORT"])
+            self.log.error(
+                self.config.get("environment", "PACKAGE_BUGREPORT", fallback="")
+            )
             self.log.error("")
             exit_code = TEST_EXIT_FAILED
         # Logging.shutdown will not remove stream- and filehandlers, so we must
@@ -1437,7 +1445,7 @@ class TestMetaClass(unittest.TestCase):
 class TestProgrammaticRun(unittest.TestCase):
     """Run node-less tests in-process with main(exit_process=False)."""
 
-    def run_case(self, run_test):
+    def run_case(self, run_test, config=None):
         class Case(BitcoinTestFramework):
             def set_test_params(self):
                 self.num_nodes = 0
@@ -1458,11 +1466,13 @@ class TestProgrammaticRun(unittest.TestCase):
         workdir = tempfile.mkdtemp(prefix="test_framework_unit_")
         self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
         configfile = os.path.join(workdir, "config.ini")
-        with open(configfile, "w", encoding="utf8") as f:
-            f.write(
+        if config is None:
+            config = (
                 "[environment]\nBUILDDIR=" + workdir + "\nEXEEXT=\nEMULATOR=\n"
                 "PACKAGE_BUGREPORT=\n[components]\n"
             )
+        with open(configfile, "w", encoding="utf8") as f:
+            f.write(config)
         test = Case(
             argv=[
                 f"--configfile={configfile}",
@@ -1485,6 +1495,18 @@ class TestProgrammaticRun(unittest.TestCase):
         test, code = self.run_case(run_test)
         self.assertEqual(code, TEST_EXIT_SKIPPED)
         self.assertEqual(test.skip_reason, "not today")
+
+    def test_setup_fails_early(self):
+        # A config.ini without [environment]: setup() fails before logging
+        # and the network thread exist, and the failure is still reported.
+        # Without logging, the failure is printed: keep it off the console
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            test, code = self.run_case(lambda self: None, config="[components]\n")
+        self.assertEqual(code, TEST_EXIT_FAILED)
+        self.assertEqual(test.failure["type"], "KeyError")
 
     def test_failed(self):
         def run_test(self):
@@ -1555,7 +1577,10 @@ class TestVariants(unittest.TestCase):
         # Explicit options win over the variant's
         explicit = Case(argv=argv + ["--variant=seeded", "--randomseed=9"])
         self.assertEqual(explicit.options.randomseed, 9)
-        with self.assertRaises(SystemExit):
+        with (
+            self.assertRaises(SystemExit),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             Case(argv=argv + ["--variant=nope"])
 
     def test_unknown_option(self):
