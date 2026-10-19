@@ -21,7 +21,7 @@ import time
 import traceback
 import unittest
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import AbstractSet, Any, Dict, List, Optional
 
 from . import coverage
 from .address import ADDRESS_ECREG_P2SH_OP_TRUE
@@ -164,6 +164,9 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
     # Disable ThreadOpenConnections by default, so that adding entries to
     # addrman will not result in automatic connections to them.
     disable_autoconnect: bool = True
+    # What the test needs, from REQUIREMENTS (e.g. {"wallet", "chronik"});
+    # the test is skipped when something is missing.
+    requires: AbstractSet[str] = frozenset()
 
     def __init__(self, argv=None):
         """Sets test framework defaults. Do not override this method. Instead, override the set_test_params() method
@@ -680,8 +683,14 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         pass
 
     def skip_test_if_missing_module(self):
-        """Override this method to skip a test if a module is not compiled"""
-        pass
+        """Skip the test if something in `requires` is missing. Override this
+        method only for conditions that `requires` cannot express."""
+        unknown = set(self.requires) - set(REQUIREMENTS)
+        if unknown:
+            raise ValueError(f"unknown requirements: {sorted(unknown)}")
+        for name, check in REQUIREMENTS.items():
+            if name in self.requires:
+                check(self)
 
     def setup_chain(self):
         """Override this method to customize blockchain setup"""
@@ -1371,6 +1380,23 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         return os.path.isfile(os.path.join(blocksdir, f"blk{filenum}.dat"))
 
 
+# Requirements a test can list in `requires`, and the check that skips the
+# test (raising SkipTest) when one is missing. Checked in this order.
+REQUIREMENTS = {
+    "wallet": BitcoinTestFramework.skip_if_no_wallet,
+    "wallet_tool": BitcoinTestFramework.skip_if_no_wallet_tool,
+    "cli": BitcoinTestFramework.skip_if_no_cli,
+    "zmq": BitcoinTestFramework.skip_if_no_bitcoind_zmq,
+    "py3_zmq": BitcoinTestFramework.skip_if_no_py3_zmq,
+    "chronik": BitcoinTestFramework.skip_if_no_chronik,
+    "chronik_plugins": BitcoinTestFramework.skip_if_no_chronik_plugins,
+    "linux": BitcoinTestFramework.skip_if_platform_not_linux,
+    "usdt": BitcoinTestFramework.skip_if_no_bitcoind_tracepoints,
+    "bcc": BitcoinTestFramework.skip_if_no_python_bcc,
+    "bpf_permissions": BitcoinTestFramework.skip_if_no_bpf_permissions,
+}
+
+
 class TestNodeExtraArgs(unittest.TestCase):
     def test_default_lists_are_distinct(self):
         args = node_extra_args(3)
@@ -1631,3 +1657,35 @@ class TestClassParameters(unittest.TestCase):
         self.assertEqual(Declarative.extra_args, [["-a"], ["-b"]])
         other = Declarative(argv=[f"--configfile={configfile}"])
         self.assertEqual(other.extra_args, [["-a"], ["-b"]])
+
+
+class TestRequirements(unittest.TestCase):
+    def test_requires(self):
+        calls = []
+
+        class Fake:
+            requires = {"cli", "wallet"}
+
+        def check(name, missing=False):
+            def run(self):
+                calls.append(name)
+                if missing:
+                    raise SkipTest(f"no {name}")
+
+            return run
+
+        saved = dict(REQUIREMENTS)
+        self.addCleanup(REQUIREMENTS.update, saved)
+        REQUIREMENTS.update(
+            {name: check(name) for name in REQUIREMENTS}
+            | {"cli": check("cli", missing=True)}
+        )
+        with self.assertRaises(SkipTest):
+            BitcoinTestFramework.skip_test_if_missing_module(Fake())
+        # Checked in table order: the wallet (which also marks the wallet as
+        # required) before the cli, which is missing
+        self.assertEqual(calls, ["wallet", "cli"])
+
+        Fake.requires = {"no_such_thing"}
+        with self.assertRaises(ValueError):
+            BitcoinTestFramework.skip_test_if_missing_module(Fake())
