@@ -85,7 +85,7 @@ int ChargeDerived(const VmBytes &script, const std::vector<VmBytes> &args) {
 // state lookup: the harness must provide the independently resolved coin set.
 int Context(int argc, char **argv) {
     if (argc < 7) return 2;
-    const TxProfile tp{65535, 65535, 65535, 8192, 1024, 8192, 64};
+    const TxProfile tp{256, 256, 256, 8192, 1024, 8192, 64};
     Transaction tx;
     std::string error;
     if (!DecodeTransaction(Hex(argv[2]), tp, tx, error)) return 2;
