@@ -40,14 +40,36 @@ public:
     using ChronikError::ChronikError;
 };
 
+/**
+ * Open failure for an index of another schema version; it is not rebuilt
+ * implicitly (the message says to reindex).
+ */
+class V2SchemaError : public V2ServiceError {
+public:
+    using V2ServiceError::V2ServiceError;
+};
+
 /** The DB owner: readers hold `mutex` for the whole snapshot use. */
 struct SharedV2Db {
+    /** In-memory recording transaction source (tests and tools). */
     SharedV2Db(const std::filesystem::path &path, const Binding &binding,
                const Bounds &bounds)
         : db(path, binding, bounds) {}
+    SharedV2Db(const std::filesystem::path &path, const Binding &binding,
+               const Bounds &bounds, std::shared_ptr<MemTxSource> recorder)
+        : db(path, binding, bounds, std::move(recorder)) {}
+    SharedV2Db(const std::filesystem::path &path, const Binding &binding,
+               const Bounds &bounds, std::shared_ptr<const TxSource> source)
+        : db(path, binding, bounds, std::move(source)) {}
     std::mutex mutex;
     V2Db db;
 };
+
+/**
+ * Native facts of one confirmed transaction of the block `block` (throws
+ * V2ServiceError on an invalid output frame).
+ */
+ConfirmedTx ConvertNativeTx(const ffi::NativeTx &tx, const Anchor &block);
 
 /** Thread-safe confirmed index owner. Copies share storage and caps. */
 class V2Service {
@@ -56,10 +78,15 @@ public:
      * Open a dedicated directory: fresh requires its absence, existing
      * requires mdbx.dat. Nothing is deleted. Reads stay unavailable until
      * explicit genesis commits. `sha256` is the host SHA-256 (filter digest).
+     * Indexed transactions are read through `source` (the node's block
+     * files); without one they are kept in memory, shared by every service
+     * opened on the same path in this process (tests and tools). An index of
+     * another schema version throws V2SchemaError.
      */
     static std::unique_ptr<V2Service>
     Open(const std::string &path, const ffi::Binding &binding, bool fresh,
-         const ffi::ServiceLimits &limits, query_branches::Sha256Fn sha256);
+         const ffi::ServiceLimits &limits, query_branches::Sha256Fn sha256,
+         std::shared_ptr<const TxSource> source = nullptr);
 
     /** Invalidate before native chain changes or recovery. */
     uint64_t InvalidateAuthority();

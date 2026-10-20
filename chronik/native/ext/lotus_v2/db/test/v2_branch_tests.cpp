@@ -19,18 +19,15 @@ using namespace chronik::native::lotus_v2::test;
 
 namespace {
 
-/** The private v2_branch.rs Record: re-encode with its creation tampered. */
-Bytes TamperRecordCreationHash(ByteView saved) {
-    postcard::Reader r(saved);
-    const Bytes output = r.ByteVec();
-    TxLocation creation;
-    codec::Read(r, creation);
-    creation.txhash.hash.b[0] ^= 1;
-    Bytes out;
-    postcard::Writer w(out);
-    w.ByteVec(output);
-    codec::Write(w, creation);
-    w.Raw(r.Remaining());
+/**
+ * Flip a byte of a spent token coin record: postcard {flags, value varint,
+ * Some(token_id), Some((spender txid, input index))}. Offset 1 is the value
+ * (a one-byte varint in the fixture) and offset 36 the spender txid.
+ */
+Bytes TamperSpentTokenCoin(ByteView saved, size_t offset) {
+    BOOST_REQUIRE(saved.size() > 68 && saved[2] == 1 && saved[35] == 1);
+    Bytes out(saved.begin(), saved.end());
+    out[offset] ^= 1;
     return out;
 }
 
@@ -43,16 +40,12 @@ Bytes UndoWithExtraEntry(ByteView saved, ByteView key, ByteView value) {
     codec::Read(r, binding);
     codec::Read(r, anchor);
     codec::Read(r, parent);
-    const uint32_t file_num = r.U32();
-    const uint64_t pos = r.U64();
     const uint64_t n = r.SeqLen();
     Bytes out;
     postcard::Writer w(out);
     codec::Write(w, binding);
     codec::Write(w, anchor);
     codec::Write(w, parent);
-    w.U32(file_num);
-    w.U64(pos);
     w.SeqLen(n + 1);
     w.Raw(r.Remaining());
     w.ByteVec(key);
@@ -76,10 +69,11 @@ Bytes RecordKey(const OutPoint &op) {
 
 BOOST_AUTO_TEST_SUITE(lotus_v2_branch_tests)
 
-BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
-    V2TempDir dir("v2-schema3");
+BOOST_AUTO_TEST_CASE(schema4_complete_facts_atomic_replay_and_tamper) {
+    V2TempDir dir("v2-schema4");
+    const auto mem = std::make_shared<MemTxSource>();
     std::optional<V2Db> db;
-    db.emplace(dir.path, TestBinding(), TestBounds());
+    db.emplace(dir.path, TestBinding(), TestBounds(), mem);
     db->InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = *db->Checkpoint();
     Output token = TestOutput(5, false);
@@ -106,13 +100,13 @@ BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
 
     const Bytes input_key = InputKey(TxId{Fill(22)}, 0);
     Bytes saved = *env.Get(input_key);
-    InputMeta corrupted_input = DecodeRecord<InputMeta>(saved);
+    StoredInputMeta corrupted_input = DecodeRecord<StoredInputMeta>(saved);
     corrupted_input.flags = 255;
     env.Put(input_key, EncodeRecord(corrupted_input));
     BOOST_CHECK(ThrowsV2(
         [&] { db->Snapshot().ExplorerInput(TxId{Fill(22)}, 0); }));
     env.Put(input_key, saved);
-    corrupted_input = DecodeRecord<InputMeta>(saved);
+    corrupted_input = DecodeRecord<StoredInputMeta>(saved);
     corrupted_input.coinbase_data = WireRange{UINT64_MAX, 1};
     env.Put(input_key, EncodeRecord(corrupted_input));
     BOOST_CHECK(ThrowsV2(
@@ -139,8 +133,10 @@ BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
 
     const Bytes record_key = RecordKey(Op(20, 0));
     saved = *env.Get(record_key);
-    env.Put(record_key, TamperRecordCreationHash(saved));
-    BOOST_CHECK(ThrowsV2([&] { db->Snapshot().GetOutput(Op(20, 0)); }));
+    for (const size_t offset : {size_t(36), size_t(1)}) {
+        env.Put(record_key, TamperSpentTokenCoin(saved, offset));
+        BOOST_CHECK(ThrowsV2([&] { db->Snapshot().GetOutput(Op(20, 0)); }));
+    }
     env.Put(record_key, saved);
 
     const Bytes summary_key = AssetSummaryKey(Fill(77));
@@ -168,17 +164,15 @@ BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
     CommittedBlock conflicting = second;
     conflicting.transactions[0].explorer.wire.push_back(1);
     BOOST_CHECK(ThrowsV2([&] { db->Connect(conflicting); }));
-    const TxMeta tx_meta =
-        DecodeRecord<TxMeta>(*env.Get(TxKey(TxId{Fill(22)})));
-    const Bytes original = env.Flat().ReadAt(
-        tx_meta.file_num, tx_meta.data_pos, size_t(tx_meta.wire_size));
-    const uint8_t one = 1;
-    env.Flat().WriteAt(tx_meta.file_num, tx_meta.data_pos, ByteView(&one, 1));
+    // The node's bytes no longer match the recorded wire checksum: reads and
+    // the undo check fail closed.
+    const auto flip = [](NodeTx &tx) { tx.explorer.wire[0] ^= 1; };
+    BOOST_CHECK(mem->Modify(TxId{Fill(22)}, flip));
     BOOST_CHECK(ThrowsV2(
         [&] { db->Snapshot().ExplorerWireSlice(TxId{Fill(22)}, 0, 1); }));
     BOOST_CHECK(ThrowsV2([&] { db->Disconnect(second.anchor); }));
     BOOST_CHECK(db->Checkpoint() == second.anchor);
-    env.Flat().WriteAt(tx_meta.file_num, tx_meta.data_pos, original);
+    BOOST_CHECK(mem->Modify(TxId{Fill(22)}, flip));
     db->Disconnect(second.anchor);
     BOOST_CHECK(!db->Snapshot().ExplorerTx(TxId{Fill(22)}));
     BOOST_CHECK(!env.Get(
@@ -198,23 +192,38 @@ BOOST_AUTO_TEST_CASE(schema3_complete_facts_atomic_replay_and_tamper) {
     BOOST_CHECK(after == baseline);
 
     db.reset();
-    {
-        V2Env raw(dir.path);
-        Bytes identity;
-        postcard::Writer w(identity);
-        w.U32(2);
-        codec::Write(w, TestBinding());
-        raw.Put(Str("v2-binding"), identity);
+    // An index of an older schema is refused with a reindex instruction,
+    // never read with this build's layouts.
+    for (const uint32_t old : {2u, 3u}) {
+        {
+            V2Env raw(dir.path);
+            Bytes identity;
+            postcard::Writer w(identity);
+            w.U32(old);
+            codec::Write(w, TestBinding());
+            raw.Put(Str("v2-binding"), identity);
+        }
+        bool refused = false;
+        try {
+            V2Db(dir.path, TestBinding(), TestBounds());
+        } catch (const V2Error &e) {
+            refused = e.kind() == V2Error::Kind::Schema &&
+                      std::string_view(e.what()).find("-chronikreindex") !=
+                          std::string_view::npos &&
+                      std::string_view(e.what()).find(
+                          "schema version " + std::to_string(old)) !=
+                          std::string_view::npos;
+        }
+        BOOST_CHECK(refused);
     }
-    BOOST_CHECK(
-        ThrowsInvalid([&] { V2Db(dir.path, TestBinding(), TestBounds()); },
-                      "binding/schema mismatch"));
 }
 
 BOOST_AUTO_TEST_CASE(restart_inverse_burns_and_replay) {
     V2TempDir dir("v2-index");
+    // The node's block files outlive a restart: share one source.
+    const auto mem = std::make_shared<MemTxSource>();
     std::optional<V2Db> db;
-    db.emplace(dir.path, TestBinding(), TestBounds());
+    db.emplace(dir.path, TestBinding(), TestBounds(), mem);
     db->InitializeGenesis(FixtureGenesis({}));
     const Anchor genesis = db->Snapshot().anchor;
     const CommittedBlock first = TestBlock(
@@ -243,7 +252,7 @@ BOOST_AUTO_TEST_CASE(restart_inverse_burns_and_replay) {
                     Op(20, 0));
     }
     db.reset();
-    db.emplace(dir.path, TestBinding(), TestBounds());
+    db.emplace(dir.path, TestBinding(), TestBounds(), mem);
     BOOST_CHECK(db->Snapshot().anchor == second.anchor);
     db->Connect(second);
     db->Disconnect(second.anchor);
