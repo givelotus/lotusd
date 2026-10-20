@@ -88,6 +88,13 @@ public:
 
     rust::Vec<uint8_t> load_raw_tx(uint32_t file_num, uint32_t data_pos) const;
 
+    /**
+     * Read the transaction serialized at a block-file position (C++ only, for
+     * the V2 index, which stores positions instead of transactions).
+     */
+    std::shared_ptr<const CTransaction> read_tx_from_disk(uint32_t file_num,
+                                                         uint32_t data_pos) const;
+
     bool is_avalanche_finalized_preconsensus(
         const std::array<uint8_t, 32> &txid) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_node.mempool->cs);

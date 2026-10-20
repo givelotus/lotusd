@@ -42,14 +42,77 @@ pub struct V2Service {
     service_epoch: [u8; 16],
     index_error: Arc<AtomicBool>,
 }
-/// Open a dedicated directory; fresh requires absence, existing requires mdbx.dat.
-/// No deletion occurs. Reads stay unavailable until explicit genesis commits.
+/// Failure to open a V2 service.
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    /// The directory holds an index of another schema version; it is not
+    /// rebuilt implicitly (the message says to reindex).
+    #[error("{0}")]
+    Schema(String),
+    /// Any other failure.
+    #[error("{0}")]
+    Other(String),
+}
+impl From<String> for OpenError {
+    fn from(s: String) -> Self {
+        OpenError::Other(s)
+    }
+}
+impl From<&str> for OpenError {
+    fn from(s: &str) -> Self {
+        OpenError::Other(s.into())
+    }
+}
+/// Open a dedicated directory without a node: indexed transactions are kept
+/// in memory, shared by every service opened on the same path in this
+/// process (tests and tools). See `open_service_with_source`.
 pub fn open_service(
     path: &str,
     binding: f::Binding,
     fresh: bool,
     limits: f::ServiceLimits,
 ) -> Result<Box<V2Service>> {
+    static MEMORY: Mutex<
+        std::collections::BTreeMap<String, Arc<db::MemTxSource>>,
+    > = Mutex::new(std::collections::BTreeMap::new());
+    let memory = MEMORY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(path.to_string())
+        .or_default()
+        .clone();
+    open_service_impl(path, binding, fresh, limits, TxSourceKind::Memory(memory))
+        .map_err(|e| e.to_string())
+}
+/// Open a dedicated directory; fresh requires absence, existing requires mdbx.dat.
+/// No deletion occurs. Reads stay unavailable until explicit genesis commits.
+/// Indexed transactions are read from the node's block files through `node`.
+pub fn open_service_with_node(
+    path: &str,
+    binding: f::Binding,
+    fresh: bool,
+    limits: f::ServiceLimits,
+    node: Arc<chronik_indexer::indexer::Node>,
+) -> std::result::Result<Box<V2Service>, OpenError> {
+    open_service_impl(
+        path,
+        binding,
+        fresh,
+        limits,
+        TxSourceKind::Node(Arc::new(NodeTxSource { node })),
+    )
+}
+enum TxSourceKind {
+    Memory(Arc<db::MemTxSource>),
+    Node(Arc<dyn db::TxSource>),
+}
+fn open_service_impl(
+    path: &str,
+    binding: f::Binding,
+    fresh: bool,
+    limits: f::ServiceLimits,
+    source: TxSourceKind,
+) -> std::result::Result<Box<V2Service>, OpenError> {
     if path.is_empty() || path.len() > 4096 {
         return Err("path bound".into());
     }
@@ -85,16 +148,23 @@ pub fn open_service(
     } else if !path.join("mdbx.dat").is_file() {
         return Err("existing V2 DB required".into());
     }
-    let database = V2Db::open(
-        path,
-        db::Binding {
-            chain_id: binding.chain_id,
-            genesis: binding.genesis,
-            profile: binding.profile,
-        },
-        bounds,
-    )
-    .map_err(|e| e.to_string())?;
+    let db_binding = db::Binding {
+        chain_id: binding.chain_id,
+        genesis: binding.genesis,
+        profile: binding.profile,
+    };
+    let database = match source {
+        TxSourceKind::Memory(memory) => {
+            V2Db::open_recording(path, db_binding, bounds, memory)
+        }
+        TxSourceKind::Node(node) => {
+            V2Db::open_with_source(path, db_binding, bounds, node)
+        }
+    }
+    .map_err(|e| match e {
+        db::Error::Schema { .. } => OpenError::Schema(e.to_string()),
+        e => OpenError::Other(e.to_string()),
+    })?;
     Ok(Box::new(V2Service {
         db: Arc::new(Mutex::new(database)),
         limits,
@@ -244,68 +314,11 @@ impl V2Service {
                 }
             }
         }
+        let block_anchor = anchor(&block.anchor);
         let transactions = block
             .transactions
             .into_iter()
-            .map(|tx| {
-                let outputs = tx
-                    .outputs
-                    .into_iter()
-                    .map(|o| Output::decode(&o.wire).map_err(|e| e.to_string()))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(db::ConfirmedTx {
-                    location: TxLocation {
-                        block_id: Hash32(block.anchor.block_id),
-                        height: block.anchor.height,
-                        tx_index: tx.index,
-                        txid: TxId(Hash32(tx.txid)),
-                        txhash: TxHash(Hash32(tx.txhash)),
-                    },
-                    explorer: ExplorerTxFacts {
-                        wire: tx.wire,
-                        lock: tx.lock,
-                        inputs: tx
-                            .full_inputs
-                            .into_iter()
-                            .map(|i| InputFact {
-                                prev_txid: i.prev_txid,
-                                prev_index: i.prev_index,
-                                sequence: i.sequence,
-                                flags: i.flags,
-                                path_index: i.path_index,
-                                has_coinbase_data: i.has_coinbase_data,
-                                coinbase_data: range(i.coinbase_data),
-                                witnesses: i
-                                    .witnesses
-                                    .into_iter()
-                                    .map(|w| WitnessFact {
-                                        script: range(w.script),
-                                        siblings_table: range(w.siblings_table),
-                                        siblings_count: w.siblings_count,
-                                        arguments_table: range(
-                                            w.arguments_table,
-                                        ),
-                                        arguments_count: w.arguments_count,
-                                    })
-                                    .collect(),
-                                resolved_creation: None,
-                            })
-                            .collect(),
-                    },
-                    outputs,
-                    spends: tx
-                        .inputs
-                        .into_iter()
-                        .map(|i| db::SpentInput {
-                            outpoint: OutPoint {
-                                txid: TxId(Hash32(i.txid)),
-                                out_idx: i.out_idx,
-                            },
-                            input_index: i.input_index,
-                        })
-                        .collect(),
-                })
-            })
+            .map(|tx| confirmed_tx(tx, block_anchor))
             .collect::<Result<Vec<_>>>()?;
         Ok(db::CommittedBlock {
             anchor: anchor(&block.anchor),
@@ -595,6 +608,101 @@ pub fn start_v2_server(
     )
 }
 
+/// Native facts of one confirmed transaction of `block`.
+fn confirmed_tx(tx: f::NativeTx, block: db::Anchor) -> Result<db::ConfirmedTx> {
+    let outputs = tx
+        .outputs
+        .into_iter()
+        .map(|o| Output::decode(&o.wire).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(db::ConfirmedTx {
+        location: TxLocation {
+            block_id: Hash32(block.block_id),
+            height: block.height,
+            tx_index: tx.index,
+            txid: TxId(Hash32(tx.txid)),
+            txhash: TxHash(Hash32(tx.txhash)),
+        },
+        pos: db::TxPos {
+            file_num: tx.file_num,
+            data_pos: tx.data_pos,
+        },
+        explorer: ExplorerTxFacts {
+            wire: tx.wire,
+            lock: tx.lock,
+            inputs: tx
+                .full_inputs
+                .into_iter()
+                .map(|i| InputFact {
+                    prev_txid: i.prev_txid,
+                    prev_index: i.prev_index,
+                    sequence: i.sequence,
+                    flags: i.flags,
+                    path_index: i.path_index,
+                    has_coinbase_data: i.has_coinbase_data,
+                    coinbase_data: range(i.coinbase_data),
+                    witnesses: i
+                        .witnesses
+                        .into_iter()
+                        .map(|w| WitnessFact {
+                            script: range(w.script),
+                            siblings_table: range(w.siblings_table),
+                            siblings_count: w.siblings_count,
+                            arguments_table: range(
+                                w.arguments_table,
+                            ),
+                            arguments_count: w.arguments_count,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        },
+        outputs,
+        spends: tx
+            .inputs
+            .into_iter()
+            .map(|i| db::SpentInput {
+                outpoint: OutPoint {
+                    txid: TxId(Hash32(i.txid)),
+                    out_idx: i.out_idx,
+                },
+                input_index: i.input_index,
+            })
+            .collect(),
+    })
+}
+/// Reads indexed transactions from the node's block files: the bridge reads
+/// the transaction at its position and converts it exactly as at connect.
+pub(crate) struct NodeTxSource {
+    pub(crate) node: Arc<chronik_indexer::indexer::Node>,
+}
+impl db::TxSource for NodeTxSource {
+    fn load_tx(
+        &self,
+        pos: db::TxPos,
+        txid: TxId,
+        coinbase: bool,
+    ) -> Result<db::NodeTx> {
+        let tx = f::load_v2_native_tx(
+            &self.node.bridge,
+            pos.file_num,
+            pos.data_pos,
+            coinbase,
+        )
+        .map_err(|e| e.to_string())?;
+        if tx.txid != txid.0 .0 {
+            return Err("transaction identity at block-file position".into());
+        }
+        let tx = confirmed_tx(
+            tx,
+            db::Anchor {
+                block_id: [0; 32],
+                height: 0,
+            },
+        )?;
+        Ok(db::NodeTx::from(&tx))
+    }
+}
 fn range(r: f::WireRange) -> WireRange {
     WireRange {
         offset: r.offset,

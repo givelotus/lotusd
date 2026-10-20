@@ -106,6 +106,10 @@ mod ffi_inner {
         wire: Vec<u8>,
         lock: u64,
         full_inputs: Vec<NativeFullInput>,
+        /// Block file number (`blkNNNNN.dat`) holding the transaction.
+        file_num: u32,
+        /// Byte offset of the serialized transaction in that file.
+        data_pos: u32,
     }
     /// Native V2 NativeBlock transport.
     #[derive(Clone, Debug)]
@@ -289,5 +293,14 @@ mod ffi_inner {
             block: &CBlock,
             bindex: &CBlockIndex,
         ) -> Result<NativeBlock>;
+        /// Read the transaction at a block-file position and convert it
+        /// exactly as `bridge_v2_native_block` does (`coinbase` for the first
+        /// transaction of its block). Its `index` is 0.
+        fn load_v2_native_tx(
+            bridge: &ChronikBridge,
+            file_num: u32,
+            data_pos: u32,
+            coinbase: bool,
+        ) -> Result<NativeTx>;
     }
 }

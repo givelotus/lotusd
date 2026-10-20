@@ -3,18 +3,16 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 //! Safe Rust wrapper around bundled `libmdbx` with named `MDBX_dbi` subdatabases
-//! (`MDBX_DUPSORT | MDBX_DUPFIXED` for 1-to-many OutPoint postings) and
-//! append-only flat segment files (`v2_tx_NNNNN.dat`) for raw transaction and
-//! witness wire bytes referenced by `(file_num, offset, length)` pointers.
+//! (`MDBX_DUPSORT | MDBX_DUPFIXED` for 1-to-many OutPoint postings). V2
+//! transaction bytes are not copied here: records point into the node's
+//! block files and are read back through the node.
 
 use std::{
-    collections::BTreeMap,
     ffi::{c_char, c_int, c_void, CStr, CString},
-    fs::{self, File, OpenOptions},
-    os::unix::fs::FileExt,
-    path::{Path, PathBuf},
+    fs,
+    path::Path,
     ptr, slice,
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 #[repr(C)]
@@ -208,7 +206,7 @@ extern "C" {
     ) -> *const c_char;
 }
 
-/// Error returned by `libmdbx` or flat segment file operations.
+/// Error returned by `libmdbx` operations.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("mdbx storage error: {0}")]
 pub struct MdbxError(pub String);
@@ -234,10 +232,6 @@ fn check_rc(rc: c_int) -> Result<(), MdbxError> {
     }
 }
 
-/// Maximum byte size per flat transaction wire segment file (`v2_tx_NNNNN.dat`)
-/// before rotating to `file_num + 1` (2 GiB).
-pub const MAX_FLAT_SEGMENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
 /// Named `MDBX_dbi` subdatabases opened within the `libmdbx` environment.
 ///
 /// Replaces single-column-family prefix multiplexing with isolated B+tree
@@ -245,7 +239,7 @@ pub const MAX_FLAT_SEGMENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// `OutPoint` postings.
 #[derive(Clone, Copy, Debug)]
 pub struct MdbxTables {
-    /// Singleton metadata (`"v2-binding"`, `"tip"`, `"disconnected"`, `"flat_pos"`).
+    /// Singleton metadata (`"v2-binding"`, `"tip"`, `"disconnected"`).
     pub meta: MdbxDbi,
     /// Block receipts (`block_id (32B) -> ReceiptBlock`).
     pub block_receipts: MdbxDbi,
@@ -253,8 +247,9 @@ pub struct MdbxTables {
     pub undo: MdbxDbi,
     /// Canonical transaction locations (`txid (32B) -> Loc`).
     pub tx_locations: MdbxDbi,
-    /// Output records and spend state (`OutPoint (36B) -> Record`).
-    pub outputs: MdbxDbi,
+    /// Coin facts and spend references (`OutPoint (36B) -> Coin`); the full
+    /// output is read from its creating transaction in the node's block files.
+    pub coins: MdbxDbi,
     /// Branch/root postings (`root(32B)||pos(1B) (33B) -> OutPoint (36B)`),
     /// opened with `MDBX_DUPSORT | MDBX_DUPFIXED`.
     pub postings: MdbxDbi,
@@ -264,7 +259,7 @@ pub struct MdbxTables {
     pub explorer_block: MdbxDbi,
     /// Explorer block transaction ordinal index (`block_id(32B)||tx_idx_be(4B) -> txid (32B)`).
     pub explorer_block_tx: MdbxDbi,
-    /// Explorer transaction metadata + flat-file `(file_num, data_pos, wire_size)` pointer.
+    /// Explorer transaction metadata + node block-file `(file_num, data_pos)` pointer.
     pub explorer_tx: MdbxDbi,
     /// Explorer txhash-to-txid lookup (`txhash (32B) -> txid (32B)`).
     pub explorer_txhash: MdbxDbi,
@@ -297,11 +292,7 @@ fn route_key<'a>(
     tables: &MdbxTables,
     key: &'a [u8],
 ) -> Result<KeyRoute<'a>, MdbxError> {
-    if key == b"v2-binding"
-        || key == b"tip"
-        || key == b"disconnected"
-        || key == b"flat_pos"
-    {
+    if key == b"v2-binding" || key == b"tip" || key == b"disconnected" {
         return Ok(KeyRoute::Regular {
             dbi: tables.meta,
             subkey: key,
@@ -321,7 +312,7 @@ fn route_key<'a>(
             subkey: rest,
         }),
         [b'o', rest @ ..] if rest.len() == 36 => Ok(KeyRoute::Regular {
-            dbi: tables.outputs,
+            dbi: tables.coins,
             subkey: rest,
         }),
         [b'p', rest @ ..] if rest.len() == 69 => Ok(KeyRoute::DupFixed {
@@ -376,125 +367,6 @@ fn route_key<'a>(
     }
 }
 
-/// Append-only flat segment file store (`v2_tx_NNNNN.dat`) for raw transaction
-/// and witness wire frames.
-#[derive(Debug)]
-pub struct FlatFileStore {
-    dir: PathBuf,
-    files: Mutex<BTreeMap<u32, Arc<File>>>,
-}
-
-impl FlatFileStore {
-    fn open(dir: &Path) -> Result<Self, MdbxError> {
-        Ok(Self {
-            dir: dir.to_path_buf(),
-            files: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    fn segment_path(&self, file_num: u32) -> PathBuf {
-        self.dir.join(format!("v2_tx_{file_num:05}.dat"))
-    }
-
-    fn get_or_open(
-        &self,
-        file_num: u32,
-        create: bool,
-    ) -> Result<Arc<File>, MdbxError> {
-        let mut guard = self
-            .files
-            .lock()
-            .map_err(|_| MdbxError("flat file lock poisoned".into()))?;
-        if let Some(f) = guard.get(&file_num) {
-            return Ok(Arc::clone(f));
-        }
-        let path = self.segment_path(file_num);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(create)
-            .open(&path)
-            .map_err(|e| MdbxError(format!("open {}: {e}", path.display())))?;
-        let arc = Arc::new(file);
-        guard.insert(file_num, Arc::clone(&arc));
-        Ok(arc)
-    }
-
-    /// Write `bytes` at `(file_num, offset)` using positional `pwrite`.
-    pub fn write_at(
-        &self,
-        file_num: u32,
-        offset: u64,
-        bytes: &[u8],
-    ) -> Result<(), MdbxError> {
-        if bytes.is_empty() {
-            let _ = self.get_or_open(file_num, true)?;
-            return Ok(());
-        }
-        let file = self.get_or_open(file_num, true)?;
-        file.write_all_at(bytes, offset).map_err(|e| {
-            MdbxError(format!("pwrite flat file {file_num}@{offset}: {e}"))
-        })
-    }
-
-    /// Flush data for segment `file_num` to stable storage.
-    pub fn sync_file(&self, file_num: u32) -> Result<(), MdbxError> {
-        let file = self.get_or_open(file_num, true)?;
-        file.sync_data()
-            .map_err(|e| MdbxError(format!("fdatasync flat file {file_num}: {e}")))
-    }
-
-    /// Read `len` bytes from `(file_num, offset)` using positional `pread`.
-    pub fn read_at(
-        &self,
-        file_num: u32,
-        offset: u64,
-        len: usize,
-    ) -> Result<Vec<u8>, MdbxError> {
-        if len == 0 {
-            return Ok(Vec::new());
-        }
-        let file = self.get_or_open(file_num, false)?;
-        let mut buf = vec![0u8; len];
-        file.read_exact_at(&mut buf, offset).map_err(|e| {
-            MdbxError(format!(
-                "pread flat file {file_num}@{offset}+{len}: {e}"
-            ))
-        })?;
-        Ok(buf)
-    }
-
-    /// Truncate flat segment storage back to `(file_num, write_pos)` after a
-    /// block disconnect commits.
-    pub fn truncate_to(
-        &self,
-        file_num: u32,
-        write_pos: u64,
-    ) -> Result<(), MdbxError> {
-        if let Ok(file) = self.get_or_open(file_num, false) {
-            file.set_len(write_pos).map_err(|e| {
-                MdbxError(format!(
-                    "truncate flat file {file_num} to {write_pos}: {e}"
-                ))
-            })?;
-            file.sync_data().map_err(|e| {
-                MdbxError(format!("sync truncated flat file {file_num}: {e}"))
-            })?;
-        }
-        let mut guard = self
-            .files
-            .lock()
-            .map_err(|_| MdbxError("flat file lock poisoned".into()))?;
-        let higher: Vec<u32> =
-            guard.keys().copied().filter(|&k| k > file_num).collect();
-        for k in higher {
-            guard.remove(&k);
-            let _ = fs::remove_file(self.segment_path(k));
-        }
-        Ok(())
-    }
-}
-
 /// Staged write batch for atomic commit across `libmdbx` subdatabases.
 #[derive(Default, Debug)]
 pub struct MdbxWriteBatch {
@@ -530,11 +402,10 @@ impl MdbxWriteBatch {
     }
 }
 
-/// `libmdbx` database environment paired with append-only flat segment files.
+/// `libmdbx` database environment.
 pub struct MdbxEnv {
     env: *mut MDBX_env,
     tables: MdbxTables,
-    flat: Arc<FlatFileStore>,
 }
 
 // Safety: `MDBX_env` is thread-safe and opened with `MDBX_NOSTICKYTHREADS`.
@@ -747,7 +618,7 @@ impl MdbxEnv {
                         "tx_locations",
                         MDBX_DB_DEFAULTS,
                     )?,
-                    outputs: open_dbi(txn, "outputs", MDBX_DB_DEFAULTS)?,
+                    coins: open_dbi(txn, "coins", MDBX_DB_DEFAULTS)?,
                     postings: open_dbi(txn, "postings", dup_flags)?,
                     explorer_height: open_dbi(
                         txn,
@@ -819,10 +690,7 @@ impl MdbxEnv {
         })();
 
         match init {
-            Ok(tables) => {
-                let flat = Arc::new(FlatFileStore::open(dir)?);
-                Ok(Self { env, tables, flat })
-            }
+            Ok(tables) => Ok(Self { env, tables }),
             Err(e) => {
                 unsafe {
                     mdbx_env_close_ex(env, true);
@@ -830,11 +698,6 @@ impl MdbxEnv {
                 Err(e)
             }
         }
-    }
-
-    /// Reference to the flat segment file store.
-    pub fn flat(&self) -> &FlatFileStore {
-        &self.flat
     }
 
     /// Point lookup across the named subdatabases using a logical key.
@@ -917,7 +780,6 @@ impl MdbxEnv {
         Ok(MdbxSnapshot {
             txn,
             tables: self.tables,
-            flat: Arc::clone(&self.flat),
             posting_cache: Mutex::new(None),
             _marker: std::marker::PhantomData,
         })
@@ -954,11 +816,10 @@ struct DupFixedPageCache {
     next_idx: usize,
 }
 
-/// Consistent MVCC read-only transaction snapshot over `libmdbx` + flat files.
+/// Consistent MVCC read-only transaction snapshot over `libmdbx`.
 pub struct MdbxSnapshot<'a> {
     txn: *mut MDBX_txn,
     tables: MdbxTables,
-    flat: Arc<FlatFileStore>,
     posting_cache: Mutex<Option<DupFixedPageCache>>,
     _marker: std::marker::PhantomData<&'a MdbxEnv>,
 }
@@ -974,17 +835,6 @@ impl MdbxSnapshot<'_> {
         key: impl AsRef<[u8]>,
     ) -> Result<Option<Vec<u8>>, MdbxError> {
         txn_get(self.txn, &self.tables, key.as_ref())
-    }
-
-    /// Read a slice of raw transaction wire bytes from `(file_num, offset, len)`
-    /// in the append-only flat segment store.
-    pub fn read_flat(
-        &self,
-        file_num: u32,
-        offset: u64,
-        len: usize,
-    ) -> Result<Vec<u8>, MdbxError> {
-        self.flat.read_at(file_num, offset, len)
     }
 
     /// Strictly ordered next 36-byte `OutPoint` in `tables.postings`
@@ -1300,7 +1150,7 @@ impl MdbxSnapshot<'_> {
             (self.tables.block_receipts, b"b"),
             (self.tables.undo, b"u"),
             (self.tables.tx_locations, b"t"),
-            (self.tables.outputs, b"o"),
+            (self.tables.coins, b"o"),
             (self.tables.explorer_height, b"eH"),
             (self.tables.explorer_block, b"eB"),
             (self.tables.explorer_block_tx, b"eO"),
@@ -1437,7 +1287,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn named_subdatabases_dupfixed_postings_and_flat_files() {
+    fn named_subdatabases_and_dupfixed_postings() {
         let dir = tempdir::TempDir::new("mdbx-v2-unit").unwrap();
         let env = MdbxEnv::open(dir.path()).unwrap();
         assert!(env.is_empty().unwrap());
@@ -1543,15 +1393,5 @@ mod tests {
         }
         assert_eq!(iter_ops, expected_ops);
         drop(snap3);
-
-        // Flat file append, pread, and truncate
-        env.flat().write_at(0, 0, b"hello ").unwrap();
-        env.flat().write_at(0, 6, b"world!").unwrap();
-        env.flat().sync_file(0).unwrap();
-        assert_eq!(env.flat().read_at(0, 0, 12).unwrap(), b"hello world!");
-        assert_eq!(env.flat().read_at(0, 6, 5).unwrap(), b"world");
-        env.flat().truncate_to(0, 5).unwrap();
-        assert_eq!(env.flat().read_at(0, 0, 5).unwrap(), b"hello");
-        assert!(env.flat().read_at(0, 0, 6).is_err());
     }
 }
