@@ -62,6 +62,11 @@ struct PoolJob {
     int64_t created_time{0};
     uint64_t block_size{0};
     Amount block_reward{Amount::zero()};
+    // Immutable economics committed by this job's coinbase/header.
+    uint16_t operator_fee_bps{0};
+    std::string operator_address;
+    Amount operator_commission{Amount::zero()};
+    Amount worker_reward{Amount::zero()};
     bool block_sealed{false};
     std::unordered_set<uint64_t> submitted_nonces;
 };
@@ -119,6 +124,11 @@ struct ShareSubmissionResult {
 class MiningPoolManager {
 public:
     MiningPoolManager();
+
+    /** Exact floor commission; rejects negative amounts or bps above 10000. */
+    static Amount OperatorCommission(Amount miner_slice, uint16_t bps);
+    /** Parse 0..100 percent with at most two decimal places, exactly. */
+    static uint16_t ParseOperatorFeePercent(const std::string &percent);
 
     /** Configure pool settings from CLI/config arguments. */
     void Configure(const ArgsManager &args, const Config &config);
@@ -190,6 +200,7 @@ private:
     uint256 m_initial_share_target;
     bool m_configured{false};
     bool m_enabled{DEFAULT_MINING_POOL_ENABLED};
+    uint16_t m_operator_fee_bps{0};
     std::string m_pool_address_arg;
     std::optional<CTxOut> m_fallback_payout;
     std::string m_payout_error;
