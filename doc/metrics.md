@@ -161,6 +161,13 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_blocks_invalid_total` | counter | `source` (`validation`, `invalidateblock`) | 2 | Blocks marked invalid. |
 | `fullnode_blocks_parked_total` | counter | `reason` (`policy`, `finalization_conflict`, `deep_reorg`, `requested`) | 4 | Blocks parked: a block policy failed, forks below the Avalanche-finalized tip, `-parkdeepreorg`, or `parkblock`/an Avalanche rejection. |
 
+### Storage
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_db_size_bytes` | gauge | `db` (6) | 6 | Size of each MDBX database (the data file's current geometry), as of its last commit. Databases: `chainstate`, `block_index`, `txindex`, `blockfilterindex`, `coinstatsindex`, `other`. Two databases of one kind (e.g. a snapshot chainstate and the background one) share a series: the last commit sets it. |
+| `fullnode_db_commit_seconds` | histogram | `db` (6) | 6 | Time to write and commit a batch (and sync it when asked). `_count` counts commits. 50 µs to 120 s. |
+
 
 ## Tests
 
