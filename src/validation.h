@@ -44,6 +44,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -673,6 +674,30 @@ bool HasValidProofOfWork(const std::vector<CBlockHeader> &headers,
  * Check if a block has been mutated (with respect to its merkle root).
  */
 bool IsBlockMutated(const CBlock &block);
+
+//! Blocks with at least this many transactions have their Merkle root
+//! computed on several threads (see ValidationBlockMerkleRoot).
+static constexpr size_t PARALLEL_MERKLE_MIN_TXS{10000};
+//! Threads used for a parallel Merkle root (the caller included).
+static constexpr size_t PARALLEL_MERKLE_THREADS{4};
+
+/**
+ * Run fn(0) ... fn(n_tasks - 1) on up to max_threads threads of the
+ * validation worker pool (the calling thread included), or all on the
+ * calling thread if the pool is busy. Returns when all tasks have returned.
+ */
+void RunOnValidationWorkers(size_t max_threads, size_t n_tasks,
+                            const std::function<void(size_t)> &fn);
+
+/**
+ * The block's Merkle root and mutation flag, bit-identical to
+ * BlockMerkleRoot: computed by BlockMerkleRoot below min_parallel_txs
+ * transactions, else as subtrees on up to `threads` threads.
+ */
+uint256 ValidationBlockMerkleRoot(
+    const CBlock &block, bool *mutated,
+    size_t min_parallel_txs = PARALLEL_MERKLE_MIN_TXS,
+    size_t threads = PARALLEL_MERKLE_THREADS);
 
 /**
  * Return the sum of the claimed work on a given set of headers. No verification
