@@ -78,6 +78,15 @@ namespace metric_labels {
     const std::vector<std::string> &HTTPEndpoints();
     //! 0 = 1xx ... 4 = 5xx, 5 = other
     const std::vector<std::string> &HTTPCodeClasses();
+    //! Avalanche vote item types, index = avalanche::AnyVoteItem's variant
+    //! index (proof, block, contender, transaction, batch, state_anchor)
+    const std::vector<std::string> &AvalancheItemTypes();
+    //! Index = AvalancheItemOutcome
+    const std::vector<std::string> &AvalancheItemOutcomes();
+    //! Index = AvalancheVoteSeries()
+    const std::vector<std::string> &AvalancheVotes();
+    //! Index = AvalancheProofPool
+    const std::vector<std::string> &AvalancheProofPools();
 } // namespace metric_labels
 
 enum class HTTPEndpoint : size_t {
@@ -130,6 +139,24 @@ struct NodeMetrics {
     //! Always 1; labelled with version and commit
     metrics::Gauge &build_info;
 
+    // Avalanche
+    metrics::Gauge &avalanche_quorum_established;
+    metrics::Gauge &avalanche_quorum_nodes;
+    //! By scope: 0 = total, 1 = connected
+    metrics::Gauge &avalanche_quorum_score;
+    //! By AvalancheProofPool
+    metrics::Gauge &avalanche_proofs;
+    metrics::Counter &avalanche_polls_sent;
+    metrics::Counter &avalanche_poll_items_sent;
+    //! By outcome: 0 = answered, 1 = ignored (cooldown)
+    metrics::Counter &avalanche_polls_received;
+    //! Votes in responses to our polls, by AvalancheVoteSeries()
+    metrics::Counter &avalanche_votes_received;
+    //! By item type x AvalancheItemOutcome
+    metrics::Counter &avalanche_items;
+    //! By item type: time from first poll registration to finalization
+    metrics::EventHistogram &avalanche_finalization_seconds;
+
     /** Label index of an RPC method ("other" if not in the set) */
     size_t RPCMethodIndex(std::string_view method) const noexcept;
 
@@ -166,6 +193,26 @@ util::Result<NodeMetrics *> StartNodeMetrics(
     const std::vector<std::pair<std::string, std::string>> &operator_labels);
 /** Stop the drain thread (recording still works, into full rings) */
 void StopNodeMetrics();
+
+enum class AvalancheItemOutcome : size_t { FINALIZED, INVALIDATED, STALE };
+enum class AvalancheProofPool : size_t {
+    VALID,
+    CONFLICTING,
+    IMMATURE,
+    DANGLING
+};
+
+/**
+ * Series of avalanche_votes_received for a vote's error code, as
+ * VoteRecord::registerVote counts it: 0 is yes, a positive error a no (e.g.
+ * invalid, parked), a negative one neutral (e.g. unknown, missing).
+ */
+inline size_t AvalancheVoteSeries(uint32_t error) noexcept {
+    if (error == 0) {
+        return 0;
+    }
+    return int32_t(error) > 0 ? 1 : 2;
+}
 
 /** Label index of a P2P message type ("other" for unknown types) */
 size_t MetricMsgTypeIndex(std::string_view msg_type) noexcept;

@@ -117,6 +117,22 @@ one `_bucket` per bound plus `+Inf`, a `_sum` and a `_count`.
 | `fullnode_mempool_transactions` | gauge | | 1 | Transactions in the mempool. |
 | `fullnode_mempool_bytes` | gauge | | 1 | Total size of the mempool's transactions. |
 
+### Avalanche
+
+| Name | Type | Labels | Max series | Meaning |
+|---|---|---|---|---|
+| `fullnode_avalanche_quorum_established` | gauge | | 1 | 1 once the quorum is established (latched, while at least 8 nodes are connected). |
+| `fullnode_avalanche_quorum_nodes` | gauge | | 1 | Avalanche nodes counted for the quorum. |
+| `fullnode_avalanche_quorum_score` | gauge | `scope` (`total`, `connected`) | 2 | Stake score of the known peers, and of those with a connected node (the local proof not included). |
+| `fullnode_avalanche_proofs` | gauge | `pool` (`valid`, `conflicting`, `immature`, `dangling`) | 4 | Proofs in each proof pool. |
+| `fullnode_avalanche_polls_sent_total` | counter | | 1 | Polls sent to peers. |
+| `fullnode_avalanche_poll_items_sent_total` | counter | | 1 | Items asked for in the polls sent. |
+| `fullnode_avalanche_polls_received_total` | counter | `outcome` (`answered`, `ignored`) | 2 | Polls received; ignored when the peer's cooldown had not elapsed. |
+| `fullnode_avalanche_votes_received_total` | counter | `vote` (`yes`, `no`, `neutral`) | 3 | Votes in responses to our polls: yes (0), no (positive error, e.g. invalid or parked), neutral (negative error, e.g. unknown). |
+| `fullnode_avalanche_items_total` | counter | `type` (6), `outcome` (`finalized`, `invalidated`, `stale`) | 18 | Items whose vote ended. Types: `proof`, `block`, `contender`, `transaction`, `batch`, `state_anchor`. |
+| `fullnode_avalanche_finalization_seconds` | histogram | `type` (6) | 6 | Time from an item's registration for polling to its finalization. Items registered while metrics were off are not timed. |
+
+
 ## Tests
 
 `test/functional/test_framework/metrics.py` scrapes and checks an

@@ -491,6 +491,19 @@ public:
     int64_t getAvaproofsNodeCounter() const {
         return avaproofsNodeCounter.load();
     }
+    /**
+     * Whether the quorum is established, as isQuorumEstablished() would
+     * answer once it has latched, without its side effects or locks (for
+     * metrics): the latch, and at least 8 nodes.
+     */
+    bool isQuorumLatched() const;
+    struct QuorumFigures {
+        size_t nodeCount;
+        uint32_t totalScore;
+        uint32_t connectedScore;
+    };
+    /** Quorum figures, read without a lock (for metrics) */
+    QuorumFigures getQuorumFigures() const;
     bool isQuorumEstablished() LOCKS_EXCLUDED(cs_main)
         EXCLUSIVE_LOCKS_REQUIRED(!cs_peerManager, !cs_stakingRewards,
                                  !cs_finalizedItems);

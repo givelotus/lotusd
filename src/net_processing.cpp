@@ -7095,6 +7095,9 @@ void PeerManagerImpl::ProcessMessage(
                      "Ignoring repeated avapoll from peer %d: cooldown not "
                      "elapsed\n",
                      pfrom.GetId());
+            if (auto *metrics{node::GetNodeMetrics()}) {
+                metrics->avalanche_polls_received.Add(/*ignored=*/1);
+            }
             return;
         }
 
@@ -7180,6 +7183,9 @@ void PeerManagerImpl::ProcessMessage(
             votes.emplace_back(vote, inv.hash);
         }
 
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->avalanche_polls_received.Add(/*answered=*/0);
+        }
         // Send the query to the node.
         m_avalanche->sendResponse(
             &pfrom, avalanche::Response(round, m_opts.avalanche_cooldown,
