@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "batch": "config-file-read-diagnostics",
+  "status": "SOURCE_APPLIED_PENDING_NATIVE_GATE",
+  "files": [
+    {
+      "path": "src/common/configfile.cpp",
+      "rules": [
+        {
+          "id": "config_unknown_option_ignored",
+          "old": "LogPrintf(\"Ignoring unknown configuration value %s\\n\",\n                          option.first)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_unknown_option_ignored\", \"Ignoring unknown configuration value {config_option}\").Field(BCLog::LogField::ConfigOption, option.first)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Ignoring unknown configuration value %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "option.first"
+            ]
+          },
+          "review_note": "Preserve Info/text and success/error paths. Unknown configuration key only: never add its value. Included conf_file_name remains the exact user-supplied filename, not falsely promoted to an absolute file.path and not expanded to file contents."
+        },
+        {
+          "id": "config_include_loaded",
+          "old": "LogPrintf(\"Included configuration file %s\\n\",\n                              conf_file_name)",
+          "replacement": "LogInfoEvent(BCLog::ALL, \"config_include_loaded\", \"Included configuration file {name}\").Field(BCLog::LogField::Name, conf_file_name)",
+          "count": 1,
+          "reviewed_input": {
+            "macro": "LogPrintf",
+            "format": "Included configuration file %s\n",
+            "specifiers": [
+              "%s"
+            ],
+            "arguments": [
+              "conf_file_name"
+            ]
+          },
+          "review_note": "Preserve Info/text and success/error paths. Unknown configuration key only: never add its value. Included conf_file_name remains the exact user-supplied filename, not falsely promoted to an absolute file.path and not expanded to file contents."
+        }
+      ]
+    }
+  ]
+}
