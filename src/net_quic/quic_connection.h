@@ -191,6 +191,9 @@ public:
     /** Queue bytes (and optionally FIN) on an OWN stream */
     void QueueStreamData(QuicStream &stream, std::vector<uint8_t> &&data,
                          bool fin = false);
+    /** Queue an HTTP/3 datagram payload (sent before stream data; dropped
+     * if datagrams were not negotiated or it is too large) */
+    void QueueDatagram(std::vector<uint8_t> &&payload);
     /** Let the peer send `n` more bytes on the stream (and connection) */
     void ExtendCredit(int64_t stream_id, uint64_t n);
     /** Stop reading and writing a stream with an application error */
@@ -243,6 +246,8 @@ private:
     uint64_t m_created{0};
     uint64_t m_last_ts{0};
     std::vector<uint8_t> m_txbuf;
+    std::deque<std::vector<uint8_t>> m_datagrams;
+    uint64_t m_next_datagram_id{1};
     std::shared_ptr<std::atomic<bool>> m_cancel;
 };
 
