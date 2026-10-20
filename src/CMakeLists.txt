@@ -672,6 +672,7 @@ add_library(server
 	net_websocket_codec.cpp
 	net_websocket_sock.cpp
 	net_websocket_tls.cpp
+	net_zstd_independent.cpp
 	node/abort.cpp
 	node/blockfitter.cpp
 	node/blockmanager_args.cpp

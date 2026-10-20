@@ -8,7 +8,8 @@ Sec-WebSocket-Protocol offer) or raw TCP, complete the version handshake,
 wait for a common start signal, send `getdata` for one block and stop when
 the whole `block` message has arrived and matches the expected SHA256.
 WebSocket peers decode what they receive exactly as a real peer would
-(zstd stream with the P2P dictionary), so every side does the same work.
+(zstd stream with the P2P dictionary, and independent RSV2 frames on zstd
+connections), so every side does the same work.
 
 Peers run in asyncio event loops inside several worker processes (see
 serve_ab.py); this module has no dependency on the node's source tree
@@ -84,6 +85,23 @@ def getdata_payload(block_hash_hex):
     )
 
 
+def decode_independent(body, dictionary, max_size=64 << 20):
+    """An independent frame: [1][dictionary version LE32 = 1][zstd frame]"""
+    import zstandard
+
+    if len(body) < 11 or body[0] != 1 or struct.unpack_from("<I", body, 1)[0] != 1:
+        raise ValueError("unsupported independent frame")
+    frame = body[5:]
+    params = zstandard.get_frame_parameters(frame)
+    if params.content_size > max_size or params.window_size > 1 << 20:
+        raise ValueError("independent frame resource bound exceeded")
+    out = zstandard.ZstdDecompressor(dict_data=dictionary).decompressobj()
+    data = out.decompress(frame)
+    if not out.eof or out.unused_data or len(data) != params.content_size:
+        raise ValueError("malformed independent frame")
+    return data
+
+
 class Codec:
     """The P2P byte stream over one transport (raw TCP or WebSocket)."""
 
@@ -91,21 +109,24 @@ class Codec:
         self.subprotocol = subprotocol
         self.encoder = self.decoder = None
         self.dictionary = None
-        if subprotocol in ("p2p-zstd", "p2p-zstd-v1"):
+        self.frames = subprotocol in ("p2p-zstd", "p2p-zstd-v1")
+        if self.frames:
             import zstandard
 
-            if subprotocol != "p2p-zstd":
-                self.dictionary = zstandard.ZstdCompressionDict(
-                    dictionary, dict_type=zstandard.DICT_TYPE_RAWCONTENT
-                )
+            # Independent frames always use the dictionary, the stream only
+            # with p2p-zstd-v1.
+            self.dictionary = zstandard.ZstdCompressionDict(
+                dictionary, dict_type=zstandard.DICT_TYPE_RAWCONTENT
+            )
+            stream_dict = self.dictionary if subprotocol == "p2p-zstd-v1" else None
             self.encoder = zstandard.ZstdCompressor(
                 level=1,
-                dict_data=self.dictionary,
+                dict_data=stream_dict,
                 write_checksum=False,
                 write_content_size=False,
             ).compressobj()
             self.decoder = zstandard.ZstdDecompressor(
-                dict_data=self.dictionary
+                dict_data=stream_dict
             ).decompressobj()
             self.flush = zstandard.COMPRESSOBJ_FLUSH_BLOCK
 
@@ -115,6 +136,8 @@ class Codec:
         return self.encoder.compress(raw) + self.encoder.flush(self.flush)
 
     def decode(self, payload, rsv):
+        if rsv == 0x20 and self.frames:
+            return decode_independent(payload, self.dictionary)
         if rsv:
             raise ValueError(f"unexpected RSV bits {rsv:#x}")
         return self.decoder.decompress(payload) if self.decoder else payload

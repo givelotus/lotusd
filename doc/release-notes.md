@@ -5,6 +5,11 @@ Bitcoin ABC version 0.34.1 is now available from:
   <https://download.bitcoinabc.org/0.34.1/>
 
 This release includes the following features and fixes:
+- On zstd P2P WebSocket connections (`p2p-zstd-v1`, `p2p-zstd`), large
+  blocks are sent as independent zstd frames, compressed once and shared by
+  every such peer instead of once per peer. See
+  `-p2pcompressoncethreshold`, `-p2pcompressoncecache` and
+  doc/p2p-websocket.md.
 - Wallets receive chain notifications (blocks, mempool transactions and chain
   state flushes) on a per-wallet worker thread instead of the validation
   scheduler thread, in the same order as before. A wallet that is busy, for

@@ -5,11 +5,16 @@
 #include <net_websocket_sock.h>
 
 #include <compat/compat.h>
+#include <crypto/common.h>
 #include <logging.h>
+#include <net_zstd_independent.h>
+#include <node/metrics.h>
+#include <protocol.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <utility>
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -55,8 +60,8 @@ WebSocketSock::WebSocketSock(Sock &&sock, WebSocketCodec::Role role,
                              std::shared_ptr<WebSocketTransportInfo> info,
                              std::unique_ptr<WebSocketByteLayer> layer,
                              std::vector<uint8_t> initial_wire_bytes)
-    : Sock{std::move(sock)}, m_info{std::move(info)},
-      m_layer{std::move(layer)}, m_codec{role, m_info->compression},
+    : Sock{std::move(sock)}, m_info{std::move(info)}, m_layer{std::move(layer)},
+      m_codec{role, m_info->compression},
       m_rx_wire{std::move(initial_wire_bytes)} {
     // Never block a CConnman thread: MSG_DONTWAIT may be unavailable (it is
     // then defined as 0 by compat.h), so make the socket itself
@@ -93,12 +98,99 @@ void WebSocketSock::UpdateFlagsLocked() const {
                        (m_read_waits_send ? Sock::SEND : Event{0});
 }
 
-bool WebSocketSock::FlushLocked() const {
-    if (!m_coalesce.empty()) {
-        m_codec.EncodeMessage(m_coalesce, m_tx);
-        AddCounters(*m_info, m_coalesce.size(), 0, 0, 0);
-        m_coalesce.clear();
+void WebSocketSock::EncodeCoalescedLocked() const {
+    if (m_coalesce.empty()) {
+        return;
     }
+    m_codec.EncodeMessage(m_coalesce, m_tx);
+    AddCounters(*m_info, m_coalesce.size(), 0, 0, 0);
+    m_coalesce.clear();
+    if (m_out_header_have > 0) {
+        // The start of the current header went into the zstd stream.
+        m_out_header_split = true;
+    }
+}
+
+void WebSocketSock::EncodeIndependentLocked(Span<const uint8_t> payload) const {
+    const auto frame{
+        GetP2PIndependentFrameCache().Encode(m_out_header, payload)};
+    m_codec.EncodeIndependent(*frame, m_tx);
+    m_out_independent = false;
+    AddCounters(*m_info, m_out_header.size() + payload.size(), 0, 0, 0);
+    ++m_info->independent_frames_sent;
+    if (auto *metrics{node::GetNodeMetrics()}) {
+        metrics->websocket_independent_frames.Add(0);
+    }
+}
+
+void WebSocketSock::QueueLocked(Span<const uint8_t> bytes) const {
+    if (!m_codec.IndependentFrames()) {
+        m_coalesce.insert(m_coalesce.end(), bytes.begin(), bytes.end());
+        return;
+    }
+    // CConnman sends whole P2P messages (header, then payload) in order, so
+    // the stream can be followed message by message. Following it wrongly
+    // would only change how bytes are framed, never the bytes themselves.
+    static constexpr size_t HEADER{CMessageHeader::HEADER_SIZE};
+    static_assert(std::tuple_size_v<decltype(m_out_header)> == HEADER);
+    static constexpr char BLOCK_COMMAND[CMessageHeader::MESSAGE_TYPE_SIZE]{
+        "block"};
+    while (!bytes.empty()) {
+        if (m_out_body_left == 0 && !m_out_independent) {
+            const size_t take{
+                std::min(HEADER - m_out_header_have, bytes.size())};
+            std::copy(bytes.begin(), bytes.begin() + take,
+                      m_out_header.begin() + m_out_header_have);
+            m_coalesce.insert(m_coalesce.end(), bytes.begin(),
+                              bytes.begin() + take);
+            m_out_header_have += take;
+            bytes = bytes.subspan(take);
+            if (m_out_header_have < HEADER) {
+                break;
+            }
+            m_out_header_have = 0;
+            const bool split{std::exchange(m_out_header_split, false)};
+            m_out_body_left = ReadLE32(m_out_header.data() +
+                                       CMessageHeader::MESSAGE_SIZE_OFFSET);
+            const uint64_t total{HEADER + m_out_body_left};
+            const size_t threshold{g_p2p_compress_once_threshold.load()};
+            if (!split && threshold != 0 && total >= threshold &&
+                total <= GetP2PWebSocketMessageSizeLimit() &&
+                std::memcmp(m_out_header.data() +
+                                CMessageHeader::MESSAGE_START_SIZE,
+                            BLOCK_COMMAND, sizeof(BLOCK_COMMAND)) == 0) {
+                // Frame what precedes the block, then the block on its own.
+                m_coalesce.resize(m_coalesce.size() - HEADER);
+                EncodeCoalescedLocked();
+                m_out_independent = true;
+            }
+            continue;
+        }
+        const size_t take{
+            size_t(std::min<uint64_t>(m_out_body_left, bytes.size()))};
+        if (!m_out_independent) {
+            m_coalesce.insert(m_coalesce.end(), bytes.begin(),
+                              bytes.begin() + take);
+            m_out_body_left -= take;
+        } else if (m_out_block.empty() && take == m_out_body_left) {
+            // The whole payload in one call (as CConnman sends it): no copy.
+            m_out_body_left = 0;
+            EncodeIndependentLocked(bytes.first(take));
+        } else {
+            m_out_block.insert(m_out_block.end(), bytes.begin(),
+                               bytes.begin() + take);
+            m_out_body_left -= take;
+            if (m_out_body_left == 0) {
+                EncodeIndependentLocked(m_out_block);
+                std::vector<uint8_t>().swap(m_out_block);
+            }
+        }
+        bytes = bytes.subspan(take);
+    }
+}
+
+bool WebSocketSock::FlushLocked() const {
+    EncodeCoalescedLocked();
     while (m_tx_offset < m_tx.size()) {
         const ssize_t n{m_layer->Write(m_socket, m_tx.data() + m_tx_offset,
                                        m_tx.size() - m_tx_offset)};
@@ -143,7 +235,8 @@ ssize_t WebSocketSock::Send(const void *data, size_t len, int flags) const {
         errno = EPIPE;
         return -1;
     }
-    if (m_tx.size() - m_tx_offset + m_coalesce.size() > MAX_PENDING_SEND) {
+    if (m_tx.size() - m_tx_offset + m_coalesce.size() + m_out_block.size() >
+        MAX_PENDING_SEND) {
         // Back-pressure: try to drain first.
         if (!FlushLocked()) {
             errno = ECONNRESET;
@@ -157,7 +250,16 @@ ssize_t WebSocketSock::Send(const void *data, size_t len, int flags) const {
         }
     }
     const auto *bytes{static_cast<const uint8_t *>(data)};
-    m_coalesce.insert(m_coalesce.end(), bytes, bytes + len);
+    try {
+        QueueLocked(Span<const uint8_t>{bytes, len});
+    } catch (const std::exception &e) {
+        LogPrintf("WebSocket: cannot encode an independent frame: %s\n",
+                  e.what());
+        m_failed = true;
+        UpdateFlagsLocked();
+        errno = ECONNRESET;
+        return -1;
+    }
     bool more{false};
 #ifdef MSG_MORE
     more = flags & MSG_MORE;
@@ -205,6 +307,14 @@ bool WebSocketSock::FillLocked() const {
     AddCounters(*m_info, 0, m_rx_plain.size() - plain_before, 0,
                 m_codec.WireBytesRecv() - m_wire_recv_reported);
     m_wire_recv_reported = m_codec.WireBytesRecv();
+    if (const uint64_t independent{m_codec.IndependentFramesRecv() -
+                                   m_independent_recv_reported}) {
+        m_independent_recv_reported = m_codec.IndependentFramesRecv();
+        m_info->independent_frames_recv += independent;
+        if (auto *metrics{node::GetNodeMetrics()}) {
+            metrics->websocket_independent_frames.Add(1, independent);
+        }
+    }
     if (result.error) {
         LogDebug(BCLog::NET, "WebSocket peer error: %s\n", *result.error);
         m_failed = true;
