@@ -7,6 +7,7 @@
 #define BITCOIN_KEY_IO_H
 
 #include <key.h>
+#include <lotus_v2/address.h>
 #include <pubkey.h>
 #include <script/standard.h>
 
@@ -14,6 +15,10 @@
 
 class Config;
 class CChainParams;
+
+lotus::v2::AddressNetwork NativeAddressNetwork(const CChainParams &params);
+lotus::v2::Hash32 NativeDestinationRoot(const NativeDestination &dest);
+NativeDestination NativeKeyHashDestination(const CPubKey &pubkey);
 
 CKey DecodeSecret(const std::string &str);
 CKey DecodeSecret(const std::string &str, const CChainParams &params);
