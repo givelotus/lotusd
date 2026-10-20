@@ -3021,19 +3021,18 @@ void Chainstate::CheckForkWarningConditions() {
         }
 
         if (m_best_fork_tip && m_best_fork_base) {
-            LogPrintf("%s: Warning: Large fork found\n  forking the "
-                      "chain at height %d (%s)\n  lasting to height %d "
-                      "(%s).\nChain state database corruption likely.\n",
-                      __func__, m_best_fork_base->nHeight,
-                      m_best_fork_base->phashBlock->ToString(),
-                      m_best_fork_tip->nHeight,
-                      m_best_fork_tip->phashBlock->ToString());
+            LogInfoEvent(BCLog::ALL, "chain_large_fork_detected",
+                     "{source_function}: Warning: Large fork found\n  forking the chain at height {fork_base_height} ({fork_base_hash})\n  lasting to height {fork_tip_height} ({fork_tip_hash}).\nChain state database corruption likely.")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::ForkBaseHeight, m_best_fork_base->nHeight)
+            .Field(BCLog::LogField::ForkBaseHash, m_best_fork_base->GetBlockHash())
+            .Field(BCLog::LogField::ForkTipHeight, m_best_fork_tip->nHeight)
+            .Field(BCLog::LogField::ForkTipHash, m_best_fork_tip->GetBlockHash());
             SetfLargeWorkForkFound(true);
         } else {
-            LogPrintf("%s: Warning: Found invalid chain at least ~6 blocks "
-                      "longer than our best chain.\nChain state database "
-                      "corruption likely.\n",
-                      __func__);
+            LogInfoEvent(BCLog::ALL, "chain_large_invalid_fork_detected",
+                     "{source_function}: Warning: Found invalid chain at least ~6 blocks longer than our best chain.\nChain state database corruption likely.")
+            .Field(BCLog::LogField::SourceFunction, __func__);
             SetfLargeWorkInvalidChainFound(true);
         }
     } else {
@@ -3091,17 +3090,22 @@ void Chainstate::InvalidChainFound(CBlockIndex *pindexNew) {
         m_avalancheFinalizedBlockIndex = pindexNew->pprev;
     }
 
-    LogPrintf("%s: invalid block=%s  height=%d  log2_work=%f  date=%s\n",
-              __func__, pindexNew->GetBlockHash().ToString(),
-              pindexNew->nHeight,
-              log(pindexNew->nChainWork.getdouble()) / log(2.0),
-              FormatISO8601DateTime(pindexNew->GetBlockTime()));
+    LogInfoEvent(BCLog::ALL, "chain_invalid_block",
+                     "{source_function}: invalid block={block_hash}  height={height}  log2_work={log2_work:f}  date={block_time}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::BlockHash, pindexNew->GetBlockHash())
+            .Field(BCLog::LogField::Height, pindexNew->nHeight)
+            .Field(BCLog::LogField::Log2Work, log(pindexNew->nChainWork.getdouble()) / log(2.0))
+            .Field(BCLog::LogField::BlockTime, FormatISO8601DateTime(pindexNew->GetBlockTime()));
     CBlockIndex *tip = m_chain.Tip();
     assert(tip);
-    LogPrintf("%s:  current best=%s  height=%d  log2_work=%f  date=%s\n",
-              __func__, tip->GetBlockHash().ToString(), m_chain.Height(),
-              log(tip->nChainWork.getdouble()) / log(2.0),
-              FormatISO8601DateTime(tip->GetBlockTime()));
+    LogInfoEvent(BCLog::ALL, "chain_invalid_current_best",
+                     "{source_function}:  current best={block_hash}  height={height}  log2_work={log2_work:f}  date={block_time}")
+            .Field(BCLog::LogField::SourceFunction, __func__)
+            .Field(BCLog::LogField::BlockHash, tip->GetBlockHash())
+            .Field(BCLog::LogField::Height, m_chain.Height())
+            .Field(BCLog::LogField::Log2Work, log(tip->nChainWork.getdouble()) / log(2.0))
+            .Field(BCLog::LogField::BlockTime, FormatISO8601DateTime(tip->GetBlockTime()));
 }
 
 // Same as InvalidChainFound, above, except not called directly from
@@ -6717,8 +6721,10 @@ bool ChainstateManager::ProcessNewBlockHeaders(
             blocks_left = std::max<int64_t>(0, blocks_left);
             const double progress{100.0 * last_accepted.nHeight /
                                   (last_accepted.nHeight + blocks_left)};
-            LogInfo("Synchronizing blockheaders, height: %d (~%.2f%%)\n",
-                    last_accepted.nHeight, progress);
+            LogInfoEvent(BCLog::ALL, "chain_headers_sync_progress",
+                     "Synchronizing blockheaders, height: {height} (~{header_progress_percent:.2f}%)")
+            .Field(BCLog::LogField::Height, last_accepted.nHeight)
+            .Field(BCLog::LogField::HeaderProgressPercent, progress);
         }
     }
     return true;
@@ -6758,8 +6764,10 @@ void ChainstateManager::ReportHeadersPresync(const arith_uint256 &work,
             GetConsensus().PowTargetSpacing()};
         blocks_left = std::max<int64_t>(0, blocks_left);
         const double progress{100.0 * height / (height + blocks_left)};
-        LogInfo("Pre-synchronizing blockheaders, height: %d (~%.2f%%)\n",
-                height, progress);
+        LogInfoEvent(BCLog::ALL, "chain_headers_presync_progress",
+                     "Pre-synchronizing blockheaders, height: {height} (~{header_progress_percent:.2f}%)")
+            .Field(BCLog::LogField::Height, height)
+            .Field(BCLog::LogField::HeaderProgressPercent, progress);
     }
 }
 
@@ -6806,12 +6814,14 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock> &pblock,
     bool isSameHeight =
         ActiveTip() && (pindex->nChainWork == ActiveTip()->nChainWork);
     if (isSameHeight) {
-        LogPrintf("Chain tip timestamp-to-received-time difference: hash=%s, "
-                  "diff=%d\n",
-                  ActiveTip()->GetBlockHash().ToString(), chainTipTimeDiff);
-        LogPrintf("New block timestamp-to-received-time difference: hash=%s, "
-                  "diff=%d\n",
-                  pindex->GetBlockHash().ToString(), newBlockTimeDiff);
+        LogInfoEvent(BCLog::ALL, "chain_tip_received_time_difference",
+                     "Chain tip timestamp-to-received-time difference: hash={block_hash}, diff={received_time_difference_seconds}")
+            .Field(BCLog::LogField::BlockHash, ActiveTip()->GetBlockHash())
+            .Field(BCLog::LogField::ReceivedTimeDifferenceSeconds, chainTipTimeDiff);
+        LogInfoEvent(BCLog::ALL, "chain_block_received_time_difference",
+                     "New block timestamp-to-received-time difference: hash={block_hash}, diff={received_time_difference_seconds}")
+            .Field(BCLog::LogField::BlockHash, pindex->GetBlockHash())
+            .Field(BCLog::LogField::ReceivedTimeDifferenceSeconds, newBlockTimeDiff);
     }
 
     bool fHasMoreOrSameWork =
