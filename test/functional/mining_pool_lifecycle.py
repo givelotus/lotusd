@@ -11,6 +11,7 @@ import urllib.parse
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal, assert_raises_rpc_error, p2p_port
+from test_framework.xpiaddr import encode
 
 
 class MiningPoolLifecycleTest(BitcoinTestFramework):
@@ -23,6 +24,9 @@ class MiningPoolLifecycleTest(BitcoinTestFramework):
         self.add_nodes(2, [[f"-publicbind=127.0.0.1:{self.public_port}"], []])
         with open(self.nodes[1].bitcoinconf, "a", encoding="utf-8") as config:
             config.write("\nminingpool=0\n")
+        for node in self.nodes:
+            with open(node.bitcoinconf, "a", encoding="utf-8") as config:
+                config.write(f"\npooladdress={encode('rxpi', bytes(32), 0)}\n")
         self.start_nodes()
 
     def request(self, node, method, path, body=None, *, public=False):
